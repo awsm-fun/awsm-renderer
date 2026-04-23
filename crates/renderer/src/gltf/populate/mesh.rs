@@ -182,7 +182,7 @@ impl AwsmRenderer {
                     let material =
                         pbr_material_mapper(self, ctx, primitive_buffer_info, gltf_material)
                             .await?;
-                    let key = self.materials.insert(material, &self.textures)?;
+                    let key = self.materials.insert(material, &self.textures);
                     ctx.material_keys
                         .lock()
                         .unwrap()
@@ -241,7 +241,7 @@ impl AwsmRenderer {
                             .visibility_geometry_vertex_bytes
                             .get(geometry_data_start..geometry_data_end)
                             .ok_or_else(|| {
-                                AwsmGltfError::GeometryDataSizeOverflow(format!(
+                                AwsmGltfError::GeometryDataRangeOutOfBounds(format!(
                                     "visibility geometry byte range [{}..{}) exceeds buffer length {}",
                                     geometry_data_start,
                                     geometry_data_end,
@@ -283,7 +283,7 @@ impl AwsmRenderer {
                             .transparency_geometry_vertex_bytes
                             .get(geometry_data_start..geometry_data_end)
                             .ok_or_else(|| {
-                                AwsmGltfError::GeometryDataSizeOverflow(format!(
+                                AwsmGltfError::GeometryDataRangeOutOfBounds(format!(
                                     "transparency geometry byte range [{}..{}) exceeds buffer length {}",
                                     geometry_data_start,
                                     geometry_data_end,

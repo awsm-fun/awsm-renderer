@@ -187,6 +187,9 @@ pub enum AwsmGltfError {
     #[error("[gltf] geometry data size overflow: {0}")]
     GeometryDataSizeOverflow(String),
 
+    #[error("[gltf] geometry data range out of bounds: {0}")]
+    GeometryDataRangeOutOfBounds(String),
+
     #[error("[gltf] unable to get positions: {0}")]
     Positions(String),
 
