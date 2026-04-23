@@ -98,7 +98,7 @@ Skybox (if simple png)
 
 ktx create \
     --cubemap \
-    --format R8G8B8A8_SRGB \
+    --encode uastc --uastc 2 \
     skybox/px.png skybox/nx.png skybox/py.png skybox/ny.png skybox/pz.png skybox/nz.png \
     skybox.ktx2
 ```

@@ -6,6 +6,9 @@
   - Maybe global "editor_mode" on renderer that toggles some less-efficient behavior
     - All meshes get both transparent and opaque geometry 
     - Picking pass samples both and uses alpha test to discard transparent fragments below threshold
+
+- Font rendering
+    - https://github.com/EricLengyel/Slug
     
 - Shadows
 

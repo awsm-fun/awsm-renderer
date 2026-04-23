@@ -46,39 +46,39 @@ opt-level = 1
 
 # Misc
 cfg-if = "1.0.4"
-ordered-float = "5.1.0"
+ordered-float = "5.3.0"
 
 # Error handling
-anyhow = "1.0.100"
+anyhow = "1.0.102"
 thiserror = "2.0.18"
 
 # Async
-futures = "0.3.31"
+futures = "0.3.32"
 
 # Data formats
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
-const-hex = "1.17.0"
+const-hex = "1.18.1"
 
 # Logging
-tracing-subscriber = {version ="0.3.22", features = ["env-filter"]}
+tracing-subscriber = {version ="0.3.23", features = ["env-filter"]}
 tracing = "0.1.44"
 tracing-panic = "0.1.2"
 
 # Collections
 slotmap = {version = "1.1.1", features = ["serde"]}
-indexmap = "2.13.0"
+indexmap = "2.11.4"
 
 # Helper utils
-strum = { version = "0.27.2", features = ["derive"] }
+strum = { version = "0.28.0", features = ["derive"] }
 
 # Template
-askama = {version = "0.15.4", default-features = false, features = ["config", "derive", "std"]}
+askama = {version = "0.15.6", default-features = false, features = ["config", "derive", "std"]}
 
 # Math
-glam = {version = "0.31.0"}
-half = "2.7.1"
-bevy_mikktspace = "0.16.1"
+glam = {version = "0.32.1"}
+half = "2.4.1"
+bevy_mikktspace = "0.15.3"
 
 # Media
 # https://github.com/gltf-rs/gltf/issues/465
@@ -98,17 +98,17 @@ gltf = {version = "1.4.1", git = "https://github.com/gltf-rs/gltf.git", features
 exr = "1.74.0"
 binpack2d = "1.0.1"
 image = {version = "0.25.6", default-features = false, features = ["png"]}
-ktx2 = "0.4.0"
+ktx2 = "0.5.0"
 
 # Browser bindings and helpers
-wasm-bindgen = "0.2.108"
-js-sys = "0.3.85"
-wasm-bindgen-futures = "0.4.58"
+wasm-bindgen = "0.2.118"
+js-sys = "0.3.95"
+wasm-bindgen-futures = "0.4.68"
 gloo-net = {version = "0.6.0", features = ["http"]}
 serde-wasm-bindgen = "0.6.5"
 
 [workspace.dependencies.web-sys]
-version = "0.3.85"
+version = "0.3.95"
 features = [
     "console",
     "DomRect",
