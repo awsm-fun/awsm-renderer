@@ -240,8 +240,8 @@ impl Transforms {
     }
 
     /// Returns the children of a transform.
-    pub fn get_children(&self, key: TransformKey) -> Option<&Vec<TransformKey>> {
-        self.children.get(key)
+    pub fn get_children(&self, key: TransformKey) -> Option<&[TransformKey]> {
+        self.children.get(key).map(Vec::as_slice)
     }
 
     // This is the only way to update the world matrices

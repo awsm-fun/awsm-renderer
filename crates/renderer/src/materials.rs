@@ -25,8 +25,12 @@ pub mod writer;
 
 impl AwsmRenderer {
     /// Updates a material in place.
-    pub fn update_material(&mut self, key: MaterialKey, f: impl FnMut(&mut Material)) {
-        self.materials.update(key, &self.textures, f);
+    pub fn update_material(
+        &mut self,
+        key: MaterialKey,
+        f: impl FnMut(&mut Material),
+    ) -> Result<()> {
+        self.materials.update(key, &self.textures, f)
     }
 }
 
@@ -124,7 +128,7 @@ impl Materials {
     }
 
     /// Inserts a material and returns its key.
-    pub fn insert(&mut self, material: Material, textures: &Textures) -> MaterialKey {
+    pub fn insert(&mut self, material: Material, textures: &Textures) -> Result<MaterialKey> {
         let is_transparency_pass = material.is_transparency_pass();
 
         let key = self.lookup.insert(material);
@@ -132,9 +136,13 @@ impl Materials {
             self._is_transparency_pass.insert(key, ());
         }
 
-        self.update(key, textures, |_| {});
+        if let Err(e) = self.update(key, textures, |_| {}) {
+            self.lookup.remove(key);
+            self._is_transparency_pass.remove(key);
+            return Err(e);
+        }
 
-        key
+        Ok(key)
     }
 
     /// Returns the GPU buffer offset for a material.
@@ -159,46 +167,59 @@ impl Materials {
     }
 
     /// Updates a material and refreshes GPU data.
+    ///
+    /// Returns `Ok(())` if the material was updated (or the key did not exist),
+    /// and `Err(_)` if producing the uniform data or writing to the buffer failed.
+    /// On error, the transparency-pass classification is rolled back so CPU and GPU
+    /// state stay consistent.
     pub fn update(
         &mut self,
         key: MaterialKey,
         textures: &Textures,
         mut f: impl FnMut(&mut Material),
-    ) {
-        if let Some(material) = self.lookup.get_mut(key) {
-            let old_is_transparency_pass = material.is_transparency_pass();
-            f(material);
-            let new_is_transparency_pass = material.is_transparency_pass();
-            if old_is_transparency_pass != new_is_transparency_pass {
-                if new_is_transparency_pass {
-                    self._is_transparency_pass.insert(key, ());
-                } else {
-                    self._is_transparency_pass.remove(key);
-                }
-            }
+    ) -> Result<()> {
+        let Some(material) = self.lookup.get_mut(key) else {
+            return Ok(());
+        };
 
-            match material.uniform_buffer_data(textures) {
-                Ok(data) => match self.buffer.update(key, &data) {
-                    Ok(_) => {
-                        self.gpu_dirty = true;
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            "Failed to update material buffer for key {:?}: {:?}",
-                            key,
-                            e
-                        );
-                    }
-                },
-                Err(e) => {
-                    tracing::error!(
-                        "Failed to get uniform buffer data for material key {:?}: {:?}",
-                        key,
-                        e
-                    );
-                }
+        let old_is_transparency_pass = material.is_transparency_pass();
+        f(material);
+        let new_is_transparency_pass = material.is_transparency_pass();
+        if old_is_transparency_pass != new_is_transparency_pass {
+            if new_is_transparency_pass {
+                self._is_transparency_pass.insert(key, ());
+            } else {
+                self._is_transparency_pass.remove(key);
             }
         }
+
+        let rollback_transparency = |this: &mut Self| {
+            if old_is_transparency_pass != new_is_transparency_pass {
+                if old_is_transparency_pass {
+                    this._is_transparency_pass.insert(key, ());
+                } else {
+                    this._is_transparency_pass.remove(key);
+                }
+            }
+        };
+
+        let data = match material.uniform_buffer_data(textures) {
+            Ok(data) => data,
+            Err(e) => {
+                rollback_transparency(self);
+                return Err(e);
+            }
+        };
+
+        if let Err(e) = self.buffer.update(key, &data) {
+            rollback_transparency(self);
+            return Err(AwsmMaterialError::BufferCapacityOverflow(format!(
+                "material uniform: {e}"
+            )));
+        }
+
+        self.gpu_dirty = true;
+        Ok(())
     }
 
     /// Returns true if the material uses the transparency pass.
@@ -325,4 +346,7 @@ pub enum AwsmMaterialError {
 
     #[error("[material] buffer slot missing {0:?}")]
     BufferSlotMissing(MaterialKey),
+
+    #[error("[material] buffer capacity overflow: {0}")]
+    BufferCapacityOverflow(String),
 }

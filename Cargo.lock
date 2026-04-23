@@ -294,7 +294,7 @@ checksum = "212d0f5754cb6769937f4501cc0e67f4f4483c8d2c3e1e922ee9edbe4ab4c7c0"
 [[package]]
 name = "dominator"
 version = "0.5.38"
-source = "git+https://github.com/Pauan/rust-dominator#25597cd851d9c7b6029b642435ec87703b303f70"
+source = "git+https://github.com/Pauan/rust-dominator?rev=25597cd#25597cd851d9c7b6029b642435ec87703b303f70"
 dependencies = [
  "discard",
  "futures-channel",

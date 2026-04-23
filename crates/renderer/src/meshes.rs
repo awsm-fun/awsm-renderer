@@ -496,6 +496,13 @@ impl Meshes {
     ) -> Result<MeshResourceKey> {
         let buffer_info = self.buffer_infos.get(buffer_info_key)?;
 
+        // Pre-validate geometry buffer info before any mutation.
+        if visibility_geometry_data.is_some() && buffer_info.visibility_geometry_vertex.is_none() {
+            return Err(AwsmMeshError::VisibilityGeometryBufferInfoNotFound(
+                buffer_info_key,
+            ));
+        }
+
         let resource_key = self.resources.insert(MeshResource {
             buffer_info_key,
             visibility_geometry_data_offset: None,
@@ -509,9 +516,15 @@ impl Meshes {
             refcount: 1,
         });
 
-        let visibility_geometry_data_offset = match visibility_geometry_data {
-            Some(geometry_data) => {
-                if let Some(vertex_info) = &buffer_info.visibility_geometry_vertex {
+        // Perform all fallible buffer updates in one pass so we can roll back on error.
+        let offsets_result: Result<(Option<usize>, Option<usize>, usize, usize)> = (|| {
+            let visibility_offset = match visibility_geometry_data {
+                Some(geometry_data) => {
+                    // visibility_geometry_vertex presence was already validated above.
+                    let vertex_info = buffer_info
+                        .visibility_geometry_vertex
+                        .as_ref()
+                        .expect("visibility_geometry_vertex presence pre-validated");
                     let mut geometry_index = Vec::new();
                     for i in 0..vertex_info.count {
                         geometry_index.extend_from_slice(&(i as u32).to_le_bytes());
@@ -523,60 +536,80 @@ impl Meshes {
                                 "visibility geometry index: {e}"
                             ))
                         })?;
-                } else {
-                    return Err(AwsmMeshError::VisibilityGeometryBufferInfoNotFound(
-                        buffer_info_key,
-                    ));
+                    self.visibility_geometry_index_dirty = true;
+
+                    let offset = self
+                        .visibility_geometry_data_buffers
+                        .update(resource_key, geometry_data)
+                        .map_err(|e| {
+                            AwsmMeshError::BufferCapacityOverflow(format!(
+                                "visibility geometry data: {e}"
+                            ))
+                        })?;
+                    self.visibility_geometry_data_dirty = true;
+                    Some(offset)
                 }
+                None => None,
+            };
 
-                self.visibility_geometry_index_dirty = true;
-                let offset = self
-                    .visibility_geometry_data_buffers
-                    .update(resource_key, geometry_data)
-                    .map_err(|e| {
-                        AwsmMeshError::BufferCapacityOverflow(format!(
-                            "visibility geometry data: {e}"
-                        ))
-                    })?;
-                self.visibility_geometry_data_dirty = true;
+            let transparency_offset = match transparency_geometry_data {
+                Some(geometry_data) => {
+                    let offset = self
+                        .transparency_geometry_data_buffers
+                        .update(resource_key, geometry_data)
+                        .map_err(|e| {
+                            AwsmMeshError::BufferCapacityOverflow(format!(
+                                "transparency geometry data: {e}"
+                            ))
+                        })?;
+                    self.transparency_geometry_data_dirty = true;
+                    Some(offset)
+                }
+                None => None,
+            };
 
-                Some(offset)
+            let custom_attribute_indices_offset = self
+                .custom_attribute_index_buffers
+                .update(resource_key, attribute_index)
+                .map_err(|e| {
+                    AwsmMeshError::BufferCapacityOverflow(format!("custom attribute index: {e}"))
+                })?;
+            self.custom_attribute_index_dirty = true;
+
+            let custom_attribute_data_offset = self
+                .custom_attribute_data_buffers
+                .update(resource_key, attribute_data)
+                .map_err(|e| {
+                    AwsmMeshError::BufferCapacityOverflow(format!("custom attribute data: {e}"))
+                })?;
+            self.custom_attribute_data_dirty = true;
+
+            Ok((
+                visibility_offset,
+                transparency_offset,
+                custom_attribute_indices_offset,
+                custom_attribute_data_offset,
+            ))
+        })();
+
+        let (
+            visibility_geometry_data_offset,
+            transparency_geometry_data_offset,
+            custom_attribute_indices_offset,
+            custom_attribute_data_offset,
+        ) = match offsets_result {
+            Ok(offsets) => offsets,
+            Err(e) => {
+                // Roll back any partial buffer allocations and the resource entry itself.
+                self.visibility_geometry_index_buffers.remove(resource_key);
+                self.visibility_geometry_data_buffers.remove(resource_key);
+                self.transparency_geometry_data_buffers.remove(resource_key);
+                self.custom_attribute_index_buffers.remove(resource_key);
+                self.custom_attribute_data_buffers.remove(resource_key);
+                self.resources.remove(resource_key);
+                return Err(e);
             }
-            None => None,
         };
-
-        let transparency_geometry_data_offset = match transparency_geometry_data {
-            Some(geometry_data) => {
-                let offset = self
-                    .transparency_geometry_data_buffers
-                    .update(resource_key, geometry_data)
-                    .map_err(|e| {
-                        AwsmMeshError::BufferCapacityOverflow(format!(
-                            "transparency geometry data: {e}"
-                        ))
-                    })?;
-                self.transparency_geometry_data_dirty = true;
-
-                Some(offset)
-            }
-            None => None,
-        };
-
-        let custom_attribute_indices_offset = self
-            .custom_attribute_index_buffers
-            .update(resource_key, attribute_index)
-            .map_err(|e| {
-                AwsmMeshError::BufferCapacityOverflow(format!("custom attribute index: {e}"))
-            })?;
-        self.custom_attribute_index_dirty = true;
-
-        let custom_attribute_data_offset = self
-            .custom_attribute_data_buffers
-            .update(resource_key, attribute_data)
-            .map_err(|e| {
-                AwsmMeshError::BufferCapacityOverflow(format!("custom attribute data: {e}"))
-            })?;
-        self.custom_attribute_data_dirty = true;
 
         // KEEP THIS AROUND FOR DEBUGGING
         // Very helpful - shows all the non-position vertex attributes and triangle indices

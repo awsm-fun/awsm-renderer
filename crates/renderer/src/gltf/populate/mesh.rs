@@ -182,7 +182,7 @@ impl AwsmRenderer {
                     let material =
                         pbr_material_mapper(self, ctx, primitive_buffer_info, gltf_material)
                             .await?;
-                    let key = self.materials.insert(material, &self.textures);
+                    let key = self.materials.insert(material, &self.textures)?;
                     ctx.material_keys
                         .lock()
                         .unwrap()
@@ -236,8 +236,18 @@ impl AwsmRenderer {
                             ))
                         })?;
                     Some(
-                        &ctx.data.buffers.visibility_geometry_vertex_bytes
-                            [geometry_data_start..geometry_data_end],
+                        ctx.data
+                            .buffers
+                            .visibility_geometry_vertex_bytes
+                            .get(geometry_data_start..geometry_data_end)
+                            .ok_or_else(|| {
+                                AwsmGltfError::GeometryDataSizeOverflow(format!(
+                                    "visibility geometry byte range [{}..{}) exceeds buffer length {}",
+                                    geometry_data_start,
+                                    geometry_data_end,
+                                    ctx.data.buffers.visibility_geometry_vertex_bytes.len()
+                                ))
+                            })?,
                     )
                 }
                 None => None,
@@ -268,8 +278,18 @@ impl AwsmRenderer {
                             ))
                         })?;
                     Some(
-                        &ctx.data.buffers.transparency_geometry_vertex_bytes
-                            [geometry_data_start..geometry_data_end],
+                        ctx.data
+                            .buffers
+                            .transparency_geometry_vertex_bytes
+                            .get(geometry_data_start..geometry_data_end)
+                            .ok_or_else(|| {
+                                AwsmGltfError::GeometryDataSizeOverflow(format!(
+                                    "transparency geometry byte range [{}..{}) exceeds buffer length {}",
+                                    geometry_data_start,
+                                    geometry_data_end,
+                                    ctx.data.buffers.transparency_geometry_vertex_bytes.len()
+                                ))
+                            })?,
                     )
                 }
                 None => None,

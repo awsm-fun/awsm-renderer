@@ -4,7 +4,7 @@ use slotmap::{Key, SecondaryMap};
 use thiserror::Error;
 
 /// Errors from [`DynamicStorageBuffer`] allocation.
-#[derive(Error, Debug, Clone, Copy)]
+#[derive(Error, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DynamicStorageBufferError {
     #[error("buffer capacity overflow (requested size exceeds platform limit)")]
     CapacityOverflow,
@@ -1399,16 +1399,15 @@ mod test {
         let mut buffer: DynamicStorageBuffer<TestKey> =
             DynamicStorageBuffer::new(MIN_BLOCK, Some("overflow_test".to_string()));
 
-        let (_, key1, _, _) = create_keys();
+        // Exercise the real overflow path deterministically: asking to grow by
+        // usize::MAX makes `old_cap + min_extra` and the subsequent doublings
+        // overflow, which `grow` must surface as `CapacityOverflow` rather than
+        // panicking.
+        let result = buffer.grow(usize::MAX);
+        assert_eq!(result, Err(DynamicStorageBufferError::CapacityOverflow));
 
-        // Try to allocate more than isize::MAX bytes - should return error, not panic
-        // We can't actually allocate that much, but we can test the checked arithmetic
-        // by verifying the error type exists and small allocations still work
-        let result = buffer.update(key1, &[0u8; 100]);
-        assert!(result.is_ok());
-
-        // Verify the error type is correct
-        let err = DynamicStorageBufferError::CapacityOverflow;
-        assert!(format!("{err}").contains("capacity overflow"));
+        // Verify the error message remains meaningful.
+        assert!(format!("{}", DynamicStorageBufferError::CapacityOverflow)
+            .contains("capacity overflow"));
     }
 }

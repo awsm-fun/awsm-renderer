@@ -71,7 +71,7 @@ High-res for skybox
 cmgen -s 2048 -f exr -x skybox myHDR.exr
 ```
 
-or, if simple png
+Or, for a simple PNG:
 ```bash
 cmgen -s 2048 -f png -x skybox myimage.png
 ```
@@ -92,7 +92,7 @@ After all these are done, you probably want to move the created subdirectories i
 
 _if your EXRs come in flipped, use --convert-texcoord-origin top-left (rarely needed with cmgen output)_
 
-Skybox (if simple png)
+Skybox (simple PNG, no mipmaps)
 
 ```bash
 
@@ -102,7 +102,7 @@ ktx create \
     skybox/px.png skybox/nx.png skybox/py.png skybox/ny.png skybox/pz.png skybox/nz.png \
     skybox.ktx2
 ```
-Skybox (with mips?)
+Skybox (HDR EXR with mipmaps)
 
 ```bash
 

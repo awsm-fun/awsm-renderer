@@ -51,11 +51,13 @@ impl Instances {
 
     /// Inserts instance transforms for a key.
     pub fn transform_insert(&mut self, key: TransformKey, transforms: &[Transform]) -> Result<()> {
-        self.cpu_transforms.insert(key, transforms.to_vec());
+        // Do the fallible GPU buffer update first so the CPU-side maps are not
+        // left with a partially-inserted entry on failure.
         let bytes = Self::transforms_to_bytes(transforms);
         self.transform_buffer.update(key, &bytes).map_err(|e| {
             AwsmInstanceError::BufferCapacityOverflow(format!("instance transforms: {e}"))
         })?;
+        self.cpu_transforms.insert(key, transforms.to_vec());
         self.transform_count.insert(key, transforms.len());
         self.transform_gpu_dirty = true;
         self.transform_dirty.insert(key);

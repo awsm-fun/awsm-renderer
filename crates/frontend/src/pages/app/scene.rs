@@ -698,7 +698,7 @@ impl AppScene {
                         // TODO
                     }
                 }
-            });
+            })?;
         }
 
         Ok(())
