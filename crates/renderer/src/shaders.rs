@@ -146,15 +146,12 @@ impl ShaderTemplate {
 /// Logs shader source to the console for debugging.
 pub fn print_shader_source(source: &str, with_line_numbers: bool) {
     let mut output = "\n".to_string();
-    let lines = source.lines();
-    let mut line_number = 1;
-    for line in lines {
+    for (line_number, line) in (1..).zip(source.lines()) {
         let formatted_line = match with_line_numbers {
             true => format!("{line_number:>4}: {line}\n"),
             false => format!("{line}\n"),
         };
         output.push_str(&formatted_line);
-        line_number += 1;
     }
 
     web_sys::console::log_1(&web_sys::wasm_bindgen::JsValue::from(output.as_str()));
