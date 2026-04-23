@@ -13,6 +13,7 @@ pub mod convert_srgb;
 pub mod mipmap;
 
 use wasm_bindgen::convert::IntoWasmAbi;
+use wasm_bindgen::JsCast;
 
 /// WebGPU texture format.
 // https://docs.rs/web-sys/latest/web_sys/enum.GpuTextureFormat.html
@@ -327,7 +328,7 @@ pub fn texture_format_to_wgsl_storage(format: TextureFormat) -> crate::error::Re
 
 impl From<TextureDescriptor<'_>> for web_sys::GpuTextureDescriptor {
     fn from(descriptor: TextureDescriptor) -> Self {
-        let descriptor_js = web_sys::GpuTextureDescriptor::new(
+        let descriptor_js = web_sys::GpuTextureDescriptor::new_with_gpu_extent_3d_dict(
             descriptor.format,
             &web_sys::GpuExtent3dDict::from(descriptor.size),
             descriptor.usage.as_u32(),
@@ -348,10 +349,13 @@ impl From<TextureDescriptor<'_>> for web_sys::GpuTextureDescriptor {
             descriptor_js.set_sample_count(sample_count);
         }
         if !descriptor.view_formats.is_empty() {
-            let view_formats = js_sys::Array::new();
-            for format in descriptor.view_formats {
-                view_formats.push(&format.into());
-            }
+            let view_formats: Vec<js_sys::JsString> = descriptor
+                .view_formats
+                .into_iter()
+                .map(|format| {
+                    wasm_bindgen::JsValue::from(format).unchecked_into::<js_sys::JsString>()
+                })
+                .collect();
             descriptor_js.set_view_formats(&view_formats);
         }
 
@@ -397,10 +401,14 @@ impl From<TextureViewDescriptor<'_>> for web_sys::GpuTextureViewDescriptor {
 
 impl From<ExternalTextureDescriptor<'_>> for web_sys::GpuExternalTextureDescriptor {
     fn from(descriptor: ExternalTextureDescriptor) -> Self {
-        let descriptor_js = web_sys::GpuExternalTextureDescriptor::new(&match descriptor.source {
-            ExternalTextureDescriptorSource::VideoElement(video) => video.into(),
-            ExternalTextureDescriptorSource::VideoFrame(frame) => frame.into(),
-        });
+        let descriptor_js = match &descriptor.source {
+            ExternalTextureDescriptorSource::VideoElement(video) => {
+                web_sys::GpuExternalTextureDescriptor::new(video)
+            }
+            ExternalTextureDescriptorSource::VideoFrame(frame) => {
+                web_sys::GpuExternalTextureDescriptor::new_with_video_frame(frame)
+            }
+        };
 
         if let Some(label) = descriptor.label {
             descriptor_js.set_label(label);

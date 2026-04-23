@@ -81,14 +81,33 @@ impl MeshBufferVertexInfo {
     /// Byte size for instance transform data.
     pub const INSTANCING_BYTE_SIZE: usize = 64;
 
+    /// Returns the visibility geometry buffer size in bytes, or `None` on overflow.
+    pub fn checked_visibility_geometry_size(&self) -> Option<usize> {
+        self.count.checked_mul(Self::VISIBILITY_GEOMETRY_BYTE_SIZE)
+    }
+
     /// Returns the visibility geometry buffer size in bytes.
+    ///
+    /// # Panics
+    /// Panics if the result would overflow `usize`.
     pub fn visibility_geometry_size(&self) -> usize {
-        self.count * Self::VISIBILITY_GEOMETRY_BYTE_SIZE
+        self.checked_visibility_geometry_size()
+            .expect("visibility geometry size overflow")
+    }
+
+    /// Returns the transparency geometry buffer size in bytes, or `None` on overflow.
+    pub fn checked_transparency_geometry_size(&self) -> Option<usize> {
+        self.count
+            .checked_mul(Self::TRANSPARENCY_GEOMETRY_BYTE_SIZE)
     }
 
     /// Returns the transparency geometry buffer size in bytes.
+    ///
+    /// # Panics
+    /// Panics if the result would overflow `usize`.
     pub fn transparency_geometry_size(&self) -> usize {
-        self.count * Self::TRANSPARENCY_GEOMETRY_BYTE_SIZE
+        self.checked_transparency_geometry_size()
+            .expect("transparency geometry size overflow")
     }
 }
 

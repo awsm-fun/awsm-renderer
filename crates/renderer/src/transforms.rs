@@ -239,6 +239,11 @@ impl Transforms {
             .ok_or(AwsmTransformError::WorldNotFound(key))
     }
 
+    /// Returns the children of a transform.
+    pub fn get_children(&self, key: TransformKey) -> Option<&[TransformKey]> {
+        self.children.get(key).map(Vec::as_slice)
+    }
+
     // This is the only way to update the world matrices
     // it does *not* write to the GPU, so it can be called relatively frequently for physics etc.
     pub(crate) fn update_world(&mut self) {

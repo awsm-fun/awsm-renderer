@@ -1,6 +1,14 @@
 //! Dynamic storage buffer utilities.
 
 use slotmap::{Key, SecondaryMap};
+use thiserror::Error;
+
+/// Errors from [`DynamicStorageBuffer`] allocation.
+#[derive(Error, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DynamicStorageBufferError {
+    #[error("buffer capacity overflow (requested size exceeds platform limit)")]
+    CapacityOverflow,
+}
 
 /// Dynamic buffer for variable-size allocations using buddy memory allocation.
 ///
@@ -46,34 +54,46 @@ pub struct DynamicStorageBuffer<K: Key, const ZERO: u8 = 0> {
 
     // --- GPU side & misc ---
     gpu_buffer_needs_resize: bool,
-    #[allow(dead_code)]
     label: Option<String>,
+    /// The original `initial_bytes` argument passed to [`Self::new`],
+    /// kept so that [`Self::clear`] can reset to the same starting size.
+    initial_bytes_arg: usize,
 }
 
 impl<K: Key, const ZERO: u8> DynamicStorageBuffer<K, ZERO> {
     /// Creates a new dynamic storage buffer.
-    pub fn new(mut initial_bytes: usize, label: Option<String>) -> Self {
-        let initial_bytes_orig = initial_bytes;
+    pub fn new(initial_bytes: usize, label: Option<String>) -> Self {
+        let initial_bytes_arg = initial_bytes;
         // round up to next power‑of‑two multiple of MIN_BLOCK
-        initial_bytes = round_pow2(initial_bytes.max(MIN_BLOCK));
+        let capacity = round_pow2(initial_bytes.max(MIN_BLOCK));
 
         // buddy tree size: 2 * cap / MIN_BLOCK  – 1  (perfect binary tree)
-        let leaves = initial_bytes / MIN_BLOCK;
+        let leaves = capacity / MIN_BLOCK;
         let mut buddy_tree = vec![0; 2 * leaves - 1];
 
-        init_full(&mut buddy_tree, 0, initial_bytes);
+        init_full(&mut buddy_tree, 0, capacity);
 
         // CPU
-        let raw_data = vec![ZERO; initial_bytes];
+        let raw_data = vec![ZERO; capacity];
 
         Self {
             raw_data,
             dirty_ranges: Vec::new(),
             buddy_tree,
             slot_indices: SecondaryMap::new(),
-            gpu_buffer_needs_resize: initial_bytes != initial_bytes_orig,
+            gpu_buffer_needs_resize: capacity != initial_bytes,
             label,
+            initial_bytes_arg,
         }
+    }
+
+    /// Resets the buffer to its initial capacity, dropping all allocations.
+    ///
+    /// After this call the buffer is in the same state as a freshly
+    /// constructed one (with the same `initial_bytes` and `label`).
+    pub fn clear(&mut self) {
+        let fresh = Self::new(self.initial_bytes_arg, self.label.clone());
+        *self = fresh;
     }
 
     /* ------------------------------------------------------------------ */
@@ -85,8 +105,9 @@ impl<K: Key, const ZERO: u8> DynamicStorageBuffer<K, ZERO> {
     /// If the key exists and the new data fits in the existing allocation,
     /// it reuses the same memory. Otherwise, it reallocates.
     ///
-    /// Returns the byte offset of the data in the buffer.
-    pub fn update(&mut self, key: K, bytes: &[u8]) -> usize {
+    /// Returns the byte offset of the data in the buffer, or an error if the
+    /// buffer cannot grow large enough to accommodate the data.
+    pub fn update(&mut self, key: K, bytes: &[u8]) -> Result<usize, DynamicStorageBufferError> {
         // remove & reinsert if new size doesn’t fit existing block
         if let Some((off, old_size)) = self.slot_indices.get(key).copied() {
             if bytes.len() <= old_size {
@@ -96,7 +117,7 @@ impl<K: Key, const ZERO: u8> DynamicStorageBuffer<K, ZERO> {
                     self.raw_data[off + bytes.len()..off + old_size].fill(ZERO);
                 }
                 self.mark_dirty_range(off, old_size);
-                return off;
+                return Ok(off);
             }
             self.remove(key);
         }
@@ -120,18 +141,34 @@ impl<K: Key, const ZERO: u8> DynamicStorageBuffer<K, ZERO> {
     }
 
     // Use update() instead; this always inserts a new allocation.
-    fn insert(&mut self, key: K, bytes: &[u8]) -> usize {
-        let req = round_pow2(bytes.len().max(MIN_BLOCK));
-        let off = self.alloc(req).unwrap_or_else(|| {
-            // grow buffer & tree, then retry
-            self.grow(req.max(self.raw_data.len()));
-            self.alloc(req).expect("allocation after grow must succeed")
-        });
+    fn insert(&mut self, key: K, bytes: &[u8]) -> Result<usize, DynamicStorageBufferError> {
+        let req = bytes
+            .len()
+            .max(MIN_BLOCK)
+            .checked_next_power_of_two()
+            .ok_or(DynamicStorageBufferError::CapacityOverflow)?;
+        let off = match self.alloc(req) {
+            Some(off) => off,
+            None => {
+                // grow buffer & tree, then retry
+                self.grow(req)?;
+                self.alloc(req).ok_or_else(|| {
+                    tracing::error!(
+                        "buddy alloc failed after grow: \
+                         requested={req} capacity={} used={} label={:?}",
+                        self.raw_data.len(),
+                        self.used_size(),
+                        self.label,
+                    );
+                    DynamicStorageBufferError::CapacityOverflow
+                })?
+            }
+        };
         self.raw_data[off..off + bytes.len()].copy_from_slice(bytes);
         self.slot_indices.insert(key, (off, req));
         self.mark_dirty_range(off, req);
 
-        off
+        Ok(off)
     }
 
     /// Removes a key and frees its allocation.
@@ -289,12 +326,51 @@ impl<K: Key, const ZERO: u8> DynamicStorageBuffer<K, ZERO> {
         }
     }
 
-    fn grow(&mut self, min_extra: usize) {
+    /// The largest power-of-two capacity that fits in a `Vec<u8>`.
+    /// On 32-bit (wasm32): 2^30 = 1 GiB.  On 64-bit: 2^62 (~4 EiB).
+    const MAX_BUDDY_CAPACITY: usize = 1usize << (usize::BITS - 2);
+
+    fn grow(&mut self, min_extra: usize) -> Result<(), DynamicStorageBufferError> {
         let old_cap = self.raw_data.len();
-        let mut new_cap = old_cap * 2;
-        while new_cap - old_cap < min_extra {
-            new_cap *= 2;
+
+        if old_cap >= Self::MAX_BUDDY_CAPACITY {
+            tracing::error!(
+                "DynamicStorageBuffer at platform ceiling: \
+                 capacity={old_cap} used={} max={} label={:?}",
+                self.used_size(),
+                Self::MAX_BUDDY_CAPACITY,
+                self.label,
+            );
+            return Err(DynamicStorageBufferError::CapacityOverflow);
         }
+
+        let needed = old_cap
+            .checked_add(min_extra)
+            .ok_or(DynamicStorageBufferError::CapacityOverflow)?;
+
+        // Double until we meet the requirement, but cap at the platform ceiling.
+        let mut new_cap = old_cap
+            .checked_mul(2)
+            .map(|c| c.min(Self::MAX_BUDDY_CAPACITY))
+            .ok_or(DynamicStorageBufferError::CapacityOverflow)?;
+
+        while new_cap < needed {
+            if new_cap >= Self::MAX_BUDDY_CAPACITY {
+                tracing::error!(
+                    "DynamicStorageBuffer cannot grow enough: \
+                     needed={needed} max={} used={} label={:?}",
+                    Self::MAX_BUDDY_CAPACITY,
+                    self.used_size(),
+                    self.label,
+                );
+                return Err(DynamicStorageBufferError::CapacityOverflow);
+            }
+            new_cap = new_cap
+                .checked_mul(2)
+                .map(|c| c.min(Self::MAX_BUDDY_CAPACITY))
+                .ok_or(DynamicStorageBufferError::CapacityOverflow)?;
+        }
+
         self.raw_data.resize(new_cap, ZERO);
         self.gpu_buffer_needs_resize = true;
 
@@ -308,6 +384,8 @@ impl<K: Key, const ZERO: u8> DynamicStorageBuffer<K, ZERO> {
         for (offset, size) in self.slot_indices.values().cloned() {
             mark_used(&mut self.buddy_tree, self.raw_data.len(), offset, size);
         }
+
+        Ok(())
     }
 
     /* ---------- tiny query helpers (unchanged APIs) -------------------- */
@@ -453,7 +531,7 @@ mod test {
         let (_, key1, _, _) = create_keys();
 
         let test_data = b"hello world test data";
-        let offset = buffer.update(key1, test_data);
+        let offset = buffer.update(key1, test_data).unwrap();
 
         // Should have allocated space
         assert!(buffer.slot_indices.contains_key(key1));
@@ -481,8 +559,8 @@ mod test {
         let data1 = b"first data block";
         let data2 = b"second data block with more content";
 
-        let offset1 = buffer.update(key1, data1);
-        let offset2 = buffer.update(key2, data2);
+        let offset1 = buffer.update(key1, data1).unwrap();
+        let offset2 = buffer.update(key2, data2).unwrap();
 
         // Both items should be stored
         assert!(buffer.slot_indices.contains_key(key1));
@@ -503,12 +581,12 @@ mod test {
 
         // Insert initial data
         let initial_data = b"initial data content";
-        let initial_offset = buffer.update(key1, initial_data);
+        let initial_offset = buffer.update(key1, initial_data).unwrap();
         let initial_size = buffer.size(key1).unwrap();
 
         // Update with data that fits in same block
         let updated_data = b"updated data content";
-        let updated_offset = buffer.update(key1, updated_data);
+        let updated_offset = buffer.update(key1, updated_data).unwrap();
 
         // Should reuse same allocation
         assert_eq!(initial_offset, updated_offset);
@@ -528,11 +606,11 @@ mod test {
 
         // Insert small data
         let small_data = vec![1u8; 10];
-        buffer.update(key1, &small_data);
+        buffer.update(key1, &small_data).unwrap();
 
         // Update with larger data that needs reallocation
         let large_data = vec![2u8; 300];
-        let new_offset = buffer.update(key1, &large_data);
+        let new_offset = buffer.update(key1, &large_data).unwrap();
 
         // Should have reallocated
         let new_size = buffer.size(key1).unwrap();
@@ -554,8 +632,8 @@ mod test {
         let data1 = b"data one";
         let data2 = b"data two";
 
-        let offset1 = buffer.update(key1, data1);
-        buffer.update(key2, data2);
+        let offset1 = buffer.update(key1, data1).unwrap();
+        buffer.update(key2, data2).unwrap();
 
         let size1 = buffer.size(key1).unwrap();
 
@@ -584,8 +662,8 @@ mod test {
         // Allocate and free to test buddy system
         let data = vec![1u8; 100];
 
-        buffer.update(key1, &data);
-        buffer.update(key2, &data);
+        buffer.update(key1, &data).unwrap();
+        buffer.update(key2, &data).unwrap();
 
         let offset1 = buffer.offset(key1).unwrap();
 
@@ -593,7 +671,7 @@ mod test {
         buffer.remove(key1);
 
         // New allocation should potentially reuse the freed space
-        buffer.update(key3, &data);
+        buffer.update(key3, &data).unwrap();
         let offset3 = buffer.offset(key3).unwrap();
 
         // Should reuse the freed block
@@ -614,12 +692,12 @@ mod test {
         let key1 = key_map.insert(());
         let key2 = key_map.insert(());
 
-        buffer.update(key1, &large_data);
+        buffer.update(key1, &large_data).unwrap();
 
         let initial_capacity = buffer.raw_data.len();
 
         // This should trigger growth
-        buffer.update(key2, &large_data);
+        buffer.update(key2, &large_data).unwrap();
 
         // Buffer should have grown
         assert!(buffer.raw_data.len() > initial_capacity);
@@ -641,12 +719,12 @@ mod test {
         let _initial_flag = buffer.take_gpu_needs_resize();
 
         // Small allocations shouldn't trigger resize
-        buffer.update(key1, b"small");
+        buffer.update(key1, b"small").unwrap();
         assert_eq!(buffer.take_gpu_needs_resize(), None);
 
         // Large allocation should trigger growth
         let large_data = vec![1u8; 200];
-        buffer.update(key2, &large_data);
+        buffer.update(key2, &large_data).unwrap();
 
         // Should indicate resize needed
         let resize_size = buffer.take_gpu_needs_resize();
@@ -668,7 +746,7 @@ mod test {
             let key = key_map.insert(());
             let data = vec![0xAA; size];
 
-            buffer.update(key, &data);
+            buffer.update(key, &data).unwrap();
 
             let allocated_size = buffer.size(key).unwrap();
             assert!(allocated_size.is_power_of_two());
@@ -688,8 +766,8 @@ mod test {
 
         let data = vec![1u8; MIN_BLOCK];
 
-        buffer.update(key1, &data);
-        buffer.update(key2, &data);
+        buffer.update(key1, &data).unwrap();
+        buffer.update(key2, &data).unwrap();
 
         // Remove both to test if buddies coalesce
         buffer.remove(key1);
@@ -699,7 +777,7 @@ mod test {
         let key3 = key_map.insert(());
         let large_data = vec![2u8; MIN_BLOCK * 2];
 
-        let offset = buffer.update(key3, &large_data);
+        let offset = buffer.update(key3, &large_data).unwrap();
 
         // Should be able to allocate at beginning (coalesced buddies)
         assert_eq!(offset, 0);
@@ -712,7 +790,7 @@ mod test {
 
         // Insert initial data
         let initial_data = vec![0u8; 100];
-        buffer.update(key1, &initial_data);
+        buffer.update(key1, &initial_data).unwrap();
 
         // Update using the callback
         buffer.update_with_unchecked(key1, |offset, data| {
@@ -751,8 +829,8 @@ mod test {
         let (_, key1, key2, _) = create_keys();
 
         // Add and remove items to test zero fill behavior
-        buffer1.update(key1, b"testdata");
-        buffer2.update(key2, b"testdata");
+        buffer1.update(key1, b"testdata").unwrap();
+        buffer2.update(key2, b"testdata").unwrap();
 
         let offset1 = buffer1.offset(key1).unwrap();
         let size1 = buffer1.size(key1).unwrap();
@@ -788,7 +866,7 @@ mod test {
             let size = 10 + (i * 7) % 200;
             let data = vec![(i % 256) as u8; size];
 
-            buffer.update(key, &data);
+            buffer.update(key, &data).unwrap();
         }
 
         // Verify all items are accessible
@@ -819,7 +897,7 @@ mod test {
             let size = 15 + (i * 11) % 150;
             let data = vec![(i % 256) as u8; size];
 
-            buffer.update(key, &data);
+            buffer.update(key, &data).unwrap();
         }
     }
 
@@ -834,7 +912,7 @@ mod test {
 
         // Add data
         let test_data = b"test data content here";
-        buffer.update(key1, test_data);
+        buffer.update(key1, test_data).unwrap();
 
         // Raw slice should reflect the changes
         let raw = buffer.raw_slice();
@@ -851,15 +929,15 @@ mod test {
         assert_eq!(buffer.used_size(), 0);
 
         // Add items and track used size
-        buffer.update(key1, &[1u8; 100]);
+        buffer.update(key1, &[1u8; 100]).unwrap();
         let size1 = buffer.size(key1).unwrap();
         assert_eq!(buffer.used_size(), size1);
 
-        buffer.update(key2, &[2u8; 200]);
+        buffer.update(key2, &[2u8; 200]).unwrap();
         let size2 = buffer.size(key2).unwrap();
         assert_eq!(buffer.used_size(), size1 + size2);
 
-        buffer.update(key3, &[3u8; 50]);
+        buffer.update(key3, &[3u8; 50]).unwrap();
         let size3 = buffer.size(key3).unwrap();
         assert_eq!(buffer.used_size(), size1 + size2 + size3);
 
@@ -875,7 +953,7 @@ mod test {
 
         // Allocate very small data
         let tiny_data = b"x";
-        buffer.update(key1, tiny_data);
+        buffer.update(key1, tiny_data).unwrap();
 
         // Should still allocate at least MIN_BLOCK
         let size = buffer.size(key1).unwrap();
@@ -894,10 +972,10 @@ mod test {
         let key2 = key_map.insert(());
         let key3 = key_map.insert(());
 
-        buffer.update(key1, &[1u8; 100]);
-        buffer.update(key2, &[2u8; 200]);
+        buffer.update(key1, &[1u8; 100]).unwrap();
+        buffer.update(key2, &[2u8; 200]).unwrap();
         buffer.remove(key1);
-        buffer.update(key3, &[3u8; 150]);
+        buffer.update(key3, &[3u8; 150]).unwrap();
 
         // Verify that allocations work correctly and don't overlap
         let offset2 = buffer.offset(key2).unwrap();
@@ -937,7 +1015,7 @@ mod test {
         for _ in 0..4 {
             let key = key_map.insert(());
             keys.push(key);
-            buffer.update(key, &[0xAA; MIN_BLOCK]);
+            buffer.update(key, &[0xAA; MIN_BLOCK]).unwrap();
         }
 
         // Remove alternating ones to create fragmentation
@@ -947,7 +1025,7 @@ mod test {
         // Try to allocate a larger block
         let key_large = key_map.insert(());
         let large_data = vec![0xBB; MIN_BLOCK * 2];
-        let offset = buffer.update(key_large, &large_data);
+        let offset = buffer.update(key_large, &large_data).unwrap();
 
         // Should not be able to use fragmented space at beginning
         assert!(offset >= MIN_BLOCK * 4);
@@ -967,13 +1045,13 @@ mod test {
         let data1 = vec![0x11; 100];
         let data2 = vec![0x22; 150];
 
-        let offset1 = buffer.update(key1, &data1);
-        let offset2 = buffer.update(key2, &data2);
+        let offset1 = buffer.update(key1, &data1).unwrap();
+        let offset2 = buffer.update(key2, &data2).unwrap();
 
         // Force growth
         let key3 = key_map.insert(());
         let large_data = vec![0x33; 400];
-        buffer.update(key3, &large_data);
+        buffer.update(key3, &large_data).unwrap();
 
         // Original allocations should still be valid
         assert_eq!(buffer.offset(key1), Some(offset1));
@@ -1012,7 +1090,7 @@ mod test {
 
         // Add items
         let data1 = vec![1u8; 100];
-        buffer.update(key1, &data1);
+        buffer.update(key1, &data1).unwrap();
 
         let offset1 = buffer.offset(key1).unwrap();
         let size1 = buffer.size(key1).unwrap();
@@ -1023,7 +1101,7 @@ mod test {
 
         // Add another
         let data2 = vec![2u8; 300];
-        buffer.update(key2, &data2);
+        buffer.update(key2, &data2).unwrap();
 
         let offset2 = buffer.offset(key2).unwrap();
         let size2 = buffer.size(key2).unwrap();
@@ -1045,14 +1123,14 @@ mod test {
 
         // Insert larger data
         let large_data = vec![0xAA; 200];
-        buffer.update(key1, &large_data);
+        buffer.update(key1, &large_data).unwrap();
 
         let offset = buffer.offset(key1).unwrap();
         let size = buffer.size(key1).unwrap();
 
         // Update with smaller data
         let small_data = vec![0xBB; 50];
-        buffer.update(key1, &small_data);
+        buffer.update(key1, &small_data).unwrap();
 
         // Should reuse same allocation
         assert_eq!(buffer.offset(key1), Some(offset));
@@ -1118,7 +1196,7 @@ mod test {
             let size = MIN_BLOCK * (1 << (i % 3)); // Sizes: 256, 512, 1024, 256, ...
             let data = vec![(i % 256) as u8; size];
 
-            buffer.update(key, &data);
+            buffer.update(key, &data).unwrap();
             allocations.push((key, size));
         }
 
@@ -1133,7 +1211,7 @@ mod test {
             let size = MIN_BLOCK * (1 << (i % 2)); // Sizes: 256, 512, 256, ...
             let data = vec![(i % 256) as u8; size];
 
-            let offset = buffer.update(key, &data);
+            let offset = buffer.update(key, &data).unwrap();
 
             // Verify data was written correctly
             for j in 0..size {
@@ -1160,7 +1238,7 @@ mod test {
         for i in 0..num_blocks {
             let key = key_map.insert(());
             keys.push(key);
-            buffer.update(key, &vec![i as u8; MIN_BLOCK]);
+            buffer.update(key, &vec![i as u8; MIN_BLOCK]).unwrap();
         }
 
         // Remove every other block
@@ -1172,7 +1250,7 @@ mod test {
         let large_key = key_map.insert(());
         let large_data = vec![0xFF; MIN_BLOCK * 4];
 
-        let offset = buffer.update(large_key, &large_data);
+        let offset = buffer.update(large_key, &large_data).unwrap();
 
         // Should have grown the buffer
         assert!(buffer.raw_data.len() > 8192);
@@ -1193,11 +1271,11 @@ mod test {
         assert!(buffer.is_empty());
         assert_eq!(buffer.len(), 0);
 
-        buffer.update(key1, b"data1");
+        buffer.update(key1, b"data1").unwrap();
         assert!(!buffer.is_empty());
         assert_eq!(buffer.len(), 1);
 
-        buffer.update(key2, b"data2_longer");
+        buffer.update(key2, b"data2_longer").unwrap();
         assert_eq!(buffer.len(), 2);
 
         // Test contains_key
@@ -1225,7 +1303,7 @@ mod test {
         let (_, key1, _, _) = create_keys();
 
         // Zero-sized allocation should still work and allocate MIN_BLOCK
-        buffer.update(key1, &[]);
+        buffer.update(key1, &[]).unwrap();
 
         assert!(buffer.contains_key(key1));
         assert_eq!(buffer.size(key1), Some(MIN_BLOCK));
@@ -1242,7 +1320,7 @@ mod test {
         for i in 0..8 {
             let key = key_map.insert(());
             keys.push(key);
-            buffer.update(key, &vec![i as u8; MIN_BLOCK]);
+            buffer.update(key, &vec![i as u8; MIN_BLOCK]).unwrap();
         }
 
         // Remove alternating allocations
@@ -1252,7 +1330,7 @@ mod test {
 
         // Now we have fragmented memory - try to allocate something that fits
         let key_new = key_map.insert(());
-        buffer.update(key_new, &vec![0xFF; MIN_BLOCK]);
+        buffer.update(key_new, &vec![0xFF; MIN_BLOCK]).unwrap();
 
         // Should reuse one of the freed blocks
         let offset = buffer.offset(key_new).unwrap();
@@ -1271,7 +1349,7 @@ mod test {
             let size = 50 + (i * 17) % 200; // Varying sizes
             let data = vec![(i % 256) as u8; size];
 
-            buffer.update(key, &data);
+            buffer.update(key, &data).unwrap();
             operations.push((key, data));
 
             // Sometimes remove older items
@@ -1303,7 +1381,7 @@ mod test {
         let key1 = key_map.insert(());
         let huge_data = vec![0x42; 2048];
 
-        buffer.update(key1, &huge_data);
+        buffer.update(key1, &huge_data).unwrap();
 
         // Buffer should have grown enough to accommodate the data
         assert!(buffer.raw_data.len() >= 2048);
@@ -1314,5 +1392,22 @@ mod test {
             &buffer.raw_data[offset..offset + huge_data.len()],
             &huge_data[..]
         );
+    }
+
+    #[test]
+    fn test_capacity_overflow_returns_error() {
+        let mut buffer: DynamicStorageBuffer<TestKey> =
+            DynamicStorageBuffer::new(MIN_BLOCK, Some("overflow_test".to_string()));
+
+        // Exercise the real overflow path deterministically: asking to grow by
+        // usize::MAX makes `old_cap + min_extra` and the subsequent doublings
+        // overflow, which `grow` must surface as `CapacityOverflow` rather than
+        // panicking.
+        let result = buffer.grow(usize::MAX);
+        assert_eq!(result, Err(DynamicStorageBufferError::CapacityOverflow));
+
+        // Verify the error message remains meaningful.
+        assert!(format!("{}", DynamicStorageBufferError::CapacityOverflow)
+            .contains("capacity overflow"));
     }
 }

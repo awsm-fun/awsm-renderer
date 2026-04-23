@@ -10,7 +10,7 @@ use crate::texture::{
 use std::borrow::Cow;
 #[cfg(feature = "exr")]
 use std::sync::Arc;
-use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
 
 pub mod bitmap;
 #[cfg(feature = "exr")]
@@ -347,27 +347,20 @@ impl From<CopyExternalImageSourceInfo<'_>> for web_sys::GpuCopyExternalImageSour
     fn from(info: CopyExternalImageSourceInfo) -> Self {
         // https://developer.mozilla.org/en-US/docs/Web/API/GPUQueue/copyExternalImageToTexture#source
         // https://docs.rs/web-sys/latest/web_sys/struct.GpuCopyExternalImageSourceInfo.html
-        let info_js = web_sys::GpuCopyExternalImageSourceInfo::new(&info.source);
+        // The source is any `GPUImageCopyExternalImage` compatible JS object;
+        // cast to ImageBitmap for the constructor - the underlying type is verified at runtime by WebGPU.
+        let info_js =
+            web_sys::GpuCopyExternalImageSourceInfo::new(info.source.as_ref().unchecked_ref());
 
         if let Some(flip_y) = info.flip_y {
             info_js.set_flip_y(flip_y);
         }
 
         if let Some(origin) = info.origin {
-            let obj = js_sys::Object::new();
-            js_sys::Reflect::set(
-                obj.as_ref(),
-                &JsValue::from("x"),
-                &JsValue::from_f64(origin[0] as f64),
-            )
-            .unwrap();
-            js_sys::Reflect::set(
-                obj.as_ref(),
-                &JsValue::from("y"),
-                &JsValue::from_f64(origin[1] as f64),
-            )
-            .unwrap();
-            info_js.set_origin(&obj);
+            info_js.set_origin(&[
+                js_sys::Number::from(origin[0] as f64),
+                js_sys::Number::from(origin[1] as f64),
+            ]);
         }
 
         info_js
@@ -387,7 +380,7 @@ impl From<CopyExternalImageDestInfo<'_>> for web_sys::GpuCopyExternalImageDestIn
             info_js.set_mip_level(mip_level);
         }
         if let Some(origin) = info.origin {
-            info_js.set_origin(&web_sys::GpuOrigin3dDict::from(origin));
+            info_js.set_origin_gpu_origin_3d_dict(&web_sys::GpuOrigin3dDict::from(origin));
         }
         if let Some(premultiplied_alpha) = info.premultiplied_alpha {
             info_js.set_premultiplied_alpha(premultiplied_alpha);

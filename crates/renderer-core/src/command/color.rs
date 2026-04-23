@@ -116,6 +116,16 @@ impl Color {
 
         arr.into()
     }
+
+    /// Converts to `[Number; 4]` for web-sys APIs that require a typed slice.
+    pub fn as_number_array(&self) -> [js_sys::Number; 4] {
+        [
+            js_sys::Number::from(self.r),
+            js_sys::Number::from(self.g),
+            js_sys::Number::from(self.b),
+            js_sys::Number::from(self.a),
+        ]
+    }
 }
 
 fn perceptual_to_linear(perceptual: f64) -> f64 {

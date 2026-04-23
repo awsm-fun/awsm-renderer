@@ -50,13 +50,18 @@ impl Instances {
     }
 
     /// Inserts instance transforms for a key.
-    pub fn transform_insert(&mut self, key: TransformKey, transforms: &[Transform]) {
-        self.cpu_transforms.insert(key, transforms.to_vec());
+    pub fn transform_insert(&mut self, key: TransformKey, transforms: &[Transform]) -> Result<()> {
+        // Do the fallible GPU buffer update first so the CPU-side maps are not
+        // left with a partially-inserted entry on failure.
         let bytes = Self::transforms_to_bytes(transforms);
-        self.transform_buffer.update(key, &bytes);
+        self.transform_buffer.update(key, &bytes).map_err(|e| {
+            AwsmInstanceError::BufferCapacityOverflow(format!("instance transforms: {e}"))
+        })?;
+        self.cpu_transforms.insert(key, transforms.to_vec());
         self.transform_count.insert(key, transforms.len());
         self.transform_gpu_dirty = true;
         self.transform_dirty.insert(key);
+        Ok(())
     }
 
     /// Updates a single instance transform.
@@ -121,7 +126,11 @@ impl Instances {
                 .get(key)
                 .ok_or(AwsmInstanceError::TransformNotFound(key))?;
             let full_bytes = Self::transforms_to_bytes(full_list);
-            self.transform_buffer.update(key, &full_bytes);
+            self.transform_buffer
+                .update(key, &full_bytes)
+                .map_err(|e| {
+                    AwsmInstanceError::BufferCapacityOverflow(format!("instance transforms: {e}"))
+                })?;
         }
         self.transform_count.insert(key, len);
         self.transform_gpu_dirty = true;
@@ -281,7 +290,11 @@ impl Instances {
         };
 
         existing_bytes.resize(desired_bytes, 0);
-        self.transform_buffer.update(key, &existing_bytes);
+        self.transform_buffer
+            .update(key, &existing_bytes)
+            .map_err(|e| {
+                AwsmInstanceError::BufferCapacityOverflow(format!("instance transforms: {e}"))
+            })?;
         self.transform_gpu_dirty = true;
         self.transform_dirty.insert(key);
 
@@ -314,4 +327,7 @@ pub enum AwsmInstanceError {
 
     #[error("[instance] transform does not exist {0:?}")]
     TransformNotFound(TransformKey),
+
+    #[error("[instance] buffer capacity overflow: {0}")]
+    BufferCapacityOverflow(String),
 }

@@ -258,7 +258,7 @@ fn vertex_buffer_layouts(mesh: &Mesh, buffer_info: &MeshBufferInfo) -> Vec<Verte
 
     let mut offset = 0;
 
-    let mut shader_location = out
+    let start_shader_location = out
         .last()
         .unwrap()
         .attributes
@@ -267,12 +267,13 @@ fn vertex_buffer_layouts(mesh: &Mesh, buffer_info: &MeshBufferInfo) -> Vec<Verte
         .shader_location
         + 1;
 
-    for attribute_info in buffer_info
-        .triangles
-        .vertex_attributes
-        .iter()
-        .filter(|x| x.is_custom_attribute())
-    {
+    for (shader_location, attribute_info) in (start_shader_location..).zip(
+        buffer_info
+            .triangles
+            .vertex_attributes
+            .iter()
+            .filter(|x| x.is_custom_attribute()),
+    ) {
         let custom_attribute_info = match attribute_info {
             MeshBufferVertexAttributeInfo::Custom(info) => info,
             _ => unreachable!("Expected custom attribute info"),
@@ -283,8 +284,6 @@ fn vertex_buffer_layouts(mesh: &Mesh, buffer_info: &MeshBufferInfo) -> Vec<Verte
             offset,
             shader_location,
         });
-
-        shader_location += 1;
 
         offset += attribute_info.vertex_size() as u64;
     }

@@ -51,10 +51,12 @@ pub struct DynamicUniformBuffer<K: Key, const ZERO_VALUE: u8 = 0> {
     capacity_slots: usize,
     // first unused index >= capacity used so far
     next_slot: usize,
-    #[allow(dead_code)]
     label: Option<String>,
     byte_size: usize,
     aligned_slice_size: usize,
+    /// The original `initial_capacity` argument passed to [`Self::new`],
+    /// kept so that [`Self::clear`] can reset to the same starting size.
+    initial_capacity_arg: usize,
 }
 
 impl<K: Key, const ZERO_VALUE: u8> DynamicUniformBuffer<K, ZERO_VALUE> {
@@ -82,7 +84,22 @@ impl<K: Key, const ZERO_VALUE: u8> DynamicUniformBuffer<K, ZERO_VALUE> {
             label,
             byte_size,
             aligned_slice_size,
+            initial_capacity_arg: initial_capacity,
         }
+    }
+
+    /// Resets the buffer to its initial capacity, dropping all allocations.
+    ///
+    /// After this call the buffer is in the same state as a freshly
+    /// constructed one (with the same constructor arguments).
+    pub fn clear(&mut self) {
+        let fresh = Self::new(
+            self.initial_capacity_arg,
+            self.byte_size,
+            Some(self.aligned_slice_size),
+            self.label.clone(),
+        );
+        *self = fresh;
     }
 
     /// Returns the total byte size of the buffer.

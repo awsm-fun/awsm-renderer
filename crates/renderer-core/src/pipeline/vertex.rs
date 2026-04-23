@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
 
 use super::constants::{ConstantOverrideKey, ConstantOverrideValue};
 
@@ -101,14 +102,15 @@ impl From<VertexState<'_>> for web_sys::GpuVertexState {
                 js_sys::Reflect::set(&obj, &JsValue::from(key), &JsValue::from(value))
                     .unwrap_throw();
             }
-            state_js.set_constants(&obj);
+            state_js.set_constants(&obj.unchecked_into());
         }
 
         if !state.buffer_layouts.is_empty() {
-            let buffers = js_sys::Array::new();
-            for buffer in state.buffer_layouts {
-                buffers.push(&web_sys::GpuVertexBufferLayout::from(buffer));
-            }
+            let buffers: Vec<js_sys::JsOption<web_sys::GpuVertexBufferLayout>> = state
+                .buffer_layouts
+                .into_iter()
+                .map(|buffer| js_sys::JsOption::wrap(web_sys::GpuVertexBufferLayout::from(buffer)))
+                .collect();
             state_js.set_buffers(&buffers);
         }
 
@@ -118,15 +120,16 @@ impl From<VertexState<'_>> for web_sys::GpuVertexState {
 
 impl From<VertexBufferLayout> for web_sys::GpuVertexBufferLayout {
     fn from(buffer_layout: VertexBufferLayout) -> web_sys::GpuVertexBufferLayout {
-        let attributes = js_sys::Array::new();
-        if !buffer_layout.attributes.is_empty() {
-            for attribute in &buffer_layout.attributes {
-                attributes.push(&web_sys::GpuVertexAttribute::from(*attribute));
-            }
-        }
+        let attributes: Vec<web_sys::GpuVertexAttribute> = buffer_layout
+            .attributes
+            .iter()
+            .map(|attribute| web_sys::GpuVertexAttribute::from(*attribute))
+            .collect();
 
-        let buffer_layout_js =
-            web_sys::GpuVertexBufferLayout::new(buffer_layout.array_stride as f64, &attributes);
+        let buffer_layout_js = web_sys::GpuVertexBufferLayout::new_with_f64(
+            buffer_layout.array_stride as f64,
+            &attributes,
+        );
 
         if let Some(step_mode) = buffer_layout.step_mode {
             buffer_layout_js.set_step_mode(step_mode);
@@ -138,7 +141,7 @@ impl From<VertexBufferLayout> for web_sys::GpuVertexBufferLayout {
 
 impl From<VertexAttribute> for web_sys::GpuVertexAttribute {
     fn from(attribute: VertexAttribute) -> web_sys::GpuVertexAttribute {
-        web_sys::GpuVertexAttribute::new(
+        web_sys::GpuVertexAttribute::new_with_f64(
             attribute.format,
             attribute.offset as f64,
             attribute.shader_location,

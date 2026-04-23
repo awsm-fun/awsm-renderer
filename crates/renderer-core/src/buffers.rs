@@ -215,8 +215,10 @@ pub async fn extract_buffer_array<const N: usize>(
 
 impl From<BufferDescriptor<'_>> for web_sys::GpuBufferDescriptor {
     fn from(descriptor: BufferDescriptor) -> Self {
-        let descriptor_js =
-            web_sys::GpuBufferDescriptor::new(descriptor.size as f64, descriptor.usage.into());
+        let descriptor_js = web_sys::GpuBufferDescriptor::new_with_f64(
+            descriptor.size as f64,
+            descriptor.usage.into(),
+        );
 
         if let Some(label) = descriptor.label {
             descriptor_js.set_label(label);
@@ -235,11 +237,11 @@ impl From<BufferBinding<'_>> for web_sys::GpuBufferBinding {
         let binding_js = web_sys::GpuBufferBinding::new(binding.buffer);
 
         if let Some(offset) = binding.offset {
-            binding_js.set_offset(offset as f64);
+            binding_js.set_offset_f64(offset as f64);
         }
 
         if let Some(size) = binding.size {
-            binding_js.set_size(size as f64);
+            binding_js.set_size_f64(size as f64);
         }
 
         binding_js

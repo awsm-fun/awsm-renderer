@@ -159,6 +159,15 @@ impl Materials {
     }
 
     /// Updates a material and refreshes GPU data.
+    ///
+    /// Intentionally non-atomic: `f` mutates the stored `Material` in place and
+    /// the transparency-pass classification is updated before the fallible GPU
+    /// buffer write. On failure we log and leave CPU state as-is rather than
+    /// rolling back. This is a hot path; staging on a clone of `Material`
+    /// (which boxes PBR data) would pay an allocation + copy on every call, and
+    /// the error cases here (uniform-data build failure, GPU buffer capacity
+    /// overflow) are not expected to occur in normal operation. If they ever do,
+    /// the stale GPU entry alongside the logged error is the acceptable outcome.
     pub fn update(
         &mut self,
         key: MaterialKey,
@@ -178,10 +187,18 @@ impl Materials {
             }
 
             match material.uniform_buffer_data(textures) {
-                Ok(data) => {
-                    self.buffer.update(key, &data);
-                    self.gpu_dirty = true;
-                }
+                Ok(data) => match self.buffer.update(key, &data) {
+                    Ok(_) => {
+                        self.gpu_dirty = true;
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "Failed to update material buffer for key {:?}: {:?}",
+                            key,
+                            e
+                        );
+                    }
+                },
                 Err(e) => {
                     tracing::error!(
                         "Failed to get uniform buffer data for material key {:?}: {:?}",

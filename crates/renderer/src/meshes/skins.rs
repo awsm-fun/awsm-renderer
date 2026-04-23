@@ -124,12 +124,26 @@ impl Skins {
 
         let skin_key = self.skeleton_transforms.insert(skeleton_joint_transforms);
 
-        self.skin_matrices.update(skin_key, &initial_fill);
+        if let Err(e) = self
+            .skin_matrices
+            .update(skin_key, &initial_fill)
+            .map_err(|e| AwsmSkinError::BufferCapacityOverflow(format!("skin matrices: {e}")))
+            .and_then(|_| {
+                self.joint_index_weights
+                    .update(skin_key, joint_index_weights)
+                    .map_err(|e| {
+                        AwsmSkinError::BufferCapacityOverflow(format!("joint index weights: {e}"))
+                    })
+            })
+        {
+            // Roll back partial state so a failed allocation doesn't leave an orphan skin.
+            self.skin_matrices.remove(skin_key);
+            self.joint_index_weights.remove(skin_key);
+            self.skeleton_transforms.remove(skin_key);
+            return Err(e);
+        }
 
         self.sets_len.insert(skin_key, set_len);
-
-        self.joint_index_weights
-            .update(skin_key, joint_index_weights);
 
         self.matrices_gpu_dirty = true;
         self.joint_index_weights_gpu_dirty = true;
@@ -334,4 +348,7 @@ pub enum AwsmSkinError {
 
     #[error("[skin] {0:?}")]
     BindGroup(#[from] AwsmBindGroupError),
+
+    #[error("[skin] buffer capacity overflow: {0}")]
+    BufferCapacityOverflow(String),
 }

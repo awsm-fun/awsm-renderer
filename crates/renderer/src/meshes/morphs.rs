@@ -160,8 +160,23 @@ impl<Key: slotmap::Key, Info: MorphInfo> MorphData<Key, Info> {
 
         let key = self.infos.insert(morph_buffer_info.clone());
 
-        self.weights.update(key, weights);
-        self.values.update(key, values);
+        if let Err(e) = self
+            .weights
+            .update(key, weights)
+            .map_err(|e| AwsmMeshError::BufferCapacityOverflow(format!("morph weights: {e}")))
+            .and_then(|_| {
+                self.values.update(key, values).map_err(|e| {
+                    AwsmMeshError::BufferCapacityOverflow(format!("morph values: {e}"))
+                })
+            })
+        {
+            // Roll back the info entry (and any successful weights write) so we don't
+            // leak an orphaned key when a buffer update fails.
+            self.weights.remove(key);
+            self.values.remove(key);
+            self.infos.remove(key);
+            return Err(e);
+        }
 
         self.weights_dirty = true;
         self.values_dirty = true;

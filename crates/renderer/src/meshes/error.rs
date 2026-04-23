@@ -79,4 +79,7 @@ pub enum AwsmMeshError {
 
     #[error("[mesh] buffer info not found: {0:?}")]
     BufferInfoNotFound(MeshBufferInfoKey),
+
+    #[error("[mesh] buffer capacity overflow: {0}")]
+    BufferCapacityOverflow(String),
 }

@@ -283,7 +283,7 @@ impl AwsmRendererWebGpu {
     pub fn submit_commands(&self, command_buffer: &web_sys::GpuCommandBuffer) {
         self.device
             .queue()
-            .submit(&js_sys::Array::of1(command_buffer));
+            .submit(std::slice::from_ref(command_buffer));
     }
 
     /// See [create_command_encoder](create_command_encoder) for usage.
@@ -292,10 +292,8 @@ impl AwsmRendererWebGpu {
         &self,
         command_buffers: impl IntoIterator<Item = &'a web_sys::GpuCommandBuffer>,
     ) {
-        let command_buffers_js = js_sys::Array::new();
-        for command_buffer in command_buffers {
-            command_buffers_js.push(command_buffer);
-        }
+        let command_buffers_js: Vec<web_sys::GpuCommandBuffer> =
+            command_buffers.into_iter().cloned().collect();
         self.device.queue().submit(&command_buffers_js);
     }
 
@@ -518,8 +516,8 @@ impl AwsmRendererWebGpu {
         let rect = canvas.get_bounding_client_rect();
 
         // CSS pixels relative to the canvas' top-left
-        let css_x = evt.client_x() as f64 - rect.left();
-        let css_y = evt.client_y() as f64 - rect.top();
+        let css_x = evt.client_x() - rect.left();
+        let css_y = evt.client_y() - rect.top();
 
         // Get CSS and backing buffer sizes
         let (css_w, css_h) = self.canvas_size(true);

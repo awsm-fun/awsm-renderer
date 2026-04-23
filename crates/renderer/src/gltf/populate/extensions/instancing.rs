@@ -149,7 +149,13 @@ impl AwsmRenderer {
                         gltf_node.index()
                     )))?;
 
-                self.instances.transform_insert(key, &transforms);
+                self.instances
+                    .transform_insert(key, &transforms)
+                    .map_err(|e| {
+                        AwsmGltfError::ExtInstancing(anyhow::anyhow!(
+                            "instance transform buffer overflow: {e}"
+                        ))
+                    })?;
                 ctx.transform_is_instanced.lock().unwrap().insert(key);
             }
         }

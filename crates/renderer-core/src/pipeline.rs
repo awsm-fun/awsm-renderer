@@ -18,6 +18,7 @@ use multisample::MultisampleState;
 use primitive::PrimitiveState;
 use vertex::VertexState;
 use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
 
 /// Builder for a render pipeline descriptor.
 #[derive(Debug, Clone)]
@@ -141,8 +142,9 @@ impl From<RenderPipelineDescriptor<'_>> for web_sys::GpuRenderPipelineDescriptor
             vertex,
         } = pipeline;
 
+        let layout_js: JsValue = layout.into();
         let pipeline_js = web_sys::GpuRenderPipelineDescriptor::new(
-            &layout.into(),
+            layout_js.unchecked_ref(),
             &web_sys::GpuVertexState::from(vertex),
         );
 
@@ -178,8 +180,9 @@ impl From<ComputePipelineDescriptor<'_, '_>> for web_sys::GpuComputePipelineDesc
             compute,
         } = pipeline;
 
+        let layout_js: JsValue = layout.into();
         let pipeline_js =
-            web_sys::GpuComputePipelineDescriptor::new(&layout.into(), &compute.into());
+            web_sys::GpuComputePipelineDescriptor::new(layout_js.unchecked_ref(), &compute.into());
 
         if let Some(label) = label {
             pipeline_js.set_label(label);
@@ -203,7 +206,7 @@ impl From<ProgrammableStage<'_, '_>> for web_sys::GpuProgrammableStage {
                 js_sys::Reflect::set(&obj, &JsValue::from(binding), &JsValue::from(constant))
                     .unwrap_throw();
             }
-            compute_js.set_constants(&obj);
+            compute_js.set_constants(&obj.unchecked_into());
         }
 
         compute_js
