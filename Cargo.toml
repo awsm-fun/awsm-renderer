@@ -5,12 +5,19 @@ resolver = "2"
 [workspace.package]
 description = "awsm renderer"
 edition = "2021"
-version = "0.1.6"
+version = "0.1.7"
 license = "MIT"
 authors = ["David Komer"]
 rust-version = "1.80.0"
 repository = "https://github.com/dakom/awsm-renderer"
 homepage = "https://dakom.github.io/awsm-renderer/"
+
+### Patches
+
+# dominator 0.5.38 on crates.io is incompatible with web_sys_unstable_apis (mouse/scroll types became f64).
+# Fix landed on master (commit 25597cd) but isn't published yet.
+[patch.crates-io]
+dominator = { git = "https://github.com/Pauan/rust-dominator" }
 
 ### Profiles
 

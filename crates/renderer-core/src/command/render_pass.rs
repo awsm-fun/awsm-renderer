@@ -248,10 +248,13 @@ pub struct RenderTimestampWrites<'a> {
 
 impl<'a, 'b> From<RenderPassDescriptor<'a, 'b>> for web_sys::GpuRenderPassDescriptor {
     fn from(pass: RenderPassDescriptor) -> web_sys::GpuRenderPassDescriptor {
-        let color_attachments = js_sys::Array::new();
-        for attachment in pass.color_attachments {
-            color_attachments.push(&web_sys::GpuRenderPassColorAttachment::from(attachment));
-        }
+        let color_attachments: Vec<js_sys::JsOption<web_sys::GpuRenderPassColorAttachment>> = pass
+            .color_attachments
+            .into_iter()
+            .map(|attachment| {
+                js_sys::JsOption::wrap(web_sys::GpuRenderPassColorAttachment::from(attachment))
+            })
+            .collect();
 
         let pass_js = web_sys::GpuRenderPassDescriptor::new(&color_attachments);
 
@@ -266,7 +269,7 @@ impl<'a, 'b> From<RenderPassDescriptor<'a, 'b>> for web_sys::GpuRenderPassDescri
         }
 
         if let Some(max_draw_count) = pass.max_draw_count {
-            pass_js.set_max_draw_count(max_draw_count as f64);
+            pass_js.set_max_draw_count_f64(max_draw_count as f64);
         }
 
         if let Some(occlusion_query_set) = pass.occlusion_query_set {
@@ -285,20 +288,20 @@ impl<'a, 'b> From<RenderPassDescriptor<'a, 'b>> for web_sys::GpuRenderPassDescri
 
 impl<'a, 'b> From<ColorAttachment<'a, 'b>> for web_sys::GpuRenderPassColorAttachment {
     fn from(attachment: ColorAttachment) -> web_sys::GpuRenderPassColorAttachment {
-        let attachment_js = web_sys::GpuRenderPassColorAttachment::new(
+        let attachment_js = web_sys::GpuRenderPassColorAttachment::new_with_gpu_texture_view(
             attachment.load_op,
             attachment.store_op,
             attachment.view,
         );
 
         if let Some(clear_color) = attachment.clear_color {
-            attachment_js.set_clear_value(&clear_color.as_js_value());
+            attachment_js.set_clear_value(&clear_color.as_number_array());
         }
         if let Some(depth_slice) = attachment.depth_slice {
             attachment_js.set_depth_slice(depth_slice);
         }
         if let Some(resolve_target) = attachment.resolve_target {
-            attachment_js.set_resolve_target(resolve_target);
+            attachment_js.set_resolve_target_gpu_texture_view(resolve_target);
         }
 
         attachment_js
@@ -307,7 +310,10 @@ impl<'a, 'b> From<ColorAttachment<'a, 'b>> for web_sys::GpuRenderPassColorAttach
 
 impl From<DepthStencilAttachment<'_>> for web_sys::GpuRenderPassDepthStencilAttachment {
     fn from(attachment: DepthStencilAttachment) -> web_sys::GpuRenderPassDepthStencilAttachment {
-        let attachment_js = web_sys::GpuRenderPassDepthStencilAttachment::new(attachment.view);
+        let attachment_js =
+            web_sys::GpuRenderPassDepthStencilAttachment::new_with_gpu_texture_view(
+                attachment.view,
+            );
 
         if let Some(depth_clear_value) = attachment.depth_clear_value {
             attachment_js.set_depth_clear_value(depth_clear_value);

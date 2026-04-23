@@ -281,9 +281,7 @@ impl AwsmRendererWebGpu {
     /// See [create_command_encoder](create_command_encoder) for usage.
     /// Submits a single command buffer.
     pub fn submit_commands(&self, command_buffer: &web_sys::GpuCommandBuffer) {
-        self.device
-            .queue()
-            .submit(&js_sys::Array::of1(command_buffer));
+        self.device.queue().submit(&[command_buffer.clone()]);
     }
 
     /// See [create_command_encoder](create_command_encoder) for usage.
@@ -292,10 +290,8 @@ impl AwsmRendererWebGpu {
         &self,
         command_buffers: impl IntoIterator<Item = &'a web_sys::GpuCommandBuffer>,
     ) {
-        let command_buffers_js = js_sys::Array::new();
-        for command_buffer in command_buffers {
-            command_buffers_js.push(command_buffer);
-        }
+        let command_buffers_js: Vec<web_sys::GpuCommandBuffer> =
+            command_buffers.into_iter().cloned().collect();
         self.device.queue().submit(&command_buffers_js);
     }
 

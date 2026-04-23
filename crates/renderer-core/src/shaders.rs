@@ -83,7 +83,7 @@ impl ShaderCompilationInfo {
         let mut errors = Vec::new();
         let mut warnings = Vec::new();
         let mut infos = Vec::new();
-        let js_messages: js_sys::Array = info.messages();
+        let js_messages = info.messages();
 
         for i in 0..js_messages.length() {
             let js_message: web_sys::GpuCompilationMessage = js_messages.get(i).unchecked_into();

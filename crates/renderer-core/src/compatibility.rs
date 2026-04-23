@@ -99,7 +99,11 @@ impl Compatibility {
         }
 
         let descriptor = web_sys::GpuDeviceDescriptor::new();
-        descriptor.set_required_limits(&DeviceRequestLimits::typical().into_js(&adapter.limits()));
+        descriptor.set_required_limits(
+            &DeviceRequestLimits::typical()
+                .into_js(&adapter.limits())
+                .unchecked_into(),
+        );
         let device: web_sys::GpuDevice =
             match JsFuture::from(adapter.request_device_with_descriptor(&descriptor)).await {
                 Ok(device) => device.unchecked_into(),

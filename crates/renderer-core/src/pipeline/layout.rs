@@ -44,11 +44,11 @@ impl<'a> PipelineLayoutDescriptor<'a> {
 
 impl From<PipelineLayoutDescriptor<'_>> for web_sys::GpuPipelineLayoutDescriptor {
     fn from(layout: PipelineLayoutDescriptor) -> Self {
-        let bind_group_layouts = js_sys::Array::new();
-
-        for bind_group_layout in layout.bind_group_layouts {
-            bind_group_layouts.push(&bind_group_layout);
-        }
+        let bind_group_layouts: Vec<js_sys::JsOption<web_sys::GpuBindGroupLayout>> = layout
+            .bind_group_layouts
+            .into_iter()
+            .map(js_sys::JsOption::wrap)
+            .collect();
 
         let layout_js = web_sys::GpuPipelineLayoutDescriptor::new(&bind_group_layouts);
 

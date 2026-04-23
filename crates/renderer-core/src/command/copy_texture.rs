@@ -164,7 +164,7 @@ impl From<TexelCopyBufferInfo<'_>> for web_sys::GpuTexelCopyBufferInfo {
             info_js.set_bytes_per_row(bytes_per_row);
         }
         if let Some(offset) = info.offset {
-            info_js.set_offset(offset as f64);
+            info_js.set_offset_f64(offset as f64);
         }
         if let Some(rows_per_image) = info.rows_per_image {
             info_js.set_rows_per_image(rows_per_image);
@@ -185,7 +185,7 @@ impl From<TexelCopyTextureInfo<'_>> for web_sys::GpuTexelCopyTextureInfo {
             info_js.set_mip_level(mip_level);
         }
         if let Some(origin) = info.origin {
-            info_js.set_origin(&web_sys::GpuOrigin3dDict::from(origin));
+            info_js.set_origin_gpu_origin_3d_dict(&web_sys::GpuOrigin3dDict::from(origin));
         }
 
         info_js
@@ -203,7 +203,7 @@ impl From<TexelCopyBufferLayout> for web_sys::GpuTexelCopyBufferLayout {
             layout_js.set_rows_per_image(rows_per_image);
         }
         if let Some(offset) = layout.offset {
-            layout_js.set_offset(offset as f64);
+            layout_js.set_offset_f64(offset as f64);
         }
 
         layout_js

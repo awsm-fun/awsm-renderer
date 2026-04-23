@@ -112,7 +112,9 @@ impl AwsmRendererWebGpuBuilder {
                             .unchecked_into()
                     } else {
                         let descriptor = web_sys::GpuDeviceDescriptor::new();
-                        descriptor.set_required_limits(&limits.into_js(&adapter.limits()));
+                        descriptor.set_required_limits(
+                            &limits.into_js(&adapter.limits()).unchecked_into(),
+                        );
                         JsFuture::from(adapter.request_device_with_descriptor(&descriptor))
                             .await
                             .map_err(AwsmCoreError::gpu_device)?

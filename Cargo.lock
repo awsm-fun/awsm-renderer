@@ -83,7 +83,7 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "awsm-renderer"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "askama",
@@ -105,7 +105,7 @@ dependencies = [
 
 [[package]]
 name = "awsm-renderer-core"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "binpack2d",
@@ -130,7 +130,7 @@ dependencies = [
 
 [[package]]
 name = "awsm-renderer-editor"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "awsm-renderer",
@@ -294,8 +294,7 @@ checksum = "212d0f5754cb6769937f4501cc0e67f4f4483c8d2c3e1e922ee9edbe4ab4c7c0"
 [[package]]
 name = "dominator"
 version = "0.5.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "40348e50c3b38c0d76bc116e7e02eb98ef5dd3536d79d9411acb07663f10ec9d"
+source = "git+https://github.com/Pauan/rust-dominator#25597cd851d9c7b6029b642435ec87703b303f70"
 dependencies = [
  "discard",
  "futures-channel",
@@ -377,7 +376,7 @@ checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
 
 [[package]]
 name = "frontend"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "awsm-renderer",

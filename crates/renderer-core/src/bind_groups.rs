@@ -327,10 +327,11 @@ impl<'a> BindGroupDescriptor<'a> {
 
 impl From<BindGroupLayoutDescriptor<'_>> for web_sys::GpuBindGroupLayoutDescriptor {
     fn from(layout: BindGroupLayoutDescriptor) -> Self {
-        let entries = js_sys::Array::new();
-        for entry in layout.entries {
-            entries.push(&web_sys::GpuBindGroupLayoutEntry::from(entry));
-        }
+        let entries: Vec<web_sys::GpuBindGroupLayoutEntry> = layout
+            .entries
+            .into_iter()
+            .map(web_sys::GpuBindGroupLayoutEntry::from)
+            .collect();
 
         let layout_js = web_sys::GpuBindGroupLayoutDescriptor::new(&entries);
 
@@ -390,7 +391,7 @@ impl From<BufferBindingLayout> for web_sys::GpuBufferBindingLayout {
         }
 
         if let Some(min_binding_size) = layout.min_binding_size {
-            layout_js.set_min_binding_size(min_binding_size as f64);
+            layout_js.set_min_binding_size_f64(min_binding_size as f64);
         }
 
         if let Some(binding_type) = layout.binding_type {
@@ -449,10 +450,11 @@ impl From<TextureBindingLayout> for web_sys::GpuTextureBindingLayout {
 
 impl From<BindGroupDescriptor<'_>> for web_sys::GpuBindGroupDescriptor {
     fn from(bind_group: BindGroupDescriptor) -> Self {
-        let entries = js_sys::Array::new();
-        for entry in bind_group.entries {
-            entries.push(&web_sys::GpuBindGroupEntry::from(entry));
-        }
+        let entries: Vec<web_sys::GpuBindGroupEntry> = bind_group
+            .entries
+            .into_iter()
+            .map(web_sys::GpuBindGroupEntry::from)
+            .collect();
 
         let bind_group_js = web_sys::GpuBindGroupDescriptor::new(&entries, bind_group.layout);
 
@@ -466,14 +468,26 @@ impl From<BindGroupDescriptor<'_>> for web_sys::GpuBindGroupDescriptor {
 
 impl From<BindGroupEntry<'_>> for web_sys::GpuBindGroupEntry {
     fn from(entry: BindGroupEntry) -> Self {
-        web_sys::GpuBindGroupEntry::new(
-            entry.binding,
-            &match entry.resource {
-                BindGroupResource::Buffer(buffer) => web_sys::GpuBufferBinding::from(buffer).into(),
-                BindGroupResource::ExternalTexture(external_texture) => external_texture.into(),
-                BindGroupResource::Sampler(sampler) => sampler.into(),
-                BindGroupResource::TextureView(texture_view) => texture_view.as_ref().into(),
-            },
-        )
+        match entry.resource {
+            BindGroupResource::Buffer(buffer) => web_sys::GpuBindGroupEntry::new_with_gpu_buffer_binding(
+                entry.binding,
+                &web_sys::GpuBufferBinding::from(buffer),
+            ),
+            BindGroupResource::ExternalTexture(external_texture) => {
+                web_sys::GpuBindGroupEntry::new_with_gpu_external_texture(
+                    entry.binding,
+                    external_texture,
+                )
+            }
+            BindGroupResource::Sampler(sampler) => {
+                web_sys::GpuBindGroupEntry::new(entry.binding, sampler)
+            }
+            BindGroupResource::TextureView(texture_view) => {
+                web_sys::GpuBindGroupEntry::new_with_gpu_texture_view(
+                    entry.binding,
+                    texture_view.as_ref(),
+                )
+            }
+        }
     }
 }

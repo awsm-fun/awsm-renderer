@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use crate::texture::TextureFormat;
 use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
 
 use super::constants::{ConstantOverrideKey, ConstantOverrideValue};
 
@@ -214,10 +215,11 @@ impl<'a> FragmentState<'a> {
 
 impl From<FragmentState<'_>> for web_sys::GpuFragmentState {
     fn from(state: FragmentState) -> web_sys::GpuFragmentState {
-        let targets = js_sys::Array::new();
-        for target in state.targets {
-            targets.push(&web_sys::GpuColorTargetState::from(target));
-        }
+        let targets: Vec<js_sys::JsOption<web_sys::GpuColorTargetState>> = state
+            .targets
+            .into_iter()
+            .map(|target| js_sys::JsOption::wrap(web_sys::GpuColorTargetState::from(target)))
+            .collect();
 
         let state_js = web_sys::GpuFragmentState::new(state.module, &targets);
 
@@ -231,7 +233,7 @@ impl From<FragmentState<'_>> for web_sys::GpuFragmentState {
                 js_sys::Reflect::set(&obj, &JsValue::from(binding), &JsValue::from(constant))
                     .unwrap_throw();
             }
-            state_js.set_constants(&obj);
+            state_js.set_constants(&obj.unchecked_into());
         }
 
         state_js
