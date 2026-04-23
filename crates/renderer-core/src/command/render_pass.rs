@@ -310,10 +310,9 @@ impl<'a, 'b> From<ColorAttachment<'a, 'b>> for web_sys::GpuRenderPassColorAttach
 
 impl From<DepthStencilAttachment<'_>> for web_sys::GpuRenderPassDepthStencilAttachment {
     fn from(attachment: DepthStencilAttachment) -> web_sys::GpuRenderPassDepthStencilAttachment {
-        let attachment_js =
-            web_sys::GpuRenderPassDepthStencilAttachment::new_with_gpu_texture_view(
-                attachment.view,
-            );
+        let attachment_js = web_sys::GpuRenderPassDepthStencilAttachment::new_with_gpu_texture_view(
+            attachment.view,
+        );
 
         if let Some(depth_clear_value) = attachment.depth_clear_value {
             attachment_js.set_depth_clear_value(depth_clear_value);

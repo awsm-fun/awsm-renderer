@@ -353,7 +353,9 @@ impl From<TextureDescriptor<'_>> for web_sys::GpuTextureDescriptor {
                 .view_formats
                 .into_iter()
                 .map(|format| {
-                    js_sys::JsString::from(wasm_bindgen::JsValue::from(format).unchecked_into::<js_sys::JsString>())
+                    js_sys::JsString::from(
+                        wasm_bindgen::JsValue::from(format).unchecked_into::<js_sys::JsString>(),
+                    )
                 })
                 .collect();
             descriptor_js.set_view_formats(&view_formats);

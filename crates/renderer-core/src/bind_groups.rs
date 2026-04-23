@@ -469,10 +469,12 @@ impl From<BindGroupDescriptor<'_>> for web_sys::GpuBindGroupDescriptor {
 impl From<BindGroupEntry<'_>> for web_sys::GpuBindGroupEntry {
     fn from(entry: BindGroupEntry) -> Self {
         match entry.resource {
-            BindGroupResource::Buffer(buffer) => web_sys::GpuBindGroupEntry::new_with_gpu_buffer_binding(
-                entry.binding,
-                &web_sys::GpuBufferBinding::from(buffer),
-            ),
+            BindGroupResource::Buffer(buffer) => {
+                web_sys::GpuBindGroupEntry::new_with_gpu_buffer_binding(
+                    entry.binding,
+                    &web_sys::GpuBufferBinding::from(buffer),
+                )
+            }
             BindGroupResource::ExternalTexture(external_texture) => {
                 web_sys::GpuBindGroupEntry::new_with_gpu_external_texture(
                     entry.binding,

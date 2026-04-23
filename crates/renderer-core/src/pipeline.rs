@@ -181,10 +181,8 @@ impl From<ComputePipelineDescriptor<'_, '_>> for web_sys::GpuComputePipelineDesc
         } = pipeline;
 
         let layout_js: JsValue = layout.into();
-        let pipeline_js = web_sys::GpuComputePipelineDescriptor::new(
-            layout_js.unchecked_ref(),
-            &compute.into(),
-        );
+        let pipeline_js =
+            web_sys::GpuComputePipelineDescriptor::new(layout_js.unchecked_ref(), &compute.into());
 
         if let Some(label) = label {
             pipeline_js.set_label(label);
