@@ -139,6 +139,24 @@ impl TransformController {
             .get_local(self.transform_keys.root)?
             .clone();
 
+        // Re-anchor the gizmo to the selected object every frame. The
+        // selection can change via paths that don't go through
+        // `start_pick` (tree-driven selection in a host editor, etc.),
+        // and the selected object's transform can be edited externally
+        // (a properties panel writing to the local TRS) — without this
+        // the gizmo would otherwise stay where it was last positioned.
+        if let Some(selected_object) = self.selected_object {
+            if let Some(world_matrix) = get_world_matrix(renderer, selected_object) {
+                let (_, world_rotation, world_position) =
+                    world_matrix.to_scale_rotation_translation();
+                transform.translation = world_position;
+                transform.rotation = match self._gizmo_space {
+                    GizmoSpace::Global => Quat::IDENTITY,
+                    GizmoSpace::Local => world_rotation,
+                };
+            }
+        }
+
         const DESIRED_PIXEL_SIZE: f32 = 100.0; // Desired size in pixels
         const REFERENCE_SIZE: f32 = 1.0; // Reference size of the gizmo in world
 

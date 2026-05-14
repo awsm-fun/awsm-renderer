@@ -750,9 +750,25 @@ impl Meshes {
             resource.aabb.clone()
         };
 
+        // Pre-transform the AABB into the new transform's world space.
+        // `update_world` only refreshes meshes whose transform key is
+        // currently dirty — but a duplicated mesh is often re-parented
+        // under a transform whose dirty flag has long since cleared,
+        // so without this the world_aabb stays at the local-space AABB
+        // and consumers (frustum culling, selection bboxes, gizmo
+        // centering) see an unrotated, unscaled box.
+        let world_aabb = match (
+            resource_aabb.as_ref(),
+            transforms.get_world(new_transform_key).ok(),
+        ) {
+            (Some(aabb), Some(world_mat)) => Some(aabb.transformed(world_mat)),
+            (Some(aabb), None) => Some(aabb.clone()),
+            (None, _) => None,
+        };
+
         let mut new_mesh = mesh.clone();
         new_mesh.transform_key = new_transform_key;
-        new_mesh.world_aabb = resource_aabb;
+        new_mesh.world_aabb = world_aabb;
 
         self.insert_instance(new_mesh, resource_key, materials, transforms)
     }
@@ -1002,9 +1018,22 @@ impl Meshes {
     ) -> Result<()> {
         let resource_aabb = self.resource(mesh_key).ok().and_then(|r| r.aabb.clone());
 
+        // Same reason as `duplicate_with_transform`: pre-transform into
+        // world space rather than leave the AABB local — the new
+        // transform key may not be dirty when the next `update_world`
+        // runs.
+        let world_aabb = match (
+            resource_aabb.as_ref(),
+            transforms.get_world(new_transform_key).ok(),
+        ) {
+            (Some(aabb), Some(world_mat)) => Some(aabb.transformed(world_mat)),
+            (Some(aabb), None) => Some(aabb.clone()),
+            (None, _) => None,
+        };
+
         if let Some(mesh) = self.list.get_mut(mesh_key) {
             mesh.transform_key = new_transform_key;
-            mesh.world_aabb = resource_aabb;
+            mesh.world_aabb = world_aabb;
         }
 
         if let Some(meshes) = self.transform_to_meshes.get_mut(old_transform_key) {
