@@ -9,7 +9,11 @@ use crate::curve3::Curve3;
 ///
 /// Uses a two-stage strategy: coarse sampling to find the best segment, then a fixed
 /// number of golden-section iterations within that segment for refinement.
-pub fn nearest_point_on_curve<C: Curve3 + ?Sized>(curve: &C, p: Vec3, coarse_samples: usize) -> (f32, f32) {
+pub fn nearest_point_on_curve<C: Curve3 + ?Sized>(
+    curve: &C,
+    p: Vec3,
+    coarse_samples: usize,
+) -> (f32, f32) {
     let n = coarse_samples.max(8);
     let mut best_t = 0.0_f32;
     let mut best_d2 = f32::MAX;
@@ -50,7 +54,12 @@ pub fn nearest_point_on_curve<C: Curve3 + ?Sized>(curve: &C, p: Vec3, coarse_sam
 ///
 /// Uses `subdivisions` chord-sums; raise this for higher accuracy. Returns 0.0 if
 /// `b <= a`.
-pub fn curve_length_between<C: Curve3 + ?Sized>(curve: &C, a: f32, b: f32, subdivisions: usize) -> f32 {
+pub fn curve_length_between<C: Curve3 + ?Sized>(
+    curve: &C,
+    a: f32,
+    b: f32,
+    subdivisions: usize,
+) -> f32 {
     let a = a.clamp(0.0, 1.0);
     let b = b.clamp(0.0, 1.0);
     if b <= a {

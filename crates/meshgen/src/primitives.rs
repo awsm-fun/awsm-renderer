@@ -20,11 +20,7 @@ pub fn plane_mesh(width: f32, depth: f32, segments_x: u32, segments_z: u32) -> M
         let v = z as f32 / sz as f32;
         for x in 0..=sx {
             let u = x as f32 / sx as f32;
-            positions.push([
-                -half_w + u * width,
-                0.0,
-                -half_d + v * depth,
-            ]);
+            positions.push([-half_w + u * width, 0.0, -half_d + v * depth]);
             uvs.push([u, v]);
             normals.push([0.0, 1.0, 0.0]);
         }
@@ -54,25 +50,61 @@ pub fn box_mesh(dims: Vec3) -> MeshData {
     let h = dims * 0.5;
     let positions = vec![
         // +X face
-        [h.x, -h.y, -h.z], [h.x, h.y, -h.z], [h.x, h.y, h.z], [h.x, -h.y, h.z],
+        [h.x, -h.y, -h.z],
+        [h.x, h.y, -h.z],
+        [h.x, h.y, h.z],
+        [h.x, -h.y, h.z],
         // -X face
-        [-h.x, -h.y, h.z], [-h.x, h.y, h.z], [-h.x, h.y, -h.z], [-h.x, -h.y, -h.z],
+        [-h.x, -h.y, h.z],
+        [-h.x, h.y, h.z],
+        [-h.x, h.y, -h.z],
+        [-h.x, -h.y, -h.z],
         // +Y face
-        [-h.x, h.y, -h.z], [-h.x, h.y, h.z], [h.x, h.y, h.z], [h.x, h.y, -h.z],
+        [-h.x, h.y, -h.z],
+        [-h.x, h.y, h.z],
+        [h.x, h.y, h.z],
+        [h.x, h.y, -h.z],
         // -Y face
-        [-h.x, -h.y, h.z], [-h.x, -h.y, -h.z], [h.x, -h.y, -h.z], [h.x, -h.y, h.z],
+        [-h.x, -h.y, h.z],
+        [-h.x, -h.y, -h.z],
+        [h.x, -h.y, -h.z],
+        [h.x, -h.y, h.z],
         // +Z face
-        [h.x, -h.y, h.z], [h.x, h.y, h.z], [-h.x, h.y, h.z], [-h.x, -h.y, h.z],
+        [h.x, -h.y, h.z],
+        [h.x, h.y, h.z],
+        [-h.x, h.y, h.z],
+        [-h.x, -h.y, h.z],
         // -Z face
-        [-h.x, -h.y, -h.z], [-h.x, h.y, -h.z], [h.x, h.y, -h.z], [h.x, -h.y, -h.z],
+        [-h.x, -h.y, -h.z],
+        [-h.x, h.y, -h.z],
+        [h.x, h.y, -h.z],
+        [h.x, -h.y, -h.z],
     ];
     let normals = vec![
-        [1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 0.0, 0.0],
-        [-1.0, 0.0, 0.0], [-1.0, 0.0, 0.0], [-1.0, 0.0, 0.0], [-1.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0], [0.0, 1.0, 0.0], [0.0, 1.0, 0.0], [0.0, 1.0, 0.0],
-        [0.0, -1.0, 0.0], [0.0, -1.0, 0.0], [0.0, -1.0, 0.0], [0.0, -1.0, 0.0],
-        [0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0],
-        [0.0, 0.0, -1.0], [0.0, 0.0, -1.0], [0.0, 0.0, -1.0], [0.0, 0.0, -1.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [-1.0, 0.0, 0.0],
+        [-1.0, 0.0, 0.0],
+        [-1.0, 0.0, 0.0],
+        [-1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, -1.0, 0.0],
+        [0.0, -1.0, 0.0],
+        [0.0, -1.0, 0.0],
+        [0.0, -1.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [0.0, 0.0, 1.0],
+        [0.0, 0.0, 1.0],
+        [0.0, 0.0, 1.0],
+        [0.0, 0.0, -1.0],
+        [0.0, 0.0, -1.0],
+        [0.0, 0.0, -1.0],
+        [0.0, 0.0, -1.0],
     ];
     let mut uvs = Vec::with_capacity(24);
     for _ in 0..6 {
@@ -263,7 +295,12 @@ pub fn cone_mesh(radius: f32, height: f32, radial_segments: u32) -> MeshData {
 }
 
 /// Torus around the Y axis with major `radius` and tube `thickness`.
-pub fn torus_mesh(radius: f32, thickness: f32, segments_major: u32, segments_minor: u32) -> MeshData {
+pub fn torus_mesh(
+    radius: f32,
+    thickness: f32,
+    segments_major: u32,
+    segments_minor: u32,
+) -> MeshData {
     let smaj = segments_major.max(3) as usize;
     let smin = segments_minor.max(3) as usize;
     let mut positions = Vec::with_capacity((smaj + 1) * (smin + 1));
@@ -318,9 +355,9 @@ pub fn sprite_quad(size_x: f32, size_y: f32) -> MeshData {
     MeshData {
         positions: vec![
             [-hx, -hy, 0.0],
-            [ hx, -hy, 0.0],
-            [ hx,  hy, 0.0],
-            [-hx,  hy, 0.0],
+            [hx, -hy, 0.0],
+            [hx, hy, 0.0],
+            [-hx, hy, 0.0],
         ],
         normals: Some(vec![[0.0, 0.0, 1.0]; 4]),
         uvs: Some(vec![[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]]),

@@ -69,9 +69,21 @@ pub fn aabb_in_frustum(aabb: &Aabb, f: &Frustum) -> bool {
     // Positive-vertex test against each plane.
     for plane in &f.planes {
         let p = Vec3::new(
-            if plane.normal.x >= 0.0 { aabb.max.x } else { aabb.min.x },
-            if plane.normal.y >= 0.0 { aabb.max.y } else { aabb.min.y },
-            if plane.normal.z >= 0.0 { aabb.max.z } else { aabb.min.z },
+            if plane.normal.x >= 0.0 {
+                aabb.max.x
+            } else {
+                aabb.min.x
+            },
+            if plane.normal.y >= 0.0 {
+                aabb.max.y
+            } else {
+                aabb.min.y
+            },
+            if plane.normal.z >= 0.0 {
+                aabb.max.z
+            } else {
+                aabb.min.z
+            },
         );
         if plane.signed_distance(p) < 0.0 {
             return false;

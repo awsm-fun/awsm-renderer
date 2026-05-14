@@ -82,7 +82,8 @@ impl Simulator {
         let mut rng = || self.rng_state_local();
         let (offset, dir) = emitter.shape.sample(&mut rng);
         let speed_t = self.next_unit();
-        let speed = emitter.initial_speed.0 + (emitter.initial_speed.1 - emitter.initial_speed.0) * speed_t;
+        let speed =
+            emitter.initial_speed.0 + (emitter.initial_speed.1 - emitter.initial_speed.0) * speed_t;
         let life_t = self.next_unit();
         let lifetime = emitter.lifetime.0 + (emitter.lifetime.1 - emitter.lifetime.0) * life_t;
         let size_t = self.next_unit();
@@ -200,7 +201,7 @@ impl Simulator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::emitter::{Emitter, ColorOverLife};
+    use crate::emitter::{ColorOverLife, Emitter};
     use crate::spawn::SpawnShape;
 
     #[test]

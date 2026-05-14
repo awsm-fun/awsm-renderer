@@ -62,9 +62,11 @@ impl ColorOverLife {
     pub fn sample(&self, t: f32) -> [f32; 4] {
         match self {
             ColorOverLife::Const(c) => *c,
-            ColorOverLife::Linear { start, end } => {
-                LinearCurve1 { start: *start, end: *end }.sample(t.clamp(0.0, 1.0))
+            ColorOverLife::Linear { start, end } => LinearCurve1 {
+                start: *start,
+                end: *end,
             }
+            .sample(t.clamp(0.0, 1.0)),
         }
     }
 }
@@ -80,9 +82,11 @@ impl SizeOverLife {
     pub fn sample(&self, t: f32) -> f32 {
         match self {
             SizeOverLife::Const(c) => *c,
-            SizeOverLife::Linear { start, end } => {
-                LinearCurve1 { start: *start, end: *end }.sample(t.clamp(0.0, 1.0))
+            SizeOverLife::Linear { start, end } => LinearCurve1 {
+                start: *start,
+                end: *end,
             }
+            .sample(t.clamp(0.0, 1.0)),
         }
     }
 }
@@ -105,4 +109,3 @@ impl AlphaOverLife {
         }
     }
 }
-

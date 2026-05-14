@@ -138,8 +138,16 @@ impl FrameSequence {
             frames.push(Frame {
                 position,
                 tangent,
-                normal: if normal.length_squared() > 0.0 { normal } else { prev_normal },
-                binormal: if binormal.length_squared() > 0.0 { binormal } else { prev_binormal },
+                normal: if normal.length_squared() > 0.0 {
+                    normal
+                } else {
+                    prev_normal
+                },
+                binormal: if binormal.length_squared() > 0.0 {
+                    binormal
+                } else {
+                    prev_binormal
+                },
             });
             prev_tangent = tangent;
             prev_normal = normal;
@@ -162,7 +170,11 @@ pub struct CatmullRomCurve {
 
 impl CatmullRomCurve {
     pub fn new(points: Vec<Vec3>, closed: bool) -> Self {
-        Self { points, closed, tension: 0.5 }
+        Self {
+            points,
+            closed,
+            tension: 0.5,
+        }
     }
 
     fn segment_count(&self) -> usize {
@@ -310,20 +322,27 @@ mod tests {
             closed: false,
         };
         assert!(curve.point_at(0.0).abs_diff_eq(Vec3::ZERO, 1.0e-5));
-        assert!(curve.point_at(1.0).abs_diff_eq(Vec3::new(3.0, 0.0, 0.0), 1.0e-5));
+        assert!(curve
+            .point_at(1.0)
+            .abs_diff_eq(Vec3::new(3.0, 0.0, 0.0), 1.0e-5));
     }
 
     #[test]
     fn frame_sequence_length_matches() {
         let curve = CatmullRomCurve::new(
-            vec![Vec3::ZERO, Vec3::X, Vec3::X + Vec3::Y, Vec3::X + Vec3::Y + Vec3::Z],
+            vec![
+                Vec3::ZERO,
+                Vec3::X,
+                Vec3::X + Vec3::Y,
+                Vec3::X + Vec3::Y + Vec3::Z,
+            ],
             false,
         );
         let frames = FrameSequence::parallel_transport(&curve, 8, Vec3::Y);
         assert_eq!(frames.frames.len(), 8);
         for f in &frames.frames {
-            let basis_ok = f.tangent.dot(f.normal).abs() < 1.0e-3
-                && f.tangent.dot(f.binormal).abs() < 1.0e-3;
+            let basis_ok =
+                f.tangent.dot(f.normal).abs() < 1.0e-3 && f.tangent.dot(f.binormal).abs() < 1.0e-3;
             assert!(basis_ok);
         }
     }

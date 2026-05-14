@@ -119,7 +119,10 @@ mod tests {
 
     #[test]
     fn linear_curve1_f32() {
-        let c = LinearCurve1 { start: 0.0_f32, end: 10.0 };
+        let c = LinearCurve1 {
+            start: 0.0_f32,
+            end: 10.0,
+        };
         assert!((c.sample(0.0) - 0.0).abs() < 1.0e-6);
         assert!((c.sample(0.5) - 5.0).abs() < 1.0e-6);
         assert!((c.sample(1.0) - 10.0).abs() < 1.0e-6);
@@ -129,8 +132,14 @@ mod tests {
     fn keyed_curve1_through_keys() {
         let c = KeyedCurve1 {
             keys: vec![
-                Curve1Key { t: 0.0, value: 0.0_f32 },
-                Curve1Key { t: 0.5, value: 10.0 },
+                Curve1Key {
+                    t: 0.0,
+                    value: 0.0_f32,
+                },
+                Curve1Key {
+                    t: 0.5,
+                    value: 10.0,
+                },
                 Curve1Key { t: 1.0, value: 0.0 },
             ],
         };

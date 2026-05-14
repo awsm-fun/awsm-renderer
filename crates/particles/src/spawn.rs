@@ -6,8 +6,13 @@ use glam::Vec3;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SpawnShape {
     Point,
-    Sphere { radius: f32 },
-    Cone { angle_radians: f32, direction: [f32; 3] },
+    Sphere {
+        radius: f32,
+    },
+    Cone {
+        angle_radians: f32,
+        direction: [f32; 3],
+    },
 }
 
 impl SpawnShape {
@@ -19,9 +24,16 @@ impl SpawnShape {
                 let dir = sample_unit_sphere(rng);
                 (dir * *radius * rng(), dir)
             }
-            SpawnShape::Cone { angle_radians, direction } => {
+            SpawnShape::Cone {
+                angle_radians,
+                direction,
+            } => {
                 let dir = Vec3::from_array(*direction).normalize_or_zero();
-                let dir = if dir.length_squared() < 1.0e-6 { Vec3::Y } else { dir };
+                let dir = if dir.length_squared() < 1.0e-6 {
+                    Vec3::Y
+                } else {
+                    dir
+                };
                 let cone_dir = sample_cone(dir, *angle_radians, rng);
                 (Vec3::ZERO, cone_dir)
             }

@@ -26,7 +26,11 @@ impl MeshData {
     /// Overwrites any existing normals.
     pub fn compute_vertex_normals(&mut self) {
         let mut acc = vec![Vec3::ZERO; self.positions.len()];
-        let positions: Vec<Vec3> = self.positions.iter().map(|p| Vec3::from_array(*p)).collect();
+        let positions: Vec<Vec3> = self
+            .positions
+            .iter()
+            .map(|p| Vec3::from_array(*p))
+            .collect();
         for tri in self.indices.chunks_exact(3) {
             let i0 = tri[0] as usize;
             let i1 = tri[1] as usize;

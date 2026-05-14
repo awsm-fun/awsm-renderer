@@ -21,7 +21,14 @@ impl Color {
 }
 
 /// Checkerboard pattern at `cells` per axis.
-pub fn checker_rgba(width: u32, height: u32, cells_x: u32, cells_y: u32, a: [f32; 4], b: [f32; 4]) -> Vec<u8> {
+pub fn checker_rgba(
+    width: u32,
+    height: u32,
+    cells_x: u32,
+    cells_y: u32,
+    a: [f32; 4],
+    b: [f32; 4],
+) -> Vec<u8> {
     let mut out = Vec::with_capacity((width * height) as usize * 4);
     let col_a = Color::new(a[0], a[1], a[2], a[3]).to_u8_rgba();
     let col_b = Color::new(b[0], b[1], b[2], b[3]).to_u8_rgba();
@@ -38,7 +45,13 @@ pub fn checker_rgba(width: u32, height: u32, cells_x: u32, cells_y: u32, a: [f32
 }
 
 /// Linear gradient from color `a` (left) to color `b` (right).
-pub fn gradient_rgba(width: u32, height: u32, a: [f32; 4], b: [f32; 4], horizontal: bool) -> Vec<u8> {
+pub fn gradient_rgba(
+    width: u32,
+    height: u32,
+    a: [f32; 4],
+    b: [f32; 4],
+    horizontal: bool,
+) -> Vec<u8> {
     let mut out = Vec::with_capacity((width * height) as usize * 4);
     for y in 0..height {
         for x in 0..width {

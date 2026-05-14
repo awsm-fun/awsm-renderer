@@ -13,7 +13,10 @@ pub struct Ray {
 
 impl Ray {
     pub fn new(origin: Vec3, direction: Vec3) -> Self {
-        Self { origin, direction: direction.normalize_or_zero() }
+        Self {
+            origin,
+            direction: direction.normalize_or_zero(),
+        }
     }
 
     pub fn at(&self, t: f32) -> Vec3 {
@@ -30,9 +33,21 @@ pub struct RayHit {
 /// Slab test for ray vs AABB. Returns `(t_near, t_far)` if hit, else `None`.
 pub fn ray_aabb(ray: &Ray, aabb: &Aabb) -> Option<(f32, f32)> {
     let inv_d = Vec3::new(
-        if ray.direction.x.abs() > 1.0e-20 { 1.0 / ray.direction.x } else { f32::INFINITY },
-        if ray.direction.y.abs() > 1.0e-20 { 1.0 / ray.direction.y } else { f32::INFINITY },
-        if ray.direction.z.abs() > 1.0e-20 { 1.0 / ray.direction.z } else { f32::INFINITY },
+        if ray.direction.x.abs() > 1.0e-20 {
+            1.0 / ray.direction.x
+        } else {
+            f32::INFINITY
+        },
+        if ray.direction.y.abs() > 1.0e-20 {
+            1.0 / ray.direction.y
+        } else {
+            f32::INFINITY
+        },
+        if ray.direction.z.abs() > 1.0e-20 {
+            1.0 / ray.direction.z
+        } else {
+            f32::INFINITY
+        },
     );
     let t0 = (aabb.min - ray.origin) * inv_d;
     let t1 = (aabb.max - ray.origin) * inv_d;
@@ -70,7 +85,10 @@ pub fn ray_triangle(ray: &Ray, a: Vec3, b: Vec3, c: Vec3) -> Option<RayHit> {
     }
     let t = inv_det * e2.dot(q);
     if t > 1.0e-6 {
-        Some(RayHit { t, point: ray.at(t) })
+        Some(RayHit {
+            t,
+            point: ray.at(t),
+        })
     } else {
         None
     }
@@ -86,7 +104,10 @@ pub fn ray_plane(ray: &Ray, normal: Vec3, d: f32) -> Option<RayHit> {
     if t < 0.0 {
         None
     } else {
-        Some(RayHit { t, point: ray.at(t) })
+        Some(RayHit {
+            t,
+            point: ray.at(t),
+        })
     }
 }
 
