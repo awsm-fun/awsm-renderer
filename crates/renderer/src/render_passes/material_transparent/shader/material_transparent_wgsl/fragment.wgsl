@@ -5,6 +5,7 @@ struct FragmentInput {
     @location(0) world_position: vec3<f32>,     // World position
     @location(1) world_normal: vec3<f32>,     // Transformed world-space normal
     @location(2) world_tangent: vec4<f32>,    // Transformed world-space tangent (w = handedness)
+    @location(3) @interpolate(flat) instance_id: u32,
     {% for i in 0..color_sets %}
         @location({{ in_color_set_start + i }}) color_{{ i }}: vec4<f32>,
     {% endfor %}
@@ -290,6 +291,14 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
         }
 
         base_alpha = material_color.base.a;
+    }
+
+    // Apply per-instance tint (Stage-3b — mirrors the opaque non-MSAA path).
+    if (input.instance_id != INSTANCE_ATTR_NONE) {
+        let attr = instance_attrs[input.instance_id];
+        let tint = unpack4x8unorm(attr.color_packed);
+        color = color * tint.rgb;
+        base_alpha = base_alpha * tint.a * attr.alpha;
     }
 
     // Output final color with alpha

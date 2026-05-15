@@ -133,6 +133,18 @@ impl MaterialTransparentBindGroups {
                 visibility_fragment: true,
                 visibility_compute: false,
             },
+            // Per-instance attribute storage buffer — read by both vertex
+            // (to plumb `instance_id` forward) and fragment (to apply the
+            // per-instance tint). Mirrors the opaque pass's binding 23.
+            BindGroupLayoutCacheKeyEntry {
+                resource: BindGroupLayoutResource::Buffer(
+                    BufferBindingLayout::new()
+                        .with_binding_type(BufferBindingType::ReadOnlyStorage),
+                ),
+                visibility_vertex: true,
+                visibility_fragment: true,
+                visibility_compute: false,
+            },
         ];
 
         let main_bind_group_layout_key = ctx
@@ -408,6 +420,14 @@ impl MaterialTransparentBindGroups {
         entries.push(BindGroupEntry::new(
             entries.len() as u32,
             BindGroupResource::TextureView(Cow::Borrowed(&ctx.render_texture_views.opaque)),
+        ));
+        // Per-instance attribute storage buffer — matches the opaque path's
+        // tint logic. Vertex shader reads it to plumb `instance_id` forward
+        // (via meta.instance_attr_base + instance_index); fragment shader
+        // reads it to apply per-instance color × tint.rgb + alpha × tint.a.
+        entries.push(BindGroupEntry::new(
+            entries.len() as u32,
+            BindGroupResource::Buffer(BufferBinding::new(ctx.instances.gpu_attribute_buffer())),
         ));
 
         let descriptor = BindGroupDescriptor::new(

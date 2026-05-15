@@ -118,8 +118,12 @@ impl RawMeshData {
 
 impl AwsmRenderer {
     /// Upload a raw `RawMeshData` + material into the renderer and return a
-    /// `MeshKey` that participates in the standard render passes (visibility
-    /// buffer for opaque, fragment pass for transparent).
+    /// `MeshKey` that participates in the visibility-buffer opaque pass.
+    ///
+    /// Sync; opaque-only. Use [`AwsmRenderer::add_raw_mesh_transparent`] for
+    /// materials whose alpha mode routes through the transparent pass (the
+    /// transparent path needs an async transparent-pipeline-key registration
+    /// for the per-mesh attributes, so it can't be sync).
     ///
     /// The returned mesh is **not** instanced. To draw multiple copies, either
     /// call `add_raw_mesh` repeatedly or `enable_mesh_instancing` after creation.
@@ -270,9 +274,6 @@ impl AwsmRenderer {
 
         let is_transparent = self.materials.is_transparency_pass(material_key);
         if is_transparent {
-            // Transparent path also needs a transparency-vertex-bytes write so
-            // the fragment shader has positions / normals / tangents. v1 of
-            // raw-mesh API ships opaque-only; transparent raw meshes are TODO.
             return Err(crate::error::AwsmError::Mesh(
                 crate::meshes::error::AwsmMeshError::MeshListEmpty,
             ));
@@ -294,6 +295,202 @@ impl AwsmRenderer {
             None,
             None,
         )?;
+
+        Ok(mesh_key)
+    }
+
+    /// Async variant of [`AwsmRenderer::add_raw_mesh`] that supports the
+    /// transparent pass. Builds a 40-byte transparency vertex pack
+    /// (position(12) + normal(12) + tangent(16); per-vertex, *not*
+    /// exploded — matches the glTF transparent path) and registers the
+    /// per-mesh transparent pipeline key after insert.
+    ///
+    /// For opaque materials this delegates to the sync `add_raw_mesh` —
+    /// the async wrapper is a no-op cost in that case.
+    pub async fn add_raw_mesh_transparent(
+        &mut self,
+        mut data: RawMeshData,
+        transform_key: TransformKey,
+        material_key: MaterialKey,
+    ) -> crate::error::Result<MeshKey> {
+        if !self.materials.is_transparency_pass(material_key) {
+            return self.add_raw_mesh(data, transform_key, material_key);
+        }
+        if data.positions.is_empty() || data.indices.len() % 3 != 0 {
+            return Err(crate::error::AwsmError::Mesh(
+                crate::meshes::error::AwsmMeshError::MeshListEmpty,
+            ));
+        }
+
+        data.ensure_normals();
+        let aabb = data.aabb();
+        let vertex_count = data.vertex_count();
+        let triangle_count = data.triangle_count();
+        let exploded_count = triangle_count * 3;
+
+        // ── Visibility geometry (56 B / exploded vertex) — same layout as
+        // the opaque path; the transparent pipeline doesn't consume this but
+        // the buffer_info expects both visibility + transparency offsets.
+        let mut visibility_bytes: Vec<u8> = Vec::with_capacity(
+            exploded_count * MeshBufferVertexInfo::VISIBILITY_GEOMETRY_BYTE_SIZE,
+        );
+        let normals = data.normals.as_ref().expect("ensure_normals filled this");
+        const BARYCENTRICS: [[f32; 2]; 3] = [[1.0, 0.0], [0.0, 1.0], [0.0, 0.0]];
+        for (triangle_index, tri) in data.indices.chunks_exact(3).enumerate() {
+            for (corner, &vertex_index) in tri.iter().enumerate() {
+                let v_idx = vertex_index as usize;
+                let pos = data.positions[v_idx];
+                let normal = normals[v_idx];
+                let bary = BARYCENTRICS[corner];
+                visibility_bytes.extend_from_slice(&pos[0].to_le_bytes());
+                visibility_bytes.extend_from_slice(&pos[1].to_le_bytes());
+                visibility_bytes.extend_from_slice(&pos[2].to_le_bytes());
+                visibility_bytes.extend_from_slice(&(triangle_index as u32).to_le_bytes());
+                visibility_bytes.extend_from_slice(&bary[0].to_le_bytes());
+                visibility_bytes.extend_from_slice(&bary[1].to_le_bytes());
+                visibility_bytes.extend_from_slice(&normal[0].to_le_bytes());
+                visibility_bytes.extend_from_slice(&normal[1].to_le_bytes());
+                visibility_bytes.extend_from_slice(&normal[2].to_le_bytes());
+                visibility_bytes.extend_from_slice(&0.0_f32.to_le_bytes());
+                visibility_bytes.extend_from_slice(&0.0_f32.to_le_bytes());
+                visibility_bytes.extend_from_slice(&0.0_f32.to_le_bytes());
+                visibility_bytes.extend_from_slice(&1.0_f32.to_le_bytes());
+                visibility_bytes.extend_from_slice(&vertex_index.to_le_bytes());
+            }
+        }
+
+        // ── Transparency geometry (40 B / vertex, per-original-vertex,
+        // *not* exploded). Matches `gltf/buffers/mesh/transparency.rs`.
+        let mut transparency_bytes: Vec<u8> = Vec::with_capacity(
+            vertex_count * MeshBufferVertexInfo::TRANSPARENCY_GEOMETRY_BYTE_SIZE,
+        );
+        for (v_idx, normal) in normals.iter().enumerate().take(vertex_count) {
+            let pos = data.positions[v_idx];
+            let normal = *normal;
+            transparency_bytes.extend_from_slice(&pos[0].to_le_bytes());
+            transparency_bytes.extend_from_slice(&pos[1].to_le_bytes());
+            transparency_bytes.extend_from_slice(&pos[2].to_le_bytes());
+            transparency_bytes.extend_from_slice(&normal[0].to_le_bytes());
+            transparency_bytes.extend_from_slice(&normal[1].to_le_bytes());
+            transparency_bytes.extend_from_slice(&normal[2].to_le_bytes());
+            // Synthetic tangent [0,0,0,1] matches the gltf default-tangent
+            // fallback when meshes don't ship per-vertex tangents.
+            transparency_bytes.extend_from_slice(&0.0_f32.to_le_bytes());
+            transparency_bytes.extend_from_slice(&0.0_f32.to_le_bytes());
+            transparency_bytes.extend_from_slice(&0.0_f32.to_le_bytes());
+            transparency_bytes.extend_from_slice(&1.0_f32.to_le_bytes());
+        }
+
+        // Attribute index (per-triangle u32s — same as opaque).
+        let mut attribute_index_bytes: Vec<u8> = Vec::with_capacity(triangle_count * 12);
+        for tri in data.indices.chunks_exact(3) {
+            attribute_index_bytes.extend_from_slice(&tri[0].to_le_bytes());
+            attribute_index_bytes.extend_from_slice(&tri[1].to_le_bytes());
+            attribute_index_bytes.extend_from_slice(&tri[2].to_le_bytes());
+        }
+
+        // Custom attributes (UVs + colors if supplied). Same packing as opaque.
+        let mut custom_attributes: Vec<MeshBufferVertexAttributeInfo> = Vec::new();
+        let mut custom_attribute_bytes: Vec<u8> = Vec::new();
+        let has_uvs = data.uvs.is_some();
+        let has_colors = data.colors.is_some();
+        if has_uvs {
+            custom_attributes.push(MeshBufferVertexAttributeInfo::Custom(
+                MeshBufferCustomVertexAttributeInfo::TexCoords {
+                    index: 0,
+                    data_size: 4,
+                    component_len: 2,
+                },
+            ));
+        }
+        if has_colors {
+            custom_attributes.push(MeshBufferVertexAttributeInfo::Custom(
+                MeshBufferCustomVertexAttributeInfo::Colors {
+                    index: 0,
+                    data_size: 4,
+                    component_len: 4,
+                },
+            ));
+        }
+        for v in 0..vertex_count {
+            if let Some(uvs) = data.uvs.as_ref() {
+                let uv = uvs[v];
+                custom_attribute_bytes.extend_from_slice(&uv[0].to_le_bytes());
+                custom_attribute_bytes.extend_from_slice(&uv[1].to_le_bytes());
+            }
+            if let Some(colors) = data.colors.as_ref() {
+                let c = colors[v];
+                custom_attribute_bytes.extend_from_slice(&c[0].to_le_bytes());
+                custom_attribute_bytes.extend_from_slice(&c[1].to_le_bytes());
+                custom_attribute_bytes.extend_from_slice(&c[2].to_le_bytes());
+                custom_attribute_bytes.extend_from_slice(&c[3].to_le_bytes());
+            }
+        }
+
+        let triangle_info = MeshBufferTriangleInfo {
+            count: triangle_count,
+            vertex_attribute_indices: MeshBufferAttributeIndexInfo {
+                count: triangle_count * 3,
+            },
+            vertex_attributes: custom_attributes,
+            vertex_attributes_size: custom_attribute_bytes.len(),
+            triangle_data: MeshBufferTriangleDataInfo {
+                size_per_triangle: 12,
+                total_size: triangle_count * 12,
+            },
+        };
+        let buffer_info = MeshBufferInfo {
+            visibility_geometry_vertex: Some(MeshBufferVertexInfo {
+                count: exploded_count,
+            }),
+            transparency_geometry_vertex: Some(MeshBufferVertexInfo {
+                count: vertex_count,
+            }),
+            triangles: triangle_info,
+            geometry_morph: None,
+            material_morph: None,
+            skin: None,
+        };
+        let buffer_info_key = self.meshes.buffer_infos.insert(buffer_info);
+
+        let mesh = Mesh::new(transform_key, material_key, false, false, false, false);
+        let mesh_key = self.meshes.insert_public(
+            mesh,
+            &self.materials,
+            &self.transforms,
+            buffer_info_key,
+            Some(&visibility_bytes),
+            Some(&transparency_bytes),
+            &custom_attribute_bytes,
+            &attribute_index_bytes,
+            aabb,
+            None,
+            None,
+            None,
+        )?;
+
+        // Register the per-mesh transparent pipeline key so the transparent
+        // pass has a draw pipeline for this geometry. Mirrors what
+        // `enable_mesh_instancing` does for instanced transparent meshes.
+        let mesh_ref = self.meshes.get(mesh_key)?;
+        self.render_passes
+            .material_transparent
+            .pipelines
+            .set_render_pipeline_key(
+                &self.gpu,
+                mesh_ref,
+                mesh_key,
+                buffer_info_key,
+                &mut self.shaders,
+                &mut self.pipelines,
+                &self.render_passes.material_transparent.bind_groups,
+                &self.pipeline_layouts,
+                &self.meshes.buffer_infos,
+                &self.anti_aliasing,
+                &self.textures,
+                &self.render_textures.formats,
+            )
+            .await?;
 
         Ok(mesh_key)
     }
