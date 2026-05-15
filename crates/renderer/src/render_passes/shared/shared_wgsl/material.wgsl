@@ -10,6 +10,10 @@
 {% include "shared_wgsl/unlit/unlit_material.wgsl" %}
 /*************** END unlit_material_color.wgsl ******************/
 
+/*************** START toon_material.wgsl ******************/
+{% include "shared_wgsl/toon/toon_material.wgsl" %}
+/*************** END toon_material.wgsl ******************/
+
 // must match MaterialAlphaMode::variant_as_u32
 const ALPHA_MODE_OPAQUE: u32 = 0u;
 const ALPHA_MODE_MASK: u32 = 1u;
@@ -17,6 +21,7 @@ const ALPHA_MODE_BLEND: u32 = 2u;
 
 const SHADER_ID_PBR: u32 = 1u;
 const SHADER_ID_UNLIT: u32 = 2u;
+const SHADER_ID_TOON: u32 = 3u;
 
 fn material_load_shader_id(byte_offset: u32) -> u32 {
     // shader_id is stored as the first u32 at the material's byte offset

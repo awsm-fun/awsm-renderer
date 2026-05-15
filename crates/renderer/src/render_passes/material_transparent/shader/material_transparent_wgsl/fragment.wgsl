@@ -224,6 +224,18 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
         let unlit_color = unlit_get_material_color(unlit_material, input);
         color = compute_unlit_output(unlit_color);
         base_alpha = unlit_color.base.a;
+    } else if (shader_id == SHADER_ID_TOON) {
+        // Toon material path
+        let toon_material = toon_get_material(material_offset);
+        let lights_info = get_lights_info();
+        color = compute_toon_lit_color(
+            toon_material,
+            world_normal,
+            surface_to_camera,
+            input.world_position,
+            lights_info,
+        );
+        base_alpha = toon_material.base_color_factor.a;
     } else {
         // PBR material path (default)
         let material = pbr_get_material(material_offset);

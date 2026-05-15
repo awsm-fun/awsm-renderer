@@ -125,6 +125,16 @@ fn msaa_process_sample(
                 );
         {% endmatch %}
         return MsaaSampleResult(compute_unlit_output(unlit_color), unlit_color.base.a, true);
+    } else if (sample_shader_id == SHADER_ID_TOON) {
+        let toon_mat = toon_get_material(sample_mat_offset);
+        let toon_color = compute_toon_lit_color(
+            toon_mat,
+            sample_normal,
+            standard_coordinates.surface_to_camera,
+            standard_coordinates.world_position,
+            lights_info,
+        );
+        return MsaaSampleResult(toon_color, toon_mat.base_color_factor.a, true);
     } else {
         // PBR path
         let pbr_mat = pbr_get_material(sample_mat_offset);

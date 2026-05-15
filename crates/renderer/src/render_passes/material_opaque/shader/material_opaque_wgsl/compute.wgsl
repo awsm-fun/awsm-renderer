@@ -243,6 +243,19 @@ fn main(
         {% endmatch %}
         color = compute_unlit_output(unlit_color);
         base_alpha = unlit_color.base.a;
+    } else if (shader_id == SHADER_ID_TOON) {
+        // Toon material path — banded N·L + stepped Blinn-Phong + rim.
+        // Reads world position from the standard coordinates the surrounding
+        // code already computes; doesn't sample textures (v1).
+        let toon_material = toon_get_material(material_offset);
+        color = compute_toon_lit_color(
+            toon_material,
+            world_normal,
+            standard_coordinates.surface_to_camera,
+            standard_coordinates.world_position,
+            lights_info,
+        );
+        base_alpha = toon_material.base_color_factor.a;
     } else {
         // PBR material path (default)
         let pbr_material = pbr_get_material(material_offset);

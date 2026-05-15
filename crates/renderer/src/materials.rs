@@ -14,12 +14,13 @@ use crate::{
     bind_groups::{AwsmBindGroupError, BindGroupCreate, BindGroups},
     buffer::dynamic_storage::DynamicStorageBuffer,
     buffer::helpers::write_buffer_with_dirty_ranges,
-    materials::{pbr::PbrMaterial, unlit::UnlitMaterial},
+    materials::{pbr::PbrMaterial, toon::ToonMaterial, unlit::UnlitMaterial},
     textures::{AwsmTextureError, SamplerKey, TextureKey, TextureTransformKey, Textures},
     AwsmRenderer, AwsmRendererLogging,
 };
 
 pub mod pbr;
+pub mod toon;
 pub mod unlit;
 pub mod writer;
 
@@ -35,6 +36,7 @@ impl AwsmRenderer {
 pub enum Material {
     Pbr(Box<PbrMaterial>),
     Unlit(UnlitMaterial),
+    Toon(Box<ToonMaterial>),
 }
 
 impl Material {
@@ -42,39 +44,40 @@ impl Material {
     /// Returns true if the material renders in the transparency pass.
     pub fn is_transparency_pass(&self) -> bool {
         match self {
-            Material::Pbr(pbr_material) => pbr_material.is_transparency_pass(),
-            Material::Unlit(pbr_material) => pbr_material.is_transparency_pass(),
+            Material::Pbr(m) => m.is_transparency_pass(),
+            Material::Unlit(m) => m.is_transparency_pass(),
+            Material::Toon(m) => m.is_transparency_pass(),
         }
     }
 
     /// Returns the alpha mask cutoff if applicable.
     pub fn alpha_mask(&self) -> Option<f32> {
         match self {
-            Material::Pbr(pbr_material) => pbr_material.alpha_mask(),
-            Material::Unlit(pbr_material) => pbr_material.alpha_mask(),
+            Material::Pbr(m) => m.alpha_mask(),
+            Material::Unlit(m) => m.alpha_mask(),
+            Material::Toon(m) => m.alpha_mask(),
         }
     }
 
     /// Returns the packed uniform buffer data for the material.
     pub fn uniform_buffer_data(&self, textures: &Textures) -> Result<Vec<u8>> {
         match self {
-            Material::Pbr(pbr_material) => {
-                let data = pbr_material.uniform_buffer_data(textures)?;
-
-                Ok(data)
-            }
-            Material::Unlit(unlit_material) => unlit_material.uniform_buffer_data(textures),
+            Material::Pbr(m) => m.uniform_buffer_data(textures),
+            Material::Unlit(m) => m.uniform_buffer_data(textures),
+            Material::Toon(m) => m.uniform_buffer_data(textures),
         }
     }
 }
 
-/// Material shader identifiers.
+/// Material shader identifiers. Each variant's `repr(u32)` value is written
+/// as the first word of the material's storage-buffer slot and dispatched
+/// against in the visibility-buffer compute pass + transparent fragment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum MaterialShaderId {
     Pbr = 1,
     Unlit = 2,
-    // Toon = 3, etc.
+    Toon = 3,
 }
 
 const INITIAL_SIZE: usize = 8192; //Why not

@@ -102,6 +102,24 @@ impl AwsmRenderer {
         Ok(())
     }
 
+    /// Reassign the material a mesh references. The previous material is left
+    /// in the materials map for reuse; callers may remove it via the
+    /// `materials` API if they're sure nothing else references it.
+    ///
+    /// Refreshes the mesh's metadata in the meta buffer so the visibility-
+    /// buffer compute pass picks up the new material on the next frame.
+    pub fn set_mesh_material(
+        &mut self,
+        mesh_key: MeshKey,
+        new_material_key: crate::materials::MaterialKey,
+    ) -> crate::error::Result<()> {
+        let mesh = self.meshes.get_mut(mesh_key)?;
+        mesh.material_key = new_material_key;
+        self.meshes
+            .refresh_meta_for_mesh_public(mesh_key, &self.materials, &self.transforms)?;
+        Ok(())
+    }
+
     /// Removes all meshes under a transform and clears any pass-local mesh state.
     pub fn remove_meshes_by_transform_key(&mut self, transform_key: TransformKey) -> Vec<MeshKey> {
         let mesh_keys = self
@@ -1089,6 +1107,17 @@ impl Meshes {
         self.refresh_meta_for_mesh(mesh_key, materials, transforms)?;
 
         Ok(())
+    }
+
+    /// Public wrapper around `refresh_meta_for_mesh` for the `set_mesh_material`
+    /// path on `AwsmRenderer`.
+    pub fn refresh_meta_for_mesh_public(
+        &mut self,
+        mesh_key: MeshKey,
+        materials: &Materials,
+        transforms: &Transforms,
+    ) -> Result<()> {
+        self.refresh_meta_for_mesh(mesh_key, materials, transforms)
     }
 
     fn refresh_meta_for_mesh(
