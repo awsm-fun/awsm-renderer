@@ -9,6 +9,7 @@
 //! the dispatch table and concatenate WGSL fragments at shader-template time.
 
 pub mod alpha_mode;
+pub mod registry;
 pub mod shader;
 pub mod shader_id;
 pub mod texture;
