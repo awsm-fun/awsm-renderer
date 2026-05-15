@@ -67,7 +67,7 @@ use crate::{
     picker::Picker,
     pipeline_layouts::PipelineLayouts,
     post_process::PostProcessing,
-    render_passes::{RenderPassInitContext, RenderPasses},
+    render_passes::{lines::LineRenderer, RenderPassInitContext, RenderPasses},
     render_textures::{RenderTextureFormats, RenderTextures},
 };
 
@@ -93,6 +93,7 @@ pub struct AwsmRenderer {
     pub anti_aliasing: AntiAliasing,
     pub post_processing: PostProcessing,
     pub picker: Picker,
+    pub lines: LineRenderer,
     // we pick between these on the fly
     _clear_color_perceptual_to_linear: Color,
     _clear_color: Color,
@@ -331,6 +332,16 @@ impl AwsmRendererBuilder {
         )
         .await?;
 
+        let lines = LineRenderer::load(
+            &gpu,
+            &mut bind_group_layouts,
+            &mut pipeline_layouts,
+            &mut pipelines,
+            &mut shaders,
+            &render_textures.formats,
+        )
+        .await?;
+
         #[cfg(feature = "animation")]
         let animations = animation::Animations::default();
 
@@ -357,6 +368,7 @@ impl AwsmRendererBuilder {
             anti_aliasing,
             post_processing,
             picker,
+            lines,
             #[cfg(feature = "animation")]
             animations,
         };
