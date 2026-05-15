@@ -4,7 +4,7 @@ use awsm_renderer_core::{error::AwsmCoreError, pipeline::primitive::IndexFormat}
 use gltf::Semantic;
 use thiserror::Error;
 
-use crate::{
+use awsm_renderer::{
     animation::AwsmAnimationError,
     bind_group_layout::AwsmBindGroupLayoutError,
     bind_groups::AwsmBindGroupError,

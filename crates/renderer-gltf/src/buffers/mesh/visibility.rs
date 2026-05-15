@@ -3,12 +3,13 @@ use std::{borrow::Cow, collections::BTreeMap};
 use super::Result;
 use awsm_renderer_core::pipeline::primitive::FrontFace;
 
+use awsm_renderer::meshes::buffer_info::{
+    MeshBufferVertexAttributeInfo, MeshBufferVisibilityVertexAttributeInfo,
+};
+
 use crate::{
-    gltf::{
-        buffers::mesh::{get_position_from_buffer, get_vec3_from_buffer, get_vec4_from_buffer},
-        error::AwsmGltfError,
-    },
-    meshes::buffer_info::{MeshBufferVertexAttributeInfo, MeshBufferVisibilityVertexAttributeInfo},
+    buffers::mesh::{get_position_from_buffer, get_vec3_from_buffer, get_vec4_from_buffer},
+    error::AwsmGltfError,
 };
 
 /// Creates EXPLODED visibility vertices for deferred/visibility buffer rendering.

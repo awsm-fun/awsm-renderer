@@ -11,12 +11,13 @@ use awsm_renderer::core::command::color::Color;
 use awsm_renderer::core::cubemap::images::CubemapBitmapColors;
 use awsm_renderer::core::cubemap::CubemapImage;
 use awsm_renderer::environment::Skybox;
-use awsm_renderer::gltf::data::GltfData;
-use awsm_renderer::gltf::loader::GltfLoader;
 use awsm_renderer::lights::ibl::Ibl;
 use awsm_renderer::lights::ibl::IblTexture;
 use awsm_renderer::lights::Light;
 use awsm_renderer::lights::LightKey;
+use awsm_renderer_gltf::data::GltfData;
+use awsm_renderer_gltf::loader::GltfLoader;
+use awsm_renderer_gltf::AwsmRendererGltfExt;
 
 use awsm_renderer::materials::Material;
 use awsm_renderer::picker::PickResult;

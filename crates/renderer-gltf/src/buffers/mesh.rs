@@ -4,22 +4,22 @@ mod visibility;
 use awsm_renderer_core::pipeline::primitive::FrontFace;
 use gltf::material::AlphaMode;
 
-use crate::gltf::buffers::attributes::{load_attribute_data_by_kind, pack_vertex_attributes};
-use crate::gltf::buffers::index::extract_triangle_indices;
-use crate::gltf::buffers::mesh::transparency::create_transparency_vertices;
-use crate::gltf::buffers::mesh::visibility::create_visibility_vertices;
-use crate::gltf::buffers::morph::convert_morph_targets;
-use crate::gltf::buffers::normals::ensure_normals;
-use crate::gltf::buffers::skin::convert_skin;
-use crate::gltf::buffers::tangents::ensure_tangents;
-use crate::gltf::buffers::triangle::pack_triangle_data;
-use crate::gltf::buffers::{
+use crate::buffers::attributes::{load_attribute_data_by_kind, pack_vertex_attributes};
+use crate::buffers::index::extract_triangle_indices;
+use crate::buffers::mesh::transparency::create_transparency_vertices;
+use crate::buffers::mesh::visibility::create_visibility_vertices;
+use crate::buffers::morph::convert_morph_targets;
+use crate::buffers::normals::ensure_normals;
+use crate::buffers::skin::convert_skin;
+use crate::buffers::tangents::ensure_tangents;
+use crate::buffers::triangle::pack_triangle_data;
+use crate::buffers::{
     MeshBufferAttributeIndexInfoWithOffset, MeshBufferInfoWithOffset,
     MeshBufferTriangleInfoWithOffset, MeshBufferVertexInfoWithOffset,
 };
-use crate::gltf::data::GltfDataHints;
-use crate::gltf::error::AwsmGltfError;
-use crate::meshes::buffer_info::MeshBufferVertexAttributeInfo;
+use crate::data::GltfDataHints;
+use crate::error::AwsmGltfError;
+use awsm_renderer::meshes::buffer_info::MeshBufferVertexAttributeInfo;
 
 use super::Result;
 

@@ -2,13 +2,14 @@ use std::{borrow::Cow, collections::BTreeMap};
 
 use gltf::{accessor::DataType, Semantic};
 
-use crate::{
+use awsm_renderer::{
     buffer::helpers::{i16_to_i32_vec, u16_to_u32_vec, u8_to_i16_vec, u8_to_u16_vec},
-    gltf::{
-        buffers::accessor::accessor_to_bytes,
-        error::{AwsmGltfError, Result},
-    },
     meshes::buffer_info::{MeshBufferCustomVertexAttributeInfo, MeshBufferVertexAttributeInfo},
+};
+
+use crate::{
+    buffers::accessor::accessor_to_bytes,
+    error::{AwsmGltfError, Result},
 };
 
 // Helper function to load attribute data (similar to your existing code)
@@ -163,7 +164,7 @@ pub(super) fn convert_attribute_kind(
     semantic: &gltf::Semantic,
     accessor: &gltf::Accessor<'_>,
 ) -> Option<MeshBufferVertexAttributeInfo> {
-    use crate::meshes::buffer_info::{
+    use awsm_renderer::meshes::buffer_info::{
         MeshBufferCustomVertexAttributeInfo, MeshBufferVisibilityVertexAttributeInfo,
     };
 

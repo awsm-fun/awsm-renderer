@@ -1,11 +1,11 @@
 use std::borrow::Cow;
 
-use crate::buffer::helpers::slice_zeroes;
-use crate::gltf::buffers::accessor::accessor_to_bytes;
-use crate::gltf::buffers::{
+use crate::buffers::accessor::accessor_to_bytes;
+use crate::buffers::{
     MeshBufferGeometryMorphInfoWithOffset, MeshBufferMaterialMorphInfoWithOffset,
 };
-use crate::gltf::error::{AwsmGltfError, Result};
+use crate::error::{AwsmGltfError, Result};
+use awsm_renderer::buffer::helpers::slice_zeroes;
 
 /// Converts GLTF morph targets into storage buffer with indexed per-vertex format
 ///

@@ -35,9 +35,6 @@ pub mod update;
 pub mod core {
     pub use awsm_renderer_core::*;
 }
-#[cfg(feature = "gltf")]
-pub mod gltf;
-
 #[cfg(feature = "animation")]
 pub mod animation;
 
@@ -99,9 +96,6 @@ pub struct AwsmRenderer {
     // we pick between these on the fly
     _clear_color_perceptual_to_linear: Color,
     _clear_color: Color,
-
-    #[cfg(feature = "gltf")]
-    gltf: gltf::cache::GltfCache,
 
     #[cfg(feature = "animation")]
     pub animations: animation::Animations,
@@ -337,8 +331,6 @@ impl AwsmRendererBuilder {
         )
         .await?;
 
-        #[cfg(feature = "gltf")]
-        let gltf = gltf::cache::GltfCache::default();
         #[cfg(feature = "animation")]
         let animations = animation::Animations::default();
 
@@ -365,8 +357,6 @@ impl AwsmRendererBuilder {
             anti_aliasing,
             post_processing,
             picker,
-            #[cfg(feature = "gltf")]
-            gltf,
             #[cfg(feature = "animation")]
             animations,
         };

@@ -6,7 +6,7 @@ use awsm_renderer_core::pipeline::vertex::VertexFormat;
 use gltf::accessor::{DataType, Dimensions};
 
 use super::Result;
-use crate::buffer::helpers::{
+use awsm_renderer::buffer::helpers::{
     u8_to_f32_vec, u8_to_i16_vec, u8_to_i8_vec, u8_to_u16_vec, u8_to_u32_vec,
 };
 

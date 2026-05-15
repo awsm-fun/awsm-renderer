@@ -1,11 +1,7 @@
 use std::{future::Future, pin::Pin, sync::Arc};
 
-use crate::{
+use awsm_renderer::{
     bounds::Aabb,
-    gltf::{
-        error::{AwsmGltfError, Result},
-        populate::material::pbr_material_mapper,
-    },
     meshes::{
         buffer_info::{
             MeshBufferCustomVertexAttributeInfo, MeshBufferInfo, MeshBufferVertexAttributeInfo,
@@ -19,11 +15,38 @@ use crate::{
 };
 use glam::{Mat4, Vec3};
 
+use crate::{
+    error::{AwsmGltfError, Result},
+    populate::material::pbr_material_mapper,
+};
+
+use super::animation::GltfAnimationExt;
 use super::GltfMaterialLookupKey;
 use super::GltfPopulateContext;
 
-impl AwsmRenderer {
-    pub(super) fn populate_gltf_node_mesh<'a, 'b: 'a, 'c: 'a>(
+/// Per-crate extension trait carrying mesh-population methods on
+/// `AwsmRenderer`. Internal to this crate.
+pub(crate) trait GltfMeshExt {
+    fn populate_gltf_node_mesh<'a, 'b: 'a, 'c: 'a>(
+        &'a mut self,
+        ctx: &'c GltfPopulateContext,
+        gltf_node: &'b gltf::Node<'b>,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>;
+
+    #[allow(async_fn_in_trait)]
+    async fn populate_gltf_primitive(
+        &mut self,
+        ctx: &GltfPopulateContext,
+        gltf_node: &gltf::Node<'_>,
+        gltf_mesh: &gltf::Mesh<'_>,
+        gltf_primitive: gltf::Primitive<'_>,
+        transform_key: TransformKey,
+        skin_transform: Option<Arc<(Vec<TransformKey>, Vec<Mat4>)>>,
+    ) -> Result<MeshKey>;
+}
+
+impl GltfMeshExt for AwsmRenderer {
+    fn populate_gltf_node_mesh<'a, 'b: 'a, 'c: 'a>(
         &'a mut self,
         ctx: &'c GltfPopulateContext,
         gltf_node: &'b gltf::Node<'b>,

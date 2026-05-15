@@ -107,7 +107,7 @@ impl Camera {
 
         let aabb = aabb.unwrap_or_else(|| {
             if let Some(doc) = &gltf_doc {
-                Aabb::from_gltf_doc(doc)
+                awsm_renderer_gltf::aabb_from_gltf_doc(doc)
             } else {
                 Aabb::new_unit_cube()
             }
@@ -145,7 +145,7 @@ impl Camera {
         let margin = 1.1;
         let aabb = aabb.unwrap_or_else(|| {
             if let Some(doc) = &gltf_doc {
-                Aabb::from_gltf_doc(doc)
+                awsm_renderer_gltf::aabb_from_gltf_doc(doc)
             } else {
                 Aabb::new_unit_cube()
             }

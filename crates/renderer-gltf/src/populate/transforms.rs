@@ -2,27 +2,41 @@
 
 use glam::{Mat4, Quat, Vec3};
 
-use crate::{
+use awsm_renderer::{
     transforms::{Transform, TransformKey},
     AwsmRenderer,
 };
 
 use super::GltfPopulateContext;
-use crate::gltf::error::Result;
+use crate::error::Result;
 
-impl AwsmRenderer {
-    pub(super) fn populate_gltf_node_transform<'a, 'b: 'a, 'c: 'a>(
+/// Per-crate extension trait carrying transform-population methods on
+/// `AwsmRenderer`. Internal to this crate.
+pub(crate) trait GltfTransformsExt {
+    fn populate_gltf_node_transform<'a, 'b: 'a, 'c: 'a>(
+        &'a mut self,
+        ctx: &'c GltfPopulateContext,
+        gltf_node: &'b gltf::Node<'b>,
+        parent_transform_key: Option<TransformKey>,
+    ) -> Result<()>;
+}
+
+impl GltfTransformsExt for AwsmRenderer {
+    fn populate_gltf_node_transform<'a, 'b: 'a, 'c: 'a>(
         &'a mut self,
         ctx: &'c GltfPopulateContext,
         gltf_node: &'b gltf::Node<'b>,
         parent_transform_key: Option<TransformKey>,
     ) -> Result<()> {
-        // We use one transform per-node, even though we are creating distinct meshes per gltf-primitive
-        // conceptually, this means meshes (in the renderer) are more like components than individual nodes
+        // We use one transform per-node, even though we are creating distinct
+        // meshes per gltf-primitive conceptually, this means meshes (in the
+        // renderer) are more like components than individual nodes.
         //
-        // the reason is two-fold:
-        // 1. that's technically how the gltf spec is defined
-        // 2. we get a performance boost since we can use the same transform for all primitives in a mesh (instead of forcing an unnecessary tree)
+        // The reason is two-fold:
+        // 1. That's technically how the gltf spec is defined.
+        // 2. We get a performance boost since we can use the same transform
+        //    for all primitives in a mesh (instead of forcing an unnecessary
+        //    tree).
         let transform = transform_gltf_node(gltf_node);
         let transform_key = self.transforms.insert(transform, parent_transform_key);
 

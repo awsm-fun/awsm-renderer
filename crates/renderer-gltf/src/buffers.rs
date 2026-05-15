@@ -17,22 +17,20 @@ use glam::{Mat4, Quat, Vec3};
 use std::collections::HashMap;
 
 use crate::{
-    gltf::{
-        buffers::{
-            index::{generate_fresh_indices_from_primitive, GltfMeshBufferIndexInfo},
-            mesh::{convert_to_mesh_buffer, mesh_buffer_geometry_kind},
-        },
-        data::GltfDataHints,
+    buffers::{
+        index::{generate_fresh_indices_from_primitive, GltfMeshBufferIndexInfo},
+        mesh::{convert_to_mesh_buffer, mesh_buffer_geometry_kind},
     },
-    meshes::buffer_info::{
-        MeshBufferAttributeIndexInfo, MeshBufferGeometryMorphInfo, MeshBufferInfo,
-        MeshBufferMaterialMorphAttributes, MeshBufferMaterialMorphInfo, MeshBufferSkinInfo,
-        MeshBufferTriangleDataInfo, MeshBufferTriangleInfo, MeshBufferVertexAttributeInfo,
-        MeshBufferVertexInfo,
-    },
+    data::GltfDataHints,
+};
+use awsm_renderer::meshes::buffer_info::{
+    MeshBufferAttributeIndexInfo, MeshBufferGeometryMorphInfo, MeshBufferInfo,
+    MeshBufferMaterialMorphAttributes, MeshBufferMaterialMorphInfo, MeshBufferSkinInfo,
+    MeshBufferTriangleDataInfo, MeshBufferTriangleInfo, MeshBufferVertexAttributeInfo,
+    MeshBufferVertexInfo,
 };
 
-use super::error::{AwsmGltfError, Result};
+use crate::error::Result;
 
 macro_rules! maybe_enter_span {
     ($enabled:expr, $($span_args:tt)*) => {{

@@ -1,12 +1,22 @@
-use crate::gltf::buffers::accessor::{accessor_to_vec, AccessorVec};
-use crate::gltf::error::{AwsmGltfError, Result};
-use crate::transforms::Transform;
-use crate::{gltf::populate::GltfPopulateContext, AwsmRenderer};
+use crate::buffers::accessor::{accessor_to_vec, AccessorVec};
+use crate::error::{AwsmGltfError, Result};
+use crate::populate::GltfPopulateContext;
 use anyhow::anyhow;
+use awsm_renderer::{transforms::Transform, AwsmRenderer};
 use glam::{Quat, Vec3};
 
-impl AwsmRenderer {
-    pub(crate) fn populate_gltf_node_extension_instancing<'a, 'b: 'a, 'c: 'a>(
+/// Per-crate extension trait carrying `EXT_mesh_gpu_instancing` population
+/// on `AwsmRenderer`. Internal to this crate.
+pub(crate) trait GltfInstancingExt {
+    fn populate_gltf_node_extension_instancing<'a, 'b: 'a, 'c: 'a>(
+        &'a mut self,
+        ctx: &'c GltfPopulateContext,
+        gltf_node: &'b gltf::Node<'b>,
+    ) -> Result<()>;
+}
+
+impl GltfInstancingExt for AwsmRenderer {
+    fn populate_gltf_node_extension_instancing<'a, 'b: 'a, 'c: 'a>(
         &'a mut self,
         ctx: &'c GltfPopulateContext,
         gltf_node: &'b gltf::Node<'b>,

@@ -1,8 +1,7 @@
 //! Index buffer extraction helpers for glTF.
 
-use crate::gltf::buffers::MeshBufferAttributeIndexInfoWithOffset;
-
-use super::{accessor::accessor_to_bytes, AwsmGltfError, Result};
+use crate::buffers::{accessor::accessor_to_bytes, MeshBufferAttributeIndexInfoWithOffset};
+use crate::error::{AwsmGltfError, Result};
 
 /// Index buffer info extracted from a glTF primitive.
 #[derive(Debug, Clone)]

@@ -4,12 +4,7 @@ use awsm_renderer_core::{
 };
 use ordered_float::OrderedFloat;
 
-use crate::{
-    gltf::{
-        buffers::MeshBufferInfoWithOffset,
-        error::{AwsmGltfError, Result},
-        populate::GltfTextureKey,
-    },
+use awsm_renderer::{
     materials::{
         pbr::{
             PbrMaterial, PbrMaterialAnisotropy, PbrMaterialClearCoat,
@@ -23,6 +18,12 @@ use crate::{
     meshes::buffer_info::{MeshBufferCustomVertexAttributeInfo, MeshBufferVertexAttributeInfo},
     textures::{SamplerCacheKey, SamplerKey, TextureKey, TextureTransform, TextureTransformKey},
     AwsmRenderer,
+};
+
+use crate::{
+    buffers::MeshBufferInfoWithOffset,
+    error::{AwsmGltfError, Result},
+    populate::GltfTextureKey,
 };
 
 use super::GltfPopulateContext;

@@ -1,9 +1,9 @@
 use std::borrow::Cow;
 
-use crate::buffer::helpers::{u8_to_f32_iter, u8_to_u16_iter, u8_to_u32_iter};
-use crate::gltf::buffers::accessor::accessor_to_bytes;
-use crate::gltf::buffers::MeshBufferSkinInfoWithOffset;
-use crate::gltf::error::{AwsmGltfError, Result};
+use crate::buffers::accessor::accessor_to_bytes;
+use crate::buffers::MeshBufferSkinInfoWithOffset;
+use crate::error::{AwsmGltfError, Result};
+use awsm_renderer::buffer::helpers::{u8_to_f32_iter, u8_to_u16_iter, u8_to_u32_iter};
 
 /// Converts GLTF skin data into storage buffers.
 ///

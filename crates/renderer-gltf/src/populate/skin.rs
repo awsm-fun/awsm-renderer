@@ -2,20 +2,28 @@ use std::sync::Arc;
 
 use glam::Mat4;
 
+use awsm_renderer::{buffer::helpers::u8_to_f32_vec, AwsmRenderer};
+
 use crate::{
-    buffer::helpers::u8_to_f32_vec,
-    gltf::{
-        buffers::accessor::accessor_to_bytes,
-        error::{AwsmGltfError, Result},
-    },
-    AwsmRenderer,
+    buffers::accessor::accessor_to_bytes,
+    error::{AwsmGltfError, Result},
 };
 
 use super::GltfPopulateContext;
 
-impl AwsmRenderer {
+/// Per-crate extension trait carrying skin-population methods on
+/// `AwsmRenderer`. Internal to this crate.
+pub(crate) trait GltfSkinExt {
+    fn populate_gltf_node_skin<'a, 'b: 'a, 'c: 'a>(
+        &'a mut self,
+        ctx: &'c GltfPopulateContext,
+        gltf_node: &'b gltf::Node<'b>,
+    ) -> Result<()>;
+}
+
+impl GltfSkinExt for AwsmRenderer {
     #[allow(clippy::only_used_in_recursion)]
-    pub(super) fn populate_gltf_node_skin<'a, 'b: 'a, 'c: 'a>(
+    fn populate_gltf_node_skin<'a, 'b: 'a, 'c: 'a>(
         &'a mut self,
         ctx: &'c GltfPopulateContext,
         gltf_node: &'b gltf::Node<'b>,

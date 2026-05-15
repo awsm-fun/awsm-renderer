@@ -12,26 +12,16 @@ homepage.workspace = true
 
 [package.metadata.docs.rs]
 default-target = "wasm32-unknown-unknown"
-# Don't use all-features because clearcoat/sheen require unreleased gltf features
-features = ["gltf", "animation", "ktx", "serde", "mega-texture", "exr", "texture-export"]
+features = ["animation", "ktx", "serde", "mega-texture", "exr", "texture-export"]
 # WebGPU APIs in web-sys require this cfg flag
 rustc-args = ["--cfg=web_sys_unstable_apis"]
 rustdoc-args = ["--cfg=web_sys_unstable_apis"]
 
 [features]
-default = ["gltf", "animation"]
-all = ["gltf", "animation", "clearcoat", "sheen", "awsm-renderer-core/all"]
+default = ["animation"]
+all = ["animation", "awsm-renderer-core/all"]
 # specifics
-gltf = [
-    "dep:gltf",
-    "dep:gloo-net",
-    "awsm-renderer-core/image",
-]
 animation = []
-# gltf material extensions (clearcoat/sheen require unreleased gltf features, only work with git dep)
-# These features gate our code. gltf's KHR_materials_clearcoat/sheen must be enabled separately (see frontend/Cargo.toml)
-clearcoat = ["gltf"]
-sheen = ["gltf"]
 # Optional features to enable optional parts of awsm-renderer-core
 ktx = ["awsm-renderer-core/ktx"]
 serde = ["dep:serde", "awsm-renderer-core/serde"]
@@ -56,7 +46,3 @@ ordered-float = {workspace = true}
 indexmap = { workspace = true}
 bevy_mikktspace = { workspace = true}
 serde = { workspace = true, optional = true}
-
-# Optional deps
-gloo-net = {workspace = true, optional = true}
-gltf = {workspace = true, optional = true}

@@ -136,8 +136,6 @@ dependencies = [
  "bevy_mikktspace",
  "futures",
  "glam 0.32.1",
- "gloo-net",
- "gltf",
  "indexmap",
  "ordered-float",
  "serde",
@@ -181,6 +179,7 @@ version = "0.1.7"
 dependencies = [
  "anyhow",
  "awsm-renderer",
+ "awsm-renderer-gltf",
  "glam 0.32.1",
  "tracing",
  "web-sys",
@@ -189,6 +188,25 @@ dependencies = [
 [[package]]
 name = "awsm-renderer-gltf"
 version = "0.1.7"
+dependencies = [
+ "anyhow",
+ "awsm-materials",
+ "awsm-renderer",
+ "awsm-renderer-core",
+ "bevy_mikktspace",
+ "futures",
+ "glam 0.32.1",
+ "gloo-net",
+ "gltf",
+ "indexmap",
+ "ordered-float",
+ "slotmap",
+ "strum",
+ "thiserror 2.0.18",
+ "tracing",
+ "wasm-bindgen",
+ "web-sys",
+]
 
 [[package]]
 name = "awsm_web"
@@ -432,6 +450,7 @@ dependencies = [
  "anyhow",
  "awsm-renderer",
  "awsm-renderer-editor",
+ "awsm-renderer-gltf",
  "awsm_web 0.45.0",
  "cfg-if",
  "dominator",

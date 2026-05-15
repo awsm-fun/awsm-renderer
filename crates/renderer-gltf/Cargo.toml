@@ -1,6 +1,6 @@
 [package]
 name = "awsm-renderer-gltf"
-description = "glTF ingestion for awsm-renderer (extracted from awsm-renderer per the editor-renderer overhaul plan)"
+description = "glTF ingestion for awsm-renderer"
 readme = "../../README.md"
 edition.workspace = true
 version.workspace = true
@@ -17,8 +17,27 @@ rustdoc-args = ["--cfg=web_sys_unstable_apis"]
 
 [features]
 default = []
+# Optional glTF material extensions. `gltf`'s `KHR_materials_clearcoat` /
+# `KHR_materials_sheen` are unreleased on crates.io, so they're only
+# available with the git dependency (see workspace Cargo.toml).
+clearcoat = []
+sheen = []
 
 [dependencies]
-# Scaffold-only deps. Full extraction (C-2) will fill these in; see
-# `src/lib.rs` for the migration plan.
-
+awsm-renderer = { path = "../renderer" }
+awsm-renderer-core = { path = "../renderer-core", features = ["texture-pool", "image"] }
+awsm-materials = { path = "../materials" }
+gltf = { workspace = true }
+gloo-net = { workspace = true }
+web-sys = { workspace = true }
+wasm-bindgen = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+futures = { workspace = true }
+slotmap = { workspace = true }
+glam = { workspace = true }
+strum = { workspace = true }
+ordered-float = { workspace = true }
+indexmap = { workspace = true }
+bevy_mikktspace = { workspace = true }

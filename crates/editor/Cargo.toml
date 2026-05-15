@@ -19,6 +19,7 @@ rustdoc-args = ["--cfg=web_sys_unstable_apis"]
 
 [dependencies]
 awsm-renderer = { version = "0.1.3", path = "../renderer"}
+awsm-renderer-gltf = { path = "../renderer-gltf"}
 anyhow = {workspace = true}
 glam = {workspace = true}
 web-sys = { workspace = true}

@@ -3,11 +3,11 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use awsm_renderer::{
     camera::CameraMatrices,
-    gltf::GltfKeyLookups,
     meshes::MeshKey,
     transforms::{Transform, TransformKey},
     AwsmRenderer,
 };
+use awsm_renderer_gltf::GltfKeyLookups;
 use glam::{Mat4, Quat, Vec3, Vec4};
 
 #[derive(Clone, Debug)]

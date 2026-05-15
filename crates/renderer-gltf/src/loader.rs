@@ -15,7 +15,7 @@ use gltf::{buffer, image, Document, Error as GltfError, Gltf};
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 
-use super::error::AwsmGltfError;
+use crate::error::AwsmGltfError;
 
 /// Loaded glTF document plus buffer and image data.
 pub struct GltfLoader {
@@ -217,7 +217,7 @@ fn get_image_futures<'a>(
                         let begin = view.offset();
                         let end = begin + view.length();
                         let encoded_image = &parent_buffer_data[begin..end];
-                        let image = crate::core::image::bitmap::load_u8(
+                        let image = awsm_renderer_core::image::bitmap::load_u8(
                             &encoded_image,
                             mime_type,
                             options.clone(),

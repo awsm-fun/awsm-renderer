@@ -584,7 +584,10 @@ impl Meshes {
     }
 
     /// Inserts a mesh and its backing resource data, returning a mesh key.
-    pub(crate) fn insert(
+    ///
+    /// Pub so external ingestion crates (e.g. `awsm-renderer-gltf`) can
+    /// upload meshes through the same path glTF historically used.
+    pub fn insert(
         &mut self,
         mesh: Mesh,
         materials: &Materials,

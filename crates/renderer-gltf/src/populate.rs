@@ -8,17 +8,19 @@ use std::{
 use awsm_renderer_core::texture::texture_pool::TextureColorInfo;
 use glam::Mat4;
 
-use crate::materials::MaterialKey;
-use crate::{meshes::MeshKey, textures::TextureKey, transforms::TransformKey, AwsmRenderer};
+use awsm_renderer::materials::MaterialKey;
+use awsm_renderer::{
+    meshes::MeshKey, textures::TextureKey, transforms::TransformKey, AwsmRenderer,
+};
 
-use super::{data::GltfData, error::AwsmGltfError};
+use crate::{data::GltfData, error::AwsmGltfError};
 
-mod animation;
-mod extensions;
+pub(crate) mod animation;
+pub(crate) mod extensions;
 pub mod material;
-mod mesh;
-mod skin;
-pub(super) mod transforms;
+pub(crate) mod mesh;
+pub(crate) mod skin;
+pub(crate) mod transforms;
 
 /// Context and shared state used while populating glTF data.
 pub struct GltfPopulateContext {
@@ -140,72 +142,85 @@ pub(super) struct GltfMaterialLookupKey {
     pub hud: bool,
 }
 
-impl AwsmRenderer {
-    /// Populates renderer resources from a glTF asset.
-    pub async fn populate_gltf(
-        &mut self,
-        gltf_data: impl Into<Arc<GltfData>>,
-        scene: Option<usize>,
-    ) -> anyhow::Result<GltfPopulateContext> {
-        let gltf_data = gltf_data.into();
-        self.gltf.raw_datas.push(gltf_data.clone());
+/// Populates renderer resources from a glTF asset.
+///
+/// The driver: walks the scene tree four times — transforms (so node-index →
+/// transform-key lookup is populated before mesh / skin / animation paths
+/// need it), then EXT_mesh_gpu_instancing, then skinning, then animation,
+/// then meshes. Each pass uses the per-crate extension traits defined in
+/// the `populate::{transforms, mesh, skin, animation, extensions::instancing}`
+/// submodules.
+pub async fn populate_gltf(
+    renderer: &mut AwsmRenderer,
+    gltf_data: impl Into<Arc<GltfData>>,
+    scene: Option<usize>,
+) -> anyhow::Result<GltfPopulateContext> {
+    use crate::populate::animation::GltfAnimationExt;
+    use crate::populate::extensions::instancing::GltfInstancingExt;
+    use crate::populate::mesh::GltfMeshExt;
+    use crate::populate::skin::GltfSkinExt;
+    use crate::populate::transforms::GltfTransformsExt;
 
-        let mut mesh_keys = Vec::new();
-        let node_animation_samplers = build_node_animation_sampler_lookup(&gltf_data.doc);
+    let gltf_data = gltf_data.into();
+    // The old `awsm-renderer` `gltf` cache field stored these `Arc<GltfData>`
+    // refs write-only; nothing in the renderer ever read them back. Removed
+    // as part of the C-2 extraction.
 
-        let ctx = GltfPopulateContext {
-            data: gltf_data,
-            textures: Mutex::new(HashMap::new()),
-            material_keys: Mutex::new(HashMap::new()),
-            node_to_skin_transform: Mutex::new(HashMap::new()),
-            transform_is_joint: Mutex::new(HashSet::new()),
-            transform_is_instanced: Mutex::new(HashSet::new()),
-            node_animation_samplers,
-            key_lookups: Arc::new(Mutex::new(GltfKeyLookups::default())),
-        };
+    let mut mesh_keys = Vec::new();
+    let node_animation_samplers = build_node_animation_sampler_lookup(&gltf_data.doc);
 
-        let scene = match scene {
-            Some(index) => ctx
+    let ctx = GltfPopulateContext {
+        data: gltf_data,
+        textures: Mutex::new(HashMap::new()),
+        material_keys: Mutex::new(HashMap::new()),
+        node_to_skin_transform: Mutex::new(HashMap::new()),
+        transform_is_joint: Mutex::new(HashSet::new()),
+        transform_is_instanced: Mutex::new(HashSet::new()),
+        node_animation_samplers,
+        key_lookups: Arc::new(Mutex::new(GltfKeyLookups::default())),
+    };
+
+    let scene = match scene {
+        Some(index) => ctx
+            .data
+            .doc
+            .scenes()
+            .nth(index)
+            .ok_or(AwsmGltfError::InvalidScene(index))?,
+        None => match ctx.data.doc.default_scene() {
+            Some(scene) => scene,
+            None => ctx
                 .data
                 .doc
                 .scenes()
-                .nth(index)
-                .ok_or(AwsmGltfError::InvalidScene(index))?,
-            None => match ctx.data.doc.default_scene() {
-                Some(scene) => scene,
-                None => ctx
-                    .data
-                    .doc
-                    .scenes()
-                    .next()
-                    .ok_or(AwsmGltfError::NoDefaultScene)?,
-            },
-        };
+                .next()
+                .ok_or(AwsmGltfError::NoDefaultScene)?,
+        },
+    };
 
-        for node in scene.nodes() {
-            self.populate_gltf_node_transform(&ctx, &node, None)?;
-        }
-
-        for node in scene.nodes() {
-            self.populate_gltf_node_extension_instancing(&ctx, &node)?;
-        }
-
-        for node in scene.nodes() {
-            self.populate_gltf_node_skin(&ctx, &node)?;
-        }
-
-        for node in scene.nodes() {
-            self.populate_gltf_node_animation(&ctx, &node)?;
-        }
-
-        for node in scene.nodes() {
-            mesh_keys.push(self.populate_gltf_node_mesh(&ctx, &node).await?);
-        }
-
-        self.finalize_gpu_textures().await?;
-
-        Ok(ctx)
+    for node in scene.nodes() {
+        renderer.populate_gltf_node_transform(&ctx, &node, None)?;
     }
+
+    for node in scene.nodes() {
+        renderer.populate_gltf_node_extension_instancing(&ctx, &node)?;
+    }
+
+    for node in scene.nodes() {
+        renderer.populate_gltf_node_skin(&ctx, &node)?;
+    }
+
+    for node in scene.nodes() {
+        renderer.populate_gltf_node_animation(&ctx, &node)?;
+    }
+
+    for node in scene.nodes() {
+        mesh_keys.push(renderer.populate_gltf_node_mesh(&ctx, &node).await?);
+    }
+
+    renderer.finalize_gpu_textures().await?;
+
+    Ok(ctx)
 }
 
 impl GltfPopulateContext {

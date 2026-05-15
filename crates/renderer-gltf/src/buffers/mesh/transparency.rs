@@ -3,12 +3,13 @@ use std::{borrow::Cow, collections::BTreeMap};
 use super::Result;
 use awsm_renderer_core::pipeline::primitive::FrontFace;
 
+use awsm_renderer::meshes::buffer_info::{
+    MeshBufferVertexAttributeInfo, MeshBufferVisibilityVertexAttributeInfo,
+};
+
 use crate::{
-    gltf::{
-        buffers::{mesh::get_vec3_from_buffer, MeshBufferAttributeIndexInfoWithOffset},
-        error::AwsmGltfError,
-    },
-    meshes::buffer_info::{MeshBufferVertexAttributeInfo, MeshBufferVisibilityVertexAttributeInfo},
+    buffers::{mesh::get_vec3_from_buffer, MeshBufferAttributeIndexInfoWithOffset},
+    error::AwsmGltfError,
 };
 
 /// Creates NON-EXPLODED transparency vertices for traditional forward rendering.

@@ -1,12 +1,11 @@
 use std::{borrow::Cow, collections::BTreeMap};
 
-use crate::{
-    gltf::error::{AwsmGltfError, Result},
-    meshes::buffer_info::{
-        MeshBufferCustomVertexAttributeInfo, MeshBufferVertexAttributeInfo,
-        MeshBufferVisibilityVertexAttributeInfo,
-    },
+use awsm_renderer::meshes::buffer_info::{
+    MeshBufferCustomVertexAttributeInfo, MeshBufferVertexAttributeInfo,
+    MeshBufferVisibilityVertexAttributeInfo,
 };
+
+use crate::error::{AwsmGltfError, Result};
 
 /// Generates tangents using MikkTSpace algorithm if:
 /// - The primitive has a normal map (material has normalTexture)

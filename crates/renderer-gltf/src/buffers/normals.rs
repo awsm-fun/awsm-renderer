@@ -2,10 +2,11 @@ use std::{borrow::Cow, collections::BTreeMap};
 
 use glam::Vec3;
 
-use crate::{
-    gltf::error::{AwsmGltfError, Result},
-    meshes::buffer_info::{MeshBufferVertexAttributeInfo, MeshBufferVisibilityVertexAttributeInfo},
+use awsm_renderer::meshes::buffer_info::{
+    MeshBufferVertexAttributeInfo, MeshBufferVisibilityVertexAttributeInfo,
 };
+
+use crate::error::{AwsmGltfError, Result};
 
 pub(super) fn ensure_normals<'a>(
     mut attribute_data: BTreeMap<MeshBufferVertexAttributeInfo, Cow<'a, [u8]>>,

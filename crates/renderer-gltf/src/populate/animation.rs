@@ -1,24 +1,64 @@
 use glam::{Quat, Vec3};
 
-use crate::{
+use awsm_renderer::{
     animation::{
         AnimationClip, AnimationData, AnimationKey, AnimationMorphKey, AnimationPlayer,
         AnimationSampler, TransformAnimation, VertexAnimation,
     },
     buffer::helpers::u8_to_f32_vec,
-    gltf::{
-        buffers::accessor::accessor_to_bytes,
-        error::{AwsmGltfError, Result},
-    },
     meshes::morphs::{GeometryMorphKey, MaterialMorphKey},
     transforms::TransformKey,
     AwsmRenderer,
 };
 
+use crate::{
+    buffers::accessor::accessor_to_bytes,
+    error::{AwsmGltfError, Result},
+};
+
 use super::GltfPopulateContext;
 
-impl AwsmRenderer {
-    pub(super) fn populate_gltf_node_animation<'a, 'b: 'a, 'c: 'a>(
+/// Per-crate extension trait carrying animation-population methods on
+/// `AwsmRenderer`. Internal to this crate.
+pub(crate) trait GltfAnimationExt {
+    fn populate_gltf_node_animation<'a, 'b: 'a, 'c: 'a>(
+        &'a mut self,
+        ctx: &'c GltfPopulateContext,
+        gltf_node: &'b gltf::Node<'b>,
+    ) -> Result<()>;
+
+    fn populate_gltf_animation_morph<'a, 'b: 'a, 'c: 'a>(
+        &'a mut self,
+        ctx: &'c GltfPopulateContext,
+        gltf_sampler: gltf::animation::Sampler<'b>,
+        geometry_morph_key: Option<GeometryMorphKey>,
+        material_morph_key: Option<MaterialMorphKey>,
+    ) -> Result<Vec<AnimationKey>>;
+
+    fn populate_gltf_animation_transform_translation<'a, 'b: 'a, 'c: 'a>(
+        &'a mut self,
+        ctx: &'c GltfPopulateContext,
+        gltf_sampler: gltf::animation::Sampler<'b>,
+        transform_key: TransformKey,
+    ) -> Result<AnimationKey>;
+
+    fn populate_gltf_animation_transform_rotation<'a, 'b: 'a, 'c: 'a>(
+        &'a mut self,
+        ctx: &'c GltfPopulateContext,
+        gltf_sampler: gltf::animation::Sampler<'b>,
+        transform_key: TransformKey,
+    ) -> Result<AnimationKey>;
+
+    fn populate_gltf_animation_transform_scale<'a, 'b: 'a, 'c: 'a>(
+        &'a mut self,
+        ctx: &'c GltfPopulateContext,
+        gltf_sampler: gltf::animation::Sampler<'b>,
+        transform_key: TransformKey,
+    ) -> Result<AnimationKey>;
+}
+
+impl GltfAnimationExt for AwsmRenderer {
+    fn populate_gltf_node_animation<'a, 'b: 'a, 'c: 'a>(
         &'a mut self,
         ctx: &'c GltfPopulateContext,
         gltf_node: &'b gltf::Node<'b>,
@@ -65,7 +105,7 @@ impl AwsmRenderer {
         Ok(())
     }
 
-    pub(super) fn populate_gltf_animation_morph<'a, 'b: 'a, 'c: 'a>(
+    fn populate_gltf_animation_morph<'a, 'b: 'a, 'c: 'a>(
         &'a mut self,
         ctx: &'c GltfPopulateContext,
         gltf_sampler: gltf::animation::Sampler<'b>,

@@ -1,7 +1,7 @@
 use awsm_renderer_core::pipeline::primitive::FrontFace;
 
-use crate::gltf::buffers::MeshBufferTriangleDataInfoWithOffset;
-use crate::gltf::error::Result;
+use crate::buffers::MeshBufferTriangleDataInfoWithOffset;
+use crate::error::Result;
 
 // Pack triangle data (vertex indices)
 pub(super) fn pack_triangle_data(

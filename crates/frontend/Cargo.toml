@@ -8,7 +8,8 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-awsm-renderer = { path = "../renderer", features = ["texture-export", "ktx", "serde", "clearcoat", "sheen"] }
+awsm-renderer = { path = "../renderer", features = ["texture-export", "ktx", "serde"] }
+awsm-renderer-gltf = { path = "../renderer-gltf", features = ["clearcoat", "sheen"] }
 awsm-renderer-editor = { path = "../editor" }
 serde = {workspace = true}
 serde_json = {workspace = true}
