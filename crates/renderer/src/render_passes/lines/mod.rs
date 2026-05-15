@@ -15,9 +15,7 @@
 //! (`depth_compare = Less | Always`) × (`MSAA = on | off`).
 
 use awsm_renderer_core::{
-    bind_groups::{
-        BindGroupDescriptor, BindGroupEntry, BindGroupResource,
-    },
+    bind_groups::{BindGroupDescriptor, BindGroupEntry, BindGroupResource},
     buffers::{BufferBinding, BufferDescriptor, BufferUsage},
     renderer::AwsmRendererWebGpu,
 };
@@ -139,7 +137,13 @@ impl AwsmRenderer {
         width: f32,
         depth_test_always: bool,
     ) -> Result<Option<LineKey>> {
-        self.add_line(positions, colors, width, depth_test_always, LineTopology::Strip)
+        self.add_line(
+            positions,
+            colors,
+            width,
+            depth_test_always,
+            LineTopology::Strip,
+        )
     }
 
     /// Registers a disjoint-segments line draw (line-list semantics).
@@ -152,7 +156,13 @@ impl AwsmRenderer {
         width: f32,
         depth_test_always: bool,
     ) -> Result<Option<LineKey>> {
-        self.add_line(positions, colors, width, depth_test_always, LineTopology::Segments)
+        self.add_line(
+            positions,
+            colors,
+            width,
+            depth_test_always,
+            LineTopology::Segments,
+        )
     }
 
     fn add_line(
@@ -338,7 +348,12 @@ fn pack(positions: &[Vec3], colors: &[Vec4], topology: LineTopology) -> Vec<GpuL
                 out.push(GpuLineSegment {
                     a: [positions[i].x, positions[i].y, positions[i].z, 0.0],
                     color_a: color_at(i).to_array(),
-                    b: [positions[i + 1].x, positions[i + 1].y, positions[i + 1].z, 0.0],
+                    b: [
+                        positions[i + 1].x,
+                        positions[i + 1].y,
+                        positions[i + 1].z,
+                        0.0,
+                    ],
                     color_b: color_at(i + 1).to_array(),
                 });
             }
@@ -366,10 +381,7 @@ fn segments_byte_size(segment_count: usize) -> usize {
     (segment_count.max(1)) * SEGMENT_BYTES
 }
 
-fn create_segment_buffer(
-    gpu: &AwsmRendererWebGpu,
-    byte_size: usize,
-) -> Result<web_sys::GpuBuffer> {
+fn create_segment_buffer(gpu: &AwsmRendererWebGpu, byte_size: usize) -> Result<web_sys::GpuBuffer> {
     Ok(gpu.create_buffer(
         &BufferDescriptor::new(
             Some("LineSegments"),
@@ -436,4 +448,3 @@ fn create_bind_group(
         .into(),
     ))
 }
-

@@ -1,9 +1,7 @@
 //! Pipeline + bind-group-layout setup for the fat-line renderer.
 
 use awsm_renderer_core::{
-    bind_groups::{
-        BindGroupLayoutResource, BufferBindingLayout, BufferBindingType,
-    },
+    bind_groups::{BindGroupLayoutResource, BufferBindingLayout, BufferBindingType},
     compare::CompareFunction,
     pipeline::{
         depth_stencil::DepthStencilState,
@@ -17,8 +15,7 @@ use awsm_renderer_core::{
 
 use crate::{
     bind_group_layout::{
-        BindGroupLayoutCacheKey, BindGroupLayoutCacheKeyEntry, BindGroupLayoutKey,
-        BindGroupLayouts,
+        BindGroupLayoutCacheKey, BindGroupLayoutCacheKeyEntry, BindGroupLayoutKey, BindGroupLayouts,
     },
     error::Result,
     pipeline_layouts::{PipelineLayoutCacheKey, PipelineLayouts},
@@ -86,8 +83,7 @@ impl LinePipelines {
             ],
         };
 
-        let bind_group_layout_key =
-            bind_group_layouts.get_key(gpu, bind_group_layout_cache_key)?;
+        let bind_group_layout_key = bind_group_layouts.get_key(gpu, bind_group_layout_cache_key)?;
 
         let shader_source = include_str!("shader/line_wgsl/line.wgsl");
         let shader_module = gpu.compile_shader(
@@ -162,20 +158,19 @@ async fn build_pipeline(
         .with_depth_write_enabled(false)
         .with_depth_compare(compare);
 
-    let color_target =
-        ColorTargetState::new(formats.color).with_blend(BlendState::new(
-            BlendComponent::new()
-                .with_src_factor(BlendFactor::SrcAlpha)
-                .with_dst_factor(BlendFactor::OneMinusSrcAlpha)
-                .with_operation(BlendOperation::Add),
-            BlendComponent::new()
-                .with_src_factor(BlendFactor::One)
-                .with_dst_factor(BlendFactor::OneMinusSrcAlpha)
-                .with_operation(BlendOperation::Add),
-        ));
+    let color_target = ColorTargetState::new(formats.color).with_blend(BlendState::new(
+        BlendComponent::new()
+            .with_src_factor(BlendFactor::SrcAlpha)
+            .with_dst_factor(BlendFactor::OneMinusSrcAlpha)
+            .with_operation(BlendOperation::Add),
+        BlendComponent::new()
+            .with_src_factor(BlendFactor::One)
+            .with_dst_factor(BlendFactor::OneMinusSrcAlpha)
+            .with_operation(BlendOperation::Add),
+    ));
 
-    let primitive = PrimitiveState::new()
-        .with_topology(web_sys::GpuPrimitiveTopology::TriangleStrip);
+    let primitive =
+        PrimitiveState::new().with_topology(web_sys::GpuPrimitiveTopology::TriangleStrip);
 
     let mut pipeline_cache_key = RenderPipelineCacheKey::new(shader_key, pipeline_layout_key)
         .with_primitive(primitive)
