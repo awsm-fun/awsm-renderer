@@ -17,6 +17,37 @@ use crate::error::Result;
 
 // this is most like a "primitive" in gltf, not the containing "mesh"
 // because for non-gltf naming, "mesh" makes more sense
+/// Camera-facing rotation override applied in the geometry vertex shader.
+///
+/// Mirrors `BillboardMode` in `lockstep-game-data` and the `billboard_mode`
+/// field on the WGSL `GeometryMeshMeta` struct. The shader picks one of three
+/// paths after `apply_vertex` builds the world transform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BillboardMode {
+    /// No override — the mesh uses its authored rotation.
+    #[default]
+    None,
+    /// Yaw-only — rotates around world `+Y` to face the camera, preserving the
+    /// authored pitch / roll. Right pick for upright sprites (name tags, etc.).
+    YAxis,
+    /// Full — overrides the rotation so the mesh's local `+Z` points at the
+    /// camera with the world-up reference for the secondary basis. Right pick
+    /// for particle quads and generic billboards.
+    Full,
+}
+
+impl BillboardMode {
+    /// Encoding written into `GeometryMeshMeta::billboard_mode` for the
+    /// vertex shader. Must match the WGSL constants in `apply_vertex.wgsl`.
+    pub fn as_u32(self) -> u32 {
+        match self {
+            BillboardMode::None => 0,
+            BillboardMode::YAxis => 1,
+            BillboardMode::Full => 2,
+        }
+    }
+}
+
 /// Mesh instance metadata and render flags.
 #[derive(Debug, Clone)]
 pub struct Mesh {
@@ -32,6 +63,10 @@ pub struct Mesh {
     /// time). Set by `AwsmRenderer::set_mesh_instance_attrs` after writing
     /// the attribute slice via `Instances::attribute_insert`.
     pub instance_attr_base: u32,
+    /// Camera-facing rotation override applied in the geometry vertex shader.
+    /// Defaults to `BillboardMode::None`; sprite + particle meshes set it to
+    /// `YAxis` / `Full` at construction time.
+    pub billboard_mode: BillboardMode,
 }
 
 impl Mesh {
@@ -53,6 +88,7 @@ impl Mesh {
             world_aabb: None,
             hidden,
             instance_attr_base: u32::MAX,
+            billboard_mode: BillboardMode::None,
         }
     }
 

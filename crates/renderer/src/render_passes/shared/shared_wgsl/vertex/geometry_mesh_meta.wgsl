@@ -19,5 +19,10 @@ struct GeometryMeshMeta {
     // pass. U32_MAX sentinel means "this mesh isn't instanced or has no
     // per-instance attributes" — the shading pass treats that as an
     // identity tint.
-    instance_attr_base: u32
+    instance_attr_base: u32,
+    // Camera-facing rotation override applied in `apply_vertex` after morphs +
+    // skinning. 0 = none (default), 1 = Y-axis (yaw-around-up only — sprite
+    // stays upright), 2 = full (rotates the local basis so the model +Z axis
+    // points at the camera). See `BillboardMode` in `meshes/mesh.rs`.
+    billboard_mode: u32
 }

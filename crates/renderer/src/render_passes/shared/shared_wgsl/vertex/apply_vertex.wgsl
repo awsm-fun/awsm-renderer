@@ -53,10 +53,72 @@ fn apply_vertex(vertex_orig: ApplyVertexInput, camera: Camera) -> ApplyVertexOut
             vertex.instance_transform_row_3,
         );
 
-        let model_transform = get_model_transform(geometry_mesh_meta.transform_offset) * instance_transform;
+        var model_transform = get_model_transform(geometry_mesh_meta.transform_offset) * instance_transform;
     {% else %}
-        let model_transform = get_model_transform(geometry_mesh_meta.transform_offset);
+        var model_transform = get_model_transform(geometry_mesh_meta.transform_offset);
     {% endif %}
+
+    // Camera-facing override. Replaces the rotation portion of the model
+    // matrix while preserving translation + per-instance scale (encoded as
+    // column lengths). Uniform scale is recovered as `length(col[i].xyz)` so
+    // the per-instance `size` (Stage 3) stays baked-in through this rewrite.
+    let billboard_mode = geometry_mesh_meta.billboard_mode;
+    if (billboard_mode != 0u) {
+        let translation = model_transform[3].xyz;
+        let scale_x = length(model_transform[0].xyz);
+        let scale_y = length(model_transform[1].xyz);
+        let scale_z = length(model_transform[2].xyz);
+
+        let to_cam = camera.position - translation;
+        // BillboardMode::YAxis (1): rotate only around world +Y so the local
+        // +Z axis points at the camera in the XZ plane. Preserves upright
+        // orientation for sprites that should not pitch.
+        // BillboardMode::Full (2): build a full look-at basis with world up
+        // as the reference; local +Z points at the camera in 3D.
+        var forward: vec3<f32>;
+        if (billboard_mode == 1u) {
+            // YAxis: project onto XZ plane, fall back to +Z when degenerate.
+            var xz = vec3<f32>(to_cam.x, 0.0, to_cam.z);
+            let len_sq = dot(xz, xz);
+            if (len_sq < 1e-8) {
+                xz = vec3<f32>(0.0, 0.0, 1.0);
+            } else {
+                xz = xz * inverseSqrt(len_sq);
+            }
+            forward = xz;
+        } else {
+            // Full: world-space look-at; degenerate when the camera is exactly
+            // above / below the sprite — fall back to +Z.
+            let len_sq = dot(to_cam, to_cam);
+            if (len_sq < 1e-8) {
+                forward = vec3<f32>(0.0, 0.0, 1.0);
+            } else {
+                forward = to_cam * inverseSqrt(len_sq);
+            }
+        }
+
+        let world_up = vec3<f32>(0.0, 1.0, 0.0);
+        var right_unnorm = cross(world_up, forward);
+        let right_len_sq = dot(right_unnorm, right_unnorm);
+        var right: vec3<f32>;
+        var up: vec3<f32>;
+        if (right_len_sq < 1e-8) {
+            // forward is collinear with world up; use world-X as a fallback
+            // right vector so the basis stays orthonormal.
+            right = vec3<f32>(1.0, 0.0, 0.0);
+            up = cross(forward, right);
+        } else {
+            right = right_unnorm * inverseSqrt(right_len_sq);
+            up = cross(forward, right);
+        }
+
+        model_transform = mat4x4<f32>(
+            vec4<f32>(right * scale_x, 0.0),
+            vec4<f32>(up * scale_y, 0.0),
+            vec4<f32>(forward * scale_z, 0.0),
+            vec4<f32>(translation, 1.0),
+        );
+    }
 
     let world_pos = model_transform * vec4<f32>(vertex.position, 1.0);
     out.clip_position = camera.view_proj * world_pos;

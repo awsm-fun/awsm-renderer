@@ -28,7 +28,7 @@ use meta::{MeshMeta, MESH_META_INITIAL_CAPACITY};
 use skins::{SkinKey, Skins};
 
 use error::{AwsmMeshError, Result};
-use mesh::Mesh;
+use mesh::{BillboardMode, Mesh};
 use morphs::{GeometryMorphKey, MaterialMorphKey, Morphs};
 
 impl AwsmRenderer {
@@ -252,6 +252,23 @@ impl AwsmRenderer {
         self.instances
             .transform_insert(mesh.transform_key, transforms)?;
 
+        Ok(())
+    }
+
+    /// Sets the per-mesh camera-facing billboard mode and refreshes geometry
+    /// meta so the next frame's vertex shader picks up the new mode.
+    pub fn set_mesh_billboard_mode(
+        &mut self,
+        mesh_key: MeshKey,
+        mode: BillboardMode,
+    ) -> crate::error::Result<()> {
+        if let Ok(mesh) = self.meshes.get_mut(mesh_key) {
+            mesh.billboard_mode = mode;
+        } else {
+            return Err(AwsmMeshError::MeshNotFound(mesh_key).into());
+        }
+        self.meshes
+            .refresh_meta_for_mesh_public(mesh_key, &self.materials, &self.transforms)?;
         Ok(())
     }
 
