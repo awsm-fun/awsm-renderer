@@ -27,6 +27,11 @@ pub struct Mesh {
     pub instanced: bool,
     pub hud: bool,
     pub hidden: bool,
+    /// Base instance index into the per-instance attribute storage buffer
+    /// (`u32::MAX` = no per-instance attributes; identity tint at shading
+    /// time). Set by `AwsmRenderer::set_mesh_instance_attrs` after writing
+    /// the attribute slice via `Instances::attribute_insert`.
+    pub instance_attr_base: u32,
 }
 
 impl Mesh {
@@ -47,6 +52,7 @@ impl Mesh {
             hud,
             world_aabb: None,
             hidden,
+            instance_attr_base: u32::MAX,
         }
     }
 

@@ -76,7 +76,8 @@ impl AwsmRenderer {
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
         self.lights
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
-        self.instances.write_gpu(&self.logging, &self.gpu)?;
+        self.instances
+            .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
         self.meshes
             .skins
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
@@ -117,6 +118,7 @@ impl AwsmRenderer {
                 environment: &self.environment,
                 lights: &self.lights,
                 transforms: &self.transforms,
+                instances: &self.instances,
                 anti_aliasing: &self.anti_aliasing,
             },
             &mut self.render_passes,

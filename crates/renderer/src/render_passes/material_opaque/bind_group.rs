@@ -283,6 +283,12 @@ impl MaterialOpaqueBindGroups {
             entries.len() as u32,
             BindGroupResource::TextureView(Cow::Borrowed(&ctx.render_texture_views.opaque)),
         ));
+        // Per-instance attribute storage buffer (color/alpha/size tint applied
+        // after shading; sentinel `instance_id == U32_MAX` means identity).
+        entries.push(BindGroupEntry::new(
+            entries.len() as u32,
+            BindGroupResource::Buffer(BufferBinding::new(ctx.instances.gpu_attribute_buffer())),
+        ));
 
         let descriptor = BindGroupDescriptor::new(
             ctx.bind_group_layouts
@@ -587,6 +593,15 @@ async fn create_main_bind_group_layout_key(
                 StorageTextureBindingLayout::new(ctx.render_texture_formats.color)
                     .with_view_dimension(TextureViewDimension::N2d)
                     .with_access(StorageTextureAccess::WriteOnly),
+            ),
+            visibility_vertex: false,
+            visibility_fragment: false,
+            visibility_compute: true,
+        },
+        // Per-instance attribute storage buffer (read by shading pass for tint).
+        BindGroupLayoutCacheKeyEntry {
+            resource: BindGroupLayoutResource::Buffer(
+                BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),
             ),
             visibility_vertex: false,
             visibility_fragment: false,

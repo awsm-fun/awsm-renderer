@@ -11,12 +11,65 @@ use std::collections::HashSet;
 use thiserror::Error;
 
 use crate::{
-    bind_groups::AwsmBindGroupError,
+    bind_groups::{AwsmBindGroupError, BindGroupCreate, BindGroups},
     buffer::dynamic_storage::DynamicStorageBuffer,
     buffer::helpers::write_buffer_with_dirty_ranges,
     transforms::{Transform, TransformKey, Transforms},
     AwsmRendererLogging,
 };
+
+/// Per-instance attributes consumed by the shading pass.
+///
+/// Layout (16 bytes, matches `InstanceAttr` in `shared_wgsl/instance_attrs.wgsl`):
+/// - `color_packed` — RGBA8 unorm packed into a `u32` (low byte = R), unpacked
+///   via WGSL `unpack4x8unorm`.
+/// - `size` — per-instance uniform scale. Stage-3 bakes this into the per-instance
+///   transform on the CPU side; the field is retained in the GPU struct for future
+///   use by a GPU-compute particle simulator that wants to leave transforms static
+///   and rewrite only the attribute buffer per frame.
+/// - `alpha` — multiplicative alpha applied on top of the material's base alpha.
+/// - `_pad` — keeps the struct 16-byte aligned for WebGPU storage layout.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct InstanceAttr {
+    pub color_packed: u32,
+    pub size: f32,
+    pub alpha: f32,
+    pub _pad: u32,
+}
+
+impl Default for InstanceAttr {
+    fn default() -> Self {
+        Self {
+            color_packed: 0xFFFFFFFF,
+            size: 1.0,
+            alpha: 1.0,
+            _pad: 0,
+        }
+    }
+}
+
+impl InstanceAttr {
+    /// Number of bytes per `InstanceAttr` in the GPU storage buffer.
+    pub const BYTE_SIZE: usize = 16;
+
+    /// Packs an `[r, g, b, a]` 0..=1 color into the storage format.
+    pub fn from_rgba_alpha_size(rgba: [f32; 4], alpha_mul: f32, size: f32) -> Self {
+        let to_u8 = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+        let r = to_u8(rgba[0]);
+        let g = to_u8(rgba[1]);
+        let b = to_u8(rgba[2]);
+        let a = to_u8(rgba[3]);
+        let color_packed =
+            u32::from(r) | (u32::from(g) << 8) | (u32::from(b) << 16) | (u32::from(a) << 24);
+        Self {
+            color_packed,
+            size,
+            alpha: alpha_mul,
+            _pad: 0,
+        }
+    }
+}
 
 /// Instance transform storage and GPU buffers.
 pub struct Instances {
@@ -26,17 +79,31 @@ pub struct Instances {
     gpu_transform_buffer: web_sys::GpuBuffer,
     transform_gpu_dirty: bool,
     transform_dirty: HashSet<TransformKey>,
+    // Per-instance attribute block parallel to the transform buffer. Keyed by the
+    // same `TransformKey` so a mesh's instance attributes live next to its
+    // transforms.
+    attribute_buffer: DynamicStorageBuffer<TransformKey>,
+    attribute_count: SecondaryMap<TransformKey, usize>,
+    cpu_attributes: SecondaryMap<TransformKey, Vec<InstanceAttr>>,
+    gpu_attribute_buffer: web_sys::GpuBuffer,
+    attribute_gpu_dirty: bool,
 }
 
 impl Instances {
     /// Initial byte size for instance transforms.
     pub const TRANSFORM_INITIAL_SIZE: usize = Transforms::BYTE_SIZE * 32; // 32 elements is a good starting point
+    /// Initial byte size for instance attributes.
+    pub const ATTRIBUTE_INITIAL_SIZE: usize = InstanceAttr::BYTE_SIZE * 32;
 
     /// Creates instance buffers.
     pub fn new(gpu: &AwsmRendererWebGpu) -> Result<Self> {
         let transform_buffer = DynamicStorageBuffer::new(
             Self::TRANSFORM_INITIAL_SIZE,
             Some("Instance Transforms".to_string()),
+        );
+        let attribute_buffer = DynamicStorageBuffer::new(
+            Self::ATTRIBUTE_INITIAL_SIZE,
+            Some("Instance Attributes".to_string()),
         );
 
         Ok(Self {
@@ -46,6 +113,11 @@ impl Instances {
             cpu_transforms: SecondaryMap::new(),
             transform_gpu_dirty: false,
             transform_dirty: HashSet::new(),
+            attribute_buffer,
+            gpu_attribute_buffer: gpu_create_storage_buffer(gpu, Self::ATTRIBUTE_INITIAL_SIZE)?,
+            attribute_count: SecondaryMap::new(),
+            cpu_attributes: SecondaryMap::new(),
+            attribute_gpu_dirty: false,
         })
     }
 
@@ -151,6 +223,78 @@ impl Instances {
         &self.gpu_transform_buffer
     }
 
+    /// Inserts (or replaces) the per-instance attribute slice for a key.
+    pub fn attribute_insert(
+        &mut self,
+        key: TransformKey,
+        attributes: &[InstanceAttr],
+    ) -> Result<()> {
+        let bytes = Self::attributes_to_bytes(attributes);
+        self.attribute_buffer.update(key, &bytes).map_err(|e| {
+            AwsmInstanceError::BufferCapacityOverflow(format!("instance attributes: {e}"))
+        })?;
+        self.cpu_attributes.insert(key, attributes.to_vec());
+        self.attribute_count.insert(key, attributes.len());
+        self.attribute_gpu_dirty = true;
+        Ok(())
+    }
+
+    /// Updates a single per-instance attribute in-place.
+    pub fn attribute_update(&mut self, key: TransformKey, index: usize, attr: &InstanceAttr) {
+        if let Some(list) = self.cpu_attributes.get_mut(key) {
+            list[index] = *attr;
+        }
+        self.attribute_buffer
+            .update_with_unchecked(key, |_, bytes| {
+                let offset = index * InstanceAttr::BYTE_SIZE;
+                let attr_bytes = Self::attribute_to_bytes(attr);
+                bytes[offset..offset + InstanceAttr::BYTE_SIZE].copy_from_slice(&attr_bytes);
+            });
+        self.attribute_gpu_dirty = true;
+    }
+
+    /// Removes the per-instance attribute slice for a key.
+    pub fn attribute_remove(&mut self, key: TransformKey) {
+        self.attribute_buffer.remove(key);
+        self.cpu_attributes.remove(key);
+        self.attribute_count.remove(key);
+        self.attribute_gpu_dirty = true;
+    }
+
+    /// Returns the byte offset into the GPU attribute buffer for a key. The
+    /// vertex / shading passes divide this by `InstanceAttr::BYTE_SIZE` to get
+    /// an instance-index base used to look up per-fragment tints.
+    pub fn attribute_buffer_offset(&self, key: TransformKey) -> Option<usize> {
+        self.attribute_buffer.offset(key)
+    }
+
+    /// Returns the number of per-instance attributes for a key.
+    pub fn attribute_instance_count(&self, key: TransformKey) -> Option<usize> {
+        self.attribute_count.get(key).copied()
+    }
+
+    /// Returns the GPU buffer storing per-instance attributes.
+    pub fn gpu_attribute_buffer(&self) -> &web_sys::GpuBuffer {
+        &self.gpu_attribute_buffer
+    }
+
+    fn attribute_to_bytes(attr: &InstanceAttr) -> [u8; InstanceAttr::BYTE_SIZE] {
+        let mut out = [0u8; InstanceAttr::BYTE_SIZE];
+        out[0..4].copy_from_slice(&attr.color_packed.to_le_bytes());
+        out[4..8].copy_from_slice(&attr.size.to_le_bytes());
+        out[8..12].copy_from_slice(&attr.alpha.to_le_bytes());
+        out[12..16].copy_from_slice(&attr._pad.to_le_bytes());
+        out
+    }
+
+    fn attributes_to_bytes(attributes: &[InstanceAttr]) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(attributes.len() * InstanceAttr::BYTE_SIZE);
+        for attr in attributes {
+            bytes.extend_from_slice(&Self::attribute_to_bytes(attr));
+        }
+        bytes
+    }
+
     /// Returns the instance count for a key.
     pub fn transform_instance_count(&self, key: TransformKey) -> Option<usize> {
         self.transform_count.get(key).copied()
@@ -208,11 +352,12 @@ impl Instances {
 
     // This *does* write to the gpu, should be called only once per frame
     // just write the entire buffer in one fell swoop
-    /// Writes instance transforms to the GPU.
+    /// Writes instance transforms and per-instance attributes to the GPU.
     pub fn write_gpu(
         &mut self,
         logging: &AwsmRendererLogging,
         gpu: &AwsmRendererWebGpu,
+        bind_groups: &mut BindGroups,
     ) -> Result<()> {
         if self.transform_gpu_dirty {
             let _maybe_span_guard = if logging.render_timings {
@@ -247,6 +392,44 @@ impl Instances {
             }
 
             self.transform_gpu_dirty = false;
+        }
+
+        if self.attribute_gpu_dirty {
+            let _maybe_span_guard = if logging.render_timings {
+                Some(
+                    tracing::span!(tracing::Level::INFO, "Instance Attribute GPU write").entered(),
+                )
+            } else {
+                None
+            };
+
+            let mut resized = false;
+            if let Some(new_size) = self.attribute_buffer.take_gpu_needs_resize() {
+                self.gpu_attribute_buffer = gpu_create_storage_buffer(gpu, new_size)?;
+                bind_groups.mark_create(BindGroupCreate::InstanceAttributesResize);
+                resized = true;
+            }
+
+            if resized {
+                self.attribute_buffer.clear_dirty_ranges();
+                gpu.write_buffer(
+                    &self.gpu_attribute_buffer,
+                    None,
+                    self.attribute_buffer.raw_slice(),
+                    None,
+                    None,
+                )?;
+            } else {
+                let ranges = self.attribute_buffer.take_dirty_ranges();
+                write_buffer_with_dirty_ranges(
+                    gpu,
+                    &self.gpu_attribute_buffer,
+                    self.attribute_buffer.raw_slice(),
+                    ranges,
+                )?;
+            }
+
+            self.attribute_gpu_dirty = false;
         }
         Ok(())
     }
@@ -308,6 +491,17 @@ fn gpu_create_vertex_buffer(gpu: &AwsmRendererWebGpu, size: usize) -> Result<web
             Some("InstanceTransformVertex"),
             size,
             BufferUsage::new().with_copy_dst().with_vertex(),
+        )
+        .into(),
+    )?)
+}
+
+fn gpu_create_storage_buffer(gpu: &AwsmRendererWebGpu, size: usize) -> Result<web_sys::GpuBuffer> {
+    Ok(gpu.create_buffer(
+        &BufferDescriptor::new(
+            Some("InstanceAttributes"),
+            size,
+            BufferUsage::new().with_copy_dst().with_storage(),
         )
         .into(),
     )?)

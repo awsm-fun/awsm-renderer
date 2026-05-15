@@ -255,6 +255,45 @@ impl AwsmRenderer {
         Ok(())
     }
 
+    /// Writes per-instance attributes (color + alpha + size) for every mesh
+    /// sharing the given transform key, and refreshes those meshes' geometry
+    /// meta so the shading pass picks up the new `instance_attr_base`.
+    ///
+    /// The number of `attrs` must match the number of transforms previously
+    /// written via `set_mesh_instances` / `transform_insert`.
+    pub fn set_mesh_instance_attrs(
+        &mut self,
+        transform_key: TransformKey,
+        attrs: &[crate::instances::InstanceAttr],
+    ) -> crate::error::Result<()> {
+        self.instances.attribute_insert(transform_key, attrs)?;
+
+        let base = self
+            .instances
+            .attribute_buffer_offset(transform_key)
+            .map(|off| (off / crate::instances::InstanceAttr::BYTE_SIZE) as u32)
+            .unwrap_or(u32::MAX);
+
+        let mesh_keys: Vec<MeshKey> = self
+            .meshes
+            .keys_by_transform_key(transform_key)
+            .cloned()
+            .unwrap_or_default();
+
+        for mesh_key in mesh_keys {
+            if let Ok(mesh) = self.meshes.get_mut(mesh_key) {
+                mesh.instance_attr_base = base;
+            }
+            self.meshes.refresh_meta_for_mesh_public(
+                mesh_key,
+                &self.materials,
+                &self.transforms,
+            )?;
+        }
+
+        Ok(())
+    }
+
     /// Appends a single instance transform to an instanced mesh.
     pub fn append_mesh_instance(
         &mut self,

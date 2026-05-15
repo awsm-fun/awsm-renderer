@@ -8,9 +8,9 @@ use thiserror::Error;
 
 use crate::{
     anti_alias::AntiAliasing, bind_group_layout::BindGroupLayouts, camera::CameraBuffer,
-    environment::Environment, lights::Lights, materials::Materials, meshes::Meshes, picker::Picker,
-    render_passes::RenderPasses, render_textures::RenderTextureViews, textures::Textures,
-    transforms::Transforms,
+    environment::Environment, instances::Instances, lights::Lights, materials::Materials,
+    meshes::Meshes, picker::Picker, render_passes::RenderPasses,
+    render_textures::RenderTextureViews, textures::Textures, transforms::Transforms,
 };
 
 // There are no cache keys for bind groups, they are created on demand
@@ -35,6 +35,7 @@ pub struct BindGroupRecreateContext<'a> {
     pub environment: &'a Environment,
     pub lights: &'a Lights,
     pub transforms: &'a Transforms,
+    pub instances: &'a Instances,
     pub anti_aliasing: &'a AntiAliasing,
 }
 
@@ -64,6 +65,9 @@ pub enum BindGroupCreate {
     TexturePool,
     TextureTransformsResize,
     AntiAliasingChange,
+    /// Per-instance attribute storage buffer was reallocated; opaque + transparent
+    /// shading bind groups must re-bind the new buffer.
+    InstanceAttributesResize,
 }
 
 /// Tracks pending bind group recreations.
@@ -212,6 +216,12 @@ impl BindGroups {
                     functions_to_call.insert(FunctionToCall::TransparentMain);
                 }
                 BindGroupCreate::AntiAliasingChange => {
+                    functions_to_call.insert(FunctionToCall::OpaqueMain);
+                    functions_to_call.insert(FunctionToCall::TransparentMain);
+                }
+                BindGroupCreate::InstanceAttributesResize => {
+                    // Per-instance attribute storage buffer is bound on the
+                    // opaque + transparent main bind groups for shading lookup.
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
                     functions_to_call.insert(FunctionToCall::TransparentMain);
                 }

@@ -27,6 +27,22 @@ struct MsaaSampleTextures {
 }
 
 {% if multisampled_geometry %}
+// Apply per-instance tint to a sample's (color, alpha) and pack into the
+// `MsaaSampleResult` carried back to the resolve loop. Identity passthrough
+// when `instance_id == INSTANCE_ATTR_NONE` (i.e. non-instanced mesh).
+fn msaa_apply_instance_tint(
+    color: vec3<f32>,
+    alpha: f32,
+    instance_id: u32,
+) -> MsaaSampleResult {
+    if (instance_id == INSTANCE_ATTR_NONE) {
+        return MsaaSampleResult(color, alpha, true);
+    }
+    let attr = instance_attrs[instance_id];
+    let tint = unpack4x8unorm(attr.color_packed);
+    return MsaaSampleResult(color * tint.rgb, alpha * tint.a * attr.alpha, true);
+}
+
 // Load texture data for a single MSAA sample
 fn msaa_load_sample_textures(coords: vec2<i32>, sample_index: u32) -> MsaaSampleTextures {
     var result: MsaaSampleTextures;
@@ -82,7 +98,7 @@ fn msaa_process_sample(
     // Unpack barycentric from u16 fixed-point (no clamping - matches main)
     let bary_xy = vec2<f32>(f32(textures.bary.x), f32(textures.bary.y)) / 65535.0;
     let sample_bary = vec3<f32>(bary_xy.x, bary_xy.y, 1.0 - bary_xy.x - bary_xy.y);
-    let _sample_instance_id = join32(textures.bary.z, textures.bary.w);
+    let sample_instance_id = join32(textures.bary.z, textures.bary.w);
 
     let sample_tbn = unpack_normal_tangent(textures.normal_tangent);
     let sample_normal = sample_tbn.N;
@@ -130,7 +146,11 @@ fn msaa_process_sample(
                     sample_uv_sets_idx,
                 );
         {% endmatch %}
-        return MsaaSampleResult(compute_unlit_output(unlit_color), unlit_color.base.a, true);
+        return msaa_apply_instance_tint(
+            compute_unlit_output(unlit_color),
+            unlit_color.base.a,
+            sample_instance_id,
+        );
     } else if (sample_shader_id == SHADER_ID_TOON) {
         let toon_mat = toon_get_material(sample_mat_offset);
         let toon_color = compute_toon_lit_color(
@@ -140,7 +160,11 @@ fn msaa_process_sample(
             standard_coordinates.world_position,
             lights_info,
         );
-        return MsaaSampleResult(toon_color, toon_mat.base_color_factor.a, true);
+        return msaa_apply_instance_tint(
+            toon_color,
+            toon_mat.base_color_factor.a,
+            sample_instance_id,
+        );
     } else {
         // PBR path
         let pbr_mat = pbr_get_material(sample_mat_offset);
@@ -175,6 +199,7 @@ fn msaa_process_sample(
 
         if(pbr_mat.debug_bitmask != 0u) {
             let color = pbr_debug_material_color(pbr_mat, mat_color);
+            // Debug viz bypasses tint so the raw debug color isn't masked.
             return MsaaSampleResult(color, mat_color.base.a, true);
         }
 
@@ -185,7 +210,7 @@ fn msaa_process_sample(
             standard_coordinates.world_position,
             lights_info
         );
-        return MsaaSampleResult(color, mat_color.base.a, true);
+        return msaa_apply_instance_tint(color, mat_color.base.a, sample_instance_id);
     }
 }
 
