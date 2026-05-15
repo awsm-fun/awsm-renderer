@@ -12,6 +12,7 @@ pub mod cubemap;
 pub mod data;
 pub mod error;
 pub mod image;
+pub mod keys;
 pub mod methods;
 pub mod pipeline;
 pub mod renderer;

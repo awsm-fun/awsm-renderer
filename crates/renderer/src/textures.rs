@@ -631,20 +631,11 @@ fn create_sampler_key(
     Ok(key)
 }
 
-new_key_type! {
-    /// Opaque key for pooled textures.
-    pub struct TextureKey;
-}
-
-new_key_type! {
-    /// Opaque key for texture transforms.
-    pub struct TextureTransformKey;
-}
-
-new_key_type! {
-    /// Opaque key for samplers.
-    pub struct SamplerKey;
-}
+// `TextureKey`, `TextureTransformKey`, `SamplerKey` moved to
+// `awsm-renderer-core::keys` so the upcoming `awsm-materials` crate can
+// reference them without depending on `awsm-renderer`. Re-exported here for
+// backward compat with existing callers that import via `awsm_renderer`.
+pub use awsm_renderer_core::keys::{SamplerKey, TextureKey, TextureTransformKey};
 
 new_key_type! {
     /// Opaque key for cubemap textures.
