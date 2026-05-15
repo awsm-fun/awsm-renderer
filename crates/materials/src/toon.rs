@@ -24,8 +24,14 @@ use crate::{
 pub const WGSL_FRAGMENT: &str = include_str!("wgsl/toon_material.wgsl");
 
 const TEXTURE_SLOTS: &[TextureSlotDecl] = &[
-    TextureSlotDecl { slot_name: "base_color", optional: true },
-    TextureSlotDecl { slot_name: "emissive", optional: true },
+    TextureSlotDecl {
+        slot_name: "base_color",
+        optional: true,
+    },
+    TextureSlotDecl {
+        slot_name: "emissive",
+        optional: true,
+    },
 ];
 
 /// Toon material parameters.
@@ -63,7 +69,7 @@ impl ToonMaterial {
         }
     }
 
-    pub fn alpha_mode_ref(&self) -> &MaterialAlphaMode {
+    pub fn alpha_mode(&self) -> &MaterialAlphaMode {
         &self.alpha_mode
     }
 

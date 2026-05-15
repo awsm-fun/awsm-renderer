@@ -32,10 +32,7 @@ pub trait TextureContext {
     ///
     /// Returns `(None, None)` if the sampler is unknown — packers should
     /// treat that as the default (Repeat).
-    fn sampler_address_modes(
-        &self,
-        key: SamplerKey,
-    ) -> (Option<AddressMode>, Option<AddressMode>);
+    fn sampler_address_modes(&self, key: SamplerKey) -> (Option<AddressMode>, Option<AddressMode>);
 
     /// Returns the byte offset of a texture transform in the renderer's
     /// transform buffer, if the key is known.

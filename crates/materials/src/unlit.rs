@@ -13,8 +13,14 @@ use crate::{
 pub const WGSL_FRAGMENT: &str = include_str!("wgsl/unlit_material.wgsl");
 
 const TEXTURE_SLOTS: &[TextureSlotDecl] = &[
-    TextureSlotDecl { slot_name: "base_color", optional: true },
-    TextureSlotDecl { slot_name: "emissive", optional: true },
+    TextureSlotDecl {
+        slot_name: "base_color",
+        optional: true,
+    },
+    TextureSlotDecl {
+        slot_name: "emissive",
+        optional: true,
+    },
 ];
 
 /// Unlit material parameters.
@@ -42,8 +48,8 @@ impl UnlitMaterial {
         }
     }
 
-    /// Returns the material alpha mode.
-    pub fn alpha_mode_ref(&self) -> &MaterialAlphaMode {
+    /// Returns the material alpha mode by reference.
+    pub fn alpha_mode(&self) -> &MaterialAlphaMode {
         &self.alpha_mode
     }
 

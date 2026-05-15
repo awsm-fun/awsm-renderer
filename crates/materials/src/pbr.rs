@@ -17,11 +17,26 @@ pub const WGSL_FRAGMENT: &str = concat!(
 );
 
 const TEXTURE_SLOTS: &[TextureSlotDecl] = &[
-    TextureSlotDecl { slot_name: "base_color", optional: true },
-    TextureSlotDecl { slot_name: "metallic_roughness", optional: true },
-    TextureSlotDecl { slot_name: "normal", optional: true },
-    TextureSlotDecl { slot_name: "occlusion", optional: true },
-    TextureSlotDecl { slot_name: "emissive", optional: true },
+    TextureSlotDecl {
+        slot_name: "base_color",
+        optional: true,
+    },
+    TextureSlotDecl {
+        slot_name: "metallic_roughness",
+        optional: true,
+    },
+    TextureSlotDecl {
+        slot_name: "normal",
+        optional: true,
+    },
+    TextureSlotDecl {
+        slot_name: "occlusion",
+        optional: true,
+    },
+    TextureSlotDecl {
+        slot_name: "emissive",
+        optional: true,
+    },
 ];
 
 /// Physically based rendering (PBR) material parameters.
@@ -232,8 +247,8 @@ impl PbrMaterial {
         }
     }
 
-    /// Returns the material alpha mode.
-    pub fn alpha_mode_ref(&self) -> &MaterialAlphaMode {
+    /// Returns the material alpha mode by reference.
+    pub fn alpha_mode(&self) -> &MaterialAlphaMode {
         &self.alpha_mode
     }
 

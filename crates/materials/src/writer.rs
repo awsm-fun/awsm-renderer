@@ -120,10 +120,7 @@ pub fn write_material_texture(
 /// that as `SkipTexture`. This mirrors the historical behavior in
 /// `awsm-renderer`: a missing texture / sampler / UV-set should not abort
 /// the buffer write, just fall back to the no-texture path.
-pub fn map_texture<'a>(
-    tex: &MaterialTexture,
-    ctx: &'a dyn TextureContext,
-) -> Option<Value<'a>> {
+pub fn map_texture<'a>(tex: &MaterialTexture, ctx: &'a dyn TextureContext) -> Option<Value<'a>> {
     let entry_info = ctx.texture_entry(tex.key)?;
     let array = ctx.pool_array_by_index(entry_info.array_index)?;
     let sampler_key = tex.sampler_key?;

@@ -632,10 +632,42 @@ fn create_sampler_key(
 }
 
 // `TextureKey`, `TextureTransformKey`, `SamplerKey` moved to
-// `awsm-renderer-core::keys` so the upcoming `awsm-materials` crate can
-// reference them without depending on `awsm-renderer`. Re-exported here for
-// backward compat with existing callers that import via `awsm_renderer`.
+// `awsm-renderer-core::keys` so the `awsm-materials` crate can reference
+// them without depending on `awsm-renderer`. Re-exported here for backward
+// compat with existing callers that import via `awsm_renderer`.
 pub use awsm_renderer_core::keys::{SamplerKey, TextureKey, TextureTransformKey};
+
+impl awsm_materials::TextureContext for Textures {
+    fn pool_array_by_index(
+        &self,
+        index: usize,
+    ) -> Option<&awsm_renderer_core::texture::texture_pool::TexturePoolArray<TextureKey>> {
+        self.pool.array_by_index(index)
+    }
+
+    fn texture_entry(&self, key: TextureKey) -> Option<&TexturePoolEntryInfo<TextureKey>> {
+        self.pool_textures.get(key)
+    }
+
+    fn sampler_index(&self, key: SamplerKey) -> Option<u32> {
+        self.pool_sampler_set.get_index_of(&key).map(|i| i as u32)
+    }
+
+    fn sampler_address_modes(&self, key: SamplerKey) -> (Option<AddressMode>, Option<AddressMode>) {
+        self.sampler_address_modes
+            .get(key)
+            .copied()
+            .unwrap_or((None, None))
+    }
+
+    fn texture_transform_offset(&self, key: TextureTransformKey) -> Option<usize> {
+        self.get_texture_transform_offset(key)
+    }
+
+    fn texture_transform_identity_offset(&self) -> usize {
+        self.texture_transform_identity_offset
+    }
+}
 
 new_key_type! {
     /// Opaque key for cubemap textures.
