@@ -113,6 +113,18 @@ impl LineRenderer {
     }
 }
 
+/// Packing topology for `positions`/`colors` into `GpuLineSegment` records.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum LineTopology {
+    /// `positions[i] → positions[i+1]` for each adjacent pair (connected
+    /// polyline). N points produce N-1 segments.
+    Strip,
+    /// `positions[2*i] → positions[2*i+1]` for each pair (disjoint
+    /// segments — the same model as line-list topology). N points
+    /// produce N/2 segments.
+    Segments,
+}
+
 impl AwsmRenderer {
     /// Registers a new line strip: `positions[i] → positions[i+1]` for each
     /// adjacent pair, with per-vertex colors interpolated A→B. `width` is in
@@ -127,17 +139,34 @@ impl AwsmRenderer {
         width: f32,
         depth_test_always: bool,
     ) -> Result<Option<LineKey>> {
-        if positions.len() < 2 {
+        self.add_line(positions, colors, width, depth_test_always, LineTopology::Strip)
+    }
+
+    /// Registers a disjoint-segments line draw (line-list semantics).
+    /// `positions` must be even-length; consecutive pairs become independent
+    /// segments. Useful for wireframe geometry where edges are not connected.
+    pub fn add_line_segments(
+        &mut self,
+        positions: &[Vec3],
+        colors: &[Vec4],
+        width: f32,
+        depth_test_always: bool,
+    ) -> Result<Option<LineKey>> {
+        self.add_line(positions, colors, width, depth_test_always, LineTopology::Segments)
+    }
+
+    fn add_line(
+        &mut self,
+        positions: &[Vec3],
+        colors: &[Vec4],
+        width: f32,
+        depth_test_always: bool,
+        topology: LineTopology,
+    ) -> Result<Option<LineKey>> {
+        let segments = pack(positions, colors, topology);
+        if segments.is_empty() {
             return Ok(None);
         }
-        if colors.len() != positions.len() {
-            tracing::warn!(
-                "add_line_strip: colors.len() ({}) != positions.len() ({}); padding with last color",
-                colors.len(),
-                positions.len()
-            );
-        }
-        let segments = pack_segments(positions, colors);
         let segment_bytes = segments_byte_size(segments.len());
 
         let segment_buffer = create_segment_buffer(&self.gpu, segment_bytes)?;
@@ -176,16 +205,36 @@ impl AwsmRenderer {
         positions: &[Vec3],
         colors: &[Vec4],
     ) -> Result<()> {
+        self.update_line(key, positions, colors, LineTopology::Strip)
+    }
+
+    /// Re-uploads positions + colors as line-list pairs (see [`add_line_segments`]).
+    pub fn update_line_segments(
+        &mut self,
+        key: LineKey,
+        positions: &[Vec3],
+        colors: &[Vec4],
+    ) -> Result<()> {
+        self.update_line(key, positions, colors, LineTopology::Segments)
+    }
+
+    fn update_line(
+        &mut self,
+        key: LineKey,
+        positions: &[Vec3],
+        colors: &[Vec4],
+        topology: LineTopology,
+    ) -> Result<()> {
         if !self.lines.entries.contains_key(key) {
             return Ok(());
         }
         let bind_group_layout_key = self.lines.pipelines.bind_group_layout_key;
+        let segments = pack(positions, colors, topology);
         let entry = self.lines.entries.get_mut(key).expect("checked above");
-        if positions.len() < 2 {
+        if segments.is_empty() {
             entry.segment_count = 0;
             return Ok(());
         }
-        let segments = pack_segments(positions, colors);
         let new_bytes = segments_byte_size(segments.len());
         if new_bytes > entry.segment_capacity_bytes {
             entry.segment_buffer = create_segment_buffer(&self.gpu, new_bytes)?;
@@ -228,13 +277,15 @@ impl AwsmRenderer {
     pub fn line_count(&self) -> usize {
         self.lines.entries.len()
     }
+}
 
+impl LineRenderer {
     /// Executes the line render pass: re-writes each line's uniform buffer
     /// with the current viewport size + width, then draws all registered lines
     /// against the world-space transparent target. Safe to call with zero
     /// registered lines (it returns early).
-    pub fn render_lines(&self, ctx: &RenderContext) -> Result<()> {
-        if self.lines.entries.is_empty() {
+    pub fn render(&self, ctx: &RenderContext) -> Result<()> {
+        if self.entries.is_empty() {
             return Ok(());
         }
         let msaa = ctx.anti_aliasing.has_msaa_checked()?;
@@ -244,7 +295,7 @@ impl AwsmRenderer {
         let render_pass = ctx.begin_world_transparent_pass(Some("Line Render Pass"))?;
         let mut current_variant: Option<LineVariantKey> = None;
 
-        for entry in self.lines.entries.values() {
+        for entry in self.entries.values() {
             if entry.segment_count == 0 {
                 continue;
             }
@@ -260,7 +311,7 @@ impl AwsmRenderer {
                 msaa,
             };
             if current_variant != Some(variant) {
-                let pipeline_key = self.lines.pipelines.get(variant);
+                let pipeline_key = self.pipelines.get(variant);
                 render_pass.set_pipeline(ctx.pipelines.render.get(pipeline_key)?);
                 current_variant = Some(variant);
             }
@@ -274,23 +325,41 @@ impl AwsmRenderer {
     }
 }
 
-fn pack_segments(positions: &[Vec3], colors: &[Vec4]) -> Vec<GpuLineSegment> {
+fn pack(positions: &[Vec3], colors: &[Vec4], topology: LineTopology) -> Vec<GpuLineSegment> {
+    if positions.len() < 2 {
+        return Vec::new();
+    }
     let last_color = colors.last().copied().unwrap_or(Vec4::ONE);
     let color_at = |i: usize| -> Vec4 { colors.get(i).copied().unwrap_or(last_color) };
-    let mut out = Vec::with_capacity(positions.len().saturating_sub(1));
-    for i in 0..positions.len() - 1 {
-        let a = positions[i];
-        let b = positions[i + 1];
-        let ca = color_at(i);
-        let cb = color_at(i + 1);
-        out.push(GpuLineSegment {
-            a: [a.x, a.y, a.z, 0.0],
-            color_a: ca.to_array(),
-            b: [b.x, b.y, b.z, 0.0],
-            color_b: cb.to_array(),
-        });
+    match topology {
+        LineTopology::Strip => {
+            let mut out = Vec::with_capacity(positions.len() - 1);
+            for i in 0..positions.len() - 1 {
+                out.push(GpuLineSegment {
+                    a: [positions[i].x, positions[i].y, positions[i].z, 0.0],
+                    color_a: color_at(i).to_array(),
+                    b: [positions[i + 1].x, positions[i + 1].y, positions[i + 1].z, 0.0],
+                    color_b: color_at(i + 1).to_array(),
+                });
+            }
+            out
+        }
+        LineTopology::Segments => {
+            let pair_count = positions.len() / 2;
+            let mut out = Vec::with_capacity(pair_count);
+            for i in 0..pair_count {
+                let a = positions[2 * i];
+                let b = positions[2 * i + 1];
+                out.push(GpuLineSegment {
+                    a: [a.x, a.y, a.z, 0.0],
+                    color_a: color_at(2 * i).to_array(),
+                    b: [b.x, b.y, b.z, 0.0],
+                    color_b: color_at(2 * i + 1).to_array(),
+                });
+            }
+            out
+        }
     }
-    out
 }
 
 fn segments_byte_size(segment_count: usize) -> usize {

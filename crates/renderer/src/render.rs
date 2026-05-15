@@ -262,6 +262,18 @@ impl AwsmRenderer {
             )?;
         }
 
+        // Built-in line render pass — must run after the opaque->transparent
+        // blit (so depth + transparent target are populated) and before any
+        // `before_transparent_pass` hook so editor overlays can draw on top.
+        {
+            let _maybe_span_guard = if self.logging.render_timings {
+                Some(tracing::span!(tracing::Level::INFO, "Line RenderPass").entered())
+            } else {
+                None
+            };
+            self.lines.render(&ctx)?;
+        }
+
         if let Some(hook) = hooks.and_then(|h| h.before_transparent_pass.as_ref()) {
             {
                 let _maybe_span_guard = if self.logging.render_timings {
