@@ -58,6 +58,7 @@ pub(super) fn mesh_buffer_geometry_kind(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn convert_to_mesh_buffer(
     primitive: &gltf::Primitive,
     render_timings: bool,

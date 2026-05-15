@@ -22,13 +22,21 @@ pub(crate) mod mesh;
 pub(crate) mod skin;
 pub(crate) mod transforms;
 
+/// Per-node skin info: the joint transforms + the inverse-bind matrices.
+/// Lookup is keyed by glTF node index.
+type NodeSkinTransform = Arc<(Vec<TransformKey>, Vec<SkinInverseBindMatrix>)>;
+
+/// Per-node mesh entry: optional mesh name + the mesh keys created for each
+/// of the node's primitives. Used as the value type in
+/// `GltfKeyLookups::node_meshes`.
+type NodeMeshEntry = (Option<String>, Vec<MeshKey>);
+
 /// Context and shared state used while populating glTF data.
 pub struct GltfPopulateContext {
     pub data: Arc<GltfData>,
     pub textures: Mutex<HashMap<GltfTextureKey, TextureKey>>,
     pub(super) material_keys: Mutex<HashMap<GltfMaterialLookupKey, MaterialKey>>,
-    pub node_to_skin_transform:
-        Mutex<HashMap<GltfIndex, Arc<(Vec<TransformKey>, Vec<SkinInverseBindMatrix>)>>>,
+    pub node_to_skin_transform: Mutex<HashMap<GltfIndex, NodeSkinTransform>>,
     pub transform_is_joint: Mutex<HashSet<TransformKey>>,
     pub transform_is_instanced: Mutex<HashSet<TransformKey>>,
     pub(super) node_animation_samplers: HashMap<GltfIndex, GltfNodeAnimationSamplers>,
@@ -40,7 +48,7 @@ pub struct GltfPopulateContext {
 pub struct GltfKeyLookups {
     pub node_transforms: HashMap<String, TransformKey>,
     // for all nodes with a name, get mesh_keys per primitive for that node, and optional mesh name
-    pub node_meshes: HashMap<String, Vec<(Option<String>, Vec<MeshKey>)>>,
+    pub node_meshes: HashMap<String, Vec<NodeMeshEntry>>,
     // for all the meshes with a name, get mesh_keys per primitive for that mesh
     pub mesh_primitives: HashMap<String, Vec<MeshKey>>,
     pub node_index_to_transform: HashMap<GltfIndex, TransformKey>,

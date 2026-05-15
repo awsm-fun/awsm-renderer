@@ -587,6 +587,7 @@ impl Meshes {
     ///
     /// Pub so external ingestion crates (e.g. `awsm-renderer-gltf`) can
     /// upload meshes through the same path glTF historically used.
+    #[allow(clippy::too_many_arguments)]
     pub fn insert(
         &mut self,
         mesh: Mesh,
