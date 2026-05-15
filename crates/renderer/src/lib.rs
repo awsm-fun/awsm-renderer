@@ -22,6 +22,7 @@ pub mod picker;
 pub mod pipeline_layouts;
 pub mod pipelines;
 pub mod post_process;
+pub mod raw_mesh;
 pub mod render;
 pub mod render_passes;
 pub mod render_textures;

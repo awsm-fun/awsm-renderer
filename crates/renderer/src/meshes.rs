@@ -451,6 +451,40 @@ impl Meshes {
         })
     }
 
+    /// Public wrapper around `insert` for the raw-mesh path. Same semantics —
+    /// see `raw_mesh::AwsmRenderer::add_raw_mesh` for the canonical caller.
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_public(
+        &mut self,
+        mesh: Mesh,
+        materials: &Materials,
+        transforms: &Transforms,
+        buffer_info_key: MeshBufferInfoKey,
+        visibility_geometry_data: Option<&[u8]>,
+        transparency_geometry_data: Option<&[u8]>,
+        attribute_data: &[u8],
+        attribute_index: &[u8],
+        aabb: Option<Aabb>,
+        geometry_morph_key: Option<GeometryMorphKey>,
+        material_morph_key: Option<MaterialMorphKey>,
+        skin_key: Option<SkinKey>,
+    ) -> Result<MeshKey> {
+        self.insert(
+            mesh,
+            materials,
+            transforms,
+            buffer_info_key,
+            visibility_geometry_data,
+            transparency_geometry_data,
+            attribute_data,
+            attribute_index,
+            aabb,
+            geometry_morph_key,
+            material_morph_key,
+            skin_key,
+        )
+    }
+
     /// Inserts a mesh and its backing resource data, returning a mesh key.
     pub(crate) fn insert(
         &mut self,
