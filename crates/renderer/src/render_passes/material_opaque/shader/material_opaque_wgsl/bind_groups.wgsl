@@ -1,12 +1,13 @@
 {% if multisampled_geometry %}
     @group(0) @binding(0) var visibility_data_tex: texture_multisampled_2d<u32>;
-    @group(0) @binding(1) var barycentric_tex: texture_multisampled_2d<f32>;
+    // Barycentric tex packs: RG = bary.xy as u16 fixed-point, BA = instance_id (split u32).
+    @group(0) @binding(1) var barycentric_tex: texture_multisampled_2d<u32>;
     @group(0) @binding(2) var depth_tex: texture_depth_multisampled_2d;
     @group(0) @binding(3) var normal_tangent_tex: texture_multisampled_2d<f32>;
     @group(0) @binding(4) var barycentric_derivatives_tex: texture_multisampled_2d<f32>;
 {% else %}
     @group(0) @binding(0) var visibility_data_tex: texture_2d<u32>;
-    @group(0) @binding(1) var barycentric_tex: texture_2d<f32>;
+    @group(0) @binding(1) var barycentric_tex: texture_2d<u32>;
     @group(0) @binding(2) var depth_tex: texture_depth_2d;
     @group(0) @binding(3) var normal_tangent_tex: texture_2d<f32>;
     @group(0) @binding(4) var barycentric_derivatives_tex: texture_2d<f32>;

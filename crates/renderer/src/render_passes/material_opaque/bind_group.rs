@@ -377,12 +377,15 @@ async fn create_main_bind_group_layout_key(
             visibility_fragment: false,
             visibility_compute: true,
         },
-        // Barycentric texture
+        // Barycentric texture — RGBA16uint: RG channels hold barycentric.xy
+        // as u16 fixed-point (* 65535), BA channels hold the per-fragment
+        // instance_id as a packed u32 (high u16 in B, low u16 in A; joined
+        // via the same `join32` helper used for tri_id/material_offset).
         BindGroupLayoutCacheKeyEntry {
             resource: BindGroupLayoutResource::Texture(
                 TextureBindingLayout::new()
                     .with_view_dimension(TextureViewDimension::N2d)
-                    .with_sample_type(TextureSampleType::UnfilterableFloat)
+                    .with_sample_type(TextureSampleType::Uint)
                     .with_multisampled(multisampled_geometry),
             ),
             visibility_vertex: false,

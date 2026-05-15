@@ -47,7 +47,11 @@ impl RenderTextureFormats {
     pub async fn new(_device: &web_sys::GpuDevice) -> Self {
         Self {
             visiblity_data: TextureFormat::Rgba16uint,
-            barycentric: TextureFormat::Rg16float,
+            // RGBA16uint: RG = bary.xy as u16 fixed-point (* 65535), BA =
+            // per-fragment instance_id (split u32 via `join32`). Stays at 4
+            // color attachments; barycentric precision in u16 fixed-point is
+            // comparable to f16 for the [0, 1] range.
+            barycentric: TextureFormat::Rgba16uint,
             normal_tangent: TextureFormat::Rgba16float,
             barycentric_derivatives: TextureFormat::Rgba16float,
             color: TextureFormat::Rgba16float, // HDR format for bloom/tonemapping

@@ -14,10 +14,14 @@ struct MsaaSampleResult {
     is_valid: bool,
 }
 
-// Texture data loaded for a single MSAA sample
+// Texture data loaded for a single MSAA sample.
+// `bary` carries the raw RGBA16uint texel for barycentric_tex: RG channels
+// are u16 fixed-point barycentric, BA channels are the per-fragment
+// instance_id (split via `join32` on read). Unpack to f32 / instance_id
+// at the use sites.
 struct MsaaSampleTextures {
     vis_data: vec4<u32>,
-    bary: vec4<f32>,
+    bary: vec4<u32>,
     bary_derivs: vec4<f32>,
     normal_tangent: vec4<f32>,
 }
@@ -75,8 +79,10 @@ fn msaa_process_sample(
 
     let sample_mesh_meta = material_mesh_metas[mat_meta_off / META_SIZE_IN_BYTES];
 
-    // Process barycentrics (no clamping - matches main)
-    let sample_bary = vec3<f32>(textures.bary.x, textures.bary.y, 1.0 - textures.bary.x - textures.bary.y);
+    // Unpack barycentric from u16 fixed-point (no clamping - matches main)
+    let bary_xy = vec2<f32>(f32(textures.bary.x), f32(textures.bary.y)) / 65535.0;
+    let sample_bary = vec3<f32>(bary_xy.x, bary_xy.y, 1.0 - bary_xy.x - bary_xy.y);
+    let _sample_instance_id = join32(textures.bary.z, textures.bary.w);
 
     let sample_tbn = unpack_normal_tangent(textures.normal_tangent);
     let sample_normal = sample_tbn.N;

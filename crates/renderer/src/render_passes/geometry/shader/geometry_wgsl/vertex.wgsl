@@ -30,6 +30,9 @@ struct VertexOutput {
     @location(1) barycentric: vec2<f32>,  // Full barycentric coordinates
     @location(2) world_normal: vec3<f32>,     // Transformed world-space normal
     @location(3) world_tangent: vec4<f32>,    // Transformed world-space tangent (w = handedness)
+    // Stage-1 leaves this at U32_MAX always; Stage-2 wires
+    // `geometry_mesh_meta.instance_attr_base + @builtin(instance_index)`.
+    @location(4) @interpolate(flat) instance_id: u32,
 }
 
 @vertex
@@ -58,6 +61,7 @@ fn vert_main(input: VertexInput) -> VertexOutput {
     // Pass through
     out.triangle_index = input.triangle_index;
     out.barycentric = input.barycentric;
+    out.instance_id = 0xFFFFFFFFu;
 
     return out;
 }

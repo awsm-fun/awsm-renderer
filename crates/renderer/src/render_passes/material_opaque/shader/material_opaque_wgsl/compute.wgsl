@@ -182,8 +182,13 @@ fn main(
     }
 
 
-    let barycentric_data = textureLoad(barycentric_tex, coords, 0);
-    let barycentric = vec3<f32>(barycentric_data.x, barycentric_data.y, 1.0 - barycentric_data.x - barycentric_data.y);
+    // Barycentric tex is RGBA16uint: RG = bary.xy as u16 fixed-point,
+    // BA = instance_id (split u32 via join32). Unpack to f32 here; Stage-2
+    // wires the instance_id consumer.
+    let barycentric_raw = textureLoad(barycentric_tex, coords, 0);
+    let bary_xy = vec2<f32>(f32(barycentric_raw.x), f32(barycentric_raw.y)) / 65535.0;
+    let barycentric = vec3<f32>(bary_xy.x, bary_xy.y, 1.0 - bary_xy.x - bary_xy.y);
+    let _instance_id = join32(barycentric_raw.z, barycentric_raw.w);
 
     let material_offset = material_mesh_meta.material_offset;
     let shader_id = material_load_shader_id(material_offset);

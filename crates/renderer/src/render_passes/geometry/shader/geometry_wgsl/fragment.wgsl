@@ -6,13 +6,16 @@ struct FragmentInput {
     @location(1) barycentric: vec2<f32>,  // Full barycentric coordinates
     @location(2) world_normal: vec3<f32>,     // Transformed world-space normal
     @location(3) world_tangent: vec4<f32>,    // Transformed world-space tangent (w = handedness)
+    @location(4) @interpolate(flat) instance_id: u32, // U32_MAX for non-instanced draws
 }
 
 struct FragmentOutput {
     // RGBA16uint
     @location(0) visibility_data: vec4<u32>,    // triangle_index and material_offset (each as packed 32)
-    // RG16float
-    @location(1) barycentric: vec2<f32>,    // bary.xy
+    // RGBA16uint
+    // RG: barycentric.xy as u16 fixed-point (clamp(bary, 0, 1) * 65535).
+    // BA: instance_id as packed u32 (split16 → B=lo, A=hi via join32 convention).
+    @location(1) barycentric: vec4<u32>,
     // RGBA16float
     @location(2) normal_tangent: vec4<f32>,
     // RGBA16float
@@ -34,8 +37,13 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
         m.x,m.y
     );
 
-    // z = 1.0 - x - y
-    out.barycentric = input.barycentric;
+    // z = 1.0 - x - y. Pack as u16 fixed-point so we can use the BA channels
+    // for instance_id (kept lossless via `join32`).
+    let bary = clamp(input.barycentric, vec2<f32>(0.0), vec2<f32>(1.0));
+    let bary_x_u16 = u32(bary.x * 65535.0 + 0.5);
+    let bary_y_u16 = u32(bary.y * 65535.0 + 0.5);
+    let iid = split16(input.instance_id);
+    out.barycentric = vec4<u32>(bary_x_u16, bary_y_u16, iid.x, iid.y);
 
     // Pack normal and tangent into a single vec4 (RGBA16Float)
     // octahedral normal (2 channels) + tangent angle (1 channel) + handedness sign (1 channel)
