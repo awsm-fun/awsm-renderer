@@ -191,6 +191,30 @@ impl AwsmRenderer {
         )?)
     }
 
+    /// Enables GPU instancing for an opaque mesh — sync because the
+    /// transparent pipeline rebuild is unnecessary when the mesh doesn't
+    /// flow through the transparent pass. Use `enable_mesh_instancing` for
+    /// meshes that may also render via the transparent pipeline.
+    pub fn enable_mesh_instancing_opaque(
+        &mut self,
+        mesh_key: MeshKey,
+        transforms: &[Transform],
+    ) -> crate::error::Result<()> {
+        let transform_key = self.meshes.get(mesh_key)?.transform_key;
+        if transforms.is_empty() {
+            return Err(AwsmMeshError::InstancingMissingTransforms(mesh_key).into());
+        }
+        {
+            let mesh = self.meshes.get_mut(mesh_key)?;
+            if mesh.instanced {
+                return Err(AwsmMeshError::InstancingAlreadyEnabled(mesh_key).into());
+            }
+            mesh.instanced = true;
+        }
+        self.instances.transform_insert(transform_key, transforms)?;
+        Ok(())
+    }
+
     /// Enables GPU instancing for a mesh with explicit instance transforms.
     pub async fn enable_mesh_instancing(
         &mut self,
