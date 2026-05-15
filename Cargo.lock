@@ -98,6 +98,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "awsm-materials"
+version = "0.1.7"
+dependencies = [
+ "awsm-renderer-core",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "awsm-meshgen"
 version = "0.1.7"
 dependencies = [

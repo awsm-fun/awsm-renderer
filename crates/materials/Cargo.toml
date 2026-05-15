@@ -1,0 +1,27 @@
+[package]
+name = "awsm-materials"
+description = "Pluggable material shaders behind the MaterialShader trait + Cargo features"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[package.metadata.docs.rs]
+default-target = "wasm32-unknown-unknown"
+rustc-args = ["--cfg=web_sys_unstable_apis"]
+rustdoc-args = ["--cfg=web_sys_unstable_apis"]
+
+[features]
+default = ["pbr-standard", "unlit", "toon"]
+# Each material is a Cargo feature. Adding a new material = one new module +
+# one feature entry + one trait impl, with zero edits to `awsm-renderer`.
+pbr-standard = []
+unlit = []
+toon = []
+
+[dependencies]
+awsm-renderer-core = { path = "../renderer-core", features = ["texture-pool"] }
+thiserror = { workspace = true }
