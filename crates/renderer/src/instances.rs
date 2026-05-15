@@ -396,9 +396,7 @@ impl Instances {
 
         if self.attribute_gpu_dirty {
             let _maybe_span_guard = if logging.render_timings {
-                Some(
-                    tracing::span!(tracing::Level::INFO, "Instance Attribute GPU write").entered(),
-                )
+                Some(tracing::span!(tracing::Level::INFO, "Instance Attribute GPU write").entered())
             } else {
                 None
             };
