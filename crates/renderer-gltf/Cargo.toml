@@ -1,0 +1,24 @@
+[package]
+name = "awsm-renderer-gltf"
+description = "glTF ingestion for awsm-renderer (extracted from awsm-renderer per the editor-renderer overhaul plan)"
+readme = "../../README.md"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[package.metadata.docs.rs]
+default-target = "wasm32-unknown-unknown"
+rustc-args = ["--cfg=web_sys_unstable_apis"]
+rustdoc-args = ["--cfg=web_sys_unstable_apis"]
+
+[features]
+default = []
+
+[dependencies]
+# Scaffold-only deps. Full extraction (C-2) will fill these in; see
+# `src/lib.rs` for the migration plan.
+

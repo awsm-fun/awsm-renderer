@@ -178,6 +178,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "awsm-renderer-gltf"
+version = "0.1.7"
+
+[[package]]
 name = "awsm_web"
 version = "0.44.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
