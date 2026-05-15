@@ -42,6 +42,7 @@ texture-export = ["awsm-renderer-core/texture-export"]
 [dependencies]
 awsm-renderer-core = { version = "0.1.3", path = "../renderer-core", features = ["texture-pool"] }
 web-sys = {workspace = true}
+wasm-bindgen = {workspace = true}
 tracing = {workspace = true}
 thiserror = {workspace = true}
 anyhow = {workspace = true}

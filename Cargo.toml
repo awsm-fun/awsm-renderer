@@ -148,6 +148,8 @@ features = [
     "HtmlSelectElement",
     "Performance",
     "HtmlCanvasElement",
+    "OffscreenCanvas",
+    "OffscreenCanvasRenderingContext2d",
     "MessageEvent",
     "StyleSheet",
     "CssStyleDeclaration",

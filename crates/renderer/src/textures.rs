@@ -355,6 +355,73 @@ impl Textures {
         Ok(key)
     }
 
+    /// Adds a texture from raw RGBA8 bytes by packing them through a synchronous
+    /// `OffscreenCanvas` → `ImageBitmap` round-trip and inserting via the
+    /// standard pool path. Caller is responsible for triggering
+    /// `AwsmRenderer::finalize_gpu_textures()` after a batch of additions so
+    /// the new bitmaps actually upload to the GPU.
+    pub fn add_image_rgba_raw(
+        &mut self,
+        rgba_bytes: &[u8],
+        width: u32,
+        height: u32,
+        sampler_key: SamplerKey,
+        color: TextureColorInfo,
+    ) -> Result<TextureKey> {
+        use wasm_bindgen::JsCast;
+        let expected_len = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|n| n.checked_mul(4))
+            .ok_or_else(|| {
+                AwsmTextureError::ImageBitmapCreate(format!(
+                    "rgba dims overflow: width={width} height={height}"
+                ))
+            })?;
+        if rgba_bytes.len() != expected_len {
+            return Err(AwsmTextureError::ImageBitmapCreate(format!(
+                "rgba length mismatch: got {} bytes, want {expected_len} (width={width} height={height})",
+                rgba_bytes.len()
+            )));
+        }
+
+        let canvas = web_sys::OffscreenCanvas::new(width, height)
+            .map_err(|e| AwsmTextureError::ImageBitmapCreate(format!("{e:?}")))?;
+        let ctx_obj = canvas
+            .get_context("2d")
+            .map_err(|e| AwsmTextureError::ImageBitmapCreate(format!("get_context: {e:?}")))?
+            .ok_or_else(|| {
+                AwsmTextureError::ImageBitmapCreate("2d context unavailable".to_string())
+            })?;
+        let ctx: web_sys::OffscreenCanvasRenderingContext2d = ctx_obj.dyn_into().map_err(|_| {
+            AwsmTextureError::ImageBitmapCreate("cast OffscreenCanvas 2d context".to_string())
+        })?;
+
+        // The FFI binding accepts `Clamped<&[u8]>`; web-sys will copy the
+        // slice into a Wasm-side Uint8ClampedArray when constructing the
+        // ImageData.
+        let image_data = web_sys::ImageData::new_with_u8_clamped_array_and_sh(
+            wasm_bindgen::Clamped(rgba_bytes),
+            width,
+            height,
+        )
+        .map_err(|e| AwsmTextureError::ImageBitmapCreate(format!("ImageData::new: {e:?}")))?;
+        ctx.put_image_data(&image_data, 0, 0)
+            .map_err(|e| AwsmTextureError::ImageBitmapCreate(format!("put_image_data: {e:?}")))?;
+        let bitmap = canvas
+            .transfer_to_image_bitmap()
+            .map_err(|e| AwsmTextureError::ImageBitmapCreate(format!("transfer: {e:?}")))?;
+
+        self.add_image(
+            ImageData::Bitmap {
+                image: bitmap,
+                options: None,
+            },
+            TextureFormat::Rgba8unorm,
+            sampler_key,
+            color,
+        )
+    }
+
     /// Inserts a texture transform and returns its key.
     pub fn insert_texture_transform(
         &mut self,
@@ -607,4 +674,7 @@ pub enum AwsmTextureError {
 
     #[error("[texture] no clamp sampler found in mega-texture")]
     NoClampSamplerInMegaTexture,
+
+    #[error("[texture] runtime image bitmap creation failed: {0}")]
+    ImageBitmapCreate(String),
 }
