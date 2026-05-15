@@ -136,6 +136,10 @@ impl MeshMeta {
             morphs,
             skins,
             material_meta_buffers: &self.material_buffers,
+            // Stage-3 will populate this from the per-mesh `Instances`
+            // attribute offset. For now every mesh emits the sentinel and
+            // shading sees `instance_id == U32_MAX` → identity tint.
+            instance_attr_base: u32::MAX,
         }
         .to_bytes()?;
 
