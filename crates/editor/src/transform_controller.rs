@@ -701,7 +701,7 @@ fn get_rotation_plane_basis(axis: Vec3) -> (Vec3, Vec3) {
 ///
 /// Returns the world-space intersection point, or None if the ray is parallel to the plane
 /// or pointing away from it.
-fn ray_plane_intersection(
+pub fn ray_plane_intersection(
     screen_x: f32,
     screen_y: f32,
     viewport_width: f32,

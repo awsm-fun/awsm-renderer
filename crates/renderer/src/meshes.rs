@@ -102,6 +102,15 @@ impl AwsmRenderer {
         Ok(())
     }
 
+    /// Routes the mesh through the HUD render pass so it draws on top of
+    /// world geometry. Used by editor overlay primitives (gizmos, point
+    /// handles) that need to remain visible regardless of occluding meshes.
+    pub fn set_mesh_hud(&mut self, mesh_key: MeshKey, hud: bool) -> crate::error::Result<()> {
+        let mesh = self.meshes.get_mut(mesh_key)?;
+        mesh.hud = hud;
+        Ok(())
+    }
+
     /// Reassign the material a mesh references. The previous material is left
     /// in the materials map for reuse; callers may remove it via the
     /// `materials` API if they're sure nothing else references it.

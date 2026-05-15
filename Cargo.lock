@@ -178,6 +178,7 @@ name = "awsm-renderer-editor"
 version = "0.1.7"
 dependencies = [
  "anyhow",
+ "awsm-meshgen",
  "awsm-renderer",
  "awsm-renderer-gltf",
  "glam 0.32.1",
