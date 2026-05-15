@@ -689,14 +689,13 @@ impl AppScene {
         let keys = renderer.materials.keys().collect::<Vec<_>>();
 
         for key in keys {
-            renderer.update_material(key, |mat| {
-                match mat {
-                    Material::Pbr(pbr_material) => {
-                        pbr_material.debug = material_debug;
-                    }
-                    Material::Unlit(_) => {
-                        // TODO
-                    }
+            renderer.update_material(key, |mat| match mat {
+                Material::Pbr(pbr_material) => {
+                    pbr_material.debug = material_debug;
+                }
+                Material::Unlit(_) | Material::Toon(_) => {
+                    // Non-PBR materials don't carry the per-shading debug
+                    // bitmask; ignore the per-frame override on those.
                 }
             });
         }
