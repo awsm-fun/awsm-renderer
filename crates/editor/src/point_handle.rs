@@ -11,6 +11,7 @@
 //! (`transform_controller`) — no axis constraints, no rotation, no scale.
 //! Authors grab the handle and drag in the camera plane.
 
+use awsm_meshgen::sphere_mesh;
 use awsm_renderer::{
     camera::CameraMatrices,
     materials::{pbr::PbrMaterial, Material, MaterialAlphaMode, MaterialKey},
@@ -19,7 +20,6 @@ use awsm_renderer::{
     transforms::{Transform, TransformKey},
     AwsmRenderer,
 };
-use awsm_meshgen::sphere_mesh;
 use glam::{Quat, Vec3};
 
 use crate::transform_controller::ray_plane_intersection;
@@ -51,22 +51,12 @@ struct PointDragState {
 /// Set of N translation-only point handles. Used by the editor to expose
 /// control-point editing for `NodeKind::Curve` and `NodeKind::Line` nodes
 /// directly in the viewport.
+#[derive(Default)]
 pub struct PointHandleSet {
     handles: Vec<PointHandle>,
     material_key: Option<MaterialKey>,
     drag_state: Option<PointDragState>,
     visible: bool,
-}
-
-impl Default for PointHandleSet {
-    fn default() -> Self {
-        Self {
-            handles: Vec::new(),
-            material_key: None,
-            drag_state: None,
-            visible: false,
-        }
-    }
 }
 
 impl PointHandleSet {
@@ -176,9 +166,7 @@ impl PointHandleSet {
 
     /// Returns the handle index if `mesh_key` belongs to this set.
     pub fn is_handle_mesh(&self, mesh_key: MeshKey) -> Option<usize> {
-        self.handles
-            .iter()
-            .position(|h| h.mesh_key == mesh_key)
+        self.handles.iter().position(|h| h.mesh_key == mesh_key)
     }
 
     pub fn handle_count(&self) -> usize {
