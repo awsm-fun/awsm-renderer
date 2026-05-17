@@ -103,9 +103,19 @@ pub struct AwsmRenderer {
 }
 
 /// Compatibility requirements for this renderer.
+///
+/// `storage_buffers` is the worst-case `maxStorageBuffersPerShaderStage`
+/// the opaque-material pass needs. Opaque currently binds 9 storage
+/// buffers in `@group(0)` (visibility_data, material_mesh_metas,
+/// materials, attribute_indices, attribute_data, model_transforms,
+/// normal_matrices, texture_transforms, instance_attrs) plus 1 in
+/// `@group(1)` (lights) → 10 in one shader stage. The transparent pass
+/// peaks at 9. Bumping this lower than the binding count will pass
+/// adapter compatibility on a device that exactly meets the declared
+/// limit, then fail pipeline validation when the shader is compiled.
 pub static COMPATIBITLIY_REQUIREMENTS: LazyLock<CompatibilityRequirements> =
     LazyLock::new(|| CompatibilityRequirements {
-        storage_buffers: Some(9),
+        storage_buffers: Some(10),
     });
 
 impl AwsmRenderer {
