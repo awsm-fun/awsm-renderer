@@ -69,6 +69,23 @@ impl ToastInstance {
     }
 
     fn render(&self) -> Dom {
+        static DISMISS_BTN: LazyLock<String> = LazyLock::new(|| {
+            class! {
+                .style("position", "absolute")
+                .style("top", "0.25rem")
+                .style("right", "0.4rem")
+                .style("background", "transparent")
+                .style("border", "none")
+                .style("color", "white")
+                .style("font-size", "1.1rem")
+                .style("line-height", "1")
+                .style("cursor", "pointer")
+                .style("padding", "0.15rem 0.35rem")
+                .style("opacity", "0.7")
+                .pseudo!(":hover", { .style("opacity", "1") })
+            }
+        });
+
         let message = self.message.clone();
         let kind = self.kind.clone();
 
@@ -87,14 +104,26 @@ impl ToastInstance {
                         ToastKind::Error => ("rgba(180, 60, 60, 0.95)", "rgba(230, 90, 90, 0.95)"),
                     };
                     html!("div", {
-                        .style("padding", "0.6rem 0.95rem")
+                        .style("padding", "0.6rem 2.25rem 0.6rem 0.95rem")
                         .style("border-radius", "0.5rem")
                         .style("border", &format!("1px solid {border}"))
                         .style("background", bg)
                         .style("color", "white")
                         .style("font-size", FontSize::Md.value())
                         .style("box-shadow", "0 6px 20px rgba(0, 0, 0, 0.35)")
+                        .style("position", "relative")
                         .text(&msg)
+                        // Manual-dismiss "×" in the top-right. The 4–8s
+                        // auto-hide is still there as the lazy path; the
+                        // X is for when a toast lingers in the corner and
+                        // the user wants it out of the way now.
+                        .child(html!("button", {
+                            .class(&*DISMISS_BTN)
+                            .text("×")
+                            .event(clone!(message => move |_: events::Click| {
+                                message.set(None);
+                            }))
+                        }))
                     })
                 })
             })))
