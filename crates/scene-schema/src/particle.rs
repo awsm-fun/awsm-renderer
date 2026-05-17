@@ -67,15 +67,6 @@ pub enum SizeOverLifeDef {
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[derive(Copy)]
-pub enum AlphaOverLifeDef {
-    Const(f32),
-    LinearOneToZero,
-    Linear { start: f32, end: f32 },
-}
-
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub struct ParticleEmitterDef {
     pub spawn_rate: f32,
     pub burst_count: u32,
@@ -87,9 +78,16 @@ pub struct ParticleEmitterDef {
     pub lifetime: [f32; 2],
     pub size: [f32; 2],
     pub forces: Vec<ForceDef>,
+    /// Per-particle RGBA curve over lifetime. The alpha channel is
+    /// the *only* transparency knob — there used to be a separate
+    /// `alpha_over_life: AlphaOverLifeDef` field, but it just
+    /// multiplied with this `.a` and trivially produced α² fades
+    /// when the user set both to 1→0. The schema no longer carries
+    /// it; the fragment shader multiplies the texture's alpha by
+    /// this color's `.a` and the per-instance attr alpha and that's
+    /// the visible transparency.
     pub color_over_life: ColorOverLifeDef,
     pub size_over_life: SizeOverLifeDef,
-    pub alpha_over_life: AlphaOverLifeDef,
     /// Optional sprite texture for billboard rendering.
     pub texture: Option<TextureRef>,
     /// Route this emitter through the transparent-blend pass instead of the
@@ -113,15 +111,19 @@ impl Default for ParticleEmitterDef {
             lifetime: [0.4, 0.8],
             size: [0.1, 0.2],
             forces: vec![],
+            // Default is a neutral white→white fade so a newly
+            // inserted emitter with no texture renders as plain
+            // dots, and the user's first texture binding shows up
+            // un-tinted. (The old fiery orange→red default made
+            // every fresh smoke emitter look like fire.)
             color_over_life: ColorOverLifeDef::Linear {
-                start: [1.0, 0.8, 0.2, 1.0],
-                end: [1.0, 0.2, 0.0, 0.0],
+                start: [1.0, 1.0, 1.0, 1.0],
+                end: [1.0, 1.0, 1.0, 0.0],
             },
             size_over_life: SizeOverLifeDef::Linear {
                 start: 1.0,
                 end: 0.3,
             },
-            alpha_over_life: AlphaOverLifeDef::LinearOneToZero,
             texture: None,
             blend: false,
         }

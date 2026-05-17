@@ -30,8 +30,7 @@ use awsm_renderer::{
     AwsmRenderer,
 };
 use awsm_scene_schema::{
-    AlphaOverLifeDef, ColorOverLifeDef, EmitterSpaceDef, ForceDef, ParticleEmitterDef,
-    SizeOverLifeDef, SpawnShapeDef,
+    ColorOverLifeDef, EmitterSpaceDef, ForceDef, ParticleEmitterDef, SizeOverLifeDef, SpawnShapeDef,
 };
 use futures_signals::signal::{Mutable, SignalExt};
 use glam::{Quat, Vec3};
@@ -613,15 +612,6 @@ fn def_to_emitter(def: &ParticleEmitterDef) -> Emitter {
             SizeOverLifeDef::Const(c) => awsm_particles::emitter::SizeOverLife::Const(c),
             SizeOverLifeDef::Linear { start, end } => {
                 awsm_particles::emitter::SizeOverLife::Linear { start, end }
-            }
-        },
-        alpha_over_life: match def.alpha_over_life {
-            AlphaOverLifeDef::Const(c) => awsm_particles::emitter::AlphaOverLife::Const(c),
-            AlphaOverLifeDef::LinearOneToZero => {
-                awsm_particles::emitter::AlphaOverLife::LinearOneToZero
-            }
-            AlphaOverLifeDef::Linear { start, end } => {
-                awsm_particles::emitter::AlphaOverLife::Linear { start, end }
             }
         },
     }

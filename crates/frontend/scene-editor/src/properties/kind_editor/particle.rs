@@ -5,8 +5,9 @@
 // `playing` Mutable that `renderer_bridge::particles_sync` observes —
 // see `D-1a` in the progress doc), then every authored param: spawn
 // rate / burst / max-alive / one-shot / blend / space / spawn shape /
-// speed range / lifetime range / size range / color-over-life /
-// size-over-life / alpha-over-life / forces vec / texture picker.
+// speed range / lifetime range / size range / color-over-life
+// (alpha lives on color_over_life.a) / size-over-life / forces vec /
+// texture picker.
 // Each `particle_*` helper renders one row.
 // ─────────────────────────────────────────────────────────────────────
 
@@ -44,7 +45,6 @@ pub fn render(node: Arc<Node>) -> Dom {
         .child(field_row("Size max", particle_f32_input(node.clone(), ParticleField::SizeMax)))
         .child(particle_color_over_life_section(node.clone()))
         .child(particle_size_over_life_section(node.clone()))
-        .child(particle_alpha_over_life_section(node.clone()))
         .child(particle_forces_section(node.clone()))
         .child(field_row("Texture", texture_ref_select(
             node,
@@ -586,12 +586,11 @@ fn particle_cone_dir_input(node: Arc<Node>, axis: usize) -> Dom {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Particle over-life variant pickers (color / size / alpha)
+// Particle over-life variant pickers (color / size)
 // ─────────────────────────────────────────────────────────────────────
 
 const OVER_LIFE_CONST: &str = "const";
 const OVER_LIFE_LINEAR: &str = "linear";
-const OVER_LIFE_LINEAR_ONE_TO_ZERO: &str = "linear_one_to_zero";
 
 fn particle_color_over_life_section(node: Arc<Node>) -> Dom {
     use awsm_scene_schema::ColorOverLifeDef;
@@ -866,61 +865,5 @@ fn size_over_life_input(node: Arc<Node>, is_end: bool) -> Dom {
             }
             kind.set(k);
         }
-    })
-}
-
-fn particle_alpha_over_life_section(node: Arc<Node>) -> Dom {
-    use awsm_scene_schema::AlphaOverLifeDef;
-    let kind = node.kind.clone();
-    let select = html!("select" => web_sys::HtmlSelectElement, {
-        .style("padding", "0.35rem 0.5rem")
-        .style("background-color", ColorRaw::Darkest.value())
-        .style("color", ColorText::SidebarHeader.value())
-        .style("border", &format!("1px solid {}", ColorBackground::UnderlineSecondary.value()))
-        .style("border-radius", "0.3rem")
-        .style("font-size", "0.85rem")
-        .style("cursor", "pointer")
-        .child(html!("option", { .attr("value", OVER_LIFE_CONST).text("Const") }))
-        .child(html!("option", { .attr("value", OVER_LIFE_LINEAR).text("Linear") }))
-        .child(html!("option", { .attr("value", OVER_LIFE_LINEAR_ONE_TO_ZERO).text("Linear 1→0") }))
-        .with_node!(select => {
-            .future(clone!(kind, select => {
-                kind.signal_cloned().for_each(move |k| {
-                    if let NodeKind::ParticleEmitter(p) = k {
-                        let want = match p.alpha_over_life {
-                            AlphaOverLifeDef::Const(_) => OVER_LIFE_CONST,
-                            AlphaOverLifeDef::Linear { .. } => OVER_LIFE_LINEAR,
-                            AlphaOverLifeDef::LinearOneToZero => OVER_LIFE_LINEAR_ONE_TO_ZERO,
-                        };
-                        if select.value() != want {
-                            select.set_value(want);
-                        }
-                    }
-                    async {}
-                })
-            }))
-            .event(clone!(kind, select => move |_: events::Change| {
-                let mut k = kind.get_cloned();
-                if let NodeKind::ParticleEmitter(ref mut p) = k {
-                    let new_var = match select.value().as_str() {
-                        OVER_LIFE_CONST => AlphaOverLifeDef::Const(1.0),
-                        OVER_LIFE_LINEAR_ONE_TO_ZERO => AlphaOverLifeDef::LinearOneToZero,
-                        _ => AlphaOverLifeDef::Linear { start: 1.0, end: 0.0 },
-                    };
-                    let same = std::mem::discriminant(&p.alpha_over_life)
-                        == std::mem::discriminant(&new_var);
-                    if !same {
-                        p.alpha_over_life = new_var;
-                        kind.set(k);
-                    }
-                }
-            }))
-        })
-    });
-    html!("div", {
-        .style("display", "flex")
-        .style("flex-direction", "column")
-        .style("gap", "0.4rem")
-        .child(field_row("Alpha/life", select))
     })
 }
