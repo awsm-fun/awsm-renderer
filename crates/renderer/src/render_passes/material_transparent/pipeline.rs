@@ -174,25 +174,21 @@ async fn render_pipeline_key(
         .with_front_face(FrontFace::Ccw)
         .with_cull_mode(cull_mode);
 
-    // Transparency requires depth-test ON (so opaque geometry in
-    // front correctly occludes a translucent surface behind it) but
-    // depth-write OFF. Writing depth from a translucent fragment
-    // makes subsequent translucent fragments at *any* greater depth
-    // fail the LessEqual test, which produces two visible bugs:
+    // HUD elements will start with a FRESH depth buffer
+    // so we can write to it too.
     //
-    //   1. Cross-mesh: a particle behind a transparent dome pane
-    //      (or vice versa) gets culled by whichever drew first,
-    //      so the user sees one occluding the other instead of
-    //      compositing through.
-    //   2. Intra-emitter: particles in one billboard emitter draw
-    //      in instance-buffer order, not depth order — the first
-    //      instance writes its depth and any farther instance in
-    //      the same cloud disappears.
-    //
-    // Back-to-front sort in `collect_renderables` keeps the
-    // composite ordering correct without needing depth-write.
+    // Note: depth_write here is intentionally ON — disabling it
+    // breaks `KHR_materials_transmission` glass (front + back
+    // faces stop masking each other and the bowl loses its
+    // refractive silhouette). Transmission isn't a pure alpha-
+    // blend material; it samples the opaque background and
+    // expects the conventional "transparent mesh writes its own
+    // depth" behaviour. For particle-through-glass + intra-cloud
+    // sorting we instead rely on the back-to-front sort in
+    // `collect_renderables` to put the right primitive ahead of
+    // any depth-test rejections.
     let depth_stencil = DepthStencilState::new(depth_texture_format)
-        .with_depth_write_enabled(false)
+        .with_depth_write_enabled(true)
         .with_depth_compare(CompareFunction::LessEqual);
 
     let mut pipeline_cache_key = RenderPipelineCacheKey::new(shader_key, pipeline_layout_key)

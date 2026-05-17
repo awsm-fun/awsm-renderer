@@ -132,20 +132,25 @@ async fn materialize_or_replace(node_id: NodeId, transform_key: TransformKey) {
         return;
     }
 
-    with_renderer_mut(move |r| {
-        let base_world = r
-            .transforms
-            .get_world(transform_key)
-            .copied()
-            .unwrap_or(glam::Mat4::IDENTITY);
-        let base_world_pos = base_world.w_axis.truncate();
-        if let Some(runtime) = build_runtime(r, transform_key, base_world_pos, &def) {
-            with_runtimes(|m| {
-                m.insert(node_id, runtime);
-            });
-        }
-    })
-    .await;
+    // Opaque path is sync per-step, but we still need `finalize_gpu_textures`
+    // (async) afterwards so the pipeline + bind groups see any freshly-uploaded
+    // raster texture the material binds — same reason as the blend path.
+    let handle = renderer_handle();
+    let mut renderer = handle.lock().await;
+    let base_world = renderer
+        .transforms
+        .get_world(transform_key)
+        .copied()
+        .unwrap_or(glam::Mat4::IDENTITY);
+    let base_world_pos = base_world.w_axis.truncate();
+    if let Some(runtime) = build_runtime(&mut renderer, transform_key, base_world_pos, &def) {
+        with_runtimes(|m| {
+            m.insert(node_id, runtime);
+        });
+    }
+    if let Err(err) = renderer.finalize_gpu_textures().await {
+        tracing::warn!("particles_sync (opaque): finalize_gpu_textures failed: {err}");
+    }
 }
 
 async fn tear_down(node_id: NodeId) {
@@ -379,6 +384,17 @@ async fn build_runtime_blend(
     }
     if let Err(err) = renderer.set_mesh_instance_attrs(transform_key, &initial_attrs) {
         tracing::warn!("particles_sync (blend): set_mesh_instance_attrs failed: {err}");
+    }
+
+    // If `resolve_particle_texture` just uploaded a fresh raster
+    // texture into the pool (the typical first-play case for a
+    // smoke / fire / spark sprite), the bind groups + transparent
+    // pipelines need to be rebuilt to see the new pool entry. Without
+    // this the shader samples an empty array slot and the particles
+    // render fully invisible. Mirrors what `instance_template` does
+    // at the end of the gltf instance-flow.
+    if let Err(err) = renderer.finalize_gpu_textures().await {
+        tracing::warn!("particles_sync (blend): finalize_gpu_textures failed: {err}");
     }
 
     Some(EmitterRuntime {
