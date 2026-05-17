@@ -72,6 +72,38 @@ impl AssetSource {
 #[serde(rename_all = "snake_case")]
 pub struct AssetEntry {
     pub source: AssetSource,
+    /// Editable `MaterialDef` asset ids extracted from a glTF file on
+    /// import, indexed by glTF material index. Empty for non-glTF
+    /// entries (and for glTFs imported before this feature shipped —
+    /// they continue to render via the gltf-baked materials).
+    ///
+    /// The `Model` instancer walks the per-primitive glTF material index
+    /// in the matching `AssetTemplate` and, when an entry exists at
+    /// that index, swaps the rendered mesh's material via
+    /// `set_mesh_material`. This is the single source of truth — every
+    /// Model node referencing the same gltf inherits the same overrides
+    /// without per-node duplication.
+    ///
+    /// `#[serde(default)]` keeps existing project.json files
+    /// round-tripping cleanly. We deliberately don't add
+    /// `skip_serializing_if = "Vec::is_empty"` because bitcode (used
+    /// for the per-game build artifact) doesn't support serde's skip
+    /// hint — an empty Vec serializes as zero length anyway.
+    #[serde(default)]
+    pub gltf_material_asset_ids: Vec<AssetId>,
+}
+
+impl AssetEntry {
+    /// Convenience for the common case: just a source, no glTF
+    /// override map. Equivalent to `AssetEntry { source, ..Default }`
+    /// but reads cleaner at call sites and stays valid as the struct
+    /// grows.
+    pub fn new(source: AssetSource) -> Self {
+        Self {
+            source,
+            gltf_material_asset_ids: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -113,12 +145,8 @@ impl AssetTable {
             return id;
         }
         let id = AssetId::new();
-        self.entries.insert(
-            id,
-            AssetEntry {
-                source: AssetSource::Filename(filename),
-            },
-        );
+        self.entries
+            .insert(id, AssetEntry::new(AssetSource::Filename(filename)));
         id
     }
 

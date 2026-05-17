@@ -53,6 +53,15 @@ pub struct GltfKeyLookups {
     pub mesh_primitives: HashMap<String, Vec<MeshKey>>,
     pub node_index_to_transform: HashMap<GltfIndex, TransformKey>,
     pub all_mesh_keys: HashMap<GltfIndex, Vec<MeshKey>>,
+    /// For each renderer `MeshKey` produced by the glTF populate pass,
+    /// the originating glTF material index (`None` if the primitive had
+    /// no material set, which glTF treats as the spec default material).
+    ///
+    /// Consumers like the editor's scene-editor crate use this to
+    /// override the renderer-baked material with an editable
+    /// `MaterialDef` extracted at import time — see
+    /// `crates/frontend/scene-editor/src/renderer_bridge/node_sync.rs`.
+    pub mesh_key_to_gltf_material_index: HashMap<MeshKey, Option<GltfIndex>>,
 }
 
 impl GltfKeyLookups {

@@ -239,12 +239,10 @@ pub fn capture_as_mesh_asset(node_id: NodeId) -> Option<awsm_scene_schema::Asset
         let mut table = scene.assets.lock().unwrap();
         table.entries.insert(
             asset_id,
-            AssetEntry {
-                source: AssetSource::Mesh(MeshDef {
-                    label: label.clone(),
-                    source: Some(captured_source),
-                }),
-            },
+            AssetEntry::new(AssetSource::Mesh(MeshDef {
+                label: label.clone(),
+                source: Some(captured_source),
+            })),
         );
     }
     state.pending_assets.lock().unwrap().insert(asset_id, bytes);

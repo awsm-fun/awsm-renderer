@@ -60,14 +60,23 @@ async fn save_inner() -> anyhow::Result<()> {
 
     let table = state.scene.assets.lock().unwrap().clone();
     for (id, bytes) in &pending {
-        // Two disk-path conventions today:
+        // Disk-path conventions:
         // - `AssetSource::Filename(name)` → `assets/<name>` (the
         //   user-picked filename round-trips into project.json).
+        // - `AssetSource::Texture(TextureDef::Raster { filename })` →
+        //   `assets/<filename>` (gltf-extracted images live here; the
+        //   filename in the TextureDef is the stable identifier and
+        //   the bytes in pending_assets are what gets written).
         // - `AssetSource::Mesh(_)` → `assets/<asset-id>.mesh.bin`
         //   (the captured-mesh side file; the AssetId is the stable
         //   filename, project.json only stores the MeshDef metadata).
         // Anything else with pending bytes is unexpected — log + skip.
         let disk_path = if let Some(filename) = table.filename(*id) {
+            asset_disk_path(filename)
+        } else if let Some(awsm_scene_schema::AssetSource::Texture(
+            awsm_scene_schema::TextureDef::Raster { filename },
+        )) = table.get(*id).map(|e| &e.source)
+        {
             asset_disk_path(filename)
         } else if matches!(
             table.get(*id).map(|e| &e.source),
@@ -98,10 +107,20 @@ fn collect_referenced_asset_ids(scene: &crate::scene::Scene) -> HashSet<AssetId>
     use crate::scene::{IblConfig, Node, NodeKind, SkyboxConfig};
     use awsm_scene_schema::{AssetSource, MaterialDef};
 
-    // Pull texture refs out of an inline MaterialDef (procedural-texture
-    // assets bound as base_color_texture).
+    // Pull every texture-asset reference out of a MaterialDef. Both
+    // inline materials (on Primitive / Sweep / Mesh nodes) and shared
+    // Material assets carry the same fields; this helper covers both.
     fn record_material_def(def: &MaterialDef, out: &mut HashSet<AssetId>) {
-        if let Some(t) = def.base_color_texture {
+        for t in [
+            def.base_color_texture,
+            def.metallic_roughness_texture,
+            def.emissive_texture,
+            def.normal_texture,
+            def.occlusion_texture,
+        ]
+        .into_iter()
+        .flatten()
+        {
             out.insert(t.0);
         }
     }
@@ -161,15 +180,30 @@ fn collect_referenced_asset_ids(scene: &crate::scene::Scene) -> HashSet<AssetId>
     let nodes = scene.nodes.lock_ref();
     walk(nodes.as_slice(), &mut ids);
 
-    // Walk Material assets: their MaterialDef can carry a
-    // base_color_texture pointing at another asset (a procedural
-    // texture). The Material asset itself is referenced by a node
-    // (or another walker pass would skip it), but the texture it
-    // embeds also needs to survive cleanup. Indirect refs only —
-    // we don't recurse into Material→Material chains because the
-    // schema doesn't have any.
+    // Bring in indirect references. We do this in two passes because
+    // both depend on the asset table itself, not the node tree:
+    //
+    // 1) For every in-use gltf (AssetSource::Filename referenced by a
+    //    Model node above), mark every Material AssetId in its
+    //    `gltf_material_asset_ids` map. These are the gltf-extracted
+    //    editable materials — the link from Model → Material is
+    //    indirected through the gltf's AssetEntry rather than living
+    //    on the Model node, so the basic node walk doesn't see them.
+    //
+    // 2) For every Material asset, mark its texture refs. The Material
+    //    itself was marked either by a Primitive/Sweep/Mesh node above
+    //    or by step (1); the textures it embeds need to survive even
+    //    though nothing else points at them directly.
     {
         let table = scene.assets.lock().unwrap();
+        let gltf_link_ids: Vec<AssetId> = ids.iter().copied().collect();
+        for id in gltf_link_ids {
+            if let Some(entry) = table.entries.get(&id) {
+                for material_id in &entry.gltf_material_asset_ids {
+                    ids.insert(*material_id);
+                }
+            }
+        }
         for entry in table.entries.values() {
             if let AssetSource::Material(def) = &entry.source {
                 record_material_def(def, &mut ids);
@@ -385,7 +419,7 @@ async fn load_inner() -> anyhow::Result<bool> {
     }
 
     let text = dir.read_text(PROJECT_JSON_FILENAME).await?;
-    let snapshot: SceneSnapshot = serde_json::from_str(&text)?;
+    let mut snapshot: SceneSnapshot = serde_json::from_str(&text)?;
 
     // Drop the prior project's caches before we point the scene at
     // the new project — otherwise a fresh project that recycles an
@@ -395,6 +429,62 @@ async fn load_inner() -> anyhow::Result<bool> {
     crate::renderer_bridge::mesh_cache::clear();
     drop_renderer_caches().await;
 
+    // Switching projects: drop anything the previous session staged but
+    // never saved. Assets referenced by the loaded project live on disk.
+    // Done BEFORE the gltf-material extraction below so the extracted
+    // texture bytes land in a fresh pending_assets map.
+    state.pending_assets.lock().unwrap().clear();
+
+    // Auto-extract editable materials + textures from every glb/gltf
+    // asset that hasn't already been processed. This is what makes
+    // gltf-imported materials show up in the Assets library; we mutate
+    // the snapshot rather than the live scene so apply_to picks up the
+    // extracted state in one shot and the materializer reads the final
+    // override map straight away (no race with reactive observers).
+    let gltfs_to_extract: Vec<(awsm_scene_schema::AssetId, String)> = snapshot
+        .assets
+        .entries
+        .iter()
+        .filter_map(|(id, entry)| {
+            if !entry.gltf_material_asset_ids.is_empty() {
+                return None;
+            }
+            match &entry.source {
+                awsm_scene_schema::AssetSource::Filename(name)
+                    if name.ends_with(".glb") || name.ends_with(".gltf") =>
+                {
+                    Some((*id, name.clone()))
+                }
+                _ => None,
+            }
+        })
+        .collect();
+    for (gltf_id, filename) in gltfs_to_extract {
+        let disk_path = asset_disk_path(&filename);
+        match dir.read_bytes(&disk_path).await {
+            Ok(bytes) => {
+                let display = filename
+                    .rsplit_once('.')
+                    .map(|(s, _)| s.to_string())
+                    .unwrap_or_else(|| filename.clone());
+                crate::actions::insert::extract_gltf_materials_into(
+                    &mut snapshot.assets,
+                    &state.pending_assets,
+                    gltf_id,
+                    &display,
+                    &bytes,
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "load: auto-extract gltf {gltf_id} ({filename}) — read bytes \
+                     failed: {err}; renderer-baked materials will continue to be \
+                     used for this asset"
+                );
+            }
+        }
+    }
+
     crate::scene::snapshot::apply_to(&snapshot, &state.scene);
     state.scene.bump_revision();
 
@@ -403,14 +493,48 @@ async fn load_inner() -> anyhow::Result<bool> {
     state.history.lock().unwrap().clear();
     state.refresh_history_signals();
 
-    // Switching projects: drop anything the previous session staged but
-    // never saved. Assets referenced by the loaded project live on disk.
-    state.pending_assets.lock().unwrap().clear();
-
     {
         let mut project = state.project.lock().unwrap();
         project.directory = Some(dir.clone());
         project.dirty = false;
+    }
+
+    // Pre-hydrate `pending_assets` with the bytes for every
+    // `TextureDef::Raster` entry — the texture cache's sync upload
+    // path reads from this map and has no async hook, so we have to
+    // page the files in before any materializer runs. Silently skip
+    // textures whose file isn't on disk (the inspector surfaces
+    // those via the existing "missing assets" modal).
+    let raster_filenames: Vec<(awsm_scene_schema::AssetId, String)> = {
+        let table = state.scene.assets.lock().unwrap();
+        table
+            .entries
+            .iter()
+            .filter_map(|(id, entry)| match &entry.source {
+                awsm_scene_schema::AssetSource::Texture(
+                    awsm_scene_schema::TextureDef::Raster { filename },
+                ) => Some((*id, filename.clone())),
+                _ => None,
+            })
+            .collect()
+    };
+    for (texture_id, filename) in raster_filenames {
+        let disk_path = asset_disk_path(&filename);
+        match dir.read_bytes(&disk_path).await {
+            Ok(bytes) => {
+                state
+                    .pending_assets
+                    .lock()
+                    .unwrap()
+                    .insert(texture_id, bytes);
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "load: raster texture asset {texture_id} ({filename}) \
+                     could not be read from disk: {err}"
+                );
+            }
+        }
     }
     // Prefer the project's stored name if the user has renamed it
     // through the header; fall back to the directory name otherwise.

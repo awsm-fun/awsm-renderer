@@ -43,6 +43,22 @@ gloo-timers = { version = "0.3.0", features = ["futures"] }
 serde-wasm-bindgen = "0.6.5"
 xutex = "0.2.1"
 awsm_web = { version = "0.45.0", default-features = false, features = ["dom", "file"] }
+# Raster decode for gltf-extracted textures. The workspace dep only
+# enables `png`; add `jpeg` here because glTF embedded textures often
+# arrive as JPEG. No-default-features keeps the binary lean.
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
+# Parse glTF documents at editor-import time to extract material
+# parameters + image bytes into editable asset entries. The renderer's
+# own gltf path (awsm-renderer-gltf) still does the renderer-side
+# populate; this is a second, editor-side pass that produces
+# MaterialDef + TextureDef::Raster assets bound to the same gltf.
+gltf = { version = "1.4.1", git = "https://github.com/gltf-rs/gltf.git", features = [
+    "extensions",
+    "KHR_lights_punctual",
+    "KHR_texture_transform",
+    "KHR_materials_emissive_strength",
+    "KHR_materials_unlit",
+] }
 
 # web-sys features additive on top of the awsm workspace baseline.
 # These cover what the editor uses beyond the renderer/web-shared set:

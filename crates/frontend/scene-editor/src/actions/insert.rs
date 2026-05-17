@@ -109,6 +109,50 @@ async fn prepare_model(file: File) -> anyhow::Result<ModelPrep> {
         state.pending_assets.lock().unwrap().insert(asset_id, bytes);
     }
 
+    // Once per import, walk the gltf's materials + textures and surface
+    // them in the assets library as editable `MaterialDef` /
+    // `TextureDef::Raster` entries — and stash the per-gltf "material
+    // index → editor AssetId" map on the gltf's AssetEntry so the
+    // `instance_template` materializer can swap the renderer-baked
+    // material with our editable extraction.
+    //
+    // Skipped (silently) if:
+    //   - The gltf's AssetEntry already carries a populated
+    //     `gltf_material_asset_ids` Vec (re-imported in the same
+    //     session, or hydrated from a project.json that captured the
+    //     prior extraction).
+    //   - The gltf bytes aren't in `pending_assets` (the
+    //     `already_on_disk` short-circuit above writes bytes only when
+    //     they aren't already on disk). In that case the extraction
+    //     would have to read from disk async — for now we accept that
+    //     pre-existing on-disk gltfs keep their renderer-baked
+    //     materials until re-imported.
+    let already_extracted = !state
+        .scene
+        .assets
+        .lock()
+        .unwrap()
+        .get(asset_id)
+        .map(|e| e.gltf_material_asset_ids.is_empty())
+        .unwrap_or(true);
+    if !already_extracted {
+        let bytes_for_gltf = state.pending_assets.lock().unwrap().get(&asset_id).cloned();
+        if let Some(bytes) = bytes_for_gltf {
+            let extract_label = filename
+                .rsplit_once('.')
+                .map(|(stem, _)| stem.to_string())
+                .unwrap_or_else(|| filename.clone());
+            let mut table = state.scene.assets.lock().unwrap();
+            extract_gltf_materials_into(
+                &mut table,
+                &state.pending_assets,
+                asset_id,
+                &extract_label,
+                &bytes,
+            );
+        }
+    }
+
     // Kick off the asset load + wait for the populated template so we
     // know how many top-level nodes it has. A concurrent insert of the
     // same path will share this load.
@@ -414,18 +458,16 @@ pub fn texture_asset() -> Option<awsm_scene_schema::AssetId> {
         let mut table = state.scene.assets.lock().unwrap();
         table.entries.insert(
             id,
-            AssetEntry {
-                source: AssetSource::Texture(TextureDef::Procedural(
-                    ProceduralTextureDef::Checker {
-                        width: 256,
-                        height: 256,
-                        cells_x: 8,
-                        cells_y: 8,
-                        color_a: [0.1, 0.1, 0.1, 1.0],
-                        color_b: [0.9, 0.9, 0.9, 1.0],
-                    },
-                )),
-            },
+            AssetEntry::new(AssetSource::Texture(TextureDef::Procedural(
+                ProceduralTextureDef::Checker {
+                    width: 256,
+                    height: 256,
+                    cells_x: 8,
+                    cells_y: 8,
+                    color_a: [0.1, 0.1, 0.1, 1.0],
+                    color_b: [0.9, 0.9, 0.9, 1.0],
+                },
+            ))),
         );
     }
     state.scene.bump_revision();
@@ -444,9 +486,7 @@ pub fn material_asset() -> Option<awsm_scene_schema::AssetId> {
         let mut table = state.scene.assets.lock().unwrap();
         table.entries.insert(
             id,
-            AssetEntry {
-                source: AssetSource::Material(MaterialDef::default()),
-            },
+            AssetEntry::new(AssetSource::Material(MaterialDef::default())),
         );
     }
     state.scene.bump_revision();
@@ -473,4 +513,222 @@ fn insert_simple(make_node: impl FnOnce() -> Arc<Node>, op_label: &str) {
     state.select_only_implicit(node_id);
     state.commit_history(previous);
     tracing::info!("action: {op_label} — done");
+}
+
+/// Walk the glTF in `bytes`, build a `TextureDef::Raster` asset for
+/// each embedded image, a `MaterialDef` asset for each material, and
+/// stamp the resulting `material_index → AssetId` map onto the gltf
+/// asset's entry so `instance_template` can override the renderer-
+/// baked materials per primitive.
+///
+/// glTF features handled:
+/// - PBR scalars/colors (baseColorFactor / metallic / roughness / emissive)
+/// - Double-sided + alpha mode (Opaque / Mask{cutoff} / Blend)
+/// - Textures: baseColor, metallicRoughness, normal, occlusion, emissive
+///
+/// glTF features that fall back to the renderer-baked material until
+/// `MaterialDef` grows support: clearcoat / sheen / transmission /
+/// volume / iridescence / specular / anisotropy / KHR_materials_unlit,
+/// plus the `KHR_texture_transform` per-texture xform / non-zero
+/// `texCoord` set indices. Images supplied via external `uri` (rather
+/// than an embedded glb buffer view) are also skipped — gltf models
+/// in the wild are almost always glb so this is rarely load-bearing.
+///
+/// Takes the asset table + pending-bytes map as explicit arguments so
+/// callers can drive it either against the live scene state (Insert
+/// Model) or against a `SceneSnapshot` (project Load, before
+/// `apply_to`).
+pub(crate) fn extract_gltf_materials_into(
+    assets: &mut awsm_scene_schema::AssetTable,
+    pending_assets: &Mutex<std::collections::HashMap<AssetId, Vec<u8>>>,
+    gltf_asset_id: AssetId,
+    display_name: &str,
+    bytes: &[u8],
+) {
+    use awsm_scene_schema::{
+        AssetEntry, AssetSource, MaterialAlphaMode, MaterialDef, TextureDef, TextureRef,
+    };
+
+    let gltf = match gltf::Gltf::from_slice(bytes) {
+        Ok(g) => g,
+        Err(err) => {
+            tracing::warn!("extract_gltf_materials({display_name}): parse failed: {err}");
+            return;
+        }
+    };
+
+    let blob = gltf.blob.clone().unwrap_or_default();
+    let document = gltf.document;
+
+    // ── Pass 1: each gltf image → Texture::Raster asset ────────────────
+    //
+    // We extract by *image index* (not texture index), because the same
+    // image can back multiple gltf textures with different samplers; one
+    // editor Texture asset per image keeps the assets library tidy
+    // without losing fidelity.
+    let mut image_to_texture_asset: std::collections::HashMap<usize, AssetId> =
+        std::collections::HashMap::new();
+
+    for image in document.images() {
+        let img_idx = image.index();
+        let (raw_bytes, ext) = match image.source() {
+            gltf::image::Source::View { view, mime_type } => {
+                let buffer_idx = view.buffer().index();
+                // The glb's binary chunk is buffer 0; external .gltf
+                // buffers aren't loaded here (we'd need an async fetch).
+                // Skip with a debug log so the user can investigate.
+                if buffer_idx != 0 {
+                    tracing::debug!(
+                        "extract_gltf_materials({display_name}): image {img_idx} \
+                         references buffer {buffer_idx}, skipping (only buffer 0 \
+                         is read from the glb blob)"
+                    );
+                    continue;
+                }
+                let start = view.offset();
+                let len = view.length();
+                if start + len > blob.len() {
+                    tracing::warn!(
+                        "extract_gltf_materials({display_name}): image {img_idx} \
+                         buffer view {start}..{} exceeds blob len {}",
+                        start + len,
+                        blob.len()
+                    );
+                    continue;
+                }
+                (blob[start..start + len].to_vec(), mime_to_ext(mime_type))
+            }
+            gltf::image::Source::Uri { mime_type, .. } => {
+                tracing::debug!(
+                    "extract_gltf_materials({display_name}): image {img_idx} is \
+                     URI-sourced (mime={mime_type:?}); skipping extraction (only \
+                     embedded buffer views are read)"
+                );
+                continue;
+            }
+        };
+        let filename = format!("{display_name}__tex_{img_idx}.{ext}");
+        let texture_asset_id = AssetId::new();
+        assets.entries.insert(
+            texture_asset_id,
+            AssetEntry::new(AssetSource::Texture(TextureDef::Raster {
+                filename: filename.clone(),
+            })),
+        );
+        // Park the encoded bytes in `pending_assets` keyed by the
+        // texture's AssetId so `texture_cache::get_or_upload` can
+        // pick them up at materialize time, and `save_inner` can
+        // flush them to `assets/<filename>` when the user saves.
+        pending_assets
+            .lock()
+            .unwrap()
+            .insert(texture_asset_id, raw_bytes);
+        image_to_texture_asset.insert(img_idx, texture_asset_id);
+    }
+
+    // ── Pass 2: each gltf material → MaterialDef asset ─────────────────
+    let mut material_asset_ids: Vec<AssetId> = Vec::new();
+    for material in document.materials() {
+        let Some(mat_idx) = material.index() else {
+            // glTF allows a primitive to have no material set — the
+            // spec default material handles those at render time. We
+            // skip generating an editable asset for that case; the
+            // `instance_template` override is gated on `Some(idx)` so
+            // those primitives keep the renderer's baked default.
+            continue;
+        };
+
+        let pbr = material.pbr_metallic_roughness();
+        let alpha_mode = match material.alpha_mode() {
+            gltf::material::AlphaMode::Opaque => MaterialAlphaMode::Opaque,
+            gltf::material::AlphaMode::Mask => MaterialAlphaMode::Mask {
+                cutoff: material.alpha_cutoff().unwrap_or(0.5),
+            },
+            gltf::material::AlphaMode::Blend => MaterialAlphaMode::Blend,
+        };
+
+        let resolve_texture = |info_image_idx: usize| -> Option<TextureRef> {
+            image_to_texture_asset
+                .get(&info_image_idx)
+                .copied()
+                .map(TextureRef)
+        };
+        let base_color_texture = pbr
+            .base_color_texture()
+            .and_then(|info| resolve_texture(info.texture().source().index()));
+        let metallic_roughness_texture = pbr
+            .metallic_roughness_texture()
+            .and_then(|info| resolve_texture(info.texture().source().index()));
+        let normal_texture = material
+            .normal_texture()
+            .and_then(|info| resolve_texture(info.texture().source().index()));
+        let occlusion_texture = material
+            .occlusion_texture()
+            .and_then(|info| resolve_texture(info.texture().source().index()));
+        let emissive_texture = material
+            .emissive_texture()
+            .and_then(|info| resolve_texture(info.texture().source().index()));
+
+        let def = MaterialDef {
+            label: material
+                .name()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("{display_name} · material {mat_idx}")),
+            base_color: pbr.base_color_factor(),
+            base_color_texture,
+            metallic: pbr.metallic_factor(),
+            roughness: pbr.roughness_factor(),
+            metallic_roughness_texture,
+            emissive: material.emissive_factor(),
+            emissive_texture,
+            normal_texture,
+            occlusion_texture,
+            double_sided: material.double_sided(),
+            vertex_colors_enabled: false,
+            alpha_mode,
+            ..MaterialDef::default()
+        };
+
+        let material_asset_id = AssetId::new();
+        assets.entries.insert(
+            material_asset_id,
+            AssetEntry::new(AssetSource::Material(def)),
+        );
+        // The Vec is indexed by gltf material index, so we have to
+        // pad if the document skips any (glTF docs typically pack
+        // them densely from 0 but we don't assume).
+        while material_asset_ids.len() < mat_idx {
+            material_asset_ids.push(AssetId::default());
+        }
+        if material_asset_ids.len() == mat_idx {
+            material_asset_ids.push(material_asset_id);
+        } else {
+            material_asset_ids[mat_idx] = material_asset_id;
+        }
+    }
+
+    // ── Stamp the per-primitive lookup onto the gltf's AssetEntry ──────
+    {
+        if let Some(entry) = assets.entries.get_mut(&gltf_asset_id) {
+            entry.gltf_material_asset_ids = material_asset_ids;
+        }
+    }
+
+    tracing::info!(
+        "extract_gltf_materials({display_name}): extracted {} materials, {} textures",
+        document.materials().len(),
+        image_to_texture_asset.len()
+    );
+}
+
+/// Map a glTF image MIME type to a file-extension string used for the
+/// generated `TextureDef::Raster.filename`. The on-disk file always
+/// carries the original encoded bytes (PNG or JPEG; we don't transcode),
+/// so the extension preserves the format.
+fn mime_to_ext(mime: &str) -> &'static str {
+    match mime {
+        "image/png" => "png",
+        "image/jpeg" | "image/jpg" => "jpg",
+        _ => "bin",
+    }
 }

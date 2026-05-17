@@ -49,12 +49,10 @@ fn project_with_mesh_asset(asset_id: AssetId, label: &str) -> EditorProject {
     let mut assets = AssetTable::new();
     assets.entries.insert(
         asset_id,
-        AssetEntry {
-            source: AssetSource::Mesh(MeshDef {
-                label: label.to_string(),
-                source: None,
-            }),
-        },
+        AssetEntry::new(AssetSource::Mesh(MeshDef {
+            label: label.to_string(),
+            source: None,
+        })),
     );
     EditorProject {
         name: String::new(),
@@ -135,35 +133,31 @@ fn mesh_asset_with_source_roundtrip() {
     let prim_id = AssetId::new();
     assets.entries.insert(
         prim_id,
-        AssetEntry {
-            source: AssetSource::Mesh(MeshDef {
-                label: "captured sphere".to_string(),
-                source: Some(CapturedSource::Primitive(PrimitiveShape::Sphere {
-                    radius: 1.25,
-                    segments_long: 24,
-                    segments_lat: 12,
-                })),
-            }),
-        },
+        AssetEntry::new(AssetSource::Mesh(MeshDef {
+            label: "captured sphere".to_string(),
+            source: Some(CapturedSource::Primitive(PrimitiveShape::Sphere {
+                radius: 1.25,
+                segments_long: 24,
+                segments_lat: 12,
+            })),
+        })),
     );
     let sweep_id = AssetId::new();
     assets.entries.insert(
         sweep_id,
-        AssetEntry {
-            source: AssetSource::Mesh(MeshDef {
-                label: "captured rail".to_string(),
-                source: Some(CapturedSource::Sweep(SweepAlongCurveDef {
-                    curve_node: NodeId::new(),
-                    cross_section: CrossSectionDef::Tube {
-                        radius: 0.3,
-                        radial_segments: 16,
-                    },
-                    uv_mode: SweepUvMode::StretchOnce,
-                    up_hint: [0.0, 1.0, 0.0],
-                    samples: 128,
-                })),
-            }),
-        },
+        AssetEntry::new(AssetSource::Mesh(MeshDef {
+            label: "captured rail".to_string(),
+            source: Some(CapturedSource::Sweep(SweepAlongCurveDef {
+                curve_node: NodeId::new(),
+                cross_section: CrossSectionDef::Tube {
+                    radius: 0.3,
+                    radial_segments: 16,
+                },
+                uv_mode: SweepUvMode::StretchOnce,
+                up_hint: [0.0, 1.0, 0.0],
+                samples: 128,
+            })),
+        })),
     );
     let project = EditorProject {
         name: String::new(),

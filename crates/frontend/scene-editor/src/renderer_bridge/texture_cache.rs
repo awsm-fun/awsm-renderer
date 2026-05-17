@@ -39,13 +39,37 @@ pub fn lookup(asset_id: AssetId) -> Option<TextureKey> {
     with_cache(|m| m.get(&asset_id).copied())
 }
 
-/// Upload a single procedural texture asset on demand and cache the
-/// resulting key. Returns the key (cached or newly inserted), or `None`
-/// if the asset isn't a procedural texture.
+/// How the renderer should interpret the pixel data of a raster
+/// texture. Mirrors the glTF convention: `Srgb` for visible-color
+/// channels (base color, emissive) — the bytes are gamma-encoded and
+/// the GPU sampler decodes to linear on read — and `Linear` for data
+/// channels (metallic-roughness, normal, occlusion) where the bytes
+/// are already linear and any gamma round-trip would mangle the
+/// values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextureColorRole {
+    Srgb,
+    Linear,
+}
+
+/// Upload a single texture asset on demand and cache the resulting key.
+/// Returns the key (cached or newly inserted), or `None` if the asset
+/// isn't a texture or its bytes aren't yet in `pending_assets` (for
+/// raster textures hydrated from disk this happens during project
+/// load — see `actions::project::load_inner`).
+///
+/// `role` only matters for first-upload of a raster texture; once
+/// cached, subsequent `get_or_upload` calls return the same key
+/// regardless of the role they pass. Different roles for the same
+/// `AssetId` would need separate texture slots — not a real-world
+/// case for now (a gltf texture is bound to a single MaterialDef
+/// slot per material), and `cargo clippy` keeps the unused-arg lint
+/// off this signature because callers always specify it.
 pub fn get_or_upload(
     renderer: &mut AwsmRenderer,
     asset_id: AssetId,
     source: &AssetSource,
+    role: TextureColorRole,
 ) -> Option<TextureKey> {
     if let Some(key) = lookup(asset_id) {
         return Some(key);
@@ -54,12 +78,34 @@ pub fn get_or_upload(
         AssetSource::Texture(t) => t,
         _ => return None,
     };
-    let proc_def = match texture_def {
-        TextureDef::Procedural(p) => p,
-        TextureDef::Raster { .. } => return None,
+
+    let (rgba, width, height) = match texture_def {
+        TextureDef::Procedural(proc_def) => procedural_rgba(proc_def),
+        TextureDef::Raster { filename } => decode_raster_from_pending(asset_id, filename)?,
     };
 
-    let (rgba, width, height) = match proc_def {
+    let sampler_key = renderer
+        .textures
+        .get_sampler_key(&renderer.gpu, SamplerCacheKey::default())
+        .ok()?;
+    let color = TextureColorInfo {
+        mipmap_kind: MipmapTextureKind::Albedo,
+        srgb_to_linear: matches!(role, TextureColorRole::Srgb),
+        premultiplied_alpha: None,
+    };
+    let key = renderer
+        .textures
+        .add_image_rgba_raw(&rgba, width, height, sampler_key, color)
+        .ok()?;
+    with_cache(|m| {
+        m.insert(asset_id, key);
+    });
+    Some(key)
+}
+
+/// Generate RGBA bytes for a procedural texture definition.
+fn procedural_rgba(proc_def: &ProceduralTextureDef) -> (Vec<u8>, u32, u32) {
+    match proc_def {
         ProceduralTextureDef::Checker {
             width,
             height,
@@ -89,25 +135,50 @@ pub fn get_or_upload(
             seed,
             scale,
         } => (noise_rgba(*width, *height, *seed, *scale), *width, *height),
-    };
+    }
+}
 
-    let sampler_key = renderer
-        .textures
-        .get_sampler_key(&renderer.gpu, SamplerCacheKey::default())
-        .ok()?;
-    let color = TextureColorInfo {
-        mipmap_kind: MipmapTextureKind::Albedo,
-        srgb_to_linear: true,
-        premultiplied_alpha: None,
+/// Read raster bytes from `pending_assets` keyed by the texture's
+/// `AssetId`, decode via the `image` crate, and return RGBA8 + dims.
+/// Returns `None` if the bytes aren't in memory yet — the materializer
+/// will silently skip the binding, matching the historical "missing
+/// texture ⇒ untextured material" behaviour for procedural textures.
+///
+/// `_filename` is unused at runtime — the bytes are looked up by
+/// AssetId — but it's part of the `TextureDef::Raster` shape and
+/// useful for debug logging on decode failure.
+fn decode_raster_from_pending(asset_id: AssetId, _filename: &str) -> Option<(Vec<u8>, u32, u32)> {
+    let bytes = crate::state::app_state()
+        .pending_assets
+        .lock()
+        .unwrap()
+        .get(&asset_id)
+        .cloned();
+    let bytes = match bytes {
+        Some(b) => b,
+        None => {
+            tracing::warn!(
+                "texture_cache: raster {asset_id} ({_filename}) — no bytes in \
+                 pending_assets; binding will be skipped"
+            );
+            return None;
+        }
     };
-    let key = renderer
-        .textures
-        .add_image_rgba_raw(&rgba, width, height, sampler_key, color)
-        .ok()?;
-    with_cache(|m| {
-        m.insert(asset_id, key);
-    });
-    Some(key)
+    tracing::debug!(
+        "texture_cache: decoding raster {asset_id} ({_filename}), {} bytes",
+        bytes.len()
+    );
+    match image::load_from_memory(&bytes) {
+        Ok(img) => {
+            let rgba = img.to_rgba8();
+            let (w, h) = rgba.dimensions();
+            Some((rgba.into_raw(), w, h))
+        }
+        Err(err) => {
+            tracing::warn!("texture_cache: decode raster {asset_id} failed: {err}");
+            None
+        }
+    }
 }
 
 /// Look up an asset's `AssetSource` in the editor scene's asset table.

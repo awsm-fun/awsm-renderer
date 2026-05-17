@@ -272,6 +272,8 @@ dependencies = [
  "gloo-net",
  "gloo-render",
  "gloo-timers",
+ "gltf",
+ "image",
  "indexmap",
  "js-sys",
  "serde",

@@ -710,10 +710,21 @@ pub fn material_def_to_renderer(renderer: &mut AwsmRenderer, def: &MaterialDef) 
 }
 
 fn material_to_pbr(renderer: &mut AwsmRenderer, def: &MaterialDef) -> PbrMaterial {
-    let alpha_mode = if def.base_color[3] < 0.999 {
-        MaterialAlphaMode::Blend
-    } else {
-        MaterialAlphaMode::Opaque
+    let alpha_mode = match def.alpha_mode {
+        awsm_scene_schema::MaterialAlphaMode::Opaque => {
+            // Back-compat fallback for pre-extension authored materials
+            // (alpha_mode defaults to Opaque on load): if the base color
+            // has an explicit alpha < 1 we still treat it as a Blend
+            // intent, matching the editor's long-standing behaviour for
+            // inline-edited materials.
+            if def.base_color[3] < 0.999 {
+                MaterialAlphaMode::Blend
+            } else {
+                MaterialAlphaMode::Opaque
+            }
+        }
+        awsm_scene_schema::MaterialAlphaMode::Mask { cutoff } => MaterialAlphaMode::Mask { cutoff },
+        awsm_scene_schema::MaterialAlphaMode::Blend => MaterialAlphaMode::Blend,
     };
     let mut pbr = PbrMaterial::new(alpha_mode, def.double_sided);
     pbr.base_color_factor = def.base_color;
@@ -728,21 +739,49 @@ fn material_to_pbr(renderer: &mut AwsmRenderer, def: &MaterialDef) -> PbrMateria
             Some(awsm_renderer::materials::pbr::PbrMaterialVertexColorInfo { set_index: 0 });
     }
 
-    // Resolve procedural-texture asset reference to a real `TextureKey` via
-    // the editor-side texture cache. Uploads on first lookup; subsequent
-    // materials reusing the same `AssetId` bind the cached key.
-    if let Some(texture_ref) = def.base_color_texture {
-        if let Some(source) = super::texture_cache::asset_source(texture_ref.0) {
-            if let Some(key) = super::texture_cache::get_or_upload(renderer, texture_ref.0, &source)
-            {
-                pbr.base_color_tex = Some(awsm_renderer::materials::MaterialTexture {
-                    key,
-                    sampler_key: None,
-                    uv_index: Some(0),
-                    transform_key: None,
-                });
-            }
-        }
-    }
+    // Resolve each of MaterialDef's texture refs to a renderer
+    // `TextureKey` via the editor-side texture cache. The cache handles
+    // both procedurally-generated and raster (gltf-extracted) textures;
+    // missing entries silently leave the corresponding pbr_*_tex None.
+    //
+    // Color-space tagging mirrors glTF + the renderer-gltf path: only
+    // base_color + emissive carry sRGB-encoded pixels; metallic-
+    // roughness / normal / occlusion ship as linear data and must NOT
+    // be gamma-decoded on upload (the renderer reads those channels
+    // directly).
+    use super::texture_cache::TextureColorRole;
+    pbr.base_color_tex =
+        resolve_material_texture(renderer, def.base_color_texture, TextureColorRole::Srgb);
+    pbr.metallic_roughness_tex = resolve_material_texture(
+        renderer,
+        def.metallic_roughness_texture,
+        TextureColorRole::Linear,
+    );
+    pbr.emissive_tex =
+        resolve_material_texture(renderer, def.emissive_texture, TextureColorRole::Srgb);
+    pbr.normal_tex =
+        resolve_material_texture(renderer, def.normal_texture, TextureColorRole::Linear);
+    pbr.occlusion_tex =
+        resolve_material_texture(renderer, def.occlusion_texture, TextureColorRole::Linear);
     pbr
+}
+
+/// Look up a renderer-side `TextureKey` for an authored texture
+/// reference. Centralises the cache-lookup boilerplate so each
+/// pbr_*_tex field reads identically and a future second `uv_index`
+/// (etc.) is one knob to add.
+fn resolve_material_texture(
+    renderer: &mut AwsmRenderer,
+    texture_ref: Option<awsm_scene_schema::TextureRef>,
+    role: super::texture_cache::TextureColorRole,
+) -> Option<awsm_renderer::materials::MaterialTexture> {
+    let texture_ref = texture_ref?;
+    let source = super::texture_cache::asset_source(texture_ref.0)?;
+    let key = super::texture_cache::get_or_upload(renderer, texture_ref.0, &source, role)?;
+    Some(awsm_renderer::materials::MaterialTexture {
+        key,
+        sampler_key: None,
+        uv_index: Some(0),
+        transform_key: None,
+    })
 }

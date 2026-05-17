@@ -21,9 +21,31 @@ pub struct MaterialDef {
     pub base_color_texture: Option<TextureRef>,
     pub metallic: f32,
     pub roughness: f32,
+    /// Combined metallic-roughness texture (glTF convention: G channel =
+    /// roughness, B channel = metallic). Default-skip so existing
+    /// project.json files round-trip cleanly.
+    #[serde(default)]
+    pub metallic_roughness_texture: Option<TextureRef>,
     pub emissive: [f32; 3],
+    #[serde(default)]
+    pub emissive_texture: Option<TextureRef>,
+    /// Tangent-space normal map (RGB). When set, the renderer uses it to
+    /// perturb the surface normal at shading time.
+    #[serde(default)]
+    pub normal_texture: Option<TextureRef>,
+    /// Ambient-occlusion mask (R channel). When set, the renderer
+    /// multiplies it into the ambient/indirect lighting term.
+    #[serde(default)]
+    pub occlusion_texture: Option<TextureRef>,
     pub double_sided: bool,
     pub vertex_colors_enabled: bool,
+    /// glTF-style alpha rendering mode. Defaults to `Opaque` so
+    /// pre-extension project.json round-trips identically (the
+    /// material_to_pbr translation then falls back to the
+    /// "base_color.a < 1 → blend" heuristic the editor has always used
+    /// for inline procedural materials).
+    #[serde(default)]
+    pub alpha_mode: MaterialAlphaMode,
     /// Shading model selector. `Pbr` is the default; `Unlit` is the existing
     /// emissive-only path; `Toon` is the new banded-diffuse + stepped-specular
     /// + rim shading model added by this plan.
@@ -38,12 +60,35 @@ impl Default for MaterialDef {
             base_color_texture: None,
             metallic: 0.0,
             roughness: 0.7,
+            metallic_roughness_texture: None,
             emissive: [0.0, 0.0, 0.0],
+            emissive_texture: None,
+            normal_texture: None,
+            occlusion_texture: None,
             double_sided: false,
             vertex_colors_enabled: false,
+            alpha_mode: MaterialAlphaMode::Opaque,
             shading: MaterialShading::Pbr,
         }
     }
+}
+
+/// Authored alpha mode. Mirrors glTF's `material.alphaMode` so a
+/// MaterialDef extracted from a glTF retains the original rendering
+/// intent. `Opaque` is the default and matches the legacy
+/// "base_color.a == 1 ⇒ opaque" behaviour; `Mask` carries the same
+/// `alpha_cutoff` glTF stores; `Blend` enables order-dependent alpha
+/// compositing.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[derive(Default)]
+pub enum MaterialAlphaMode {
+    #[default]
+    Opaque,
+    Mask {
+        cutoff: f32,
+    },
+    Blend,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]

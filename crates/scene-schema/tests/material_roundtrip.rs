@@ -20,24 +20,22 @@ use awsm_scene_schema::{
 };
 
 fn material_asset(_id: AssetId) -> AssetEntry {
-    AssetEntry {
-        source: AssetSource::Material(MaterialDef {
-            label: "Spec material".to_string(),
-            // Non-trivial values per field so a "wrong default" regression
-            // would visibly diverge — defaults are 1.0/0.0/0.7/false-zeros.
-            base_color: [0.25, 0.5, 0.75, 0.4],
-            base_color_texture: None,
-            metallic: 0.6,
-            roughness: 0.35,
-            emissive: [0.1, 0.2, 0.3],
-            double_sided: true,
-            vertex_colors_enabled: true,
-            shading: MaterialShading::Toon {
-                diffuse_bands: 7,
-                rim_strength: 0.42,
-            },
-        }),
-    }
+    AssetEntry::new(AssetSource::Material(MaterialDef {
+        label: "Spec material".to_string(),
+        // Non-trivial values per field so a "wrong default" regression
+        // would visibly diverge — defaults are 1.0/0.0/0.7/false-zeros.
+        base_color: [0.25, 0.5, 0.75, 0.4],
+        metallic: 0.6,
+        roughness: 0.35,
+        emissive: [0.1, 0.2, 0.3],
+        double_sided: true,
+        vertex_colors_enabled: true,
+        shading: MaterialShading::Toon {
+            diffuse_bands: 7,
+            rim_strength: 0.42,
+        },
+        ..MaterialDef::default()
+    }))
 }
 
 fn sample_project_with_material(asset_id: AssetId) -> EditorProject {

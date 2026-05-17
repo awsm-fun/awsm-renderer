@@ -76,6 +76,14 @@ pub struct AssetTemplateNode {
     pub label: Option<String>,
     pub local: Transform,
     pub mesh_keys: Vec<MeshKey>,
+    /// One entry per `mesh_keys[i]`: the originating glTF material
+    /// index (`None` if the primitive had no material set, which glTF
+    /// treats as the spec default material). Populated from
+    /// `GltfKeyLookups::mesh_key_to_gltf_material_index` at template
+    /// snapshot time; the editor uses it together with the gltf
+    /// `AssetEntry::gltf_material_asset_ids` map to swap each
+    /// duplicated mesh's material with an editable extraction.
+    pub mesh_gltf_material_indices: Vec<Option<usize>>,
     pub children: Vec<AssetTemplateNode>,
 }
 
@@ -208,9 +216,22 @@ async fn load_and_populate(asset_id: AssetId) -> Result<AssetTemplate, String> {
         .filter(|k| renderer.transforms.get_parent(*k).ok() == Some(root))
         .collect();
 
+    let mesh_key_to_gltf_material_index: HashMap<awsm_renderer::meshes::MeshKey, Option<usize>> = {
+        let lookups = ctx.key_lookups.lock().unwrap();
+        lookups.mesh_key_to_gltf_material_index.clone()
+    };
+
     let roots: Vec<AssetTemplateNode> = top_level
         .into_iter()
-        .map(|k| snapshot_template(&renderer, k, &key_to_node_index, &key_to_label))
+        .map(|k| {
+            snapshot_template(
+                &renderer,
+                k,
+                &key_to_node_index,
+                &key_to_label,
+                &mesh_key_to_gltf_material_index,
+            )
+        })
         .collect();
 
     // Hide every mesh in the template so the populated originals don't
@@ -240,23 +261,41 @@ fn snapshot_template(
     key: TransformKey,
     key_to_node_index: &HashMap<TransformKey, u32>,
     key_to_label: &HashMap<TransformKey, String>,
+    mesh_key_to_gltf_material_index: &HashMap<awsm_renderer::meshes::MeshKey, Option<usize>>,
 ) -> AssetTemplateNode {
     let local = renderer
         .transforms
         .get_local(key)
         .cloned()
         .unwrap_or(Transform::IDENTITY);
-    let mesh_keys = renderer
+    let mesh_keys: Vec<MeshKey> = renderer
         .meshes
         .keys_by_transform_key(key)
         .cloned()
         .unwrap_or_default();
+    let mesh_gltf_material_indices: Vec<Option<usize>> = mesh_keys
+        .iter()
+        .map(|mk| {
+            mesh_key_to_gltf_material_index
+                .get(mk)
+                .copied()
+                .unwrap_or(None)
+        })
+        .collect();
     let children: Vec<AssetTemplateNode> = renderer
         .transforms
         .get_children(key)
         .map(|kids| {
             kids.iter()
-                .map(|c| snapshot_template(renderer, *c, key_to_node_index, key_to_label))
+                .map(|c| {
+                    snapshot_template(
+                        renderer,
+                        *c,
+                        key_to_node_index,
+                        key_to_label,
+                        mesh_key_to_gltf_material_index,
+                    )
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -266,6 +305,7 @@ fn snapshot_template(
         label: key_to_label.get(&key).cloned(),
         local,
         mesh_keys,
+        mesh_gltf_material_indices,
         children,
     }
 }

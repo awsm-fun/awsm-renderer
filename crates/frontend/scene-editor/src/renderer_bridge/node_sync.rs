@@ -686,7 +686,14 @@ async fn instantiate_model_template(
         NodeKind::Model(r) => (r.node_index, r.primitive_index),
         _ => (0, None),
     };
-    instance_template(entry.clone(), template, node_index, primitive_index).await;
+    instance_template(
+        entry.clone(),
+        asset_id,
+        template,
+        node_index,
+        primitive_index,
+    )
+    .await;
     entry.node.asset_status.set(AssetStatus::Ready);
     app_state().clear_asset_failure(entry.node_id);
 }
@@ -940,6 +947,7 @@ async fn clear_model_instance(entry: &Arc<RendererNode>) {
 
 async fn instance_template(
     entry: Arc<RendererNode>,
+    asset_id: AssetId,
     template: super::asset_cache::AssetTemplate,
     node_index: u32,
     primitive_index: Option<u32>,
@@ -964,11 +972,23 @@ async fn instance_template(
 
     // `primitive_index = Some(i)` means the editor node was peeled off
     // by Split and represents only the i-th primitive of this gltf node.
-    // `None` (the common case) means render every primitive.
-    let mesh_keys: Vec<_> = match primitive_index {
-        None => template_node.mesh_keys.clone(),
+    // `None` (the common case) means render every primitive. We carry the
+    // parallel `gltf_material_indices` Vec so the override step below
+    // sees the right index per duplicated mesh even after Split.
+    let (mesh_keys, gltf_material_indices): (Vec<_>, Vec<Option<usize>>) = match primitive_index {
+        None => (
+            template_node.mesh_keys.clone(),
+            template_node.mesh_gltf_material_indices.clone(),
+        ),
         Some(i) => match template_node.mesh_keys.get(i as usize).copied() {
-            Some(k) => vec![k],
+            Some(k) => {
+                let mat_idx = template_node
+                    .mesh_gltf_material_indices
+                    .get(i as usize)
+                    .copied()
+                    .unwrap_or(None);
+                (vec![k], vec![mat_idx])
+            }
             None => {
                 tracing::warn!(
                     "instance_template: primitive_index={i} out of range for gltf \
@@ -980,6 +1000,18 @@ async fn instance_template(
         },
     };
 
+    // Look up the gltf asset's editable-material override map (if any
+    // was populated at Insert Model time). Empty for pre-extension
+    // projects, in which case the renderer keeps its baked materials.
+    let gltf_material_asset_ids: Vec<awsm_scene_schema::AssetId> = {
+        let scene = crate::state::app_state().scene.clone();
+        let assets = scene.assets.lock().unwrap();
+        assets
+            .get(asset_id)
+            .map(|e| e.gltf_material_asset_ids.clone())
+            .unwrap_or_default()
+    };
+
     let handle = renderer_handle();
     let mut renderer = handle.lock().await;
 
@@ -988,8 +1020,9 @@ async fn instance_template(
     // visible while we wait for the gltf to finish loading.
     let visible = *entry.effective_visible.lock().unwrap();
 
+    let scene = crate::state::app_state().scene.clone();
     let mut created_meshes = Vec::new();
-    for mesh_key in &mesh_keys {
+    for (i, mesh_key) in mesh_keys.iter().enumerate() {
         match renderer.duplicate_mesh_with_transform(*mesh_key, parent_tk) {
             Ok(new_mesh) => {
                 // The template mesh is kept hidden so the original doesn't
@@ -997,10 +1030,67 @@ async fn instance_template(
                 // that flag via `mesh.clone()`, so set it explicitly to
                 // match the node's current effective visibility.
                 let _ = renderer.set_mesh_hidden(new_mesh, !visible);
+
+                // If this primitive's glTF material has been extracted
+                // into an editable MaterialDef asset, swap the renderer-
+                // baked material for ours so subsequent edits in the
+                // inspector propagate to the rendered model.
+                if let Some(gltf_mat_idx) = gltf_material_indices.get(i).copied().flatten() {
+                    if let Some(&override_asset_id) = gltf_material_asset_ids.get(gltf_mat_idx) {
+                        let override_ref = awsm_scene_schema::MaterialRef(override_asset_id);
+                        match super::material_cache::get_or_create(
+                            &mut renderer,
+                            &scene,
+                            override_ref,
+                        ) {
+                            Some(key) => {
+                                tracing::debug!(
+                                    "instance_template: override gltf material {gltf_mat_idx} \
+                                     (asset {override_asset_id}) on mesh {new_mesh:?}"
+                                );
+                                if let Err(err) = renderer.set_mesh_material(new_mesh, key) {
+                                    tracing::warn!(
+                                        "instance_template: set_mesh_material for editable \
+                                         gltf material {gltf_mat_idx} (asset \
+                                         {override_asset_id}) failed: {err}"
+                                    );
+                                }
+                            }
+                            None => {
+                                tracing::warn!(
+                                    "instance_template: get_or_create for gltf material \
+                                     {gltf_mat_idx} (asset {override_asset_id}) returned \
+                                     None — falling back to renderer-baked material"
+                                );
+                            }
+                        }
+                    } else {
+                        tracing::debug!(
+                            "instance_template: gltf material {gltf_mat_idx} has no \
+                             override entry (map len {})",
+                            gltf_material_asset_ids.len()
+                        );
+                    }
+                } else {
+                    tracing::debug!("instance_template: primitive {i} has no gltf material index");
+                }
                 created_meshes.push(new_mesh);
             }
             Err(err) => tracing::warn!("duplicate_mesh_with_transform failed: {err}"),
         }
+    }
+
+    // If the material override path uploaded any new raster textures,
+    // they're sitting in the renderer's texture pool but the bind-group
+    // layouts + pipelines haven't been rebuilt to bind them yet. Mirror
+    // what `populate_gltf` does at the end of its own load: finalize the
+    // pool while we still hold the lock so the meshes we just inserted
+    // can sample the new textures from the very next frame.
+    //
+    // No-op (cheap) when nothing actually changed — finalize gates on a
+    // dirty flag internally.
+    if let Err(err) = renderer.finalize_gpu_textures().await {
+        tracing::warn!("instance_template: finalize_gpu_textures failed: {err}");
     }
 
     drop(renderer);
