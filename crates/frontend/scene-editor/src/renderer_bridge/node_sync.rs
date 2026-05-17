@@ -1,0 +1,1020 @@
+//! Per-node bridge entries + signal observers that keep the renderer
+//! in lockstep with the editor scene.
+//!
+//! Each editor `Node` maps to one `RendererNode`, which owns the renderer
+//! transform key plus a bag of `AsyncLoader`s for the observers that
+//! watch transform / kind / children changes. Dropping the `RendererNode`
+//! cancels those observers and reclaims the renderer resources.
+
+#![allow(clippy::arc_with_non_send_sync)]
+
+use crate::context::{renderer_handle, with_renderer_mut};
+use crate::prelude::*;
+use crate::renderer_bridge::asset_cache::{AssetCache, AssetEntry};
+use crate::scene::{AssetId, AssetStatus, Node, NodeId, NodeKind, Trs};
+use crate::state::app_state;
+use awsm_renderer::transforms::{Transform, TransformKey};
+use futures_signals::signal_vec::VecDiff;
+use glam::{Quat, Vec3};
+use std::collections::HashMap;
+use wasm_bindgen_futures::spawn_local;
+
+/// One bridge entry per live scene node.
+pub struct RendererNode {
+    pub node_id: NodeId,
+    pub node: Arc<Node>,
+    pub transform_key: TransformKey,
+    /// Currently-active model asset id, if any. Used for guard-checks
+    /// when an in-flight load completes (skip if the kind has changed
+    /// out from under us).
+    pub asset_id: Mutex<Option<AssetId>>,
+    /// Transform keys we spawned *underneath* `transform_key` when
+    /// instancing a glb. Removed + their meshes dropped on cleanup.
+    pub model_transforms: Mutex<Vec<TransformKey>>,
+    pub model_meshes: Mutex<Vec<awsm_renderer::meshes::MeshKey>>,
+    /// Inline-material `MaterialKey`s this node owns. Shared (asset-cache)
+    /// keys are *not* tracked here — they live for the cache's lifetime.
+    /// `clear_model_instance` + `remove_node` free everything in this vec
+    /// to keep the renderer's materials slotmap from growing on every
+    /// kind change.
+    pub material_keys: Mutex<Vec<awsm_renderer::materials::MaterialKey>>,
+    /// Hash of the *geometry inputs* (curve control points, cross
+    /// section, uv mode, samples, up hint) used to build this node's
+    /// current mesh, when the node is a `SweepAlongCurve`. Used by
+    /// `apply_kind`'s fast path: if the next `kind.set` doesn't change
+    /// this hash, only the material binding is updated — saves a full
+    /// `sweep_along_curve` evaluation + GPU upload on material-only
+    /// edits of a heavy sweep (4096 samples × 32 radial = ~130k verts).
+    pub sweep_geometry_hash: Mutex<Option<u64>>,
+    /// The `NodeKind` value most recently materialized into the
+    /// renderer for this node. F-A fast path: if the next `kind.set`
+    /// emits a value `==` to this, skip the full clear-then-materialize
+    /// — the bridge's per-frame state is already correct. Catches the
+    /// common case where the inspector's `number_input` writes back a
+    /// value identical to what's already there (Mutable::set always
+    /// emits regardless of equality).
+    pub last_applied_kind: Mutex<Option<NodeKind>>,
+    /// Line strips registered against this node — Line / curve-visualization
+    /// kinds register through `AwsmRenderer::add_line_strip` and store the
+    /// returned `LineKey`(s) here. Cleared on kind change via `clear_lines`
+    /// + on node removal.
+    pub line_keys: Mutex<Vec<awsm_renderer::render_passes::lines::LineKey>>,
+    /// `Some` if this node is currently a Light; `None` otherwise.
+    pub light_key: Mutex<Option<awsm_renderer::lights::LightKey>>,
+    /// `node.visible` ANDed with every ancestor's visible. Updated by
+    /// `apply_visibility_subtree` whenever any ancestor or this node
+    /// flips its own `visible`. Read by the per-frame light + collision
+    /// passes so they can skip hidden nodes; written before changing
+    /// the renderer-side mesh hidden state for Model nodes.
+    pub effective_visible: Mutex<bool>,
+    /// Loader holding in-flight asset load. Dropping cancels.
+    pub asset_loader: AsyncLoader,
+    /// Observer tasks tied to this node. Dropping cancels.
+    pub tasks: Mutex<Vec<AsyncLoader>>,
+}
+
+impl RendererNode {
+    /// Clear the `last_applied_kind` identity cache for a node so the
+    /// next `kind.set` is always treated as a fresh transition — even
+    /// when the new value compares equal to the previous one. Needed
+    /// when the outside world has changed in a way that requires
+    /// re-materialize but doesn't show up in the kind value (e.g.
+    /// mesh_cache bytes got overwritten under the same MeshRef).
+    pub fn invalidate_apply_kind_cache(node_id: NodeId) {
+        if let Some(entry) = bridge().nodes.lock().unwrap().get(&node_id).cloned() {
+            *entry.last_applied_kind.lock().unwrap() = None;
+        }
+    }
+
+    pub fn new(node: Arc<Node>, transform_key: TransformKey) -> Arc<Self> {
+        Arc::new(Self {
+            node_id: node.id,
+            node,
+            transform_key,
+            asset_id: Mutex::new(None),
+            model_transforms: Mutex::new(Vec::new()),
+            model_meshes: Mutex::new(Vec::new()),
+            material_keys: Mutex::new(Vec::new()),
+            sweep_geometry_hash: Mutex::new(None),
+            last_applied_kind: Mutex::new(None),
+            line_keys: Mutex::new(Vec::new()),
+            light_key: Mutex::new(None),
+            effective_visible: Mutex::new(true),
+            asset_loader: AsyncLoader::new(),
+            tasks: Mutex::new(Vec::new()),
+        })
+    }
+}
+
+/// Shared bridge state. Mirrors the scene tree's structure one-to-one.
+pub struct Bridge {
+    pub nodes: Mutex<HashMap<NodeId, Arc<RendererNode>>>,
+    pub assets: Arc<AssetCache>,
+    /// Top-level of the scene → top-level of our tracking. Each entry
+    /// maps a "children level" (via key = parent node id, or None for
+    /// scene root) to the ordered list of NodeIds currently at that level.
+    /// Needed because `VecDiff::RemoveAt` doesn't carry the removed id.
+    pub child_order: Mutex<HashMap<Option<NodeId>, Vec<NodeId>>>,
+    /// Bumps whenever a `RendererNode` is added or removed. Observers
+    /// that need to react to bridge state (e.g. the gizmo rebinding
+    /// when its target first appears) combine this with `selected`.
+    pub nodes_revision: Mutable<u64>,
+}
+
+impl Bridge {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            nodes: Mutex::new(HashMap::new()),
+            assets: Arc::new(AssetCache::new()),
+            child_order: Mutex::new(HashMap::new()),
+            nodes_revision: Mutable::new(0),
+        })
+    }
+
+    pub fn bump_nodes_revision(&self) {
+        let prev = self.nodes_revision.get();
+        self.nodes_revision.set(prev.wrapping_add(1));
+    }
+}
+
+pub fn bridge() -> Arc<Bridge> {
+    app_state().renderer_bridge.clone()
+}
+
+// ==================== observer wiring ====================
+
+/// Start watching the scene's top-level children vector.
+pub fn start_top_level_observer() {
+    let scene = app_state().scene.clone();
+    let top_signal = scene.nodes.signal_vec_cloned();
+    spawn_local(async move {
+        use futures_signals::signal_vec::SignalVecExt;
+        top_signal
+            .for_each(|diff| async move {
+                handle_children_diff(None, diff).await;
+            })
+            .await;
+    });
+}
+
+/// Apply a `VecDiff` coming from either the scene root's children
+/// (parent_id = None) or an interior node's children.
+async fn handle_children_diff(parent_id: Option<NodeId>, diff: VecDiff<Arc<Node>>) {
+    let parent_tk = resolve_parent_transform_key(parent_id).await;
+    let Some(parent_tk) = parent_tk else {
+        tracing::warn!("children diff for missing parent {parent_id:?}; dropping");
+        return;
+    };
+
+    match diff {
+        VecDiff::Replace { values } => {
+            remove_all_children(parent_id).await;
+            for (i, node) in values.iter().enumerate() {
+                add_child_at(parent_id, parent_tk, i, node.clone()).await;
+            }
+        }
+        VecDiff::Push { value } => {
+            let len = current_children_len(parent_id);
+            add_child_at(parent_id, parent_tk, len, value).await;
+        }
+        VecDiff::InsertAt { index, value } => {
+            add_child_at(parent_id, parent_tk, index, value).await;
+        }
+        VecDiff::UpdateAt { index, value } => {
+            // A clean "replace this child" path. Tear the old one down,
+            // stand a fresh one up at the same index.
+            remove_child_at(parent_id, index).await;
+            add_child_at(parent_id, parent_tk, index, value).await;
+        }
+        VecDiff::RemoveAt { index } => {
+            remove_child_at(parent_id, index).await;
+        }
+        VecDiff::Move {
+            old_index,
+            new_index,
+        } => {
+            let bridge_handle = bridge();
+            let mut order = bridge_handle.child_order.lock().unwrap();
+            if let Some(level) = order.get_mut(&parent_id) {
+                if old_index < level.len() && new_index <= level.len() {
+                    let id = level.remove(old_index);
+                    level.insert(new_index.min(level.len()), id);
+                }
+            }
+        }
+        VecDiff::Pop {} => {
+            let idx = current_children_len(parent_id).saturating_sub(1);
+            if current_children_len(parent_id) > 0 {
+                remove_child_at(parent_id, idx).await;
+            }
+        }
+        VecDiff::Clear {} => {
+            remove_all_children(parent_id).await;
+        }
+    }
+}
+
+async fn resolve_parent_transform_key(parent_id: Option<NodeId>) -> Option<TransformKey> {
+    match parent_id {
+        None => Some(with_renderer_mut(|r| r.transforms.root_node).await),
+        Some(id) => bridge()
+            .nodes
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|n| n.transform_key),
+    }
+}
+
+fn current_children_len(parent_id: Option<NodeId>) -> usize {
+    bridge()
+        .child_order
+        .lock()
+        .unwrap()
+        .get(&parent_id)
+        .map(|v| v.len())
+        .unwrap_or(0)
+}
+
+async fn remove_all_children(parent_id: Option<NodeId>) {
+    let ids: Vec<NodeId> = bridge()
+        .child_order
+        .lock()
+        .unwrap()
+        .remove(&parent_id)
+        .unwrap_or_default();
+    for id in ids {
+        remove_node(id).await;
+    }
+}
+
+async fn remove_child_at(parent_id: Option<NodeId>, index: usize) {
+    let id_opt = {
+        let bridge_handle = bridge();
+        let mut order = bridge_handle.child_order.lock().unwrap();
+        order.get_mut(&parent_id).and_then(|v| {
+            if index < v.len() {
+                Some(v.remove(index))
+            } else {
+                None
+            }
+        })
+    };
+    if let Some(id) = id_opt {
+        remove_node(id).await;
+    }
+}
+
+async fn add_child_at(
+    parent_id: Option<NodeId>,
+    parent_tk: TransformKey,
+    index: usize,
+    node: Arc<Node>,
+) {
+    // Insert the transform into the renderer + record in bridge state.
+    let node_id = node.id;
+    let transform_key = with_renderer_mut(|r| {
+        r.transforms
+            .insert(trs_to_transform(&node.transform.get()), Some(parent_tk))
+    })
+    .await;
+
+    let entry = RendererNode::new(node.clone(), transform_key);
+
+    bridge()
+        .nodes
+        .lock()
+        .unwrap()
+        .insert(node_id, entry.clone());
+
+    {
+        let bridge_handle = bridge();
+        let mut order = bridge_handle.child_order.lock().unwrap();
+        let level = order.entry(parent_id).or_default();
+        let clamped = index.min(level.len());
+        level.insert(clamped, node_id);
+    }
+
+    bridge().bump_nodes_revision();
+
+    // Spawn per-node observers.
+    spawn_transform_observer(node.clone(), entry.clone());
+    spawn_kind_observer(node.clone(), entry.clone());
+    spawn_children_observer(node.clone(), entry.clone());
+    spawn_visibility_observer(node.clone(), entry.clone());
+
+    // The newly-mounted node may have been hydrated from a snapshot
+    // that already had `visible = false`, or may sit under an ancestor
+    // that's already hidden. Either way, settle the renderer-side
+    // state once now so we don't ship the first frame with a "leaked"
+    // visible mesh / live light.
+    apply_visibility_subtree(node_id);
+}
+
+async fn remove_node(node_id: NodeId) {
+    let entry_opt = bridge().nodes.lock().unwrap().remove(&node_id);
+    let Some(entry) = entry_opt else {
+        return;
+    };
+
+    // Drop any failure record this node owned — gone from the scene means
+    // gone from the missing-assets surface.
+    app_state().clear_asset_failure(node_id);
+
+    // Recursively tear down children first, so their sub-entries leave
+    // the map before we drop the renderer transform.
+    let child_ids: Vec<NodeId> = bridge()
+        .child_order
+        .lock()
+        .unwrap()
+        .remove(&Some(node_id))
+        .unwrap_or_default();
+    for child in child_ids {
+        Box::pin(remove_node(child)).await;
+    }
+
+    // Drop observer tasks + in-flight asset load.
+    entry.tasks.lock().unwrap().clear();
+    entry.asset_loader.cancel();
+    // Tear down any "playing" emitter runtime owned by this node.
+    super::particles_sync::forget(node_id).await;
+
+    // Clean up any glb sub-transforms + duplicated meshes we instanced
+    // under this node.
+    let sub_transforms: Vec<TransformKey> =
+        std::mem::take(&mut *entry.model_transforms.lock().unwrap());
+    let sub_meshes: Vec<awsm_renderer::meshes::MeshKey> =
+        std::mem::take(&mut *entry.model_meshes.lock().unwrap());
+    let material_keys: Vec<awsm_renderer::materials::MaterialKey> =
+        std::mem::take(&mut *entry.material_keys.lock().unwrap());
+    let line_keys: Vec<awsm_renderer::render_passes::lines::LineKey> =
+        std::mem::take(&mut *entry.line_keys.lock().unwrap());
+    let light_key = entry.light_key.lock().unwrap().take();
+
+    with_renderer_mut(|r| {
+        if let Some(key) = light_key {
+            r.lights.remove(key);
+        }
+        for mesh in sub_meshes {
+            r.remove_mesh(mesh);
+        }
+        // Free owned inline materials *after* the meshes that referenced
+        // them are gone, so no live draw still points at the slot.
+        for mat in material_keys {
+            r.remove_material(mat);
+        }
+        for line in line_keys {
+            r.remove_line(line);
+        }
+        for tk in sub_transforms {
+            r.transforms.remove(tk);
+        }
+        r.transforms.remove(entry.transform_key);
+    })
+    .await;
+
+    bridge().bump_nodes_revision();
+}
+
+fn spawn_transform_observer(node: Arc<Node>, entry: Arc<RendererNode>) {
+    let loader = AsyncLoader::new();
+    let task_node = node.clone();
+    let tk = entry.transform_key;
+    loader.load(async move {
+        use futures_signals::signal::SignalExt;
+        task_node
+            .transform
+            .signal()
+            .for_each(move |trs| {
+                let t = trs_to_transform(&trs);
+                async move {
+                    with_renderer_mut(move |r| {
+                        let _ = r.transforms.set_local(tk, t);
+                    })
+                    .await;
+                }
+            })
+            .await;
+    });
+    entry.tasks.lock().unwrap().push(loader);
+}
+
+fn spawn_kind_observer(node: Arc<Node>, entry: Arc<RendererNode>) {
+    let loader = AsyncLoader::new();
+    let task_node = node.clone();
+    let entry_for_task = entry.clone();
+    loader.load(async move {
+        use futures_signals::signal::SignalExt;
+        task_node
+            .kind
+            .signal_cloned()
+            .for_each(move |kind| {
+                let entry = entry_for_task.clone();
+                async move {
+                    apply_kind(entry, kind).await;
+                }
+            })
+            .await;
+    });
+    entry.tasks.lock().unwrap().push(loader);
+}
+
+fn spawn_children_observer(node: Arc<Node>, entry: Arc<RendererNode>) {
+    let loader = AsyncLoader::new();
+    let task_node = node.clone();
+    let node_id = entry.node_id;
+    loader.load(async move {
+        use futures_signals::signal_vec::SignalVecExt;
+        task_node
+            .children
+            .signal_vec_cloned()
+            .for_each(move |diff| async move {
+                handle_children_diff(Some(node_id), diff).await;
+            })
+            .await;
+    });
+    entry.tasks.lock().unwrap().push(loader);
+}
+
+/// Watch `node.visible`. When it flips, recompute effective visibility
+/// for this node's whole subtree (descendants inherit the change) and
+/// push the new state into the renderer per-kind.
+fn spawn_visibility_observer(node: Arc<Node>, entry: Arc<RendererNode>) {
+    let loader = AsyncLoader::new();
+    let task_node = node.clone();
+    let node_id = entry.node_id;
+    loader.load(async move {
+        use futures_signals::signal::SignalExt;
+        task_node
+            .visible
+            .signal()
+            .for_each(move |_| {
+                // Apply on the same task so consecutive flips serialize.
+                apply_visibility_subtree(node_id);
+                async {}
+            })
+            .await;
+    });
+    entry.tasks.lock().unwrap().push(loader);
+}
+
+/// Walk the scene subtree rooted at `node_id` (inclusive) and reapply
+/// effective visibility to each descendant. Called whenever any node's
+/// own `visible` flag changes — descendants inherit ancestors so the
+/// only correct response is to recompute the subtree.
+pub fn apply_visibility_subtree(node_id: NodeId) {
+    let scene = app_state().scene.clone();
+    let descendants = collect_descendants_inclusive(&scene, node_id);
+    for desc_id in descendants {
+        let visible = compute_effective_visibility(&scene, desc_id);
+        apply_visibility_to_node(desc_id, visible);
+    }
+}
+
+/// `node_id`'s effective visibility is `node.visible AND ancestors.visible`.
+/// Walks parent-by-parent to the root via `mutate::find_parent`. Missing
+/// nodes (e.g. removed mid-flight) short-circuit to `true`.
+fn compute_effective_visibility(scene: &crate::scene::Scene, node_id: NodeId) -> bool {
+    use crate::scene::mutate;
+    let mut current = mutate::find_by_id(scene, node_id);
+    while let Some(node) = current {
+        if !node.visible.get() {
+            return false;
+        }
+        current = mutate::find_parent(scene, node.id);
+    }
+    true
+}
+
+/// Depth-first pre-order collection of `node_id` + every descendant's
+/// `NodeId`. Returns an empty vec if the node has been removed.
+fn collect_descendants_inclusive(scene: &crate::scene::Scene, node_id: NodeId) -> Vec<NodeId> {
+    use crate::scene::mutate;
+    let Some(root) = mutate::find_by_id(scene, node_id) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    fn walk(node: &Arc<Node>, out: &mut Vec<NodeId>) {
+        out.push(node.id);
+        for child in node.children.lock_ref().iter() {
+            walk(child, out);
+        }
+    }
+    walk(&root, &mut out);
+    out
+}
+
+/// Update `effective_visible` on the bridge entry and push the new
+/// state into the renderer per-kind. Light + Collision read
+/// `effective_visible` themselves each frame, so this only needs to do
+/// direct work for Model nodes.
+fn apply_visibility_to_node(node_id: NodeId, visible: bool) {
+    let entry = match bridge().nodes.lock().unwrap().get(&node_id).cloned() {
+        Some(e) => e,
+        None => return,
+    };
+    *entry.effective_visible.lock().unwrap() = visible;
+
+    // Snapshot the current mesh list so we can release the bridge lock
+    // before crossing the renderer await.
+    let meshes: Vec<awsm_renderer::meshes::MeshKey> = entry.model_meshes.lock().unwrap().clone();
+    if meshes.is_empty() {
+        return;
+    }
+    spawn_local(async move {
+        with_renderer_mut(move |r| {
+            for mesh in &meshes {
+                let _ = r.set_mesh_hidden(*mesh, !visible);
+            }
+        })
+        .await;
+    });
+}
+
+async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
+    // F-A identity check: if this kind equals the last one we
+    // materialized for the node, the bridge state is already correct
+    // — bail without touching the renderer. `Mutable::set` always
+    // emits regardless of equality, so the inspector's `number_input`
+    // routinely writes back a value identical to what's already there
+    // (e.g. focus+blur with no edit, scrub-wheel hitting the existing
+    // value, undo restoring the same kind).
+    {
+        let last = entry.last_applied_kind.lock().unwrap();
+        if last.as_ref() == Some(&kind) {
+            return;
+        }
+    }
+    // F9 fast path (SweepAlongCurve only): if the new kind is a Sweep
+    // whose geometry inputs match the previous Sweep this node built,
+    // skip the full rebuild and just swap the material binding. Avoids
+    // re-evaluating `sweep_along_curve` (potentially tens of thousands
+    // of verts) on every material-only edit during a drag.
+    if try_sweep_material_only_update(&entry, &kind).await {
+        *entry.last_applied_kind.lock().unwrap() = Some(kind);
+        return;
+    }
+    // L5 fast path (ParticleEmitter only): if the new kind is a
+    // ParticleEmitter and the previous one had matching structural
+    // fields (`blend`, `max_alive`, `texture`), hot-swap the live
+    // simulator's emitter snapshot in place. The simulator's
+    // per-particle state (positions, velocities, remaining lifetimes)
+    // survives, so a user can drag a slider in the inspector and watch
+    // the running emitter react smoothly instead of restarting.
+    if try_particle_param_only_update(&entry, &kind) {
+        *entry.last_applied_kind.lock().unwrap() = Some(kind);
+        return;
+    }
+    // L5+ structural fast path: same kind variant but a structural
+    // field differs (e.g. blend toggle, max_alive resize, texture
+    // swap). Renderer-side mesh + material need rebuilding, but the
+    // simulator state itself is salvageable — lift it across the
+    // rebuild so the particle stream doesn't restart, only the
+    // render-pass / buffer-size / material identity changes. Also
+    // covers the not-currently-playing case: nothing to rebuild but
+    // we still want to skip the generic `forget` path, which would
+    // drop the per-node `playing` Mutable the inspector is bound to.
+    if try_particle_structural_smooth_rebuild(&entry, &kind).await {
+        *entry.last_applied_kind.lock().unwrap() = Some(kind);
+        return;
+    }
+    // Clear any previous kind's renderer-side state first so changing
+    // a node's kind at runtime doesn't leak sub-transforms/meshes / lights.
+    clear_model_instance(&entry).await;
+    clear_light(&entry).await;
+    clear_lines(&entry).await;
+    super::particles_sync::forget(entry.node_id).await;
+
+    // Any kind transition wipes a previous Model's failure record — if
+    // the node is no longer a Model, it can't be missing an asset.
+    app_state().clear_asset_failure(entry.node_id);
+
+    // Remember this for the next identity check. Done before dispatch
+    // so even early-returning paths (Group / Collider / Camera) get
+    // their last-applied-kind state updated.
+    *entry.last_applied_kind.lock().unwrap() = Some(kind.clone());
+
+    match kind {
+        NodeKind::Group | NodeKind::Collider(_) | NodeKind::Camera(_) => {
+            apply_kind_passive(&entry);
+        }
+        NodeKind::Primitive { .. }
+        | NodeKind::Mesh { .. }
+        | NodeKind::Curve(_)
+        | NodeKind::SweepAlongCurve { .. }
+        | NodeKind::InstancesAlongCurve(_)
+        | NodeKind::Line(_)
+        | NodeKind::Sprite(_)
+        | NodeKind::ParticleEmitter(_) => {
+            apply_kind_procedural(entry, kind).await;
+        }
+        NodeKind::Light(cfg) => apply_kind_light(entry, cfg).await,
+        NodeKind::Model(model_ref) => apply_kind_model(entry, model_ref),
+    }
+}
+
+/// Pure transform / wireframe-only kinds. No renderer-side asset or
+/// light handle allocated; the existing transform key already covers
+/// what these need.
+fn apply_kind_passive(entry: &Arc<RendererNode>) {
+    *entry.asset_id.lock().unwrap() = None;
+    entry.node.asset_status.set(AssetStatus::Idle);
+}
+
+/// Procedural variants — materializer in `procedural_sync` does the
+/// real work. Mesh keys + sub-transforms land in `model_meshes` /
+/// `model_transforms` so the standard `clear_model_instance` cleanup
+/// path tears them down on the next kind change.
+async fn apply_kind_procedural(entry: Arc<RendererNode>, kind: NodeKind) {
+    *entry.asset_id.lock().unwrap() = None;
+    entry.node.asset_status.set(AssetStatus::Idle);
+    let parent_tk = entry.transform_key;
+    super::procedural_sync::materialize_procedural(entry, kind, parent_tk).await;
+}
+
+/// Light kinds — insert a `Light` at the origin; the per-frame light
+/// sync in `renderer_bridge.rs` pushes the right world pos/dir next
+/// tick.
+async fn apply_kind_light(entry: Arc<RendererNode>, cfg: crate::scene::LightConfig) {
+    *entry.asset_id.lock().unwrap() = None;
+    entry.node.asset_status.set(AssetStatus::Idle);
+    let light = light_from_config(&cfg, Vec3::ZERO, Vec3::NEG_Z);
+    let key = with_renderer_mut(move |r| r.lights.insert(light)).await;
+    if let Ok(key) = key {
+        *entry.light_key.lock().unwrap() = Some(key);
+    }
+}
+
+/// Model kinds — kick off the gltf load, then instance the matched
+/// template node under the editor node's transform when the load
+/// completes. Loading is parked on `entry.asset_loader` so a kind
+/// change mid-load cancels the in-flight work via the standard
+/// AsyncLoader drop semantics.
+fn apply_kind_model(entry: Arc<RendererNode>, model_ref: crate::scene::ModelRef) {
+    let asset_id = model_ref.asset_id;
+    *entry.asset_id.lock().unwrap() = Some(asset_id);
+
+    let cache = bridge().assets.clone();
+    let asset_entry: AssetEntry = cache.get_or_load(asset_id);
+
+    entry.node.asset_status.set(AssetStatus::Loading);
+
+    let entry_for_load = entry.clone();
+    let asset_entry_for_load = asset_entry.clone();
+    entry.asset_loader.load(async move {
+        match asset_entry_for_load.wait().await {
+            Ok(template) => instantiate_model_template(entry_for_load, asset_id, template).await,
+            Err(err) => report_model_load_failure(entry_for_load, asset_id, err),
+        }
+    });
+}
+
+async fn instantiate_model_template(
+    entry: Arc<RendererNode>,
+    asset_id: AssetId,
+    template: super::asset_cache::AssetTemplate,
+) {
+    // Guard: did this node get removed or change kind while we were
+    // loading?
+    {
+        let cur = *entry.asset_id.lock().unwrap();
+        if cur != Some(asset_id) {
+            return;
+        }
+    }
+    let (node_index, primitive_index) = match &*entry.node.kind.lock_ref() {
+        NodeKind::Model(r) => (r.node_index, r.primitive_index),
+        _ => (0, None),
+    };
+    instance_template(entry.clone(), template, node_index, primitive_index).await;
+    entry.node.asset_status.set(AssetStatus::Ready);
+    app_state().clear_asset_failure(entry.node_id);
+}
+
+fn report_model_load_failure(entry: Arc<RendererNode>, asset_id: AssetId, err: String) {
+    entry.node.asset_status.set(AssetStatus::Failed(err));
+    // Resolve the asset id back to a filename for the user-facing
+    // error surface; if the table no longer has it (e.g. cleanup
+    // raced), fall back to the raw id string.
+    let label = app_state()
+        .scene
+        .assets
+        .lock()
+        .unwrap()
+        .filename(asset_id)
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| asset_id.to_string());
+    app_state().report_asset_failed(entry.node_id, label);
+}
+
+/// F9 fast path: returns `true` if the incoming kind is a Sweep whose
+/// geometry inputs match the node's stored hash AND we still have a
+/// live mesh from the previous Sweep. In that case the only thing
+/// that needs to happen is rebinding the material — no expensive
+/// `sweep_along_curve` re-evaluation, no GPU vertex upload, no
+/// transform churn.
+///
+/// Returns `false` and leaves the node untouched in every other case
+/// (kind isn't Sweep, hash differs, no existing mesh, curve lookup
+/// failed). The caller then takes the standard clear-then-materialize
+/// path.
+/// L5: ParticleEmitter param-only fast path. Hot-swaps the live
+/// simulator's `Emitter` snapshot when only "param" fields changed —
+/// preserving per-particle state (positions, velocities, lifetimes)
+/// so an inspector drag plays out smoothly instead of restarting.
+///
+/// Structural fields (`blend`, `max_alive`, `texture`) fall through
+/// to [`try_particle_structural_smooth_rebuild`], which preserves
+/// simulator state across a true rebuild. The not-currently-playing
+/// case also falls through there — that path no-ops cleanly while
+/// keeping the per-node Play Mutable alive (`forget` in the generic
+/// path would orphan it).
+fn try_particle_param_only_update(entry: &Arc<RendererNode>, kind: &NodeKind) -> bool {
+    let new_def = match kind {
+        NodeKind::ParticleEmitter(def) => def,
+        _ => return false,
+    };
+    let last_def = {
+        let last = entry.last_applied_kind.lock().unwrap();
+        match last.as_ref() {
+            Some(NodeKind::ParticleEmitter(def)) => def.clone(),
+            _ => return false,
+        }
+    };
+    if new_def.blend != last_def.blend
+        || new_def.max_alive != last_def.max_alive
+        || new_def.texture != last_def.texture
+    {
+        return false;
+    }
+    super::particles_sync::hot_swap_emitter(entry.node_id, new_def)
+}
+
+/// L5+ ParticleEmitter structural-edit fast path. The L5 param-only
+/// path catches cases where `blend` / `max_alive` / `texture` are
+/// unchanged; this path handles the remaining ParticleEmitter →
+/// ParticleEmitter transitions by lifting the live simulator state
+/// across a renderer-side rebuild (mesh + material reconstructed on
+/// the new def's render pass / buffer size / texture).
+///
+/// Returns `true` for every `ParticleEmitter → ParticleEmitter`
+/// transition, INCLUDING the not-currently-playing case — that
+/// branch no-ops but the `true` return prevents the generic clear
+/// path from running `forget`, which would drop the per-node
+/// `playing` Mutable the inspector is bound to. Returns `false`
+/// only when the variant transitions in or out of `ParticleEmitter`
+/// — those changes need the generic clear path so observer
+/// registration / cleanup runs.
+async fn try_particle_structural_smooth_rebuild(
+    entry: &Arc<RendererNode>,
+    kind: &NodeKind,
+) -> bool {
+    let new_def = match kind {
+        NodeKind::ParticleEmitter(def) => def.clone(),
+        _ => return false,
+    };
+    let old_was_particle = matches!(
+        entry.last_applied_kind.lock().unwrap().as_ref(),
+        Some(NodeKind::ParticleEmitter(_))
+    );
+    if !old_was_particle {
+        return false;
+    }
+    let _ = super::particles_sync::try_rebuild_preserving_simulator(
+        entry.node_id,
+        entry.transform_key,
+        &new_def,
+    )
+    .await;
+    true
+}
+
+async fn try_sweep_material_only_update(entry: &Arc<RendererNode>, kind: &NodeKind) -> bool {
+    let (def, material_ref, inline) = match kind {
+        NodeKind::SweepAlongCurve {
+            def,
+            material,
+            inline_material,
+        } => (def.clone(), *material, inline_material.clone()),
+        _ => return false,
+    };
+
+    // Need an existing mesh + stored hash to take the fast path.
+    let existing_mesh = entry.model_meshes.lock().unwrap().first().copied();
+    let Some(existing_mesh) = existing_mesh else {
+        return false;
+    };
+    let stored_hash = *entry.sweep_geometry_hash.lock().unwrap();
+    let Some(stored_hash) = stored_hash else {
+        return false;
+    };
+
+    let Some(curve_def) = super::procedural_sync::lookup_curve_def(def.curve_node) else {
+        return false;
+    };
+    let new_hash = super::procedural_sync::sweep_geometry_hash(&def, &curve_def);
+    if new_hash != stored_hash {
+        return false;
+    }
+
+    // Geometry unchanged — only the material side may have changed.
+    // Free the previously-owned inline material (if any), resolve the
+    // new material (which may produce a new owned key or hit the
+    // shared cache), and rebind the existing mesh to it.
+    let old_owned: Vec<awsm_renderer::materials::MaterialKey> =
+        std::mem::take(&mut *entry.material_keys.lock().unwrap());
+    let entry_for_apply = entry.clone();
+    with_renderer_mut(move |r| {
+        let scene = app_state().scene.clone();
+        let resolved = super::material_cache::resolve(r, &scene, material_ref, &inline);
+        let new_material = resolved.key();
+        if let Err(err) = r.set_mesh_material(existing_mesh, new_material) {
+            tracing::warn!("node_sync (Sweep fast path): set_mesh_material failed: {err}");
+        }
+        // Free the previously-owned inline material *after* the rebind
+        // so the slot isn't briefly orphaned mid-frame.
+        for k in old_owned {
+            r.remove_material(k);
+        }
+        if let super::material_cache::ResolvedMaterial::Owned(k) = resolved {
+            entry_for_apply.material_keys.lock().unwrap().push(k);
+        }
+    })
+    .await;
+
+    true
+}
+
+async fn clear_light(entry: &Arc<RendererNode>) {
+    let key = entry.light_key.lock().unwrap().take();
+    if let Some(key) = key {
+        with_renderer_mut(move |r| r.lights.remove(key)).await;
+    }
+}
+
+async fn clear_lines(entry: &Arc<RendererNode>) {
+    let keys: Vec<_> = std::mem::take(&mut *entry.line_keys.lock().unwrap());
+    if keys.is_empty() {
+        return;
+    }
+    with_renderer_mut(move |r| {
+        for k in keys {
+            r.remove_line(k);
+        }
+    })
+    .await;
+}
+
+fn light_from_config(
+    cfg: &crate::scene::LightConfig,
+    position: Vec3,
+    direction: Vec3,
+) -> awsm_renderer::lights::Light {
+    use crate::scene::LightConfig;
+    use awsm_renderer::lights::Light;
+    match cfg {
+        LightConfig::Directional { color, intensity } => Light::Directional {
+            color: *color,
+            intensity: *intensity,
+            direction: direction.to_array(),
+        },
+        LightConfig::Point {
+            color,
+            intensity,
+            range,
+        } => Light::Point {
+            color: *color,
+            intensity: *intensity,
+            position: position.to_array(),
+            range: *range,
+        },
+        LightConfig::Spot {
+            color,
+            intensity,
+            range,
+            inner_angle,
+            outer_angle,
+        } => Light::Spot {
+            color: *color,
+            intensity: *intensity,
+            position: position.to_array(),
+            direction: direction.to_array(),
+            range: *range,
+            inner_angle: *inner_angle,
+            outer_angle: *outer_angle,
+        },
+    }
+}
+
+async fn clear_model_instance(entry: &Arc<RendererNode>) {
+    let sub_transforms: Vec<TransformKey> =
+        std::mem::take(&mut *entry.model_transforms.lock().unwrap());
+    let sub_meshes: Vec<awsm_renderer::meshes::MeshKey> =
+        std::mem::take(&mut *entry.model_meshes.lock().unwrap());
+    let material_keys: Vec<awsm_renderer::materials::MaterialKey> =
+        std::mem::take(&mut *entry.material_keys.lock().unwrap());
+    // Tearing down the mesh invalidates the sweep fast-path hash —
+    // the next Sweep build will repopulate it. Forgetting to clear
+    // it here would let an unrelated transition (Sweep → Primitive
+    // → Sweep with same hash) take the fast path on a Primitive mesh.
+    *entry.sweep_geometry_hash.lock().unwrap() = None;
+    if sub_transforms.is_empty() && sub_meshes.is_empty() && material_keys.is_empty() {
+        return;
+    }
+    with_renderer_mut(move |r| {
+        for mesh in sub_meshes {
+            r.remove_mesh(mesh);
+        }
+        // Free owned inline materials *after* the meshes that referenced
+        // them — keeps the materials slotmap flat across repeated kind
+        // changes (was leaking one entry per re-materialize).
+        for mat in material_keys {
+            r.remove_material(mat);
+        }
+        for tk in sub_transforms {
+            r.transforms.remove(tk);
+        }
+    })
+    .await;
+}
+
+async fn instance_template(
+    entry: Arc<RendererNode>,
+    template: super::asset_cache::AssetTemplate,
+    node_index: u32,
+    primitive_index: Option<u32>,
+) {
+    let parent_tk = entry.transform_key;
+
+    // Find the gltf node this editor `Node` represents. Children of that
+    // gltf node are NOT instanced here — `Insert Model` already created
+    // independent editor `Node`s for them, and the bridge's children
+    // observer will spawn their own meshes.
+    let Some(template_node) = template.find_by_node_index(node_index) else {
+        tracing::warn!(
+            "instance_template: gltf node_index={node_index} not found in template; \
+             nothing to render for this node"
+        );
+        return;
+    };
+
+    if template_node.mesh_keys.is_empty() {
+        return;
+    }
+
+    // `primitive_index = Some(i)` means the editor node was peeled off
+    // by Split and represents only the i-th primitive of this gltf node.
+    // `None` (the common case) means render every primitive.
+    let mesh_keys: Vec<_> = match primitive_index {
+        None => template_node.mesh_keys.clone(),
+        Some(i) => match template_node.mesh_keys.get(i as usize).copied() {
+            Some(k) => vec![k],
+            None => {
+                tracing::warn!(
+                    "instance_template: primitive_index={i} out of range for gltf \
+                     node_index={node_index} (has {} primitives)",
+                    template_node.mesh_keys.len()
+                );
+                return;
+            }
+        },
+    };
+
+    let handle = renderer_handle();
+    let mut renderer = handle.lock().await;
+
+    // Honor the node's effective visibility at instance time. Without
+    // this a node hydrated as `visible = false` would briefly flash
+    // visible while we wait for the gltf to finish loading.
+    let visible = *entry.effective_visible.lock().unwrap();
+
+    let mut created_meshes = Vec::new();
+    for mesh_key in &mesh_keys {
+        match renderer.duplicate_mesh_with_transform(*mesh_key, parent_tk) {
+            Ok(new_mesh) => {
+                // The template mesh is kept hidden so the original doesn't
+                // render at the world origin as a ghost; duplicates inherit
+                // that flag via `mesh.clone()`, so set it explicitly to
+                // match the node's current effective visibility.
+                let _ = renderer.set_mesh_hidden(new_mesh, !visible);
+                created_meshes.push(new_mesh);
+            }
+            Err(err) => tracing::warn!("duplicate_mesh_with_transform failed: {err}"),
+        }
+    }
+
+    drop(renderer);
+
+    entry.model_meshes.lock().unwrap().extend(created_meshes);
+    // Bump so any signal that derives from "is this Model splittable?"
+    // re-evaluates now that mesh count is known.
+    bridge().bump_nodes_revision();
+}
+
+pub fn trs_to_transform(trs: &Trs) -> Transform {
+    Transform {
+        translation: Vec3::from_array(trs.translation),
+        rotation: Quat::from_array(trs.rotation),
+        scale: Vec3::from_array(trs.scale),
+    }
+}

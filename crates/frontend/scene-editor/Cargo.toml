@@ -1,0 +1,69 @@
+[package]
+name = "awsm-scene-editor"
+description = "Interactive 3D scene authoring tool for awsm-renderer."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+awsm-curves = { path = "../../curves", features = ["serde"] }
+awsm-meshgen = { path = "../../meshgen", features = ["serde"] }
+awsm-particles = { path = "../../particles", features = ["serde"] }
+awsm-renderer = { path = "../../renderer", features = ["ktx", "serde"] }
+awsm-renderer-core = { path = "../../renderer-core" }
+awsm-renderer-editor = { path = "../../editor" }
+awsm-renderer-gltf = { path = "../../renderer-gltf" }
+awsm-scene-schema = { path = "../../scene-schema" }
+awsm-web-shared = { path = "../../web-shared" }
+
+anyhow = { workspace = true }
+glam = { workspace = true, features = ["serde"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+uuid = { version = "1.11.0", features = ["v4", "serde", "js"] }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+js-sys = { workspace = true }
+futures = { workspace = true }
+indexmap = { workspace = true }
+
+# Frontend-only — not in the awsm workspace deps, mirror what
+# `model-tests` and `web-shared` pull directly.
+bitcode = { version = "0.6.9", features = ["serde", "uuid"] }
+dominator = "0.5.38"
+futures-signals = "0.3.34"
+gloo-events = "0.2.0"
+gloo-net = { version = "0.6.0", features = ["http"] }
+gloo-render = "0.2.0"
+gloo-timers = { version = "0.3.0", features = ["futures"] }
+serde-wasm-bindgen = "0.6.5"
+xutex = "0.2.1"
+awsm_web = { version = "0.45.0", default-features = false, features = ["dom", "file"] }
+
+# web-sys features additive on top of the awsm workspace baseline.
+# These cover what the editor uses beyond the renderer/web-shared set:
+# the FS Access API (DirectoryPicker + FileSystem* handles), keyboard
+# events, and 2D canvas overlay used by the gizmo / collider wireframe
+# layers.
+[dependencies.web-sys]
+workspace = true
+features = [
+    "CanvasRenderingContext2d",
+    "DirectoryPickerOptions",
+    "FileSystemHandle",
+    "FileSystemHandleKind",
+    "FileSystemPermissionMode",
+    "FileSystemHandlePermissionDescriptor",
+    "FileSystemDirectoryHandle",
+    "FileSystemFileHandle",
+    "FileSystemWritableFileStream",
+    "FileSystemGetDirectoryOptions",
+    "FileSystemGetFileOptions",
+    "FileSystemRemoveOptions",
+    "FileSystemCreateWritableOptions",
+    "KeyboardEvent",
+]

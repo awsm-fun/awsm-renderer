@@ -12,6 +12,7 @@ members = [
     "crates/scene-schema",
     "crates/web-shared",
     "crates/frontend/model-tests",
+    "crates/frontend/scene-editor",
 ]
 resolver = "2"
 
@@ -58,6 +59,9 @@ opt-level = 1
 opt-level = 1
 
 [profile.dev.package."awsm-model-tests"]
+opt-level = 1
+
+[profile.dev.package."awsm-scene-editor"]
 opt-level = 1
 
 ### Dependencies
