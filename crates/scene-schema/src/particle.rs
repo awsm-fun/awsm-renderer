@@ -1,0 +1,129 @@
+//! Authored particle emitter definitions.
+
+use super::primitive::TextureRef;
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[derive(Copy)]
+pub enum SpawnShapeDef {
+    Point,
+    Sphere {
+        radius: f32,
+    },
+    Cone {
+        angle_radians: f32,
+        direction: [f32; 3],
+    },
+}
+
+impl SpawnShapeDef {
+    pub fn default_cone() -> Self {
+        Self::Cone {
+            angle_radians: 0.4,
+            direction: [0.0, -1.0, 0.0],
+        }
+    }
+}
+
+impl Default for SpawnShapeDef {
+    fn default() -> Self {
+        Self::default_cone()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[derive(Copy)]
+pub enum ForceDef {
+    Gravity { acceleration: [f32; 3] },
+    LinearDrag { coefficient_x1000: u32 },
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[derive(Eq, Hash, Copy, Default)]
+pub enum EmitterSpaceDef {
+    /// Particles persist in world space.
+    World,
+    /// Particles follow the emitter transform.
+    #[default]
+    Local,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ColorOverLifeDef {
+    Const([f32; 4]),
+    Linear { start: [f32; 4], end: [f32; 4] },
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[derive(Copy)]
+pub enum SizeOverLifeDef {
+    Const(f32),
+    Linear { start: f32, end: f32 },
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[derive(Copy)]
+pub enum AlphaOverLifeDef {
+    Const(f32),
+    LinearOneToZero,
+    Linear { start: f32, end: f32 },
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ParticleEmitterDef {
+    pub spawn_rate: f32,
+    pub burst_count: u32,
+    pub max_alive: u32,
+    pub one_shot: bool,
+    pub space: EmitterSpaceDef,
+    pub shape: SpawnShapeDef,
+    pub initial_speed: [f32; 2],
+    pub lifetime: [f32; 2],
+    pub size: [f32; 2],
+    pub forces: Vec<ForceDef>,
+    pub color_over_life: ColorOverLifeDef,
+    pub size_over_life: SizeOverLifeDef,
+    pub alpha_over_life: AlphaOverLifeDef,
+    /// Optional sprite texture for billboard rendering.
+    pub texture: Option<TextureRef>,
+    /// Route this emitter through the transparent-blend pass instead of the
+    /// opaque-emissive path. Required for true alpha-fading particles
+    /// (smoke, soft glows). Opaque is the default since the visibility
+    /// buffer is cheaper.
+    #[serde(default)]
+    pub blend: bool,
+}
+
+impl Default for ParticleEmitterDef {
+    fn default() -> Self {
+        Self {
+            spawn_rate: 60.0,
+            burst_count: 0,
+            max_alive: 256,
+            one_shot: false,
+            space: EmitterSpaceDef::Local,
+            shape: SpawnShapeDef::default(),
+            initial_speed: [1.0, 2.0],
+            lifetime: [0.4, 0.8],
+            size: [0.1, 0.2],
+            forces: vec![],
+            color_over_life: ColorOverLifeDef::Linear {
+                start: [1.0, 0.8, 0.2, 1.0],
+                end: [1.0, 0.2, 0.0, 0.0],
+            },
+            size_over_life: SizeOverLifeDef::Linear {
+                start: 1.0,
+                end: 0.3,
+            },
+            alpha_over_life: AlphaOverLifeDef::LinearOneToZero,
+            texture: None,
+            blend: false,
+        }
+    }
+}
