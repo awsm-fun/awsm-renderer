@@ -1,0 +1,44 @@
+version: "3"
+
+vars:
+  # Paths
+  PATH_REPO_ROOT:
+    sh: git rev-parse --show-toplevel
+  PATH_BUILD_ARTIFACTS: '{{joinPath .PATH_REPO_ROOT ".build-artifacts"}}'
+  PATH_CRATES: '{{joinPath .PATH_REPO_ROOT "crates"}}'
+  PATH_FRONTENDS: '{{joinPath .PATH_CRATES "frontend"}}'
+  PATH_CRATE_RENDERER: '{{joinPath .PATH_CRATES "renderer"}}'
+  PATH_CRATE_RENDERER_CORE: '{{joinPath .PATH_CRATES "renderer-core"}}'
+  PATH_CRATE_EDITOR: '{{joinPath .PATH_CRATES "editor"}}'
+  PATH_CRATE_SCENE_SCHEMA: '{{joinPath .PATH_CRATES "scene-schema"}}'
+  PATH_CRATE_WEB_SHARED: '{{joinPath .PATH_CRATES "web-shared"}}'
+  PATH_MEDIA_LOCAL: '{{joinPath .PATH_REPO_ROOT "media"}}'
+  PATH_MEDIA_ADDITIONAL_ASSETS: '{{joinPath .PATH_REPO_ROOT ".." "awsm-renderer-assets"}}'
+
+  # Ports
+  PORT_SITE_INDEX_DEV: 9079
+  PORT_MODEL_TESTS_DEV: 9080
+  PORT_SCENE_EDITOR_DEV: 9081
+  PORT_MEDIA_LOCAL_DEV: 9082
+  PORT_MEDIA_ADDITIONAL_ASSETS_DEV: 9083
+
+  # URLs — dev (served by the per-frontend dev recipes + media servers)
+  URL_DEV_SITE_INDEX: "http://localhost:{{.PORT_SITE_INDEX_DEV}}"
+  URL_DEV_MODEL_TESTS: "http://localhost:{{.PORT_MODEL_TESTS_DEV}}"
+  URL_DEV_SCENE_EDITOR: "http://localhost:{{.PORT_SCENE_EDITOR_DEV}}"
+  URL_DEV_MEDIA_BASE_URL_GLTF_SAMPLES: "http://localhost:{{.PORT_MEDIA_LOCAL_DEV}}/glTF-Sample-Assets/Models"
+  URL_DEV_MEDIA_BASE_URL_ADDITIONAL_ASSETS: "http://localhost:{{.PORT_MEDIA_ADDITIONAL_ASSETS_DEV}}"
+
+  # URLs — production (GitHub Pages deploy targets)
+  URL_PROD_SITE_INDEX: "https://dakom.github.io/awsm-renderer/"
+  URL_PROD_MODEL_TESTS: "https://dakom.github.io/awsm-renderer/model-tests/"
+  URL_PROD_SCENE_EDITOR: "https://dakom.github.io/awsm-renderer/scene-editor/"
+  URL_PROD_MEDIA_BASE_URL_GLTF_SAMPLES: "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/refs/heads/main/Models"
+  URL_PROD_MEDIA_BASE_URL_ADDITIONAL_ASSETS: "https://dakom.github.io/awsm-renderer-assets"
+
+  # Trunk public-URL prefix. Production builds embed
+  # `${PROD_ROOT_BASE_URI_PATH}/<frontend>/` so links resolve under the
+  # repo subpath of the dakom.github.io site; dev builds run at the
+  # root.
+  PROD_ROOT_BASE_URI_PATH: "/awsm-renderer"
+  DEV_ROOT_BASE_URI_PATH: ""

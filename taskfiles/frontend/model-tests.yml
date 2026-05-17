@@ -1,0 +1,46 @@
+version: "3"
+
+includes:
+  config:
+    taskfile: ../config.yml
+    flatten: true
+
+vars:
+  PATH_CRATE: '{{joinPath .PATH_FRONTENDS "model-tests"}}'
+  PATH_DIST: '{{joinPath .PATH_BUILD_ARTIFACTS "model-tests"}}'
+
+tasks:
+  dev:
+    desc: "model-tests: trunk serve"
+    env:
+      MEDIA_BASE_URL_GLTF_SAMPLES: "{{.URL_DEV_MEDIA_BASE_URL_GLTF_SAMPLES}}"
+      MEDIA_BASE_URL_ADDITIONAL_ASSETS: "{{.URL_DEV_MEDIA_BASE_URL_ADDITIONAL_ASSETS}}"
+      ROOT_BASE_URI_PATH: "{{.DEV_ROOT_BASE_URI_PATH}}"
+    cmds:
+      - >
+        cd {{.PATH_CRATE}} &&
+        trunk serve --port {{.PORT_MODEL_TESTS_DEV}}
+        --watch "{{.PATH_MEDIA_LOCAL}}"
+        --watch "{{.PATH_MEDIA_ADDITIONAL_ASSETS}}"
+        --watch "{{.PATH_CRATE}}"
+        --watch "{{.PATH_CRATE_RENDERER}}"
+        --watch "{{.PATH_CRATE_RENDERER_CORE}}"
+        --watch "{{.PATH_CRATE_EDITOR}}"
+
+  build:
+    desc: "model-tests: production build"
+    env:
+      MEDIA_BASE_URL_GLTF_SAMPLES: "{{.URL_PROD_MEDIA_BASE_URL_GLTF_SAMPLES}}"
+      MEDIA_BASE_URL_ADDITIONAL_ASSETS: "{{.URL_PROD_MEDIA_BASE_URL_ADDITIONAL_ASSETS}}"
+      ROOT_BASE_URI_PATH: "{{.PROD_ROOT_BASE_URI_PATH}}/model-tests"
+    cmds:
+      - cd {{.PATH_CRATE}} && trunk build --release --public-url "{{.URL_PROD_MODEL_TESTS}}"
+      - mkdir -p {{.PATH_DIST}}
+      - cp -r {{joinPath .PATH_CRATE "dist"}}/* {{.PATH_DIST}}/
+      - cp {{.PATH_DIST}}/index.html {{.PATH_DIST}}/404.html
+
+  clean:
+    desc: "model-tests: remove dist + .build-artifacts output"
+    cmds:
+      - rm -rf {{joinPath .PATH_CRATE "dist"}}
+      - rm -rf {{.PATH_DIST}}

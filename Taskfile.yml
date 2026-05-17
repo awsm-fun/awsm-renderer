@@ -4,66 +4,44 @@ silent: true
 
 dotenv: [".env"]
 
-vars:
-  # Paths
-  PATH_REPO_ROOT:
-    sh: git rev-parse --show-toplevel
-  PATH_BUILD_ARTIFACTS: '{{joinPath .PATH_REPO_ROOT ".build-artifacts"}}'
-  PATH_CRATES: '{{joinPath .PATH_REPO_ROOT "crates"}}'
-  PATH_BUILD_ARTIFACTS_FRONTEND: '{{joinPath .PATH_BUILD_ARTIFACTS "frontend"}}'
-  PATH_MEDIA_LOCAL: '{{joinPath .PATH_REPO_ROOT "media"}}'
-  PATH_MEDIA_ADDITIONAL_ASSETS: '{{joinPath .PATH_REPO_ROOT ".." "awsm-renderer-assets"}}'
-  PATH_CRATE_FRONTEND: '{{joinPath .PATH_CRATES "frontend" "model-tests"}}'
-  PATH_CRATE_RENDERER: '{{joinPath .PATH_CRATES "renderer"}}'
-  PATH_CRATE_RENDERER_CORE: '{{joinPath .PATH_CRATES "renderer-core"}}'
-  PATH_CRATE_EDITOR: '{{joinPath .PATH_CRATES "editor"}}'
-
-  # Ports
-  PORT_MEDIA_LOCAL_DEV: 9082
-  PORT_MEDIA_ADDITIONAL_ASSETS_DEV: 9083
-  PORT_FRONTEND_DEV: 9080
-
-  # URLs
-  URL_PROD_MEDIA_BASE_URL_GLTF_SAMPLES: "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/refs/heads/main/Models"
-  URL_PROD_MEDIA_BASE_URL_ADDITIONAL_ASSETS: "https://dakom.github.io/awsm-renderer-assets"
-  URL_DEV_MEDIA_BASE_URL_GLTF_SAMPLES: "http://localhost:{{.PORT_MEDIA_LOCAL_DEV}}/glTF-Sample-Assets/Models"
-  URL_DEV_MEDIA_BASE_URL_ADDITIONAL_ASSETS: "http://localhost:{{.PORT_MEDIA_ADDITIONAL_ASSETS_DEV}}"
-  URL_TRUNK: "https://dakom.github.io/awsm-renderer/"
-
-  # Misc
-  PROD_ROOT_BASE_URI_PATH: "/awsm-renderer"
-  DEV_ROOT_BASE_URI_PATH: ""
+includes:
+  config:
+    taskfile: ./taskfiles/config.yml
+    flatten: true
+  model-tests:
+    taskfile: ./taskfiles/frontend/model-tests.yml
+  scene-editor:
+    taskfile: ./taskfiles/frontend/scene-editor.yml
 
 tasks:
   default:
     desc: "List all tasks"
     cmds:
       - task --list-all
-  dev:
-    deps: [media-local, media-additional-assets, trunk-serve]
-    desc: "Run frontend development server"
 
-  trunk-serve:
-    internal: true
-    desc: "Trunk serve"
-    env:
-      MEDIA_BASE_URL_GLTF_SAMPLES: "{{.URL_DEV_MEDIA_BASE_URL_GLTF_SAMPLES}}"
-      MEDIA_BASE_URL_ADDITIONAL_ASSETS: "{{.URL_DEV_MEDIA_BASE_URL_ADDITIONAL_ASSETS}}"
-      ROOT_BASE_URI_PATH: "{{.DEV_ROOT_BASE_URI_PATH}}"
+  dev:
+    desc: "Run every frontend dev server in parallel plus the media servers"
+    deps:
+      - model-tests:dev
+      - scene-editor:dev
+      - media-local
+      - media-additional-assets
+
+  build:
+    desc: "Build every frontend for production into .build-artifacts/"
     cmds:
-      - >
-        cd {{.PATH_CRATE_FRONTEND}} &&
-        trunk serve --port {{.PORT_FRONTEND_DEV}}
-        --watch "{{.PATH_MEDIA_LOCAL}}"
-        --watch "{{.PATH_MEDIA_ADDITIONAL_ASSETS}}"
-        --watch "{{.PATH_CRATE_FRONTEND}}"
-        --watch "{{.PATH_CRATE_RENDERER}}"
-        --watch "{{.PATH_CRATE_RENDERER_CORE}}"
-        --watch "{{.PATH_CRATE_EDITOR}}"
+      - task: model-tests:build
+      - task: scene-editor:build
+
+  clean:
+    desc: "Remove every frontend's dist + .build-artifacts output"
+    cmds:
+      - task: model-tests:clean
+      - task: scene-editor:clean
 
   media-local:
     internal: true
-    desc: "Local media server"
+    desc: "Local media server (glTF samples + assets watched by model-tests)"
     cmds:
       - >
         cd {{.PATH_MEDIA_LOCAL}} &&
@@ -71,35 +49,14 @@ tasks:
 
   media-additional-assets:
     internal: true
-    desc: "Additional assets media server"
+    desc: "Additional-assets media server"
     cmds:
       - >
         cd {{.PATH_MEDIA_ADDITIONAL_ASSETS}} &&
         http-server --gzip --cors -p {{.PORT_MEDIA_ADDITIONAL_ASSETS_DEV}}
 
-  build:
-    deps: [trunk-build-release]
-    desc: "Build frontend for production"
-    cmds:
-      # no need to copy media, it's referenced remotely in production
-      - mkdir -p {{.PATH_BUILD_ARTIFACTS_FRONTEND}}
-      - cp -r {{joinPath .PATH_CRATE_FRONTEND "dist" }}/* {{.PATH_BUILD_ARTIFACTS_FRONTEND}}/
-      - cp {{.PATH_BUILD_ARTIFACTS_FRONTEND}}/index.html {{.PATH_BUILD_ARTIFACTS_FRONTEND}}/404.html
-
-  trunk-build-release:
-    internal: true
-    desc: "Trunk build release"
-    env:
-      MEDIA_BASE_URL_GLTF_SAMPLES: "{{.URL_PROD_MEDIA_BASE_URL_GLTF_SAMPLES}}"
-      MEDIA_BASE_URL_ADDITIONAL_ASSETS: "{{.URL_PROD_MEDIA_BASE_URL_ADDITIONAL_ASSETS}}"
-      ROOT_BASE_URI_PATH: "{{.PROD_ROOT_BASE_URI_PATH}}"
-    cmds:
-      - >
-        cd {{.PATH_CRATE_FRONTEND}} &&
-        trunk build --release --public-url "{{.URL_TRUNK}}"
-
   publish:
-    desc: "Publish crates to crates.io (must be run in order: renderer-core, then renderer, then editor)"
+    desc: "Publish library crates to crates.io (must be run in order: renderer-core, then renderer, then editor)"
     cmds:
       - echo "Publishing awsm-renderer-core..."
       - cd {{.PATH_CRATE_RENDERER_CORE}} && cargo publish --target wasm32-unknown-unknown
