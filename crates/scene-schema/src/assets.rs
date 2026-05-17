@@ -139,22 +139,23 @@ impl AssetEntry {
     }
 }
 
-/// Disk path (relative to the project's `assets/` directory) for a
-/// file-backed asset entry. Returns `None` for entries that don't
-/// live on disk (`Material`, `Procedural` textures, `Url`) or are
-/// missing the content hash. Uses the entry's `display_name` to pull
-/// the file extension so a hashed file keeps its original extension —
-/// browsers + image decoders treat `<hash>.png` the same as
-/// `smoke.png` but the on-disk layout is collision-free.
+/// Leaf filename (no directory prefix) for a file-backed asset
+/// entry. Format is `<content_hash>.<ext>` where the extension is
+/// derived from the entry's `display_name`. Captured procedural
+/// meshes return `<asset-id>.mesh.bin` instead — they're addressed
+/// by `AssetId` because the bytes are deterministic from the
+/// `MeshDef`, not user-uploaded.
 ///
-/// Captured procedural meshes (`AssetSource::Mesh`) keep their
-/// historical `<asset-id>.mesh.bin` path — see
-/// [`mesh_asset_filename`] — they're addressed by `AssetId` because
-/// the bytes are deterministic from the `MeshDef`, not user-uploaded.
-pub fn asset_disk_path(id: AssetId, entry: &AssetEntry) -> Option<String> {
+/// Returns `None` for entries that don't live on disk (`Material`,
+/// `Procedural` textures, `Url`) or are missing `content_hash`.
+///
+/// This is the unit both the editor (for project-relative paths
+/// under `assets/`) and the player (for CDN URLs under
+/// `<base>/games/<gid>/world/assets/`) build on.
+pub fn asset_filename(id: AssetId, entry: &AssetEntry) -> Option<String> {
     use crate::material::{mesh_asset_filename, TextureDef};
     if let AssetSource::Mesh(_) = &entry.source {
-        return Some(format!("assets/{}", mesh_asset_filename(id)));
+        return Some(mesh_asset_filename(id));
     }
     if entry.content_hash.is_empty() {
         return None;
@@ -165,11 +166,19 @@ pub fn asset_disk_path(id: AssetId, entry: &AssetEntry) -> Option<String> {
         _ => return None,
     };
     let ext = display.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
-    if ext.is_empty() {
-        Some(format!("assets/{}", entry.content_hash))
+    Some(if ext.is_empty() {
+        entry.content_hash.clone()
     } else {
-        Some(format!("assets/{}.{}", entry.content_hash, ext))
-    }
+        format!("{}.{}", entry.content_hash, ext)
+    })
+}
+
+/// Project-relative disk path (`assets/<leaf>`) for a file-backed
+/// asset entry. Thin wrapper over [`asset_filename`] for editor save
+/// / load callers; the player composes its own CDN URL out of the
+/// leaf directly.
+pub fn asset_disk_path(id: AssetId, entry: &AssetEntry) -> Option<String> {
+    asset_filename(id, entry).map(|leaf| format!("assets/{leaf}"))
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
