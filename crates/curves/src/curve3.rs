@@ -245,12 +245,23 @@ impl Curve3 for CatmullRomCurve {
 
 /// Composite cubic Bezier curve through a sequence of control points
 /// (control points: [p0, c0, c1, p1, c2, c3, p2, ...]; segments share end points).
+///
+/// When `closed` is true the curve wraps the last anchor back to the
+/// first as an additional segment, using the optional wrap-handle pair
+/// at `handles[2*(N-1) .. 2*N]` (out-handle of anchor N-1 then
+/// in-handle of anchor 0). Missing wrap handles fall back to the
+/// anchor positions themselves, which degrades the wrap into a
+/// straight chord — sensible visual placeholder but the caller should
+/// provide handles for a smooth loop.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BezierCurve {
     /// Sequence of anchor points (length N).
     pub anchors: Vec<Vec3>,
-    /// Two control handles per segment (length 2 * (N - 1)) — out-handle of anchor i then in-handle of anchor i+1.
+    /// Two control handles per segment — out-handle of anchor i then
+    /// in-handle of anchor i+1. Length `2 * (N - 1)` for an open curve;
+    /// `2 * N` for a closed curve (the trailing pair bridges anchor
+    /// N-1 back to anchor 0).
     pub handles: Vec<Vec3>,
     pub closed: bool,
 }
@@ -260,7 +271,11 @@ impl BezierCurve {
         if self.anchors.len() < 2 {
             return 0;
         }
-        self.anchors.len() - 1
+        if self.closed {
+            self.anchors.len()
+        } else {
+            self.anchors.len() - 1
+        }
     }
 }
 
@@ -279,7 +294,10 @@ impl Curve3 for BezierCurve {
         let u = scaled - seg_idx as f32;
 
         let p0 = self.anchors[seg_idx];
-        let p3 = self.anchors[seg_idx + 1];
+        // For the wrap segment of a closed curve, the next anchor is
+        // anchor 0. `% anchors.len()` keeps the open case unchanged
+        // (seg_idx + 1 < N for every non-wrap segment).
+        let p3 = self.anchors[(seg_idx + 1) % self.anchors.len()];
         let handle_base = seg_idx * 2;
         let p1 = self.handles.get(handle_base).copied().unwrap_or(p0);
         let p2 = self.handles.get(handle_base + 1).copied().unwrap_or(p3);
@@ -325,6 +343,58 @@ mod tests {
         assert!(curve
             .point_at(1.0)
             .abs_diff_eq(Vec3::new(3.0, 0.0, 0.0), 1.0e-5));
+    }
+
+    #[test]
+    fn bezier_closed_wraps_to_first_anchor() {
+        // Triangle of anchors with handles set to anchor positions —
+        // the loop degenerates into straight chords, which is enough
+        // to test that the wrap segment exists at all (segment_count
+        // returns N, t=1 lands back on anchors[0]).
+        let a0 = Vec3::ZERO;
+        let a1 = Vec3::new(1.0, 0.0, 0.0);
+        let a2 = Vec3::new(0.5, 1.0, 0.0);
+        let curve = BezierCurve {
+            anchors: vec![a0, a1, a2],
+            handles: vec![a0, a1, a1, a2, a2, a0], // 3 segments × 2 handles
+            closed: true,
+        };
+
+        // t=1 must close the loop back to the first anchor.
+        assert!(
+            curve.point_at(1.0).abs_diff_eq(a0, 1.0e-5),
+            "closed curve t=1 should land on anchors[0], got {:?}",
+            curve.point_at(1.0),
+        );
+
+        // Sample the open version of the same anchors — t=1 lands on
+        // the last anchor instead, so the closed/open behavior is
+        // distinguishable.
+        let open = BezierCurve {
+            anchors: vec![a0, a1, a2],
+            handles: vec![a0, a1, a1, a2],
+            closed: false,
+        };
+        assert!(open.point_at(1.0).abs_diff_eq(a2, 1.0e-5));
+    }
+
+    #[test]
+    fn bezier_closed_two_anchors_makes_two_segments() {
+        // N=2 with closed=true: outgoing segment 0→1 + wrap segment
+        // 1→0. Without the fix, t=1 lands on anchors[1]; with the fix
+        // it lands on anchors[0].
+        let a0 = Vec3::ZERO;
+        let a1 = Vec3::new(2.0, 0.0, 0.0);
+        let curve = BezierCurve {
+            anchors: vec![a0, a1],
+            handles: vec![a0, a1, a1, a0],
+            closed: true,
+        };
+        // Halfway through the curve should be the second anchor
+        // (end of segment 0, start of segment 1).
+        assert!(curve.point_at(0.5).abs_diff_eq(a1, 1.0e-5));
+        // End of the loop returns to a0.
+        assert!(curve.point_at(1.0).abs_diff_eq(a0, 1.0e-5));
     }
 
     #[test]
