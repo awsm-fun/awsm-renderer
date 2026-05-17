@@ -203,6 +203,17 @@ fn build_runtime(
 ) -> Option<EmitterRuntime> {
     let emitter = def_to_emitter(def);
     let max = emitter.max_alive.max(1) as usize;
+    // For `World` mode the simulator emits in absolute world space and
+    // we expect particles to *stay* where they were spawned even when
+    // the emitter moves — so parent the instanced mesh's transform to
+    // the scene root instead of the emitter. Parenting to the emitter
+    // would multiply the world-space instance positions by the
+    // emitter's current world transform every frame, dragging the
+    // whole cloud along.
+    let instance_parent = match emitter.space {
+        EmitterSpace::Local => parent_transform,
+        EmitterSpace::World => renderer.transforms.root_node,
+    };
 
     let base_color = match &def.color_over_life {
         ColorOverLifeDef::Const(c) => *c,
@@ -239,7 +250,7 @@ fn build_runtime(
     };
     let transform_key = renderer
         .transforms
-        .insert(Transform::IDENTITY, Some(parent_transform));
+        .insert(Transform::IDENTITY, Some(instance_parent));
     let mesh_key = match renderer.add_raw_mesh(raw, transform_key, material_key) {
         Ok(k) => k,
         Err(err) => {
@@ -302,6 +313,14 @@ async fn build_runtime_blend(
 ) -> Option<EmitterRuntime> {
     let emitter = def_to_emitter(def);
     let max = emitter.max_alive.max(1) as usize;
+    // See `build_runtime` for the rationale — `World` mode emits in
+    // absolute world space and the instanced mesh's parent must be
+    // the scene root so the emitter's transform doesn't drag already-
+    // spawned particles along when the user moves it.
+    let instance_parent = match emitter.space {
+        EmitterSpace::Local => parent_transform,
+        EmitterSpace::World => renderer.transforms.root_node,
+    };
 
     // Alpha-blend material so per-instance alpha (Stage-3b) fades on
     // screen instead of writing as alpha-0 into the opaque texture.
@@ -339,7 +358,7 @@ async fn build_runtime_blend(
     };
     let transform_key = renderer
         .transforms
-        .insert(Transform::IDENTITY, Some(parent_transform));
+        .insert(Transform::IDENTITY, Some(instance_parent));
     let mesh_key = match renderer
         .add_raw_mesh_transparent(raw, transform_key, material_key)
         .await
