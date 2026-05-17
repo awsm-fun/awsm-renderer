@@ -349,13 +349,20 @@ async fn build_runtime_blend(
     let initial_transforms = vec![dead_transform.clone(); max];
     let initial_attrs = vec![dead_attr; max];
 
-    // For transparent meshes the same instancing API works — the
-    // transparent pipeline-key was registered by add_raw_mesh_transparent
-    // above and instancing toggles `mesh.instanced` without needing a
-    // fresh pipeline key (instanced/non-instanced share the same shader
-    // template variant at the transparent-vertex stage).
-    if let Err(err) = renderer.enable_mesh_instancing_opaque(mesh_key, &initial_transforms) {
-        tracing::warn!("particles_sync (blend): enable_mesh_instancing_opaque failed: {err}");
+    // Transparent path must use the async `enable_mesh_instancing` so
+    // the transparent pipeline gets re-keyed with the instanced shader
+    // variant. The opaque/sync variant flips `mesh.instanced` without
+    // rebuilding the transparent pipeline; since the transparent shader
+    // cache key includes `instancing_transforms` (see
+    // `material_transparent::pipeline::set_render_pipeline_key`), that
+    // leaves the mesh on the non-instanced shader and only the base
+    // quad ever renders — no per-instance transforms, no per-instance
+    // attrs. Visible as a single fading sprite instead of a smoke cloud.
+    if let Err(err) = renderer
+        .enable_mesh_instancing(mesh_key, &initial_transforms)
+        .await
+    {
+        tracing::warn!("particles_sync (blend): enable_mesh_instancing failed: {err}");
         renderer.remove_mesh(mesh_key);
         renderer.remove_material(material_key);
         renderer.transforms.remove(transform_key);
