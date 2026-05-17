@@ -398,9 +398,7 @@ impl AwsmRenderer {
             return Err(AwsmMeshError::InstancingMissingTransforms(mesh_key).into());
         }
 
-        let start_index = self
-            .instances
-            .transform_extend(transform_key, transforms)?;
+        let start_index = self.instances.transform_extend(transform_key, transforms)?;
         self.instances
             .attribute_extend_with_default(transform_key, transforms.len())?;
         Ok(start_index)
