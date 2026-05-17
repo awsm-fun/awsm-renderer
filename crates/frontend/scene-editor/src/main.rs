@@ -7,6 +7,7 @@ mod error;
 mod fs;
 mod header;
 mod keys;
+mod loading_modal;
 mod prelude;
 mod properties;
 mod renderer_bridge;

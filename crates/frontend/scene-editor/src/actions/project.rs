@@ -14,9 +14,12 @@ pub fn save() {
     spawn_local(async move {
         match save_inner().await {
             Ok(()) => {
+                crate::loading_modal::close();
                 tracing::info!("action: project::save — done");
             }
             Err(err) => {
+                // Modal::error replaces whichever modal is open
+                // (loading or none), so no explicit close needed.
                 tracing::error!("Save failed: {err}");
                 Modal::error(format!("Save failed: {err}"));
             }
@@ -28,6 +31,7 @@ async fn save_inner() -> anyhow::Result<()> {
     let state = app_state();
     let dir = ensure_project_directory().await?;
 
+    crate::loading_modal::open("Saving project", "Writing project.json…");
     let mut snapshot = state.snapshot_scene();
     // capture() leaves `name` blank — fold in the AppState project
     // name at save time so a rename through the header survives a
@@ -41,6 +45,7 @@ async fn save_inner() -> anyhow::Result<()> {
     // this session) into the project directory. Only assets still
     // referenced by the scene make the trip — anything inserted then
     // undone / deleted is silently dropped.
+    crate::loading_modal::set("Flushing pending assets…");
     let referenced = collect_referenced_asset_ids(&state.scene);
     let pending: Vec<(AssetId, Vec<u8>)> = {
         let mut map = state.pending_assets.lock().unwrap();
@@ -390,12 +395,14 @@ pub fn load() {
     spawn_local(async move {
         match load_inner().await {
             Ok(true) => {
+                crate::loading_modal::close();
                 tracing::info!("action: project::load — done");
             }
             Ok(false) => {
-                // User cancelled the picker.
+                // User cancelled the picker — modal was never opened.
             }
             Err(err) => {
+                // Modal::error replaces the loading modal.
                 tracing::error!("Load failed: {err}");
                 Modal::error(format!("Load failed: {err}"));
             }
@@ -418,6 +425,7 @@ async fn load_inner() -> anyhow::Result<bool> {
         );
     }
 
+    crate::loading_modal::open("Loading project", "Reading project.json…");
     let text = dir.read_text(PROJECT_JSON_FILENAME).await?;
     let mut snapshot: SceneSnapshot = serde_json::from_str(&text)?;
 
@@ -459,6 +467,9 @@ async fn load_inner() -> anyhow::Result<bool> {
             }
         })
         .collect();
+    if !gltfs_to_extract.is_empty() {
+        crate::loading_modal::set("Extracting glTF materials + textures…");
+    }
     for (gltf_id, filename) in gltfs_to_extract {
         let disk_path = asset_disk_path(&filename);
         match dir.read_bytes(&disk_path).await {
@@ -485,6 +496,7 @@ async fn load_inner() -> anyhow::Result<bool> {
         }
     }
 
+    crate::loading_modal::set("Materializing scene…");
     crate::scene::snapshot::apply_to(&snapshot, &state.scene);
     state.scene.bump_revision();
 
@@ -518,6 +530,9 @@ async fn load_inner() -> anyhow::Result<bool> {
             })
             .collect()
     };
+    if !raster_filenames.is_empty() {
+        crate::loading_modal::set("Loading texture files…");
+    }
     for (texture_id, filename) in raster_filenames {
         let disk_path = asset_disk_path(&filename);
         match dir.read_bytes(&disk_path).await {

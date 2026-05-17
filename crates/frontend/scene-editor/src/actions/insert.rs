@@ -12,10 +12,10 @@ use web_sys::File;
 pub use crate::scene::LightKind;
 
 pub fn model(file: File) {
-    open_loading_modal(&file.name());
+    crate::loading_modal::open("Inserting Model", format!("Reading {}…", file.name()));
     spawn_local(async move {
         let result = prepare_model(file).await;
-        Modal::close();
+        crate::loading_modal::close();
         match result {
             Ok(ModelPrep {
                 asset_id,
@@ -32,33 +32,6 @@ pub fn model(file: File) {
             }
         }
     });
-}
-
-fn open_loading_modal(filename: &str) {
-    let label = format!("Loading {filename}…");
-    Modal::open(move || {
-        html!("div", {
-            .style("display", "flex")
-            .style("flex-direction", "column")
-            .style("align-items", "center")
-            .style("gap", "1rem")
-            .style("padding", "0.5rem 1.5rem")
-            .style("color", ColorText::SidebarHeader.value())
-            .style("min-width", "320px")
-            .child(html!("h2", {
-                .style("margin", "0")
-                .style("font-size", "1.1rem")
-                .text("Inserting Model")
-            }))
-            .child(html!("p", {
-                .style("margin", "0")
-                .style("font-size", "0.95rem")
-                .style("line-height", "1.4")
-                .text(&label)
-            }))
-        })
-    });
-    Modal::lock();
 }
 
 struct ModelPrep {
@@ -138,6 +111,7 @@ async fn prepare_model(file: File) -> anyhow::Result<ModelPrep> {
     if !already_extracted {
         let bytes_for_gltf = state.pending_assets.lock().unwrap().get(&asset_id).cloned();
         if let Some(bytes) = bytes_for_gltf {
+            crate::loading_modal::set("Extracting materials + textures…");
             let extract_label = filename
                 .rsplit_once('.')
                 .map(|(stem, _)| stem.to_string())
@@ -156,6 +130,7 @@ async fn prepare_model(file: File) -> anyhow::Result<ModelPrep> {
     // Kick off the asset load + wait for the populated template so we
     // know how many top-level nodes it has. A concurrent insert of the
     // same path will share this load.
+    crate::loading_modal::set("Uploading to GPU…");
     let cache = state.renderer_bridge.assets.clone();
     let entry = cache.get_or_load(asset_id);
     let template = entry

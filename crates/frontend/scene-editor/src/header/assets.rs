@@ -13,8 +13,8 @@
 //! Popups rebuild on every `scene.revision` tick so insert / undo /
 //! delete flow back into the list without a manual refresh.
 
-use crate::{actions, prelude::*, state};
 use super::menu::render_popup_backdrop;
+use crate::{actions, prelude::*, state};
 
 pub(super) fn render_assets_row() -> Dom {
     use awsm_web_shared::prelude::SignalExt;
@@ -159,8 +159,8 @@ fn render_asset_popup(
                 .style("flex-direction", "column")
                 .style("gap", "0.2rem")
                 .style("overflow-y", "auto")
-                .child_signal(filter.signal_cloned().map(clone!(items => move |needle| {
-                    Some(render_asset_list(items.clone(), needle))
+                .child_signal(filter.signal_cloned().map(clone!(open, items => move |needle| {
+                    Some(render_asset_list(open.clone(), items.clone(), needle))
                 })))
             }))
         }))
@@ -168,6 +168,7 @@ fn render_asset_popup(
 }
 
 fn render_asset_list(
+    open: Mutable<bool>,
     items: Vec<(crate::scene::AssetId, String)>,
     needle: String,
 ) -> Dom {
@@ -194,11 +195,11 @@ fn render_asset_list(
         .style("display", "flex")
         .style("flex-direction", "column")
         .style("gap", "0.15rem")
-        .children(filtered.into_iter().map(|(id, label)| render_asset_row(id, label)))
+        .children(filtered.into_iter().map(clone!(open => move |(id, label)| render_asset_row(open.clone(), id, label))))
     })
 }
 
-fn render_asset_row(id: crate::scene::AssetId, label: String) -> Dom {
+fn render_asset_row(open: Mutable<bool>, id: crate::scene::AssetId, label: String) -> Dom {
     use awsm_web_shared::prelude::SignalExt;
     let selected_assets = state::app_state().selected_assets.clone();
     html!("button" => web_sys::HtmlElement, {
@@ -219,10 +220,12 @@ fn render_asset_row(id: crate::scene::AssetId, label: String) -> Dom {
             }
         }))
         .text(&label)
-        .event(clone!(selected_assets => move |e: events::Click| {
+        .event(clone!(open, selected_assets => move |e: events::Click| {
             // Same selection semantics as the previous inline pills:
             // ctrl/cmd or shift extends, plain replaces. The dominator
-            // fork ORs the meta key into ctrl_key on macOS.
+            // fork ORs the meta key into ctrl_key on macOS. A plain
+            // click also dismisses the popup — additive clicks keep
+            // it open so the user can toggle multiple rows.
             let additive = e.ctrl_key() || e.shift_key();
             let mut set = selected_assets.get_cloned();
             if additive {
@@ -232,6 +235,7 @@ fn render_asset_row(id: crate::scene::AssetId, label: String) -> Dom {
             } else {
                 set.clear();
                 set.insert(id);
+                open.set(false);
             }
             selected_assets.set(set);
         }))
