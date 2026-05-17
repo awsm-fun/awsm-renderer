@@ -470,6 +470,70 @@ pub fn texture_asset() -> Option<awsm_scene_schema::AssetId> {
     Some(id)
 }
 
+/// File-backed texture asset. Reads the picked image's bytes into
+/// `pending_assets` and creates an `AssetSource::Texture(Raster {
+/// filename })` entry. Save flushes the bytes to
+/// `assets/<filename>` (same convention as the glTF-extractor's
+/// raster entries). The texture cache decodes via the `image` crate
+/// on first bind, so the resulting AssetId works anywhere a
+/// `TextureRef` is accepted — material slots, sprites, particles.
+///
+/// Filename collisions are not deduped: picking the same file twice
+/// creates two separate AssetIds backed by the same on-disk path.
+/// Same-filename-different-content would clobber on save; for now
+/// the user manages that.
+pub fn texture_asset_from_file(file: File) {
+    crate::loading_modal::open("Adding Texture", format!("Reading {}…", file.name()));
+    spawn_local(async move {
+        let result = prepare_texture_from_file(file).await;
+        crate::loading_modal::close();
+        match result {
+            Ok(filename) => {
+                awsm_web_shared::prelude::Toast::info(format!("Added texture: {filename}"));
+            }
+            Err(err) => {
+                tracing::error!("Add Texture failed: {err}");
+                Modal::error(format!("Add Texture failed: {err}"));
+            }
+        }
+    });
+}
+
+async fn prepare_texture_from_file(file: File) -> anyhow::Result<String> {
+    use awsm_scene_schema::{AssetEntry, AssetSource, TextureDef};
+    let state = app_state();
+    let filename = file.name();
+    if filename.is_empty() {
+        anyhow::bail!("The chosen file has no name");
+    }
+    let buffer = JsFuture::from(file.array_buffer())
+        .await
+        .map_err(|err| anyhow::anyhow!("reading file: {:?}", err))?;
+    let buffer: js_sys::ArrayBuffer = buffer
+        .dyn_into()
+        .map_err(|_| anyhow::anyhow!("file.arrayBuffer() did not return an ArrayBuffer"))?;
+    let array = Uint8Array::new(&buffer);
+    let mut bytes = vec![0u8; array.length() as usize];
+    array.copy_to(&mut bytes);
+
+    let previous = state.snapshot_scene();
+    let id = AssetId::new();
+    state.pending_assets.lock().unwrap().insert(id, bytes);
+    {
+        let mut table = state.scene.assets.lock().unwrap();
+        table.entries.insert(
+            id,
+            AssetEntry::new(AssetSource::Texture(TextureDef::Raster {
+                filename: filename.clone(),
+            })),
+        );
+    }
+    state.scene.bump_revision();
+    state.commit_history(previous);
+    tracing::info!("action: insert::texture_asset_from_file({id}, {filename}) — done");
+    Ok(filename)
+}
+
 pub fn material_asset() -> Option<awsm_scene_schema::AssetId> {
     use awsm_scene_schema::{AssetEntry, AssetId, AssetSource, MaterialDef};
     let state = app_state();

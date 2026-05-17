@@ -30,11 +30,12 @@ pub(super) fn render_assets_row() -> Dom {
             .with_on_click(|| { let _ = actions::insert::material_asset(); })
             .render())
         .child(Button::new()
-            .with_text("+ Texture Asset")
+            .with_text("+ Procedural Texture")
             .with_style(ButtonStyle::Outline)
             .with_size(ButtonSize::Sm)
             .with_on_click(|| { let _ = actions::insert::texture_asset(); })
             .render())
+        .child(render_insert_image_texture_button())
         .child_signal(revision.signal().map(|_rev| {
             Some(render_asset_dropdown(AssetKind::Material, "Materials"))
         }))
@@ -293,4 +294,45 @@ fn collect_assets_of_kind(kind: AssetKind) -> Vec<(crate::scene::AssetId, String
         .collect();
     out.sort_by(|a, b| a.1.cmp(&b.1));
     out
+}
+
+/// "+ Image Texture" — hidden `<input type=file>` triggered by a
+/// visible button. Mirrors the Insert Model picker pattern; the
+/// selected file is fed to `actions::insert::texture_asset_from_file`
+/// which creates a `Raster` asset entry + stages bytes for save.
+fn render_insert_image_texture_button() -> Dom {
+    let file_input: Mutable<Option<web_sys::HtmlInputElement>> = Mutable::new(None);
+    html!("div", {
+        .style("display", "inline-flex")
+        .child(Button::new()
+            .with_text("+ Image Texture")
+            .with_style(ButtonStyle::Outline)
+            .with_size(ButtonSize::Sm)
+            .with_on_click(clone!(file_input => move || {
+                if let Some(input) = file_input.get_cloned() {
+                    input.click();
+                }
+            }))
+            .render())
+        .child(html!("input" => web_sys::HtmlInputElement, {
+            .attr("type", "file")
+            .attr("accept", "image/png,image/jpeg,image/webp")
+            .style("display", "none")
+            .with_node!(input => {
+                .after_inserted(clone!(file_input, input => move |_| {
+                    file_input.set(Some(input));
+                }))
+                .after_removed(clone!(file_input => move |_| {
+                    file_input.set(None);
+                }))
+                .event(clone!(input => move |_: events::Change| {
+                    let file = input.files().and_then(|files| files.get(0));
+                    input.set_value("");
+                    if let Some(file) = file {
+                        actions::insert::texture_asset_from_file(file);
+                    }
+                }))
+            })
+        }))
+    })
 }
