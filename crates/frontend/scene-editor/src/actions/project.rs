@@ -561,6 +561,15 @@ async fn load_inner() -> anyhow::Result<bool> {
     state.project_name.set(Some(display_name));
     state.mark_clean();
 
+    // Hold the loading modal up until the bridge has actually
+    // instantiated every Model node on the GPU — otherwise the
+    // modal closes while the scene is still half-empty and the
+    // user watches geometry pop in piece by piece.
+    crate::loading_modal::set("Materializing on GPU…");
+    let roots: Vec<Arc<crate::scene::Node>> =
+        state.scene.nodes.lock_ref().iter().cloned().collect();
+    crate::loading_modal::wait_for_models_ready(&roots).await;
+
     // Warn if any model references point at missing files.
     let missing = collect_missing_assets(&state.scene, &dir).await;
     if !missing.is_empty() {

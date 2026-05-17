@@ -15,7 +15,6 @@ pub fn model(file: File) {
     crate::loading_modal::open("Inserting Model", format!("Reading {}…", file.name()));
     spawn_local(async move {
         let result = prepare_model(file).await;
-        crate::loading_modal::close();
         match result {
             Ok(ModelPrep {
                 asset_id,
@@ -24,9 +23,21 @@ pub fn model(file: File) {
                 parent_id,
                 template,
             }) => {
-                insert_model_tree(asset_id, &filename, &display_name, parent_id, &template);
+                crate::loading_modal::set("Building scene nodes…");
+                let inserted =
+                    insert_model_tree(asset_id, &filename, &display_name, parent_id, &template);
+                // The bridge reacts to `bump_revision` on a microtask
+                // and then runs `instantiate_model_template` to allocate
+                // the actual GPU instances. Hold the modal up until every
+                // freshly inserted Model node has reported Ready/Failed
+                // so the user doesn't see a blank window between the
+                // modal closing and the geometry appearing.
+                crate::loading_modal::set("Materializing on GPU…");
+                crate::loading_modal::wait_for_models_ready(&inserted).await;
+                crate::loading_modal::close();
             }
             Err(err) => {
+                crate::loading_modal::close();
                 tracing::error!("Insert Model failed: {err}");
                 Modal::error(format!("Insert Model failed: {err}"));
             }
@@ -157,17 +168,20 @@ async fn prepare_model(file: File) -> anyhow::Result<ModelPrep> {
 /// (carrying the gltf node index they represent); pure transform-parents
 /// become `Group` nodes. Each top-level gltf root becomes a sibling at the
 /// chosen insertion point.
+/// Builds editor `Node`s from the populated gltf template and inserts
+/// them under `parent_id`. Returns the inserted root `Arc<Node>`s so
+/// the caller can wait on their asset_status — empty Vec on failure.
 fn insert_model_tree(
     asset_id: AssetId,
     filename: &str,
     display_name: &str,
     parent_id: Option<NodeId>,
     template: &AssetTemplate,
-) {
+) -> Vec<Arc<Node>> {
     if template.roots.is_empty() {
         tracing::warn!("insert::model: template '{filename}' has no top-level nodes");
         Modal::error("This file contains no nodes to insert.");
-        return;
+        return Vec::new();
     }
 
     let state = app_state();
@@ -182,14 +196,17 @@ fn insert_model_tree(
         .map(|root| build_editor_subtree(root, asset_id, Some(display_name)))
         .collect();
 
+    let mut inserted: Vec<Arc<Node>> = Vec::with_capacity(nodes.len());
     let mut first_id: Option<NodeId> = None;
     for node in nodes {
         let id = node.id;
+        let node_clone = node.clone();
         if !insert_under(&state.scene, parent_id, node) {
             tracing::error!("insert::model: failed to insert");
             Modal::error("Failed to insert model (parent may have been removed).");
-            return;
+            return Vec::new();
         }
+        inserted.push(node_clone);
         if first_id.is_none() {
             first_id = Some(id);
         }
@@ -206,6 +223,7 @@ fn insert_model_tree(
         "action: insert::model — added {filename} as {} top-level node(s)",
         template.roots.len()
     );
+    inserted
 }
 
 fn build_editor_subtree(

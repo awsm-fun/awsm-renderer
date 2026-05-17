@@ -7,8 +7,10 @@
 //! `close()`, so the user can't accidentally dismiss it mid-flight.
 
 use std::cell::RefCell;
+use std::sync::Arc;
 
 use crate::prelude::*;
+use crate::scene::{types::AssetStatus, Node, NodeKind};
 
 thread_local! {
     static MESSAGE: Mutable<String> = Mutable::new(String::new());
@@ -34,6 +36,40 @@ pub fn set(message: impl Into<String>) {
 
 pub fn close() {
     Modal::close();
+}
+
+/// Walk `roots`, find every Model node in the subtree, and await
+/// each one's `asset_status` reaching `Ready` or `Failed`. This is
+/// what lets callers keep the loading modal up until the renderer
+/// bridge has actually allocated the GPU instances — the bridge
+/// reacts to `bump_revision` on a microtask + then schedules
+/// `instantiate_model_template`, so the synchronous tree-mutation
+/// is well ahead of the visible draw.
+pub async fn wait_for_models_ready(roots: &[Arc<Node>]) {
+    use futures::StreamExt;
+    use futures_signals::signal::SignalExt;
+
+    let mut models: Vec<Arc<Node>> = Vec::new();
+    fn walk(node: &Arc<Node>, out: &mut Vec<Arc<Node>>) {
+        if matches!(&*node.kind.lock_ref(), NodeKind::Model(_)) {
+            out.push(node.clone());
+        }
+        for child in node.children.lock_ref().iter() {
+            walk(child, out);
+        }
+    }
+    for root in roots {
+        walk(root, &mut models);
+    }
+
+    for node in models {
+        let mut stream = node.asset_status.signal_cloned().to_stream();
+        while let Some(status) = stream.next().await {
+            if matches!(status, AssetStatus::Ready | AssetStatus::Failed(_)) {
+                break;
+            }
+        }
+    }
 }
 
 fn render() -> Dom {
