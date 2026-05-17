@@ -246,6 +246,7 @@ impl AwsmRenderer {
         self.instances.transform_insert(transform_key, transforms)?;
 
         let mesh = self.meshes.get(mesh_key)?;
+        let has_transmission = self.materials.has_transmission(mesh.material_key);
         self.render_passes
             .material_transparent
             .pipelines
@@ -262,6 +263,7 @@ impl AwsmRenderer {
                 &self.anti_aliasing,
                 &self.textures,
                 &self.render_textures.formats,
+                has_transmission,
             )
             .await?;
 

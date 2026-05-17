@@ -105,6 +105,22 @@ impl Material {
         }
     }
 
+    /// Returns true if the material implements
+    /// `KHR_materials_transmission` (transmission factor > 0 or a
+    /// transmission texture). Used by the transparent pipeline
+    /// builder to flip on depth-write — transmissive surfaces want
+    /// a single front-face fragment per pixel (so back-face refraction
+    /// doesn't double-composite over front-face refraction and wipe
+    /// the silhouette), while pure alpha-blend transparents want
+    /// depth-write off so layered alpha (smoke through dome) composes
+    /// correctly. Only PBR currently exposes the extension.
+    pub fn has_transmission(&self) -> bool {
+        match self {
+            Material::Pbr(m) => m.has_transmission(),
+            Material::Unlit(_) | Material::Toon(_) => false,
+        }
+    }
+
     /// Returns the packed uniform buffer data for the material.
     pub fn uniform_buffer_data(&self, ctx: &dyn TextureContext) -> Vec<u8> {
         let mut data = Vec::with_capacity(256);
@@ -261,6 +277,16 @@ impl Materials {
     /// Returns true if the material uses the transparency pass.
     pub fn is_transparency_pass(&self, key: MaterialKey) -> bool {
         self._is_transparency_pass.contains_key(key)
+    }
+
+    /// Returns true if the material implements
+    /// `KHR_materials_transmission`. See [`Material::has_transmission`]
+    /// for why the transparent pipeline branches depth-write on this.
+    pub fn has_transmission(&self, key: MaterialKey) -> bool {
+        self.lookup
+            .get(key)
+            .map(|m| m.has_transmission())
+            .unwrap_or(false)
     }
 
     /// Writes material data to the GPU.

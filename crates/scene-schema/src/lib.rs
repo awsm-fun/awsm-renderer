@@ -61,7 +61,13 @@ mod tests {
     fn sample() -> EditorProject {
         let asset = AssetId::new();
         let mut assets = AssetTable::new();
-        assets.insert_filename("robot.glb".to_string());
+        // Content-hash addressing post-`feat(schema): content-hash …`:
+        // a stable test hash keeps this round-trip deterministic across
+        // serializers; real callers compute the SHA-256 from upload bytes.
+        assets.insert_file_with_hash(
+            "robot.glb".to_string(),
+            "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+        );
         let _unused = asset; // keep the fresh-id helper exercised
         EditorProject {
             name: String::new(),

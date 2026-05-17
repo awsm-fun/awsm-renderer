@@ -505,6 +505,7 @@ impl AwsmRenderer {
         // pass has a draw pipeline for this geometry. Mirrors what
         // `enable_mesh_instancing` does for instanced transparent meshes.
         let mesh_ref = self.meshes.get(mesh_key)?;
+        let has_transmission = self.materials.has_transmission(mesh_ref.material_key);
         self.render_passes
             .material_transparent
             .pipelines
@@ -521,6 +522,7 @@ impl AwsmRenderer {
                 &self.anti_aliasing,
                 &self.textures,
                 &self.render_textures.formats,
+                has_transmission,
             )
             .await?;
 

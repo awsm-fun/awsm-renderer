@@ -92,6 +92,7 @@ impl AwsmRenderer {
             if has_seen_buffer_info.insert(buffer_info_key, ()).is_none()
                 || has_seen_material.insert(mesh.material_key, ()).is_none()
             {
+                let has_transmission = self.materials.has_transmission(mesh.material_key);
                 self.render_passes
                     .material_transparent
                     .pipelines
@@ -108,6 +109,7 @@ impl AwsmRenderer {
                         &self.anti_aliasing,
                         &self.textures,
                         &self.render_textures.formats,
+                        has_transmission,
                     )
                     .await?;
             }
