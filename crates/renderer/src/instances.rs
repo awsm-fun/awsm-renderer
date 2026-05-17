@@ -253,6 +253,48 @@ impl Instances {
         self.attribute_gpu_dirty = true;
     }
 
+    /// Grow the per-instance attribute slice for `key` by `additional`
+    /// default `InstanceAttr` entries (white tint, alpha 1.0, size 1.0).
+    /// No-op if attributes haven't been set for this key — callers that
+    /// haven't bound attrs don't need a parallel buffer.
+    ///
+    /// Used by `append_mesh_instances` / `reserve_mesh_instances` to
+    /// keep `attribute_count == transform_count` invariant after a
+    /// transform append, so the shading pass's
+    /// `instance_attrs[base + instance_index]` lookup never reads past
+    /// the logical slice.
+    pub fn attribute_extend_with_default(
+        &mut self,
+        key: TransformKey,
+        additional: usize,
+    ) -> Result<()> {
+        if additional == 0 {
+            return Ok(());
+        }
+        if !self.cpu_attributes.contains_key(key) {
+            return Ok(());
+        }
+        let existing = self
+            .cpu_attributes
+            .get(key)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
+        let new_len = existing.len() + additional;
+        let mut next = Vec::with_capacity(new_len);
+        next.extend_from_slice(existing);
+        for _ in 0..additional {
+            next.push(InstanceAttr::default());
+        }
+        let bytes = Self::attributes_to_bytes(&next);
+        self.attribute_buffer.update(key, &bytes).map_err(|e| {
+            AwsmInstanceError::BufferCapacityOverflow(format!("instance attributes: {e}"))
+        })?;
+        self.attribute_count.insert(key, new_len);
+        self.cpu_attributes.insert(key, next);
+        self.attribute_gpu_dirty = true;
+        Ok(())
+    }
+
     /// Removes the per-instance attribute slice for a key.
     pub fn attribute_remove(&mut self, key: TransformKey) {
         self.attribute_buffer.remove(key);

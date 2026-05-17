@@ -32,6 +32,13 @@ pub enum AwsmMeshError {
     #[error("[mesh] instance transforms missing or empty: {0:?}")]
     InstancingMissingTransforms(MeshKey),
 
+    #[error("[mesh] instance attribute count ({attrs}) does not match transform count ({transforms}) for {transform_key:?}")]
+    InstanceAttrCountMismatch {
+        transform_key: TransformKey,
+        attrs: usize,
+        transforms: usize,
+    },
+
     #[error("[mesh] instanced mesh unsupported for this operation: {0:?}")]
     InstancedMeshUnsupported(MeshKey),
 

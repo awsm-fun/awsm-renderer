@@ -310,12 +310,29 @@ impl AwsmRenderer {
     /// meta so the shading pass picks up the new `instance_attr_base`.
     ///
     /// The number of `attrs` must match the number of transforms previously
-    /// written via `set_mesh_instances` / `transform_insert`.
+    /// written via `set_mesh_instances` / `transform_insert`. Mismatches
+    /// (including the case where no transforms exist yet for the key)
+    /// return `AwsmMeshError::InstanceAttrCountMismatch` — silently
+    /// accepting a shorter slice would leave the shader reading past the
+    /// logical attr range into zero-fill / neighbor allocations and tint
+    /// the trailing instances with garbage.
     pub fn set_mesh_instance_attrs(
         &mut self,
         transform_key: TransformKey,
         attrs: &[crate::instances::InstanceAttr],
     ) -> crate::error::Result<()> {
+        let transforms = self
+            .instances
+            .transform_instance_count(transform_key)
+            .unwrap_or(0);
+        if transforms != attrs.len() {
+            return Err(AwsmMeshError::InstanceAttrCountMismatch {
+                transform_key,
+                attrs: attrs.len(),
+                transforms,
+            }
+            .into());
+        }
         self.instances.attribute_insert(transform_key, attrs)?;
 
         let base = self
@@ -354,7 +371,11 @@ impl AwsmRenderer {
         Ok(start_index)
     }
 
-    /// Appends instance transforms to an instanced mesh.
+    /// Appends instance transforms to an instanced mesh. Keeps any
+    /// already-bound per-instance attributes extended in lockstep with
+    /// default `InstanceAttr` entries so the shading pass's
+    /// `instance_attrs[base + instance_index]` lookup never reads past
+    /// the logical slice.
     pub fn append_mesh_instances(
         &mut self,
         mesh_key: MeshKey,
@@ -368,20 +389,27 @@ impl AwsmRenderer {
         if !mesh.instanced {
             return Err(AwsmMeshError::InstancingNotEnabled(mesh_key).into());
         }
+        let transform_key = mesh.transform_key;
         if self
             .instances
-            .transform_instance_count(mesh.transform_key)
+            .transform_instance_count(transform_key)
             .is_none()
         {
             return Err(AwsmMeshError::InstancingMissingTransforms(mesh_key).into());
         }
 
-        Ok(self
+        let start_index = self
             .instances
-            .transform_extend(mesh.transform_key, transforms)?)
+            .transform_extend(transform_key, transforms)?;
+        self.instances
+            .attribute_extend_with_default(transform_key, transforms.len())?;
+        Ok(start_index)
     }
 
-    /// Reserves additional instance slots for an instanced mesh.
+    /// Reserves additional instance slots for an instanced mesh. Mirrors
+    /// `append_mesh_instances` for attrs: if attrs are already bound,
+    /// extend with defaults so the invariant holds even when reserved
+    /// slots are written via `attribute_update` directly.
     pub fn reserve_mesh_instances(
         &mut self,
         mesh_key: MeshKey,
@@ -391,17 +419,21 @@ impl AwsmRenderer {
         if !mesh.instanced {
             return Err(AwsmMeshError::InstancingNotEnabled(mesh_key).into());
         }
+        let transform_key = mesh.transform_key;
         if self
             .instances
-            .transform_instance_count(mesh.transform_key)
+            .transform_instance_count(transform_key)
             .is_none()
         {
             return Err(AwsmMeshError::InstancingMissingTransforms(mesh_key).into());
         }
 
-        Ok(self
+        let start_index = self
             .instances
-            .transform_reserve(mesh.transform_key, additional)?)
+            .transform_reserve(transform_key, additional)?;
+        self.instances
+            .attribute_extend_with_default(transform_key, additional)?;
+        Ok(start_index)
     }
 }
 
