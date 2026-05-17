@@ -2,6 +2,7 @@ mod actions;
 mod canvas;
 mod collider_wireframe;
 mod config;
+mod content_hash;
 mod context;
 mod error;
 mod fs;

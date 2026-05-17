@@ -3,7 +3,7 @@
 use crate::prelude::*;
 use crate::renderer_bridge::asset_cache::{AssetTemplate, AssetTemplateNode};
 use crate::scene::{mutate::insert_under, AssetId, ModelRef, Node, NodeId, NodeKind, Trs};
-use crate::state::{app_state, project::asset_disk_path};
+use crate::state::app_state;
 use js_sys::Uint8Array;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::{spawn_local, JsFuture};
@@ -61,36 +61,58 @@ async fn prepare_model(file: File) -> anyhow::Result<ModelPrep> {
         anyhow::bail!("The chosen file has no name");
     }
 
-    // Resolve (or allocate) an `AssetId` for this filename. Re-importing
-    // `robot.glb` into the same project resolves to the same id, so the
-    // bridge's per-asset cache continues to dedup at the renderer level.
-    let asset_id = state
-        .scene
-        .assets
-        .lock()
-        .unwrap()
-        .insert_filename(filename.clone());
+    // Read bytes first so we can hash + dedup. With content-hash
+    // addressing the disk file lives at `assets/<hash>.<ext>`, so a
+    // re-import of identical bytes (regardless of original filename)
+    // resolves to the same `AssetId` and reuses the existing disk
+    // file — no clobbering.
+    let buffer = JsFuture::from(file.array_buffer())
+        .await
+        .map_err(|err| anyhow::anyhow!("reading file: {:?}", err))?;
+    let buffer: js_sys::ArrayBuffer = buffer
+        .dyn_into()
+        .map_err(|_| anyhow::anyhow!("file.arrayBuffer() did not return an ArrayBuffer"))?;
+    let array = Uint8Array::new(&buffer);
+    let mut bytes = vec![0u8; array.length() as usize];
+    array.copy_to(&mut bytes);
+    let content_hash = crate::content_hash::sha256_hex(&bytes);
 
-    // Decide whether we need to keep bytes for this asset.
+    let (asset_id, was_existing) = {
+        let mut table = state.scene.assets.lock().unwrap();
+        match table.find_by_content_hash(&content_hash) {
+            Some(id) => (id, true),
+            None => (
+                table.insert_file_with_hash(filename.clone(), content_hash.clone()),
+                false,
+            ),
+        }
+    };
+
+    // Stash bytes for the upload pass (texture cache reads them out
+    // of `pending_assets`). Skip if already on disk for this entry —
+    // that means the project loaded them from disk earlier and the
+    // disk copy is canonical.
     let dir = state.project.lock().unwrap().directory.clone();
-    let disk_path = asset_disk_path(&filename);
-    let already_on_disk = match &dir {
-        Some(dir) => dir.file_exists(&disk_path).await,
-        None => false,
+    let entry_snapshot = state.scene.assets.lock().unwrap().get(asset_id).cloned();
+    let already_on_disk = match (&dir, &entry_snapshot) {
+        (Some(dir), Some(entry)) => match awsm_scene_schema::asset_disk_path(asset_id, entry) {
+            Some(path) => dir.file_exists(&path).await,
+            None => false,
+        },
+        _ => false,
     };
     let already_pending = state.pending_assets.lock().unwrap().contains_key(&asset_id);
-
     if !already_on_disk && !already_pending {
-        let buffer = JsFuture::from(file.array_buffer())
-            .await
-            .map_err(|err| anyhow::anyhow!("reading file: {:?}", err))?;
-        let buffer: js_sys::ArrayBuffer = buffer
-            .dyn_into()
-            .map_err(|_| anyhow::anyhow!("file.arrayBuffer() did not return an ArrayBuffer"))?;
-        let array = Uint8Array::new(&buffer);
-        let mut bytes = vec![0u8; array.length() as usize];
-        array.copy_to(&mut bytes);
         state.pending_assets.lock().unwrap().insert(asset_id, bytes);
+    }
+    if was_existing {
+        tracing::debug!(
+            "prepare_model: dedup hit on hash {content_hash} — reusing asset {asset_id} ({})",
+            entry_snapshot
+                .as_ref()
+                .and_then(|e| e.source.display_name())
+                .unwrap_or("")
+        );
     }
 
     // Once per import, walk the gltf's materials + textures and surface
@@ -478,18 +500,23 @@ pub fn texture_asset() -> Option<awsm_scene_schema::AssetId> {
 /// on first bind, so the resulting AssetId works anywhere a
 /// `TextureRef` is accepted — material slots, sprites, particles.
 ///
-/// Filename collisions are not deduped: picking the same file twice
-/// creates two separate AssetIds backed by the same on-disk path.
-/// Same-filename-different-content would clobber on save; for now
-/// the user manages that.
+/// Content-addressed: the on-disk path is `assets/<hash>.<ext>`,
+/// where the hash dedups identical bytes within the project. Picking
+/// the same file twice resolves to the same `AssetId` and toasts
+/// "already exists" instead of clobbering.
 pub fn texture_asset_from_file(file: File) {
     crate::loading_modal::open("Adding Texture", format!("Reading {}…", file.name()));
     spawn_local(async move {
         let result = prepare_texture_from_file(file).await;
         crate::loading_modal::close();
         match result {
-            Ok(filename) => {
-                awsm_web_shared::prelude::Toast::info(format!("Added texture: {filename}"));
+            Ok(AddTextureResult::Added { display_name }) => {
+                awsm_web_shared::prelude::Toast::info(format!("Added texture: {display_name}"));
+            }
+            Ok(AddTextureResult::Existing { display_name }) => {
+                awsm_web_shared::prelude::Toast::info(format!(
+                    "Texture already exists: {display_name}"
+                ));
             }
             Err(err) => {
                 tracing::error!("Add Texture failed: {err}");
@@ -499,11 +526,16 @@ pub fn texture_asset_from_file(file: File) {
     });
 }
 
-async fn prepare_texture_from_file(file: File) -> anyhow::Result<String> {
+enum AddTextureResult {
+    Added { display_name: String },
+    Existing { display_name: String },
+}
+
+async fn prepare_texture_from_file(file: File) -> anyhow::Result<AddTextureResult> {
     use awsm_scene_schema::{AssetEntry, AssetSource, TextureDef};
     let state = app_state();
-    let filename = file.name();
-    if filename.is_empty() {
+    let display_name = file.name();
+    if display_name.is_empty() {
         anyhow::bail!("The chosen file has no name");
     }
     let buffer = JsFuture::from(file.array_buffer())
@@ -515,6 +547,32 @@ async fn prepare_texture_from_file(file: File) -> anyhow::Result<String> {
     let array = Uint8Array::new(&buffer);
     let mut bytes = vec![0u8; array.length() as usize];
     array.copy_to(&mut bytes);
+    let content_hash = crate::content_hash::sha256_hex(&bytes);
+
+    // Dedup: if any entry already carries this hash, return its
+    // display name without touching the table or pending bytes.
+    if let Some(existing_id) = state
+        .scene
+        .assets
+        .lock()
+        .unwrap()
+        .find_by_content_hash(&content_hash)
+    {
+        let existing_name = state
+            .scene
+            .assets
+            .lock()
+            .unwrap()
+            .display_name(existing_id)
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| display_name.clone());
+        tracing::info!(
+            "action: insert::texture_asset_from_file — dedup hit ({existing_id}, {existing_name})"
+        );
+        return Ok(AddTextureResult::Existing {
+            display_name: existing_name,
+        });
+    }
 
     let previous = state.snapshot_scene();
     let id = AssetId::new();
@@ -523,15 +581,18 @@ async fn prepare_texture_from_file(file: File) -> anyhow::Result<String> {
         let mut table = state.scene.assets.lock().unwrap();
         table.entries.insert(
             id,
-            AssetEntry::new(AssetSource::Texture(TextureDef::Raster {
-                filename: filename.clone(),
-            })),
+            AssetEntry::new_with_hash(
+                AssetSource::Texture(TextureDef::Raster {
+                    display_name: display_name.clone(),
+                }),
+                content_hash,
+            ),
         );
     }
     state.scene.bump_revision();
     state.commit_history(previous);
-    tracing::info!("action: insert::texture_asset_from_file({id}, {filename}) — done");
-    Ok(filename)
+    tracing::info!("action: insert::texture_asset_from_file({id}, {display_name}) — done");
+    Ok(AddTextureResult::Added { display_name })
 }
 
 pub fn material_asset() -> Option<awsm_scene_schema::AssetId> {
@@ -664,22 +725,33 @@ pub(crate) fn extract_gltf_materials_into(
                 continue;
             }
         };
-        let filename = format!("{display_name}__tex_{img_idx}.{ext}");
-        let texture_asset_id = AssetId::new();
-        assets.entries.insert(
-            texture_asset_id,
-            AssetEntry::new(AssetSource::Texture(TextureDef::Raster {
-                filename: filename.clone(),
-            })),
-        );
-        // Park the encoded bytes in `pending_assets` keyed by the
-        // texture's AssetId so `texture_cache::get_or_upload` can
-        // pick them up at materialize time, and `save_inner` can
-        // flush them to `assets/<filename>` when the user saves.
-        pending_assets
-            .lock()
-            .unwrap()
-            .insert(texture_asset_id, raw_bytes);
+        // Dedup: if the table already has an entry for these bytes
+        // (because the user previously uploaded the same PNG via the
+        // image picker, or another glTF embeds the same texture),
+        // reuse its AssetId rather than creating a parallel entry.
+        let extracted_label = format!("{display_name}__tex_{img_idx}.{ext}");
+        let extracted_hash = crate::content_hash::sha256_hex(&raw_bytes);
+        let texture_asset_id = if let Some(existing) = assets.find_by_content_hash(&extracted_hash)
+        {
+            existing
+        } else {
+            let id = AssetId::new();
+            assets.entries.insert(
+                id,
+                AssetEntry::new_with_hash(
+                    AssetSource::Texture(TextureDef::Raster {
+                        display_name: extracted_label,
+                    }),
+                    extracted_hash,
+                ),
+            );
+            // Park the encoded bytes in `pending_assets` keyed by the
+            // texture's AssetId so `texture_cache::get_or_upload` can
+            // pick them up at materialize time, and `save_inner` can
+            // flush them to `assets/<hash>.<ext>` on save.
+            pending_assets.lock().unwrap().insert(id, raw_bytes);
+            id
+        };
         image_to_texture_asset.insert(img_idx, texture_asset_id);
     }
 

@@ -137,8 +137,12 @@ pub enum ProceduralTextureDef {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TextureDef {
-    /// External raster file (PNG, KTX2, etc.) located in the project's `assets/` dir.
-    Raster { filename: String },
+    /// External raster file (PNG, JPEG, WebP) shipped alongside the
+    /// project. `display_name` is the user-facing label + provides the
+    /// extension for the on-disk file; the disk path itself is derived
+    /// from the entry's `content_hash` (see
+    /// `AssetEntry::content_hash`), not from this string.
+    Raster { display_name: String },
     /// Procedurally generated at load time.
     Procedural(ProceduralTextureDef),
 }

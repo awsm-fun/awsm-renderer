@@ -212,7 +212,7 @@ fn render_model_editor(node: Arc<Node>) -> Dom {
                     .assets
                     .lock()
                     .unwrap()
-                    .filename(r.asset_id)
+                    .display_name(r.asset_id)
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| format!("<missing: {}>", r.asset_id)),
                 _ => String::new(),
@@ -793,7 +793,7 @@ pub(super) fn collect_textures() -> Vec<(AssetId, String)> {
     for (id, entry) in assets.entries.iter() {
         if let AssetSource::Texture(def) = &entry.source {
             let label = match def {
-                TextureDef::Raster { filename } => filename.clone(),
+                TextureDef::Raster { display_name } => display_name.clone(),
                 TextureDef::Procedural(ProceduralTextureDef::Checker { .. }) => {
                     "Procedural: Checker".to_string()
                 }

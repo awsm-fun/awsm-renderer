@@ -11,7 +11,7 @@
 use crate::context::renderer_handle;
 use crate::fs::ProjectDir;
 use crate::scene::{AssetId, AssetSource, EnvironmentConfig, IblConfig, SkyboxConfig};
-use crate::state::{app_state, project::asset_disk_path};
+use crate::state::app_state;
 use awsm_renderer::{
     core::cubemap::{images::CubemapSkyGradient, CubemapImage},
     environment::Skybox,
@@ -101,16 +101,16 @@ async fn apply_ibl(cfg: &IblConfig) -> anyhow::Result<()> {
 async fn load_ktx_by_id(asset_id: AssetId) -> anyhow::Result<CubemapImage> {
     let state = app_state();
 
-    let source = state
+    let entry_snapshot = state
         .scene
         .assets
         .lock()
         .unwrap()
         .get(asset_id)
-        .map(|e| e.source.clone())
+        .cloned()
         .ok_or_else(|| anyhow::anyhow!("asset id {asset_id} not in the project asset table"))?;
 
-    let (label, bytes) = match source {
+    let (label, bytes) = match &entry_snapshot.source {
         AssetSource::Filename(filename) => {
             let bytes = {
                 let in_memory = state.pending_assets.lock().unwrap().get(&asset_id).cloned();
@@ -119,13 +119,19 @@ async fn load_ktx_by_id(asset_id: AssetId) -> anyhow::Result<CubemapImage> {
                     None => {
                         let dir: Option<ProjectDir> =
                             state.project.lock().unwrap().directory.clone();
+                        let disk_path =
+                            awsm_scene_schema::asset_disk_path(asset_id, &entry_snapshot)
+                                .ok_or_else(|| {
+                                    anyhow::anyhow!(
+                                        "KTX '{filename}' has no resolvable disk path \
+                                         (missing content hash?)"
+                                    )
+                                })?;
                         match dir {
-                            Some(dir) => {
-                                let disk_path = asset_disk_path(&filename);
-                                dir.read_bytes(&disk_path)
-                                    .await
-                                    .map_err(|e| anyhow::anyhow!("read {filename}: {e}"))?
-                            }
+                            Some(dir) => dir
+                                .read_bytes(&disk_path)
+                                .await
+                                .map_err(|e| anyhow::anyhow!("read {filename}: {e}"))?,
                             None => anyhow::bail!(
                                 "KTX '{filename}' is not in memory and no project directory is set"
                             ),
@@ -133,17 +139,17 @@ async fn load_ktx_by_id(asset_id: AssetId) -> anyhow::Result<CubemapImage> {
                     }
                 }
             };
-            (filename, bytes)
+            (filename.clone(), bytes)
         }
         AssetSource::Url(url) => {
-            let bytes = gloo_net::http::Request::get(&url)
+            let bytes = gloo_net::http::Request::get(url)
                 .send()
                 .await
                 .map_err(|e| anyhow::anyhow!("fetch {url}: {e}"))?
                 .binary()
                 .await
                 .map_err(|e| anyhow::anyhow!("fetch {url} body: {e}"))?;
-            (url, bytes)
+            (url.clone(), bytes)
         }
         AssetSource::Material(_) | AssetSource::Texture(_) | AssetSource::Mesh(_) => {
             anyhow::bail!(

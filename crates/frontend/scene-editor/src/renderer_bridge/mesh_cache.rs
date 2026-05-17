@@ -22,9 +22,9 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use awsm_scene_schema::{mesh_asset_filename, AssetId, AssetSource, CapturedMesh, MeshRef};
+use awsm_scene_schema::{AssetId, AssetSource, CapturedMesh, MeshRef};
 
-use crate::state::{app_state, project::asset_disk_path};
+use crate::state::app_state;
 
 static CACHE: Mutex<Option<HashMap<AssetId, CapturedMesh>>> = Mutex::new(None);
 
@@ -76,7 +76,8 @@ pub async fn get_or_load(mesh_ref: MeshRef) -> Option<CapturedMesh> {
         Some(b) => b,
         None => {
             let dir = state.project.lock().unwrap().directory.clone()?;
-            let disk_path = asset_disk_path(&mesh_asset_filename(asset_id));
+            let entry = state.scene.assets.lock().unwrap().get(asset_id).cloned()?;
+            let disk_path = awsm_scene_schema::asset_disk_path(asset_id, &entry)?;
             match dir.read_bytes(&disk_path).await {
                 Ok(b) => b,
                 Err(err) => {

@@ -708,7 +708,7 @@ fn report_model_load_failure(entry: Arc<RendererNode>, asset_id: AssetId, err: S
         .assets
         .lock()
         .unwrap()
-        .filename(asset_id)
+        .display_name(asset_id)
         .map(|s| s.to_string())
         .unwrap_or_else(|| asset_id.to_string());
     app_state().report_asset_failed(entry.node_id, label);

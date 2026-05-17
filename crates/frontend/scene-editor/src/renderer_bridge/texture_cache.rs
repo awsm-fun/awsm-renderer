@@ -81,7 +81,7 @@ pub fn get_or_upload(
 
     let (rgba, width, height) = match texture_def {
         TextureDef::Procedural(proc_def) => procedural_rgba(proc_def),
-        TextureDef::Raster { filename } => decode_raster_from_pending(asset_id, filename)?,
+        TextureDef::Raster { display_name } => decode_raster_from_pending(asset_id, display_name)?,
     };
 
     let sampler_key = renderer

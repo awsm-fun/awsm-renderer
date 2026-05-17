@@ -42,6 +42,10 @@ gloo-render = "0.2.0"
 gloo-timers = { version = "0.3.0", features = ["futures"] }
 serde-wasm-bindgen = "0.6.5"
 xutex = "0.2.1"
+# Content-hashing for asset dedup + collision-free on-disk paths.
+# Asset bytes (glb, raster images) get SHA-256'd at upload time; the
+# hash is what addresses the file on disk under `assets/<hash>.<ext>`.
+sha2 = "0.10.8"
 awsm_web = { version = "0.45.0", default-features = false, features = ["dom", "file"] }
 # Raster decode for gltf-extracted textures. The workspace dep only
 # enables `png`; add `jpeg` here because glTF embedded textures often

@@ -12,7 +12,7 @@ use crate::context::{renderer_handle, with_renderer};
 use crate::fs::ProjectDir;
 use crate::prelude::*;
 use crate::scene::{AssetId, AssetSource, AssetStatus};
-use crate::state::{app_state, project::asset_disk_path};
+use crate::state::app_state;
 use awsm_renderer::{
     meshes::MeshKey,
     transforms::{Transform, TransformKey},
@@ -317,31 +317,43 @@ async fn resolve_asset(
     state: &crate::state::AppState,
     asset_id: AssetId,
 ) -> Result<ResolvedAsset, String> {
-    let source = state
+    let entry = state
         .scene
         .assets
         .lock()
         .unwrap()
         .get(asset_id)
-        .map(|e| e.source.clone())
+        .cloned()
         .ok_or_else(|| format!("asset id {asset_id} not in the project asset table"))?;
 
-    match source {
+    match &entry.source {
         AssetSource::Filename(filename) => {
             // First check the in-memory pending bytes.
             if let Some(bytes) = state.pending_assets.lock().unwrap().get(&asset_id).cloned() {
-                return Ok(ResolvedAsset { filename, bytes });
+                return Ok(ResolvedAsset {
+                    filename: filename.clone(),
+                    bytes,
+                });
             }
-            // Fall back to disk via the project directory.
+            // Fall back to disk via the project directory + hash-derived path.
             let dir: Option<ProjectDir> = state.project.lock().unwrap().directory.clone();
+            let disk_path =
+                awsm_scene_schema::asset_disk_path(asset_id, &entry).ok_or_else(|| {
+                    format!(
+                        "asset '{filename}' has no resolvable disk path \
+                         (missing content hash on entry {asset_id})"
+                    )
+                })?;
             match dir {
                 Some(dir) => {
-                    let disk_path = asset_disk_path(&filename);
                     let bytes = dir
                         .read_bytes(&disk_path)
                         .await
                         .map_err(|e| format!("read {filename}: {e}"))?;
-                    Ok(ResolvedAsset { filename, bytes })
+                    Ok(ResolvedAsset {
+                        filename: filename.clone(),
+                        bytes,
+                    })
                 }
                 None => Err(format!(
                     "asset '{filename}' is not in memory and no project directory is set"
@@ -349,7 +361,7 @@ async fn resolve_asset(
             }
         }
         AssetSource::Url(url) => {
-            let bytes = gloo_net::http::Request::get(&url)
+            let bytes = gloo_net::http::Request::get(url)
                 .send()
                 .await
                 .map_err(|e| format!("fetch {url}: {e}"))?
@@ -358,7 +370,7 @@ async fn resolve_asset(
                 .map_err(|e| format!("fetch {url} body: {e}"))?;
             // Prefer the URL's tail for filename-based detection (mime,
             // file type). The full URL is fine as a fallback.
-            let filename = url.rsplit('/').next().unwrap_or(&url).to_string();
+            let filename = url.rsplit('/').next().unwrap_or(url.as_str()).to_string();
             Ok(ResolvedAsset { filename, bytes })
         }
         AssetSource::Material(_) | AssetSource::Texture(_) | AssetSource::Mesh(_) => {
@@ -368,7 +380,7 @@ async fn resolve_asset(
             Err(format!(
                 "asset id {asset_id} is a non-file source ({:?}); call the appropriate \
                  procedural materialization path instead of `resolve`",
-                source
+                entry.source
             ))
         }
     }

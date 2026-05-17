@@ -3,10 +3,7 @@
 use crate::fs::ProjectDir;
 use crate::prelude::*;
 use crate::scene::{AssetId, SceneSnapshot};
-use crate::state::{
-    app_state,
-    project::{asset_disk_path, PROJECT_JSON_FILENAME},
-};
+use crate::state::{app_state, project::PROJECT_JSON_FILENAME};
 use std::collections::HashSet;
 use wasm_bindgen_futures::spawn_local;
 
@@ -63,35 +60,23 @@ async fn save_inner() -> anyhow::Result<()> {
         keep_pending
     };
 
+    // Disk paths come from `awsm_scene_schema::asset_disk_path`:
+    // - `Filename` + `Texture(Raster)` → `assets/<content_hash>.<ext>`
+    // - `Mesh(_)` → `assets/<asset-id>.mesh.bin`
+    // Everything else (`Material`, `Procedural`, `Url`) lives in
+    // project.json only and shouldn't have pending bytes. Anything
+    // that *does* show up here without a resolvable path is a bug —
+    // log + skip rather than fail the save.
     let table = state.scene.assets.lock().unwrap().clone();
     for (id, bytes) in &pending {
-        // Disk-path conventions:
-        // - `AssetSource::Filename(name)` → `assets/<name>` (the
-        //   user-picked filename round-trips into project.json).
-        // - `AssetSource::Texture(TextureDef::Raster { filename })` →
-        //   `assets/<filename>` (gltf-extracted images live here; the
-        //   filename in the TextureDef is the stable identifier and
-        //   the bytes in pending_assets are what gets written).
-        // - `AssetSource::Mesh(_)` → `assets/<asset-id>.mesh.bin`
-        //   (the captured-mesh side file; the AssetId is the stable
-        //   filename, project.json only stores the MeshDef metadata).
-        // Anything else with pending bytes is unexpected — log + skip.
-        let disk_path = if let Some(filename) = table.filename(*id) {
-            asset_disk_path(filename)
-        } else if let Some(awsm_scene_schema::AssetSource::Texture(
-            awsm_scene_schema::TextureDef::Raster { filename },
-        )) = table.get(*id).map(|e| &e.source)
-        {
-            asset_disk_path(filename)
-        } else if matches!(
-            table.get(*id).map(|e| &e.source),
-            Some(awsm_scene_schema::AssetSource::Mesh(_))
-        ) {
-            asset_disk_path(&awsm_scene_schema::mesh_asset_filename(*id))
-        } else {
+        let Some(entry) = table.get(*id) else {
+            tracing::warn!("save: pending asset {id} has no table entry; skipping");
+            continue;
+        };
+        let Some(disk_path) = awsm_scene_schema::asset_disk_path(*id, entry) else {
             tracing::warn!(
-                "save: pending asset {id} has no disk filename in the asset table; \
-                 skipping"
+                "save: pending asset {id} ({:?}) has no resolvable disk path; skipping",
+                entry.source
             );
             continue;
         };
@@ -471,7 +456,12 @@ async fn load_inner() -> anyhow::Result<bool> {
         crate::loading_modal::set("Extracting glTF materials + textures…");
     }
     for (gltf_id, filename) in gltfs_to_extract {
-        let disk_path = asset_disk_path(&filename);
+        let entry = snapshot.assets.entries.get(&gltf_id).cloned();
+        let Some(entry) = entry else { continue };
+        let Some(disk_path) = awsm_scene_schema::asset_disk_path(gltf_id, &entry) else {
+            tracing::warn!("load: gltf {gltf_id} ({filename}) has no disk path; skipping");
+            continue;
+        };
         match dir.read_bytes(&disk_path).await {
             Ok(bytes) => {
                 let display = filename
@@ -517,24 +507,28 @@ async fn load_inner() -> anyhow::Result<bool> {
     // page the files in before any materializer runs. Silently skip
     // textures whose file isn't on disk (the inspector surfaces
     // those via the existing "missing assets" modal).
-    let raster_filenames: Vec<(awsm_scene_schema::AssetId, String)> = {
+    // Walk every raster Texture entry, resolve its on-disk path
+    // through the schema helper, and stage the bytes for the texture
+    // cache. Anything missing from disk is logged but doesn't block
+    // load — the inspector's "missing assets" modal surfaces them.
+    let raster_targets: Vec<(awsm_scene_schema::AssetId, String, String)> = {
         let table = state.scene.assets.lock().unwrap();
         table
             .entries
             .iter()
             .filter_map(|(id, entry)| match &entry.source {
                 awsm_scene_schema::AssetSource::Texture(
-                    awsm_scene_schema::TextureDef::Raster { filename },
-                ) => Some((*id, filename.clone())),
+                    awsm_scene_schema::TextureDef::Raster { display_name },
+                ) => awsm_scene_schema::asset_disk_path(*id, entry)
+                    .map(|path| (*id, display_name.clone(), path)),
                 _ => None,
             })
             .collect()
     };
-    if !raster_filenames.is_empty() {
+    if !raster_targets.is_empty() {
         crate::loading_modal::set("Loading texture files…");
     }
-    for (texture_id, filename) in raster_filenames {
-        let disk_path = asset_disk_path(&filename);
+    for (texture_id, display_name, disk_path) in raster_targets {
         match dir.read_bytes(&disk_path).await {
             Ok(bytes) => {
                 state
@@ -545,7 +539,7 @@ async fn load_inner() -> anyhow::Result<bool> {
             }
             Err(err) => {
                 tracing::warn!(
-                    "load: raster texture asset {texture_id} ({filename}) \
+                    "load: raster texture asset {texture_id} ({display_name}) \
                      could not be read from disk: {err}"
                 );
             }
@@ -593,18 +587,26 @@ async fn collect_missing_assets(scene: &crate::scene::Scene, dir: &ProjectDir) -
     let referenced = collect_referenced_asset_ids(scene);
     let table = scene.assets.lock().unwrap().clone();
 
-    let mut filenames: Vec<String> = referenced
+    // (display_name, disk_path) pairs for every referenced
+    // file-backed asset. We report display names in the missing-asset
+    // modal — they're what the user authored with — but check
+    // existence at the hashed disk path.
+    let mut targets: Vec<(String, String)> = referenced
         .iter()
-        .filter_map(|id| table.filename(*id).map(|f| f.to_string()))
+        .filter_map(|id| {
+            let entry = table.get(*id)?;
+            let display = entry.source.display_name()?.to_string();
+            let path = awsm_scene_schema::asset_disk_path(*id, entry)?;
+            Some((display, path))
+        })
         .collect();
-    filenames.sort();
-    filenames.dedup();
+    targets.sort();
+    targets.dedup();
 
     let mut missing = Vec::new();
-    for filename in filenames {
-        let disk_path = asset_disk_path(&filename);
+    for (display, disk_path) in targets {
         if !dir.file_exists(&disk_path).await {
-            missing.push(filename);
+            missing.push(display);
         }
     }
     missing

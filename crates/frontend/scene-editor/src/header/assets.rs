@@ -265,14 +265,14 @@ fn collect_assets_of_kind(kind: AssetKind) -> Vec<(crate::scene::AssetId, String
                     TextureDef::Procedural(ProceduralTextureDef::Checker { .. }) => "checker",
                     TextureDef::Procedural(ProceduralTextureDef::Gradient { .. }) => "gradient",
                     TextureDef::Procedural(ProceduralTextureDef::Noise { .. }) => "noise",
-                    TextureDef::Raster { filename } => {
-                        // For raster textures the filename is the most
-                        // useful label (matches what's on disk) — fall
-                        // back to the id-prefix if a filename is empty.
-                        if filename.is_empty() {
+                    TextureDef::Raster { display_name } => {
+                        // For raster textures the user's chosen name is
+                        // the most useful label — fall back to the
+                        // id-prefix if it's empty.
+                        if display_name.is_empty() {
                             "raster"
                         } else {
-                            return Some((*id, filename.clone()));
+                            return Some((*id, display_name.clone()));
                         }
                     }
                 };

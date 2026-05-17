@@ -6,7 +6,7 @@
 //! applies it to the renderer).
 
 use crate::scene::{AssetId, IblConfig, SkyboxConfig};
-use crate::state::{app_state, project::asset_disk_path};
+use crate::state::app_state;
 use awsm_web_shared::atoms::modal::Modal;
 use js_sys::Uint8Array;
 use wasm_bindgen::JsCast;
@@ -90,23 +90,30 @@ async fn stash_ktx_bytes(file: &File) -> anyhow::Result<AssetId> {
         anyhow::bail!("The chosen file has no name");
     }
 
+    // Read + hash first so dedup hits across re-imports of the same
+    // KTX (skybox + IBL pair often share files).
+    let bytes = read_file_bytes(file).await?;
+    let content_hash = crate::content_hash::sha256_hex(&bytes);
+
     let asset_id = state
         .scene
         .assets
         .lock()
         .unwrap()
-        .insert_filename(filename.clone());
+        .insert_file_with_hash(filename.clone(), content_hash);
 
     let dir = state.project.lock().unwrap().directory.clone();
-    let disk_path = asset_disk_path(&filename);
-    let already_on_disk = match &dir {
-        Some(dir) => dir.file_exists(&disk_path).await,
-        None => false,
+    let entry_snapshot = state.scene.assets.lock().unwrap().get(asset_id).cloned();
+    let already_on_disk = match (&dir, &entry_snapshot) {
+        (Some(dir), Some(entry)) => match awsm_scene_schema::asset_disk_path(asset_id, entry) {
+            Some(path) => dir.file_exists(&path).await,
+            None => false,
+        },
+        _ => false,
     };
     let already_pending = state.pending_assets.lock().unwrap().contains_key(&asset_id);
 
     if !already_on_disk && !already_pending {
-        let bytes = read_file_bytes(file).await?;
         state.pending_assets.lock().unwrap().insert(asset_id, bytes);
     }
     Ok(asset_id)
