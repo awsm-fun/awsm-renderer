@@ -34,7 +34,7 @@ use glam::Vec3;
 
 use crate::{
     bounds::Aabb,
-    materials::MaterialKey,
+    materials::{Material, MaterialKey},
     meshes::{
         buffer_info::{
             MeshBufferAttributeIndexInfo, MeshBufferCustomVertexAttributeInfo, MeshBufferInfo,
@@ -279,7 +279,26 @@ impl AwsmRenderer {
             ));
         }
 
-        let mesh = Mesh::new(transform_key, material_key, false, false, false, false);
+        // Inherit the material's double-sided flag — the gltf path does
+        // the same upstream, but procedural meshes never had a packed
+        // material attached at mesh-creation time, so this was silently
+        // hardcoded to single-sided. Without it, toggling "Double-sided"
+        // in the material inspector has no effect on a plane / sweep /
+        // sprite mesh's cull mode.
+        let double_sided = self
+            .materials
+            .get(material_key)
+            .map(Material::double_sided)
+            .unwrap_or(false);
+
+        let mesh = Mesh::new(
+            transform_key,
+            material_key,
+            double_sided,
+            false,
+            false,
+            false,
+        );
 
         let mesh_key = self.meshes.insert_public(
             mesh,
@@ -453,7 +472,20 @@ impl AwsmRenderer {
         };
         let buffer_info_key = self.meshes.buffer_infos.insert(buffer_info);
 
-        let mesh = Mesh::new(transform_key, material_key, false, false, false, false);
+        // See note on the opaque path's add_raw_mesh — same propagation.
+        let double_sided = self
+            .materials
+            .get(material_key)
+            .map(Material::double_sided)
+            .unwrap_or(false);
+        let mesh = Mesh::new(
+            transform_key,
+            material_key,
+            double_sided,
+            false,
+            false,
+            false,
+        );
         let mesh_key = self.meshes.insert_public(
             mesh,
             &self.materials,

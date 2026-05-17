@@ -93,6 +93,18 @@ impl Material {
         }
     }
 
+    /// Returns true if the material is flagged as double-sided. Callers
+    /// that build a `Mesh` from a `MaterialKey` use this to propagate the
+    /// flag onto `Mesh::double_sided`, which is what actually drives
+    /// `cull_mode` at pipeline-build time.
+    pub fn double_sided(&self) -> bool {
+        match self {
+            Material::Pbr(m) => m.double_sided(),
+            Material::Unlit(m) => m.double_sided(),
+            Material::Toon(m) => m.double_sided(),
+        }
+    }
+
     /// Returns the packed uniform buffer data for the material.
     pub fn uniform_buffer_data(&self, ctx: &dyn TextureContext) -> Vec<u8> {
         let mut data = Vec::with_capacity(256);
