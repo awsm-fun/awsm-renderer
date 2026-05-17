@@ -12,8 +12,10 @@ vars:
 tasks:
   dev:
     desc: "scene-editor: trunk serve"
+    # No MEDIA_BASE_URL_* needed: the gizmo asset is shipped with the
+    # crate (`crates/frontend/scene-editor/assets/`) and Trunk copies
+    # it into the dist on every build/serve.
     env:
-      MEDIA_BASE_URL_ADDITIONAL_ASSETS: "{{.URL_DEV_MEDIA_BASE_URL_ADDITIONAL_ASSETS}}"
       ROOT_BASE_URI_PATH: "{{.DEV_ROOT_BASE_URI_PATH}}"
     cmds:
       - >
@@ -29,7 +31,6 @@ tasks:
   build:
     desc: "scene-editor: production build"
     env:
-      MEDIA_BASE_URL_ADDITIONAL_ASSETS: "{{.URL_PROD_MEDIA_BASE_URL_ADDITIONAL_ASSETS}}"
       ROOT_BASE_URI_PATH: "{{.PROD_ROOT_BASE_URI_PATH}}/scene-editor"
     cmds:
       - rm -rf {{joinPath .PATH_CRATE "dist"}}

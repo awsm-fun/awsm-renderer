@@ -248,7 +248,7 @@ fn open_about_modal() {
             .style("max-width", "560px")
             .child(html!("h2", {
                 .style("margin", "0")
-                .text("About the game editor")
+                .text("About awsm scene editor")
             }))
             .child(html!("p", {
                 .style("margin", "0")

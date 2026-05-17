@@ -400,8 +400,8 @@ fn wire_document_title() {
             let name = state.project_name.signal_cloned(),
             let dirty = state.dirty.signal() => {
                 let base = match name.as_ref() {
-                    Some(n) if !n.is_empty() => format!("{n} — Game Editor"),
-                    _ => "Game Editor".to_string(),
+                    Some(n) if !n.is_empty() => format!("{n} — awsm scene editor"),
+                    _ => "awsm scene editor".to_string(),
                 };
                 if *dirty { format!("• {base}") } else { base }
             }

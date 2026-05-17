@@ -1,33 +1,31 @@
-//! Build-time + UI-tuning constants for the editor. Anything that would
-//! otherwise show up as a magic number (drag thresholds, indents) lives
-//! here so it can be tweaked in one place.
+//! UI-tuning constants for the editor. Anything that would otherwise
+//! show up as a magic number (drag thresholds, indents) lives here so it
+//! can be tweaked in one place.
 //!
-//! `additional_assets_url` is pulled from a build-time env var (see
-//! `required_build_env!`) — same pattern as the rest of the awsm
-//! frontends. Set it via `MEDIA_BASE_URL_ADDITIONAL_ASSETS` (also used
-//! by `model-tests`) so the editor reaches its gizmo.glb at
-//! `<base>/gizmo/gizmo.glb`.
+//! The gizmo asset is shipped with the editor and copied into the dist
+//! by Trunk (`<link data-trunk rel="copy-dir" href="assets" …>` in
+//! `index.html`), so the runtime fetch is a path relative to the
+//! editor's own deploy — no environment variable, no separate media
+//! server required for the editor to come up cleanly.
 
 use std::sync::LazyLock;
 
-use awsm_web_shared::required_build_env;
-
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub additional_assets_url: &'static str,
     pub camera_focus_distance: f32,
     pub camera_aperture: f32,
 }
 
 impl Config {
-    /// URL for the editor's built-in gltf gizmo asset.
-    pub fn gizmo_url(&self) -> String {
-        format!("{}/gizmo/gizmo.glb", self.additional_assets_url)
+    /// URL for the editor's bundled gltf gizmo asset. Relative — resolves
+    /// against the page's base URL whether dev (`localhost:9081/`) or
+    /// prod (`/awsm-renderer/scene-editor/`).
+    pub fn gizmo_url(&self) -> &'static str {
+        "assets/gizmo.glb"
     }
 }
 
 pub static CONFIG: LazyLock<Config> = LazyLock::new(|| Config {
-    additional_assets_url: required_build_env!("MEDIA_BASE_URL_ADDITIONAL_ASSETS"),
     camera_aperture: 5.6,
     camera_focus_distance: 10.0,
 });

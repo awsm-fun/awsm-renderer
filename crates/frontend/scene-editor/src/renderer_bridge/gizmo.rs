@@ -36,7 +36,7 @@ pub fn init() {
 
 async fn init_inner() -> anyhow::Result<()> {
     let url = CONFIG.gizmo_url();
-    let loader = GltfLoader::load(&url, None)
+    let loader = GltfLoader::load(url, None)
         .await
         .map_err(|e| anyhow::anyhow!("gizmo.glb load: {e}"))?;
 

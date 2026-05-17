@@ -4,6 +4,13 @@
         <meta http-equiv="Content-type" content="text/html; charset=utf-8" />
         <meta name="referrer" content="strict-origin-when-cross-origin" />
         <title>awsm scene editor</title>
+        <!--
+            Editor-bundled assets (e.g. gizmo.glb). Trunk copies the
+            crate-local `assets/` directory into the dist so the editor
+            fetches `assets/gizmo.glb` at a path relative to its own
+            deploy — no separate media server required at runtime.
+        -->
+        <link data-trunk rel="copy-dir" href="assets" data-target-path="assets" />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
         <link
