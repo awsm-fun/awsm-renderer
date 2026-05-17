@@ -204,8 +204,16 @@ fn build_runtime(
         ColorOverLifeDef::Const(c) => *c,
         ColorOverLifeDef::Linear { start, .. } => *start,
     };
+    // Resolve `def.texture` (if any) so the PBR material samples the
+    // user's smoke / fire / spark sprite instead of a flat white quad.
+    // base_color slot is the right choice: the texture's RGB tints the
+    // emissive (computed below) and its alpha modulates the
+    // per-instance alpha at fragment time — exactly what a soft-falloff
+    // sprite needs. Same plumbing in the blend path below.
+    let base_color_tex = resolve_particle_texture(renderer, def.texture);
     let mut pbr_opaque = PbrMaterial::new(MaterialAlphaMode::Opaque, true);
     pbr_opaque.base_color_factor = [1.0, 1.0, 1.0, 1.0];
+    pbr_opaque.base_color_tex = base_color_tex;
     pbr_opaque.metallic_factor = 0.0;
     pbr_opaque.roughness_factor = 1.0;
     pbr_opaque.emissive_factor = [
@@ -297,8 +305,10 @@ async fn build_runtime_blend(
     };
     // Alpha-blend material so per-instance alpha (Stage-3b) fades on
     // screen instead of writing as alpha-0 into the opaque texture.
+    let base_color_tex = resolve_particle_texture(renderer, def.texture);
     let mut pbr_blend = PbrMaterial::new(MaterialAlphaMode::Blend, true);
     pbr_blend.base_color_factor = [1.0, 1.0, 1.0, 1.0];
+    pbr_blend.base_color_tex = base_color_tex;
     pbr_blend.metallic_factor = 0.0;
     pbr_blend.roughness_factor = 1.0;
     pbr_blend.emissive_factor = [
@@ -615,4 +625,31 @@ fn def_to_emitter(def: &ParticleEmitterDef) -> Emitter {
             }
         },
     }
+}
+
+/// Resolve `def.texture` to a `MaterialTexture` for the particle's
+/// base-color slot. Mirrors `procedural_sync::resolve_material_texture`
+/// but is local because the particle path doesn't go through a
+/// `MaterialDef`. Tagged sRGB because particle sprites are authored as
+/// gamma-encoded PNGs (smoke, fire, sparks) — same convention as
+/// every other base_color binding in the renderer.
+fn resolve_particle_texture(
+    renderer: &mut AwsmRenderer,
+    texture_ref: Option<awsm_scene_schema::TextureRef>,
+) -> Option<awsm_renderer::materials::MaterialTexture> {
+    use super::texture_cache::{asset_source, get_or_upload, TextureColorRole};
+    use awsm_renderer::textures::SamplerCacheKey;
+    let texture_ref = texture_ref?;
+    let source = asset_source(texture_ref.0)?;
+    let key = get_or_upload(renderer, texture_ref.0, &source, TextureColorRole::Srgb)?;
+    let sampler_key = renderer
+        .textures
+        .get_sampler_key(&renderer.gpu, SamplerCacheKey::default())
+        .ok()?;
+    Some(awsm_renderer::materials::MaterialTexture {
+        key,
+        sampler_key: Some(sampler_key),
+        uv_index: Some(0),
+        transform_key: None,
+    })
 }
