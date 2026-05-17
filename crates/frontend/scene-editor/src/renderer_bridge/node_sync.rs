@@ -748,9 +748,15 @@ fn try_particle_param_only_update(entry: &Arc<RendererNode>, kind: &NodeKind) ->
             _ => return false,
         }
     };
+    // `space` is a structural change: Local vs World picks different
+    // parents for the instanced mesh's transform, which the hot-swap
+    // path doesn't re-apply (it only mutates the simulator/Emitter
+    // snapshot). Falling through to the structural rebuild path
+    // re-runs `build_runtime_*` which picks the right parent.
     if new_def.blend != last_def.blend
         || new_def.max_alive != last_def.max_alive
         || new_def.texture != last_def.texture
+        || new_def.space != last_def.space
     {
         return false;
     }

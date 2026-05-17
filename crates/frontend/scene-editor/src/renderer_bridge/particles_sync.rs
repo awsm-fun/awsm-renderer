@@ -42,9 +42,23 @@ struct EmitterRuntime {
     simulator: Simulator,
     mesh_key: MeshKey,
     material_key: awsm_renderer::materials::MaterialKey,
+    /// Per-instance transform key for the billboard mesh. In `Local`
+    /// space this is parented to `emitter_transform_key`; in `World`
+    /// space it's parented to the scene root.
     transform_key: TransformKey,
+    /// The emitter node's own transform — held so `tick_all` can
+    /// re-read the live emitter world position every frame and feed
+    /// it to the simulator. Without this, `World` mode would spawn
+    /// new particles at the build-time snapshot location even after
+    /// the user moves the emitter.
+    emitter_transform_key: TransformKey,
     transforms_buf: Vec<Transform>,
     attrs_buf: Vec<InstanceAttr>,
+    /// Snapshot of the emitter's world position at build time.
+    /// Used as the spawn-origin reference in `Local` space (so
+    /// new particles spawn at the parent's origin and the parent
+    /// transform sweeps the whole cloud as the emitter moves).
+    /// `World` mode ignores this and uses the live position instead.
     base_world_pos: Vec3,
     last_ts_ms: f64,
 }
@@ -293,6 +307,7 @@ fn build_runtime(
         mesh_key,
         material_key,
         transform_key,
+        emitter_transform_key: parent_transform,
         transforms_buf: vec![dead_transform; max],
         attrs_buf: vec![dead_attr; max],
         base_world_pos: parent_world_pos,
@@ -427,6 +442,7 @@ async fn build_runtime_blend(
         mesh_key,
         material_key,
         transform_key,
+        emitter_transform_key: parent_transform,
         transforms_buf: vec![dead_transform; max],
         attrs_buf: vec![dead_attr; max],
         base_world_pos: parent_world_pos,
@@ -447,9 +463,21 @@ pub fn tick_all(now_ms: f64, renderer: &mut AwsmRenderer) {
             };
             runtime.last_ts_ms = now_ms;
 
-            runtime
-                .simulator
-                .tick(dt, &runtime.emitter, runtime.base_world_pos);
+            // In `World` space new spawns need to come out of the
+            // emitter's CURRENT world position so a moving emitter
+            // leaves a trail; in `Local` space we keep using the
+            // build-time snapshot because the parent transform
+            // already moves the entire cloud and re-spawning at
+            // the live position would double-displace.
+            let spawn_origin = match runtime.emitter.space {
+                EmitterSpace::Local => runtime.base_world_pos,
+                EmitterSpace::World => renderer
+                    .transforms
+                    .get_world(runtime.emitter_transform_key)
+                    .map(|m| m.w_axis.truncate())
+                    .unwrap_or(runtime.base_world_pos),
+            };
+            runtime.simulator.tick(dt, &runtime.emitter, spawn_origin);
 
             let live = &runtime.simulator.packed;
             let max = runtime.transforms_buf.len();
