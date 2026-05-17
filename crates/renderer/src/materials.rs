@@ -27,9 +27,7 @@ use crate::{
 
 // Re-export the material types from `awsm-materials` so consumers can keep
 // using `crate::materials::*` paths.
-pub use awsm_materials::{
-    MaterialAlphaMode, MaterialShaderId, MaterialTexture, TextureContext,
-};
+pub use awsm_materials::{MaterialAlphaMode, MaterialShaderId, MaterialTexture, TextureContext};
 
 /// PBR material parameters — re-exported from `awsm-materials`.
 pub mod pbr {
