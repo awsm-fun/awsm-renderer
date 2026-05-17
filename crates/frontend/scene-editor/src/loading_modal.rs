@@ -38,14 +38,67 @@ pub fn close() {
     Modal::close();
 }
 
+/// Hard ceiling on how long [`wait_for_models_ready`] will block. The
+/// modal is locked while it runs, so if anything stalls indefinitely
+/// the user has no escape hatch — better to surface "this took
+/// longer than expected" than to leave them staring at a frozen
+/// "Materializing on GPU…" forever. 60s is well past any normal
+/// glb-on-localhost upload; if we hit this in practice it's almost
+/// certainly a bug to investigate, not a slow disk.
+const MODELS_READY_TIMEOUT_MS: u32 = 60_000;
+
+/// Result of [`wait_for_models_ready`]. `failures` carries any
+/// `(label, error)` pairs whose nodes resolved to
+/// `AssetStatus::Failed`; `timed_out` is true when the wall-clock
+/// deadline fired before every model settled. Both empty + false on
+/// the happy path.
+#[derive(Default)]
+pub struct ModelsReady {
+    pub failures: Vec<(String, String)>,
+    pub timed_out: bool,
+}
+
+impl ModelsReady {
+    pub fn is_clean(&self) -> bool {
+        self.failures.is_empty() && !self.timed_out
+    }
+
+    /// Build a user-facing error message for the caller's
+    /// `Modal::error` surface. `action_label` is the verb prefix
+    /// (e.g. "Insert Model", "Load Project") so the user sees the
+    /// failed operation in context.
+    pub fn error_message(&self, action_label: &str) -> String {
+        let mut buf = format!("{action_label} finished with errors.\n");
+        if self.timed_out {
+            buf.push_str(&format!(
+                "\nTimed out after {}s waiting for models to finish materializing.\n",
+                MODELS_READY_TIMEOUT_MS / 1000
+            ));
+        }
+        if !self.failures.is_empty() {
+            buf.push_str("\nThe following assets failed to load:\n");
+            for (label, err) in &self.failures {
+                buf.push_str(&format!("  • {label}: {err}\n"));
+            }
+        }
+        buf.push_str("\nCheck the console for more detail.");
+        buf
+    }
+}
+
 /// Walk `roots`, find every Model node in the subtree, and await
-/// each one's `asset_status` reaching `Ready` or `Failed`. This is
+/// each one's `asset_status` settling to `Ready` or `Failed`. This is
 /// what lets callers keep the loading modal up until the renderer
 /// bridge has actually allocated the GPU instances — the bridge
 /// reacts to `bump_revision` on a microtask + then schedules
-/// `instantiate_model_template`, so the synchronous tree-mutation
-/// is well ahead of the visible draw.
-pub async fn wait_for_models_ready(roots: &[Arc<Node>]) {
+/// `instantiate_model_template`, so the synchronous tree-mutation is
+/// well ahead of the visible draw.
+///
+/// Returns any per-node failures + a timeout flag so the caller can
+/// surface them via `Modal::error` instead of silently closing the
+/// loading modal with a half-built scene.
+pub async fn wait_for_models_ready(roots: &[Arc<Node>]) -> ModelsReady {
+    use futures::FutureExt;
     use futures::StreamExt;
     use futures_signals::signal::SignalExt;
 
@@ -62,13 +115,32 @@ pub async fn wait_for_models_ready(roots: &[Arc<Node>]) {
         walk(root, &mut models);
     }
 
-    for node in models {
-        let mut stream = node.asset_status.signal_cloned().to_stream();
-        while let Some(status) = stream.next().await {
-            if matches!(status, AssetStatus::Ready | AssetStatus::Failed(_)) {
-                break;
+    let wait = async move {
+        let mut failures: Vec<(String, String)> = Vec::new();
+        for node in models {
+            let mut stream = node.asset_status.signal_cloned().to_stream();
+            while let Some(status) = stream.next().await {
+                match status {
+                    AssetStatus::Ready => break,
+                    AssetStatus::Failed(err) => {
+                        let label = node.name.get_cloned();
+                        failures.push((label, err));
+                        break;
+                    }
+                    AssetStatus::Idle | AssetStatus::Loading => continue,
+                }
             }
         }
+        failures
+    };
+
+    let timeout = gloo_timers::future::TimeoutFuture::new(MODELS_READY_TIMEOUT_MS);
+    futures::select! {
+        failures = wait.fuse() => ModelsReady { failures, timed_out: false },
+        _ = timeout.fuse() => ModelsReady {
+            failures: Vec::new(),
+            timed_out: true,
+        },
     }
 }
 

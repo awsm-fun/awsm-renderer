@@ -33,8 +33,12 @@ pub fn model(file: File) {
                 // so the user doesn't see a blank window between the
                 // modal closing and the geometry appearing.
                 crate::loading_modal::set("Materializing on GPU…");
-                crate::loading_modal::wait_for_models_ready(&inserted).await;
-                crate::loading_modal::close();
+                let outcome = crate::loading_modal::wait_for_models_ready(&inserted).await;
+                if outcome.is_clean() {
+                    crate::loading_modal::close();
+                } else {
+                    Modal::error(outcome.error_message("Insert Model"));
+                }
             }
             Err(err) => {
                 crate::loading_modal::close();

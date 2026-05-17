@@ -379,12 +379,23 @@ pub fn delete_asset_entries(ids: &[AssetId]) {
 pub fn load() {
     spawn_local(async move {
         match load_inner().await {
-            Ok(true) => {
+            Ok(LoadOutcome::Cancelled) => {
+                // User cancelled the picker — modal was never opened.
+            }
+            Ok(LoadOutcome::Done) => {
                 crate::loading_modal::close();
                 tracing::info!("action: project::load — done");
             }
-            Ok(false) => {
-                // User cancelled the picker — modal was never opened.
+            Ok(LoadOutcome::PartialWithErrors(outcome)) => {
+                // Modal::error replaces the loading modal with an
+                // explicit failure surface so the user isn't left
+                // staring at a frozen "Materializing on GPU…".
+                tracing::error!(
+                    "Load completed with {} failure(s); timed_out={}",
+                    outcome.failures.len(),
+                    outcome.timed_out
+                );
+                Modal::error(outcome.error_message("Load Project"));
             }
             Err(err) => {
                 // Modal::error replaces the loading modal.
@@ -395,11 +406,23 @@ pub fn load() {
     });
 }
 
-async fn load_inner() -> anyhow::Result<bool> {
+enum LoadOutcome {
+    /// User dismissed the directory picker before anything was loaded.
+    Cancelled,
+    /// Project loaded cleanly — every Model node reached `Ready`.
+    Done,
+    /// project.json + the scene tree applied, but one or more Model
+    /// nodes never reached `Ready` (failed loads, or wait timed out).
+    /// Callers surface the carried `ModelsReady` via `Modal::error` so
+    /// the user sees the half-loaded scene + what went wrong.
+    PartialWithErrors(crate::loading_modal::ModelsReady),
+}
+
+async fn load_inner() -> anyhow::Result<LoadOutcome> {
     let state = app_state();
     let dir = match ProjectDir::pick().await {
         Ok(dir) => dir,
-        Err(crate::fs::FsError::Cancelled) => return Ok(false),
+        Err(crate::fs::FsError::Cancelled) => return Ok(LoadOutcome::Cancelled),
         Err(err) => return Err(err.into()),
     };
 
@@ -562,9 +585,12 @@ async fn load_inner() -> anyhow::Result<bool> {
     crate::loading_modal::set("Materializing on GPU…");
     let roots: Vec<Arc<crate::scene::Node>> =
         state.scene.nodes.lock_ref().iter().cloned().collect();
-    crate::loading_modal::wait_for_models_ready(&roots).await;
+    let outcome = crate::loading_modal::wait_for_models_ready(&roots).await;
 
-    // Warn if any model references point at missing files.
+    // Warn if any model references point at missing files. Done
+    // after materialize so the disk check sees whatever assets the
+    // bridge already pulled in (which makes the "missing" list a
+    // true superset of the per-node failures from `outcome`).
     let missing = collect_missing_assets(&state.scene, &dir).await;
     if !missing.is_empty() {
         tracing::warn!(
@@ -572,15 +598,22 @@ async fn load_inner() -> anyhow::Result<bool> {
             missing.len(),
             missing
         );
-        Modal::error(format!(
-            "Loaded {PROJECT_JSON_FILENAME}, but {} asset file(s) are missing:\n\n{}\n\n\
-             Nodes referencing these files will still appear in the tree.",
-            missing.len(),
-            missing.join("\n")
-        ));
     }
 
-    Ok(true)
+    if !outcome.is_clean() || !missing.is_empty() {
+        // Build a combined `ModelsReady` carrying both the
+        // bridge-side failures and the missing-asset list so the
+        // outer error surface shows everything in one modal.
+        let mut combined = outcome;
+        for m in missing {
+            combined
+                .failures
+                .push((m, "asset file missing on disk".to_string()));
+        }
+        return Ok(LoadOutcome::PartialWithErrors(combined));
+    }
+
+    Ok(LoadOutcome::Done)
 }
 
 async fn collect_missing_assets(scene: &crate::scene::Scene, dir: &ProjectDir) -> Vec<String> {
