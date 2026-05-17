@@ -582,35 +582,37 @@ async fn load_inner() -> anyhow::Result<LoadOutcome> {
     // instantiated every Model node on the GPU — otherwise the
     // modal closes while the scene is still half-empty and the
     // user watches geometry pop in piece by piece.
+    // Pre-flight check: every referenced file-backed asset must
+    // either be on disk OR sitting in `pending_assets` (e.g. freshly
+    // extracted glTF embedded images). If any are *neither*, the
+    // materializer would either render an empty model or hang
+    // waiting for bytes that never arrive — fail fast here instead
+    // of forcing the user to sit through `wait_for_models_ready`'s
+    // 60s timeout for an asset that's just not there.
+    crate::loading_modal::set("Checking referenced assets…");
+    let missing = collect_missing_assets(&state.scene, &dir).await;
+    if !missing.is_empty() {
+        tracing::warn!(
+            "Load: aborting before materialize — {} asset file(s) missing: {:?}",
+            missing.len(),
+            missing
+        );
+        let combined = crate::loading_modal::ModelsReady {
+            failures: missing
+                .into_iter()
+                .map(|m| (m, "asset file missing on disk".to_string()))
+                .collect(),
+            timed_out: false,
+        };
+        return Ok(LoadOutcome::PartialWithErrors(combined));
+    }
+
     crate::loading_modal::set("Materializing on GPU…");
     let roots: Vec<Arc<crate::scene::Node>> =
         state.scene.nodes.lock_ref().iter().cloned().collect();
     let outcome = crate::loading_modal::wait_for_models_ready(&roots).await;
-
-    // Warn if any model references point at missing files. Done
-    // after materialize so the disk check sees whatever assets the
-    // bridge already pulled in (which makes the "missing" list a
-    // true superset of the per-node failures from `outcome`).
-    let missing = collect_missing_assets(&state.scene, &dir).await;
-    if !missing.is_empty() {
-        tracing::warn!(
-            "Loaded project, but {} asset file(s) are missing: {:?}",
-            missing.len(),
-            missing
-        );
-    }
-
-    if !outcome.is_clean() || !missing.is_empty() {
-        // Build a combined `ModelsReady` carrying both the
-        // bridge-side failures and the missing-asset list so the
-        // outer error surface shows everything in one modal.
-        let mut combined = outcome;
-        for m in missing {
-            combined
-                .failures
-                .push((m, "asset file missing on disk".to_string()));
-        }
-        return Ok(LoadOutcome::PartialWithErrors(combined));
+    if !outcome.is_clean() {
+        return Ok(LoadOutcome::PartialWithErrors(outcome));
     }
 
     Ok(LoadOutcome::Done)
@@ -619,13 +621,25 @@ async fn load_inner() -> anyhow::Result<LoadOutcome> {
 async fn collect_missing_assets(scene: &crate::scene::Scene, dir: &ProjectDir) -> Vec<String> {
     let referenced = collect_referenced_asset_ids(scene);
     let table = scene.assets.lock().unwrap().clone();
+    // Anything in `pending_assets` is loadable by the materializer
+    // even if it isn't on disk yet (typical after a glTF auto-extract
+    // — the embedded images live in memory until the user saves).
+    // Counting those as "missing" would over-report and trigger a
+    // 60s wait_for_models_ready timeout for assets that are actually
+    // fine, so we treat in-memory bytes as available here.
+    let pending_ids: std::collections::HashSet<awsm_scene_schema::AssetId> = app_state()
+        .pending_assets
+        .lock()
+        .unwrap()
+        .keys()
+        .copied()
+        .collect();
 
-    // (display_name, disk_path) pairs for every referenced
-    // file-backed asset. We report display names in the missing-asset
-    // modal — they're what the user authored with — but check
-    // existence at the hashed disk path.
+    // (asset_id, display_name, disk_path) tuples for every referenced
+    // file-backed asset whose bytes aren't already in memory.
     let mut targets: Vec<(String, String)> = referenced
         .iter()
+        .filter(|id| !pending_ids.contains(id))
         .filter_map(|id| {
             let entry = table.get(*id)?;
             let display = entry.source.display_name()?.to_string();

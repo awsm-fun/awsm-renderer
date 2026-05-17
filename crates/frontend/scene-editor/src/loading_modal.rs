@@ -38,14 +38,16 @@ pub fn close() {
     Modal::close();
 }
 
-/// Hard ceiling on how long [`wait_for_models_ready`] will block. The
-/// modal is locked while it runs, so if anything stalls indefinitely
-/// the user has no escape hatch — better to surface "this took
-/// longer than expected" than to leave them staring at a frozen
-/// "Materializing on GPU…" forever. 60s is well past any normal
-/// glb-on-localhost upload; if we hit this in practice it's almost
-/// certainly a bug to investigate, not a slow disk.
-const MODELS_READY_TIMEOUT_MS: u32 = 60_000;
+/// Hard ceiling on how long [`wait_for_models_ready`] will block.
+/// The modal is locked while it runs, so anything stalled past this
+/// surfaces as an explicit "took longer than expected" error rather
+/// than leaving the user staring at a frozen "Materializing on
+/// GPU…". 15s is well past a healthy glb-on-localhost load — pre-
+/// flight checks (`collect_missing_assets`) already short-circuit
+/// the "asset file genuinely missing" case before we reach this
+/// wait, so hitting the timeout means the bridge is actually stuck
+/// and the user should see that loud + clear.
+const MODELS_READY_TIMEOUT_MS: u32 = 15_000;
 
 /// Result of [`wait_for_models_ready`]. `failures` carries any
 /// `(label, error)` pairs whose nodes resolved to
