@@ -641,16 +641,23 @@ fn particle_color_over_life_section(node: Arc<Node>) -> Dom {
             }))
         })
     });
+    // Only rebuild the row(s) when the variant flips (Const ↔
+    // Linear). Listening on the raw `kind.signal_cloned` would also
+    // fire on every RGB / alpha edit, which yanks the picker's DOM
+    // out from under the user mid-drag and dismisses the native
+    // color dialog after the first click.
+    let layout_signal = node.kind.signal_ref(|k| {
+        matches!(
+            k,
+            NodeKind::ParticleEmitter(p) if matches!(p.color_over_life, ColorOverLifeDef::Const(_))
+        )
+    });
     html!("div", {
         .style("display", "flex")
         .style("flex-direction", "column")
         .style("gap", "0.4rem")
         .child(field_row("Color/life", select))
-        .child_signal(node.kind.signal_cloned().map(clone!(node => move |k| {
-            let is_const = matches!(
-                &k,
-                NodeKind::ParticleEmitter(p) if matches!(p.color_over_life, ColorOverLifeDef::Const(_))
-            );
+        .child_signal(layout_signal.dedupe().map(clone!(node => move |is_const| {
             Some(if is_const {
                 field_row("Color", color_over_life_row(node.clone(), false))
             } else {
