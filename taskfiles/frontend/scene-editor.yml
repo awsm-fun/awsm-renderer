@@ -1,0 +1,47 @@
+version: "3"
+
+includes:
+  config:
+    taskfile: ../config.yml
+    flatten: true
+
+vars:
+  PATH_CRATE: '{{joinPath .PATH_FRONTENDS "scene-editor"}}'
+  PATH_DIST: '{{joinPath .PATH_BUILD_ARTIFACTS "scene-editor"}}'
+
+tasks:
+  dev:
+    desc: "scene-editor: trunk serve"
+    # No MEDIA_BASE_URL_* needed: the gizmo asset is shipped with the
+    # crate (`crates/frontend/scene-editor/assets/`) and Trunk copies
+    # it into the dist on every build/serve.
+    env:
+      ROOT_BASE_URI_PATH: "{{.DEV_ROOT_BASE_URI_PATH}}"
+    cmds:
+      - >
+        cd {{.PATH_CRATE}} &&
+        trunk serve --port {{.PORT_SCENE_EDITOR_DEV}}
+        --watch "{{.PATH_CRATE}}"
+        --watch "{{.PATH_CRATE_RENDERER}}"
+        --watch "{{.PATH_CRATE_RENDERER_CORE}}"
+        --watch "{{.PATH_CRATE_EDITOR}}"
+        --watch "{{.PATH_CRATE_SCENE_SCHEMA}}"
+        --watch "{{.PATH_CRATE_WEB_SHARED}}"
+
+  build:
+    desc: "scene-editor: production build"
+    env:
+      ROOT_BASE_URI_PATH: "{{.PROD_ROOT_BASE_URI_PATH}}/scene-editor"
+    cmds:
+      - rm -rf {{joinPath .PATH_CRATE "dist"}}
+      - rm -rf {{.PATH_DIST}}
+      - cd {{.PATH_CRATE}} && trunk build --release --public-url "{{.URL_PROD_SCENE_EDITOR}}"
+      - mkdir -p {{.PATH_DIST}}
+      - cp -r {{joinPath .PATH_CRATE "dist"}}/* {{.PATH_DIST}}/
+      - cp {{.PATH_DIST}}/index.html {{.PATH_DIST}}/404.html
+
+  clean:
+    desc: "scene-editor: remove dist + .build-artifacts output"
+    cmds:
+      - rm -rf {{joinPath .PATH_CRATE "dist"}}
+      - rm -rf {{.PATH_DIST}}

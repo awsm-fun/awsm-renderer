@@ -126,8 +126,9 @@ impl GltfMeshExt for AwsmRenderer {
             extract_vertex_color_set_index(&primitive_buffer_info.triangles.vertex_attributes);
 
         let gltf_material = gltf_primitive.material();
+        let gltf_material_index = gltf_material.index();
         let material_lookup_key = GltfMaterialLookupKey {
-            material_index: gltf_material.index(),
+            material_index: gltf_material_index,
             vertex_color_set_index,
             hud: ctx.data.hints.hud,
         };
@@ -371,6 +372,15 @@ impl GltfMeshExt for AwsmRenderer {
                 skin_key,
             )?
         };
+
+        // Record the originating glTF material index so downstream
+        // consumers (notably the editor) can override the baked
+        // material with an editable extraction at instantiate time.
+        ctx.key_lookups
+            .lock()
+            .unwrap()
+            .mesh_key_to_gltf_material_index
+            .insert(mesh_key, gltf_material_index);
 
         if let Some(sampler_ref) = ctx
             .node_animation_samplers

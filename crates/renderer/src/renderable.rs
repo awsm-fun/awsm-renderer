@@ -105,23 +105,33 @@ fn geometry_sort_renderable(
     view_proj: &Mat4,
     transparent: bool,
 ) -> std::cmp::Ordering {
-    // Criteria 2: group by render_pipeline_key.
-    match (
-        a.geometry_render_pipeline_key(ctx),
-        b.geometry_render_pipeline_key(ctx),
-    ) {
-        (Err(_), Err(_)) => return std::cmp::Ordering::Equal,
-        (Err(_), Ok(_)) => return std::cmp::Ordering::Greater,
-        (Ok(_), Err(_)) => return std::cmp::Ordering::Less,
-        (Ok(key_a), Ok(key_b)) => {
-            let pipeline_ordering = key_a.cmp(&key_b);
-            if pipeline_ordering != std::cmp::Ordering::Equal {
-                return pipeline_ordering;
+    // For the OPAQUE pass we group by render_pipeline_key first so the
+    // GPU can avoid pipeline switches across consecutive draws — the
+    // depth buffer handles overlap so any in-group order works. For
+    // the TRANSPARENT pass that grouping is *unsafe*: alpha compositing
+    // requires strict back-to-front draw order across *every* renderable,
+    // not within a pipeline group, otherwise a particle in front of a
+    // dome pane (or vice versa) will draw in the wrong order and one
+    // will incorrectly occlude / show-through the other. Skip the
+    // pipeline grouping in the transparent case and let depth alone
+    // decide.
+    if !transparent {
+        match (
+            a.geometry_render_pipeline_key(ctx),
+            b.geometry_render_pipeline_key(ctx),
+        ) {
+            (Err(_), Err(_)) => return std::cmp::Ordering::Equal,
+            (Err(_), Ok(_)) => return std::cmp::Ordering::Greater,
+            (Ok(_), Err(_)) => return std::cmp::Ordering::Less,
+            (Ok(key_a), Ok(key_b)) => {
+                let pipeline_ordering = key_a.cmp(&key_b);
+                if pipeline_ordering != std::cmp::Ordering::Equal {
+                    return pipeline_ordering;
+                }
             }
         }
     }
 
-    // Criteria 3: sort by depth.
     match (a.world_aabb(), b.world_aabb()) {
         (Some(a_world_aabb), Some(b_world_aabb)) => {
             let a_min_z = view_proj.transform_point3(a_world_aabb.min).z;

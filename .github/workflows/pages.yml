@@ -43,16 +43,47 @@ jobs:
       - name: Install Task
         uses: go-task/setup-task@v1
 
-      - name: Build frontend
+      # `envsubst` ships with gettext-base; preinstalled on
+      # ubuntu-latest at time of writing but cheap to ensure.
+      - name: Ensure envsubst is available
+        run: sudo apt-get install -y --no-install-recommends gettext-base
+
+      - name: Build every frontend
+        # `task build` fans out to model-tests:build + scene-editor:build
+        # + site-index:build, writing each into .build-artifacts/<name>/.
+        # The trunk builds embed `--public-url
+        # https://dakom.github.io/awsm-renderer/<frontend>/` so assets
+        # resolve under the Pages subpath.
         run: task build
         env:
           RUSTFLAGS: '--cfg=web_sys_unstable_apis --cfg=getrandom_backend="wasm_js"'
+
+      - name: Assemble the combined Pages tree
+        # The deployed site is a single tree:
+        #   pages/index.html         (site-index landing)
+        #   pages/model-tests/...    (model-tests trunk dist)
+        #   pages/scene-editor/...   (scene-editor trunk dist)
+        # site-index uses sibling-relative URLs (`model-tests/`,
+        # `scene-editor/`) so the same tree deploys cleanly at any
+        # Pages subpath without rebuilding.
+        run: |
+          set -euo pipefail
+          rm -rf .build-artifacts/pages
+          mkdir -p .build-artifacts/pages
+          cp -r .build-artifacts/site-index/. .build-artifacts/pages/
+          cp -r .build-artifacts/model-tests  .build-artifacts/pages/model-tests
+          cp -r .build-artifacts/scene-editor .build-artifacts/pages/scene-editor
+          # GitHub Pages serves 404.html for unknown paths; each
+          # trunk frontend already gets one, but the site-index
+          # itself wants one too so a typo at the root surfaces the
+          # landing page rather than a generic 404.
+          cp .build-artifacts/pages/index.html .build-artifacts/pages/404.html
 
       - name: Upload artifacts
         uses: actions/upload-pages-artifact@v3
         with:
           name: github-pages
-          path: ./.build-artifacts/frontend
+          path: ./.build-artifacts/pages
 
   deploy:
     name: Deploy to GitHub Pages

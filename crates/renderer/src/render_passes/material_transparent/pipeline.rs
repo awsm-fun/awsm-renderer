@@ -70,6 +70,12 @@ impl MaterialTransparentPipelines {
     }
 
     /// Creates and caches a render pipeline for a mesh.
+    ///
+    /// `material_has_transmission` is supplied by the caller (computed
+    /// from `Materials::has_transmission(mesh.material_key)`) because
+    /// this function lives in a sub-module that doesn't carry a
+    /// `&Materials` of its own. It drives the depth-write state — see
+    /// [`render_pipeline_key`] for the rationale.
     pub async fn set_render_pipeline_key(
         &mut self,
         gpu: &AwsmRendererWebGpu,
@@ -84,6 +90,7 @@ impl MaterialTransparentPipelines {
         anti_aliasing: &AntiAliasing,
         _textures: &Textures,
         render_texture_formats: &RenderTextureFormats,
+        material_has_transmission: bool,
     ) -> Result<RenderPipelineKey> {
         let mesh_buffer_info = mesh_buffer_infos.get(buffer_info_key)?;
 
@@ -128,6 +135,7 @@ impl MaterialTransparentPipelines {
                 CullMode::Back
             },
             mesh.hud,
+            material_has_transmission,
         )
         .await?;
 
@@ -168,16 +176,37 @@ async fn render_pipeline_key(
     msaa_sample_count: Option<u32>,
     cull_mode: CullMode,
     _is_hud: bool,
+    has_transmission: bool,
 ) -> Result<RenderPipelineKey> {
     let primitive_state = PrimitiveState::new()
         .with_topology(PrimitiveTopology::TriangleList)
         .with_front_face(FrontFace::Ccw)
         .with_cull_mode(cull_mode);
 
-    // HUD elements will start with a FRESH depth buffer
-    // so we can write to it too
+    // Depth-write is *per-material*:
+    //
+    //   - Transmissive (`KHR_materials_transmission`) surfaces want
+    //     depth_write ON so a double-sided glass bowl draws only the
+    //     near-facing fragment per pixel; without it the back face
+    //     also draws and its refraction composites over the front
+    //     face's, doubling the transmission and wiping the
+    //     silhouette.
+    //
+    //   - Pure alpha-blend surfaces (smoke, dome panes, sprites)
+    //     want depth_write OFF so layered transparents can compose
+    //     correctly under the back-to-front sort in
+    //     `collect_renderables`. With depth_write on, the first-
+    //     drawn (farthest) transparent fragment writes depth and
+    //     any closer transparent at the same screen pixel still
+    //     passes the LessEqual test fine — but two transparents at
+    //     overlapping depths in the SAME emitter or an emitter +
+    //     dome combo end up culled instead of composited.
+    //
+    // The flag is part of the pipeline cache key (via
+    // `with_depth_stencil`) so transmissive and non-transmissive
+    // transparents get distinct pipelines.
     let depth_stencil = DepthStencilState::new(depth_texture_format)
-        .with_depth_write_enabled(true)
+        .with_depth_write_enabled(has_transmission)
         .with_depth_compare(CompareFunction::LessEqual);
 
     let mut pipeline_cache_key = RenderPipelineCacheKey::new(shader_key, pipeline_layout_key)

@@ -25,9 +25,15 @@ pub struct Emitter {
     pub lifetime: (f32, f32),
     pub size: (f32, f32),
     pub forces: Vec<Force>,
+    /// Per-particle RGBA over its lifetime. The alpha channel
+    /// doubles as the transparency curve — multiplied into the
+    /// fragment shader's per-instance alpha. There used to be a
+    /// separate `alpha_over_life` field, but it was just an extra
+    /// scalar that multiplied with this `.a`; collapsing the two
+    /// avoids the "α² fade" footgun where users set both to 1→0
+    /// and got a quadratic falloff.
     pub color_over_life: ColorOverLife,
     pub size_over_life: SizeOverLife,
-    pub alpha_over_life: AlphaOverLife,
 }
 
 impl Default for Emitter {
@@ -43,9 +49,11 @@ impl Default for Emitter {
             lifetime: (0.5, 1.5),
             size: (0.1, 0.2),
             forces: Vec::new(),
-            color_over_life: ColorOverLife::Const([1.0, 1.0, 1.0, 1.0]),
+            color_over_life: ColorOverLife::Linear {
+                start: [1.0, 1.0, 1.0, 1.0],
+                end: [1.0, 1.0, 1.0, 0.0],
+            },
             size_over_life: SizeOverLife::Const(1.0),
-            alpha_over_life: AlphaOverLife::LinearOneToZero,
         }
     }
 }
@@ -87,25 +95,6 @@ impl SizeOverLife {
                 end: *end,
             }
             .sample(t.clamp(0.0, 1.0)),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum AlphaOverLife {
-    Const(f32),
-    LinearOneToZero,
-    Linear { start: f32, end: f32 },
-}
-
-impl AlphaOverLife {
-    pub fn sample(&self, t: f32) -> f32 {
-        let t = t.clamp(0.0, 1.0);
-        match self {
-            AlphaOverLife::Const(c) => *c,
-            AlphaOverLife::LinearOneToZero => 1.0 - t,
-            AlphaOverLife::Linear { start, end } => start + (end - start) * t,
         }
     }
 }

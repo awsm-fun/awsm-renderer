@@ -174,18 +174,12 @@ impl Simulator {
         for i in 0..self.ages.len() {
             let t = (self.ages[i] / self.lifetimes[i]).clamp(0.0, 1.0);
             let base_color = emitter.color_over_life.sample(t);
-            let alpha = emitter.alpha_over_life.sample(t);
             let size_factor = emitter.size_over_life.sample(t);
             let pos = self.positions[i];
             self.packed.push(InstanceAttr {
                 position: pos.to_array(),
                 size: self.base_sizes[i] * size_factor,
-                color: [
-                    base_color[0],
-                    base_color[1],
-                    base_color[2],
-                    base_color[3] * alpha,
-                ],
+                color: base_color,
             });
         }
         if emitter.one_shot && self.ages.is_empty() && self.burst_fired {

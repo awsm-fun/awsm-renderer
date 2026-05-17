@@ -1,5 +1,19 @@
 [workspace]
-members = [ "crates/*" ]
+members = [
+    "crates/curves",
+    "crates/editor",
+    "crates/geometry",
+    "crates/materials",
+    "crates/meshgen",
+    "crates/particles",
+    "crates/renderer",
+    "crates/renderer-core",
+    "crates/renderer-gltf",
+    "crates/scene-schema",
+    "crates/web-shared",
+    "crates/frontend/model-tests",
+    "crates/frontend/scene-editor",
+]
 resolver = "2"
 
 [workspace.package]
@@ -44,7 +58,10 @@ opt-level = 1
 [profile.dev.package."awsm-renderer-core"]
 opt-level = 1
 
-[profile.dev.package.frontend]
+[profile.dev.package."awsm-model-tests"]
+opt-level = 1
+
+[profile.dev.package."awsm-scene-editor"]
 opt-level = 1
 
 ### Dependencies

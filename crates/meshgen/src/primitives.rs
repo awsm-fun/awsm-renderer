@@ -7,6 +7,14 @@ use glam::Vec3;
 use crate::mesh_data::MeshData;
 
 /// XZ-plane facing +Y. `width` along X, `depth` along Z, centred at origin.
+///
+/// Index winding matches the +Y vertex normal so the camera looking down
+/// from above sees the front face. Picking the indices CCW from below
+/// (the more "natural" reading order across grid rows) would put the
+/// front on -Y, which contradicts the normal and makes the plane render
+/// invisible from a top-down view under WebGPU's default CCW-front +
+/// backface cull. The triangulation here matches the right-hand rule
+/// for a +Y face: `a → d → c, a → c → b`.
 pub fn plane_mesh(width: f32, depth: f32, segments_x: u32, segments_z: u32) -> MeshData {
     let sx = segments_x.max(1) as usize;
     let sz = segments_z.max(1) as usize;
@@ -32,7 +40,7 @@ pub fn plane_mesh(width: f32, depth: f32, segments_x: u32, segments_z: u32) -> M
             let b = (z * stride + x + 1) as u32;
             let c = ((z + 1) * stride + x + 1) as u32;
             let d = ((z + 1) * stride + x) as u32;
-            indices.extend_from_slice(&[a, b, c, a, c, d]);
+            indices.extend_from_slice(&[a, d, c, a, c, b]);
         }
     }
     MeshData {

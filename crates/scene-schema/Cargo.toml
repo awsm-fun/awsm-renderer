@@ -1,0 +1,18 @@
+[package]
+name = "awsm-scene-schema"
+description = "Authored scene shape consumed by the awsm-renderer editor + runtime."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+glam = { workspace = true, features = ["serde"] }
+serde = { workspace = true, features = ["derive"] }
+uuid = { version = "1.11.0", features = ["v4", "serde", "js"] }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+bitcode = { version = "0.6.9", features = ["serde", "uuid"] }

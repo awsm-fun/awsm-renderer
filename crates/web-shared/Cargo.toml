@@ -1,0 +1,31 @@
+[package]
+name = "awsm-web-shared"
+description = "Web-frontend primitives (widgets, theme, utilities) shared across awsm-renderer's frontends."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+awsm-renderer = { path = "../renderer" }
+
+futures = { workspace = true }
+glam = { workspace = true }
+js-sys = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-panic = { workspace = true }
+tracing-subscriber = { workspace = true }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+web-sys = { workspace = true }
+
+# Frontend-only — not in the awsm workspace deps, mirror what
+# `crates/frontend` already pulls directly.
+dominator = "0.5.38"
+futures-signals = "0.3.34"
+gloo-events = "0.2.0"
+gloo-timers = { version = "0.3.0", features = ["futures"] }
+tracing-web = "0.1.3"
