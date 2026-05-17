@@ -36,7 +36,7 @@ tasks:
     cmds:
       - >
         cd {{.PATH_DIST_LOCAL}} &&
-        http-server --gzip --cors -p {{.PORT_SITE_INDEX_DEV}}
+        http-server --gzip --cors --index -p {{.PORT_SITE_INDEX_DEV}}
 
   clean:
     desc: "site-index: remove dist + .build-artifacts output"

@@ -13,6 +13,7 @@ tasks:
   dev:
     desc: "scene-editor: trunk serve"
     env:
+      MEDIA_BASE_URL_ADDITIONAL_ASSETS: "{{.URL_DEV_MEDIA_BASE_URL_ADDITIONAL_ASSETS}}"
       ROOT_BASE_URI_PATH: "{{.DEV_ROOT_BASE_URI_PATH}}"
     cmds:
       - >
@@ -28,6 +29,7 @@ tasks:
   build:
     desc: "scene-editor: production build"
     env:
+      MEDIA_BASE_URL_ADDITIONAL_ASSETS: "{{.URL_PROD_MEDIA_BASE_URL_ADDITIONAL_ASSETS}}"
       ROOT_BASE_URI_PATH: "{{.PROD_ROOT_BASE_URI_PATH}}/scene-editor"
     cmds:
       - cd {{.PATH_CRATE}} && trunk build --release --public-url "{{.URL_PROD_SCENE_EDITOR}}"

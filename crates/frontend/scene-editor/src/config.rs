@@ -2,36 +2,32 @@
 //! otherwise show up as a magic number (drag thresholds, indents) lives
 //! here so it can be tweaked in one place.
 //!
-//! The CDN/media URLs are pulled from build-time env vars (see
-//! `required_build_env!`) — same pattern as the rest of the frontend.
+//! `additional_assets_url` is pulled from a build-time env var (see
+//! `required_build_env!`) — same pattern as the rest of the awsm
+//! frontends. Set it via `MEDIA_BASE_URL_ADDITIONAL_ASSETS` (also used
+//! by `model-tests`) so the editor reaches its gizmo.glb at
+//! `<base>/gizmo/gizmo.glb`.
 
-#![allow(dead_code)]
 use std::sync::LazyLock;
 
 use awsm_web_shared::required_build_env;
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub cdn_url: &'static str,
-    pub media_url: &'static str,
+    pub additional_assets_url: &'static str,
     pub camera_focus_distance: f32,
     pub camera_aperture: f32,
 }
 
 impl Config {
-    pub fn media_link(&self, path: &str) -> String {
-        format!("{}/{}", self.media_url, path)
-    }
-
-    /// URL for shared editor assets on the CDN (e.g. `gizmo.glb`).
-    pub fn editor_common_url(&self, path: &str) -> String {
-        format!("{}/games/_editor-common/{}", self.cdn_url, path)
+    /// URL for the editor's built-in gltf gizmo asset.
+    pub fn gizmo_url(&self) -> String {
+        format!("{}/gizmo/gizmo.glb", self.additional_assets_url)
     }
 }
 
 pub static CONFIG: LazyLock<Config> = LazyLock::new(|| Config {
-    cdn_url: required_build_env!("URL_CDN"),
-    media_url: required_build_env!("URL_MEDIA"),
+    additional_assets_url: required_build_env!("MEDIA_BASE_URL_ADDITIONAL_ASSETS"),
     camera_aperture: 5.6,
     camera_focus_distance: 10.0,
 });
