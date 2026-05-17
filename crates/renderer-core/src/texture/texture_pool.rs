@@ -115,11 +115,7 @@ impl<ID: Eq + Hash + Clone> TexturePool<ID> {
         // fresh layer onto the GPU array — keeps `images.len()` (and
         // therefore the GPU array's layer count) at the historical
         // high-water mark across re-upload churn.
-        if let Some(free_idx) = self
-            .free_layers
-            .get_mut(&array_key)
-            .and_then(|v| v.pop())
-        {
+        if let Some(free_idx) = self.free_layers.get_mut(&array_key).and_then(|v| v.pop()) {
             array.images[free_idx] = (id.clone(), image, color);
             array.gpu_dirty = true;
         } else {
