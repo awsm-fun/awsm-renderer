@@ -26,7 +26,7 @@ pub mod unlit;
 pub mod toon;
 
 pub use alpha_mode::MaterialAlphaMode;
-pub use shader::{MaterialShader, TextureSlotDecl};
+pub use shader::MaterialShader;
 pub use shader_id::MaterialShaderId;
 pub use texture::MaterialTexture;
 pub use texture_context::TextureContext;

@@ -15,24 +15,13 @@
 //! drop it in alongside PBR / Unlit.
 
 use crate::{
-    shader::{MaterialShader, TextureSlotDecl},
+    shader::MaterialShader,
     writer::{write, write_material_texture},
     MaterialAlphaMode, MaterialShaderId, MaterialTexture, TextureContext,
 };
 
 /// WGSL helper module for this material.
 pub const WGSL_FRAGMENT: &str = include_str!("wgsl/toon_material.wgsl");
-
-const TEXTURE_SLOTS: &[TextureSlotDecl] = &[
-    TextureSlotDecl {
-        slot_name: "base_color",
-        optional: true,
-    },
-    TextureSlotDecl {
-        slot_name: "emissive",
-        optional: true,
-    },
-];
 
 /// Toon material parameters.
 #[derive(Clone, Debug)]
@@ -104,10 +93,6 @@ impl MaterialShader for ToonMaterial {
 
     fn is_transparency_pass(&self) -> bool {
         self.has_alpha_blend() || self.alpha_cutoff().is_some()
-    }
-
-    fn texture_slots(&self) -> &'static [TextureSlotDecl] {
-        TEXTURE_SLOTS
     }
 
     /// Layout must stay in sync with `toon_get_material` in WGSL.

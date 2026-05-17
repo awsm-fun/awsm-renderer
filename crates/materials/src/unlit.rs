@@ -4,24 +4,13 @@
 //! includes that fragment via the `{{ materials_wgsl }}` askama variable.
 
 use crate::{
-    shader::{MaterialShader, TextureSlotDecl},
+    shader::MaterialShader,
     writer::{write, write_material_texture},
     MaterialAlphaMode, MaterialShaderId, MaterialTexture, TextureContext,
 };
 
 /// WGSL helper module for this material.
 pub const WGSL_FRAGMENT: &str = include_str!("wgsl/unlit_material.wgsl");
-
-const TEXTURE_SLOTS: &[TextureSlotDecl] = &[
-    TextureSlotDecl {
-        slot_name: "base_color",
-        optional: true,
-    },
-    TextureSlotDecl {
-        slot_name: "emissive",
-        optional: true,
-    },
-];
 
 /// Unlit material parameters.
 #[derive(Clone, Debug)]
@@ -87,10 +76,6 @@ impl MaterialShader for UnlitMaterial {
 
     fn is_transparency_pass(&self) -> bool {
         self.has_alpha_blend() || self.alpha_cutoff().is_some()
-    }
-
-    fn texture_slots(&self) -> &'static [TextureSlotDecl] {
-        TEXTURE_SLOTS
     }
 
     fn write_uniform_buffer(&self, ctx: &dyn TextureContext, data: &mut Vec<u8>) {

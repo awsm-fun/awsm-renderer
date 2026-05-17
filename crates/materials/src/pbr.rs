@@ -1,7 +1,7 @@
 //! Physically based rendering (PBR) material parameters and packing.
 
 use crate::{
-    shader::{MaterialShader, TextureSlotDecl},
+    shader::MaterialShader,
     writer::{write, write_material_texture},
     MaterialAlphaMode, MaterialShaderId, MaterialTexture, TextureContext,
 };
@@ -15,29 +15,6 @@ pub const WGSL_FRAGMENT: &str = concat!(
     "\n",
     include_str!("wgsl/pbr/pbr_material_color.wgsl"),
 );
-
-const TEXTURE_SLOTS: &[TextureSlotDecl] = &[
-    TextureSlotDecl {
-        slot_name: "base_color",
-        optional: true,
-    },
-    TextureSlotDecl {
-        slot_name: "metallic_roughness",
-        optional: true,
-    },
-    TextureSlotDecl {
-        slot_name: "normal",
-        optional: true,
-    },
-    TextureSlotDecl {
-        slot_name: "occlusion",
-        optional: true,
-    },
-    TextureSlotDecl {
-        slot_name: "emissive",
-        optional: true,
-    },
-];
 
 /// Physically based rendering (PBR) material parameters.
 #[derive(Clone, Debug)]
@@ -286,10 +263,6 @@ impl MaterialShader for PbrMaterial {
 
     fn is_transparency_pass(&self) -> bool {
         self.has_alpha_blend() || self.alpha_cutoff().is_some() || self.has_transmission()
-    }
-
-    fn texture_slots(&self) -> &'static [TextureSlotDecl] {
-        TEXTURE_SLOTS
     }
 
     fn write_uniform_buffer(&self, ctx: &dyn TextureContext, data: &mut Vec<u8>) {

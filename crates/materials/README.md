@@ -44,7 +44,6 @@ pub trait MaterialShader {
     fn alpha_mode(&self) -> MaterialAlphaMode;
     fn is_transparency_pass(&self) -> bool;
     fn write_uniform_buffer(&self, ctx: &dyn TextureContext, out: &mut Vec<u8>);
-    fn texture_slots(&self) -> &'static [TextureSlotDecl];
 }
 ```
 
@@ -60,9 +59,14 @@ pub trait MaterialShader {
   byte buffer the visibility-buffer dispatch reads. The `TextureContext`
   trait abstracts the renderer's `Textures` slotmap so this crate doesn't
   depend on `awsm-renderer`.
-- `texture_slots` declares which textures the material binds. The renderer
-  builds the union of declared slots across enabled materials when laying
-  out bind groups.
+
+Texture bindings flow through the renderer's shared texture pool: a
+material stores `MaterialTexture` keys in its uniform payload, the renderer
+maps each key to `(array_index, layer_index)` at pack time
+(via `writer::pack_texture_info_raw`), and the WGSL accessor samples the
+pool's bind-group entry at that index. The pool's bind-group layout is
+data-driven by the textures actually loaded — not by per-material slot
+declarations.
 
 ## How registration works (compile-time, not dynamic)
 

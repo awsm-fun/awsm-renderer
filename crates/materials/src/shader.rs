@@ -4,21 +4,6 @@
 
 use crate::{alpha_mode::MaterialAlphaMode, shader_id::MaterialShaderId, TextureContext};
 
-/// A declarative description of a texture slot a material expects to bind.
-///
-/// The renderer takes the union of declared slots across enabled materials
-/// when building the material pass's bind-group layout. Bindings are
-/// addressed by `slot_name` in WGSL.
-#[derive(Debug, Clone, Copy)]
-pub struct TextureSlotDecl {
-    /// Stable identifier for the slot — used as the WGSL binding name and as
-    /// the lookup key on the renderer side. Must be unique within a material.
-    pub slot_name: &'static str,
-    /// Whether the material can ship without the slot bound (the writer
-    /// falls back to `SkipTexture`).
-    pub optional: bool,
-}
-
 /// Material shading contract.
 ///
 /// Each material in this crate (gated by a Cargo feature) implements this
@@ -28,8 +13,6 @@ pub struct TextureSlotDecl {
 ///   askama variable.
 /// - Generate the `if shader_id == X { ... }` dispatch table as the
 ///   `{{ shader_id_dispatch }}` askama variable.
-/// - Build the union of declared texture slots for the material pass's
-///   bind-group layout.
 /// - Dispatch `write_uniform_buffer` per material instance when packing the
 ///   material storage buffer.
 pub trait MaterialShader {
@@ -65,7 +48,4 @@ pub trait MaterialShader {
     /// of the layout is private to the material and must match its
     /// `wgsl_fragment`'s accessor.
     fn write_uniform_buffer(&self, ctx: &dyn TextureContext, out: &mut Vec<u8>);
-
-    /// Texture slots this material declares.
-    fn texture_slots(&self) -> &'static [TextureSlotDecl];
 }
