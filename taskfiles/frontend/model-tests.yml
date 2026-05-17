@@ -34,6 +34,8 @@ tasks:
       MEDIA_BASE_URL_ADDITIONAL_ASSETS: "{{.URL_PROD_MEDIA_BASE_URL_ADDITIONAL_ASSETS}}"
       ROOT_BASE_URI_PATH: "{{.PROD_ROOT_BASE_URI_PATH}}/model-tests"
     cmds:
+      - rm -rf {{joinPath .PATH_CRATE "dist"}}
+      - rm -rf {{.PATH_DIST}}
       - cd {{.PATH_CRATE}} && trunk build --release --public-url "{{.URL_PROD_MODEL_TESTS}}"
       - mkdir -p {{.PATH_DIST}}
       - cp -r {{joinPath .PATH_CRATE "dist"}}/* {{.PATH_DIST}}/
