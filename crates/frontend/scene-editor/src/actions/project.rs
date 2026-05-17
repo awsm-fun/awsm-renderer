@@ -42,22 +42,31 @@ async fn save_inner() -> anyhow::Result<()> {
     // this session) into the project directory. Only assets still
     // referenced by the scene make the trip — anything inserted then
     // undone / deleted is silently dropped.
+    //
+    // The kept bytes stay in `pending_assets` after the write — texture
+    // cache reads bytes from there on first GPU upload, and a fresh
+    // material binding in the same session (e.g. drag the texture onto
+    // a second emitter) needs to find the bytes again. Earlier this
+    // function drained the map without re-inserting, which broke any
+    // such post-save binding.
     crate::loading_modal::set("Flushing pending assets…");
     let referenced = collect_referenced_asset_ids(&state.scene);
     let pending: Vec<(AssetId, Vec<u8>)> = {
         let mut map = state.pending_assets.lock().unwrap();
         let drained: Vec<(AssetId, Vec<u8>)> = map.drain().collect();
-        // Re-insert anything we DON'T want to write so it stays cached for
-        // a later save (e.g. an orphan that the user might re-reference
-        // before saving).
-        let mut keep_pending = Vec::new();
+        let mut kept = Vec::new();
         for (id, bytes) in drained {
             if referenced.contains(&id) {
-                keep_pending.push((id, bytes));
+                kept.push((id, bytes));
             }
-            // Orphan: drop bytes from memory entirely.
+            // Unreferenced (orphaned) entries are dropped from memory.
         }
-        keep_pending
+        // Put the referenced bytes back so subsequent texture-cache
+        // lookups in this session continue to find them.
+        for (id, bytes) in &kept {
+            map.insert(*id, bytes.clone());
+        }
+        kept
     };
 
     // Disk paths come from `awsm_scene_schema::asset_disk_path`:
