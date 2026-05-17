@@ -12,6 +12,8 @@ includes:
     taskfile: ./taskfiles/frontend/model-tests.yml
   scene-editor:
     taskfile: ./taskfiles/frontend/scene-editor.yml
+  site-index:
+    taskfile: ./taskfiles/frontend/site-index.yml
 
 tasks:
   default:
@@ -24,6 +26,7 @@ tasks:
     deps:
       - model-tests:dev
       - scene-editor:dev
+      - site-index:dev
       - media-local
       - media-additional-assets
 
@@ -32,12 +35,14 @@ tasks:
     cmds:
       - task: model-tests:build
       - task: scene-editor:build
+      - task: site-index:build
 
   clean:
     desc: "Remove every frontend's dist + .build-artifacts output"
     cmds:
       - task: model-tests:clean
       - task: scene-editor:clean
+      - task: site-index:clean
 
   media-local:
     internal: true

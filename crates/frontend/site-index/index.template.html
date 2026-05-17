@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>awsm-renderer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 36rem; margin: 4rem auto; padding: 0 1.5rem; line-height: 1.6; color: #1a1a1a; background: #fafafa; }
+    h1 { margin-bottom: 0.25rem; }
+    .lead { color: #555; margin-top: 0; }
+    .sites { display: grid; gap: 1rem; margin-top: 2.5rem; padding: 0; list-style: none; }
+    .sites a { display: block; padding: 1rem 1.25rem; border: 1px solid #ddd; border-radius: 0.5rem; text-decoration: none; color: inherit; background: #fff; transition: border-color 0.15s; }
+    .sites a:hover { border-color: #888; }
+    .sites strong { display: block; font-size: 1.05rem; margin-bottom: 0.2rem; }
+    .sites span { color: #666; font-size: 0.9rem; }
+    footer { margin-top: 3rem; color: #888; font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+  <h1>awsm-renderer</h1>
+  <p class="lead">A WebGPU 3D renderer in Rust.</p>
+
+  <ul class="sites">
+    <li><a href="${URL_MODEL_TESTS}">
+      <strong>Model tests</strong>
+      <span>Rendering demos exercising glTF samples, materials, lights, particles.</span>
+    </a></li>
+    <li><a href="${URL_SCENE_EDITOR}">
+      <strong>Scene editor</strong>
+      <span>Interactive 3D scene authoring tool.</span>
+    </a></li>
+  </ul>
+
+  <footer>
+    Source on <a href="https://github.com/dakom/awsm-renderer">GitHub</a>.
+  </footer>
+</body>
+</html>
