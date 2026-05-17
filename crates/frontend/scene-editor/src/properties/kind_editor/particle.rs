@@ -11,8 +11,10 @@
 // ─────────────────────────────────────────────────────────────────────
 
 use crate::prelude::*;
+use crate::properties::history_input;
 use crate::properties::transform::number_input;
 use crate::scene::{Node, NodeKind};
+use crate::state::app_state;
 use awsm_scene_schema::EmitterSpaceDef;
 
 use super::{field_row, section_header, texture_ref_select};
@@ -644,8 +646,106 @@ fn particle_color_over_life_section(node: Arc<Node>) -> Dom {
         .style("flex-direction", "column")
         .style("gap", "0.4rem")
         .child(field_row("Color/life", select))
-        .child(field_row("Color start A", color_over_life_rgba_input(node.clone(), false, 3)))
-        .child(field_row("Color end A", color_over_life_rgba_input(node, true, 3)))
+        .child_signal(node.kind.signal_cloned().map(clone!(node => move |k| {
+            let is_const = matches!(
+                &k,
+                NodeKind::ParticleEmitter(p) if matches!(p.color_over_life, ColorOverLifeDef::Const(_))
+            );
+            Some(if is_const {
+                field_row("Color", color_over_life_row(node.clone(), false))
+            } else {
+                html!("div", {
+                    .style("display", "flex")
+                    .style("flex-direction", "column")
+                    .style("gap", "0.4rem")
+                    .child(field_row("Color start", color_over_life_row(node.clone(), false)))
+                    .child(field_row("Color end", color_over_life_row(node.clone(), true)))
+                })
+            })
+        })))
+    })
+}
+
+/// One row: native `<input type="color">` for the RGB + a 0..1 alpha
+/// number input. `is_end = true` writes to the `Linear` variant's end
+/// color; `false` writes to start (or to `Const`'s single color).
+/// Pairs the same pattern the texture-asset inspector uses so the UX
+/// is consistent across the editor.
+fn color_over_life_row(node: Arc<Node>, is_end: bool) -> Dom {
+    use awsm_scene_schema::ColorOverLifeDef;
+
+    let read_rgba = {
+        let kind = node.kind.clone();
+        move || match kind.get_cloned() {
+            NodeKind::ParticleEmitter(p) => match (&p.color_over_life, is_end) {
+                (ColorOverLifeDef::Const(c), _) => Some(*c),
+                (ColorOverLifeDef::Linear { start, .. }, false) => Some(*start),
+                (ColorOverLifeDef::Linear { end, .. }, true) => Some(*end),
+            },
+            _ => None,
+        }
+    };
+
+    let read_hex = {
+        let read = read_rgba.clone();
+        move || {
+            let c = read().unwrap_or([1.0, 1.0, 1.0, 1.0]);
+            format!(
+                "#{:02x}{:02x}{:02x}",
+                (c[0] * 255.0).round() as u8,
+                (c[1] * 255.0).round() as u8,
+                (c[2] * 255.0).round() as u8,
+            )
+        }
+    };
+    let write_hex = {
+        let kind = node.kind.clone();
+        move |hex: String| {
+            let parse = |s: &str| u8::from_str_radix(s, 16).ok().map(|v| v as f32 / 255.0);
+            let (Some(r), Some(g), Some(b)) = (
+                parse(hex.get(1..3).unwrap_or("ff")),
+                parse(hex.get(3..5).unwrap_or("ff")),
+                parse(hex.get(5..7).unwrap_or("ff")),
+            ) else {
+                return;
+            };
+            let mut k = kind.get_cloned();
+            if let NodeKind::ParticleEmitter(ref mut p) = k {
+                match (&mut p.color_over_life, is_end) {
+                    (ColorOverLifeDef::Const(c), _) => {
+                        c[0] = r;
+                        c[1] = g;
+                        c[2] = b;
+                    }
+                    (ColorOverLifeDef::Linear { start, .. }, false) => {
+                        start[0] = r;
+                        start[1] = g;
+                        start[2] = b;
+                    }
+                    (ColorOverLifeDef::Linear { end, .. }, true) => {
+                        end[0] = r;
+                        end[1] = g;
+                        end[2] = b;
+                    }
+                }
+                kind.set(k);
+            }
+        }
+    };
+    let revision = app_state().scene.revision.clone();
+    let picker = history_input::color_input(read_hex, write_hex, revision.signal());
+
+    let alpha = color_over_life_rgba_input(node, is_end, 3);
+
+    html!("div", {
+        .style("display", "flex")
+        .style("align-items", "center")
+        .style("gap", "0.5rem")
+        .child(picker)
+        .child(html!("div", {
+            .style("flex", "1")
+            .child(alpha)
+        }))
     })
 }
 
