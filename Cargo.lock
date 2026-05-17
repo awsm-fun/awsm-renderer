@@ -228,6 +228,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "awsm-web-shared"
+version = "0.1.7"
+dependencies = [
+ "awsm-renderer",
+ "dominator",
+ "futures",
+ "futures-signals",
+ "glam 0.32.1",
+ "gloo-events 0.2.0",
+ "gloo-timers",
+ "js-sys",
+ "serde",
+ "thiserror 2.0.18",
+ "tracing",
+ "tracing-panic",
+ "tracing-subscriber",
+ "tracing-web",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "awsm_web"
 version = "0.44.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
