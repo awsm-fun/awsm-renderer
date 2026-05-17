@@ -152,6 +152,14 @@ impl AwsmRenderer {
         Ok(())
     }
 
+    /// Removes a pool texture. Consumers should ensure no live material
+    /// still binds `key` (i.e. trigger a re-resolve cascade before
+    /// calling), then drop their cached handle. Returns `true` if the
+    /// key existed; `false` if it was already gone.
+    pub fn remove_texture(&mut self, key: TextureKey) -> bool {
+        self.textures.remove(key)
+    }
+
     /// Regenerates mipmaps for an existing cubemap texture.
     pub async fn regenerate_cubemap_texture_mipmaps(
         &self,
@@ -535,6 +543,21 @@ impl Textures {
             self.texture_transforms_gpu_dirty = false;
         }
         Ok(())
+    }
+
+    /// Removes a texture from the pool + slotmap. Returns `true` if the
+    /// key existed; `false` if it was already gone. The pool recycles
+    /// the freed layer slot for the next matching add — see
+    /// [`TexturePool::remove`] for the invariants. Callers are
+    /// responsible for ensuring no live material still binds this key
+    /// (the renderer doesn't trace texture → material refs).
+    pub fn remove(&mut self, key: TextureKey) -> bool {
+        if self.pool.remove(key).is_some() {
+            self.pool_textures.remove(key);
+            true
+        } else {
+            false
+        }
     }
 
     /// Returns pool entry info for a texture key.
