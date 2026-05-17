@@ -122,6 +122,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "awsm-model-tests"
+version = "0.1.7"
+dependencies = [
+ "anyhow",
+ "awsm-renderer",
+ "awsm-renderer-editor",
+ "awsm-renderer-gltf",
+ "awsm_web 0.45.0",
+ "cfg-if",
+ "dominator",
+ "dominator_helpers",
+ "futures",
+ "futures-signals",
+ "glam 0.32.1",
+ "gloo-events 0.2.0",
+ "gloo-net",
+ "gloo-render",
+ "gloo-timers",
+ "gltf",
+ "js-sys",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "tracing",
+ "tracing-panic",
+ "tracing-subscriber",
+ "tracing-web",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "awsm-particles"
 version = "0.1.7"
 dependencies = [
@@ -509,39 +542,6 @@ name = "foldhash"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
-
-[[package]]
-name = "frontend"
-version = "0.1.7"
-dependencies = [
- "anyhow",
- "awsm-renderer",
- "awsm-renderer-editor",
- "awsm-renderer-gltf",
- "awsm_web 0.45.0",
- "cfg-if",
- "dominator",
- "dominator_helpers",
- "futures",
- "futures-signals",
- "glam 0.32.1",
- "gloo-events 0.2.0",
- "gloo-net",
- "gloo-render",
- "gloo-timers",
- "gltf",
- "js-sys",
- "serde",
- "serde-wasm-bindgen",
- "serde_json",
- "tracing",
- "tracing-panic",
- "tracing-subscriber",
- "tracing-web",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
-]
 
 [[package]]
 name = "futures"

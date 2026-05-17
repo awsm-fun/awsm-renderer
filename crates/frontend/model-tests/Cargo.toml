@@ -1,6 +1,6 @@
 [package]
-name = "frontend"
-description = "frontend"
+name = "awsm-model-tests"
+description = "Rendering demos exercising glTF samples, materials, lights, particles."
 edition.workspace = true
 version.workspace = true
 license.workspace = true
@@ -8,9 +8,9 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-awsm-renderer = { path = "../renderer", features = ["texture-export", "ktx", "serde"] }
-awsm-renderer-gltf = { path = "../renderer-gltf", features = ["clearcoat", "sheen"] }
-awsm-renderer-editor = { path = "../editor" }
+awsm-renderer = { path = "../../renderer", features = ["texture-export", "ktx", "serde"] }
+awsm-renderer-gltf = { path = "../../renderer-gltf", features = ["clearcoat", "sheen"] }
+awsm-renderer-editor = { path = "../../editor" }
 serde = {workspace = true}
 serde_json = {workspace = true}
 anyhow = {workspace = true}

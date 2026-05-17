@@ -13,7 +13,7 @@ vars:
   PATH_BUILD_ARTIFACTS_FRONTEND: '{{joinPath .PATH_BUILD_ARTIFACTS "frontend"}}'
   PATH_MEDIA_LOCAL: '{{joinPath .PATH_REPO_ROOT "media"}}'
   PATH_MEDIA_ADDITIONAL_ASSETS: '{{joinPath .PATH_REPO_ROOT ".." "awsm-renderer-assets"}}'
-  PATH_CRATE_FRONTEND: '{{joinPath .PATH_CRATES "frontend"}}'
+  PATH_CRATE_FRONTEND: '{{joinPath .PATH_CRATES "frontend" "model-tests"}}'
   PATH_CRATE_RENDERER: '{{joinPath .PATH_CRATES "renderer"}}'
   PATH_CRATE_RENDERER_CORE: '{{joinPath .PATH_CRATES "renderer-core"}}'
   PATH_CRATE_EDITOR: '{{joinPath .PATH_CRATES "editor"}}'
