@@ -767,20 +767,28 @@ fn material_to_pbr(renderer: &mut AwsmRenderer, def: &MaterialDef) -> PbrMateria
 }
 
 /// Look up a renderer-side `TextureKey` for an authored texture
-/// reference. Centralises the cache-lookup boilerplate so each
-/// pbr_*_tex field reads identically and a future second `uv_index`
-/// (etc.) is one knob to add.
+/// reference and pair it with a default sampler. Both halves are
+/// required: `map_texture` in `awsm-materials::writer` returns
+/// `SkipTexture` when `sampler_key` is `None`, which silently drops
+/// the binding at material-buffer-write time and is what made the
+/// pre-extension procedural texture path render flat-coloured even
+/// when the cache had uploaded the bitmap successfully.
 fn resolve_material_texture(
     renderer: &mut AwsmRenderer,
     texture_ref: Option<awsm_scene_schema::TextureRef>,
     role: super::texture_cache::TextureColorRole,
 ) -> Option<awsm_renderer::materials::MaterialTexture> {
+    use awsm_renderer::textures::SamplerCacheKey;
     let texture_ref = texture_ref?;
     let source = super::texture_cache::asset_source(texture_ref.0)?;
     let key = super::texture_cache::get_or_upload(renderer, texture_ref.0, &source, role)?;
+    let sampler_key = renderer
+        .textures
+        .get_sampler_key(&renderer.gpu, SamplerCacheKey::default())
+        .ok()?;
     Some(awsm_renderer::materials::MaterialTexture {
         key,
-        sampler_key: None,
+        sampler_key: Some(sampler_key),
         uv_index: Some(0),
         transform_key: None,
     })
