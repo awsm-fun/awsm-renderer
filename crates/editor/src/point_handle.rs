@@ -169,6 +169,62 @@ impl PointHandleSet {
         self.handles.iter().position(|h| h.mesh_key == mesh_key)
     }
 
+    /// CPU-side picking fallback for when two handles project close
+    /// together in screen space and the per-pixel GPU pick lands on
+    /// the wrong one (or just misses, e.g. clicking the screen between
+    /// two adjacent handles).
+    ///
+    /// Projects every visible handle to screen space using the camera
+    /// matrices captured last frame, then returns the index of the
+    /// closest one whose 2D distance from `(screen_x, screen_y)` is at
+    /// most `tolerance_px`. Returns `None` if no handle qualifies.
+    ///
+    /// Cheap: O(N) over the handle set (max ~30 handles for any
+    /// authored Curve / Line), no GPU work, sub-pixel-precise.
+    pub fn pick_with_tolerance(
+        &self,
+        renderer: &AwsmRenderer,
+        screen_x: i32,
+        screen_y: i32,
+        tolerance_px: f32,
+    ) -> Option<usize> {
+        if !self.visible || self.handles.is_empty() {
+            return None;
+        }
+        let matrices = renderer.camera.last_matrices.as_ref()?;
+        let (width, height) = renderer.gpu.canvas_size(false);
+        let viewport_w = width as f32;
+        let viewport_h = height as f32;
+        if viewport_w <= 0.0 || viewport_h <= 0.0 {
+            return None;
+        }
+        let view_proj = matrices.projection * matrices.view;
+        let cursor = glam::Vec2::new(screen_x as f32, screen_y as f32);
+
+        let mut best: Option<(usize, f32)> = None;
+        for (i, handle) in self.handles.iter().enumerate() {
+            let clip = view_proj * handle.world_pos.extend(1.0);
+            if clip.w <= 0.0 {
+                // Behind the camera (or on the near plane) — skip.
+                continue;
+            }
+            let ndc_x = clip.x / clip.w;
+            let ndc_y = clip.y / clip.w;
+            // NDC → backing-store pixel. Y is flipped because NDC is
+            // bottom-up but pixel space is top-down.
+            let px = (ndc_x * 0.5 + 0.5) * viewport_w;
+            let py = (1.0 - (ndc_y * 0.5 + 0.5)) * viewport_h;
+            let dist = (glam::Vec2::new(px, py) - cursor).length();
+            if dist <= tolerance_px {
+                match best {
+                    Some((_, bd)) if bd <= dist => {}
+                    _ => best = Some((i, dist)),
+                }
+            }
+        }
+        best.map(|(i, _)| i)
+    }
+
     pub fn handle_count(&self) -> usize {
         self.handles.len()
     }
