@@ -742,6 +742,14 @@ fn color_over_life_row(node: Arc<Node>, is_end: bool) -> Dom {
         .style("align-items", "center")
         .style("gap", "0.5rem")
         .child(picker)
+        .child(html!("span", {
+            .style("font-size", "0.85rem")
+            .style("color", ColorText::Byline.value())
+            // Greek alpha as a compact "this is the alpha channel"
+            // marker — the input is a bare 0..1 number otherwise and
+            // sitting next to a color picker is too ambiguous.
+            .text("α")
+        }))
         .child(html!("div", {
             .style("flex", "1")
             .child(alpha)
