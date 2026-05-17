@@ -303,23 +303,28 @@ async fn build_runtime_blend(
     let emitter = def_to_emitter(def);
     let max = emitter.max_alive.max(1) as usize;
 
-    let base_color = match &def.color_over_life {
-        ColorOverLifeDef::Const(c) => *c,
-        ColorOverLifeDef::Linear { start, .. } => *start,
-    };
     // Alpha-blend material so per-instance alpha (Stage-3b) fades on
     // screen instead of writing as alpha-0 into the opaque texture.
+    //
+    // Unlike the opaque path, we deliberately leave `emissive_factor`
+    // at zero here. The opaque path needs an emissive glow because
+    // its pipeline can't actually alpha-blend (it writes to the
+    // visibility buffer), so the only way to make a particle visible
+    // at all is to push the lit base into the emissive add. With real
+    // alpha blending available on this path, that workaround backfires:
+    // emissive is added *after* the texture sample in the BRDF, so a
+    // white `emissive_factor` saturates the output and the texture's
+    // RGB never makes it to screen — particles render as solid colored
+    // squares regardless of which sprite is bound. Texture drives
+    // base color; per-instance tint (carrying `color_over_life`)
+    // modulates it at fragment time.
     let base_color_tex = resolve_particle_texture(renderer, def.texture);
     let mut pbr_blend = PbrMaterial::new(MaterialAlphaMode::Blend, true);
     pbr_blend.base_color_factor = [1.0, 1.0, 1.0, 1.0];
     pbr_blend.base_color_tex = base_color_tex;
     pbr_blend.metallic_factor = 0.0;
     pbr_blend.roughness_factor = 1.0;
-    pbr_blend.emissive_factor = [
-        base_color[0] * 1.2,
-        base_color[1] * 1.2,
-        base_color[2] * 1.2,
-    ];
+    pbr_blend.emissive_factor = [0.0, 0.0, 0.0];
     let material_key = renderer
         .materials
         .insert(Material::Pbr(Box::new(pbr_blend)), &renderer.textures);
