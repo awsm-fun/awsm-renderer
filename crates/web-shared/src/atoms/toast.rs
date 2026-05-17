@@ -75,7 +75,7 @@ impl ToastInstance {
                 .style("top", "0.25rem")
                 .style("right", "0.4rem")
                 .style("background", "transparent")
-                .style("border", "none")
+                .style("border", "0")
                 .style("color", "white")
                 .style("font-size", "1.1rem")
                 .style("line-height", "1")
