@@ -1,0 +1,20 @@
+[package]
+name = "awsm-geometry"
+description = "Pure CPU non-curve geometry utilities (AABB, ray/triangle, frustum)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[features]
+default = []
+# Propagates to glam — every public type stores Vec3 / Vec2 / Mat4, none of
+# which implement Serialize/Deserialize without glam's own `serde` feature on.
+serde = ["dep:serde", "glam/serde"]
+
+[dependencies]
+glam = {workspace = true}
+serde = {workspace = true, optional = true}

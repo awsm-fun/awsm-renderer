@@ -4,6 +4,7 @@ pub mod display;
 pub mod effects;
 pub mod geometry;
 pub mod light_culling;
+pub mod lines;
 pub mod material_opaque;
 pub mod material_transparent;
 pub mod shader_cache_key;

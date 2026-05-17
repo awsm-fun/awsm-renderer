@@ -22,6 +22,7 @@ pub mod picker;
 pub mod pipeline_layouts;
 pub mod pipelines;
 pub mod post_process;
+pub mod raw_mesh;
 pub mod render;
 pub mod render_passes;
 pub mod render_textures;
@@ -34,9 +35,6 @@ pub mod update;
 pub mod core {
     pub use awsm_renderer_core::*;
 }
-#[cfg(feature = "gltf")]
-pub mod gltf;
-
 #[cfg(feature = "animation")]
 pub mod animation;
 
@@ -69,7 +67,7 @@ use crate::{
     picker::Picker,
     pipeline_layouts::PipelineLayouts,
     post_process::PostProcessing,
-    render_passes::{RenderPassInitContext, RenderPasses},
+    render_passes::{lines::LineRenderer, RenderPassInitContext, RenderPasses},
     render_textures::{RenderTextureFormats, RenderTextures},
 };
 
@@ -95,21 +93,29 @@ pub struct AwsmRenderer {
     pub anti_aliasing: AntiAliasing,
     pub post_processing: PostProcessing,
     pub picker: Picker,
+    pub lines: LineRenderer,
     // we pick between these on the fly
     _clear_color_perceptual_to_linear: Color,
     _clear_color: Color,
-
-    #[cfg(feature = "gltf")]
-    gltf: gltf::cache::GltfCache,
 
     #[cfg(feature = "animation")]
     pub animations: animation::Animations,
 }
 
 /// Compatibility requirements for this renderer.
+///
+/// `storage_buffers` is the worst-case `maxStorageBuffersPerShaderStage`
+/// the opaque-material pass needs. Opaque currently binds 9 storage
+/// buffers in `@group(0)` (visibility_data, material_mesh_metas,
+/// materials, attribute_indices, attribute_data, model_transforms,
+/// normal_matrices, texture_transforms, instance_attrs) plus 1 in
+/// `@group(1)` (lights) → 10 in one shader stage. The transparent pass
+/// peaks at 9. Bumping this lower than the binding count will pass
+/// adapter compatibility on a device that exactly meets the declared
+/// limit, then fail pipeline validation when the shader is compiled.
 pub static COMPATIBITLIY_REQUIREMENTS: LazyLock<CompatibilityRequirements> =
     LazyLock::new(|| CompatibilityRequirements {
-        storage_buffers: Some(9),
+        storage_buffers: Some(10),
     });
 
 impl AwsmRenderer {
@@ -336,8 +342,16 @@ impl AwsmRendererBuilder {
         )
         .await?;
 
-        #[cfg(feature = "gltf")]
-        let gltf = gltf::cache::GltfCache::default();
+        let lines = LineRenderer::load(
+            &gpu,
+            &mut bind_group_layouts,
+            &mut pipeline_layouts,
+            &mut pipelines,
+            &mut shaders,
+            &render_textures.formats,
+        )
+        .await?;
+
         #[cfg(feature = "animation")]
         let animations = animation::Animations::default();
 
@@ -364,8 +378,7 @@ impl AwsmRendererBuilder {
             anti_aliasing,
             post_processing,
             picker,
-            #[cfg(feature = "gltf")]
-            gltf,
+            lines,
             #[cfg(feature = "animation")]
             animations,
         };

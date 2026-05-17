@@ -1,12 +1,17 @@
+// `instance_attrs` (binding 23) uses `InstanceAttr`; declare the struct here
+// so the binding's type is in scope at parse time.
+{% include "shared_wgsl/instance_attrs.wgsl" %}
+
 {% if multisampled_geometry %}
     @group(0) @binding(0) var visibility_data_tex: texture_multisampled_2d<u32>;
-    @group(0) @binding(1) var barycentric_tex: texture_multisampled_2d<f32>;
+    // Barycentric tex packs: RG = bary.xy as u16 fixed-point, BA = instance_id (split u32).
+    @group(0) @binding(1) var barycentric_tex: texture_multisampled_2d<u32>;
     @group(0) @binding(2) var depth_tex: texture_depth_multisampled_2d;
     @group(0) @binding(3) var normal_tangent_tex: texture_multisampled_2d<f32>;
     @group(0) @binding(4) var barycentric_derivatives_tex: texture_multisampled_2d<f32>;
 {% else %}
     @group(0) @binding(0) var visibility_data_tex: texture_2d<u32>;
-    @group(0) @binding(1) var barycentric_tex: texture_2d<f32>;
+    @group(0) @binding(1) var barycentric_tex: texture_2d<u32>;
     @group(0) @binding(2) var depth_tex: texture_depth_2d;
     @group(0) @binding(3) var normal_tangent_tex: texture_2d<f32>;
     @group(0) @binding(4) var barycentric_derivatives_tex: texture_2d<f32>;
@@ -29,6 +34,7 @@
 @group(0) @binding(20) var brdf_lut_tex: texture_2d<f32>;
 @group(0) @binding(21) var brdf_lut_sampler: sampler;
 @group(0) @binding(22) var opaque_tex: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(23) var<storage, read> instance_attrs: array<InstanceAttr>;
 
 @group(1) @binding(0) var<uniform> lights_info: LightsInfoPacked;
 @group(1) @binding(1) var<storage, read> lights: array<LightPacked>;

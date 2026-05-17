@@ -76,7 +76,8 @@ impl AwsmRenderer {
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
         self.lights
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
-        self.instances.write_gpu(&self.logging, &self.gpu)?;
+        self.instances
+            .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
         self.meshes
             .skins
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
@@ -117,6 +118,7 @@ impl AwsmRenderer {
                 environment: &self.environment,
                 lights: &self.lights,
                 transforms: &self.transforms,
+                instances: &self.instances,
                 anti_aliasing: &self.anti_aliasing,
             },
             &mut self.render_passes,
@@ -258,6 +260,18 @@ impl AwsmRenderer {
                 &ctx.render_texture_views.transparent,
                 &ctx.command_encoder,
             )?;
+        }
+
+        // Built-in line render pass — must run after the opaque->transparent
+        // blit (so depth + transparent target are populated) and before any
+        // `before_transparent_pass` hook so editor overlays can draw on top.
+        {
+            let _maybe_span_guard = if self.logging.render_timings {
+                Some(tracing::span!(tracing::Level::INFO, "Line RenderPass").entered())
+            } else {
+                None
+            };
+            self.lines.render(&ctx)?;
         }
 
         if let Some(hook) = hooks.and_then(|h| h.before_transparent_pass.as_ref()) {

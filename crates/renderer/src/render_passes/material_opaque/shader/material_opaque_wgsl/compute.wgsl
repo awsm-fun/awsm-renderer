@@ -18,6 +18,9 @@
 {% include "shared_wgsl/material_mesh_meta.wgsl" %}
 /*************** END mesh_meta.wgsl ******************/
 
+// instance_attrs.wgsl is already included via bind_groups.wgsl above (the
+// `InstanceAttr` struct must be declared before binding 23 references it).
+
 /*************** START textures.wgsl ******************/
 {% include "shared_wgsl/textures.wgsl" %}
 /*************** END textures.wgsl ******************/
@@ -182,8 +185,14 @@ fn main(
     }
 
 
-    let barycentric_data = textureLoad(barycentric_tex, coords, 0);
-    let barycentric = vec3<f32>(barycentric_data.x, barycentric_data.y, 1.0 - barycentric_data.x - barycentric_data.y);
+    // Barycentric tex is RGBA16uint: RG = bary.xy as u16 fixed-point,
+    // BA = instance_id (split u32 via join32). Unpack to f32 here; the
+    // instance_id is consumed at the bottom of the function for per-instance
+    // tint application.
+    let barycentric_raw = textureLoad(barycentric_tex, coords, 0);
+    let bary_xy = vec2<f32>(f32(barycentric_raw.x), f32(barycentric_raw.y)) / 65535.0;
+    let barycentric = vec3<f32>(bary_xy.x, bary_xy.y, 1.0 - bary_xy.x - bary_xy.y);
+    let main_instance_id = join32(barycentric_raw.z, barycentric_raw.w);
 
     let material_offset = material_mesh_meta.material_offset;
     let shader_id = material_load_shader_id(material_offset);
@@ -243,6 +252,19 @@ fn main(
         {% endmatch %}
         color = compute_unlit_output(unlit_color);
         base_alpha = unlit_color.base.a;
+    } else if (shader_id == SHADER_ID_TOON) {
+        // Toon material path — banded N·L + stepped Blinn-Phong + rim.
+        // Reads world position from the standard coordinates the surrounding
+        // code already computes; doesn't sample textures (v1).
+        let toon_material = toon_get_material(material_offset);
+        color = compute_toon_lit_color(
+            toon_material,
+            world_normal,
+            standard_coordinates.surface_to_camera,
+            standard_coordinates.world_position,
+            lights_info,
+        );
+        base_alpha = toon_material.base_color_factor.a;
     } else {
         // PBR material path (default)
         let pbr_material = pbr_get_material(material_offset);
@@ -316,6 +338,14 @@ fn main(
         textureStore(opaque_tex, coords, vec4<f32>(debug_normals(world_normal), 1.0));
         return;
     {% endif %}
+
+    // Apply per-instance tint (color × tint.rgb, alpha × tint.a × attr.alpha).
+    if (main_instance_id != INSTANCE_ATTR_NONE) {
+        let attr = instance_attrs[main_instance_id];
+        let tint = unpack4x8unorm(attr.color_packed);
+        color = color * tint.rgb;
+        base_alpha = base_alpha * tint.a * attr.alpha;
+    }
 
     // Write to output texture for non-edge pixel
     textureStore(opaque_tex, coords, vec4<f32>(color, base_alpha));

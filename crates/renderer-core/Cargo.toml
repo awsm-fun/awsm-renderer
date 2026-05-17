@@ -39,6 +39,7 @@ web-sys = { workspace = true}
 thiserror = { workspace = true}
 ordered-float = { workspace = true}
 indexmap = { workspace = true}
+slotmap = { workspace = true}
 
 # optional deps
 gloo-net = {workspace = true, optional = true}

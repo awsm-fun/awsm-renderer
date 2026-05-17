@@ -17,7 +17,10 @@ use crate::{
 };
 
 /// Byte size for geometry mesh meta struct.
-pub const GEOMETRY_MESH_META_BYTE_SIZE: usize = 40;
+/// 10 u32s + 1 u32 (instance_attr_base) + 1 u32 (billboard_mode) = 48 bytes;
+/// the storage buffer rounds each entry up to
+/// `GEOMETRY_MESH_META_BYTE_ALIGNMENT`.
+pub const GEOMETRY_MESH_META_BYTE_SIZE: usize = 48;
 /// Byte alignment for geometry mesh meta buffer entries.
 pub const GEOMETRY_MESH_META_BYTE_ALIGNMENT: usize = 256;
 
@@ -37,6 +40,16 @@ pub struct GeometryMeshMeta<'a> {
     pub morphs: &'a Morphs,
     pub skins: &'a Skins,
     pub material_meta_buffers: &'a DynamicUniformBuffer<MeshKey>,
+    /// Per-mesh base offset into the global instance-attribute storage
+    /// buffer. The vertex shader adds `@builtin(instance_index)` to this to
+    /// derive the per-fragment instance_id that's packed into
+    /// barycentric_tex's BA channels and looked up by the shading compute
+    /// pass. `u32::MAX` sentinel means "this mesh has no per-instance
+    /// attributes" — the shading pass treats that as an identity tint.
+    pub instance_attr_base: u32,
+    /// Camera-facing rotation override. See `BillboardMode` on `Mesh` for the
+    /// authored value. Encoded as `u32` (None=0 / YAxis=1 / Full=2).
+    pub billboard_mode: u32,
 }
 
 impl<'a> GeometryMeshMeta<'a> {
@@ -55,6 +68,8 @@ impl<'a> GeometryMeshMeta<'a> {
             morphs,
             skins,
             material_meta_buffers,
+            instance_attr_base,
+            billboard_mode,
         } = self;
 
         let mut result = [0u8; GEOMETRY_MESH_META_BYTE_SIZE];
@@ -108,6 +123,12 @@ impl<'a> GeometryMeshMeta<'a> {
                 .offset(mesh_key)
                 .ok_or(AwsmMeshError::MetaNotFound(mesh_key))? as u32,
         );
+
+        // Per-instance attribute base offset (4 bytes; u32::MAX = no attrs)
+        push_u32(instance_attr_base);
+
+        // Billboard mode (4 bytes; 0 = None, 1 = YAxis, 2 = Full).
+        push_u32(billboard_mode);
 
         Ok(result)
     }

@@ -30,10 +30,16 @@ struct VertexOutput {
     @location(1) barycentric: vec2<f32>,  // Full barycentric coordinates
     @location(2) world_normal: vec3<f32>,     // Transformed world-space normal
     @location(3) world_tangent: vec4<f32>,    // Transformed world-space tangent (w = handedness)
+    // Stage-1 leaves this at U32_MAX always; Stage-2 wires
+    // `geometry_mesh_meta.instance_attr_base + @builtin(instance_index)`.
+    @location(4) @interpolate(flat) instance_id: u32,
 }
 
 @vertex
-fn vert_main(input: VertexInput) -> VertexOutput {
+fn vert_main(
+    input: VertexInput,
+    @builtin(instance_index) instance_index: u32,
+) -> VertexOutput {
     var out: VertexOutput;
 
     let camera = camera_from_raw(camera_raw);
@@ -58,6 +64,18 @@ fn vert_main(input: VertexInput) -> VertexOutput {
     // Pass through
     out.triangle_index = input.triangle_index;
     out.barycentric = input.barycentric;
+
+    // Per-fragment instance_id. The shading compute pass reads this to look
+    // up per-instance attributes (color, size, alpha) from a small storage
+    // buffer. For non-instanced meshes the writer side stores `u32::MAX` in
+    // `geometry_mesh_meta.instance_attr_base`; we propagate that sentinel
+    // through so the read site can branch on a single value.
+    let base = geometry_mesh_meta.instance_attr_base;
+    if (base == 0xFFFFFFFFu) {
+        out.instance_id = 0xFFFFFFFFu;
+    } else {
+        out.instance_id = base + instance_index;
+    }
 
     return out;
 }

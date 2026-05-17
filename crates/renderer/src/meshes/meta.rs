@@ -86,6 +86,7 @@ impl MeshMeta {
         })
     }
     /// Writes mesh metadata into GPU-bound buffers.
+    #[allow(clippy::too_many_arguments)]
     pub fn insert(
         &mut self,
         mesh_key: MeshKey,
@@ -102,6 +103,8 @@ impl MeshMeta {
         morphs: &Morphs,
         skins: &Skins,
     ) -> Result<()> {
+        let instance_attr_base = mesh.instance_attr_base;
+        let billboard_mode = mesh.billboard_mode.as_u32();
         let transform_key = mesh.transform_key;
         let material_key = mesh.material_key;
         let transform_offset = transforms.buffer_offset(transform_key)?;
@@ -136,6 +139,8 @@ impl MeshMeta {
             morphs,
             skins,
             material_meta_buffers: &self.material_buffers,
+            instance_attr_base,
+            billboard_mode,
         }
         .to_bytes()?;
 

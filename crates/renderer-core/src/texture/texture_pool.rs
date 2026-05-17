@@ -23,9 +23,18 @@ use crate::{
 };
 
 /// Pool of texture arrays grouped by size and format.
+///
+/// `free_layers` is the slot recycler. When an ID is removed, its layer
+/// index lands here per-array; the next `add_image` of a matching
+/// `(width, height, format)` reuses the slot instead of pushing a fresh
+/// layer onto the GPU array. This keeps the high-water-mark layer count
+/// bounded across long editing sessions where the same logical texture
+/// keeps being re-uploaded under different IDs (procedural-texture
+/// param edits in the editor are the canonical case).
 pub struct TexturePool<ID> {
     arrays: IndexMap<TexturePoolArrayKey, TexturePoolArray<ID>>,
     id_to_array_key: HashMap<ID, TexturePoolArrayKey>,
+    free_layers: HashMap<TexturePoolArrayKey, Vec<usize>>,
 }
 
 /// Single texture array in the pool.
@@ -77,6 +86,7 @@ impl<ID: Eq + Hash + Clone> TexturePool<ID> {
         Self {
             arrays: IndexMap::new(),
             id_to_array_key: HashMap::new(),
+            free_layers: HashMap::new(),
         }
     }
 
@@ -96,12 +106,50 @@ impl<ID: Eq + Hash + Clone> TexturePool<ID> {
             format: format.into(),
         };
 
-        self.arrays
+        let array = self
+            .arrays
             .entry(array_key)
-            .or_insert_with(|| TexturePoolArray::new(format, width, height))
-            .insert(id.clone(), image, color);
+            .or_insert_with(|| TexturePoolArray::new(format, width, height));
+
+        // Prefer a recycled slot from an earlier `remove` over pushing a
+        // fresh layer onto the GPU array — keeps `images.len()` (and
+        // therefore the GPU array's layer count) at the historical
+        // high-water mark across re-upload churn.
+        if let Some(free_idx) = self.free_layers.get_mut(&array_key).and_then(|v| v.pop()) {
+            array.images[free_idx] = (id.clone(), image, color);
+            array.gpu_dirty = true;
+        } else {
+            array.insert(id.clone(), image, color);
+        }
 
         self.id_to_array_key.insert(id, array_key);
+    }
+
+    /// Removes an ID from the pool. The freed layer slot is recycled
+    /// by the next matching `add_image` so the array's GPU layer count
+    /// stays bounded; the on-GPU pixels remain (as no-longer-referenced
+    /// "ghost" data) until that recycle overwrites them. Returns the
+    /// entry info the ID resolved to before removal, or `None` if the
+    /// ID wasn't present.
+    pub fn remove(&mut self, id: ID) -> Option<TexturePoolEntryInfo<ID>> {
+        let array_key = self.id_to_array_key.remove(&id)?;
+        let array_index = self.arrays.get_index_of(&array_key)?;
+        let array = self.arrays.get(&array_key)?;
+        let layer_index = array
+            .images
+            .iter()
+            .position(|(layer_id, _, _)| *layer_id == id)?;
+        let color = array.images[layer_index].2;
+        self.free_layers
+            .entry(array_key)
+            .or_default()
+            .push(layer_index);
+        Some(TexturePoolEntryInfo {
+            id,
+            array_index,
+            layer_index,
+            color,
+        })
     }
 
     /// Returns a texture array by index.

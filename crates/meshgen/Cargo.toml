@@ -1,0 +1,20 @@
+[package]
+name = "awsm-meshgen"
+description = "Pure CPU mesh generators (primitives + sweep + procedural textures)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[features]
+default = []
+serde = ["dep:serde", "awsm-curves/serde", "awsm-geometry/serde"]
+
+[dependencies]
+awsm-curves = { path = "../curves" }
+awsm-geometry = { path = "../geometry" }
+glam = {workspace = true}
+serde = {workspace = true, optional = true}

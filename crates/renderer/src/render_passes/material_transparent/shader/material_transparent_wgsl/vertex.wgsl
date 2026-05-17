@@ -26,6 +26,10 @@ struct VertexOutput {
     @location(0) world_position: vec3<f32>,     // Transformed world position
     @location(1) world_normal: vec3<f32>,     // Transformed world-space normal
     @location(2) world_tangent: vec4<f32>,    // Transformed world-space tangent (w = handedness)
+    // Per-fragment instance_id, plumbed through for the Stage-3b per-instance
+    // tint applied at the end of fs_main. `INSTANCE_ATTR_NONE` (`u32::MAX`)
+    // means "non-instanced" → identity tint.
+    @location(3) @interpolate(flat) instance_id: u32,
 
     {% for i in 0..color_sets %}
         @location({{ out_color_set_start + i }}) color_{{ i }}: vec4<f32>,
@@ -37,7 +41,10 @@ struct VertexOutput {
 }
 
 @vertex
-fn vert_main(input: VertexInput) -> VertexOutput {
+fn vert_main(
+    input: VertexInput,
+    @builtin(instance_index) instance_index: u32,
+) -> VertexOutput {
     var out: VertexOutput;
 
     let camera = camera_from_raw(camera_raw);
@@ -59,6 +66,17 @@ fn vert_main(input: VertexInput) -> VertexOutput {
     out.world_position = applied.world_position;
     out.world_normal = applied.world_normal;
     out.world_tangent = applied.world_tangent;
+
+    // Per-fragment instance_id derived from geometry_mesh_meta.instance_attr_base
+    // + the GPU's @builtin(instance_index). Non-instanced meshes carry the
+    // sentinel through unchanged so the fragment side branches identically
+    // to the opaque path's MSAA helper.
+    let base = geometry_mesh_meta.instance_attr_base;
+    if (base == INSTANCE_ATTR_NONE) {
+        out.instance_id = INSTANCE_ATTR_NONE;
+    } else {
+        out.instance_id = base + instance_index;
+    }
 
     {% for i in 0..color_sets %}
         out.color_{{ i }} = input.color_{{ i }};

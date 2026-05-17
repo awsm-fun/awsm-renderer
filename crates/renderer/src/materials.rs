@@ -1,7 +1,14 @@
-//! Material definitions and GPU uploads.
+//! Material storage + GPU upload management.
+//!
+//! Material **shading models** (PBR / Unlit / Toon, the `MaterialShader`
+//! trait, the WGSL fragments) live in the sibling `awsm-materials` crate and
+//! are re-exported here for back-compat. This module owns the renderer-side
+//! `Materials` slotmap manager, the per-material `MaterialKey`, the GPU
+//! storage buffer, and the `Material` sum type the slotmap stores.
 
 use std::sync::LazyLock;
 
+use awsm_materials::MaterialShader;
 use awsm_renderer_core::{
     buffers::{BufferDescriptor, BufferUsage},
     error::AwsmCoreError,
@@ -14,19 +21,48 @@ use crate::{
     bind_groups::{AwsmBindGroupError, BindGroupCreate, BindGroups},
     buffer::dynamic_storage::DynamicStorageBuffer,
     buffer::helpers::write_buffer_with_dirty_ranges,
-    materials::{pbr::PbrMaterial, unlit::UnlitMaterial},
-    textures::{AwsmTextureError, SamplerKey, TextureKey, TextureTransformKey, Textures},
+    textures::{AwsmTextureError, Textures},
     AwsmRenderer, AwsmRendererLogging,
 };
 
-pub mod pbr;
-pub mod unlit;
-pub mod writer;
+// Re-export the material types from `awsm-materials` so consumers can keep
+// using `crate::materials::*` paths.
+pub use awsm_materials::{MaterialAlphaMode, MaterialShaderId, MaterialTexture, TextureContext};
+
+/// PBR material parameters — re-exported from `awsm-materials`.
+pub mod pbr {
+    pub use awsm_materials::pbr::*;
+}
+
+/// Unlit material parameters — re-exported from `awsm-materials`.
+pub mod unlit {
+    pub use awsm_materials::unlit::*;
+}
+
+/// Toon material parameters — re-exported from `awsm-materials`.
+pub mod toon {
+    pub use awsm_materials::toon::*;
+}
+
+/// Storage-buffer writer helpers — re-exported from `awsm-materials`.
+pub mod writer {
+    pub use awsm_materials::writer::*;
+}
+
+use awsm_materials::{pbr::PbrMaterial, toon::ToonMaterial, unlit::UnlitMaterial};
 
 impl AwsmRenderer {
     /// Updates a material in place.
     pub fn update_material(&mut self, key: MaterialKey, f: impl FnMut(&mut Material)) {
         self.materials.update(key, &self.textures, f);
+    }
+
+    /// Removes a material and frees its slot in the materials storage
+    /// buffer. Callers must ensure no live mesh still references `key`
+    /// (e.g. tear down meshes first). Returns `true` if the material
+    /// existed; `false` if it was already gone.
+    pub fn remove_material(&mut self, key: MaterialKey) -> bool {
+        self.materials.remove(key)
     }
 }
 
@@ -35,46 +71,44 @@ impl AwsmRenderer {
 pub enum Material {
     Pbr(Box<PbrMaterial>),
     Unlit(UnlitMaterial),
+    Toon(Box<ToonMaterial>),
 }
 
 impl Material {
-    // this should match `mesh_buffer_geometry_kind()`
     /// Returns true if the material renders in the transparency pass.
     pub fn is_transparency_pass(&self) -> bool {
         match self {
-            Material::Pbr(pbr_material) => pbr_material.is_transparency_pass(),
-            Material::Unlit(pbr_material) => pbr_material.is_transparency_pass(),
+            Material::Pbr(m) => MaterialShader::is_transparency_pass(m.as_ref()),
+            Material::Unlit(m) => MaterialShader::is_transparency_pass(m),
+            Material::Toon(m) => MaterialShader::is_transparency_pass(m.as_ref()),
         }
     }
 
     /// Returns the alpha mask cutoff if applicable.
     pub fn alpha_mask(&self) -> Option<f32> {
         match self {
-            Material::Pbr(pbr_material) => pbr_material.alpha_mask(),
-            Material::Unlit(pbr_material) => pbr_material.alpha_mask(),
+            Material::Pbr(m) => m.alpha_cutoff(),
+            Material::Unlit(m) => m.alpha_cutoff(),
+            Material::Toon(m) => m.alpha_cutoff(),
         }
     }
 
     /// Returns the packed uniform buffer data for the material.
-    pub fn uniform_buffer_data(&self, textures: &Textures) -> Result<Vec<u8>> {
+    pub fn uniform_buffer_data(&self, ctx: &dyn TextureContext) -> Vec<u8> {
+        let mut data = Vec::with_capacity(256);
         match self {
-            Material::Pbr(pbr_material) => {
-                let data = pbr_material.uniform_buffer_data(textures)?;
-
-                Ok(data)
+            Material::Pbr(m) => {
+                MaterialShader::write_uniform_buffer(m.as_ref(), ctx, &mut data);
             }
-            Material::Unlit(unlit_material) => unlit_material.uniform_buffer_data(textures),
+            Material::Unlit(m) => {
+                MaterialShader::write_uniform_buffer(m, ctx, &mut data);
+            }
+            Material::Toon(m) => {
+                MaterialShader::write_uniform_buffer(m.as_ref(), ctx, &mut data);
+            }
         }
+        data
     }
-}
-
-/// Material shader identifiers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u32)]
-pub enum MaterialShaderId {
-    Pbr = 1,
-    Unlit = 2,
-    // Toon = 3, etc.
 }
 
 const INITIAL_SIZE: usize = 8192; //Why not
@@ -137,6 +171,18 @@ impl Materials {
         key
     }
 
+    /// Removes a material from the slotmap + storage buffer. Returns
+    /// `true` if the key existed; `false` if it was already gone.
+    pub fn remove(&mut self, key: MaterialKey) -> bool {
+        let removed = self.lookup.remove(key).is_some();
+        if removed {
+            self._is_transparency_pass.remove(key);
+            self.buffer.remove(key);
+            self.gpu_dirty = true;
+        }
+        removed
+    }
+
     /// Returns the GPU buffer offset for a material.
     pub fn buffer_offset(&self, key: MaterialKey) -> Result<usize> {
         let offset = self
@@ -160,14 +206,12 @@ impl Materials {
 
     /// Updates a material and refreshes GPU data.
     ///
-    /// Intentionally non-atomic: `f` mutates the stored `Material` in place and
-    /// the transparency-pass classification is updated before the fallible GPU
-    /// buffer write. On failure we log and leave CPU state as-is rather than
-    /// rolling back. This is a hot path; staging on a clone of `Material`
-    /// (which boxes PBR data) would pay an allocation + copy on every call, and
-    /// the error cases here (uniform-data build failure, GPU buffer capacity
-    /// overflow) are not expected to occur in normal operation. If they ever do,
-    /// the stale GPU entry alongside the logged error is the acceptable outcome.
+    /// Intentionally non-atomic: `f` mutates the stored `Material` in place
+    /// and the transparency-pass classification is updated before the
+    /// fallible GPU buffer write. On failure we log and leave CPU state
+    /// as-is rather than rolling back. The buffer-write path is a hot path,
+    /// and the error cases (GPU buffer capacity overflow) are not expected
+    /// to occur in normal operation.
     pub fn update(
         &mut self,
         key: MaterialKey,
@@ -186,22 +230,14 @@ impl Materials {
                 }
             }
 
-            match material.uniform_buffer_data(textures) {
-                Ok(data) => match self.buffer.update(key, &data) {
-                    Ok(_) => {
-                        self.gpu_dirty = true;
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            "Failed to update material buffer for key {:?}: {:?}",
-                            key,
-                            e
-                        );
-                    }
-                },
+            let data = material.uniform_buffer_data(textures);
+            match self.buffer.update(key, &data) {
+                Ok(_) => {
+                    self.gpu_dirty = true;
+                }
                 Err(e) => {
                     tracing::error!(
-                        "Failed to get uniform buffer data for material key {:?}: {:?}",
+                        "Failed to update material buffer for key {:?}: {:?}",
                         key,
                         e
                     );
@@ -255,37 +291,6 @@ impl Materials {
             self.gpu_dirty = false;
         }
         Ok(())
-    }
-}
-
-/// Texture reference used by materials.
-#[derive(Clone, Debug)]
-pub struct MaterialTexture {
-    pub key: TextureKey,
-    pub sampler_key: Option<SamplerKey>,
-    pub uv_index: Option<u32>,
-    pub transform_key: Option<TextureTransformKey>,
-}
-
-/// Alpha mode for materials.
-#[derive(Default, Debug, Clone, Copy, PartialEq)]
-pub enum MaterialAlphaMode {
-    #[default]
-    Opaque,
-    Mask {
-        cutoff: f32,
-    },
-    Blend,
-}
-
-impl MaterialAlphaMode {
-    /// Returns the numeric shader variant value.
-    pub fn variant_as_u32(&self) -> u32 {
-        match self {
-            Self::Opaque => 0,
-            Self::Mask { .. } => 1,
-            Self::Blend => 2,
-        }
     }
 }
 

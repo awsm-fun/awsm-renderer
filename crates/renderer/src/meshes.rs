@@ -28,7 +28,7 @@ use meta::{MeshMeta, MESH_META_INITIAL_CAPACITY};
 use skins::{SkinKey, Skins};
 
 use error::{AwsmMeshError, Result};
-use mesh::Mesh;
+use mesh::{BillboardMode, Mesh};
 use morphs::{GeometryMorphKey, MaterialMorphKey, Morphs};
 
 impl AwsmRenderer {
@@ -99,6 +99,33 @@ impl AwsmRenderer {
     pub fn set_mesh_hidden(&mut self, mesh_key: MeshKey, hidden: bool) -> crate::error::Result<()> {
         let mesh = self.meshes.get_mut(mesh_key)?;
         mesh.hidden = hidden;
+        Ok(())
+    }
+
+    /// Routes the mesh through the HUD render pass so it draws on top of
+    /// world geometry. Used by editor overlay primitives (gizmos, point
+    /// handles) that need to remain visible regardless of occluding meshes.
+    pub fn set_mesh_hud(&mut self, mesh_key: MeshKey, hud: bool) -> crate::error::Result<()> {
+        let mesh = self.meshes.get_mut(mesh_key)?;
+        mesh.hud = hud;
+        Ok(())
+    }
+
+    /// Reassign the material a mesh references. The previous material is left
+    /// in the materials map for reuse; callers may remove it via the
+    /// `materials` API if they're sure nothing else references it.
+    ///
+    /// Refreshes the mesh's metadata in the meta buffer so the visibility-
+    /// buffer compute pass picks up the new material on the next frame.
+    pub fn set_mesh_material(
+        &mut self,
+        mesh_key: MeshKey,
+        new_material_key: crate::materials::MaterialKey,
+    ) -> crate::error::Result<()> {
+        let mesh = self.meshes.get_mut(mesh_key)?;
+        mesh.material_key = new_material_key;
+        self.meshes
+            .refresh_meta_for_mesh_public(mesh_key, &self.materials, &self.transforms)?;
         Ok(())
     }
 
@@ -173,6 +200,30 @@ impl AwsmRenderer {
         )?)
     }
 
+    /// Enables GPU instancing for an opaque mesh — sync because the
+    /// transparent pipeline rebuild is unnecessary when the mesh doesn't
+    /// flow through the transparent pass. Use `enable_mesh_instancing` for
+    /// meshes that may also render via the transparent pipeline.
+    pub fn enable_mesh_instancing_opaque(
+        &mut self,
+        mesh_key: MeshKey,
+        transforms: &[Transform],
+    ) -> crate::error::Result<()> {
+        let transform_key = self.meshes.get(mesh_key)?.transform_key;
+        if transforms.is_empty() {
+            return Err(AwsmMeshError::InstancingMissingTransforms(mesh_key).into());
+        }
+        {
+            let mesh = self.meshes.get_mut(mesh_key)?;
+            if mesh.instanced {
+                return Err(AwsmMeshError::InstancingAlreadyEnabled(mesh_key).into());
+            }
+            mesh.instanced = true;
+        }
+        self.instances.transform_insert(transform_key, transforms)?;
+        Ok(())
+    }
+
     /// Enables GPU instancing for a mesh with explicit instance transforms.
     pub async fn enable_mesh_instancing(
         &mut self,
@@ -237,6 +288,79 @@ impl AwsmRenderer {
         Ok(())
     }
 
+    /// Sets the per-mesh camera-facing billboard mode and refreshes geometry
+    /// meta so the next frame's vertex shader picks up the new mode.
+    pub fn set_mesh_billboard_mode(
+        &mut self,
+        mesh_key: MeshKey,
+        mode: BillboardMode,
+    ) -> crate::error::Result<()> {
+        if let Ok(mesh) = self.meshes.get_mut(mesh_key) {
+            mesh.billboard_mode = mode;
+        } else {
+            return Err(AwsmMeshError::MeshNotFound(mesh_key).into());
+        }
+        self.meshes
+            .refresh_meta_for_mesh_public(mesh_key, &self.materials, &self.transforms)?;
+        Ok(())
+    }
+
+    /// Writes per-instance attributes (color + alpha + size) for every mesh
+    /// sharing the given transform key, and refreshes those meshes' geometry
+    /// meta so the shading pass picks up the new `instance_attr_base`.
+    ///
+    /// The number of `attrs` must match the number of transforms previously
+    /// written via `set_mesh_instances` / `transform_insert`. Mismatches
+    /// (including the case where no transforms exist yet for the key)
+    /// return `AwsmMeshError::InstanceAttrCountMismatch` — silently
+    /// accepting a shorter slice would leave the shader reading past the
+    /// logical attr range into zero-fill / neighbor allocations and tint
+    /// the trailing instances with garbage.
+    pub fn set_mesh_instance_attrs(
+        &mut self,
+        transform_key: TransformKey,
+        attrs: &[crate::instances::InstanceAttr],
+    ) -> crate::error::Result<()> {
+        let transforms = self
+            .instances
+            .transform_instance_count(transform_key)
+            .unwrap_or(0);
+        if transforms != attrs.len() {
+            return Err(AwsmMeshError::InstanceAttrCountMismatch {
+                transform_key,
+                attrs: attrs.len(),
+                transforms,
+            }
+            .into());
+        }
+        self.instances.attribute_insert(transform_key, attrs)?;
+
+        let base = self
+            .instances
+            .attribute_buffer_offset(transform_key)
+            .map(|off| (off / crate::instances::InstanceAttr::BYTE_SIZE) as u32)
+            .unwrap_or(u32::MAX);
+
+        let mesh_keys: Vec<MeshKey> = self
+            .meshes
+            .keys_by_transform_key(transform_key)
+            .cloned()
+            .unwrap_or_default();
+
+        for mesh_key in mesh_keys {
+            if let Ok(mesh) = self.meshes.get_mut(mesh_key) {
+                mesh.instance_attr_base = base;
+            }
+            self.meshes.refresh_meta_for_mesh_public(
+                mesh_key,
+                &self.materials,
+                &self.transforms,
+            )?;
+        }
+
+        Ok(())
+    }
+
     /// Appends a single instance transform to an instanced mesh.
     pub fn append_mesh_instance(
         &mut self,
@@ -247,7 +371,11 @@ impl AwsmRenderer {
         Ok(start_index)
     }
 
-    /// Appends instance transforms to an instanced mesh.
+    /// Appends instance transforms to an instanced mesh. Keeps any
+    /// already-bound per-instance attributes extended in lockstep with
+    /// default `InstanceAttr` entries so the shading pass's
+    /// `instance_attrs[base + instance_index]` lookup never reads past
+    /// the logical slice.
     pub fn append_mesh_instances(
         &mut self,
         mesh_key: MeshKey,
@@ -261,20 +389,25 @@ impl AwsmRenderer {
         if !mesh.instanced {
             return Err(AwsmMeshError::InstancingNotEnabled(mesh_key).into());
         }
+        let transform_key = mesh.transform_key;
         if self
             .instances
-            .transform_instance_count(mesh.transform_key)
+            .transform_instance_count(transform_key)
             .is_none()
         {
             return Err(AwsmMeshError::InstancingMissingTransforms(mesh_key).into());
         }
 
-        Ok(self
-            .instances
-            .transform_extend(mesh.transform_key, transforms)?)
+        let start_index = self.instances.transform_extend(transform_key, transforms)?;
+        self.instances
+            .attribute_extend_with_default(transform_key, transforms.len())?;
+        Ok(start_index)
     }
 
-    /// Reserves additional instance slots for an instanced mesh.
+    /// Reserves additional instance slots for an instanced mesh. Mirrors
+    /// `append_mesh_instances` for attrs: if attrs are already bound,
+    /// extend with defaults so the invariant holds even when reserved
+    /// slots are written via `attribute_update` directly.
     pub fn reserve_mesh_instances(
         &mut self,
         mesh_key: MeshKey,
@@ -284,17 +417,21 @@ impl AwsmRenderer {
         if !mesh.instanced {
             return Err(AwsmMeshError::InstancingNotEnabled(mesh_key).into());
         }
+        let transform_key = mesh.transform_key;
         if self
             .instances
-            .transform_instance_count(mesh.transform_key)
+            .transform_instance_count(transform_key)
             .is_none()
         {
             return Err(AwsmMeshError::InstancingMissingTransforms(mesh_key).into());
         }
 
-        Ok(self
+        let start_index = self
             .instances
-            .transform_reserve(mesh.transform_key, additional)?)
+            .transform_reserve(transform_key, additional)?;
+        self.instances
+            .attribute_extend_with_default(transform_key, additional)?;
+        Ok(start_index)
     }
 }
 
@@ -451,8 +588,46 @@ impl Meshes {
         })
     }
 
+    /// Public wrapper around `insert` for the raw-mesh path. Same semantics —
+    /// see `raw_mesh::AwsmRenderer::add_raw_mesh` for the canonical caller.
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_public(
+        &mut self,
+        mesh: Mesh,
+        materials: &Materials,
+        transforms: &Transforms,
+        buffer_info_key: MeshBufferInfoKey,
+        visibility_geometry_data: Option<&[u8]>,
+        transparency_geometry_data: Option<&[u8]>,
+        attribute_data: &[u8],
+        attribute_index: &[u8],
+        aabb: Option<Aabb>,
+        geometry_morph_key: Option<GeometryMorphKey>,
+        material_morph_key: Option<MaterialMorphKey>,
+        skin_key: Option<SkinKey>,
+    ) -> Result<MeshKey> {
+        self.insert(
+            mesh,
+            materials,
+            transforms,
+            buffer_info_key,
+            visibility_geometry_data,
+            transparency_geometry_data,
+            attribute_data,
+            attribute_index,
+            aabb,
+            geometry_morph_key,
+            material_morph_key,
+            skin_key,
+        )
+    }
+
     /// Inserts a mesh and its backing resource data, returning a mesh key.
-    pub(crate) fn insert(
+    ///
+    /// Pub so external ingestion crates (e.g. `awsm-renderer-gltf`) can
+    /// upload meshes through the same path glTF historically used.
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert(
         &mut self,
         mesh: Mesh,
         materials: &Materials,
@@ -1055,6 +1230,17 @@ impl Meshes {
         self.refresh_meta_for_mesh(mesh_key, materials, transforms)?;
 
         Ok(())
+    }
+
+    /// Public wrapper around `refresh_meta_for_mesh` for the `set_mesh_material`
+    /// path on `AwsmRenderer`.
+    pub fn refresh_meta_for_mesh_public(
+        &mut self,
+        mesh_key: MeshKey,
+        materials: &Materials,
+        transforms: &Transforms,
+    ) -> Result<()> {
+        self.refresh_meta_for_mesh(mesh_key, materials, transforms)
     }
 
     fn refresh_meta_for_mesh(

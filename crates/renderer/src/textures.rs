@@ -152,6 +152,14 @@ impl AwsmRenderer {
         Ok(())
     }
 
+    /// Removes a pool texture. Consumers should ensure no live material
+    /// still binds `key` (i.e. trigger a re-resolve cascade before
+    /// calling), then drop their cached handle. Returns `true` if the
+    /// key existed; `false` if it was already gone.
+    pub fn remove_texture(&mut self, key: TextureKey) -> bool {
+        self.textures.remove(key)
+    }
+
     /// Regenerates mipmaps for an existing cubemap texture.
     pub async fn regenerate_cubemap_texture_mipmaps(
         &self,
@@ -355,6 +363,73 @@ impl Textures {
         Ok(key)
     }
 
+    /// Adds a texture from raw RGBA8 bytes by packing them through a synchronous
+    /// `OffscreenCanvas` → `ImageBitmap` round-trip and inserting via the
+    /// standard pool path. Caller is responsible for triggering
+    /// `AwsmRenderer::finalize_gpu_textures()` after a batch of additions so
+    /// the new bitmaps actually upload to the GPU.
+    pub fn add_image_rgba_raw(
+        &mut self,
+        rgba_bytes: &[u8],
+        width: u32,
+        height: u32,
+        sampler_key: SamplerKey,
+        color: TextureColorInfo,
+    ) -> Result<TextureKey> {
+        use wasm_bindgen::JsCast;
+        let expected_len = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|n| n.checked_mul(4))
+            .ok_or_else(|| {
+                AwsmTextureError::ImageBitmapCreate(format!(
+                    "rgba dims overflow: width={width} height={height}"
+                ))
+            })?;
+        if rgba_bytes.len() != expected_len {
+            return Err(AwsmTextureError::ImageBitmapCreate(format!(
+                "rgba length mismatch: got {} bytes, want {expected_len} (width={width} height={height})",
+                rgba_bytes.len()
+            )));
+        }
+
+        let canvas = web_sys::OffscreenCanvas::new(width, height)
+            .map_err(|e| AwsmTextureError::ImageBitmapCreate(format!("{e:?}")))?;
+        let ctx_obj = canvas
+            .get_context("2d")
+            .map_err(|e| AwsmTextureError::ImageBitmapCreate(format!("get_context: {e:?}")))?
+            .ok_or_else(|| {
+                AwsmTextureError::ImageBitmapCreate("2d context unavailable".to_string())
+            })?;
+        let ctx: web_sys::OffscreenCanvasRenderingContext2d = ctx_obj.dyn_into().map_err(|_| {
+            AwsmTextureError::ImageBitmapCreate("cast OffscreenCanvas 2d context".to_string())
+        })?;
+
+        // The FFI binding accepts `Clamped<&[u8]>`; web-sys will copy the
+        // slice into a Wasm-side Uint8ClampedArray when constructing the
+        // ImageData.
+        let image_data = web_sys::ImageData::new_with_u8_clamped_array_and_sh(
+            wasm_bindgen::Clamped(rgba_bytes),
+            width,
+            height,
+        )
+        .map_err(|e| AwsmTextureError::ImageBitmapCreate(format!("ImageData::new: {e:?}")))?;
+        ctx.put_image_data(&image_data, 0, 0)
+            .map_err(|e| AwsmTextureError::ImageBitmapCreate(format!("put_image_data: {e:?}")))?;
+        let bitmap = canvas
+            .transfer_to_image_bitmap()
+            .map_err(|e| AwsmTextureError::ImageBitmapCreate(format!("transfer: {e:?}")))?;
+
+        self.add_image(
+            ImageData::Bitmap {
+                image: bitmap,
+                options: None,
+            },
+            TextureFormat::Rgba8unorm,
+            sampler_key,
+            color,
+        )
+    }
+
     /// Inserts a texture transform and returns its key.
     pub fn insert_texture_transform(
         &mut self,
@@ -470,6 +545,21 @@ impl Textures {
         Ok(())
     }
 
+    /// Removes a texture from the pool + slotmap. Returns `true` if the
+    /// key existed; `false` if it was already gone. The pool recycles
+    /// the freed layer slot for the next matching add — see
+    /// [`TexturePool::remove`] for the invariants. Callers are
+    /// responsible for ensuring no live material still binds this key
+    /// (the renderer doesn't trace texture → material refs).
+    pub fn remove(&mut self, key: TextureKey) -> bool {
+        if self.pool.remove(key).is_some() {
+            self.pool_textures.remove(key);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Returns pool entry info for a texture key.
     pub fn get_entry(&self, key: TextureKey) -> Result<&TexturePoolEntryInfo<TextureKey>> {
         self.pool_textures
@@ -564,19 +654,42 @@ fn create_sampler_key(
     Ok(key)
 }
 
-new_key_type! {
-    /// Opaque key for pooled textures.
-    pub struct TextureKey;
-}
+// `TextureKey`, `TextureTransformKey`, `SamplerKey` moved to
+// `awsm-renderer-core::keys` so the `awsm-materials` crate can reference
+// them without depending on `awsm-renderer`. Re-exported here for backward
+// compat with existing callers that import via `awsm_renderer`.
+pub use awsm_renderer_core::keys::{SamplerKey, TextureKey, TextureTransformKey};
 
-new_key_type! {
-    /// Opaque key for texture transforms.
-    pub struct TextureTransformKey;
-}
+impl awsm_materials::TextureContext for Textures {
+    fn pool_array_by_index(
+        &self,
+        index: usize,
+    ) -> Option<&awsm_renderer_core::texture::texture_pool::TexturePoolArray<TextureKey>> {
+        self.pool.array_by_index(index)
+    }
 
-new_key_type! {
-    /// Opaque key for samplers.
-    pub struct SamplerKey;
+    fn texture_entry(&self, key: TextureKey) -> Option<&TexturePoolEntryInfo<TextureKey>> {
+        self.pool_textures.get(key)
+    }
+
+    fn sampler_index(&self, key: SamplerKey) -> Option<u32> {
+        self.pool_sampler_set.get_index_of(&key).map(|i| i as u32)
+    }
+
+    fn sampler_address_modes(&self, key: SamplerKey) -> (Option<AddressMode>, Option<AddressMode>) {
+        self.sampler_address_modes
+            .get(key)
+            .copied()
+            .unwrap_or((None, None))
+    }
+
+    fn texture_transform_offset(&self, key: TextureTransformKey) -> Option<usize> {
+        self.get_texture_transform_offset(key)
+    }
+
+    fn texture_transform_identity_offset(&self) -> usize {
+        self.texture_transform_identity_offset
+    }
 }
 
 new_key_type! {
@@ -607,4 +720,7 @@ pub enum AwsmTextureError {
 
     #[error("[texture] no clamp sampler found in mega-texture")]
     NoClampSamplerInMegaTexture,
+
+    #[error("[texture] runtime image bitmap creation failed: {0}")]
+    ImageBitmapCreate(String),
 }

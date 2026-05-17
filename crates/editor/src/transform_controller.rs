@@ -3,11 +3,11 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use awsm_renderer::{
     camera::CameraMatrices,
-    gltf::GltfKeyLookups,
     meshes::MeshKey,
     transforms::{Transform, TransformKey},
     AwsmRenderer,
 };
+use awsm_renderer_gltf::GltfKeyLookups;
 use glam::{Mat4, Quat, Vec3, Vec4};
 
 #[derive(Clone, Debug)]
@@ -701,7 +701,7 @@ fn get_rotation_plane_basis(axis: Vec3) -> (Vec3, Vec3) {
 ///
 /// Returns the world-space intersection point, or None if the ray is parallel to the plane
 /// or pointing away from it.
-fn ray_plane_intersection(
+pub fn ray_plane_intersection(
     screen_x: f32,
     screen_y: f32,
     viewport_width: f32,

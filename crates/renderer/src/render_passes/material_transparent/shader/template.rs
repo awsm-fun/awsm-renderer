@@ -31,6 +31,12 @@ pub struct ShaderTemplateTransparentMaterialIncludes {
     pub color_sets: Option<u32>,
     pub uv_sets: u32,
     pub debug: ShaderTemplateMaterialTransparentDebug,
+    /// Concatenated `wgsl_fragment()` of every enabled material — see
+    /// `awsm_materials::registry::build_materials_wgsl`.
+    pub materials_wgsl: String,
+    /// Generated `const SHADER_ID_X: u32 = N;` lines — see
+    /// `awsm_materials::registry::build_shader_id_consts`.
+    pub shader_id_consts: String,
 }
 impl ShaderTemplateTransparentMaterialIncludes {
     /// Creates include template data from the cache key.
@@ -44,6 +50,8 @@ impl ShaderTemplateTransparentMaterialIncludes {
             color_sets: cache_key.attributes.color_sets,
             uv_sets: cache_key.attributes.uv_sets.unwrap_or_default(),
             debug: ShaderTemplateMaterialTransparentDebug::new(),
+            materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
+            shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
         }
     }
 
@@ -120,7 +128,8 @@ impl ShaderTemplateTransparentMaterialVertex {
 
         let in_uv_set_start = in_color_set_start + color_sets;
 
-        let out_color_set_start = 3; // after world_tanget
+        // after world_tangent (loc 2) + instance_id (loc 3)
+        let out_color_set_start = 4;
         let out_uv_set_start = out_color_set_start + color_sets;
 
         Self {
@@ -157,7 +166,8 @@ impl ShaderTemplateTransparentMaterialFragment {
     pub fn new(cache_key: &ShaderCacheKeyMaterialTransparent) -> Self {
         let uv_sets = cache_key.attributes.uv_sets.unwrap_or_default();
         let color_sets = cache_key.attributes.color_sets.unwrap_or_default();
-        let in_color_set_start = 3; // after world_tangent
+        // after world_tangent (loc 2) + instance_id (loc 3)
+        let in_color_set_start = 4;
         let in_uv_set_start = in_color_set_start + color_sets;
 
         Self {

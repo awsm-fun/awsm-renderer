@@ -1,12 +1,9 @@
 use crate::{models::collections::GltfId, pages::app::scene::camera::Camera, prelude::*};
 use anyhow::Result;
-use awsm_renderer::{
-    gltf::{
-        data::{GltfData, GltfDataHints},
-        loader::GltfLoader,
-    },
-    render::RenderHooks,
-    AwsmRenderer,
+use awsm_renderer::{render::RenderHooks, AwsmRenderer};
+use awsm_renderer_gltf::{
+    data::{GltfData, GltfDataHints},
+    loader::GltfLoader,
 };
 use dominator_helpers::futures::AsyncLoader;
 use futures::StreamExt;

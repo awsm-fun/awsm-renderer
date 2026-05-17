@@ -82,17 +82,60 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
+name = "awsm-curves"
+version = "0.1.7"
+dependencies = [
+ "glam 0.32.1",
+ "serde",
+]
+
+[[package]]
+name = "awsm-geometry"
+version = "0.1.7"
+dependencies = [
+ "glam 0.32.1",
+ "serde",
+]
+
+[[package]]
+name = "awsm-materials"
+version = "0.1.7"
+dependencies = [
+ "awsm-renderer-core",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "awsm-meshgen"
+version = "0.1.7"
+dependencies = [
+ "awsm-curves",
+ "awsm-geometry",
+ "glam 0.32.1",
+ "serde",
+]
+
+[[package]]
+name = "awsm-particles"
+version = "0.1.7"
+dependencies = [
+ "awsm-curves",
+ "awsm-geometry",
+ "glam 0.32.1",
+ "serde",
+]
+
+[[package]]
 name = "awsm-renderer"
 version = "0.1.7"
 dependencies = [
  "anyhow",
  "askama",
+ "awsm-materials",
  "awsm-renderer-core",
  "bevy_mikktspace",
  "futures",
  "glam 0.32.1",
- "gloo-net",
- "gltf",
  "indexmap",
  "ordered-float",
  "serde",
@@ -100,6 +143,7 @@ dependencies = [
  "strum",
  "thiserror 2.0.18",
  "tracing",
+ "wasm-bindgen",
  "web-sys",
 ]
 
@@ -121,6 +165,7 @@ dependencies = [
  "ordered-float",
  "serde",
  "serde-wasm-bindgen",
+ "slotmap",
  "thiserror 2.0.18",
  "tracing",
  "wasm-bindgen",
@@ -133,9 +178,34 @@ name = "awsm-renderer-editor"
 version = "0.1.7"
 dependencies = [
  "anyhow",
+ "awsm-meshgen",
  "awsm-renderer",
+ "awsm-renderer-gltf",
  "glam 0.32.1",
  "tracing",
+ "web-sys",
+]
+
+[[package]]
+name = "awsm-renderer-gltf"
+version = "0.1.7"
+dependencies = [
+ "anyhow",
+ "awsm-materials",
+ "awsm-renderer",
+ "awsm-renderer-core",
+ "bevy_mikktspace",
+ "futures",
+ "glam 0.32.1",
+ "gloo-net",
+ "gltf",
+ "indexmap",
+ "ordered-float",
+ "slotmap",
+ "strum",
+ "thiserror 2.0.18",
+ "tracing",
+ "wasm-bindgen",
  "web-sys",
 ]
 
@@ -381,6 +451,7 @@ dependencies = [
  "anyhow",
  "awsm-renderer",
  "awsm-renderer-editor",
+ "awsm-renderer-gltf",
  "awsm_web 0.45.0",
  "cfg-if",
  "dominator",
@@ -546,6 +617,9 @@ name = "glam"
 version = "0.32.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f70749695b063ecbf6b62949ccccde2e733ec3ecbbd71d467dca4e5c6c97cca0"
+dependencies = [
+ "serde_core",
+]
 
 [[package]]
 name = "gloo-events"
