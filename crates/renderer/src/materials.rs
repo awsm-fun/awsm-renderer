@@ -58,6 +58,14 @@ impl AwsmRenderer {
     pub fn update_material(&mut self, key: MaterialKey, f: impl FnMut(&mut Material)) {
         self.materials.update(key, &self.textures, f);
     }
+
+    /// Removes a material and frees its slot in the materials storage
+    /// buffer. Callers must ensure no live mesh still references `key`
+    /// (e.g. tear down meshes first). Returns `true` if the material
+    /// existed; `false` if it was already gone.
+    pub fn remove_material(&mut self, key: MaterialKey) -> bool {
+        self.materials.remove(key)
+    }
 }
 
 /// Material variants supported by the renderer.
@@ -163,6 +171,18 @@ impl Materials {
         self.update(key, textures, |_| {});
 
         key
+    }
+
+    /// Removes a material from the slotmap + storage buffer. Returns
+    /// `true` if the key existed; `false` if it was already gone.
+    pub fn remove(&mut self, key: MaterialKey) -> bool {
+        let removed = self.lookup.remove(key).is_some();
+        if removed {
+            self._is_transparency_pass.remove(key);
+            self.buffer.remove(key);
+            self.gpu_dirty = true;
+        }
+        removed
     }
 
     /// Returns the GPU buffer offset for a material.
