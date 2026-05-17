@@ -18,9 +18,13 @@ pub enum SpawnShapeDef {
 
 impl SpawnShapeDef {
     pub fn default_cone() -> Self {
+        // Default direction +Y so a fresh emitter shoots particles
+        // upward (smoke / sparks / steam — the typical case). The
+        // earlier -Y default ran particles through the ground plane
+        // and they were invisible to a fresh user.
         Self::Cone {
             angle_radians: 0.4,
-            direction: [0.0, -1.0, 0.0],
+            direction: [0.0, 1.0, 0.0],
         }
     }
 }
@@ -108,7 +112,11 @@ impl Default for ParticleEmitterDef {
             space: EmitterSpaceDef::Local,
             shape: SpawnShapeDef::default(),
             initial_speed: [1.0, 2.0],
-            lifetime: [0.4, 0.8],
+            // A 2s upper bound on lifetime keeps a fresh smoke / steam
+            // emitter visible long enough to read the curve falloff —
+            // 0.8s was too short for the particles to register before
+            // they faded.
+            lifetime: [0.4, 2.0],
             size: [0.1, 0.2],
             forces: vec![],
             // Default is a neutral white→white fade so a newly
