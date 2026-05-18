@@ -28,22 +28,9 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
             if !view.should_render {
                 continue;
             }
-            // Per-view shadow_view uniform write. `queue.writeBuffer`
-            // is cheap enough to call per pass on the small (80B)
-            // uniform; phase 4 may switch to a dynamic-offset binding
-            // into the descriptor buffer if cascade counts grow.
-            shadows.write_shadow_view(
-                ctx.gpu,
-                &view.view_projection,
-                shadows
-                    .light_params(_light_key)
-                    .map(|p| p.depth_bias)
-                    .unwrap_or(0.0),
-                shadows
-                    .light_params(_light_key)
-                    .map(|p| p.normal_bias)
-                    .unwrap_or(0.0),
-            )?;
+            // Per-view matrix is read from `shadow_view_buffer` at a
+            // dynamic offset (`view.shadow_view_slot * SHADOW_VIEW_STRIDE`)
+            // — Shadows::write_gpu uploaded every slot once, up front.
 
             let depth_view = match view.cube_layer {
                 Some(layer) => shadows
@@ -75,7 +62,14 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
             let [x, y, w, h] = view.atlas_rect;
             render_pass.set_viewport(x as f32, y as f32, w as f32, h as f32, 0.0, 1.0);
 
-            render_pass.set_bind_group(0, shadows.shadow_view_bind_group(), None)?;
+            let view_offset = crate::shadows::Shadows::shadow_view_dynamic_offset(
+                view.shadow_view_slot,
+            );
+            render_pass.set_bind_group(
+                0,
+                shadows.shadow_view_bind_group(),
+                Some(&[view_offset]),
+            )?;
             render_pass.set_bind_group(
                 1,
                 ctx.render_passes

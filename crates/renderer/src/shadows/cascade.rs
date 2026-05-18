@@ -133,6 +133,7 @@ pub fn fit_cascade(
     let projection = Mat4::orthographic_rh(min.x, max.x, min.y, max.y, near, far);
     let view_projection = projection * view;
 
+
     Cascade {
         view,
         projection,

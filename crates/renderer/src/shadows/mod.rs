@@ -75,6 +75,12 @@ pub use self::{
 /// `maxUniformBufferBindingSize` ceiling (default 64 KB).
 pub const MAX_SHADOW_DESCRIPTORS: u32 = 32;
 
+/// Maximum number of shadow VIEWS per frame (one render pass each).
+/// Point lights have 6 views per descriptor (cube faces); directional
+/// lights have one per cascade. 96 covers a worst case of 8 point +
+/// 4 directional × 4 cascades + 32 spots.
+pub const MAX_SHADOW_VIEWS: u32 = 96;
+
 /// Size in bytes of a single packed `ShadowDescriptor` (see
 /// `shared_wgsl/shadow/bind_groups.wgsl`):
 /// - `view_projection: mat4x4<f32>` (64 B)
@@ -86,8 +92,15 @@ pub const SHADOW_DESCRIPTOR_BYTES: usize = 112;
 /// Size in bytes of the `ShadowGlobals` uniform block.
 pub const SHADOW_GLOBALS_BYTES: usize = 48;
 
-/// Size in bytes of the per-pass shadow-view uniform.
+/// Logical size of a single per-view shadow uniform entry (matrix +
+/// bias floats). The actual buffer is laid out with stride
+/// `SHADOW_VIEW_STRIDE` so dynamic uniform offsets stay aligned.
 pub const SHADOW_VIEW_BYTES: usize = 80;
+
+/// Stride between shadow-view buffer slots — aligned to
+/// `minUniformBufferOffsetAlignment` (256 B on every adapter we
+/// target) so each slot is a valid dynamic-offset target.
+pub const SHADOW_VIEW_STRIDE: usize = 256;
 
 /// Per-face cube shadow map resolution. Hardcoded for v1; phase 13
 /// may surface this as a config knob alongside `atlas_size`.
@@ -158,6 +171,9 @@ pub struct Shadows {
     throttle: SecondaryMap<LightKey, Vec<ShadowViewThrottle>>,
     /// Number of descriptors currently active in `descriptors_uniform`.
     active_descriptor_count: u32,
+    /// Number of view slots used in `shadow_view_buffer` this frame.
+    /// One per render pass (per cascade / spot / cube face).
+    active_view_count: u32,
 
     /// Bind-group layout for slot 0 of the shadow generation pipeline
     /// — a single `ShadowView` uniform. Held for diagnostic /
@@ -222,6 +238,11 @@ pub struct LightShadowView {
     /// means the render pass should re-render this view, `false`
     /// means the cached atlas tile is still valid for this frame.
     pub should_render: bool,
+    /// Global slot index for this view in the per-frame shadow-view
+    /// buffer. The render pass uses this as the dynamic offset
+    /// multiplier when binding `shadow_view_bind_group`. Set during
+    /// `write_gpu` once all views are known.
+    pub shadow_view_slot: u32,
 }
 
 /// Persistent throttle state per shadow view. Keyed by `(LightKey,
@@ -341,10 +362,18 @@ impl Shadows {
             .into(),
         )?;
 
+        // N slots × 256 B stride. Each slot stores the per-view
+        // matrix + bias floats for one shadow render pass. The bind
+        // group uses dynamic offsets so we can write all slots in
+        // `write_gpu` (once per frame) and select the right slot
+        // per render pass without re-queueing buffer writes between
+        // passes — `queue.writeBuffer` flushes all writes BEFORE any
+        // command buffer executes, so per-pass writes to a single
+        // slot would cause every pass to see the last-written value.
         let shadow_view_buffer = gpu.create_buffer(
             &BufferDescriptor::new(
-                Some("Shadow View (per-pass)"),
-                SHADOW_VIEW_BYTES,
+                Some("Shadow Views"),
+                SHADOW_VIEW_STRIDE * MAX_SHADOW_VIEWS as usize,
                 BufferUsage::new().with_uniform().with_copy_dst(),
             )
             .into(),
@@ -371,14 +400,17 @@ impl Shadows {
             .into(),
         ));
 
-        // Slot 0 of the shadow pipeline: a single uniform with the
-        // current view's view-projection + bias params.
+        // Slot 0 of the shadow pipeline: a per-view uniform that the
+        // render pass selects via dynamic offset (one slot per
+        // active shadow descriptor).
         let shadow_view_bind_group_layout_key = bind_group_layouts.get_key(
             gpu,
             BindGroupLayoutCacheKey {
                 entries: vec![BindGroupLayoutCacheKeyEntry {
                     resource: BindGroupLayoutResource::Buffer(
-                        BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
+                        BufferBindingLayout::new()
+                            .with_binding_type(BufferBindingType::Uniform)
+                            .with_dynamic_offset(true),
                     ),
                     visibility_vertex: true,
                     visibility_fragment: false,
@@ -391,7 +423,9 @@ impl Shadows {
             let layout = bind_group_layouts.get(shadow_view_bind_group_layout_key)?;
             let entries = vec![BindGroupEntry::new(
                 0,
-                BindGroupResource::Buffer(BufferBinding::new(&shadow_view_buffer)),
+                BindGroupResource::Buffer(
+                    BufferBinding::new(&shadow_view_buffer).with_size(SHADOW_VIEW_BYTES),
+                ),
             )];
             let descriptor = BindGroupDescriptor::new(layout, Some("Shadow View"), entries);
             gpu.create_bind_group(&descriptor.into())
@@ -450,6 +484,7 @@ impl Shadows {
             records: SecondaryMap::new(),
             throttle: SecondaryMap::new(),
             active_descriptor_count: 0,
+            active_view_count: 0,
             shadow_view_bind_group_layout_key,
             shadow_view_bind_group,
             shadow_pipeline_layout_key,
@@ -615,7 +650,13 @@ impl Shadows {
 
         self.records.clear();
         self.active_descriptor_count = 0;
+        self.active_view_count = 0;
         let mut descriptor_bytes = vec![0u8; *SHADOW_DESCRIPTOR_UNIFORM_BYTES];
+        // Shadow-view buffer: one slot (256 B) per shadow view (render
+        // pass), packed contiguously. Filled inline as we generate
+        // each cascade / spot / cube face, then uploaded once at the
+        // end of write_gpu.
+        let mut view_bytes = vec![0u8; SHADOW_VIEW_STRIDE * MAX_SHADOW_VIEWS as usize];
 
         // Approximate the camera's near/far in world-space depth.
         // The actual values live on the camera but aren't exposed
@@ -741,12 +782,22 @@ impl Shadows {
                             } else {
                                 1
                             };
+                        let view_slot = self.active_view_count;
+                        write_shadow_view_slot(
+                            &mut view_bytes,
+                            view_slot as usize,
+                            &cascade.view_projection,
+                            params.depth_bias,
+                            params.normal_bias,
+                        );
+                        self.active_view_count += 1;
                         views.push(LightShadowView {
                             view_projection: cascade.view_projection,
                             atlas_rect: rect,
                             cube_layer: None,
                             update_period,
                             should_render: true,
+                            shadow_view_slot: view_slot,
                         });
                         self.active_descriptor_count += 1;
                     }
@@ -819,12 +870,24 @@ impl Shadows {
                     self.records.insert(
                         light_key,
                         LightShadowRecord {
-                            views: vec![LightShadowView {
-                                view_projection,
-                                atlas_rect: rect,
-                                cube_layer: None,
-                                update_period: 1,
-                                should_render: true,
+                            views: vec![{
+                                let view_slot = self.active_view_count;
+                                write_shadow_view_slot(
+                                    &mut view_bytes,
+                                    view_slot as usize,
+                                    &view_projection,
+                                    params.depth_bias,
+                                    params.normal_bias,
+                                );
+                                self.active_view_count += 1;
+                                LightShadowView {
+                                    view_projection,
+                                    atlas_rect: rect,
+                                    cube_layer: None,
+                                    update_period: 1,
+                                    should_render: true,
+                                    shadow_view_slot: view_slot,
+                                }
                             }],
                             descriptor_base: descriptor_index,
                         },
@@ -869,12 +932,22 @@ impl Shadows {
                     for (face_idx, (dir, up)) in face_dirs.iter().enumerate() {
                         let view = glam::Mat4::look_at_rh(pos, pos + *dir, *up);
                         let vp = projection * view;
+                        let view_slot = self.active_view_count;
+                        write_shadow_view_slot(
+                            &mut view_bytes,
+                            view_slot as usize,
+                            &vp,
+                            params.depth_bias,
+                            params.normal_bias,
+                        );
+                        self.active_view_count += 1;
                         views.push(LightShadowView {
                             view_projection: vp,
                             atlas_rect: [0, 0, POINT_SHADOW_RESOLUTION, POINT_SHADOW_RESOLUTION],
                             cube_layer: Some(slot_index as u32 * 6 + face_idx as u32),
                             update_period: 1,
                             should_render: true,
+                            shadow_view_slot: view_slot,
                         });
                     }
 
@@ -930,6 +1003,22 @@ impl Shadows {
                 &self.descriptors_uniform,
                 None,
                 descriptor_bytes.as_slice(),
+                None,
+                None,
+            )?;
+        }
+        if self.active_view_count > 0 {
+            // Upload the per-view matrices once. The render pass uses
+            // dynamic offsets into this buffer to select per-pass
+            // matrices — a single `writeBuffer` call here is critical:
+            // queue.writeBuffer flushes all queued writes BEFORE any
+            // command buffer executes, so if we wrote per-pass we'd
+            // see only the last matrix in every pass.
+            let used = self.active_view_count as usize * SHADOW_VIEW_STRIDE;
+            gpu.write_buffer(
+                &self.shadow_view_buffer,
+                None,
+                &view_bytes[..used],
                 None,
                 None,
             )?;
@@ -995,25 +1084,12 @@ impl Shadows {
         Ok(())
     }
 
-    /// Writes the supplied view-projection + bias parameters into
-    /// `shadow_view_buffer`. Called per shadow view inside
-    /// `record_passes`.
-    pub fn write_shadow_view(
-        &self,
-        gpu: &AwsmRendererWebGpu,
-        view_projection: &Mat4,
-        depth_bias: f32,
-        normal_bias: f32,
-    ) -> Result<(), AwsmShadowError> {
-        let mut data = [0u8; SHADOW_VIEW_BYTES];
-        let cols = view_projection.to_cols_array();
-        let mat_bytes: &[u8] =
-            unsafe { std::slice::from_raw_parts(cols.as_ptr() as *const u8, 64) };
-        data[0..64].copy_from_slice(mat_bytes);
-        data[64..68].copy_from_slice(&depth_bias.to_ne_bytes());
-        data[68..72].copy_from_slice(&normal_bias.to_ne_bytes());
-        gpu.write_buffer(&self.shadow_view_buffer, None, data.as_slice(), None, None)?;
-        Ok(())
+    /// Dynamic-offset argument for the shadow_view bind group at
+    /// `view_global_index`. The buffer is laid out with
+    /// `SHADOW_VIEW_STRIDE`-byte slots so offsets are
+    /// `min-uniform-buffer-offset-alignment` compatible.
+    pub fn shadow_view_dynamic_offset(view_global_index: u32) -> u32 {
+        view_global_index * SHADOW_VIEW_STRIDE as u32
     }
 
     /// Iterates all per-frame caster records — used by the render
@@ -1132,6 +1208,26 @@ async fn build_shadow_pipeline(
 /// matrix. Handles glam's right-handed perspective convention; falls
 /// back to `(0.1, 100.0)` for matrices we don't recognise
 /// (orthographic, custom).
+/// Writes one entry into the per-view shadow uniform buffer at slot
+/// `view_slot`. Buffer is laid out at `SHADOW_VIEW_STRIDE`-byte stride
+/// so dynamic offsets stay aligned; only the first
+/// `SHADOW_VIEW_BYTES` of each slot carry data.
+fn write_shadow_view_slot(
+    dest: &mut [u8],
+    view_slot: usize,
+    view_projection: &Mat4,
+    depth_bias: f32,
+    normal_bias: f32,
+) {
+    let off = view_slot * SHADOW_VIEW_STRIDE;
+    debug_assert!(off + SHADOW_VIEW_BYTES <= dest.len());
+    let cols = view_projection.to_cols_array();
+    let mat_bytes: &[u8] = unsafe { std::slice::from_raw_parts(cols.as_ptr() as *const u8, 64) };
+    dest[off..off + 64].copy_from_slice(mat_bytes);
+    dest[off + 64..off + 68].copy_from_slice(&depth_bias.to_ne_bytes());
+    dest[off + 68..off + 72].copy_from_slice(&normal_bias.to_ne_bytes());
+}
+
 /// Quick scalar drift metric between two view-projection matrices.
 /// Sum of per-element absolute differences; used by the temporal
 /// throttle to invalidate cached cascades when the camera or light
