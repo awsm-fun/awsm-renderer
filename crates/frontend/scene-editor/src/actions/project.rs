@@ -134,6 +134,7 @@ fn collect_referenced_asset_ids(scene: &crate::scene::Scene) -> HashSet<AssetId>
                     mesh,
                     material,
                     inline_material,
+                    ..
                 } => {
                     // Captured-mesh side file — the bytes ride along on
                     // Save, and cleanup must not nuke the table entry

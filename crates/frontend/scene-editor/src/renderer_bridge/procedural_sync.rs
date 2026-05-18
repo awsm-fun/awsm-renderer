@@ -73,6 +73,7 @@ pub async fn materialize_procedural(
             shape,
             material,
             inline_material,
+            ..
         } => materialize_primitive(entry, parent_tk, shape, material, inline_material).await,
         NodeKind::Line(def) => materialize_line(entry, parent_tk, def).await,
         NodeKind::Sprite(def) => materialize_sprite(entry, parent_tk, def).await,
@@ -80,6 +81,7 @@ pub async fn materialize_procedural(
             def,
             material,
             inline_material,
+            ..
         } => {
             let curve_def = lookup_curve_def(def.curve_node);
             match curve_def {
@@ -119,6 +121,7 @@ pub async fn materialize_procedural(
                         shape,
                         material,
                         inline_material,
+                        ..
                     }),
                 ) => {
                     materialize_instances_along_curve(
@@ -151,6 +154,7 @@ pub async fn materialize_procedural(
             mesh,
             material,
             inline_material,
+            ..
         } => {
             // Captured-procedural-mesh asset (F10). `mesh_cache` loads
             // the bytes on-demand — from `pending_assets` if captured

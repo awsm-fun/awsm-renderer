@@ -639,7 +639,17 @@ async fn apply_kind_light(entry: Arc<RendererNode>, cfg: crate::scene::LightConf
     *entry.asset_id.lock().unwrap() = None;
     entry.node.asset_status.set(AssetStatus::Idle);
     let light = light_from_config(&cfg, Vec3::ZERO, Vec3::NEG_Z);
-    let key = with_renderer_mut(move |r| r.lights.insert(light)).await;
+    let shadow_params = light_shadow_params_from_config(cfg.shadow());
+    let key = with_renderer_mut(move |r| {
+        let key = r.lights.insert(light)?;
+        // Propagate the schema's shadow config to the renderer's
+        // runtime mirror. The setter currently no-ops (Phase 0/1
+        // scaffold) but the call is in place so phase 2's caster
+        // registry picks up authored values immediately.
+        let _ = r.set_light_shadow_params(key, shadow_params);
+        Ok::<_, awsm_renderer::error::AwsmError>(key)
+    })
+    .await;
     if let Ok(key) = key {
         *entry.light_key.lock().unwrap() = Some(key);
     }
@@ -808,6 +818,7 @@ async fn try_sweep_material_only_update(entry: &Arc<RendererNode>, kind: &NodeKi
             def,
             material,
             inline_material,
+            ..
         } => (def.clone(), *material, inline_material.clone()),
         _ => return false,
     };
@@ -878,6 +889,57 @@ async fn clear_lines(entry: &Arc<RendererNode>) {
     .await;
 }
 
+/// Schema → runtime conversion for a light's shadow configuration.
+/// This is the only place in the codebase that performs this
+/// translation; non-editor consumers construct `LightShadowParams`
+/// directly.
+pub fn light_shadow_params_from_config(
+    cfg: &awsm_scene_schema::LightShadowConfig,
+) -> awsm_renderer::shadows::LightShadowParams {
+    use awsm_renderer::shadows as r;
+    use awsm_scene_schema as s;
+    r::LightShadowParams {
+        cast: cfg.cast,
+        depth_bias: cfg.depth_bias,
+        normal_bias: cfg.normal_bias,
+        resolution: cfg.resolution,
+        hardness: match cfg.hardness {
+            s::LightShadowHardness::Hard => r::LightShadowHardness::Hard,
+            s::LightShadowHardness::Soft => r::LightShadowHardness::Soft,
+            s::LightShadowHardness::Pcss => r::LightShadowHardness::Pcss,
+        },
+        pcss_penumbra_scale: cfg.pcss_penumbra_scale,
+        max_distance: cfg.max_distance,
+        cascade_count: cfg.cascade_count,
+        cascade_split_lambda: cfg.cascade_split_lambda,
+        evsm_cutoff: match cfg.evsm_cutoff {
+            s::EvsmCutoff::Off => r::EvsmCutoff::Off,
+            s::EvsmCutoff::LastCascade => r::EvsmCutoff::LastCascade,
+            s::EvsmCutoff::LastTwoCascades => r::EvsmCutoff::LastTwoCascades,
+        },
+        far_cascade_update_rate: match cfg.far_cascade_update_rate {
+            s::FarCascadeUpdateRate::EveryFrame => r::FarCascadeUpdateRate::EveryFrame,
+            s::FarCascadeUpdateRate::Every2Frames => r::FarCascadeUpdateRate::Every2Frames,
+            s::FarCascadeUpdateRate::Every4Frames => r::FarCascadeUpdateRate::Every4Frames,
+            s::FarCascadeUpdateRate::Every8Frames => r::FarCascadeUpdateRate::Every8Frames,
+        },
+    }
+}
+
+/// Schema → runtime conversion for a mesh's shadow flags.
+///
+/// Wired into per-mesh creation sites in phase 2 once the renderer
+/// actually consumes the flags.
+#[allow(dead_code)]
+pub fn mesh_shadow_flags_from_config(
+    cfg: &awsm_scene_schema::MeshShadowConfig,
+) -> awsm_renderer::shadows::MeshShadowFlags {
+    awsm_renderer::shadows::MeshShadowFlags {
+        cast: cfg.cast,
+        receive: cfg.receive,
+    }
+}
+
 fn light_from_config(
     cfg: &crate::scene::LightConfig,
     position: Vec3,
@@ -886,7 +948,9 @@ fn light_from_config(
     use crate::scene::LightConfig;
     use awsm_renderer::lights::Light;
     match cfg {
-        LightConfig::Directional { color, intensity } => Light::Directional {
+        LightConfig::Directional {
+            color, intensity, ..
+        } => Light::Directional {
             color: *color,
             intensity: *intensity,
             direction: direction.to_array(),
@@ -895,6 +959,7 @@ fn light_from_config(
             color,
             intensity,
             range,
+            ..
         } => Light::Point {
             color: *color,
             intensity: *intensity,
@@ -907,6 +972,7 @@ fn light_from_config(
             range,
             inner_angle,
             outer_angle,
+            ..
         } => Light::Spot {
             color: *color,
             intensity: *intensity,

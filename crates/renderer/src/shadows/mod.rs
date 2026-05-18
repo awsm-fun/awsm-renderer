@@ -325,22 +325,31 @@ impl AwsmRenderer {
     }
 
     /// Sets a mesh's shadow flags. Takes effect on the next `render()`.
-    ///
-    /// Phase 0: no-op.
+    /// Errors if the mesh key is unknown.
     pub fn set_mesh_shadow_flags(
         &mut self,
-        _key: crate::meshes::MeshKey,
-        _flags: MeshShadowFlags,
+        key: crate::meshes::MeshKey,
+        flags: MeshShadowFlags,
     ) -> Result<(), AwsmShadowError> {
+        let mesh = self
+            .meshes
+            .get_mut(key)
+            .map_err(|_| AwsmShadowError::UnknownMesh)?;
+        mesh.cast_shadows = flags.cast;
+        mesh.receive_shadows = flags.receive;
         Ok(())
     }
 
     /// Returns the current shadow flags for a mesh. Returns the
-    /// per-mesh default if never explicitly set.
-    ///
-    /// Phase 0: always returns the opaque default (cast + receive).
-    pub fn mesh_shadow_flags(&self, _key: crate::meshes::MeshKey) -> MeshShadowFlags {
-        MeshShadowFlags::default()
+    /// per-mesh default if the mesh key is unknown.
+    pub fn mesh_shadow_flags(&self, key: crate::meshes::MeshKey) -> MeshShadowFlags {
+        match self.meshes.get(key) {
+            Ok(mesh) => MeshShadowFlags {
+                cast: mesh.cast_shadows,
+                receive: mesh.receive_shadows,
+            },
+            Err(_) => MeshShadowFlags::default(),
+        }
     }
 }
 

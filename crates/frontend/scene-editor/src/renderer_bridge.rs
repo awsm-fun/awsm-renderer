@@ -240,7 +240,9 @@ fn sync_lights_pre_render(renderer: &mut awsm_renderer::AwsmRenderer) {
                 0.0
             };
             let new_light = match &cfg {
-                crate::scene::LightConfig::Directional { color, intensity } => Light::Directional {
+                crate::scene::LightConfig::Directional {
+                    color, intensity, ..
+                } => Light::Directional {
                     color: *color,
                     intensity: *intensity * intensity_scale,
                     direction: direction.to_array(),
@@ -249,6 +251,7 @@ fn sync_lights_pre_render(renderer: &mut awsm_renderer::AwsmRenderer) {
                     color,
                     intensity,
                     range,
+                    ..
                 } => Light::Point {
                     color: *color,
                     intensity: *intensity * intensity_scale,
@@ -261,6 +264,7 @@ fn sync_lights_pre_render(renderer: &mut awsm_renderer::AwsmRenderer) {
                     range,
                     inner_angle,
                     outer_angle,
+                    ..
                 } => Light::Spot {
                     color: *color,
                     intensity: *intensity * intensity_scale,

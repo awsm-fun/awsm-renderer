@@ -117,6 +117,8 @@ pub enum NodeKind {
         /// quick authoring without going through the asset table.
         #[serde(default)]
         inline_material: MaterialDef,
+        #[serde(default)]
+        shadow: MeshShadowConfig,
     },
     /// A captured procedural mesh stored as an asset; multiple nodes can share it.
     Mesh {
@@ -124,6 +126,8 @@ pub enum NodeKind {
         material: Option<MaterialRef>,
         #[serde(default)]
         inline_material: MaterialDef,
+        #[serde(default)]
+        shadow: MeshShadowConfig,
     },
     /// Catmull-Rom curve (control points + closed + tension). Emits no renderer
     /// node directly; consumed by sweep / instance / camera nodes.
@@ -134,6 +138,8 @@ pub enum NodeKind {
         material: Option<MaterialRef>,
         #[serde(default)]
         inline_material: MaterialDef,
+        #[serde(default)]
+        shadow: MeshShadowConfig,
     },
     /// Place copies of a source node along a curve.
     InstancesAlongCurve(InstancesAlongCurveDef),
@@ -143,6 +149,46 @@ pub enum NodeKind {
     Sprite(SpriteDef),
     /// CPU particle emitter.
     ParticleEmitter(ParticleEmitterDef),
+}
+
+/// Per-mesh shadow flags. Sprite, line, and particle nodes do NOT
+/// carry this — they are hard-coded to no-cast / no-receive in v1.
+///
+/// Defaults to both `cast` and `receive` true. Transparent materials
+/// should override this to `TRANSPARENT_DEFAULT` (both off) — the
+/// renderer bridge or scene loader is responsible for that
+/// reinterpretation since the schema doesn't know the resolved
+/// material's alpha mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct MeshShadowConfig {
+    /// Whether the mesh appears in the shadow-generation pass.
+    #[serde(default = "default_true_msc")]
+    pub cast: bool,
+    /// Whether the mesh's shaded pixels darken under shadow.
+    #[serde(default = "default_true_msc")]
+    pub receive: bool,
+}
+
+impl Default for MeshShadowConfig {
+    fn default() -> Self {
+        Self {
+            cast: true,
+            receive: true,
+        }
+    }
+}
+
+impl MeshShadowConfig {
+    /// Conservative default for transparent materials.
+    pub const TRANSPARENT_DEFAULT: Self = Self {
+        cast: false,
+        receive: false,
+    };
+}
+
+fn default_true_msc() -> bool {
+    true
 }
 
 impl NodeKind {
@@ -161,6 +207,32 @@ impl NodeKind {
             Self::Line(_) => "line",
             Self::Sprite(_) => "sprite",
             Self::ParticleEmitter(_) => "particle",
+        }
+    }
+
+    /// Returns this node's mesh shadow config if the variant carries
+    /// one; returns `None` for non-renderable nodes (groups, lights,
+    /// cameras, curves, lines, sprites, particles).
+    pub fn mesh_shadow(&self) -> Option<&MeshShadowConfig> {
+        match self {
+            Self::Model(r) => Some(&r.shadow),
+            Self::Primitive { shadow, .. }
+            | Self::Mesh { shadow, .. }
+            | Self::SweepAlongCurve { shadow, .. } => Some(shadow),
+            Self::InstancesAlongCurve(d) => Some(&d.shadow),
+            _ => None,
+        }
+    }
+
+    /// Mutable variant of [`Self::mesh_shadow`].
+    pub fn mesh_shadow_mut(&mut self) -> Option<&mut MeshShadowConfig> {
+        match self {
+            Self::Model(r) => Some(&mut r.shadow),
+            Self::Primitive { shadow, .. }
+            | Self::Mesh { shadow, .. }
+            | Self::SweepAlongCurve { shadow, .. } => Some(shadow),
+            Self::InstancesAlongCurve(d) => Some(&mut d.shadow),
+            _ => None,
         }
     }
 }

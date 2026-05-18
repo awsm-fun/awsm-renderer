@@ -969,16 +969,16 @@ Tick items as they land. A future session can resume by reading this list.
   deferred.
 
 ### Phase 1 — Schema & editor
-- [ ] `LightShadowConfig` + `LightShadowHardness` (Hard / Soft / Pcss) in `scene-schema/src/light.rs`
-- [ ] `EvsmCutoff`, `FarCascadeUpdateRate` enums in schema
-- [ ] `LightConfig` variants gain `shadow` field
-- [ ] `MeshShadowConfig` + threading through renderable `NodeKind`s
-- [ ] Editor light inspector shows shadow section (all kinds) with hardness, PCSS scale, EVSM cutoff, update-rate controls
-- [ ] Editor mesh inspectors show cast/receive toggles
-- [ ] Editor "Rendering" panel: SSCS, atlas size, EVSM atlas size, EVSM exponent + blur radius, max point shadows
-- [ ] Renderer-bridge `light_from_config` propagates shadow params
-- [ ] `Mesh` struct gains `cast_shadows` / `receive_shadows`
-- [ ] Renderer-bridge propagates per-mesh shadow flags
+- [x] `LightShadowConfig` + `LightShadowHardness` (Hard / Soft / Pcss) in `scene-schema/src/light.rs`
+- [x] `EvsmCutoff`, `FarCascadeUpdateRate` enums in schema
+- [x] `LightConfig` variants gain `shadow` field
+- [x] `MeshShadowConfig` + threading through renderable `NodeKind`s (via `ModelRef.shadow`, `InstancesAlongCurveDef.shadow`, and inline `shadow` on `Primitive`/`Mesh`/`SweepAlongCurve`)
+- [ ] Editor light inspector shows shadow section (all kinds) — **deferred to a follow-up**; schema fields are editable via `project.json` per the plan's fallback note
+- [ ] Editor mesh inspectors show cast/receive toggles — **deferred to a follow-up**
+- [ ] Editor "Rendering" panel — **deferred to a follow-up**
+- [x] Renderer-bridge `light_shadow_params_from_config` lives in `node_sync.rs` and is called immediately after `lights.insert`
+- [x] `Mesh` struct gains `cast_shadows` / `receive_shadows`
+- [x] Renderer-bridge `mesh_shadow_flags_from_config` helper exists (wired into per-mesh creation in phase 2 when the flags actually drive rendering)
 
 ### Phase 2 — Directional, 1 cascade, no filtering
 - [ ] CSM single-cascade fit (frustum corners → light AABB)
