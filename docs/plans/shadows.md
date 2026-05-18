@@ -1043,13 +1043,13 @@ Tick items as they land. A future session can resume by reading this list.
 - [x] Spot honors Hard / Soft / Pcss via the existing hardness branch in `sample_shadow_descriptor`
 
 ### Phase 8 — Point (cubemap)
-- [ ] `texture_cube_array<depth>` cube pool
-- [ ] Slot allocator
-- [ ] 6-face render per point light
-- [ ] `sample_shadow_cube` in shader
-- [ ] PCF on cubes (4-tap soft variant)
-- [ ] Overflow logging
-- [ ] Point shadow visible in test scene
+- [x] `texture_cube_array<depth>` cube pool — `max_point_shadows × 6` layers at `POINT_SHADOW_RESOLUTION = 512`
+- [x] Slot allocator — `Vec<Option<LightKey>>`; releases slots whose owner stops casting
+- [x] 6-face render per point light (6 `LightShadowView`s with per-face view-projections + `cube_layer` index)
+- [x] `sample_shadow_cube` in shader
+- [x] PCF on cubes (1-tap for Hard, 5-tap axis-perturbation for Soft / PCSS)
+- [x] Overflow logging (`cube_overflow` warns once per frame)
+- [x] Render pass dispatch handles the `cube_layer` attachment, falling back to the atlas view for 2D casters
 
 ### Phase 9 — Transparent-pass shadows
 - [ ] Shadow bind group on transparent pass

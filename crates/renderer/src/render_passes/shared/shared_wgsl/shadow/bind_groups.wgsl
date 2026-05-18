@@ -84,6 +84,63 @@ fn pcss_rotate(v: vec2<f32>, sin_a: f32, cos_a: f32) -> vec2<f32> {
     return vec2<f32>(v.x * cos_a - v.y * sin_a, v.x * sin_a + v.y * cos_a);
 }
 
+// Sample a point-light cube shadow. The descriptor repurposes
+// `atlas_rect.xyz` for the light's world position and `atlas_rect.w`
+// for its range; `cascade_info.y` is the cube-pool slot index.
+//
+// Phase 8 ships a 1-tap compare for hard, 4-tap axis-offset taps for
+// soft / PCSS. Proper tangent-aligned cube PCF is left for v2.
+fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal: vec3<f32>) -> f32 {
+    let light_pos = desc.atlas_rect.xyz;
+    let range = max(desc.atlas_rect.w, 0.01);
+    let slot = i32(desc.cascade_info.y);
+
+    let biased_pos = world_pos + world_normal * desc.bias_params.y;
+    let surface_to_light = light_pos - biased_pos;
+    let dist = length(surface_to_light);
+    if dist >= range {
+        return 1.0;
+    }
+    // The cube samples by direction from cube center → texel; pass
+    // `light → surface` so the shadow map (rendered with the same
+    // view direction in the gen pass) matches.
+    let dir = -surface_to_light / max(dist, 1e-4);
+    let ref_depth = (dist / range) - desc.bias_params.x;
+    let hardness = desc.bias_params.z;
+
+    if hardness < 0.5 {
+        return textureSampleCompareLevel(
+            shadow_cube_array,
+            shadow_cube_sampler,
+            dir,
+            slot,
+            ref_depth,
+        );
+    }
+    // 4-tap axis-perturbation soft kernel. Proper cube PCF needs a
+    // tangent-plane basis; v1 uses the cheapest reasonable filter.
+    let eps = 0.02;
+    let offsets = array<vec3<f32>, 4>(
+        vec3<f32>( eps,  eps,  0.0),
+        vec3<f32>(-eps,  eps,  0.0),
+        vec3<f32>( eps, -eps,  0.0),
+        vec3<f32>(-eps, -eps,  0.0),
+    );
+    var sum = textureSampleCompareLevel(
+        shadow_cube_array, shadow_cube_sampler, dir, slot, ref_depth,
+    );
+    for (var i = 0u; i < 4u; i = i + 1u) {
+        sum = sum + textureSampleCompareLevel(
+            shadow_cube_array,
+            shadow_cube_sampler,
+            normalize(dir + offsets[i]),
+            slot,
+            ref_depth,
+        );
+    }
+    return sum / 5.0;
+}
+
 // Sample a single shadow descriptor (cascade / spot / face). Returns
 // `[0, 1]` visibility (1.0 = lit, 0.0 = fully shadowed).
 //
@@ -100,6 +157,15 @@ fn sample_shadow_descriptor(
         return 1.0;
     }
     let desc = shadow_descriptors.items[descriptor_index];
+    // cascade_info.w encodes the descriptor kind:
+    //   0.0 = 2D PCF (directional cascade / spot)
+    //   1.0 = 2D EVSM cascade (falls back to PCF until the moment
+    //         writer lands — phase 5 deferred)
+    //   2.0 = cube (point light)
+    let kind = desc.cascade_info.w;
+    if kind > 1.5 {
+        return sample_shadow_cube(desc, world_pos, world_normal);
+    }
     // EVSM cascades currently fall through to PCF — the moment write
     // pass / blur compute aren't online yet. The `cascade_info.w` flag
     // is preserved for the phase-5 follow-up that swaps the sample

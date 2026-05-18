@@ -90,6 +90,10 @@ pub const SHADOW_GLOBALS_BYTES: usize = 48;
 /// Size in bytes of the per-pass shadow-view uniform.
 pub const SHADOW_VIEW_BYTES: usize = 80;
 
+/// Per-face cube shadow map resolution. Hardcoded for v1; phase 13
+/// may surface this as a config knob alongside `atlas_size`.
+pub const POINT_SHADOW_RESOLUTION: u32 = 512;
+
 /// Sentinel meaning "this light has no shadow descriptor allocated"
 /// in the packed `LightPacked` row 4. The shading shader uses this to
 /// short-circuit shadow sampling.
@@ -114,8 +118,17 @@ pub struct Shadows {
     pub evsm_atlas_view: web_sys::GpuTextureView,
     /// Cubemap array used for point-light shadows.
     pub cube_array_texture: web_sys::GpuTexture,
-    /// Cube-array view spanning every slice.
+    /// Cube-array view spanning every slice — used as the
+    /// `texture_depth_cube_array` binding in the material-opaque
+    /// shading pass.
     pub cube_array_view: web_sys::GpuTextureView,
+    /// One 2D-array depth view per cube face (6 per slot). Indexed
+    /// as `slot * 6 + face`. Used as the render attachment when
+    /// generating each face's shadow map.
+    pub cube_face_views: Vec<web_sys::GpuTextureView>,
+    /// Per-slot owner. `None` means the slot is free; `Some(key)`
+    /// means it currently holds the shadow for that point light.
+    pub cube_slots: Vec<Option<LightKey>>,
     /// Storage buffer of per-shadow descriptors. Kept for forward
     /// compatibility with the plan's storage-buffer layout; the
     /// material-opaque bind group reads from `descriptors_uniform`
@@ -182,8 +195,13 @@ pub struct LightShadowRecord {
 pub struct LightShadowView {
     /// Light-space view-projection matrix.
     pub view_projection: Mat4,
-    /// Atlas rectangle in texels (x, y, w, h).
+    /// Atlas rectangle in texels (x, y, w, h). Used as the viewport
+    /// for 2D shadow generation; ignored for cube faces (the cube
+    /// face view is rendered at the texture's native resolution).
     pub atlas_rect: [u32; 4],
+    /// Cube face layer index when this view targets the cube pool —
+    /// `slot * 6 + face_index`. `None` for 2D atlas views.
+    pub cube_layer: Option<u32>,
 }
 
 static SHADOW_DESCRIPTOR_UNIFORM_BYTES: LazyLock<usize> =
@@ -238,18 +256,25 @@ impl Shadows {
             .create_view()
             .map_err(AwsmCoreError::create_texture_view)?;
 
+        let cube_slot_count = config.max_point_shadows.max(1);
+        let cube_layer_count = cube_slot_count * 6;
         let cube_array_texture = gpu.create_texture(
             &TextureDescriptor::new(
                 TextureFormat::Depth32float,
-                Extent3d::new(1, Some(1), Some(6)),
+                Extent3d::new(
+                    POINT_SHADOW_RESOLUTION,
+                    Some(POINT_SHADOW_RESOLUTION),
+                    Some(cube_layer_count),
+                ),
                 TextureUsage::new()
                     .with_render_attachment()
                     .with_texture_binding(),
             )
-            .with_label("Shadow Cube Pool (placeholder)")
+            .with_label("Shadow Cube Pool")
             .into(),
         )?;
         let cube_array_view = create_cube_array_view(&cube_array_texture)?;
+        let cube_face_views = build_cube_face_views(&cube_array_texture, cube_layer_count)?;
 
         let descriptors_buffer = gpu.create_buffer(
             &BufferDescriptor::new(
@@ -378,6 +403,8 @@ impl Shadows {
             evsm_atlas_view,
             cube_array_texture,
             cube_array_view,
+            cube_face_views,
+            cube_slots: vec![None; cube_slot_count as usize],
             descriptors_buffer,
             descriptors_uniform,
             globals_buffer,
@@ -526,6 +553,16 @@ impl Shadows {
         let mut atlas_x: u32 = 0;
         let mut atlas_y: u32 = 0;
         let mut row_height: u32 = 0;
+        // Reset cube slot ownership for lights that no longer cast.
+        // The match loop below re-claims slots for surviving casters.
+        for slot in self.cube_slots.iter_mut() {
+            if let Some(key) = *slot {
+                if !self.params.get(key).map(|p| p.cast).unwrap_or(false) {
+                    *slot = None;
+                }
+            }
+        }
+        let mut cube_overflow = false;
         let mut place = |w: u32, h: u32, atlas_size: u32| -> Option<[u32; 4]> {
             if atlas_x + w > atlas_size {
                 atlas_x = 0;
@@ -618,6 +655,7 @@ impl Shadows {
                         views.push(LightShadowView {
                             view_projection: cascade.view_projection,
                             atlas_rect: rect,
+                            cube_layer: None,
                         });
                         self.active_descriptor_count += 1;
                     }
@@ -690,16 +728,110 @@ impl Shadows {
                             views: vec![LightShadowView {
                                 view_projection,
                                 atlas_rect: rect,
+                                cube_layer: None,
                             }],
                             descriptor_base: descriptor_index,
                         },
                     );
                     self.active_descriptor_count += 1;
                 }
-                crate::lights::Light::Point { .. } => {
-                    // Phase 8 wires the 6-face cube generation. For
-                    // now skip — the schema flag still round-trips so
-                    // the user-authored configuration is preserved.
+                crate::lights::Light::Point {
+                    position, range, ..
+                } => {
+                    if self.active_descriptor_count >= MAX_SHADOW_DESCRIPTORS {
+                        tracing::warn!("shadow descriptor capacity exhausted (point)");
+                        break;
+                    }
+                    let slot = self
+                        .cube_slots
+                        .iter()
+                        .position(|s| s.map(|k| k == light_key).unwrap_or(false))
+                        .or_else(|| self.cube_slots.iter().position(|s| s.is_none()));
+                    let Some(slot_index) = slot else {
+                        cube_overflow = true;
+                        continue;
+                    };
+                    self.cube_slots[slot_index] = Some(light_key);
+
+                    let pos = glam::Vec3::from(*position);
+                    let r = (*range).max(0.05);
+                    let projection = glam::Mat4::perspective_rh(
+                        std::f32::consts::FRAC_PI_2,
+                        1.0,
+                        0.05,
+                        r,
+                    );
+                    // glTF cube-map face conventions, in the order
+                    // WebGPU lays out cube layers: +X, -X, +Y, -Y, +Z, -Z.
+                    let face_dirs = [
+                        (glam::Vec3::X, -glam::Vec3::Y),
+                        (-glam::Vec3::X, -glam::Vec3::Y),
+                        (glam::Vec3::Y, glam::Vec3::Z),
+                        (-glam::Vec3::Y, -glam::Vec3::Z),
+                        (glam::Vec3::Z, -glam::Vec3::Y),
+                        (-glam::Vec3::Z, -glam::Vec3::Y),
+                    ];
+
+                    let descriptor_base = self.active_descriptor_count;
+                    let mut views: Vec<LightShadowView> = Vec::with_capacity(6);
+                    for (face_idx, (dir, up)) in face_dirs.iter().enumerate() {
+                        let view = glam::Mat4::look_at_rh(pos, pos + *dir, *up);
+                        let vp = projection * view;
+                        views.push(LightShadowView {
+                            view_projection: vp,
+                            atlas_rect: [0, 0, POINT_SHADOW_RESOLUTION, POINT_SHADOW_RESOLUTION],
+                            cube_layer: Some(slot_index as u32 * 6 + face_idx as u32),
+                        });
+                    }
+
+                    // Only one descriptor per point light. Sample-site
+                    // uses world-space direction to pick the face.
+                    let descriptor_index = self.active_descriptor_count;
+                    let off = descriptor_index as usize * SHADOW_DESCRIPTOR_BYTES;
+                    write_shadow_descriptor(
+                        &mut descriptor_bytes[off..off + SHADOW_DESCRIPTOR_BYTES],
+                        // view_projection unused for cube; zero is fine.
+                        &glam::Mat4::ZERO,
+                        // Repurpose atlas_rect for (light_pos.xyz, range)
+                        // — packed at the same byte offsets so the
+                        // shader can pull them straight from the same
+                        // vec4 it'd otherwise use for UV math.
+                        [0, 0, 0, 0],
+                        self.atlas_size,
+                        params.depth_bias,
+                        params.normal_bias,
+                        params.hardness,
+                        params.pcss_penumbra_scale,
+                        0,
+                        1,
+                        f32::MAX,
+                    );
+                    // Patch in the cube-specific atlas_rect (light_pos +
+                    // range) and the "kind = cube + slice index" in
+                    // `cascade_info.w / .y`.
+                    descriptor_bytes[off + 64..off + 68]
+                        .copy_from_slice(&pos.x.to_ne_bytes());
+                    descriptor_bytes[off + 68..off + 72]
+                        .copy_from_slice(&pos.y.to_ne_bytes());
+                    descriptor_bytes[off + 72..off + 76]
+                        .copy_from_slice(&pos.z.to_ne_bytes());
+                    descriptor_bytes[off + 76..off + 80]
+                        .copy_from_slice(&r.to_ne_bytes());
+                    // cascade_info.y = slot index (as f32)
+                    descriptor_bytes[off + 100..off + 104]
+                        .copy_from_slice(&(slot_index as f32).to_ne_bytes());
+                    // cascade_info.w = 2.0 → cube
+                    descriptor_bytes[off + 108..off + 112]
+                        .copy_from_slice(&2.0_f32.to_ne_bytes());
+
+                    self.records.insert(
+                        light_key,
+                        LightShadowRecord {
+                            views,
+                            descriptor_base,
+                        },
+                    );
+                    self.active_descriptor_count += 1;
                 }
             }
         }
@@ -712,6 +844,13 @@ impl Shadows {
                 None,
                 None,
             )?;
+        }
+
+        if cube_overflow {
+            tracing::warn!(
+                "point-light shadow cube pool exhausted (capacity {})",
+                self.cube_slots.len()
+            );
         }
 
         self.frame_count = self.frame_count.wrapping_add(1);
@@ -884,6 +1023,29 @@ fn create_cube_array_view(
         .create_view_with_descriptor(&descriptor)
         .map_err(AwsmCoreError::create_texture_view)
         .map_err(Into::into)
+}
+
+/// One 2D-array depth view per cube face. Indexed as
+/// `slot_index * 6 + face_index` so the render-pass dispatch can grab
+/// the right attachment without rebuilding the view each frame.
+fn build_cube_face_views(
+    texture: &web_sys::GpuTexture,
+    total_layers: u32,
+) -> Result<Vec<web_sys::GpuTextureView>, AwsmShadowError> {
+    let mut views = Vec::with_capacity(total_layers as usize);
+    for layer in 0..total_layers {
+        let descriptor: web_sys::GpuTextureViewDescriptor =
+            TextureViewDescriptor::new(Some("Shadow Cube Face"))
+                .with_dimension(TextureViewDimension::N2d)
+                .with_base_array_layer(layer)
+                .with_array_layer_count(1)
+                .into();
+        let view = texture
+            .create_view_with_descriptor(&descriptor)
+            .map_err(AwsmCoreError::create_texture_view)?;
+        views.push(view);
+    }
+    Ok(views)
 }
 
 impl AwsmRenderer {

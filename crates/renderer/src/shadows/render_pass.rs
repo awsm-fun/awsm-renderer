@@ -41,7 +41,14 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
                     .unwrap_or(0.0),
             )?;
 
-            let depth_attachment = DepthStencilAttachment::new(&shadows.atlas_view)
+            let depth_view = match view.cube_layer {
+                Some(layer) => shadows
+                    .cube_face_views
+                    .get(layer as usize)
+                    .unwrap_or(&shadows.atlas_view),
+                None => &shadows.atlas_view,
+            };
+            let depth_attachment = DepthStencilAttachment::new(depth_view)
                 .with_depth_load_op(LoadOp::Clear)
                 .with_depth_store_op(StoreOp::Store)
                 .with_depth_clear_value(1.0);
@@ -56,9 +63,11 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
                 .into(),
             )?;
 
-            // Scope to the view's atlas rect. Phase 2 covers the full
-            // atlas so the viewport is (0, 0, size, size); phase 4
-            // will set per-cascade viewports.
+            // For 2D atlas views the viewport scopes the draw to the
+            // sub-rect. For cube faces the attachment is already its
+            // own per-face view at the cube's native resolution, so
+            // the rect (POINT_RES × POINT_RES at origin) doubles up
+            // — same call site either way.
             let [x, y, w, h] = view.atlas_rect;
             render_pass.set_viewport(x as f32, y as f32, w as f32, h as f32, 0.0, 1.0);
 
