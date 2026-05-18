@@ -182,7 +182,16 @@ pub struct Shadows {
     pub frame_count: u64,
     /// Whether descriptors / globals need to be re-uploaded.
     pub dirty: bool,
+    /// Set when a write_gpu pass detected atlas overflow. The next
+    /// frame's write_gpu grows the atlas (and rebinds the opaque
+    /// shadow bind group via `BindGroupCreate::ShadowsResourcesChange`).
+    pending_atlas_grow: bool,
 }
+
+/// Upper bound for `atlas_size` when dynamic resizing kicks in. Caps
+/// the atlas at 8K to match the plan's "Shadow atlas size dropdown:
+/// 1024 / 2048 / 4096 / 8192" ceiling.
+pub const SHADOW_ATLAS_MAX_SIZE: u32 = 8192;
 
 /// Per-light shadow state recorded each frame.
 #[derive(Clone, Debug)]
@@ -452,6 +461,7 @@ impl Shadows {
             shadow_pipeline_instancing,
             frame_count: 0,
             dirty: true,
+            pending_atlas_grow: false,
         })
     }
 
@@ -529,10 +539,58 @@ impl Shadows {
         &mut self,
         _logging: &AwsmRendererLogging,
         gpu: &AwsmRendererWebGpu,
-        _bind_groups: &mut BindGroups,
+        bind_groups: &mut BindGroups,
         camera: &crate::camera::CameraBuffer,
         lights: &crate::lights::Lights,
     ) -> Result<(), AwsmShadowError> {
+        // Phase 13: dynamic atlas resize. If the previous frame's
+        // packer ran out of room we grow the atlas to the next power
+        // of two (capped at `SHADOW_ATLAS_MAX_SIZE`) before this
+        // frame's pack. Recreates the texture + view and tells the
+        // bind-group reconciler to rebind the opaque shadow group.
+        if self.pending_atlas_grow {
+            self.pending_atlas_grow = false;
+            let new_size = (self.atlas_size.saturating_mul(2)).min(SHADOW_ATLAS_MAX_SIZE);
+            if new_size > self.atlas_size {
+                tracing::info!(
+                    "shadow atlas overflow → growing from {} to {}",
+                    self.atlas_size,
+                    new_size
+                );
+                self.atlas_size = new_size;
+                self.atlas_texture = gpu.create_texture(
+                    &TextureDescriptor::new(
+                        TextureFormat::Depth32float,
+                        Extent3d::new(self.atlas_size, Some(self.atlas_size), Some(1)),
+                        TextureUsage::new()
+                            .with_render_attachment()
+                            .with_texture_binding(),
+                    )
+                    .with_label("Shadow Atlas")
+                    .into(),
+                )?;
+                self.atlas_view = self
+                    .atlas_texture
+                    .create_view()
+                    .map_err(AwsmCoreError::create_texture_view)?;
+                bind_groups.mark_create(
+                    crate::bind_groups::BindGroupCreate::ShadowsResourcesChange,
+                );
+                // Force the throttle to re-render every cascade at the
+                // new atlas location.
+                for entries in self.throttle.values_mut() {
+                    for t in entries.iter_mut() {
+                        t.last_rendered_frame = u64::MAX;
+                    }
+                }
+            } else {
+                tracing::warn!(
+                    "shadow atlas at max size {}, cannot grow further",
+                    SHADOW_ATLAS_MAX_SIZE
+                );
+            }
+        }
+
         if self.dirty {
             // Globals layout (matches WGSL `ShadowGlobals`).
             let mut data = [0u8; SHADOW_GLOBALS_BYTES];
@@ -655,9 +713,10 @@ impl Shadows {
                     for (cascade_index, (cascade, res, split_far)) in cascades.iter().enumerate() {
                         let Some(rect) = place(*res, *res, self.atlas_size) else {
                             tracing::warn!(
-                                "shadow atlas overflow on cascade {}",
+                                "shadow atlas overflow on cascade {} — will grow next frame",
                                 cascade_index
                             );
+                            self.pending_atlas_grow = true;
                             break;
                         };
 
@@ -724,7 +783,8 @@ impl Shadows {
                     }
                     let res = params.resolution.max(16);
                     let Some(rect) = place(res, res, self.atlas_size) else {
-                        tracing::warn!("shadow atlas overflow on spot light");
+                        tracing::warn!("shadow atlas overflow on spot light — will grow next frame");
+                        self.pending_atlas_grow = true;
                         continue;
                     };
                     let pos = glam::Vec3::from(*position);

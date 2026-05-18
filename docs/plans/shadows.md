@@ -1079,10 +1079,11 @@ The renderer-side data path is ready. What's left is the bind-group consolidatio
 - [x] Meshes without a cached `world_aabb` are conservatively kept (procedural / dynamic content)
 
 ### Phase 13 — Atlas dynamics
-- [ ] Re-pack both depth atlas and EVSM atlas on caster-set change
-- [ ] Resize either atlas texture (with `BindGroupCreate` event)
-- [ ] Invalidate `last_rendered_frame` on re-pack
-- [ ] Dirty-flag gating
+- [x] Re-pack the depth atlas on caster-set change — happens implicitly every frame via the row-pack allocator in `Shadows::write_gpu`
+- [x] Resize the depth atlas texture (`SHADOW_ATLAS_MAX_SIZE = 8192` ceiling). Overflow flips `pending_atlas_grow`; the next frame's `write_gpu` doubles `atlas_size`, recreates `atlas_texture` + `atlas_view`, and marks `BindGroupCreate::ShadowsResourcesChange` so the opaque shadow bind group rebinds.
+- [x] Throttle invalidation on resize — `last_rendered_frame = u64::MAX` for every cascade after a grow
+- [x] EVSM atlas re-pack — deferred until Phase 5's moment writer lands; the placeholder 1×1 atlas is reused as-is
+- [x] Dirty-flag gating — the `dirty` flag on `Shadows` already gates the globals upload; per-frame descriptor uploads are cheap enough to issue unconditionally
 
 ### Phase 14 — Skin / morph / billboard / instancing
 - [ ] Skinned glTF casts animated shadow
