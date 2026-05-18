@@ -98,8 +98,13 @@ impl AwsmRenderer {
         // *before* the lights buffer is packed — `Lights::write_gpu`
         // queries `shadow_index_for` per-light and bakes the result
         // into `LightPacked.row4.z`.
-        self.shadows
-            .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups, &self.camera)?;
+        self.shadows.write_gpu(
+            &self.logging,
+            &self.gpu,
+            &mut self.bind_groups,
+            &self.camera,
+            &self.lights,
+        )?;
         {
             let shadows = &self.shadows;
             self.lights.write_gpu(

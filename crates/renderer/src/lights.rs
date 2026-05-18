@@ -222,6 +222,12 @@ impl Lights {
         }
     }
 
+    /// Returns the light associated with a key, or `None` if the key
+    /// is unknown.
+    pub fn get(&self, key: LightKey) -> Option<&Light> {
+        self.lights.get(key)
+    }
+
     /// Writes lighting buffers to the GPU if dirty.
     ///
     /// `shadow_index_for` resolves each light's shadow descriptor

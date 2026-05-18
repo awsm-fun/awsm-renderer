@@ -473,6 +473,7 @@ impl Shadows {
         gpu: &AwsmRendererWebGpu,
         _bind_groups: &mut BindGroups,
         camera: &crate::camera::CameraBuffer,
+        lights: &crate::lights::Lights,
     ) -> Result<(), AwsmShadowError> {
         if self.dirty {
             // Globals layout (matches WGSL `ShadowGlobals`).
@@ -519,106 +520,188 @@ impl Shadows {
         // the planes. Falls back to (0.1, 100.0) for orthographic.
         let (camera_near, camera_far) = extract_near_far(&camera_matrices.projection);
 
+        // Cursor for the row-pack atlas allocator. Phase 13 will
+        // replace this with a real packer; for now we walk left-to-
+        // right and wrap to the next row when the current row fills.
+        let mut atlas_x: u32 = 0;
+        let mut atlas_y: u32 = 0;
+        let mut row_height: u32 = 0;
+        let mut place = |w: u32, h: u32, atlas_size: u32| -> Option<[u32; 4]> {
+            if atlas_x + w > atlas_size {
+                atlas_x = 0;
+                atlas_y += row_height;
+                row_height = 0;
+            }
+            if atlas_y + h > atlas_size {
+                return None;
+            }
+            let rect = [atlas_x, atlas_y, w, h];
+            atlas_x += w;
+            row_height = row_height.max(h);
+            Some(rect)
+        };
+
         for (light_key, params) in self.params.iter() {
             if !params.cast {
                 continue;
             }
-            let cascade_count = params.cascade_count.max(1).min(4) as u32;
-            if self.active_descriptor_count + cascade_count > MAX_SHADOW_DESCRIPTORS {
-                tracing::warn!(
-                    "shadow descriptor capacity exhausted: needed {} more, have {} slots free",
-                    cascade_count,
-                    MAX_SHADOW_DESCRIPTORS - self.active_descriptor_count
-                );
-                break;
-            }
-            // TODO(phase 4 follow-up): pull the actual light direction
-            // from `Lights`. The set-of-callers refactor needed to
-            // thread `&Lights` into `Shadows::write_gpu` belongs in
-            // its own commit; for now we use a fallback sun direction
-            // matching the test scene's `Sun` node so the demo path
-            // produces a sensible cascade.
-            let direction = glam::Vec3::new(0.3, -1.0, 0.3).normalize();
-
-            let cascades = cascade::fit_cascades(
-                camera_matrices.view_projection(),
-                camera_matrices.view,
-                direction,
-                camera_near.max(0.01),
-                camera_far.min(params.max_distance).max(camera_near + 1.0),
-                cascade_count,
-                params.cascade_split_lambda.clamp(0.0, 1.0),
-                params.resolution.max(16),
-                16,
-            );
-
-            let descriptor_base = self.active_descriptor_count;
-            let mut views = Vec::with_capacity(cascades.len());
-
-            // Naive row-pack: stack cascades horizontally. Phase 13
-            // generalises this into a real packer.
-            let mut x_cursor: u32 = 0;
-            let evsm_first = match params.evsm_cutoff {
-                EvsmCutoff::Off => u32::MAX,
-                EvsmCutoff::LastCascade => cascade_count.saturating_sub(1),
-                EvsmCutoff::LastTwoCascades => cascade_count.saturating_sub(2),
+            let Some(light) = lights.get(light_key) else {
+                continue;
             };
-            for (cascade_index, (cascade, res, split_far)) in cascades.iter().enumerate() {
-                // Bail out if this row no longer fits — the atlas is
-                // big enough by default that this only kicks in for
-                // pathological resolution / cascade combos.
-                if x_cursor + res > self.atlas_size {
-                    tracing::warn!(
-                        "shadow atlas overflow on cascade {} (cursor {} + res {} > {})",
-                        cascade_index,
-                        x_cursor,
-                        res,
-                        self.atlas_size
+
+            match light {
+                crate::lights::Light::Directional { direction, .. } => {
+                    let cascade_count = params.cascade_count.max(1).min(4) as u32;
+                    if self.active_descriptor_count + cascade_count > MAX_SHADOW_DESCRIPTORS {
+                        tracing::warn!(
+                            "shadow descriptor capacity exhausted: needed {} more, have {} slots free",
+                            cascade_count,
+                            MAX_SHADOW_DESCRIPTORS - self.active_descriptor_count
+                        );
+                        break;
+                    }
+                    let dir = glam::Vec3::from(*direction);
+                    let cascades = cascade::fit_cascades(
+                        camera_matrices.view_projection(),
+                        camera_matrices.view,
+                        if dir.length_squared() > 1e-8 {
+                            dir.normalize()
+                        } else {
+                            glam::Vec3::new(0.3, -1.0, 0.3).normalize()
+                        },
+                        camera_near.max(0.01),
+                        camera_far.min(params.max_distance).max(camera_near + 1.0),
+                        cascade_count,
+                        params.cascade_split_lambda.clamp(0.0, 1.0),
+                        params.resolution.max(16),
+                        16,
                     );
-                    break;
-                }
-                let rect = [x_cursor, 0, *res, *res];
-                x_cursor += res;
 
-                let descriptor_index = self.active_descriptor_count;
-                let off = descriptor_index as usize * SHADOW_DESCRIPTOR_BYTES;
-                let is_evsm = (cascade_index as u32) >= evsm_first;
-                write_shadow_descriptor(
-                    &mut descriptor_bytes[off..off + SHADOW_DESCRIPTOR_BYTES],
-                    &cascade.view_projection,
-                    rect,
-                    self.atlas_size,
-                    params.depth_bias,
-                    params.normal_bias,
-                    params.hardness,
-                    params.pcss_penumbra_scale,
-                    cascade_index as u32,
-                    cascade_count,
-                    *split_far,
-                );
-                if is_evsm {
-                    // EVSM flag lives in cascade_info.w. Phase 5
-                    // ships the flag + sampler fallback; the actual
-                    // moment-write compute pipeline is deferred.
-                    let evsm_flag_off = off + 108;
-                    descriptor_bytes[evsm_flag_off..evsm_flag_off + 4]
-                        .copy_from_slice(&1.0_f32.to_ne_bytes());
-                }
+                    let descriptor_base = self.active_descriptor_count;
+                    let mut views = Vec::with_capacity(cascades.len());
+                    let evsm_first = match params.evsm_cutoff {
+                        EvsmCutoff::Off => u32::MAX,
+                        EvsmCutoff::LastCascade => cascade_count.saturating_sub(1),
+                        EvsmCutoff::LastTwoCascades => cascade_count.saturating_sub(2),
+                    };
+                    for (cascade_index, (cascade, res, split_far)) in cascades.iter().enumerate() {
+                        let Some(rect) = place(*res, *res, self.atlas_size) else {
+                            tracing::warn!(
+                                "shadow atlas overflow on cascade {}",
+                                cascade_index
+                            );
+                            break;
+                        };
 
-                views.push(LightShadowView {
-                    view_projection: cascade.view_projection,
-                    atlas_rect: rect,
-                });
-                self.active_descriptor_count += 1;
+                        let descriptor_index = self.active_descriptor_count;
+                        let off = descriptor_index as usize * SHADOW_DESCRIPTOR_BYTES;
+                        let is_evsm = (cascade_index as u32) >= evsm_first;
+                        write_shadow_descriptor(
+                            &mut descriptor_bytes[off..off + SHADOW_DESCRIPTOR_BYTES],
+                            &cascade.view_projection,
+                            rect,
+                            self.atlas_size,
+                            params.depth_bias,
+                            params.normal_bias,
+                            params.hardness,
+                            params.pcss_penumbra_scale,
+                            cascade_index as u32,
+                            cascade_count,
+                            *split_far,
+                        );
+                        if is_evsm {
+                            let evsm_flag_off = off + 108;
+                            descriptor_bytes[evsm_flag_off..evsm_flag_off + 4]
+                                .copy_from_slice(&1.0_f32.to_ne_bytes());
+                        }
+
+                        views.push(LightShadowView {
+                            view_projection: cascade.view_projection,
+                            atlas_rect: rect,
+                        });
+                        self.active_descriptor_count += 1;
+                    }
+
+                    self.records.insert(
+                        light_key,
+                        LightShadowRecord {
+                            views,
+                            descriptor_base,
+                        },
+                    );
+                }
+                crate::lights::Light::Spot {
+                    position,
+                    direction,
+                    range,
+                    outer_angle,
+                    ..
+                } => {
+                    if self.active_descriptor_count >= MAX_SHADOW_DESCRIPTORS {
+                        tracing::warn!("shadow descriptor capacity exhausted (spot)");
+                        break;
+                    }
+                    let res = params.resolution.max(16);
+                    let Some(rect) = place(res, res, self.atlas_size) else {
+                        tracing::warn!("shadow atlas overflow on spot light");
+                        continue;
+                    };
+                    let pos = glam::Vec3::from(*position);
+                    let dir_v = glam::Vec3::from(*direction);
+                    let dir = if dir_v.length_squared() > 1e-8 {
+                        dir_v.normalize()
+                    } else {
+                        glam::Vec3::new(0.0, -1.0, 0.0)
+                    };
+                    let up = if dir.x.abs() < 0.9 {
+                        glam::Vec3::X
+                    } else {
+                        glam::Vec3::Z
+                    };
+                    let view = glam::Mat4::look_at_rh(pos, pos + dir, up);
+                    let fov = (*outer_angle * 2.0).clamp(0.01, std::f32::consts::PI - 0.01);
+                    let near = 0.05_f32.min(*range * 0.01).max(0.005);
+                    let far = (*range).max(near + 0.1);
+                    let projection = glam::Mat4::perspective_rh(fov, 1.0, near, far);
+                    let view_projection = projection * view;
+
+                    let descriptor_index = self.active_descriptor_count;
+                    let off = descriptor_index as usize * SHADOW_DESCRIPTOR_BYTES;
+                    write_shadow_descriptor(
+                        &mut descriptor_bytes[off..off + SHADOW_DESCRIPTOR_BYTES],
+                        &view_projection,
+                        rect,
+                        self.atlas_size,
+                        params.depth_bias,
+                        params.normal_bias,
+                        params.hardness,
+                        params.pcss_penumbra_scale,
+                        0,
+                        1,
+                        // Spot lights don't use cascade selection; setting
+                        // `split_far` to +infinity-ish makes the shader's
+                        // walk pick this descriptor unconditionally.
+                        f32::MAX,
+                    );
+
+                    self.records.insert(
+                        light_key,
+                        LightShadowRecord {
+                            views: vec![LightShadowView {
+                                view_projection,
+                                atlas_rect: rect,
+                            }],
+                            descriptor_base: descriptor_index,
+                        },
+                    );
+                    self.active_descriptor_count += 1;
+                }
+                crate::lights::Light::Point { .. } => {
+                    // Phase 8 wires the 6-face cube generation. For
+                    // now skip — the schema flag still round-trips so
+                    // the user-authored configuration is preserved.
+                }
             }
-
-            self.records.insert(
-                light_key,
-                LightShadowRecord {
-                    views,
-                    descriptor_base,
-                },
-            );
         }
 
         if self.active_descriptor_count > 0 {

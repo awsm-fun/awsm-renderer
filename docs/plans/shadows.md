@@ -1037,10 +1037,10 @@ Tick items as they land. A future session can resume by reading this list.
 - [ ] Editor gray-out for Pcss on point lights — deferred to the editor-UI follow-up
 
 ### Phase 7 — Spot light shadows
-- [ ] Spot projection from outer cone + range
-- [ ] Atlas packs spot rects alongside directional
-- [ ] `sample_shadow_perspective` in shader
-- [ ] Spot shadow visible in test scene with each of Hard / Soft / Pcss
+- [x] Spot projection: `Mat4::perspective_rh(outer_angle * 2, 1.0, ~0.05, range)`; view = `look_at_rh(pos, pos + dir, up)`
+- [x] Atlas packs spot rects alongside directional cascades — shared row-pack allocator
+- [x] Shader: `sample_shadow_directional` walks the spot's single descriptor (split_far = f32::MAX) the same way it walks a directional's cascades — perspective divide already handled
+- [x] Spot honors Hard / Soft / Pcss via the existing hardness branch in `sample_shadow_descriptor`
 
 ### Phase 8 — Point (cubemap)
 - [ ] `texture_cube_array<depth>` cube pool
