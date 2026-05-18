@@ -1051,10 +1051,13 @@ Tick items as they land. A future session can resume by reading this list.
 - [x] Overflow logging (`cube_overflow` warns once per frame)
 - [x] Render pass dispatch handles the `cube_layer` attachment, falling back to the atlas view for 2D casters
 
-### Phase 9 — Transparent-pass shadows
-- [ ] Shadow bind group on transparent pass
-- [ ] Same `apply_lighting` path with shadows (PCF / PCSS / EVSM / cube all reachable)
-- [ ] Receive-shadows toggle works on transparent mesh
+### Phase 9 — Transparent-pass shadows — **DEFERRED (bind-group consolidation)**
+- [x] `MaterialTransparentBindGroups::recreate_shadows` already builds the shadow bind group (phase 0)
+- [ ] Wire the bind group into the transparent pipeline layout — blocked on the adapter's `maxBindGroups = 4` limit; the transparent pipeline already uses 4 (main + lights + texture pool + mesh_material). Real fix: merge `lights` into `main` (or split out the per-draw `mesh_material` differently); both options touch every transparent WGSL `@group` reference.
+- [x] `Mesh::receive_shadows` flag is honored on the renderer side; transparent meshes with `receive_shadows = false` will skip the shadow sample once the WGSL hook lands.
+- [ ] Visual check on a transparent receiver — deferred.
+
+The renderer-side data path is ready. What's left is the bind-group consolidation refactor on the transparent pipeline — substantial and orthogonal to shadows. Tracked as a follow-up rather than spent in this plan.
 
 ### Phase 10 — SSCS
 - [ ] Screen-space ray-march from depth
