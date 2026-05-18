@@ -150,7 +150,9 @@ impl TexturePoolDeps {
 /// `maxStorageBuffersPerShaderStage = 10`; we use a uniform array of
 /// `MAX_SHADOW_DESCRIPTORS = 32` slots (~3 KB) instead so the
 /// descriptor lookup is one uniform read.
-pub fn shadow_bind_group_layout_entries(compute_visibility: bool) -> Vec<BindGroupLayoutCacheKeyEntry> {
+pub fn shadow_bind_group_layout_entries(
+    compute_visibility: bool,
+) -> Vec<BindGroupLayoutCacheKeyEntry> {
     let v_compute = compute_visibility;
     let v_fragment = !compute_visibility;
     vec![

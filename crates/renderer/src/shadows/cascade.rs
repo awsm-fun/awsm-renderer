@@ -83,11 +83,7 @@ pub fn fit_cascade(
     } else {
         direction.normalize()
     };
-    let up = if dir.x.abs() < 0.9 {
-        Vec3::X
-    } else {
-        Vec3::Z
-    };
+    let up = if dir.x.abs() < 0.9 { Vec3::X } else { Vec3::Z };
 
     let view = Mat4::look_at_rh(center - dir, center, up);
 

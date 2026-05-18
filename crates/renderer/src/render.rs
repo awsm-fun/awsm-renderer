@@ -107,12 +107,10 @@ impl AwsmRenderer {
         )?;
         {
             let shadows = &self.shadows;
-            self.lights.write_gpu(
-                &self.logging,
-                &self.gpu,
-                &mut self.bind_groups,
-                |key| shadows.descriptor_index_for_light(key),
-            )?;
+            self.lights
+                .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups, |key| {
+                    shadows.descriptor_index_for_light(key)
+                })?;
         }
 
         let render_texture_views = self

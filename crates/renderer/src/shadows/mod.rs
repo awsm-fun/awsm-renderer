@@ -1,6 +1,6 @@
 //! Shadow mapping subsystem.
 //!
-//! The `Shadows` struct sits on [`AwsmRenderer`](crate::AwsmRenderer)
+//! The `Shadows` struct sits on [`AwsmRenderer`]
 //! and owns every GPU resource needed for shadow generation and
 //! sampling: a 2D PCF/PCSS atlas, an RGBA16F EVSM atlas (allocated
 //! lazily), a depth cubemap-array slot pool for point lights, the
@@ -41,8 +41,7 @@ use slotmap::SecondaryMap;
 
 use crate::{
     bind_group_layout::{
-        BindGroupLayoutCacheKey, BindGroupLayoutCacheKeyEntry, BindGroupLayoutKey,
-        BindGroupLayouts,
+        BindGroupLayoutCacheKey, BindGroupLayoutCacheKeyEntry, BindGroupLayoutKey, BindGroupLayouts,
     },
     bind_groups::BindGroups,
     debug::AwsmRendererLogging,
@@ -408,11 +407,8 @@ impl Shadows {
             geometry_bind_groups.meta.bind_group_layout_key,
             geometry_bind_groups.animation.bind_group_layout_key,
         ]);
-        let shadow_pipeline_layout_key = pipeline_layouts.get_key(
-            gpu,
-            bind_group_layouts,
-            shadow_pipeline_layout_cache_key,
-        )?;
+        let shadow_pipeline_layout_key =
+            pipeline_layouts.get_key(gpu, bind_group_layouts, shadow_pipeline_layout_cache_key)?;
 
         let shadow_pipeline_no_instancing = build_shadow_pipeline(
             gpu,
@@ -479,10 +475,7 @@ impl Shadows {
     /// Number of lights currently registered as shadow casters
     /// (whether or not their `cast` flag is on).
     pub fn caster_count(&self) -> usize {
-        self.params
-            .values()
-            .filter(|p| p.cast)
-            .count()
+        self.params.values().filter(|p| p.cast).count()
     }
 
     /// `[0.0, 1.0]` — fraction of the 2D atlas occupied by active
@@ -573,9 +566,8 @@ impl Shadows {
                     .atlas_texture
                     .create_view()
                     .map_err(AwsmCoreError::create_texture_view)?;
-                bind_groups.mark_create(
-                    crate::bind_groups::BindGroupCreate::ShadowsResourcesChange,
-                );
+                bind_groups
+                    .mark_create(crate::bind_groups::BindGroupCreate::ShadowsResourcesChange);
                 // Force the throttle to re-render every cascade at the
                 // new atlas location.
                 for entries in self.throttle.values_mut() {
@@ -603,10 +595,8 @@ impl Shadows {
             data[16..20].copy_from_slice(&self.config.evsm_exponent.to_ne_bytes());
             data[20..24].copy_from_slice(&(self.config.evsm_blur_radius as f32).to_ne_bytes());
             data[24..28].copy_from_slice(&(self.config.sscs_step_count as f32).to_ne_bytes());
-            data[28..32]
-                .copy_from_slice(&(self.config.sscs_enabled as u32 as f32).to_ne_bytes());
-            data[32..36]
-                .copy_from_slice(&(self.config.debug_cascade_colors as u32).to_ne_bytes());
+            data[28..32].copy_from_slice(&(self.config.sscs_enabled as u32 as f32).to_ne_bytes());
+            data[32..36].copy_from_slice(&(self.config.debug_cascade_colors as u32).to_ne_bytes());
             data[36..40].copy_from_slice(&self.config.max_point_shadows.to_ne_bytes());
             gpu.write_buffer(&self.globals_buffer, None, data.as_slice(), None, None)?;
             self.dirty = false;
@@ -677,7 +667,7 @@ impl Shadows {
 
             match light {
                 crate::lights::Light::Directional { direction, .. } => {
-                    let cascade_count = params.cascade_count.max(1).min(4) as u32;
+                    let cascade_count = params.cascade_count.clamp(1, 4) as u32;
                     if self.active_descriptor_count + cascade_count > MAX_SHADOW_DESCRIPTORS {
                         tracing::warn!(
                             "shadow descriptor capacity exhausted: needed {} more, have {} slots free",
@@ -745,13 +735,12 @@ impl Shadows {
                         // Throttle only the FAR cascade. Closer
                         // cascades carry per-frame contact detail and
                         // must refresh every frame.
-                        let update_period = if (cascade_index as u32)
-                            == cascade_count.saturating_sub(1)
-                        {
-                            params.far_cascade_update_rate.period()
-                        } else {
-                            1
-                        };
+                        let update_period =
+                            if (cascade_index as u32) == cascade_count.saturating_sub(1) {
+                                params.far_cascade_update_rate.period()
+                            } else {
+                                1
+                            };
                         views.push(LightShadowView {
                             view_projection: cascade.view_projection,
                             atlas_rect: rect,
@@ -783,7 +772,9 @@ impl Shadows {
                     }
                     let res = params.resolution.max(16);
                     let Some(rect) = place(res, res, self.atlas_size) else {
-                        tracing::warn!("shadow atlas overflow on spot light — will grow next frame");
+                        tracing::warn!(
+                            "shadow atlas overflow on spot light — will grow next frame"
+                        );
                         self.pending_atlas_grow = true;
                         continue;
                     };
@@ -860,12 +851,8 @@ impl Shadows {
 
                     let pos = glam::Vec3::from(*position);
                     let r = (*range).max(0.05);
-                    let projection = glam::Mat4::perspective_rh(
-                        std::f32::consts::FRAC_PI_2,
-                        1.0,
-                        0.05,
-                        r,
-                    );
+                    let projection =
+                        glam::Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.05, r);
                     // glTF cube-map face conventions, in the order
                     // WebGPU lays out cube layers: +X, -X, +Y, -Y, +Z, -Z.
                     let face_dirs = [
@@ -916,20 +903,15 @@ impl Shadows {
                     // Patch in the cube-specific atlas_rect (light_pos +
                     // range) and the "kind = cube + slice index" in
                     // `cascade_info.w / .y`.
-                    descriptor_bytes[off + 64..off + 68]
-                        .copy_from_slice(&pos.x.to_ne_bytes());
-                    descriptor_bytes[off + 68..off + 72]
-                        .copy_from_slice(&pos.y.to_ne_bytes());
-                    descriptor_bytes[off + 72..off + 76]
-                        .copy_from_slice(&pos.z.to_ne_bytes());
-                    descriptor_bytes[off + 76..off + 80]
-                        .copy_from_slice(&r.to_ne_bytes());
+                    descriptor_bytes[off + 64..off + 68].copy_from_slice(&pos.x.to_ne_bytes());
+                    descriptor_bytes[off + 68..off + 72].copy_from_slice(&pos.y.to_ne_bytes());
+                    descriptor_bytes[off + 72..off + 76].copy_from_slice(&pos.z.to_ne_bytes());
+                    descriptor_bytes[off + 76..off + 80].copy_from_slice(&r.to_ne_bytes());
                     // cascade_info.y = slot index (as f32)
                     descriptor_bytes[off + 100..off + 104]
                         .copy_from_slice(&(slot_index as f32).to_ne_bytes());
                     // cascade_info.w = 2.0 → cube
-                    descriptor_bytes[off + 108..off + 112]
-                        .copy_from_slice(&2.0_f32.to_ne_bytes());
+                    descriptor_bytes[off + 108..off + 112].copy_from_slice(&2.0_f32.to_ne_bytes());
 
                     self.records.insert(
                         light_key,
@@ -1025,9 +1007,8 @@ impl Shadows {
     ) -> Result<(), AwsmShadowError> {
         let mut data = [0u8; SHADOW_VIEW_BYTES];
         let cols = view_projection.to_cols_array();
-        let mat_bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(cols.as_ptr() as *const u8, 64)
-        };
+        let mat_bytes: &[u8] =
+            unsafe { std::slice::from_raw_parts(cols.as_ptr() as *const u8, 64) };
         data[0..64].copy_from_slice(mat_bytes);
         data[64..68].copy_from_slice(&depth_bias.to_ne_bytes());
         data[68..72].copy_from_slice(&normal_bias.to_ne_bytes());
@@ -1040,7 +1021,6 @@ impl Shadows {
     pub fn records(&self) -> impl Iterator<Item = (LightKey, &LightShadowRecord)> + '_ {
         self.records.iter()
     }
-
 
     /// Returns the per-light authored shadow params, if registered.
     pub fn light_params(&self, key: LightKey) -> Option<&LightShadowParams> {

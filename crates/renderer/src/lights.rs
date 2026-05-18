@@ -258,9 +258,7 @@ impl Lights {
             let punctual_light_buffer: Vec<u8> = self
                 .lights
                 .iter()
-                .flat_map(|(key, light)| {
-                    light.storage_buffer_data(shadow_index_for(key))
-                })
+                .flat_map(|(key, light)| light.storage_buffer_data(shadow_index_for(key)))
                 .collect();
 
             // GPU size should never be 0, so use at least PUNCTUAL_LIGHT_SIZE

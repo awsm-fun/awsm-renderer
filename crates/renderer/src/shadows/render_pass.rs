@@ -140,7 +140,11 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
                 render_pass.set_vertex_buffer(
                     0,
                     ctx.meshes.visibility_geometry_data_gpu_buffer(),
-                    Some(ctx.meshes.visibility_geometry_data_buffer_offset(mesh_key)? as u64),
+                    Some(
+                        ctx.meshes
+                            .visibility_geometry_data_buffer_offset(mesh_key)?
+                            as u64,
+                    ),
                     None,
                 );
 
@@ -158,7 +162,11 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
                 render_pass.set_index_buffer(
                     ctx.meshes.visibility_geometry_index_gpu_buffer(),
                     IndexFormat::Uint32,
-                    Some(ctx.meshes.visibility_geometry_index_buffer_offset(mesh_key)? as u64),
+                    Some(
+                        ctx.meshes
+                            .visibility_geometry_index_buffer_offset(mesh_key)?
+                            as u64,
+                    ),
                     None,
                 );
 
@@ -168,10 +176,8 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
                     if let Some(instance_count) =
                         ctx.instances.transform_instance_count(mesh.transform_key)
                     {
-                        render_pass.draw_indexed_with_instance_count(
-                            index_count,
-                            instance_count as u32,
-                        );
+                        render_pass
+                            .draw_indexed_with_instance_count(index_count, instance_count as u32);
                     }
                 } else {
                     render_pass.draw_indexed(index_count);

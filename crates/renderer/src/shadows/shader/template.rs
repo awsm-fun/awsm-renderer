@@ -3,8 +3,8 @@
 use askama::Template;
 
 use crate::{
-    shadows::shader::cache_key::ShaderCacheKeyShadow,
     shaders::{AwsmShaderError, Result},
+    shadows::shader::cache_key::ShaderCacheKeyShadow,
 };
 
 /// Shadow generation shader template.
