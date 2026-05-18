@@ -1086,10 +1086,10 @@ The renderer-side data path is ready. What's left is the bind-group consolidatio
 - [x] Dirty-flag gating — the `dirty` flag on `Shadows` already gates the globals upload; per-frame descriptor uploads are cheap enough to issue unconditionally
 
 ### Phase 14 — Skin / morph / billboard / instancing
-- [ ] Skinned glTF casts animated shadow
-- [ ] Morph-driven shadow
-- [ ] Billboards/sprites do not cast (verified)
-- [ ] Instanced meshes cast (verified)
+- [x] Shadow VS reuses the same `apply_position_morphs` and `apply_position_skin` helpers as the geometry pass via shared WGSL includes — skinned + morph-driven shadows are correct by construction
+- [x] Sprites + particles default to `cast_shadows = false, receive_shadows = false` (bridge: `materialize_sprite` and `particles_sync::build_runtime` both call `set_mesh_shadow_flags`)
+- [x] Instanced meshes render with the instancing shadow-pipeline variant (`Mesh::instanced` flag → `Shadows::shadow_pipeline_key(true)`); the shadow VS's `{% if instancing_transforms %}` template branch consumes the same per-instance transform vertex buffer the geometry pass does
+- [ ] Visual confirmation on a real skinned glTF + EXT_mesh_gpu_instancing asset — deferred along with the editor Load flow
 
 ### Phase 15 — Ship
 - [ ] `docs/ROADMAP.md` updated (shadows + sub-bullets for EVSM/PCSS/SSCS/temporal)

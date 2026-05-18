@@ -280,6 +280,19 @@ fn build_runtime(
     if let Err(err) = renderer.set_mesh_billboard_mode(mesh_key, BillboardMode::Full) {
         tracing::warn!("particles_sync: set_mesh_billboard_mode failed: {err}");
     }
+    // Particles never cast or receive shadows in v1 — the shadow VS
+    // doesn't run the billboard rotation, so a particle quad's
+    // shadow would be authored-orientation (wrong); receive doesn't
+    // make sense for a transparent additive quad either.
+    if let Err(err) = renderer.set_mesh_shadow_flags(
+        mesh_key,
+        awsm_renderer::shadows::MeshShadowFlags {
+            cast: false,
+            receive: false,
+        },
+    ) {
+        tracing::warn!("particles_sync: set_mesh_shadow_flags failed: {err}");
+    }
 
     let dead_transform = Transform {
         translation: Vec3::ZERO,

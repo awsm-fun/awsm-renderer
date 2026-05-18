@@ -415,6 +415,16 @@ async fn materialize_sprite(entry: Arc<RendererNode>, parent_tk: TransformKey, d
     if let Some(mk) = mesh_key {
         with_renderer_mut(move |r| {
             let _ = r.set_mesh_billboard_mode(mk, mode);
+            // Sprites don't cast or receive shadows in v1 — the
+            // shadow VS doesn't run the billboard rotation, so the
+            // shadow would be authored-orientation (wrong).
+            let _ = r.set_mesh_shadow_flags(
+                mk,
+                awsm_renderer::shadows::MeshShadowFlags {
+                    cast: false,
+                    receive: false,
+                },
+            );
         })
         .await;
     }
