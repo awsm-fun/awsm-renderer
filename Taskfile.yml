@@ -30,6 +30,20 @@ tasks:
       - media-local
       - media-additional-assets
 
+  model-tests-dev:
+    desc: "Run model-tests dev server in parallel plus the media servers"
+    deps:
+      - model-tests:dev
+      - media-local
+      - media-additional-assets
+
+  scene-editor-dev:
+    desc: "Run model-tests dev server in parallel plus the media servers"
+    deps:
+      - model-tests:dev
+      - media-local
+      - media-additional-assets
+
   build:
     desc: "Build every frontend for production into .build-artifacts/"
     cmds:

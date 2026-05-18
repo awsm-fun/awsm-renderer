@@ -206,6 +206,11 @@ impl DeviceRequestLimits {
         self
     }
 
+    pub fn with_max_sampled_textures_per_shader_stage(mut self) -> Self {
+        self.max_sampled_textures_per_shader_stage = true;
+        self
+    }
+
     /// Converts requested limits into a WebGPU limits object.
     pub fn into_js(self, limits: &GpuSupportedLimits) -> js_sys::Object {
         let obj = js_sys::Object::new();
