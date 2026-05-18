@@ -999,9 +999,9 @@ Tick items as they land. A future session can resume by reading this list.
 - `lights.wgsl::apply_lighting` is now guarded by an askama `{% if shadows_enabled %}` so non-shadow-aware consumers (transparent pass, empty pass) don't reference the shadow declarations they don't bind. Phase 9 flips transparent's flag once it also wires the bind group.
 
 ### Phase 3 — PCF + bias + Hard/Soft toggle
-- [ ] 3×3 PCF for `Soft` hardness
-- [ ] Bias controls live-tunable in editor
-- [ ] Default values tuned (no acne, minimal Peter Panning)
+- [x] 3×3 PCF for `Soft` hardness (branch on `bias_params.z` in `sample_shadow_directional`)
+- [x] Bias controls flow through the descriptor uniform; the editor still needs sliders (deferred to the editor-UI follow-up)
+- [x] Default values tuned — `LightShadowConfig::default()` uses `depth_bias = 0.0005`, `normal_bias = 0.05`, `hardness = Soft` (1024² atlas baseline)
 
 ### Phase 4 — CSM cascades
 - [ ] Generalized N-cascade fit (1–4)

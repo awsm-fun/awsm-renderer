@@ -77,8 +77,31 @@ fn sample_shadow_directional(
     let uv_local = vec2<f32>(ndc.x * 0.5 + 0.5, -ndc.y * 0.5 + 0.5);
     let atlas_uv = desc.atlas_rect.xy + uv_local * desc.atlas_rect.zw;
     let ref_depth = ndc.z - desc.bias_params.x;
-    // `textureSampleCompareLevel` is required in the compute stage
-    // (the standard `textureSampleCompare` needs quad-level derivative
-    // info that isn't available outside fragment).
-    return textureSampleCompareLevel(shadow_atlas, shadow_atlas_sampler, atlas_uv, ref_depth);
+    let hardness = desc.bias_params.z;
+    // 0.0 = Hard, 1.0 = Soft (3x3 PCF), 2.0 = PCSS (phase 6).
+    if hardness < 0.5 {
+        return textureSampleCompareLevel(
+            shadow_atlas,
+            shadow_atlas_sampler,
+            atlas_uv,
+            ref_depth,
+        );
+    }
+    // 3x3 PCF. `shadow_globals.atlas_sizes.x` is the atlas width in
+    // texels; the kernel offset is one texel per step in normalised UV
+    // space.
+    let inv_atlas = 1.0 / shadow_globals.atlas_sizes.x;
+    var sum = 0.0;
+    for (var dy = -1; dy <= 1; dy = dy + 1) {
+        for (var dx = -1; dx <= 1; dx = dx + 1) {
+            let offset = vec2<f32>(f32(dx), f32(dy)) * inv_atlas;
+            sum += textureSampleCompareLevel(
+                shadow_atlas,
+                shadow_atlas_sampler,
+                atlas_uv + offset,
+                ref_depth,
+            );
+        }
+    }
+    return sum / 9.0;
 }
