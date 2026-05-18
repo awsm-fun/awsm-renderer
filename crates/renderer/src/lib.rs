@@ -363,7 +363,16 @@ impl AwsmRendererBuilder {
 
         let opaque_mipgen = opaque_mipgen::OpaqueMipgen::new(&gpu).await?;
 
-        let shadows = shadows::Shadows::new(&gpu)?;
+        let shadows = shadows::Shadows::new(
+            &gpu,
+            &mut bind_group_layouts,
+            &mut pipeline_layouts,
+            &mut pipelines,
+            &mut shaders,
+            &render_passes.geometry.bind_groups,
+            &render_textures.formats,
+        )
+        .await?;
 
         #[cfg(feature = "animation")]
         let animations = animation::Animations::default();

@@ -19,7 +19,7 @@ struct LightPacked {
   dir_inner: vec4<f32>,
   // color.rgb + intensity
   color_intensity: vec4<f32>,
-  // kind (as uint) + outer_cone + 2 pads (or extra params)
+  // kind (as uint) + outer_cone + shadow_index (bit-cast u32) + 1 pad
   kind_outer_pad: vec4<f32>,
 };
 
@@ -32,6 +32,8 @@ struct Light {
     direction: vec3<f32>,
     inner_cone: f32,
     outer_cone: f32,
+    // Index into `shadow_descriptors`. `0xFFFFFFFF` = no shadow.
+    shadow_index: u32,
 };
 
 fn get_lights_info() -> LightsInfo {
@@ -56,7 +58,8 @@ fn get_light(i: u32) -> Light {
         p.pos_range.w,
         p.dir_inner.xyz,
         p.dir_inner.w,
-        p.kind_outer_pad.y
+        p.kind_outer_pad.y,
+        bitcast<u32>(p.kind_outer_pad.z),
     );
 }
 
@@ -153,8 +156,22 @@ fn apply_lighting(
 
     {% if has_lighting_punctual() %}
         for(var i = 0u; i < lights_info.n_lights; i = i + 1u) {
-            let light_brdf = light_to_brdf(get_light(i), material_color.normal, world_position);
-            color += brdf_direct(material_color, light_brdf, surface_to_camera);
+            let light = get_light(i);
+            let light_brdf = light_to_brdf(light, material_color.normal, world_position);
+            let direct = brdf_direct(material_color, light_brdf, surface_to_camera);
+            {% if shadows_enabled %}
+                // Modulate by shadow visibility (1.0 = lit, 0.0 = fully
+                // shadowed). When `shadow_index == SHADOW_INDEX_NONE` the
+                // helper short-circuits to 1.0.
+                let visibility = sample_shadow_directional(
+                    light.shadow_index,
+                    world_position,
+                    material_color.normal,
+                );
+                color += direct * visibility;
+            {% else %}
+                color += direct;
+            {% endif %}
         }
     {% endif %}
 
@@ -189,8 +206,22 @@ fn apply_lighting_with_transmission(
 
     {% if has_lighting_punctual() %}
         for(var i = 0u; i < lights_info.n_lights; i = i + 1u) {
-            let light_brdf = light_to_brdf(get_light(i), material_color.normal, world_position);
-            color += brdf_direct(material_color, light_brdf, surface_to_camera);
+            let light = get_light(i);
+            let light_brdf = light_to_brdf(light, material_color.normal, world_position);
+            let direct = brdf_direct(material_color, light_brdf, surface_to_camera);
+            {% if shadows_enabled %}
+                // Modulate by shadow visibility (1.0 = lit, 0.0 = fully
+                // shadowed). When `shadow_index == SHADOW_INDEX_NONE` the
+                // helper short-circuits to 1.0.
+                let visibility = sample_shadow_directional(
+                    light.shadow_index,
+                    world_position,
+                    material_color.normal,
+                );
+                color += direct * visibility;
+            {% else %}
+                color += direct;
+            {% endif %}
         }
     {% endif %}
 

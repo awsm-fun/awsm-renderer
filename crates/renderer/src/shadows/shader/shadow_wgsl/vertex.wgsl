@@ -79,3 +79,4 @@ fn vert_main(
     let world_pos = model_transform * vec4<f32>(vertex.position, 1.0);
     return shadow_view.view_projection * world_pos;
 }
+

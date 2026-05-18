@@ -31,6 +31,11 @@ pub struct ShaderTemplateTransparentMaterialIncludes {
     pub color_sets: Option<u32>,
     pub uv_sets: u32,
     pub debug: ShaderTemplateMaterialTransparentDebug,
+    /// Whether `lights.wgsl` should wire shadow sampling into
+    /// `apply_lighting`. The transparent pass leaves this `false`
+    /// until Phase 9 lands the shared shadow bind group on its
+    /// pipeline.
+    pub shadows_enabled: bool,
     /// Concatenated `wgsl_fragment()` of every enabled material — see
     /// `awsm_materials::registry::build_materials_wgsl`.
     pub materials_wgsl: String,
@@ -50,6 +55,7 @@ impl ShaderTemplateTransparentMaterialIncludes {
             color_sets: cache_key.attributes.color_sets,
             uv_sets: cache_key.attributes.uv_sets.unwrap_or_default(),
             debug: ShaderTemplateMaterialTransparentDebug::new(),
+            shadows_enabled: false,
             materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
             shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
         }

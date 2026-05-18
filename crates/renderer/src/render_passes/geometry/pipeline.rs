@@ -25,7 +25,7 @@ use crate::render_passes::geometry::shader::cache_key::ShaderCacheKeyGeometry;
 use crate::render_passes::{geometry::bind_group::GeometryBindGroups, RenderPassInitContext};
 use crate::shaders::{ShaderKey, Shaders};
 
-static VERTEX_BUFFER_LAYOUT: LazyLock<VertexBufferLayout> = LazyLock::new(|| {
+pub static VERTEX_BUFFER_LAYOUT: LazyLock<VertexBufferLayout> = LazyLock::new(|| {
     VertexBufferLayout {
         // this is the stride across all of the attributes
         // position (12) + triangle_index (4) + barycentric (8) + normal (12) + tangent (16) + original_vertex_index (4) = 56 bytes
@@ -72,7 +72,7 @@ static VERTEX_BUFFER_LAYOUT: LazyLock<VertexBufferLayout> = LazyLock::new(|| {
     }
 });
 
-static VERTEX_BUFFER_LAYOUT_INSTANCING: LazyLock<VertexBufferLayout> = LazyLock::new(|| {
+pub static VERTEX_BUFFER_LAYOUT_INSTANCING: LazyLock<VertexBufferLayout> = LazyLock::new(|| {
     let mut vertex_buffer_layout_instancing = VertexBufferLayout {
         // this is the stride across all of the attributes
         array_stride: MeshBufferVertexInfo::INSTANCING_BYTE_SIZE as u64,

@@ -143,12 +143,13 @@ impl TexturePoolDeps {
 /// 4 texture `evsm_atlas` (filterable float)
 /// 5 sampler `evsm_atlas_sampler` (filtering)
 /// 6 uniform `shadow_globals`
+/// 7 uniform `shadow_descriptors` (fixed-size `array<ShadowDescriptor, MAX>`)
 ///
-/// The plan calls for a `shadow_descriptors` storage buffer at binding
-/// 0 — adding it now would push the opaque compute stage past the
-/// adapter's `maxStorageBuffersPerShaderStage = 10`. Phase 2 will fold
-/// `instance_attrs` (or another storage entry) into the descriptors
-/// buffer to free a slot, then re-introduce the descriptor binding.
+/// The plan's original storage-buffer descriptor binding would have
+/// pushed the opaque compute stage past the adapter's
+/// `maxStorageBuffersPerShaderStage = 10`; we use a uniform array of
+/// `MAX_SHADOW_DESCRIPTORS = 32` slots (~3 KB) instead so the
+/// descriptor lookup is one uniform read.
 pub fn shadow_bind_group_layout_entries(compute_visibility: bool) -> Vec<BindGroupLayoutCacheKeyEntry> {
     let v_compute = compute_visibility;
     let v_fragment = !compute_visibility;
@@ -222,6 +223,15 @@ pub fn shadow_bind_group_layout_entries(compute_visibility: bool) -> Vec<BindGro
             visibility_fragment: v_fragment,
             visibility_compute: v_compute,
         },
+        // descriptors uniform (fixed-size array)
+        BindGroupLayoutCacheKeyEntry {
+            resource: BindGroupLayoutResource::Buffer(
+                BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
+            ),
+            visibility_vertex: false,
+            visibility_fragment: v_fragment,
+            visibility_compute: v_compute,
+        },
     ]
 }
 
@@ -250,6 +260,10 @@ pub fn build_shadow_bind_group_entries<'a>(
         BindGroupEntry::new(
             6,
             BindGroupResource::Buffer(BufferBinding::new(&shadows.globals_buffer)),
+        ),
+        BindGroupEntry::new(
+            7,
+            BindGroupResource::Buffer(BufferBinding::new(&shadows.descriptors_uniform)),
         ),
     ]
 }

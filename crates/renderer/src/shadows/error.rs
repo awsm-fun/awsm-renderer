@@ -3,6 +3,12 @@
 use awsm_renderer_core::error::AwsmCoreError;
 use thiserror::Error;
 
+use crate::{
+    bind_group_layout::AwsmBindGroupLayoutError, bind_groups::AwsmBindGroupError,
+    pipeline_layouts::AwsmPipelineLayoutError, pipelines::render_pipeline::AwsmRenderPipelineError,
+    shaders::AwsmShaderError,
+};
+
 /// Errors produced by the shadow subsystem.
 ///
 /// Surfaces from `AwsmRenderer::set_light_shadow_params`,
@@ -34,4 +40,19 @@ pub enum AwsmShadowError {
     /// Pass-through for GPU-side failures.
     #[error("[shadow] {0}")]
     Core(#[from] AwsmCoreError),
+    /// Shader compilation / template error.
+    #[error("[shadow] {0}")]
+    Shader(#[from] AwsmShaderError),
+    /// Bind-group layout failure.
+    #[error("[shadow] {0}")]
+    BindGroupLayout(#[from] AwsmBindGroupLayoutError),
+    /// Bind-group lookup failure.
+    #[error("[shadow] {0}")]
+    BindGroup(#[from] AwsmBindGroupError),
+    /// Pipeline layout failure.
+    #[error("[shadow] {0}")]
+    PipelineLayout(#[from] AwsmPipelineLayoutError),
+    /// Render pipeline failure.
+    #[error("[shadow] {0}")]
+    RenderPipeline(#[from] AwsmRenderPipelineError),
 }

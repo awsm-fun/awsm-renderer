@@ -64,12 +64,17 @@ impl RenderPipelines {
         vertex.buffer_layouts = cache_key.vertex_buffer_layouts;
         vertex.constants = cache_key.vertex_constants;
 
-        let fragment = FragmentState::new(shader_module, None, cache_key.fragment_targets.clone());
-
         let mut descriptor = RenderPipelineDescriptor::new(vertex, None)
             .with_primitive(cache_key.primitive)
-            .with_layout(PipelineLayoutKind::Custom(layout))
-            .with_fragment(fragment);
+            .with_layout(PipelineLayoutKind::Custom(layout));
+
+        // Depth-only pipelines (e.g. shadow generation) skip the
+        // fragment stage entirely by passing an empty target list.
+        if !cache_key.fragment_targets.is_empty() {
+            let fragment =
+                FragmentState::new(shader_module, None, cache_key.fragment_targets.clone());
+            descriptor = descriptor.with_fragment(fragment);
+        }
 
         if let Some(depth_stencil) = cache_key.depth_stencil {
             descriptor = descriptor.with_depth_stencil(depth_stencil);
