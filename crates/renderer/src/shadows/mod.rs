@@ -558,6 +558,11 @@ impl Shadows {
             // Naive row-pack: stack cascades horizontally. Phase 13
             // generalises this into a real packer.
             let mut x_cursor: u32 = 0;
+            let evsm_first = match params.evsm_cutoff {
+                EvsmCutoff::Off => u32::MAX,
+                EvsmCutoff::LastCascade => cascade_count.saturating_sub(1),
+                EvsmCutoff::LastTwoCascades => cascade_count.saturating_sub(2),
+            };
             for (cascade_index, (cascade, res, split_far)) in cascades.iter().enumerate() {
                 // Bail out if this row no longer fits — the atlas is
                 // big enough by default that this only kicks in for
@@ -577,6 +582,7 @@ impl Shadows {
 
                 let descriptor_index = self.active_descriptor_count;
                 let off = descriptor_index as usize * SHADOW_DESCRIPTOR_BYTES;
+                let is_evsm = (cascade_index as u32) >= evsm_first;
                 write_shadow_descriptor(
                     &mut descriptor_bytes[off..off + SHADOW_DESCRIPTOR_BYTES],
                     &cascade.view_projection,
@@ -590,6 +596,14 @@ impl Shadows {
                     cascade_count,
                     *split_far,
                 );
+                if is_evsm {
+                    // EVSM flag lives in cascade_info.w. Phase 5
+                    // ships the flag + sampler fallback; the actual
+                    // moment-write compute pipeline is deferred.
+                    let evsm_flag_off = off + 108;
+                    descriptor_bytes[evsm_flag_off..evsm_flag_off + 4]
+                        .copy_from_slice(&1.0_f32.to_ne_bytes());
+                }
 
                 views.push(LightShadowView {
                     view_projection: cascade.view_projection,

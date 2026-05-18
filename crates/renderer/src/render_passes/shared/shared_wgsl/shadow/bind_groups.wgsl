@@ -14,7 +14,12 @@ struct ShadowDescriptor {
     atlas_rect: vec4<f32>,
     // (depth_bias, normal_bias, hardness, pcss_penumbra_scale)
     bias_params: vec4<f32>,
-    // (split_far_view_z, cascade_index, cascade_count_in_light, 0)
+    // (split_far_view_z, cascade_index, cascade_count_in_light, evsm_flag)
+    // `evsm_flag` is 1.0 when this cascade should sample EVSM moments
+    // from `evsm_atlas` instead of the PCF depth atlas. Phase 5 lands
+    // the flag + sample-site dispatch; the moment-write compute pass
+    // and Gaussian blur are deferred — until they land, EVSM cascades
+    // transparently fall back to PCF sampling on `shadow_atlas`.
     cascade_info: vec4<f32>,
 };
 
@@ -59,6 +64,10 @@ fn sample_shadow_descriptor(
         return 1.0;
     }
     let desc = shadow_descriptors.items[descriptor_index];
+    // EVSM cascades currently fall through to PCF — the moment write
+    // pass / blur compute aren't online yet. The `cascade_info.w` flag
+    // is preserved for the phase-5 follow-up that swaps the sample
+    // call site to `sample_shadow_evsm`.
 
     let biased_pos = world_pos + world_normal * desc.bias_params.y;
     let clip = desc.view_projection * vec4<f32>(biased_pos, 1.0);

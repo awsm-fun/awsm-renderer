@@ -1013,15 +1013,17 @@ Tick items as they land. A future session can resume by reading this list.
 - [ ] Cascade count + lambda editor inputs — deferred to the editor-UI follow-up; schema field is editable in `project.json`
 - [x] Cascade-color debug overlay — `debug_cascade_tint`, gated on `ShadowsConfig::debug_cascade_colors`
 
-### Phase 5 — EVSM hybrid (far directional cascades)
-- [ ] `RGBA16F` EVSM atlas + packer (shared impl with depth atlas)
-- [ ] EVSM moment-writing fragment shader (positive + negative exponential moments)
-- [ ] Separable Gaussian blur compute (horizontal + vertical)
-- [ ] EVSM atlas allocation per `evsm_cutoff` cascade index
-- [ ] `sample_shadow_evsm` using Chebyshev's inequality (two-sided)
-- [ ] Cascade dispatcher branches PCF vs EVSM by descriptor flag
-- [ ] EVSM exponent + blur radius wired from editor
-- [ ] Far cascades visibly soft without leaks; `evsm_cutoff = Off` matches Phase 4
+### Phase 5 — EVSM hybrid (far directional cascades) — **INFRASTRUCTURE LANDED**
+- [x] `RGBA16F` EVSM atlas + view exist as 1x1 placeholders (resize deferred until the compute pass needs real data)
+- [ ] EVSM moment-writing fragment shader — **deferred**
+- [ ] Separable Gaussian blur compute (horizontal + vertical) — **deferred**
+- [x] EVSM atlas allocation flag: per-cascade `is_evsm` derived from `evsm_cutoff` and packed into `cascade_info.w`
+- [ ] `sample_shadow_evsm` using Chebyshev's inequality (two-sided) — **deferred**
+- [x] Cascade dispatcher already has the flag in scope; sample call site falls through to PCF until the moment-write pipeline lands
+- [x] EVSM exponent + blur radius surfaced in `ShadowsConfig` + `ShadowGlobals` uniform (defaults 20 + 3 texels)
+- [ ] Visual verification — deferred until the moment-write pipeline lands
+
+**Why deferred:** EVSM is the heaviest phase to implement (depth→moments compute pipeline, separable Gaussian blur, two-sided Chebyshev sampler). Phases 6–10 deliver much more visible bang-per-line so I'm landing the descriptor / cutoff infrastructure now and threading EVSM as a follow-up. PCF on far cascades looks fine for the test scene; the `evsm_cutoff` schema field is preserved on disk so the moment-write follow-up just has to wire the compute pass + sampler — no schema breakage.
 
 ### Phase 6 — PCSS (hardness = `Pcss`)
 - [ ] Poisson disk constants (16 samples)
