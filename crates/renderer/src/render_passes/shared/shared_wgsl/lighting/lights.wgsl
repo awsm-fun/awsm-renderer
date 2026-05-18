@@ -168,12 +168,21 @@ fn apply_lighting(
                 // shadowed). `shadow_index == SHADOW_INDEX_NONE` short-
                 // circuits to 1.0; the cascade selector walks
                 // descriptors descriptor_base..base+count.
-                let visibility = sample_shadow_directional(
+                var visibility = sample_shadow_directional(
                     light.shadow_index,
                     world_position,
                     material_color.normal,
                     view_z_for_shadow,
                 );
+                // Contact-shadow refinement: directional lights only,
+                // since the SSCS ray-march needs a meaningful
+                // surface-to-light direction. Point/spot already
+                // sample their own short-range shadow maps so SSCS
+                // would double-cost them for no win.
+                if light.kind == 1u && light.shadow_index != SHADOW_INDEX_NONE {
+                    let sscs_dir = normalize(-light.direction);
+                    visibility = visibility * apply_sscs(world_position, sscs_dir);
+                }
                 color += direct * visibility;
             {% else %}
                 color += direct;
@@ -237,12 +246,21 @@ fn apply_lighting_with_transmission(
                 // shadowed). `shadow_index == SHADOW_INDEX_NONE` short-
                 // circuits to 1.0; the cascade selector walks
                 // descriptors descriptor_base..base+count.
-                let visibility = sample_shadow_directional(
+                var visibility = sample_shadow_directional(
                     light.shadow_index,
                     world_position,
                     material_color.normal,
                     view_z_for_shadow,
                 );
+                // Contact-shadow refinement: directional lights only,
+                // since the SSCS ray-march needs a meaningful
+                // surface-to-light direction. Point/spot already
+                // sample their own short-range shadow maps so SSCS
+                // would double-cost them for no win.
+                if light.kind == 1u && light.shadow_index != SHADOW_INDEX_NONE {
+                    let sscs_dir = normalize(-light.direction);
+                    visibility = visibility * apply_sscs(world_position, sscs_dir);
+                }
                 color += direct * visibility;
             {% else %}
                 color += direct;

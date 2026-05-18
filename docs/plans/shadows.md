@@ -1060,10 +1060,10 @@ Tick items as they land. A future session can resume by reading this list.
 The renderer-side data path is ready. What's left is the bind-group consolidation refactor on the transparent pipeline — substantial and orthogonal to shadows. Tracked as a follow-up rather than spent in this plan.
 
 ### Phase 10 — SSCS
-- [ ] Screen-space ray-march from depth
-- [ ] Multiply directional shadow term
-- [ ] Global toggle in editor + `ShadowsConfig`
-- [ ] Defaults tuned
+- [x] Screen-space ray-march from depth — `apply_sscs` in `shared_wgsl/shadow/bind_groups.wgsl`
+- [x] Multiply directional shadow term — applied inside `apply_lighting` for `light.kind == Directional` only (point/spot already use their own short-range shadow maps)
+- [x] Global toggle in `ShadowsConfig::sscs_enabled` + `sscs_step_count`; uploaded via `shadow_globals.evsm_sscs.w / .z`
+- [x] Defaults tuned — 16 steps × 5 cm = ~80 cm reach, thickness window 0.5 mm – 2 cm
 
 ### Phase 11 — Temporal throttling
 - [ ] `frame_count` on `Shadows`

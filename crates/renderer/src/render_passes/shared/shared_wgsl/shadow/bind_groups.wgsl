@@ -84,6 +84,73 @@ fn pcss_rotate(v: vec2<f32>, sin_a: f32, cos_a: f32) -> vec2<f32> {
     return vec2<f32>(v.x * cos_a - v.y * sin_a, v.x * sin_a + v.y * cos_a);
 }
 
+// Screen-space contact shadows (SSCS). Short ray-march in view space
+// from `world_pos` toward `light_dir` (the surface→light direction),
+// using the already-bound depth buffer (`depth_tex`). Returns `[0, 1]`
+// visibility — multiplied into the main shadow term to darken micro-
+// occluders that the shadow map misses (gaps under feet, hair, etc.).
+//
+// `shadow_globals.evsm_sscs.w` is the master enable; `.z` is the step
+// count. Phase 10 ships single-sample depth reads even when the
+// geometry pass was rendered with MSAA (we read sample 0).
+fn apply_sscs(world_pos: vec3<f32>, light_dir: vec3<f32>) -> f32 {
+    let enabled = shadow_globals.evsm_sscs.w;
+    if enabled < 0.5 {
+        return 1.0;
+    }
+    let steps = u32(max(shadow_globals.evsm_sscs.z, 1.0));
+    if steps == 0u {
+        return 1.0;
+    }
+    // 5cm world-space steps. The total reach is `steps * step_len`
+    // (e.g. 16 * 0.05 = 0.8 m) which matches the scale Drobot 2017
+    // proposes for contact shadows.
+    let step_len = 0.05;
+    let step_world = light_dir * step_len;
+    let viewport_size = camera_raw.viewport.zw;
+    let depth_dim = vec2<i32>(viewport_size);
+
+    var occluded: f32 = 0.0;
+    var ray = world_pos;
+    for (var i: u32 = 0u; i < steps; i = i + 1u) {
+        ray = ray + step_world;
+        let clip = camera_raw.view_proj * vec4<f32>(ray, 1.0);
+        if clip.w <= 0.0 {
+            continue;
+        }
+        let ndc = clip.xyz / clip.w;
+        if ndc.x < -1.0 || ndc.x > 1.0 || ndc.y < -1.0 || ndc.y > 1.0 || ndc.z < 0.0 || ndc.z > 1.0 {
+            continue;
+        }
+        let uv = vec2<f32>(ndc.x * 0.5 + 0.5, -ndc.y * 0.5 + 0.5);
+        let px = clamp(
+            vec2<i32>(uv * viewport_size),
+            vec2<i32>(0, 0),
+            depth_dim - vec2<i32>(1, 1),
+        );
+        {% if multisampled_geometry %}
+            let scene_depth = textureLoad(depth_tex, px, 0);
+        {% else %}
+            let scene_depth = textureLoad(depth_tex, px, 0);
+        {% endif %}
+        let ray_depth = ndc.z;
+        // Hit window: scene depth is closer to the camera than the
+        // ray by a small margin (`thickness_min`) but not by more than
+        // `thickness_max` — the latter prevents distant geometry
+        // behind the ray from registering as an occluder.
+        let thickness_min = 0.0005;
+        let thickness_max = 0.02;
+        if scene_depth < ray_depth - thickness_min && scene_depth > ray_depth - thickness_max {
+            occluded = occluded + 1.0;
+            break;
+        }
+    }
+    if occluded > 0.0 {
+        return 0.0;
+    }
+    return 1.0;
+}
+
 // Sample a point-light cube shadow. The descriptor repurposes
 // `atlas_rect.xyz` for the light's world position and `atlas_rect.w`
 // for its range; `cascade_info.y` is the cube-pool slot index.
