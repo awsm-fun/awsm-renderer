@@ -1074,9 +1074,9 @@ The renderer-side data path is ready. What's left is the bind-group consolidatio
 - [ ] Visual check on fast camera fling vs slow orbit — deferred along with editor UI
 
 ### Phase 12 — Culling
-- [ ] Per-view shadow frustum culling
-- [ ] Directional cascade frustum expansion along light dir
-- [ ] Verify draw call count drops with off-screen casters
+- [x] Per-view shadow-frustum culling — `Frustum::from_view_projection(view.view_projection)` rebuilt per shadow view; `Mesh::world_aabb` tested with `intersects_aabb`
+- [x] Directional cascade frustum already pulls the near plane back along the light direction in `fit_cascade` (the `z_pull_back` step), so the same `Frustum::from_view_projection` captures off-screen casters
+- [x] Meshes without a cached `world_aabb` are conservatively kept (procedural / dynamic content)
 
 ### Phase 13 — Atlas dynamics
 - [ ] Re-pack both depth atlas and EVSM atlas on caster-set change

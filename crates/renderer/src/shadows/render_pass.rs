@@ -14,6 +14,7 @@ use awsm_renderer_core::command::{
 use awsm_renderer_core::pipeline::primitive::IndexFormat;
 
 use crate::error::Result;
+use crate::frustum::Frustum;
 use crate::render::RenderContext;
 use crate::shadows::Shadows;
 
@@ -101,6 +102,13 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
                 .meta
                 .get_bind_group()?;
 
+            // Per-view frustum culling. Directional cascades especially
+            // see geometry the camera doesn't, so we test against the
+            // light-space frustum rather than the camera's. The
+            // frustum is rebuilt per view (cheap; 6 plane extractions
+            // from `view_projection`).
+            let shadow_frustum = Frustum::from_view_projection(view.view_projection);
+
             // Cache the last-bound pipeline key so we don't re-bind
             // when consecutive draws share the same variant.
             let mut last_pipeline_key = None;
@@ -109,6 +117,16 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
                     continue;
                 }
                 // HUD overlay primitives also shouldn't cast shadows.
+
+                // Frustum cull against the light-space view. Meshes
+                // without a cached world AABB are conservative kept
+                // (they're typically procedural / dynamic content
+                // whose bounds haven't been computed yet).
+                if let Some(aabb) = &mesh.world_aabb {
+                    if !shadow_frustum.intersects_aabb(aabb) {
+                        continue;
+                    }
+                }
 
                 let pipeline_key = shadows.shadow_pipeline_key(mesh.instanced);
                 if last_pipeline_key != Some(pipeline_key) {
