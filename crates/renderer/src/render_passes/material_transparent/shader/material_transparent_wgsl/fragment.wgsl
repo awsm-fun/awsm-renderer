@@ -33,6 +33,41 @@ fn sample_transmission_background(
     ior: f32,
     roughness: f32,
     thickness: f32,
+    dispersion: f32,
+    camera: Camera,
+) -> vec3<f32> {
+    if (dispersion > 0.0 && thickness > 0.0) {
+        // KHR_materials_dispersion: refract per RGB channel against three
+        // slightly-shifted IORs and recombine. The helper handles the
+        // shared ray/projection/blur work, so this stays a thin wrapper.
+        // Half-spread matches the glTF Sample Renderer formula.
+        let dstrength = (ior - 1.0) * 0.025 * dispersion;
+        let ior_r = max(ior - dstrength, 1.0001);
+        let ior_b = ior + dstrength;
+        let bg_r = sample_transmission_background_for_ior(
+            frag_pos, world_position, normal, view_dir, ior_r, roughness, thickness, camera,
+        );
+        let bg_g = sample_transmission_background_for_ior(
+            frag_pos, world_position, normal, view_dir, ior, roughness, thickness, camera,
+        );
+        let bg_b = sample_transmission_background_for_ior(
+            frag_pos, world_position, normal, view_dir, ior_b, roughness, thickness, camera,
+        );
+        return vec3<f32>(bg_r.r, bg_g.g, bg_b.b);
+    }
+    return sample_transmission_background_for_ior(
+        frag_pos, world_position, normal, view_dir, ior, roughness, thickness, camera,
+    );
+}
+
+fn sample_transmission_background_for_ior(
+    frag_pos: vec4<f32>,
+    world_position: vec3<f32>,
+    normal: vec3<f32>,
+    view_dir: vec3<f32>,
+    ior: f32,
+    roughness: f32,
+    thickness: f32,
     camera: Camera,
 ) -> vec3<f32> {
     let screen_dims = vec2<f32>(textureDimensions(opaque_tex));
@@ -81,106 +116,21 @@ fn sample_transmission_background(
         {% endif %}
     }
 
-    // Convert to texel coordinates
-    let texel_coord = vec2<i32>(screen_uv * screen_dims);
-
-    // Apply IOR-adjusted roughness for blur (matches glTF sample renderer formula)
-    // IOR 1.0 = no blur, IOR 1.5+ = full roughness blur
-    // glTF sample viewer uses: framebufferLod = log2(width) * roughness * clamp(ior * 2.0 - 2.0, 0.0, 1.0)
+    // Pick a mip level from the IOR-adjusted roughness. This matches the
+    // glTF Sample Renderer formula: `mip = log2(width) * roughness * clamp(ior*2 - 2, 0, 1)`.
+    // The opaque RT now carries a real mip chain (built by `OpaqueMipgen`
+    // after the opaque pass), so we get a properly pre-filtered fetch in
+    // one hardware sample instead of the multi-tap Gaussian we used to
+    // approximate it.
     let ior_roughness_factor = clamp(ior * 2.0 - 2.0, 0.0, 1.0);
     let blur_roughness = roughness * ior_roughness_factor;
-
-    // For rough transmission, sample multiple neighbors to approximate mipmap blur
-    // Since we can't generate mipmaps per-frame efficiently, we use multi-sample blur
-    // Quality controlled by transmission_blur_rings: 0=none, 1=9 samples, 2=17 samples, 3=25 samples
-    const BLUR_THRESHOLD: f32 = 0.05;
-
-    {% if transmission_blur_rings > 0 %}
-    if (blur_roughness > BLUR_THRESHOLD) {
-        // Calculate blur radius to approximate mipmap sampling
-        // glTF sample viewer formula: mip = log2(width) * adjusted_roughness
-        // At mip level N, each texel represents 2^N original pixels
-        // We approximate this by sampling a radius proportional to 2^(mip_level)
-        let target_mip = log2(screen_dims.x) * blur_roughness;
-        // Clamp to reasonable range (mip 0-8 gives radius 1-256)
-        let clamped_mip = clamp(target_mip, 0.0, 8.0);
-        let blur_radius = pow(2.0, clamped_mip);
-
-        // Offsets for 8-sample ring (normalized)
-        let ring_offsets = array<vec2<f32>, 8>(
-            vec2<f32>(1.0, 0.0),
-            vec2<f32>(0.707, 0.707),
-            vec2<f32>(0.0, 1.0),
-            vec2<f32>(-0.707, 0.707),
-            vec2<f32>(-1.0, 0.0),
-            vec2<f32>(-0.707, -0.707),
-            vec2<f32>(0.0, -1.0),
-            vec2<f32>(0.707, -0.707),
-        );
-
-        // Gaussian-like weights: center weighted most, outer rings less
-        // sigma roughly = blur_radius / 2
-        let sigma = blur_radius * 0.5;
-        let sigma_sq_2 = 2.0 * sigma * sigma;
-
-        // Screen bounds for out-of-bounds checking
-        let screen_max = vec2<i32>(screen_dims) - 1;
-
-        // Center sample with Gaussian weight (distance = 0)
-        var color_sum = textureLoad(opaque_tex, texel_coord, 0).rgb;
-        var weight_sum = 1.0;
-
-        // Ring 1: radius = blur_radius * 0.33
-        let r1 = blur_radius * 0.33;
-        for (var i = 0u; i < 8u; i = i + 1u) {
-            let offset_px = ring_offsets[i] * r1;
-            let sample_coord = vec2<i32>(screen_uv * screen_dims + offset_px);
-            // Skip samples outside screen bounds to avoid dark edges
-            if (sample_coord.x >= 0 && sample_coord.x <= screen_max.x &&
-                sample_coord.y >= 0 && sample_coord.y <= screen_max.y) {
-                let w = exp(-(r1 * r1) / sigma_sq_2);
-                color_sum += textureLoad(opaque_tex, sample_coord, 0).rgb * w;
-                weight_sum += w;
-            }
-        }
-
-        {% if transmission_blur_rings > 1 %}
-        // Ring 2: radius = blur_radius * 0.67
-        let r2 = blur_radius * 0.67;
-        for (var i = 0u; i < 8u; i = i + 1u) {
-            let offset_px = ring_offsets[i] * r2;
-            let sample_coord = vec2<i32>(screen_uv * screen_dims + offset_px);
-            if (sample_coord.x >= 0 && sample_coord.x <= screen_max.x &&
-                sample_coord.y >= 0 && sample_coord.y <= screen_max.y) {
-                let w = exp(-(r2 * r2) / sigma_sq_2);
-                color_sum += textureLoad(opaque_tex, sample_coord, 0).rgb * w;
-                weight_sum += w;
-            }
-        }
-        {% endif %}
-
-        {% if transmission_blur_rings > 2 %}
-        // Ring 3: radius = blur_radius * 1.0
-        let r3 = blur_radius;
-        for (var i = 0u; i < 8u; i = i + 1u) {
-            let offset_px = ring_offsets[i] * r3;
-            let sample_coord = vec2<i32>(screen_uv * screen_dims + offset_px);
-            if (sample_coord.x >= 0 && sample_coord.x <= screen_max.x &&
-                sample_coord.y >= 0 && sample_coord.y <= screen_max.y) {
-                let w = exp(-(r3 * r3) / sigma_sq_2);
-                color_sum += textureLoad(opaque_tex, sample_coord, 0).rgb * w;
-                weight_sum += w;
-            }
-        }
-        {% endif %}
-
-        return color_sum / weight_sum;
-    }
-    {% endif %}
-
-    // Sharp sample for smooth materials
-    let background = textureLoad(opaque_tex, texel_coord, 0).rgb;
-    return background;
+    let max_mip = f32(textureNumLevels(opaque_tex) - 1u);
+    let mip_level = clamp(log2(screen_dims.x) * blur_roughness, 0.0, max_mip);
+    let mip_i = i32(mip_level + 0.5);
+    let mip_size = vec2<f32>(textureDimensions(opaque_tex, u32(mip_i)));
+    let mip_max = vec2<i32>(mip_size) - vec2<i32>(1);
+    let mip_coord = clamp(vec2<i32>(screen_uv * mip_size), vec2<i32>(0), mip_max);
+    return textureLoad(opaque_tex, mip_coord, mip_i).rgb;
 }
 
 @fragment
@@ -269,6 +219,7 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
                 material_color.ior,
                 roughness,
                 material_color.volume_thickness,
+                material_color.dispersion,
                 camera,
             );
 

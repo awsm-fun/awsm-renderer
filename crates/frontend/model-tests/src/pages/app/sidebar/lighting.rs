@@ -1,7 +1,7 @@
 use wasm_bindgen_futures::spawn_local;
 
 use crate::{
-    pages::app::context::{AppContext, IblId, SkyboxId},
+    pages::app::context::{AppContext, IblId, PunctualLightsMode, SkyboxId},
     prelude::*,
 };
 
@@ -73,7 +73,16 @@ impl SidebarLighting {
                         }
                     }));
                 }))
-                .with_options([("On".to_string(), true), ("Off".to_string(), false)])
+                .with_options([
+                    ("Auto (smart)".to_string(), PunctualLightsMode::Auto),
+                    ("Off".to_string(), PunctualLightsMode::Off),
+                    ("Model only".to_string(), PunctualLightsMode::ModelOnly),
+                    (
+                        "Additional only".to_string(),
+                        PunctualLightsMode::AdditionalOnly,
+                    ),
+                    ("On (both)".to_string(), PunctualLightsMode::On),
+                ])
                 .render(),
         )
     }

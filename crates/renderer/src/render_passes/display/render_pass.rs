@@ -36,6 +36,19 @@ impl DisplayRenderPass {
 
     /// Executes the display render pass.
     pub fn render(&self, ctx: &RenderContext) -> Result<()> {
+        // Upload the per-frame display uniform (currently: exposure scale).
+        // exp2(EV) so 0 EV is unity, +1 EV doubles brightness, -1 EV halves.
+        let exposure_scale = ctx.post_processing.exposure.exp2();
+        let mut bytes = [0u8; super::bind_group::DISPLAY_UNIFORM_SIZE];
+        bytes[0..4].copy_from_slice(&exposure_scale.to_le_bytes());
+        ctx.gpu.write_buffer(
+            &self.bind_groups.uniform_buffer,
+            None,
+            &bytes[..],
+            None,
+            None,
+        )?;
+
         let render_pass = ctx.command_encoder.begin_render_pass(
             &RenderPassDescriptor {
                 label: Some("Display Render Pass"),

@@ -96,6 +96,13 @@ pub static GLTF_SETS: LazyLock<HashMap<GltfSetId, Vec<GltfId>>> = LazyLock::new(
     h.insert(
         GltfSetId::Extensions,
         vec![
+            GltfId::SimpleInstancing,
+            GltfId::UnlitTest,
+            GltfId::SpecularTest,
+            GltfId::PointLightIntensityTest,
+            GltfId::PlaysetLightTest,
+            GltfId::LightsPunctualLamp,
+            GltfId::DirectionalLight,
             GltfId::ClearCoatCarPaint,
             GltfId::ClearCoatWicker,
             GltfId::ClearCoatTest,
@@ -104,24 +111,36 @@ pub static GLTF_SETS: LazyLock<HashMap<GltfSetId, Vec<GltfId>>> = LazyLock::new(
             GltfId::SheenTestGrid,
             GltfId::SheenWoodLeatherSofa,
             GltfId::TransmissionRoughness,
-            GltfId::IorTestGrid,
-            GltfId::SimpleInstancing,
-            GltfId::EmissiveStrength,
             GltfId::TextureTransformMultiTest,
             GltfId::TextureTransformTest,
             GltfId::CompareAnisotropy,
+            GltfId::AnisotropyBarnLamp,
+            GltfId::AnisotropyDiscTest,
+            GltfId::AnisotropyRotationTest,
+            GltfId::AnisotropyStrengthTest,
             GltfId::CompareAmbientOcclusion,
             GltfId::CompareClearcoat,
             GltfId::CompareDispersion,
+            GltfId::DispersionTest,
+            GltfId::DragonDispersion,
+            GltfId::DiffuseTransmissionTest,
+            GltfId::DiffuseTransmissionTeacup,
+            GltfId::DiffuseTransmissionPlant,
             GltfId::CompareEmissiveStrength,
+            GltfId::EmissiveStrength,
             GltfId::CompareIor,
+            GltfId::IorTestGrid,
             GltfId::CompareIridescence,
+            GltfId::IridescenceAbalone,
+            GltfId::IridescenceDielectricSpheres,
+            GltfId::IridescenceLamp,
+            GltfId::IridescenceMetallicSpheres,
+            GltfId::IridescenceSuzanne,
+            GltfId::IridescenceDishWithOlives,
             GltfId::CompareSheen,
             GltfId::CompareSpecular,
             GltfId::CompareTransmission,
             GltfId::CompareVolume,
-            GltfId::UnlitTest,
-            GltfId::SpecularTest,
         ],
     );
 
@@ -194,12 +213,27 @@ pub enum GltfId {
     CompareAlphaCoverage,
     CompareAmbientOcclusion,
     CompareAnisotropy,
+    AnisotropyBarnLamp,
+    AnisotropyDiscTest,
+    AnisotropyRotationTest,
+    AnisotropyStrengthTest,
     CompareBaseColor,
     CompareClearcoat,
     CompareDispersion,
+    DispersionTest,
+    DragonDispersion,
+    DiffuseTransmissionTest,
+    DiffuseTransmissionTeacup,
+    DiffuseTransmissionPlant,
     CompareEmissiveStrength,
     CompareIor,
     CompareIridescence,
+    IridescenceAbalone,
+    IridescenceDielectricSpheres,
+    IridescenceLamp,
+    IridescenceMetallicSpheres,
+    IridescenceSuzanne,
+    IridescenceDishWithOlives,
     CompareMetallic,
     CompareNormal,
     CompareRoughness,
@@ -216,6 +250,10 @@ pub enum GltfId {
     TextureTransformMultiTest,
     UnlitTest,
     SpecularTest,
+    PointLightIntensityTest,
+    PlaysetLightTest,
+    LightsPunctualLamp,
+    DirectionalLight,
     AwsmTransformGizmo,
     IorTestGrid,
 }
@@ -308,6 +346,12 @@ impl GltfId {
             }
             Self::IorTestGrid => "IORTestGrid/glTF/IORTestGrid.gltf",
             Self::UnlitTest => "UnlitTest/glTF/UnlitTest.gltf",
+            Self::PointLightIntensityTest => {
+                "PointLightIntensityTest/glTF/PointLightIntensityTest.gltf"
+            }
+            Self::PlaysetLightTest => "PlaysetLightTest/glTF/PlaysetLightTest.gltf",
+            Self::LightsPunctualLamp => "LightsPunctualLamp/glTF/LightsPunctualLamp.gltf",
+            Self::DirectionalLight => "DirectionalLight/glTF/DirectionalLight.gltf",
             Self::SpecularTest => "SpecularTest/glTF/SpecularTest.gltf",
             Self::BrainStem => "BrainStem/glTF/BrainStem.gltf",
             Self::Fox => "Fox/glTF/Fox.gltf",
@@ -363,14 +407,45 @@ impl GltfId {
                 "CompareAmbientOcclusion/glTF/CompareAmbientOcclusion.gltf"
             }
             Self::CompareAnisotropy => "CompareAnisotropy/glTF/CompareAnisotropy.gltf",
+            Self::AnisotropyBarnLamp => "AnisotropyBarnLamp/glTF/AnisotropyBarnLamp.gltf",
+            Self::AnisotropyDiscTest => "AnisotropyDiscTest/glTF/AnisotropyDiscTest.gltf",
+            Self::AnisotropyRotationTest => {
+                "AnisotropyRotationTest/glTF/AnisotropyRotationTest.gltf"
+            }
+            Self::AnisotropyStrengthTest => {
+                "AnisotropyStrengthTest/glTF/AnisotropyStrengthTest.gltf"
+            }
             Self::CompareBaseColor => "CompareBaseColor/glTF/CompareBaseColor.gltf",
             Self::CompareClearcoat => "CompareClearcoat/glTF/CompareClearcoat.gltf",
             Self::CompareDispersion => "CompareDispersion/glTF/CompareDispersion.gltf",
+            Self::DispersionTest => "DispersionTest/glTF/DispersionTest.gltf",
+            Self::DragonDispersion => "DragonDispersion/glTF/DragonDispersion.gltf",
+            Self::DiffuseTransmissionTest => {
+                "DiffuseTransmissionTest/glTF/DiffuseTransmissionTest.gltf"
+            }
+            Self::DiffuseTransmissionTeacup => {
+                "DiffuseTransmissionTeacup/glTF/DiffuseTransmissionTeacup.gltf"
+            }
+            Self::DiffuseTransmissionPlant => {
+                "DiffuseTransmissionPlant/glTF/DiffuseTransmissionPlant.gltf"
+            }
             Self::CompareEmissiveStrength => {
                 "CompareEmissiveStrength/glTF/CompareEmissiveStrength.gltf"
             }
             Self::CompareIor => "CompareIor/glTF/CompareIor.gltf",
             Self::CompareIridescence => "CompareIridescence/glTF/CompareIridescence.gltf",
+            Self::IridescenceAbalone => "IridescenceAbalone/glTF/IridescenceAbalone.gltf",
+            Self::IridescenceDielectricSpheres => {
+                "IridescenceDielectricSpheres/glTF/IridescenceDielectricSpheres.gltf"
+            }
+            Self::IridescenceLamp => "IridescenceLamp/glTF/IridescenceLamp.gltf",
+            Self::IridescenceMetallicSpheres => {
+                "IridescenceMetallicSpheres/glTF/IridescenceMetallicSpheres.gltf"
+            }
+            Self::IridescenceSuzanne => "IridescenceSuzanne/glTF/IridescenceSuzanne.gltf",
+            Self::IridescenceDishWithOlives => {
+                "IridescentDishWithOlives/glTF/IridescentDishWithOlives.gltf"
+            }
             Self::CompareMetallic => "CompareMetallic/glTF/CompareMetallic.gltf",
             Self::CompareNormal => "CompareNormal/glTF/CompareNormal.gltf",
             Self::CompareRoughness => "CompareRoughness/glTF/CompareRoughness.gltf",
@@ -401,6 +476,10 @@ impl GltfId {
             Self::IorTestGrid => "Ior test grid",
             Self::SpecularTest => "Specular test",
             Self::UnlitTest => "Unlit test",
+            Self::PointLightIntensityTest => "Point light intensity test",
+            Self::PlaysetLightTest => "Playset light test",
+            Self::LightsPunctualLamp => "Lights punctual lamp",
+            Self::DirectionalLight => "Directional light",
             Self::BrainStem => "Brain stem",
             Self::Fox => "Fox",
             Self::AlphaBlendMode => "Alpha blend mode",
@@ -443,12 +522,27 @@ impl GltfId {
             Self::CompareAlphaCoverage => "Alpha coverage compare",
             Self::CompareAmbientOcclusion => "Ambient occlusion compare",
             Self::CompareAnisotropy => "Anisotropy compare",
+            Self::AnisotropyBarnLamp => "Anisotropy barn lamp",
+            Self::AnisotropyDiscTest => "Anisotropy disc test",
+            Self::AnisotropyRotationTest => "Anisotropy rotation test",
+            Self::AnisotropyStrengthTest => "Anisotropy strength test",
             Self::CompareBaseColor => "Base color compare",
             Self::CompareClearcoat => "Clearcoat compare",
             Self::CompareDispersion => "Dispersion compare",
+            Self::DispersionTest => "Dispersion test",
+            Self::DragonDispersion => "Dragon dispersion",
+            Self::DiffuseTransmissionTest => "Diffuse transmission test",
+            Self::DiffuseTransmissionTeacup => "Diffuse transmission teacup",
+            Self::DiffuseTransmissionPlant => "Diffuse transmission plant",
             Self::CompareEmissiveStrength => "Emissive strength compare",
             Self::CompareIor => "IOR compare",
             Self::CompareIridescence => "Iridescence compare",
+            Self::IridescenceAbalone => "Iridescence abalone",
+            Self::IridescenceDielectricSpheres => "Iridescent dielectric spheres",
+            Self::IridescenceLamp => "Iridescent lamp",
+            Self::IridescenceMetallicSpheres => "Iridescent metallic spheres",
+            Self::IridescenceSuzanne => "Iridescent suzanne",
+            Self::IridescenceDishWithOlives => "Iridescent dish with olives",
             Self::CompareMetallic => "Metallic compare",
             Self::CompareNormal => "Normal compare",
             Self::CompareRoughness => "Roughness compare",

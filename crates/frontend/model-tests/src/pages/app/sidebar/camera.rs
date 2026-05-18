@@ -5,7 +5,7 @@ use crate::{
     prelude::*,
 };
 
-use super::render_dropdown_label;
+use super::{render_dropdown_label, render_input_label};
 
 pub struct SidebarCamera {
     ctx: AppContext,
@@ -97,34 +97,4 @@ impl SidebarCamera {
                 .render(),
         )
     }
-}
-
-fn render_input_label(label: &str, input: Dom) -> Dom {
-    static CONTAINER: LazyLock<String> = LazyLock::new(|| {
-        class! {
-            .style("display", "flex")
-            .style("flex-direction", "column")
-            .style("margin", "0.75rem 1rem")
-            .style("gap", "0.5rem")
-        }
-    });
-
-    static LABEL: LazyLock<String> = LazyLock::new(|| {
-        class! {
-            .style("font-size", FontSize::Sm.value())
-            .style("color", ColorText::SidebarHeader.value())
-            .style("text-transform", "uppercase")
-            .style("letter-spacing", "0.05em")
-            .style("opacity", "0.8")
-        }
-    });
-
-    html!("div", {
-        .class(&*CONTAINER)
-        .child(html!("div", {
-            .class(&*LABEL)
-            .text(label)
-        }))
-        .child(input)
-    })
 }

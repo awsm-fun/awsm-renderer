@@ -6,7 +6,8 @@ use awsm_renderer_core::{
     texture::{
         blit::{blit_get_bind_group, blit_get_pipeline, BlitPipeline},
         clear::TextureClearer,
-        Extent3d, TextureDescriptor, TextureFormat, TextureUsage,
+        Extent3d, TextureDescriptor, TextureFormat, TextureUsage, TextureViewDescriptor,
+        TextureViewDimension,
     },
 };
 use thiserror::Error;
@@ -150,6 +151,12 @@ impl RenderTextures {
         ))
     }
 
+    /// Borrows the inner textures (if initialized). Used by per-frame
+    /// passes that need direct GPU texture handles (e.g. mip generation).
+    pub fn inner(&self) -> Option<&RenderTexturesInner> {
+        self.inner.as_ref()
+    }
+
     /// Clears the opaque render texture when initialized.
     pub fn clear_opaque(&self, gpu: &AwsmRendererWebGpu) -> Result<()> {
         if let Some(inner) = self.inner.as_ref() {
@@ -173,8 +180,17 @@ pub struct RenderTextureViews {
 
     // Output from opaque pass
     pub opaque: web_sys::GpuTextureView,
+    /// Mip-0-only view of the opaque target. Storage bindings require a
+    /// single-mip view, so the opaque compute pass and the post-pass
+    /// mipgen seed both use this view.
+    pub opaque_storage: web_sys::GpuTextureView,
+    /// Full-mip view of the opaque target, used by the transparent pass
+    /// to sample pre-blurred neighborhoods for screen-space transmission.
+    pub opaque_full: web_sys::GpuTextureView,
     pub opaque_to_transparent_blit_bind_group_msaa_4: web_sys::GpuBindGroup,
     pub opaque_to_transparent_blit_bind_group_no_anti_alias: web_sys::GpuBindGroup,
+    /// Number of mip levels in the opaque target (`floor(log2(max(w, h))) + 1`).
+    pub opaque_mip_count: u32,
 
     // Output from transparent pass
     pub transparent: web_sys::GpuTextureView,
@@ -212,7 +228,10 @@ impl RenderTextureViews {
             barycentric: inner.barycentric_view.clone(),
             normal_tangent: inner.normal_tangent_view.clone(),
             barycentric_derivatives: inner.barycentric_derivatives_view.clone(),
-            opaque: inner.opaque_view.clone(),
+            opaque: inner.opaque_storage_view.clone(),
+            opaque_storage: inner.opaque_storage_view.clone(),
+            opaque_full: inner.opaque_full_view.clone(),
+            opaque_mip_count: inner.opaque_mip_count,
             opaque_to_transparent_blit_bind_group_msaa_4: inner
                 .opaque_to_transparent_blit_bind_group_msaa_4
                 .clone(),
@@ -256,7 +275,12 @@ pub struct RenderTexturesInner {
 
     pub opaque: web_sys::GpuTexture,
     pub opaque_clearer: TextureClearer,
-    pub opaque_view: web_sys::GpuTextureView,
+    /// Storage-binding-friendly mip-0 view; also what the blit shaders
+    /// sample from. WebGPU requires storage views to cover exactly one
+    /// mip level, so we keep this separate from the full-mip view below.
+    pub opaque_storage_view: web_sys::GpuTextureView,
+    pub opaque_full_view: web_sys::GpuTextureView,
+    pub opaque_mip_count: u32,
     pub opaque_to_transparent_blit_bind_group_msaa_4: web_sys::GpuBindGroup,
     pub opaque_to_transparent_blit_bind_group_no_anti_alias: web_sys::GpuBindGroup,
 
@@ -350,7 +374,13 @@ impl RenderTexturesInner {
             )
             .map_err(AwsmRenderTextureError::CreateTexture)?;
 
-        // NEVER multisampled, used as a storage texture
+        // NEVER multisampled, used as a storage texture. Allocate a full
+        // mip chain so the transparent pass can do hardware-filtered
+        // background sampling for rough/refractive materials. Mip 0 is
+        // populated by the opaque pass; subsequent mips are filled in by
+        // `OpaqueMipgen` between the opaque pass and the transparent pass
+        // when the frame uses transmission.
+        let opaque_mip_count = mip_levels_for(width, height);
         let opaque = gpu
             .create_texture(
                 &TextureDescriptor::new(
@@ -363,6 +393,7 @@ impl RenderTexturesInner {
                         .with_copy_dst(),
                 )
                 .with_label("Opaque")
+                .with_mip_level_count(opaque_mip_count)
                 .into(),
             )
             .map_err(AwsmRenderTextureError::CreateTexture)?;
@@ -475,9 +506,32 @@ impl RenderTexturesInner {
             AwsmRenderTextureError::CreateTextureView(format!("barycentric: {e:?}"))
         })?;
 
-        let opaque_view = opaque
-            .create_view()
-            .map_err(|e| AwsmRenderTextureError::CreateTextureView(format!("opaque: {e:?}")))?;
+        // Storage views must cover a single mip level. The opaque pass
+        // writes only mip 0; the full-mip view is used by the transparent
+        // pass when sampling for transmission.
+        let opaque_storage_view = opaque
+            .create_view_with_descriptor(
+                &TextureViewDescriptor::new(Some("Opaque (mip 0)"))
+                    .with_dimension(TextureViewDimension::N2d)
+                    .with_base_mip_level(0)
+                    .with_mip_level_count(1)
+                    .into(),
+            )
+            .map_err(|e| {
+                AwsmRenderTextureError::CreateTextureView(format!("opaque storage: {e:?}"))
+            })?;
+
+        let opaque_full_view = opaque
+            .create_view_with_descriptor(
+                &TextureViewDescriptor::new(Some("Opaque (full mips)"))
+                    .with_dimension(TextureViewDimension::N2d)
+                    .with_base_mip_level(0)
+                    .with_mip_level_count(opaque_mip_count)
+                    .into(),
+            )
+            .map_err(|e| {
+                AwsmRenderTextureError::CreateTextureView(format!("opaque full: {e:?}"))
+            })?;
 
         let transparent_view = transparent.create_view().map_err(|e| {
             AwsmRenderTextureError::CreateTextureView(format!("transparent: {e:?}"))
@@ -503,16 +557,19 @@ impl RenderTexturesInner {
             .create_view()
             .map_err(|e| AwsmRenderTextureError::CreateTextureView(format!("bloom: {e:?}")))?;
 
+        // The blit shader uses `textureLoad(_, _, 0)` against mip 0, so
+        // either of the opaque views technically works; bind the storage
+        // (mip-0-only) view to keep its intent obvious.
         let opaque_to_transparent_blit_bind_group_msaa_4 = blit_get_bind_group(
             gpu,
             opaque_to_transparent_blit_pipeline_msaa_4,
-            &opaque_view,
+            &opaque_storage_view,
         );
 
         let opaque_to_transparent_blit_bind_group_no_anti_alias = blit_get_bind_group(
             gpu,
             opaque_to_transparent_blit_pipeline_no_anti_alias,
-            &opaque_view,
+            &opaque_storage_view,
         );
 
         let transparent_to_composite_blit_bind_group_no_anti_alias =
@@ -539,7 +596,9 @@ impl RenderTexturesInner {
             barycentric_derivatives_view,
 
             opaque,
-            opaque_view,
+            opaque_storage_view,
+            opaque_full_view,
+            opaque_mip_count,
             opaque_clearer: TextureClearer::new(gpu, render_texture_formats.color, width, height)
                 .map_err(AwsmRenderTextureError::CreateTextureClearer)?,
             opaque_to_transparent_blit_bind_group_msaa_4,
@@ -587,6 +646,12 @@ impl RenderTexturesInner {
         self.effects.destroy();
         self.bloom.destroy();
     }
+}
+
+/// Returns the natural mip-chain length for a 2D texture of the given size.
+fn mip_levels_for(width: u32, height: u32) -> u32 {
+    let max_dim = width.max(height).max(1);
+    32 - max_dim.leading_zeros()
 }
 
 /// Result type for render texture operations.

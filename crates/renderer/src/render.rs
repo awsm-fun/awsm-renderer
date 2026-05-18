@@ -223,6 +223,43 @@ impl AwsmRenderer {
                 .render(&ctx, renderables.opaque)?;
         }
 
+        // Build the opaque RT mip chain when any visible transparent
+        // material uses transmission. The transparent pass uses these
+        // mips for hardware-filtered background sampling at refraction
+        // points instead of a multi-tap blur. Skipped entirely on frames
+        // with no transmissive material — they pay zero overhead.
+        let scene_has_transmission = renderables
+            .transparent
+            .iter()
+            .any(|r| self.materials.has_transmission(r.material_key()));
+        if scene_has_transmission {
+            let _maybe_span_guard = if self.logging.render_timings {
+                Some(tracing::span!(tracing::Level::INFO, "Opaque Mipgen").entered())
+            } else {
+                None
+            };
+            // Clone the texture handle and mip count out of the inner
+            // borrow first; that drops the immutable `self.render_textures`
+            // borrow before we take a mutable borrow on `self.opaque_mipgen`.
+            // GpuTexture is a wasm-bindgen JS handle — `.clone()` is a
+            // refcount bump, not a texture copy.
+            let opaque_info = self
+                .render_textures
+                .inner()
+                .map(|inner| (inner.opaque.clone(), inner.opaque_mip_count));
+            // The mipgen caches per-mip views + bind groups across frames.
+            // We invalidate explicitly when the render textures were just
+            // recreated (resize / AA change) so the cache stays paired
+            // with the right `GpuTexture` identity.
+            if ctx.render_texture_views.size_changed {
+                self.opaque_mipgen.invalidate();
+            }
+            if let Some((texture, mip_count)) = opaque_info {
+                self.opaque_mipgen
+                    .record(&self.gpu, &ctx.command_encoder, &texture, mip_count)?;
+            }
+        }
+
         {
             let _maybe_span_guard = if ctx.logging.render_timings {
                 Some(tracing::span!(tracing::Level::INFO, "Opaque to Transparent Blit").entered())

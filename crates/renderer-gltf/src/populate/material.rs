@@ -619,14 +619,211 @@ impl LocalPbrMaterialExtensions {
             });
         }
 
-        // TODO:
-        // pub diffuse_transmission: Option<PbrMaterialDiffuseTransmission>,
-        // pub dispersion: Option<PbrMaterialDispersion>,
-        // pub anisotropy: Option<PbrMaterialAnisotropy>,
-        // pub iridescence: Option<PbrMaterialIridescence>,
+        // The remaining extensions aren't yet exposed by the `gltf` crate, so
+        // we read them straight off the extensions JSON map.
+        if let Some(value) = gltf_material.extension_value("KHR_materials_dispersion") {
+            let dispersion = read_f32(value, "dispersion", 0.0);
+            extensions.dispersion = Some(PbrMaterialDispersion { dispersion });
+        }
+
+        if let Some(value) = gltf_material.extension_value("KHR_materials_diffuse_transmission") {
+            let factor = read_f32(value, "diffuseTransmissionFactor", 0.0);
+            let color_factor =
+                read_color3(value, "diffuseTransmissionColorFactor", [1.0, 1.0, 1.0]);
+
+            let tex = load_json_texture(
+                renderer,
+                ctx,
+                value.get("diffuseTransmissionTexture"),
+                TextureColorInfo {
+                    mipmap_kind: MipmapTextureKind::Albedo,
+                    srgb_to_linear: false,
+                    premultiplied_alpha: None,
+                },
+            )
+            .await?;
+            let color_tex = load_json_texture(
+                renderer,
+                ctx,
+                value.get("diffuseTransmissionColorTexture"),
+                TextureColorInfo {
+                    mipmap_kind: MipmapTextureKind::Albedo,
+                    srgb_to_linear: true,
+                    premultiplied_alpha: None,
+                },
+            )
+            .await?;
+
+            extensions.diffuse_transmission = Some(PbrMaterialDiffuseTransmission {
+                tex,
+                factor,
+                color_tex,
+                color_factor,
+            });
+        }
+
+        if let Some(value) = gltf_material.extension_value("KHR_materials_anisotropy") {
+            let strength = read_f32(value, "anisotropyStrength", 0.0);
+            let rotation = read_f32(value, "anisotropyRotation", 0.0);
+            let tex = load_json_texture(
+                renderer,
+                ctx,
+                value.get("anisotropyTexture"),
+                TextureColorInfo {
+                    mipmap_kind: MipmapTextureKind::Normal,
+                    srgb_to_linear: false,
+                    premultiplied_alpha: None,
+                },
+            )
+            .await?;
+            extensions.anisotropy = Some(PbrMaterialAnisotropy {
+                tex,
+                strength,
+                rotation,
+            });
+        }
+
+        if let Some(value) = gltf_material.extension_value("KHR_materials_iridescence") {
+            let factor = read_f32(value, "iridescenceFactor", 0.0);
+            let ior = read_f32(value, "iridescenceIor", 1.3);
+            let thickness_min = read_f32(value, "iridescenceThicknessMinimum", 100.0);
+            let thickness_max = read_f32(value, "iridescenceThicknessMaximum", 400.0);
+            let tex = load_json_texture(
+                renderer,
+                ctx,
+                value.get("iridescenceTexture"),
+                TextureColorInfo {
+                    mipmap_kind: MipmapTextureKind::Albedo,
+                    srgb_to_linear: false,
+                    premultiplied_alpha: None,
+                },
+            )
+            .await?;
+            let thickness_tex = load_json_texture(
+                renderer,
+                ctx,
+                value.get("iridescenceThicknessTexture"),
+                TextureColorInfo {
+                    mipmap_kind: MipmapTextureKind::Albedo,
+                    srgb_to_linear: false,
+                    premultiplied_alpha: None,
+                },
+            )
+            .await?;
+            extensions.iridescence = Some(PbrMaterialIridescence {
+                tex,
+                factor,
+                ior,
+                thickness_tex,
+                thickness_min,
+                thickness_max,
+            });
+        }
 
         Ok(extensions)
     }
+}
+
+fn read_f32(value: &gltf::json::Value, key: &str, default: f32) -> f32 {
+    value
+        .get(key)
+        .and_then(|v| v.as_f64())
+        .map(|v| v as f32)
+        .unwrap_or(default)
+}
+
+fn read_color3(value: &gltf::json::Value, key: &str, default: [f32; 3]) -> [f32; 3] {
+    value
+        .get(key)
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            [
+                arr.first()
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(default[0] as f64) as f32,
+                arr.get(1)
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(default[1] as f64) as f32,
+                arr.get(2)
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(default[2] as f64) as f32,
+            ]
+        })
+        .unwrap_or(default)
+}
+
+fn parse_json_texture_info(value: &gltf::json::Value) -> Option<GltfTextureInfo> {
+    let index = value.get("index").and_then(|v| v.as_u64())? as usize;
+    let base_tex_coord = value.get("texCoord").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+
+    let transform_json = value
+        .get("extensions")
+        .and_then(|ext| ext.get("KHR_texture_transform"));
+
+    let texture_transform = transform_json.map(|t| {
+        let offset = t
+            .get("offset")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                [
+                    arr.first().and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+                    arr.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+                ]
+            })
+            .unwrap_or([0.0, 0.0]);
+        let rotation = t.get("rotation").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+        let scale = t
+            .get("scale")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                [
+                    arr.first().and_then(|v| v.as_f64()).unwrap_or(1.0) as f32,
+                    arr.get(1).and_then(|v| v.as_f64()).unwrap_or(1.0) as f32,
+                ]
+            })
+            .unwrap_or([1.0, 1.0]);
+        GltfTextureTransform {
+            offset: [OrderedFloat(offset[0]), OrderedFloat(offset[1])],
+            rotation: OrderedFloat(rotation),
+            scale: [OrderedFloat(scale[0]), OrderedFloat(scale[1])],
+        }
+    });
+
+    let tex_coord_index = transform_json
+        .and_then(|t| t.get("texCoord"))
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
+        .unwrap_or(base_tex_coord);
+
+    Some(GltfTextureInfo {
+        index,
+        tex_coord_index,
+        texture_transform,
+    })
+}
+
+async fn load_json_texture(
+    renderer: &mut AwsmRenderer,
+    ctx: &GltfPopulateContext,
+    value: Option<&gltf::json::Value>,
+    color: TextureColorInfo,
+) -> Result<Option<MaterialTexture>> {
+    let Some(value) = value else { return Ok(None) };
+    let Some(info) = parse_json_texture_info(value) else {
+        return Ok(None);
+    };
+    let GLtfMaterialCacheKey {
+        uv_index,
+        texture_key,
+        sampler_key,
+        texture_transform_key,
+    } = info.create_material_cache_key(renderer, ctx, color).await?;
+    Ok(Some(MaterialTexture {
+        key: texture_key,
+        sampler_key: Some(sampler_key),
+        uv_index: Some(uv_index as u32),
+        transform_key: texture_transform_key,
+    }))
 }
 
 #[derive(Hash, Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -664,124 +861,28 @@ impl<'a> From<gltf::texture::Info<'a>> for GltfTextureInfo {
 
 impl<'a> From<gltf::material::NormalTexture<'a>> for GltfTextureInfo {
     fn from(info: gltf::material::NormalTexture<'a>) -> Self {
-        // Extract KHR_texture_transform from extensions if present
-        let texture_transform = info.extensions().and_then(|ext| {
-            ext.get("KHR_texture_transform").map(|transform_json| {
-                // Parse the extension manually
-                let offset = transform_json
-                    .get("offset")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        [
-                            arr.first().and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
-                            arr.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
-                        ]
-                    })
-                    .unwrap_or([0.0, 0.0]);
-
-                let rotation = transform_json
-                    .get("rotation")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(0.0) as f32;
-
-                let scale = transform_json
-                    .get("scale")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        [
-                            arr.first().and_then(|v| v.as_f64()).unwrap_or(1.0) as f32,
-                            arr.get(1).and_then(|v| v.as_f64()).unwrap_or(1.0) as f32,
-                        ]
-                    })
-                    .unwrap_or([1.0, 1.0]);
-
-                GltfTextureTransform {
-                    offset: [
-                        ordered_float::OrderedFloat(offset[0]),
-                        ordered_float::OrderedFloat(offset[1]),
-                    ],
-                    rotation: ordered_float::OrderedFloat(rotation),
-                    scale: [
-                        ordered_float::OrderedFloat(scale[0]),
-                        ordered_float::OrderedFloat(scale[1]),
-                    ],
-                }
-            })
-        });
-
-        let tex_coord_override = info
-            .extensions()
-            .and_then(|ext| ext.get("KHR_texture_transform"))
-            .and_then(|t| t.get("texCoord"))
-            .and_then(|v| v.as_u64())
-            .map(|v| v as usize);
-
+        let transform = info.texture_transform();
         Self {
             index: info.texture().index(),
-            tex_coord_index: tex_coord_override.unwrap_or(info.tex_coord() as usize),
-            texture_transform,
+            tex_coord_index: transform
+                .as_ref()
+                .and_then(|t| t.tex_coord())
+                .unwrap_or_else(|| info.tex_coord()) as usize,
+            texture_transform: transform.map(GltfTextureTransform::from),
         }
     }
 }
 
 impl<'a> From<gltf::material::OcclusionTexture<'a>> for GltfTextureInfo {
     fn from(info: gltf::material::OcclusionTexture<'a>) -> Self {
-        // Extract KHR_texture_transform from extensions if present
-        let texture_transform = info.extensions().and_then(|ext| {
-            ext.get("KHR_texture_transform").map(|transform_json| {
-                // Parse the extension manually
-                let offset = transform_json
-                    .get("offset")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        [
-                            arr.first().and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
-                            arr.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
-                        ]
-                    })
-                    .unwrap_or([0.0, 0.0]);
-
-                let rotation = transform_json
-                    .get("rotation")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(0.0) as f32;
-
-                let scale = transform_json
-                    .get("scale")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        [
-                            arr.first().and_then(|v| v.as_f64()).unwrap_or(1.0) as f32,
-                            arr.get(1).and_then(|v| v.as_f64()).unwrap_or(1.0) as f32,
-                        ]
-                    })
-                    .unwrap_or([1.0, 1.0]);
-
-                GltfTextureTransform {
-                    offset: [
-                        ordered_float::OrderedFloat(offset[0]),
-                        ordered_float::OrderedFloat(offset[1]),
-                    ],
-                    rotation: ordered_float::OrderedFloat(rotation),
-                    scale: [
-                        ordered_float::OrderedFloat(scale[0]),
-                        ordered_float::OrderedFloat(scale[1]),
-                    ],
-                }
-            })
-        });
-
-        let tex_coord_override = info
-            .extensions()
-            .and_then(|ext| ext.get("KHR_texture_transform"))
-            .and_then(|t| t.get("texCoord"))
-            .and_then(|v| v.as_u64())
-            .map(|v| v as usize);
-
+        let transform = info.texture_transform();
         Self {
             index: info.texture().index(),
-            tex_coord_index: tex_coord_override.unwrap_or(info.tex_coord() as usize),
-            texture_transform,
+            tex_coord_index: transform
+                .as_ref()
+                .and_then(|t| t.tex_coord())
+                .unwrap_or_else(|| info.tex_coord()) as usize,
+            texture_transform: transform.map(GltfTextureTransform::from),
         }
     }
 }

@@ -67,6 +67,16 @@ struct LightBrdf {
     radiance: vec3<f32>,
 };
 
+// KHR_lights_punctual unit-handling note:
+//   * Directional intensity is `lux` (lm/m²).
+//   * Point/spot intensity is `candela` (lm/sr).
+// We treat both as already-radiometric: `radiance = color * intensity * attenuation`.
+// That matches what the glTF Sample Renderer does and is what most assets
+// are authored for, but it is NOT a proper photometric → radiometric
+// conversion. A tonemapped, exposure-aware renderer can hide the
+// difference; a strictly physical pipeline would multiply each kind by
+// the appropriate `683 lm/W` luminous-efficacy scale and divide by the
+// shaded surface's projected area.
 fn light_to_brdf(light:Light, normal: vec3<f32>, world_position: vec3<f32>) -> LightBrdf {
     var light_dir: vec3<f32> = vec3<f32>(0.0, 0.0, 0.0);
     var radiance: vec3<f32> = vec3<f32>(0.0, 0.0, 0.0);

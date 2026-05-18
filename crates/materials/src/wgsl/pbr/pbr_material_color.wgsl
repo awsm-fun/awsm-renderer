@@ -24,6 +24,21 @@ struct PbrMaterialColor {
     // KHR_materials_sheen
     sheen_color: vec3<f32>,      // Sheen color at grazing angles
     sheen_roughness: f32,        // Sheen roughness (affects sheen lobe width)
+    // KHR_materials_dispersion
+    dispersion: f32,             // Chromatic dispersion strength (0 = none)
+    // KHR_materials_diffuse_transmission
+    diffuse_transmission: f32,
+    diffuse_transmission_color: vec3<f32>,
+    // KHR_materials_anisotropy: per-fragment world-space anisotropy direction
+    // (the rotated tangent) and signed strength. Strength stays signed so
+    // texture-driven sign flips survive into the BRDF.
+    anisotropy_t: vec3<f32>,
+    anisotropy_b: vec3<f32>,
+    anisotropy_strength: f32,
+    // KHR_materials_iridescence
+    iridescence: f32,
+    iridescence_ior: f32,
+    iridescence_thickness: f32,
 };
 
 fn pbr_debug_material_color(material: PbrMaterial, color: PbrMaterialColor) -> vec3<f32> {

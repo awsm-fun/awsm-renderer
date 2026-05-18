@@ -3,12 +3,21 @@
 use crate::{error::Result, AwsmRenderer};
 
 /// Post-processing settings for the renderer.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PostProcessing {
     pub tonemapping: ToneMapping,
     pub bloom: bool,
     pub dof: bool,
+    /// Pre-tonemap scene exposure in EV (stops). 0 = unity, +1 = 2x as
+    /// bright, -1 = half as bright. Lets the user pull authored
+    /// photometric intensities (candela-scale gltf lights) into a range
+    /// the tonemapper can resolve without saturating. The renderer
+    /// doesn't try to convert lumens→watts; this is the user-facing
+    /// knob that compensates.
+    pub exposure: f32,
 }
+
+impl Eq for PostProcessing {}
 
 /// Tonemapping operator selection.
 #[derive(Clone, Debug, PartialEq, Eq, Copy, Hash)]
@@ -24,6 +33,7 @@ impl Default for PostProcessing {
             tonemapping: ToneMapping::KhronosNeutralPbr,
             bloom: false,
             dof: false,
+            exposure: 0.0,
         }
     }
 }

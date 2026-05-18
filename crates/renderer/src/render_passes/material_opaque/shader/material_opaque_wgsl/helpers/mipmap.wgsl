@@ -230,6 +230,9 @@ fn pbr_get_gradients(
     let volume = pbr_material_load_volume(material.volume_index);
     let clearcoat = pbr_material_load_clearcoat(material.clearcoat_index);
     let sheen = pbr_material_load_sheen(material.sheen_index);
+    let diffuse_trans = pbr_material_load_diffuse_transmission(material.diffuse_transmission_index);
+    let anisotropy = pbr_material_load_anisotropy(material.anisotropy_index);
+    let iridescence = pbr_material_load_iridescence(material.iridescence_index);
 
     if (material.base_color_tex_info.exists) {
         out.base_color = get_uv_derivatives(
@@ -410,6 +413,74 @@ fn pbr_get_gradients(
             attribute_data_offset, vertex_attribute_stride,
             uv_sets_index,
             sheen.roughness_tex_info,
+            world_normal,
+            view_matrix
+        );
+    }
+
+    // KHR_materials_diffuse_transmission
+    if (diffuse_trans.tex_info.exists) {
+        out.diffuse_transmission = get_uv_derivatives(
+            barycentric,
+            bary_derivs,
+            triangle_indices,
+            attribute_data_offset, vertex_attribute_stride,
+            uv_sets_index,
+            diffuse_trans.tex_info,
+            world_normal,
+            view_matrix
+        );
+    }
+
+    if (diffuse_trans.color_tex_info.exists) {
+        out.diffuse_transmission_color = get_uv_derivatives(
+            barycentric,
+            bary_derivs,
+            triangle_indices,
+            attribute_data_offset, vertex_attribute_stride,
+            uv_sets_index,
+            diffuse_trans.color_tex_info,
+            world_normal,
+            view_matrix
+        );
+    }
+
+    // KHR_materials_anisotropy
+    if (anisotropy.tex_info.exists) {
+        out.anisotropy = get_uv_derivatives(
+            barycentric,
+            bary_derivs,
+            triangle_indices,
+            attribute_data_offset, vertex_attribute_stride,
+            uv_sets_index,
+            anisotropy.tex_info,
+            world_normal,
+            view_matrix
+        );
+    }
+
+    // KHR_materials_iridescence
+    if (iridescence.tex_info.exists) {
+        out.iridescence = get_uv_derivatives(
+            barycentric,
+            bary_derivs,
+            triangle_indices,
+            attribute_data_offset, vertex_attribute_stride,
+            uv_sets_index,
+            iridescence.tex_info,
+            world_normal,
+            view_matrix
+        );
+    }
+
+    if (iridescence.thickness_tex_info.exists) {
+        out.iridescence_thickness = get_uv_derivatives(
+            barycentric,
+            bary_derivs,
+            triangle_indices,
+            attribute_data_offset, vertex_attribute_stride,
+            uv_sets_index,
+            iridescence.thickness_tex_info,
             world_normal,
             view_matrix
         );

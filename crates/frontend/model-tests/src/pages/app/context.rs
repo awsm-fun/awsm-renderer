@@ -16,7 +16,7 @@ pub struct AppContext {
     pub camera_aperture: Mutable<f32>,
     pub camera_focus_distance: Mutable<f32>,
     pub ibl_id: Mutable<IblId>,
-    pub punctual_lights: Mutable<bool>,
+    pub punctual_lights: Mutable<PunctualLightsMode>,
     pub skybox_id: Mutable<SkyboxId>,
     pub editor_grid_enabled: Mutable<bool>,
     pub editor_gizmo_translation_enabled: Mutable<bool>,
@@ -131,6 +131,37 @@ pub enum SkyboxId {
     SpecificIbl(IblId),
     // Not a real mode, just for debugging to use original default from renderer
     None,
+}
+
+/// Which set of punctual lights the model-tests scene should contribute.
+///
+/// "Model lights" are the `KHR_lights_punctual` lights the gltf populator
+/// inserted from the loaded asset (e.g. lamps inside the PlaysetLightTest
+/// scene). "Additional lights" is the four-directional fill the app sets
+/// up so the default scene looks lit even when an asset doesn't carry
+/// its own lighting.
+///
+/// Default is `Auto` — the previous app behavior: use the asset's lights
+/// if it brings any, otherwise fall back to the additional fill. The
+/// other four modes are explicit overrides for testing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PunctualLightsMode {
+    /// No punctual lights at all (IBL still applies).
+    Off,
+    /// Use only the lights that came from the gltf asset. Falls back to
+    /// no lights if the asset doesn't define any.
+    ModelOnly,
+    /// Use only the default four-directional fill. Strips any lights
+    /// the gltf defined.
+    AdditionalOnly,
+    /// Both the model lights and the additional fill (tends to
+    /// overexpose authored-lit assets, but useful for inspection).
+    On,
+    /// Smart default: use the asset's lights when present, otherwise
+    /// fall back to the additional fill. Keeps light-test assets like
+    /// `PlaysetLightTest` and `PointLightIntensityTest` reading right
+    /// while still lighting up everything else.
+    Auto,
 }
 
 impl Default for AppContext {

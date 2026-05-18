@@ -17,6 +17,14 @@ struct PbrMaterialGradients {
     // KHR_materials_sheen
     sheen_color: UvDerivs,
     sheen_roughness: UvDerivs,
+    // KHR_materials_diffuse_transmission
+    diffuse_transmission: UvDerivs,
+    diffuse_transmission_color: UvDerivs,
+    // KHR_materials_anisotropy
+    anisotropy: UvDerivs,
+    // KHR_materials_iridescence
+    iridescence: UvDerivs,
+    iridescence_thickness: UvDerivs,
 }
 {% endif %}
 
@@ -41,6 +49,10 @@ fn pbr_get_material_color{{ mipmap.suffix() }}(
     let volume = pbr_material_load_volume(material.volume_index);
     let clearcoat = pbr_material_load_clearcoat(material.clearcoat_index);
     let sheen = pbr_material_load_sheen(material.sheen_index);
+    let dispersion = pbr_material_load_dispersion(material.dispersion_index);
+    let diffuse_trans = pbr_material_load_diffuse_transmission(material.diffuse_transmission_index);
+    let anisotropy = pbr_material_load_anisotropy(material.anisotropy_index);
+    let iridescence = pbr_material_load_iridescence(material.iridescence_index);
 
     var base = _pbr_material_base_color{{ mipmap.suffix() }}(
         material,
@@ -241,6 +253,75 @@ fn pbr_get_material_color{{ mipmap.suffix() }}(
         {% if mipmap.is_gradient() %}gradients.sheen_roughness,{% endif %}
     );
 
+    // Diffuse transmission
+    let diffuse_trans_factor = _pbr_diffuse_transmission{{ mipmap.suffix() }}(
+        diffuse_trans,
+        texture_uv(
+            attribute_data_offset,
+            triangle_indices,
+            barycentric,
+            diffuse_trans.tex_info,
+            vertex_attribute_stride,
+            uv_sets_index,
+        ),
+        {% if mipmap.is_gradient() %}gradients.diffuse_transmission,{% endif %}
+    );
+
+    let diffuse_trans_color = _pbr_diffuse_transmission_color{{ mipmap.suffix() }}(
+        diffuse_trans,
+        texture_uv(
+            attribute_data_offset,
+            triangle_indices,
+            barycentric,
+            diffuse_trans.color_tex_info,
+            vertex_attribute_stride,
+            uv_sets_index,
+        ),
+        {% if mipmap.is_gradient() %}gradients.diffuse_transmission_color,{% endif %}
+    );
+
+    // Anisotropy
+    let aniso_basis = _pbr_anisotropy_basis{{ mipmap.suffix() }}(
+        anisotropy,
+        geometry_tbn,
+        texture_uv(
+            attribute_data_offset,
+            triangle_indices,
+            barycentric,
+            anisotropy.tex_info,
+            vertex_attribute_stride,
+            uv_sets_index,
+        ),
+        {% if mipmap.is_gradient() %}gradients.anisotropy,{% endif %}
+    );
+
+    // Iridescence
+    let iridescence_factor = _pbr_iridescence_factor{{ mipmap.suffix() }}(
+        iridescence,
+        texture_uv(
+            attribute_data_offset,
+            triangle_indices,
+            barycentric,
+            iridescence.tex_info,
+            vertex_attribute_stride,
+            uv_sets_index,
+        ),
+        {% if mipmap.is_gradient() %}gradients.iridescence,{% endif %}
+    );
+
+    let iridescence_thickness = _pbr_iridescence_thickness{{ mipmap.suffix() }}(
+        iridescence,
+        texture_uv(
+            attribute_data_offset,
+            triangle_indices,
+            barycentric,
+            iridescence.thickness_tex_info,
+            vertex_attribute_stride,
+            uv_sets_index,
+        ),
+        {% if mipmap.is_gradient() %}gradients.iridescence_thickness,{% endif %}
+    );
+
     return PbrMaterialColor(
         base,
         metallic_roughness,
@@ -261,6 +342,19 @@ fn pbr_get_material_color{{ mipmap.suffix() }}(
         // Sheen
         sheen_color_factor,
         sheen_roughness_factor,
+        // Dispersion
+        dispersion,
+        // Diffuse transmission
+        diffuse_trans_factor,
+        diffuse_trans_color,
+        // Anisotropy
+        aniso_basis.t,
+        aniso_basis.b,
+        aniso_basis.strength,
+        // Iridescence
+        iridescence_factor,
+        iridescence.ior,
+        iridescence_thickness,
     );
 }
 
@@ -498,6 +592,103 @@ fn _pbr_sheen_roughness{{ mipmap.suffix() }}(
         roughness *= {{ mipmap.sample_fn() }}(sheen.roughness_tex_info, attribute_uv{% if mipmap.is_gradient() %}, uv_derivs{% endif %}).a;
     }
     return roughness;
+}
+
+// ============================================================================
+// Diffuse Transmission (KHR_materials_diffuse_transmission)
+// ============================================================================
+
+fn _pbr_diffuse_transmission{{ mipmap.suffix() }}(
+    dt: PbrDiffuseTransmission,
+    attribute_uv: vec2<f32>,
+    {% if mipmap.is_gradient() %}uv_derivs: UvDerivs,{% endif %}
+) -> f32 {
+    if (!dt.tex_info.exists && dt.factor == 0.0) {
+        return 0.0;
+    }
+    var factor = dt.factor;
+    if dt.tex_info.exists {
+        factor *= {{ mipmap.sample_fn() }}(dt.tex_info, attribute_uv{% if mipmap.is_gradient() %}, uv_derivs{% endif %}).a;
+    }
+    return factor;
+}
+
+fn _pbr_diffuse_transmission_color{{ mipmap.suffix() }}(
+    dt: PbrDiffuseTransmission,
+    attribute_uv: vec2<f32>,
+    {% if mipmap.is_gradient() %}uv_derivs: UvDerivs,{% endif %}
+) -> vec3<f32> {
+    var color = dt.color_factor;
+    if dt.color_tex_info.exists {
+        color *= {{ mipmap.sample_fn() }}(dt.color_tex_info, attribute_uv{% if mipmap.is_gradient() %}, uv_derivs{% endif %}).rgb;
+    }
+    return color;
+}
+
+// ============================================================================
+// Anisotropy (KHR_materials_anisotropy)
+// ============================================================================
+
+struct AnisotropyBasis {
+    t: vec3<f32>,
+    b: vec3<f32>,
+    strength: f32,
+};
+
+fn _pbr_anisotropy_basis{{ mipmap.suffix() }}(
+    aniso: PbrAnisotropy,
+    geometry_tbn: TBN,
+    attribute_uv: vec2<f32>,
+    {% if mipmap.is_gradient() %}uv_derivs: UvDerivs,{% endif %}
+) -> AnisotropyBasis {
+    var anisotropy_dir = vec2<f32>(1.0, 0.0);
+    var strength = aniso.strength;
+
+    if aniso.tex_info.exists {
+        let sample = {{ mipmap.sample_fn() }}(aniso.tex_info, attribute_uv{% if mipmap.is_gradient() %}, uv_derivs{% endif %});
+        anisotropy_dir = sample.rg * 2.0 - vec2<f32>(1.0);
+        strength *= sample.b;
+    }
+
+    let cos_r = cos(aniso.rotation);
+    let sin_r = sin(aniso.rotation);
+    let dir = vec2<f32>(
+        cos_r * anisotropy_dir.x - sin_r * anisotropy_dir.y,
+        sin_r * anisotropy_dir.x + cos_r * anisotropy_dir.y,
+    );
+
+    let t_aniso = geometry_tbn.T * dir.x + geometry_tbn.B * dir.y;
+    let b_aniso = cross(geometry_tbn.N, t_aniso);
+
+    return AnisotropyBasis(t_aniso, b_aniso, strength);
+}
+
+// ============================================================================
+// Iridescence (KHR_materials_iridescence)
+// ============================================================================
+
+fn _pbr_iridescence_factor{{ mipmap.suffix() }}(
+    iri: PbrIridescence,
+    attribute_uv: vec2<f32>,
+    {% if mipmap.is_gradient() %}uv_derivs: UvDerivs,{% endif %}
+) -> f32 {
+    var factor = iri.factor;
+    if iri.tex_info.exists {
+        factor *= {{ mipmap.sample_fn() }}(iri.tex_info, attribute_uv{% if mipmap.is_gradient() %}, uv_derivs{% endif %}).r;
+    }
+    return factor;
+}
+
+fn _pbr_iridescence_thickness{{ mipmap.suffix() }}(
+    iri: PbrIridescence,
+    attribute_uv: vec2<f32>,
+    {% if mipmap.is_gradient() %}uv_derivs: UvDerivs,{% endif %}
+) -> f32 {
+    if iri.thickness_tex_info.exists {
+        let g = {{ mipmap.sample_fn() }}(iri.thickness_tex_info, attribute_uv{% if mipmap.is_gradient() %}, uv_derivs{% endif %}).g;
+        return mix(iri.thickness_min, iri.thickness_max, g);
+    }
+    return iri.thickness_max;
 }
 
 // ============================================================================

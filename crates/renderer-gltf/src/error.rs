@@ -9,6 +9,7 @@ use awsm_renderer::{
     bind_group_layout::AwsmBindGroupLayoutError,
     bind_groups::AwsmBindGroupError,
     error::AwsmError,
+    lights::AwsmLightError,
     materials::AwsmMaterialError,
     meshes::{buffer_info::MeshBufferInfoKey, error::AwsmMeshError, skins::AwsmSkinError},
     pipeline_layouts::AwsmPipelineLayoutError,
@@ -207,6 +208,12 @@ pub enum AwsmGltfError {
 
     #[error("[gltf] Transparent geometry requested but not supplied: {0:?}")]
     TransparencyGeometryNotSupplied(MeshBufferInfoKey),
+
+    #[error("[gltf] punctual light: {0:?}")]
+    Light(#[from] AwsmLightError),
+
+    #[error("[gltf] {0}")]
+    Other(String),
 }
 
 /// glTF loader result type.

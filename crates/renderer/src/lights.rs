@@ -453,18 +453,22 @@ impl Light {
                 inner_angle,
                 outer_angle,
             } => {
+                // The shader compares against cosines (`dot(light_dir, axis)`),
+                // so pre-compute cos(angle) here instead of storing raw radians.
+                let inner_cos = inner_angle.cos();
+                let outer_cos = outer_angle.cos();
                 // row 1
                 write(position.into());
                 write(range.into());
                 // row 2
                 write(direction.into());
-                write(inner_angle.into());
+                write((&inner_cos).into());
                 // row 3
                 write(color.into());
                 write(intensity.into());
                 // row 4
                 write((&self.enum_value()).into());
-                write(outer_angle.into());
+                write((&outer_cos).into());
                 write(Value::SkipN32(2)); // skip padding
             }
         }

@@ -53,6 +53,10 @@ pub struct AppScene {
     pub last_request_animation_frame: Cell<Option<f64>>,
     pub event_listeners: Mutex<Vec<EventListener>>,
     lights: Mutex<Option<Vec<LightKey>>>,
+    /// Lights inserted by `populate_gltf` from `KHR_lights_punctual`. When
+    /// non-empty, we skip the default directional fill in
+    /// `reset_punctual_lights` so the model's own lighting drives the scene.
+    gltf_punctual_lights: Mutex<Vec<LightKey>>,
     move_action: Cell<Option<MoveAction>>,
     last_size: Cell<(f64, f64)>,
     last_camera_id: Cell<CameraId>,
@@ -87,6 +91,7 @@ impl AppScene {
             editor: Mutex::new(None),
             move_action: Cell::new(None),
             lights: Mutex::new(None),
+            gltf_punctual_lights: Mutex::new(Vec::new()),
         });
 
         let resize_observer = ResizeObserver::new(
@@ -569,7 +574,17 @@ impl AppScene {
 
                 let mut renderer = scene.renderer.lock().await;
 
-                renderer.populate_gltf(data, None).await?;
+                // Drop any lights that came from a previous gltf load before
+                // populating the next one, so KHR_lights_punctual additions
+                // stay scoped to the model that owns them.
+                {
+                    let mut prev = scene.gltf_punctual_lights.lock().unwrap();
+                    for key in prev.drain(..) {
+                        renderer.lights.remove(key);
+                    }
+                }
+                let populate_ctx = renderer.populate_gltf(data, None).await?;
+                *scene.gltf_punctual_lights.lock().unwrap() = populate_ctx.punctual_lights;
 
                 let editor_gizmo_gltf_data = {
                     let editor_guard = scene.editor.lock().unwrap();
@@ -642,15 +657,67 @@ impl AppScene {
     }
 
     pub async fn reset_punctual_lights(self: &Arc<Self>) -> Result<()> {
-        let mut renderer = self.renderer.lock().await;
+        use crate::pages::app::context::PunctualLightsMode;
+        use awsm_renderer_gltf::populate::lights::populate_lights_from_doc;
 
+        let mut renderer = self.renderer.lock().await;
+        let mode = self.ctx.punctual_lights.get();
+
+        // 1. Drop the existing additional-fill lights (we'll re-add them
+        //    below if the mode wants them). Tracked separately from the
+        //    gltf-derived lights so we never confuse the two.
         if let Some(lights) = self.lights.lock().unwrap().take() {
             for light_key in lights {
                 renderer.lights.remove(light_key);
             }
         }
 
-        if !self.ctx.punctual_lights.get() {
+        // 2. Reconcile gltf-derived lights against the mode.
+        //      Off / AdditionalOnly: gltf lights should NOT be present.
+        //      ModelOnly / On / Auto: gltf lights should be present
+        //                             (Auto only effectively uses them if
+        //                             the asset has any).
+        //    We re-walk the cached gltf data to re-insert them if they
+        //    were previously stripped, so toggling between modes is
+        //    non-destructive.
+        let wants_model_lights = matches!(
+            mode,
+            PunctualLightsMode::ModelOnly | PunctualLightsMode::On | PunctualLightsMode::Auto
+        );
+        let has_model_lights = !self.gltf_punctual_lights.lock().unwrap().is_empty();
+
+        if !wants_model_lights && has_model_lights {
+            let prev = std::mem::take(&mut *self.gltf_punctual_lights.lock().unwrap());
+            for key in prev {
+                renderer.lights.remove(key);
+            }
+        } else if wants_model_lights && !has_model_lights {
+            // Re-populate from the last loaded gltf data, if any. This
+            // makes the model-only / on / auto modes reversible without
+            // re-running the whole gltf populate.
+            let data_clone = self
+                .latest_gltf_data
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|d| d.heavy_clone());
+            if let Some(data) = data_clone {
+                let keys = populate_lights_from_doc(&mut renderer, &data)?;
+                *self.gltf_punctual_lights.lock().unwrap() = keys;
+            }
+        }
+
+        // 3. Re-add the additional four-directional fill when the mode
+        //    asks for it. `Auto` falls back to fill ONLY if the model
+        //    didn't bring its own lights — otherwise the model's
+        //    authored lighting wins.
+        let auto_wants_fill = matches!(mode, PunctualLightsMode::Auto)
+            && self.gltf_punctual_lights.lock().unwrap().is_empty();
+        let wants_additional = matches!(
+            mode,
+            PunctualLightsMode::AdditionalOnly | PunctualLightsMode::On
+        ) || auto_wants_fill;
+        if !wants_additional {
             return Ok(());
         }
 

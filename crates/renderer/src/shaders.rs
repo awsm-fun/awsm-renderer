@@ -68,6 +68,71 @@ impl Shaders {
         Ok(shader_key)
     }
 
+    /// Pre-warms the cache for a batch of shader keys, issuing all
+    /// browser compiles concurrently.
+    ///
+    /// `compile_shader` is synchronous — it returns a module handle
+    /// immediately and the browser begins compilation in the background.
+    /// The slow part is `validate_shader().await`, which blocks until
+    /// the compile finishes. By firing all `compile_shader` calls before
+    /// `await`ing any validation, we let the driver compile N shaders in
+    /// parallel instead of N times serially.
+    ///
+    /// Subsequent `get_key` calls for the same cache keys then hit the
+    /// cache and complete without any further async work.
+    pub async fn ensure_keys<I>(&mut self, gpu: &AwsmRendererWebGpu, cache_keys: I) -> Result<()>
+    where
+        I: IntoIterator<Item = ShaderCacheKey>,
+    {
+        // De-dupe in one pass while skipping anything already cached.
+        let mut seen: HashMap<ShaderCacheKey, ()> = HashMap::new();
+        let mut pending: Vec<(ShaderCacheKey, web_sys::GpuShaderModuleDescriptor)> = Vec::new();
+        for cache_key in cache_keys {
+            if self.cache.contains_key(&cache_key) || seen.contains_key(&cache_key) {
+                continue;
+            }
+            seen.insert(cache_key.clone(), ());
+            let descriptor = ShaderTemplate::try_from(&cache_key)?.into_descriptor()?;
+            pending.push((cache_key, descriptor));
+        }
+        if pending.is_empty() {
+            return Ok(());
+        }
+
+        // Issue every compile_shader synchronously so the browser kicks
+        // off all compiles before we await anything.
+        let modules: Vec<(
+            ShaderCacheKey,
+            web_sys::GpuShaderModule,
+            web_sys::GpuShaderModuleDescriptor,
+        )> = pending
+            .into_iter()
+            .map(|(k, desc)| {
+                let module = gpu.compile_shader(&desc);
+                (k, module, desc)
+            })
+            .collect();
+
+        // Await every validation in parallel.
+        let validate_futures = modules.iter().map(|(_, m, _)| m.validate_shader());
+        let results = futures::future::join_all(validate_futures).await;
+        for (i, result) in results.into_iter().enumerate() {
+            if let Err(err) = result.map_err(AwsmShaderError::Compilation) {
+                // Match the diagnostic behavior of `get_key`: print the
+                // offending source on a failed compile.
+                print_shader_source(&modules[i].2.get_code(), true);
+                return Err(err);
+            }
+        }
+
+        // Install everything into the cache in one go.
+        for (cache_key, module, _) in modules {
+            let shader_key = self.lookup.insert(module);
+            self.cache.insert(cache_key, shader_key);
+        }
+        Ok(())
+    }
+
     /// Returns a shader module by key.
     pub fn get(&self, shader_key: ShaderKey) -> Option<&web_sys::GpuShaderModule> {
         self.lookup.get(shader_key)

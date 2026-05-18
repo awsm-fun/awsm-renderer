@@ -1,7 +1,4 @@
 # Next up
-- Fix TextureTransforms
-  - https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/TextureTransformMultiTest#problem-certain-inputs-not-transformed
-- Move newly added methods in lib.rs to appropriate module
 - Make transparent meshes pickable
   - Maybe global "editor_mode" on renderer that toggles some less-efficient behavior
     - All meshes get both transparent and opaque geometry 
@@ -16,12 +13,6 @@
   - Can probably be done in opaque pass 
   - Should be optional/togglable
 
-- Toon shader
-    
-- More extensions (see below)
-    
-- Visual bounding box around selected objects
-      
 - Animation support in sidebar (or get rid of it)
 
 - Light culling 
@@ -86,16 +77,16 @@ If it's supported here, corresponding core functionality is also supported
     - [x] KHR_materials_specular
     - [x] KHR_materials_transmission
     - [x] KHR_materials_volume
-    - [ ] KHR_materials_dispersion
-    - [ ] KHR_materials_diffuse_transmission
-    - [ ] KHR_materials_anisotropy
-    - [ ] KHR_materials_iridescence
+    - [x] KHR_materials_dispersion
+    - [x] KHR_materials_diffuse_transmission
+    - [x] KHR_materials_anisotropy
+    - [x] KHR_materials_iridescence
     - [x] KHR_materials_ior
     - [x] KHR_texture_transform
-    - [ ] KHR_lights_punctual
-        - [ ] Directional
-        - [ ] Point
-        - [ ] Spot
+    - [x] KHR_lights_punctual
+        - [x] Directional
+        - [x] Point
+        - [x] Spot
 - Materials
     - [x] PBR metallic-roughness
         - [x] base color
@@ -191,4 +182,4 @@ If it's supported here, corresponding core functionality is also supported
     - Gpu gating on dirty flag
 - Camera
     - [x] Single uniform buffer
-    - [ ] Frustum culling
+    - [x] Frustum culling

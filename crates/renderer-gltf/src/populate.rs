@@ -10,13 +10,14 @@ use glam::Mat4;
 
 use awsm_renderer::materials::MaterialKey;
 use awsm_renderer::{
-    meshes::MeshKey, textures::TextureKey, transforms::TransformKey, AwsmRenderer,
+    lights::LightKey, meshes::MeshKey, textures::TextureKey, transforms::TransformKey, AwsmRenderer,
 };
 
 use crate::{data::GltfData, error::AwsmGltfError};
 
 pub(crate) mod animation;
 pub(crate) mod extensions;
+pub mod lights;
 pub mod material;
 pub(crate) mod mesh;
 pub(crate) mod skin;
@@ -41,6 +42,9 @@ pub struct GltfPopulateContext {
     pub transform_is_instanced: Mutex<HashSet<TransformKey>>,
     pub(super) node_animation_samplers: HashMap<GltfIndex, GltfNodeAnimationSamplers>,
     pub key_lookups: Arc<Mutex<GltfKeyLookups>>,
+    /// Renderer light keys created from KHR_lights_punctual nodes during this
+    /// populate. Empty when the asset doesn't reference the extension.
+    pub punctual_lights: Vec<LightKey>,
 }
 
 /// Lookup tables for glTF node, mesh, and primitive keys.
@@ -186,7 +190,7 @@ pub async fn populate_gltf(
     let mut mesh_keys = Vec::new();
     let node_animation_samplers = build_node_animation_sampler_lookup(&gltf_data.doc);
 
-    let ctx = GltfPopulateContext {
+    let mut ctx = GltfPopulateContext {
         data: gltf_data,
         textures: Mutex::new(HashMap::new()),
         material_keys: Mutex::new(HashMap::new()),
@@ -195,6 +199,7 @@ pub async fn populate_gltf(
         transform_is_instanced: Mutex::new(HashSet::new()),
         node_animation_samplers,
         key_lookups: Arc::new(Mutex::new(GltfKeyLookups::default())),
+        punctual_lights: Vec::new(),
     };
 
     let scene = match scene {
@@ -234,6 +239,8 @@ pub async fn populate_gltf(
     for node in scene.nodes() {
         mesh_keys.push(renderer.populate_gltf_node_mesh(&ctx, &node).await?);
     }
+
+    ctx.punctual_lights = crate::populate::lights::populate_gltf_lights(renderer, &ctx)?;
 
     renderer.finalize_gpu_textures().await?;
 

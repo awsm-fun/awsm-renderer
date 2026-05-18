@@ -33,6 +33,10 @@ fn pbr_get_material_color(
     let volume = pbr_material_load_volume(material.volume_index);
     let clearcoat = pbr_material_load_clearcoat(material.clearcoat_index);
     let sheen = pbr_material_load_sheen(material.sheen_index);
+    let dispersion = pbr_material_load_dispersion(material.dispersion_index);
+    let diffuse_trans = pbr_material_load_diffuse_transmission(material.diffuse_transmission_index);
+    let anisotropy = pbr_material_load_anisotropy(material.anisotropy_index);
+    let iridescence = pbr_material_load_iridescence(material.iridescence_index);
 
     var base = pbr_material_base_color(material, fragment_input);
 
@@ -69,6 +73,19 @@ fn pbr_get_material_color(
     let sheen_color_factor = pbr_sheen_color(sheen, fragment_input);
     let sheen_roughness_factor = pbr_sheen_roughness(sheen, fragment_input);
 
+    // Diffuse transmission
+    let diffuse_trans_factor = pbr_diffuse_transmission(diffuse_trans, fragment_input);
+    let diffuse_trans_color = pbr_diffuse_transmission_color(diffuse_trans, fragment_input);
+
+    // Anisotropy: rotate the world-space tangent into the per-fragment
+    // anisotropy direction using the texture-encoded rotation (and the
+    // constant rotation factor when no texture is supplied).
+    let aniso_basis = pbr_anisotropy_basis(anisotropy, normal, world_tangent, fragment_input);
+
+    // Iridescence
+    let iridescence_factor = pbr_iridescence_factor(iridescence, fragment_input);
+    let iridescence_thickness = pbr_iridescence_thickness(iridescence, fragment_input);
+
     return PbrMaterialColor(
         base,
         metallic_roughness,
@@ -89,6 +106,19 @@ fn pbr_get_material_color(
         // Sheen
         sheen_color_factor,
         sheen_roughness_factor,
+        // Dispersion
+        dispersion,
+        // Diffuse transmission
+        diffuse_trans_factor,
+        diffuse_trans_color,
+        // Anisotropy
+        aniso_basis.t,
+        aniso_basis.b,
+        aniso_basis.strength,
+        // Iridescence
+        iridescence_factor,
+        iridescence.ior,
+        iridescence_thickness,
     );
 }
 
@@ -334,6 +364,114 @@ fn pbr_sheen_roughness(
         roughness *= texture_pool_sample(sheen.roughness_tex_info, uv).a;
     }
     return roughness;
+}
+
+// ============================================================================
+// Diffuse Transmission (KHR_materials_diffuse_transmission)
+// ============================================================================
+
+fn pbr_diffuse_transmission(
+    dt: PbrDiffuseTransmission,
+    fragment_input: FragmentInput
+) -> f32 {
+    if (!dt.tex_info.exists && dt.factor == 0.0) {
+        return 0.0;
+    }
+    var factor = dt.factor;
+    if dt.tex_info.exists {
+        let uv = texture_uv(dt.tex_info, fragment_input);
+        factor *= texture_pool_sample(dt.tex_info, uv).a;
+    }
+    return factor;
+}
+
+fn pbr_diffuse_transmission_color(
+    dt: PbrDiffuseTransmission,
+    fragment_input: FragmentInput
+) -> vec3<f32> {
+    var color = dt.color_factor;
+    if dt.color_tex_info.exists {
+        let uv = texture_uv(dt.color_tex_info, fragment_input);
+        color *= texture_pool_sample(dt.color_tex_info, uv).rgb;
+    }
+    return color;
+}
+
+// ============================================================================
+// Anisotropy (KHR_materials_anisotropy)
+// ============================================================================
+
+struct AnisotropyBasis {
+    t: vec3<f32>,
+    b: vec3<f32>,
+    strength: f32,
+};
+
+fn pbr_anisotropy_basis(
+    aniso: PbrAnisotropy,
+    world_normal: vec3<f32>,
+    world_tangent: vec4<f32>,
+    fragment_input: FragmentInput
+) -> AnisotropyBasis {
+    // Build the same TBN we use for normal mapping so the rotation is in
+    // the surface tangent plane.
+    let N = normalize(world_normal);
+    let T0 = orthonormal_tangent_from_vertex(N, world_tangent.xyz);
+    let B0 = cross(N, T0) * world_tangent.w;
+
+    // Defaults: no rotation, zero strength.
+    var anisotropy_dir = vec2<f32>(1.0, 0.0);
+    var strength = aniso.strength;
+
+    if aniso.tex_info.exists {
+        // RG store a unit vector in [0,1] for the local rotation; B holds
+        // the per-fragment strength multiplier.
+        let uv = texture_uv(aniso.tex_info, fragment_input);
+        let sample = texture_pool_sample(aniso.tex_info, uv);
+        anisotropy_dir = sample.rg * 2.0 - vec2<f32>(1.0);
+        strength *= sample.b;
+    }
+
+    let cos_r = cos(aniso.rotation);
+    let sin_r = sin(aniso.rotation);
+    // Rotate the texture-direction by the material's constant rotation.
+    let dir = vec2<f32>(
+        cos_r * anisotropy_dir.x - sin_r * anisotropy_dir.y,
+        sin_r * anisotropy_dir.x + cos_r * anisotropy_dir.y,
+    );
+
+    let t_aniso = T0 * dir.x + B0 * dir.y;
+    let b_aniso = cross(N, t_aniso);
+
+    return AnisotropyBasis(t_aniso, b_aniso, strength);
+}
+
+// ============================================================================
+// Iridescence (KHR_materials_iridescence)
+// ============================================================================
+
+fn pbr_iridescence_factor(
+    iri: PbrIridescence,
+    fragment_input: FragmentInput
+) -> f32 {
+    var factor = iri.factor;
+    if iri.tex_info.exists {
+        let uv = texture_uv(iri.tex_info, fragment_input);
+        factor *= texture_pool_sample(iri.tex_info, uv).r;
+    }
+    return factor;
+}
+
+fn pbr_iridescence_thickness(
+    iri: PbrIridescence,
+    fragment_input: FragmentInput
+) -> f32 {
+    if iri.thickness_tex_info.exists {
+        let uv = texture_uv(iri.thickness_tex_info, fragment_input);
+        let g = texture_pool_sample(iri.thickness_tex_info, uv).g;
+        return mix(iri.thickness_min, iri.thickness_max, g);
+    }
+    return iri.thickness_max;
 }
 
 // ============================================================================
