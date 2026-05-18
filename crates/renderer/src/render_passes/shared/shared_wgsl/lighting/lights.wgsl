@@ -155,24 +155,43 @@ fn apply_lighting(
     {% endif %}
 
     {% if has_lighting_punctual() %}
+        {% if shadows_enabled %}
+            // View-space z (positive forward) for cascade selection.
+            let view_z_for_shadow = -(camera_raw.view * vec4<f32>(world_position, 1.0)).z;
+        {% endif %}
         for(var i = 0u; i < lights_info.n_lights; i = i + 1u) {
             let light = get_light(i);
             let light_brdf = light_to_brdf(light, material_color.normal, world_position);
             let direct = brdf_direct(material_color, light_brdf, surface_to_camera);
             {% if shadows_enabled %}
                 // Modulate by shadow visibility (1.0 = lit, 0.0 = fully
-                // shadowed). When `shadow_index == SHADOW_INDEX_NONE` the
-                // helper short-circuits to 1.0.
+                // shadowed). `shadow_index == SHADOW_INDEX_NONE` short-
+                // circuits to 1.0; the cascade selector walks
+                // descriptors descriptor_base..base+count.
                 let visibility = sample_shadow_directional(
                     light.shadow_index,
                     world_position,
                     material_color.normal,
+                    view_z_for_shadow,
                 );
                 color += direct * visibility;
             {% else %}
                 color += direct;
             {% endif %}
         }
+        {% if shadows_enabled %}
+            // Cascade-debug overlay (uses the dominant directional
+            // light's descriptor base, fetched via light 0's
+            // `shadow_index` — sufficient until phase 4 surfaces a
+            // proper sun-light index).
+            if lights_info.n_lights > 0u {
+                color = debug_cascade_tint(
+                    color,
+                    get_light(0u).shadow_index,
+                    view_z_for_shadow,
+                );
+            }
+        {% endif %}
     {% endif %}
 
     return color;
@@ -205,24 +224,43 @@ fn apply_lighting_with_transmission(
     {% endif %}
 
     {% if has_lighting_punctual() %}
+        {% if shadows_enabled %}
+            // View-space z (positive forward) for cascade selection.
+            let view_z_for_shadow = -(camera_raw.view * vec4<f32>(world_position, 1.0)).z;
+        {% endif %}
         for(var i = 0u; i < lights_info.n_lights; i = i + 1u) {
             let light = get_light(i);
             let light_brdf = light_to_brdf(light, material_color.normal, world_position);
             let direct = brdf_direct(material_color, light_brdf, surface_to_camera);
             {% if shadows_enabled %}
                 // Modulate by shadow visibility (1.0 = lit, 0.0 = fully
-                // shadowed). When `shadow_index == SHADOW_INDEX_NONE` the
-                // helper short-circuits to 1.0.
+                // shadowed). `shadow_index == SHADOW_INDEX_NONE` short-
+                // circuits to 1.0; the cascade selector walks
+                // descriptors descriptor_base..base+count.
                 let visibility = sample_shadow_directional(
                     light.shadow_index,
                     world_position,
                     material_color.normal,
+                    view_z_for_shadow,
                 );
                 color += direct * visibility;
             {% else %}
                 color += direct;
             {% endif %}
         }
+        {% if shadows_enabled %}
+            // Cascade-debug overlay (uses the dominant directional
+            // light's descriptor base, fetched via light 0's
+            // `shadow_index` — sufficient until phase 4 surfaces a
+            // proper sun-light index).
+            if lights_info.n_lights > 0u {
+                color = debug_cascade_tint(
+                    color,
+                    get_light(0u).shadow_index,
+                    view_z_for_shadow,
+                );
+            }
+        {% endif %}
     {% endif %}
 
     return color;

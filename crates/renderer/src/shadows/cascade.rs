@@ -1,10 +1,16 @@
 //! CSM cascade fitting for directional lights.
 //!
-//! Phase 2 ships a single-cascade fitter. Phase 4 generalizes to
-//! 1–4 cascades with PSSM splits + per-cascade resolution scaling and
-//! re-uses [`fit_cascade`] per split.
+//! `fit_cascade` is the per-split workhorse — given a normalised
+//! near/far in NDC depth space, it produces an orthographic light
+//! view-projection that tightly encloses the slice. `pssm_splits` /
+//! `fit_cascades` build the per-light cascade set from a count + PSSM
+//! lambda + base resolution.
 
 use glam::{Mat4, Vec3, Vec4};
+
+/// Maximum number of cascades per directional light, matching the
+/// schema's `cascade_count: u8` valid range.
+pub const MAX_CASCADES: usize = 4;
 
 /// Output of fitting one cascade. `view_projection` is the light-space
 /// transform applied at sample time and during shadow generation.
@@ -127,4 +133,80 @@ pub fn fit_cascade(
         projection,
         view_projection,
     }
+}
+
+/// Computes the cascade far-distances in **world-space depth** using
+/// the Practical Split Scheme for Parallel-Split Shadow Maps (PSSM):
+/// blend between a uniform split (`lambda = 0`) and a logarithmic
+/// split (`lambda = 1`).
+///
+/// Returns `cascade_count` values; the last one equals `far`.
+/// `near` / `far` are the camera's view-space near and far planes.
+pub fn pssm_splits(near: f32, far: f32, lambda: f32, cascade_count: u32) -> Vec<f32> {
+    let n = cascade_count.max(1).min(MAX_CASCADES as u32);
+    let ratio = if near > 0.0 { far / near } else { 1.0 };
+    let mut splits = Vec::with_capacity(n as usize);
+    for i in 1..=n {
+        let p = i as f32 / n as f32;
+        let log_split = if near > 0.0 {
+            near * ratio.powf(p)
+        } else {
+            far * p
+        };
+        let uniform_split = near + (far - near) * p;
+        let split = lambda * log_split + (1.0 - lambda) * uniform_split;
+        splits.push(split);
+    }
+    splits
+}
+
+/// Per-cascade resolution: `max(min_res, base >> i)`. Phase 4 uses
+/// this to halve the resolution for each successively-far cascade,
+/// trading distant precision for memory bandwidth.
+pub fn cascade_resolution(base: u32, cascade_index: u32, min_res: u32) -> u32 {
+    (base >> cascade_index).max(min_res)
+}
+
+/// Convenience: fit every cascade for a directional light in one call.
+/// Returns one [`Cascade`] per requested cascade.
+///
+/// `world_near` / `world_far` are the camera's view-space near and
+/// far planes; the cascades partition that range using
+/// [`pssm_splits`].
+pub fn fit_cascades(
+    camera_view_projection: Mat4,
+    camera_view: Mat4,
+    direction: Vec3,
+    world_near: f32,
+    world_far: f32,
+    cascade_count: u32,
+    lambda: f32,
+    base_resolution: u32,
+    min_resolution: u32,
+) -> Vec<(Cascade, u32, f32)> {
+    let inv_view_proj = camera_view_projection.inverse();
+    let splits = pssm_splits(world_near, world_far, lambda, cascade_count);
+
+    // Convert world-space splits to NDC z. Project a view-space point
+    // at the split's z onto clip space, then divide by w to get NDC.z.
+    let proj = camera_view_projection * camera_view.inverse();
+    let split_to_ndc = |z: f32| {
+        let view_p = Vec4::new(0.0, 0.0, -z, 1.0);
+        let clip = proj * view_p;
+        if clip.w.abs() < 1e-8 {
+            return 1.0;
+        }
+        (clip.z / clip.w).clamp(0.0, 1.0)
+    };
+
+    let mut prev_ndc = 0.0;
+    let mut cascades = Vec::with_capacity(splits.len());
+    for (i, split_world) in splits.iter().enumerate() {
+        let ndc_far = split_to_ndc(*split_world);
+        let res = cascade_resolution(base_resolution, i as u32, min_resolution);
+        let cascade = fit_cascade(inv_view_proj, direction, prev_ndc, ndc_far, res);
+        cascades.push((cascade, res, *split_world));
+        prev_ndc = ndc_far;
+    }
+    cascades
 }

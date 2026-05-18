@@ -14,6 +14,8 @@ struct ShadowDescriptor {
     atlas_rect: vec4<f32>,
     // (depth_bias, normal_bias, hardness, pcss_penumbra_scale)
     bias_params: vec4<f32>,
+    // (split_far_view_z, cascade_index, cascade_count_in_light, 0)
+    cascade_info: vec4<f32>,
 };
 
 struct ShadowGlobals {
@@ -41,20 +43,18 @@ struct ShadowDescriptorArray {
 // Sentinel for "no shadow" — packed into `LightPacked.row4.z`.
 const SHADOW_INDEX_NONE: u32 = 0xFFFFFFFFu;
 
-// Sample a directional/spot shadow descriptor at `world_pos`, offset
-// along `world_normal` by the descriptor's `normal_bias` to suppress
-// acne. Returns `[0, 1]` visibility (1.0 = lit, 0.0 = fully shadowed).
+// Sample a single shadow descriptor (cascade / spot / face). Returns
+// `[0, 1]` visibility (1.0 = lit, 0.0 = fully shadowed).
 //
-// Phase 2: 1-tap `textureSampleCompare`. Phase 3 adds PCF + the
-// hardness branch; phase 6 adds PCSS.
-fn sample_shadow_directional(
+// Hardness branches:
+//   0.0 = Hard, 1-tap.
+//   1.0 = Soft, 3x3 PCF.
+//   2.0 = PCSS (phase 6 — currently falls back to Soft).
+fn sample_shadow_descriptor(
     descriptor_index: u32,
     world_pos: vec3<f32>,
     world_normal: vec3<f32>,
 ) -> f32 {
-    if descriptor_index == SHADOW_INDEX_NONE {
-        return 1.0;
-    }
     if descriptor_index >= MAX_SHADOW_DESCRIPTORS {
         return 1.0;
     }
@@ -66,19 +66,14 @@ fn sample_shadow_directional(
         return 1.0;
     }
     let ndc = clip.xyz / clip.w;
-    // Reject samples outside the cascade's clip volume — they fall
-    // back to "lit" so geometry past the cascade range doesn't pick
-    // up a false dark blob from the edge of the atlas.
     if ndc.x < -1.0 || ndc.x > 1.0 || ndc.y < -1.0 || ndc.y > 1.0 || ndc.z < 0.0 || ndc.z > 1.0 {
         return 1.0;
     }
-    // NDC.xy [-1, 1] → UV [0, 1] with Y flipped (WebGPU's framebuffer
-    // origin is top-left while NDC origin is bottom-left).
     let uv_local = vec2<f32>(ndc.x * 0.5 + 0.5, -ndc.y * 0.5 + 0.5);
     let atlas_uv = desc.atlas_rect.xy + uv_local * desc.atlas_rect.zw;
     let ref_depth = ndc.z - desc.bias_params.x;
     let hardness = desc.bias_params.z;
-    // 0.0 = Hard, 1.0 = Soft (3x3 PCF), 2.0 = PCSS (phase 6).
+
     if hardness < 0.5 {
         return textureSampleCompareLevel(
             shadow_atlas,
@@ -87,10 +82,13 @@ fn sample_shadow_directional(
             ref_depth,
         );
     }
-    // 3x3 PCF. `shadow_globals.atlas_sizes.x` is the atlas width in
-    // texels; the kernel offset is one texel per step in normalised UV
-    // space.
-    let inv_atlas = 1.0 / shadow_globals.atlas_sizes.x;
+    // 3x3 PCF. Offsets are scaled by the atlas-rect's UV extent so a
+    // 1024² cascade in a 4096 atlas takes 1-cascade-texel steps, not
+    // 1-atlas-texel steps.
+    let inv_atlas = vec2<f32>(
+        1.0 / shadow_globals.atlas_sizes.x,
+        1.0 / shadow_globals.atlas_sizes.y,
+    );
     var sum = 0.0;
     for (var dy = -1; dy <= 1; dy = dy + 1) {
         for (var dx = -1; dx <= 1; dx = dx + 1) {
@@ -104,4 +102,79 @@ fn sample_shadow_directional(
         }
     }
     return sum / 9.0;
+}
+
+// Per-light cascade selection. `descriptor_base` points to the first
+// cascade descriptor of a directional light; `cascade_info.z` gives
+// the cascade count. We walk descriptors descriptor_base..base+count
+// and pick the first whose `cascade_info.x` (split_far in world-space
+// depth) exceeds `view_z`. Returns 1.0 (no shadow) if `view_z` is
+// beyond the last cascade.
+fn sample_shadow_directional(
+    descriptor_base: u32,
+    world_pos: vec3<f32>,
+    world_normal: vec3<f32>,
+    view_z: f32,
+) -> f32 {
+    if descriptor_base == SHADOW_INDEX_NONE {
+        return 1.0;
+    }
+    if descriptor_base >= MAX_SHADOW_DESCRIPTORS {
+        return 1.0;
+    }
+    let cascade_count = u32(shadow_descriptors.items[descriptor_base].cascade_info.z);
+    var picked: u32 = SHADOW_INDEX_NONE;
+    for (var i = 0u; i < cascade_count; i = i + 1u) {
+        let idx = descriptor_base + i;
+        if idx >= MAX_SHADOW_DESCRIPTORS {
+            break;
+        }
+        let split_far = shadow_descriptors.items[idx].cascade_info.x;
+        if view_z <= split_far {
+            picked = idx;
+            break;
+        }
+    }
+    if picked == SHADOW_INDEX_NONE {
+        return 1.0;
+    }
+    return sample_shadow_descriptor(picked, world_pos, world_normal);
+}
+
+// Debug-overlay tint for cascade visualisation. Driven by
+// `shadow_globals.flags.x` (`debug_cascade_colors`). Returns the
+// cascade-tinted color if enabled, otherwise the input unchanged.
+fn debug_cascade_tint(
+    base_color: vec3<f32>,
+    descriptor_base: u32,
+    view_z: f32,
+) -> vec3<f32> {
+    if shadow_globals.flags.x == 0u {
+        return base_color;
+    }
+    if descriptor_base == SHADOW_INDEX_NONE || descriptor_base >= MAX_SHADOW_DESCRIPTORS {
+        return base_color;
+    }
+    let cascade_count = u32(shadow_descriptors.items[descriptor_base].cascade_info.z);
+    var picked_idx: u32 = cascade_count;
+    for (var i = 0u; i < cascade_count; i = i + 1u) {
+        let idx = descriptor_base + i;
+        if idx >= MAX_SHADOW_DESCRIPTORS {
+            break;
+        }
+        if view_z <= shadow_descriptors.items[idx].cascade_info.x {
+            picked_idx = i;
+            break;
+        }
+    }
+    let palette = array<vec3<f32>, 4>(
+        vec3<f32>(1.0, 0.4, 0.4),
+        vec3<f32>(0.4, 1.0, 0.4),
+        vec3<f32>(0.4, 0.5, 1.0),
+        vec3<f32>(1.0, 1.0, 0.4),
+    );
+    if picked_idx >= 4u {
+        return base_color;
+    }
+    return mix(base_color, palette[picked_idx], 0.35);
 }

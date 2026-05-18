@@ -77,8 +77,12 @@ pub use self::{
 pub const MAX_SHADOW_DESCRIPTORS: u32 = 32;
 
 /// Size in bytes of a single packed `ShadowDescriptor` (see
-/// `shared_wgsl/shadow/bind_groups.wgsl`).
-pub const SHADOW_DESCRIPTOR_BYTES: usize = 96;
+/// `shared_wgsl/shadow/bind_groups.wgsl`):
+/// - `view_projection: mat4x4<f32>` (64 B)
+/// - `atlas_rect: vec4<f32>` (16 B)
+/// - `bias_params: vec4<f32>` (16 B)
+/// - `cascade_info: vec4<f32>` (16 B)
+pub const SHADOW_DESCRIPTOR_BYTES: usize = 112;
 
 /// Size in bytes of the `ShadowGlobals` uniform block.
 pub const SHADOW_GLOBALS_BYTES: usize = 48;
@@ -500,60 +504,107 @@ impl Shadows {
             self.frame_count = self.frame_count.wrapping_add(1);
             return Ok(());
         };
-        let camera_inv_view_proj = camera_matrices.inv_view_projection();
+        let _camera_inv_view_proj = camera_matrices.inv_view_projection();
 
         self.records.clear();
         self.active_descriptor_count = 0;
         let mut descriptor_bytes = vec![0u8; *SHADOW_DESCRIPTOR_UNIFORM_BYTES];
 
+        // Approximate the camera's near/far in world-space depth.
+        // The actual values live on the camera but aren't exposed
+        // directly here; reconstruct from the projection's column.
+        // For a standard RH perspective with `Mat4::perspective_rh`
+        // (which glam uses): proj[2][3] is `-2*near*far/(far-near)`
+        // and proj[2][2] is `-(far+near)/(far-near)`; solving gives
+        // the planes. Falls back to (0.1, 100.0) for orthographic.
+        let (camera_near, camera_far) = extract_near_far(&camera_matrices.projection);
+
         for (light_key, params) in self.params.iter() {
             if !params.cast {
                 continue;
             }
-            if self.active_descriptor_count >= MAX_SHADOW_DESCRIPTORS {
-                tracing::warn!("shadow descriptor capacity exhausted (phase 2 limit)");
+            let cascade_count = params.cascade_count.max(1).min(4) as u32;
+            if self.active_descriptor_count + cascade_count > MAX_SHADOW_DESCRIPTORS {
+                tracing::warn!(
+                    "shadow descriptor capacity exhausted: needed {} more, have {} slots free",
+                    cascade_count,
+                    MAX_SHADOW_DESCRIPTORS - self.active_descriptor_count
+                );
                 break;
             }
-            // Phase 2: assume directional, single cascade covering
-            // [0, 1] in normalised camera depth. The light direction
-            // is recovered from the corresponding `Light::Directional`
-            // entry at sample time — for now, hard-code a fallback
-            // sun direction so the cascade fitter has something to
-            // chew on. Phase 4 will pull the actual direction from
-            // `Lights`.
+            // TODO(phase 4 follow-up): pull the actual light direction
+            // from `Lights`. The set-of-callers refactor needed to
+            // thread `&Lights` into `Shadows::write_gpu` belongs in
+            // its own commit; for now we use a fallback sun direction
+            // matching the test scene's `Sun` node so the demo path
+            // produces a sensible cascade.
             let direction = glam::Vec3::new(0.3, -1.0, 0.3).normalize();
-            let cascade = cascade::fit_cascade(
-                camera_inv_view_proj,
+
+            let cascades = cascade::fit_cascades(
+                camera_matrices.view_projection(),
+                camera_matrices.view,
                 direction,
-                0.0,
-                1.0,
-                params.resolution.max(1),
+                camera_near.max(0.01),
+                camera_far.min(params.max_distance).max(camera_near + 1.0),
+                cascade_count,
+                params.cascade_split_lambda.clamp(0.0, 1.0),
+                params.resolution.max(16),
+                16,
             );
 
-            let descriptor_index = self.active_descriptor_count;
-            let descriptor_offset = descriptor_index as usize * SHADOW_DESCRIPTOR_BYTES;
-            write_shadow_descriptor(
-                &mut descriptor_bytes[descriptor_offset..descriptor_offset + SHADOW_DESCRIPTOR_BYTES],
-                &cascade.view_projection,
-                [0, 0, self.atlas_size, self.atlas_size],
-                self.atlas_size,
-                params.depth_bias,
-                params.normal_bias,
-                params.hardness,
-                params.pcss_penumbra_scale,
-            );
+            let descriptor_base = self.active_descriptor_count;
+            let mut views = Vec::with_capacity(cascades.len());
+
+            // Naive row-pack: stack cascades horizontally. Phase 13
+            // generalises this into a real packer.
+            let mut x_cursor: u32 = 0;
+            for (cascade_index, (cascade, res, split_far)) in cascades.iter().enumerate() {
+                // Bail out if this row no longer fits — the atlas is
+                // big enough by default that this only kicks in for
+                // pathological resolution / cascade combos.
+                if x_cursor + res > self.atlas_size {
+                    tracing::warn!(
+                        "shadow atlas overflow on cascade {} (cursor {} + res {} > {})",
+                        cascade_index,
+                        x_cursor,
+                        res,
+                        self.atlas_size
+                    );
+                    break;
+                }
+                let rect = [x_cursor, 0, *res, *res];
+                x_cursor += res;
+
+                let descriptor_index = self.active_descriptor_count;
+                let off = descriptor_index as usize * SHADOW_DESCRIPTOR_BYTES;
+                write_shadow_descriptor(
+                    &mut descriptor_bytes[off..off + SHADOW_DESCRIPTOR_BYTES],
+                    &cascade.view_projection,
+                    rect,
+                    self.atlas_size,
+                    params.depth_bias,
+                    params.normal_bias,
+                    params.hardness,
+                    params.pcss_penumbra_scale,
+                    cascade_index as u32,
+                    cascade_count,
+                    *split_far,
+                );
+
+                views.push(LightShadowView {
+                    view_projection: cascade.view_projection,
+                    atlas_rect: rect,
+                });
+                self.active_descriptor_count += 1;
+            }
 
             self.records.insert(
                 light_key,
                 LightShadowRecord {
-                    views: vec![LightShadowView {
-                        view_projection: cascade.view_projection,
-                        atlas_rect: [0, 0, self.atlas_size, self.atlas_size],
-                    }],
-                    descriptor_base: descriptor_index,
+                    views,
+                    descriptor_base,
                 },
             );
-            self.active_descriptor_count += 1;
         }
 
         if self.active_descriptor_count > 0 {
@@ -614,6 +665,9 @@ fn write_shadow_descriptor(
     normal_bias: f32,
     hardness: LightShadowHardness,
     pcss_scale: f32,
+    cascade_index: u32,
+    cascade_count: u32,
+    split_far: f32,
 ) {
     debug_assert!(dest.len() >= SHADOW_DESCRIPTOR_BYTES);
     let cols = view_projection.to_cols_array();
@@ -642,6 +696,11 @@ fn write_shadow_descriptor(
     };
     dest[88..92].copy_from_slice(&hardness_f.to_ne_bytes());
     dest[92..96].copy_from_slice(&pcss_scale.to_ne_bytes());
+    // cascade_info: (split_far_view_z, cascade_index, cascade_count_in_light, 0)
+    dest[96..100].copy_from_slice(&split_far.to_ne_bytes());
+    dest[100..104].copy_from_slice(&(cascade_index as f32).to_ne_bytes());
+    dest[104..108].copy_from_slice(&(cascade_count as f32).to_ne_bytes());
+    dest[108..112].copy_from_slice(&0.0_f32.to_ne_bytes());
 }
 
 async fn build_shadow_pipeline(
@@ -694,6 +753,27 @@ async fn build_shadow_pipeline(
         .get_key(gpu, shaders, pipeline_layouts, pipeline_cache_key)
         .await
         .map_err(Into::into)
+}
+
+/// Extracts the world-space near + far planes from a projection
+/// matrix. Handles glam's right-handed perspective convention; falls
+/// back to `(0.1, 100.0)` for matrices we don't recognise
+/// (orthographic, custom).
+fn extract_near_far(projection: &Mat4) -> (f32, f32) {
+    let m22 = projection.z_axis.z;
+    let m23 = projection.w_axis.z;
+    // Reverse the glam `Mat4::perspective_rh` formulation:
+    //   m22 = far / (near - far)
+    //   m23 = (near * far) / (near - far)
+    // → near = m23 / m22, far = m23 / (m22 + 1)
+    if m22.abs() > 1e-4 && (m22 + 1.0).abs() > 1e-4 {
+        let near = m23 / m22;
+        let far = m23 / (m22 + 1.0);
+        if near > 0.0 && far > near {
+            return (near, far);
+        }
+    }
+    (0.1, 100.0)
 }
 
 fn create_cube_array_view(

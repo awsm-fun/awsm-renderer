@@ -1004,14 +1004,14 @@ Tick items as they land. A future session can resume by reading this list.
 - [x] Default values tuned — `LightShadowConfig::default()` uses `depth_bias = 0.0005`, `normal_bias = 0.05`, `hardness = Soft` (1024² atlas baseline)
 
 ### Phase 4 — CSM cascades
-- [ ] Generalized N-cascade fit (1–4)
-- [ ] PSSM split with lambda blending
-- [ ] Per-cascade resolution (`cascade i = max(min_res, resolution >> i)`)
-- [ ] Multi-rect atlas packing for mixed sizes
-- [ ] Cascade selection in shading shader (by view-space depth)
-- [ ] `max_distance` fade
-- [ ] Cascade count + lambda editor inputs working
-- [ ] Cascade-color debug overlay (debug bitmask flag)
+- [x] Generalized N-cascade fit (1–4) — `cascade::fit_cascades`
+- [x] PSSM split with lambda blending — `cascade::pssm_splits`
+- [x] Per-cascade resolution (`cascade i = max(min_res, resolution >> i)`) — `cascade::cascade_resolution`
+- [x] Multi-rect atlas packing for mixed sizes (row-pack; phase 13 generalises)
+- [x] Cascade selection in shading shader (by view-space depth) — `sample_shadow_directional` walks `descriptor_base..base+count`
+- [x] `max_distance` fade (cascades cap at `params.max_distance`)
+- [ ] Cascade count + lambda editor inputs — deferred to the editor-UI follow-up; schema field is editable in `project.json`
+- [x] Cascade-color debug overlay — `debug_cascade_tint`, gated on `ShadowsConfig::debug_cascade_colors`
 
 ### Phase 5 — EVSM hybrid (far directional cascades)
 - [ ] `RGBA16F` EVSM atlas + packer (shared impl with depth atlas)
