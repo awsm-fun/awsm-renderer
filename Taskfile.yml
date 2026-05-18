@@ -64,7 +64,7 @@ tasks:
     cmds:
       - >
         cd {{.PATH_MEDIA_LOCAL}} &&
-        http-server --gzip --cors -p {{.PORT_MEDIA_LOCAL_DEV}}
+        http-server --cors -p {{.PORT_MEDIA_LOCAL_DEV}}
 
   media-additional-assets:
     internal: true
@@ -72,7 +72,7 @@ tasks:
     cmds:
       - >
         cd {{.PATH_MEDIA_ADDITIONAL_ASSETS}} &&
-        http-server --gzip --cors -p {{.PORT_MEDIA_ADDITIONAL_ASSETS_DEV}}
+        http-server --cors -p {{.PORT_MEDIA_ADDITIONAL_ASSETS_DEV}}
 
   publish:
     desc: "Publish library crates to crates.io (must be run in order: renderer-core, then renderer, then editor)"

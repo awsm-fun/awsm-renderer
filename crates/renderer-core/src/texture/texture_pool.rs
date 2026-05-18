@@ -278,7 +278,18 @@ impl<ID> TexturePoolArray<ID> {
             .with_copy_src()
             .with_render_attachment();
 
-        // Process each layer: copy to staging, optionally convert, then copy to dest array
+        // Single command encoder for the whole upload. Previously we
+        // submitted one command buffer per layer (N round-trips for N
+        // textures); batching them collapses the GPU sync overhead to
+        // a single queue submit while still preserving per-layer
+        // staging textures (no race risk — each layer has its own
+        // src/dst pair). The `copy_external_image_to_texture` calls
+        // are queue-level operations and serialize on the GPU queue
+        // ahead of this command buffer.
+        let upload_encoder = gpu.create_command_encoder(Some("Texture Pool Upload"));
+        let mut staging_textures: Vec<web_sys::GpuTexture> =
+            Vec::with_capacity(self.images.len() * 2);
+
         for (index, (_, image, color)) in self.images.iter().enumerate() {
             // Create fresh staging textures for this layer to avoid GPU race conditions
             let staging_src = gpu.create_texture(
@@ -303,7 +314,8 @@ impl<ID> TexturePoolArray<ID> {
                 .into(),
             )?;
 
-            // Copy external image to staging_src (this is a queue operation)
+            // Copy external image to staging_src (this is a queue operation
+            // that runs ahead of the encoder we're recording below).
             let source = image.source_info(None, None)?;
             let staging_dest = CopyExternalImageDestInfo::new(&staging_src)
                 .with_mip_level(0)
@@ -319,14 +331,11 @@ impl<ID> TexturePoolArray<ID> {
                 &Extent3d::new(self.width, Some(self.height), Some(1)).into(),
             )?;
 
-            // Create command encoder for this layer's operations
-            let layer_encoder = gpu.create_command_encoder(Some("Texture Pool Layer Upload"));
-
-            // Convert sRGB to linear if needed
+            // Optional sRGB→linear compute pass, recorded into the shared encoder.
             let final_staging = if color.srgb_to_linear {
                 convert_srgb_to_linear(
                     gpu,
-                    &layer_encoder,
+                    &upload_encoder,
                     &staging_src,
                     &staging_dst,
                     self.width,
@@ -344,22 +353,29 @@ impl<ID> TexturePoolArray<ID> {
                 .with_mip_level(0)
                 .with_origin(Origin3d::new().with_z(index as u32));
 
-            layer_encoder.copy_texture_to_texture(
+            upload_encoder.copy_texture_to_texture(
                 &src_info.into(),
                 &dst_info.into(),
                 &Extent3d::new(self.width, Some(self.height), Some(1)).into(),
             )?;
 
-            // Submit this layer's operations
-            let layer_buffer = layer_encoder.finish();
-            gpu.submit_commands(&layer_buffer);
-
-            // Destroy staging textures for this layer
-            // GPU will keep them alive until commands complete
-            staging_src.destroy();
-            staging_dst.destroy();
+            // Stash the staging textures so we can release them once the
+            // batched submit has actually been queued.
+            staging_textures.push(staging_src);
+            staging_textures.push(staging_dst);
 
             mipmap_texture_kinds.push(color.mipmap_kind);
+        }
+
+        // One submit for every layer's compute + copy work.
+        let upload_buffer = upload_encoder.finish();
+        gpu.submit_commands(&upload_buffer);
+
+        // Staging textures are safe to destroy after submit — the GPU
+        // keeps the underlying allocations alive until the queued
+        // commands finish.
+        for staging in staging_textures {
+            staging.destroy();
         }
 
         if self.mipmap {

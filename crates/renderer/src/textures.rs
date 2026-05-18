@@ -81,10 +81,47 @@ impl AwsmRenderer {
                 .await?;
         }
 
+        // Pre-pass: compile every transparent shader we'll need
+        // concurrently. The per-mesh loop below would otherwise serialize
+        // shader compilation (each `set_render_pipeline_key` awaits a
+        // shader compile + pipeline creation), so on first load we'd pay
+        // N × compile-time wall-clock. `Shaders::ensure_keys` dedupes the
+        // batch and fires every `compile_shader` synchronously before
+        // awaiting any validation, letting the browser compile them in
+        // parallel.
+        let transparent_bind_groups = &self.render_passes.material_transparent.bind_groups;
+        let mut shader_cache_keys: Vec<crate::shaders::ShaderCacheKey> = Vec::new();
+        let mut has_seen_buffer_info = SecondaryMap::new();
+        let mut has_seen_material = SecondaryMap::new();
+        for (key, mesh) in self.meshes.iter() {
+            let buffer_info_key = self.meshes.buffer_info_key(key)?;
+            if has_seen_buffer_info.insert(buffer_info_key, ()).is_none()
+                || has_seen_material.insert(mesh.material_key, ()).is_none()
+            {
+                let mesh_buffer_info = self.meshes.buffer_infos.get(buffer_info_key)?;
+                let cache_key = crate::render_passes::material_transparent::shader::cache_key::ShaderCacheKeyMaterialTransparent {
+                    attributes: mesh_buffer_info.into(),
+                    texture_pool_arrays_len: transparent_bind_groups.texture_pool_arrays_len,
+                    texture_pool_samplers_len: transparent_bind_groups
+                        .texture_pool_sampler_keys
+                        .len() as u32,
+                    msaa_sample_count: self.anti_aliasing.msaa_sample_count,
+                    mipmaps: self.anti_aliasing.mipmap,
+                    instancing_transforms: mesh.instanced,
+                };
+                shader_cache_keys.push(cache_key.into());
+            }
+        }
+        self.shaders
+            .ensure_keys(&self.gpu, shader_cache_keys)
+            .await?;
+
         // Recreate transparent pass pipelines for each mesh (and _only_ transparent!)
         // These depend on per-mesh attributes (unlike opaque which uses only global parameters),
         // so we must iterate through meshes to create pipelines with the (potentially new) layout.
-        // Caching ensures this is efficient when pipelines already exist.
+        // Shader compilation is now warm thanks to `ensure_keys`, so the
+        // per-mesh `get_key` calls here only do (cheaper) pipeline
+        // creation; the cache eliminates real duplicates regardless.
         let mut has_seen_buffer_info = SecondaryMap::new();
         let mut has_seen_material = SecondaryMap::new();
         for (key, mesh) in self.meshes.iter() {
