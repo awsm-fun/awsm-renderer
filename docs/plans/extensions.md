@@ -140,9 +140,115 @@ Notes:
 
 # Updates
 
-- [ ] TextureTransform
-- [ ] Dispersion
-- [ ] DiffuseTransmission
-- [ ] Anisotropy
-- [ ] Iridescence
-- [ ] Lights
+- [x] TextureTransform
+- [x] Dispersion
+- [x] DiffuseTransmission
+- [x] Anisotropy
+- [x] Iridescence
+- [x] Lights
+
+## Notes & follow-ups
+
+### TextureTransform
+- Root cause: the per-extension `gltf::material::NormalTexture` and
+  `OcclusionTexture` wrappers were parsed by reading the raw `extensions`
+  map and looking for `KHR_texture_transform`. The `gltf-rs` crate already
+  extracts that extension into its own field (when the `KHR_texture_transform`
+  feature is enabled), so `extensions().get("KHR_texture_transform")` always
+  returned `None` for normal/occlusion/clearcoat-normal textures.
+- Fix: use `info.texture_transform()` directly for both wrappers, mirroring
+  the working code path used by `gltf::texture::Info`. `TextureTransformMultiTest`
+  now renders the full grid of checkmarks (UV0, UV1, Sampler) for Normal,
+  Occlusion, and Clearcoat Normal rows.
+
+### Lights (KHR_lights_punctual)
+- Added a gltf populator at `crates/renderer-gltf/src/populate/lights.rs`
+  that walks the scene tree, computes a baked world transform per light
+  node, and inserts a renderer `Light` for every node that references a
+  punctual light. The list of inserted keys is returned in
+  `GltfPopulateContext::punctual_lights`.
+- The model-tests app skips its default 4-directional fill when the gltf
+  contributes its own lights, and removes old gltf lights before a new
+  populate so the previous model's lighting doesn't leak.
+- Fixed the spot light packing: the WGSL `spot_falloff` consumes cosines
+  of the inner/outer cone angles, but the Rust side was writing raw
+  radians. `Light::Spot::storage_buffer_data` now pre-computes
+  `cos(inner_angle)` and `cos(outer_angle)`. The renderer's spot light API
+  still takes radians.
+- Replaced the ad-hoc `inverse_square` falloff with the
+  `KHR_lights_punctual` formula: `max(min(1 - (d/range)^4, 1), 0) / d^2`,
+  matching the glTF Sample Renderer reference. Lights with `range = 0`
+  fall back to pure inverse-square.
+
+### Dispersion (KHR_materials_dispersion)
+- Per-channel refraction in two places:
+  - `brdf_ibl` (IBL transmission background): three `samplePrefilteredEnv`
+    fetches at slightly-shifted IORs and we keep just the matching channel
+    from each.
+  - `sample_transmission_background` (screen-space transmission with
+    refraction): factored a `_for_ior` helper since WGSL has no recursion
+    and a top-level wrapper invokes it three times when dispersion is
+    active.
+- IOR half-spread matches the glTF Sample Renderer:
+  `(ior - 1) * 0.025 * dispersion`. Test scenes show subtle but visible
+  chromatic fringes; the effect is more pronounced on highly-faceted
+  geometry like the dragon and at strong dispersion values.
+
+### Diffuse Transmission (KHR_materials_diffuse_transmission)
+- New parser in `populate/material.rs` reads
+  `KHR_materials_diffuse_transmission` straight from the extensions JSON
+  (the gltf crate doesn't expose this one as a typed accessor).
+- BRDF additions:
+  - Direct lighting: when light is behind the surface (`dot(-N, L) > 0`),
+    a Lambertian term using `diffuseTransmissionColor * baseColor / π` is
+    contributed at the back-side cosine.
+  - IBL: an extra `sampleIrradiance(-N)` contributes a back-side diffuse
+    term, and the front-side diffuse is scaled by `(1 - dt)` for rough
+    energy conservation.
+- Visual checks: `DiffuseTransmissionTest` shows the factor sweep, the
+  teacup glows correctly through the porcelain, and the plant leaves
+  exhibit the expected translucent backlighting.
+
+### Anisotropy (KHR_materials_anisotropy)
+- New parser handles `anisotropyStrength`, `anisotropyRotation`, and the
+  optional `anisotropyTexture` (RG = rotated direction, B = strength).
+- WGSL `PbrMaterialColor` now carries a per-fragment world-space
+  anisotropy basis (`anisotropy_t`, `anisotropy_b`, signed strength)
+  built by rotating the surface tangent into the per-fragment direction
+  from the texture and material rotation.
+- Direct BRDF switches to anisotropic GGX (Disney form) when strength is
+  non-zero; isotropic GGX stays as the default path so most materials
+  don't pay for tangent math.
+- Specular IBL bends the reflection direction and stretches the mip toward
+  the rough axis, matching the glTF Sample Viewer fit.
+- Visual checks: `CompareAnisotropy` shows the expected horizontal and
+  radial brushed-metal patterns; `AnisotropyBarnLamp` shows clean brass
+  brush highlights.
+
+### Iridescence (KHR_materials_iridescence)
+- New parser handles `iridescenceFactor`, `iridescenceIor`, the
+  `iridescenceThicknessMinimum/Maximum` pair, and both `iridescenceTexture`
+  (R = factor multiplier) and `iridescenceThicknessTexture`
+  (G = thickness interpolation between min and max).
+- WGSL `iridescence_fresnel` uses the simplified two-beam Fabry-Perot
+  expression `R = R12 + R23 + 2*sqrt(R12*R23)*cos(phase)` per RGB channel
+  with wavelengths at 685/550/463 nm. Polarized Fresnel terms produce the
+  outside/film reflectance, the base F0 substitutes for the film/base
+  reflectance, and a smoothstep on thickness mutes interference for
+  vanishingly-thin films.
+- Both `brdf_direct` and `brdf_ibl_with_transmission` mix the modulated
+  F0 toward the iridescence layer using the per-fragment factor.
+- Visual checks: `IridescenceAbalone` now produces the expected
+  green/magenta interference; `CompareIridescence` shows the right sphere
+  with vivid iridescent color while the left stays neutral.
+
+### Architecture notes
+- Two new fields in the PBR uniform packing already existed (`dispersion`,
+  `anisotropy`, `iridescence` were declared in `crates/materials/src/pbr.rs`
+  and packed in `write_uniform_buffer`); the work in this pass was
+  decoding and consuming them in WGSL.
+- The opaque path required matching changes to
+  `material_color_calc.wgsl`, `mipmap.wgsl` (to compute UV derivatives for
+  the new textures), and the `PbrMaterialGradients` struct.
+- No new geometry render targets were added; the four-attachment budget
+  for mobile WebGPU is preserved.

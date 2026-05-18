@@ -53,6 +53,10 @@ pub struct AppScene {
     pub last_request_animation_frame: Cell<Option<f64>>,
     pub event_listeners: Mutex<Vec<EventListener>>,
     lights: Mutex<Option<Vec<LightKey>>>,
+    /// Lights inserted by `populate_gltf` from `KHR_lights_punctual`. When
+    /// non-empty, we skip the default directional fill in
+    /// `reset_punctual_lights` so the model's own lighting drives the scene.
+    gltf_punctual_lights: Mutex<Vec<LightKey>>,
     move_action: Cell<Option<MoveAction>>,
     last_size: Cell<(f64, f64)>,
     last_camera_id: Cell<CameraId>,
@@ -87,6 +91,7 @@ impl AppScene {
             editor: Mutex::new(None),
             move_action: Cell::new(None),
             lights: Mutex::new(None),
+            gltf_punctual_lights: Mutex::new(Vec::new()),
         });
 
         let resize_observer = ResizeObserver::new(
@@ -569,7 +574,17 @@ impl AppScene {
 
                 let mut renderer = scene.renderer.lock().await;
 
-                renderer.populate_gltf(data, None).await?;
+                // Drop any lights that came from a previous gltf load before
+                // populating the next one, so KHR_lights_punctual additions
+                // stay scoped to the model that owns them.
+                {
+                    let mut prev = scene.gltf_punctual_lights.lock().unwrap();
+                    for key in prev.drain(..) {
+                        renderer.lights.remove(key);
+                    }
+                }
+                let populate_ctx = renderer.populate_gltf(data, None).await?;
+                *scene.gltf_punctual_lights.lock().unwrap() = populate_ctx.punctual_lights;
 
                 let editor_gizmo_gltf_data = {
                     let editor_guard = scene.editor.lock().unwrap();
@@ -651,6 +666,12 @@ impl AppScene {
         }
 
         if !self.ctx.punctual_lights.get() {
+            return Ok(());
+        }
+
+        // If the loaded gltf brings its own lights, leave them alone — the
+        // test asset has authored the lighting and adding more would skew it.
+        if !self.gltf_punctual_lights.lock().unwrap().is_empty() {
             return Ok(());
         }
 

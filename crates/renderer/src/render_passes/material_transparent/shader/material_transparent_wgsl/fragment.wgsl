@@ -33,6 +33,41 @@ fn sample_transmission_background(
     ior: f32,
     roughness: f32,
     thickness: f32,
+    dispersion: f32,
+    camera: Camera,
+) -> vec3<f32> {
+    if (dispersion > 0.0 && thickness > 0.0) {
+        // KHR_materials_dispersion: refract per RGB channel against three
+        // slightly-shifted IORs and recombine. The helper handles the
+        // shared ray/projection/blur work, so this stays a thin wrapper.
+        // Half-spread matches the glTF Sample Renderer formula.
+        let dstrength = (ior - 1.0) * 0.025 * dispersion;
+        let ior_r = max(ior - dstrength, 1.0001);
+        let ior_b = ior + dstrength;
+        let bg_r = sample_transmission_background_for_ior(
+            frag_pos, world_position, normal, view_dir, ior_r, roughness, thickness, camera,
+        );
+        let bg_g = sample_transmission_background_for_ior(
+            frag_pos, world_position, normal, view_dir, ior, roughness, thickness, camera,
+        );
+        let bg_b = sample_transmission_background_for_ior(
+            frag_pos, world_position, normal, view_dir, ior_b, roughness, thickness, camera,
+        );
+        return vec3<f32>(bg_r.r, bg_g.g, bg_b.b);
+    }
+    return sample_transmission_background_for_ior(
+        frag_pos, world_position, normal, view_dir, ior, roughness, thickness, camera,
+    );
+}
+
+fn sample_transmission_background_for_ior(
+    frag_pos: vec4<f32>,
+    world_position: vec3<f32>,
+    normal: vec3<f32>,
+    view_dir: vec3<f32>,
+    ior: f32,
+    roughness: f32,
+    thickness: f32,
     camera: Camera,
 ) -> vec3<f32> {
     let screen_dims = vec2<f32>(textureDimensions(opaque_tex));
@@ -269,6 +304,7 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
                 material_color.ior,
                 roughness,
                 material_color.volume_thickness,
+                material_color.dispersion,
                 camera,
             );
 

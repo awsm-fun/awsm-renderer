@@ -302,6 +302,109 @@ fn sampleBRDFLUT(
 }
 
 // -------------------------------------------------------------
+// Anisotropy (KHR_materials_anisotropy)
+// -------------------------------------------------------------
+
+// Returns a per-direction anisotropic roughness pair `(alpha_t, alpha_b)`.
+// `strength` is the (signed) anisotropy factor — sign flips orient the lobe.
+fn anisotropic_alpha(roughness: f32, strength: f32) -> vec2<f32> {
+    let alpha = max(roughness * roughness, 0.0016);
+    let s = clamp(abs(strength), 0.0, 1.0);
+    // Spec: roughness_t = mix(roughness, 1, anisotropy^2) (the "rough" axis)
+    //       roughness_b = roughness                          (the "smooth" axis)
+    let alpha_t = mix(alpha, 1.0, s * s);
+    let alpha_b = alpha;
+    return vec2<f32>(alpha_t, alpha_b);
+}
+
+// Anisotropic GGX distribution (Burley/Disney form).
+fn distribution_ggx_anisotropic(
+    t_dot_h: f32,
+    b_dot_h: f32,
+    n_dot_h: f32,
+    alpha_t: f32,
+    alpha_b: f32
+) -> f32 {
+    let a2 = alpha_t * alpha_b;
+    let f = vec3<f32>(alpha_b * t_dot_h, alpha_t * b_dot_h, a2 * n_dot_h);
+    let denom = a2 / max(dot(f, f), EPSILON);
+    return a2 * denom * denom / PI;
+}
+
+fn visibility_anisotropic(
+    n_dot_l: f32,
+    n_dot_v: f32,
+    t_dot_l: f32,
+    t_dot_v: f32,
+    b_dot_l: f32,
+    b_dot_v: f32,
+    alpha_t: f32,
+    alpha_b: f32
+) -> f32 {
+    let lambda_v = n_dot_l * length(vec3<f32>(alpha_t * t_dot_v, alpha_b * b_dot_v, n_dot_v));
+    let lambda_l = n_dot_v * length(vec3<f32>(alpha_t * t_dot_l, alpha_b * b_dot_l, n_dot_l));
+    return 0.5 / max(lambda_v + lambda_l, EPSILON);
+}
+
+// -------------------------------------------------------------
+// Iridescence (KHR_materials_iridescence)
+// Belcour-Barla thin-film interference, simplified to a single
+// air/film/base stack. We approximate the wavelength integral using
+// the cosine series fit from the glTF sample viewer.
+// -------------------------------------------------------------
+
+fn iridescence_fresnel(
+    cos_theta_v: f32,
+    eta_thin: f32,
+    thickness_nm: f32,
+    base_f0: vec3<f32>
+) -> vec3<f32> {
+    // Force the film IOR back toward the outside medium when the layer
+    // is too thin for coherent interference — keeps the result smooth as
+    // thickness → 0.
+    let outside_ior = 1.0;
+    let scaled_ior = mix(outside_ior, max(eta_thin, 1.0), smoothstep(0.0, 0.03, thickness_nm));
+
+    // Snell's law inside the film.
+    let sin_t2 = (outside_ior / scaled_ior) * (outside_ior / scaled_ior)
+        * (1.0 - cos_theta_v * cos_theta_v);
+    if (sin_t2 >= 1.0) {
+        // Total internal reflection: bypass interference, the surface
+        // already reflects everything.
+        return base_f0;
+    }
+    let cos_t2 = sqrt(1.0 - sin_t2);
+
+    // Reflectance at the outside/film interface (averaged over polarization).
+    let r_par = (scaled_ior * cos_theta_v - outside_ior * cos_t2)
+        / (scaled_ior * cos_theta_v + outside_ior * cos_t2);
+    let r_perp = (outside_ior * cos_theta_v - scaled_ior * cos_t2)
+        / (outside_ior * cos_theta_v + scaled_ior * cos_t2);
+    let r12 = clamp(0.5 * (r_par * r_par + r_perp * r_perp), 0.0, 1.0);
+
+    // The base/film interface reflectance is the base F0 — that already
+    // encodes the metallic/dielectric weighting from upstream.
+    let r23 = clamp(base_f0, vec3<f32>(0.0), vec3<f32>(1.0));
+
+    // Amplitude reflectances (square roots of the intensity reflectances).
+    let amp1 = sqrt(r12);
+    let amp2 = sqrt(r23);
+
+    // OPD round trip and per-wavelength phase. Wavelengths centred on the
+    // peaks of the CIE RGB sensitivity curves.
+    let opd = 2.0 * scaled_ior * thickness_nm * cos_t2;
+    let wavelengths = vec3<f32>(685.0, 550.0, 463.0);
+    let phase = 2.0 * PI * opd / wavelengths;
+    let cos_phase = cos(phase);
+
+    // Two-beam interference (simplified Fabry-Perot, ignoring higher orders).
+    // R = r12 + r23 + 2*amp1*amp2*cos(phi); the cross term is what produces
+    // the chromatic fringes.
+    let interference = vec3<f32>(r12) + r23 + 2.0 * vec3<f32>(amp1) * amp2 * cos_phase;
+    return clamp(interference, vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+// -------------------------------------------------------------
 // Direct Lighting BRDF (Cook-Torrance)
 // With clearcoat and sheen extensions
 // -------------------------------------------------------------
@@ -329,10 +432,16 @@ fn brdf_direct(color: PbrMaterialColor, light_brdf: LightBrdf, surface_to_camera
     // KHR_materials_specular: dielectric_f0 = min(f0_base * specular_color, 1.0) * specular
     let dielectric_f0_base = ior_to_f0(color.ior);
     let dielectric_f0 = min(vec3<f32>(dielectric_f0_base) * color.specular_color, vec3<f32>(1.0)) * color.specular;
-    let F0 = mix(dielectric_f0, base_color, metallic);
+    var F0 = mix(dielectric_f0, base_color, metallic);
 
     // f90: grazing angle reflectivity (specular for dielectrics, 1.0 for metals per spec)
     let f90 = mix(color.specular, 1.0, metallic);
+
+    // KHR_materials_iridescence: thin-film interference modulates F0.
+    if (color.iridescence > 0.0) {
+        let iri_f0 = iridescence_fresnel(n_dot_v, color.iridescence_ior, color.iridescence_thickness, F0);
+        F0 = mix(F0, iri_f0, color.iridescence);
+    }
 
     // Cook-Torrance specular BRDF: DFG / (4 * N·L * N·V)
     // When V and L are antiparallel, H is undefined. Treat that as zero specular
@@ -342,13 +451,32 @@ fn brdf_direct(color: PbrMaterialColor, light_brdf: LightBrdf, surface_to_camera
         fresnel_schlick_f90(v_dot_h, F0, f90),
         has_half
     );
-    let D = distribution_ggx(n_dot_h, alpha);
-    let G = geometry_smith(n, v, l, alpha);
-    let specular = select(
-        vec3<f32>(0.0),
-        F * (D * G) / max(4.0 * n_dot_l * n_dot_v, EPSILON),
-        has_half
-    );
+
+    // KHR_materials_anisotropy: switch to anisotropic GGX when there is a
+    // non-trivial strength to apply. We keep the isotropic path for the
+    // fast majority of materials so we don't pay for tangent math on every
+    // shading point.
+    var specular = vec3<f32>(0.0);
+    if (has_half) {
+        if (color.anisotropy_strength != 0.0) {
+            let a = anisotropic_alpha(roughness, color.anisotropy_strength);
+            let t = safe_normalize(color.anisotropy_t);
+            let b = safe_normalize(color.anisotropy_b);
+            let t_dot_l = dot(t, l);
+            let t_dot_v = dot(t, v);
+            let b_dot_l = dot(b, l);
+            let b_dot_v = dot(b, v);
+            let t_dot_h = dot(t, h);
+            let b_dot_h = dot(b, h);
+            let D = distribution_ggx_anisotropic(t_dot_h, b_dot_h, n_dot_h, a.x, a.y);
+            let V = visibility_anisotropic(n_dot_l, n_dot_v, t_dot_l, t_dot_v, b_dot_l, b_dot_v, a.x, a.y);
+            specular = F * D * V;
+        } else {
+            let D = distribution_ggx(n_dot_h, alpha);
+            let G = geometry_smith(n, v, l, alpha);
+            specular = F * (D * G) / max(4.0 * n_dot_l * n_dot_v, EPSILON);
+        }
+    }
 
     // Lambertian diffuse (energy-conserving: scaled by (1-F_max) and non-metallic portion)
     // Note: transmission modifies diffuse in brdf_ibl, but for direct lighting we keep
@@ -359,6 +487,20 @@ fn brdf_direct(color: PbrMaterialColor, light_brdf: LightBrdf, surface_to_camera
 
     // Base layer contribution
     var result = (diffuse + specular) * light_brdf.radiance * n_dot_l * color.occlusion;
+
+    // KHR_materials_diffuse_transmission: back-side Lambertian contribution
+    // computed against the flipped normal. Only contributes when light is
+    // actually behind the surface.
+    if (color.diffuse_transmission > 0.0) {
+        let n_dot_l_back = max(dot(-n, l), 0.0);
+        if (n_dot_l_back > 0.0) {
+            let transmitted = (1.0 - F_max) * (1.0 - metallic)
+                * color.diffuse_transmission
+                * color.diffuse_transmission_color
+                * base_color * (1.0 / PI);
+            result += transmitted * light_brdf.radiance * n_dot_l_back * color.occlusion;
+        }
+    }
 
     // Sheen contribution (cloth-like rim highlight)
     let sheen = sheen_brdf_direct(color.sheen_color, color.sheen_roughness, n, v, l);
@@ -414,10 +556,16 @@ fn brdf_ibl_with_transmission(
     // KHR_materials_specular: dielectric_f0 = min(f0_base * specular_color, 1.0) * specular
     let dielectric_f0_base = ior_to_f0(color.ior);
     let dielectric_f0 = min(vec3<f32>(dielectric_f0_base) * color.specular_color, vec3<f32>(1.0)) * color.specular;
-    let F0 = mix(dielectric_f0, base_color, metallic);
+    var F0 = mix(dielectric_f0, base_color, metallic);
 
     // f90: grazing angle reflectivity (specular for dielectrics, 1.0 for metals per spec)
     let f90 = mix(color.specular, 1.0, metallic);
+
+    // KHR_materials_iridescence: thin-film modulates F0 before Fresnel.
+    if (color.iridescence > 0.0) {
+        let iri_f0 = iridescence_fresnel(n_dot_v, color.iridescence_ior, color.iridescence_thickness, F0);
+        F0 = mix(F0, iri_f0, color.iridescence);
+    }
 
     // Fresnel at view direction
     let F_view = fresnel_schlick_f90(n_dot_v, F0, f90);
@@ -463,11 +611,44 @@ fn brdf_ibl_with_transmission(
 
     // Apply diffuse/transmission energy conservation
     let k_d = (1.0 - F_view_max) * (1.0 - metallic);
-    let base_contribution = k_d * base_layer * color.occlusion;
+    var base_contribution = k_d * base_layer * color.occlusion;
+
+    // KHR_materials_diffuse_transmission: light incoming on the back side
+    // adds a Lambertian transmitted term. Use the irradiance sampled in
+    // the opposite direction as a cheap "behind the surface" estimate.
+    if (color.diffuse_transmission > 0.0) {
+        let back_irradiance = sampleIrradiance(-n, ibl_irradiance_tex, ibl_irradiance_sampler);
+        let transmitted = (1.0 - F_view_max) * (1.0 - metallic)
+            * color.diffuse_transmission
+            * color.diffuse_transmission_color
+            * base_color * (1.0 / PI) * back_irradiance;
+        // Energy conservation: take some of what the front diffuse would
+        // have contributed and route it to the back side.
+        let dt = color.diffuse_transmission;
+        base_contribution = base_contribution * (1.0 - dt) + transmitted * color.occlusion;
+    }
 
     // Specular IBL: prefiltered environment * (F0 * scale + f90 * bias) from BRDF LUT
-    let R = reflect(-v, n);
-    let prefiltered = samplePrefilteredEnv(R, roughness, ibl_filtered_env_tex, ibl_filtered_env_sampler, ibl_info);
+    // KHR_materials_anisotropy: bend the reflection direction and stretch the
+    // mip level toward the rough axis (matches glTF Sample Viewer fit).
+    var R = reflect(-v, n);
+    var ibl_roughness = roughness;
+    if (color.anisotropy_strength != 0.0) {
+        let t = safe_normalize(color.anisotropy_t);
+        let b = safe_normalize(color.anisotropy_b);
+        let aniso_strength = clamp(abs(color.anisotropy_strength), 0.0, 1.0);
+        let aniso_dir = select(b, t, color.anisotropy_strength >= 0.0);
+        // Tangent perpendicular to the view in the surface plane.
+        let aniso_tangent = cross(aniso_dir, v);
+        let aniso_normal = cross(aniso_tangent, aniso_dir);
+        // Bend the reflected normal toward the anisotropy direction; smoother
+        // along the rough axis, sharper across.
+        let bend_factor = 1.0 - aniso_strength * (1.0 - roughness);
+        let bent_normal = normalize(mix(aniso_normal, n, bend_factor * bend_factor));
+        R = reflect(-v, bent_normal);
+        ibl_roughness = mix(roughness, 1.0, aniso_strength * aniso_strength * (1.0 - n_dot_v));
+    }
+    let prefiltered = samplePrefilteredEnv(R, ibl_roughness, ibl_filtered_env_tex, ibl_filtered_env_sampler, ibl_info);
     let brdf_lut = sampleBRDFLUT(n_dot_v, roughness, brdf_lut_tex, brdf_lut_sampler);
     // Apply occlusion to specular with reduced strength to avoid over-darkening reflections
     let specular = prefiltered * (F0 * brdf_lut.x + vec3<f32>(f90) * brdf_lut.y) * mix(1.0, color.occlusion, 0.5);
@@ -542,22 +723,49 @@ fn brdf_ibl(
         // If volumetric (thickness > 0), apply refraction
         let ior_val = effective_ior(color.ior);
         if (color.volume_thickness > 0.0 && ior_val != 1.0) {
-            let refracted = refract_direction(v, n, 1.0 / ior_val);
-            // Use dot product instead of length to avoid sqrt (checking for non-zero)
-            if (dot(refracted, refracted) > 1e-6) {
-                sample_dir = refracted;
+            // KHR_materials_dispersion: when dispersion is non-zero, refract
+            // per RGB channel so the transmitted background separates into
+            // chromatic fringes. Half-spread matches glTF Sample Renderer
+            // (`(ior - 1) * 0.025 * dispersion`), which keeps the offset
+            // well-behaved across the typical Abbe range while still showing
+            // through at the test asset's exaggerated `dispersion = 25`.
+            if (color.dispersion > 0.0) {
+                let dstrength = (ior_val - 1.0) * 0.025 * color.dispersion;
+                let ior_r = max(ior_val - dstrength, 1.0001);
+                let ior_b = ior_val + dstrength;
+                let refracted_r = refract_direction(v, n, 1.0 / ior_r);
+                let refracted_g = refract_direction(v, n, 1.0 / ior_val);
+                let refracted_b = refract_direction(v, n, 1.0 / ior_b);
+                let dir_r = select(-v, refracted_r, dot(refracted_r, refracted_r) > 1e-6);
+                let dir_g = select(-v, refracted_g, dot(refracted_g, refracted_g) > 1e-6);
+                let dir_b = select(-v, refracted_b, dot(refracted_b, refracted_b) > 1e-6);
+                let s_r = samplePrefilteredEnv(dir_r, roughness, ibl_filtered_env_tex, ibl_filtered_env_sampler, ibl_info);
+                let s_g = samplePrefilteredEnv(dir_g, roughness, ibl_filtered_env_tex, ibl_filtered_env_sampler, ibl_info);
+                let s_b = samplePrefilteredEnv(dir_b, roughness, ibl_filtered_env_tex, ibl_filtered_env_sampler, ibl_info);
+                transmission_background = vec3<f32>(s_r.r, s_g.g, s_b.b);
+            } else {
+                let refracted = refract_direction(v, n, 1.0 / ior_val);
+                if (dot(refracted, refracted) > 1e-6) {
+                    sample_dir = refracted;
+                }
+                transmission_background = samplePrefilteredEnv(
+                    sample_dir,
+                    roughness,
+                    ibl_filtered_env_tex,
+                    ibl_filtered_env_sampler,
+                    ibl_info
+                );
             }
-            // else: TIR occurred, keep straight-through direction
+        } else {
+            // Sample environment with roughness-based blur
+            transmission_background = samplePrefilteredEnv(
+                sample_dir,
+                roughness,
+                ibl_filtered_env_tex,
+                ibl_filtered_env_sampler,
+                ibl_info
+            );
         }
-
-        // Sample environment with roughness-based blur
-        transmission_background = samplePrefilteredEnv(
-            sample_dir,
-            roughness,
-            ibl_filtered_env_tex,
-            ibl_filtered_env_sampler,
-            ibl_info
-        );
     }
 
     return brdf_ibl_with_transmission(
