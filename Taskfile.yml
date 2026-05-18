@@ -40,7 +40,7 @@ tasks:
   scene-editor-dev:
     desc: "Run model-tests dev server in parallel plus the media servers"
     deps:
-      - model-tests:dev
+      - scene-editor:dev
       - media-local
       - media-additional-assets
 

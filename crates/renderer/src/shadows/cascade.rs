@@ -113,13 +113,22 @@ pub fn fit_cascade(
         max.y = min.y + extents.y;
     }
 
-    // Pull the near plane back along the light's forward axis so
-    // off-screen casters (e.g. tall towers behind the camera) still
-    // cast shadows into the cascade. A fixed expansion is sufficient
-    // for v1; phase 12 may make this a per-cascade tuning knob.
-    let z_pull_back = (max.z - min.z).max(50.0);
-    let near = min.z - z_pull_back;
-    let far = max.z;
+    // `Mat4::orthographic_rh` expects positive distances along the
+    // eye's -Z forward axis: a `near` value of N means the near plane
+    // is at `view_z = -N`. Our light-view AABB stored view-space z
+    // directly (negative for points in front of the eye), so negate
+    // when converting to ortho-rh's "distance from eye" convention.
+    //
+    // We then pull the near plane closer to the eye by
+    // `z_pull_back` so casters between the light and the visible
+    // cascade slice (above the visible scene from the light's POV)
+    // still contribute to the depth map. Negative `near` is fine —
+    // it just means the near plane is behind the eye.
+    let visible_near = -max.z; // smallest distance from eye to scene
+    let visible_far = -min.z; // largest distance from eye to scene
+    let z_pull_back = (visible_far - visible_near).max(50.0);
+    let near = visible_near - z_pull_back;
+    let far = visible_far;
 
     let projection = Mat4::orthographic_rh(min.x, max.x, min.y, max.y, near, far);
     let view_projection = projection * view;
