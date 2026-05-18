@@ -48,6 +48,42 @@ struct ShadowDescriptorArray {
 // Sentinel for "no shadow" — packed into `LightPacked.row4.z`.
 const SHADOW_INDEX_NONE: u32 = 0xFFFFFFFFu;
 
+// 16 Poisson-distributed samples in `[-1, 1]^2`. Used by both the
+// PCSS blocker search and the variable-kernel PCF pass. The same
+// table doubled-up keeps the WGSL small; a per-pixel rotation breaks
+// up the regular pattern.
+const POISSON_DISK_16: array<vec2<f32>, 16> = array<vec2<f32>, 16>(
+    vec2<f32>(-0.94201624, -0.39906216),
+    vec2<f32>( 0.94558609, -0.76890725),
+    vec2<f32>(-0.09418410, -0.92938870),
+    vec2<f32>( 0.34495938,  0.29387760),
+    vec2<f32>(-0.91588581,  0.45771432),
+    vec2<f32>(-0.81544232, -0.87912464),
+    vec2<f32>(-0.38277543,  0.27676845),
+    vec2<f32>( 0.97484398,  0.75648379),
+    vec2<f32>( 0.44323325, -0.97511554),
+    vec2<f32>( 0.53742981, -0.47373420),
+    vec2<f32>(-0.26496911, -0.41893023),
+    vec2<f32>( 0.79197514,  0.19090188),
+    vec2<f32>(-0.24188840,  0.99706507),
+    vec2<f32>(-0.81409955,  0.91437590),
+    vec2<f32>( 0.19984126,  0.78641367),
+    vec2<f32>( 0.14383161, -0.14100790),
+);
+
+// Inter-leaved Gradient Noise — Jorge Jimenez's hash, returns a
+// per-pixel angle in `[0, 2π]`. Used to rotate the Poisson disk so
+// adjacent fragments don't sample identical patterns.
+fn pcss_disk_angle(coords: vec2<f32>) -> f32 {
+    let magic = vec3<f32>(0.06711056, 0.00583715, 52.9829189);
+    let noise = fract(magic.z * fract(dot(coords, magic.xy)));
+    return noise * 6.2831853;
+}
+
+fn pcss_rotate(v: vec2<f32>, sin_a: f32, cos_a: f32) -> vec2<f32> {
+    return vec2<f32>(v.x * cos_a - v.y * sin_a, v.x * sin_a + v.y * cos_a);
+}
+
 // Sample a single shadow descriptor (cascade / spot / face). Returns
 // `[0, 1]` visibility (1.0 = lit, 0.0 = fully shadowed).
 //
@@ -91,26 +127,78 @@ fn sample_shadow_descriptor(
             ref_depth,
         );
     }
-    // 3x3 PCF. Offsets are scaled by the atlas-rect's UV extent so a
-    // 1024² cascade in a 4096 atlas takes 1-cascade-texel steps, not
-    // 1-atlas-texel steps.
     let inv_atlas = vec2<f32>(
         1.0 / shadow_globals.atlas_sizes.x,
         1.0 / shadow_globals.atlas_sizes.y,
     );
-    var sum = 0.0;
-    for (var dy = -1; dy <= 1; dy = dy + 1) {
-        for (var dx = -1; dx <= 1; dx = dx + 1) {
-            let offset = vec2<f32>(f32(dx), f32(dy)) * inv_atlas;
-            sum += textureSampleCompareLevel(
-                shadow_atlas,
-                shadow_atlas_sampler,
-                atlas_uv + offset,
-                ref_depth,
-            );
+    if hardness < 1.5 {
+        // 3x3 PCF. Offsets in atlas-texel units.
+        var sum = 0.0;
+        for (var dy = -1; dy <= 1; dy = dy + 1) {
+            for (var dx = -1; dx <= 1; dx = dx + 1) {
+                let offset = vec2<f32>(f32(dx), f32(dy)) * inv_atlas;
+                sum += textureSampleCompareLevel(
+                    shadow_atlas,
+                    shadow_atlas_sampler,
+                    atlas_uv + offset,
+                    ref_depth,
+                );
+            }
+        }
+        return sum / 9.0;
+    }
+    // PCSS — blocker-search + variable-kernel PCF. `pcss_scale`
+    // (bias_params.w) tunes both the search radius and the apparent
+    // light-source size.
+    let pcss_scale = max(desc.bias_params.w, 0.01);
+    let atlas_uv_to_texels = vec2<f32>(
+        shadow_globals.atlas_sizes.x,
+        shadow_globals.atlas_sizes.y,
+    );
+    let atlas_pixel = atlas_uv * atlas_uv_to_texels;
+    let angle = pcss_disk_angle(atlas_pixel);
+    let sin_a = sin(angle);
+    let cos_a = cos(angle);
+    let search_radius_texels = 3.0 * pcss_scale;
+
+    var blocker_sum = 0.0;
+    var blocker_count = 0u;
+    for (var i = 0u; i < 16u; i = i + 1u) {
+        let off = pcss_rotate(POISSON_DISK_16[i], sin_a, cos_a) * search_radius_texels;
+        let sample_uv = atlas_uv + off * inv_atlas;
+        let coord = vec2<i32>(sample_uv * atlas_uv_to_texels);
+        // `textureLoad` reads the raw depth value (no comparison)
+        // for the blocker search. Out-of-bounds reads clamp to the
+        // texture's edge value — for our usage that's a depth of 1.0
+        // (cleared) which classifies as "not a blocker" → safe.
+        let dim = vec2<i32>(atlas_uv_to_texels);
+        let c = clamp(coord, vec2<i32>(0, 0), dim - vec2<i32>(1, 1));
+        let d = textureLoad(shadow_atlas, c, 0);
+        if d < ref_depth - 0.0005 {
+            blocker_sum = blocker_sum + d;
+            blocker_count = blocker_count + 1u;
         }
     }
-    return sum / 9.0;
+    if blocker_count == 0u {
+        return 1.0; // fully lit fast path
+    }
+    let avg_blocker = blocker_sum / f32(blocker_count);
+    let light_size_texels = 5.0 * pcss_scale;
+    let penumbra_texels = max(
+        (ref_depth - avg_blocker) * light_size_texels / max(avg_blocker, 1e-4),
+        1.0,
+    );
+    var pcf_sum = 0.0;
+    for (var i = 0u; i < 16u; i = i + 1u) {
+        let off = pcss_rotate(POISSON_DISK_16[i], sin_a, cos_a) * penumbra_texels;
+        pcf_sum = pcf_sum + textureSampleCompareLevel(
+            shadow_atlas,
+            shadow_atlas_sampler,
+            atlas_uv + off * inv_atlas,
+            ref_depth,
+        );
+    }
+    return pcf_sum / 16.0;
 }
 
 // Per-light cascade selection. `descriptor_base` points to the first

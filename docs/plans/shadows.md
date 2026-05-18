@@ -1026,15 +1026,15 @@ Tick items as they land. A future session can resume by reading this list.
 **Why deferred:** EVSM is the heaviest phase to implement (depth→moments compute pipeline, separable Gaussian blur, two-sided Chebyshev sampler). Phases 6–10 deliver much more visible bang-per-line so I'm landing the descriptor / cutoff infrastructure now and threading EVSM as a follow-up. PCF on far cascades looks fine for the test scene; the `evsm_cutoff` schema field is preserved on disk so the moment-write follow-up just has to wire the compute pass + sampler — no schema breakage.
 
 ### Phase 6 — PCSS (hardness = `Pcss`)
-- [ ] Poisson disk constants (16 samples)
-- [ ] Inter-leaved gradient noise rotation per pixel
-- [ ] Raw-depth view of atlas (binding 8) + non-comparison linear sampler
-- [ ] Blocker search (16-tap, kernel radius scaled by `pcss_penumbra_scale`)
-- [ ] Average blocker depth → penumbra size
-- [ ] Variable-kernel PCF using estimated penumbra
-- [ ] `Pcss` arm in cascade sample dispatcher (PCF cascades only, not EVSM)
-- [ ] Spot lights honor `Pcss`
-- [ ] Point lights gray out `Pcss` in editor
+- [x] Poisson disk constants (16 samples)
+- [x] Inter-leaved Gradient Noise rotation per pixel
+- [x] Raw-depth reads via `textureLoad` on `texture_depth_2d` — no extra binding needed
+- [x] Blocker search (16-tap, kernel radius scaled by `pcss_penumbra_scale`)
+- [x] Average blocker depth → penumbra-size estimate
+- [x] Variable-kernel PCF using estimated penumbra
+- [x] `Pcss` arm in cascade sample dispatcher (PCF cascades only — EVSM cascades still fall through to PCF until the moment writer lands)
+- [x] Spot lights honor `Pcss` (same descriptor path; the perspective shadow map is a 2D atlas just like a directional cascade)
+- [ ] Editor gray-out for Pcss on point lights — deferred to the editor-UI follow-up
 
 ### Phase 7 — Spot light shadows
 - [ ] Spot projection from outer cone + range
