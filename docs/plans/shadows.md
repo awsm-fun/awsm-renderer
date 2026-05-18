@@ -949,11 +949,24 @@ Done.
 Tick items as they land. A future session can resume by reading this list.
 
 ### Phase 0 — Scaffolding
-- [ ] `crates/renderer/src/shadows/` module skeleton + `Shadows` struct
-- [ ] `shadows` field on `AwsmRenderer`
-- [ ] No-op `Shadows::write_gpu` plumbed into `render()`
-- [ ] No-op `ShadowRenderPass::render` between geometry and light culling
-- [ ] Empty shadow bind group bound at slot 3 of material_opaque (compiles)
+- [x] `crates/renderer/src/shadows/` module skeleton + `Shadows` struct
+- [x] `shadows` field on `AwsmRenderer`
+- [x] No-op `Shadows::write_gpu` plumbed into `render()`
+- [x] No-op `ShadowRenderPass::render` between geometry and light culling
+- [x] Empty shadow bind group bound at slot 3 of material_opaque (compiles)
+
+**Deviations:**
+- `shadow_descriptors` storage buffer **omitted** from the Phase 0 bind
+  group — adding it would push the opaque compute stage past
+  `maxStorageBuffersPerShaderStage = 10` on the target adapter. Phase 2
+  will free a slot (likely by folding `instance_attrs`) and re-add the
+  descriptor binding.
+- Transparent-pass shadow plumbing **deferred** to Phase 9 — the
+  transparent pipeline already uses 4 bind groups (the adapter's
+  `maxBindGroups` limit), so Phase 9 must consolidate before adding
+  shadows there. Bind-group layout and recreation method are already
+  in place; only the pipeline-layout slot and per-pass binding are
+  deferred.
 
 ### Phase 1 — Schema & editor
 - [ ] `LightShadowConfig` + `LightShadowHardness` (Hard / Soft / Pcss) in `scene-schema/src/light.rs`

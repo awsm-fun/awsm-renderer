@@ -96,6 +96,8 @@ impl AwsmRenderer {
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
         self.camera
             .write_gpu(&self.logging, &self.gpu, &self.bind_groups)?;
+        self.shadows
+            .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
 
         let render_texture_views = self
             .render_textures
@@ -120,6 +122,7 @@ impl AwsmRenderer {
                 transforms: &self.transforms,
                 instances: &self.instances,
                 anti_aliasing: &self.anti_aliasing,
+                shadows: &self.shadows,
             },
             &mut self.render_passes,
             &mut self.picker,
@@ -189,6 +192,20 @@ impl AwsmRenderer {
                 };
                 hook(&ctx)?;
             }
+        }
+
+        // Shadow generation pass — runs between the geometry passes
+        // and light culling so that the shading passes downstream can
+        // sample the freshly-written shadow maps. Phase 0: no-op when
+        // no shadow caster is active (always true in Phase 0); kept
+        // here to lock the slot in for later phases.
+        if self.shadows.any_active() {
+            let _maybe_span_guard = if self.logging.render_timings {
+                Some(tracing::span!(tracing::Level::INFO, "Shadow Generation").entered())
+            } else {
+                None
+            };
+            // Phase 0: nothing to record. Real dispatch lands in Phase 2.
         }
 
         {

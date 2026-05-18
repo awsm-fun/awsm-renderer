@@ -17,6 +17,7 @@ use crate::{
     },
     render_textures::AwsmRenderTextureError,
     shaders::AwsmShaderError,
+    shadows::AwsmShadowError,
     textures::AwsmTextureError,
     transforms::AwsmTransformError,
 };
@@ -84,6 +85,9 @@ pub enum AwsmError {
 
     #[error("{0}")]
     OpaqueMipgen(#[from] crate::opaque_mipgen::AwsmOpaqueMipgenError),
+
+    #[error("{0}")]
+    Shadow(#[from] AwsmShadowError),
 }
 
 /// Renderer result type.

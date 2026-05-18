@@ -29,6 +29,7 @@ pub mod render_passes;
 pub mod render_textures;
 pub mod renderable;
 pub mod shaders;
+pub mod shadows;
 pub mod textures;
 pub mod transforms;
 pub mod update;
@@ -98,6 +99,10 @@ pub struct AwsmRenderer {
     /// Per-frame mipmap generator for the opaque RT — only dispatched
     /// when the visible material set contains a transmissive material.
     pub opaque_mipgen: opaque_mipgen::OpaqueMipgen,
+    /// Shadow mapping subsystem. Owns the depth atlas, EVSM atlas,
+    /// cube-array pool, descriptors, and the comparison / filterable
+    /// samplers used by the shadow-aware shading passes.
+    pub shadows: shadows::Shadows,
     // we pick between these on the fly
     _clear_color_perceptual_to_linear: Color,
     _clear_color: Color,
@@ -358,6 +363,8 @@ impl AwsmRendererBuilder {
 
         let opaque_mipgen = opaque_mipgen::OpaqueMipgen::new(&gpu).await?;
 
+        let shadows = shadows::Shadows::new(&gpu)?;
+
         #[cfg(feature = "animation")]
         let animations = animation::Animations::default();
 
@@ -386,6 +393,7 @@ impl AwsmRendererBuilder {
             picker,
             lines,
             opaque_mipgen,
+            shadows,
             #[cfg(feature = "animation")]
             animations,
         };

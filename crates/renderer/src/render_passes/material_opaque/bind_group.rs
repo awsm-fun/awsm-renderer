@@ -12,7 +12,10 @@ use indexmap::IndexSet;
 use crate::bind_group_layout::{BindGroupLayoutCacheKey, BindGroupLayoutCacheKeyEntry};
 use crate::bind_groups::{AwsmBindGroupError, BindGroupRecreateContext};
 use crate::error::Result;
-use crate::render_passes::shared::material::bind_group::{TexturePoolDeps, TexturePoolVisibility};
+use crate::render_passes::shared::material::bind_group::{
+    build_shadow_bind_group_entries, shadow_bind_group_layout_entries, TexturePoolDeps,
+    TexturePoolVisibility,
+};
 use crate::textures::SamplerKey;
 use crate::{bind_group_layout::BindGroupLayoutKey, render_passes::RenderPassInitContext};
 
@@ -27,12 +30,14 @@ pub struct MaterialOpaqueBindGroups {
     pub singlesampled_main_bind_group_layout_key: BindGroupLayoutKey,
     pub lights_bind_group_layout_key: BindGroupLayoutKey,
     pub texture_pool_textures_bind_group_layout_key: BindGroupLayoutKey,
+    pub shadows_bind_group_layout_key: BindGroupLayoutKey,
     pub texture_pool_arrays_len: u32,
     pub texture_pool_sampler_keys: IndexSet<SamplerKey>,
     // this is set via `recreate` mechanism
     _main_bind_group: Option<web_sys::GpuBindGroup>,
     _lights_bind_group: Option<web_sys::GpuBindGroup>,
     _texture_bind_group: Option<web_sys::GpuBindGroup>,
+    _shadows_bind_group: Option<web_sys::GpuBindGroup>,
 }
 
 impl MaterialOpaqueBindGroups {
@@ -73,6 +78,13 @@ impl MaterialOpaqueBindGroups {
             },
         )?;
 
+        let shadows_bind_group_layout_key = ctx.bind_group_layouts.get_key(
+            ctx.gpu,
+            BindGroupLayoutCacheKey {
+                entries: shadow_bind_group_layout_entries(true),
+            },
+        )?;
+
         // Texture Pool
         let TexturePoolDeps {
             bind_group_layout_key: texture_pool_textures_bind_group_layout_key,
@@ -85,11 +97,13 @@ impl MaterialOpaqueBindGroups {
             multisampled_main_bind_group_layout_key,
             lights_bind_group_layout_key,
             texture_pool_textures_bind_group_layout_key,
+            shadows_bind_group_layout_key,
             texture_pool_arrays_len,
             texture_pool_sampler_keys,
             _main_bind_group: None,
             _lights_bind_group: None,
             _texture_bind_group: None,
+            _shadows_bind_group: None,
         })
     }
 
@@ -109,11 +123,13 @@ impl MaterialOpaqueBindGroups {
             singlesampled_main_bind_group_layout_key: self.singlesampled_main_bind_group_layout_key,
             lights_bind_group_layout_key: self.lights_bind_group_layout_key,
             texture_pool_textures_bind_group_layout_key,
+            shadows_bind_group_layout_key: self.shadows_bind_group_layout_key,
             texture_pool_arrays_len,
             texture_pool_sampler_keys,
             _main_bind_group: self._main_bind_group.clone(),
             _lights_bind_group: self._lights_bind_group.clone(),
             _texture_bind_group: None,
+            _shadows_bind_group: self._shadows_bind_group.clone(),
         };
 
         Ok(_self)
@@ -127,6 +143,7 @@ impl MaterialOpaqueBindGroups {
             &web_sys::GpuBindGroup,
             &web_sys::GpuBindGroup,
             &web_sys::GpuBindGroup,
+            &web_sys::GpuBindGroup,
         ),
         AwsmBindGroupError,
     > {
@@ -134,18 +151,30 @@ impl MaterialOpaqueBindGroups {
             &self._main_bind_group,
             &self._lights_bind_group,
             &self._texture_bind_group,
+            &self._shadows_bind_group,
         ) {
-            (Some(main_bind_group), Some(lights_bind_group), Some(texture_bind_group)) => {
-                Ok((main_bind_group, lights_bind_group, texture_bind_group))
-            }
-            (None, _, _) => Err(AwsmBindGroupError::NotFound(
+            (
+                Some(main_bind_group),
+                Some(lights_bind_group),
+                Some(texture_bind_group),
+                Some(shadows_bind_group),
+            ) => Ok((
+                main_bind_group,
+                lights_bind_group,
+                texture_bind_group,
+                shadows_bind_group,
+            )),
+            (None, _, _, _) => Err(AwsmBindGroupError::NotFound(
                 "Material Opaque - Main".to_string(),
             )),
-            (_, None, _) => Err(AwsmBindGroupError::NotFound(
+            (_, None, _, _) => Err(AwsmBindGroupError::NotFound(
                 "Material Opaque - Lights".to_string(),
             )),
-            (_, _, None) => Err(AwsmBindGroupError::NotFound(
+            (_, _, None, _) => Err(AwsmBindGroupError::NotFound(
                 "Material Opaque - Texture Pool".to_string(),
+            )),
+            (_, _, _, None) => Err(AwsmBindGroupError::NotFound(
+                "Material Opaque - Shadows".to_string(),
             )),
         }
     }
@@ -329,6 +358,22 @@ impl MaterialOpaqueBindGroups {
         );
 
         self._lights_bind_group = Some(ctx.gpu.create_bind_group(&descriptor.into()));
+
+        Ok(())
+    }
+
+    /// Recreates the shadow bind group for the opaque material pass.
+    pub fn recreate_shadows(&mut self, ctx: &BindGroupRecreateContext<'_>) -> Result<()> {
+        let entries = build_shadow_bind_group_entries(ctx);
+
+        let descriptor = BindGroupDescriptor::new(
+            ctx.bind_group_layouts
+                .get(self.shadows_bind_group_layout_key)?,
+            Some("Material Opaque - Shadows"),
+            entries,
+        );
+
+        self._shadows_bind_group = Some(ctx.gpu.create_bind_group(&descriptor.into()));
 
         Ok(())
     }

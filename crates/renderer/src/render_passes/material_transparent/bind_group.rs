@@ -16,7 +16,10 @@ use crate::bind_groups::{AwsmBindGroupError, BindGroupRecreateContext};
 use crate::error::Result;
 use crate::meshes::meta::geometry_meta::GEOMETRY_MESH_META_BYTE_ALIGNMENT;
 use crate::meshes::meta::material_meta::MATERIAL_MESH_META_BYTE_ALIGNMENT;
-use crate::render_passes::shared::material::bind_group::{TexturePoolDeps, TexturePoolVisibility};
+use crate::render_passes::shared::material::bind_group::{
+    build_shadow_bind_group_entries, shadow_bind_group_layout_entries, TexturePoolDeps,
+    TexturePoolVisibility,
+};
 use crate::textures::SamplerKey;
 use crate::{bind_group_layout::BindGroupLayoutKey, render_passes::RenderPassInitContext};
 
@@ -26,6 +29,7 @@ pub struct MaterialTransparentBindGroups {
     pub mesh_material_bind_group_layout_key: BindGroupLayoutKey,
     pub lights_bind_group_layout_key: BindGroupLayoutKey,
     pub texture_pool_textures_bind_group_layout_key: BindGroupLayoutKey,
+    pub shadows_bind_group_layout_key: BindGroupLayoutKey,
     pub texture_pool_arrays_len: u32,
     pub texture_pool_sampler_keys: IndexSet<SamplerKey>,
 
@@ -33,6 +37,7 @@ pub struct MaterialTransparentBindGroups {
     _mesh_material_bind_group: Option<web_sys::GpuBindGroup>,
     _lights_bind_group: Option<web_sys::GpuBindGroup>,
     _texture_bind_group: Option<web_sys::GpuBindGroup>,
+    _shadows_bind_group: Option<web_sys::GpuBindGroup>,
 }
 
 impl MaterialTransparentBindGroups {
@@ -274,12 +279,20 @@ impl MaterialTransparentBindGroups {
 
         // Texture Pool
 
+        let shadows_bind_group_layout_key = ctx.bind_group_layouts.get_key(
+            ctx.gpu,
+            BindGroupLayoutCacheKey {
+                entries: shadow_bind_group_layout_entries(false),
+            },
+        )?;
+
         Ok(Self {
             main_bind_group_layout_key,
             mesh_material_bind_group_layout_key,
             lights_bind_group_layout_key,
 
             texture_pool_textures_bind_group_layout_key,
+            shadows_bind_group_layout_key,
             texture_pool_arrays_len,
             texture_pool_sampler_keys,
 
@@ -287,6 +300,7 @@ impl MaterialTransparentBindGroups {
             _mesh_material_bind_group: None,
             _lights_bind_group: None,
             _texture_bind_group: None,
+            _shadows_bind_group: None,
         })
     }
 
@@ -306,12 +320,14 @@ impl MaterialTransparentBindGroups {
             mesh_material_bind_group_layout_key: self.mesh_material_bind_group_layout_key,
             lights_bind_group_layout_key: self.lights_bind_group_layout_key,
             texture_pool_textures_bind_group_layout_key,
+            shadows_bind_group_layout_key: self.shadows_bind_group_layout_key,
             texture_pool_arrays_len,
             texture_pool_sampler_keys,
             _main_bind_group: self._main_bind_group.clone(),
             _mesh_material_bind_group: self._mesh_material_bind_group.clone(),
             _lights_bind_group: self._lights_bind_group.clone(),
             _texture_bind_group: None,
+            _shadows_bind_group: self._shadows_bind_group.clone(),
         };
 
         Ok(_self)
@@ -359,6 +375,26 @@ impl MaterialTransparentBindGroups {
                 "Material Transparent - Texture Pool".to_string(),
             )),
         }
+    }
+
+    /// Recreates the shadow bind group for transparent materials.
+    /// Phase 0 / Phase 9 placeholder — the bind group itself is built
+    /// but isn't currently set on the pipeline since `maxBindGroups=4`
+    /// on the target adapter. Phase 9 wires it in after consolidating
+    /// existing bind groups.
+    pub fn recreate_shadows(&mut self, ctx: &BindGroupRecreateContext<'_>) -> Result<()> {
+        let entries = build_shadow_bind_group_entries(ctx);
+
+        let descriptor = BindGroupDescriptor::new(
+            ctx.bind_group_layouts
+                .get(self.shadows_bind_group_layout_key)?,
+            Some("Material Transparent - Shadows"),
+            entries,
+        );
+
+        self._shadows_bind_group = Some(ctx.gpu.create_bind_group(&descriptor.into()));
+
+        Ok(())
     }
 
     /// Recreates the main bind group for transparent materials.

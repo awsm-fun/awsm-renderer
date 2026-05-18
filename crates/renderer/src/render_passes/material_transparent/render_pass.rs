@@ -61,6 +61,8 @@ impl MaterialTransparentRenderPass {
         render_pass.set_bind_group(0u32, main_bind_group, None)?;
         render_pass.set_bind_group(1u32, lights_bind_group, None)?;
         render_pass.set_bind_group(2u32, texture_bind_group, None)?;
+        // Phase 9 will add a shadow bind group here once `maxBindGroups=4`
+        // is respected by collapsing an existing group.
 
         let mut last_render_pipeline_key = None;
         for renderable in renderables {

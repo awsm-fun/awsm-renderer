@@ -10,7 +10,8 @@ use crate::{
     anti_alias::AntiAliasing, bind_group_layout::BindGroupLayouts, camera::CameraBuffer,
     environment::Environment, instances::Instances, lights::Lights, materials::Materials,
     meshes::Meshes, picker::Picker, render_passes::RenderPasses,
-    render_textures::RenderTextureViews, textures::Textures, transforms::Transforms,
+    render_textures::RenderTextureViews, shadows::Shadows, textures::Textures,
+    transforms::Transforms,
 };
 
 // There are no cache keys for bind groups, they are created on demand
@@ -37,6 +38,7 @@ pub struct BindGroupRecreateContext<'a> {
     pub transforms: &'a Transforms,
     pub instances: &'a Instances,
     pub anti_aliasing: &'a AntiAliasing,
+    pub shadows: &'a Shadows,
 }
 
 /// Reasons to recreate bind groups.
@@ -68,6 +70,9 @@ pub enum BindGroupCreate {
     /// Per-instance attribute storage buffer was reallocated; opaque + transparent
     /// shading bind groups must re-bind the new buffer.
     InstanceAttributesResize,
+    /// Shadow atlas, EVSM atlas, cube array, or descriptors buffer was recreated;
+    /// the opaque + transparent shading bind groups must re-bind the new resources.
+    ShadowsResourcesChange,
 }
 
 /// Tracks pending bind group recreations.
@@ -115,10 +120,12 @@ impl BindGroups {
             OpaqueMain,
             OpaqueLights,
             OpaqueTextures,
+            OpaqueShadows,
             TransparentMain,
             TransparentMeshMaterial,
             TransparentLights,
             TransparentTextures,
+            TransparentShadows,
             LightCulling,
             Effects,
             Display,
@@ -225,6 +232,10 @@ impl BindGroups {
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
                     functions_to_call.insert(FunctionToCall::TransparentMain);
                 }
+                BindGroupCreate::ShadowsResourcesChange => {
+                    functions_to_call.insert(FunctionToCall::OpaqueShadows);
+                    functions_to_call.insert(FunctionToCall::TransparentShadows);
+                }
             }
         }
 
@@ -267,6 +278,18 @@ impl BindGroups {
                         .material_opaque
                         .bind_groups
                         .recreate_texture_pool(&ctx)?;
+                }
+                FunctionToCall::OpaqueShadows => {
+                    render_passes
+                        .material_opaque
+                        .bind_groups
+                        .recreate_shadows(&ctx)?;
+                }
+                FunctionToCall::TransparentShadows => {
+                    render_passes
+                        .material_transparent
+                        .bind_groups
+                        .recreate_shadows(&ctx)?;
                 }
                 FunctionToCall::TransparentMain => {
                     render_passes
