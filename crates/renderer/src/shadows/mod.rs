@@ -153,6 +153,10 @@ pub struct Shadows {
     /// Per-light, per-frame fitted record (cascade fit, atlas rect,
     /// descriptor index). Rebuilt every `write_gpu` call.
     records: SecondaryMap<LightKey, LightShadowRecord>,
+    /// Throttle state per view, persisted across the `records`
+    /// rebuild. Indexed by light key; each entry is a `Vec` parallel
+    /// to `LightShadowRecord::views`.
+    throttle: SecondaryMap<LightKey, Vec<ShadowViewThrottle>>,
     /// Number of descriptors currently active in `descriptors_uniform`.
     active_descriptor_count: u32,
 
@@ -202,6 +206,32 @@ pub struct LightShadowView {
     /// Cube face layer index when this view targets the cube pool —
     /// `slot * 6 + face_index`. `None` for 2D atlas views.
     pub cube_layer: Option<u32>,
+    /// Re-render cadence for this view in frames. `1` means every
+    /// frame; the far directional cascade may bump this to 2/4/8 via
+    /// `LightShadowParams::far_cascade_update_rate`.
+    pub update_period: u64,
+    /// Decision flag set by the temporal throttle (Phase 11): `true`
+    /// means the render pass should re-render this view, `false`
+    /// means the cached atlas tile is still valid for this frame.
+    pub should_render: bool,
+}
+
+/// Persistent throttle state per shadow view. Keyed by `(LightKey,
+/// view_index)` on `Shadows` so the per-frame `records` rebuild
+/// doesn't lose it.
+#[derive(Clone, Debug)]
+pub struct ShadowViewThrottle {
+    /// Frame index at which the view was last rendered. `u64::MAX`
+    /// means "never rendered" → force a render this frame.
+    pub last_rendered_frame: u64,
+    /// Last view-projection we rendered with. Compared each frame so
+    /// significant camera / light movement forces an early refresh.
+    pub last_view_projection: Mat4,
+    /// Last atlas rect we rendered into. If the row-pack allocator
+    /// moves this view to a different rect (Phase 13 will re-pack on
+    /// caster-set changes), we invalidate the throttle entry so the
+    /// stale rect isn't sampled at its new location.
+    pub last_atlas_rect: [u32; 4],
 }
 
 static SHADOW_DESCRIPTOR_UNIFORM_BYTES: LazyLock<usize> =
@@ -413,6 +443,7 @@ impl Shadows {
             sampler_filterable,
             params: SecondaryMap::new(),
             records: SecondaryMap::new(),
+            throttle: SecondaryMap::new(),
             active_descriptor_count: 0,
             shadow_view_bind_group_layout_key,
             shadow_view_bind_group,
@@ -652,10 +683,22 @@ impl Shadows {
                                 .copy_from_slice(&1.0_f32.to_ne_bytes());
                         }
 
+                        // Throttle only the FAR cascade. Closer
+                        // cascades carry per-frame contact detail and
+                        // must refresh every frame.
+                        let update_period = if (cascade_index as u32)
+                            == cascade_count.saturating_sub(1)
+                        {
+                            params.far_cascade_update_rate.period()
+                        } else {
+                            1
+                        };
                         views.push(LightShadowView {
                             view_projection: cascade.view_projection,
                             atlas_rect: rect,
                             cube_layer: None,
+                            update_period,
+                            should_render: true,
                         });
                         self.active_descriptor_count += 1;
                     }
@@ -729,6 +772,8 @@ impl Shadows {
                                 view_projection,
                                 atlas_rect: rect,
                                 cube_layer: None,
+                                update_period: 1,
+                                should_render: true,
                             }],
                             descriptor_base: descriptor_index,
                         },
@@ -781,6 +826,8 @@ impl Shadows {
                             view_projection: vp,
                             atlas_rect: [0, 0, POINT_SHADOW_RESOLUTION, POINT_SHADOW_RESOLUTION],
                             cube_layer: Some(slot_index as u32 * 6 + face_idx as u32),
+                            update_period: 1,
+                            should_render: true,
                         });
                     }
 
@@ -846,6 +893,55 @@ impl Shadows {
             )?;
         }
 
+        // Reconcile throttle state with the freshly-built records.
+        // Lights that vanished from the caster set drop their state;
+        // views whose atlas rect moved get invalidated (the cached
+        // depth is at the wrong location); the view-projection drift
+        // check forces a redraw when the camera or light moved enough
+        // to make the cached cascade visibly stale.
+        let active_keys: Vec<LightKey> = self.records.keys().collect();
+        let stale: Vec<LightKey> = self
+            .throttle
+            .keys()
+            .filter(|k| !active_keys.contains(k))
+            .collect();
+        for k in stale {
+            self.throttle.remove(k);
+        }
+        let frame = self.frame_count;
+        for (light_key, record) in self.records.iter_mut() {
+            if !self.throttle.contains_key(light_key) {
+                self.throttle.insert(light_key, Vec::new());
+            }
+            let entry = &mut self.throttle[light_key];
+            entry.resize(
+                record.views.len(),
+                ShadowViewThrottle {
+                    last_rendered_frame: u64::MAX,
+                    last_view_projection: Mat4::ZERO,
+                    last_atlas_rect: [0; 4],
+                },
+            );
+            for (i, view) in record.views.iter_mut().enumerate() {
+                let t = &mut entry[i];
+                if t.last_atlas_rect != view.atlas_rect {
+                    t.last_rendered_frame = u64::MAX;
+                }
+                let drift = view_projection_drift(&t.last_view_projection, &view.view_projection);
+                if drift > 0.001 {
+                    t.last_rendered_frame = u64::MAX;
+                }
+                let due = t.last_rendered_frame == u64::MAX
+                    || frame >= t.last_rendered_frame.saturating_add(view.update_period);
+                view.should_render = due;
+                if due {
+                    t.last_rendered_frame = frame;
+                    t.last_view_projection = view.view_projection;
+                    t.last_atlas_rect = view.atlas_rect;
+                }
+            }
+        }
+
         if cube_overflow {
             tracing::warn!(
                 "point-light shadow cube pool exhausted (capacity {})",
@@ -884,6 +980,7 @@ impl Shadows {
     pub fn records(&self) -> impl Iterator<Item = (LightKey, &LightShadowRecord)> + '_ {
         self.records.iter()
     }
+
 
     /// Returns the per-light authored shadow params, if registered.
     pub fn light_params(&self, key: LightKey) -> Option<&LightShadowParams> {
@@ -995,6 +1092,20 @@ async fn build_shadow_pipeline(
 /// matrix. Handles glam's right-handed perspective convention; falls
 /// back to `(0.1, 100.0)` for matrices we don't recognise
 /// (orthographic, custom).
+/// Quick scalar drift metric between two view-projection matrices.
+/// Sum of per-element absolute differences; used by the temporal
+/// throttle to invalidate cached cascades when the camera or light
+/// moves enough that the cached shadow would visibly tear.
+fn view_projection_drift(prev: &Mat4, current: &Mat4) -> f32 {
+    let a = prev.to_cols_array();
+    let b = current.to_cols_array();
+    let mut acc = 0.0_f32;
+    for i in 0..16 {
+        acc += (a[i] - b[i]).abs();
+    }
+    acc
+}
+
 fn extract_near_far(projection: &Mat4) -> (f32, f32) {
     let m22 = projection.z_axis.z;
     let m23 = projection.w_axis.z;

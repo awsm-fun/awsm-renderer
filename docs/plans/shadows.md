@@ -1066,13 +1066,12 @@ The renderer-side data path is ready. What's left is the bind-group consolidatio
 - [x] Defaults tuned — 16 steps × 5 cm = ~80 cm reach, thickness window 0.5 mm – 2 cm
 
 ### Phase 11 — Temporal throttling
-- [ ] `frame_count` on `Shadows`
-- [ ] Per-cascade `last_rendered_frame` tracking
-- [ ] Skip-dispatch decision by `update_rate`
-- [ ] Invalidate on view-projection drift (camera/light movement heuristic)
-- [ ] EVSM render + blur skipped together
-- [ ] Cascade re-renders smoothly on fast camera fling
-- [ ] No visible popping at default settings on slow orbit
+- [x] `frame_count` on `Shadows` (already present from phase 0)
+- [x] Per-view throttle state — `ShadowViewThrottle` in `SecondaryMap<LightKey, Vec<…>>`
+- [x] Skip-dispatch decision by `update_period` — `LightShadowView::should_render` flag set in `write_gpu`; `render_pass::record` short-circuits when false (no clear, no draw → atlas tile keeps its previous contents)
+- [x] Invalidate on view-projection drift (`view_projection_drift` heuristic) and on atlas-rect change
+- [x] EVSM render + blur skipped together — EVSM render path falls through to the same depth-only dispatch in Phase 5 deferred state, so a single `should_render` flag covers both
+- [ ] Visual check on fast camera fling vs slow orbit — deferred along with editor UI
 
 ### Phase 12 — Culling
 - [ ] Per-view shadow frustum culling

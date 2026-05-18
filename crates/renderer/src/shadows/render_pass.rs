@@ -24,6 +24,9 @@ use crate::shadows::Shadows;
 pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
     for (_light_key, record) in shadows.records() {
         for view in &record.views {
+            if !view.should_render {
+                continue;
+            }
             // Per-view shadow_view uniform write. `queue.writeBuffer`
             // is cheap enough to call per pass on the small (80B)
             // uniform; phase 4 may switch to a dynamic-offset binding
