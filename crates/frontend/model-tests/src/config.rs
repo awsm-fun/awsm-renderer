@@ -6,7 +6,7 @@ use awsm_renderer::{
 };
 
 use crate::{
-    pages::app::context::{IblId, SkyboxId},
+    pages::app::context::{IblId, PunctualLightsMode, SkyboxId},
     route::{AppRoute, Route},
 };
 
@@ -26,7 +26,7 @@ pub struct Config {
     pub initial_show_gizmo_translation: bool,
     pub initial_show_gizmo_rotation: bool,
     pub initial_show_gizmo_scale: bool,
-    pub initial_punctual_lights: bool,
+    pub initial_punctual_lights: PunctualLightsMode,
     pub initial_anti_alias: AntiAliasing,
     pub initial_post_processing: PostProcessing,
     pub initial_camera_aperture: f32,
@@ -71,7 +71,12 @@ pub static CONFIG: LazyLock<Config> = LazyLock::new(|| {
         initial_show_gizmo_translation: false,
         initial_show_gizmo_rotation: false,
         initial_show_gizmo_scale: false,
-        initial_punctual_lights: true,
+        // Default to "Auto": authored-lit assets (PlaysetLightTest,
+        // PointLightIntensityTest, LightsPunctualLamp) use just their own
+        // lights, while unlit assets still get the four-directional fill.
+        // The other four modes are explicit overrides exposed in the
+        // Lighting sidebar.
+        initial_punctual_lights: PunctualLightsMode::Auto,
         initial_material_debug: PbrMaterialDebug::None,
         initial_anti_alias: AntiAliasing::default(),
         initial_post_processing: PostProcessing::default(),

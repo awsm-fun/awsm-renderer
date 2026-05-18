@@ -81,6 +81,9 @@ pub enum AwsmError {
 
     #[error("{0}")]
     Texture(#[from] AwsmTextureError),
+
+    #[error("{0}")]
+    OpaqueMipgen(#[from] crate::opaque_mipgen::AwsmOpaqueMipgenError),
 }
 
 /// Renderer result type.

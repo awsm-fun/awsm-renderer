@@ -2,8 +2,14 @@ use awsm_renderer::post_process::ToneMapping;
 use wasm_bindgen_futures::spawn_local;
 
 use crate::{
-    atoms::checkbox::{Checkbox, CheckboxStyle},
-    pages::app::{context::AppContext, sidebar::render_dropdown_label},
+    atoms::{
+        checkbox::{Checkbox, CheckboxStyle},
+        text_input::{TextInput, TextInputKind},
+    },
+    pages::app::{
+        context::AppContext,
+        sidebar::{render_dropdown_label, render_input_label},
+    },
     prelude::*,
 };
 
@@ -31,11 +37,37 @@ impl SidebarProcessing {
         html!("div", {
             .class(&*CONTAINER)
             .child(state.render_tonemapping_selector())
+            .child(state.render_exposure_input())
             .child(state.render_bloom_selector())
             .child(state.render_dof_selector())
             .child(state.render_msaa_selector())
             .child(state.render_smaa_selector())
         })
+    }
+
+    fn render_exposure_input(self: &Arc<Self>) -> Dom {
+        let state = self;
+        render_input_label(
+            "Exposure (EV)",
+            TextInput::new()
+                .with_intial_value(state.ctx.post_processing.get_cloned().exposure.to_string())
+                .with_kind(TextInputKind::Number)
+                .with_on_input(clone!(state => move |value| {
+                    if let Some(ev) = value.and_then(|value| value.parse::<f32>().ok()) {
+                        let mut pp = state.ctx.post_processing.get_cloned();
+                        pp.exposure = ev;
+                        state.ctx.post_processing.set_neq(pp);
+                        spawn_local(clone!(state => async move {
+                            if let Some(scene) = state.ctx.scene.get_cloned() {
+                                if let Err(err) = scene.reset_post_processing().await {
+                                    tracing::error!("Error resetting post_processing: {}", err);
+                                }
+                            }
+                        }));
+                    }
+                }))
+                .render(),
+        )
     }
 
     fn render_msaa_selector(self: &Arc<Self>) -> Dom {

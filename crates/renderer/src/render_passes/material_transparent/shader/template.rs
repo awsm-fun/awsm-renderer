@@ -157,7 +157,6 @@ pub struct ShaderTemplateTransparentMaterialFragment {
     pub in_color_set_start: u32,
     pub texture_pool_arrays_len: u32,
     pub texture_pool_samplers_len: u32,
-    pub transmission_blur_rings: u32, // more rings = higher quality = more expensive
     pub debug: ShaderTemplateMaterialTransparentDebug,
 }
 
@@ -177,7 +176,6 @@ impl ShaderTemplateTransparentMaterialFragment {
             in_color_set_start,
             texture_pool_arrays_len: cache_key.texture_pool_arrays_len,
             texture_pool_samplers_len: cache_key.texture_pool_samplers_len,
-            transmission_blur_rings: 3,
             debug: ShaderTemplateMaterialTransparentDebug::new(),
         }
     }

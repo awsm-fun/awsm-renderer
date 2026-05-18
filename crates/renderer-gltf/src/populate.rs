@@ -17,7 +17,7 @@ use crate::{data::GltfData, error::AwsmGltfError};
 
 pub(crate) mod animation;
 pub(crate) mod extensions;
-pub(crate) mod lights;
+pub mod lights;
 pub mod material;
 pub(crate) mod mesh;
 pub(crate) mod skin;

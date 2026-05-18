@@ -416,10 +416,11 @@ impl MaterialTransparentBindGroups {
                 &ctx.textures.texture_transforms_gpu_buffer,
             )),
         ));
-        // opaque texture
+        // opaque texture — full mip chain so screen-space transmission can
+        // sample pre-blurred neighborhoods at an explicit mip level.
         entries.push(BindGroupEntry::new(
             entries.len() as u32,
-            BindGroupResource::TextureView(Cow::Borrowed(&ctx.render_texture_views.opaque)),
+            BindGroupResource::TextureView(Cow::Borrowed(&ctx.render_texture_views.opaque_full)),
         ));
         // Per-instance attribute storage buffer — matches the opaque path's
         // tint logic. Vertex shader reads it to plumb `instance_id` forward

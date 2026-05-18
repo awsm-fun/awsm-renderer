@@ -48,6 +48,13 @@ fn refract_direction(incident: vec3<f32>, normal: vec3<f32>, eta: f32) -> vec3<f
 
 // -------------------------------------------------------------
 // Volume Attenuation (Beer's Law)
+//
+// Strict Beer's law: `T(x) = attenuationColor^(distance / attenuationDistance)`.
+// We do NOT clamp this — assets with high `thickness / attenuationDistance`
+// ratios will go nearly opaque, which is physically correct but can read
+// as "the material isn't transmitting" (see DragonDispersion notes).
+// Loosening this would need to be an explicit artistic knob, not a
+// silent override of physics.
 // -------------------------------------------------------------
 
 // Calculate light attenuation through a medium using Beer's Law
@@ -348,9 +355,27 @@ fn visibility_anisotropic(
 
 // -------------------------------------------------------------
 // Iridescence (KHR_materials_iridescence)
-// Belcour-Barla thin-film interference, simplified to a single
-// air/film/base stack. We approximate the wavelength integral using
-// the cosine series fit from the glTF sample viewer.
+//
+// Trade-off: this is a simplified two-beam Fabry-Perot model — not the
+// full Belcour-Barla 2017 thin-film integration the spec references.
+// We get:
+//   * The right qualitative behavior (rainbow fringes that shift with
+//     view angle and film thickness)
+//   * The right peak colors at typical thicknesses (100-400 nm)
+// We do NOT get:
+//   * Physically accurate spectral integration. At thick films (>1µm)
+//     or very high IOR ratios, hue progression drifts from a true
+//     Belcour-Barla evaluation.
+//   * Higher-order Fabry-Perot terms (`(amp1*amp2)^n` for n>1). The
+//     two-beam term dominates for the typical (small) R12 and R23
+//     values we'll see; the extra terms would matter for highly
+//     reflective film/base stacks (e.g. metallic underlayers).
+//
+// The simpler form runs in a handful of ALU ops per fragment and pulls
+// no extra LUTs. If we ever need the full physical answer (real-time
+// pearlescent paint comparable to offline renderers), the upgrade path
+// is the LUT-based Belcour-Barla — but it costs a 64x64x64 RGB LUT and
+// noticeably more shader cost.
 // -------------------------------------------------------------
 
 fn iridescence_fresnel(
@@ -630,7 +655,14 @@ fn brdf_ibl_with_transmission(
 
     // Specular IBL: prefiltered environment * (F0 * scale + f90 * bias) from BRDF LUT
     // KHR_materials_anisotropy: bend the reflection direction and stretch the
-    // mip level toward the rough axis (matches glTF Sample Viewer fit).
+    // mip level toward the rough axis. This is the glTF Sample Viewer's
+    // empirical fit, not a derived integral — anisotropic IBL with a
+    // single split-sum LUT is an open problem. The fit produces the
+    // expected stretched highlights (brushed metal, disc grooves) and
+    // is what the reference renderer ships, but a physically-correct
+    // result would need either a 2D anisotropic BRDF LUT or per-pixel
+    // importance sampling. Either upgrade is large enough to warrant
+    // its own work item.
     var R = reflect(-v, n);
     var ibl_roughness = roughness;
     if (color.anisotropy_strength != 0.0) {
@@ -729,6 +761,12 @@ fn brdf_ibl(
             // (`(ior - 1) * 0.025 * dispersion`), which keeps the offset
             // well-behaved across the typical Abbe range while still showing
             // through at the test asset's exaggerated `dispersion = 25`.
+            //
+            // Trade-off: the visible fringe strength is honest-to-physics
+            // quiet at typical glass values (dispersion ≈ 0.3-0.7). Some
+            // engines amplify this for artistic effect; we don't. If a game
+            // wants showier chromatic aberration, the place to scale it is
+            // here, not in the asset.
             if (color.dispersion > 0.0) {
                 let dstrength = (ior_val - 1.0) * 0.025 * color.dispersion;
                 let ior_r = max(ior_val - dstrength, 1.0001);

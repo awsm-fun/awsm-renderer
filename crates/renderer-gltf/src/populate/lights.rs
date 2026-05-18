@@ -9,7 +9,7 @@ use awsm_renderer::{
 };
 
 use super::GltfPopulateContext;
-use crate::error::Result;
+use crate::{data::GltfData, error::Result};
 
 /// Walks every node in the scene and inserts a renderer `Light` for nodes
 /// that reference `KHR_lights_punctual`. The world transform is computed
@@ -20,9 +20,20 @@ pub(crate) fn populate_gltf_lights(
     renderer: &mut AwsmRenderer,
     ctx: &GltfPopulateContext,
 ) -> Result<Vec<LightKey>> {
+    populate_lights_from_doc(renderer, &ctx.data)
+}
+
+/// Like `populate_gltf_lights`, but driven by a `GltfData` directly so it
+/// can be re-run after the initial populate (e.g. when the model-tests
+/// app re-enables "model only" lighting and needs to re-insert lights
+/// that were previously removed).
+pub fn populate_lights_from_doc(
+    renderer: &mut AwsmRenderer,
+    data: &GltfData,
+) -> Result<Vec<LightKey>> {
     let mut keys = Vec::new();
 
-    let doc = &ctx.data.doc;
+    let doc = &data.doc;
     let scene = match doc.default_scene() {
         Some(s) => Some(s),
         None => doc.scenes().next(),

@@ -18,6 +18,7 @@ pub mod instances;
 pub mod lights;
 pub mod materials;
 pub mod meshes;
+pub mod opaque_mipgen;
 pub mod picker;
 pub mod pipeline_layouts;
 pub mod pipelines;
@@ -94,6 +95,9 @@ pub struct AwsmRenderer {
     pub post_processing: PostProcessing,
     pub picker: Picker,
     pub lines: LineRenderer,
+    /// Per-frame mipmap generator for the opaque RT — only dispatched
+    /// when the visible material set contains a transmissive material.
+    pub opaque_mipgen: opaque_mipgen::OpaqueMipgen,
     // we pick between these on the fly
     _clear_color_perceptual_to_linear: Color,
     _clear_color: Color,
@@ -352,6 +356,8 @@ impl AwsmRendererBuilder {
         )
         .await?;
 
+        let opaque_mipgen = opaque_mipgen::OpaqueMipgen::new(&gpu).await?;
+
         #[cfg(feature = "animation")]
         let animations = animation::Animations::default();
 
@@ -379,6 +385,7 @@ impl AwsmRendererBuilder {
             post_processing,
             picker,
             lines,
+            opaque_mipgen,
             #[cfg(feature = "animation")]
             animations,
         };
