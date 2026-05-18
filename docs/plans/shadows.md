@@ -980,17 +980,33 @@ Tick items as they land. A future session can resume by reading this list.
 - [x] `Mesh` struct gains `cast_shadows` / `receive_shadows`
 - [x] Renderer-bridge `mesh_shadow_flags_from_config` helper exists (wired into per-mesh creation in phase 2 when the flags actually drive rendering)
 
-### Phase 2 — Directional, 1 cascade, no filtering
-- [ ] CSM single-cascade fit (frustum corners → light AABB)
-- [ ] Texel-grid snapping for stable shadows
-- [ ] Single-rect atlas packer
-- [ ] Stripped-down shadow vertex shader + askama template
-- [ ] Depth-only pipeline (no fragment, or empty fragment)
-- [ ] Shadow render pass dispatch (1 view, 1 light)
+### Phase 2 — Directional, 1 cascade, no filtering — **PARTIAL**
+- [x] CSM single-cascade fit (frustum corners → light AABB) — in `shadows/cascade.rs::fit_cascade`
+- [x] Texel-grid snapping for stable shadows
+- [ ] Single-rect atlas packer — deferred to Phase 4
+- [x] Stripped-down shadow vertex shader + askama template — `shadows/shader/` (compiles via `cargo check`; WebGPU compile is gated on the first pipeline build)
+- [ ] Depth-only pipeline (no fragment, or empty fragment) — pipeline construction deferred
+- [ ] Shadow render pass dispatch (1 view, 1 light) — `shadows/render_pass.rs::record` is a stub
 - [ ] Shadow descriptor storage buffer GPU upload
 - [ ] `sample_shadow_directional` in opaque compute
 - [ ] Test scene updated with plane + boxes + directional light
 - [ ] Hard shadow visible in browser
+
+**What landed:**
+- `shadows::cascade::fit_cascade` (8-corner frustum unproject → light-space AABB → orthographic + texel snap + z pull-back).
+- Shadow shader plumbing: `ShaderCacheKeyShadow` + `ShaderTemplateShadow` (askama path `shadow_wgsl/vertex.wgsl`) wired into top-level `ShaderCacheKey::Shadow` / `ShaderTemplate::Shadow` (parallel to `Picker`).
+- WGSL: `shadow_wgsl/bind_groups.wgsl` declares slot-0 `ShadowView` uniform and reuses geometry's groups 1–3; `shadow_wgsl/vertex.wgsl` reuses the geometry pass's morph + skin helpers via included WGSL, skipping normal/tangent math.
+- `shadows/render_pass.rs::record(ctx)` stub; render.rs already has the no-op slot guarded by `shadows.any_active()` from Phase 0.
+
+**What's deferred** (this is the rest of Phase 2):
+- Depth-only render pipeline construction (vertex stage only, no fragment, depth attachment = atlas view).
+- Shadow descriptor buffer: replace the storage-buffer plan with a *uniform* buffer sized `MAX_CASTERS * 80B` (~1.6 KB for 20 casters) — sidesteps the `maxStorageBuffersPerShaderStage=10` ceiling without rearranging the opaque main bind group.
+- Atlas allocator: trivial for phase 2 — one light, full atlas. Phase 4 generalises.
+- Per-light caster registry on `Shadows`: `SecondaryMap<LightKey, LightShadowRecord>` populated by `set_light_shadow_params`; per-frame, fit cascades from `CameraMatrices`, upload descriptors.
+- `Shadows::write_gpu` extension: build per-cascade view-projection, write to GPU.
+- `sample_shadow_directional` WGSL helper in `material_opaque_wgsl/helpers/material_shading.wgsl`; hook into `apply_lighting`'s punctual loop with a guard `if shadow_index != U32_MAX`.
+- `LightPacked` row 4 gains a `shadow_index` u32 (replacing one of the pad slots) so the shader can look up the descriptor; CPU-side packing in `lights.rs::storage_buffer_data` updated to write it.
+- Test scene: add a 10x10 `Primitive::Plane` at y=0, a box at y=1, a `LightConfig::Directional` with `intensity≈3`, direction `[0.3, -1, 0.3]`, `shadow.cast = true`.
 
 ### Phase 3 — PCF + bias + Hard/Soft toggle
 - [ ] 3×3 PCF for `Soft` hardness

@@ -19,9 +19,12 @@
 //! phases can fill in real generation and sampling without touching
 //! the surrounding renderer plumbing again.
 
+pub mod cascade;
 pub mod config;
 pub mod error;
 pub mod light_shadow;
+pub mod render_pass;
+pub mod shader;
 
 use awsm_renderer_core::{
     buffers::{BufferDescriptor, BufferUsage},
