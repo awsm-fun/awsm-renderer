@@ -222,6 +222,17 @@ impl Lights {
         }
     }
 
+    /// Force the next `write_gpu` to repack the punctual storage
+    /// buffer. Lights doesn't observe shadow state — the descriptor
+    /// index that lands in `LightPacked.row4.z` is resolved at pack
+    /// time via the `shadow_index_for` callback — so when the shadow
+    /// subsystem changes a light's `descriptor_base` (e.g. shadows
+    /// toggled on/off, hardness changed) it must call this to
+    /// invalidate the cached packing.
+    pub fn mark_punctual_dirty(&mut self) {
+        self.punctual_gpu_dirty = true;
+    }
+
     /// Returns the light associated with a key, or `None` if the key
     /// is unknown.
     pub fn get(&self, key: LightKey) -> Option<&Light> {

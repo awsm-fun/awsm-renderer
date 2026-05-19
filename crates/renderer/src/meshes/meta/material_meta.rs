@@ -20,7 +20,7 @@ pub const MATERIAL_MESH_META_MORPH_MATERIAL_BITMASK_NORMAL: u32 = 1;
 /// Bitmask for tangent morphing.
 pub const MATERIAL_MESH_META_MORPH_MATERIAL_BITMASK_TANGENT: u32 = 1 << 1;
 /// Byte size for material mesh meta struct.
-pub const MATERIAL_MESH_META_BYTE_SIZE: usize = 68;
+pub const MATERIAL_MESH_META_BYTE_SIZE: usize = 72;
 /// Byte alignment for material mesh meta entries.
 pub const MATERIAL_MESH_META_BYTE_ALIGNMENT: usize = 256;
 
@@ -180,6 +180,12 @@ impl<'a> MaterialMeshMeta<'a> {
 
         // is hud
         push_u32(if mesh.hud { 1 } else { 0 });
+
+        // receive_shadows — consumed by `apply_lighting` in
+        // `lights.wgsl` to skip the shadow modulation when the mesh
+        // opted out. Matches the `receive_shadows` u32 in
+        // `material_mesh_meta.wgsl`.
+        push_u32(if mesh.receive_shadows { 1 } else { 0 });
 
         Ok(result)
     }

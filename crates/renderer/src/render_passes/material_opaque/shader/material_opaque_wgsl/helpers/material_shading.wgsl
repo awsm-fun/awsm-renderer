@@ -208,7 +208,8 @@ fn msaa_process_sample(
             mat_color,
             standard_coordinates.surface_to_camera,
             standard_coordinates.world_position,
-            lights_info
+            lights_info,
+            material_mesh_meta.receive_shadows,
         );
         return msaa_apply_instance_tint(color, mat_color.base.a, sample_instance_id);
     }

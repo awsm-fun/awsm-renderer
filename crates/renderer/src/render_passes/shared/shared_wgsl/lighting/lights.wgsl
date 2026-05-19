@@ -136,6 +136,11 @@ fn apply_lighting(
     surface_to_camera: vec3<f32>,
     world_position: vec3<f32>,
     lights_info: LightsInfo,
+    // Mirrors `Mesh::receive_shadows` (1 = enabled, 0 = mesh opts
+    // out). Drives an inner gate around `sample_shadow_directional`
+    // so a non-receiver mesh stays fully lit even when shadow
+    // descriptors are otherwise live for this light.
+    receive_shadows: u32,
 ) -> vec3<f32> {
     var color = vec3<f32>(0.0);
 
@@ -168,20 +173,23 @@ fn apply_lighting(
                 // shadowed). `shadow_index == SHADOW_INDEX_NONE` short-
                 // circuits to 1.0; the cascade selector walks
                 // descriptors descriptor_base..base+count.
-                var visibility = sample_shadow_directional(
-                    light.shadow_index,
-                    world_position,
-                    material_color.normal,
-                    view_z_for_shadow,
-                );
-                // Contact-shadow refinement: directional lights only,
-                // since the SSCS ray-march needs a meaningful
-                // surface-to-light direction. Point/spot already
-                // sample their own short-range shadow maps so SSCS
-                // would double-cost them for no win.
-                if light.kind == 1u && light.shadow_index != SHADOW_INDEX_NONE {
-                    let sscs_dir = normalize(-light.direction);
-                    visibility = visibility * apply_sscs(world_position, sscs_dir);
+                var visibility: f32 = 1.0;
+                if receive_shadows != 0u {
+                    visibility = sample_shadow_directional(
+                        light.shadow_index,
+                        world_position,
+                        material_color.normal,
+                        view_z_for_shadow,
+                    );
+                    // Contact-shadow refinement: directional lights only,
+                    // since the SSCS ray-march needs a meaningful
+                    // surface-to-light direction. Point/spot already
+                    // sample their own short-range shadow maps so SSCS
+                    // would double-cost them for no win.
+                    if light.kind == 1u && light.shadow_index != SHADOW_INDEX_NONE {
+                        let sscs_dir = normalize(-light.direction);
+                        visibility = visibility * apply_sscs(world_position, sscs_dir);
+                    }
                 }
                 color += direct * visibility;
             {% else %}
@@ -214,6 +222,8 @@ fn apply_lighting_with_transmission(
     world_position: vec3<f32>,
     lights_info: LightsInfo,
     transmission_background: vec3<f32>,
+    // See `apply_lighting`.
+    receive_shadows: u32,
 ) -> vec3<f32> {
     var color = vec3<f32>(0.0);
 
@@ -247,20 +257,23 @@ fn apply_lighting_with_transmission(
                 // shadowed). `shadow_index == SHADOW_INDEX_NONE` short-
                 // circuits to 1.0; the cascade selector walks
                 // descriptors descriptor_base..base+count.
-                var visibility = sample_shadow_directional(
-                    light.shadow_index,
-                    world_position,
-                    material_color.normal,
-                    view_z_for_shadow,
-                );
-                // Contact-shadow refinement: directional lights only,
-                // since the SSCS ray-march needs a meaningful
-                // surface-to-light direction. Point/spot already
-                // sample their own short-range shadow maps so SSCS
-                // would double-cost them for no win.
-                if light.kind == 1u && light.shadow_index != SHADOW_INDEX_NONE {
-                    let sscs_dir = normalize(-light.direction);
-                    visibility = visibility * apply_sscs(world_position, sscs_dir);
+                var visibility: f32 = 1.0;
+                if receive_shadows != 0u {
+                    visibility = sample_shadow_directional(
+                        light.shadow_index,
+                        world_position,
+                        material_color.normal,
+                        view_z_for_shadow,
+                    );
+                    // Contact-shadow refinement: directional lights only,
+                    // since the SSCS ray-march needs a meaningful
+                    // surface-to-light direction. Point/spot already
+                    // sample their own short-range shadow maps so SSCS
+                    // would double-cost them for no win.
+                    if light.kind == 1u && light.shadow_index != SHADOW_INDEX_NONE {
+                        let sscs_dir = normalize(-light.direction);
+                        visibility = visibility * apply_sscs(world_position, sscs_dir);
+                    }
                 }
                 color += direct * visibility;
             {% else %}

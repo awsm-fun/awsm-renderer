@@ -309,7 +309,8 @@ fn main(
             material_color,
             standard_coordinates.surface_to_camera,
             standard_coordinates.world_position,
-            lights_info
+            lights_info,
+            material_mesh_meta.receive_shadows,
         );
         base_alpha = material_color.base.a;
 

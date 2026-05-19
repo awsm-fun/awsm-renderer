@@ -2126,6 +2126,13 @@ impl AwsmRenderer {
         params: LightShadowParams,
     ) -> Result<(), AwsmShadowError> {
         self.shadows.params.insert(key, params);
+        // The light's `shadow_index` is baked into `LightPacked.row4.z`
+        // at pack time via the `shadow_index_for` callback in
+        // `Lights::write_gpu`. Changing shadow params can change that
+        // index (cast=false → SHADOW_INDEX_NONE, or a freshly assigned
+        // descriptor_base when shadows toggle on), so the cached pack
+        // must be invalidated even though the light itself didn't move.
+        self.lights.mark_punctual_dirty();
         Ok(())
     }
 
@@ -2144,6 +2151,9 @@ impl AwsmRenderer {
     ) -> Result<(), AwsmShadowError> {
         if let Some(params) = self.shadows.params.get_mut(key) {
             f(params);
+            // See `set_light_shadow_params` — the baked `shadow_index`
+            // in the lights buffer must be reconciled.
+            self.lights.mark_punctual_dirty();
             Ok(())
         } else {
             Err(AwsmShadowError::UnknownLight)
