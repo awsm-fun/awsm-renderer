@@ -2170,8 +2170,20 @@ impl AwsmRenderer {
             .meshes
             .get_mut(key)
             .map_err(|_| AwsmShadowError::UnknownMesh)?;
+        let receive_changed = mesh.receive_shadows != flags.receive;
         mesh.cast_shadows = flags.cast;
         mesh.receive_shadows = flags.receive;
+        // `cast_shadows` is read CPU-side by the shadow render pass at
+        // draw time — no GPU state to update. `receive_shadows` is
+        // packed into `MaterialMeshMeta.receive_shadows` and read by
+        // the lighting shader; patch it in place so the GPU buffer
+        // doesn't keep the stale value.
+        if receive_changed {
+            self.meshes
+                .meta
+                .set_receive_shadows(key, flags.receive)
+                .map_err(|_| AwsmShadowError::UnknownMesh)?;
+        }
         Ok(())
     }
 

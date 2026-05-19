@@ -172,6 +172,25 @@ impl MeshMeta {
             .ok_or(AwsmMeshError::MetaNotFound(key))
     }
 
+    /// In-place patch of the `receive_shadows` u32 inside an
+    /// already-registered mesh's material metadata. Avoids the full
+    /// re-pack that `insert` would require (which needs Materials /
+    /// Transforms / Morphs / buffer_info in scope). The next
+    /// `write_gpu` flushes the dirty sub-range to the GPU buffer.
+    pub fn set_receive_shadows(&mut self, mesh_key: MeshKey, receive_shadows: bool) -> Result<()> {
+        if !self.material_buffers.contains_key(mesh_key) {
+            return Err(AwsmMeshError::MetaNotFound(mesh_key));
+        }
+        let value: u32 = if receive_shadows { 1 } else { 0 };
+        self.material_buffers.update_offset(
+            mesh_key,
+            material_meta::MATERIAL_MESH_META_RECEIVE_SHADOWS_OFFSET,
+            &value.to_le_bytes(),
+        );
+        self.material_dirty = true;
+        Ok(())
+    }
+
     /// Removes mesh metadata entries.
     pub fn remove(&mut self, mesh_key: MeshKey) {
         if self.geometry_buffers.remove(mesh_key) {
