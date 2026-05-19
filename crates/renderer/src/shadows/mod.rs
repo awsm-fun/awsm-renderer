@@ -65,7 +65,8 @@ pub use self::{
     config::ShadowsConfig,
     error::AwsmShadowError,
     light_shadow::{
-        EvsmCutoff, FarCascadeUpdateRate, LightShadowHardness, LightShadowParams, MeshShadowFlags,
+        CubeFaceUpdateRate, EvsmCutoff, FarCascadeUpdateRate, LightShadowHardness,
+        LightShadowParams, MeshShadowFlags,
     },
     shader::{cache_key::ShaderCacheKeyShadow, template::ShaderTemplateShadow},
 };
@@ -92,8 +93,9 @@ pub const SHADOW_DESCRIPTOR_BYTES: usize = 112;
 /// Size in bytes of the `ShadowGlobals` uniform block.
 pub const SHADOW_GLOBALS_BYTES: usize = 48;
 
-/// Logical size of a single per-view shadow uniform entry (matrix +
-/// bias floats). The actual buffer is laid out with stride
+/// Logical size of a single per-view shadow uniform entry: a
+/// `mat4x4` view-projection (64 B) and a `vec4` of bias parameters
+/// (16 B). The actual buffer is laid out with stride
 /// `SHADOW_VIEW_STRIDE` so dynamic uniform offsets stay aligned.
 pub const SHADOW_VIEW_BYTES: usize = 80;
 
@@ -102,9 +104,35 @@ pub const SHADOW_VIEW_BYTES: usize = 80;
 /// target) so each slot is a valid dynamic-offset target.
 pub const SHADOW_VIEW_STRIDE: usize = 256;
 
-/// Per-face cube shadow map resolution. Hardcoded for v1; phase 13
-/// may surface this as a config knob alongside `atlas_size`.
-pub const POINT_SHADOW_RESOLUTION: u32 = 512;
+/// Default per-face cube shadow map resolution. The runtime value is
+/// `ShadowsConfig::point_shadow_resolution` (held on `Shadows` as
+/// `cube_resolution`); this constant is the default the config falls
+/// back to. 1024² × 6 × Depth32f × N_lights of VRAM (24 MB for 8
+/// lights) — industry standard for medium-quality point shadows.
+/// Drop to 512 / 256 for mobile-class browsers; bump to 2048 for
+/// ultra-quality.
+pub const POINT_SHADOW_RESOLUTION: u32 = 1024;
+
+/// Minimum legal per-face cube resolution. Anything smaller than this
+/// produces extreme stair-step aliasing well before saving meaningful
+/// memory (a 32² face is 24 KB, vs 256 KB at 256²) — so we clamp.
+pub const MIN_POINT_SHADOW_RESOLUTION: u32 = 64;
+
+/// Clamps a user-supplied cube-face resolution to the legal range. The
+/// upper bound matches `SHADOW_ATLAS_MAX_SIZE` so a single cube face
+/// can't out-size the 2D atlas (`Shadows::new` already saturates VRAM
+/// for the 8-light × 6-face pool when we approach that limit).
+pub fn clamp_point_shadow_resolution(res: u32) -> u32 {
+    res.clamp(MIN_POINT_SHADOW_RESOLUTION, SHADOW_ATLAS_MAX_SIZE)
+}
+
+/// Near plane used when generating each point-light cube face. The
+/// receiver-side WGSL constant `POINT_SHADOW_NEAR` MUST match this —
+/// the shadow VS writes perspective NDC.z with this near, and the
+/// receiver remaps its linear distance to the same NDC.z curve for
+/// the comparison. Diverging values cause silent failure (no shadow
+/// or all shadow).
+pub const POINT_SHADOW_NEAR: f32 = 0.05;
 
 /// Sentinel meaning "this light has no shadow descriptor allocated"
 /// in the packed `LightPacked` row 4. The shading shader uses this to
@@ -138,6 +166,14 @@ pub struct Shadows {
     /// as `slot * 6 + face`. Used as the render attachment when
     /// generating each face's shadow map.
     pub cube_face_views: Vec<web_sys::GpuTextureView>,
+    /// Active per-face cube shadow resolution in texels (square).
+    /// Mirrors `config.point_shadow_resolution` clamped via
+    /// `clamp_point_shadow_resolution` (≥ `MIN_POINT_SHADOW_RESOLUTION`,
+    /// ≤ `SHADOW_ATLAS_MAX_SIZE`). Power-of-two isn't enforced — WebGPU
+    /// is fine with arbitrary sizes — but non-POT values waste a bit of
+    /// memory on the depth-texture tail. Read in `write_gpu` as the
+    /// cube viewport.
+    pub cube_resolution: u32,
     /// Per-slot owner. `None` means the slot is free; `Some(key)`
     /// means it currently holds the shadow for that point light.
     pub cube_slots: Vec<Option<LightKey>>,
@@ -192,6 +228,14 @@ pub struct Shadows {
     shadow_pipeline_no_instancing: RenderPipelineKey,
     /// Depth-only shadow pipeline (instancing).
     shadow_pipeline_instancing: RenderPipelineKey,
+    /// Depth-only shadow pipeline used for cube-face passes
+    /// (non-instancing). Identical to the 2D variant except `front_face`
+    /// is `Cw` to compensate for the Y-flip applied to the cube face
+    /// projection — without that, front-face culling would invert and
+    /// produce peter-panning on every point-light receiver.
+    shadow_pipeline_cube_no_instancing: RenderPipelineKey,
+    /// Depth-only shadow pipeline used for cube-face passes (instancing).
+    shadow_pipeline_cube_instancing: RenderPipelineKey,
 
     /// Frame counter used by temporal throttling (phase 11).
     pub frame_count: u64,
@@ -317,12 +361,13 @@ impl Shadows {
 
         let cube_slot_count = config.max_point_shadows.max(1);
         let cube_layer_count = cube_slot_count * 6;
+        let cube_resolution = clamp_point_shadow_resolution(config.point_shadow_resolution);
         let cube_array_texture = gpu.create_texture(
             &TextureDescriptor::new(
                 TextureFormat::Depth32float,
                 Extent3d::new(
-                    POINT_SHADOW_RESOLUTION,
-                    Some(POINT_SHADOW_RESOLUTION),
+                    cube_resolution,
+                    Some(cube_resolution),
                     Some(cube_layer_count),
                 ),
                 TextureUsage::new()
@@ -379,12 +424,21 @@ impl Shadows {
             .into(),
         )?;
 
+        // Clamp-to-edge on all three axes prevents the cube comparison
+        // sampler from wrapping at face boundaries — WebGPU has no
+        // "seamless cubemap" toggle, so the address mode IS the seam
+        // policy. Without this, bilinear taps at a cube face edge can
+        // read from the opposite face's coordinate space and produce
+        // ghost shadows at the seam.
         let sampler_comparison = gpu.create_sampler(Some(
             &SamplerDescriptor {
                 label: Some("Shadow Comparison Sampler"),
                 compare: Some(CompareFunction::LessEqual),
                 mag_filter: Some(FilterMode::Linear),
                 min_filter: Some(FilterMode::Linear),
+                address_mode_u: Some(awsm_renderer_core::sampler::AddressMode::ClampToEdge),
+                address_mode_v: Some(awsm_renderer_core::sampler::AddressMode::ClampToEdge),
+                address_mode_w: Some(awsm_renderer_core::sampler::AddressMode::ClampToEdge),
                 ..SamplerDescriptor::default()
             }
             .into(),
@@ -451,6 +505,7 @@ impl Shadows {
             pipeline_layouts,
             shadow_pipeline_layout_key,
             false,
+            false,
         )
         .await?;
         let shadow_pipeline_instancing = build_shadow_pipeline(
@@ -459,6 +514,27 @@ impl Shadows {
             pipelines,
             pipeline_layouts,
             shadow_pipeline_layout_key,
+            true,
+            false,
+        )
+        .await?;
+        let shadow_pipeline_cube_no_instancing = build_shadow_pipeline(
+            gpu,
+            shaders,
+            pipelines,
+            pipeline_layouts,
+            shadow_pipeline_layout_key,
+            false,
+            true,
+        )
+        .await?;
+        let shadow_pipeline_cube_instancing = build_shadow_pipeline(
+            gpu,
+            shaders,
+            pipelines,
+            pipeline_layouts,
+            shadow_pipeline_layout_key,
+            true,
             true,
         )
         .await?;
@@ -473,6 +549,7 @@ impl Shadows {
             cube_array_texture,
             cube_array_view,
             cube_face_views,
+            cube_resolution,
             cube_slots: vec![None; cube_slot_count as usize],
             descriptors_buffer,
             descriptors_uniform,
@@ -490,6 +567,8 @@ impl Shadows {
             shadow_pipeline_layout_key,
             shadow_pipeline_no_instancing,
             shadow_pipeline_instancing,
+            shadow_pipeline_cube_no_instancing,
+            shadow_pipeline_cube_instancing,
             frame_count: 0,
             dirty: true,
             pending_atlas_grow: false,
@@ -497,6 +576,14 @@ impl Shadows {
     }
 
     /// Replaces the renderer-wide config.
+    ///
+    /// Lightweight fields (SSCS toggle, debug flags, EVSM tuning) take
+    /// effect on the next `write_gpu`. Texture-shape fields
+    /// (`atlas_size`, `max_point_shadows`, `point_shadow_resolution`)
+    /// are read by `Shadows::new` only — the 2D atlas auto-grows via
+    /// `pending_atlas_grow` when it overflows, but the cube pool's
+    /// dimensions are baked in at construction time. To change the
+    /// cube pool today, recreate the renderer.
     pub fn set_config(&mut self, config: ShadowsConfig) {
         self.config = config;
         self.dirty = true;
@@ -546,11 +633,15 @@ impl Shadows {
     }
 
     /// Returns the shadow pipeline key for the given instancing mode.
-    pub fn shadow_pipeline_key(&self, instancing: bool) -> RenderPipelineKey {
-        if instancing {
-            self.shadow_pipeline_instancing
-        } else {
-            self.shadow_pipeline_no_instancing
+    /// Cube (point) and 2D (cascade/spot) shadows use distinct pipelines:
+    /// the cube pipeline has `front_face = Cw` to compensate for the
+    /// Y-flip applied to the cube projection — see `write_gpu`.
+    pub fn shadow_pipeline_key(&self, instancing: bool, cube_face: bool) -> RenderPipelineKey {
+        match (cube_face, instancing) {
+            (true, true) => self.shadow_pipeline_cube_instancing,
+            (true, false) => self.shadow_pipeline_cube_no_instancing,
+            (false, true) => self.shadow_pipeline_instancing,
+            (false, false) => self.shadow_pipeline_no_instancing,
         }
     }
 
@@ -570,6 +661,7 @@ impl Shadows {
         bind_groups: &mut BindGroups,
         camera: &crate::camera::CameraBuffer,
         lights: &crate::lights::Lights,
+        meshes: &crate::meshes::Meshes,
     ) -> Result<(), AwsmShadowError> {
         // Phase 13: dynamic atlas resize. If the previous frame's
         // packer ran out of room we grow the atlas to the next power
@@ -667,6 +759,27 @@ impl Shadows {
         // the planes. Falls back to (0.1, 100.0) for orthographic.
         let (camera_near, camera_far) = extract_near_far(&camera_matrices.projection);
 
+        // Union of all shadow-casting meshes' world AABBs. Used by the
+        // cascade fit to extend bounds so tall casters that extend
+        // outside the camera frustum slice are still rasterised — without
+        // this, receivers in close cascades miss the part of the caster
+        // that's geometrically outside the slice's light-space AABB.
+        let caster_world_aabb: Option<crate::bounds::Aabb> = {
+            let mut acc: Option<crate::bounds::Aabb> = None;
+            for (_, mesh) in meshes.iter() {
+                if !mesh.cast_shadows || mesh.hidden || mesh.hud {
+                    continue;
+                }
+                if let Some(aabb) = &mesh.world_aabb {
+                    match acc.as_mut() {
+                        Some(a) => a.extend(aabb),
+                        None => acc = Some(aabb.clone()),
+                    }
+                }
+            }
+            acc
+        };
+
         // Cursor for the row-pack atlas allocator. Phase 13 will
         // replace this with a real packer; for now we walk left-to-
         // right and wrap to the next row when the current row fills.
@@ -732,6 +845,7 @@ impl Shadows {
                         params.cascade_split_lambda.clamp(0.0, 1.0),
                         params.resolution.max(16),
                         16,
+                        caster_world_aabb.as_ref(),
                     );
 
                     let descriptor_base = self.active_descriptor_count;
@@ -763,7 +877,7 @@ impl Shadows {
                             params.normal_bias,
                             params.hardness,
                             params.pcss_penumbra_scale,
-                            cascade_index as u32,
+                            cascade.world_per_texel,
                             cascade_count,
                             *split_far,
                         );
@@ -847,6 +961,12 @@ impl Shadows {
                     let far = (*range).max(near + 0.1);
                     let projection = glam::Mat4::perspective_rh(fov, 1.0, near, far);
                     let view_projection = projection * view;
+                    // Approximate world-per-texel for the spot cone at
+                    // its far plane: the perspective frustum's footprint
+                    // there is `2 * far * tan(fov/2)`. Used by the PCF
+                    // path to keep penumbra width consistent with
+                    // directional cascades.
+                    let spot_world_per_texel = 2.0 * far * (fov * 0.5).tan() / res as f32;
 
                     let descriptor_index = self.active_descriptor_count;
                     let off = descriptor_index as usize * SHADOW_DESCRIPTOR_BYTES;
@@ -859,7 +979,7 @@ impl Shadows {
                         params.normal_bias,
                         params.hardness,
                         params.pcss_penumbra_scale,
-                        0,
+                        spot_world_per_texel,
                         1,
                         // Spot lights don't use cascade selection; setting
                         // `split_far` to +infinity-ish makes the shader's
@@ -914,8 +1034,28 @@ impl Shadows {
 
                     let pos = glam::Vec3::from(*position);
                     let r = (*range).max(0.05);
-                    let projection =
-                        glam::Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.05, r);
+                    // 90° per face — adjacent faces meet exactly at the
+                    // cube edge and the seamless-cubemap filter handles
+                    // bilinear comparison across the seam.
+                    let cube_fov = std::f32::consts::FRAC_PI_2;
+                    // WebGPU cube sampling (D3D convention): on the +X
+                    // face, texel t=0 maps to direction +Y, etc. A
+                    // plain `look_at_rh(... up=-Y) * perspective_rh` —
+                    // the OpenGL-style cube convention — writes world
+                    // +Y to the *bottom* of the rendered face because
+                    // WebGPU's framebuffer is top-left-origin while
+                    // NDC.y is bottom-up. The mismatch shows up at
+                    // sample time as a V-flipped read, which on a
+                    // sphere of receivers manifests as a "double" or
+                    // "phantom" shadow across the seam between
+                    // adjacent faces. Post-multiplying the projection
+                    // by a Y-flip negates NDC.y so world +Y lands at
+                    // texel t=0; the matching `front_face = Cw` in the
+                    // cube shadow pipeline restores winding (and
+                    // therefore front-face culling).
+                    let y_flip = glam::Mat4::from_scale(glam::Vec3::new(1.0, -1.0, 1.0));
+                    let projection = y_flip
+                        * glam::Mat4::perspective_rh(cube_fov, 1.0, POINT_SHADOW_NEAR, r);
                     // glTF cube-map face conventions, in the order
                     // WebGPU lays out cube layers: +X, -X, +Y, -Y, +Z, -Z.
                     let face_dirs = [
@@ -929,6 +1069,14 @@ impl Shadows {
 
                     let descriptor_base = self.active_descriptor_count;
                     let mut views: Vec<LightShadowView> = Vec::with_capacity(6);
+                    // Per-face throttle period. Default `EveryFrame`
+                    // (period = 1) preserves the previous behaviour;
+                    // higher periods are a mobile / many-light perf
+                    // lever — the throttle in this same `write_gpu`
+                    // call already handles per-face cadence and forces
+                    // a redraw whenever the light or its descriptor
+                    // moves enough to invalidate the cache.
+                    let cube_update_period = params.cube_face_update_rate.period();
                     for (face_idx, (dir, up)) in face_dirs.iter().enumerate() {
                         let view = glam::Mat4::look_at_rh(pos, pos + *dir, *up);
                         let vp = projection * view;
@@ -943,9 +1091,17 @@ impl Shadows {
                         self.active_view_count += 1;
                         views.push(LightShadowView {
                             view_projection: vp,
-                            atlas_rect: [0, 0, POINT_SHADOW_RESOLUTION, POINT_SHADOW_RESOLUTION],
+                            // For cube faces the attachment is already the
+                            // per-face 2D view at the cube's native
+                            // resolution, so this rect doubles as the
+                            // render-pass viewport — it must match
+                            // `self.cube_resolution`, not the
+                            // initialization-time `POINT_SHADOW_RESOLUTION`
+                            // default, or a config change would render
+                            // into a sub-rect of the new texture.
+                            atlas_rect: [0, 0, self.cube_resolution, self.cube_resolution],
                             cube_layer: Some(slot_index as u32 * 6 + face_idx as u32),
-                            update_period: 1,
+                            update_period: cube_update_period,
                             should_render: true,
                             shadow_view_slot: view_slot,
                         });
@@ -969,7 +1125,9 @@ impl Shadows {
                         params.normal_bias,
                         params.hardness,
                         params.pcss_penumbra_scale,
-                        0,
+                        // Caller patches cascade_info.y with the slot
+                        // index after this returns — see below.
+                        0.0,
                         1,
                         f32::MAX,
                     );
@@ -1064,8 +1222,20 @@ impl Shadows {
                 }
                 let due = t.last_rendered_frame == u64::MAX
                     || frame >= t.last_rendered_frame.saturating_add(view.update_period);
-                view.should_render = due;
-                if due {
+                // The 2D shadow atlas is a single shared depth texture
+                // and `LoadOp::Clear` is attachment-wide, so the
+                // generation pass clears the whole atlas on its first
+                // pass each frame (see `render_pass::record`). If we
+                // skipped any 2D view via throttling, its tile would
+                // be left empty for the frame while its descriptor is
+                // still sampled — that produces a flicker, so 2D views
+                // are forced to render every frame until tile-local
+                // clearing (or a per-view texture-array atlas) lands.
+                // Cube views still throttle: each face owns its own
+                // attachment view and clears independently.
+                let is_cube = view.cube_layer.is_some();
+                view.should_render = due || !is_cube;
+                if view.should_render {
                     t.last_rendered_frame = frame;
                     t.last_view_projection = view.view_projection;
                     t.last_atlas_rect = view.atlas_rect;
@@ -1104,6 +1274,10 @@ impl Shadows {
     }
 }
 
+// For 2D descriptors `cascade_y_param` is world-units-per-shadow-map-
+// texel (used to scale the PCF kernel for consistent world-space
+// softness across cascades). For cube descriptors the caller patches
+// it with the cube-pool slot index right after this returns.
 #[allow(clippy::too_many_arguments)]
 fn write_shadow_descriptor(
     dest: &mut [u8],
@@ -1114,7 +1288,7 @@ fn write_shadow_descriptor(
     normal_bias: f32,
     hardness: LightShadowHardness,
     pcss_scale: f32,
-    cascade_index: u32,
+    cascade_y_param: f32,
     cascade_count: u32,
     split_far: f32,
 ) {
@@ -1145,9 +1319,12 @@ fn write_shadow_descriptor(
     };
     dest[88..92].copy_from_slice(&hardness_f.to_ne_bytes());
     dest[92..96].copy_from_slice(&pcss_scale.to_ne_bytes());
-    // cascade_info: (split_far_view_z, cascade_index, cascade_count_in_light, 0)
+    // cascade_info: (split_far_view_z, cascade_y_param, cascade_count_in_light, 0)
+    //  - .y is the per-descriptor world-per-texel for 2D shadows, or
+    //    the cube slot index for point lights (caller patches the
+    //    cube case after this returns; same byte offsets).
     dest[96..100].copy_from_slice(&split_far.to_ne_bytes());
-    dest[100..104].copy_from_slice(&(cascade_index as f32).to_ne_bytes());
+    dest[100..104].copy_from_slice(&cascade_y_param.to_ne_bytes());
     dest[104..108].copy_from_slice(&(cascade_count as f32).to_ne_bytes());
     dest[108..112].copy_from_slice(&0.0_f32.to_ne_bytes());
 }
@@ -1159,6 +1336,7 @@ async fn build_shadow_pipeline(
     pipeline_layouts: &PipelineLayouts,
     pipeline_layout_key: PipelineLayoutKey,
     instancing: bool,
+    cube_face: bool,
 ) -> Result<RenderPipelineKey, AwsmShadowError> {
     let shader_key = shaders
         .get_key(
@@ -1174,17 +1352,34 @@ async fn build_shadow_pipeline(
         vertex_buffer_layouts.push(VERTEX_BUFFER_LAYOUT_INSTANCING.clone());
     }
 
+    // Industry-standard shadow rendering uses Front culling on caster
+    // geometry: the depth-only pipeline writes the FAR (back) face's
+    // depth from the light's POV. Receivers (which are the front of
+    // surfaces facing the light) compare against the back-face depth
+    // with a small bias and the geometry's own thickness acts as the
+    // bias buffer — no Peter Panning, no acne. The slope-scale bias
+    // below is the safety net for nearly-perpendicular surfaces where
+    // back-face depth ≈ front-face depth.
+    //
+    // Cube faces apply a post-projection Y-flip (see `write_gpu`) which
+    // reverses NDC winding. The cube-pipeline variant compensates with
+    // `front_face = Cw` so the same "cull surfaces facing the light"
+    // rule applies after the flip.
+    let front_face = if cube_face {
+        FrontFace::Cw
+    } else {
+        FrontFace::Ccw
+    };
     let primitive = PrimitiveState::new()
         .with_topology(PrimitiveTopology::TriangleList)
-        .with_front_face(FrontFace::Ccw)
-        // Front-cull when generating shadows — depth-only renders look
-        // best when back faces are the ones being shadowed (avoids
-        // Peter Panning on caster geometry).
+        .with_front_face(front_face)
         .with_cull_mode(CullMode::Front);
 
     let depth_stencil = DepthStencilState::new(TextureFormat::Depth32float)
         .with_depth_write_enabled(true)
-        .with_depth_compare(CompareFunction::LessEqual);
+        .with_depth_compare(CompareFunction::LessEqual)
+        .with_depth_bias(1)
+        .with_depth_bias_slope_scale(1.5);
 
     let mut pipeline_cache_key = RenderPipelineCacheKey::new(shader_key, pipeline_layout_key)
         .with_primitive(primitive)
@@ -1193,9 +1388,6 @@ async fn build_shadow_pipeline(
     for layout in vertex_buffer_layouts {
         pipeline_cache_key = pipeline_cache_key.with_push_vertex_buffer_layout(layout);
     }
-
-    // No fragment targets → depth-only pipeline (the cache skips
-    // FragmentState when targets is empty).
 
     pipelines
         .render
@@ -1226,6 +1418,7 @@ fn write_shadow_view_slot(
     dest[off..off + 64].copy_from_slice(mat_bytes);
     dest[off + 64..off + 68].copy_from_slice(&depth_bias.to_ne_bytes());
     dest[off + 68..off + 72].copy_from_slice(&normal_bias.to_ne_bytes());
+    dest[off + 72..off + 80].copy_from_slice(&[0u8; 8]);
 }
 
 /// Quick scalar drift metric between two view-projection matrices.

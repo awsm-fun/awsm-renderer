@@ -30,6 +30,15 @@ pub struct ShadowsConfig {
     /// Maximum number of point lights that can cast shadows
     /// simultaneously. Sets the cube-array slice count.
     pub max_point_shadows: u32,
+    /// Per-face cube shadow map resolution in texels (square). Memory
+    /// cost is `4 · res² · 6 · max_point_shadows` bytes (Depth32f). The
+    /// default (`1024`) costs ~24 MB at `max_point_shadows = 8` — sane
+    /// for desktops; mobile-class browsers may prefer `512` (6 MB) or
+    /// `256` (1.5 MB). Must be a power of two ≥ 64.
+    ///
+    /// Changing this at runtime re-allocates the cube pool and triggers
+    /// a bind-group recreate; do it sparingly.
+    pub point_shadow_resolution: u32,
     /// Tints each directional cascade range so the splits are visible
     /// in the editor. Drives a debug bitmask flag in the opaque pass.
     pub debug_cascade_colors: bool,
@@ -45,6 +54,7 @@ impl Default for ShadowsConfig {
             evsm_exponent: 20.0,
             evsm_blur_radius: 3,
             max_point_shadows: 8,
+            point_shadow_resolution: 1024,
             debug_cascade_colors: false,
         }
     }

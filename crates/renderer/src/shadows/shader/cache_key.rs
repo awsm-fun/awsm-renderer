@@ -4,8 +4,7 @@ use crate::shaders::ShaderCacheKey;
 
 /// Cache key identifying a unique shadow-generation shader variant.
 ///
-/// One variant per instancing mode. The shader has no fragment stage,
-/// so MSAA / color-target options don't fork the WGSL source.
+/// Single depth-only variant; only differs by instancing mode.
 #[derive(Hash, Debug, Clone, PartialEq, Eq)]
 pub struct ShaderCacheKeyShadow {
     /// Whether the pipeline reads the per-instance transform vertex

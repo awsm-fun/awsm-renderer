@@ -68,9 +68,11 @@ impl RenderPipelines {
             .with_primitive(cache_key.primitive)
             .with_layout(PipelineLayoutKind::Custom(layout));
 
-        // Depth-only pipelines (e.g. shadow generation) skip the
-        // fragment stage entirely by passing an empty target list.
-        if !cache_key.fragment_targets.is_empty() {
+        // Pipelines that want a fragment stage either have one or more
+        // colour targets (regular shading) or explicitly opt in via
+        // `force_fragment_stage` (depth-only fragment that writes
+        // `@builtin(frag_depth)` — e.g. cube shadow generation).
+        if !cache_key.fragment_targets.is_empty() || cache_key.force_fragment_stage {
             let fragment =
                 FragmentState::new(shader_module, None, cache_key.fragment_targets.clone());
             descriptor = descriptor.with_fragment(fragment);
@@ -116,6 +118,11 @@ pub struct RenderPipelineCacheKey {
     pub vertex_buffer_layouts: Vec<VertexBufferLayout>,
     pub vertex_constants: BTreeMap<ConstantOverrideKey, ConstantOverrideValue>,
     pub multisample: Option<MultisampleState>,
+    /// Force a fragment stage even with no colour targets. Used by
+    /// shadow-generation pipelines whose fragment writes only
+    /// `@builtin(frag_depth)` (cube shadows store linear radial depth
+    /// computed in the fragment, not perspective NDC.z).
+    pub force_fragment_stage: bool,
 }
 
 impl RenderPipelineCacheKey {
@@ -130,7 +137,16 @@ impl RenderPipelineCacheKey {
             vertex_buffer_layouts: Vec::new(),
             vertex_constants: BTreeMap::new(),
             multisample: None,
+            force_fragment_stage: false,
         }
+    }
+
+    /// Forces the pipeline to include a fragment stage even with no
+    /// colour targets. Used for depth-only fragments that override
+    /// `@builtin(frag_depth)`.
+    pub fn with_force_fragment_stage(mut self) -> Self {
+        self.force_fragment_stage = true;
+        self
     }
 
     /// Sets the multisample state for the pipeline.

@@ -104,6 +104,7 @@ impl AwsmRenderer {
             &mut self.bind_groups,
             &self.camera,
             &self.lights,
+            &self.meshes,
         )?;
         {
             let shadows = &self.shadows;

@@ -151,28 +151,57 @@ fn apply_sscs(world_pos: vec3<f32>, light_dir: vec3<f32>) -> f32 {
     return 1.0;
 }
 
-// Sample a point-light cube shadow. The descriptor repurposes
-// `atlas_rect.xyz` for the light's world position and `atlas_rect.w`
-// for its range; `cascade_info.y` is the cube-pool slot index.
+// Cube near plane — MUST match the value used in `Mat4::perspective_rh`
+// for cube face generation in `Shadows::write_gpu`.
+const POINT_SHADOW_NEAR: f32 = 0.05;
+
+// Point-light cube shadow sample.
 //
-// Phase 8 ships a 1-tap compare for hard, 4-tap axis-offset taps for
-// soft / PCSS. Proper tangent-aligned cube PCF is left for v2.
+// Each cube face stores perspective NDC.z written by the rasterizer
+// (90° FOV, `near = POINT_SHADOW_NEAR`, `far = light_range`). The
+// projection is post-multiplied by a Y-flip on the writer side so the
+// rasterized image lines up with WebGPU's D3D-style cube sampling
+// convention (texel `t=0` → world +Y on the +X face, etc.) — see
+// `Shadows::write_gpu`. That flip doesn't change NDC.z, so the depth
+// formula below stays the same on both sides.
+//
+// The receiver recreates that NDC.z by projecting `length(light, P)`
+// onto the *dominant* cube axis of the light-to-surface direction:
+//
+//     view_depth = distance(light, P) · |dir.major|
+//     ndc_z      = (far / (far - near)) · (1 - near / view_depth)
+//
+// Same formula generates both the rasterized atlas value and the
+// receiver reference, so they compare directly — no linear-depth FS
+// override, no per-tap face recompute, no seam math.
 fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal: vec3<f32>) -> f32 {
     let light_pos = desc.atlas_rect.xyz;
     let range = max(desc.atlas_rect.w, 0.01);
     let slot = i32(desc.cascade_info.y);
 
     let biased_pos = world_pos + world_normal * desc.bias_params.y;
-    let surface_to_light = light_pos - biased_pos;
-    let dist = length(surface_to_light);
+    let light_to_surface = biased_pos - light_pos;
+    let dist = length(light_to_surface);
     if dist >= range {
         return 1.0;
     }
-    // The cube samples by direction from cube center → texel; pass
-    // `light → surface` so the shadow map (rendered with the same
-    // view direction in the gen pass) matches.
-    let dir = -surface_to_light / max(dist, 1e-4);
-    let ref_depth = (dist / range) - desc.bias_params.x;
+    let dir = light_to_surface / max(dist, 1e-4);
+
+    // Major-axis (cube-face) projected depth.
+    let abs_d = abs(dir);
+    let major = max(abs_d.x, max(abs_d.y, abs_d.z));
+    let view_depth = dist * max(major, 1e-4);
+
+    // Same perspective NDC.z formula as the rasterizer.
+    let near = POINT_SHADOW_NEAR;
+    let ndc_z = (range / (range - near)) * (1.0 - near / max(view_depth, near));
+
+    // Slope-aware constant bias. Tight enough not to Peter-Pan
+    // perpendicular surfaces; wide enough that grazing-angle plane
+    // self-shadow doesn't reappear at the falloff radius.
+    let n_dot_dir = abs(dot(dir, world_normal));
+    let bias = max(desc.bias_params.x, 0.001) / max(n_dot_dir, 0.05);
+    let ref_depth = clamp(ndc_z, 0.0, 1.0) - bias;
     let hardness = desc.bias_params.z;
 
     if hardness < 0.5 {
@@ -184,28 +213,54 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
             ref_depth,
         );
     }
-    // 4-tap axis-perturbation soft kernel. Proper cube PCF needs a
-    // tangent-plane basis; v1 uses the cheapest reasonable filter.
-    let eps = 0.02;
-    let offsets = array<vec3<f32>, 4>(
-        vec3<f32>( eps,  eps,  0.0),
-        vec3<f32>(-eps,  eps,  0.0),
-        vec3<f32>( eps, -eps,  0.0),
-        vec3<f32>(-eps, -eps,  0.0),
+
+    // Soft PCF: receiver-space jitter on the surface's tangent plane.
+    // Each tap recomputes its own direction and NDC.z so a flat
+    // receiver doesn't self-shadow into a kernel-shaped patch.
+    let abs_n = abs(world_normal);
+    let up_hint = select(
+        vec3<f32>(0.0, 1.0, 0.0),
+        vec3<f32>(1.0, 0.0, 0.0),
+        abs_n.y > 0.99,
     );
-    var sum = textureSampleCompareLevel(
-        shadow_cube_array, shadow_cube_sampler, dir, slot, ref_depth,
+    let tangent = normalize(cross(up_hint, world_normal));
+    let bitangent = cross(world_normal, tangent);
+
+    let soft_world_radius = 0.02;
+    let angle = pcss_disk_angle(
+        biased_pos.xz * 137.0 + vec2<f32>(biased_pos.y * 31.0, biased_pos.y * 17.0),
     );
-    for (var i = 0u; i < 4u; i = i + 1u) {
-        sum = sum + textureSampleCompareLevel(
+    let sin_a = sin(angle);
+    let cos_a = cos(angle);
+
+    // 8-tap rotated Poisson is the AAA-perf sweet spot for point
+    // shadows. Each tap is already a 2x2 bilinear hardware compare,
+    // so 8 calls ≈ 32 effective samples — visually close to 16-tap
+    // while halving the texture bandwidth.
+    var sum = 0.0;
+    for (var i = 0u; i < 8u; i = i + 1u) {
+        let off = pcss_rotate(POISSON_DISK_16[i], sin_a, cos_a) * soft_world_radius;
+        let tap_pos = biased_pos + tangent * off.x + bitangent * off.y;
+        let tap_to_light = tap_pos - light_pos;
+        let tap_dist = length(tap_to_light);
+        let tap_dir = tap_to_light / max(tap_dist, 1e-4);
+        let tap_abs = abs(tap_dir);
+        let tap_major = max(tap_abs.x, max(tap_abs.y, tap_abs.z));
+        let tap_view_depth = tap_dist * max(tap_major, 1e-4);
+        let tap_ndc_z =
+            (range / (range - near)) * (1.0 - near / max(tap_view_depth, near));
+        let tap_n_dot_dir = abs(dot(tap_dir, world_normal));
+        let tap_bias = max(desc.bias_params.x, 0.001) / max(tap_n_dot_dir, 0.05);
+        let tap_ref = clamp(tap_ndc_z, 0.0, 1.0) - tap_bias;
+        sum += textureSampleCompareLevel(
             shadow_cube_array,
             shadow_cube_sampler,
-            normalize(dir + offsets[i]),
+            tap_dir,
             slot,
-            ref_depth,
+            tap_ref,
         );
     }
-    return sum / 5.0;
+    return sum / 8.0;
 }
 
 // Sample a single shadow descriptor (cascade / spot / face). Returns
@@ -238,6 +293,14 @@ fn sample_shadow_descriptor(
     // is preserved for the phase-5 follow-up that swaps the sample
     // call site to `sample_shadow_evsm`.
 
+    // Offset the receiver along its surface normal by `normal_bias`
+    // world-space units before projecting into shadow space. This
+    // pushes the sample point *toward* the light, which is how we
+    // dodge acne on slanted surfaces without relying solely on a
+    // constant depth bias (cascade Z-ranges differ a lot, so a flat
+    // depth bias is either too soft or too aggressive). The
+    // pipeline's slope-scale bias and `bias_params.x` depth bias
+    // handle the residual.
     let biased_pos = world_pos + world_normal * desc.bias_params.y;
     let clip = desc.view_projection * vec4<f32>(biased_pos, 1.0);
     if clip.w <= 0.0 {
@@ -252,33 +315,62 @@ fn sample_shadow_descriptor(
     let ref_depth = ndc.z - desc.bias_params.x;
     let hardness = desc.bias_params.z;
 
-    if hardness < 0.5 {
-        return textureSampleCompareLevel(
-            shadow_atlas,
-            shadow_atlas_sampler,
-            atlas_uv,
-            ref_depth,
-        );
-    }
+    // PCF / PCSS taps must stay inside this cascade's tile of the
+    // atlas. The tile-pack allocator places cascades edge-to-edge,
+    // so a kernel that crosses the boundary samples a totally
+    // unrelated cascade's depth (or another light's spot tile) and
+    // produces a fringe of bogus shadow at the tile seam. The inset
+    // is half a texel so bilinear PCF taps don't read past the edge
+    // either.
     let inv_atlas = vec2<f32>(
         1.0 / shadow_globals.atlas_sizes.x,
         1.0 / shadow_globals.atlas_sizes.y,
     );
+    let tile_min = desc.atlas_rect.xy + 0.5 * inv_atlas;
+    let tile_max = desc.atlas_rect.xy + desc.atlas_rect.zw - 0.5 * inv_atlas;
+
+    if hardness < 0.5 {
+        return textureSampleCompareLevel(
+            shadow_atlas,
+            shadow_atlas_sampler,
+            clamp(atlas_uv, tile_min, tile_max),
+            ref_depth,
+        );
+    }
     if hardness < 1.5 {
-        // 3x3 PCF. Offsets in atlas-texel units.
+        // Tap-rotated 16-sample Poisson disk PCF. The kernel is
+        // sized in *world units* (`SOFT_WORLD_RADIUS`) and the
+        // per-cascade texel-radius is recovered by dividing by the
+        // cascade's `world_per_texel` (stored in `cascade_info.y`).
+        // That keeps the perceived soft-edge width identical in every
+        // cascade — without this, the near cascade's 2048 texels
+        // covering a tiny world span produces razor-sharp shadows
+        // while the far cascade's same 2048 texels covering a much
+        // larger span produces soft ones, and the boundary between
+        // is visible as a step in penumbra width.
+        let world_per_texel = max(desc.cascade_info.y, 1e-4);
+        let soft_world_radius = 0.06; // ≈ 6 cm penumbra at default light angles
+        // Clamp at 2 texels minimum — anything tighter and the far
+        // cascade reads from a single texel cluster (no PCF blur),
+        // which makes the close→far cascade boundary look like a
+        // step from "soft" to "razor". 6 texels max so the near
+        // cascade doesn't burn a giant kernel that costs but barely
+        // benefits at sub-millimetre world width.
+        let radius_texels = clamp(soft_world_radius / world_per_texel, 2.0, 6.0);
+
+        let angle = pcss_disk_angle(atlas_uv * shadow_globals.atlas_sizes.xy);
+        let sin_a = sin(angle);
+        let cos_a = cos(angle);
         var sum = 0.0;
-        for (var dy = -1; dy <= 1; dy = dy + 1) {
-            for (var dx = -1; dx <= 1; dx = dx + 1) {
-                let offset = vec2<f32>(f32(dx), f32(dy)) * inv_atlas;
-                sum += textureSampleCompareLevel(
-                    shadow_atlas,
-                    shadow_atlas_sampler,
-                    atlas_uv + offset,
-                    ref_depth,
-                );
-            }
+        for (var i = 0u; i < 16u; i = i + 1u) {
+            let off = pcss_rotate(POISSON_DISK_16[i], sin_a, cos_a) * radius_texels;
+            sum += textureSampleCompareLevel(
+                shadow_atlas, shadow_atlas_sampler,
+                clamp(atlas_uv + off * inv_atlas, tile_min, tile_max),
+                ref_depth,
+            );
         }
-        return sum / 9.0;
+        return sum / 16.0;
     }
     // PCSS — blocker-search + variable-kernel PCF. `pcss_scale`
     // (bias_params.w) tunes both the search radius and the apparent
@@ -296,16 +388,15 @@ fn sample_shadow_descriptor(
 
     var blocker_sum = 0.0;
     var blocker_count = 0u;
+    let tile_min_px = vec2<i32>(tile_min * atlas_uv_to_texels);
+    let tile_max_px = vec2<i32>(tile_max * atlas_uv_to_texels);
     for (var i = 0u; i < 16u; i = i + 1u) {
         let off = pcss_rotate(POISSON_DISK_16[i], sin_a, cos_a) * search_radius_texels;
         let sample_uv = atlas_uv + off * inv_atlas;
         let coord = vec2<i32>(sample_uv * atlas_uv_to_texels);
-        // `textureLoad` reads the raw depth value (no comparison)
-        // for the blocker search. Out-of-bounds reads clamp to the
-        // texture's edge value — for our usage that's a depth of 1.0
-        // (cleared) which classifies as "not a blocker" → safe.
-        let dim = vec2<i32>(atlas_uv_to_texels);
-        let c = clamp(coord, vec2<i32>(0, 0), dim - vec2<i32>(1, 1));
+        // Clamp to the cascade's own tile so the blocker search
+        // doesn't read from an adjacent cascade's depth values.
+        let c = clamp(coord, tile_min_px, tile_max_px);
         let d = textureLoad(shadow_atlas, c, 0);
         if d < ref_depth - 0.0005 {
             blocker_sum = blocker_sum + d;
@@ -327,19 +418,34 @@ fn sample_shadow_descriptor(
         pcf_sum = pcf_sum + textureSampleCompareLevel(
             shadow_atlas,
             shadow_atlas_sampler,
-            atlas_uv + off * inv_atlas,
+            clamp(atlas_uv + off * inv_atlas, tile_min, tile_max),
             ref_depth,
         );
     }
     return pcf_sum / 16.0;
 }
 
-// Per-light cascade selection. `descriptor_base` points to the first
-// cascade descriptor of a directional light; `cascade_info.z` gives
-// the cascade count. We walk descriptors descriptor_base..base+count
-// and pick the first whose `cascade_info.x` (split_far in world-space
-// depth) exceeds `view_z`. Returns 1.0 (no shadow) if `view_z` is
-// beyond the last cascade.
+// Per-light cascade selection with smooth blending across split
+// boundaries. `descriptor_base` points to the first cascade descriptor
+// of a directional light; `cascade_info.z` gives the cascade count.
+//
+// We walk descriptors descriptor_base..base+count and pick the first
+// whose `cascade_info.x` (split_far in world-space depth) exceeds
+// `view_z`. To hide the abrupt softness jump that comes from each
+// successive cascade halving its atlas resolution, the last
+// `CASCADE_BLEND` fraction of every cascade's depth range linearly
+// fades into the next cascade's sample (or to fully lit for the
+// final cascade — receivers past the very end get no shadow).
+//
+// Returns 1.0 (no shadow) if `view_z` is beyond the last cascade.
+// Fraction of each cascade's depth range that fades into the next
+// cascade. Stretching this band wider spreads the (unavoidable)
+// quality difference between cascades across a larger area, which
+// the eye stops reading as a hard edge. 50% is the AAA default —
+// the corresponding `BLEND_OVERLAP` in `fit_cascades` ensures the
+// next cascade's frustum actually covers this whole band.
+const CASCADE_BLEND: f32 = 0.5;
+
 fn sample_shadow_directional(
     descriptor_base: u32,
     world_pos: vec3<f32>,
@@ -354,6 +460,7 @@ fn sample_shadow_directional(
     }
     let cascade_count = u32(shadow_descriptors.items[descriptor_base].cascade_info.z);
     var picked: u32 = SHADOW_INDEX_NONE;
+    var picked_local: u32 = 0u;
     for (var i = 0u; i < cascade_count; i = i + 1u) {
         let idx = descriptor_base + i;
         if idx >= MAX_SHADOW_DESCRIPTORS {
@@ -362,13 +469,61 @@ fn sample_shadow_directional(
         let split_far = shadow_descriptors.items[idx].cascade_info.x;
         if view_z <= split_far {
             picked = idx;
+            picked_local = i;
             break;
         }
     }
     if picked == SHADOW_INDEX_NONE {
         return 1.0;
     }
-    return sample_shadow_descriptor(picked, world_pos, world_normal);
+    let split_far = shadow_descriptors.items[picked].cascade_info.x;
+    var split_near: f32 = 0.0;
+    if picked_local > 0u {
+        split_near = shadow_descriptors.items[picked - 1u].cascade_info.x;
+    }
+    let span = max(split_far - split_near, 1e-4);
+    let normalized = clamp((view_z - split_near) / span, 0.0, 1.0);
+
+    let primary = sample_shadow_descriptor(picked, world_pos, world_normal);
+    if normalized < 1.0 - CASCADE_BLEND {
+        return primary;
+    }
+    let blend_t = (normalized - (1.0 - CASCADE_BLEND)) / CASCADE_BLEND;
+    let next_local = picked_local + 1u;
+    if next_local >= cascade_count {
+        // Final cascade fades to fully lit at the very edge of the
+        // light's max_distance so receivers don't pop from shadowed
+        // to lit.
+        return mix(primary, 1.0, blend_t);
+    }
+    let next_idx = descriptor_base + next_local;
+    if next_idx >= MAX_SHADOW_DESCRIPTORS {
+        return primary;
+    }
+    let secondary = sample_shadow_descriptor(next_idx, world_pos, world_normal);
+    return mix(primary, secondary, blend_t);
+}
+
+// DEBUG: returns the picked cascade index (0..3) as a float, or
+// 4.0 if no cascade was picked. Used for debug tinting.
+fn debug_picked_cascade(
+    descriptor_base: u32,
+    view_z: f32,
+) -> f32 {
+    if descriptor_base == SHADOW_INDEX_NONE || descriptor_base >= MAX_SHADOW_DESCRIPTORS {
+        return 4.0;
+    }
+    let cascade_count = u32(shadow_descriptors.items[descriptor_base].cascade_info.z);
+    for (var i = 0u; i < cascade_count; i = i + 1u) {
+        let idx = descriptor_base + i;
+        if idx >= MAX_SHADOW_DESCRIPTORS {
+            break;
+        }
+        if view_z <= shadow_descriptors.items[idx].cascade_info.x {
+            return f32(i);
+        }
+    }
+    return 4.0;
 }
 
 // Debug-overlay tint for cascade visualisation. Driven by

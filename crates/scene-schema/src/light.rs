@@ -75,6 +75,10 @@ pub struct LightShadowConfig {
     /// How often the far cascade(s) re-render.
     #[serde(default)]
     pub far_cascade_update_rate: FarCascadeUpdateRate,
+    /// How often each cube face of a point-light shadow re-renders.
+    /// Ignored for directional / spot lights.
+    #[serde(default)]
+    pub cube_face_update_rate: CubeFaceUpdateRate,
 }
 
 impl Default for LightShadowConfig {
@@ -91,6 +95,7 @@ impl Default for LightShadowConfig {
             cascade_split_lambda: 0.5,
             evsm_cutoff: EvsmCutoff::LastCascade,
             far_cascade_update_rate: FarCascadeUpdateRate::EveryFrame,
+            cube_face_update_rate: CubeFaceUpdateRate::EveryFrame,
         }
     }
 }
@@ -134,6 +139,23 @@ pub enum FarCascadeUpdateRate {
     /// Re-render the far cascade every 4 frames.
     Every4Frames,
     /// Re-render the far cascade every 8 frames.
+    Every8Frames,
+}
+
+/// Update cadence for the 6 cube faces of a point-light shadow. Mobile
+/// browsers / many-light scenes can drop to `Every2Frames` to halve the
+/// per-frame cube pass cost — fine for slow-moving lights and casters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CubeFaceUpdateRate {
+    /// All 6 faces re-render every frame.
+    #[default]
+    EveryFrame,
+    /// Each cube face re-renders every 2 frames.
+    Every2Frames,
+    /// Each cube face re-renders every 4 frames.
+    Every4Frames,
+    /// Each cube face re-renders every 8 frames.
     Every8Frames,
 }
 

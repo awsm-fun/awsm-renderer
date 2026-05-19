@@ -39,6 +39,15 @@ pub struct LightShadowParams {
     pub evsm_cutoff: EvsmCutoff,
     /// Re-render rate for the farthest cascade(s). Directional only.
     pub far_cascade_update_rate: FarCascadeUpdateRate,
+    /// Re-render cadence for the 6 cube faces of a point light.
+    /// Point-only; ignored for directional / spot.
+    ///
+    /// Each cube face is its own throttled view, so the period applies
+    /// per-face — `Every2Frames` halves cube-pass cost at the price of
+    /// a 1-frame lag in shadow refresh for fast-moving lights or
+    /// casters. Useful when many point lights cast shadows
+    /// simultaneously on weaker GPUs (mobile WebGPU).
+    pub cube_face_update_rate: CubeFaceUpdateRate,
 }
 
 impl Default for LightShadowParams {
@@ -55,6 +64,7 @@ impl Default for LightShadowParams {
             cascade_split_lambda: 0.5,
             evsm_cutoff: EvsmCutoff::LastCascade,
             far_cascade_update_rate: FarCascadeUpdateRate::EveryFrame,
+            cube_face_update_rate: CubeFaceUpdateRate::EveryFrame,
         }
     }
 }
@@ -110,6 +120,42 @@ pub enum FarCascadeUpdateRate {
 }
 
 impl FarCascadeUpdateRate {
+    /// Returns the period in frames for this update rate.
+    pub fn period(self) -> u64 {
+        match self {
+            Self::EveryFrame => 1,
+            Self::Every2Frames => 2,
+            Self::Every4Frames => 4,
+            Self::Every8Frames => 8,
+        }
+    }
+}
+
+/// Re-render cadence for the 6 cube faces of a point-light shadow.
+/// Mirrors `FarCascadeUpdateRate` but applied per cube face. Cube
+/// faces always clear and write their own attachment so throttling is
+/// safe (no flicker risk — unlike the 2D atlas which clears
+/// attachment-wide on every cleared pass).
+///
+/// 8-frame is included for mostly-static lights (architectural fills,
+/// torch flames, etc.) where the receiver-side cost dominates the
+/// budget. Avoid it for hero lights or lights whose casters move.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum CubeFaceUpdateRate {
+    /// All 6 faces re-render every frame. Default — correct for any
+    /// scene; only reach for the throttled variants if the cube pass
+    /// is your bottleneck.
+    #[default]
+    EveryFrame,
+    /// Each face re-renders every 2 frames.
+    Every2Frames,
+    /// Each face re-renders every 4 frames.
+    Every4Frames,
+    /// Each face re-renders every 8 frames.
+    Every8Frames,
+}
+
+impl CubeFaceUpdateRate {
     /// Returns the period in frames for this update rate.
     pub fn period(self) -> u64 {
         match self {

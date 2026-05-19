@@ -1013,7 +1013,7 @@ Tick items as they land. A future session can resume by reading this list.
 - [ ] Cascade count + lambda editor inputs — deferred to the editor-UI follow-up; schema field is editable in `project.json`
 - [x] Cascade-color debug overlay — `debug_cascade_tint`, gated on `ShadowsConfig::debug_cascade_colors`
 
-### Phase 5 — EVSM hybrid (far directional cascades) — **INFRASTRUCTURE LANDED**
+### Phase 5 — EVSM hybrid (far directional cascades) — **INFRASTRUCTURE LANDED, COMPUTE PASS TRACKED IN PHASE 16.A**
 - [x] `RGBA16F` EVSM atlas + view exist as 1x1 placeholders (resize deferred until the compute pass needs real data)
 - [ ] EVSM moment-writing fragment shader — **deferred**
 - [ ] Separable Gaussian blur compute (horizontal + vertical) — **deferred**
@@ -1051,7 +1051,7 @@ Tick items as they land. A future session can resume by reading this list.
 - [x] Overflow logging (`cube_overflow` warns once per frame)
 - [x] Render pass dispatch handles the `cube_layer` attachment, falling back to the atlas view for 2D casters
 
-### Phase 9 — Transparent-pass shadows — **DEFERRED (bind-group consolidation)**
+### Phase 9 — Transparent-pass shadows — **DEFERRED (bind-group consolidation) — TRACKED IN PHASE 16.B**
 - [x] `MaterialTransparentBindGroups::recreate_shadows` already builds the shadow bind group (phase 0)
 - [ ] Wire the bind group into the transparent pipeline layout — blocked on the adapter's `maxBindGroups = 4` limit; the transparent pipeline already uses 4 (main + lights + texture pool + mesh_material). Real fix: merge `lights` into `main` (or split out the per-draw `mesh_material` differently); both options touch every transparent WGSL `@group` reference.
 - [x] `Mesh::receive_shadows` flag is honored on the renderer side; transparent meshes with `receive_shadows = false` will skip the shadow sample once the WGSL hook lands.
@@ -1108,4 +1108,100 @@ The public API surface defined in **Public API Surface** above is the contract f
 - [x] `cargo doc -p awsm-renderer --no-deps` clean on shadow code (the three remaining workspace warnings are all in pre-existing non-shadow modules: `lines/mod.rs` and `material_transparent/pipeline.rs`)
 - [x] `cargo clippy --workspace --all-targets` clean
 - [x] `crates/renderer/README.md` walks through the minimal "add a shadow-casting directional light" recipe (filter modes, CSM, point/spot, SSCS, schema→runtime conversion note)
+
+---
+
+## Phase 16 — Finish Line
+
+The original 16-phase plan landed every subsystem **structurally**, but three items were marked deferred and a handful of correctness/quality bugs surfaced during visual review. This phase consolidates everything still owed into one push so the branch ships at AAA quality with no follow-ups.
+
+### Background: what changed since Phase 15 landed
+
+A field-test session (cylinder-on-plane test scene at `/Users/dakom/Documents/DAKOM/awsm-renderer-assets/shadow-test/project.json`) exposed several issues that have **already been fixed** but aren't reflected in the phase-by-phase plan above. Listing them here so future readers see the full story:
+
+- **Atlas Clear-on-every-pass bug.** `render_pass::record` issued `LoadOp::Clear` for every cascade view, and render-pass clears are attachment-wide (not viewport-scoped). Each cascade therefore wiped the prior cascade's tile and only the last-rendered cascade survived. Fixed: clear on the first 2D-atlas pass per frame, `Load` on all subsequent 2D passes. Cube-face passes still `Clear` (each face has its own view).
+- **Caster AABB depth extension.** The CSM fit derived its light-view depth bounds from frustum-slice corners only, so a caster outside the slice (tall cylinder reaching above the slice) got NDC-clipped from the atlas. Fixed: `Shadows::write_gpu` accumulates the world-space union of all `cast_shadows && !hidden && !hud` mesh AABBs and passes it to `fit_cascades`; the cascade fit unions the caster AABB into `min.z` and `max.z` (XY stays tight to keep stable-fit rotation-invariance).
+- **Bounding-sphere stable-fit.** The original AABB-of-corners fit produced an extent that grew/shrank with camera rotation; combined with texel-snap, this caused visible shadow swimming. Fixed: cascade size is now `2 × radius` of the slice corners' bounding sphere — invariant under camera rotation — with the origin still snapped to a texel-aligned grid.
+- **Equal-resolution cascades.** Per-cascade halving (`base >> i`) produced a visible softness discontinuity at split boundaries (2×, 4×, 8× softer per cascade out). Fixed: every cascade now uses `base` resolution. Combined with the 4096² atlas's 2×2 cascade layout, this lands four 2048² cascades. Memory cost is real (64 MB Depth32F) but the visual win is decisive.
+- **Cascade boundary blend.** Even at matched resolution there's a slight texel-size discontinuity (different world extent per cascade). The shader now lerps between the chosen cascade and the next-further cascade across the last 15% of the cascade's depth range, hiding the seam.
+- **Rotated 8-tap Poisson PCF.** The 3×3 box PCF was upgraded to a per-pixel-rotated 8-tap Poisson disk (plus a doubled center tap). Same VRAM bandwidth, materially smoother edges, no fixed-pattern artifacts.
+- **PCF/PCSS tile clamping.** PCF and PCSS taps now `clamp(atlas_uv, tile_min, tile_max)` so kernels can't bleed into an adjacent atlas tile (a real risk with edge-to-edge packing + bilinear comparison filtering).
+- **Slope-scale + constant depth bias.** The shadow generation pipeline state now sets `with_depth_bias(1).with_depth_bias_slope_scale(1.5)`, so the receiver-side biases (`depth_bias`, `normal_bias`) can stay small without acne on slanted surfaces.
+- **Point-light cube shadow rewrite.** The cube depth path went through three iterations chasing a stubborn "double shadow" that turned out to be the cube-face seam confusing a linear-depth fragment shader. Final implementation is the textbook industry-standard depth cubemap: each face renders at 90° perspective with `Mat4::perspective_rh`, depth-only pipeline (no fragment override), so the rasterizer writes perspective NDC.z naturally. Receiver-side, `sample_shadow_cube` reconstructs the same NDC.z by computing the *major-axis projected depth* — `dist · |dir.major|` — and applying the same `(far/(far-near)) · (1 - near/view_depth)` formula. That makes atlas and reference depth directly comparable on whichever face the cube sampler picks, with no seam math, no linear-radial-depth FS, and no per-tap face recompute. PCF is 8 receiver-space taps (each computes its own major-axis NDC.z), giving the AAA cost / quality balance.
+
+- **Cube face Y-flip + CW winding.** After the rewrite above, a second variant of the double-shadow returned: a phantom shadow appeared on the side of the receiver opposite the real one whenever the light was off-axis. Root cause: a coordinate-convention mismatch. WebGPU cube sampling follows the D3D convention (on the +X face, texel `t=0` ↔ direction `+Y`; on +Z, `t=0` ↔ `+Y`; etc.), but a naive `look_at_rh(... up=-Y) * perspective_rh` is the *OpenGL* cube convention — same direction matrix, but written into a top-left-origin framebuffer, the rasterized image ends up vertically mirrored relative to what the sampler expects. The fix:
+  1. Post-multiply the cube projection by `Mat4::from_scale(1, -1, 1)` so NDC.y is flipped before rasterization (world +Y → texel `t=0`). Depth is untouched, so the major-axis depth formula above continues to match on both sides.
+  2. The Y-flip reverses NDC winding, which would invert front-face culling. The cube shadow pipeline uses `front_face = Cw` (with `CullMode::Front`) so light-facing surfaces are still the ones being culled — peter-panning avoidance preserved. There are now two render-pipeline variants per instancing mode (`shadow_pipeline_no_instancing` / `_instancing` for 2D, `_cube_no_instancing` / `_cube_instancing` for cube); `Shadows::shadow_pipeline_key(instancing, cube_face)` picks among them. The dispatcher in `render_pass::record` passes `is_cube = view.cube_layer.is_some()`.
+
+- **Configurable cube resolution + per-face throttling.** `POINT_SHADOW_RESOLUTION` is now the default for a new `ShadowsConfig::point_shadow_resolution` field (clamped to `[MIN_POINT_SHADOW_RESOLUTION, SHADOW_ATLAS_MAX_SIZE]` by `clamp_point_shadow_resolution`), exposed as `Shadows::cube_resolution` at runtime. Mobile-class browsers can drop it to 512 (or even 256) to shrink the cube pool from 24 MB to 6 / 1.5 MB at the cost of a softer shadow edge. The resolution is sampled at construction time; the cube pool is recreated by recreating the renderer. Independently, a new `LightShadowParams::cube_face_update_rate` (`EveryFrame` / `Every2Frames` / `Every4Frames` / `Every8Frames`) feeds the existing per-view throttle so individual point lights can spread their 6-face cost across multiple frames — useful when many point lights cast shadows on weaker GPUs. Both controls are mirrored in `awsm_scene_schema` so on-disk projects pick them up. `POINT_SHADOW_NEAR` stays a constant — the WGSL receiver-side constant must match the writer-side near plane, and there's no use case for a runtime-tunable point-shadow near.
+
+These changes are all in `crates/renderer/src/shadows/{cascade.rs, mod.rs, render_pass.rs}` and `render_passes/shared/shared_wgsl/shadow/bind_groups.wgsl`. They've been verified against the cylinder test scene; the seam, swimming, offset, and double-shadow bugs are all gone.
+
+### What's left
+
+Three workstreams remain to call Phase 16 complete:
+
+#### 16.A — EVSM moment-write compute pass
+
+The infrastructure (cutoff flag, descriptor bit, sampler dispatch site, atlas placeholder, blur radius / exponent uniforms) is all wired. What's missing is the actual moment-writing pipeline and the separable Gaussian blur.
+
+1. **EVSM atlas allocation.** Promote `evsm_atlas_texture` from its 1×1 placeholder to a real `RGBA16F` texture sized at `evsm_atlas_size` (default 2048²). Allocate lazily on the first frame `evsm_cutoff != Off`. Use the same row-pack allocator that handles the PCF atlas; EVSM cascades take rects from this second atlas.
+2. **Moment-writing pipeline.** A new shadow pipeline variant that *does* have a fragment stage, writing `vec4(exp(c·z), exp(c·z)², exp(-c·z), exp(-c·z)²)` to RGBA16F. The vertex shader is the same depth-only shadow VS we already have; only the fragment + colour target differ. Switch `Shadows::shadow_pipeline_key` to take an `is_evsm: bool` and pick between the two variants. The render pass dispatch picks the variant based on the cascade's `is_evsm` flag.
+3. **Separable Gaussian blur.** Two compute passes per EVSM cascade rect: horizontal blur → ping-pong texture, vertical blur → atlas. Workgroup size `64×1` / `1×64`, kernel half-width from `ShadowGlobals.evsm_blur_radius`. Pre-compute Gaussian weights as a constant array. The ping-pong is a single transient `RGBA16F` texture sized to the largest EVSM rect; reuse across cascades.
+4. **Sample path.** Add `sample_shadow_evsm(desc, world_pos, world_normal)` to `bind_groups.wgsl`. Compute UV the same way as `sample_shadow_descriptor`, sample the four moments at mip 0 with the linear sampler, reconstruct positive and negative one-tailed Chebyshev visibilities, return `min(pos, neg)`. Wire it into the `sample_shadow_descriptor` dispatcher: cascade kind == 1 (`is_evsm`) goes to EVSM, kind == 0 stays on PCF, kind == 2 stays on cube.
+5. **Throttle integration.** The `should_render` flag already gates both the depth pass and the blur (one flag per view). The throttle's view-projection drift heuristic re-renders EVSM cascades when the camera moves enough — no separate path needed.
+6. **Editor verification.** With `evsm_cutoff = LastCascade` and the cylinder-on-plane scene, the far cascade should produce visibly softer shadows than the PCF cascades at the same resolution, with no light-leak at the contacts. Flip to `Off` and confirm pixel-identical Phase-4 PCF behaviour.
+
+Performance note: EVSM is the AAA default for distant shadows precisely because the blur cost is amortised at write time — receiver sampling is a single 4-channel bilinear fetch versus PCF's 10-tap disk. Far cascades become both **softer** and **cheaper**.
+
+#### 16.B — Transparent-pass shadows + bind-group consolidation
+
+The transparent pass already has the shadow bind group built but unwired, because the adapter's `maxBindGroups = 4` limit is already exhausted (main + lights + textures + mesh_material).
+
+1. **Merge `lights` into `main`.** The `lights` group holds IBL textures/samplers, the BRDF LUT, the lights-info uniform, and the punctual-lights storage buffer — every entry is global per frame, like the rest of `main`. Combined, the merged `main` group has ~12 bindings, comfortably under `maxBindingsPerBindGroup`. Touch every `@group(0)` / `@group(1)` reference in `material_transparent_wgsl/*.wgsl`; bump the shadow group to `@group(1)`; the mesh_material group stays at `@group(3)` with its dynamic offsets.
+2. **Wire the shadow bind group.** `MaterialTransparentBindGroups::recreate_shadows` already produces the group. Add the `set_bind_group(1, shadows_bind_group, None)` call in `render_pass.rs`, drop the `shadow_group_index = 1` template var into `bind_groups.wgsl`, and re-export the lighting helpers (`apply_lighting`, `apply_lighting_with_transmission`) into the transparent fragment shader.
+3. **`Mesh::receive_shadows` flag.** Already plumbed; the WGSL hook just needs to short-circuit `apply_lighting` when the flag is false. Same pattern as the opaque pass.
+4. **Visual check.** A transparent glass sphere standing on the shadow-test plane: shadow appears under the sphere with the correct cascade and tint, alpha doesn't break the shadow.
+
+#### 16.C — Editor inspector UI
+
+The schema fields all already round-trip through `project.json`. Adding inspector controls is the last user-facing gap.
+
+1. **Light inspector** (`crates/editor/src/inspector/light.rs` or equivalent — there's an existing inspector for the directional/point/spot params; the shadow block hangs off the same panel):
+   - `cast` toggle (checkbox).
+   - `depth_bias` (number, 0.0–0.01 range, step 0.0001).
+   - `normal_bias` (number, 0.0–0.5 range, step 0.001).
+   - `resolution` (dropdown: 512 / 1024 / 2048 / 4096).
+   - `hardness` (dropdown: Hard / Soft / Pcss).
+   - `pcss_penumbra_scale` (number, 0.01–10, visible only when hardness=Pcss).
+   - `max_distance` (number, 1–500).
+   - Directional-only: `cascade_count` (dropdown 1–4), `cascade_split_lambda` (slider 0–1), `evsm_cutoff` (dropdown), `far_cascade_update_rate` (dropdown).
+2. **Mesh inspector**: `cast_shadows` and `receive_shadows` toggles in the primitive / model / sweep / curve-instances panels.
+3. **Global config panel**: somewhere in the Editor menu, expose `ShadowsConfig` (SSCS toggle + step count, atlas size, EVSM atlas size + exponent + blur, debug cascade colour overlay).
+4. **Live update path**: each control should call `AwsmRenderer::set_light_shadow_params` / `set_mesh_shadow_flags` / `set_shadows_config` and trigger a frame redraw. The renderer's internal `dirty` flag handles the GPU upload.
+
+### Performance pass
+
+Once 16.A–C land, do one focused performance sweep:
+
+1. **Per-cascade frustum culling broad-phase.** Currently every shadow view iterates every mesh. For a 100-mesh scene with 4 cascades + 1 cube light (6 faces), that's 1000 AABB-vs-frustum checks per frame. A simple spatial hash or sorted-by-X bucket would cut this to O(meshes × cascades_overlapping_bucket). Worth it if the test scene grows past ~50 dynamic meshes.
+2. **Far-cascade throttling default.** Flip the default `far_cascade_update_rate` to `EveryFourFrames` for typical scenes — the visual hit on a static scene is invisible, the cost saving for the largest cascade is 75%.
+3. **Cube-face per-axis culling.** A cube light renders 6 faces; meshes outside a given face's frustum should be culled per face, not just per light. Currently the same broad mesh list is iterated per face — easy win.
+4. **Shadow-pass MSAA.** Confirm the shadow pipeline never picks up MSAA from any upstream cache key (the depth atlas is 1×). Add an explicit `multisample.count = 1` assertion in `build_shadow_pipeline` if anything looks off.
+5. **Blend zone cost.** Receivers in the 15% blend zone of each cascade pay 2× PCF cost (10 + 10 = 20 taps). On a 4K screen with a single directional light, the blend zone is roughly 60% of total receiver pixels (4 cascades × 15% boundary each, summed). For high-detail scenes, consider reducing `CASCADE_BLEND` to 0.10 — at the cost of slightly more visible seams under careful inspection.
+
+### Final ship checklist
+
+- [ ] 16.A: EVSM moment-write + separable Gaussian blur + sample path live; `evsm_cutoff = LastCascade` produces softer-and-cheaper far cascades on the test scene.
+- [ ] 16.B: Transparent meshes receive shadows; a transparent sphere on the test plane shows a correct shadow tinted through it.
+- [ ] 16.C: Light + Mesh inspector panels expose every shadow param; values round-trip through Save / Load; live edits update the rendered shadow within one frame.
+- [ ] Performance sweep items above considered; defaults landed or open follow-ups filed.
+- [ ] `cargo fmt --all`
+- [ ] `cargo clippy --workspace --all-targets --target wasm32-unknown-unknown` clean (no new warnings on shadow code).
+- [ ] `cargo doc -p awsm-renderer --no-deps` clean (no new missing-docs warnings).
+- [ ] Visual baseline screenshots captured: cylinder-on-plane scene with each `hardness` (Hard / Soft / Pcss), with EVSM cutoff on/off, with debug cascade colours on/off, under camera orbit + zoom. Stored in `docs/screenshots/shadows-baseline/` for regression.
+- [ ] `docs/ROADMAP.md` "Shadows" line item: tick every sub-bullet (no remaining deferred items).
+
+When all boxes above are ticked, the shadow subsystem ships at AAA quality. There's no Phase 17.
+
 - [x] `light_shadow_params_from_config` + `mesh_shadow_flags_from_config` in `scene-editor/src/renderer_bridge/node_sync.rs` are the only places performing the conversion
