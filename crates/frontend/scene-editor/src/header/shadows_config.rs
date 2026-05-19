@@ -21,7 +21,7 @@ use crate::state::app_state;
 
 /// Public entry — wired into the Environment-tab toolbar.
 pub fn open_modal() {
-    Modal::open(|| render_modal_body());
+    Modal::open(render_modal_body);
 }
 
 fn render_modal_body() -> Dom {
@@ -183,24 +183,27 @@ fn bool_row(
     set: impl Fn(&mut ShadowsConfig, bool) + 'static,
 ) -> Dom {
     let checked = cfg.signal_cloned().map(clone!(get => move |c| get(&c)));
-    field_row(label, html!("input" => web_sys::HtmlInputElement, {
-        .attr("type", "checkbox")
-        .style("width", "1rem")
-        .style("height", "1rem")
-        .style("cursor", "pointer")
-        .with_node!(input => {
-            .future(clone!(input => {
-                checked.for_each(move |b| {
-                    if input.checked() != b { input.set_checked(b); }
-                    async {}
-                })
-            }))
-            .event(clone!(cfg, input => move |_: events::Change| {
-                let v = input.checked();
-                commit(&cfg, |c| set(c, v));
-            }))
-        })
-    }))
+    field_row(
+        label,
+        html!("input" => web_sys::HtmlInputElement, {
+            .attr("type", "checkbox")
+            .style("width", "1rem")
+            .style("height", "1rem")
+            .style("cursor", "pointer")
+            .with_node!(input => {
+                .future(clone!(input => {
+                    checked.for_each(move |b| {
+                        if input.checked() != b { input.set_checked(b); }
+                        async {}
+                    })
+                }))
+                .event(clone!(cfg, input => move |_: events::Change| {
+                    let v = input.checked();
+                    commit(&cfg, |c| set(c, v));
+                }))
+            })
+        }),
+    )
 }
 
 fn u32_row(
@@ -223,28 +226,33 @@ fn u32_row(
             .style("font-family", "monospace")
         }
     });
-    let value_signal = cfg.signal_cloned().map(clone!(get => move |c| get(&c).to_string()));
-    field_row(label, html!("input" => web_sys::HtmlInputElement, {
-        .class(&*INPUT)
-        .attr("type", "number")
-        .attr("min", &min.to_string())
-        .attr("max", &max.to_string())
-        .attr("step", "1")
-        .with_node!(input => {
-            .future(clone!(input => {
-                value_signal.for_each(move |s| {
-                    if input.value() != s { input.set_value(&s); }
-                    async {}
-                })
-            }))
-            .event(clone!(cfg, input => move |_: events::Change| {
-                if let Ok(parsed) = input.value().parse::<u32>() {
-                    let v = parsed.clamp(min, max);
-                    commit(&cfg, |c| set(c, v));
-                }
-            }))
-        })
-    }))
+    let value_signal = cfg
+        .signal_cloned()
+        .map(clone!(get => move |c| get(&c).to_string()));
+    field_row(
+        label,
+        html!("input" => web_sys::HtmlInputElement, {
+            .class(&*INPUT)
+            .attr("type", "number")
+            .attr("min", &min.to_string())
+            .attr("max", &max.to_string())
+            .attr("step", "1")
+            .with_node!(input => {
+                .future(clone!(input => {
+                    value_signal.for_each(move |s| {
+                        if input.value() != s { input.set_value(&s); }
+                        async {}
+                    })
+                }))
+                .event(clone!(cfg, input => move |_: events::Change| {
+                    if let Ok(parsed) = input.value().parse::<u32>() {
+                        let v = parsed.clamp(min, max);
+                        commit(&cfg, |c| set(c, v));
+                    }
+                }))
+            })
+        }),
+    )
 }
 
 fn f32_row(
@@ -268,28 +276,33 @@ fn f32_row(
             .style("font-family", "monospace")
         }
     });
-    let value_signal = cfg.signal_cloned().map(clone!(get => move |c| format!("{:.2}", get(&c))));
-    field_row(label, html!("input" => web_sys::HtmlInputElement, {
-        .class(&*INPUT)
-        .attr("type", "number")
-        .attr("min", &min.to_string())
-        .attr("max", &max.to_string())
-        .attr("step", &step.to_string())
-        .with_node!(input => {
-            .future(clone!(input => {
-                value_signal.for_each(move |s| {
-                    if input.value() != s { input.set_value(&s); }
-                    async {}
-                })
-            }))
-            .event(clone!(cfg, input => move |_: events::Change| {
-                if let Ok(parsed) = input.value().parse::<f32>() {
-                    let v = parsed.clamp(min, max);
-                    commit(&cfg, |c| set(c, v));
-                }
-            }))
-        })
-    }))
+    let value_signal = cfg
+        .signal_cloned()
+        .map(clone!(get => move |c| format!("{:.2}", get(&c))));
+    field_row(
+        label,
+        html!("input" => web_sys::HtmlInputElement, {
+            .class(&*INPUT)
+            .attr("type", "number")
+            .attr("min", &min.to_string())
+            .attr("max", &max.to_string())
+            .attr("step", &step.to_string())
+            .with_node!(input => {
+                .future(clone!(input => {
+                    value_signal.for_each(move |s| {
+                        if input.value() != s { input.set_value(&s); }
+                        async {}
+                    })
+                }))
+                .event(clone!(cfg, input => move |_: events::Change| {
+                    if let Ok(parsed) = input.value().parse::<f32>() {
+                        let v = parsed.clamp(min, max);
+                        commit(&cfg, |c| set(c, v));
+                    }
+                }))
+            })
+        }),
+    )
 }
 
 fn pow2_select_row(
@@ -322,26 +335,31 @@ fn u32_select_row(
             .style("cursor", "pointer")
         }
     });
-    let value_signal = cfg.signal_cloned().map(clone!(get => move |c| get(&c).to_string()));
+    let value_signal = cfg
+        .signal_cloned()
+        .map(clone!(get => move |c| get(&c).to_string()));
     let opts = options;
-    field_row(label, html!("select" => HtmlSelectElement, {
-        .class(&*SELECT)
-        .children(opts.iter().map(|v| html!("option", {
-            .attr("value", &v.to_string())
-            .text(&v.to_string())
-        })))
-        .with_node!(select => {
-            .future(clone!(select => {
-                value_signal.for_each(move |s| {
-                    if select.value() != s { select.set_value(&s); }
-                    async {}
-                })
-            }))
-            .event(clone!(cfg, select => move |_: events::Change| {
-                if let Ok(parsed) = select.value().parse::<u32>() {
-                    commit(&cfg, |c| set(c, parsed));
-                }
-            }))
-        })
-    }))
+    field_row(
+        label,
+        html!("select" => HtmlSelectElement, {
+            .class(&*SELECT)
+            .children(opts.iter().map(|v| html!("option", {
+                .attr("value", &v.to_string())
+                .text(&v.to_string())
+            })))
+            .with_node!(select => {
+                .future(clone!(select => {
+                    value_signal.for_each(move |s| {
+                        if select.value() != s { select.set_value(&s); }
+                        async {}
+                    })
+                }))
+                .event(clone!(cfg, select => move |_: events::Change| {
+                    if let Ok(parsed) = select.value().parse::<u32>() {
+                        commit(&cfg, |c| set(c, parsed));
+                    }
+                }))
+            })
+        }),
+    )
 }

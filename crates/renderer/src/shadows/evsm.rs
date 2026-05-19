@@ -39,8 +39,7 @@ use awsm_renderer_core::{
 
 use crate::{
     bind_group_layout::{
-        BindGroupLayoutCacheKey, BindGroupLayoutCacheKeyEntry, BindGroupLayoutKey,
-        BindGroupLayouts,
+        BindGroupLayoutCacheKey, BindGroupLayoutCacheKeyEntry, BindGroupLayoutKey, BindGroupLayouts,
     },
     pipeline_layouts::{PipelineLayoutCacheKey, PipelineLayoutKey, PipelineLayouts},
     pipelines::{

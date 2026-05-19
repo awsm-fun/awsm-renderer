@@ -161,8 +161,7 @@ impl MaterialTransparentBindGroups {
             // IBL prefiltered env texture (cube)
             BindGroupLayoutCacheKeyEntry {
                 resource: BindGroupLayoutResource::Texture(
-                    TextureBindingLayout::new()
-                        .with_view_dimension(TextureViewDimension::Cube),
+                    TextureBindingLayout::new().with_view_dimension(TextureViewDimension::Cube),
                 ),
                 visibility_vertex: true,
                 visibility_fragment: true,
@@ -170,8 +169,7 @@ impl MaterialTransparentBindGroups {
             },
             BindGroupLayoutCacheKeyEntry {
                 resource: BindGroupLayoutResource::Sampler(
-                    SamplerBindingLayout::new()
-                        .with_binding_type(SamplerBindingType::Filtering),
+                    SamplerBindingLayout::new().with_binding_type(SamplerBindingType::Filtering),
                 ),
                 visibility_vertex: true,
                 visibility_fragment: true,
@@ -179,8 +177,7 @@ impl MaterialTransparentBindGroups {
             },
             BindGroupLayoutCacheKeyEntry {
                 resource: BindGroupLayoutResource::Texture(
-                    TextureBindingLayout::new()
-                        .with_view_dimension(TextureViewDimension::Cube),
+                    TextureBindingLayout::new().with_view_dimension(TextureViewDimension::Cube),
                 ),
                 visibility_vertex: true,
                 visibility_fragment: true,
@@ -188,8 +185,7 @@ impl MaterialTransparentBindGroups {
             },
             BindGroupLayoutCacheKeyEntry {
                 resource: BindGroupLayoutResource::Sampler(
-                    SamplerBindingLayout::new()
-                        .with_binding_type(SamplerBindingType::Filtering),
+                    SamplerBindingLayout::new().with_binding_type(SamplerBindingType::Filtering),
                 ),
                 visibility_vertex: true,
                 visibility_fragment: true,
@@ -197,8 +193,7 @@ impl MaterialTransparentBindGroups {
             },
             BindGroupLayoutCacheKeyEntry {
                 resource: BindGroupLayoutResource::Texture(
-                    TextureBindingLayout::new()
-                        .with_view_dimension(TextureViewDimension::N2d),
+                    TextureBindingLayout::new().with_view_dimension(TextureViewDimension::N2d),
                 ),
                 visibility_vertex: true,
                 visibility_fragment: true,
@@ -206,8 +201,7 @@ impl MaterialTransparentBindGroups {
             },
             BindGroupLayoutCacheKeyEntry {
                 resource: BindGroupLayoutResource::Sampler(
-                    SamplerBindingLayout::new()
-                        .with_binding_type(SamplerBindingType::Filtering),
+                    SamplerBindingLayout::new().with_binding_type(SamplerBindingType::Filtering),
                 ),
                 visibility_vertex: true,
                 visibility_fragment: true,
@@ -215,8 +209,7 @@ impl MaterialTransparentBindGroups {
             },
             BindGroupLayoutCacheKeyEntry {
                 resource: BindGroupLayoutResource::Buffer(
-                    BufferBindingLayout::new()
-                        .with_binding_type(BufferBindingType::Uniform),
+                    BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
                 ),
                 visibility_vertex: true,
                 visibility_fragment: true,

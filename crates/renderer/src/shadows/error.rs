@@ -4,7 +4,8 @@ use awsm_renderer_core::error::AwsmCoreError;
 use thiserror::Error;
 
 use crate::{
-    bind_group_layout::AwsmBindGroupLayoutError, bind_groups::AwsmBindGroupError,
+    bind_group_layout::AwsmBindGroupLayoutError,
+    bind_groups::AwsmBindGroupError,
     pipeline_layouts::AwsmPipelineLayoutError,
     pipelines::{
         compute_pipeline::AwsmComputePipelineError, render_pipeline::AwsmRenderPipelineError,

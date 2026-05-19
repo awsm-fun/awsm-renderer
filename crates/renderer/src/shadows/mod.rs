@@ -988,7 +988,11 @@ impl Shadows {
                         .and_then(|v| v.get(i))
                         .map(|v| v.cube_layer.is_some())
                         .unwrap_or(false);
-                    let hit = if is_cube { invalidate_cube } else { invalidate_2d };
+                    let hit = if is_cube {
+                        invalidate_cube
+                    } else {
+                        invalidate_2d
+                    };
                     if hit {
                         t.last_rendered_frame = u64::MAX;
                     }
@@ -1006,7 +1010,6 @@ impl Shadows {
         self.dirty = true;
         Ok(())
     }
-
 
     /// `true` if any shadow-casting light is currently active. The
     /// render graph short-circuits the entire shadow generation pass
@@ -1350,10 +1353,11 @@ impl Shadows {
                         } else {
                             None
                         };
-                        let (descriptor_rect, descriptor_atlas_size, evsm_active) = match evsm_rect_alloc {
-                            Some(evsm_rect) => (evsm_rect, self.evsm_atlas_size, true),
-                            None => (rect, self.atlas_size, false),
-                        };
+                        let (descriptor_rect, descriptor_atlas_size, evsm_active) =
+                            match evsm_rect_alloc {
+                                Some(evsm_rect) => (evsm_rect, self.evsm_atlas_size, true),
+                                None => (rect, self.atlas_size, false),
+                            };
                         write_shadow_descriptor(
                             &mut descriptor_bytes[off..off + SHADOW_DESCRIPTOR_BYTES],
                             &cascade.view_projection,
@@ -1551,15 +1555,14 @@ impl Shadows {
                             None
                         }
                     });
-                    let slot = owned.or_else(|| {
-                        self.cube_slots.iter().position(|s| s.is_none())
-                    });
+                    let slot = owned.or_else(|| self.cube_slots.iter().position(|s| s.is_none()));
                     let Some(slot_index) = slot else {
                         cube_overflow = true;
                         continue;
                     };
                     self.cube_slots[slot_index] = Some(light_key);
-                    self.cube_slot_for_light.insert(light_key, slot_index as u32);
+                    self.cube_slot_for_light
+                        .insert(light_key, slot_index as u32);
 
                     let pos = glam::Vec3::from(*position);
                     let r = (*range).max(0.05);
@@ -1583,8 +1586,8 @@ impl Shadows {
                     // cube shadow pipeline restores winding (and
                     // therefore front-face culling).
                     let y_flip = glam::Mat4::from_scale(glam::Vec3::new(1.0, -1.0, 1.0));
-                    let projection = y_flip
-                        * glam::Mat4::perspective_rh(cube_fov, 1.0, POINT_SHADOW_NEAR, r);
+                    let projection =
+                        y_flip * glam::Mat4::perspective_rh(cube_fov, 1.0, POINT_SHADOW_NEAR, r);
                     // glTF cube-map face conventions, in the order
                     // WebGPU lays out cube layers: +X, -X, +Y, -Y, +Z, -Z.
                     let face_dirs = [
@@ -1691,8 +1694,7 @@ impl Shadows {
             // get read; the uniform buffer's tail keeps whatever it
             // held last frame (harmless — those slots are not bound
             // as descriptor indices anywhere).
-            let used =
-                self.active_descriptor_count as usize * SHADOW_DESCRIPTOR_BYTES;
+            let used = self.active_descriptor_count as usize * SHADOW_DESCRIPTOR_BYTES;
             gpu.write_buffer(
                 &self.descriptors_uniform,
                 None,
@@ -1873,13 +1875,17 @@ fn build_evsm_moment_write_bind_group(
     evsm_atlas_view: &web_sys::GpuTextureView,
     params_buffer: &web_sys::GpuBuffer,
 ) -> Result<web_sys::GpuBindGroup, AwsmShadowError> {
-    use awsm_renderer_core::bind_groups::{
-        BindGroupDescriptor, BindGroupEntry, BindGroupResource,
-    };
+    use awsm_renderer_core::bind_groups::{BindGroupDescriptor, BindGroupEntry, BindGroupResource};
     use std::borrow::Cow;
     let entries = vec![
-        BindGroupEntry::new(0, BindGroupResource::TextureView(Cow::Borrowed(shadow_atlas_view))),
-        BindGroupEntry::new(1, BindGroupResource::TextureView(Cow::Borrowed(evsm_atlas_view))),
+        BindGroupEntry::new(
+            0,
+            BindGroupResource::TextureView(Cow::Borrowed(shadow_atlas_view)),
+        ),
+        BindGroupEntry::new(
+            1,
+            BindGroupResource::TextureView(Cow::Borrowed(evsm_atlas_view)),
+        ),
         BindGroupEntry::new(
             2,
             BindGroupResource::Buffer(
@@ -1904,9 +1910,7 @@ fn build_evsm_blur_bind_group(
     params_buffer: &web_sys::GpuBuffer,
     label: &str,
 ) -> Result<web_sys::GpuBindGroup, AwsmShadowError> {
-    use awsm_renderer_core::bind_groups::{
-        BindGroupDescriptor, BindGroupEntry, BindGroupResource,
-    };
+    use awsm_renderer_core::bind_groups::{BindGroupDescriptor, BindGroupEntry, BindGroupResource};
     use std::borrow::Cow;
     let entries = vec![
         BindGroupEntry::new(0, BindGroupResource::TextureView(Cow::Borrowed(src_view))),
@@ -1918,11 +1922,8 @@ fn build_evsm_blur_bind_group(
             ),
         ),
     ];
-    let descriptor = BindGroupDescriptor::new(
-        bind_group_layouts.get(layout_key)?,
-        Some(label),
-        entries,
-    );
+    let descriptor =
+        BindGroupDescriptor::new(bind_group_layouts.get(layout_key)?, Some(label), entries);
     Ok(gpu.create_bind_group(&descriptor.into()))
 }
 

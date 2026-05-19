@@ -340,3 +340,40 @@ move with the code if it gets refactored. Map of where to look:
 If a future regression makes one of these decisions look wrong, the
 comment in the code block typically explains the trade-off the
 current choice is making — read that first before changing.
+
+## References
+
+The algorithms used here aren't novel — they're the AAA standard
+playbook. If you're touching a subsystem and the in-code comment
+doesn't fully justify a choice, the underlying paper usually does.
+
+- **Shadow mapping (foundation)** — Williams 1978, *Casting Curved
+  Shadows on Curved Surfaces*. The depth-from-light comparison that
+  everything else extends.
+- **Percentage-Closer Filtering (PCF)** — Reeves, Salesin, Cook 1987,
+  *Rendering Antialiased Shadows with Depth Maps*. The basis for the
+  Soft hardness.
+- **Cascaded Shadow Maps** — Microsoft's reference write-up:
+  <https://learn.microsoft.com/en-us/windows/win32/dxtecharts/cascaded-shadow-maps>.
+  Plus the *Common Techniques to Improve Shadow Depth Maps* sibling:
+  <https://learn.microsoft.com/en-us/windows/win32/dxtecharts/common-techniques-to-improve-shadow-depth-maps>.
+- **Practical Split Scheme (PSSM)** — Zhang et al. 2006:
+  <https://www.cse.chalmers.se/~uffe/xjobb/Practical%20Split%20Scheme%20for%20Parallel-Split%20Shadow%20Maps.pdf>.
+  The blend between uniform and logarithmic splits used by
+  `cascade::pssm_splits`.
+- **EVSM** — Lauritzen 2007 (*Summed-Area Variance Shadow Maps*) and
+  the follow-on EVSM presentations. The depth-warp exponent + four
+  moments + separable Gaussian blur pattern in `shadows/evsm.rs`.
+- **PCSS** — Fernando 2005, *Percentage-Closer Soft Shadows* (NVIDIA).
+  Blocker-search + variable-kernel PCF, used on the 2D path and
+  approximated on the cube path (see "Known limits").
+- **Cube depth sampling in WebGPU** — `texture_depth_cube_array` spec:
+  <https://www.w3.org/TR/webgpu/#texture-depth-cube-array>. WebGPU
+  follows the D3D cube-face convention, which drives the Y-flip + CW
+  winding fix on the cube pipeline.
+- **Contact shadows (SSCS)** — Drobot 2017 SIGGRAPH course notes;
+  Bungie's *Destiny* implementation overview. The world-space ray
+  march in `apply_sscs`.
+- **glTF `KHR_lights_punctual`** — units / direction conventions
+  this renderer follows:
+  <https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_lights_punctual>.

@@ -11,9 +11,9 @@ pub mod snapshot;
 pub mod types;
 
 pub use assets::{AssetId, AssetSource, AssetTable};
+pub use awsm_scene_schema::ShadowsConfig;
 pub use node::{Node, NodeId};
 pub use snapshot::SceneSnapshot;
-pub use awsm_scene_schema::ShadowsConfig;
 pub use types::{
     AssetStatus, CameraConfig, CameraProjection, ColliderShape, EnvironmentConfig, IblConfig,
     LightConfig, LightKind, ModelRef, NodeKind, SkyboxConfig, Trs,

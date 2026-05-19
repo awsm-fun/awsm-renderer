@@ -189,14 +189,11 @@ fn hardness_signal(node: Arc<Node>) -> impl Signal<Item = LightShadowHardness> {
     })
 }
 
-fn shadow_signal<T: 'static>(
+fn shadow_signal<T: Clone + 'static>(
     node: &Arc<Node>,
     get: impl Fn(&LightShadowConfig) -> T + 'static,
     default: T,
-) -> impl Signal<Item = T>
-where
-    T: Clone,
-{
+) -> impl Signal<Item = T> {
     node.kind.signal_cloned().map(move |k| match shadow_of(&k) {
         Some(s) => get(s),
         None => default.clone(),
@@ -233,11 +230,9 @@ fn hardness_select(node: Arc<Node>) -> Dom {
 
 fn cascade_count_select(node: Arc<Node>) -> Dom {
     let sig = shadow_signal(&node, |s| s.cascade_count, 4);
-    enum_select(
-        &[("1", 1u8), ("2", 2), ("3", 3), ("4", 4)],
-        sig,
-        move |v| update_shadow(&node, |s| s.cascade_count = v),
-    )
+    enum_select(&[("1", 1u8), ("2", 2), ("3", 3), ("4", 4)], sig, move |v| {
+        update_shadow(&node, |s| s.cascade_count = v)
+    })
 }
 
 fn evsm_cutoff_select(node: Arc<Node>) -> Dom {
@@ -293,7 +288,11 @@ fn cube_face_update_rate_select(node: Arc<Node>) -> Dom {
 /// changes — undo, programmatic edits — sync automatically) and a
 /// commit callback. Option ids are derived via `Debug` so callers don't
 /// have to provide a `Display` for each enum.
-fn enum_select<T, S>(options: &[(&'static str, T)], value_signal: S, write: impl Fn(T) + 'static) -> Dom
+fn enum_select<T, S>(
+    options: &[(&'static str, T)],
+    value_signal: S,
+    write: impl Fn(T) + 'static,
+) -> Dom
 where
     T: Copy + PartialEq + std::fmt::Debug + 'static,
     S: Signal<Item = T> + 'static,
