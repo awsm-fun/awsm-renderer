@@ -57,6 +57,7 @@ fn project_with_mesh_asset(asset_id: AssetId, label: &str) -> EditorProject {
     EditorProject {
         name: String::new(),
         environment: EnvironmentConfig::default(),
+        shadows: Default::default(),
         assets,
         nodes: Vec::new(),
     }
@@ -162,6 +163,7 @@ fn mesh_asset_with_source_roundtrip() {
     let project = EditorProject {
         name: String::new(),
         environment: EnvironmentConfig::default(),
+        shadows: Default::default(),
         assets,
         nodes: Vec::new(),
     };

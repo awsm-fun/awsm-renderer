@@ -74,6 +74,7 @@ mod tests {
         EditorProject {
             name: String::new(),
             environment: EnvironmentConfig::default(),
+            shadows: Default::default(),
             assets,
             nodes: vec![EditorNode {
                 id: NodeId::new(),

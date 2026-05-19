@@ -44,6 +44,7 @@ fn sample_project_with_material(asset_id: AssetId) -> EditorProject {
     EditorProject {
         name: String::new(),
         environment: EnvironmentConfig::default(),
+        shadows: Default::default(),
         assets,
         nodes: Vec::new(),
     }
