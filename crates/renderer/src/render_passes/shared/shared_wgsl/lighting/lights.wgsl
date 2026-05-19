@@ -197,6 +197,7 @@ fn apply_lighting(
                 color = debug_cascade_tint(
                     color,
                     get_light(0u).shadow_index,
+                    world_position,
                     view_z_for_shadow,
                 );
             }
@@ -275,6 +276,7 @@ fn apply_lighting_with_transmission(
                 color = debug_cascade_tint(
                     color,
                     get_light(0u).shadow_index,
+                    world_position,
                     view_z_for_shadow,
                 );
             }

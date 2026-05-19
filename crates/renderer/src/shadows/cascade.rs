@@ -56,7 +56,7 @@ pub fn fit_cascade(
     near_normalized: f32,
     far_normalized: f32,
     resolution: u32,
-    caster_world_aabb: Option<&Aabb>,
+    casters_world_aabbs: &[Aabb],
 ) -> Cascade {
     // Eight NDC corners of the camera's view frustum, parameterised by
     // the slice's near/far z in NDC. WebGPU NDC z is [0, 1] (near = 0,
@@ -127,61 +127,96 @@ pub fn fit_cascade(
         center_ls.z + sphere_radius,
     );
 
-    // Caster light-space AABB, used below to extend the cascade's
-    // depth range so off-slice casters still rasterise.
-    let mut caster_ls: Option<(Vec3, Vec3)> = None;
-    if let Some(aabb) = caster_world_aabb {
-        let corners = [
-            Vec3::new(aabb.min.x, aabb.min.y, aabb.min.z),
-            Vec3::new(aabb.max.x, aabb.min.y, aabb.min.z),
-            Vec3::new(aabb.min.x, aabb.max.y, aabb.min.z),
-            Vec3::new(aabb.max.x, aabb.max.y, aabb.min.z),
-            Vec3::new(aabb.min.x, aabb.min.y, aabb.max.z),
-            Vec3::new(aabb.max.x, aabb.min.y, aabb.max.z),
-            Vec3::new(aabb.min.x, aabb.max.y, aabb.max.z),
-            Vec3::new(aabb.max.x, aabb.max.y, aabb.max.z),
-        ];
-        let mut cmin = Vec3::splat(f32::INFINITY);
-        let mut cmax = Vec3::splat(f32::NEG_INFINITY);
-        for c in &corners {
-            let ls = view.transform_point3(*c);
-            cmin = cmin.min(ls);
-            cmax = cmax.max(ls);
+    // Extend the cascade's light-view depth range to capture casters
+    // between the light and the visible slice, then pull the near
+    // plane back further by `Z_PULL_BACK_MIN` for floating-point
+    // headroom — without that slack, a caster's topmost vertex
+    // sitting *exactly* on `max.z` rasterises to `NDC.z ≈ 0` and
+    // gets pinched at the near-plane by the hardware clip stage,
+    // leaving a gap between the caster's contact point and the
+    // start of its shadow on the ground.
+    //
+    // Caster filter: world-space cube of side `2·sphere_radius`
+    // around the slice centre, then collect the clipped portion's
+    // light-view Z extent. This excludes casters laterally far from
+    // the cascade (especially long thin meshes like a 10 km ground
+    // plane) so they don't inflate the cascade's Z range and ruin
+    // shadow-map depth precision. Casters between the cube and the
+    // cascade's true (infinite-along-light) prism footprint are
+    // missed; the outer cascade — whose cube is larger — typically
+    // covers them.
+    let mut have_caster = false;
+    let mut cmin_z = f32::INFINITY;
+    let mut cmax_z = f32::NEG_INFINITY;
+    if !casters_world_aabbs.is_empty() {
+        let clip_min_w = frustum_center - Vec3::splat(sphere_radius);
+        let clip_max_w = frustum_center + Vec3::splat(sphere_radius);
+        for aabb in casters_world_aabbs {
+            let clipped_min = Vec3::new(
+                aabb.min.x.max(clip_min_w.x),
+                aabb.min.y.max(clip_min_w.y),
+                aabb.min.z.max(clip_min_w.z),
+            );
+            let clipped_max = Vec3::new(
+                aabb.max.x.min(clip_max_w.x),
+                aabb.max.y.min(clip_max_w.y),
+                aabb.max.z.min(clip_max_w.z),
+            );
+            if clipped_min.x > clipped_max.x
+                || clipped_min.y > clipped_max.y
+                || clipped_min.z > clipped_max.z
+            {
+                continue;
+            }
+            let corners = [
+                Vec3::new(clipped_min.x, clipped_min.y, clipped_min.z),
+                Vec3::new(clipped_max.x, clipped_min.y, clipped_min.z),
+                Vec3::new(clipped_min.x, clipped_max.y, clipped_min.z),
+                Vec3::new(clipped_max.x, clipped_max.y, clipped_min.z),
+                Vec3::new(clipped_min.x, clipped_min.y, clipped_max.z),
+                Vec3::new(clipped_max.x, clipped_min.y, clipped_max.z),
+                Vec3::new(clipped_min.x, clipped_max.y, clipped_max.z),
+                Vec3::new(clipped_max.x, clipped_max.y, clipped_max.z),
+            ];
+            for c in &corners {
+                let ls = view.transform_point3(*c);
+                cmin_z = cmin_z.min(ls.z);
+                cmax_z = cmax_z.max(ls.z);
+            }
+            have_caster = true;
         }
-        caster_ls = Some((cmin, cmax));
     }
-
-    if let Some((cmin, cmax)) = caster_ls {
-        // Extend the cascade's light-view depth range to include the
-        // full caster AABB. Casters whose light-view z falls outside
-        // the receiver-frustum-slice's z range get NDC-clipped during
-        // rasterisation and never appear in the depth atlas — even
-        // though they may sit directly between the light and slice
-        // receivers in WORLD space. Both ends matter:
-        //   * `max.z` (closer to the light eye) captures the top of
-        //     a tall caster that pokes up toward the light.
-        //   * `min.z` (further from the light) captures the base of
-        //     a caster that sits at receiver-similar depths.
-        // XY is left as the stable-fit sphere bounds — extending it
-        // would defeat the rotation-invariance and reintroduce swim.
-        min.z = min.z.min(cmin.z);
-        max.z = max.z.max(cmax.z);
+    if have_caster {
+        max.z = max.z.max(cmax_z);
+        min.z = min.z.min(cmin_z);
     }
 
     // `Mat4::orthographic_rh` expects positive distances along the
-    // eye's -Z forward axis: a `near` value of N means the near plane
-    // is at `view_z = -N`. Our light-view AABB stored view-space z
-    // directly (negative for points in front of the eye), so negate
-    // when converting to ortho-rh's "distance from eye" convention.
+    // eye's -Z forward axis. Our light-view AABB stored view-space
+    // z directly (negative for points in front of the eye), so
+    // negate when converting to ortho-rh's "distance from eye"
+    // convention. Then pull the near plane back by
+    // `(visible_far - visible_near).max(Z_PULL_BACK_MIN)` for two
+    // distinct reasons:
     //
-    // We then pull the near plane closer to the eye by
-    // `z_pull_back` so casters between the light and the visible
-    // cascade slice (above the visible scene from the light's POV)
-    // still contribute to the depth map. Negative `near` is fine —
-    // it just means the near plane is behind the eye.
-    let visible_near = -max.z; // smallest distance from eye to scene
-    let visible_far = -min.z; // largest distance from eye to scene
-    let z_pull_back = (visible_far - visible_near).max(50.0);
+    //   1. *Float-precision headroom at the near plane.* Casters
+    //      whose top corner sat exactly on `max.z` would land at
+    //      `NDC.z ≈ 0` and get clipped by the hardware near-plane,
+    //      leaving a visible "peter-panning" gap between the
+    //      caster and the start of its shadow.
+    //   2. *Missed casters between the world cube and the true
+    //      cascade prism.* The cube filter is conservative-from-
+    //      the-receiver-side but can miss casters laterally
+    //      outside the cube that still shadow into the cascade.
+    //      A scene-scale pull-back gives those casters somewhere
+    //      to land in depth.
+    //
+    // `Z_PULL_BACK_MIN` is a soft floor — when the caster-driven
+    // range is already wider than this we don't shrink it.
+    const Z_PULL_BACK_MIN: f32 = 50.0;
+    let visible_near = -max.z;
+    let visible_far = -min.z;
+    let z_pull_back = (visible_far - visible_near).max(Z_PULL_BACK_MIN);
     let near = visible_near - z_pull_back;
     let far = visible_far;
 
@@ -255,7 +290,7 @@ pub fn fit_cascades(
     lambda: f32,
     base_resolution: u32,
     min_resolution: u32,
-    caster_world_aabb: Option<&Aabb>,
+    casters_world_aabbs: &[Aabb],
 ) -> Vec<(Cascade, u32, f32)> {
     let inv_view_proj = camera_view_projection.inverse();
     let splits = pssm_splits(world_near, world_far, lambda, cascade_count);
@@ -307,7 +342,7 @@ pub fn fit_cascades(
             ndc_near,
             ndc_far,
             res,
-            caster_world_aabb,
+            casters_world_aabbs,
         );
         cascades.push((cascade, res, *split_world));
         prev_split_world = *split_world;

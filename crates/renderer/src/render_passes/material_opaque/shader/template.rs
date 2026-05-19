@@ -32,8 +32,13 @@ pub struct ShaderTemplateMaterialOpaqueBindGroups {
     /// Bind-group slot index the shadow declarations should occupy.
     /// Opaque pipelines use slot 3; the field exists so the same
     /// `shared_wgsl/shadow/bind_groups.wgsl` include can be reused by
-    /// the transparent pipeline (which uses slot 4).
+    /// the transparent pipeline (slot 1 as of 16.B).
     pub shadow_group_index: u32,
+    /// Whether `apply_sscs` should compile its real body (true on the
+    /// opaque pass — it has `depth_tex` bound) or short-circuit to
+    /// `return 1.0` (true on the transparent pass — sampling its own
+    /// depth target would be a feedback loop, so SSCS is disabled).
+    pub sscs_available: bool,
 }
 
 /// Compute shader template for the opaque material pass.
@@ -103,6 +108,7 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 msaa_sample_count,
                 debug,
                 shadow_group_index: 3,
+                sscs_available: true,
             },
             compute: ShaderTemplateMaterialOpaqueCompute {
                 texture_pool_arrays_len,
@@ -226,6 +232,7 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaqueEmpty> for ShaderTemplateMaterialOpaqu
             unlit: true,
             shadow_group_index: 3,
             shadows_enabled: false,
+            sscs_available: false,
             materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
             shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
         })
@@ -246,6 +253,9 @@ pub struct ShaderTemplateMaterialOpaqueEmpty {
     /// real geometry so shadow sampling is irrelevant; left `false`
     /// to keep the WGSL minimal.
     pub shadows_enabled: bool,
+    /// Mirror of the opaque-compute flag. The empty template never
+    /// runs SSCS, but the shared shadow include needs the symbol.
+    pub sscs_available: bool,
     /// Concatenated `wgsl_fragment()` of every enabled material — see
     /// `awsm_materials::registry::build_materials_wgsl`.
     pub materials_wgsl: String,

@@ -94,7 +94,7 @@ impl Default for LightShadowConfig {
             cascade_count: 4,
             cascade_split_lambda: 0.5,
             evsm_cutoff: EvsmCutoff::LastCascade,
-            far_cascade_update_rate: FarCascadeUpdateRate::EveryFrame,
+            far_cascade_update_rate: FarCascadeUpdateRate::Every4Frames,
             cube_face_update_rate: CubeFaceUpdateRate::EveryFrame,
         }
     }
@@ -127,16 +127,20 @@ pub enum EvsmCutoff {
 }
 
 /// Update cadence for the farthest directional cascade. Near cascades
-/// always re-render every frame.
+/// always re-render every frame. Default is `Every4Frames` — the far
+/// cascade is the most expensive and least sensitive to per-frame
+/// updates; the runtime throttle's drift check invalidates the cache
+/// whenever the camera or light moves enough to matter, so the visual
+/// hit is invisible on typical scenes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum FarCascadeUpdateRate {
     /// Re-render the far cascade every frame.
-    #[default]
     EveryFrame,
     /// Re-render the far cascade every 2 frames.
     Every2Frames,
-    /// Re-render the far cascade every 4 frames.
+    /// Re-render the far cascade every 4 frames. Default.
+    #[default]
     Every4Frames,
     /// Re-render the far cascade every 8 frames.
     Every8Frames,

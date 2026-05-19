@@ -6,9 +6,11 @@
 pub mod camera;
 pub mod curve;
 pub mod instances;
+pub mod light_shadow;
 pub mod line;
 pub mod material;
 pub mod mesh;
+pub mod mesh_shadow;
 pub mod particle;
 pub mod primitive;
 pub mod sprite;
@@ -218,7 +220,19 @@ fn render_model_editor(node: Arc<Node>) -> Dom {
                 _ => String::new(),
             }))
         })))
-        .child(field_row("Node index", model_node_index_input(node)))
+        .child(field_row("Node index", model_node_index_input(node.clone())))
+        .child(mesh_shadow::render(
+            node,
+            |k| match k {
+                NodeKind::Model(r) => Some(r.shadow),
+                _ => None,
+            },
+            |k, new_shadow| {
+                if let NodeKind::Model(r) = k {
+                    r.shadow = new_shadow;
+                }
+            },
+        ))
     })
 }
 
@@ -273,6 +287,11 @@ fn render_light_editor(node: Arc<Node>) -> Dom {
                 None => None,
             }
         })))
+        // Shadow knobs sit below the variant-specific block so undoable
+        // edits there don't tear down the rest of the inspector. The
+        // panel itself dedupes internally on the variant tag for its
+        // directional-only / point-only sub-blocks.
+        .child(light_shadow::render(node.clone()))
     })
 }
 

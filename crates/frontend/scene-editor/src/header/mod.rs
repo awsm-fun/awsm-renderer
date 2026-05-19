@@ -22,6 +22,7 @@ mod insert;
 mod menu;
 mod object;
 mod project_label;
+pub(crate) mod shadows_config;
 mod stats;
 mod top;
 

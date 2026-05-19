@@ -304,10 +304,14 @@ impl BindGroups {
                         .recreate_mesh_material(&ctx)?;
                 }
                 FunctionToCall::TransparentLights => {
+                    // 16.B folded `lights` into `main` on the transparent
+                    // pipeline; the upstream signal still fires, but it
+                    // now routes through `recreate_main` so the merged
+                    // group picks up the new IBL / light buffer views.
                     render_passes
                         .material_transparent
                         .bind_groups
-                        .recreate_lights(&ctx)?;
+                        .recreate_main(&ctx)?;
                 }
                 FunctionToCall::TransparentTextures => {
                     render_passes

@@ -24,10 +24,15 @@ use crate::textures::SamplerKey;
 use crate::{bind_group_layout::BindGroupLayoutKey, render_passes::RenderPassInitContext};
 
 /// Bind group layout keys and cached bind groups for transparent materials.
+///
+/// As of 16.B, the transparent pass runs with 3 user bind groups + the
+/// shadow bind group at slot 1 — that's 4 total, exactly at the
+/// `maxBindGroups = 4` adapter limit. The former standalone `lights`
+/// group has been folded into `main` (all of its entries — IBL,
+/// BRDF LUT, lights_info, lights — are global per-frame).
 pub struct MaterialTransparentBindGroups {
     pub main_bind_group_layout_key: BindGroupLayoutKey,
     pub mesh_material_bind_group_layout_key: BindGroupLayoutKey,
-    pub lights_bind_group_layout_key: BindGroupLayoutKey,
     pub texture_pool_textures_bind_group_layout_key: BindGroupLayoutKey,
     pub shadows_bind_group_layout_key: BindGroupLayoutKey,
     pub texture_pool_arrays_len: u32,
@@ -35,7 +40,6 @@ pub struct MaterialTransparentBindGroups {
 
     _main_bind_group: Option<web_sys::GpuBindGroup>,
     _mesh_material_bind_group: Option<web_sys::GpuBindGroup>,
-    _lights_bind_group: Option<web_sys::GpuBindGroup>,
     _texture_bind_group: Option<web_sys::GpuBindGroup>,
     _shadows_bind_group: Option<web_sys::GpuBindGroup>,
 }
@@ -150,6 +154,83 @@ impl MaterialTransparentBindGroups {
                 visibility_fragment: true,
                 visibility_compute: false,
             },
+            // ── Lights block (was a separate bind group prior to 16.B,
+            // folded into `main` so slot 1 frees up for shadows; every
+            // binding here is global per frame, identical to the
+            // opaque pass's "lights" group. Bindings 10..=17.)
+            // IBL prefiltered env texture (cube)
+            BindGroupLayoutCacheKeyEntry {
+                resource: BindGroupLayoutResource::Texture(
+                    TextureBindingLayout::new()
+                        .with_view_dimension(TextureViewDimension::Cube),
+                ),
+                visibility_vertex: true,
+                visibility_fragment: true,
+                visibility_compute: false,
+            },
+            BindGroupLayoutCacheKeyEntry {
+                resource: BindGroupLayoutResource::Sampler(
+                    SamplerBindingLayout::new()
+                        .with_binding_type(SamplerBindingType::Filtering),
+                ),
+                visibility_vertex: true,
+                visibility_fragment: true,
+                visibility_compute: false,
+            },
+            BindGroupLayoutCacheKeyEntry {
+                resource: BindGroupLayoutResource::Texture(
+                    TextureBindingLayout::new()
+                        .with_view_dimension(TextureViewDimension::Cube),
+                ),
+                visibility_vertex: true,
+                visibility_fragment: true,
+                visibility_compute: false,
+            },
+            BindGroupLayoutCacheKeyEntry {
+                resource: BindGroupLayoutResource::Sampler(
+                    SamplerBindingLayout::new()
+                        .with_binding_type(SamplerBindingType::Filtering),
+                ),
+                visibility_vertex: true,
+                visibility_fragment: true,
+                visibility_compute: false,
+            },
+            BindGroupLayoutCacheKeyEntry {
+                resource: BindGroupLayoutResource::Texture(
+                    TextureBindingLayout::new()
+                        .with_view_dimension(TextureViewDimension::N2d),
+                ),
+                visibility_vertex: true,
+                visibility_fragment: true,
+                visibility_compute: false,
+            },
+            BindGroupLayoutCacheKeyEntry {
+                resource: BindGroupLayoutResource::Sampler(
+                    SamplerBindingLayout::new()
+                        .with_binding_type(SamplerBindingType::Filtering),
+                ),
+                visibility_vertex: true,
+                visibility_fragment: true,
+                visibility_compute: false,
+            },
+            BindGroupLayoutCacheKeyEntry {
+                resource: BindGroupLayoutResource::Buffer(
+                    BufferBindingLayout::new()
+                        .with_binding_type(BufferBindingType::Uniform),
+                ),
+                visibility_vertex: true,
+                visibility_fragment: true,
+                visibility_compute: false,
+            },
+            BindGroupLayoutCacheKeyEntry {
+                resource: BindGroupLayoutResource::Buffer(
+                    BufferBindingLayout::new()
+                        .with_binding_type(BufferBindingType::ReadOnlyStorage),
+                ),
+                visibility_vertex: true,
+                visibility_fragment: true,
+                visibility_compute: false,
+            },
         ];
 
         let main_bind_group_layout_key = ctx
@@ -187,97 +268,7 @@ impl MaterialTransparentBindGroups {
             },
         )?;
 
-        // lights
-
-        let lights_bind_group_layout_key = ctx.bind_group_layouts.get_key(
-            ctx.gpu,
-            BindGroupLayoutCacheKey {
-                entries: vec![
-                    // IBL prefiltered env texture
-                    BindGroupLayoutCacheKeyEntry {
-                        resource: BindGroupLayoutResource::Texture(
-                            TextureBindingLayout::new()
-                                .with_view_dimension(TextureViewDimension::Cube),
-                        ),
-                        visibility_vertex: true,
-                        visibility_fragment: true,
-                        visibility_compute: false,
-                    },
-                    // IBL prefiltered env sampler
-                    BindGroupLayoutCacheKeyEntry {
-                        resource: BindGroupLayoutResource::Sampler(
-                            SamplerBindingLayout::new()
-                                .with_binding_type(SamplerBindingType::Filtering),
-                        ),
-                        visibility_vertex: true,
-                        visibility_fragment: true,
-                        visibility_compute: false,
-                    },
-                    // IBL irradiance env texture
-                    BindGroupLayoutCacheKeyEntry {
-                        resource: BindGroupLayoutResource::Texture(
-                            TextureBindingLayout::new()
-                                .with_view_dimension(TextureViewDimension::Cube),
-                        ),
-                        visibility_vertex: true,
-                        visibility_fragment: true,
-                        visibility_compute: false,
-                    },
-                    // IBL irradiance env sampler
-                    BindGroupLayoutCacheKeyEntry {
-                        resource: BindGroupLayoutResource::Sampler(
-                            SamplerBindingLayout::new()
-                                .with_binding_type(SamplerBindingType::Filtering),
-                        ),
-                        visibility_vertex: true,
-                        visibility_fragment: true,
-                        visibility_compute: false,
-                    },
-                    // Brdf lut texture
-                    BindGroupLayoutCacheKeyEntry {
-                        resource: BindGroupLayoutResource::Texture(
-                            TextureBindingLayout::new()
-                                .with_view_dimension(TextureViewDimension::N2d),
-                        ),
-                        visibility_vertex: true,
-                        visibility_fragment: true,
-                        visibility_compute: false,
-                    },
-                    // Brdf lut sampler
-                    BindGroupLayoutCacheKeyEntry {
-                        resource: BindGroupLayoutResource::Sampler(
-                            SamplerBindingLayout::new()
-                                .with_binding_type(SamplerBindingType::Filtering),
-                        ),
-                        visibility_vertex: true,
-                        visibility_fragment: true,
-                        visibility_compute: false,
-                    },
-                    // info
-                    BindGroupLayoutCacheKeyEntry {
-                        resource: BindGroupLayoutResource::Buffer(
-                            BufferBindingLayout::new()
-                                .with_binding_type(BufferBindingType::Uniform),
-                        ),
-                        visibility_vertex: true,
-                        visibility_fragment: true,
-                        visibility_compute: false,
-                    },
-                    // punctual lights
-                    BindGroupLayoutCacheKeyEntry {
-                        resource: BindGroupLayoutResource::Buffer(
-                            BufferBindingLayout::new()
-                                .with_binding_type(BufferBindingType::ReadOnlyStorage),
-                        ),
-                        visibility_vertex: true,
-                        visibility_fragment: true,
-                        visibility_compute: false,
-                    },
-                ],
-            },
-        )?;
-
-        // Texture Pool
+        // Lights inlined into `main` above; no standalone group needed.
 
         let shadows_bind_group_layout_key = ctx.bind_group_layouts.get_key(
             ctx.gpu,
@@ -289,7 +280,6 @@ impl MaterialTransparentBindGroups {
         Ok(Self {
             main_bind_group_layout_key,
             mesh_material_bind_group_layout_key,
-            lights_bind_group_layout_key,
 
             texture_pool_textures_bind_group_layout_key,
             shadows_bind_group_layout_key,
@@ -298,7 +288,6 @@ impl MaterialTransparentBindGroups {
 
             _main_bind_group: None,
             _mesh_material_bind_group: None,
-            _lights_bind_group: None,
             _texture_bind_group: None,
             _shadows_bind_group: None,
         })
@@ -315,17 +304,15 @@ impl MaterialTransparentBindGroups {
             sampler_keys: texture_pool_sampler_keys,
         } = TexturePoolDeps::new(ctx, TexturePoolVisibility::Render)?;
 
-        let mut _self = Self {
+        let _self = Self {
             main_bind_group_layout_key: self.main_bind_group_layout_key,
             mesh_material_bind_group_layout_key: self.mesh_material_bind_group_layout_key,
-            lights_bind_group_layout_key: self.lights_bind_group_layout_key,
             texture_pool_textures_bind_group_layout_key,
             shadows_bind_group_layout_key: self.shadows_bind_group_layout_key,
             texture_pool_arrays_len,
             texture_pool_sampler_keys,
             _main_bind_group: self._main_bind_group.clone(),
             _mesh_material_bind_group: self._mesh_material_bind_group.clone(),
-            _lights_bind_group: self._lights_bind_group.clone(),
             _texture_bind_group: None,
             _shadows_bind_group: self._shadows_bind_group.clone(),
         };
@@ -333,7 +320,11 @@ impl MaterialTransparentBindGroups {
         Ok(_self)
     }
 
-    /// Returns the live bind groups used for rendering.
+    /// Returns the live bind groups used for rendering, in dispatch
+    /// slot order: `(main @0, shadows @1, texture_pool @2,
+    /// mesh_material @3)`. Lights got folded into `main`, so the
+    /// shadow bind group now lives at slot 1 (was the lights slot
+    /// pre-16.B).
     pub fn get_bind_groups(
         &self,
     ) -> std::result::Result<
@@ -347,32 +338,32 @@ impl MaterialTransparentBindGroups {
     > {
         match (
             &self._main_bind_group,
-            &self._mesh_material_bind_group,
-            &self._lights_bind_group,
+            &self._shadows_bind_group,
             &self._texture_bind_group,
+            &self._mesh_material_bind_group,
         ) {
             (
                 Some(main_bind_group),
-                Some(mesh_material_bind_group),
-                Some(lights_bind_group),
+                Some(shadows_bind_group),
                 Some(texture_bind_group),
+                Some(mesh_material_bind_group),
             ) => Ok((
                 main_bind_group,
-                mesh_material_bind_group,
-                lights_bind_group,
+                shadows_bind_group,
                 texture_bind_group,
+                mesh_material_bind_group,
             )),
             (None, _, _, _) => Err(AwsmBindGroupError::NotFound(
                 "Material Transparent - Main".to_string(),
             )),
             (_, None, _, _) => Err(AwsmBindGroupError::NotFound(
-                "Material Transparent - Mesh Material".to_string(),
+                "Material Transparent - Shadows".to_string(),
             )),
             (_, _, None, _) => Err(AwsmBindGroupError::NotFound(
-                "Material Transparent - Lights".to_string(),
+                "Material Transparent - Texture Pool".to_string(),
             )),
             (_, _, _, None) => Err(AwsmBindGroupError::NotFound(
-                "Material Transparent - Texture Pool".to_string(),
+                "Material Transparent - Mesh Material".to_string(),
             )),
         }
     }
@@ -467,6 +458,42 @@ impl MaterialTransparentBindGroups {
             BindGroupResource::Buffer(BufferBinding::new(ctx.instances.gpu_attribute_buffer())),
         ));
 
+        // ── Lights block (was a separate group; bindings 10..=17) ────
+        entries.push(BindGroupEntry::new(
+            entries.len() as u32,
+            BindGroupResource::TextureView(Cow::Borrowed(
+                &ctx.lights.ibl.prefiltered_env.texture_view,
+            )),
+        ));
+        entries.push(BindGroupEntry::new(
+            entries.len() as u32,
+            BindGroupResource::Sampler(&ctx.lights.ibl.prefiltered_env.sampler),
+        ));
+        entries.push(BindGroupEntry::new(
+            entries.len() as u32,
+            BindGroupResource::TextureView(Cow::Borrowed(&ctx.lights.ibl.irradiance.texture_view)),
+        ));
+        entries.push(BindGroupEntry::new(
+            entries.len() as u32,
+            BindGroupResource::Sampler(&ctx.lights.ibl.irradiance.sampler),
+        ));
+        entries.push(BindGroupEntry::new(
+            entries.len() as u32,
+            BindGroupResource::TextureView(Cow::Borrowed(&ctx.lights.brdf_lut.view)),
+        ));
+        entries.push(BindGroupEntry::new(
+            entries.len() as u32,
+            BindGroupResource::Sampler(&ctx.lights.brdf_lut.sampler),
+        ));
+        entries.push(BindGroupEntry::new(
+            entries.len() as u32,
+            BindGroupResource::Buffer(BufferBinding::new(&ctx.lights.gpu_info_buffer)),
+        ));
+        entries.push(BindGroupEntry::new(
+            entries.len() as u32,
+            BindGroupResource::Buffer(BufferBinding::new(&ctx.lights.gpu_punctual_buffer)),
+        ));
+
         let descriptor = BindGroupDescriptor::new(
             ctx.bind_group_layouts
                 .get(self.main_bind_group_layout_key)?,
@@ -513,64 +540,12 @@ impl MaterialTransparentBindGroups {
         Ok(())
     }
 
-    /// Recreates the light bind group for transparent materials.
-    pub fn recreate_lights(&mut self, ctx: &BindGroupRecreateContext<'_>) -> Result<()> {
-        let mut entries = Vec::new();
-
-        // IBL filtered env
-        entries.push(BindGroupEntry::new(
-            entries.len() as u32,
-            BindGroupResource::TextureView(Cow::Borrowed(
-                &ctx.lights.ibl.prefiltered_env.texture_view,
-            )),
-        ));
-        entries.push(BindGroupEntry::new(
-            entries.len() as u32,
-            BindGroupResource::Sampler(&ctx.lights.ibl.prefiltered_env.sampler),
-        ));
-
-        // IBL irradiance
-        entries.push(BindGroupEntry::new(
-            entries.len() as u32,
-            BindGroupResource::TextureView(Cow::Borrowed(&ctx.lights.ibl.irradiance.texture_view)),
-        ));
-        entries.push(BindGroupEntry::new(
-            entries.len() as u32,
-            BindGroupResource::Sampler(&ctx.lights.ibl.irradiance.sampler),
-        ));
-
-        // BRDF lut
-        entries.push(BindGroupEntry::new(
-            entries.len() as u32,
-            BindGroupResource::TextureView(Cow::Borrowed(&ctx.lights.brdf_lut.view)),
-        ));
-        entries.push(BindGroupEntry::new(
-            entries.len() as u32,
-            BindGroupResource::Sampler(&ctx.lights.brdf_lut.sampler),
-        ));
-
-        // Lights info
-        entries.push(BindGroupEntry::new(
-            entries.len() as u32,
-            BindGroupResource::Buffer(BufferBinding::new(&ctx.lights.gpu_info_buffer)),
-        ));
-
-        entries.push(BindGroupEntry::new(
-            entries.len() as u32,
-            BindGroupResource::Buffer(BufferBinding::new(&ctx.lights.gpu_punctual_buffer)),
-        ));
-
-        let descriptor = BindGroupDescriptor::new(
-            ctx.bind_group_layouts
-                .get(self.lights_bind_group_layout_key)?,
-            Some("Material Transparent - Lights"),
-            entries,
-        );
-
-        self._lights_bind_group = Some(ctx.gpu.create_bind_group(&descriptor.into()));
-
-        Ok(())
-    }
+    // `recreate_lights` removed in 16.B — its entries are now built
+    // by `recreate_main` (bindings 10..=17 of the merged `main`
+    // group). Callers that previously invoked `recreate_lights`
+    // should call `recreate_main` instead; the `BindGroupCreate`
+    // enum still has a `LightsChange` variant for upstream signal
+    // compatibility but it routes to `recreate_main` on this pass.
 
     /// Recreates the texture pool bind group for transparent materials.
     pub fn recreate_texture_pool(&mut self, ctx: &BindGroupRecreateContext<'_>) -> Result<()> {

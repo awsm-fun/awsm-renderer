@@ -54,15 +54,14 @@ impl MaterialTransparentRenderPass {
             ctx.begin_world_transparent_pass(Some("Material Transparent Pass"))?
         };
 
-        let (main_bind_group, mesh_material_bind_group, lights_bind_group, texture_bind_group) =
+        let (main_bind_group, shadows_bind_group, texture_bind_group, mesh_material_bind_group) =
             self.bind_groups.get_bind_groups()?;
 
-        // set later with dynamic offsets
+        // 16.B slot order: main (was main + lights) / shadows /
+        // texture_pool / mesh_material (per-mesh, dynamic-offset).
         render_pass.set_bind_group(0u32, main_bind_group, None)?;
-        render_pass.set_bind_group(1u32, lights_bind_group, None)?;
+        render_pass.set_bind_group(1u32, shadows_bind_group, None)?;
         render_pass.set_bind_group(2u32, texture_bind_group, None)?;
-        // Phase 9 will add a shadow bind group here once `maxBindGroups=4`
-        // is respected by collapsing an existing group.
 
         let mut last_render_pipeline_key = None;
         for renderable in renderables {

@@ -203,5 +203,69 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
         }
     }
 
+    // EVSM compute passes: for every cascade that landed in
+    // `evsm_dispatch_queue` this frame, run moment-write → blur H →
+    // blur V. The render passes above must complete first because
+    // moment-write reads from `shadow_atlas`; WebGPU enforces the
+    // barrier at the pass-boundary level so no explicit sync is
+    // needed.
+    if !shadows.evsm_dispatch_queue.is_empty() {
+        dispatch_evsm(ctx, shadows)?;
+    }
+
+    Ok(())
+}
+
+fn dispatch_evsm(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
+    use awsm_renderer_core::command::compute_pass::{ComputePassDescriptor, ComputePassEncoder};
+    let moment_pipeline = ctx
+        .pipelines
+        .compute
+        .get(shadows.evsm_pass.moment_write_pipeline_key)?;
+    let blur_h_pipeline = ctx
+        .pipelines
+        .compute
+        .get(shadows.evsm_pass.blur_h_pipeline_key)?;
+    let blur_v_pipeline = ctx
+        .pipelines
+        .compute
+        .get(shadows.evsm_pass.blur_v_pipeline_key)?;
+
+    for entry in &shadows.evsm_dispatch_queue {
+        let dst_w = entry.evsm_rect[2];
+        let dst_h = entry.evsm_rect[3];
+        if dst_w == 0 || dst_h == 0 {
+            continue;
+        }
+        let offset = crate::shadows::EvsmPass::params_dynamic_offset(entry.params_slot);
+
+        // ── Moment write ────────────────────────────────────────────
+        let pass: ComputePassEncoder = ctx.command_encoder.begin_compute_pass(Some(
+            &ComputePassDescriptor::new(Some("Shadow EVSM Moment Write")).into(),
+        ));
+        pass.set_pipeline(moment_pipeline);
+        pass.set_bind_group(0, &shadows.evsm_moment_write_bind_group, Some(&[offset]))?;
+        pass.dispatch_workgroups(dst_w.div_ceil(8), Some(dst_h.div_ceil(8)), None);
+        pass.end();
+
+        // ── Blur H (evsm → ping-pong) ──────────────────────────────
+        let pass: ComputePassEncoder = ctx.command_encoder.begin_compute_pass(Some(
+            &ComputePassDescriptor::new(Some("Shadow EVSM Blur H")).into(),
+        ));
+        pass.set_pipeline(blur_h_pipeline);
+        pass.set_bind_group(0, &shadows.evsm_blur_h_bind_group, Some(&[offset]))?;
+        pass.dispatch_workgroups(dst_w.div_ceil(64), Some(dst_h), None);
+        pass.end();
+
+        // ── Blur V (ping-pong → evsm) ──────────────────────────────
+        let pass: ComputePassEncoder = ctx.command_encoder.begin_compute_pass(Some(
+            &ComputePassDescriptor::new(Some("Shadow EVSM Blur V")).into(),
+        ));
+        pass.set_pipeline(blur_v_pipeline);
+        pass.set_bind_group(0, &shadows.evsm_blur_v_bind_group, Some(&[offset]))?;
+        pass.dispatch_workgroups(dst_w, Some(dst_h.div_ceil(64)), None);
+        pass.end();
+    }
+
     Ok(())
 }

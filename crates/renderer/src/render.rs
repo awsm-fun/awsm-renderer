@@ -101,6 +101,7 @@ impl AwsmRenderer {
         self.shadows.write_gpu(
             &self.logging,
             &self.gpu,
+            &self.bind_group_layouts,
             &mut self.bind_groups,
             &self.camera,
             &self.lights,

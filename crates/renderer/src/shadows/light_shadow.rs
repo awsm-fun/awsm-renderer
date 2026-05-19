@@ -63,7 +63,7 @@ impl Default for LightShadowParams {
             cascade_count: 4,
             cascade_split_lambda: 0.5,
             evsm_cutoff: EvsmCutoff::LastCascade,
-            far_cascade_update_rate: FarCascadeUpdateRate::EveryFrame,
+            far_cascade_update_rate: FarCascadeUpdateRate::Every4Frames,
             cube_face_update_rate: CubeFaceUpdateRate::EveryFrame,
         }
     }
@@ -105,15 +105,26 @@ pub enum EvsmCutoff {
 /// Re-render cadence for the farthest directional cascade. Near
 /// cascades always re-render every frame; this only throttles the work
 /// for distant geometry where per-frame change is small relative to a
-/// texel.
+/// texel. The throttle's view-projection drift check still invalidates
+/// the cache when the camera / light moves above ~0.001 in vp-norm
+/// units, so user-driven changes are picked up immediately — the
+/// throttle only matters when the scene is genuinely idle.
+///
+/// Default is `Every4Frames`: the far cascade covers the largest
+/// world extent, so each texel maps to many world units and a 3-frame
+/// delay is imperceptible. The 75 % cost saving on the most-expensive
+/// cascade is a clear win for "typical" scenes; consumers that need
+/// per-frame freshness (rapidly-changing distant geometry) can set
+/// `EveryFrame` explicitly.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum FarCascadeUpdateRate {
     /// Re-render the far cascade(s) every frame.
-    #[default]
     EveryFrame,
     /// Re-render every 2 frames.
     Every2Frames,
-    /// Re-render every 4 frames.
+    /// Re-render every 4 frames. Default — best cost / quality balance
+    /// for distant cascades.
+    #[default]
     Every4Frames,
     /// Re-render every 8 frames.
     Every8Frames,

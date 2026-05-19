@@ -83,5 +83,17 @@ pub fn render(node: Arc<Node>) -> Dom {
                 }
             },
         ))
+        .child(super::mesh_shadow::render(
+            node,
+            |k| match k {
+                NodeKind::Mesh { shadow, .. } => Some(*shadow),
+                _ => None,
+            },
+            |k, new_shadow| {
+                if let NodeKind::Mesh { shadow, .. } = k {
+                    *shadow = new_shadow;
+                }
+            },
+        ))
     })
 }

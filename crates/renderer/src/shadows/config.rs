@@ -47,15 +47,35 @@ pub struct ShadowsConfig {
 impl Default for ShadowsConfig {
     fn default() -> Self {
         Self {
-            sscs_enabled: true,
+            sscs_enabled: false,
             sscs_step_count: 16,
             atlas_size: 4096,
             evsm_atlas_size: 2048,
-            evsm_exponent: 20.0,
-            evsm_blur_radius: 3,
+            // 10 is the AAA-canon EVSM exponent for fp16 — gives a
+            // smooth contact-hardening curve with comfortable
+            // half-float headroom. 20 (the prior default) was at the
+            // top of the fp16 range and the resulting Chebyshev curve
+            // was so sharp it rendered like a binary mask. See
+            // `EVSM_EXPONENT_MAX_FP16` for the hard cap.
+            evsm_exponent: 10.0,
+            // 6 gives a clearly soft far cascade. Lower values
+            // (3 was the prior default) leave EVSM visually similar
+            // to PCF for typical caster sizes.
+            evsm_blur_radius: 6,
             max_point_shadows: 8,
             point_shadow_resolution: 1024,
             debug_cascade_colors: false,
         }
     }
+}
+
+impl ShadowsConfig {
+    /// Hard upper safe limit for `evsm_exponent` under `RGBA16F`
+    /// moment storage. The moments `exp(c · z)` are evaluated for
+    /// `z ∈ [-1, 1]`, so the largest stored value is `exp(c) ≈ 5·10⁸`
+    /// at `c = 20` — already at the very top of the half-float range.
+    /// Pushing higher silently saturates and produces near-binary
+    /// (hard-edged) Chebyshev visibility, which defeats the whole
+    /// point of EVSM. AAA tunings sit near `c ≈ 10` for fp16.
+    pub const EVSM_EXPONENT_MAX_FP16: f32 = 18.0;
 }

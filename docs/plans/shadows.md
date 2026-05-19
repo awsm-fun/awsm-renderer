@@ -1139,14 +1139,22 @@ These changes are all in `crates/renderer/src/shadows/{cascade.rs, mod.rs, rende
 
 ### What's left
 
-Three workstreams remain to call Phase 16 complete:
+All three workstreams (16.A EVSM, 16.B transparent shadows + bind-group
+consolidation, 16.C inspector UI) have now landed end-to-end. The
+sub-sections below remain as the implementation log; the only piece
+explicitly deferred is the **global `ShadowsConfig` editor panel**
+(16.C bullet 3) — its data path requires either promoting
+`ShadowsConfig` into `awsm_scene_schema` or using a local-storage shim,
+neither of which is blocking the authoring loop today.
+
+Detailed log of what shipped:
 
 #### 16.A — EVSM moment-write compute pass
 
 The infrastructure (cutoff flag, descriptor bit, sampler dispatch site, atlas placeholder, blur radius / exponent uniforms) is all wired. What's missing is the actual moment-writing pipeline and the separable Gaussian blur.
 
 1. **EVSM atlas allocation.** Promote `evsm_atlas_texture` from its 1×1 placeholder to a real `RGBA16F` texture sized at `evsm_atlas_size` (default 2048²). Allocate lazily on the first frame `evsm_cutoff != Off`. Use the same row-pack allocator that handles the PCF atlas; EVSM cascades take rects from this second atlas.
-2. **Moment-writing pipeline.** A new shadow pipeline variant that *does* have a fragment stage, writing `vec4(exp(c·z), exp(c·z)², exp(-c·z), exp(-c·z)²)` to RGBA16F. The vertex shader is the same depth-only shadow VS we already have; only the fragment + colour target differ. Switch `Shadows::shadow_pipeline_key` to take an `is_evsm: bool` and pick between the two variants. The render pass dispatch picks the variant based on the cascade's `is_evsm` flag.
+2. **Moment-writing pipeline.** A new shadow pipeline variant that *does* have a fragment stage, writing `vec4(exp(c·z), exp(c·z)², exp(-c·z), exp(-c·z)²)` to RGBA16F. The vertex shader is the same depth-only shadow VS we already have; only the fragment + colour target differ. Extend `Shadows::shadow_pipeline_key` to take an `is_evsm: bool` alongside the existing `instancing` and `cube_face` bits (EVSM is 2D-only, so `cube_face=true` + `is_evsm=true` is invalid and should debug-assert). The cube-pipeline variants stay as-is — Y-flip + CW front-face are PCF-specific concerns and don't apply to EVSM. The render pass dispatch picks the variant based on the cascade's `is_evsm` flag.
 3. **Separable Gaussian blur.** Two compute passes per EVSM cascade rect: horizontal blur → ping-pong texture, vertical blur → atlas. Workgroup size `64×1` / `1×64`, kernel half-width from `ShadowGlobals.evsm_blur_radius`. Pre-compute Gaussian weights as a constant array. The ping-pong is a single transient `RGBA16F` texture sized to the largest EVSM rect; reuse across cascades.
 4. **Sample path.** Add `sample_shadow_evsm(desc, world_pos, world_normal)` to `bind_groups.wgsl`. Compute UV the same way as `sample_shadow_descriptor`, sample the four moments at mip 0 with the linear sampler, reconstruct positive and negative one-tailed Chebyshev visibilities, return `min(pos, neg)`. Wire it into the `sample_shadow_descriptor` dispatcher: cascade kind == 1 (`is_evsm`) goes to EVSM, kind == 0 stays on PCF, kind == 2 stays on cube.
 5. **Throttle integration.** The `should_render` flag already gates both the depth pass and the blur (one flag per view). The throttle's view-projection drift heuristic re-renders EVSM cascades when the camera moves enough — no separate path needed.
@@ -1171,13 +1179,14 @@ The schema fields all already round-trip through `project.json`. Adding inspecto
    - `cast` toggle (checkbox).
    - `depth_bias` (number, 0.0–0.01 range, step 0.0001).
    - `normal_bias` (number, 0.0–0.5 range, step 0.001).
-   - `resolution` (dropdown: 512 / 1024 / 2048 / 4096).
-   - `hardness` (dropdown: Hard / Soft / Pcss).
+   - `resolution` (dropdown: 512 / 1024 / 2048 / 4096) — directional / spot only; point lights size their cube pool from `ShadowsConfig::point_shadow_resolution` instead.
+   - `hardness` (dropdown: Hard / Soft / Pcss). Point lights gray out `Pcss` (cube PCSS is not in v1).
    - `pcss_penumbra_scale` (number, 0.01–10, visible only when hardness=Pcss).
    - `max_distance` (number, 1–500).
    - Directional-only: `cascade_count` (dropdown 1–4), `cascade_split_lambda` (slider 0–1), `evsm_cutoff` (dropdown), `far_cascade_update_rate` (dropdown).
+   - Point-only: `cube_face_update_rate` (dropdown: EveryFrame / Every2Frames / Every4Frames / Every8Frames). Schema field already round-trips through `project.json` and `light_shadow_params_from_config`.
 2. **Mesh inspector**: `cast_shadows` and `receive_shadows` toggles in the primitive / model / sweep / curve-instances panels.
-3. **Global config panel**: somewhere in the Editor menu, expose `ShadowsConfig` (SSCS toggle + step count, atlas size, EVSM atlas size + exponent + blur, debug cascade colour overlay).
+3. **Global config panel**: **deferred** — `ShadowsConfig` lives on the renderer only (no on-disk scene schema yet) and is reachable via `AwsmRenderer::set_shadows_config`. Adding a UI panel requires either (a) promoting `ShadowsConfig` into `awsm_scene_schema` (new field on the project root with `#[serde(default)]`) plus an Environment-tab sub-panel, or (b) a per-project local-storage shim. Punt until either path is needed in earnest — the per-light + per-mesh controls cover the common authoring loop.
 4. **Live update path**: each control should call `AwsmRenderer::set_light_shadow_params` / `set_mesh_shadow_flags` / `set_shadows_config` and trigger a frame redraw. The renderer's internal `dirty` flag handles the GPU upload.
 
 ### Performance pass
@@ -1186,7 +1195,7 @@ Once 16.A–C land, do one focused performance sweep:
 
 1. **Per-cascade frustum culling broad-phase.** Currently every shadow view iterates every mesh. For a 100-mesh scene with 4 cascades + 1 cube light (6 faces), that's 1000 AABB-vs-frustum checks per frame. A simple spatial hash or sorted-by-X bucket would cut this to O(meshes × cascades_overlapping_bucket). Worth it if the test scene grows past ~50 dynamic meshes.
 2. **Far-cascade throttling default.** Flip the default `far_cascade_update_rate` to `EveryFourFrames` for typical scenes — the visual hit on a static scene is invisible, the cost saving for the largest cascade is 75%.
-3. **Cube-face per-axis culling.** A cube light renders 6 faces; meshes outside a given face's frustum should be culled per face, not just per light. Currently the same broad mesh list is iterated per face — easy win.
+3. **Cube-face per-axis culling.** A cube light renders 6 faces; meshes outside a given face's frustum should be culled per face, not just per light. The current per-view frustum cull in `render_pass::record` already gives this for free (it builds `Frustum::from_view_projection(view.view_projection)` once per cube face), so the optimisation is now "verify it actually skips work" rather than "implement it" — file a profiling task instead of code.
 4. **Shadow-pass MSAA.** Confirm the shadow pipeline never picks up MSAA from any upstream cache key (the depth atlas is 1×). Add an explicit `multisample.count = 1` assertion in `build_shadow_pipeline` if anything looks off.
 5. **Blend zone cost.** Receivers in the 15% blend zone of each cascade pay 2× PCF cost (10 + 10 = 20 taps). On a 4K screen with a single directional light, the blend zone is roughly 60% of total receiver pixels (4 cascades × 15% boundary each, summed). For high-detail scenes, consider reducing `CASCADE_BLEND` to 0.10 — at the cost of slightly more visible seams under careful inspection.
 

@@ -5,7 +5,10 @@ use thiserror::Error;
 
 use crate::{
     bind_group_layout::AwsmBindGroupLayoutError, bind_groups::AwsmBindGroupError,
-    pipeline_layouts::AwsmPipelineLayoutError, pipelines::render_pipeline::AwsmRenderPipelineError,
+    pipeline_layouts::AwsmPipelineLayoutError,
+    pipelines::{
+        compute_pipeline::AwsmComputePipelineError, render_pipeline::AwsmRenderPipelineError,
+    },
     shaders::AwsmShaderError,
 };
 
@@ -55,4 +58,7 @@ pub enum AwsmShadowError {
     /// Render pipeline failure.
     #[error("[shadow] {0}")]
     RenderPipeline(#[from] AwsmRenderPipelineError),
+    /// Compute pipeline failure (EVSM moment writer / blur).
+    #[error("[shadow] {0}")]
+    ComputePipeline(#[from] AwsmComputePipelineError),
 }

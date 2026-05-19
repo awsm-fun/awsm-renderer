@@ -11,8 +11,11 @@
 pub mod cascade;
 pub mod config;
 pub mod error;
+pub mod evsm;
 pub mod light_shadow;
 pub mod render_pass;
+#[cfg(feature = "scene-schema")]
+pub mod schema_convert;
 pub mod shader;
 
 use std::sync::LazyLock;
@@ -27,6 +30,7 @@ use awsm_renderer_core::{
     error::AwsmCoreError,
     pipeline::{
         depth_stencil::DepthStencilState,
+        multisample::MultisampleState,
         primitive::{CullMode, FrontFace, PrimitiveState, PrimitiveTopology},
     },
     renderer::AwsmRendererWebGpu,
@@ -64,6 +68,7 @@ pub use self::{
     cascade::Cascade,
     config::ShadowsConfig,
     error::AwsmShadowError,
+    evsm::EvsmPass,
     light_shadow::{
         CubeFaceUpdateRate, EvsmCutoff, FarCascadeUpdateRate, LightShadowHardness,
         LightShadowParams, MeshShadowFlags,
@@ -139,6 +144,25 @@ pub const POINT_SHADOW_NEAR: f32 = 0.05;
 /// short-circuit shadow sampling.
 pub const SHADOW_INDEX_NONE: u32 = u32::MAX;
 
+/// One queued EVSM moment-write + blur dispatch for the current frame.
+/// `descriptor_index` lets the render-pass dispatch fetch the
+/// `evsm_rect` (which was patched into the descriptor's `atlas_rect`
+/// at write time), but we cache the rects here so the compute-pass
+/// loop doesn't need to re-read the descriptor.
+#[derive(Clone, Copy, Debug)]
+pub struct EvsmDispatchEntry {
+    /// Index into `descriptors_uniform` for this cascade.
+    pub descriptor_index: u32,
+    /// Source rect on `shadow_atlas` in texels (`x, y, w, h`).
+    pub pcf_rect: [u32; 4],
+    /// Destination rect on `evsm_atlas` in texels (`x, y, w, h`). Also
+    /// what receivers sample (UV-converted on read).
+    pub evsm_rect: [u32; 4],
+    /// Params-buffer slot index for this cascade. Multiplied by
+    /// `EVSM_PARAMS_STRIDE` to get the dynamic offset.
+    pub params_slot: u32,
+}
+
 /// Owns every GPU resource for shadow generation and sampling.
 pub struct Shadows {
     /// Renderer-wide configuration. Replace via [`Shadows::set_config`].
@@ -151,11 +175,38 @@ pub struct Shadows {
     /// for the one supported caster; phase 4 swaps in a packer.
     pub atlas_size: u32,
     /// EVSM atlas (`RGBA16F`) — moments storage for far directional
-    /// cascades. Allocated even in phase 0 so the bind group has a
-    /// stable layout.
+    /// cascades. Sized at `config.evsm_atlas_size`. Usage includes
+    /// `STORAGE_BINDING` for the blur compute passes plus
+    /// `RENDER_ATTACHMENT` for the moment-writer fragment pass.
     pub evsm_atlas_texture: web_sys::GpuTexture,
-    /// Default view of the EVSM atlas.
+    /// Default sample-side view of the EVSM atlas. Bound at shadow
+    /// group slot 4 of every receiver pipeline.
     pub evsm_atlas_view: web_sys::GpuTextureView,
+    /// Active per-side dimension of the EVSM atlas in texels.
+    pub evsm_atlas_size: u32,
+    /// Ping-pong texture for the separable Gaussian blur. Same size as
+    /// `evsm_atlas_texture`; never sampled at receiver time.
+    pub evsm_blur_pingpong_texture: web_sys::GpuTexture,
+    /// Default view of the ping-pong texture.
+    pub evsm_blur_pingpong_view: web_sys::GpuTextureView,
+    /// EVSM compute pipelines + per-cascade params buffer.
+    pub evsm_pass: EvsmPass,
+    /// Per-frame EVSM cascade list — `(descriptor_index, pcf_rect,
+    /// evsm_rect)` for the dispatch loop. `pcf_rect` is in shadow_atlas
+    /// texels; `evsm_rect` is in evsm_atlas texels.
+    pub evsm_dispatch_queue: Vec<EvsmDispatchEntry>,
+    /// Persistent bind group for the moment-write compute pass.
+    /// Bindings: 0=shadow_atlas (depth), 1=evsm_atlas (storage write),
+    /// 2=params (uniform, dynamic offset). Same group is used for
+    /// every EVSM cascade; per-cascade context comes via dynamic
+    /// offset.
+    pub evsm_moment_write_bind_group: web_sys::GpuBindGroup,
+    /// Persistent bind group for the horizontal blur half-pass.
+    /// 0=evsm_atlas (read), 1=ping-pong (storage write), 2=params.
+    pub evsm_blur_h_bind_group: web_sys::GpuBindGroup,
+    /// Persistent bind group for the vertical blur half-pass.
+    /// 0=ping-pong (read), 1=evsm_atlas (storage write), 2=params.
+    pub evsm_blur_v_bind_group: web_sys::GpuBindGroup,
     /// Cubemap array used for point-light shadows.
     pub cube_array_texture: web_sys::GpuTexture,
     /// Cube-array view spanning every slice — used as the
@@ -198,6 +249,14 @@ pub struct Shadows {
 
     /// Per-light authored shadow parameters.
     params: SecondaryMap<LightKey, LightShadowParams>,
+    /// O(1) cache of `cube_slots[idx] == Some(light_key)`. Each point
+    /// light's slot is stable across frames (re-assigned only on
+    /// cube-pool resize or first acquisition), so caching the index
+    /// avoids the two linear walks the previous code did each frame.
+    /// Validated against `cube_slots[idx]` on lookup — a stale entry
+    /// (slot reassigned to a different light, or pool recreated) falls
+    /// back to the linear search.
+    cube_slot_for_light: SecondaryMap<LightKey, u32>,
     /// Per-light, per-frame fitted record (cascade fit, atlas rect,
     /// descriptor index). Rebuilt every `write_gpu` call.
     records: SecondaryMap<LightKey, LightShadowRecord>,
@@ -245,6 +304,51 @@ pub struct Shadows {
     /// frame's write_gpu grows the atlas (and rebinds the opaque
     /// shadow bind group via `BindGroupCreate::ShadowsResourcesChange`).
     pending_atlas_grow: bool,
+    /// Set by `set_config` when a resource-shape config field changed.
+    /// Processed at the top of the next `write_gpu` so users get a
+    /// live update from the editor without having to reload the
+    /// project.
+    pending_resource_recreate: PendingResourceRecreate,
+    /// Scratch buffer reused across `write_gpu` calls to avoid a per-
+    /// frame heap allocation for the per-mesh caster AABB list. Capacity
+    /// grows monotonically to the largest scene seen so far; `clear()`
+    /// preserves capacity.
+    caster_aabbs_scratch: Vec<crate::bounds::Aabb>,
+    /// Scratch staging buffer for the per-frame descriptor pack
+    /// before upload to `descriptors_uniform`. Sized to
+    /// `SHADOW_DESCRIPTOR_UNIFORM_BYTES` once at construction;
+    /// `fill(0)` between frames reuses the allocation.
+    descriptor_bytes_scratch: Vec<u8>,
+    /// Scratch staging buffer for per-view matrices uploaded into
+    /// `shadow_view_buffer`. Sized to `SHADOW_VIEW_STRIDE *
+    /// MAX_SHADOW_VIEWS` once at construction.
+    view_bytes_scratch: Vec<u8>,
+}
+
+/// Tracks which GPU resources need to be torn down + rebuilt because a
+/// resource-shape config field changed since the last `write_gpu`. All
+/// three resources are independent: a pure EVSM-atlas size bump
+/// doesn't need to touch the PCF atlas or cube pool, and vice versa.
+#[derive(Default, Copy, Clone)]
+struct PendingResourceRecreate {
+    /// `config.atlas_size` differs from `self.atlas_size`. Recreates
+    /// the depth atlas texture + view and the moment-write bind group
+    /// (which reads from the atlas).
+    pcf_atlas: bool,
+    /// `config.evsm_atlas_size` differs from `self.evsm_atlas_size`.
+    /// Recreates the EVSM atlas + ping-pong textures and all three
+    /// EVSM compute bind groups.
+    evsm_atlas: bool,
+    /// `config.max_point_shadows` or `config.point_shadow_resolution`
+    /// changed. Recreates the cube-array texture, its views, and
+    /// clears all slot owners so they get re-allocated next frame.
+    cube_pool: bool,
+}
+
+impl PendingResourceRecreate {
+    fn any(&self) -> bool {
+        self.pcf_atlas || self.evsm_atlas || self.cube_pool
+    }
 }
 
 /// Upper bound for `atlas_size` when dynamic resizing kicks in. Caps
@@ -325,9 +429,8 @@ impl Shadows {
         shaders: &mut Shaders,
         geometry_bind_groups: &GeometryBindGroups,
         _render_texture_formats: &RenderTextureFormats,
+        config: ShadowsConfig,
     ) -> Result<Self, AwsmShadowError> {
-        let config = ShadowsConfig::default();
-
         let atlas_size = config.atlas_size.max(1);
         let atlas_texture = gpu.create_texture(
             &TextureDescriptor::new(
@@ -344,17 +447,49 @@ impl Shadows {
             .create_view()
             .map_err(AwsmCoreError::create_texture_view)?;
 
+        // EVSM atlas — RGBA16F holds the four exponential moments
+        // (pos_exp, pos_exp², neg_exp, neg_exp²) packed in `.rgba`.
+        // Receivers do a single bilinear fetch + Chebyshev visibility
+        // reconstruction instead of N comparison taps; the trade-off
+        // is moment storage + a moment-write pass per EVSM cascade.
+        //
+        // Sized from `config.evsm_atlas_size` (default 2048², ~32 MB).
+        // Usage = `RENDER_ATTACHMENT | TEXTURE_BINDING | STORAGE_BINDING`
+        // so the moment-writer can render into it (fragment pipeline)
+        // and the Gaussian-blur compute passes can read / write through
+        // a storage view (post-blur it's bound back to the shadow group
+        // for sampling).
+        let evsm_atlas_size = config.evsm_atlas_size.max(1);
         let evsm_atlas_texture = gpu.create_texture(
             &TextureDescriptor::new(
                 TextureFormat::Rgba16float,
-                Extent3d::new(1, Some(1), Some(1)),
+                Extent3d::new(evsm_atlas_size, Some(evsm_atlas_size), Some(1)),
                 TextureUsage::new()
                     .with_render_attachment()
-                    .with_texture_binding(),
+                    .with_texture_binding()
+                    .with_storage_binding(),
             )
-            .with_label("Shadow EVSM Atlas (placeholder)")
+            .with_label("Shadow EVSM Atlas")
             .into(),
         )?;
+        // Same-size ping-pong texture for the separable Gaussian blur.
+        // The horizontal blur reads from `evsm_atlas_texture`, writes
+        // into this; the vertical blur reads back and writes into
+        // `evsm_atlas_texture`. Storage-only — never sampled directly.
+        let evsm_blur_pingpong_texture = gpu.create_texture(
+            &TextureDescriptor::new(
+                TextureFormat::Rgba16float,
+                Extent3d::new(evsm_atlas_size, Some(evsm_atlas_size), Some(1)),
+                TextureUsage::new()
+                    .with_texture_binding()
+                    .with_storage_binding(),
+            )
+            .with_label("Shadow EVSM Blur Ping-pong")
+            .into(),
+        )?;
+        let evsm_blur_pingpong_view = evsm_blur_pingpong_texture
+            .create_view()
+            .map_err(AwsmCoreError::create_texture_view)?;
         let evsm_atlas_view = evsm_atlas_texture
             .create_view()
             .map_err(AwsmCoreError::create_texture_view)?;
@@ -539,6 +674,42 @@ impl Shadows {
         )
         .await?;
 
+        let evsm_pass = EvsmPass::new(
+            gpu,
+            bind_group_layouts,
+            pipeline_layouts,
+            pipelines,
+            shaders,
+        )
+        .await?;
+
+        let evsm_moment_write_bind_group = build_evsm_moment_write_bind_group(
+            gpu,
+            bind_group_layouts,
+            evsm_pass.moment_write_layout_key,
+            &atlas_view,
+            &evsm_atlas_view,
+            &evsm_pass.params_buffer,
+        )?;
+        let evsm_blur_h_bind_group = build_evsm_blur_bind_group(
+            gpu,
+            bind_group_layouts,
+            evsm_pass.blur_layout_key,
+            &evsm_atlas_view,
+            &evsm_blur_pingpong_view,
+            &evsm_pass.params_buffer,
+            "Shadow EVSM Blur H Bind Group",
+        )?;
+        let evsm_blur_v_bind_group = build_evsm_blur_bind_group(
+            gpu,
+            bind_group_layouts,
+            evsm_pass.blur_layout_key,
+            &evsm_blur_pingpong_view,
+            &evsm_atlas_view,
+            &evsm_pass.params_buffer,
+            "Shadow EVSM Blur V Bind Group",
+        )?;
+
         Ok(Self {
             config,
             atlas_texture,
@@ -551,6 +722,14 @@ impl Shadows {
             cube_face_views,
             cube_resolution,
             cube_slots: vec![None; cube_slot_count as usize],
+            evsm_atlas_size,
+            evsm_blur_pingpong_texture,
+            evsm_blur_pingpong_view,
+            evsm_pass,
+            evsm_dispatch_queue: Vec::new(),
+            evsm_moment_write_bind_group,
+            evsm_blur_h_bind_group,
+            evsm_blur_v_bind_group,
             descriptors_buffer,
             descriptors_uniform,
             globals_buffer,
@@ -558,6 +737,7 @@ impl Shadows {
             sampler_comparison,
             sampler_filterable,
             params: SecondaryMap::new(),
+            cube_slot_for_light: SecondaryMap::new(),
             records: SecondaryMap::new(),
             throttle: SecondaryMap::new(),
             active_descriptor_count: 0,
@@ -572,19 +752,37 @@ impl Shadows {
             frame_count: 0,
             dirty: true,
             pending_atlas_grow: false,
+            pending_resource_recreate: PendingResourceRecreate::default(),
+            caster_aabbs_scratch: Vec::new(),
+            descriptor_bytes_scratch: vec![0u8; *SHADOW_DESCRIPTOR_UNIFORM_BYTES],
+            view_bytes_scratch: vec![0u8; SHADOW_VIEW_STRIDE * MAX_SHADOW_VIEWS as usize],
         })
     }
 
     /// Replaces the renderer-wide config.
     ///
     /// Lightweight fields (SSCS toggle, debug flags, EVSM tuning) take
-    /// effect on the next `write_gpu`. Texture-shape fields
-    /// (`atlas_size`, `max_point_shadows`, `point_shadow_resolution`)
-    /// are read by `Shadows::new` only — the 2D atlas auto-grows via
-    /// `pending_atlas_grow` when it overflows, but the cube pool's
-    /// dimensions are baked in at construction time. To change the
-    /// cube pool today, recreate the renderer.
+    /// effect on the next `write_gpu`. Resource-shape fields
+    /// (`atlas_size`, `evsm_atlas_size`, `max_point_shadows`,
+    /// `point_shadow_resolution`) trigger a tear-down + rebuild of
+    /// the corresponding GPU textures + bind groups at the start of
+    /// the next `write_gpu` — recreating GPU resources is not free
+    /// (texture alloc + dependent-bind-group rebuild) so don't poke
+    /// these at frame rate; from the editor inspector they're fine.
     pub fn set_config(&mut self, config: ShadowsConfig) {
+        let new_atlas = config.atlas_size.max(1);
+        let new_evsm = config.evsm_atlas_size.max(1);
+        let new_cube_count = config.max_point_shadows.max(1);
+        let new_cube_res = clamp_point_shadow_resolution(config.point_shadow_resolution);
+        if new_atlas != self.atlas_size {
+            self.pending_resource_recreate.pcf_atlas = true;
+        }
+        if new_evsm != self.evsm_atlas_size {
+            self.pending_resource_recreate.evsm_atlas = true;
+        }
+        if new_cube_count != self.cube_slots.len() as u32 || new_cube_res != self.cube_resolution {
+            self.pending_resource_recreate.cube_pool = true;
+        }
         self.config = config;
         self.dirty = true;
     }
@@ -615,6 +813,200 @@ impl Shadows {
     pub fn cube_pool_utilization(&self) -> f32 {
         0.0
     }
+
+    /// Tear down and rebuild whichever GPU resources were marked dirty
+    /// by `set_config`. Each block is independent — only the resources
+    /// that actually changed get touched. After every successful path
+    /// we mark `ShadowsResourcesChange` so the consumer-side opaque /
+    /// transparent shadow bind groups get re-bound, and reset throttle
+    /// state so previously-rendered cascades re-rasterise into the
+    /// freshly-allocated texture (otherwise they would read stale or
+    /// uninitialised memory and flicker).
+    fn apply_pending_resource_recreate(
+        &mut self,
+        gpu: &AwsmRendererWebGpu,
+        bind_group_layouts: &BindGroupLayouts,
+        bind_groups: &mut BindGroups,
+    ) -> Result<(), AwsmShadowError> {
+        let recreate = std::mem::take(&mut self.pending_resource_recreate);
+
+        if recreate.pcf_atlas {
+            let new_size = self.config.atlas_size.max(1);
+            tracing::info!(
+                "shadow PCF atlas resize (config) {} → {}",
+                self.atlas_size,
+                new_size
+            );
+            self.atlas_size = new_size;
+            self.atlas_texture = gpu.create_texture(
+                &TextureDescriptor::new(
+                    TextureFormat::Depth32float,
+                    Extent3d::new(self.atlas_size, Some(self.atlas_size), Some(1)),
+                    TextureUsage::new()
+                        .with_render_attachment()
+                        .with_texture_binding(),
+                )
+                .with_label("Shadow Atlas")
+                .into(),
+            )?;
+            self.atlas_view = self
+                .atlas_texture
+                .create_view()
+                .map_err(AwsmCoreError::create_texture_view)?;
+            // Moment-write reads from the PCF atlas — rebind it
+            // against the new view. The two blur bind groups only
+            // touch the EVSM atlas / ping-pong and stay valid.
+            self.evsm_moment_write_bind_group = build_evsm_moment_write_bind_group(
+                gpu,
+                bind_group_layouts,
+                self.evsm_pass.moment_write_layout_key,
+                &self.atlas_view,
+                &self.evsm_atlas_view,
+                &self.evsm_pass.params_buffer,
+            )?;
+        }
+
+        if recreate.evsm_atlas {
+            let new_size = self.config.evsm_atlas_size.max(1);
+            tracing::info!(
+                "shadow EVSM atlas resize (config) {} → {}",
+                self.evsm_atlas_size,
+                new_size
+            );
+            self.evsm_atlas_size = new_size;
+            self.evsm_atlas_texture = gpu.create_texture(
+                &TextureDescriptor::new(
+                    TextureFormat::Rgba16float,
+                    Extent3d::new(new_size, Some(new_size), Some(1)),
+                    TextureUsage::new()
+                        .with_render_attachment()
+                        .with_texture_binding()
+                        .with_storage_binding(),
+                )
+                .with_label("Shadow EVSM Atlas")
+                .into(),
+            )?;
+            self.evsm_atlas_view = self
+                .evsm_atlas_texture
+                .create_view()
+                .map_err(AwsmCoreError::create_texture_view)?;
+            self.evsm_blur_pingpong_texture = gpu.create_texture(
+                &TextureDescriptor::new(
+                    TextureFormat::Rgba16float,
+                    Extent3d::new(new_size, Some(new_size), Some(1)),
+                    TextureUsage::new()
+                        .with_texture_binding()
+                        .with_storage_binding(),
+                )
+                .with_label("Shadow EVSM Blur Ping-pong")
+                .into(),
+            )?;
+            self.evsm_blur_pingpong_view = self
+                .evsm_blur_pingpong_texture
+                .create_view()
+                .map_err(AwsmCoreError::create_texture_view)?;
+            // All three EVSM bind groups reference at least one of the
+            // recreated views, so rebuild all three.
+            self.evsm_moment_write_bind_group = build_evsm_moment_write_bind_group(
+                gpu,
+                bind_group_layouts,
+                self.evsm_pass.moment_write_layout_key,
+                &self.atlas_view,
+                &self.evsm_atlas_view,
+                &self.evsm_pass.params_buffer,
+            )?;
+            self.evsm_blur_h_bind_group = build_evsm_blur_bind_group(
+                gpu,
+                bind_group_layouts,
+                self.evsm_pass.blur_layout_key,
+                &self.evsm_atlas_view,
+                &self.evsm_blur_pingpong_view,
+                &self.evsm_pass.params_buffer,
+                "Shadow EVSM Blur H Bind Group",
+            )?;
+            self.evsm_blur_v_bind_group = build_evsm_blur_bind_group(
+                gpu,
+                bind_group_layouts,
+                self.evsm_pass.blur_layout_key,
+                &self.evsm_blur_pingpong_view,
+                &self.evsm_atlas_view,
+                &self.evsm_pass.params_buffer,
+                "Shadow EVSM Blur V Bind Group",
+            )?;
+        }
+
+        if recreate.cube_pool {
+            let new_count = self.config.max_point_shadows.max(1);
+            let new_res = clamp_point_shadow_resolution(self.config.point_shadow_resolution);
+            tracing::info!(
+                "shadow cube pool resize (config) {} × {}² → {} × {}²",
+                self.cube_slots.len(),
+                self.cube_resolution,
+                new_count,
+                new_res,
+            );
+            let new_layers = new_count * 6;
+            self.cube_array_texture = gpu.create_texture(
+                &TextureDescriptor::new(
+                    TextureFormat::Depth32float,
+                    Extent3d::new(new_res, Some(new_res), Some(new_layers)),
+                    TextureUsage::new()
+                        .with_render_attachment()
+                        .with_texture_binding(),
+                )
+                .with_label("Shadow Cube Pool")
+                .into(),
+            )?;
+            self.cube_array_view = create_cube_array_view(&self.cube_array_texture)?;
+            self.cube_face_views = build_cube_face_views(&self.cube_array_texture, new_layers)?;
+            self.cube_resolution = new_res;
+            // Slot ownership is keyed by index — when the pool size
+            // changes (or any face is recreated), every previously-
+            // resident shadow's contents are gone. Clear ownership so
+            // the next descriptor pack re-allocates from scratch.
+            self.cube_slots = vec![None; new_count as usize];
+            // Slot ownership reset → drop the per-light index cache so
+            // the next frame's lookup falls through to a fresh slot
+            // search instead of trusting a stale slot_index.
+            self.cube_slot_for_light.clear();
+        }
+
+        // Re-rasterise only the views whose backing texture actually
+        // changed. The throttle is parallel-indexed with the previous
+        // frame's `records.views`, so each entry's "is cube" can be
+        // read by matching position. EVSM atlas resize doesn't need
+        // an invalidation pass — EVSM moments are re-computed every
+        // frame from the PCF atlas content during the compute pass,
+        // so the PCF cascades' throttle entries already cover it.
+        let invalidate_2d = recreate.pcf_atlas;
+        let invalidate_cube = recreate.cube_pool;
+        if invalidate_2d || invalidate_cube {
+            for (key, entries) in self.throttle.iter_mut() {
+                let prev_views = self.records.get(key).map(|r| r.views.as_slice());
+                for (i, t) in entries.iter_mut().enumerate() {
+                    let is_cube = prev_views
+                        .and_then(|v| v.get(i))
+                        .map(|v| v.cube_layer.is_some())
+                        .unwrap_or(false);
+                    let hit = if is_cube { invalidate_cube } else { invalidate_2d };
+                    if hit {
+                        t.last_rendered_frame = u64::MAX;
+                    }
+                }
+            }
+        }
+        bind_groups.mark_create(crate::bind_groups::BindGroupCreate::ShadowsResourcesChange);
+        // `set_config` already flagged `dirty` before our pending
+        // recreate flags were ever consulted, so the globals upload
+        // is queued — but make the dependency explicit here too:
+        // the PCF/PCSS shader reads `atlas_sizes` from globals and
+        // any sample after this point must see the new size, even if
+        // the recreate path is invoked from a non-`set_config` source
+        // in the future.
+        self.dirty = true;
+        Ok(())
+    }
+
 
     /// `true` if any shadow-casting light is currently active. The
     /// render graph short-circuits the entire shadow generation pass
@@ -658,11 +1050,19 @@ impl Shadows {
         &mut self,
         _logging: &AwsmRendererLogging,
         gpu: &AwsmRendererWebGpu,
+        bind_group_layouts: &BindGroupLayouts,
         bind_groups: &mut BindGroups,
         camera: &crate::camera::CameraBuffer,
         lights: &crate::lights::Lights,
         meshes: &crate::meshes::Meshes,
     ) -> Result<(), AwsmShadowError> {
+        // User-driven resource recreates land first so a fresh
+        // `set_config` from the editor takes effect immediately. The
+        // auto-grow path below operates on whatever size landed here.
+        if self.pending_resource_recreate.any() {
+            self.apply_pending_resource_recreate(gpu, bind_group_layouts, bind_groups)?;
+        }
+
         // Phase 13: dynamic atlas resize. If the previous frame's
         // packer ran out of room we grow the atlas to the next power
         // of two (capped at `SHADOW_ATLAS_MAX_SIZE`) before this
@@ -693,6 +1093,19 @@ impl Shadows {
                     .atlas_texture
                     .create_view()
                     .map_err(AwsmCoreError::create_texture_view)?;
+                // EVSM moment-write reads from `shadow_atlas`, so its
+                // bind group holds a reference to the OLD view. Rebuild
+                // it now against the new view; the blur bind groups
+                // only touch `evsm_atlas` + ping-pong so they survive
+                // the atlas grow untouched.
+                self.evsm_moment_write_bind_group = build_evsm_moment_write_bind_group(
+                    gpu,
+                    bind_group_layouts,
+                    self.evsm_pass.moment_write_layout_key,
+                    &self.atlas_view,
+                    &self.evsm_atlas_view,
+                    &self.evsm_pass.params_buffer,
+                )?;
                 bind_groups
                     .mark_create(crate::bind_groups::BindGroupCreate::ShadowsResourcesChange);
                 // Force the throttle to re-render every cascade at the
@@ -702,6 +1115,10 @@ impl Shadows {
                         t.last_rendered_frame = u64::MAX;
                     }
                 }
+                // `ShadowGlobals.atlas_sizes` is read by every PCF
+                // tile clamp / PCSS kernel — re-upload so the shader
+                // sees the new size on the next sample.
+                self.dirty = true;
             } else {
                 tracing::warn!(
                     "shadow atlas at max size {}, cannot grow further",
@@ -719,7 +1136,14 @@ impl Shadows {
             data[4..8].copy_from_slice(&atlas.to_ne_bytes());
             data[8..12].copy_from_slice(&evsm.to_ne_bytes());
             data[12..16].copy_from_slice(&evsm.to_ne_bytes());
-            data[16..20].copy_from_slice(&self.config.evsm_exponent.to_ne_bytes());
+            // Clamp `evsm_exponent` to the fp16-safe range — anything
+            // above ~18 saturates the half-float moments and collapses
+            // the Chebyshev visibility curve into a hard binary mask.
+            let evsm_exponent = self
+                .config
+                .evsm_exponent
+                .clamp(0.5, ShadowsConfig::EVSM_EXPONENT_MAX_FP16);
+            data[16..20].copy_from_slice(&evsm_exponent.to_ne_bytes());
             data[20..24].copy_from_slice(&(self.config.evsm_blur_radius as f32).to_ne_bytes());
             data[24..28].copy_from_slice(&(self.config.sscs_step_count as f32).to_ne_bytes());
             data[28..32].copy_from_slice(&(self.config.sscs_enabled as u32 as f32).to_ne_bytes());
@@ -743,12 +1167,26 @@ impl Shadows {
         self.records.clear();
         self.active_descriptor_count = 0;
         self.active_view_count = 0;
-        let mut descriptor_bytes = vec![0u8; *SHADOW_DESCRIPTOR_UNIFORM_BYTES];
-        // Shadow-view buffer: one slot (256 B) per shadow view (render
-        // pass), packed contiguously. Filled inline as we generate
-        // each cascade / spot / cube face, then uploaded once at the
-        // end of write_gpu.
-        let mut view_bytes = vec![0u8; SHADOW_VIEW_STRIDE * MAX_SHADOW_VIEWS as usize];
+
+        // Early-out when no light is currently casting. Skips the
+        // O(meshes) caster-AABB sweep, descriptor pack, and throttle
+        // reconciliation — the entire shadow generation pass is
+        // also gated by `any_active()` upstream, so leaving stale
+        // descriptors here is fine. We still tick `frame_count` so
+        // throttle counters stay in step when shadows resume.
+        if !self.params.values().any(|p| p.cast) {
+            self.frame_count = self.frame_count.wrapping_add(1);
+            return Ok(());
+        }
+
+        // Reuse the scratch staging buffers across frames. Zero the
+        // descriptor scratch in full (gaps between active descriptors
+        // must read as zero in the uniform), and only zero the view
+        // scratch up to `MAX_SHADOW_VIEWS` slots that will actually
+        // be written below.
+        let descriptor_bytes = &mut self.descriptor_bytes_scratch[..];
+        descriptor_bytes.fill(0);
+        let view_bytes = &mut self.view_bytes_scratch[..];
 
         // Approximate the camera's near/far in world-space depth.
         // The actual values live on the camera but aren't exposed
@@ -759,32 +1197,39 @@ impl Shadows {
         // the planes. Falls back to (0.1, 100.0) for orthographic.
         let (camera_near, camera_far) = extract_near_far(&camera_matrices.projection);
 
-        // Union of all shadow-casting meshes' world AABBs. Used by the
-        // cascade fit to extend bounds so tall casters that extend
-        // outside the camera frustum slice are still rasterised — without
-        // this, receivers in close cascades miss the part of the caster
-        // that's geometrically outside the slice's light-space AABB.
-        let caster_world_aabb: Option<crate::bounds::Aabb> = {
-            let mut acc: Option<crate::bounds::Aabb> = None;
-            for (_, mesh) in meshes.iter() {
-                if !mesh.cast_shadows || mesh.hidden || mesh.hud {
-                    continue;
-                }
-                if let Some(aabb) = &mesh.world_aabb {
-                    match acc.as_mut() {
-                        Some(a) => a.extend(aabb),
-                        None => acc = Some(aabb.clone()),
-                    }
-                }
+        // Per-mesh shadow-caster AABBs. `fit_cascades` clips each one
+        // to the cascade's world footprint per-cascade, so we hand it
+        // the full list rather than a precomputed union — a single
+        // pre-unioned AABB would over-include casters that lie
+        // laterally outside the cascade, ballooning the cascade's Z
+        // range and destroying depth precision (the canonical failure
+        // mode: a 10 km × 10 km ground plane whose union AABB stretches
+        // thousands of metres along the tilted light direction).
+        self.caster_aabbs_scratch.clear();
+        for (_, mesh) in meshes.iter() {
+            if !mesh.cast_shadows || mesh.hidden || mesh.hud {
+                continue;
             }
-            acc
-        };
+            if let Some(aabb) = mesh.world_aabb.clone() {
+                self.caster_aabbs_scratch.push(aabb);
+            }
+        }
+        let caster_world_aabbs = self.caster_aabbs_scratch.as_slice();
 
         // Cursor for the row-pack atlas allocator. Phase 13 will
         // replace this with a real packer; for now we walk left-to-
         // right and wrap to the next row when the current row fills.
         let mut atlas_x: u32 = 0;
         let mut atlas_y: u32 = 0;
+        // EVSM atlas allocator cursors (separate from PCF). Local for
+        // the duration of the cascade-placement loop; final state
+        // doesn't need to persist on `self`.
+        let mut evsm_x: u32 = 0;
+        let mut evsm_y: u32 = 0;
+        let mut evsm_row_h: u32 = 0;
+        let evsm_atlas_size = self.evsm_atlas_size;
+        self.evsm_dispatch_queue.clear();
+        self.evsm_pass.active_cascade_count = 0;
         let mut row_height: u32 = 0;
         // Reset cube slot ownership for lights that no longer cast.
         // The match loop below re-claims slots for surviving casters.
@@ -845,7 +1290,7 @@ impl Shadows {
                         params.cascade_split_lambda.clamp(0.0, 1.0),
                         params.resolution.max(16),
                         16,
-                        caster_world_aabb.as_ref(),
+                        caster_world_aabbs,
                     );
 
                     let descriptor_base = self.active_descriptor_count;
@@ -868,11 +1313,52 @@ impl Shadows {
                         let descriptor_index = self.active_descriptor_count;
                         let off = descriptor_index as usize * SHADOW_DESCRIPTOR_BYTES;
                         let is_evsm = (cascade_index as u32) >= evsm_first;
+                        // For EVSM cascades the *descriptor*'s atlas
+                        // rect points at the EVSM atlas (the receiver
+                        // samples the post-blur moments from there),
+                        // but the depth pass still writes into the
+                        // PCF rect on `shadow_atlas` — so
+                        // `LightShadowView::atlas_rect` keeps the PCF
+                        // rect for use as the render-pass viewport.
+                        //
+                        // If EVSM atlas allocation overflows, the
+                        // cascade silently degrades to PCF: descriptor
+                        // points at the PCF rect, `is_evsm` flag stays
+                        // off, no compute dispatch is queued.
+                        let evsm_rect_alloc = if is_evsm {
+                            // Inline row-pack on the EVSM atlas, same
+                            // shape as the PCF allocator. Returns None
+                            // on overflow → cascade silently degrades.
+                            let r = *res;
+                            if evsm_x + r > evsm_atlas_size {
+                                evsm_x = 0;
+                                evsm_y += evsm_row_h;
+                                evsm_row_h = 0;
+                            }
+                            if evsm_y + r > evsm_atlas_size {
+                                tracing::warn!(
+                                    "EVSM atlas overflow on cascade res={} — falling back to PCF",
+                                    r
+                                );
+                                None
+                            } else {
+                                let rect = [evsm_x, evsm_y, r, r];
+                                evsm_x += r;
+                                evsm_row_h = evsm_row_h.max(r);
+                                Some(rect)
+                            }
+                        } else {
+                            None
+                        };
+                        let (descriptor_rect, descriptor_atlas_size, evsm_active) = match evsm_rect_alloc {
+                            Some(evsm_rect) => (evsm_rect, self.evsm_atlas_size, true),
+                            None => (rect, self.atlas_size, false),
+                        };
                         write_shadow_descriptor(
                             &mut descriptor_bytes[off..off + SHADOW_DESCRIPTOR_BYTES],
                             &cascade.view_projection,
-                            rect,
-                            self.atlas_size,
+                            descriptor_rect,
+                            descriptor_atlas_size,
                             params.depth_bias,
                             params.normal_bias,
                             params.hardness,
@@ -881,10 +1367,41 @@ impl Shadows {
                             cascade_count,
                             *split_far,
                         );
-                        if is_evsm {
+                        if evsm_active {
                             let evsm_flag_off = off + 108;
                             descriptor_bytes[evsm_flag_off..evsm_flag_off + 4]
                                 .copy_from_slice(&1.0_f32.to_ne_bytes());
+                            let evsm_rect = descriptor_rect;
+                            let slot = self.evsm_pass.active_cascade_count as usize;
+                            if slot < evsm::MAX_EVSM_CASCADES_PER_FRAME {
+                                // Match the clamp applied to
+                                // `shadow_globals.evsm_sscs.x` so the
+                                // writer-side moment exponent never
+                                // diverges from the receiver-side
+                                // reference. A mismatch would make
+                                // visibility either constant-1 or
+                                // constant-0 over the whole cascade.
+                                let evsm_exponent = self
+                                    .config
+                                    .evsm_exponent
+                                    .clamp(0.5, ShadowsConfig::EVSM_EXPONENT_MAX_FP16);
+                                self.evsm_pass.write_params_slot(
+                                    slot,
+                                    [rect[0], rect[1]],
+                                    [rect[2], rect[3]],
+                                    [evsm_rect[0], evsm_rect[1]],
+                                    [evsm_rect[2], evsm_rect[3]],
+                                    evsm_exponent,
+                                    self.config.evsm_blur_radius,
+                                );
+                                self.evsm_dispatch_queue.push(EvsmDispatchEntry {
+                                    descriptor_index,
+                                    pcf_rect: rect,
+                                    evsm_rect,
+                                    params_slot: slot as u32,
+                                });
+                                self.evsm_pass.active_cascade_count += 1;
+                            }
                         }
 
                         // Throttle only the FAR cascade. Closer
@@ -898,7 +1415,7 @@ impl Shadows {
                             };
                         let view_slot = self.active_view_count;
                         write_shadow_view_slot(
-                            &mut view_bytes,
+                            &mut *view_bytes,
                             view_slot as usize,
                             &cascade.view_projection,
                             params.depth_bias,
@@ -993,7 +1510,7 @@ impl Shadows {
                             views: vec![{
                                 let view_slot = self.active_view_count;
                                 write_shadow_view_slot(
-                                    &mut view_bytes,
+                                    &mut *view_bytes,
                                     view_slot as usize,
                                     &view_projection,
                                     params.depth_bias,
@@ -1021,16 +1538,28 @@ impl Shadows {
                         tracing::warn!("shadow descriptor capacity exhausted (point)");
                         break;
                     }
-                    let slot = self
-                        .cube_slots
-                        .iter()
-                        .position(|s| s.map(|k| k == light_key).unwrap_or(false))
-                        .or_else(|| self.cube_slots.iter().position(|s| s.is_none()));
+                    // O(1) ownership lookup via `cube_slot_for_light`,
+                    // validated against `cube_slots` (a stale entry from
+                    // a previous-pool reassignment falls back to the
+                    // linear free-slot search).
+                    let cached = self.cube_slot_for_light.get(light_key).copied();
+                    let owned = cached.and_then(|idx| {
+                        let i = idx as usize;
+                        if self.cube_slots.get(i).and_then(|s| *s) == Some(light_key) {
+                            Some(i)
+                        } else {
+                            None
+                        }
+                    });
+                    let slot = owned.or_else(|| {
+                        self.cube_slots.iter().position(|s| s.is_none())
+                    });
                     let Some(slot_index) = slot else {
                         cube_overflow = true;
                         continue;
                     };
                     self.cube_slots[slot_index] = Some(light_key);
+                    self.cube_slot_for_light.insert(light_key, slot_index as u32);
 
                     let pos = glam::Vec3::from(*position);
                     let r = (*range).max(0.05);
@@ -1082,7 +1611,7 @@ impl Shadows {
                         let vp = projection * view;
                         let view_slot = self.active_view_count;
                         write_shadow_view_slot(
-                            &mut view_bytes,
+                            &mut *view_bytes,
                             view_slot as usize,
                             &vp,
                             params.depth_bias,
@@ -1157,10 +1686,17 @@ impl Shadows {
         }
 
         if self.active_descriptor_count > 0 {
+            // Upload only the active prefix. The shader iterates
+            // `descriptor_base..base+count` so trailing slots never
+            // get read; the uniform buffer's tail keeps whatever it
+            // held last frame (harmless — those slots are not bound
+            // as descriptor indices anywhere).
+            let used =
+                self.active_descriptor_count as usize * SHADOW_DESCRIPTOR_BYTES;
             gpu.write_buffer(
                 &self.descriptors_uniform,
                 None,
-                descriptor_bytes.as_slice(),
+                &descriptor_bytes[..used],
                 None,
                 None,
             )?;
@@ -1188,15 +1724,10 @@ impl Shadows {
         // depth is at the wrong location); the view-projection drift
         // check forces a redraw when the camera or light moved enough
         // to make the cached cascade visibly stale.
-        let active_keys: Vec<LightKey> = self.records.keys().collect();
-        let stale: Vec<LightKey> = self
-            .throttle
-            .keys()
-            .filter(|k| !active_keys.contains(k))
-            .collect();
-        for k in stale {
-            self.throttle.remove(k);
-        }
+        // Drop throttle entries for lights that no longer have a
+        // record this frame. `retain` is allocation-free; the
+        // earlier `Vec<LightKey>` sweep + `contains()` was O(n²).
+        self.throttle.retain(|k, _| self.records.contains_key(k));
         let frame = self.frame_count;
         for (light_key, record) in self.records.iter_mut() {
             if !self.throttle.contains_key(light_key) {
@@ -1249,6 +1780,11 @@ impl Shadows {
                 self.cube_slots.len()
             );
         }
+
+        // Flush EVSM per-cascade params to the GPU. One write covers
+        // every active cascade; the compute-pass loop in
+        // `render_pass::record` binds slot N via dynamic offset.
+        self.evsm_pass.upload_params(gpu)?;
 
         self.frame_count = self.frame_count.wrapping_add(1);
         Ok(())
@@ -1329,6 +1865,67 @@ fn write_shadow_descriptor(
     dest[108..112].copy_from_slice(&0.0_f32.to_ne_bytes());
 }
 
+fn build_evsm_moment_write_bind_group(
+    gpu: &AwsmRendererWebGpu,
+    bind_group_layouts: &BindGroupLayouts,
+    layout_key: BindGroupLayoutKey,
+    shadow_atlas_view: &web_sys::GpuTextureView,
+    evsm_atlas_view: &web_sys::GpuTextureView,
+    params_buffer: &web_sys::GpuBuffer,
+) -> Result<web_sys::GpuBindGroup, AwsmShadowError> {
+    use awsm_renderer_core::bind_groups::{
+        BindGroupDescriptor, BindGroupEntry, BindGroupResource,
+    };
+    use std::borrow::Cow;
+    let entries = vec![
+        BindGroupEntry::new(0, BindGroupResource::TextureView(Cow::Borrowed(shadow_atlas_view))),
+        BindGroupEntry::new(1, BindGroupResource::TextureView(Cow::Borrowed(evsm_atlas_view))),
+        BindGroupEntry::new(
+            2,
+            BindGroupResource::Buffer(
+                BufferBinding::new(params_buffer).with_size(evsm::EVSM_PARAMS_STRIDE),
+            ),
+        ),
+    ];
+    let descriptor = BindGroupDescriptor::new(
+        bind_group_layouts.get(layout_key)?,
+        Some("Shadow EVSM Moment Write Bind Group"),
+        entries,
+    );
+    Ok(gpu.create_bind_group(&descriptor.into()))
+}
+
+fn build_evsm_blur_bind_group(
+    gpu: &AwsmRendererWebGpu,
+    bind_group_layouts: &BindGroupLayouts,
+    layout_key: BindGroupLayoutKey,
+    src_view: &web_sys::GpuTextureView,
+    dst_view: &web_sys::GpuTextureView,
+    params_buffer: &web_sys::GpuBuffer,
+    label: &str,
+) -> Result<web_sys::GpuBindGroup, AwsmShadowError> {
+    use awsm_renderer_core::bind_groups::{
+        BindGroupDescriptor, BindGroupEntry, BindGroupResource,
+    };
+    use std::borrow::Cow;
+    let entries = vec![
+        BindGroupEntry::new(0, BindGroupResource::TextureView(Cow::Borrowed(src_view))),
+        BindGroupEntry::new(1, BindGroupResource::TextureView(Cow::Borrowed(dst_view))),
+        BindGroupEntry::new(
+            2,
+            BindGroupResource::Buffer(
+                BufferBinding::new(params_buffer).with_size(evsm::EVSM_PARAMS_STRIDE),
+            ),
+        ),
+    ];
+    let descriptor = BindGroupDescriptor::new(
+        bind_group_layouts.get(layout_key)?,
+        Some(label),
+        entries,
+    );
+    Ok(gpu.create_bind_group(&descriptor.into()))
+}
+
 async fn build_shadow_pipeline(
     gpu: &AwsmRendererWebGpu,
     shaders: &mut Shaders,
@@ -1381,9 +1978,18 @@ async fn build_shadow_pipeline(
         .with_depth_bias(1)
         .with_depth_bias_slope_scale(1.5);
 
+    // Shadow atlas / cube faces are never multisampled — the depth
+    // textures are single-sample. Pinning sample-count to 1 explicitly
+    // guards against a future cache-key change (or a copy-paste from a
+    // multisampled pipeline) silently enabling MSAA on the shadow
+    // path, which would either error at pipeline creation or — worse,
+    // if it survived — quadruple the per-pass rasterization cost.
+    let multisample = MultisampleState::new().with_count(1);
+
     let mut pipeline_cache_key = RenderPipelineCacheKey::new(shader_key, pipeline_layout_key)
         .with_primitive(primitive)
-        .with_depth_stencil(depth_stencil);
+        .with_depth_stencil(depth_stencil)
+        .with_multisample(multisample);
 
     for layout in vertex_buffer_layouts {
         pipeline_cache_key = pipeline_cache_key.with_push_vertex_buffer_layout(layout);
@@ -1489,6 +2095,26 @@ fn build_cube_face_views(
 }
 
 impl AwsmRenderer {
+    /// Replaces the renderer-wide shadow config. Player / runtime
+    /// equivalent of the editor's "shadows" inspector — load the
+    /// `ShadowsConfig` from disk (via `awsm_scene_schema` → `into()`
+    /// or a custom build pipeline) and push it in at startup.
+    ///
+    /// Resource-shaped fields (`atlas_size`, `max_point_shadows`,
+    /// `point_shadow_resolution`, `evsm_atlas_size`) are baked into
+    /// `Shadows::new` at construction time, so changing them at
+    /// runtime requires recreating the renderer. The other tunables
+    /// (SSCS toggle, blur radius, exponent, debug overlay) take
+    /// effect on the next `render()` call.
+    pub fn set_shadows_config(&mut self, config: ShadowsConfig) {
+        self.shadows.set_config(config);
+    }
+
+    /// Returns the current renderer-wide shadow config.
+    pub fn shadows_config(&self) -> &ShadowsConfig {
+        self.shadows.config()
+    }
+
     /// Sets a light's shadow parameters. Pass
     /// `LightShadowParams { cast: false, .. }` to disable shadows for a
     /// specific light while keeping the light itself. Takes effect on

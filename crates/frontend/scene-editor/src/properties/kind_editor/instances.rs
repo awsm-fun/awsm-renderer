@@ -42,7 +42,19 @@ pub fn render(node: Arc<Node>) -> Dom {
         )))
         .child(field_row("Spacing", instances_f32_input(node.clone(), InstancesField::Spacing)))
         .child(field_row("Side offset", instances_f32_input(node.clone(), InstancesField::SideOffset)))
-        .child(field_row("Orient", instances_bool_input(node)))
+        .child(field_row("Orient", instances_bool_input(node.clone())))
+        .child(super::mesh_shadow::render(
+            node,
+            |k| match k {
+                NodeKind::InstancesAlongCurve(def) => Some(def.shadow),
+                _ => None,
+            },
+            |k, new_shadow| {
+                if let NodeKind::InstancesAlongCurve(def) = k {
+                    def.shadow = new_shadow;
+                }
+            },
+        ))
     })
 }
 

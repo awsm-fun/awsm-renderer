@@ -1013,7 +1013,7 @@ Done.
 - **Askama template engine** — the Rust template engine used for all shader composition. <https://djc.github.io/askama/>
 - **CodeMirror 6** — recommended in-browser WGSL editor. <https://codemirror.net/docs/>
 - **File System Access API** — for material-folder open/save in material-editor. <https://developer.mozilla.org/en-US/docs/Web/API/File_System_Access_API>
-- **Internal**: `docs/plans/shadows.md` — sibling plan that established the schema → bridge → renderer pattern this plan extends. Particularly the "Public API Surface" and "Documentation requirements" sections — same discipline applies here.
+- **Internal**: `docs/SHADOWS.md` — shadow subsystem (preceded this one) established the schema → bridge → renderer pattern this plan extends. The "Player / runtime integration" and "Configuration surface" sections show the same discipline applied to a feature that's already shipped.
 - **Internal**: `crates/materials/src/shader.rs` — current `MaterialShader` trait definition; the contract the Phase 1 audit anchors against.
 - **Internal**: `crates/renderer/src/render_passes/shared/shared_wgsl/` — every file in this directory is in-scope for custom-material WGSL fragments; the contract docs reference all of them.
 
