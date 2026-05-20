@@ -1597,7 +1597,7 @@ After all of the above land, archive §16 — its work is done.
 
 ### What has shipped (this conversation's session)
 
-All committed to the `optimizations` branch as of `6eef59c`. Each
+All committed to the `optimizations` branch as of `2034023`. Each
 commit is a clean checkpoint:
 
 ```
@@ -1607,6 +1607,10 @@ b51503b  material classify + indirect dispatch
 5769d3f  docs(dynamic-materials): sync with material classify landing
 bac0b1f  decals subsystem — runtime
 6eef59c  HZB build from visibility depth (Cluster 7.1)
+c60ba56  docs(optimizations): full handoff for resume session
+2c03fa9  merged mesh geometry pool (§16.E1 / §16.E2)
+def39a7  decals scene-schema + editor authoring (§16.4.B)
+2034023  GPU occlusion cull pass — Phase 1 infrastructure (§16.7)
 ```
 
 ### Load-bearing constraints a resume session must respect
@@ -2032,7 +2036,28 @@ synthetic depth pattern.
 
 #### 16.7 Cluster 7.2 — Two-phase GPU occlusion culling
 
-**Status:** `not started` — storage budget freed by §16.E1/E2; ready to start
+**Status:** `Phase 1 done; Phase 2 deferred (depends on geometry-shader restructure shared with §16.8)`
+
+Phase 1 (infrastructure) shipped as commit `2034023`. The cull pass
+writes `visible_this_frame[i]` per BVH-visible opaque instance; v1
+does not consume the output (it's surfaced via tracing spans for
+measurement).
+
+**Phase 2 deferral note.** The Phase 2 split as written — "Pass 1
+draws survivors; HZB rebuild; Pass 2 draws newly-visible
+candidates" — needs Pass 2's draws to be gated by the fresh GPU
+cull output. The only practical way to feed GPU compute results
+back into a per-mesh draw count on the same frame is
+`drawIndirect`. Async readback (`mapAsync`) gives a one-frame
+delay and defeats the point.
+
+So Phase 2 is effectively bundled with §16.8's drawIndirect
+rewire. The bundled task additionally needs the geometry pass's
+per-mesh dynamic-offset uniform bind group to be replaced with a
+storage-buffer array indexed by `@builtin(instance_index)` (since
+drawIndirect doesn't change bind groups per-draw). That shader
+restructure is the load-bearing piece and deserves its own
+focused session.
 
 Sousa/Karis two-phase pattern. The HZB (from §16.6) is the
 load-bearing input.
