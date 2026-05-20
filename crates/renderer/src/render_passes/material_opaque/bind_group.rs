@@ -244,20 +244,12 @@ impl MaterialOpaqueBindGroups {
             entries.len() as u32,
             BindGroupResource::Buffer(BufferBinding::new(&ctx.materials.gpu_buffer)),
         ));
-        // Attribute index buffer
-        entries.push(BindGroupEntry::new(
-            entries.len() as u32,
-            BindGroupResource::Buffer(BufferBinding::new(
-                ctx.meshes.custom_attribute_index_gpu_buffer(),
-            )),
-        ));
-        // Attribute data buffer
-        entries.push(BindGroupEntry::new(
-            entries.len() as u32,
-            BindGroupResource::Buffer(BufferBinding::new(
-                ctx.meshes.custom_attribute_data_gpu_buffer(),
-            )),
-        ));
+        // §16.E1/E2: `attribute_indices` and `attribute_data` are no
+        // longer separate storage bindings — both live as sections of
+        // the merged geometry pool that's already bound here as
+        // `visibility_data` (binding 5). WGSL reads them through that
+        // single binding at the per-mesh sub-offsets carried by
+        // MaterialMeshMeta.
         // transforms — packed (model + normal). See `Transforms`.
         entries.push(BindGroupEntry::new(
             entries.len() as u32,
@@ -540,24 +532,10 @@ async fn create_main_bind_group_layout_key(
             visibility_fragment: false,
             visibility_compute: true,
         },
-        // Attribute index buffer
-        BindGroupLayoutCacheKeyEntry {
-            resource: BindGroupLayoutResource::Buffer(
-                BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),
-            ),
-            visibility_vertex: false,
-            visibility_fragment: false,
-            visibility_compute: true,
-        },
-        // Attribute data buffer
-        BindGroupLayoutCacheKeyEntry {
-            resource: BindGroupLayoutResource::Buffer(
-                BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),
-            ),
-            visibility_vertex: false,
-            visibility_fragment: false,
-            visibility_compute: true,
-        },
+        // §16.E1/E2: layout entries for attribute_indices/attribute_data
+        // were removed — both live inside the merged geometry pool that
+        // entry 5 (visibility data) already binds. Two storage slots
+        // freed for §16.7 (occlusion) and dynamic-materials extras_pool.
         // Packed transforms buffer — model (mat4x4) + normal (mat3x3)
         // in one struct (Option E). The normal matrix lives at
         // `Transforms::NORMAL_OFFSET` inside each entry, so no separate

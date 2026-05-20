@@ -15,7 +15,9 @@ fn _vertex_color_per_vertex(attribute_data_offset: u32, set_index: u32, vertex_i
     // Each additional color set contributes 4 more floats per vertex.
     let color_offset = set_index * 4u;
     let index = vertex_start + color_offset;
-    let color = vec4<f32>(attribute_data[index], attribute_data[index + 1], attribute_data[index + 2], attribute_data[index + 3]);
+    // §16.E2: attribute_data lives in the merged geometry pool aliased
+    // here by `visibility_data` (binding 5).
+    let color = vec4<f32>(visibility_data[index], visibility_data[index + 1], visibility_data[index + 2], visibility_data[index + 3]);
 
     return color;
 }

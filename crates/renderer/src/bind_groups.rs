@@ -73,8 +73,11 @@ pub enum BindGroupCreate {
     SkinJointIndexAndWeightsResize,
     GeometryMeshMetaResize,
     MaterialMeshMetaResize,
-    MeshAttributeDataResize,
-    MeshAttributeIndexResize,
+    /// Merged geometry pool (§16.E1/E2) was reallocated — opaque main
+    /// must rebind the new buffer handle (transparent's vertex/index
+    /// buffers are bound per-draw via setVertexBuffer / setIndexBuffer,
+    /// so its main bind group is unaffected).
+    MeshGeometryPoolResize,
     MaterialResize,
     TextureViewRecreate,
     TexturePool,
@@ -247,13 +250,8 @@ impl BindGroups {
                     functions_to_call.insert(FunctionToCall::TransparentMain);
                     functions_to_call.insert(FunctionToCall::Picker);
                 }
-                BindGroupCreate::MeshAttributeDataResize => {
+                BindGroupCreate::MeshGeometryPoolResize => {
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
-                    functions_to_call.insert(FunctionToCall::TransparentMain);
-                }
-                BindGroupCreate::MeshAttributeIndexResize => {
-                    functions_to_call.insert(FunctionToCall::OpaqueMain);
-                    functions_to_call.insert(FunctionToCall::TransparentMain);
                 }
                 BindGroupCreate::AntiAliasingChange => {
                     functions_to_call.insert(FunctionToCall::OpaqueMain);

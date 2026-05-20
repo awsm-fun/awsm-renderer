@@ -113,9 +113,9 @@ fn msaa_process_sample(
 
     let base_tri = sample_indices_off + (tri_id * 3u);
     let sample_tri_indices = vec3<u32>(
-        attribute_indices[base_tri],
-        attribute_indices[base_tri + 1u],
-        attribute_indices[base_tri + 2u]
+        bitcast<u32>(visibility_data[base_tri]),
+        bitcast<u32>(visibility_data[base_tri + 1u]),
+        bitcast<u32>(visibility_data[base_tri + 2u])
     );
 
     // Check shader type and compute color accordingly

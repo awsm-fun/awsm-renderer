@@ -258,9 +258,9 @@ fn main(
 
     let base_triangle_index = attribute_indices_offset + (triangle_index * 3u);
     let triangle_indices = vec3<u32>(
-        attribute_indices[base_triangle_index],
-        attribute_indices[base_triangle_index + 1],
-        attribute_indices[base_triangle_index + 2]
+        bitcast<u32>(visibility_data[base_triangle_index]),
+        bitcast<u32>(visibility_data[base_triangle_index + 1]),
+        bitcast<u32>(visibility_data[base_triangle_index + 2])
     );
 
     let standard_coordinates = get_standard_coordinates(coords, screen_dims);
@@ -424,8 +424,8 @@ fn main(
 fn get_triangle_indices(attribute_indices_offset: u32, triangle_index: u32) -> vec3<u32> {
     let base = attribute_indices_offset + (triangle_index * 3u);
     return vec3<u32>(
-        attribute_indices[base],
-        attribute_indices[base + 1u],
-        attribute_indices[base + 2u],
+        bitcast<u32>(visibility_data[base]),
+        bitcast<u32>(visibility_data[base + 1u]),
+        bitcast<u32>(visibility_data[base + 2u]),
     );
 }

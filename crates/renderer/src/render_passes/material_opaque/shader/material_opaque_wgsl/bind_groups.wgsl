@@ -1,4 +1,4 @@
-// `instance_attrs` (binding 23) uses `InstanceAttr`; declare the struct here
+// `instance_attrs` (binding 20) uses `InstanceAttr`; declare the struct here
 // so the binding's type is in scope at parse time.
 {% include "shared_wgsl/instance_attrs.wgsl" %}
 
@@ -16,11 +16,14 @@
     @group(0) @binding(3) var normal_tangent_tex: texture_2d<f32>;
     @group(0) @binding(4) var barycentric_derivatives_tex: texture_2d<f32>;
 {% endif %}
+// §16.E1/E2: `visibility_data` is now a view over the merged geometry
+// pool — per-mesh sections (visibility, attribute_indices, attribute_data)
+// are addressed at the sub-offsets carried by MaterialMeshMeta. The
+// declared element type stays `f32` because position/normal reads stay
+// natural; u32 reads (attribute indices) come through `bitcast<u32>(…)`.
 @group(0) @binding(5) var<storage, read> visibility_data: array<f32>;
 @group(0) @binding(6) var<storage, read> material_mesh_metas: array<MaterialMeshMeta>;
 @group(0) @binding(7) var<storage, read> materials: array<u32>;
-@group(0) @binding(8) var<storage, read> attribute_indices: array<u32>;
-@group(0) @binding(9) var<storage, read> attribute_data: array<f32>;
 // Packed transform (Option E): each entry is model (mat4x4) + normal
 // matrix (mat3x3 with vec3-column padding). The shader reads both
 // from the same array; `Transforms::BYTE_SIZE` = 112 = stride.
@@ -28,19 +31,19 @@ struct TransformPacked {
     model_world: mat4x4<f32>,
     normal_world: mat3x3<f32>,
 };
-@group(0) @binding(10) var<storage, read> transforms: array<TransformPacked>;
-@group(0) @binding(11) var<storage, read> texture_transforms: array<TextureTransform>;
-@group(0) @binding(12) var<uniform> camera_raw: CameraRaw;
-@group(0) @binding(13) var skybox_tex: texture_cube<f32>;
-@group(0) @binding(14) var skybox_sampler: sampler;
-@group(0) @binding(15) var ibl_filtered_env_tex: texture_cube<f32>;
-@group(0) @binding(16) var ibl_filtered_env_sampler: sampler;
-@group(0) @binding(17) var ibl_irradiance_tex: texture_cube<f32>;
-@group(0) @binding(18) var ibl_irradiance_sampler: sampler;
-@group(0) @binding(19) var brdf_lut_tex: texture_2d<f32>;
-@group(0) @binding(20) var brdf_lut_sampler: sampler;
-@group(0) @binding(21) var opaque_tex: texture_storage_2d<rgba16float, write>;
-@group(0) @binding(22) var<storage, read> instance_attrs: array<InstanceAttr>;
+@group(0) @binding(8) var<storage, read> transforms: array<TransformPacked>;
+@group(0) @binding(9) var<storage, read> texture_transforms: array<TextureTransform>;
+@group(0) @binding(10) var<uniform> camera_raw: CameraRaw;
+@group(0) @binding(11) var skybox_tex: texture_cube<f32>;
+@group(0) @binding(12) var skybox_sampler: sampler;
+@group(0) @binding(13) var ibl_filtered_env_tex: texture_cube<f32>;
+@group(0) @binding(14) var ibl_filtered_env_sampler: sampler;
+@group(0) @binding(15) var ibl_irradiance_tex: texture_cube<f32>;
+@group(0) @binding(16) var ibl_irradiance_sampler: sampler;
+@group(0) @binding(17) var brdf_lut_tex: texture_2d<f32>;
+@group(0) @binding(18) var brdf_lut_sampler: sampler;
+@group(0) @binding(19) var opaque_tex: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(20) var<storage, read> instance_attrs: array<InstanceAttr>;
 
 // Material classify output (read-only here — the read-write atomic
 // view is bound on the classify pass). Layout matches
@@ -58,7 +61,7 @@ struct ClassifyBuckets {
     bucket_capacity: u32,
     tiles: array<vec2<u32>>,
 };
-@group(0) @binding(23) var<storage, read> classify_buckets: ClassifyBuckets;
+@group(0) @binding(21) var<storage, read> classify_buckets: ClassifyBuckets;
 
 @group(1) @binding(0) var<uniform> lights_info: LightsInfoPacked;
 // `lights` is a uniform array (Option F follow-up to Cluster 2.1.c).

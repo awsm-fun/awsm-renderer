@@ -2032,7 +2032,7 @@ synthetic depth pattern.
 
 #### 16.7 Cluster 7.2 — Two-phase GPU occlusion culling
 
-**Status:** `not started; depends on §16.E1/E2 (storage budget) landing first`
+**Status:** `not started` — storage budget freed by §16.E1/E2; ready to start
 
 Sousa/Karis two-phase pattern. The HZB (from §16.6) is the
 load-bearing input.
@@ -2209,7 +2209,7 @@ Several upcoming features want one more slot:
 
 #### 16.E1 Pack `attribute_indices` into `MaterialMeshMeta`
 
-**Status:** `not started` — **must land before §16.7 / §16.8**
+**Status:** `done` (landed together with §16.E2 as the merged geometry pool refactor)
 
 `attribute_indices: array<u32>` (binding 8 on the opaque main bind
 group) holds vertex-attribute index buffers — one slice per mesh.
@@ -2254,15 +2254,27 @@ slot for §16.7.
 
 #### 16.E2 Pack `attribute_data` similarly
 
-**Status:** `not started` — `pairs with §16.E1`
+**Status:** `done`
 
-`attribute_data: array<f32>` (binding 9) — same shape as
-`attribute_indices` but for the actual vertex attribute floats.
-Same refactor as §16.E1; same acceptance.
-
-After 16.E1 + 16.E2 the opaque main bind group sits at 8/10, with
-two slots free for dynamic-materials' `extras_pool` (one) and the
-GPU-driven culling's per-instance attribute list (the other).
+Landed approach: rather than a binding-shape change (which the
+original brief described but wasn't actually possible — three
+separate underlying GpuBuffers can't share one binding), the
+three per-mesh GpuBuffers were merged into a single
+`mesh_geometry_pool` buffer that holds
+`[visibility_data || attribute_index || attribute_data]`
+contiguously per mesh. The existing `MaterialMeshMeta` offset
+fields (`visibility_geometry_data_offset`,
+`vertex_attribute_indices_offset`,
+`vertex_attribute_data_offset`) now address sections within the
+merged pool. The opaque main bind group dropped bindings 8 and 9
+(`attribute_indices`, `attribute_data`); the WGSL `visibility_data`
+binding is the one shared view, with `bitcast<u32>(visibility_data[i])`
+for index reads and direct `visibility_data[i]` for attribute floats.
+Storage-buffer peak across the compute stage dropped from 10/10 to
+7/10, leaving room for §16.7's instance-list binding and
+dynamic-materials' `extras_pool`. Buffer usage flags on the pool
+are `copy_dst | vertex | storage | index` (the same buffer
+underlies the transparent path's per-mesh vertex / index buffers).
 
 ### Tuning / profiling items (no new code)
 

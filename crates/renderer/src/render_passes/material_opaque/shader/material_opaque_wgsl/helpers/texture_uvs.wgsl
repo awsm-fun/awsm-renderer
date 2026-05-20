@@ -78,7 +78,9 @@ fn _texture_uv_per_vertex(attribute_data_offset: u32, set_index: u32, vertex_ind
     // Each additional UV set contributes two more floats per vertex.
     let uv_offset = uv_sets_index + (set_index * 2u);
     let index = vertex_start + uv_offset;
-    let uv = vec2<f32>(attribute_data[index], attribute_data[index + 1]);
+    // §16.E2: attribute_data lives in the merged geometry pool aliased
+    // here by `visibility_data` (binding 5).
+    let uv = vec2<f32>(visibility_data[index], visibility_data[index + 1]);
 
     return uv;
 }
