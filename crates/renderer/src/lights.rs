@@ -191,8 +191,12 @@ impl Lights {
         })
     }
 
-    /// Removes all lights.
-    pub fn clear(&mut self) {
+    /// Removes all lights. `pub(crate)` for the same reason as
+    /// [`Self::remove`] — external callers must go through
+    /// [`AwsmRenderer::clear_lights`](crate::AwsmRenderer::clear_lights)
+    /// so the shadow subsystem can drop every per-light slot /
+    /// throttle / params entry in lockstep.
+    pub(crate) fn clear(&mut self) {
         self.lights.clear();
         self.punctual_gpu_dirty = true;
         self.lighting_info_gpu_dirty = true;
@@ -207,8 +211,13 @@ impl Lights {
         Ok(key)
     }
 
-    /// Removes a light by key.
-    pub fn remove(&mut self, key: LightKey) {
+    /// Removes a light by key. `pub(crate)` so callers can't bypass
+    /// the coordinated shadow cleanup — every external removal must
+    /// go through [`AwsmRenderer::remove_light`](crate::AwsmRenderer::remove_light),
+    /// which calls `Shadows::on_light_removed` first so the cube-pool
+    /// slot, the throttle history, and the per-light shadow params
+    /// don't leak when the underlying light goes away.
+    pub(crate) fn remove(&mut self, key: LightKey) {
         self.lights.remove(key);
         self.punctual_gpu_dirty = true;
         self.lighting_info_gpu_dirty = true;

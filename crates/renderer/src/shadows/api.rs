@@ -75,6 +75,16 @@ impl AwsmRenderer {
         self.lights.remove(key);
     }
 
+    /// Removes every light, dropping all per-light shadow state in
+    /// lockstep (params / cube slots / throttle history). The
+    /// shadow-clear runs first so a subsequent per-frame
+    /// `Shadows::write_gpu` doesn't see lights for which the slotmap
+    /// entry is already gone.
+    pub fn clear_lights(&mut self) {
+        self.shadows.clear_all_lights();
+        self.lights.clear();
+    }
+
     /// Mutates a light's shadow params in place. Convenience over the
     /// get-clone-mutate-set pattern.
     pub fn update_light_shadow<F: FnOnce(&mut LightShadowParams)>(

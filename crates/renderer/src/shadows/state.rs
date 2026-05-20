@@ -1275,13 +1275,54 @@ impl Shadows {
                         self.active_descriptor_count += 1;
                     }
 
-                    self.records.insert(
-                        light_key,
-                        LightShadowRecord {
-                            views,
-                            descriptor_base,
-                        },
-                    );
+                    // If view-slot overflow tripped on the very first
+                    // cascade we have no views to publish but
+                    // `descriptor_base` was reserved at the start of
+                    // the branch. Skip the insert — `Lights::write_gpu`
+                    // resolves `shadow_index_for_light(key)` through
+                    // `records`, so an absent record produces
+                    // `SHADOW_INDEX_NONE` and the receiver short-
+                    // circuits. Without this guard the lights buffer
+                    // would bake `descriptor_base` into the light, and
+                    // a subsequent light writing into that same
+                    // descriptor slot would silently take over this
+                    // light's shadow sampling.
+                    if !views.is_empty() {
+                        // Patch each landed cascade's `cascade_info.z`
+                        // (the cascade-count-in-light field at byte
+                        // offset 104..108) to the count we actually
+                        // wrote. `write_shadow_descriptor` was called
+                        // per-cascade with the *requested* count, so
+                        // if view-slot overflow cut us short, each
+                        // landed descriptor still advertises 4
+                        // cascades — the receiver's
+                        // `sample_shadow_directional` would walk past
+                        // the landed prefix into unwritten /
+                        // overwritten descriptor slots. Patching the
+                        // count clamps the walk to exactly what
+                        // exists.
+                        let actual_count = views.len() as u32;
+                        if actual_count != cascade_count {
+                            tracing::warn!(
+                                "directional shadow truncated: requested {} cascades, landed {}",
+                                cascade_count,
+                                actual_count
+                            );
+                            let actual_count_f = (actual_count as f32).to_ne_bytes();
+                            for i in 0..actual_count {
+                                let off = (descriptor_base + i) as usize * SHADOW_DESCRIPTOR_BYTES;
+                                descriptor_bytes[off + 104..off + 108]
+                                    .copy_from_slice(&actual_count_f);
+                            }
+                        }
+                        self.records.insert(
+                            light_key,
+                            LightShadowRecord {
+                                views,
+                                descriptor_base,
+                            },
+                        );
+                    }
                 }
                 crate::lights::Light::Spot {
                     position,
@@ -1505,6 +1546,32 @@ impl Shadows {
                         );
                     }
 
+                    // Cube shadows are all-or-nothing: the receiver
+                    // sampler picks a face from the receiver-to-light
+                    // direction and reads `shadow_cube_array` at that
+                    // face's layer. Layers we didn't render *this*
+                    // frame retain whatever depth was there last
+                    // frame (the per-face attachment clear only fires
+                    // when the view's `should_render` is true, which
+                    // requires the view to be in `records.views`).
+                    // Publishing 1..5 faces of a 6-face cube means
+                    // the receiver lands on a stale face whenever its
+                    // direction's major axis matches a missing face —
+                    // visible as random shadow tearing on rotating
+                    // light + receiver geometry. So require all six.
+                    if views.len() != 6 {
+                        tracing::warn!(
+                            "point shadow truncated: only {}/6 cube faces landed — dropping light",
+                            views.len()
+                        );
+                        // Relinquish the tentatively-assigned cube
+                        // slot so the next frame can reuse it cleanly,
+                        // and drop the per-light slot cache entry.
+                        self.cube_slots[slot_index] = None;
+                        self.cube_slot_for_light.remove(light_key);
+                        continue;
+                    }
+
                     // Only one descriptor per point light. Sample-site
                     // uses world-space direction to pick the face.
                     let descriptor_index = self.active_descriptor_count;
@@ -1675,6 +1742,20 @@ impl Shadows {
     /// Returns the per-light authored shadow params, if registered.
     pub fn light_params(&self, key: LightKey) -> Option<&LightShadowParams> {
         self.params.get(key)
+    }
+
+    /// Drop every per-light shadow row in one shot. Paired with the
+    /// `AwsmRenderer::clear_lights` mass-removal entry point so the
+    /// shadow side stays in lockstep when callers blow away the
+    /// lights set.
+    pub(super) fn clear_all_lights(&mut self) {
+        self.params.clear();
+        self.throttle.clear();
+        self.records.clear();
+        self.cube_slot_for_light.clear();
+        for slot in self.cube_slots.iter_mut() {
+            *slot = None;
+        }
     }
 
     /// Cleans every piece of shadow state keyed on `key`. Call this
