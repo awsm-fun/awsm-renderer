@@ -108,6 +108,12 @@ pub struct AwsmRenderer {
     /// the per-decal GPU storage buffer the `material_decal` compute
     /// pass reads at shading time.
     pub decals: decals::Decals,
+    /// GPU occlusion-cull buffers (Cluster 7.2 / §16.7 Phase 1). The
+    /// per-frame instance list (CPU-populated) + the per-instance
+    /// visibility output. v1 dispatches the cull but doesn't yet
+    /// consume the result — Phase 2 / §16.8 will gate `drawIndirect`
+    /// against it.
+    pub occlusion_buffers: render_passes::occlusion::buffers::OcclusionBuffers,
     /// Last-frame per-mesh pixel coverage (Cluster 6.2). Populated by
     /// the GPU coverage compute pass; consumed by the skinning-skip
     /// and material-LOD gates. Empty until the producer pass is wired.
@@ -435,6 +441,11 @@ impl AwsmRendererBuilder {
         // bytes for currently-active decals.
         let decals = decals::Decals::new(&gpu)?;
 
+        // Occlusion-cull buffers (§16.7 Phase 1). Starts at 1024
+        // instances; grows 2× when needed.
+        let occlusion_buffers =
+            render_passes::occlusion::buffers::OcclusionBuffers::new(&gpu)?;
+
         let shadows = shadows::Shadows::new(
             &gpu,
             &mut bind_group_layouts,
@@ -461,6 +472,7 @@ impl AwsmRendererBuilder {
             mesh_light_indices_gpu,
             material_classify_buffers,
             decals,
+            occlusion_buffers,
             coverage: coverage::MeshCoverage::default(),
             frame_index: 0,
             shaders,

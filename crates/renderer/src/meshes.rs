@@ -1575,6 +1575,18 @@ impl Meshes {
             .ok_or(AwsmMeshError::CustomAttributeBufferNotFound(key))
     }
 
+    /// Total number of `Mesh` entries (including hidden / non-renderable).
+    /// Used as an upper bound when sizing per-mesh GPU buffers before the
+    /// per-frame renderables list is collected.
+    pub fn len(&self) -> usize {
+        self.list.len()
+    }
+
+    /// True when there are no `Mesh` entries.
+    pub fn is_empty(&self) -> bool {
+        self.list.is_empty()
+    }
+
     /// Iterates over meshes and their keys.
     pub fn iter(&self) -> impl Iterator<Item = (MeshKey, &Mesh)> {
         self.list.iter()

@@ -170,6 +170,20 @@ impl AwsmRenderer {
         }
         self.material_classify_buffers.reset_header(&self.gpu)?;
 
+        // Build a snapshot of the active mesh count so we can size the
+        // occlusion-cull buffers before bind groups are recreated.
+        // Refining this to the actual opaque-renderable count requires
+        // `collect_renderables` which runs later; this upper bound is
+        // fine for capacity planning.
+        let occlusion_needed = self.meshes.len() as u32;
+        if self
+            .occlusion_buffers
+            .ensure_capacity(&self.gpu, occlusion_needed)?
+        {
+            self.bind_groups
+                .mark_create(BindGroupCreate::OcclusionBuffersResize);
+        }
+
         self.bind_groups.recreate(
             BindGroupRecreateContext {
                 gpu: &self.gpu,
@@ -188,6 +202,8 @@ impl AwsmRenderer {
                 mesh_light_indices_gpu: &self.mesh_light_indices_gpu,
                 material_classify_buffers: &self.material_classify_buffers,
                 decals: &self.decals,
+                occlusion_buffers: &self.occlusion_buffers,
+                hzb_full_view: self.render_passes.hzb.texture.view_all.clone(),
             },
             &mut self.render_passes,
             &mut self.picker,
@@ -214,6 +230,16 @@ impl AwsmRenderer {
         };
 
         let renderables = self.collect_renderables(&ctx)?;
+
+        // Snapshot the opaque renderables' world AABBs while we still
+        // hold the borrow (`renderables.opaque` is consumed by the
+        // material-opaque pass below). The occlusion-cull pass uses
+        // this snapshot once HZB is built.
+        let occlusion_aabbs: Vec<crate::bounds::Aabb> = renderables
+            .opaque
+            .iter()
+            .filter_map(|r| r.world_aabb().cloned())
+            .collect();
 
         if let Some(hook) = hooks.and_then(|h| h.first_pass.as_ref()) {
             {
@@ -416,8 +442,7 @@ impl AwsmRenderer {
 
         // HZB build (Cluster 7.1, plan §16.6). Runs after opaque /
         // decal so the depth buffer holds the final scene depth.
-        // Pure infrastructure in v1 — no in-tree consumer yet; the
-        // 7.2 / 7.3 occlusion-culling passes will be the first.
+        // Consumed by the occlusion-cull pass below.
         {
             let _maybe_span_guard = if self.logging.render_timings {
                 Some(tracing::span!(tracing::Level::INFO, "HZB RenderPass").entered())
@@ -425,6 +450,60 @@ impl AwsmRenderer {
                 None
             };
             self.render_passes.hzb.render(&ctx)?;
+        }
+
+        // Occlusion cull (Cluster 7.2 / §16.7 Phase 1). Pack the
+        // active opaque renderables' world AABBs into the GPU instance
+        // buffer, then dispatch a compute shader that frustum + HZB
+        // tests each. v1 doesn't *consume* the output yet — Phase 2
+        // splits the geometry pass into survivor halves and gates
+        // `drawIndirect` against this.
+        let occlusion_instance_count = {
+            let stride =
+                crate::render_passes::occlusion::buffers::OCCLUSION_INSTANCE_STRIDE;
+            let mut bytes: Vec<u8> = Vec::with_capacity(occlusion_aabbs.len() * stride);
+            for aabb in &occlusion_aabbs {
+                bytes.extend_from_slice(&aabb.min.x.to_le_bytes());
+                bytes.extend_from_slice(&aabb.min.y.to_le_bytes());
+                bytes.extend_from_slice(&aabb.min.z.to_le_bytes());
+                bytes.extend_from_slice(&0u32.to_le_bytes()); // _pad0
+                bytes.extend_from_slice(&aabb.max.x.to_le_bytes());
+                bytes.extend_from_slice(&aabb.max.y.to_le_bytes());
+                bytes.extend_from_slice(&aabb.max.z.to_le_bytes());
+                bytes.extend_from_slice(&0u32.to_le_bytes()); // _pad1
+                bytes.extend_from_slice(&0u32.to_le_bytes()); // mesh_meta_offset (unused in v1)
+                bytes.extend_from_slice(&0u32.to_le_bytes()); // instance_attr_base
+                bytes.extend_from_slice(&0u32.to_le_bytes()); // last_frame_visible
+                bytes.extend_from_slice(&0u32.to_le_bytes()); // _pad2
+            }
+            let count = (bytes.len() / stride) as u32;
+            if count > 0 {
+                self.gpu.write_buffer(
+                    &self.occlusion_buffers.instances_buffer,
+                    None,
+                    bytes.as_slice(),
+                    None,
+                    None,
+                )?;
+            }
+            count
+        };
+        if occlusion_instance_count > 0 {
+            let _maybe_span_guard = if self.logging.render_timings {
+                Some(
+                    tracing::span!(
+                        tracing::Level::INFO,
+                        "Occlusion Cull RenderPass",
+                        instances = occlusion_instance_count
+                    )
+                    .entered(),
+                )
+            } else {
+                None
+            };
+            self.render_passes
+                .occlusion
+                .render(&ctx, occlusion_instance_count)?;
         }
 
         // Built-in line render pass — must run after the opaque->transparent

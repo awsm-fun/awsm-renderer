@@ -10,6 +10,7 @@ pub mod material_classify;
 pub mod material_decal;
 pub mod material_opaque;
 pub mod material_transparent;
+pub mod occlusion;
 pub mod shader_cache_key;
 pub mod shader_template;
 pub mod shared;
@@ -30,6 +31,7 @@ use crate::{
         material_decal::render_pass::MaterialDecalRenderPass,
         material_opaque::render_pass::MaterialOpaqueRenderPass,
         material_transparent::render_pass::MaterialTransparentRenderPass,
+        occlusion::render_pass::OcclusionRenderPass,
     },
     render_textures::RenderTextureFormats,
     shaders::Shaders,
@@ -40,6 +42,7 @@ use crate::{
 pub struct RenderPasses {
     pub geometry: GeometryRenderPass,
     pub hzb: HzbRenderPass,
+    pub occlusion: OcclusionRenderPass,
     pub light_culling: LightCullingRenderPass,
     pub material_classify: MaterialClassifyRenderPass,
     pub material_decal: MaterialDecalRenderPass,
@@ -55,6 +58,7 @@ impl RenderPasses {
         Ok(Self {
             geometry: GeometryRenderPass::new(ctx).await?,
             hzb: HzbRenderPass::new(ctx).await?,
+            occlusion: OcclusionRenderPass::new(ctx).await?,
             light_culling: LightCullingRenderPass::new(ctx).await?,
             material_classify: MaterialClassifyRenderPass::new(ctx).await?,
             material_decal: MaterialDecalRenderPass::new(ctx).await?,

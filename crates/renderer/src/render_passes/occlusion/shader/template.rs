@@ -1,0 +1,31 @@
+//! Occlusion-cull shader templates.
+
+use askama::Template;
+
+use crate::{
+    render_passes::occlusion::shader::cache_key::ShaderCacheKeyOcclusionCull,
+    shaders::{AwsmShaderError, Result},
+};
+
+#[derive(Template, Debug, Default)]
+#[template(path = "occlusion_wgsl/cull.wgsl", whitespace = "minimize")]
+pub struct ShaderTemplateOcclusionCull;
+
+impl TryFrom<&ShaderCacheKeyOcclusionCull> for ShaderTemplateOcclusionCull {
+    type Error = AwsmShaderError;
+
+    fn try_from(_value: &ShaderCacheKeyOcclusionCull) -> Result<Self> {
+        Ok(Self)
+    }
+}
+
+impl ShaderTemplateOcclusionCull {
+    pub fn into_source(self) -> Result<String> {
+        self.render().map_err(AwsmShaderError::from)
+    }
+
+    #[cfg(debug_assertions)]
+    pub fn debug_label(&self) -> Option<&str> {
+        Some("Occlusion Cull")
+    }
+}

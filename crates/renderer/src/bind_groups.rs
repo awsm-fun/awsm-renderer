@@ -53,6 +53,12 @@ pub struct BindGroupRecreateContext<'a> {
     /// the per-decal GPU buffer the `material_decal` compute pass
     /// reads at shading time.
     pub decals: &'a crate::decals::Decals,
+    /// Occlusion-cull instance + visibility buffers (§16.7 Phase 1).
+    pub occlusion_buffers:
+        &'a crate::render_passes::occlusion::buffers::OcclusionBuffers,
+    /// Full-chain HZB view used by the cull pass to sample at
+    /// per-instance mip levels.
+    pub hzb_full_view: web_sys::GpuTextureView,
 }
 
 /// Reasons to recreate bind groups.
@@ -78,6 +84,9 @@ pub enum BindGroupCreate {
     /// buffers are bound per-draw via setVertexBuffer / setIndexBuffer,
     /// so its main bind group is unaffected).
     MeshGeometryPoolResize,
+    /// Occlusion-cull instance / visibility buffers were reallocated
+    /// (§16.7 Phase 1). Only the cull pass's bind group binds them.
+    OcclusionBuffersResize,
     MaterialResize,
     TextureViewRecreate,
     TexturePool,
@@ -150,6 +159,7 @@ impl BindGroups {
             GeometryMeta,
             GeometryAnimation,
             Hzb,
+            Occlusion,
             MaterialClassify,
             MaterialDecalMain,
             MaterialDecalTextures,
@@ -207,6 +217,7 @@ impl BindGroups {
                 }
                 BindGroupCreate::TextureViewRecreate => {
                     functions_to_call.insert(FunctionToCall::Hzb);
+                    functions_to_call.insert(FunctionToCall::Occlusion);
                     functions_to_call.insert(FunctionToCall::LightCulling);
                     functions_to_call.insert(FunctionToCall::MaterialClassify);
                     functions_to_call.insert(FunctionToCall::MaterialDecalMain);
@@ -283,6 +294,9 @@ impl BindGroups {
                     // Decals buffer is bound on the decal pass's
                     // main bind group.
                     functions_to_call.insert(FunctionToCall::MaterialDecalMain);
+                }
+                BindGroupCreate::OcclusionBuffersResize => {
+                    functions_to_call.insert(FunctionToCall::Occlusion);
                 }
             }
         }
@@ -373,6 +387,9 @@ impl BindGroups {
                 FunctionToCall::Hzb => {
                     let hzb = &mut render_passes.hzb;
                     hzb.bind_groups.recreate(&ctx, &hzb.texture)?;
+                }
+                FunctionToCall::Occlusion => {
+                    render_passes.occlusion.bind_groups.recreate(&ctx)?;
                 }
                 FunctionToCall::MaterialClassify => {
                     render_passes
