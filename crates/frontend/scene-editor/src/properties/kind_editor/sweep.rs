@@ -79,6 +79,18 @@ pub fn render(node: Arc<Node>) -> Dom {
                 }
             },
         ))
+        .child(super::mesh_shadow::render(
+            node.clone(),
+            |k| match k {
+                NodeKind::SweepAlongCurve { shadow, .. } => Some(*shadow),
+                _ => None,
+            },
+            |k, new_shadow| {
+                if let NodeKind::SweepAlongCurve { shadow, .. } = k {
+                    *shadow = new_shadow;
+                }
+            },
+        ))
         // F10: snapshot the current swept geometry into a shareable
         // Mesh asset and re-point the node at it.
         .child(super::capture_as_mesh_button(node))

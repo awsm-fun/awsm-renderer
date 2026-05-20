@@ -74,8 +74,6 @@ impl AwsmRenderer {
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
         self.materials
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
-        self.lights
-            .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
         self.instances
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
         self.meshes
@@ -96,6 +94,26 @@ impl AwsmRenderer {
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
         self.camera
             .write_gpu(&self.logging, &self.gpu, &self.bind_groups)?;
+        // Shadows must fit cascades + populate the descriptor buffer
+        // *before* the lights buffer is packed — `Lights::write_gpu`
+        // queries `shadow_index_for` per-light and bakes the result
+        // into `LightPacked.row4.z`.
+        self.shadows.write_gpu(
+            &self.logging,
+            &self.gpu,
+            &self.bind_group_layouts,
+            &mut self.bind_groups,
+            &self.camera,
+            &self.lights,
+            &self.meshes,
+        )?;
+        {
+            let shadows = &self.shadows;
+            self.lights
+                .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups, |key| {
+                    shadows.descriptor_index_for_light(key)
+                })?;
+        }
 
         let render_texture_views = self
             .render_textures
@@ -120,6 +138,7 @@ impl AwsmRenderer {
                 transforms: &self.transforms,
                 instances: &self.instances,
                 anti_aliasing: &self.anti_aliasing,
+                shadows: &self.shadows,
             },
             &mut self.render_passes,
             &mut self.picker,
@@ -189,6 +208,19 @@ impl AwsmRenderer {
                 };
                 hook(&ctx)?;
             }
+        }
+
+        // Shadow generation pass — runs between the geometry passes
+        // and light culling so the shading passes downstream sample
+        // the freshly-written shadow maps. Short-circuits when there
+        // are no active shadow casters.
+        if self.shadows.any_active() {
+            let _maybe_span_guard = if self.logging.render_timings {
+                Some(tracing::span!(tracing::Level::INFO, "Shadow Generation").entered())
+            } else {
+                None
+            };
+            crate::shadows::render_pass::record(&ctx, &self.shadows)?;
         }
 
         {

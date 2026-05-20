@@ -80,6 +80,20 @@ pub fn render(node: Arc<Node>) -> Dom {
                 }
             },
         ))
+        // Cast / receive shadow toggles. Sit below material so the
+        // shadow section reads like a "rendering" footer.
+        .child(super::mesh_shadow::render(
+            node.clone(),
+            |k| match k {
+                NodeKind::Primitive { shadow, .. } => Some(*shadow),
+                _ => None,
+            },
+            |k, new_shadow| {
+                if let NodeKind::Primitive { shadow, .. } = k {
+                    *shadow = new_shadow;
+                }
+            },
+        ))
         // F10: snapshot the current primitive geometry into a
         // shareable Mesh asset and re-point the node at it. The
         // material binding rides along onto NodeKind::Mesh so the

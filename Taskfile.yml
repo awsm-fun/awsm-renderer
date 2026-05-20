@@ -40,7 +40,7 @@ tasks:
   scene-editor-dev:
     desc: "Run model-tests dev server in parallel plus the media servers"
     deps:
-      - model-tests:dev
+      - scene-editor:dev
       - media-local
       - media-additional-assets
 
@@ -73,6 +73,12 @@ tasks:
       - >
         cd {{.PATH_MEDIA_ADDITIONAL_ASSETS}} &&
         http-server --cors -p {{.PORT_MEDIA_ADDITIONAL_ASSETS_DEV}}
+
+  lint:
+    desc: "Run the exact lints CI runs (rustfmt + clippy with -D warnings, all features, tests). Mirrors .github/workflows/test.yml."
+    cmds:
+      - cargo fmt --all -- --check
+      - cargo clippy --all --all-features --tests -- -D warnings
 
   publish:
     desc: "Publish library crates to crates.io (must be run in order: renderer-core, then renderer, then editor)"

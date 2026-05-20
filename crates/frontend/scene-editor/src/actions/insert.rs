@@ -270,6 +270,7 @@ fn build_editor_subtree(
             asset_id,
             node_index: template_node.gltf_node_index,
             primitive_index: None,
+            shadow: Default::default(),
         })
     };
 

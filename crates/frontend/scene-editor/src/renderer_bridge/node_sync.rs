@@ -353,7 +353,7 @@ async fn remove_node(node_id: NodeId) {
 
     with_renderer_mut(|r| {
         if let Some(key) = light_key {
-            r.lights.remove(key);
+            r.remove_light(key);
         }
         for mesh in sub_meshes {
             r.remove_mesh(mesh);
@@ -639,7 +639,17 @@ async fn apply_kind_light(entry: Arc<RendererNode>, cfg: crate::scene::LightConf
     *entry.asset_id.lock().unwrap() = None;
     entry.node.asset_status.set(AssetStatus::Idle);
     let light = light_from_config(&cfg, Vec3::ZERO, Vec3::NEG_Z);
-    let key = with_renderer_mut(move |r| r.lights.insert(light)).await;
+    let shadow_params = light_shadow_params_from_config(cfg.shadow());
+    let key = with_renderer_mut(move |r| {
+        // Insert the light + register shadow params atomically — the
+        // coordinated API ensures no frame can render between the
+        // two inserts. `lights.mark_punctual_dirty()` (called via
+        // `set_light_shadow_params`'s internal flag) isn't needed
+        // here because the fresh insert already marks the buffer
+        // dirty.
+        r.insert_light(light, Some(shadow_params))
+    })
+    .await;
     if let Ok(key) = key {
         *entry.light_key.lock().unwrap() = Some(key);
     }
@@ -803,12 +813,14 @@ async fn try_particle_structural_smooth_rebuild(
 }
 
 async fn try_sweep_material_only_update(entry: &Arc<RendererNode>, kind: &NodeKind) -> bool {
-    let (def, material_ref, inline) = match kind {
+    let (def, material_ref, inline, shadow_cfg) = match kind {
         NodeKind::SweepAlongCurve {
             def,
             material,
             inline_material,
-        } => (def.clone(), *material, inline_material.clone()),
+            shadow,
+            ..
+        } => (def.clone(), *material, inline_material.clone(), *shadow),
         _ => return false,
     };
 
@@ -830,19 +842,27 @@ async fn try_sweep_material_only_update(entry: &Arc<RendererNode>, kind: &NodeKi
         return false;
     }
 
-    // Geometry unchanged — only the material side may have changed.
-    // Free the previously-owned inline material (if any), resolve the
-    // new material (which may produce a new owned key or hit the
-    // shared cache), and rebind the existing mesh to it.
+    // Geometry unchanged — only the material side and/or the shadow
+    // flags may have changed. Free the previously-owned inline
+    // material (if any), resolve the new material, rebind the
+    // existing mesh to it, and re-apply the per-mesh shadow flags so
+    // a toggle of Cast/Receive on a sweep node actually reaches the
+    // renderer (without this, the fast path skipped the
+    // `set_mesh_shadow_flags` that `procedural_sync` would otherwise
+    // run after a full re-materialize).
     let old_owned: Vec<awsm_renderer::materials::MaterialKey> =
         std::mem::take(&mut *entry.material_keys.lock().unwrap());
     let entry_for_apply = entry.clone();
+    let shadow_flags = mesh_shadow_flags_from_config(&shadow_cfg);
     with_renderer_mut(move |r| {
         let scene = app_state().scene.clone();
         let resolved = super::material_cache::resolve(r, &scene, material_ref, &inline);
         let new_material = resolved.key();
         if let Err(err) = r.set_mesh_material(existing_mesh, new_material) {
             tracing::warn!("node_sync (Sweep fast path): set_mesh_material failed: {err}");
+        }
+        if let Err(err) = r.set_mesh_shadow_flags(existing_mesh, shadow_flags) {
+            tracing::warn!("node_sync (Sweep fast path): set_mesh_shadow_flags failed: {err}");
         }
         // Free the previously-owned inline material *after* the rebind
         // so the slot isn't briefly orphaned mid-frame.
@@ -861,7 +881,7 @@ async fn try_sweep_material_only_update(entry: &Arc<RendererNode>, kind: &NodeKi
 async fn clear_light(entry: &Arc<RendererNode>) {
     let key = entry.light_key.lock().unwrap().take();
     if let Some(key) = key {
-        with_renderer_mut(move |r| r.lights.remove(key)).await;
+        with_renderer_mut(move |r| r.remove_light(key)).await;
     }
 }
 
@@ -878,6 +898,63 @@ async fn clear_lines(entry: &Arc<RendererNode>) {
     .await;
 }
 
+/// Schema → runtime conversion for a light's shadow configuration.
+/// This is the only place in the codebase that performs this
+/// translation; non-editor consumers construct `LightShadowParams`
+/// directly.
+pub fn light_shadow_params_from_config(
+    cfg: &awsm_scene_schema::LightShadowConfig,
+) -> awsm_renderer::shadows::LightShadowParams {
+    use awsm_renderer::shadows as r;
+    use awsm_scene_schema as s;
+    r::LightShadowParams {
+        cast: cfg.cast,
+        depth_bias: cfg.depth_bias,
+        normal_bias: cfg.normal_bias,
+        resolution: cfg.resolution,
+        hardness: match cfg.hardness {
+            s::LightShadowHardness::Hard => r::LightShadowHardness::Hard,
+            s::LightShadowHardness::Soft => r::LightShadowHardness::Soft,
+            s::LightShadowHardness::Pcss => r::LightShadowHardness::Pcss,
+        },
+        pcss_penumbra_scale: cfg.pcss_penumbra_scale,
+        max_distance: cfg.max_distance,
+        cascade_count: cfg.cascade_count,
+        cascade_split_lambda: cfg.cascade_split_lambda,
+        evsm_cutoff: match cfg.evsm_cutoff {
+            s::EvsmCutoff::Off => r::EvsmCutoff::Off,
+            s::EvsmCutoff::LastCascade => r::EvsmCutoff::LastCascade,
+            s::EvsmCutoff::LastTwoCascades => r::EvsmCutoff::LastTwoCascades,
+        },
+        far_cascade_update_rate: match cfg.far_cascade_update_rate {
+            s::FarCascadeUpdateRate::EveryFrame => r::FarCascadeUpdateRate::EveryFrame,
+            s::FarCascadeUpdateRate::Every2Frames => r::FarCascadeUpdateRate::Every2Frames,
+            s::FarCascadeUpdateRate::Every4Frames => r::FarCascadeUpdateRate::Every4Frames,
+            s::FarCascadeUpdateRate::Every8Frames => r::FarCascadeUpdateRate::Every8Frames,
+        },
+        cube_face_update_rate: match cfg.cube_face_update_rate {
+            s::CubeFaceUpdateRate::EveryFrame => r::CubeFaceUpdateRate::EveryFrame,
+            s::CubeFaceUpdateRate::Every2Frames => r::CubeFaceUpdateRate::Every2Frames,
+            s::CubeFaceUpdateRate::Every4Frames => r::CubeFaceUpdateRate::Every4Frames,
+            s::CubeFaceUpdateRate::Every8Frames => r::CubeFaceUpdateRate::Every8Frames,
+        },
+    }
+}
+
+/// Schema → runtime conversion for a mesh's shadow flags.
+///
+/// Wired into per-mesh creation sites in phase 2 once the renderer
+/// actually consumes the flags.
+#[allow(dead_code)]
+pub fn mesh_shadow_flags_from_config(
+    cfg: &awsm_scene_schema::MeshShadowConfig,
+) -> awsm_renderer::shadows::MeshShadowFlags {
+    awsm_renderer::shadows::MeshShadowFlags {
+        cast: cfg.cast,
+        receive: cfg.receive,
+    }
+}
+
 fn light_from_config(
     cfg: &crate::scene::LightConfig,
     position: Vec3,
@@ -886,7 +963,9 @@ fn light_from_config(
     use crate::scene::LightConfig;
     use awsm_renderer::lights::Light;
     match cfg {
-        LightConfig::Directional { color, intensity } => Light::Directional {
+        LightConfig::Directional {
+            color, intensity, ..
+        } => Light::Directional {
             color: *color,
             intensity: *intensity,
             direction: direction.to_array(),
@@ -895,6 +974,7 @@ fn light_from_config(
             color,
             intensity,
             range,
+            ..
         } => Light::Point {
             color: *color,
             intensity: *intensity,
@@ -907,6 +987,7 @@ fn light_from_config(
             range,
             inner_angle,
             outer_angle,
+            ..
         } => Light::Spot {
             color: *color,
             intensity: *intensity,
@@ -1102,6 +1183,31 @@ async fn instance_template(
     drop(renderer);
 
     entry.model_meshes.lock().unwrap().extend(created_meshes);
+    // Apply the authored per-mesh shadow flags to every instantiated
+    // mesh. Without this, a `Cast`/`Receive` toggle on a Model node in
+    // the inspector serialises to `project.json` but never reaches the
+    // renderer — the duplicated glTF meshes keep `cast_shadows = true`
+    // / `receive_shadows = true` (the renderer's defaults) regardless
+    // of what the user authored. Mirrors the post-materialize step in
+    // `procedural_sync::materialize_procedural` for Primitive / Mesh /
+    // Sweep / Instances kinds.
+    let shadow_cfg = match &*entry.node.kind.lock_ref() {
+        NodeKind::Model(r) => Some(r.shadow),
+        _ => None,
+    };
+    if let Some(cfg) = shadow_cfg {
+        let flags = mesh_shadow_flags_from_config(&cfg);
+        let mesh_keys: Vec<awsm_renderer::meshes::MeshKey> =
+            entry.model_meshes.lock().unwrap().clone();
+        if !mesh_keys.is_empty() {
+            with_renderer_mut(move |r| {
+                for mk in mesh_keys {
+                    let _ = r.set_mesh_shadow_flags(mk, flags);
+                }
+            })
+            .await;
+        }
+    }
     // Bump so any signal that derives from "is this Model splittable?"
     // re-evaluates now that mesh count is known.
     bridge().bump_nodes_revision();

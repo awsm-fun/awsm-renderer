@@ -29,6 +29,16 @@ pub struct ShaderTemplateMaterialOpaqueBindGroups {
     pub mipmap: MipmapMode,
     pub multisampled_geometry: bool,
     pub msaa_sample_count: u32, // 0 if no MSAA
+    /// Bind-group slot index the shadow declarations should occupy.
+    /// Opaque pipelines use slot 3; the field exists so the same
+    /// `shared_wgsl/shadow/bind_groups.wgsl` include can be reused by
+    /// the transparent pipeline (slot 1 as of 16.B).
+    pub shadow_group_index: u32,
+    /// Whether `apply_sscs` should compile its real body (true on the
+    /// opaque pass — it has `depth_tex` bound) or short-circuit to
+    /// `return 1.0` (true on the transparent pass — sampling its own
+    /// depth target would be a feedback loop, so SSCS is disabled).
+    pub sscs_available: bool,
 }
 
 /// Compute shader template for the opaque material pass.
@@ -41,6 +51,11 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     pub mipmap: MipmapMode,
     pub multisampled_geometry: bool,
     pub msaa_sample_count: u32, // 0 if no MSAA
+    /// Whether to wire shadow sampling into `apply_lighting`. Opaque
+    /// is always `true` once Phase 2 lands; the empty / transparent
+    /// templates leave it `false` until they pull in the shadow
+    /// bind-group declarations themselves.
+    pub shadows_enabled: bool,
     /// Concatenated `wgsl_fragment()` of every enabled material — see
     /// `awsm_materials::registry::build_materials_wgsl`.
     pub materials_wgsl: String,
@@ -92,6 +107,8 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 multisampled_geometry,
                 msaa_sample_count,
                 debug,
+                shadow_group_index: 3,
+                sscs_available: true,
             },
             compute: ShaderTemplateMaterialOpaqueCompute {
                 texture_pool_arrays_len,
@@ -100,6 +117,7 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 multisampled_geometry,
                 msaa_sample_count,
                 debug,
+                shadows_enabled: true,
                 materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
                 shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
             },
@@ -212,6 +230,9 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaqueEmpty> for ShaderTemplateMaterialOpaqu
             texture_pool_samplers_len: value.texture_pool_samplers_len,
             multisampled_geometry: value.msaa_sample_count.is_some(),
             unlit: true,
+            shadow_group_index: 3,
+            shadows_enabled: false,
+            sscs_available: false,
             materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
             shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
         })
@@ -226,6 +247,15 @@ pub struct ShaderTemplateMaterialOpaqueEmpty {
     pub texture_pool_samplers_len: u32,
     pub multisampled_geometry: bool,
     pub unlit: bool,
+    /// Bind-group slot index the shadow declarations should occupy.
+    pub shadow_group_index: u32,
+    /// Mirror of the opaque-compute flag. The empty template has no
+    /// real geometry so shadow sampling is irrelevant; left `false`
+    /// to keep the WGSL minimal.
+    pub shadows_enabled: bool,
+    /// Mirror of the opaque-compute flag. The empty template never
+    /// runs SSCS, but the shared shadow include needs the symbol.
+    pub sscs_available: bool,
     /// Concatenated `wgsl_fragment()` of every enabled material — see
     /// `awsm_materials::registry::build_materials_wgsl`.
     pub materials_wgsl: String,

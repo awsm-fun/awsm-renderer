@@ -580,7 +580,7 @@ impl AppScene {
                 {
                     let mut prev = scene.gltf_punctual_lights.lock().unwrap();
                     for key in prev.drain(..) {
-                        renderer.lights.remove(key);
+                        renderer.remove_light(key);
                     }
                 }
                 let populate_ctx = renderer.populate_gltf(data, None).await?;
@@ -668,7 +668,7 @@ impl AppScene {
         //    gltf-derived lights so we never confuse the two.
         if let Some(lights) = self.lights.lock().unwrap().take() {
             for light_key in lights {
-                renderer.lights.remove(light_key);
+                renderer.remove_light(light_key);
             }
         }
 
@@ -689,7 +689,7 @@ impl AppScene {
         if !wants_model_lights && has_model_lights {
             let prev = std::mem::take(&mut *self.gltf_punctual_lights.lock().unwrap());
             for key in prev {
-                renderer.lights.remove(key);
+                renderer.remove_light(key);
             }
         } else if wants_model_lights && !has_model_lights {
             // Re-populate from the last loaded gltf data, if any. This
@@ -722,26 +722,38 @@ impl AppScene {
         }
 
         let lights = vec![
-            renderer.lights.insert(Light::Directional {
-                color: [1.0, 0.97, 0.92],
-                intensity: 1.4,
-                direction: [0.1, -0.35, -1.0],
-            })?,
-            renderer.lights.insert(Light::Directional {
-                color: [0.9, 0.95, 1.0],
-                intensity: 0.6,
-                direction: [0.0, -0.2, -1.0],
-            })?,
-            renderer.lights.insert(Light::Directional {
-                color: [0.8, 0.9, 1.0],
-                intensity: 0.7,
-                direction: [-0.05, -0.25, 1.0],
-            })?,
-            renderer.lights.insert(Light::Directional {
-                color: [1.0, 0.96, 0.9],
-                intensity: 0.5,
-                direction: [-1.0, -0.2, 0.2],
-            })?,
+            renderer.insert_light(
+                Light::Directional {
+                    color: [1.0, 0.97, 0.92],
+                    intensity: 1.4,
+                    direction: [0.1, -0.35, -1.0],
+                },
+                None,
+            )?,
+            renderer.insert_light(
+                Light::Directional {
+                    color: [0.9, 0.95, 1.0],
+                    intensity: 0.6,
+                    direction: [0.0, -0.2, -1.0],
+                },
+                None,
+            )?,
+            renderer.insert_light(
+                Light::Directional {
+                    color: [0.8, 0.9, 1.0],
+                    intensity: 0.7,
+                    direction: [-0.05, -0.25, 1.0],
+                },
+                None,
+            )?,
+            renderer.insert_light(
+                Light::Directional {
+                    color: [1.0, 0.96, 0.9],
+                    intensity: 0.5,
+                    direction: [-1.0, -0.2, 0.2],
+                },
+                None,
+            )?,
         ];
 
         *self.lights.lock().unwrap() = Some(lights);

@@ -21,7 +21,13 @@ struct MaterialMeshMeta {
     color_set_count: u32,
     visibility_geometry_data_offset: u32,
     is_hud: u32,
-    padding_1: u32,
+    // `1u` means the mesh's shading should be multiplied by shadow
+    // visibility from the configured lights; `0u` short-circuits the
+    // sample to "fully lit" inside `apply_lighting`. Matches
+    // `Mesh::receive_shadows`. Filled from the corresponding `u32`
+    // slot in `MaterialMeshMeta::to_bytes` — keep the byte offset in
+    // lockstep when adding fields above.
+    receive_shadows: u32,
     padding_2: u32,
     padding_3: u32,
     padding_4: array<vec4<u32>, 11>,

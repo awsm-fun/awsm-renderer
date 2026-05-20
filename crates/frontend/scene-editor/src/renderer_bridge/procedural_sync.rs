@@ -68,18 +68,38 @@ pub async fn materialize_procedural(
     kind: NodeKind,
     parent_tk: TransformKey,
 ) {
+    // Capture the per-mesh shadow config (when present) up-front so we
+    // can apply it after each materialize path produces `model_meshes`.
+    // Without this, the per-node Cast/Receive toggles in the inspector
+    // would round-trip through `project.json` but never reach the
+    // renderer — `Mesh::cast_shadows` / `receive_shadows` would stay at
+    // their renderer defaults (`true` / `true`). Sprites override to
+    // (false, false) inside `materialize_sprite` since the shadow VS
+    // doesn't run the billboard rotation.
+    let mesh_shadow_cfg: Option<awsm_scene_schema::MeshShadowConfig> = match &kind {
+        NodeKind::Primitive { shadow, .. } => Some(*shadow),
+        NodeKind::Mesh { shadow, .. } => Some(*shadow),
+        NodeKind::SweepAlongCurve { shadow, .. } => Some(*shadow),
+        NodeKind::InstancesAlongCurve(def) => Some(def.shadow),
+        _ => None,
+    };
+
     match kind {
         NodeKind::Primitive {
             shape,
             material,
             inline_material,
-        } => materialize_primitive(entry, parent_tk, shape, material, inline_material).await,
-        NodeKind::Line(def) => materialize_line(entry, parent_tk, def).await,
-        NodeKind::Sprite(def) => materialize_sprite(entry, parent_tk, def).await,
+            ..
+        } => {
+            materialize_primitive(entry.clone(), parent_tk, shape, material, inline_material).await
+        }
+        NodeKind::Line(def) => materialize_line(entry.clone(), parent_tk, def).await,
+        NodeKind::Sprite(def) => materialize_sprite(entry.clone(), parent_tk, def).await,
         NodeKind::SweepAlongCurve {
             def,
             material,
             inline_material,
+            ..
         } => {
             let curve_def = lookup_curve_def(def.curve_node);
             match curve_def {
@@ -119,10 +139,11 @@ pub async fn materialize_procedural(
                         shape,
                         material,
                         inline_material,
+                        ..
                     }),
                 ) => {
                     materialize_instances_along_curve(
-                        entry,
+                        entry.clone(),
                         parent_tk,
                         c,
                         def,
@@ -139,7 +160,7 @@ pub async fn materialize_procedural(
                 }
             }
         }
-        NodeKind::Curve(c) => materialize_curve_viz(entry, parent_tk, c).await,
+        NodeKind::Curve(c) => materialize_curve_viz(entry.clone(), parent_tk, c).await,
         NodeKind::ParticleEmitter(_) => {
             // Spawn the per-emitter "playing" observer. The inspector's
             // Play/Stop button writes into the per-node Mutable<bool>;
@@ -151,6 +172,7 @@ pub async fn materialize_procedural(
             mesh,
             material,
             inline_material,
+            ..
         } => {
             // Captured-procedural-mesh asset (F10). `mesh_cache` loads
             // the bytes on-demand — from `pending_assets` if captured
@@ -165,9 +187,23 @@ pub async fn materialize_procedural(
                 return;
             };
             let raw = captured_to_raw_mesh(captured);
-            upload_and_track(entry, parent_tk, raw, material, inline_material).await;
+            upload_and_track(entry.clone(), parent_tk, raw, material, inline_material).await;
         }
         _ => {}
+    }
+
+    if let Some(cfg) = mesh_shadow_cfg {
+        let flags = super::node_sync::mesh_shadow_flags_from_config(&cfg);
+        let mesh_keys: Vec<awsm_renderer::meshes::MeshKey> =
+            entry.model_meshes.lock().unwrap().clone();
+        if !mesh_keys.is_empty() {
+            with_renderer_mut(move |r| {
+                for mk in mesh_keys {
+                    let _ = r.set_mesh_shadow_flags(mk, flags);
+                }
+            })
+            .await;
+        }
     }
 }
 
@@ -411,6 +447,16 @@ async fn materialize_sprite(entry: Arc<RendererNode>, parent_tk: TransformKey, d
     if let Some(mk) = mesh_key {
         with_renderer_mut(move |r| {
             let _ = r.set_mesh_billboard_mode(mk, mode);
+            // Sprites don't cast or receive shadows in v1 — the
+            // shadow VS doesn't run the billboard rotation, so the
+            // shadow would be authored-orientation (wrong).
+            let _ = r.set_mesh_shadow_flags(
+                mk,
+                awsm_renderer::shadows::MeshShadowFlags {
+                    cast: false,
+                    receive: false,
+                },
+            );
         })
         .await;
     }

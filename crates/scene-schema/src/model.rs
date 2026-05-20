@@ -1,8 +1,7 @@
-use super::assets::AssetId;
+use super::{assets::AssetId, tree::MeshShadowConfig};
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[derive(Eq)]
 pub struct ModelRef {
     /// Lookup into `EditorProject::assets` for the gltf/glb source. The
     /// table maps the id to either a project-relative filename or a
@@ -16,4 +15,7 @@ pub struct ModelRef {
     /// onto its own editor node.
     #[serde(default)]
     pub primitive_index: Option<u32>,
+    /// Per-mesh shadow cast / receive flags.
+    #[serde(default)]
+    pub shadow: MeshShadowConfig,
 }

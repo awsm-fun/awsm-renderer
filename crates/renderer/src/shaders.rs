@@ -15,6 +15,7 @@ use crate::{
     render_passes::{
         shader_cache_key::ShaderCacheKeyRenderPass, shader_template::ShaderTemplateRenderPass,
     },
+    shadows::shader::{cache_key::ShaderCacheKeyShadow, template::ShaderTemplateShadow},
 };
 
 /// Cached GPU shader modules keyed by template parameters.
@@ -150,12 +151,14 @@ impl Default for Shaders {
 pub enum ShaderCacheKey {
     RenderPass(ShaderCacheKeyRenderPass),
     Picker(ShaderCacheKeyPicker),
+    Shadow(ShaderCacheKeyShadow),
 }
 
 /// Shader template variants for renderer-managed shaders.
 pub enum ShaderTemplate {
     RenderPass(ShaderTemplateRenderPass),
     Picker(ShaderTemplatePicker),
+    Shadow(ShaderTemplateShadow),
 }
 
 impl TryFrom<&ShaderCacheKey> for ShaderTemplate {
@@ -167,6 +170,7 @@ impl TryFrom<&ShaderCacheKey> for ShaderTemplate {
                 Ok(ShaderTemplate::RenderPass(cache_key.try_into()?))
             }
             ShaderCacheKey::Picker(cache_key) => Ok(ShaderTemplate::Picker(cache_key.into())),
+            ShaderCacheKey::Shadow(cache_key) => Ok(ShaderTemplate::Shadow(cache_key.try_into()?)),
         }
     }
 }
@@ -191,6 +195,7 @@ impl ShaderTemplate {
         match self {
             ShaderTemplate::RenderPass(tmpl) => tmpl.debug_label(),
             ShaderTemplate::Picker(tmpl) => tmpl.debug_label(),
+            ShaderTemplate::Shadow(tmpl) => tmpl.debug_label(),
         }
     }
 
@@ -199,6 +204,7 @@ impl ShaderTemplate {
         let source = match self {
             ShaderTemplate::RenderPass(tmpl) => tmpl.into_source()?,
             ShaderTemplate::Picker(tmpl) => tmpl.into_source()?,
+            ShaderTemplate::Shadow(tmpl) => tmpl.into_source()?,
         };
         //tracing::info!("{:#?}", tmpl);
         // print_shader_source(&source, true);

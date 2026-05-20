@@ -94,6 +94,7 @@ pub fn split() {
             asset_id: model_ref.asset_id,
             node_index: model_ref.node_index,
             primitive_index: Some(0),
+            shadow: model_ref.shadow,
         }));
 
         // Determine where to insert the siblings. If `id` is at the top
@@ -110,6 +111,7 @@ pub fn split() {
                     asset_id: model_ref.asset_id,
                     node_index: model_ref.node_index,
                     primitive_index: Some(i as u32),
+                    shadow: model_ref.shadow,
                 }),
             );
             let new_id = new_node.id;
@@ -201,6 +203,7 @@ pub fn capture_as_mesh_asset(node_id: NodeId) -> Option<awsm_scene_schema::Asset
             shape,
             material,
             inline_material,
+            ..
         } => {
             let label = match &shape {
                 PrimitiveShape::Plane { .. } => "Captured plane",
@@ -221,6 +224,7 @@ pub fn capture_as_mesh_asset(node_id: NodeId) -> Option<awsm_scene_schema::Asset
             def,
             material,
             inline_material,
+            ..
         } => (
             "Captured sweep".to_string(),
             material,
@@ -254,6 +258,7 @@ pub fn capture_as_mesh_asset(node_id: NodeId) -> Option<awsm_scene_schema::Asset
         mesh: MeshRef(asset_id),
         material: material_ref,
         inline_material,
+        shadow: Default::default(),
     });
 
     scene.bump_revision();
@@ -399,11 +404,13 @@ pub fn recapture_from_source_def(
             shape,
             material: None,
             inline_material: Default::default(),
+            shadow: Default::default(),
         },
         CapturedSource::Sweep(def) => NodeKind::SweepAlongCurve {
             def,
             material: None,
             inline_material: Default::default(),
+            shadow: Default::default(),
         },
     };
     let Some(mesh_data) = crate::renderer_bridge::procedural_sync::kind_to_mesh_data(&temp_kind)

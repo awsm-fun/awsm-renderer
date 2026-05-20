@@ -49,12 +49,13 @@ impl MaterialOpaqueRenderPass {
             &ComputePassDescriptor::new(Some("Material Opaque Pass")).into(),
         ));
 
-        let (main_bind_group, lights_bind_group, texture_bind_group) =
+        let (main_bind_group, lights_bind_group, texture_bind_group, shadows_bind_group) =
             self.bind_groups.get_bind_groups()?;
 
         compute_pass.set_bind_group(0u32, main_bind_group, None)?;
         compute_pass.set_bind_group(1u32, lights_bind_group, None)?;
         compute_pass.set_bind_group(2u32, texture_bind_group, None)?;
+        compute_pass.set_bind_group(3u32, shadows_bind_group, None)?;
 
         let workgroup_size = (
             ctx.render_texture_views.width.div_ceil(8),

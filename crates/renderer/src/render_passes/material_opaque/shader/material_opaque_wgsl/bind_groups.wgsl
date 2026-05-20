@@ -45,3 +45,8 @@
 {% for i in 0..texture_pool_samplers_len %}
     @group(2) @binding({{ texture_pool_arrays_len + i }}u) var pool_sampler_{{ i }}: sampler;
 {% endfor %}
+
+// === Shadow bind group (group 3) ===
+// Layout fixed across phases — actual sampling helpers added when the
+// real shadow generation lands. Phase 0: declarations only.
+{% include "shared_wgsl/shadow/bind_groups.wgsl" %}

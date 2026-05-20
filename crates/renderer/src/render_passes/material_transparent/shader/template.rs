@@ -31,6 +31,10 @@ pub struct ShaderTemplateTransparentMaterialIncludes {
     pub color_sets: Option<u32>,
     pub uv_sets: u32,
     pub debug: ShaderTemplateMaterialTransparentDebug,
+    /// Whether `lights.wgsl` should wire shadow sampling into
+    /// `apply_lighting`. 16.B turned this on for the transparent pass
+    /// once the shared shadow bind group landed at slot 1.
+    pub shadows_enabled: bool,
     /// Concatenated `wgsl_fragment()` of every enabled material — see
     /// `awsm_materials::registry::build_materials_wgsl`.
     pub materials_wgsl: String,
@@ -50,6 +54,7 @@ impl ShaderTemplateTransparentMaterialIncludes {
             color_sets: cache_key.attributes.color_sets,
             uv_sets: cache_key.attributes.uv_sets.unwrap_or_default(),
             debug: ShaderTemplateMaterialTransparentDebug::new(),
+            shadows_enabled: true,
             materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
             shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
         }
@@ -84,6 +89,14 @@ pub struct ShaderTemplateTransparentMaterialBindGroups {
     pub texture_pool_arrays_len: u32,
     pub texture_pool_samplers_len: u32,
     pub multisampled_geometry: bool,
+    /// Bind-group slot used by the shared shadow `bind_groups.wgsl`
+    /// include. 16.B folded `lights` into `main` (group 0) so the
+    /// shadow group lives at slot 1 on the transparent pipeline.
+    pub shadow_group_index: u32,
+    /// SSCS is opaque-only — the transparent pass doesn't have access
+    /// to a depth texture it can sample on the same frame without a
+    /// feedback loop. `false` here makes `apply_sscs` short-circuit.
+    pub sscs_available: bool,
 }
 
 impl ShaderTemplateTransparentMaterialBindGroups {
@@ -93,6 +106,8 @@ impl ShaderTemplateTransparentMaterialBindGroups {
             texture_pool_arrays_len: cache_key.texture_pool_arrays_len,
             texture_pool_samplers_len: cache_key.texture_pool_samplers_len,
             multisampled_geometry: cache_key.msaa_sample_count.is_some(),
+            shadow_group_index: 1,
+            sscs_available: false,
         }
     }
 }

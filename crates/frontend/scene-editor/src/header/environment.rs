@@ -21,6 +21,12 @@ pub(super) fn render_environment_row() -> Dom {
             .with_size(ButtonSize::Sm)
             .with_on_click(open_ibl_modal)
             .render())
+        .child(Button::new()
+            .with_text("Shadows…")
+            .with_style(ButtonStyle::Outline)
+            .with_size(ButtonSize::Sm)
+            .with_on_click(crate::header::shadows_config::open_modal)
+            .render())
     })
 }
 

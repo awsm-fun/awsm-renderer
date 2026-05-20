@@ -19,7 +19,7 @@ rustdoc-args = ["--cfg=web_sys_unstable_apis"]
 
 [features]
 default = ["animation"]
-all = ["animation", "awsm-renderer-core/all"]
+all = ["animation", "awsm-renderer-core/all", "scene-schema"]
 # specifics
 animation = []
 # Optional features to enable optional parts of awsm-renderer-core
@@ -28,10 +28,17 @@ serde = ["dep:serde", "awsm-renderer-core/serde"]
 mega-texture = ["awsm-renderer-core/mega-texture"]
 exr = ["awsm-renderer-core/exr"]
 texture-export = ["awsm-renderer-core/texture-export"]
+# Pulls in `awsm-scene-schema` and provides `From<scene_schema::*>`
+# implementations for the renderer's runtime types (`ShadowsConfig`,
+# `LightShadowParams`, `MeshShadowFlags`, etc.). Off by default so the
+# renderer stays scene-schema-free for non-editor consumers; on for
+# players that load `EditorProject` bundles and want one-call conversion.
+scene-schema = ["dep:awsm-scene-schema"]
 
 [dependencies]
 awsm-renderer-core = { version = "0.1.3", path = "../renderer-core", features = ["texture-pool"] }
 awsm-materials = { path = "../materials" }
+awsm-scene-schema = { path = "../scene-schema", optional = true }
 web-sys = {workspace = true}
 wasm-bindgen = {workspace = true}
 tracing = {workspace = true}

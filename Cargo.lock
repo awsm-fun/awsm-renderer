@@ -172,6 +172,7 @@ dependencies = [
  "askama",
  "awsm-materials",
  "awsm-renderer-core",
+ "awsm-scene-schema",
  "bevy_mikktspace",
  "futures",
  "glam 0.32.1",

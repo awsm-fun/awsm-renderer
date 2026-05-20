@@ -28,6 +28,7 @@ pub mod model;
 pub mod particle;
 pub mod primitive;
 pub mod project;
+pub mod shadows;
 pub mod sprite;
 pub mod transform;
 pub mod tree;
@@ -45,6 +46,7 @@ pub use model::*;
 pub use particle::*;
 pub use primitive::*;
 pub use project::*;
+pub use shadows::*;
 pub use sprite::*;
 pub use transform::*;
 pub use tree::*;
@@ -72,6 +74,7 @@ mod tests {
         EditorProject {
             name: String::new(),
             environment: EnvironmentConfig::default(),
+            shadows: Default::default(),
             assets,
             nodes: vec![EditorNode {
                 id: NodeId::new(),

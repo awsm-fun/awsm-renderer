@@ -19,7 +19,7 @@ struct LightPacked {
   dir_inner: vec4<f32>,
   // color.rgb + intensity
   color_intensity: vec4<f32>,
-  // kind (as uint) + outer_cone + 2 pads (or extra params)
+  // kind (as uint) + outer_cone + shadow_index (bit-cast u32) + 1 pad
   kind_outer_pad: vec4<f32>,
 };
 
@@ -32,6 +32,8 @@ struct Light {
     direction: vec3<f32>,
     inner_cone: f32,
     outer_cone: f32,
+    // Index into `shadow_descriptors`. `0xFFFFFFFF` = no shadow.
+    shadow_index: u32,
 };
 
 fn get_lights_info() -> LightsInfo {
@@ -56,7 +58,8 @@ fn get_light(i: u32) -> Light {
         p.pos_range.w,
         p.dir_inner.xyz,
         p.dir_inner.w,
-        p.kind_outer_pad.y
+        p.kind_outer_pad.y,
+        bitcast<u32>(p.kind_outer_pad.z),
     );
 }
 
@@ -133,6 +136,11 @@ fn apply_lighting(
     surface_to_camera: vec3<f32>,
     world_position: vec3<f32>,
     lights_info: LightsInfo,
+    // Mirrors `Mesh::receive_shadows` (1 = enabled, 0 = mesh opts
+    // out). Drives an inner gate around `sample_shadow_directional`
+    // so a non-receiver mesh stays fully lit even when shadow
+    // descriptors are otherwise live for this light.
+    receive_shadows: u32,
 ) -> vec3<f32> {
     var color = vec3<f32>(0.0);
 
@@ -152,10 +160,56 @@ fn apply_lighting(
     {% endif %}
 
     {% if has_lighting_punctual() %}
+        {% if shadows_enabled %}
+            // View-space z (positive forward) for cascade selection.
+            let view_z_for_shadow = -(camera_raw.view * vec4<f32>(world_position, 1.0)).z;
+        {% endif %}
         for(var i = 0u; i < lights_info.n_lights; i = i + 1u) {
-            let light_brdf = light_to_brdf(get_light(i), material_color.normal, world_position);
-            color += brdf_direct(material_color, light_brdf, surface_to_camera);
+            let light = get_light(i);
+            let light_brdf = light_to_brdf(light, material_color.normal, world_position);
+            let direct = brdf_direct(material_color, light_brdf, surface_to_camera);
+            {% if shadows_enabled %}
+                // Modulate by shadow visibility (1.0 = lit, 0.0 = fully
+                // shadowed). `shadow_index == SHADOW_INDEX_NONE` short-
+                // circuits to 1.0; the cascade selector walks
+                // descriptors descriptor_base..base+count.
+                var visibility: f32 = 1.0;
+                if receive_shadows != 0u {
+                    visibility = sample_shadow_directional(
+                        light.shadow_index,
+                        world_position,
+                        material_color.normal,
+                        view_z_for_shadow,
+                    );
+                    // Contact-shadow refinement: directional lights only,
+                    // since the SSCS ray-march needs a meaningful
+                    // surface-to-light direction. Point/spot already
+                    // sample their own short-range shadow maps so SSCS
+                    // would double-cost them for no win.
+                    if light.kind == 1u && light.shadow_index != SHADOW_INDEX_NONE {
+                        let sscs_dir = normalize(-light.direction);
+                        visibility = visibility * apply_sscs(world_position, sscs_dir);
+                    }
+                }
+                color += direct * visibility;
+            {% else %}
+                color += direct;
+            {% endif %}
         }
+        {% if shadows_enabled %}
+            // Cascade-debug overlay (uses the dominant directional
+            // light's descriptor base, fetched via light 0's
+            // `shadow_index` — sufficient until phase 4 surfaces a
+            // proper sun-light index).
+            if lights_info.n_lights > 0u {
+                color = debug_cascade_tint(
+                    color,
+                    get_light(0u).shadow_index,
+                    world_position,
+                    view_z_for_shadow,
+                );
+            }
+        {% endif %}
     {% endif %}
 
     return color;
@@ -168,6 +222,8 @@ fn apply_lighting_with_transmission(
     world_position: vec3<f32>,
     lights_info: LightsInfo,
     transmission_background: vec3<f32>,
+    // See `apply_lighting`.
+    receive_shadows: u32,
 ) -> vec3<f32> {
     var color = vec3<f32>(0.0);
 
@@ -188,10 +244,56 @@ fn apply_lighting_with_transmission(
     {% endif %}
 
     {% if has_lighting_punctual() %}
+        {% if shadows_enabled %}
+            // View-space z (positive forward) for cascade selection.
+            let view_z_for_shadow = -(camera_raw.view * vec4<f32>(world_position, 1.0)).z;
+        {% endif %}
         for(var i = 0u; i < lights_info.n_lights; i = i + 1u) {
-            let light_brdf = light_to_brdf(get_light(i), material_color.normal, world_position);
-            color += brdf_direct(material_color, light_brdf, surface_to_camera);
+            let light = get_light(i);
+            let light_brdf = light_to_brdf(light, material_color.normal, world_position);
+            let direct = brdf_direct(material_color, light_brdf, surface_to_camera);
+            {% if shadows_enabled %}
+                // Modulate by shadow visibility (1.0 = lit, 0.0 = fully
+                // shadowed). `shadow_index == SHADOW_INDEX_NONE` short-
+                // circuits to 1.0; the cascade selector walks
+                // descriptors descriptor_base..base+count.
+                var visibility: f32 = 1.0;
+                if receive_shadows != 0u {
+                    visibility = sample_shadow_directional(
+                        light.shadow_index,
+                        world_position,
+                        material_color.normal,
+                        view_z_for_shadow,
+                    );
+                    // Contact-shadow refinement: directional lights only,
+                    // since the SSCS ray-march needs a meaningful
+                    // surface-to-light direction. Point/spot already
+                    // sample their own short-range shadow maps so SSCS
+                    // would double-cost them for no win.
+                    if light.kind == 1u && light.shadow_index != SHADOW_INDEX_NONE {
+                        let sscs_dir = normalize(-light.direction);
+                        visibility = visibility * apply_sscs(world_position, sscs_dir);
+                    }
+                }
+                color += direct * visibility;
+            {% else %}
+                color += direct;
+            {% endif %}
         }
+        {% if shadows_enabled %}
+            // Cascade-debug overlay (uses the dominant directional
+            // light's descriptor base, fetched via light 0's
+            // `shadow_index` — sufficient until phase 4 surfaces a
+            // proper sun-light index).
+            if lights_info.n_lights > 0u {
+                color = debug_cascade_tint(
+                    color,
+                    get_light(0u).shadow_index,
+                    world_position,
+                    view_z_for_shadow,
+                );
+            }
+        {% endif %}
     {% endif %}
 
     return color;

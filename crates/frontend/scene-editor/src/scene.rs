@@ -11,6 +11,7 @@ pub mod snapshot;
 pub mod types;
 
 pub use assets::{AssetId, AssetSource, AssetTable};
+pub use awsm_scene_schema::ShadowsConfig;
 pub use node::{Node, NodeId};
 pub use snapshot::SceneSnapshot;
 pub use types::{
@@ -23,6 +24,12 @@ use crate::prelude::*;
 /// Live, reactive scene. Held inside `AppState` as an `Arc<Scene>`.
 pub struct Scene {
     pub environment: Mutable<EnvironmentConfig>,
+    /// Renderer-wide shadow config. Editor mirrors the on-disk
+    /// `EditorProject::shadows` block here; every change is pushed
+    /// through `set_shadows_config` and takes effect on the next
+    /// frame — resource-shape changes recreate the underlying
+    /// textures + bind groups.
+    pub shadows: Mutable<ShadowsConfig>,
     pub nodes: MutableVec<Arc<Node>>,
     /// Per-project asset table. Every `Model` node and every `Ktx`
     /// environment entry refers into this map by `AssetId`. Mutations
@@ -38,6 +45,7 @@ impl Scene {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             environment: Mutable::new(EnvironmentConfig::default()),
+            shadows: Mutable::new(ShadowsConfig::default()),
             nodes: MutableVec::new(),
             assets: Mutex::new(AssetTable::new()),
             revision: Mutable::new(0),

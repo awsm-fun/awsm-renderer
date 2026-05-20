@@ -29,6 +29,7 @@ pub mod render_passes;
 pub mod render_textures;
 pub mod renderable;
 pub mod shaders;
+pub mod shadows;
 pub mod textures;
 pub mod transforms;
 pub mod update;
@@ -98,6 +99,10 @@ pub struct AwsmRenderer {
     /// Per-frame mipmap generator for the opaque RT — only dispatched
     /// when the visible material set contains a transmissive material.
     pub opaque_mipgen: opaque_mipgen::OpaqueMipgen,
+    /// Shadow mapping subsystem. Owns the depth atlas, EVSM atlas,
+    /// cube-array pool, descriptors, and the comparison / filterable
+    /// samplers used by the shadow-aware shading passes.
+    pub shadows: shadows::Shadows,
     // we pick between these on the fly
     _clear_color_perceptual_to_linear: Color,
     _clear_color: Color,
@@ -152,6 +157,12 @@ pub struct AwsmRendererBuilder {
     ibl_irradiance_colors: CubemapBitmapColors,
     anti_aliasing: AntiAliasing,
     post_processing: PostProcessing,
+    /// Renderer-wide shadow config picked up at construction time.
+    /// Resource-shaped fields (`atlas_size`, `point_shadow_resolution`,
+    /// `max_point_shadows`, `evsm_atlas_size`) are baked into the
+    /// shadow textures; runtime tweaks of those need a renderer
+    /// rebuild. Defaults via `ShadowsConfig::default()` if unset.
+    shadows_config: Option<shadows::ShadowsConfig>,
 }
 
 /// WebGPU builder input for `AwsmRendererBuilder`.
@@ -217,7 +228,18 @@ impl AwsmRendererBuilder {
             },
             anti_aliasing: AntiAliasing::default(),
             post_processing: PostProcessing::default(),
+            shadows_config: None,
         }
+    }
+
+    /// Pins a renderer-wide shadow configuration that the new
+    /// `Shadows` will use at construction. Use this when loading an
+    /// `awsm_scene_schema::EditorProject` so the cube-pool size, EVSM
+    /// atlas size, and 2D atlas size match the authored intent before
+    /// any frame renders.
+    pub fn with_shadows_config(mut self, config: shadows::ShadowsConfig) -> Self {
+        self.shadows_config = Some(config);
+        self
     }
 
     /// Sets BRDF LUT generation options.
@@ -281,6 +303,7 @@ impl AwsmRendererBuilder {
             ibl_irradiance_colors,
             anti_aliasing,
             post_processing,
+            shadows_config,
         } = self;
 
         let mut gpu = match gpu {
@@ -358,6 +381,18 @@ impl AwsmRendererBuilder {
 
         let opaque_mipgen = opaque_mipgen::OpaqueMipgen::new(&gpu).await?;
 
+        let shadows = shadows::Shadows::new(
+            &gpu,
+            &mut bind_group_layouts,
+            &mut pipeline_layouts,
+            &mut pipelines,
+            &mut shaders,
+            &render_passes.geometry.bind_groups,
+            &render_textures.formats,
+            shadows_config.unwrap_or_default(),
+        )
+        .await?;
+
         #[cfg(feature = "animation")]
         let animations = animation::Animations::default();
 
@@ -386,6 +421,7 @@ impl AwsmRendererBuilder {
             picker,
             lines,
             opaque_mipgen,
+            shadows,
             #[cfg(feature = "animation")]
             animations,
         };

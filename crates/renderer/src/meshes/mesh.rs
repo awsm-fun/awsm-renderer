@@ -67,6 +67,12 @@ pub struct Mesh {
     /// Defaults to `BillboardMode::None`; sprite + particle meshes set it to
     /// `YAxis` / `Full` at construction time.
     pub billboard_mode: BillboardMode,
+    /// Whether this mesh appears in the shadow-generation pass.
+    /// Defaults to `true`; sprites/particles override to `false`.
+    pub cast_shadows: bool,
+    /// Whether this mesh is darkened by shadow sampling during shading.
+    /// Defaults to `true`.
+    pub receive_shadows: bool,
 }
 
 impl Mesh {
@@ -89,6 +95,8 @@ impl Mesh {
             hidden,
             instance_attr_base: u32::MAX,
             billboard_mode: BillboardMode::None,
+            cast_shadows: true,
+            receive_shadows: true,
         }
     }
 

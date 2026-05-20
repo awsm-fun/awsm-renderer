@@ -229,7 +229,8 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
                 surface_to_camera,
                 input.world_position,
                 lights_info,
-                transmission_background
+                transmission_background,
+                material_mesh_meta.receive_shadows,
             );
         } else {
             // Standard lighting without transmission
@@ -237,7 +238,8 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
                 material_color,
                 surface_to_camera,
                 input.world_position,
-                lights_info
+                lights_info,
+                material_mesh_meta.receive_shadows,
             );
         }
 

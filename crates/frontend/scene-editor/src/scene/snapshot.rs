@@ -16,6 +16,7 @@ pub type SceneSnapshot = EditorProject;
 /// Capture the live `Scene` into an `EditorProject`.
 pub fn capture(scene: &Scene) -> EditorProject {
     let environment = scene.environment.get_cloned();
+    let shadows = scene.shadows.get_cloned();
     let assets = scene.assets.lock().unwrap().clone();
     let nodes = scene
         .nodes
@@ -30,6 +31,7 @@ pub fn capture(scene: &Scene) -> EditorProject {
         // ring and stays orthogonal to undo/redo.
         name: String::new(),
         environment,
+        shadows,
         assets,
         nodes,
     }
@@ -38,6 +40,7 @@ pub fn capture(scene: &Scene) -> EditorProject {
 /// Replace the live scene's contents with an `EditorProject` in-place.
 pub fn apply_to(snapshot: &EditorProject, scene: &Scene) {
     scene.environment.set(snapshot.environment.clone());
+    scene.shadows.set(snapshot.shadows.clone());
     *scene.assets.lock().unwrap() = snapshot.assets.clone();
     let mut lock = scene.nodes.lock_mut();
     lock.clear();

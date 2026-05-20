@@ -50,9 +50,14 @@ impl MaterialTransparentPipelines {
         ctx: &mut RenderPassInitContext<'_>,
         bind_groups: &MaterialTransparentBindGroups,
     ) -> Result<Self> {
+        // Note: this adapter exposes only `maxBindGroups=4` so the
+        // transparent pipeline cannot also bind the shared shadow
+        // 16.B layout: `lights` folded into `main`, freeing slot 1
+        // for `shadows`. Slot order is `main / shadows / texture_pool
+        // / mesh_material` — matches `get_bind_groups`'s return order.
         let pipeline_layout_cache_key = PipelineLayoutCacheKey::new(vec![
             bind_groups.main_bind_group_layout_key,
-            bind_groups.lights_bind_group_layout_key,
+            bind_groups.shadows_bind_group_layout_key,
             bind_groups.texture_pool_textures_bind_group_layout_key,
             bind_groups.mesh_material_bind_group_layout_key,
         ]);

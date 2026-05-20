@@ -191,15 +191,28 @@ impl Lights {
         })
     }
 
-    /// Removes all lights.
-    pub fn clear(&mut self) {
+    /// Removes all lights. `pub(crate)` for the same reason as
+    /// [`Self::remove`] — external callers must go through
+    /// [`AwsmRenderer::clear_lights`](crate::AwsmRenderer::clear_lights)
+    /// so the shadow subsystem can drop every per-light slot /
+    /// throttle / params entry in lockstep.
+    pub(crate) fn clear(&mut self) {
         self.lights.clear();
         self.punctual_gpu_dirty = true;
         self.lighting_info_gpu_dirty = true;
     }
 
-    /// Inserts a light and returns its key.
-    pub fn insert(&mut self, light: Light) -> Result<LightKey> {
+    /// Inserts a light and returns its key. `pub(crate)` — external
+    /// callers must go through
+    /// [`AwsmRenderer::insert_light`](crate::AwsmRenderer::insert_light)
+    /// so the per-light shadow params can be registered in lockstep.
+    /// The coordinated API mirrors
+    /// [`AwsmRenderer::remove_light`](crate::AwsmRenderer::remove_light) /
+    /// [`AwsmRenderer::clear_lights`](crate::AwsmRenderer::clear_lights);
+    /// keeping both sides of the lifecycle on one entry point makes
+    /// it impossible to desynchronise the lights buffer and the
+    /// shadow subsystem.
+    pub(crate) fn insert(&mut self, light: Light) -> Result<LightKey> {
         let key = self.lights.insert(light.clone());
 
         self.punctual_gpu_dirty = true;
@@ -207,8 +220,13 @@ impl Lights {
         Ok(key)
     }
 
-    /// Removes a light by key.
-    pub fn remove(&mut self, key: LightKey) {
+    /// Removes a light by key. `pub(crate)` so callers can't bypass
+    /// the coordinated shadow cleanup — every external removal must
+    /// go through [`AwsmRenderer::remove_light`](crate::AwsmRenderer::remove_light),
+    /// which calls `Shadows::on_light_removed` first so the cube-pool
+    /// slot, the throttle history, and the per-light shadow params
+    /// don't leak when the underlying light goes away.
+    pub(crate) fn remove(&mut self, key: LightKey) {
         self.lights.remove(key);
         self.punctual_gpu_dirty = true;
         self.lighting_info_gpu_dirty = true;
@@ -222,12 +240,36 @@ impl Lights {
         }
     }
 
+    /// Force the next `write_gpu` to repack the punctual storage
+    /// buffer. Lights doesn't observe shadow state — the descriptor
+    /// index that lands in `LightPacked.row4.z` is resolved at pack
+    /// time via the `shadow_index_for` callback — so when the shadow
+    /// subsystem changes a light's `descriptor_base` (e.g. shadows
+    /// toggled on/off, hardness changed) it must call this to
+    /// invalidate the cached packing.
+    pub fn mark_punctual_dirty(&mut self) {
+        self.punctual_gpu_dirty = true;
+    }
+
+    /// Returns the light associated with a key, or `None` if the key
+    /// is unknown.
+    pub fn get(&self, key: LightKey) -> Option<&Light> {
+        self.lights.get(key)
+    }
+
     /// Writes lighting buffers to the GPU if dirty.
+    ///
+    /// `shadow_index_for` resolves each light's shadow descriptor
+    /// index — supplied by `Shadows` so the GPU-side `LightPacked`
+    /// row 4 carries the index alongside the kind / outer-cone bytes.
+    /// Pass `|_| crate::shadows::SHADOW_INDEX_NONE` to disable shadow
+    /// indexing entirely.
     pub fn write_gpu(
         &mut self,
         logging: &AwsmRendererLogging,
         gpu: &AwsmRendererWebGpu,
         bind_groups: &mut BindGroups,
+        shadow_index_for: impl Fn(LightKey) -> u32,
     ) -> Result<()> {
         if self.punctual_gpu_dirty {
             let _maybe_span_guard = if logging.render_timings {
@@ -244,8 +286,8 @@ impl Lights {
 
             let punctual_light_buffer: Vec<u8> = self
                 .lights
-                .values()
-                .flat_map(|light| light.storage_buffer_data())
+                .iter()
+                .flat_map(|(key, light)| light.storage_buffer_data(shadow_index_for(key)))
                 .collect();
 
             // GPU size should never be 0, so use at least PUNCTUAL_LIGHT_SIZE
@@ -351,7 +393,13 @@ impl Light {
 
     // matches LightPacked
     /// Returns the packed storage buffer payload for this light.
-    pub fn storage_buffer_data(&self) -> [u8; Self::BYTE_SIZE] {
+    ///
+    /// `shadow_index` is bit-cast into `LightPacked.kind_outer_pad.z`
+    /// (the f32 slot at offset 56) so the shading shader can recover
+    /// it with `bitcast<u32>`. Pass
+    /// [`crate::shadows::SHADOW_INDEX_NONE`] (== `u32::MAX`) for
+    /// lights that don't cast shadows.
+    pub fn storage_buffer_data(&self, shadow_index: u32) -> [u8; Self::BYTE_SIZE] {
         let mut data = [0u8; Self::BYTE_SIZE];
         let mut offset = 0;
 
@@ -407,6 +455,11 @@ impl Light {
         //   kind_outer_pad: vec4<f32>,
         // };
 
+        // Bit-cast the shadow index into an f32 so it shares the
+        // `kind_outer_pad: vec4<f32>` row layout. WGSL recovers the
+        // original bits via `bitcast<u32>(p.kind_outer_pad.z)`.
+        let shadow_index_f32 = f32::from_bits(shadow_index);
+
         match self {
             Light::Directional {
                 color,
@@ -422,9 +475,11 @@ impl Light {
                                           // row 3
                 write(color.into());
                 write(intensity.into());
-                // row 4
+                // row 4: kind, _, shadow_index, _
                 write((&self.enum_value()).into());
-                write(Value::SkipN32(3)); // skip outer cone and padding
+                write(Value::SkipN32(1)); // skip outer_cone (unused for directional)
+                write((&shadow_index_f32).into());
+                write(Value::SkipN32(1)); // pad
             }
             Light::Point {
                 color,
@@ -440,9 +495,11 @@ impl Light {
                                           // row 3
                 write(color.into());
                 write(intensity.into());
-                // row 4
+                // row 4: kind, _, shadow_index, _
                 write((&self.enum_value()).into());
-                write(Value::SkipN32(3)); // skip outer cone and padding
+                write(Value::SkipN32(1)); // skip outer_cone (unused for point)
+                write((&shadow_index_f32).into());
+                write(Value::SkipN32(1)); // pad
             }
             Light::Spot {
                 color,
@@ -466,10 +523,11 @@ impl Light {
                 // row 3
                 write(color.into());
                 write(intensity.into());
-                // row 4
+                // row 4: kind, outer_cone, shadow_index, _
                 write((&self.enum_value()).into());
                 write((&outer_cos).into());
-                write(Value::SkipN32(2)); // skip padding
+                write((&shadow_index_f32).into());
+                write(Value::SkipN32(1)); // pad
             }
         }
 

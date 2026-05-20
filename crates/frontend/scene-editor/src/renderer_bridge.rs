@@ -18,6 +18,7 @@ pub mod node_sync;
 pub mod particles_sync;
 pub mod point_handle_sync;
 pub mod procedural_sync;
+pub mod shadows_sync;
 pub mod texture_cache;
 
 use crate::collider_wireframe::sync_editor_wireframes;
@@ -40,6 +41,7 @@ pub use node_sync::{bridge, Bridge, RendererNode};
 pub fn init() {
     node_sync::start_top_level_observer();
     env_sync::start();
+    shadows_sync::start();
     gizmo::init();
     point_handle_sync::start();
     spawn_local(async {
@@ -240,7 +242,9 @@ fn sync_lights_pre_render(renderer: &mut awsm_renderer::AwsmRenderer) {
                 0.0
             };
             let new_light = match &cfg {
-                crate::scene::LightConfig::Directional { color, intensity } => Light::Directional {
+                crate::scene::LightConfig::Directional {
+                    color, intensity, ..
+                } => Light::Directional {
                     color: *color,
                     intensity: *intensity * intensity_scale,
                     direction: direction.to_array(),
@@ -249,6 +253,7 @@ fn sync_lights_pre_render(renderer: &mut awsm_renderer::AwsmRenderer) {
                     color,
                     intensity,
                     range,
+                    ..
                 } => Light::Point {
                     color: *color,
                     intensity: *intensity * intensity_scale,
@@ -261,6 +266,7 @@ fn sync_lights_pre_render(renderer: &mut awsm_renderer::AwsmRenderer) {
                     range,
                     inner_angle,
                     outer_angle,
+                    ..
                 } => Light::Spot {
                     color: *color,
                     intensity: *intensity * intensity_scale,

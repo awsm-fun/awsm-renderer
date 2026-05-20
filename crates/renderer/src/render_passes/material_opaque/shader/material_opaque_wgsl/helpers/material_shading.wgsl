@@ -203,12 +203,16 @@ fn msaa_process_sample(
             return MsaaSampleResult(color, mat_color.base.a, true);
         }
 
-        // Use shared standard_coordinates like main branch does
+        // Use shared standard_coordinates like main branch does. The
+        // per-sample meta is named `sample_mesh_meta` here (line 96
+        // above) rather than `material_mesh_meta` — every MSAA edge
+        // sample resolves its own mesh independently.
         let color = apply_lighting(
             mat_color,
             standard_coordinates.surface_to_camera,
             standard_coordinates.world_position,
-            lights_info
+            lights_info,
+            sample_mesh_meta.receive_shadows,
         );
         return msaa_apply_instance_tint(color, mat_color.base.a, sample_instance_id);
     }
