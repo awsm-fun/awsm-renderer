@@ -65,15 +65,17 @@ impl MaterialDecalBindGroups {
 
     /// Rebuilds the decal main bind group against current resources.
     pub fn recreate_main(&mut self, ctx: &BindGroupRecreateContext<'_>) -> Result<()> {
-        // MSAA path: transparent texture isn't storage-bindable, so
-        // there's no main bind group to build. The render pass
-        // detects this and skips the dispatch.
-        if ctx.anti_aliasing.msaa_sample_count.is_some() {
-            self.main_bind_group = None;
-            return Ok(());
-        }
-
-        let layout_key = self.main_layout_key_singlesampled;
+        // §16.4.D: the decal compute now always writes to `decal_color`
+        // (single-sample storage). On MSAA-off the composite step blits
+        // through to `transparent`; on MSAA the composite alpha-blits to
+        // the multisampled target. Either way the bind-group shape is
+        // identical — no MSAA-fork here.
+        let msaa = ctx.anti_aliasing.msaa_sample_count.is_some();
+        let layout_key = if msaa {
+            self.main_layout_key_multisampled
+        } else {
+            self.main_layout_key_singlesampled
+        };
         let entries = vec![
             BindGroupEntry::new(
                 0,
@@ -94,7 +96,7 @@ impl MaterialDecalBindGroups {
             BindGroupEntry::new(
                 3,
                 BindGroupResource::TextureView(Cow::Borrowed(
-                    &ctx.render_texture_views.transparent,
+                    &ctx.render_texture_views.decal_color,
                 )),
             ),
             BindGroupEntry::new(

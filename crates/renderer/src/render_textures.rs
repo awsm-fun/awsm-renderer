@@ -195,6 +195,12 @@ pub struct RenderTextureViews {
     // Output from transparent pass
     pub transparent: web_sys::GpuTextureView,
 
+    /// Single-sample storage target the decal compute writes to when
+    /// MSAA is enabled (the multisampled `transparent` can't be storage-
+    /// bound). A small composite pass then alpha-blits it over the
+    /// multisampled transparent target. §16.4.D.
+    pub decal_color: web_sys::GpuTextureView,
+
     // Output from composite pass
     pub composite: web_sys::GpuTextureView,
     pub transparent_to_composite_blit_bind_group_no_anti_alias: Option<web_sys::GpuBindGroup>,
@@ -242,6 +248,7 @@ impl RenderTextureViews {
                 .transparent_to_composite_blit_bind_group_no_anti_alias
                 .clone(),
             transparent: inner.transparent_view.clone(),
+            decal_color: inner.decal_color_view.clone(),
             depth: inner.depth_view.clone(),
             hud_depth: inner.hud_depth_view.clone(),
             effects: inner.effects_view.clone(),
@@ -286,6 +293,14 @@ pub struct RenderTexturesInner {
 
     pub transparent: web_sys::GpuTexture,
     pub transparent_view: web_sys::GpuTextureView,
+
+    /// Single-sample storage target used as the decal compute's output
+    /// when MSAA is on (the multisampled `transparent` can't be
+    /// storage-bound). A small composite pass alpha-blits it over the
+    /// multisampled `transparent` target. Always allocated regardless
+    /// of MSAA so the bind-group shape stays stable.
+    pub decal_color: web_sys::GpuTexture,
+    pub decal_color_view: web_sys::GpuTextureView,
 
     pub depth: web_sys::GpuTexture,
     pub depth_view: web_sys::GpuTextureView,
@@ -430,6 +445,26 @@ impl RenderTexturesInner {
                 .map_err(AwsmRenderTextureError::CreateTexture)?
         };
 
+        // §16.4.D. Single-sample storage-write target the decal compute
+        // uses when MSAA is on; the composite step alpha-blits it onto
+        // the multisampled transparent target. Always allocated so the
+        // decal pass's bind-group shape doesn't fork.
+        let decal_color = gpu
+            .create_texture(
+                &TextureDescriptor::new(
+                    render_texture_formats.color,
+                    Extent3d::new(width, Some(height), Some(1)),
+                    TextureUsage::new()
+                        .with_storage_binding()
+                        .with_texture_binding()
+                        .with_render_attachment()
+                        .with_copy_dst(),
+                )
+                .with_label("DecalColor")
+                .into(),
+            )
+            .map_err(AwsmRenderTextureError::CreateTexture)?;
+
         let depth = gpu
             .create_texture(
                 &maybe_multisample_texture(render_texture_formats.depth, "Depth").into(),
@@ -544,6 +579,10 @@ impl RenderTexturesInner {
                 AwsmRenderTextureError::CreateTextureView(format!("opaque full: {e:?}"))
             })?;
 
+        let decal_color_view = decal_color.create_view().map_err(|e| {
+            AwsmRenderTextureError::CreateTextureView(format!("decal_color: {e:?}"))
+        })?;
+
         let transparent_view = transparent.create_view().map_err(|e| {
             AwsmRenderTextureError::CreateTextureView(format!("transparent: {e:?}"))
         })?;
@@ -618,6 +657,9 @@ impl RenderTexturesInner {
             transparent,
             transparent_view,
 
+            decal_color,
+            decal_color_view,
+
             depth,
             depth_view,
 
@@ -652,6 +694,7 @@ impl RenderTexturesInner {
         self.barycentric_derivatives.destroy();
         self.opaque.destroy();
         self.transparent.destroy();
+        self.decal_color.destroy();
         self.depth.destroy();
         self.composite.destroy();
         self.effects.destroy();

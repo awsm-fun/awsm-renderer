@@ -162,6 +162,7 @@ impl BindGroups {
             Occlusion,
             MaterialClassify,
             MaterialDecalMain,
+            MaterialDecalComposite,
             MaterialDecalTextures,
             OpaqueMain,
             OpaqueLights,
@@ -221,6 +222,7 @@ impl BindGroups {
                     functions_to_call.insert(FunctionToCall::LightCulling);
                     functions_to_call.insert(FunctionToCall::MaterialClassify);
                     functions_to_call.insert(FunctionToCall::MaterialDecalMain);
+                    functions_to_call.insert(FunctionToCall::MaterialDecalComposite);
                     functions_to_call.insert(FunctionToCall::Display);
                     functions_to_call.insert(FunctionToCall::Effects);
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
@@ -402,6 +404,9 @@ impl BindGroups {
                         .material_decal
                         .bind_groups
                         .recreate_main(&ctx)?;
+                }
+                FunctionToCall::MaterialDecalComposite => {
+                    render_passes.material_decal.composite.recreate(&ctx)?;
                 }
                 FunctionToCall::MaterialDecalTextures => {
                     render_passes

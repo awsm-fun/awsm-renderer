@@ -7,6 +7,7 @@
 //! entirely on frames with no active decals.
 
 pub mod bind_group;
+pub mod composite;
 pub mod pipeline;
 pub mod render_pass;
 pub mod shader;

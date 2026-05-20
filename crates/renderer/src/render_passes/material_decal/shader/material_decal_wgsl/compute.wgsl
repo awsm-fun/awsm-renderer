@@ -20,10 +20,18 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
+    // §16.4.D: this compute writes to a dedicated single-sample
+    // `decal_color` (storage RGBA16float); a downstream composite
+    // alpha-blits it onto `transparent` (multi- or single-sample).
+    // Pixels with no decal hit *must* write 0 so the composite's
+    // alpha test correctly skips them (the storage texture isn't
+    // cleared between frames).
+
     // Skybox skip — depth == 1.0 means no geometry. Decals only
-    // apply to opaque geometry; sky pixels keep the blit's value.
+    // apply to opaque geometry; sky pixels stay untouched.
     let depth = textureLoad(depth_tex, coords, 0);
     if depth >= 1.0 {
+        textureStore(transparent_tex_out, coords, vec4<f32>(0.0));
         return;
     }
 
@@ -33,11 +41,13 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let vis = textureLoad(visibility_data_tex, coords, 0);
     let tri = join32(vis.x, vis.y);
     if tri == U32_MAX {
+        textureStore(transparent_tex_out, coords, vec4<f32>(0.0));
         return;
     }
     let meta_offset = join32(vis.z, vis.w);
     let mesh_meta = material_mesh_metas[meta_offset / META_SIZE_IN_BYTES];
     if mesh_meta.receive_decals == 0u {
+        textureStore(transparent_tex_out, coords, vec4<f32>(0.0));
         return;
     }
 
@@ -54,6 +64,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let count = decals_buffer.count;
     if count == 0u {
+        textureStore(transparent_tex_out, coords, vec4<f32>(0.0));
         return;
     }
     let opaque_color = textureLoad(opaque_tex_in, coords, 0);
@@ -77,7 +88,11 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     if any_decal_hit {
-        textureStore(transparent_tex_out, coords, accum);
+        // Alpha = 1 marks "decal touched this pixel" for the composite's
+        // discard test; the composite only ever writes back rgb.
+        textureStore(transparent_tex_out, coords, vec4<f32>(accum.rgb, 1.0));
+    } else {
+        textureStore(transparent_tex_out, coords, vec4<f32>(0.0));
     }
 }
 
