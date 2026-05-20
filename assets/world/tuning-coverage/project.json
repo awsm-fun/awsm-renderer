@@ -1,0 +1,7069 @@
+{
+  "name": "tuning-coverage",
+  "environment": {
+    "skybox": "built_in_default",
+    "ibl": "built_in_default"
+  },
+  "shadows": {
+    "sscs_enabled": false,
+    "sscs_step_count": 16,
+    "atlas_size": 4096,
+    "evsm_atlas_size": 2048,
+    "evsm_exponent": 10.0,
+    "evsm_blur_radius": 6,
+    "max_point_shadows": 8,
+    "point_shadow_resolution": 1024,
+    "debug_cascade_colors": false
+  },
+  "assets": {},
+  "nodes": [
+    {
+      "id": "34ef0625-b0f6-49ba-9a60-034087ada6c5",
+      "name": "floor",
+      "transform": {
+        "translation": [
+          0.0,
+          -0.01,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "kind": {
+        "primitive": {
+          "shape": {
+            "plane": {
+              "width": 200.0,
+              "depth": 200.0,
+              "segments_x": 1,
+              "segments_z": 1
+            }
+          },
+          "material": null,
+          "inline_material": {
+            "label": "",
+            "base_color": [
+              0.3,
+              0.3,
+              0.3,
+              1.0
+            ],
+            "base_color_texture": null,
+            "metallic": 0.0,
+            "roughness": 0.9,
+            "metallic_roughness_texture": null,
+            "emissive": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "emissive_texture": null,
+            "normal_texture": null,
+            "occlusion_texture": null,
+            "double_sided": false,
+            "vertex_colors_enabled": false,
+            "alpha_mode": "opaque",
+            "shading": "pbr"
+          },
+          "shadow": {
+            "cast": true,
+            "receive": true
+          }
+        }
+      },
+      "locked": false,
+      "visible": true,
+      "prefab": false,
+      "children": []
+    },
+    {
+      "id": "e2aea972-ab6f-481d-b27f-b7e1a724d7cc",
+      "name": "props",
+      "transform": {
+        "translation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "kind": "group",
+      "locked": false,
+      "visible": true,
+      "prefab": false,
+      "children": [
+        {
+          "id": "460c7d0b-ce02-490a-91bd-b422935ca023",
+          "name": "prop_000",
+          "transform": {
+            "translation": [
+              0.0,
+              0.25,
+              -2.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "7834d30c-3f35-4d69-aca8-b7cf0b369420",
+          "name": "prop_001",
+          "transform": {
+            "translation": [
+              1.2884353,
+              0.25,
+              -3.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "f26c90d0-b91b-4bb1-bdb8-f53d2f9ad73d",
+          "name": "prop_002",
+          "transform": {
+            "translation": [
+              1.9708995,
+              0.25,
+              -4.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "a4ed52a6-8853-4c81-9a75-ea917326a1eb",
+          "name": "prop_003",
+          "transform": {
+            "translation": [
+              1.7264189,
+              0.25,
+              -5.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "dd00f799-015c-454b-a86e-5302bb0b824a",
+          "name": "prop_004",
+          "transform": {
+            "translation": [
+              0.6699764,
+              0.25,
+              -6.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "92086ea7-b887-4c28-bd80-aa4cfb83c262",
+          "name": "prop_005",
+          "transform": {
+            "translation": [
+              -0.70156646,
+              0.25,
+              -7.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "78abe938-4a96-4fe2-b1e0-a4f90b620856",
+          "name": "prop_006",
+          "transform": {
+            "translation": [
+              -1.7431513,
+              0.25,
+              -8.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "ec6bd1a6-52ce-4a3f-bacb-4d3100a325ef",
+          "name": "prop_007",
+          "transform": {
+            "translation": [
+              -1.9649051,
+              0.25,
+              -9.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "b683575e-bbfd-4fa5-a210-a364d8ed469a",
+          "name": "prop_008",
+          "transform": {
+            "translation": [
+              -1.2625334,
+              0.25,
+              -10.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "0efe470d-ddab-4216-9858-e55b3af37696",
+          "name": "prop_009",
+          "transform": {
+            "translation": [
+              0.03362723,
+              0.25,
+              -11.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "929c0eb5-3e3f-4138-a33c-0940f0247ad1",
+          "name": "prop_010",
+          "transform": {
+            "translation": [
+              1.3139732,
+              0.25,
+              -12.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "7249352a-4919-4aa9-bc5b-b5e33f5e5b3c",
+          "name": "prop_011",
+          "transform": {
+            "translation": [
+              1.9763364,
+              0.25,
+              -13.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "4907e015-8f82-4830-b3f8-a7c153327ed7",
+          "name": "prop_012",
+          "transform": {
+            "translation": [
+              1.7091982,
+              0.25,
+              -14.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "5f2dc6ad-aa63-4326-af88-d312d649f970",
+          "name": "prop_013",
+          "transform": {
+            "translation": [
+              0.63819784,
+              0.25,
+              -15.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "a4c03944-7ee9-407d-b887-56f104cc715d",
+          "name": "prop_014",
+          "transform": {
+            "translation": [
+              -0.7329586,
+              0.25,
+              -16.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "ad861a15-01c2-49d8-a561-b990bddf4b9b",
+          "name": "prop_015",
+          "transform": {
+            "translation": [
+              -1.7593915,
+              0.25,
+              -17.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "38d2857b-0a71-4b24-8f00-18260af4b7b3",
+          "name": "prop_016",
+          "transform": {
+            "translation": [
+              -1.9583555,
+              0.25,
+              -18.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "838339b5-a876-4177-bddb-0e5b611cb531",
+          "name": "prop_017",
+          "transform": {
+            "translation": [
+              -1.2362748,
+              0.25,
+              -19.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "502f4734-5d89-40be-abc7-02f702ff03a2",
+          "name": "prop_018",
+          "transform": {
+            "translation": [
+              0.067244954,
+              0.25,
+              -20.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "78f3dda9-e4b9-41de-a5f2-684157522c50",
+          "name": "prop_019",
+          "transform": {
+            "translation": [
+              1.3391398,
+              0.25,
+              -21.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "c58b9a1e-f2f6-4975-b565-a405747284a8",
+          "name": "prop_020",
+          "transform": {
+            "translation": [
+              1.9812148,
+              0.25,
+              -22.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "cacd5128-6d3d-4aaa-86d6-112f4d24ca0d",
+          "name": "prop_021",
+          "transform": {
+            "translation": [
+              1.6914939,
+              0.25,
+              -23.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "25488307-9ace-4070-9709-27ae11ad966b",
+          "name": "prop_022",
+          "transform": {
+            "translation": [
+              0.6062375,
+              0.25,
+              -24.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "600a0bed-9208-47e3-b6fd-c99964c47bfb",
+          "name": "prop_023",
+          "transform": {
+            "translation": [
+              -0.7641435,
+              0.25,
+              -25.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "4b3cd3ce-45f9-4ea1-9dd1-354e7985fc42",
+          "name": "prop_024",
+          "transform": {
+            "translation": [
+              -1.7751334,
+              0.25,
+              -26.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "3e4d705f-6fbf-4dea-ba22-327c0dca8a91",
+          "name": "prop_025",
+          "transform": {
+            "translation": [
+              -1.951252,
+              0.25,
+              -27.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "c5bddc7f-6cc9-43f1-be8a-314dec978b4c",
+          "name": "prop_026",
+          "transform": {
+            "translation": [
+              -1.2096674,
+              0.25,
+              -28.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "959f2c4c-6f56-4e75-ba75-49c8171522b3",
+          "name": "prop_027",
+          "transform": {
+            "translation": [
+              0.100844614,
+              0.25,
+              -29.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "8c064dde-5cc1-4679-bd38-53373e9b7072",
+          "name": "prop_028",
+          "transform": {
+            "translation": [
+              1.3639278,
+              0.25,
+              -30.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "bf576d00-2144-4ed6-b4ca-698cd4b1fe81",
+          "name": "prop_029",
+          "transform": {
+            "translation": [
+              1.9855326,
+              0.25,
+              -31.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "146c61ec-c8a1-4109-ad16-c808928deee4",
+          "name": "prop_030",
+          "transform": {
+            "translation": [
+              1.6733112,
+              0.25,
+              -32.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "49f51e18-4304-46f4-b901-1a1f58590382",
+          "name": "prop_031",
+          "transform": {
+            "translation": [
+              0.57410747,
+              0.25,
+              -33.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "5c560f29-bab8-471c-94e3-6b5a1a6526d0",
+          "name": "prop_032",
+          "transform": {
+            "translation": [
+              -0.79511064,
+              0.25,
+              -34.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "f75ac19e-0069-4039-a143-39be156ce2fa",
+          "name": "prop_033",
+          "transform": {
+            "translation": [
+              -1.7903751,
+              0.25,
+              -35.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "372e1366-6ac0-4a14-b45c-11d63e625519",
+          "name": "prop_034",
+          "transform": {
+            "translation": [
+              -1.9435972,
+              0.25,
+              -36.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "5d9cbf40-ca31-4502-98cd-dd10ba63aa51",
+          "name": "prop_035",
+          "transform": {
+            "translation": [
+              -1.182715,
+              0.25,
+              -37.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "1fc30573-3615-4c37-91ef-ebafaa45faef",
+          "name": "prop_036",
+          "transform": {
+            "translation": [
+              0.13441387,
+              0.25,
+              -38.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "a46f75b6-ef82-4789-a0b6-d0ddfa0445dc",
+          "name": "prop_037",
+          "transform": {
+            "translation": [
+              1.3883288,
+              0.25,
+              -39.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "308b61a8-895c-4545-aa71-840a4f06aecd",
+          "name": "prop_038",
+          "transform": {
+            "translation": [
+              1.9892896,
+              0.25,
+              -40.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "752409e9-0748-4ae8-bb0f-d61ae7e3ed26",
+          "name": "prop_039",
+          "transform": {
+            "translation": [
+              1.6546566,
+              0.25,
+              -41.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "a850bd2d-f7a7-4bbd-aa2d-c384e7536ea0",
+          "name": "prop_040",
+          "transform": {
+            "translation": [
+              0.5418116,
+              0.25,
+              -42.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "a805a065-063d-4157-8e36-bf99c257da12",
+          "name": "prop_041",
+          "transform": {
+            "translation": [
+              -0.825853,
+              0.25,
+              -43.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "d5758e94-c51f-444f-935c-629263f8e971",
+          "name": "prop_042",
+          "transform": {
+            "translation": [
+              -1.8051089,
+              0.25,
+              -44.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "6f407d66-d0a9-4239-94c4-147fb6483a82",
+          "name": "prop_043",
+          "transform": {
+            "translation": [
+              -1.935392,
+              0.25,
+              -45.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "676a428c-0fdb-42e6-ae36-c980ed81f726",
+          "name": "prop_044",
+          "transform": {
+            "translation": [
+              -1.1554314,
+              0.25,
+              -46.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "62778b02-dc85-4461-a1c2-2b1343761c57",
+          "name": "prop_045",
+          "transform": {
+            "translation": [
+              0.16794892,
+              0.25,
+              -47.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "8327c184-d565-4029-9591-91e8bf6ca8f7",
+          "name": "prop_046",
+          "transform": {
+            "translation": [
+              1.41234,
+              0.25,
+              -48.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "b46465e5-9549-4116-84c7-7ae8d814a440",
+          "name": "prop_047",
+          "transform": {
+            "translation": [
+              1.9924835,
+              0.25,
+              -49.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "f1a4ede8-5ba9-4609-b893-67d78597c1c1",
+          "name": "prop_048",
+          "transform": {
+            "translation": [
+              1.6355343,
+              0.25,
+              -50.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "a071b006-2655-47b8-ad15-0928e4d96da9",
+          "name": "prop_049",
+          "transform": {
+            "translation": [
+              0.50936615,
+              0.25,
+              -51.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "7892aebc-6036-4f9e-a25d-6f81fc657958",
+          "name": "prop_050",
+          "transform": {
+            "translation": [
+              -0.8563653,
+              0.25,
+              -52.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "9661d8a0-9ec6-404e-bc75-c16face66177",
+          "name": "prop_051",
+          "transform": {
+            "translation": [
+              -1.819334,
+              0.25,
+              -53.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "d9e33fd6-5ce8-4014-9266-17c0c942caab",
+          "name": "prop_052",
+          "transform": {
+            "translation": [
+              -1.9266417,
+              0.25,
+              -54.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "1339e995-7f8d-4b59-a42c-b028b5ad1bff",
+          "name": "prop_053",
+          "transform": {
+            "translation": [
+              -1.127821,
+              0.25,
+              -55.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "571ea231-3eef-4171-90b3-42a6788abbf4",
+          "name": "prop_054",
+          "transform": {
+            "translation": [
+              0.20143268,
+              0.25,
+              -56.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "aa70df12-b9d2-48e0-b2dc-3ab6c52a434e",
+          "name": "prop_055",
+          "transform": {
+            "translation": [
+              1.4359492,
+              0.25,
+              -57.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "30a98f8f-0bcd-4a31-844c-e18e4404e990",
+          "name": "prop_056",
+          "transform": {
+            "translation": [
+              1.9951149,
+              0.25,
+              -58.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "a29c3d5b-0937-49e4-824e-de94b2ac5642",
+          "name": "prop_057",
+          "transform": {
+            "translation": [
+              1.6159495,
+              0.25,
+              -59.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "29c0a6be-e2b5-4a65-8af9-d63032078f5e",
+          "name": "prop_058",
+          "transform": {
+            "translation": [
+              0.47677672,
+              0.25,
+              -60.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "7329307e-a253-491c-a8a0-be98cefd50a7",
+          "name": "prop_059",
+          "transform": {
+            "translation": [
+              -0.8866321,
+              0.25,
+              -61.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "0dd8333b-34fc-4a71-bbd8-68dfea55011f",
+          "name": "prop_060",
+          "transform": {
+            "translation": [
+              -1.8330431,
+              0.25,
+              -62.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "829d90cb-9051-485f-886b-601d0fde122b",
+          "name": "prop_061",
+          "transform": {
+            "translation": [
+              -1.9173435,
+              0.25,
+              -63.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "0aa6cea4-50c2-4154-a7ce-87623b60166a",
+          "name": "prop_062",
+          "transform": {
+            "translation": [
+              -1.0998918,
+              0.25,
+              -64.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "8f5f5e3f-72eb-4f16-9bb3-02769e864b88",
+          "name": "prop_063",
+          "transform": {
+            "translation": [
+              0.2348595,
+              0.25,
+              -65.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "5cc93c68-4491-4908-9c61-24107608d5d9",
+          "name": "prop_064",
+          "transform": {
+            "translation": [
+              1.4591525,
+              0.25,
+              -66.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "18f86890-f53e-4593-800c-a0bb417ed8cf",
+          "name": "prop_065",
+          "transform": {
+            "translation": [
+              1.9971818,
+              0.25,
+              -67.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "ecf0e91b-833a-4a27-842c-1b83c8890a35",
+          "name": "prop_066",
+          "transform": {
+            "translation": [
+              1.5959033,
+              0.25,
+              -68.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "a2869373-b2e0-4d0d-95b2-59fd9f7056a5",
+          "name": "prop_067",
+          "transform": {
+            "translation": [
+              0.4440525,
+              0.25,
+              -69.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "ae47f3da-07a0-4b5a-91da-5aaa6925d5e6",
+          "name": "prop_068",
+          "transform": {
+            "translation": [
+              -0.9166482,
+              0.25,
+              -70.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "7449830f-76e4-42f6-9552-9dc98d7991bd",
+          "name": "prop_069",
+          "transform": {
+            "translation": [
+              -1.846234,
+              0.25,
+              -71.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "7034447b-ae61-42b7-8f56-657ff264cc0b",
+          "name": "prop_070",
+          "transform": {
+            "translation": [
+              -1.9075053,
+              0.25,
+              -72.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "bb1f2fa6-4f7b-4dd6-bb5e-e6f4958e03cd",
+          "name": "prop_071",
+          "transform": {
+            "translation": [
+              -1.0716451,
+              0.25,
+              -73.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "bfd74f2f-8e6d-416e-92d5-e43085c72b4d",
+          "name": "prop_072",
+          "transform": {
+            "translation": [
+              0.26821992,
+              0.25,
+              -74.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "c33b3138-58cb-4df1-86c5-e5ebd9c52bcc",
+          "name": "prop_073",
+          "transform": {
+            "translation": [
+              1.4819431,
+              0.25,
+              -75.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "0d1968c0-273b-44a0-9ce2-ed1006b110f1",
+          "name": "prop_074",
+          "transform": {
+            "translation": [
+              1.9986839,
+              0.25,
+              -76.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "1b514654-4a43-4f2d-846e-3762827c2bbb",
+          "name": "prop_075",
+          "transform": {
+            "translation": [
+              1.5754105,
+              0.25,
+              -77.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "071ae908-8cb1-433c-bb2c-6433399a0a0f",
+          "name": "prop_076",
+          "transform": {
+            "translation": [
+              0.41119528,
+              0.25,
+              -78.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "47351b99-f7ed-4f1f-98c6-7ecb31f4fc61",
+          "name": "prop_077",
+          "transform": {
+            "translation": [
+              -0.9464052,
+              0.25,
+              -79.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "3621f81c-64d0-4e73-ba81-006f43859b02",
+          "name": "prop_078",
+          "transform": {
+            "translation": [
+              -1.858903,
+              0.25,
+              -80.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "72340dd3-4c63-45dc-90e6-ea17840c4bd6",
+          "name": "prop_079",
+          "transform": {
+            "translation": [
+              -1.8971279,
+              0.25,
+              -81.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "658e3ac8-194b-430f-8421-1de3c7074adc",
+          "name": "prop_080",
+          "transform": {
+            "translation": [
+              -1.043102,
+              0.25,
+              -82.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "f7bb986b-1689-4ec6-9f36-1a878f2401cf",
+          "name": "prop_081",
+          "transform": {
+            "translation": [
+              0.30151206,
+              0.25,
+              -83.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "44f7024e-a2f0-4707-8ab9-4ededa695411",
+          "name": "prop_082",
+          "transform": {
+            "translation": [
+              1.504315,
+              0.25,
+              -84.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "10881ff2-d40e-4904-ab79-84656d71de8c",
+          "name": "prop_083",
+          "transform": {
+            "translation": [
+              1.9996212,
+              0.25,
+              -85.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "54a71769-3b72-4d37-8bdb-5d2ee51685ff",
+          "name": "prop_084",
+          "transform": {
+            "translation": [
+              1.5544722,
+              0.25,
+              -86.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "66806827-f625-4811-9d57-fe0593c2f347",
+          "name": "prop_085",
+          "transform": {
+            "translation": [
+              0.37822923,
+              0.25,
+              -87.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "a901a76a-913d-48ca-99e5-c116997d6a5d",
+          "name": "prop_086",
+          "transform": {
+            "translation": [
+              -0.97590125,
+              0.25,
+              -88.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "6ab6973e-57a2-45be-973d-affcf7273f96",
+          "name": "prop_087",
+          "transform": {
+            "translation": [
+              -1.8710464,
+              0.25,
+              -89.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "e6c8e06c-661a-4845-9fdd-abe2e0ed343d",
+          "name": "prop_088",
+          "transform": {
+            "translation": [
+              -1.8862141,
+              0.25,
+              -90.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "e8b89a5d-8009-4c7e-91da-573d6ee182de",
+          "name": "prop_089",
+          "transform": {
+            "translation": [
+              -1.014264,
+              0.25,
+              -91.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "e9282c5d-10ef-4fdd-8f92-5f1d06157634",
+          "name": "prop_090",
+          "transform": {
+            "translation": [
+              0.3347114,
+              0.25,
+              -92.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "914f8dee-fd57-4424-a5d4-724ce4996cf5",
+          "name": "prop_091",
+          "transform": {
+            "translation": [
+              1.5262665,
+              0.25,
+              -93.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "43d4b643-a07d-4b69-9c29-ed6faaf02cb8",
+          "name": "prop_092",
+          "transform": {
+            "translation": [
+              1.999993,
+              0.25,
+              -94.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "117dd773-4305-4617-99c7-e3a27a115230",
+          "name": "prop_093",
+          "transform": {
+            "translation": [
+              1.5330945,
+              0.25,
+              -95.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "68da5d07-b86f-45f3-b077-e3f52df6516f",
+          "name": "prop_094",
+          "transform": {
+            "translation": [
+              0.3451638,
+              0.25,
+              -96.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "72197d39-8bc8-4d0f-bdf6-484cb584b4e1",
+          "name": "prop_095",
+          "transform": {
+            "translation": [
+              -1.0051147,
+              0.25,
+              -97.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "99cb71e4-e06b-4bca-affe-86100aaaf451",
+          "name": "prop_096",
+          "transform": {
+            "translation": [
+              -1.882661,
+              0.25,
+              -98.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "69b9ece2-c692-4fc9-a035-a4cdd1fc2311",
+          "name": "prop_097",
+          "transform": {
+            "translation": [
+              -1.8747644,
+              0.25,
+              -99.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "78ca0921-d249-4d33-8bd0-78ab64548a69",
+          "name": "prop_098",
+          "transform": {
+            "translation": [
+              -0.98513913,
+              0.25,
+              -100.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "80d45f12-6887-4333-b28d-0ee298ab1757",
+          "name": "prop_099",
+          "transform": {
+            "translation": [
+              0.3678086,
+              0.25,
+              -101.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    0.5,
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.5,
+                  0.3,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        }
+      ]
+    },
+    {
+      "id": "25cfd169-b133-4fc5-936f-ab4e28800c61",
+      "name": "sun",
+      "transform": {
+        "translation": [
+          0.0,
+          10.0,
+          0.0
+        ],
+        "rotation": [
+          0.3826834,
+          0.0,
+          0.0,
+          0.9238795
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "kind": {
+        "light": {
+          "directional": {
+            "color": [
+              1.0,
+              1.0,
+              1.0
+            ],
+            "intensity": 4.0,
+            "shadow": {
+              "cast": true,
+              "depth_bias": 0.0005,
+              "normal_bias": 0.05,
+              "resolution": 512,
+              "hardness": "soft",
+              "pcss_penumbra_scale": 1.0,
+              "max_distance": 40.0,
+              "cascade_count": 4,
+              "cascade_split_lambda": 0.5,
+              "evsm_cutoff": "last_cascade",
+              "far_cascade_update_rate": "every4_frames",
+              "cube_face_update_rate": "every_frame"
+            }
+          }
+        }
+      },
+      "locked": false,
+      "visible": true,
+      "prefab": false,
+      "children": []
+    }
+  ]
+}
