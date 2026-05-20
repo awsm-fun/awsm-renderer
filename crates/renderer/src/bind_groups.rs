@@ -146,6 +146,7 @@ impl BindGroups {
             GeometryTransformMaterials,
             GeometryMeta,
             GeometryAnimation,
+            Hzb,
             MaterialClassify,
             MaterialDecalMain,
             MaterialDecalTextures,
@@ -202,6 +203,7 @@ impl BindGroups {
                     functions_to_call.insert(FunctionToCall::TransparentMain);
                 }
                 BindGroupCreate::TextureViewRecreate => {
+                    functions_to_call.insert(FunctionToCall::Hzb);
                     functions_to_call.insert(FunctionToCall::LightCulling);
                     functions_to_call.insert(FunctionToCall::MaterialClassify);
                     functions_to_call.insert(FunctionToCall::MaterialDecalMain);
@@ -369,6 +371,10 @@ impl BindGroups {
                 }
                 FunctionToCall::LightCulling => {
                     render_passes.light_culling.bind_groups.recreate(&ctx)?;
+                }
+                FunctionToCall::Hzb => {
+                    let hzb = &mut render_passes.hzb;
+                    hzb.bind_groups.recreate(&ctx, &hzb.texture)?;
                 }
                 FunctionToCall::MaterialClassify => {
                     render_passes

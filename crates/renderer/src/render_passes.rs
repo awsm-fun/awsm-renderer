@@ -3,6 +3,7 @@
 pub mod display;
 pub mod effects;
 pub mod geometry;
+pub mod hzb;
 pub mod light_culling;
 pub mod lines;
 pub mod material_classify;
@@ -23,6 +24,7 @@ use crate::{
     pipelines::Pipelines,
     render_passes::{
         display::render_pass::DisplayRenderPass, geometry::render_pass::GeometryRenderPass,
+        hzb::render_pass::HzbRenderPass,
         light_culling::render_pass::LightCullingRenderPass,
         material_classify::render_pass::MaterialClassifyRenderPass,
         material_decal::render_pass::MaterialDecalRenderPass,
@@ -37,6 +39,7 @@ use crate::{
 /// Collection of render passes used by the renderer.
 pub struct RenderPasses {
     pub geometry: GeometryRenderPass,
+    pub hzb: HzbRenderPass,
     pub light_culling: LightCullingRenderPass,
     pub material_classify: MaterialClassifyRenderPass,
     pub material_decal: MaterialDecalRenderPass,
@@ -51,6 +54,7 @@ impl RenderPasses {
     pub async fn new<'a>(ctx: &mut RenderPassInitContext<'a>) -> Result<Self> {
         Ok(Self {
             geometry: GeometryRenderPass::new(ctx).await?,
+            hzb: HzbRenderPass::new(ctx).await?,
             light_culling: LightCullingRenderPass::new(ctx).await?,
             material_classify: MaterialClassifyRenderPass::new(ctx).await?,
             material_decal: MaterialDecalRenderPass::new(ctx).await?,

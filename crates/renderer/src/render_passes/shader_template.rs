@@ -5,6 +5,7 @@ use crate::{
         display::shader::template::ShaderTemplateDisplay,
         effects::shader::template::ShaderTemplateEffects,
         geometry::shader::template::ShaderTemplateGeometry,
+        hzb::shader::template::{ShaderTemplateHzbReduce, ShaderTemplateHzbSeed},
         light_culling::shader::template::ShaderTemplateLightCulling,
         material_classify::shader::template::ShaderTemplateMaterialClassify,
         material_decal::shader::template::ShaderTemplateMaterialDecal,
@@ -20,6 +21,8 @@ use crate::{
 /// Render-pass shader template variants.
 pub enum ShaderTemplateRenderPass {
     Geometry(ShaderTemplateGeometry),
+    HzbSeed(ShaderTemplateHzbSeed),
+    HzbReduce(ShaderTemplateHzbReduce),
     LightCulling(ShaderTemplateLightCulling),
     MaterialClassify(ShaderTemplateMaterialClassify),
     MaterialDecal(ShaderTemplateMaterialDecal),
@@ -37,6 +40,12 @@ impl TryFrom<&ShaderCacheKeyRenderPass> for ShaderTemplateRenderPass {
         match value {
             ShaderCacheKeyRenderPass::Geometry(cache_key) => {
                 Ok(ShaderTemplateRenderPass::Geometry(cache_key.try_into()?))
+            }
+            ShaderCacheKeyRenderPass::HzbSeed(cache_key) => {
+                Ok(ShaderTemplateRenderPass::HzbSeed(cache_key.try_into()?))
+            }
+            ShaderCacheKeyRenderPass::HzbReduce(cache_key) => {
+                Ok(ShaderTemplateRenderPass::HzbReduce(cache_key.try_into()?))
             }
             ShaderCacheKeyRenderPass::LightCulling(cache_key) => Ok(
                 ShaderTemplateRenderPass::LightCulling(cache_key.try_into()?),
@@ -71,6 +80,8 @@ impl ShaderTemplateRenderPass {
     pub fn into_source(self) -> std::result::Result<String, AwsmShaderError> {
         match self {
             ShaderTemplateRenderPass::Geometry(tmpl) => tmpl.into_source(),
+            ShaderTemplateRenderPass::HzbSeed(tmpl) => tmpl.into_source(),
+            ShaderTemplateRenderPass::HzbReduce(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::LightCulling(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::MaterialClassify(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::MaterialDecal(tmpl) => tmpl.into_source(),
@@ -87,6 +98,8 @@ impl ShaderTemplateRenderPass {
     pub fn debug_label(&self) -> Option<&str> {
         match self {
             ShaderTemplateRenderPass::Geometry(tmpl) => tmpl.debug_label(),
+            ShaderTemplateRenderPass::HzbSeed(tmpl) => tmpl.debug_label(),
+            ShaderTemplateRenderPass::HzbReduce(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::LightCulling(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::MaterialClassify(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::MaterialDecal(tmpl) => tmpl.debug_label(),

@@ -140,6 +140,19 @@ impl AwsmRenderer {
                 .mark_create(BindGroupCreate::TextureViewRecreate);
         }
 
+        // Resize the HZB texture to match the live viewport. This
+        // recreates the per-mip views, so the HZB bind groups must
+        // also be rebuilt — the `TextureViewRecreate` event above
+        // covers that since size_changed implies viewport resize.
+        if self
+            .render_passes
+            .hzb
+            .ensure_size(&self.gpu, render_texture_views.width, render_texture_views.height)?
+        {
+            self.bind_groups
+                .mark_create(BindGroupCreate::TextureViewRecreate);
+        }
+
         // Classify buckets are sized to fit the current viewport's
         // tile count. The grow-with-2x path keeps the reallocation
         // away from the steady-state per-frame work. Reset the header
@@ -399,6 +412,19 @@ impl AwsmRenderer {
             self.render_passes
                 .material_decal
                 .render(&ctx, &self.decals)?;
+        }
+
+        // HZB build (Cluster 7.1, plan §16.6). Runs after opaque /
+        // decal so the depth buffer holds the final scene depth.
+        // Pure infrastructure in v1 — no in-tree consumer yet; the
+        // 7.2 / 7.3 occlusion-culling passes will be the first.
+        {
+            let _maybe_span_guard = if self.logging.render_timings {
+                Some(tracing::span!(tracing::Level::INFO, "HZB RenderPass").entered())
+            } else {
+                None
+            };
+            self.render_passes.hzb.render(&ctx)?;
         }
 
         // Built-in line render pass — must run after the opaque->transparent

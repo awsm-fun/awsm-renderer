@@ -1855,7 +1855,28 @@ smoothly (currently fixed-width regardless of scale).
 
 #### 16.6 Cluster 7.1 — HZB build from visibility depth
 
-**Status:** `not started` (long-horizon — bundles with 16.7 + 16.8)
+**Status:** `done` (infrastructure landed; consumers will follow in 16.7 / 16.4.C / coverage)
+
+Built per the §9.1 spec:
+- New `render_passes/hzb/` module — `HzbRenderPass` owns the
+  `r32float` mip-chain texture (sized to viewport, recreated on
+  resize via `HzbRenderPass::ensure_size`) and the per-mip
+  single-level storage views.
+- Two compute shaders: `hzb_wgsl/seed.wgsl` copies depth → mip 0;
+  `hzb_wgsl/reduce.wgsl` max-reduces a 2×2 of mip N-1 into mip N.
+  One dispatch per mip transition; ceil-rounded workgroup sizes
+  with the bounds check inside each shader.
+- Stores **maximum** depth per tile so consumers run the canonical
+  "candidate is occluded if its closest-screen-space-depth is
+  greater than the HZB lookup at its footprint mip" test.
+- Render-graph slot: after material_decal, before line/transparent.
+  The depth buffer is fully written by that point.
+- Bind-group recreate on `TextureViewRecreate` rebuilds both the
+  seed bind group and the per-mip-transition reduce bind groups
+  against the recreated texture.
+
+No in-tree consumer yet — verified by the shader compiling clean
+and no validation errors during the full render path.
 
 Build a min-reduced mip chain from the final-resolution depth buffer
 via successive compute passes. ~80 LoC WGSL + bind groups +
