@@ -328,6 +328,19 @@ impl MaterialOpaqueBindGroups {
             entries.len() as u32,
             BindGroupResource::Buffer(BufferBinding::new(ctx.instances.gpu_attribute_buffer())),
         ));
+        // Classify output buckets (Cluster 6.1, plan §16.3.B). The
+        // opaque compute shader reads `pbr_offset` / `unlit_offset` /
+        // `toon_offset` + `tiles[…]` to look up its workgroup's tile;
+        // the indirect-args header is consumed via
+        // `dispatchWorkgroupsIndirect` on the host side. Bound
+        // read-only here — atomics live only in the classify pass's
+        // own (read-write) view of the same buffer.
+        entries.push(BindGroupEntry::new(
+            entries.len() as u32,
+            BindGroupResource::Buffer(BufferBinding::new(
+                &ctx.material_classify_buffers.buffer,
+            )),
+        ));
 
         let descriptor = BindGroupDescriptor::new(
             ctx.bind_group_layouts
@@ -659,6 +672,17 @@ async fn create_main_bind_group_layout_key(
             visibility_compute: true,
         },
         // Per-instance attribute storage buffer (read by shading pass for tint).
+        BindGroupLayoutCacheKeyEntry {
+            resource: BindGroupLayoutResource::Buffer(
+                BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),
+            ),
+            visibility_vertex: false,
+            visibility_fragment: false,
+            visibility_compute: true,
+        },
+        // Material classify output buckets (Cluster 6.1). Read-only
+        // declaration — the read-write atomic view lives on the
+        // classify pass's own bind group.
         BindGroupLayoutCacheKeyEntry {
             resource: BindGroupLayoutResource::Buffer(
                 BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),

@@ -156,6 +156,6 @@ fn write_header(dst: &mut [u8; HEADER_BYTES as usize], bucket_capacity: u32) {
 /// 1=Unlit, 2=Toon). Passed as the second arg to
 /// `dispatch_workgroups_indirect` on the material-opaque pipeline
 /// matching that shader_id.
-pub fn indirect_args_offset(bucket_index: u32) -> u64 {
-    bucket_index as u64 * INDIRECT_ARGS_STRIDE as u64
+pub fn indirect_args_offset(bucket_index: u32) -> u32 {
+    bucket_index * INDIRECT_ARGS_STRIDE
 }

@@ -102,9 +102,27 @@
 
 @compute @workgroup_size(8, 8)
 fn main(
-    @builtin(global_invocation_id) gid: vec3<u32>
+    @builtin(workgroup_id) wg_id: vec3<u32>,
+    @builtin(local_invocation_id) lid: vec3<u32>
 ) {
-    let coords = vec2<i32>(gid.xy);
+    // Tile lookup — the material classify pass (Cluster 6.1, plan
+    // §16.3.B) populated `classify_buckets.tiles` with packed
+    // `(tile_x, tile_y)` coords per `shader_id` bucket. Our
+    // pipeline's specialized `shader_id` picks the matching offset
+    // statically; `workgroup_id.x` is the bucket entry index;
+    // `local_invocation_id.xy` is the 8×8 thread → pixel offset.
+    let bucket_offset =
+    {%- match shader_id -%}
+        {%- when MaterialShaderId::Pbr -%}
+        classify_buckets.pbr_offset
+        {%- when MaterialShaderId::Unlit -%}
+        classify_buckets.unlit_offset
+        {%- when MaterialShaderId::Toon -%}
+        classify_buckets.toon_offset
+    {%- endmatch -%}
+    ;
+    let tile = classify_buckets.tiles[bucket_offset + wg_id.x];
+    let coords = vec2<i32>(i32(tile.x * 8u + lid.x), i32(tile.y * 8u + lid.y));
     let screen_dims = textureDimensions(opaque_tex);
     let screen_dims_i32 = vec2<i32>(i32(screen_dims.x), i32(screen_dims.y));
     let screen_dims_f32 = vec2<f32>(f32(screen_dims.x), f32(screen_dims.y));
@@ -124,7 +142,12 @@ fn main(
     let camera = camera_from_raw(camera_raw);
 
 
-    // early return if we only hit skybox / no geometry (for all samples if MSAA)
+    // early return if we only hit skybox / no geometry (for all samples if MSAA).
+    //
+    // Classify routes skybox-containing tiles into the PBR bucket; Unlit / Toon
+    // pipelines also see the tile if any pixel uses their material, but for
+    // their skybox pixels they must *not* write — PBR owns the skybox sample
+    // so the output isn't double-written.
     {% if multisampled_geometry %}
         // With MSAA, check if ANY sample hit geometry before early returning
         var any_sample_hit = false;
@@ -143,34 +166,49 @@ fn main(
         }
 
         if (!any_sample_hit) {
-            // All samples are skybox - just render skybox
-            let color = sample_skybox(coords, screen_dims_f32, camera, skybox_tex, skybox_sampler);
-            textureStore(opaque_tex, coords, color);
+            {% match shader_id %}
+                {% when MaterialShaderId::Pbr %}
+                    // PBR pipeline owns skybox-only pixels.
+                    let color = sample_skybox(coords, screen_dims_f32, camera, skybox_tex, skybox_sampler);
+                    textureStore(opaque_tex, coords, color);
+                {% when _ %}
+                    // Unlit / Toon pipelines: don't shade skybox — PBR
+                    // pipeline's dispatch over the same tile handles it.
+                {% endmatch %}
             return;
         }
     {% else %}
         if (triangle_index == U32_MAX) {
-            let color = sample_skybox(coords, screen_dims_f32, camera, skybox_tex, skybox_sampler);
-            textureStore(opaque_tex, coords, color);
+            {% match shader_id %}
+                {% when MaterialShaderId::Pbr %}
+                    let color = sample_skybox(coords, screen_dims_f32, camera, skybox_tex, skybox_sampler);
+                    textureStore(opaque_tex, coords, color);
+                {% when _ %}
+                {% endmatch %}
             return;
         }
     {% endif %}
 
     // Special case: we've hit the skybox in our main sample (triangle_index is U32_MAX)
     // and yet at least one other MSAA sample hit geometry (any_sample_hit is true from above)
-    // so we need to blend all samples properly with the skybox and per-sample shading
+    // so we need to blend all samples properly with the skybox and per-sample shading.
+    // Same ownership rule as above — only PBR writes the resolve.
     {% if multisampled_geometry %}
         if (triangle_index == U32_MAX) {
-            let lights_info_sky = get_lights_info();
-            let resolve_result = msaa_resolve_samples(camera, coords, screen_dims, screen_dims_f32, lights_info_sky);
+            {% match shader_id %}
+                {% when MaterialShaderId::Pbr %}
+                    let lights_info_sky = get_lights_info();
+                    let resolve_result = msaa_resolve_samples(camera, coords, screen_dims, screen_dims_f32, lights_info_sky);
 
-            if (resolve_result.valid_samples > 0u) {
-                let final_color = resolve_result.color / f32(resolve_result.valid_samples);
-                let final_alpha = resolve_result.alpha / f32(resolve_result.valid_samples);
-                textureStore(opaque_tex, coords, vec4<f32>(final_color, final_alpha));
-            } else {
-                textureStore(opaque_tex, coords, vec4<f32>(1.0, 0.0, 1.0, 1.0));
-            }
+                    if (resolve_result.valid_samples > 0u) {
+                        let final_color = resolve_result.color / f32(resolve_result.valid_samples);
+                        let final_alpha = resolve_result.alpha / f32(resolve_result.valid_samples);
+                        textureStore(opaque_tex, coords, vec4<f32>(final_color, final_alpha));
+                    } else {
+                        textureStore(opaque_tex, coords, vec4<f32>(1.0, 0.0, 1.0, 1.0));
+                    }
+                {% when _ %}
+                {% endmatch %}
             return;
         }
     {% endif %}
@@ -197,14 +235,12 @@ fn main(
     let material_offset = material_mesh_meta.material_offset;
     let shader_id = material_load_shader_id(material_offset);
 
-    // Specialized pipeline guard: this shader was compiled for one
-    // `shader_id` (PBR / Unlit / Toon) — pixels whose material uses a
-    // different shader_id are handled by their own pipeline's
-    // dispatch. The runtime check is a safety net for the
-    // pre-classify world where every pipeline runs full-screen;
-    // once material classify (Cluster 6.1) lands, the dispatch
-    // bucket only covers tiles that contain this shader_id so the
-    // check is dead code that DCE removes.
+    // Per-pixel `shader_id` guard. The material classify pass already
+    // scopes our dispatch to tiles containing our specialized
+    // `shader_id`, so the guard rejects only pixels of a *different*
+    // shader_id that share a mixed-material tile with ours — exactly
+    // the tile-bucket-overlap correctness case described in plan
+    // §16.3.B.
     {% match shader_id %}
         {% when MaterialShaderId::Pbr %}
             if (shader_id != SHADER_ID_PBR) { return; }

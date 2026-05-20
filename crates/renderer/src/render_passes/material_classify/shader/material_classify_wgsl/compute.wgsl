@@ -15,7 +15,8 @@
 
 {{ shader_id_consts|safe }}
 
-const U32_MAX: u32 = 0xFFFFFFFFu;
+// `U32_MAX` is already declared in `shared_wgsl/math.wgsl`, which the
+// bind-groups WGSL above pulls in.
 
 // Bits in the workgroup-shared mask. Match the
 // `classify_output.{pbr,unlit,toon}_offset` ordering on the host side
@@ -55,11 +56,11 @@ fn cs_main(
             local_bit = BUCKET_BIT_PBR;
         } else {
             let meta_offset = join32(vis.z, vis.w);
-            let meta = material_mesh_metas[meta_offset / 256u];
-            if meta.is_hud == 0u {
+            let mesh_meta = material_mesh_metas[meta_offset / 256u];
+            if mesh_meta.is_hud == 0u {
                 // shader_id is stored as the first u32 of each
                 // material payload; `material_offset` is in bytes.
-                let shader_id = materials_data[meta.material_offset / 4u];
+                let shader_id = materials_data[mesh_meta.material_offset / 4u];
                 if shader_id == SHADER_ID_PBR {
                     local_bit = BUCKET_BIT_PBR;
                 } else if shader_id == SHADER_ID_UNLIT {

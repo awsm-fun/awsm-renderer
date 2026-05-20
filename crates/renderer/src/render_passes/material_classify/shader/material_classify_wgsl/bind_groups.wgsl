@@ -10,13 +10,18 @@
 //      args. Layout matches the
 //      `ClassifyBuffers` Rust-side header verbatim.
 
-/*************** START math.wgsl ******************/
-{% include "shared_wgsl/math.wgsl" %}
-/*************** END math.wgsl ******************/
-
 /*************** START material_mesh_meta.wgsl ******************/
 {% include "shared_wgsl/material_mesh_meta.wgsl" %}
 /*************** END material_mesh_meta.wgsl ******************/
+
+// `join32` is the same helper math.wgsl exposes; inlined here to
+// avoid pulling math.wgsl into both `bind_groups` and `compute`,
+// which double-declares its `const U32_MAX`. Keep the body in
+// lockstep with `shared_wgsl/math.wgsl::join32` if that ever changes.
+fn join32(hi: u32, lo: u32) -> u32 {
+    return (hi << 16u) | lo;
+}
+const U32_MAX: u32 = 4294967295u;
 
 {% if multisampled_geometry %}
 @group(0) @binding(0) var visibility_data_tex: texture_multisampled_2d<u32>;

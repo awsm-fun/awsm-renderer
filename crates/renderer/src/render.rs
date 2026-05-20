@@ -193,6 +193,7 @@ impl AwsmRenderer {
             post_processing: &self.post_processing,
             clear_color: &self._clear_color,
             scene_spatial: &self.scene_spatial,
+            material_classify_buffers: &self.material_classify_buffers,
         };
 
         let renderables = self.collect_renderables(&ctx)?;
@@ -532,6 +533,12 @@ pub struct RenderContext<'a> {
     /// Renderer-owned spatial index. Per-pass culling (camera + shadow)
     /// descends through this instead of walking `meshes` linearly.
     pub scene_spatial: &'a SceneSpatial,
+    /// Classify-pass output (Cluster 6.1). The opaque material pass
+    /// uses this buffer both as a storage binding (for the per-bucket
+    /// tile lookup) and as the indirect-args source for
+    /// `dispatchWorkgroupsIndirect`.
+    pub material_classify_buffers:
+        &'a crate::render_passes::material_classify::buffers::ClassifyBuffers,
 }
 
 impl<'a> RenderContext<'a> {

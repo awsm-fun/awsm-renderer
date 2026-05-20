@@ -42,6 +42,24 @@ struct TransformPacked {
 @group(0) @binding(21) var opaque_tex: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(22) var<storage, read> instance_attrs: array<InstanceAttr>;
 
+// Material classify output (read-only here — the read-write atomic
+// view is bound on the classify pass). Layout matches
+// `ClassifyOutput` in `material_classify_wgsl/bind_groups.wgsl`; the
+// indirect-args header is consumed by `dispatchWorkgroupsIndirect`
+// host-side. The shader only reads `*_offset` + `tiles[…]` to map
+// `workgroup_id.x` back to a tile's `(x, y)` coords.
+struct ClassifyBuckets {
+    args_pbr: vec4<u32>,
+    args_unlit: vec4<u32>,
+    args_toon: vec4<u32>,
+    pbr_offset: u32,
+    unlit_offset: u32,
+    toon_offset: u32,
+    bucket_capacity: u32,
+    tiles: array<vec2<u32>>,
+};
+@group(0) @binding(23) var<storage, read> classify_buckets: ClassifyBuckets;
+
 @group(1) @binding(0) var<uniform> lights_info: LightsInfoPacked;
 // `lights` is a uniform array (Option F follow-up to Cluster 2.1.c).
 // Uniform memory is constant-cached for the lockstep per-pixel walk;

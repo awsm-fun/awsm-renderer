@@ -1636,7 +1636,7 @@ rendered-cascade count, not configured-cascade count.
 
 #### 16.3 Cluster 6.1 — Material classify + indirect dispatch
 
-**Status:** `prerequisite done; classify pass implementation pending`
+**Status:** `done`
 
 **A. Shader split — DONE.** The opaque compute pass is now specialized
 per `MaterialShaderId` (PBR / Unlit / Toon). Concretely:
