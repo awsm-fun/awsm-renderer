@@ -28,7 +28,13 @@ struct MaterialMeshMeta {
     // slot in `MaterialMeshMeta::to_bytes` — keep the byte offset in
     // lockstep when adding fields above.
     receive_shadows: u32,
-    padding_2: u32,
-    padding_3: u32,
+    // Per-mesh light slice (Option F follow-up to Cluster 2.1.c).
+    // `light_slice_offset` is the start index into
+    // `mesh_light_indices`; `light_slice_count` is the number of
+    // punctual lights overlapping this mesh. `count = 0` means no
+    // punctual lights reach this mesh this frame (directional lights
+    // are applied separately via the global prefix walk).
+    light_slice_offset: u32,
+    light_slice_count: u32,
     padding_4: array<vec4<u32>, 11>,
 }

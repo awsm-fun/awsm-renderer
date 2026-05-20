@@ -3,7 +3,14 @@
 {% include "shared_wgsl/instance_attrs.wgsl" %}
 
 @group(0) @binding(0) var<uniform> camera_raw: CameraRaw;
-@group(0) @binding(1) var<storage, read> model_transforms : array<mat4x4<f32>>;
+// Packed transforms (model + normal). Transparent's vertex shader
+// only reads `.model_world`; the fragment shader's `get_transforms`
+// helper reads both.
+struct TransformPacked {
+    model_world: mat4x4<f32>,
+    normal_world: mat3x3<f32>,
+};
+@group(0) @binding(1) var<storage, read> transforms: array<TransformPacked>;
 @group(0) @binding(2) var<storage, read> materials: array<u32>;
 @group(0) @binding(3) var<storage, read> geometry_morph_weights: array<f32>;
 @group(0) @binding(4) var<storage, read> geometry_morph_values: array<f32>;
@@ -23,7 +30,9 @@
 @group(0) @binding(14) var brdf_lut_tex: texture_2d<f32>;
 @group(0) @binding(15) var brdf_lut_sampler: sampler;
 @group(0) @binding(16) var<uniform> lights_info: LightsInfoPacked;
-@group(0) @binding(17) var<storage, read> lights: array<LightPacked>;
+// Lights are uniform (Option F follow-up to Cluster 2.1.c). Same
+// fixed-size 1024-entry array as the opaque pass.
+@group(0) @binding(17) var<uniform> lights: array<LightPacked, 1024>;
 
 // ─── Shadow bind group (group 1 in 16.B) ───────────────────────────
 // Includes the shared shadow bindings (atlas + cube + EVSM + globals

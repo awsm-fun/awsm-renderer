@@ -18,6 +18,7 @@ use awsm_renderer_core::pipeline::primitive::IndexFormat;
 use crate::error::Result;
 use crate::frustum::Frustum;
 use crate::render::RenderContext;
+use crate::scene_spatial::NodeFilter;
 use crate::shadows::Shadows;
 
 /// Records every shadow-generation render pass for the current frame.
@@ -124,24 +125,34 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
             // from `view_projection`).
             let shadow_frustum = Frustum::from_view_projection(view.view_projection);
 
+            // Surviving caster set: BVH-pruned + shadow-caster filter
+            // (cast_shadows && !hidden && !hud). Meshes without a
+            // world AABB aren't in the index — fall back to a tail
+            // walk so procedural / mid-load content draws conservatively.
+            let bvh_visible: Vec<_> = ctx
+                .scene_spatial
+                .query_frustum(&shadow_frustum, NodeFilter::shadow_caster())
+                .map(|node| node.mesh_key)
+                .collect();
+            let conservative_extra: Vec<_> = ctx
+                .meshes
+                .iter()
+                .filter(|(_, m)| {
+                    m.cast_shadows
+                        && !m.hidden
+                        && !m.hud
+                        && m.world_aabb.is_none()
+                })
+                .map(|(k, _)| k)
+                .collect();
+
             // Cache the last-bound pipeline key so we don't re-bind
             // when consecutive draws share the same variant.
             let mut last_pipeline_key = None;
-            for (mesh_key, mesh) in ctx.meshes.iter() {
-                if !mesh.cast_shadows || mesh.hidden || mesh.hud {
+            for mesh_key in bvh_visible.into_iter().chain(conservative_extra) {
+                let Ok(mesh) = ctx.meshes.get(mesh_key) else {
                     continue;
-                }
-                // HUD overlay primitives also shouldn't cast shadows.
-
-                // Frustum cull against the light-space view. Meshes
-                // without a cached world AABB are conservative kept
-                // (they're typically procedural / dynamic content
-                // whose bounds haven't been computed yet).
-                if let Some(aabb) = &mesh.world_aabb {
-                    if !shadow_frustum.intersects_aabb(aabb) {
-                        continue;
-                    }
-                }
+                };
 
                 let pipeline_key = shadows.shadow_pipeline_key(mesh.instanced, is_cube);
                 if last_pipeline_key != Some(pipeline_key) {

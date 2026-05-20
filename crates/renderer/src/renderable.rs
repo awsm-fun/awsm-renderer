@@ -11,6 +11,7 @@ use crate::{
     pipelines::{compute_pipeline::ComputePipelineKey, render_pipeline::RenderPipelineKey},
     render::RenderContext,
     render_passes::geometry::bind_group::GeometryBindGroups,
+    scene_spatial::NodeFilter,
     AwsmRenderer,
 };
 
@@ -52,13 +53,42 @@ impl AwsmRenderer {
             .as_ref()
             .map(|matrices| Frustum::from_view_projection(matrices.view_projection()));
 
-        for (mesh_key, mesh) in self.meshes.iter().filter(|(_k, m)| !m.hidden) {
-            if let (Some(frustum), Some(world_aabb)) = (&frustum, &mesh.world_aabb) {
-                if !frustum.intersects_aabb(world_aabb) {
-                    continue; // skip meshes not in the camera frustum
-                }
+        // Build the visible mesh-key set from the BVH instead of walking
+        // every mesh. The previous linear scan tested every mesh's cached
+        // `world_aabb` against the frustum on every frame; the BVH path
+        // descends hierarchically and surfaces only the surviving leaves.
+        // Meshes without a world AABB (procedural / mid-load) aren't in
+        // the index — fall back to a tail-walk of those so they still
+        // draw conservatively.
+        let visible: Vec<(MeshKey, &Mesh)> = match &frustum {
+            Some(f) => {
+                let mut out: Vec<(MeshKey, &Mesh)> = self
+                    .scene_spatial
+                    .query_frustum(f, NodeFilter::camera_default())
+                    .filter_map(|node| {
+                        self.meshes
+                            .get(node.mesh_key)
+                            .ok()
+                            .map(|m| (node.mesh_key, m))
+                    })
+                    .collect();
+                // Conservative fallback: any mesh without a world AABB
+                // can't be tested by the BVH; keep it in the visible set.
+                out.extend(
+                    self.meshes
+                        .iter()
+                        .filter(|(_, m)| !m.hidden && m.world_aabb.is_none()),
+                );
+                out
             }
+            None => self
+                .meshes
+                .iter()
+                .filter(|(_, m)| !m.hidden)
+                .collect::<Vec<_>>(),
+        };
 
+        for (mesh_key, mesh) in visible {
             let renderable = Renderable::Mesh {
                 key: mesh_key,
                 mesh,
@@ -74,9 +104,19 @@ impl AwsmRenderer {
                     .get_render_pipeline_key(mesh_key),
             };
 
+            // Cluster 6.3: classify opaque vs transparent by the
+            // *effective* material this frame. A mesh with a cheap
+            // opaque variant + an expensive transmissive variant will
+            // route through the cheap opaque pass when distant. The
+            // deeper opaque-shading material swap (which would need
+            // to re-pack `MaterialMeshMeta`) is a follow-up; this
+            // single hook handles the renderable-list classification.
+            let effective_material =
+                mesh.effective_material_key(mesh_key, &self.coverage);
+
             if mesh.hud {
                 hud.push(renderable.clone());
-            } else if self.materials.is_transparency_pass(mesh.material_key) {
+            } else if self.materials.is_transparency_pass(effective_material) {
                 transparent.push(renderable);
             } else {
                 opaque.push(renderable);

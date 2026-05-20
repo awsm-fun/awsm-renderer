@@ -10,11 +10,13 @@ pub mod bind_groups;
 pub mod bounds;
 pub mod buffer;
 pub mod camera;
+pub mod coverage;
 pub mod debug;
 pub mod environment;
 pub mod error;
 pub mod frustum;
 pub mod instances;
+pub mod light_buckets;
 pub mod lights;
 pub mod materials;
 pub mod meshes;
@@ -28,6 +30,7 @@ pub mod render;
 pub mod render_passes;
 pub mod render_textures;
 pub mod renderable;
+pub mod scene_spatial;
 pub mod shaders;
 pub mod shadows;
 pub mod textures;
@@ -52,10 +55,12 @@ use awsm_renderer_core::{
 use bind_groups::BindGroups;
 use camera::CameraBuffer;
 use instances::Instances;
+use light_buckets::{LightMeshBuckets, MeshLightSlicesGpu};
 use lights::Lights;
 use materials::Materials;
 use meshes::Meshes;
 use pipelines::Pipelines;
+use scene_spatial::SceneSpatial;
 use shaders::Shaders;
 use textures::Textures;
 use transforms::Transforms;
@@ -82,6 +87,26 @@ pub struct AwsmRenderer {
     pub camera: CameraBuffer,
     pub transforms: Transforms,
     pub instances: Instances,
+    /// Renderer-owned spatial index over every mesh's world-space AABB.
+    /// Mirrors `Mesh::world_aabb`. Drives camera-frustum culling,
+    /// per-view shadow culling, and the per-mesh light-overlap query.
+    pub scene_spatial: SceneSpatial,
+    /// Per-light → per-mesh AABB-overlap buckets, rebuilt once per
+    /// frame from `scene_spatial`. Feeds the per-mesh light-list shader
+    /// path (Cluster 2.1).
+    pub light_buckets: LightMeshBuckets,
+    /// GPU storage buffers backing `light_buckets` for the shader path
+    /// (Cluster 2.1.b). Uploaded per-frame from the transposed buckets.
+    pub mesh_light_slices_gpu: MeshLightSlicesGpu,
+    /// Last-frame per-mesh pixel coverage (Cluster 6.2). Populated by
+    /// the GPU coverage compute pass; consumed by the skinning-skip
+    /// and material-LOD gates. Empty until the producer pass is wired.
+    pub coverage: coverage::MeshCoverage,
+    /// Monotonic frame index. Wraps every ~272 years at 60 Hz — safe to
+    /// treat as unbounded for any practical session. Drives the
+    /// `skin_update_period` gate (Cluster 8.3) and other "every Nth
+    /// frame" cadences.
+    pub frame_index: u64,
     pub shaders: Shaders,
     pub materials: Materials,
     pub pipeline_layouts: PipelineLayouts,
@@ -114,17 +139,23 @@ pub struct AwsmRenderer {
 /// Compatibility requirements for this renderer.
 ///
 /// `storage_buffers` is the worst-case `maxStorageBuffersPerShaderStage`
-/// the opaque-material pass needs. Opaque currently binds 9 storage
-/// buffers in `@group(0)` (visibility_data, material_mesh_metas,
-/// materials, attribute_indices, attribute_data, model_transforms,
-/// normal_matrices, texture_transforms, instance_attrs) plus 1 in
-/// `@group(1)` (lights) → 10 in one shader stage. The transparent pass
-/// peaks at 9. Bumping this lower than the binding count will pass
-/// adapter compatibility on a device that exactly meets the declared
-/// limit, then fail pipeline validation when the shader is compiled.
+/// the opaque-material pass needs. Opaque currently binds:
+///   * 8 storage buffers in `@group(0)`: visibility_data,
+///     material_mesh_metas, materials, attribute_indices,
+///     attribute_data, transforms (packed model + normal — Option E),
+///     texture_transforms, instance_attrs.
+///   * 1 storage buffer in `@group(1)`: mesh_light_indices.
+/// Total = 9, leaving 1 spare under a 10-buffer limit. lights +
+/// lights_info are uniforms in group(1) (Option F). The per-mesh
+/// slice (`light_slice_offset` + `light_slice_count`) is packed into
+/// MaterialMeshMeta itself, so no separate slices storage buffer is
+/// needed. The transparent pass peaks at 9. Bumping this lower than
+/// the binding count will pass adapter compatibility on a device that
+/// exactly meets the declared limit, then fail pipeline validation
+/// when the shader is compiled.
 pub static COMPATIBITLIY_REQUIREMENTS: LazyLock<CompatibilityRequirements> =
     LazyLock::new(|| CompatibilityRequirements {
-        storage_buffers: Some(10),
+        storage_buffers: Some(9),
     });
 
 impl AwsmRenderer {
@@ -381,6 +412,8 @@ impl AwsmRendererBuilder {
 
         let opaque_mipgen = opaque_mipgen::OpaqueMipgen::new(&gpu).await?;
 
+        let mesh_light_slices_gpu = MeshLightSlicesGpu::new(&gpu)?;
+
         let shadows = shadows::Shadows::new(
             &gpu,
             &mut bind_group_layouts,
@@ -402,6 +435,11 @@ impl AwsmRendererBuilder {
             camera,
             transforms,
             instances,
+            scene_spatial: SceneSpatial::default(),
+            light_buckets: LightMeshBuckets::default(),
+            mesh_light_slices_gpu,
+            coverage: coverage::MeshCoverage::default(),
+            frame_index: 0,
             shaders,
             bind_group_layouts,
             bind_groups,

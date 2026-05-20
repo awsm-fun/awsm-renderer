@@ -5,6 +5,7 @@ pub mod error;
 pub mod mesh;
 pub mod meta;
 pub mod morphs;
+pub mod skin_lod;
 pub mod skins;
 
 use std::collections::HashMap;
@@ -50,6 +51,8 @@ impl AwsmRenderer {
             .pipelines
             .clone_render_pipeline_key(mesh_key, new_mesh_key);
 
+        self.sync_spatial_for_mesh(new_mesh_key);
+
         Ok(new_mesh_key)
     }
 
@@ -90,6 +93,7 @@ impl AwsmRenderer {
                 .material_transparent
                 .pipelines
                 .clone_render_pipeline_key(source_mesh_key, new_mesh_key);
+            self.sync_spatial_for_mesh(new_mesh_key);
         }
 
         Ok((new_transform_key, new_mesh_keys))
@@ -99,6 +103,7 @@ impl AwsmRenderer {
     pub fn set_mesh_hidden(&mut self, mesh_key: MeshKey, hidden: bool) -> crate::error::Result<()> {
         let mesh = self.meshes.get_mut(mesh_key)?;
         mesh.hidden = hidden;
+        self.sync_spatial_for_mesh(mesh_key);
         Ok(())
     }
 
@@ -108,6 +113,7 @@ impl AwsmRenderer {
     pub fn set_mesh_hud(&mut self, mesh_key: MeshKey, hud: bool) -> crate::error::Result<()> {
         let mesh = self.meshes.get_mut(mesh_key)?;
         mesh.hud = hud;
+        self.sync_spatial_for_mesh(mesh_key);
         Ok(())
     }
 
@@ -148,6 +154,7 @@ impl AwsmRenderer {
                 .material_transparent
                 .pipelines
                 .remove_render_pipeline_key(*mesh_key);
+            self.drop_spatial_for_mesh(*mesh_key);
         }
 
         mesh_keys
@@ -162,6 +169,7 @@ impl AwsmRenderer {
                 .material_transparent
                 .pipelines
                 .remove_render_pipeline_key(mesh_key);
+            self.drop_spatial_for_mesh(mesh_key);
         }
 
         removed
@@ -169,9 +177,11 @@ impl AwsmRenderer {
 
     /// Splits a mesh out to a new transform key.
     pub fn split_mesh(&mut self, mesh_key: MeshKey) -> crate::error::Result<TransformKey> {
-        Ok(self
+        let new_transform_key = self
             .meshes
-            .split_mesh(mesh_key, &mut self.transforms, &self.materials)?)
+            .split_mesh(mesh_key, &mut self.transforms, &self.materials)?;
+        self.sync_spatial_for_mesh(mesh_key);
+        Ok(new_transform_key)
     }
 
     /// Splits all meshes under a transform into new transform keys.
@@ -179,11 +189,15 @@ impl AwsmRenderer {
         &mut self,
         transform_key: TransformKey,
     ) -> crate::error::Result<Vec<(MeshKey, TransformKey)>> {
-        Ok(self.meshes.split_meshes_by_transform_key(
+        let result = self.meshes.split_meshes_by_transform_key(
             transform_key,
             &mut self.transforms,
             &self.materials,
-        )?)
+        )?;
+        for (mesh_key, _) in &result {
+            self.sync_spatial_for_mesh(*mesh_key);
+        }
+        Ok(result)
     }
 
     /// Joins meshes under a shared transform, optionally overriding the transform.
@@ -192,12 +206,16 @@ impl AwsmRenderer {
         mesh_keys: &[MeshKey],
         transform_override: Option<Transform>,
     ) -> crate::error::Result<(TransformKey, Vec<MeshKey>)> {
-        Ok(self.meshes.join_meshes(
+        let (new_transform_key, moved) = self.meshes.join_meshes(
             mesh_keys,
             &mut self.transforms,
             &self.materials,
             transform_override,
-        )?)
+        )?;
+        for mesh_key in &moved {
+            self.sync_spatial_for_mesh(*mesh_key);
+        }
+        Ok((new_transform_key, moved))
     }
 
     /// Enables GPU instancing for an opaque mesh — sync because the
@@ -1116,16 +1134,28 @@ impl Meshes {
     }
 
     /// Updates world-space AABBs for meshes affected by dirty transforms or instances.
+    ///
+    /// Returns every mesh key whose `world_aabb` was potentially refreshed
+    /// this call. The caller (currently `AwsmRenderer::update_transforms`)
+    /// uses the list to mirror the new AABBs into the spatial index.
     pub fn update_world(
         &mut self,
         dirty_transforms: HashMap<TransformKey, Mat4>,
         dirty_instances: &std::collections::HashSet<TransformKey>,
         transforms: &Transforms,
         instances: &Instances,
-    ) {
+        frame_index: u64,
+        // Coverage data is consulted at gate time. Empty = consumers
+        // fall through to their conservative defaults (always update),
+        // so the parameter is harmless when the GPU coverage pass
+        // isn't wired yet (Cluster 6.2 producer side).
+        coverage: &crate::coverage::MeshCoverage,
+    ) -> Vec<MeshKey> {
         let mut update_keys = std::collections::HashSet::new();
         update_keys.extend(dirty_transforms.keys().copied());
         update_keys.extend(dirty_instances.iter().copied());
+
+        let mut touched = Vec::new();
 
         // This doesn't mark anything as dirty, it just updates the world AABB for frustum culling and depth sorting
         for transform_key in update_keys {
@@ -1177,12 +1207,50 @@ impl Meshes {
                     if let Some(mesh) = self.list.get_mut(*mesh_key) {
                         mesh.world_aabb = world_aabb;
                     }
+                    touched.push(*mesh_key);
+                }
+            }
+        }
+
+        // Skin LOD gate (Cluster 8.3 + 6.2). Precompute the set of skins
+        // we'll *skip* this frame:
+        //
+        //   1. Cluster 8.3 — `skin_update_period` cadence says "not this
+        //      frame".
+        //   2. Cluster 6.2 — coverage of every consumer mesh was zero
+        //      last frame AND the mesh isn't conservatively visible to
+        //      the BVH. (For now we only have coverage; the BVH-visible
+        //      override is the caller's responsibility — if it wants a
+        //      mesh to skin regardless of coverage, it can set the
+        //      mesh's `skin_update_period` to 1 transiently.)
+        //
+        // Done as a separate pass because the period / coverage lookups
+        // borrow `&self` while `skins.update_transforms` borrows
+        // `&mut self.skins`.
+        let mut skip_skins: std::collections::HashSet<SkinKey> =
+            std::collections::HashSet::new();
+        if frame_index > 0 {
+            let skin_keys: Vec<SkinKey> = self.skins.iter_skin_keys().collect();
+            for skin_key in skin_keys {
+                if !self.skin_should_update_this_frame(skin_key, frame_index) {
+                    skip_skins.insert(skin_key);
+                    continue;
+                }
+                // Coverage override: skip if EVERY mesh consumer was
+                // zero-coverage last frame. Conservative — if any
+                // consumer was visible, the skin still updates.
+                if !coverage.is_empty() && self.skin_all_consumers_zero_coverage(skin_key, coverage)
+                {
+                    skip_skins.insert(skin_key);
                 }
             }
         }
 
         // This does update the GPU as dirty, bit skins manage their own GPU dirty state
-        self.skins.update_transforms(dirty_transforms);
+        self.skins
+            .update_transforms(dirty_transforms, |skin_key| !skip_skins.contains(&skin_key));
+
+        touched
     }
 
     fn update_mesh_transform(
@@ -1333,6 +1401,82 @@ impl Meshes {
         self.resources
             .get(resource_key)
             .ok_or(AwsmMeshError::ResourceNotFound(resource_key))
+    }
+
+    /// Convenience accessor for the optional `SkinKey` on a mesh resource.
+    /// Returns `None` if the mesh has no resource or no skin. Used by the
+    /// spatial-index auto-flagger to route skinned meshes through the
+    /// dynamic sidecar.
+    pub fn mesh_skin_key(&self, mesh_key: MeshKey) -> Option<Option<SkinKey>> {
+        self.resource(mesh_key).ok().map(|r| r.skin_key)
+    }
+
+    /// Smallest `skin_update_period` across every mesh that references
+    /// `skin_key`. Used by the per-frame skinning-LOD gate
+    /// (Cluster 8.3): a skin is updated this frame if ANY of its
+    /// consumer meshes wants the update, which is the conservative
+    /// choice for shared skeletons. Returns `1` if no meshes reference
+    /// the skin (forces an update if anything dirties the joints).
+    pub fn skin_smallest_period(&self, skin_key: SkinKey) -> u8 {
+        let mut min_period: u8 = u8::MAX;
+        for (mesh_key, mesh) in self.iter() {
+            let same_skin = self
+                .resource(mesh_key)
+                .ok()
+                .and_then(|r| r.skin_key)
+                .map(|k| k == skin_key)
+                .unwrap_or(false);
+            if !same_skin {
+                continue;
+            }
+            min_period = min_period.min(mesh.skin_update_period.max(1));
+        }
+        if min_period == u8::MAX {
+            1
+        } else {
+            min_period
+        }
+    }
+
+    /// Coverage gate for skinning skip (Cluster 6.2). Returns true if
+    /// EVERY mesh that references `skin_key` had zero pixels last frame.
+    /// One non-zero consumer is enough to keep the skin updating.
+    pub fn skin_all_consumers_zero_coverage(
+        &self,
+        skin_key: SkinKey,
+        coverage: &crate::coverage::MeshCoverage,
+    ) -> bool {
+        let mut had_any_consumer = false;
+        for (mesh_key, _mesh) in self.iter() {
+            let same_skin = self
+                .resource(mesh_key)
+                .ok()
+                .and_then(|r| r.skin_key)
+                .map(|k| k == skin_key)
+                .unwrap_or(false);
+            if !same_skin {
+                continue;
+            }
+            had_any_consumer = true;
+            if coverage.is_visible_last_frame(mesh_key) {
+                return false;
+            }
+        }
+        // If no consumers exist, the skin isn't actually rendered —
+        // skipping it is fine.
+        had_any_consumer
+    }
+
+    /// Whether the skin should run its per-joint matrix refresh on this
+    /// frame, given the renderer-wide `frame_index`. A skin updates if
+    /// `frame_index % min_period == 0`. Always updates on the first
+    /// frame after a load (frame_index == 0) so the initial pose lands.
+    pub fn skin_should_update_this_frame(&self, skin_key: SkinKey, frame_index: u64) -> bool {
+        let period = self.skin_smallest_period(skin_key).max(1) as u64;
+        if period == 1 || frame_index == 0 {
+            return true;
+        }
+        frame_index % period == 0
     }
 
     /// Returns the GPU buffer for visibility geometry vertex data.

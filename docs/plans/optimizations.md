@@ -1453,37 +1453,50 @@ Resolve these before writing code in steps 1.4 / 2.1 / 6.1:
 
 The hand-off is "done" when:
 
-- [ ] `cargo build --target wasm32-unknown-unknown -p awsm-renderer`
+- [x] `cargo build --target wasm32-unknown-unknown -p awsm-renderer`
       passes.
-- [ ] All existing renderer tests pass.
-- [ ] `SceneSpatial`'s leaf count equals `meshes.iter().filter(|(_,
+- [x] All existing renderer tests pass (84/84; 76 prior + 8 new
+      `scene_spatial::tests`).
+- [x] `SceneSpatial`'s leaf count equals `meshes.iter().filter(|(_,
       m)| m.world_aabb.is_some()).count()` at steady state (asserted
-      in a debug-only invariant).
-- [ ] Geometry pass and shadow pass both call `query_frustum` for
+      in a debug-only invariant inside `update.rs::update_all`).
+- [x] Geometry pass and shadow pass both call `query_frustum` for
       culling; no `Frustum::intersects_aabb` calls remain in
       [`renderable.rs`](../../crates/renderer/src/renderable.rs) or
       [`shadows/render_pass.rs`](../../crates/renderer/src/shadows/render_pass.rs).
-- [ ] Editor demo scenes render visually identical to pre-change
-      (side-by-side screenshot or snapshot test).
+- [ ] Editor demo scenes render visually identical to pre-change.
+      Host-target parity test
+      `scene_spatial::tests::frustum_query_parity_with_linear_scan`
+      asserts the BVH and linear scan produce identical sets for 100
+      random AABBs — visual side-by-side still needs a browser run.
 - [ ] A `tracing` span around `record` in shadow pass shows ≥ 2×
-      improvement in the 1 k-mesh / 20-view case. (Numbers go into
-      the appendix below when measured.)
+      improvement in the 1 k-mesh / 20-view case. Profiling deferred
+      to a browser run.
 
 ### 14.1 Definition of done (Cluster 2.1 — per-mesh light lists)
 
-- [ ] `mesh_light_slices` + `mesh_light_indices` storage buffers are
-      uploaded per frame and bind-group-wired into the material
-      compute pass.
-- [ ] Lighting WGSL at
-      [`shared_wgsl/lighting/lights.wgsl:167`](../../crates/renderer/src/render_passes/shared/shared_wgsl/lighting/lights.wgsl)
-      reads the slice; no flat `for i in 0..n_lights` walk remains
-      for the opaque path.
-- [ ] Directional lights are correctly applied to every mesh (via
-      the global-prefix mechanism in §4.1.3).
-- [ ] Visual parity at 1, 2, 4, 8, 64 lights.
-- [ ] Average per-pixel `slice.count` (instrumented via debug
-      buffer) is materially below `n_lights` for the test scenes
-      with 64+ lights.
+- [x] `mesh_light_slices` + `mesh_light_indices` storage buffers are
+      uploaded per frame (`MeshLightSlicesGpu` in
+      [`light_buckets/gpu.rs`](../../crates/renderer/src/light_buckets/gpu.rs))
+      and bound at group(1) bindings 2/3 of the material-opaque compute
+      pass via
+      [`material_opaque/bind_group.rs::recreate_lights`](../../crates/renderer/src/render_passes/material_opaque/bind_group.rs).
+- [x] Lighting WGSL reads the slice; the opaque path now calls
+      `apply_lighting_per_mesh` (in
+      [`shared_wgsl/lighting/lights.wgsl`](../../crates/renderer/src/render_passes/shared/shared_wgsl/lighting/lights.wgsl))
+      with `meta_index = material_meta_offset / META_SIZE_IN_BYTES`. The
+      transparent path keeps the flat walk per plan §12 Q8 default.
+- [x] Directional lights are correctly applied via the flat-prefix
+      walk inside `apply_lighting_per_mesh` (kind == 1 keeps the
+      directional, kind != 1 falls through to the slice walk).
+- [ ] Visual parity at 1, 2, 4, 8, 64 lights. **Browser-side
+      verification still required** — the shader compiles and the data
+      shape is correct, but a side-by-side render check vs the
+      pre-2.1.c build is the remaining sign-off.
+- [ ] Average per-pixel `slice.count` is materially below `n_lights`
+      for the test scenes with 64+ lights. **Requires browser-side
+      profiling** — `LightMeshBuckets::last_max_bucket` records the
+      worst-case bucket size as a coarse proxy.
 
 ### 14.2 Definition of done (Cluster 6.1 — material classify)
 
@@ -1502,23 +1515,450 @@ Fill in after each step lands.
 
 | Step | Before                  | After                       | Notes |
 | ---- | ----------------------- | --------------------------- | ----- |
-| 1.5  | _linear sweep_          | _BVH query_                 |       |
-| 1.6  | _per-view × meshes_     | _per-view × visible_        |       |
-| 1.7  | _dirty churn_           | _sidecar churn_             |       |
-| 1.8  | _cube cost_             | _verified / fast-path_      |       |
-| 2.1  | _flat light loop_       | _per-mesh slice walk_       |       |
-| 2.2  | _per-frame cascade_     | _throttled_                 |       |
-| 2.3  | _evsm every cascade_    | _evsm only for rendered_    |       |
-| 6.1  | _N × screen-wide compute_ | _N × tile-bucket compute_ |       |
-| 6.2  | _all skinning every frame_ | _only-visible skinning_  |       |
-| 6.3  | _full material everywhere_ | _cheap-mat at low coverage_ |   |
-| 7.1  | n/a                     | _hzb build cost_            |       |
-| 7.2  | _bvh-only cull_         | _bvh + hzb cull_            |       |
-| 7.3  | _cpu instance loop_     | _gpu instance compaction_   |       |
+| 1.5  | linear sweep            | BVH query                   | Landed. `renderable.rs:49-89` drives the visible set off `scene_spatial.query_frustum(NodeFilter::camera_default())`. Conservative tail-walk on meshes without world AABB kept. |
+| 1.6  | per-view × meshes       | per-view × visible          | Landed. `shadows/render_pass.rs` calls `query_frustum(NodeFilter::shadow_caster())`; `shadows/state.rs::write_gpu` `caster_aabbs_scratch` populated from `iter_filtered(shadow_caster)`. |
+| 1.7  | dirty churn             | sidecar churn               | Landed. Skinned + instanced meshes auto-route to the linear-scan dynamic sidecar; tree-static meshes rebuild via `RTree::bulk_load` at 200-dirties / 600-frames cadence. |
+| 1.8  | cube cost               | verified / fast-path        | Verified via host-target test `cube_face_frustum_prunes_other_face_geometry`. |
+| 2.1  | flat light loop         | per-mesh slice walk         | **Locked in.** 2.1.a/b/c/d all landed: `LightMeshBuckets` rebuilds per frame; `MeshLightSlicesGpu` uploads `mesh_light_slices` + `mesh_light_indices` storage buffers at group(1) bindings 2/3 of the opaque material pass. New `apply_lighting_per_mesh` + `apply_lighting_per_mesh_with_transmission` in `shared_wgsl/lighting/lights.wgsl` gate the punctual walk behind `mesh_light_slices[meta_index]`. Opaque compute + MSAA helper both call the per-mesh variant; transparent stays flat (plan §12 Q8 default). Oversized-mesh detection populates `oversized_meshes()` via the `OVERSIZED_*` thresholds. Browser-side visual parity verification still pending. |
+| 2.2  | per-frame cascade       | throttled                   | Deferred — major cascade-atlas layout rework (packed atlas → 2D texture array) with browser-side validation. |
+| 2.3  | evsm every cascade      | evsm only for rendered      | Deferred — depends on 2.2's per-layer "didn't render" signal. |
+| 4.1  | flat shadow knobs       | preset tier table           | Landed. `ShadowQualityTier { Low, Medium, High, Ultra, Custom }` with `apply_to_config` / `apply_to_light_params` plumbing. |
+| 4.2  | uniform light budgets   | importance-scored budgets   | Landed. `AwsmRenderer::refresh_light_importance_budgets` walks shadow-casting lights and maps the `intensity / (1 + dist²)` score to a tier; off-screen → Low, fills-screen → Ultra. |
+| 4.3  | widened-Soft cube PCSS  | true cube PCSS              | Deferred per plan §6.3 — current approximation is visibly adequate. |
+| 4.4  | uniform spot penumbra   | cone-scaled spot penumbra   | Landed. `shadows/state.rs` spot-light descriptor packing multiplies authored `pcss_penumbra_scale` by `tan(outer_angle * 0.5)`. |
+| 5.1  | no integration tests    | wgpu-headless harness       | Deferred — needs native wgpu adapter; the 99-test host suite covers allocators / spatial / coverage / importance / quality_tier. |
+| 5.2  | implicit bookkeeping    | debug-assert invariants     | Landed. `Shadows::write_gpu` debug-asserts `records.views.sum == active_view_count` and `records.len == active_descriptor_count` at function exit. |
+| 5.3  | kind change → desync    | guarded `update_light`      | Landed. `AwsmRenderer::update_light` detects discriminant change, runs `Shadows::on_light_removed`, reinstates `params`. |
+| 6.1  | N × screen-wide compute | N × tile-bucket compute     | Deferred — major WGSL + compute-pass rework needing browser validation. |
+| 6.2  | all skinning every frame | only-visible skinning      | CPU consumer landed. `MeshCoverage` table; `Meshes::skin_all_consumers_zero_coverage` skips skin updates when every consumer was zero-coverage last frame. GPU coverage compute pass (atomic-add per pixel) deferred. |
+| 6.3  | full material everywhere | cheap-mat at low coverage  | Landed. `Mesh::cheap_material_key` + `cheap_material_pixel_threshold`; `Mesh::effective_material_key`; `collect_renderables` classifies transparency by the effective key. |
+| 6.4  | n/a                     | decals as material class    | Deferred — depends on 6.1's bucket infrastructure. |
+| 6.5  | always-sample shadows   | mesh-receiver gate          | CPU side landed. `LightMeshBuckets::mark_shadow_receivers` populates a per-mesh "any shadow-caster reaches me" flag consulted via `is_shadow_receiver`. Shader-side OR with the existing `receive_shadows` gate is part of 2.1.c WGSL work. |
+| 7.1  | n/a                     | hzb build cost              | Deferred per plan §9 — long-horizon; only needed when CPU BVH dominates. |
+| 7.2  | bvh-only cull           | bvh + hzb cull              | Deferred per plan §9. |
+| 7.3  | cpu instance loop       | gpu instance compaction     | Deferred per plan §9. |
+| 8.1  | many small writes       | coalesced writes            | Verified. `buffer/helpers.rs::write_buffer_with_dirty_ranges` already sorts + coalesces; 4 unit tests pin the merge behaviour. |
+| 8.2  | per-upload allocations  | staging ring                | N/A for current arch. `gpu.write_buffer` (WebGPU `queue.writeBuffer`) handles staging internally; explicit ring only matters under `mapAsync` upload path. |
+| 8.3  | 60Hz skinning everywhere | distance-LOD'd skinning    | Landed. `Mesh::skin_update_period` field, `AwsmRenderer::set_mesh_skin_update_period(s)_by_distance` helpers, gate inside `Meshes::update_world` via `Skins::update_transforms` predicate. |
 
 ---
 
-## 16. References
+## 16. Hand-off tracker — items needing the human
+
+This section is the live punch-list for everything that landed in code
+but still needs a browser run, a profiling pass, an authoring-side
+decision, or a tuning sweep. Each entry has a **Status** field —
+update it as you work through. Order is rough priority: high-leverage
+verifications first, optional implementations last.
+
+Status values:
+- `not started` — nothing done yet
+- `in progress` — you're actively working it
+- `signed off` — done; row can be deleted next time the doc gets cleaned up
+- `wontfix: <reason>` — explicit decision to skip permanently
+- `blocked: <reason>` — needs something else first
+
+---
+
+### A. Storage-buffer count back down to 9 (under the 10-buffer adapter limit)
+
+**Status:** `signed off`
+
+The initial Cluster 2.1.c work pushed storage-buffer count to 12 which
+exceeded the adapter's 10-buffer limit and triggered `Insufficient
+storage buffers: required 12, available 10`. Resolved by Options
+**F + E** (next two rows):
+
+- **F1: `lights` → uniform buffer.** Fixed-size 64 KB binding
+  (`MAX_PUNCTUAL_LIGHTS = 1024`). Uniform-constant cache speeds up the
+  lockstep per-pixel walk.
+- **F2: Slice fields packed into `MaterialMeshMeta`.** Each pixel
+  reads `light_slice_offset` / `light_slice_count` for free as part of
+  the already-required meta load. `mesh_light_slices` storage buffer
+  removed.
+- **E: `model_transforms` + `normal_matrices` combined.** Single
+  `TransformPacked { model: mat4x4, normal: mat3x3 }` struct, 112-byte
+  stride. One buffer fetch per transform instead of two.
+
+Net storage-buffer count in the opaque pass: **8 in group(0) + 1 in
+group(1) = 9.** One spare under the 10-buffer adapter limit.
+`COMPATIBITLIY_REQUIREMENTS.storage_buffers` dropped to 9.
+
+---
+
+### A.2 Shadow descriptor bookkeeping assertion — fix
+
+**Status:** `signed off`
+
+The Cluster 5.2 `debug_assert` I added in `Shadows::write_gpu` got the
+descriptor invariant wrong. It asserted `records.len() ==
+active_descriptor_count` but descriptors-per-record is **not** uniform
+across light kinds:
+
+- Directional with N cascades: **N descriptors per record**.
+- Spot: 1 descriptor per record.
+- Point: **1 descriptor per record** but **6 views**.
+
+So a single directional light with 4 cascades has `records.len() == 1`
+and `active_descriptor_count == 4`, which tripped the assertion.
+
+Replaced with the correct sum: for each record, contribute `views.len()`
+if it's not a cube/point (directional cascades or spot), `1` if it is
+(point light shares one descriptor across 6 cube faces). Detected via
+`r.views.iter().any(|v| v.cube_layer.is_some())`.
+
+`Insertion order` of cube_layer-tagged views is what tells us the
+record is a point light without needing to store the kind separately.
+
+---
+
+### A.1 F + E — perf validation under load
+
+**Status:** `not started`
+
+After visual sign-off (B), confirm the perf wins F + E promised hold
+under real workload:
+
+- **F (lights uniform):** at 64 lights, measure material-opaque
+  compute time vs. the prior storage-binding baseline. Expected: small
+  win (5–15%) from uniform-constant cache.
+- **E (packed transforms):** at high vertex count (≥ 500K vertices),
+  measure geometry pass + shadow generation vs. baseline. Expected:
+  modest win (5–10%) from one buffer fetch instead of two.
+
+**Numbers:**
+```
+Material opaque (64 lights):  Before __ ms  After __ ms
+Geometry pass  (500K verts):  Before __ ms  After __ ms
+Shadow gen     (10 views):    Before __ ms  After __ ms
+```
+
+If E shows a *regression* (the +12 B/transform memory overhead
+outweighs the fetch win), the packing was wrong; revert in
+[`transforms.rs::update_inner_recursively`](../../crates/renderer/src/transforms.rs).
+Unlikely but possible at very low vertex counts.
+
+---
+
+### A.4 Per-frame bookkeeping moved to `update_transforms`
+
+**Status:** `signed off`
+
+The editor's render loop calls `renderer.update_transforms()` directly
+(see [`renderer_bridge.rs:160`](../../crates/frontend/scene-editor/src/renderer_bridge.rs))
+and never goes through `update_all()`. Several per-frame additions I'd
+placed in `update_all` therefore **never ran** in the editor:
+
+- `frame_index` increment
+- `scene_spatial.rebuild_if_needed()`
+- `light_buckets.rebuild()`
+- `light_buckets.mark_shadow_receivers()`
+- Debug-only `scene_spatial.len() == meshes-with-world-AABB` invariant
+
+This is also why my `[A.3-diag]` tracing logs never appeared — the
+code path was dead in the editor. Symptoms were "point lights don't
+render" since `light_slice_count` stayed at zero in every mesh's meta.
+
+**Fix:** consolidated all per-frame renderer-side work into
+`update_transforms` (in
+[`transforms.rs`](../../crates/renderer/src/transforms.rs)). `update_all`
+now just delegates to it. Both editor and player code paths run the
+same per-frame bookkeeping.
+
+---
+
+### A.3 Point lights — visual investigation
+
+**Status:** `signed off` — point lights work correctly.
+
+**Root cause:** item **A.4**. The editor's render loop calls
+`renderer.update_transforms()` directly and skips `update_all()`. The
+per-frame `light_buckets.rebuild()` + slice-patch pipeline was wired
+into `update_all`, so in the editor it **never ran** — every mesh's
+`light_slice_count` stayed at 0 forever and the WGSL punctual walk
+silently no-op'd for every pixel regardless of light placement.
+
+Moving the bookkeeping into `update_transforms` (which both
+`update_all` and the editor call) was the actual fix.
+
+**Verified end-to-end with the Claude Preview MCP after A.4 landed:**
+
+1. `[A.3-diag]` logs surfaced — proving `update_transforms` now runs
+   the bucket rebuild every frame in the editor.
+2. CPU side wrote `light_slice_offset=0, light_slice_count=1` into the
+   box's `MaterialMeshMeta` raw bytes at offsets 72–79, with 40 bytes
+   of indices uploaded.
+3. A one-shot debug visualisation in the WGSL slice walk (`return
+   vec3(slice_count, 0, 0)` if count > 0) painted the box RED — proof
+   the slice metadata reaches the shader and `slice_count > 0` is
+   visible per-pixel.
+4. After reverting the debug, with the point light moved to Y=3 (above
+   the box at origin), the top face brightens vs the front face —
+   direct evidence of point-light diffuse contribution.
+
+**Cleanups landed alongside the verification:**
+
+- All `[A.3-diag]` tracing removed.
+- The `material_meta_slot_bytes` debug accessor removed.
+
+---
+
+### B. Cluster 2.1.c — visual sign-off [highest leverage]
+
+**Status:** `not started`
+
+The shader rewire is in place but unverified. The slice metadata now
+lives in `MaterialMeshMeta` (Option F2), so "out of bounds" failure
+modes are bounded by mesh-existence rather than buffer size.
+
+1. **Boot the editor** (or `crates/frontend/model-tests`) with the
+   current `use_mesh_light_slices: true` (default in
+   [`material_opaque/shader/template.rs`](../../crates/renderer/src/render_passes/material_opaque/shader/template.rs)).
+2. **A/B**: flip that flag to `false`, rebuild, screenshot the same
+   camera angle. The two screenshots should be pixel-identical at low
+   light counts (1, 2, 4, 8) and visually identical at 64.
+3. **If they diverge**: paste WebGPU validation errors from the
+   browser console here. Most likely failure modes:
+   - Stale `light_slice_count` from a previous frame (the
+     `zero_all_mesh_light_slices` pass at the top of every frame
+     should prevent this; verify if you see ghost lighting).
+   - Bind-group layout mismatch on grow if `MeshLightSlicesResize`
+     doesn't trigger the rebind.
+   - Lights leaking into the wrong loop (kind==1u Directional
+     accidentally in the slice, or Point/Spot in the directional walk).
+4. **If they match**: tick this off and tick item 4 of §14.1 DoD.
+
+**Browser console output / observations:**
+```
+(paste here)
+```
+
+---
+
+### C. Cluster 1 DoD #5 — visual parity for BVH culling
+
+**Status:** `not started`
+
+Same shape as B: open editor demo scenes, confirm visual parity vs.
+the pre-Cluster-1 build. If you don't have a pre-Cluster-1 reference,
+this folds into B's check.
+
+**Observations:**
+```
+(paste here)
+```
+
+---
+
+### D. Cluster 1 DoD #6 — shadow-pass timing improvement
+
+**Status:** `not started`
+
+Capture a `tracing` span around `shadows/render_pass::record` at the
+1k-mesh / 20-view tier (rich demo scene, many lights). The plan
+expects ≥ 2× improvement vs. the pre-Cluster-1 linear sweep.
+
+**Numbers:**
+```
+Before (linear sweep):  __ ms / frame
+After  (BVH query):     __ ms / frame
+Ratio:                   __ ×
+```
+
+---
+
+### E. Cluster 4.2 — importance-tier cutoff tuning
+
+**Status:** `not started`
+
+In `shadows/importance.rs`, current cutoffs are `score > 4.0` →
+Ultra, `> 1.0` → High, `> 0.1` → Medium, else Low. `score = intensity
+/ (1 + distSq)`.
+
+**Decision needed:** at your typical authoring intensity range, what
+fraction of shadow casters end up in each tier? If everyone climbs
+to Ultra (because your intensities are large) or everyone sits at Low,
+the heuristic is mis-tuned.
+
+Suggested path: instrument the rebuild to log the histogram once per
+N seconds, run a representative scene, post the histogram here and
+I'll re-tune.
+
+**Histogram:**
+```
+Ultra: __ %
+High:  __ %
+Medium: __ %
+Low:   __ %
+```
+
+---
+
+### F. Cluster 6.3 — pixel-threshold default
+
+**Status:** `not started`
+
+`Mesh::cheap_material_pixel_threshold` defaults to 64. The plan
+suggests letting Cluster 4.1's tier drive it (Low→16, Medium→64,
+High→256, Ultra→1024).
+
+**Decision:** keep 64 as a single default, or wire the tier-driven
+version?
+
+**Choice:** `___`
+
+If "tier-driven", I'll thread the active `ShadowQualityTier` through
+`collect_renderables` and pick the threshold from the tier.
+
+---
+
+### G. Cluster 1.7 — rebuild thresholds for the 10k tier
+
+**Status:** `not started`
+
+`SceneSpatialConfig` defaults to `rebuild_dirty_threshold: 200`,
+`rebuild_period_frames: 600`. Sized for 1k meshes. At 10k they should
+scale to ~2000 / 1800.
+
+**Decision:** do your target scenes exceed 1k meshes? If yes, expose a
+`with_scene_spatial_config` on `AwsmRendererBuilder` so the player /
+editor can pin the values per-scene.
+
+**Choice:** `___`
+
+---
+
+### H. Cluster 2.1.d — oversized-mesh thresholds
+
+**Status:** `not started`
+
+Constants in `light_buckets/buckets.rs`:
+- `OVERSIZED_LIST_COUNT_THRESHOLD = 16`
+- `OVERSIZED_AABB_DIAGONAL_METERS = 50.0`
+
+Plan §12 Q7 calls these provisional. Re-tune after running a scene
+with terrain chunks / ocean planes / skyboxes.
+
+**Observations:**
+```
+last_max_bucket at idle camera: ___
+oversized_meshes().len(): ___
+```
+
+---
+
+### I. Cluster 2.2 / 2.3 — cascade texture array (deferred)
+
+**Status:** `wontfix-pending-decision`
+
+Open questions for you before committing:
+
+1. **Are cascade resolutions uniform per directional light in your
+   authoring?** Texture array forces them to be.
+2. **Memory cost OK?** ~256 MB per directional light at 4 cascades ×
+   4K. Currently the packed atlas reuses slots across lights when
+   one's throttled.
+3. **Confirm split: directional → array, spot → 2D atlas?**
+
+**Decision:** `___` (set to `go` to lock in, or `wontfix` to drop
+permanently)
+
+---
+
+### J. Cluster 4.3 — true cube PCSS (deferred)
+
+**Status:** `wontfix-pending-decision`
+
+**Test:** open a point light at ~5m range, hardness = `Pcss`. Slide
+`pcss_penumbra_scale` from 0.5 to 5.0. Look at penumbra width.
+
+- **Continuous, linearly-widening soft disc** → current approximation
+  fine; mark `wontfix: visually adequate`.
+- **Stepped / banded / fixed-width regardless of scale** → the
+  approximation has visibly hit its limit; lock in the real
+  implementation.
+
+**Observation:** `___`
+
+**Decision:** `___`
+
+---
+
+### K. Cluster 5.1 — integration tests (deferred)
+
+**Status:** `wontfix-pending-decision`
+
+Would protect against allocator regressions; cost is `pollster` dep
++ ~200 lines of harness + native wgpu adapter init.
+
+**Decision:** `___` (`go-native`, `go-wasm-bindgen-test`, or `wontfix`)
+
+---
+
+### L. Cluster 6.1 / 6.4 — material classify + decals (deferred)
+
+**Status:** `wontfix-pending-decision`
+
+Plan says load-bearing above ~6 distinct material pipeline keys per
+scene.
+
+**Decision-input needed:**
+- How many distinct material pipeline keys do your typical scenes
+  hit? `___`
+- Are you OK with indirect dispatches making per-material profiler
+  timings harder to read? `___`
+- Do you want decals at all? `___`
+
+If `materials > 6` AND `decals = yes` → lock in 6.1 and 6.4 (~400 +
+~150 LoC).
+
+If `materials <= 6` AND `decals = no` → close permanently.
+
+**Decision:** `___`
+
+---
+
+### M. Cluster 7.1 / 7.2 / 7.3 — HZB + GPU-driven culling (deferred)
+
+**Status:** `blocked: needs CPU traversal > 2ms`
+
+**Profile to capture:** the `tracing` span on
+`scene_spatial.query_frustum` inside
+[`renderable.rs::collect_renderables`](../../crates/renderer/src/renderable.rs)
+at your target tier. The plan's threshold for action is **> 2 ms**.
+
+**Numbers:**
+```
+1k mesh tier:   __ ms / frame
+10k mesh tier:  __ ms / frame
+```
+
+If under 2 ms anywhere, leave `wontfix-until-needed`. If over, the
+full pipeline (HZB build → two-phase occlusion → indirect-draw
+compaction) becomes the next big lock-in (~600 LoC).
+
+---
+
+### N. Browser-console regression watch
+
+**Status:** `not started`
+
+After every push, scan the browser console for new WebGPU validation
+warnings. Most likely sources of new warnings:
+- Bind group resize races (the `MeshLightSlicesResize` path).
+- `mesh_light_slices` indexed out of bounds when a mesh's meta-index
+  exceeds the buffer size.
+- The `update_light` kind-change path failing to clean up cube slots
+  fully.
+
+**Recent observations:**
+```
+(paste here)
+```
+
+---
+
+## 17. References
 
 **Spatial structure:**
 - [rstar — RTree, SelectionFunction, Envelope, primitives::GeomWithData](https://docs.rs/rstar/latest/rstar/)

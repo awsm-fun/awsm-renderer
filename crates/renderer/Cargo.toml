@@ -52,4 +52,5 @@ strum = {workspace = true}
 ordered-float = {workspace = true}
 indexmap = { workspace = true}
 bevy_mikktspace = { workspace = true}
+rstar = "0.12"
 serde = { workspace = true, optional = true}

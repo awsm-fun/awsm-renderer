@@ -73,6 +73,28 @@ pub struct Mesh {
     /// Whether this mesh is darkened by shadow sampling during shading.
     /// Defaults to `true`.
     pub receive_shadows: bool,
+    /// Skinning update cadence in frames. `1` (the default) updates every
+    /// frame; `2` updates every other frame; `4` quarter-rate, etc.
+    /// Distance-LOD'd characters typically run at `2` or `4` past a few
+    /// metres — the visual difference at that distance is below the per-
+    /// pixel threshold and the GPU animation budget drops linearly.
+    ///
+    /// Cluster 8.3 of the optimisation plan. Pairs with the coverage-
+    /// driven skinning skip from Cluster 6.2 — coverage answers "skip
+    /// this frame entirely?", `skin_update_period` answers "what's the
+    /// background cadence when not skipped?".
+    pub skin_update_period: u8,
+    /// Cheap material variant for low-coverage shading (Cluster 6.3).
+    /// When set, the renderer swaps `material_key` → this key for any
+    /// frame where the mesh's last-frame coverage is below
+    /// `cheap_material_pixel_threshold`. `None` (the default) opts out
+    /// — the mesh always uses its full `material_key`.
+    pub cheap_material_key: Option<MaterialKey>,
+    /// Coverage threshold (in pixels) below which the cheap material
+    /// variant takes over. Only consulted when `cheap_material_key` is
+    /// `Some`. The plan suggests letting Cluster 4.1's quality tier
+    /// drive this — Low → 16, Medium → 64, High → 256, Ultra → 1024.
+    pub cheap_material_pixel_threshold: u32,
 }
 
 impl Mesh {
@@ -97,7 +119,30 @@ impl Mesh {
             billboard_mode: BillboardMode::None,
             cast_shadows: true,
             receive_shadows: true,
+            skin_update_period: 1,
+            cheap_material_key: None,
+            cheap_material_pixel_threshold: 64,
         }
+    }
+
+    /// Effective material to use for this frame given last-frame
+    /// coverage. Returns `cheap_material_key` when it's set AND the
+    /// mesh's last-frame coverage is below
+    /// `cheap_material_pixel_threshold`; otherwise the authored
+    /// `material_key`. Cluster 6.3 hook — call from
+    /// `collect_renderables` or any other place that picks the
+    /// material pipeline.
+    pub fn effective_material_key(
+        &self,
+        mesh_key: MeshKey,
+        coverage: &crate::coverage::MeshCoverage,
+    ) -> MaterialKey {
+        if let Some(cheap) = self.cheap_material_key {
+            if coverage.is_below_threshold(mesh_key, self.cheap_material_pixel_threshold) {
+                return cheap;
+            }
+        }
+        self.material_key
     }
 
     /// Returns the geometry render pipeline key for this mesh.

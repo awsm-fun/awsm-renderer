@@ -305,13 +305,25 @@ fn main(
             return;
         }
 
-        color = apply_lighting(
-            material_color,
-            standard_coordinates.surface_to_camera,
-            standard_coordinates.world_position,
-            lights_info,
-            material_mesh_meta.receive_shadows,
-        );
+        {% if use_mesh_light_slices %}
+            color = apply_lighting_per_mesh(
+                material_color,
+                standard_coordinates.surface_to_camera,
+                standard_coordinates.world_position,
+                lights_info,
+                material_mesh_meta.receive_shadows,
+                material_mesh_meta.light_slice_offset,
+                material_mesh_meta.light_slice_count,
+            );
+        {% else %}
+            color = apply_lighting(
+                material_color,
+                standard_coordinates.surface_to_camera,
+                standard_coordinates.world_position,
+                lights_info,
+                material_mesh_meta.receive_shadows,
+            );
+        {% endif %}
         base_alpha = material_color.base.a;
 
     }

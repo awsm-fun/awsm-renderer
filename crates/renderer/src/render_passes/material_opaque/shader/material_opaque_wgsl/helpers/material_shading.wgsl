@@ -207,13 +207,25 @@ fn msaa_process_sample(
         // per-sample meta is named `sample_mesh_meta` here (line 96
         // above) rather than `material_mesh_meta` — every MSAA edge
         // sample resolves its own mesh independently.
-        let color = apply_lighting(
-            mat_color,
-            standard_coordinates.surface_to_camera,
-            standard_coordinates.world_position,
-            lights_info,
-            sample_mesh_meta.receive_shadows,
-        );
+        {% if use_mesh_light_slices %}
+            let color = apply_lighting_per_mesh(
+                mat_color,
+                standard_coordinates.surface_to_camera,
+                standard_coordinates.world_position,
+                lights_info,
+                sample_mesh_meta.receive_shadows,
+                sample_mesh_meta.light_slice_offset,
+                sample_mesh_meta.light_slice_count,
+            );
+        {% else %}
+            let color = apply_lighting(
+                mat_color,
+                standard_coordinates.surface_to_camera,
+                standard_coordinates.world_position,
+                lights_info,
+                sample_mesh_meta.receive_shadows,
+            );
+        {% endif %}
         return msaa_apply_instance_tint(color, mat_color.base.a, sample_instance_id);
     }
 }

@@ -11,6 +11,12 @@ impl AwsmRenderer {
         camera_matrices: CameraMatrices,
     ) -> crate::error::Result<()> {
         self.update_animations(global_time_delta)?;
+        // `update_transforms` owns all per-frame renderer-side
+        // bookkeeping (frame_index bump, BVH refit, light-bucket
+        // rebuild, shadow-receiver flagging, debug invariants). The
+        // editor calls `update_transforms` directly without going
+        // through `update_all`; keeping the work centralised in
+        // `update_transforms` keeps both paths in lockstep.
         self.update_transforms();
         self.update_camera(camera_matrices)?;
 

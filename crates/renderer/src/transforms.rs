@@ -25,17 +25,65 @@ use crate::{
 };
 
 impl AwsmRenderer {
-    /// Updates world transforms and mesh bounds from dirty transforms.
+    /// Updates world transforms and mesh bounds from dirty transforms,
+    /// plus every per-frame spatial / light-bucket / coverage hook that
+    /// has to run once per render. Both `update_all()` and the editor's
+    /// custom render loop call this — keep all per-frame renderer-owned
+    /// bookkeeping here so the two paths stay in lockstep.
+    ///
+    /// Mirrors every refreshed `world_aabb` into the spatial index so the
+    /// per-view frustum queries see the latest geometry positions on the
+    /// same frame they're recomputed.
     pub fn update_transforms(&mut self) {
+        // Bump the renderer-wide frame counter first so all per-frame
+        // consumers see the same index across the frame.
+        self.frame_index = self.frame_index.wrapping_add(1);
+
         self.transforms.update_world();
         let dirty_transforms = self.transforms.take_dirty_meshes();
         let dirty_instances = self.instances.take_dirty_transforms();
-        self.meshes.update_world(
+        let touched = self.meshes.update_world(
             dirty_transforms,
             &dirty_instances,
             &self.transforms,
             &self.instances,
+            self.frame_index,
+            &self.coverage,
         );
+        for mesh_key in touched {
+            self.sync_spatial_for_mesh(mesh_key);
+        }
+
+        // Periodic BVH refresh (Cluster 1.7).
+        self.scene_spatial.rebuild_if_needed();
+
+        // Per-frame per-light → per-mesh bucket rebuild (Cluster 2.1.a).
+        // Cheap (one `query_envelope` per active punctual light).
+        self.light_buckets.rebuild(&self.lights, &self.scene_spatial);
+
+        // Cluster 6.5: per-mesh "any shadow-caster reaches me" flag.
+        let shadows_ref = &self.shadows;
+        self.light_buckets
+            .mark_shadow_receivers(&self.lights, |key| {
+                shadows_ref
+                    .light_params(key)
+                    .map(|p| p.cast)
+                    .unwrap_or(false)
+            });
+
+        #[cfg(debug_assertions)]
+        {
+            let with_aabb = self
+                .meshes
+                .iter()
+                .filter(|(_, m)| m.world_aabb.is_some())
+                .count();
+            let spatial_count = self.scene_spatial.len();
+            debug_assert!(
+                with_aabb == spatial_count,
+                "scene_spatial leaf count ({spatial_count}) diverged from meshes with world_aabb ({with_aabb}) — sync hook missing on a mutation path"
+            );
+        }
     }
 }
 
@@ -55,9 +103,7 @@ pub struct Transforms {
     gpu_dirty: bool,
     pub root_node: TransformKey,
     buffer: DynamicUniformBuffer<TransformKey>,
-    normals_buffer: DynamicUniformBuffer<TransformKey>,
     pub(crate) gpu_buffer: web_sys::GpuBuffer,
-    pub(crate) normals_gpu_buffer: web_sys::GpuBuffer,
 }
 
 static BUFFER_USAGE: LazyLock<BufferUsage> =
@@ -66,10 +112,25 @@ static BUFFER_USAGE: LazyLock<BufferUsage> =
 impl Transforms {
     /// Initial transform slot capacity.
     pub const INITIAL_CAPACITY: usize = 32; // 32 elements is a good starting point
-    /// Byte size of a transform matrix.
-    pub const BYTE_SIZE: usize = 64; // 4x4 matrix of f32 is 64 bytes
-    /// Byte size of a normal matrix.
-    pub const NORMALS_BYTE_SIZE: usize = 36; // 3x3 matrix of f32 is 36 bytes
+    /// Byte size of a packed transform entry (Option E — model + normal
+    /// in one struct).
+    ///
+    /// Layout:
+    ///   - bytes  0.. 64: `model_world: mat4x4<f32>` (4 columns × 16 B)
+    ///   - bytes 64..112: `normal_world: mat3x3<f32>` (3 columns × 16 B,
+    ///     vec3 cols padded to vec4 per WGSL rule)
+    ///
+    /// Stride is 112 bytes — already 16-aligned so no further padding.
+    /// The CPU side writes 9 useful f32s for the normal matrix; the
+    /// remaining 12 bytes (3 padding f32s, one per column) stay zeroed
+    /// and the shader's `mat3x3<f32>` constructor only reads the 9
+    /// useful values. Costs 12 B per transform vs the previous split
+    /// design (was 64 B + 36 B), but saves one storage-buffer binding
+    /// because both are read from the same `var<storage> transforms`
+    /// declaration.
+    pub const BYTE_SIZE: usize = 112;
+    /// Offset of the normal matrix inside a packed transform entry.
+    pub const NORMAL_OFFSET: usize = 64;
 
     /// Creates transform storage and GPU buffers.
     pub fn new(gpu: &AwsmRendererWebGpu) -> Result<Self> {
@@ -81,27 +142,12 @@ impl Transforms {
             )
             .into(),
         )?;
-        let normals_gpu_buffer = gpu.create_buffer(
-            &BufferDescriptor::new(
-                Some("Normal Transform Matrices"),
-                Transforms::INITIAL_CAPACITY * Transforms::NORMALS_BYTE_SIZE,
-                *BUFFER_USAGE,
-            )
-            .into(),
-        )?;
 
         let buffer = DynamicUniformBuffer::new(
             Self::INITIAL_CAPACITY,
             Self::BYTE_SIZE,
             None,
             Some("Transforms".to_string()),
-        );
-
-        let normals_buffer = DynamicUniformBuffer::new(
-            Self::INITIAL_CAPACITY,
-            Self::NORMALS_BYTE_SIZE,
-            None,
-            Some("Normal Transform Matrices".to_string()),
         );
 
         let mut locals = SlotMap::with_capacity_and_key(Self::INITIAL_CAPACITY);
@@ -122,9 +168,7 @@ impl Transforms {
             gpu_dirty: true,
             root_node,
             buffer,
-            normals_buffer,
             gpu_buffer,
-            normals_gpu_buffer,
         })
     }
 
@@ -139,8 +183,6 @@ impl Transforms {
         self.dirties.insert(key);
 
         self.buffer.update(key, &[0; Self::BYTE_SIZE]);
-        self.normals_buffer
-            .update(key, &[0; Self::NORMALS_BYTE_SIZE]);
 
         self.set_parent(key, parent);
 
@@ -168,7 +210,6 @@ impl Transforms {
         self.children.remove(key);
         self.dirties.remove(&key);
         self.buffer.remove(key);
-        self.normals_buffer.remove(key);
 
         self.gpu_dirty = true;
     }
@@ -280,21 +321,6 @@ impl Transforms {
                 transform_resized = true;
             }
 
-            let mut normals_resized = false;
-            if let Some(new_size) = self.normals_buffer.take_gpu_needs_resize() {
-                self.normals_gpu_buffer = gpu.create_buffer(
-                    &BufferDescriptor::new(
-                        Some("Normal Transform Matrices"),
-                        new_size,
-                        *BUFFER_USAGE,
-                    )
-                    .into(),
-                )?;
-
-                bind_groups.mark_create(BindGroupCreate::TransformNormalsResize);
-                normals_resized = true;
-            }
-
             if transform_resized {
                 self.buffer.clear_dirty_ranges();
                 gpu.write_buffer(&self.gpu_buffer, None, self.buffer.raw_slice(), None, None)?;
@@ -305,25 +331,6 @@ impl Transforms {
                     &self.gpu_buffer,
                     self.buffer.raw_slice(),
                     transform_ranges,
-                )?;
-            }
-
-            if normals_resized {
-                self.normals_buffer.clear_dirty_ranges();
-                gpu.write_buffer(
-                    &self.normals_gpu_buffer,
-                    None,
-                    self.normals_buffer.raw_slice(),
-                    None,
-                    None,
-                )?;
-            } else {
-                let normal_ranges = self.normals_buffer.take_dirty_ranges();
-                write_buffer_with_dirty_ranges(
-                    gpu,
-                    &self.normals_gpu_buffer,
-                    self.normals_buffer.raw_slice(),
-                    normal_ranges,
                 )?;
             }
 
@@ -351,11 +358,14 @@ impl Transforms {
             .ok_or(AwsmTransformError::TransformBufferSlotMissing(key))
     }
 
-    /// Returns the GPU buffer offset for the normal matrix.
+    /// Returns the GPU buffer offset for the packed normal matrix
+    /// inside a transform slot. Equal to `buffer_offset(key) +
+    /// NORMAL_OFFSET`. Kept as a separate accessor so callers don't
+    /// have to know the internal layout — and so the WGSL side, which
+    /// indexes `transforms[transform_offset / BYTE_SIZE].normal_world`,
+    /// can be re-routed if the struct shape ever changes.
     pub fn normals_buffer_offset(&self, key: TransformKey) -> Result<usize> {
-        self.normals_buffer
-            .offset(key)
-            .ok_or(AwsmTransformError::TransformBufferNormalsSlotMissing(key))
+        Ok(self.buffer_offset(key)? + Self::NORMAL_OFFSET)
     }
 
     /// Returns a reference to world matrices.
@@ -408,23 +418,35 @@ impl Transforms {
 
             self.world_matrices[key] = world_matrix;
 
-            let values = world_matrix.to_cols_array();
-            let values_u8 = unsafe {
-                std::slice::from_raw_parts(values.as_ptr() as *const u8, Self::BYTE_SIZE)
-            };
-            self.buffer.update(key, values_u8);
+            // Pack model (mat4x4) + normal (mat3x3 with vec3 columns
+            // padded to vec4) into one 112-byte struct entry. The
+            // padding bytes between normal columns stay zero — the
+            // shader's `mat3x3<f32>` constructor reads 3 vec3s and
+            // ignores the column padding.
+            let mut packed = [0u8; Self::BYTE_SIZE];
 
-            let normal_matrix = world_matrix.inverse().transpose();
-            let normal_matrix = glam::Mat3::from_mat4(normal_matrix);
-            let normal_values = normal_matrix.to_cols_array();
-            let normal_values_u8 = unsafe {
-                std::slice::from_raw_parts(
-                    normal_values.as_ptr() as *const u8,
-                    Self::NORMALS_BYTE_SIZE,
-                )
+            // Model matrix: 64 bytes.
+            let model_values = world_matrix.to_cols_array();
+            let model_bytes = unsafe {
+                std::slice::from_raw_parts(model_values.as_ptr() as *const u8, 64)
             };
+            packed[0..64].copy_from_slice(model_bytes);
 
-            self.normals_buffer.update(key, normal_values_u8);
+            // Normal matrix: 9 floats laid out as 3 columns × (vec3 +
+            // 4-byte pad). At byte offsets 64..76 (col0), 80..92
+            // (col1), 96..108 (col2). Padding floats (76..80, 92..96,
+            // 108..112) stay zero.
+            let normal_matrix = glam::Mat3::from_mat4(world_matrix.inverse().transpose());
+            let nm = normal_matrix.to_cols_array(); // [c0x, c0y, c0z, c1x, c1y, c1z, c2x, c2y, c2z]
+            for col in 0..3usize {
+                let col_off = Self::NORMAL_OFFSET + col * 16;
+                let src = col * 3;
+                let col_bytes = unsafe {
+                    std::slice::from_raw_parts(nm[src..src + 3].as_ptr() as *const u8, 12)
+                };
+                packed[col_off..col_off + 12].copy_from_slice(col_bytes);
+            }
+            self.buffer.update(key, &packed);
 
             self.dirty_meshes.push(key);
         }
@@ -572,9 +594,6 @@ pub enum AwsmTransformError {
 
     #[error("[transform] buffer slot missing {0:?}")]
     TransformBufferSlotMissing(TransformKey),
-
-    #[error("[transform] normals buffer slot missing {0:?}")]
-    TransformBufferNormalsSlotMissing(TransformKey),
 
     #[error("[transform] cannot get parent of root node")]
     CannotGetParentOfRootNode,

@@ -892,7 +892,7 @@ impl Shadows {
         bind_groups: &mut BindGroups,
         camera: &crate::camera::CameraBuffer,
         lights: &crate::lights::Lights,
-        meshes: &crate::meshes::Meshes,
+        scene_spatial: &crate::scene_spatial::SceneSpatial,
     ) -> Result<(), AwsmShadowError> {
         // User-driven resource recreates land first so a fresh
         // `set_config` from the editor takes effect immediately. The
@@ -1043,14 +1043,17 @@ impl Shadows {
         // range and destroying depth precision (the canonical failure
         // mode: a 10 km × 10 km ground plane whose union AABB stretches
         // thousands of metres along the tilted light direction).
+        // Pull casters straight from the spatial index. Each leaf already
+        // mirrors `mesh.world_aabb`; the shadow-caster `NodeFilter` enforces
+        // the `cast_shadows && !hidden && !hud` predicate that the linear
+        // walk used to apply by hand. Casters that haven't yet acquired a
+        // world AABB (procedural / mid-load) aren't in the index — they're
+        // still rendered conservatively by `shadow_render_pass::record`'s
+        // tail-walk, but skipped for the cascade fit (nothing to clip
+        // against).
         self.caster_aabbs_scratch.clear();
-        for (_, mesh) in meshes.iter() {
-            if !mesh.cast_shadows || mesh.hidden || mesh.hud {
-                continue;
-            }
-            if let Some(aabb) = mesh.world_aabb.clone() {
-                self.caster_aabbs_scratch.push(aabb);
-            }
+        for node in scene_spatial.iter_filtered(crate::scene_spatial::NodeFilter::shadow_caster()) {
+            self.caster_aabbs_scratch.push(node.aabb.clone());
         }
         let caster_world_aabbs = self.caster_aabbs_scratch.as_slice();
 
@@ -1382,6 +1385,17 @@ impl Shadows {
 
                     let descriptor_index = alloc.descriptor_base;
                     let off = descriptor_index as usize * SHADOW_DESCRIPTOR_BYTES;
+                    // Cluster 4.4 of the optimisation plan: scale the
+                    // authored `pcss_penumbra_scale` by `tan(outer_angle * 0.5)`
+                    // before baking it into the descriptor. Without this,
+                    // a wider spot cone with the same authored scale
+                    // gives a *narrower* perceived penumbra (the PCSS
+                    // disc radius is measured in shadow-space NDC and the
+                    // wider cone spreads the disc across more world).
+                    // Multiplying by `tan(half_cone)` keeps the world-
+                    // space penumbra width invariant to the cone angle.
+                    let spot_pcss_penumbra_scale =
+                        params.pcss_penumbra_scale * (outer_angle * 0.5).tan();
                     write_shadow_descriptor(
                         &mut descriptor_bytes[off..off + SHADOW_DESCRIPTOR_BYTES],
                         &view_projection,
@@ -1390,7 +1404,7 @@ impl Shadows {
                         params.depth_bias,
                         params.normal_bias,
                         params.hardness,
-                        params.pcss_penumbra_scale,
+                        spot_pcss_penumbra_scale,
                         spot_world_per_texel,
                         1,
                         // Spot lights don't use cascade selection; setting
@@ -1700,6 +1714,51 @@ impl Shadows {
         self.evsm_pass.upload_params(gpu)?;
 
         self.frame_count = self.frame_count.wrapping_add(1);
+
+        // Descriptor / view bookkeeping invariants (Cluster 5.2). The
+        // per-frame `active_*_count` fields drive the uniform buffer
+        // slices the shading passes bind via dynamic offset; if they
+        // disagree with the per-light record list, the binding picks up
+        // garbage data and the resulting visual artifact is impossible
+        // to diagnose from the shader side. Catch the off-by-one here
+        // so future allocator edits surface the regression immediately.
+        //
+        // Descriptors-per-record is *not* uniform across light kinds:
+        //   - Directional: one descriptor per cascade ⇒ `views.len()`
+        //   - Spot:        one descriptor, one view
+        //   - Point:       one descriptor, six views (cube sampling
+        //                  uses the same descriptor for all 6 faces)
+        //
+        // We tell point apart by `views[*].cube_layer.is_some()`.
+        #[cfg(debug_assertions)]
+        {
+            let view_sum: usize = self.records.values().map(|r| r.views.len()).sum();
+            debug_assert_eq!(
+                view_sum, self.active_view_count as usize,
+                "shadow view bookkeeping diverged: records sum to {view_sum} views, \
+                 active_view_count = {}",
+                self.active_view_count,
+            );
+            let descriptor_sum: usize = self
+                .records
+                .values()
+                .map(|r| {
+                    if r.views.iter().any(|v| v.cube_layer.is_some()) {
+                        1 // cube/point: one descriptor for all faces
+                    } else {
+                        r.views.len() // directional cascades / spot
+                    }
+                })
+                .sum();
+            debug_assert_eq!(
+                descriptor_sum,
+                self.active_descriptor_count as usize,
+                "shadow descriptor bookkeeping diverged: records sum to {descriptor_sum} descriptors, \
+                 active_descriptor_count = {}",
+                self.active_descriptor_count,
+            );
+        }
+
         Ok(())
     }
 

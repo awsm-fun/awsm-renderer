@@ -59,7 +59,22 @@ impl MaterialOpaqueBindGroups {
                 visibility_fragment: false,
                 visibility_compute: true,
             },
-            // punctual lights
+            // punctual lights — uniform binding (Option F follow-up).
+            // Access pattern is "every pixel reads the same light in
+            // lockstep" which is the canonical uniform-buffer case.
+            // 64 KB cap → MAX_PUNCTUAL_LIGHTS lights.
+            BindGroupLayoutCacheKeyEntry {
+                resource: BindGroupLayoutResource::Buffer(
+                    BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
+                ),
+                visibility_vertex: false,
+                visibility_fragment: false,
+                visibility_compute: true,
+            },
+            // mesh_light_indices (binding 2): packed u32 light indices
+            // referenced by `material_mesh_metas[meta_index]
+            // .light_slice_{offset,count}` (per-mesh slice now lives in
+            // MaterialMeshMeta — saves one storage-buffer slot).
             BindGroupLayoutCacheKeyEntry {
                 resource: BindGroupLayoutResource::Buffer(
                     BufferBindingLayout::new()
@@ -243,15 +258,10 @@ impl MaterialOpaqueBindGroups {
                 ctx.meshes.custom_attribute_data_gpu_buffer(),
             )),
         ));
-        // transforms
+        // transforms — packed (model + normal). See `Transforms`.
         entries.push(BindGroupEntry::new(
             entries.len() as u32,
             BindGroupResource::Buffer(BufferBinding::new(&ctx.transforms.gpu_buffer)),
-        ));
-        // normal matrices
-        entries.push(BindGroupEntry::new(
-            entries.len() as u32,
-            BindGroupResource::Buffer(BufferBinding::new(&ctx.transforms.normals_gpu_buffer)),
         ));
         // texture transforms
         entries.push(BindGroupEntry::new(
@@ -348,6 +358,17 @@ impl MaterialOpaqueBindGroups {
         entries.push(BindGroupEntry::new(
             entries.len() as u32,
             BindGroupResource::Buffer(BufferBinding::new(&ctx.lights.gpu_punctual_buffer)),
+        ));
+
+        // mesh_light_indices: packed u32 light indices. Slice metadata
+        // for each mesh moved into `MaterialMeshMeta.light_slice_*`
+        // fields so we save one binding (storage-buffer count, plan
+        // Option F).
+        entries.push(BindGroupEntry::new(
+            entries.len() as u32,
+            BindGroupResource::Buffer(BufferBinding::new(
+                &ctx.mesh_light_slices_gpu.indices_buffer,
+            )),
         ));
 
         let descriptor = BindGroupDescriptor::new(
@@ -524,16 +545,10 @@ async fn create_main_bind_group_layout_key(
             visibility_fragment: false,
             visibility_compute: true,
         },
-        // Transform buffer
-        BindGroupLayoutCacheKeyEntry {
-            resource: BindGroupLayoutResource::Buffer(
-                BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),
-            ),
-            visibility_vertex: false,
-            visibility_fragment: false,
-            visibility_compute: true,
-        },
-        // Normal matrices buffer
+        // Packed transforms buffer — model (mat4x4) + normal (mat3x3)
+        // in one struct (Option E). The normal matrix lives at
+        // `Transforms::NORMAL_OFFSET` inside each entry, so no separate
+        // binding for normal_matrices.
         BindGroupLayoutCacheKeyEntry {
             resource: BindGroupLayoutResource::Buffer(
                 BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),

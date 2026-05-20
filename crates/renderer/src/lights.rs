@@ -20,8 +20,16 @@ use crate::{
     AwsmRenderer, AwsmRendererLogging,
 };
 
+// Lights live in a uniform buffer (Option F of the storage-buffer-
+// reduction work — Cluster 2.1.c follow-up): the access pattern is the
+// canonical "every pixel of a wavefront reads the same light index in
+// lockstep", which is exactly what uniform memory + constant cache are
+// tuned for. Practical light count is bounded by the 64 KB uniform-max
+// limit divided by `Light::BYTE_SIZE` = 1024 lights, far above any
+// realistic scene's total light count.
+pub const MAX_PUNCTUAL_LIGHTS: usize = 1024;
 static PUNCTUAL_BUFFER_USAGE: LazyLock<BufferUsage> =
-    LazyLock::new(|| BufferUsage::new().with_storage().with_copy_dst());
+    LazyLock::new(|| BufferUsage::new().with_uniform().with_copy_dst());
 
 static INFO_BUFFER_USAGE: LazyLock<BufferUsage> =
     LazyLock::new(|| BufferUsage::new().with_uniform().with_copy_dst());
@@ -148,9 +156,15 @@ pub struct Lights {
     lights: SlotMap<LightKey, Light>,
     // We do not use DynamicUniformBuffer here because we need dense sequential access in the gpu
     // not stable offsets per-key that DynamicUniformBuffer provides (with holes, etc)
-    // instead, we rebuild a fresh Vec<u8> when the gpu is dirty
-    // however, we do need to track the size so we can resize the gpu buffer if needed
-    punctual_gpu_size: usize,
+    // instead, we rebuild a fresh Vec<u8> when the gpu is dirty.
+    //
+    // The buffer is allocated once at the uniform-max size
+    // (`MAX_PUNCTUAL_LIGHTS * Light::BYTE_SIZE` = 64 KB) and never
+    // resized — uniform-buffer bindings must reference a buffer that's
+    // at least as large as the declared binding range, and changing the
+    // size at runtime would force a bind-group recreate every time the
+    // light count changes. The wasted memory at low light counts (e.g.
+    // 64 KB for an 8-light scene) is the price for stable bindings.
     punctual_gpu_dirty: bool,
     lighting_info_gpu_dirty: bool,
 }
@@ -163,8 +177,8 @@ impl Lights {
 
     /// Creates light buffers and initializes IBL state.
     pub fn new(gpu: &AwsmRendererWebGpu, ibl: Ibl, brdf_lut: BrdfLut) -> Result<Self> {
-        // GPU size should never be 0
-        let punctual_gpu_size = Self::PUNCTUAL_LIGHT_SIZE;
+        // Fixed-size uniform allocation (see field doc). 64 KB total.
+        let punctual_gpu_size = MAX_PUNCTUAL_LIGHTS * Self::PUNCTUAL_LIGHT_SIZE;
 
         let gpu_punctual_buffer = gpu.create_buffer(
             &BufferDescriptor::new(
@@ -183,7 +197,6 @@ impl Lights {
             lights: SlotMap::with_key(),
             ibl,
             brdf_lut,
-            punctual_gpu_size,
             punctual_gpu_dirty: true,
             lighting_info_gpu_dirty: true,
             gpu_punctual_buffer,
@@ -232,7 +245,11 @@ impl Lights {
         self.lighting_info_gpu_dirty = true;
     }
 
-    /// Updates a light in place.
+    /// Updates a light in place. **Not safe for `Light` variant
+    /// changes** (Directional ↔ Point ↔ Spot) — those would desync the
+    /// shadow subsystem's cube-pool and atlas allocations. Use
+    /// [`AwsmRenderer::update_light`](crate::AwsmRenderer::update_light)
+    /// for any mutation that might flip the variant.
     pub fn update(&mut self, key: LightKey, f: impl FnOnce(&mut Light)) {
         if let Some(light) = self.lights.get_mut(key) {
             f(light);
@@ -257,6 +274,50 @@ impl Lights {
         self.lights.get(key)
     }
 
+    /// Iterates every active punctual light (point + spot — directional
+    /// lights have infinite bounds and are excluded). The per-mesh
+    /// light-list build path consumes this.
+    pub fn iter_active_punctual(&self) -> impl Iterator<Item = (LightKey, &Light)> {
+        self.lights
+            .iter()
+            .filter(|(_, light)| matches!(light, Light::Point { .. } | Light::Spot { .. }))
+    }
+
+    /// Iterate every directional light. Directional lights bypass the
+    /// per-mesh slice (they affect every mesh) and live in a small
+    /// global prefix that the shader walks unconditionally.
+    pub fn iter_directional(&self) -> impl Iterator<Item = (LightKey, &Light)> {
+        self.lights
+            .iter()
+            .filter(|(_, light)| matches!(light, Light::Directional { .. }))
+    }
+
+    /// Iterate every light, regardless of kind.
+    pub fn iter(&self) -> impl Iterator<Item = (LightKey, &Light)> {
+        self.lights.iter()
+    }
+
+    /// Total number of lights (any kind).
+    pub fn len(&self) -> usize {
+        self.lights.len()
+    }
+
+    /// Whether there are any lights of any kind.
+    pub fn is_empty(&self) -> bool {
+        self.lights.is_empty()
+    }
+
+    /// Stable index (`0..len()`) of a light within `self.lights.iter()`.
+    /// Matches the order `write_gpu` packs lights into the storage
+    /// buffer — the per-mesh slice's `mesh_light_indices[i]` reads this
+    /// to point into the packed light data.
+    pub fn index_of(&self, key: LightKey) -> Option<u32> {
+        self.lights
+            .iter()
+            .position(|(k, _)| k == key)
+            .map(|i| i as u32)
+    }
+
     /// Writes lighting buffers to the GPU if dirty.
     ///
     /// `shadow_index_for` resolves each light's shadow descriptor
@@ -276,42 +337,32 @@ impl Lights {
                 Some(
                     tracing::span!(
                         tracing::Level::INFO,
-                        "Punctual Lights Storage Buffer GPU write"
+                        "Punctual Lights Uniform Buffer GPU write"
                     )
                     .entered(),
                 )
             } else {
                 None
             };
+            // Suppress the unused-bind-groups warning at this site —
+            // we used to mark `LightsResize` here when the buffer
+            // changed size. Now the buffer is fixed at MAX_PUNCTUAL_LIGHTS
+            // so there's never a resize to broadcast.
+            let _ = bind_groups;
+
+            if self.lights.len() > MAX_PUNCTUAL_LIGHTS {
+                tracing::warn!(
+                    "{} lights exceeds MAX_PUNCTUAL_LIGHTS ({MAX_PUNCTUAL_LIGHTS}); trailing lights will be dropped this frame",
+                    self.lights.len(),
+                );
+            }
 
             let punctual_light_buffer: Vec<u8> = self
                 .lights
                 .iter()
+                .take(MAX_PUNCTUAL_LIGHTS)
                 .flat_map(|(key, light)| light.storage_buffer_data(shadow_index_for(key)))
                 .collect();
-
-            // GPU size should never be 0, so use at least PUNCTUAL_LIGHT_SIZE
-            let target_gpu_size = if punctual_light_buffer.len() > self.punctual_gpu_size {
-                // Grow with 2x headroom
-                (punctual_light_buffer.len() * 2).max(Self::PUNCTUAL_LIGHT_SIZE)
-            } else if punctual_light_buffer.len() < self.punctual_gpu_size / 2 {
-                // Shrink if using less than half
-                punctual_light_buffer.len().max(Self::PUNCTUAL_LIGHT_SIZE)
-            } else {
-                // Keep current size
-                self.punctual_gpu_size
-            };
-
-            if target_gpu_size != self.punctual_gpu_size {
-                self.gpu_punctual_buffer = gpu.create_buffer(
-                    &BufferDescriptor::new(Some("Lights"), target_gpu_size, *PUNCTUAL_BUFFER_USAGE)
-                        .into(),
-                )?;
-
-                self.punctual_gpu_size = target_gpu_size;
-
-                bind_groups.mark_create(BindGroupCreate::LightsResize);
-            }
 
             if !punctual_light_buffer.is_empty() {
                 gpu.write_buffer(
@@ -322,12 +373,6 @@ impl Lights {
                     None,
                 )?;
             }
-
-            // for (index, chunk) in punctual_light_buffer.chunks_exact(64).enumerate() {
-            //     let values =
-            //         unsafe { std::slice::from_raw_parts(chunk.as_ptr() as *const f32, 16) };
-            //     tracing::info!("{}: {:?}", index, values);
-            // }
 
             self.punctual_gpu_dirty = false;
         }
@@ -381,6 +426,40 @@ impl Light {
     /// Packed byte size for a light in the storage buffer.
     pub const BYTE_SIZE: usize = 64;
 
+    /// Conservative world-space AABB for this light's influence volume.
+    /// Returns `None` for directional lights (they have no bounded
+    /// influence — they're applied globally via the directional-prefix
+    /// path).
+    ///
+    /// Point lights: sphere centered at `position` with radius `range`.
+    /// Spot lights: sphere centered at `position` with radius `range`
+    /// (conservative — the actual spot cone is tighter, but a sphere is
+    /// a cheap correct upper bound for AABB overlap testing).
+    pub fn world_aabb(&self) -> Option<crate::bounds::Aabb> {
+        use glam::Vec3;
+        match self {
+            Light::Directional { .. } => None,
+            Light::Point { position, range, .. } => {
+                let center = Vec3::from_array(*position);
+                let extent = Vec3::splat(*range);
+                Some(crate::bounds::Aabb {
+                    min: center - extent,
+                    max: center + extent,
+                })
+            }
+            Light::Spot {
+                position, range, ..
+            } => {
+                let center = Vec3::from_array(*position);
+                let extent = Vec3::splat(*range);
+                Some(crate::bounds::Aabb {
+                    min: center - extent,
+                    max: center + extent,
+                })
+            }
+        }
+    }
+
     /// Returns a numeric tag for shader selection.
     pub fn enum_value(&self) -> f32 {
         // f32 since we aren't bitcasting, we're reading as item in packed vec4<f32>
@@ -388,6 +467,19 @@ impl Light {
             Light::Directional { .. } => 1.0,
             Light::Point { .. } => 2.0,
             Light::Spot { .. } => 3.0,
+        }
+    }
+
+    /// Stable kind discriminant used by `AwsmRenderer::update_light` to
+    /// detect light-kind changes that would desync shadow state (cube
+    /// slot for point → not-point, 2D atlas tile for directional →
+    /// not-directional). Different enum from `enum_value` because that's
+    /// for shader packing.
+    pub fn kind_discriminant(&self) -> u8 {
+        match self {
+            Light::Directional { .. } => 0,
+            Light::Point { .. } => 1,
+            Light::Spot { .. } => 2,
         }
     }
 

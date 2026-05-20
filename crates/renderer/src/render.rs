@@ -20,6 +20,7 @@ use crate::pipelines::Pipelines;
 use crate::post_process::PostProcessing;
 use crate::render_passes::RenderPasses;
 use crate::render_textures::{RenderTextureViews, RenderTextures};
+use crate::scene_spatial::SceneSpatial;
 use crate::transforms::Transforms;
 use crate::{AwsmRenderer, AwsmRendererLogging};
 
@@ -82,6 +83,18 @@ impl AwsmRenderer {
         self.meshes
             .morphs
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
+        // Per-mesh light slice path (Option F follow-up to Cluster
+        // 2.1.c). Patches slice fields into each affected mesh's
+        // MaterialMeshMeta and uploads the packed indices buffer.
+        // MUST run BEFORE `meshes.meta.write_gpu` so the slice patches
+        // land in the same meta upload.
+        self.mesh_light_slices_gpu.write_gpu(
+            &self.gpu,
+            &self.light_buckets,
+            &self.lights,
+            &mut self.meshes,
+            &mut self.bind_groups,
+        )?;
         self.meshes
             .meta
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
@@ -105,7 +118,7 @@ impl AwsmRenderer {
             &mut self.bind_groups,
             &self.camera,
             &self.lights,
-            &self.meshes,
+            &self.scene_spatial,
         )?;
         {
             let shadows = &self.shadows;
@@ -139,6 +152,7 @@ impl AwsmRenderer {
                 instances: &self.instances,
                 anti_aliasing: &self.anti_aliasing,
                 shadows: &self.shadows,
+                mesh_light_slices_gpu: &self.mesh_light_slices_gpu,
             },
             &mut self.render_passes,
             &mut self.picker,
@@ -160,6 +174,7 @@ impl AwsmRenderer {
             anti_aliasing: &self.anti_aliasing,
             post_processing: &self.post_processing,
             clear_color: &self._clear_color,
+            scene_spatial: &self.scene_spatial,
         };
 
         let renderables = self.collect_renderables(&ctx)?;
@@ -483,6 +498,9 @@ pub struct RenderContext<'a> {
     pub anti_aliasing: &'a AntiAliasing,
     pub post_processing: &'a PostProcessing,
     pub clear_color: &'a Color,
+    /// Renderer-owned spatial index. Per-pass culling (camera + shadow)
+    /// descends through this instead of walking `meshes` linearly.
+    pub scene_spatial: &'a SceneSpatial,
 }
 
 impl<'a> RenderContext<'a> {

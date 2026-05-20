@@ -207,6 +207,7 @@ impl MaterialTransparentBindGroups {
                 visibility_fragment: true,
                 visibility_compute: false,
             },
+            // lights_info uniform
             BindGroupLayoutCacheKeyEntry {
                 resource: BindGroupLayoutResource::Buffer(
                     BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
@@ -215,10 +216,11 @@ impl MaterialTransparentBindGroups {
                 visibility_fragment: true,
                 visibility_compute: false,
             },
+            // lights — uniform (matches opaque pass; same fixed-size
+            // allocation feeding both passes).
             BindGroupLayoutCacheKeyEntry {
                 resource: BindGroupLayoutResource::Buffer(
-                    BufferBindingLayout::new()
-                        .with_binding_type(BufferBindingType::ReadOnlyStorage),
+                    BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
                 ),
                 visibility_vertex: true,
                 visibility_fragment: true,

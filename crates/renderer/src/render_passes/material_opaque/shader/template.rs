@@ -56,6 +56,10 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     /// templates leave it `false` until they pull in the shadow
     /// bind-group declarations themselves.
     pub shadows_enabled: bool,
+    /// Cluster 2.1.c: switch the punctual-light walk to the per-mesh
+    /// slice fed by `mesh_light_slices` + `mesh_light_indices`. Opaque
+    /// is true; transparent stays false (plan §12 Q8 default).
+    pub use_mesh_light_slices: bool,
     /// Concatenated `wgsl_fragment()` of every enabled material — see
     /// `awsm_materials::registry::build_materials_wgsl`.
     pub materials_wgsl: String,
@@ -118,6 +122,7 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 msaa_sample_count,
                 debug,
                 shadows_enabled: true,
+                use_mesh_light_slices: true,
                 materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
                 shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
             },
@@ -233,6 +238,7 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaqueEmpty> for ShaderTemplateMaterialOpaqu
             shadow_group_index: 3,
             shadows_enabled: false,
             sscs_available: false,
+            use_mesh_light_slices: false,
             materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
             shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
         })
@@ -256,6 +262,10 @@ pub struct ShaderTemplateMaterialOpaqueEmpty {
     /// Mirror of the opaque-compute flag. The empty template never
     /// runs SSCS, but the shared shadow include needs the symbol.
     pub sscs_available: bool,
+    /// Mirror of the opaque-compute flag. The empty template never
+    /// touches the per-mesh slice path but the shared lights include
+    /// needs the symbol in scope.
+    pub use_mesh_light_slices: bool,
     /// Concatenated `wgsl_fragment()` of every enabled material — see
     /// `awsm_materials::registry::build_materials_wgsl`.
     pub materials_wgsl: String,

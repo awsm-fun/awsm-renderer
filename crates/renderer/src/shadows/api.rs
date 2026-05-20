@@ -106,6 +106,45 @@ impl AwsmRenderer {
         self.lights.clear();
     }
 
+    /// Mutates a light in place, detecting and recovering from a
+    /// **kind change** (Directional ↔ Point ↔ Spot). Without this guard
+    /// a Directional→Point flip would leave the previous cube-pool
+    /// allocation (or lack of one) attached to the new kind: a point
+    /// light without a cube slot, or a directional light still owning
+    /// one. The plan's §7.3 fix: detect the discriminant change and
+    /// re-run the shadow side's add/remove handshake.
+    ///
+    /// `params` are preserved across the kind flip so the user's
+    /// `cast = true` survives.
+    pub fn update_light<F: FnOnce(&mut Light)>(
+        &mut self,
+        key: LightKey,
+        f: F,
+    ) -> Result<(), AwsmLightError> {
+        let prev_kind = match self.lights.get(key) {
+            Some(light) => light.kind_discriminant(),
+            None => return Ok(()),
+        };
+        // Stash the authored shadow params before we touch shadow state.
+        let saved_params = self.shadows.params.get(key).cloned();
+        self.lights.update(key, f);
+        let new_kind = match self.lights.get(key) {
+            Some(light) => light.kind_discriminant(),
+            None => return Ok(()),
+        };
+        if new_kind != prev_kind {
+            // Drop every shadow-side per-light record (cube slot, throttle,
+            // record list) and reinstate the saved params under the new
+            // kind. Next `Shadows::write_gpu` allocates fresh views.
+            self.shadows.on_light_removed(key);
+            if let Some(params) = saved_params {
+                self.shadows.params.insert(key, params);
+            }
+            self.lights.mark_punctual_dirty();
+        }
+        Ok(())
+    }
+
     /// Mutates a light's shadow params in place. Convenience over the
     /// get-clone-mutate-set pattern.
     pub fn update_light_shadow<F: FnOnce(&mut LightShadowParams)>(
@@ -148,6 +187,9 @@ impl AwsmRenderer {
                 .set_receive_shadows(key, flags.receive)
                 .map_err(|_| AwsmShadowError::UnknownMesh)?;
         }
+        // Mirror the flag flip into the spatial index so per-view shadow
+        // filters see the latest `cast_shadows` / `receive_shadows`.
+        self.sync_spatial_for_mesh(key);
         Ok(())
     }
 

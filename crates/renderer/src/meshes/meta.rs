@@ -191,6 +191,54 @@ impl MeshMeta {
         Ok(())
     }
 
+    /// In-place patch of the per-mesh light slice (`light_slice_offset`
+    /// + `light_slice_count`) inside the material metadata. Called once
+    /// per frame, per mesh-with-overlapping-lights, by the light-bucket
+    /// upload path (Option F follow-up to Cluster 2.1.c).
+    ///
+    /// Returns `Ok(false)` if the mesh has no meta slot yet — callers
+    /// (per-frame bucket walk) treat that as "skip this mesh", since a
+    /// mesh without a meta slot can't be shaded anyway. `Ok(true)`
+    /// means the patch landed.
+    pub fn set_mesh_light_slice(&mut self, mesh_key: MeshKey, offset: u32, count: u32) -> bool {
+        if !self.material_buffers.contains_key(mesh_key) {
+            return false;
+        }
+        let mut bytes = [0u8; 8];
+        bytes[0..4].copy_from_slice(&offset.to_le_bytes());
+        bytes[4..8].copy_from_slice(&count.to_le_bytes());
+        self.material_buffers.update_offset(
+            mesh_key,
+            material_meta::MATERIAL_MESH_META_LIGHT_SLICE_OFFSET,
+            &bytes,
+        );
+        self.material_dirty = true;
+        true
+    }
+
+    /// Zeros the per-mesh light-slice fields (`light_slice_offset` +
+    /// `light_slice_count`) for every mesh that has a meta slot.
+    /// Called at the top of each frame's light-slice rebuild so meshes
+    /// that lost all overlapping lights this frame don't keep their
+    /// stale `count`. The dirty-range mechanism in
+    /// `DynamicUniformBuffer` coalesces the per-mesh patches at upload
+    /// time, so this is one logical write per mesh rather than one
+    /// physical `writeBuffer` call per mesh.
+    pub fn zero_all_mesh_light_slices(&mut self) {
+        let zero_bytes = [0u8; 8];
+        let keys: Vec<MeshKey> = self.material_buffers.keys().collect();
+        for key in keys {
+            self.material_buffers.update_offset(
+                key,
+                material_meta::MATERIAL_MESH_META_LIGHT_SLICE_OFFSET,
+                &zero_bytes,
+            );
+        }
+        if !self.material_buffers.is_empty() {
+            self.material_dirty = true;
+        }
+    }
+
     /// Removes mesh metadata entries.
     pub fn remove(&mut self, mesh_key: MeshKey) {
         if self.geometry_buffers.remove(mesh_key) {

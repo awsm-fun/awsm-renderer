@@ -172,10 +172,29 @@ impl Skins {
             .ok_or(AwsmSkinError::SkinNotFound(skin_key))
     }
 
+    /// Iterates every live `SkinKey`. Cheap — used by
+    /// `Meshes::update_world`'s skinning-LOD gate to discover the set
+    /// of skins that exist this frame.
+    pub fn iter_skin_keys(&self) -> impl Iterator<Item = SkinKey> + '_ {
+        self.skeleton_transforms.keys()
+    }
+
     /// Updates skin matrices from dirty joint transforms.
-    pub fn update_transforms(&mut self, dirty_skin_joints: HashMap<TransformKey, Mat4>) {
+    ///
+    /// `should_update_skin` is consulted once per `SkinKey` and lets the
+    /// caller throttle expensive skin matrix refreshes for distant /
+    /// low-coverage characters (Cluster 8.3). Default predicate `|_| true`
+    /// preserves the previous behaviour.
+    pub fn update_transforms(
+        &mut self,
+        dirty_skin_joints: HashMap<TransformKey, Mat4>,
+        mut should_update_skin: impl FnMut(SkinKey) -> bool,
+    ) {
         // different skins can theoretically share the same joint, so, iterate over them all
         for (skin_key, transform_keys) in self.skeleton_transforms.iter() {
+            if !should_update_skin(skin_key) {
+                continue;
+            }
             for (index, transform_key) in transform_keys.iter().enumerate() {
                 if let Some(world_mat) = dirty_skin_joints.get(transform_key) {
                     // could cache this for revisited joints, but, it's not a huge deal - might even be faster to redo the math

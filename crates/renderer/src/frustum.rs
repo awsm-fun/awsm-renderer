@@ -5,13 +5,13 @@ use glam::{Mat4, Vec3, Vec4};
 use crate::bounds::Aabb;
 
 #[derive(Debug, Clone, Copy)]
-struct Plane {
-    normal: Vec3,
-    d: f32,
+pub(crate) struct Plane {
+    pub(crate) normal: Vec3,
+    pub(crate) d: f32,
 }
 
 impl Plane {
-    fn from_row(row: Vec4) -> Self {
+    pub(crate) fn from_row(row: Vec4) -> Self {
         let normal = Vec3::new(row.x, row.y, row.z);
         let d = row.w;
         let len = normal.length();
@@ -25,7 +25,7 @@ impl Plane {
         }
     }
 
-    fn distance(&self, point: Vec3) -> f32 {
+    pub(crate) fn distance(&self, point: Vec3) -> f32 {
         self.normal.dot(point) + self.d
     }
 }
@@ -33,7 +33,7 @@ impl Plane {
 /// View frustum planes extracted from a view-projection matrix.
 #[derive(Debug, Clone, Copy)]
 pub struct Frustum {
-    planes: [Plane; 6],
+    pub(crate) planes: [Plane; 6],
 }
 
 impl Frustum {

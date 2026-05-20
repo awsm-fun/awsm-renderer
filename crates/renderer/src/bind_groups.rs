@@ -39,6 +39,10 @@ pub struct BindGroupRecreateContext<'a> {
     pub instances: &'a Instances,
     pub anti_aliasing: &'a AntiAliasing,
     pub shadows: &'a Shadows,
+    /// Per-mesh light-slice storage buffers (Cluster 2.1.c). Bound at
+    /// group(1) bindings 2/3 of the material-opaque + material-transparent
+    /// shading passes.
+    pub mesh_light_slices_gpu: &'a crate::light_buckets::MeshLightSlicesGpu,
 }
 
 /// Reasons to recreate bind groups.
@@ -51,7 +55,6 @@ pub enum BindGroupCreate {
     IblTextures,
     EnvironmentSkyboxCreate,
     TransformsResize,
-    TransformNormalsResize,
     GeometryMorphTargetWeightsResize,
     GeometryMorphTargetValuesResize,
     MaterialMorphTargetWeightsResize,
@@ -73,6 +76,10 @@ pub enum BindGroupCreate {
     /// Shadow atlas, EVSM atlas, cube array, or descriptors buffer was recreated;
     /// the opaque + transparent shading bind groups must re-bind the new resources.
     ShadowsResourcesChange,
+    /// `mesh_light_slices` / `mesh_light_indices` GPU buffers were
+    /// reallocated (per-frame grow path). The lights bind groups
+    /// (opaque + transparent) must re-bind the new buffer handles.
+    MeshLightSlicesResize,
 }
 
 /// Tracks pending bind group recreations.
@@ -197,10 +204,6 @@ impl BindGroups {
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
                     functions_to_call.insert(FunctionToCall::TransparentLights);
                 }
-                BindGroupCreate::TransformNormalsResize => {
-                    functions_to_call.insert(FunctionToCall::OpaqueMain);
-                    functions_to_call.insert(FunctionToCall::TransparentMain);
-                }
                 BindGroupCreate::MaterialMorphTargetWeightsResize => {
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
                     functions_to_call.insert(FunctionToCall::TransparentMain);
@@ -235,6 +238,12 @@ impl BindGroups {
                 BindGroupCreate::ShadowsResourcesChange => {
                     functions_to_call.insert(FunctionToCall::OpaqueShadows);
                     functions_to_call.insert(FunctionToCall::TransparentShadows);
+                }
+                BindGroupCreate::MeshLightSlicesResize => {
+                    // Buffers are bound on the lights bind group of
+                    // both shading passes.
+                    functions_to_call.insert(FunctionToCall::OpaqueLights);
+                    functions_to_call.insert(FunctionToCall::TransparentLights);
                 }
             }
         }

@@ -130,6 +130,225 @@ fn spot_falloff(inner_cos: f32, outer_cos: f32, cos_l: f32) -> f32 {
     return smoothed * smoothed;
 }
 
+{% if use_mesh_light_slices %}
+// Cluster 2.1.c: per-mesh-sliced light walk. Replaces the flat
+// `for i in 0..n_lights` punctual walk with an inner loop driven by
+// `mesh_light_slices[meta_index]`, so each pixel only shades the
+// lights whose AABB overlaps its mesh. Directional lights stay on the
+// flat walk (they affect every mesh; no slice would be tighter).
+fn apply_lighting_per_mesh(
+    material_color: PbrMaterialColor,
+    surface_to_camera: vec3<f32>,
+    world_position: vec3<f32>,
+    lights_info: LightsInfo,
+    receive_shadows: u32,
+    // Per-mesh slice (Option F follow-up): the caller already has
+    // these on hand from its `material_mesh_metas[meta_index]` fetch,
+    // so we take them as parameters instead of refetching.
+    slice_offset: u32,
+    slice_count: u32,
+) -> vec3<f32> {
+    var color = vec3<f32>(0.0);
+
+    {% if has_lighting_ibl() %}
+        color = brdf_ibl(
+            material_color,
+            material_color.normal,
+            surface_to_camera,
+            ibl_filtered_env_tex,
+            ibl_filtered_env_sampler,
+            ibl_irradiance_tex,
+            ibl_irradiance_sampler,
+            brdf_lut_tex,
+            brdf_lut_sampler,
+            lights_info.ibl
+        );
+    {% endif %}
+
+    {% if has_lighting_punctual() %}
+        {% if shadows_enabled %}
+            let view_z_for_shadow = -(camera_raw.view * vec4<f32>(world_position, 1.0)).z;
+        {% endif %}
+
+        // Directional walk — directional lights have no bounded AABB
+        // so they never live in the per-mesh slice. We still scan the
+        // flat list, but skip punctuals (kind != 1u) since the slice
+        // owns them.
+        for(var i = 0u; i < lights_info.n_lights; i = i + 1u) {
+            let light = get_light(i);
+            if light.kind != 1u {
+                continue;
+            }
+            let light_brdf = light_to_brdf(light, material_color.normal, world_position);
+            let direct = brdf_direct(material_color, light_brdf, surface_to_camera);
+            {% if shadows_enabled %}
+                var visibility: f32 = 1.0;
+                if receive_shadows != 0u {
+                    visibility = sample_shadow_directional(
+                        light.shadow_index,
+                        world_position,
+                        material_color.normal,
+                        view_z_for_shadow,
+                    );
+                    if light.shadow_index != SHADOW_INDEX_NONE {
+                        let sscs_dir = normalize(-light.direction);
+                        visibility = visibility * apply_sscs(world_position, sscs_dir);
+                    }
+                }
+                color += direct * visibility;
+            {% else %}
+                color += direct;
+            {% endif %}
+        }
+
+        // Per-mesh punctual walk. The slice metadata
+        // (`light_slice_offset` + `light_slice_count`) lives inside the
+        // per-mesh `MaterialMeshMeta`, so the caller hands it to us
+        // directly — no second storage-buffer fetch.
+        for(var i = 0u; i < slice_count; i = i + 1u) {
+            let light_index = mesh_light_indices[slice_offset + i];
+            let light = get_light(light_index);
+            // Defensive — the CPU side already filters out directional
+            // lights from the slice (their AABB is unbounded), but
+            // guard against bucket-rebuild bugs that would route one in.
+            if light.kind == 1u {
+                continue;
+            }
+            let light_brdf = light_to_brdf(light, material_color.normal, world_position);
+            let direct = brdf_direct(material_color, light_brdf, surface_to_camera);
+            {% if shadows_enabled %}
+                var visibility: f32 = 1.0;
+                if receive_shadows != 0u {
+                    visibility = sample_shadow_directional(
+                        light.shadow_index,
+                        world_position,
+                        material_color.normal,
+                        view_z_for_shadow,
+                    );
+                }
+                color += direct * visibility;
+            {% else %}
+                color += direct;
+            {% endif %}
+        }
+
+        {% if shadows_enabled %}
+            if lights_info.n_lights > 0u {
+                color = debug_cascade_tint(
+                    color,
+                    get_light(0u).shadow_index,
+                    world_position,
+                    view_z_for_shadow,
+                );
+            }
+        {% endif %}
+    {% endif %}
+
+    return color;
+}
+
+// Transmission variant of `apply_lighting_per_mesh` — same slice walk,
+// but IBL contribution uses the transmission-aware BRDF.
+fn apply_lighting_per_mesh_with_transmission(
+    material_color: PbrMaterialColor,
+    surface_to_camera: vec3<f32>,
+    world_position: vec3<f32>,
+    lights_info: LightsInfo,
+    transmission_background: vec3<f32>,
+    receive_shadows: u32,
+    slice_offset: u32,
+    slice_count: u32,
+) -> vec3<f32> {
+    var color = vec3<f32>(0.0);
+
+    {% if has_lighting_ibl() %}
+        color = brdf_ibl_with_transmission(
+            material_color,
+            material_color.normal,
+            surface_to_camera,
+            ibl_filtered_env_tex,
+            ibl_filtered_env_sampler,
+            ibl_irradiance_tex,
+            ibl_irradiance_sampler,
+            brdf_lut_tex,
+            brdf_lut_sampler,
+            lights_info.ibl,
+            transmission_background
+        );
+    {% endif %}
+
+    {% if has_lighting_punctual() %}
+        {% if shadows_enabled %}
+            let view_z_for_shadow = -(camera_raw.view * vec4<f32>(world_position, 1.0)).z;
+        {% endif %}
+
+        for(var i = 0u; i < lights_info.n_lights; i = i + 1u) {
+            let light = get_light(i);
+            if light.kind != 1u {
+                continue;
+            }
+            let light_brdf = light_to_brdf(light, material_color.normal, world_position);
+            let direct = brdf_direct(material_color, light_brdf, surface_to_camera);
+            {% if shadows_enabled %}
+                var visibility: f32 = 1.0;
+                if receive_shadows != 0u {
+                    visibility = sample_shadow_directional(
+                        light.shadow_index,
+                        world_position,
+                        material_color.normal,
+                        view_z_for_shadow,
+                    );
+                    if light.shadow_index != SHADOW_INDEX_NONE {
+                        let sscs_dir = normalize(-light.direction);
+                        visibility = visibility * apply_sscs(world_position, sscs_dir);
+                    }
+                }
+                color += direct * visibility;
+            {% else %}
+                color += direct;
+            {% endif %}
+        }
+
+        for(var i = 0u; i < slice_count; i = i + 1u) {
+            let light_index = mesh_light_indices[slice_offset + i];
+            let light = get_light(light_index);
+            if light.kind == 1u {
+                continue;
+            }
+            let light_brdf = light_to_brdf(light, material_color.normal, world_position);
+            let direct = brdf_direct(material_color, light_brdf, surface_to_camera);
+            {% if shadows_enabled %}
+                var visibility: f32 = 1.0;
+                if receive_shadows != 0u {
+                    visibility = sample_shadow_directional(
+                        light.shadow_index,
+                        world_position,
+                        material_color.normal,
+                        view_z_for_shadow,
+                    );
+                }
+                color += direct * visibility;
+            {% else %}
+                color += direct;
+            {% endif %}
+        }
+
+        {% if shadows_enabled %}
+            if lights_info.n_lights > 0u {
+                color = debug_cascade_tint(
+                    color,
+                    get_light(0u).shadow_index,
+                    world_position,
+                    view_z_for_shadow,
+                );
+            }
+        {% endif %}
+    {% endif %}
+
+    return color;
+}
+{% endif %}
+
 // Apply all enabled lighting to a material and return the final color
 fn apply_lighting(
     material_color: PbrMaterialColor,
