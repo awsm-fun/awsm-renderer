@@ -275,11 +275,19 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
     let near = POINT_SHADOW_NEAR;
     let ndc_z = (range / (range - near)) * (1.0 - near / max(view_depth, near));
 
-    // Slope-aware constant bias. Tight enough not to Peter-Pan
-    // perpendicular surfaces; wide enough that grazing-angle plane
-    // self-shadow doesn't reappear at the falloff radius.
+    // Slope-aware constant bias. `n_dot_dir` floor at 0.05 keeps
+    // grazing surfaces from running away to huge bias values
+    // (`bias → ∞` as `n_dot_dir → 0`); the user-authored
+    // `desc.bias_params.x` (the per-light `depth_bias`) is trusted
+    // as-is. An earlier floor of `max(..., 0.001)` here silently
+    // overrode any inspector value smaller than 0.001 — that was
+    // ~10× the NDC gap between a receiver and a box's back face at
+    // a typical 4 m point-light distance, so contacts could never
+    // close even after lowering `depth_bias`. If you DO want a
+    // global floor for some project, gate it on
+    // `ShadowsConfig::min_point_depth_bias` (not present today).
     let n_dot_dir = abs(dot(dir, world_normal));
-    let bias = max(desc.bias_params.x, 0.001) / max(n_dot_dir, 0.05);
+    let bias = desc.bias_params.x / max(n_dot_dir, 0.05);
     let ref_depth = clamp(ndc_z, 0.0, 1.0) - bias;
     let hardness = desc.bias_params.z;
 
@@ -350,7 +358,9 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
         let tap_ndc_z =
             (range / (range - near)) * (1.0 - near / max(tap_view_depth, near));
         let tap_n_dot_dir = abs(dot(tap_dir, world_normal));
-        let tap_bias = max(desc.bias_params.x, 0.001) / max(tap_n_dot_dir, 0.05);
+        // Same trust-the-author policy as the hard branch above —
+        // no floor on `desc.bias_params.x`.
+        let tap_bias = desc.bias_params.x / max(tap_n_dot_dir, 0.05);
         let tap_ref = clamp(tap_ndc_z, 0.0, 1.0) - tap_bias;
         sum += textureSampleCompareLevel(
             shadow_cube_array,

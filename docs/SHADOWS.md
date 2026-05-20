@@ -247,6 +247,184 @@ behind `sscs_available = false` on the transparent pipeline.
   so it doubles as the EVSM-is-actually-running indicator. Useful
   for tuning `cascade_split_lambda` and the per-cascade resolution.
 
+### Troubleshooting & bias tuning
+
+Almost every shadow problem someone reports falls into one of the
+seven shapes below. Read the **scale-aware-bias** preamble first
+because half the others reduce to "your biases are wrong for your
+scene scale."
+
+#### Scale-aware bias defaults
+
+`depth_bias` and `normal_bias` are not unit-free. They scale with
+your world:
+
+| Scene scale (typical extent)        | `depth_bias` | `normal_bias` |
+| ----------------------------------- | ------------ | ------------- |
+| **Small** (1–10 m worlds, indoor)   | `0.0001`     | `0.001`       |
+| **Medium** (10–100 m, default)      | `0.0005`     | `0.05`        |
+| **Large** (100+ m, open world)      | `0.001`      | `0.1`         |
+
+`LightShadowParams::default()` ships the **Medium** values because
+they suit the majority of scenes the editor will see. If your project
+authors at a different world scale, override these per-light or
+adjust the defaults in
+[`shadows/light_shadow.rs`](../crates/renderer/src/shadows/light_shadow.rs).
+
+The two have completely different jobs — don't conflate them:
+
+* **`depth_bias`** is an NDC-space tolerance subtracted from the
+  receiver's projected depth before comparing to the shadow map. It
+  exists so a surface's depth comparison against itself doesn't
+  flicker between "shadowed / lit" under floating-point noise.
+* **`normal_bias`** is a *world-space* offset along the receiver's
+  surface normal applied **before** projecting into shadow space.
+  It pushes the receiver toward the light so its projected position
+  no longer self-intersects.
+
+`depth_bias` fights the "binary value flipping" failure; `normal_bias`
+fights the "geometry-too-thin-vs-bias" failure. They're not
+interchangeable.
+
+#### Peter-panning (gap between caster and its shadow on the ground)
+
+**Symptom:** the shadow looks "detached" — there's a strip of lit
+ground between the caster's contact point and where the shadow
+actually starts.
+
+**Diagnosis ladder:**
+
+1. **`normal_bias` too large for scene scale.** For a 1 m cube under
+   a 4 m point light, a `normal_bias` of `0.05` (5 cm) shifts the
+   receiver's projected angle enough that the cube's silhouette
+   sample "misses" the box. Reduce to scale-appropriate (see table
+   above). Drop to `0` momentarily to confirm — if the gap closes,
+   `normal_bias` was the cause.
+2. **`depth_bias` too large.** If the gap persists at `normal_bias =
+   0`, the depth comparison is missing because the receiver's projected
+   depth minus `depth_bias` is *smaller* than the caster's stored depth.
+   Lower `depth_bias` until the gap closes. Watch for **acne**
+   reappearing on the caster itself; that's the trade-off floor.
+3. **Receiver right behind a thin caster** (point lights only). The
+   cube map stores the caster's *back* face (front-face culling), so
+   for a receiver one cube-edge length behind the box, the depth gap
+   is tiny and any `depth_bias > gap_size` peter-pans. This is the
+   geometric limit; you can either accept a hairline gap on Hard
+   sampling, switch the light to Soft (PCF blurs over the gap), or
+   lower the light's `range` so depth precision is finer in the
+   relevant window.
+
+#### Shadow acne (zebra stripes on a lit surface)
+
+**Symptom:** stripe or moiré pattern on surfaces that *should* be
+lit — the caster self-shadows because its depth comparison against
+its own shadow-map texel flickers.
+
+**Diagnosis ladder:**
+
+1. **`depth_bias` too small.** Bump it up. Usually one decimal place
+   at a time.
+2. **Grazing-angle acne only.** If acne appears only on surfaces
+   nearly parallel to the light direction, bump `normal_bias` instead
+   — the shader divides `depth_bias` by `max(n_dot_dir, 0.05)` so
+   grazing surfaces already get an amplified bias, but `normal_bias`
+   addresses the geometric cause more directly.
+3. **Acne survives even at `depth_bias = 0.001`.** Likely a
+   precision problem — see the **z-fighting on flat receivers** entry.
+
+#### Z-fighting on huge flat receivers
+
+**Symptom:** flickering speckle pattern on the receiver, especially
+when the camera moves. Often shows up on a 10 km ground plane with
+no subdivisions.
+
+**Cause:** vertex coordinates far from the origin (±5 km) chew up
+floating-point precision. Triangle interpolation across the giant
+quad produces sub-mm depth wobble that exceeds any reasonable
+`depth_bias`.
+
+**Fix (preferred):** add **subdivisions** to the plane (Plane primitive
+has `subdivisions_x / _z` knobs). Shrinking each triangle scales
+the interpolation error down proportionally. A 100×100 subdivided
+ground plane behaves correctly where a single quad of the same
+extent flickers.
+
+**Fix (alternative):** keep scene scale modest (single-digit km
+maximum). Origin-snap the world each frame if you really need
+unbounded extents (advanced, not implemented here).
+
+#### Shadow shimmer / swimming under camera motion
+
+**Symptom:** shadow edges visibly crawl or wobble as the camera
+moves.
+
+**Diagnosis ladder:**
+
+1. **Far cascade catching up.** If `far_cascade_update_rate >
+   EveryFrame`, the far cascade only refreshes every N frames; on
+   the catch-up frame it can pop visibly. Set to `EveryFrame` for
+   that light if the pop is unacceptable.
+2. **Texel-snap working as designed.** The cascade is pinned to a
+   texel grid (rotation-invariant, translation-stable); small
+   sub-texel shifts as the camera translates are *not* a bug. If
+   the swim is more than ~1 texel, file as a regression.
+3. **SSCS hashing on screen coordinates.** Fixed in this branch — if
+   you see jitter only with `sscs_enabled = true`, force-reload the
+   page to bust the shader cache.
+
+#### Shadow disappears entirely on one light
+
+**Symptom:** a specific light's shadow vanishes; other lights are
+fine.
+
+**Diagnosis ladder:**
+
+1. **`cast_shadows` = `false`** on the caster mesh, or
+   **`receive_shadows` = `false`** on the receiver. The mesh
+   inspector shows both toggles.
+2. **`max_distance` shorter than receiver distance.** The light's
+   shadow fades over `CASCADE_BLEND = 0.5` of the final cascade and
+   goes fully lit at `max_distance`. Receivers past that distance
+   are by-design unshadowed by this light.
+3. **View-slot budget exhausted.** `MAX_SHADOW_VIEWS = 96`. A point
+   light burns 6 view slots; a directional with 4 cascades burns 4;
+   a spot 1. The 17th point light at default config silently drops
+   its shadow with a console warn. Check `tracing` output for
+   `shadow descriptor / view budget exhausted (point needs 1 + 6)`
+   or `directional needs N`.
+4. **Cube-pool slot exhausted.** Default `max_point_shadows = 8`. If
+   more point lights have `cast = true` than the pool holds, the
+   excess silently drops with `point-light shadow cube pool
+   exhausted` in the console.
+
+#### PCSS edges look like noise / staircase
+
+**Symptom:** the soft penumbra has a noisy or stepped texture
+instead of a smooth fall-off.
+
+**Cause:** `pcss_penumbra_scale` is widening the variable kernel
+beyond the cascade's atlas tile, where blocker-search taps hit the
+tile clamp.
+
+**Fix:** reduce `pcss_penumbra_scale` (try `1.0` and work up).
+Confirm with `debug_cascade_colors` that the receiver isn't right at
+a cascade boundary where two PCSS kernels overlap.
+
+#### Phantom double / mirrored shadow on point lights
+
+**Symptom:** the shadow appears in *two* places — a real one and a
+mirrored ghost on the opposite side of the caster.
+
+**Cause:** stale shader cache from before the cube Y-flip + CW
+winding fix landed.
+
+**Fix:** force a full shader rebuild
+(`cargo clean -p awsm-renderer`, then rebuild the editor). The
+fix lives in [`shadows/state.rs`](../crates/renderer/src/shadows/state.rs)
+(search for `y_flip`) and
+[`shadows/helpers.rs`](../crates/renderer/src/shadows/helpers.rs)
+(search for `CullMode::Front` + the cube_face front-face override).
+
 ### Testing EVSM visually
 
 The default `evsm_cutoff = LastCascade` promotes only the
@@ -271,22 +449,6 @@ Recipe for an unambiguous EVSM-vs-PCF demo:
 5. Don't forget to flip `debug_cascade_colors = off` when done —
    the warm tint masks the actual shadow output, which is what you
    normally care about.
-* **Shadow shimmers under camera motion** → the texel-snap is working,
-  but with `far_cascade_update_rate > EveryFrame` you'll see drift
-  catch-up jumps. Set the rate back to `EveryFrame` for that light.
-* **Phantom doubled shadow on point lights** → very likely a stale
-  shader cache; force a full rebuild. The cube Y-flip fix is in
-  [shadows/mod.rs](../crates/renderer/src/shadows/mod.rs) and should
-  produce single coherent shadows for all `up=-Y` cube face configs.
-* **Peter Panning** (shadow detached from object) → bump `normal_bias`.
-  `depth_bias` is the wrong knob for this — it controls comparison
-  tolerance, not receiver offset.
-* **Shadow acne** (zebra stripes on a lit surface) → bump
-  `depth_bias` slightly. If acne shows up only at grazing angles,
-  bump `normal_bias` instead.
-* **PCSS edges look like noise** → reduce `pcss_penumbra_scale`.
-  Higher values widen the kernel beyond the cascade's tile, where
-  the blocker-search hits clamped texels.
 
 ## Known limits / deferred work
 
