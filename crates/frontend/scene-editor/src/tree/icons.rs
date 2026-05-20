@@ -26,7 +26,20 @@ pub fn for_kind(kind: &NodeKind) -> Dom {
         NodeKind::Line(_) => line_icon(),
         NodeKind::Sprite(_) => sprite_icon(),
         NodeKind::ParticleEmitter(_) => particle_icon(),
+        NodeKind::Decal(_) => decal_icon(),
     }
+}
+
+fn decal_icon() -> Dom {
+    icon(
+        "#A78BFA",
+        &[
+            // Cube outline (front + back face)
+            "M3 6 L8 4 L13 6 L13 11 L8 13 L3 11 Z",
+            "M3 6 L8 8 L13 6",
+            "M8 8 L8 13",
+        ],
+    )
 }
 
 fn primitive_icon() -> Dom {

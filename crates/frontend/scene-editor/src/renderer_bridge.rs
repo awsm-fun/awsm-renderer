@@ -177,6 +177,9 @@ fn render_one_frame() {
         // light. Extracted to a separate function so Phase 2 can add logic
         // without touching the render loop body.
         sync_lights_pre_render(renderer);
+        // Mirror: push each Decal node's world transform into the
+        // matching runtime decal (Cluster 6.4 / §16.4.B).
+        sync_decals_pre_render(renderer);
 
         // B-2: rebuild every editor-only overlay wireframe (collider
         // shapes, camera frustums, selection origin gizmos, selection
@@ -194,6 +197,46 @@ fn render_one_frame() {
     set_raf(gloo_render::request_animation_frame(move |_ts| {
         render_one_frame();
     }));
+}
+
+/// Push every Decal node's current world transform / texture ref /
+/// alpha into the runtime decal table. The runtime API (`update_decal`)
+/// takes a closure over `&mut Decal`; we call `Decal::new` inside so
+/// the inverse_transform + world_aabb cache is rebuilt in lockstep
+/// with the new transform.
+fn sync_decals_pre_render(renderer: &mut awsm_renderer::AwsmRenderer) {
+    let bridge_handle = bridge();
+    let entries: Vec<Arc<RendererNode>> = bridge_handle
+        .nodes
+        .lock()
+        .unwrap()
+        .values()
+        .cloned()
+        .collect();
+
+    for entry in entries {
+        let decal_key = *entry.decal_key.lock().unwrap();
+        let Some(decal_key) = decal_key else {
+            continue;
+        };
+        let world = match renderer.transforms.get_world(entry.transform_key) {
+            Ok(m) => *m,
+            Err(_) => continue,
+        };
+        let kind = entry.node.kind.get_cloned();
+        let crate::scene::NodeKind::Decal(cfg) = kind else {
+            continue;
+        };
+        let visible = *entry.effective_visible.lock().unwrap();
+        // Hidden decals contribute zero — easier than removing /
+        // re-inserting on every eye-toggle flip.
+        let alpha = if visible { cfg.alpha } else { 0.0 };
+        let texture_index =
+            crate::renderer_bridge::node_sync::decal_texture_index(&cfg);
+        renderer.update_decal(decal_key, |decal| {
+            *decal = awsm_renderer::decals::Decal::new(world, texture_index, alpha);
+        });
+    }
 }
 
 fn sync_lights_pre_render(renderer: &mut awsm_renderer::AwsmRenderer) {

@@ -61,6 +61,10 @@ pub struct RendererNode {
     pub line_keys: Mutex<Vec<awsm_renderer::render_passes::lines::LineKey>>,
     /// `Some` if this node is currently a Light; `None` otherwise.
     pub light_key: Mutex<Option<awsm_renderer::lights::LightKey>>,
+    /// `Some` if this node is currently a Decal; `None` otherwise.
+    /// The per-frame `sync_decals_pre_render` reads this to push the
+    /// node's current world transform via `AwsmRenderer::update_decal`.
+    pub decal_key: Mutex<Option<awsm_renderer::decals::DecalKey>>,
     /// `node.visible` ANDed with every ancestor's visible. Updated by
     /// `apply_visibility_subtree` whenever any ancestor or this node
     /// flips its own `visible`. Read by the per-frame light + collision
@@ -99,6 +103,7 @@ impl RendererNode {
             last_applied_kind: Mutex::new(None),
             line_keys: Mutex::new(Vec::new()),
             light_key: Mutex::new(None),
+            decal_key: Mutex::new(None),
             effective_visible: Mutex::new(true),
             asset_loader: AsyncLoader::new(),
             tasks: Mutex::new(Vec::new()),
@@ -350,10 +355,14 @@ async fn remove_node(node_id: NodeId) {
     let line_keys: Vec<awsm_renderer::render_passes::lines::LineKey> =
         std::mem::take(&mut *entry.line_keys.lock().unwrap());
     let light_key = entry.light_key.lock().unwrap().take();
+    let decal_key = entry.decal_key.lock().unwrap().take();
 
     with_renderer_mut(|r| {
         if let Some(key) = light_key {
             r.remove_light(key);
+        }
+        if let Some(key) = decal_key {
+            r.remove_decal(key);
         }
         for mesh in sub_meshes {
             r.remove_mesh(mesh);
@@ -582,6 +591,7 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
     // a node's kind at runtime doesn't leak sub-transforms/meshes / lights.
     clear_model_instance(&entry).await;
     clear_light(&entry).await;
+    clear_decal(&entry).await;
     clear_lines(&entry).await;
     super::particles_sync::forget(entry.node_id).await;
 
@@ -610,6 +620,7 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
         }
         NodeKind::Light(cfg) => apply_kind_light(entry, cfg).await,
         NodeKind::Model(model_ref) => apply_kind_model(entry, model_ref),
+        NodeKind::Decal(cfg) => apply_kind_decal(entry, cfg).await,
     }
 }
 
@@ -882,6 +893,62 @@ async fn clear_light(entry: &Arc<RendererNode>) {
     let key = entry.light_key.lock().unwrap().take();
     if let Some(key) = key {
         with_renderer_mut(move |r| r.remove_light(key)).await;
+    }
+}
+
+async fn clear_decal(entry: &Arc<RendererNode>) {
+    let key = entry.decal_key.lock().unwrap().take();
+    if let Some(key) = key {
+        with_renderer_mut(move |r| {
+            r.remove_decal(key);
+        })
+        .await;
+    }
+}
+
+/// Decal kind — inserts a runtime decal at identity transform; the
+/// per-frame `sync_decals_pre_render` pushes the actual world transform
+/// (so identity here is just a placeholder until the next tick).
+async fn apply_kind_decal(entry: Arc<RendererNode>, cfg: awsm_scene_schema::DecalConfig) {
+    *entry.asset_id.lock().unwrap() = None;
+    entry.node.asset_status.set(AssetStatus::Idle);
+    let texture_index = decal_texture_index(&cfg);
+    let alpha = cfg.alpha;
+    let key = with_renderer_mut(move |r| {
+        r.insert_decal(glam::Mat4::IDENTITY, texture_index, alpha)
+    })
+    .await;
+    match key {
+        Ok(key) => {
+            *entry.decal_key.lock().unwrap() = Some(key);
+        }
+        Err(err) => {
+            tracing::warn!("insert_decal failed: {err:?}");
+        }
+    }
+}
+
+/// Resolve a `DecalConfig`'s texture ref through the asset table /
+/// texture cache to the packed `texture_index` the decal compute pass
+/// expects (`array_index * 64 + layer_index`). Returns `0` if the
+/// texture isn't uploaded yet — the decal stays inert with the
+/// fallback magenta until the texture lands.
+pub(crate) fn decal_texture_index(cfg: &awsm_scene_schema::DecalConfig) -> u32 {
+    let Some(tex_ref) = cfg.texture else {
+        return 0;
+    };
+    let Some(texture_key) =
+        crate::renderer_bridge::texture_cache::lookup(tex_ref.0)
+    else {
+        return 0;
+    };
+    let handle = renderer_handle();
+    let Some(renderer) = handle.try_lock() else {
+        return 0;
+    };
+    match renderer.textures.get_entry(texture_key) {
+        Ok(entry) => (entry.array_index as u32) * 64 + (entry.layer_index as u32),
+        Err(_) => 0,
     }
 }
 

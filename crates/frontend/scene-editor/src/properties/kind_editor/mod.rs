@@ -5,6 +5,7 @@
 
 pub mod camera;
 pub mod curve;
+pub mod decal;
 pub mod instances;
 pub mod light_shadow;
 pub mod line;

@@ -62,6 +62,7 @@ pub(super) fn render_insert_row() -> Dom {
             ("Line", Arc::new(actions::insert::line)),
             ("Sprite", Arc::new(actions::insert::sprite)),
             ("Particle Emitter", Arc::new(actions::insert::particle)),
+            ("Decal", Arc::new(actions::insert::decal)),
             ("Shared Mesh", Arc::new(actions::insert::mesh)),
         ]))
         // Shared assets — distinct from node insertions because they

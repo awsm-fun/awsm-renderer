@@ -78,6 +78,7 @@ impl Scene {
                     NodeKind::Line(_) => stats.lines += 1,
                     NodeKind::Sprite(_) => stats.sprites += 1,
                     NodeKind::ParticleEmitter(_) => stats.particles += 1,
+                    NodeKind::Decal(_) => stats.decals += 1,
                 }
                 let children = node.children.lock_ref();
                 walk(children.as_slice(), stats);
@@ -105,6 +106,7 @@ pub struct SceneStats {
     pub lines: usize,
     pub sprites: usize,
     pub particles: usize,
+    pub decals: usize,
 }
 
 impl SceneStats {
