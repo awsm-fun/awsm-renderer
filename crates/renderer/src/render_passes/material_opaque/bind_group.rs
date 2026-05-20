@@ -367,7 +367,7 @@ impl MaterialOpaqueBindGroups {
         entries.push(BindGroupEntry::new(
             entries.len() as u32,
             BindGroupResource::Buffer(BufferBinding::new(
-                &ctx.mesh_light_slices_gpu.indices_buffer,
+                &ctx.mesh_light_indices_gpu.indices_buffer,
             )),
         ));
 

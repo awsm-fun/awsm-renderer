@@ -136,7 +136,7 @@ impl TexturePoolDeps {
 /// material-opaque pipeline; Phase 9 will wire it into transparent).
 ///
 /// Layout — must stay in sync with `shared_wgsl/shadow/bind_groups.wgsl`:
-/// 0 texture `shadow_atlas` (depth)
+/// 0 texture `shadow_atlas` (depth 2d — spot lights only now)
 /// 1 sampler `shadow_atlas_sampler` (comparison)
 /// 2 texture `shadow_cube_array` (depth cube array)
 /// 3 sampler `shadow_cube_sampler` (comparison)
@@ -144,6 +144,8 @@ impl TexturePoolDeps {
 /// 5 sampler `evsm_atlas_sampler` (filtering)
 /// 6 uniform `shadow_globals`
 /// 7 uniform `shadow_descriptors` (fixed-size `array<ShadowDescriptor, MAX>`)
+/// 8 texture `shadow_cascade_array` (depth 2d-array — directional cascades)
+/// 9 texture `shadow_cube_2d_array` (depth 2d-array view of the cube pool, used by cube PCSS)
 ///
 /// The plan's original storage-buffer descriptor binding would have
 /// pushed the opaque compute stage past the adapter's
@@ -234,6 +236,30 @@ pub fn shadow_bind_group_layout_entries(
             visibility_fragment: v_fragment,
             visibility_compute: v_compute,
         },
+        // cascade array (depth 2d-array)
+        BindGroupLayoutCacheKeyEntry {
+            resource: BindGroupLayoutResource::Texture(
+                TextureBindingLayout::new()
+                    .with_view_dimension(TextureViewDimension::N2dArray)
+                    .with_sample_type(TextureSampleType::Depth),
+            ),
+            visibility_vertex: false,
+            visibility_fragment: v_fragment,
+            visibility_compute: v_compute,
+        },
+        // cube 2d-array view (depth 2d-array) — same texture as
+        // shadow_cube_array; used by cube PCSS for raw `textureLoad`
+        // reads during the blocker search.
+        BindGroupLayoutCacheKeyEntry {
+            resource: BindGroupLayoutResource::Texture(
+                TextureBindingLayout::new()
+                    .with_view_dimension(TextureViewDimension::N2dArray)
+                    .with_sample_type(TextureSampleType::Depth),
+            ),
+            visibility_vertex: false,
+            visibility_fragment: v_fragment,
+            visibility_compute: v_compute,
+        },
     ]
 }
 
@@ -266,6 +292,14 @@ pub fn build_shadow_bind_group_entries<'a>(
         BindGroupEntry::new(
             7,
             BindGroupResource::Buffer(BufferBinding::new(&shadows.descriptors_uniform)),
+        ),
+        BindGroupEntry::new(
+            8,
+            BindGroupResource::TextureView(Cow::Borrowed(&shadows.cascade_array_view)),
+        ),
+        BindGroupEntry::new(
+            9,
+            BindGroupResource::TextureView(Cow::Borrowed(&shadows.cube_2d_array_view)),
         ),
     ]
 }

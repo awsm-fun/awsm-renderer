@@ -108,18 +108,78 @@ pub(super) fn write_shadow_descriptor(
     dest[108..112].copy_from_slice(&0.0_f32.to_ne_bytes());
 }
 
+/// Writes a directional-cascade descriptor (kind = 3) whose depth
+/// lives in the cascade-array texture at layer `cascade_layer`.
+/// `used_res` is the cascade's effective square resolution; the layer
+/// itself is `layer_resolution²`, with the cascade rendered into the
+/// top-left `used_res × used_res` sub-rect. The packed `atlas_rect`
+/// uses `.x` to carry the layer index (as `f32`) and `.zw` to carry
+/// the sub-rect width/height in normalised UV space; `.y` stays zero
+/// since the cascade always starts at the layer's origin.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn write_shadow_cascade_array_descriptor(
+    dest: &mut [u8],
+    view_projection: &Mat4,
+    cascade_layer: u32,
+    used_res: u32,
+    layer_resolution: u32,
+    depth_bias: f32,
+    normal_bias: f32,
+    hardness: LightShadowHardness,
+    pcss_scale: f32,
+    world_per_texel: f32,
+    cascade_count: u32,
+    split_far: f32,
+) {
+    debug_assert!(dest.len() >= SHADOW_DESCRIPTOR_BYTES);
+    let cols = view_projection.to_cols_array();
+    let mat_bytes: &[u8] = unsafe { std::slice::from_raw_parts(cols.as_ptr() as *const u8, 64) };
+    dest[0..64].copy_from_slice(mat_bytes);
+    let inv = if layer_resolution == 0 {
+        1.0
+    } else {
+        1.0 / layer_resolution as f32
+    };
+    // `atlas_rect.x` carries the f32 layer index — the receiver
+    // converts back via `u32(rect.x)`. `.y` is always zero (cascade
+    // starts at layer origin). `.zw` is the valid sub-rect size in
+    // normalised UV so the PCF / PCSS tile clamp keeps reads inside
+    // the cascade even when the layer is larger than needed.
+    let layer_f = cascade_layer as f32;
+    let w = used_res as f32 * inv;
+    let h = used_res as f32 * inv;
+    dest[64..68].copy_from_slice(&layer_f.to_ne_bytes());
+    dest[68..72].copy_from_slice(&0.0_f32.to_ne_bytes());
+    dest[72..76].copy_from_slice(&w.to_ne_bytes());
+    dest[76..80].copy_from_slice(&h.to_ne_bytes());
+    dest[80..84].copy_from_slice(&depth_bias.to_ne_bytes());
+    dest[84..88].copy_from_slice(&normal_bias.to_ne_bytes());
+    let hardness_f = match hardness {
+        LightShadowHardness::Hard => 0.0_f32,
+        LightShadowHardness::Soft => 1.0_f32,
+        LightShadowHardness::Pcss => 2.0_f32,
+    };
+    dest[88..92].copy_from_slice(&hardness_f.to_ne_bytes());
+    dest[92..96].copy_from_slice(&pcss_scale.to_ne_bytes());
+    dest[96..100].copy_from_slice(&split_far.to_ne_bytes());
+    dest[100..104].copy_from_slice(&world_per_texel.to_ne_bytes());
+    dest[104..108].copy_from_slice(&(cascade_count as f32).to_ne_bytes());
+    // cascade_info.w = 3.0 → cascade-array PCF.
+    dest[108..112].copy_from_slice(&3.0_f32.to_ne_bytes());
+}
+
 pub(super) fn build_evsm_moment_write_bind_group(
     gpu: &AwsmRendererWebGpu,
     bind_group_layouts: &BindGroupLayouts,
     layout_key: BindGroupLayoutKey,
-    shadow_atlas_view: &web_sys::GpuTextureView,
+    cascade_array_view: &web_sys::GpuTextureView,
     evsm_atlas_view: &web_sys::GpuTextureView,
     params_buffer: &web_sys::GpuBuffer,
 ) -> Result<web_sys::GpuBindGroup, AwsmShadowError> {
     let entries = vec![
         BindGroupEntry::new(
             0,
-            BindGroupResource::TextureView(Cow::Borrowed(shadow_atlas_view)),
+            BindGroupResource::TextureView(Cow::Borrowed(cascade_array_view)),
         ),
         BindGroupEntry::new(
             1,
@@ -296,12 +356,72 @@ pub(super) fn extract_near_far(projection: &Mat4) -> (f32, f32) {
     (0.1, 100.0)
 }
 
+/// 2D-array sampling view of the cascade depth texture. Receivers
+/// sample with `textureSampleCompareLevel(tex, samp, uv, layer, ref)`.
+pub(super) fn create_cascade_array_view(
+    texture: &web_sys::GpuTexture,
+) -> Result<web_sys::GpuTextureView, AwsmShadowError> {
+    let descriptor: web_sys::GpuTextureViewDescriptor =
+        TextureViewDescriptor::new(Some("Shadow Cascade Array"))
+            .with_dimension(TextureViewDimension::N2dArray)
+            .into();
+    texture
+        .create_view_with_descriptor(&descriptor)
+        .map_err(AwsmCoreError::create_texture_view)
+        .map_err(Into::into)
+}
+
+/// One 2D depth view per cascade layer, used as the render attachment
+/// during shadow generation. Built once at cascade-array allocation
+/// time so the per-frame pass loop can grab the right attachment
+/// without re-creating the view.
+pub(super) fn build_cascade_layer_views(
+    texture: &web_sys::GpuTexture,
+    layer_count: u32,
+) -> Result<Vec<web_sys::GpuTextureView>, AwsmShadowError> {
+    let mut views = Vec::with_capacity(layer_count as usize);
+    for layer in 0..layer_count {
+        let descriptor: web_sys::GpuTextureViewDescriptor =
+            TextureViewDescriptor::new(Some("Shadow Cascade Layer"))
+                .with_dimension(TextureViewDimension::N2d)
+                .with_base_array_layer(layer)
+                .with_array_layer_count(1)
+                .into();
+        let view = texture
+            .create_view_with_descriptor(&descriptor)
+            .map_err(AwsmCoreError::create_texture_view)?;
+        views.push(view);
+    }
+    Ok(views)
+}
+
 pub(super) fn create_cube_array_view(
     texture: &web_sys::GpuTexture,
 ) -> Result<web_sys::GpuTextureView, AwsmShadowError> {
     let descriptor: web_sys::GpuTextureViewDescriptor =
         TextureViewDescriptor::new(Some("Shadow Cube Array"))
             .with_dimension(TextureViewDimension::CubeArray)
+            .into();
+    texture
+        .create_view_with_descriptor(&descriptor)
+        .map_err(AwsmCoreError::create_texture_view)
+        .map_err(Into::into)
+}
+
+/// Alternative 2D-array view of the cube pool. The cube-array view
+/// gives `textureSampleCompare(cubedir, layer, ref)` for the standard
+/// per-direction depth compare, but PCSS needs to *read* raw depth
+/// values at specific cube-face texels for the blocker search — and
+/// `texture_depth_cube_array` exposes no `textureLoad`. The same
+/// underlying texture, viewed as `texture_depth_2d_array`, supports
+/// the per-texel load: face index `slot * 6 + face` becomes the
+/// array layer.
+pub(super) fn create_cube_2d_array_view(
+    texture: &web_sys::GpuTexture,
+) -> Result<web_sys::GpuTextureView, AwsmShadowError> {
+    let descriptor: web_sys::GpuTextureViewDescriptor =
+        TextureViewDescriptor::new(Some("Shadow Cube 2D-Array"))
+            .with_dimension(TextureViewDimension::N2dArray)
             .into();
     texture
         .create_view_with_descriptor(&descriptor)

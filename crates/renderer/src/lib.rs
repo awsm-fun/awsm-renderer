@@ -55,7 +55,7 @@ use awsm_renderer_core::{
 use bind_groups::BindGroups;
 use camera::CameraBuffer;
 use instances::Instances;
-use light_buckets::{LightMeshBuckets, MeshLightSlicesGpu};
+use light_buckets::{LightMeshBuckets, MeshLightIndicesGpu};
 use lights::Lights;
 use materials::Materials;
 use meshes::Meshes;
@@ -97,7 +97,7 @@ pub struct AwsmRenderer {
     pub light_buckets: LightMeshBuckets,
     /// GPU storage buffers backing `light_buckets` for the shader path
     /// (Cluster 2.1.b). Uploaded per-frame from the transposed buckets.
-    pub mesh_light_slices_gpu: MeshLightSlicesGpu,
+    pub mesh_light_indices_gpu: MeshLightIndicesGpu,
     /// Last-frame per-mesh pixel coverage (Cluster 6.2). Populated by
     /// the GPU coverage compute pass; consumed by the skinning-skip
     /// and material-LOD gates. Empty until the producer pass is wired.
@@ -412,7 +412,7 @@ impl AwsmRendererBuilder {
 
         let opaque_mipgen = opaque_mipgen::OpaqueMipgen::new(&gpu).await?;
 
-        let mesh_light_slices_gpu = MeshLightSlicesGpu::new(&gpu)?;
+        let mesh_light_indices_gpu = MeshLightIndicesGpu::new(&gpu)?;
 
         let shadows = shadows::Shadows::new(
             &gpu,
@@ -437,7 +437,7 @@ impl AwsmRendererBuilder {
             instances,
             scene_spatial: SceneSpatial::default(),
             light_buckets: LightMeshBuckets::default(),
-            mesh_light_slices_gpu,
+            mesh_light_indices_gpu,
             coverage: coverage::MeshCoverage::default(),
             frame_index: 0,
             shaders,

@@ -24,8 +24,12 @@ pub const MAX_SHADOW_VIEWS: u32 = 96;
 /// - `cascade_info: vec4<f32>` (16 B)
 pub const SHADOW_DESCRIPTOR_BYTES: usize = 112;
 
-/// Size in bytes of the `ShadowGlobals` uniform block.
-pub const SHADOW_GLOBALS_BYTES: usize = 48;
+/// Size in bytes of the `ShadowGlobals` uniform block. Layout:
+/// - `atlas_sizes: vec4<f32>` (16 B) — `(pcf.w, pcf.h, evsm.w, evsm.h)`
+/// - `evsm_sscs: vec4<f32>` (16 B)
+/// - `flags: vec4<u32>` (16 B)
+/// - `cascade_array: vec4<f32>` (16 B) — `(layer.w, layer.h, max_layers, _)`
+pub const SHADOW_GLOBALS_BYTES: usize = 64;
 
 /// Logical size of a single per-view shadow uniform entry: a
 /// `mat4x4` view-projection (64 B) and a `vec4` of bias parameters

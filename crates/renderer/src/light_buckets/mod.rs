@@ -13,4 +13,4 @@ mod buckets;
 mod gpu;
 
 pub use buckets::LightMeshBuckets;
-pub use gpu::MeshLightSlicesGpu;
+pub use gpu::MeshLightIndicesGpu;

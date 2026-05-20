@@ -26,14 +26,12 @@ use crate::shadows::Shadows;
 /// Called between the geometry pass and light culling. Skipped
 /// entirely when [`Shadows::any_active`] returns `false`.
 pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
-    // The 2D atlas is shared by every cascade / spot view. A
-    // render-pass clear is attachment-wide (not viewport-scoped), so
-    // if every per-cascade pass used `LoadOp::Clear`, each pass would
-    // wipe the previous cascade's tile and only the last-written
-    // cascade would survive. Clear it exactly once — on the first
-    // 2D-atlas pass we record this frame — and `Load` on every
-    // subsequent 2D pass to preserve already-written tiles. Cube-face
-    // passes target their own per-face views and clear independently.
+    // The 2D `shadow_atlas` is still shared across spot-light views,
+    // and `LoadOp::Clear` there is attachment-wide. So we clear it on
+    // the first spot-atlas pass of the frame and `Load` on subsequent
+    // spot passes to preserve already-written tiles. Cube faces and
+    // cascade layers each target their own per-attachment view and
+    // can always clear independently.
     let mut atlas_cleared = false;
 
     for (_light_key, record) in shadows.records() {
@@ -46,14 +44,24 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
             // — Shadows::write_gpu uploaded every slot once, up front.
 
             let is_cube = view.cube_layer.is_some();
-            let depth_view = match view.cube_layer {
-                Some(layer) => shadows
+            let is_cascade = view.cascade_layer.is_some();
+            let depth_view = if let Some(layer) = view.cube_layer {
+                shadows
                     .cube_face_views
                     .get(layer as usize)
-                    .unwrap_or(&shadows.atlas_view),
-                None => &shadows.atlas_view,
+                    .unwrap_or(&shadows.atlas_view)
+            } else if let Some(layer) = view.cascade_layer {
+                shadows
+                    .cascade_layer_views
+                    .get(layer as usize)
+                    .unwrap_or(&shadows.atlas_view)
+            } else {
+                &shadows.atlas_view
             };
-            let load_op = if is_cube || !atlas_cleared {
+            // Per-attachment views (cube faces, cascade layers) always
+            // clear — they own their own depth surface. The 2D atlas
+            // clears once per frame, then loads.
+            let load_op = if is_cube || is_cascade || !atlas_cleared {
                 LoadOp::Clear
             } else {
                 LoadOp::Load
@@ -62,7 +70,7 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
                 .with_depth_load_op(load_op)
                 .with_depth_store_op(StoreOp::Store)
                 .with_depth_clear_value(1.0);
-            if !is_cube {
+            if !is_cube && !is_cascade {
                 atlas_cleared = true;
             }
 
@@ -243,6 +251,14 @@ fn dispatch_evsm(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
         .get(shadows.evsm_pass.blur_v_pipeline_key)?;
 
     for entry in &shadows.evsm_dispatch_queue {
+        // Skip EVSM dispatch for throttled cascades — the source
+        // cascade layer wasn't rendered this frame, so its prior
+        // moments in `evsm_atlas` are still valid. With the far
+        // cascade on a 4-frame update period, 3 of 4 frames hit this
+        // path and skip the moment-write + 2 blur passes.
+        if !entry.should_render {
+            continue;
+        }
         let dst_w = entry.evsm_rect[2];
         let dst_h = entry.evsm_rect[3];
         if dst_w == 0 || dst_h == 0 {

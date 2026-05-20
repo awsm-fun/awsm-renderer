@@ -56,5 +56,6 @@ fn schema_to_runtime(s: &SchemaShadowsConfig) -> ShadowsConfig {
         max_point_shadows: s.max_point_shadows,
         point_shadow_resolution: s.point_shadow_resolution,
         debug_cascade_colors: s.debug_cascade_colors,
+        ..ShadowsConfig::default()
     }
 }

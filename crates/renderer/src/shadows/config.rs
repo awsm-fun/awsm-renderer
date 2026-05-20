@@ -21,6 +21,21 @@ pub struct ShadowsConfig {
     /// Width / height of the EVSM RGBA16F atlas in texels. Allocated
     /// lazily on the first frame an EVSM cascade is requested.
     pub evsm_atlas_size: u32,
+    /// Per-layer dimension (square) of the directional-cascade texture
+    /// array in texels. One layer per cascade — a 2K layer covers a
+    /// 4-cascade light in 64 MB (Depth32f). Per-light `resolution`
+    /// authoring is treated as a hint: a cascade smaller than this is
+    /// rendered into the top-left sub-rect of its layer; a cascade
+    /// larger than this is clamped to the layer size. Per-layer
+    /// render-attachment views let throttled cascades skip the depth
+    /// pass without disturbing other cascades.
+    pub cascade_resolution: u32,
+    /// Maximum simultaneously-active directional cascade layers in the
+    /// texture array. With up to 4 cascades per directional light, 16
+    /// layers covers four directional shadow casters — far more than
+    /// the scene usually has, but cheap (`cascade_resolution²` × 4 B
+    /// per layer).
+    pub cascade_array_max_layers: u32,
     /// Depth-warp exponent for EVSM. Higher values give better contact
     /// hardening at the cost of overflow risk in `RGBA16F`.
     pub evsm_exponent: f32,
@@ -51,6 +66,8 @@ impl Default for ShadowsConfig {
             sscs_step_count: 16,
             atlas_size: 4096,
             evsm_atlas_size: 2048,
+            cascade_resolution: 2048,
+            cascade_array_max_layers: 16,
             // 10 is the AAA-canon EVSM exponent for fp16 — gives a
             // smooth contact-hardening curve with comfortable
             // half-float headroom. 20 (the prior default) was at the

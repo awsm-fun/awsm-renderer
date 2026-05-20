@@ -1,4 +1,4 @@
-//! GPU storage buffer backing the per-mesh light-slice path.
+//! GPU storage buffer backing the per-mesh light-indices path.
 //!
 //! Architecture (post Option F follow-up to Cluster 2.1.c):
 //!
@@ -9,7 +9,8 @@
 //!   hot path. Saves one storage-buffer binding.
 //! - **`mesh_light_indices[offset..offset+count] -> u32 light_index`**
 //!   is the only GPU buffer this module owns. Packed, length == sum of
-//!   all slice counts.
+//!   all slice counts. The struct name reflects that: it owns
+//!   *indices*, with the slice metadata living in `MaterialMeshMeta`.
 //!
 //! Both the slice patches and the indices upload run per-frame, after
 //! `LightMeshBuckets::rebuild` and before the material-opaque pass.
@@ -33,7 +34,7 @@ static INDICES_BUFFER_USAGE: LazyLock<BufferUsage> =
 /// scratch space. Per-mesh slice metadata is patched directly into
 /// each mesh's `MaterialMeshMeta` entry instead of living in its own
 /// GPU buffer.
-pub struct MeshLightSlicesGpu {
+pub struct MeshLightIndicesGpu {
     /// `mesh_light_indices` GPU buffer. Packed `u32` light indices.
     /// Read by the lighting shader at `slice.offset .. slice.offset +
     /// slice.count` where the slice fields are loaded from the per-
@@ -50,7 +51,7 @@ pub struct MeshLightSlicesGpu {
     directional_count: u32,
 }
 
-impl MeshLightSlicesGpu {
+impl MeshLightIndicesGpu {
     /// Creates the indices storage buffer at a small initial capacity.
     pub fn new(gpu: &AwsmRendererWebGpu) -> Result<Self, awsm_renderer_core::error::AwsmCoreError> {
         let initial_indices_capacity = 4_usize;
@@ -91,7 +92,7 @@ impl MeshLightSlicesGpu {
     ///      coalesces adjacent patches at upload time.
     ///   2. Repacks the indices scratch buffer and uploads it via
     ///      `writeBuffer`. Grows the GPU buffer on capacity miss with
-    ///      2x headroom and marks `MeshLightSlicesResize` so the lights
+    ///      2x headroom and marks `MeshLightIndicesResize` so the lights
     ///      bind group rebinds the new buffer handle.
     pub fn write_gpu(
         &mut self,
@@ -160,7 +161,7 @@ impl MeshLightSlicesGpu {
             resized = true;
         }
         if resized {
-            bind_groups.mark_create(crate::bind_groups::BindGroupCreate::MeshLightSlicesResize);
+            bind_groups.mark_create(crate::bind_groups::BindGroupCreate::MeshLightIndicesResize);
         }
 
         // ── Upload ────────────────────────────────────────────────────

@@ -113,10 +113,13 @@ impl EvsmPass {
             gpu,
             BindGroupLayoutCacheKey::new(vec![
                 BindGroupLayoutCacheKeyEntry {
+                    // Source depth lives in the cascade-array (one
+                    // layer per cascade). The compute shader picks
+                    // the layer via `params.cascade_layer`.
                     resource: BindGroupLayoutResource::Texture(
                         TextureBindingLayout::new()
                             .with_sample_type(TextureSampleType::Depth)
-                            .with_view_dimension(TextureViewDimension::N2d),
+                            .with_view_dimension(TextureViewDimension::N2dArray),
                     ),
                     visibility_vertex: false,
                     visibility_fragment: false,
@@ -262,16 +265,19 @@ impl EvsmPass {
     }
 
     /// Writes one cascade's params into the CPU staging buffer at
-    /// slot `index`. Layout (stride = 256 B; first 40 B used):
+    /// slot `index`. Layout (stride = 256 B; first 48 B used):
     ///
     /// ```text
-    /// [ 0.. 8] src_offset (u32×2 — texels into shadow_atlas)
-    /// [ 8..16] src_size   (u32×2 — texels)
-    /// [16..24] dst_offset (u32×2 — texels into evsm_atlas)
-    /// [24..32] dst_size   (u32×2 — texels)
-    /// [32..36] exponent   (f32)
-    /// [36..40] blur_radius (u32 — clamped to MAX_BLUR_RADIUS)
+    /// [ 0.. 8] src_offset    (u32×2 — texels into cascade-array layer)
+    /// [ 8..16] src_size      (u32×2 — texels)
+    /// [16..24] dst_offset    (u32×2 — texels into evsm_atlas)
+    /// [24..32] dst_size      (u32×2 — texels)
+    /// [32..36] exponent      (f32)
+    /// [36..40] blur_radius   (u32 — clamped to MAX_BLUR_RADIUS)
+    /// [40..44] cascade_layer (u32 — index into cascade_array)
+    /// [44..48] _pad          (u32)
     /// ```
+    #[allow(clippy::too_many_arguments)]
     pub fn write_params_slot(
         &mut self,
         index: usize,
@@ -281,9 +287,10 @@ impl EvsmPass {
         dst_size: [u32; 2],
         exponent: f32,
         blur_radius: u32,
+        cascade_layer: u32,
     ) {
         let base = index * EVSM_PARAMS_STRIDE;
-        let dst = &mut self.params_bytes[base..base + 40];
+        let dst = &mut self.params_bytes[base..base + 48];
         dst[0..4].copy_from_slice(&src_offset[0].to_ne_bytes());
         dst[4..8].copy_from_slice(&src_offset[1].to_ne_bytes());
         dst[8..12].copy_from_slice(&src_size[0].to_ne_bytes());
@@ -295,6 +302,8 @@ impl EvsmPass {
         dst[32..36].copy_from_slice(&exponent.to_ne_bytes());
         let radius = blur_radius.min(MAX_BLUR_RADIUS);
         dst[36..40].copy_from_slice(&radius.to_ne_bytes());
+        dst[40..44].copy_from_slice(&cascade_layer.to_ne_bytes());
+        dst[44..48].copy_from_slice(&0u32.to_ne_bytes());
     }
 
     /// Flushes the staging buffer to GPU. Called once at the end of
@@ -343,9 +352,11 @@ struct Params {
     dst_size: vec2<u32>,
     exponent: f32,
     blur_radius: u32,
+    cascade_layer: u32,
+    _pad: u32,
 }
 
-@group(0) @binding(0) var src_depth: texture_depth_2d;
+@group(0) @binding(0) var src_depth: texture_depth_2d_array;
 @group(0) @binding(1) var dst_moments: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(2) var<uniform> params: Params;
 
@@ -363,7 +374,12 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         params.src_offset.x + u32(dst_uv.x * f32(params.src_size.x)),
         params.src_offset.y + u32(dst_uv.y * f32(params.src_size.y)),
     );
-    let depth = textureLoad(src_depth, vec2<i32>(i32(src_xy.x), i32(src_xy.y)), 0);
+    let depth = textureLoad(
+        src_depth,
+        vec2<i32>(i32(src_xy.x), i32(src_xy.y)),
+        i32(params.cascade_layer),
+        0,
+    );
     // Remap [0,1] → [-1,1] so the exponent space is symmetric.
     let z = 2.0 * depth - 1.0;
     let pos_exp = exp(params.exponent * z);

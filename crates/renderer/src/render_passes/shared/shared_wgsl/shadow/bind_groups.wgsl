@@ -30,6 +30,9 @@ struct ShadowGlobals {
     evsm_sscs: vec4<f32>,
     // (debug_cascade_colors, max_point_shadows, pad, pad)
     flags: vec4<u32>,
+    // (cascade_array.w, cascade_array.h, max_layers, _) — per-layer
+    // dimensions of the directional cascade texture array.
+    cascade_array: vec4<f32>,
 };
 
 struct ShadowDescriptorArray {
@@ -44,6 +47,8 @@ struct ShadowDescriptorArray {
 @group({{ shadow_group_index }}) @binding(5) var evsm_atlas_sampler: sampler;
 @group({{ shadow_group_index }}) @binding(6) var<uniform> shadow_globals: ShadowGlobals;
 @group({{ shadow_group_index }}) @binding(7) var<uniform> shadow_descriptors: ShadowDescriptorArray;
+@group({{ shadow_group_index }}) @binding(8) var shadow_cascade_array: texture_depth_2d_array;
+@group({{ shadow_group_index }}) @binding(9) var shadow_cube_2d_array: texture_depth_2d_array;
 
 // Sentinel for "no shadow" — packed into `LightPacked.row4.z`.
 const SHADOW_INDEX_NONE: u32 = 0xFFFFFFFFu;
@@ -301,27 +306,12 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
         );
     }
 
-    // Soft + Pcss: jitter the sample directions inside a disc lying
-    // on the receiver's tangent plane, then recompute each tap's
-    // direction-from-light + NDC.z + bias independently. Recomputing
-    // per tap (rather than rotating the central `dir`) is what keeps
-    // a flat receiver from self-shadowing into a kernel-shaped patch
-    // — every tap sees the surface from a slightly different point
-    // and its own surface-normal alignment via `tap_n_dot_dir`.
-    //
-    // Soft  → fixed `SOFT_WORLD_RADIUS` disc on the tangent plane.
-    // Pcss  → `pcss_penumbra_scale` widens the disc; without raw
-    //         depth reads from `texture_depth_cube_array` we can't
-    //         do a true PCSS blocker-search + variable-kernel, so
-    //         this is a fixed-kernel widened-Soft approximation that
-    //         honours the `pcss_penumbra_scale` slider. The visual
-    //         difference vs true PCSS is subtle at typical point-
-    //         light scales (range 1–30 m).
-    //
-    // 16-tap rotated Poisson, matching the directional Soft tap
-    // budget. The previous 8-tap value made the cube path render
-    // "Soft" indistinguishably from "Hard"; doubled tap count plus
-    // a real-world-scaled disc fixes that.
+    // Soft and PCSS share the same disc-on-tangent-plane tap layout:
+    // each tap recomputes its own direction-from-light + NDC.z + bias
+    // (rather than rotating the central `dir`) so a flat receiver
+    // doesn't self-shadow into a kernel-shaped patch. The PCSS path
+    // additionally does a blocker-search pre-pass using
+    // `shadow_cube_2d_array` (raw depth reads) to scale the kernel.
     let abs_n = abs(world_normal);
     let up_hint = select(
         vec3<f32>(0.0, 1.0, 0.0),
@@ -331,23 +321,157 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
     let tangent = normalize(cross(up_hint, world_normal));
     let bitangent = cross(world_normal, tangent);
 
-    let SOFT_WORLD_RADIUS: f32 = 0.15;
-    let pcss_scale = max(desc.bias_params.w, 0.01);
-    let soft_world_radius = select(
-        SOFT_WORLD_RADIUS,
-        SOFT_WORLD_RADIUS * max(pcss_scale * 3.0, 1.0),
-        hardness >= 1.5,
-    );
-
     let angle = pcss_disk_angle(
         biased_pos.xz * 137.0 + vec2<f32>(biased_pos.y * 31.0, biased_pos.y * 17.0),
     );
     let sin_a = sin(angle);
     let cos_a = cos(angle);
 
+    if hardness < 1.5 {
+        // Soft — fixed 16-tap rotated Poisson, ~15 cm world disc.
+        let SOFT_WORLD_RADIUS: f32 = 0.15;
+        var sum = 0.0;
+        for (var i = 0u; i < 16u; i = i + 1u) {
+            let off = pcss_rotate(POISSON_DISK_16[i], sin_a, cos_a) * SOFT_WORLD_RADIUS;
+            let tap_pos = biased_pos + tangent * off.x + bitangent * off.y;
+            let tap_to_light = tap_pos - light_pos;
+            let tap_dist = length(tap_to_light);
+            let tap_dir = tap_to_light / max(tap_dist, 1e-4);
+            let tap_abs = abs(tap_dir);
+            let tap_major = max(tap_abs.x, max(tap_abs.y, tap_abs.z));
+            let tap_view_depth = tap_dist * max(tap_major, 1e-4);
+            let tap_ndc_z =
+                (range / (range - near)) * (1.0 - near / max(tap_view_depth, near));
+            let tap_n_dot_dir = abs(dot(tap_dir, world_normal));
+            let tap_bias = desc.bias_params.x / max(tap_n_dot_dir, 0.05);
+            let tap_ref = clamp(tap_ndc_z, 0.0, 1.0) - tap_bias;
+            sum += textureSampleCompareLevel(
+                shadow_cube_array,
+                shadow_cube_sampler,
+                tap_dir,
+                slot,
+                tap_ref,
+            );
+        }
+        return sum / 16.0;
+    }
+
+    // PCSS — real blocker search + variable kernel.
+    //
+    // Stage 1 (blocker search): sample a fixed 16-tap "search" disc
+    // sized by `pcss_penumbra_scale` (a virtual light disc radius in
+    // metres). At each tap, project the tap's light direction onto
+    // the right cube face, fetch raw depth via the 2D-array view,
+    // and average the depths of taps that lie in front of the
+    // receiver.
+    //
+    // Stage 2 (variable PCF): derive a penumbra radius from the
+    // standard PCSS formula `(d_recv - d_avg) * light_size / d_avg`
+    // and re-sample with `textureSampleCompareLevel`, this time
+    // through the cube sampler so we get hardware bilinear PCF.
+    //
+    // The cube faces share a single NDC.z formula with the writer:
+    //   ndc_z = (range / (range - near)) * (1 - near / view_depth)
+    // so `textureLoad`-ed depths are directly comparable to the
+    // per-tap `ref_depth` we compute here.
+    let pcss_scale = max(desc.bias_params.w, 0.01);
+    // Blocker-search disc: fixed 30 cm world radius scaled by
+    // `pcss_penumbra_scale`. Bigger = fatter blocker estimate.
+    let pcss_search_world_radius = 0.30 * pcss_scale;
+    // Cube face dimension (px) for face-UV → texel conversion. All
+    // faces share the same square resolution.
+    let cube_dims = textureDimensions(shadow_cube_2d_array, 0);
+    let cube_face_size = vec2<f32>(f32(cube_dims.x), f32(cube_dims.y));
+
+    var blocker_sum = 0.0;
+    var blocker_count = 0u;
+    for (var i = 0u; i < 16u; i = i + 1u) {
+        let off = pcss_rotate(POISSON_DISK_16[i], sin_a, cos_a) * pcss_search_world_radius;
+        let tap_pos = biased_pos + tangent * off.x + bitangent * off.y;
+        let tap_to_light = tap_pos - light_pos;
+        let tap_dist = length(tap_to_light);
+        let tap_dir = tap_to_light / max(tap_dist, 1e-4);
+        let tap_abs = abs(tap_dir);
+        let tap_major = max(tap_abs.x, max(tap_abs.y, tap_abs.z));
+        let tap_view_depth = tap_dist * max(tap_major, 1e-4);
+        let tap_ndc_z = clamp(
+            (range / (range - near)) * (1.0 - near / max(tap_view_depth, near)),
+            0.0,
+            1.0,
+        );
+        // Inline cube-direction → (face, uv) projection. Standard
+        // D3D cube convention; the writer's post-projection Y-flip is
+        // already baked into the texel layout.
+        var tap_face: u32 = 0u;
+        var tap_uc: f32 = 0.0;
+        var tap_vc: f32 = 0.0;
+        var tap_ma: f32 = 1e-4;
+        if tap_abs.x >= tap_abs.y && tap_abs.x >= tap_abs.z {
+            if tap_dir.x > 0.0 {
+                tap_face = 0u; tap_uc = -tap_dir.z; tap_vc = -tap_dir.y; tap_ma = tap_abs.x;
+            } else {
+                tap_face = 1u; tap_uc =  tap_dir.z; tap_vc = -tap_dir.y; tap_ma = tap_abs.x;
+            }
+        } else if tap_abs.y >= tap_abs.z {
+            if tap_dir.y > 0.0 {
+                tap_face = 2u; tap_uc =  tap_dir.x; tap_vc =  tap_dir.z; tap_ma = tap_abs.y;
+            } else {
+                tap_face = 3u; tap_uc =  tap_dir.x; tap_vc = -tap_dir.z; tap_ma = tap_abs.y;
+            }
+        } else {
+            if tap_dir.z > 0.0 {
+                tap_face = 4u; tap_uc =  tap_dir.x; tap_vc = -tap_dir.y; tap_ma = tap_abs.z;
+            } else {
+                tap_face = 5u; tap_uc = -tap_dir.x; tap_vc = -tap_dir.y; tap_ma = tap_abs.z;
+            }
+        }
+        let tap_inv = 0.5 / max(tap_ma, 1e-4);
+        let face_uv = vec2<f32>(tap_uc * tap_inv + 0.5, tap_vc * tap_inv + 0.5);
+        let layer = i32(slot) * 6 + i32(tap_face);
+        let tex_xy = clamp(
+            vec2<i32>(face_uv * cube_face_size),
+            vec2<i32>(0, 0),
+            vec2<i32>(cube_dims.xy) - vec2<i32>(1, 1),
+        );
+        let d = textureLoad(shadow_cube_2d_array, tex_xy, layer, 0);
+        // Bias-free blocker test — we want a clean estimate of how
+        // many genuine occluders sit in front of the receiver. The
+        // 0.0005 epsilon matches the directional PCSS path.
+        if d < tap_ndc_z - 0.0005 {
+            blocker_sum = blocker_sum + d;
+            blocker_count = blocker_count + 1u;
+        }
+    }
+    if blocker_count == 0u {
+        return 1.0;
+    }
+    if blocker_count == 16u {
+        return 0.0;
+    }
+    let avg_blocker = blocker_sum / f32(blocker_count);
+    // PCSS penumbra in NDC.z space: `(z_recv - z_blocker) * light /
+    // z_blocker`. Map back to a world-space disc radius on the
+    // receiver tangent plane by treating the receiver-to-light
+    // distance as the projection distance — light_size in world
+    // metres = `pcss_penumbra_scale × 1m × penumbra_ratio`.
+    let recv_ndc_z = clamp(ndc_z, 0.0, 1.0);
+    let penumbra_ratio = clamp(
+        (recv_ndc_z - avg_blocker) / max(avg_blocker, 1e-4),
+        0.0,
+        4.0,
+    );
+    // Clamp to keep the kernel between "more than Soft" (10 cm) and
+    // "still affordable" (1 m world disc — already huge at typical
+    // point-light scales).
+    let penumbra_world_radius = clamp(
+        pcss_search_world_radius * penumbra_ratio,
+        0.10,
+        1.00,
+    );
+
     var sum = 0.0;
     for (var i = 0u; i < 16u; i = i + 1u) {
-        let off = pcss_rotate(POISSON_DISK_16[i], sin_a, cos_a) * soft_world_radius;
+        let off = pcss_rotate(POISSON_DISK_16[i], sin_a, cos_a) * penumbra_world_radius;
         let tap_pos = biased_pos + tangent * off.x + bitangent * off.y;
         let tap_to_light = tap_pos - light_pos;
         let tap_dist = length(tap_to_light);
@@ -358,8 +482,6 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
         let tap_ndc_z =
             (range / (range - near)) * (1.0 - near / max(tap_view_depth, near));
         let tap_n_dot_dir = abs(dot(tap_dir, world_normal));
-        // Same trust-the-author policy as the hard branch above —
-        // no floor on `desc.bias_params.x`.
         let tap_bias = desc.bias_params.x / max(tap_n_dot_dir, 0.05);
         let tap_ref = clamp(tap_ndc_z, 0.0, 1.0) - tap_bias;
         sum += textureSampleCompareLevel(
@@ -372,6 +494,7 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
     }
     return sum / 16.0;
 }
+
 
 // EVSM sample. Reads the four exponential moments from `evsm_atlas`
 // (written + blurred by the compute passes in `shadows::evsm`),
@@ -442,6 +565,138 @@ fn sample_shadow_evsm(
     return min(v_pos, v_neg);
 }
 
+// Sample a directional-cascade descriptor (kind = 3) backed by the
+// `shadow_cascade_array` texture. Layout in atlas_rect:
+//   .x = layer index (as f32)
+//   .y = 0 (cascade starts at layer origin)
+//   .zw = used sub-rect width/height in normalised UV
+//
+// Hardness branches mirror `sample_shadow_descriptor`'s 2D path; the
+// only difference is the bound texture and an explicit layer argument
+// on every compare/load.
+fn sample_shadow_cascade_array(
+    desc: ShadowDescriptor,
+    world_pos: vec3<f32>,
+    world_normal: vec3<f32>,
+) -> f32 {
+    let layer = i32(desc.atlas_rect.x);
+    let biased_pos = world_pos + world_normal * desc.bias_params.y;
+    let clip = desc.view_projection * vec4<f32>(biased_pos, 1.0);
+    if clip.w <= 0.0 {
+        return 1.0;
+    }
+    let ndc = clip.xyz / clip.w;
+    if ndc.x < -1.0 || ndc.x > 1.0 || ndc.y < -1.0 || ndc.y > 1.0 || ndc.z < 0.0 || ndc.z > 1.0 {
+        return 1.0;
+    }
+    let uv_local = vec2<f32>(ndc.x * 0.5 + 0.5, -ndc.y * 0.5 + 0.5);
+    // Cascades always start at the layer origin; multiply by the
+    // sub-rect size in normalised UV so smaller cascades don't read
+    // outside their valid region.
+    let atlas_uv = uv_local * desc.atlas_rect.zw;
+    let ref_depth = ndc.z - desc.bias_params.x;
+    let hardness = desc.bias_params.z;
+
+    let inv_atlas = vec2<f32>(
+        1.0 / shadow_globals.cascade_array.x,
+        1.0 / shadow_globals.cascade_array.y,
+    );
+    // Half-texel inset to keep the bilinear / PCF taps inside the
+    // valid sub-rect of the layer when `used_res < layer_size`.
+    let tile_min = 0.5 * inv_atlas;
+    let tile_max = desc.atlas_rect.zw - 0.5 * inv_atlas;
+
+    if hardness < 0.5 {
+        return textureSampleCompareLevel(
+            shadow_cascade_array,
+            shadow_atlas_sampler,
+            clamp(atlas_uv, tile_min, tile_max),
+            layer,
+            ref_depth,
+        );
+    }
+    if hardness < 1.5 {
+        let world_per_texel = max(desc.cascade_info.y, 1e-4);
+        let soft_world_radius = 0.25;
+        let radius_texels = clamp(soft_world_radius / world_per_texel, 3.0, 20.0);
+        let angle = pcss_disk_angle(
+            biased_pos.xz * 137.0 + vec2<f32>(biased_pos.y * 31.0, biased_pos.y * 17.0),
+        );
+        let sin_a = sin(angle);
+        let cos_a = cos(angle);
+        var sum = 0.0;
+        for (var i = 0u; i < 16u; i = i + 1u) {
+            let off = pcss_rotate(POISSON_DISK_16[i], sin_a, cos_a) * radius_texels;
+            sum += textureSampleCompareLevel(
+                shadow_cascade_array, shadow_atlas_sampler,
+                clamp(atlas_uv + off * inv_atlas, tile_min, tile_max),
+                layer,
+                ref_depth,
+            );
+        }
+        return sum / 16.0;
+    }
+    // PCSS — same recipe as the 2D path, with the cascade-array
+    // texture and explicit `layer` arg.
+    let pcss_scale = max(desc.bias_params.w, 0.01);
+    let world_per_texel_pcss = max(desc.cascade_info.y, 1e-4);
+    let pcss_light_world_radius = 1.0 * pcss_scale;
+    let atlas_uv_to_texels = vec2<f32>(
+        shadow_globals.cascade_array.x,
+        shadow_globals.cascade_array.y,
+    );
+    let angle = pcss_disk_angle(
+        biased_pos.xz * 137.0 + vec2<f32>(biased_pos.y * 31.0, biased_pos.y * 17.0),
+    );
+    let sin_a = sin(angle);
+    let cos_a = cos(angle);
+    let search_radius_texels = clamp(
+        pcss_light_world_radius / world_per_texel_pcss,
+        4.0,
+        64.0,
+    );
+    var blocker_sum = 0.0;
+    var blocker_count = 0u;
+    let tile_min_px = vec2<i32>(tile_min * atlas_uv_to_texels);
+    let tile_max_px = vec2<i32>(tile_max * atlas_uv_to_texels);
+    for (var i = 0u; i < 16u; i = i + 1u) {
+        let off = pcss_rotate(POISSON_DISK_16[i], sin_a, cos_a) * search_radius_texels;
+        let sample_uv = atlas_uv + off * inv_atlas;
+        let coord = vec2<i32>(sample_uv * atlas_uv_to_texels);
+        let c = clamp(coord, tile_min_px, tile_max_px);
+        let d = textureLoad(shadow_cascade_array, c, layer, 0);
+        if d < ref_depth - 0.0005 {
+            blocker_sum = blocker_sum + d;
+            blocker_count = blocker_count + 1u;
+        }
+    }
+    if blocker_count == 0u {
+        return 1.0;
+    }
+    if blocker_count == 16u {
+        return 0.0;
+    }
+    let avg_blocker = blocker_sum / f32(blocker_count);
+    let light_size_texels = pcss_light_world_radius / world_per_texel_pcss;
+    let penumbra_texels = clamp(
+        (ref_depth - avg_blocker) * light_size_texels / max(avg_blocker, 1e-4),
+        4.0,
+        40.0,
+    );
+    var pcf_sum = 0.0;
+    for (var i = 0u; i < 16u; i = i + 1u) {
+        let off = pcss_rotate(POISSON_DISK_16[i], sin_a, cos_a) * penumbra_texels;
+        pcf_sum = pcf_sum + textureSampleCompareLevel(
+            shadow_cascade_array,
+            shadow_atlas_sampler,
+            clamp(atlas_uv + off * inv_atlas, tile_min, tile_max),
+            layer,
+            ref_depth,
+        );
+    }
+    return pcf_sum / 16.0;
+}
+
 // Sample a single shadow descriptor (cascade / spot / face). Returns
 // `[0, 1]` visibility (1.0 = lit, 0.0 = fully shadowed).
 //
@@ -459,11 +714,14 @@ fn sample_shadow_descriptor(
     }
     let desc = shadow_descriptors.items[descriptor_index];
     // cascade_info.w encodes the descriptor kind:
-    //   0.0 = 2D PCF (directional cascade / spot)
-    //   1.0 = 2D EVSM cascade — read moments from `evsm_atlas` and
-    //         compute Chebyshev visibility (no per-tap PCF needed)
+    //   0.0 = 2D PCF on `shadow_atlas` (spot)
+    //   1.0 = 2D EVSM cascade — read moments from `evsm_atlas`
     //   2.0 = cube (point light)
+    //   3.0 = directional cascade on `shadow_cascade_array`
     let kind = desc.cascade_info.w;
+    if kind > 2.5 {
+        return sample_shadow_cascade_array(desc, world_pos, world_normal);
+    }
     if kind > 1.5 {
         return sample_shadow_cube(desc, world_pos, world_normal);
     }
@@ -706,7 +964,14 @@ fn sample_shadow_directional(
     // `cand_clip.w <= 0.0` test below would reject them and silently
     // return "fully lit". Dispatch straight to `sample_shadow_descriptor`
     // which routes cube descriptors to `sample_shadow_cube`.
-    if shadow_descriptors.items[descriptor_base].cascade_info.w > 1.5 {
+    //
+    // Kind values: 0.0 = 2D PCF (spot), 1.0 = 2D EVSM (cascade),
+    // 2.0 = cube, 3.0 = cascade-array PCF (directional). Only kind=2.0
+    // is the single-descriptor short-circuit; the cascade-array case
+    // still needs the cascade walk because directional lights pack
+    // multiple cascades.
+    let base_kind = shadow_descriptors.items[descriptor_base].cascade_info.w;
+    if base_kind > 1.5 && base_kind < 2.5 {
         return sample_shadow_descriptor(descriptor_base, world_pos, world_normal);
     }
     let cascade_count = u32(shadow_descriptors.items[descriptor_base].cascade_info.z);
@@ -857,6 +1122,9 @@ fn debug_cascade_tint(
     );
     let idx = descriptor_base + picked_idx;
     let kind = shadow_descriptors.items[idx].cascade_info.w;
-    let tint = select(pcf_palette[picked_idx], evsm_palette[picked_idx], kind > 0.5);
+    // EVSM (kind = 1.0) → warm palette; PCF flavours (cascade-array
+    // kind = 3.0 and the 2D-atlas spot kind = 0.0) → cool palette.
+    let is_evsm = kind > 0.5 && kind < 1.5;
+    let tint = select(pcf_palette[picked_idx], evsm_palette[picked_idx], is_evsm);
     return mix(base_color, tint, 0.35);
 }

@@ -88,7 +88,7 @@ impl AwsmRenderer {
         // MaterialMeshMeta and uploads the packed indices buffer.
         // MUST run BEFORE `meshes.meta.write_gpu` so the slice patches
         // land in the same meta upload.
-        self.mesh_light_slices_gpu.write_gpu(
+        self.mesh_light_indices_gpu.write_gpu(
             &self.gpu,
             &self.light_buckets,
             &self.lights,
@@ -152,7 +152,7 @@ impl AwsmRenderer {
                 instances: &self.instances,
                 anti_aliasing: &self.anti_aliasing,
                 shadows: &self.shadows,
-                mesh_light_slices_gpu: &self.mesh_light_slices_gpu,
+                mesh_light_indices_gpu: &self.mesh_light_indices_gpu,
             },
             &mut self.render_passes,
             &mut self.picker,

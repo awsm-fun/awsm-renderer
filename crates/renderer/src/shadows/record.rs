@@ -72,7 +72,8 @@ impl ShadowAlloc {
 pub struct EvsmDispatchEntry {
     /// Index into `descriptors_uniform` for this cascade.
     pub descriptor_index: u32,
-    /// Source rect on `shadow_atlas` in texels (`x, y, w, h`).
+    /// Source rect on the cascade-array layer in texels
+    /// (`x, y, w, h`) — always `(0, 0, used_res, used_res)`.
     pub pcf_rect: [u32; 4],
     /// Destination rect on `evsm_atlas` in texels (`x, y, w, h`). Also
     /// what receivers sample (UV-converted on read).
@@ -80,6 +81,15 @@ pub struct EvsmDispatchEntry {
     /// Params-buffer slot index for this cascade. Multiplied by
     /// `EVSM_PARAMS_STRIDE` to get the dynamic offset.
     pub params_slot: u32,
+    /// Source cascade-array layer the moment-write compute samples.
+    pub cascade_layer: u32,
+    /// Set by the throttle reconciliation pass: `false` means the
+    /// underlying cascade was throttled this frame, so its layer
+    /// still holds last frame's depth and the EVSM moments computed
+    /// from it are also unchanged — skip the dispatch entirely. With
+    /// `far_cascade_update_rate = Every4Frames` this drops 3 of 4
+    /// EVSM dispatches on the far cascade.
+    pub should_render: bool,
 }
 
 /// Per-light shadow state recorded each frame.
@@ -97,13 +107,21 @@ pub struct LightShadowRecord {
 pub struct LightShadowView {
     /// Light-space view-projection matrix.
     pub view_projection: Mat4,
-    /// Atlas rectangle in texels (x, y, w, h). Used as the viewport
-    /// for 2D shadow generation; ignored for cube faces (the cube
-    /// face view is rendered at the texture's native resolution).
+    /// Render-attachment viewport in texels (x, y, w, h). For the
+    /// 2D `shadow_atlas` (spot lights) this is the sub-rect of the
+    /// shared atlas; for the cascade-array texture this is always
+    /// `(0, 0, used_w, used_h)` of the layer; for cube faces this
+    /// is `(0, 0, cube_resolution, cube_resolution)`.
     pub atlas_rect: [u32; 4],
     /// Cube face layer index when this view targets the cube pool —
-    /// `slot * 6 + face_index`. `None` for 2D atlas views.
+    /// `slot * 6 + face_index`. `None` for non-cube views.
     pub cube_layer: Option<u32>,
+    /// Layer index into the directional-cascade texture array when
+    /// this view targets a cascade layer. `None` for spot/cube views.
+    /// Lets the render pass pick the per-layer 2D depth attachment so
+    /// throttled cascades keep their prior depth contents without
+    /// touching other layers.
+    pub cascade_layer: Option<u32>,
     /// Re-render cadence for this view in frames. `1` means every
     /// frame; the far directional cascade may bump this to 2/4/8 via
     /// `LightShadowParams::far_cascade_update_rate`.
@@ -135,6 +153,12 @@ pub struct ShadowViewThrottle {
     /// caster-set changes), we invalidate the throttle entry so the
     /// stale rect isn't sampled at its new location.
     pub last_atlas_rect: [u32; 4],
+    /// Last cascade-array layer this view rendered into. If the layer
+    /// cursor reassigns the cascade to a different layer (e.g. an
+    /// earlier-iterating light's cast toggled off and freed up its
+    /// layers), the cached entry is stale: the new layer holds depth
+    /// from a different cascade, so we force a re-render.
+    pub last_cascade_layer: Option<u32>,
 }
 
 #[cfg(test)]
