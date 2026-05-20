@@ -16,12 +16,17 @@ use awsm_renderer::{
     shadows::{LightShadowParams, LightShadowHardness, MeshShadowFlags},
 };
 
-// 1. Insert a directional light.
-let sun = renderer.lights.insert(Light::Directional {
-    color: [1.0, 0.95, 0.9],
-    intensity: 3.0,
-    direction: [0.3, -1.0, 0.3],
-})?;
+// 1. Insert a directional light. Pass `None` for shadow params (no
+//    shadow); pass `Some(LightShadowParams { cast: true, .. })` to
+//    enable shadows in the same call.
+let sun = renderer.insert_light(
+    Light::Directional {
+        color: [1.0, 0.95, 0.9],
+        intensity: 3.0,
+        direction: [0.3, -1.0, 0.3],
+    },
+    None,
+)?;
 
 // 2. Enable shadows on it. `cast: false` keeps the light but skips
 //    its shadow pass.

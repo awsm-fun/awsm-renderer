@@ -71,7 +71,10 @@ fn walk_node(
 
     if let Some(gltf_light) = node.light() {
         if let Some(light) = to_renderer_light(&gltf_light, &world) {
-            let key = renderer.lights.insert(light)?;
+            // glTF doesn't carry shadow-cast/receive intent — leave
+            // params unregistered; callers can opt in later via
+            // `AwsmRenderer::set_light_shadow_params`.
+            let key = renderer.insert_light(light, None)?;
             keys.push(key);
         }
     }

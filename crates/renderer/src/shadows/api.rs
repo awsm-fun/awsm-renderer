@@ -7,7 +7,7 @@
 //! the source-of-truth shadow params.
 
 use crate::{
-    lights::LightKey,
+    lights::{AwsmLightError, Light, LightKey},
     shadows::{
         config::ShadowsConfig,
         error::AwsmShadowError,
@@ -61,6 +61,27 @@ impl AwsmRenderer {
     /// the light has never had shadow params set.
     pub fn light_shadow_params(&self, key: LightKey) -> Option<&LightShadowParams> {
         self.shadows.params.get(key)
+    }
+
+    /// Inserts a light and (optionally) its authored shadow params in
+    /// one transaction. Pass `Some(LightShadowParams { cast: true, ..  })`
+    /// to enable shadows immediately; pass `None` (or
+    /// `Some(LightShadowParams::default())`) for an unshadowed light
+    /// — callers can still register shadow params later via
+    /// [`Self::set_light_shadow_params`], but threading them through
+    /// here makes the common "insert a casting light" path one call,
+    /// and prevents the two-step pattern from being interrupted by a
+    /// frame that sees the light without its shadow registration.
+    pub fn insert_light(
+        &mut self,
+        light: Light,
+        shadow_params: Option<LightShadowParams>,
+    ) -> std::result::Result<LightKey, AwsmLightError> {
+        let key = self.lights.insert(light)?;
+        if let Some(params) = shadow_params {
+            self.shadows.params.insert(key, params);
+        }
+        Ok(key)
     }
 
     /// Removes a light AND every piece of shadow state keyed on it:

@@ -641,13 +641,13 @@ async fn apply_kind_light(entry: Arc<RendererNode>, cfg: crate::scene::LightConf
     let light = light_from_config(&cfg, Vec3::ZERO, Vec3::NEG_Z);
     let shadow_params = light_shadow_params_from_config(cfg.shadow());
     let key = with_renderer_mut(move |r| {
-        let key = r.lights.insert(light)?;
-        // Propagate the schema's shadow config to the renderer's
-        // runtime mirror. The setter currently no-ops (Phase 0/1
-        // scaffold) but the call is in place so phase 2's caster
-        // registry picks up authored values immediately.
-        let _ = r.set_light_shadow_params(key, shadow_params);
-        Ok::<_, awsm_renderer::error::AwsmError>(key)
+        // Insert the light + register shadow params atomically — the
+        // coordinated API ensures no frame can render between the
+        // two inserts. `lights.mark_punctual_dirty()` (called via
+        // `set_light_shadow_params`'s internal flag) isn't needed
+        // here because the fresh insert already marks the buffer
+        // dirty.
+        r.insert_light(light, Some(shadow_params))
     })
     .await;
     if let Ok(key) = key {

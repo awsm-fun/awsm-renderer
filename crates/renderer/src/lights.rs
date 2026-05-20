@@ -202,8 +202,17 @@ impl Lights {
         self.lighting_info_gpu_dirty = true;
     }
 
-    /// Inserts a light and returns its key.
-    pub fn insert(&mut self, light: Light) -> Result<LightKey> {
+    /// Inserts a light and returns its key. `pub(crate)` — external
+    /// callers must go through
+    /// [`AwsmRenderer::insert_light`](crate::AwsmRenderer::insert_light)
+    /// so the per-light shadow params can be registered in lockstep.
+    /// The coordinated API mirrors
+    /// [`AwsmRenderer::remove_light`](crate::AwsmRenderer::remove_light) /
+    /// [`AwsmRenderer::clear_lights`](crate::AwsmRenderer::clear_lights);
+    /// keeping both sides of the lifecycle on one entry point makes
+    /// it impossible to desynchronise the lights buffer and the
+    /// shadow subsystem.
+    pub(crate) fn insert(&mut self, light: Light) -> Result<LightKey> {
         let key = self.lights.insert(light.clone());
 
         self.punctual_gpu_dirty = true;

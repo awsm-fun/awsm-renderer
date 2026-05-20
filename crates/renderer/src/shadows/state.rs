@@ -50,7 +50,9 @@ use crate::{
             write_shadow_descriptor, write_shadow_view_slot, SHADOW_DESCRIPTOR_UNIFORM_BYTES,
         },
         light_shadow::{EvsmCutoff, LightShadowParams},
-        record::{EvsmDispatchEntry, LightShadowRecord, LightShadowView, ShadowViewThrottle},
+        record::{
+            EvsmDispatchEntry, LightShadowRecord, LightShadowView, ShadowAlloc, ShadowViewThrottle,
+        },
     },
 };
 
@@ -262,6 +264,7 @@ impl Shadows {
         _render_texture_formats: &RenderTextureFormats,
         config: ShadowsConfig,
     ) -> Result<Self, AwsmShadowError> {
+        warn_view_budget(&config);
         let atlas_size = config.atlas_size.max(1);
         let atlas_texture = gpu.create_texture(
             &TextureDescriptor::new(
@@ -601,6 +604,7 @@ impl Shadows {
     /// (texture alloc + dependent-bind-group rebuild) so don't poke
     /// these at frame rate; from the editor inspector they're fine.
     pub fn set_config(&mut self, config: ShadowsConfig) {
+        warn_view_budget(&config);
         let new_atlas = config.atlas_size.max(1);
         let new_evsm = config.evsm_atlas_size.max(1);
         let new_cube_count = config.max_point_shadows.max(1);
@@ -1101,14 +1105,25 @@ impl Shadows {
             match light {
                 crate::lights::Light::Directional { direction, .. } => {
                     let cascade_count = params.cascade_count.clamp(1, 4) as u32;
-                    if self.active_descriptor_count + cascade_count > MAX_SHADOW_DESCRIPTORS {
+                    // Reserve `cascade_count` descriptors + `cascade_count`
+                    // views (one view per cascade). Atlas allocation
+                    // can still fail mid-loop per cascade, in which
+                    // case we commit only the landed prefix.
+                    let Some(alloc) = ShadowAlloc::try_new(
+                        self.active_descriptor_count,
+                        self.active_view_count,
+                        cascade_count,
+                        cascade_count,
+                        MAX_SHADOW_DESCRIPTORS,
+                        MAX_SHADOW_VIEWS,
+                    ) else {
                         tracing::warn!(
-                            "shadow descriptor capacity exhausted: needed {} more, have {} slots free",
-                            cascade_count,
-                            MAX_SHADOW_DESCRIPTORS - self.active_descriptor_count
+                            "shadow descriptor / view budget exhausted (directional needs {})",
+                            cascade_count
                         );
-                        break;
-                    }
+                        continue;
+                    };
+                    let descriptor_base = alloc.descriptor_base;
                     let dir = glam::Vec3::from(*direction);
                     let cascades = cascade::fit_cascades(
                         camera_matrices.view_projection(),
@@ -1127,7 +1142,7 @@ impl Shadows {
                         caster_world_aabbs,
                     );
 
-                    let descriptor_base = self.active_descriptor_count;
+                    let mut landed: u32 = 0;
                     let mut views = Vec::with_capacity(cascades.len());
                     let evsm_first = match params.evsm_cutoff {
                         EvsmCutoff::Off => u32::MAX,
@@ -1144,7 +1159,7 @@ impl Shadows {
                             break;
                         };
 
-                        let descriptor_index = self.active_descriptor_count;
+                        let descriptor_index = descriptor_base + landed;
                         let off = descriptor_index as usize * SHADOW_DESCRIPTOR_BYTES;
                         let is_evsm = (cascade_index as u32) >= evsm_first;
                         // For EVSM cascades the *descriptor*'s atlas
@@ -1248,14 +1263,7 @@ impl Shadows {
                             } else {
                                 1
                             };
-                        if self.active_view_count >= MAX_SHADOW_VIEWS {
-                            tracing::warn!(
-                                "shadow view-slot budget exhausted ({MAX_SHADOW_VIEWS}) — \
-                                 dropping cascade {cascade_index} for this light"
-                            );
-                            break;
-                        }
-                        let view_slot = self.active_view_count;
+                        let view_slot = alloc.view_base + landed;
                         write_shadow_view_slot(
                             &mut *view_bytes,
                             view_slot as usize,
@@ -1263,7 +1271,6 @@ impl Shadows {
                             params.depth_bias,
                             params.normal_bias,
                         );
-                        self.active_view_count += 1;
                         views.push(LightShadowView {
                             view_projection: cascade.view_projection,
                             atlas_rect: rect,
@@ -1272,49 +1279,43 @@ impl Shadows {
                             should_render: true,
                             shadow_view_slot: view_slot,
                         });
-                        self.active_descriptor_count += 1;
+                        landed += 1;
                     }
 
-                    // If view-slot overflow tripped on the very first
-                    // cascade we have no views to publish but
-                    // `descriptor_base` was reserved at the start of
-                    // the branch. Skip the insert — `Lights::write_gpu`
-                    // resolves `shadow_index_for_light(key)` through
-                    // `records`, so an absent record produces
-                    // `SHADOW_INDEX_NONE` and the receiver short-
-                    // circuits. Without this guard the lights buffer
-                    // would bake `descriptor_base` into the light, and
-                    // a subsequent light writing into that same
-                    // descriptor slot would silently take over this
-                    // light's shadow sampling.
-                    if !views.is_empty() {
-                        // Patch each landed cascade's `cascade_info.z`
-                        // (the cascade-count-in-light field at byte
-                        // offset 104..108) to the count we actually
-                        // wrote. `write_shadow_descriptor` was called
+                    if landed > 0 {
+                        // Atlas overflow can cut the cascade loop
+                        // short — `write_shadow_descriptor` was called
                         // per-cascade with the *requested* count, so
-                        // if view-slot overflow cut us short, each
-                        // landed descriptor still advertises 4
-                        // cascades — the receiver's
-                        // `sample_shadow_directional` would walk past
-                        // the landed prefix into unwritten /
-                        // overwritten descriptor slots. Patching the
-                        // count clamps the walk to exactly what
-                        // exists.
-                        let actual_count = views.len() as u32;
-                        if actual_count != cascade_count {
+                        // each landed descriptor advertises
+                        // `cascade_count`. Patch the
+                        // cascade-count-in-light field (byte offset
+                        // 104..108 in each 112-byte descriptor) to
+                        // the actual landed prefix so the receiver's
+                        // `sample_shadow_directional` walk doesn't
+                        // stride past the published end into unwritten
+                        // descriptor slots.
+                        if landed != cascade_count {
                             tracing::warn!(
                                 "directional shadow truncated: requested {} cascades, landed {}",
                                 cascade_count,
-                                actual_count
+                                landed
                             );
-                            let actual_count_f = (actual_count as f32).to_ne_bytes();
-                            for i in 0..actual_count {
+                            let landed_f = (landed as f32).to_ne_bytes();
+                            for i in 0..landed {
                                 let off = (descriptor_base + i) as usize * SHADOW_DESCRIPTOR_BYTES;
-                                descriptor_bytes[off + 104..off + 108]
-                                    .copy_from_slice(&actual_count_f);
+                                descriptor_bytes[off + 104..off + 108].copy_from_slice(&landed_f);
                             }
                         }
+                        // Inline `commit_shadow_alloc` — `descriptor_bytes`
+                        // / `view_bytes` hold an outstanding mut-borrow
+                        // of `self.*_scratch`, so we can't call a
+                        // `&mut self` method here. The two writes
+                        // below are exactly what `commit_shadow_alloc`
+                        // does; split-borrow lets them through.
+                        debug_assert!(landed <= alloc.reserved_descriptors);
+                        debug_assert!(landed <= alloc.reserved_views);
+                        self.active_descriptor_count = alloc.descriptor_base + landed;
+                        self.active_view_count = alloc.view_base + landed;
                         self.records.insert(
                             light_key,
                             LightShadowRecord {
@@ -1323,6 +1324,10 @@ impl Shadows {
                             },
                         );
                     }
+                    // else: alloc dropped without commit — counters
+                    // didn't advance, the next light's `try_alloc_shadow`
+                    // returns the same `descriptor_base` / `view_base`
+                    // and overwrites any orphan bytes.
                 }
                 crate::lights::Light::Spot {
                     position,
@@ -1331,10 +1336,17 @@ impl Shadows {
                     outer_angle,
                     ..
                 } => {
-                    if self.active_descriptor_count >= MAX_SHADOW_DESCRIPTORS {
-                        tracing::warn!("shadow descriptor capacity exhausted (spot)");
-                        break;
-                    }
+                    let Some(alloc) = ShadowAlloc::try_new(
+                        self.active_descriptor_count,
+                        self.active_view_count,
+                        1,
+                        1,
+                        MAX_SHADOW_DESCRIPTORS,
+                        MAX_SHADOW_VIEWS,
+                    ) else {
+                        tracing::warn!("shadow descriptor / view budget exhausted (spot)");
+                        continue;
+                    };
                     let res = params.resolution.max(16);
                     let Some(rect) = place(res, res, self.atlas_size) else {
                         tracing::warn!(
@@ -1368,7 +1380,7 @@ impl Shadows {
                     // directional cascades.
                     let spot_world_per_texel = 2.0 * far * (fov * 0.5).tan() / res as f32;
 
-                    let descriptor_index = self.active_descriptor_count;
+                    let descriptor_index = alloc.descriptor_base;
                     let off = descriptor_index as usize * SHADOW_DESCRIPTOR_BYTES;
                     write_shadow_descriptor(
                         &mut descriptor_bytes[off..off + SHADOW_DESCRIPTOR_BYTES],
@@ -1387,26 +1399,23 @@ impl Shadows {
                         f32::MAX,
                     );
 
-                    if self.active_view_count >= MAX_SHADOW_VIEWS {
-                        tracing::warn!(
-                            "shadow view-slot budget exhausted ({MAX_SHADOW_VIEWS}) — \
-                             dropping spot light shadow this frame"
-                        );
-                        continue;
-                    }
+                    let view_slot = alloc.view_base;
+                    write_shadow_view_slot(
+                        &mut *view_bytes,
+                        view_slot as usize,
+                        &view_projection,
+                        params.depth_bias,
+                        params.normal_bias,
+                    );
+                    // See directional branch — inlined commit because
+                    // `descriptor_bytes` / `view_bytes` hold mut-borrows
+                    // of self.*_scratch.
+                    self.active_descriptor_count = alloc.descriptor_base + 1;
+                    self.active_view_count = alloc.view_base + 1;
                     self.records.insert(
                         light_key,
                         LightShadowRecord {
                             views: vec![{
-                                let view_slot = self.active_view_count;
-                                write_shadow_view_slot(
-                                    &mut *view_bytes,
-                                    view_slot as usize,
-                                    &view_projection,
-                                    params.depth_bias,
-                                    params.normal_bias,
-                                );
-                                self.active_view_count += 1;
                                 LightShadowView {
                                     view_projection,
                                     atlas_rect: rect,
@@ -1419,15 +1428,27 @@ impl Shadows {
                             descriptor_base: descriptor_index,
                         },
                     );
-                    self.active_descriptor_count += 1;
                 }
                 crate::lights::Light::Point {
                     position, range, ..
                 } => {
-                    if self.active_descriptor_count >= MAX_SHADOW_DESCRIPTORS {
-                        tracing::warn!("shadow descriptor capacity exhausted (point)");
-                        break;
-                    }
+                    // Point lights need 1 descriptor + 6 view slots
+                    // (cube faces). All-or-nothing: partial publish
+                    // would leave the receiver sampling a stale cube
+                    // layer for the missing face's major axis.
+                    let Some(alloc) = ShadowAlloc::try_new(
+                        self.active_descriptor_count,
+                        self.active_view_count,
+                        1,
+                        6,
+                        MAX_SHADOW_DESCRIPTORS,
+                        MAX_SHADOW_VIEWS,
+                    ) else {
+                        tracing::warn!(
+                            "shadow descriptor / view budget exhausted (point needs 1 + 6)"
+                        );
+                        continue;
+                    };
                     // O(1) ownership lookup via `cube_slot_for_light`,
                     // validated against `cube_slots` (a stale entry from
                     // a previous-pool reassignment falls back to the
@@ -1485,7 +1506,7 @@ impl Shadows {
                         (-glam::Vec3::Z, -glam::Vec3::Y),
                     ];
 
-                    let descriptor_base = self.active_descriptor_count;
+                    let descriptor_base = alloc.descriptor_base;
                     let mut views: Vec<LightShadowView> = Vec::with_capacity(6);
                     // Per-face throttle period. Default `EveryFrame`
                     // (period = 1) preserves the previous behaviour;
@@ -1495,24 +1516,13 @@ impl Shadows {
                     // a redraw whenever the light or its descriptor
                     // moves enough to invalidate the cache.
                     let cube_update_period = params.cube_face_update_rate.period();
-                    // A single point light burns 6 view slots — the
-                    // descriptor-side capacity check above can't catch
-                    // this on its own, so guard before each face. If
-                    // the budget is exhausted we leave the rest of the
-                    // faces (and the rest of this light's descriptor)
-                    // unwritten — the corresponding cube layers stay
-                    // unrendered for the frame, which is the same
-                    // graceful-degradation behaviour the cube-pool
-                    // overflow path already gives.
-                    let mut view_overflow = false;
+                    // `try_alloc_shadow(1, 6)` above guaranteed the
+                    // 6 view slots are available, so no per-face
+                    // budget check is needed inside the loop.
                     for (face_idx, (dir, up)) in face_dirs.iter().enumerate() {
-                        if self.active_view_count >= MAX_SHADOW_VIEWS {
-                            view_overflow = true;
-                            break;
-                        }
                         let view = glam::Mat4::look_at_rh(pos, pos + *dir, *up);
                         let vp = projection * view;
-                        let view_slot = self.active_view_count;
+                        let view_slot = alloc.view_base + face_idx as u32;
                         write_shadow_view_slot(
                             &mut *view_bytes,
                             view_slot as usize,
@@ -1520,7 +1530,6 @@ impl Shadows {
                             params.depth_bias,
                             params.normal_bias,
                         );
-                        self.active_view_count += 1;
                         views.push(LightShadowView {
                             view_projection: vp,
                             // For cube faces the attachment is already the
@@ -1538,43 +1547,10 @@ impl Shadows {
                             shadow_view_slot: view_slot,
                         });
                     }
-                    if view_overflow {
-                        tracing::warn!(
-                            "shadow view-slot budget exhausted ({MAX_SHADOW_VIEWS}) — \
-                             dropped {} cube face(s) for this point light",
-                            6 - views.len()
-                        );
-                    }
-
-                    // Cube shadows are all-or-nothing: the receiver
-                    // sampler picks a face from the receiver-to-light
-                    // direction and reads `shadow_cube_array` at that
-                    // face's layer. Layers we didn't render *this*
-                    // frame retain whatever depth was there last
-                    // frame (the per-face attachment clear only fires
-                    // when the view's `should_render` is true, which
-                    // requires the view to be in `records.views`).
-                    // Publishing 1..5 faces of a 6-face cube means
-                    // the receiver lands on a stale face whenever its
-                    // direction's major axis matches a missing face —
-                    // visible as random shadow tearing on rotating
-                    // light + receiver geometry. So require all six.
-                    if views.len() != 6 {
-                        tracing::warn!(
-                            "point shadow truncated: only {}/6 cube faces landed — dropping light",
-                            views.len()
-                        );
-                        // Relinquish the tentatively-assigned cube
-                        // slot so the next frame can reuse it cleanly,
-                        // and drop the per-light slot cache entry.
-                        self.cube_slots[slot_index] = None;
-                        self.cube_slot_for_light.remove(light_key);
-                        continue;
-                    }
 
                     // Only one descriptor per point light. Sample-site
                     // uses world-space direction to pick the face.
-                    let descriptor_index = self.active_descriptor_count;
+                    let descriptor_index = alloc.descriptor_base;
                     let off = descriptor_index as usize * SHADOW_DESCRIPTOR_BYTES;
                     write_shadow_descriptor(
                         &mut descriptor_bytes[off..off + SHADOW_DESCRIPTOR_BYTES],
@@ -1609,6 +1585,9 @@ impl Shadows {
                     // cascade_info.w = 2.0 → cube
                     descriptor_bytes[off + 108..off + 112].copy_from_slice(&2.0_f32.to_ne_bytes());
 
+                    // Inlined commit (see directional branch).
+                    self.active_descriptor_count = alloc.descriptor_base + 1;
+                    self.active_view_count = alloc.view_base + 6;
                     self.records.insert(
                         light_key,
                         LightShadowRecord {
@@ -1616,7 +1595,6 @@ impl Shadows {
                             descriptor_base,
                         },
                     );
-                    self.active_descriptor_count += 1;
                 }
             }
         }
@@ -1777,5 +1755,40 @@ impl Shadows {
                 }
             }
         }
+    }
+}
+
+/// Cheap config-time sanity check on the per-frame view-slot budget.
+/// Logs a warning when `max_point_shadows * 6` leaves no headroom for
+/// directional cascades or spot lights — point lights consume 6 view
+/// slots each, and the runtime gracefully degrades on overflow (drops
+/// the offending light's shadow for the frame), but a startup warning
+/// beats discovering "why don't my N point lights cast shadows?" via
+/// the dev console. Conservative threshold: warn if point allocation
+/// alone leaves fewer than 8 slots free (room for ~2 directional
+/// lights at 4 cascades each, or 8 spots).
+fn warn_view_budget(config: &ShadowsConfig) {
+    let point_views = config.max_point_shadows.saturating_mul(6);
+    if point_views >= MAX_SHADOW_VIEWS {
+        tracing::warn!(
+            "ShadowsConfig.max_point_shadows = {} burns {} view slots — \
+             the entire MAX_SHADOW_VIEWS = {} budget. Directional cascades \
+             and spot lights will be silently dropped this frame. Lower \
+             `max_point_shadows`, or raise `MAX_SHADOW_VIEWS` if you need this many.",
+            config.max_point_shadows,
+            point_views,
+            MAX_SHADOW_VIEWS,
+        );
+    } else if point_views + 8 > MAX_SHADOW_VIEWS {
+        tracing::warn!(
+            "ShadowsConfig.max_point_shadows = {} reserves {} of {} view slots — \
+             leaves {} for directional/spot. Mixing many point + several \
+             directional cascades may exhaust the budget; the runtime degrades \
+             safely, but consider lowering `max_point_shadows`.",
+            config.max_point_shadows,
+            point_views,
+            MAX_SHADOW_VIEWS,
+            MAX_SHADOW_VIEWS - point_views,
+        );
     }
 }

@@ -722,26 +722,38 @@ impl AppScene {
         }
 
         let lights = vec![
-            renderer.lights.insert(Light::Directional {
-                color: [1.0, 0.97, 0.92],
-                intensity: 1.4,
-                direction: [0.1, -0.35, -1.0],
-            })?,
-            renderer.lights.insert(Light::Directional {
-                color: [0.9, 0.95, 1.0],
-                intensity: 0.6,
-                direction: [0.0, -0.2, -1.0],
-            })?,
-            renderer.lights.insert(Light::Directional {
-                color: [0.8, 0.9, 1.0],
-                intensity: 0.7,
-                direction: [-0.05, -0.25, 1.0],
-            })?,
-            renderer.lights.insert(Light::Directional {
-                color: [1.0, 0.96, 0.9],
-                intensity: 0.5,
-                direction: [-1.0, -0.2, 0.2],
-            })?,
+            renderer.insert_light(
+                Light::Directional {
+                    color: [1.0, 0.97, 0.92],
+                    intensity: 1.4,
+                    direction: [0.1, -0.35, -1.0],
+                },
+                None,
+            )?,
+            renderer.insert_light(
+                Light::Directional {
+                    color: [0.9, 0.95, 1.0],
+                    intensity: 0.6,
+                    direction: [0.0, -0.2, -1.0],
+                },
+                None,
+            )?,
+            renderer.insert_light(
+                Light::Directional {
+                    color: [0.8, 0.9, 1.0],
+                    intensity: 0.7,
+                    direction: [-0.05, -0.25, 1.0],
+                },
+                None,
+            )?,
+            renderer.insert_light(
+                Light::Directional {
+                    color: [1.0, 0.96, 0.9],
+                    intensity: 0.5,
+                    direction: [-1.0, -0.2, 0.2],
+                },
+                None,
+            )?,
         ];
 
         *self.lights.lock().unwrap() = Some(lights);
