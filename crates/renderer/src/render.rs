@@ -137,6 +137,23 @@ impl AwsmRenderer {
                 .mark_create(BindGroupCreate::TextureViewRecreate);
         }
 
+        // Classify buckets are sized to fit the current viewport's
+        // tile count. The grow-with-2x path keeps the reallocation
+        // away from the steady-state per-frame work. Reset the header
+        // every frame so the atomic counters start at 0.
+        let tile_count = render_texture_views
+            .width
+            .div_ceil(8)
+            .saturating_mul(render_texture_views.height.div_ceil(8));
+        if self
+            .material_classify_buffers
+            .ensure_capacity(&self.gpu, tile_count)?
+        {
+            self.bind_groups
+                .mark_create(BindGroupCreate::MaterialClassifyBuffersResize);
+        }
+        self.material_classify_buffers.reset_header(&self.gpu)?;
+
         self.bind_groups.recreate(
             BindGroupRecreateContext {
                 gpu: &self.gpu,
@@ -153,6 +170,7 @@ impl AwsmRenderer {
                 anti_aliasing: &self.anti_aliasing,
                 shadows: &self.shadows,
                 mesh_light_indices_gpu: &self.mesh_light_indices_gpu,
+                material_classify_buffers: &self.material_classify_buffers,
             },
             &mut self.render_passes,
             &mut self.picker,
@@ -256,6 +274,19 @@ impl AwsmRenderer {
             };
 
             self.render_textures.clear_opaque(&self.gpu)?;
+        }
+
+        // Material classify: per-tile scan of the visibility buffer
+        // produces the indirect-dispatch args + tile buckets the
+        // opaque pipelines consume below. Runs once per frame; cheap
+        // (~few hundred microseconds on a 4K viewport).
+        {
+            let _maybe_span_guard = if self.logging.render_timings {
+                Some(tracing::span!(tracing::Level::INFO, "Material Classify RenderPass").entered())
+            } else {
+                None
+            };
+            self.render_passes.material_classify.render(&ctx)?;
         }
 
         {

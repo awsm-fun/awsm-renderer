@@ -98,6 +98,11 @@ pub struct AwsmRenderer {
     /// GPU storage buffers backing `light_buckets` for the shader path
     /// (Cluster 2.1.b). Uploaded per-frame from the transposed buckets.
     pub mesh_light_indices_gpu: MeshLightIndicesGpu,
+    /// Per-frame classify-pass output (Cluster 6.1, plan §16.3.B).
+    /// Holds the per-`shader_id` tile buckets + indirect-dispatch args
+    /// the opaque material pipelines consume.
+    pub material_classify_buffers:
+        render_passes::material_classify::buffers::ClassifyBuffers,
     /// Last-frame per-mesh pixel coverage (Cluster 6.2). Populated by
     /// the GPU coverage compute pass; consumed by the skinning-skip
     /// and material-LOD gates. Empty until the producer pass is wired.
@@ -414,6 +419,12 @@ impl AwsmRendererBuilder {
 
         let mesh_light_indices_gpu = MeshLightIndicesGpu::new(&gpu)?;
 
+        // Sized for a small initial viewport; recreated by
+        // `ClassifyBuffers::ensure_capacity` on first frame once the
+        // real render-texture size is known.
+        let material_classify_buffers =
+            render_passes::material_classify::buffers::ClassifyBuffers::new(&gpu, 1024)?;
+
         let shadows = shadows::Shadows::new(
             &gpu,
             &mut bind_group_layouts,
@@ -438,6 +449,7 @@ impl AwsmRendererBuilder {
             scene_spatial: SceneSpatial::default(),
             light_buckets: LightMeshBuckets::default(),
             mesh_light_indices_gpu,
+            material_classify_buffers,
             coverage: coverage::MeshCoverage::default(),
             frame_index: 0,
             shaders,

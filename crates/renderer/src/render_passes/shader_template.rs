@@ -6,6 +6,7 @@ use crate::{
         effects::shader::template::ShaderTemplateEffects,
         geometry::shader::template::ShaderTemplateGeometry,
         light_culling::shader::template::ShaderTemplateLightCulling,
+        material_classify::shader::template::ShaderTemplateMaterialClassify,
         material_opaque::shader::template::{
             ShaderTemplateMaterialOpaque, ShaderTemplateMaterialOpaqueEmpty,
         },
@@ -19,6 +20,7 @@ use crate::{
 pub enum ShaderTemplateRenderPass {
     Geometry(ShaderTemplateGeometry),
     LightCulling(ShaderTemplateLightCulling),
+    MaterialClassify(ShaderTemplateMaterialClassify),
     MaterialOpaque(ShaderTemplateMaterialOpaque),
     MaterialOpaqueEmpty(ShaderTemplateMaterialOpaqueEmpty),
     MaterialTransparent(ShaderTemplateMaterialTransparent),
@@ -36,6 +38,9 @@ impl TryFrom<&ShaderCacheKeyRenderPass> for ShaderTemplateRenderPass {
             }
             ShaderCacheKeyRenderPass::LightCulling(cache_key) => Ok(
                 ShaderTemplateRenderPass::LightCulling(cache_key.try_into()?),
+            ),
+            ShaderCacheKeyRenderPass::MaterialClassify(cache_key) => Ok(
+                ShaderTemplateRenderPass::MaterialClassify(cache_key.try_into()?),
             ),
             ShaderCacheKeyRenderPass::MaterialOpaque(cache_key) => Ok(
                 ShaderTemplateRenderPass::MaterialOpaque(cache_key.try_into()?),
@@ -62,6 +67,7 @@ impl ShaderTemplateRenderPass {
         match self {
             ShaderTemplateRenderPass::Geometry(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::LightCulling(tmpl) => tmpl.into_source(),
+            ShaderTemplateRenderPass::MaterialClassify(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::MaterialOpaque(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::MaterialOpaqueEmpty(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::MaterialTransparent(tmpl) => tmpl.into_source(),
@@ -76,6 +82,7 @@ impl ShaderTemplateRenderPass {
         match self {
             ShaderTemplateRenderPass::Geometry(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::LightCulling(tmpl) => tmpl.debug_label(),
+            ShaderTemplateRenderPass::MaterialClassify(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::MaterialOpaque(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::MaterialOpaqueEmpty(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::MaterialTransparent(tmpl) => tmpl.debug_label(),

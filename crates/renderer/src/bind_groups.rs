@@ -43,6 +43,12 @@ pub struct BindGroupRecreateContext<'a> {
     /// group(1) bindings 2/3 of the material-opaque + material-transparent
     /// shading passes.
     pub mesh_light_indices_gpu: &'a crate::light_buckets::MeshLightIndicesGpu,
+    /// Classify-pass output buffer (Cluster 6.1, plan §16.3.B). Bound
+    /// read-write by the classify pass; bound read-only as the
+    /// per-`shader_id` tile bucket source on the opaque main bind
+    /// group; consumed as indirect-args by the opaque dispatch.
+    pub material_classify_buffers:
+        &'a crate::render_passes::material_classify::buffers::ClassifyBuffers,
 }
 
 /// Reasons to recreate bind groups.
@@ -80,6 +86,12 @@ pub enum BindGroupCreate {
     /// reallocated (per-frame grow path). The lights bind groups
     /// (opaque + transparent) must re-bind the new buffer handles.
     MeshLightIndicesResize,
+    /// Classify output buffer was (re)allocated (first frame, or
+    /// viewport resize bumped the tile count past current capacity).
+    /// The classify pass's bind group and the opaque main bind group
+    /// (which reads the classify output for the tile lookup) must
+    /// re-bind the new buffer.
+    MaterialClassifyBuffersResize,
 }
 
 /// Tracks pending bind group recreations.
@@ -124,6 +136,7 @@ impl BindGroups {
             GeometryTransformMaterials,
             GeometryMeta,
             GeometryAnimation,
+            MaterialClassify,
             OpaqueMain,
             OpaqueLights,
             OpaqueTextures,
@@ -178,6 +191,7 @@ impl BindGroups {
                 }
                 BindGroupCreate::TextureViewRecreate => {
                     functions_to_call.insert(FunctionToCall::LightCulling);
+                    functions_to_call.insert(FunctionToCall::MaterialClassify);
                     functions_to_call.insert(FunctionToCall::Display);
                     functions_to_call.insert(FunctionToCall::Effects);
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
@@ -244,6 +258,12 @@ impl BindGroups {
                     // both shading passes.
                     functions_to_call.insert(FunctionToCall::OpaqueLights);
                     functions_to_call.insert(FunctionToCall::TransparentLights);
+                }
+                BindGroupCreate::MaterialClassifyBuffersResize => {
+                    // Classify rebuilds its own bind group; opaque
+                    // main re-binds the buckets read-only.
+                    functions_to_call.insert(FunctionToCall::MaterialClassify);
+                    functions_to_call.insert(FunctionToCall::OpaqueMain);
                 }
             }
         }
@@ -330,6 +350,12 @@ impl BindGroups {
                 }
                 FunctionToCall::LightCulling => {
                     render_passes.light_culling.bind_groups.recreate(&ctx)?;
+                }
+                FunctionToCall::MaterialClassify => {
+                    render_passes
+                        .material_classify
+                        .bind_groups
+                        .recreate(&ctx)?;
                 }
                 FunctionToCall::Effects => {
                     render_passes.effects.bind_groups.recreate(&ctx)?;

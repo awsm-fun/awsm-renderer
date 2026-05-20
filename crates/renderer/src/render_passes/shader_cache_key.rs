@@ -5,6 +5,7 @@ use crate::render_passes::{
     effects::shader::cache_key::ShaderCacheKeyEffects,
     geometry::shader::cache_key::ShaderCacheKeyGeometry,
     light_culling::shader::cache_key::ShaderCacheKeyLightCulling,
+    material_classify::shader::cache_key::ShaderCacheKeyMaterialClassify,
     material_opaque::shader::cache_key::{
         ShaderCacheKeyMaterialOpaque, ShaderCacheKeyMaterialOpaqueEmpty,
     },
@@ -16,6 +17,7 @@ use crate::render_passes::{
 pub enum ShaderCacheKeyRenderPass {
     Geometry(ShaderCacheKeyGeometry),
     LightCulling(ShaderCacheKeyLightCulling),
+    MaterialClassify(ShaderCacheKeyMaterialClassify),
     MaterialOpaque(ShaderCacheKeyMaterialOpaque),
     MaterialOpaqueEmpty(ShaderCacheKeyMaterialOpaqueEmpty),
     MaterialTransparent(ShaderCacheKeyMaterialTransparent),
