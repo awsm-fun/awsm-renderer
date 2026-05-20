@@ -580,7 +580,7 @@ impl AppScene {
                 {
                     let mut prev = scene.gltf_punctual_lights.lock().unwrap();
                     for key in prev.drain(..) {
-                        renderer.lights.remove(key);
+                        renderer.remove_light(key);
                     }
                 }
                 let populate_ctx = renderer.populate_gltf(data, None).await?;
@@ -668,7 +668,7 @@ impl AppScene {
         //    gltf-derived lights so we never confuse the two.
         if let Some(lights) = self.lights.lock().unwrap().take() {
             for light_key in lights {
-                renderer.lights.remove(light_key);
+                renderer.remove_light(light_key);
             }
         }
 
@@ -689,7 +689,7 @@ impl AppScene {
         if !wants_model_lights && has_model_lights {
             let prev = std::mem::take(&mut *self.gltf_punctual_lights.lock().unwrap());
             for key in prev {
-                renderer.lights.remove(key);
+                renderer.remove_light(key);
             }
         } else if wants_model_lights && !has_model_lights {
             // Re-populate from the last loaded gltf data, if any. This

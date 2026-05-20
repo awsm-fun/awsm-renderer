@@ -353,7 +353,7 @@ async fn remove_node(node_id: NodeId) {
 
     with_renderer_mut(|r| {
         if let Some(key) = light_key {
-            r.lights.remove(key);
+            r.remove_light(key);
         }
         for mesh in sub_meshes {
             r.remove_mesh(mesh);
@@ -813,13 +813,14 @@ async fn try_particle_structural_smooth_rebuild(
 }
 
 async fn try_sweep_material_only_update(entry: &Arc<RendererNode>, kind: &NodeKind) -> bool {
-    let (def, material_ref, inline) = match kind {
+    let (def, material_ref, inline, shadow_cfg) = match kind {
         NodeKind::SweepAlongCurve {
             def,
             material,
             inline_material,
+            shadow,
             ..
-        } => (def.clone(), *material, inline_material.clone()),
+        } => (def.clone(), *material, inline_material.clone(), *shadow),
         _ => return false,
     };
 
@@ -841,19 +842,27 @@ async fn try_sweep_material_only_update(entry: &Arc<RendererNode>, kind: &NodeKi
         return false;
     }
 
-    // Geometry unchanged — only the material side may have changed.
-    // Free the previously-owned inline material (if any), resolve the
-    // new material (which may produce a new owned key or hit the
-    // shared cache), and rebind the existing mesh to it.
+    // Geometry unchanged — only the material side and/or the shadow
+    // flags may have changed. Free the previously-owned inline
+    // material (if any), resolve the new material, rebind the
+    // existing mesh to it, and re-apply the per-mesh shadow flags so
+    // a toggle of Cast/Receive on a sweep node actually reaches the
+    // renderer (without this, the fast path skipped the
+    // `set_mesh_shadow_flags` that `procedural_sync` would otherwise
+    // run after a full re-materialize).
     let old_owned: Vec<awsm_renderer::materials::MaterialKey> =
         std::mem::take(&mut *entry.material_keys.lock().unwrap());
     let entry_for_apply = entry.clone();
+    let shadow_flags = mesh_shadow_flags_from_config(&shadow_cfg);
     with_renderer_mut(move |r| {
         let scene = app_state().scene.clone();
         let resolved = super::material_cache::resolve(r, &scene, material_ref, &inline);
         let new_material = resolved.key();
         if let Err(err) = r.set_mesh_material(existing_mesh, new_material) {
             tracing::warn!("node_sync (Sweep fast path): set_mesh_material failed: {err}");
+        }
+        if let Err(err) = r.set_mesh_shadow_flags(existing_mesh, shadow_flags) {
+            tracing::warn!("node_sync (Sweep fast path): set_mesh_shadow_flags failed: {err}");
         }
         // Free the previously-owned inline material *after* the rebind
         // so the slot isn't briefly orphaned mid-frame.
@@ -872,7 +881,7 @@ async fn try_sweep_material_only_update(entry: &Arc<RendererNode>, kind: &NodeKi
 async fn clear_light(entry: &Arc<RendererNode>) {
     let key = entry.light_key.lock().unwrap().take();
     if let Some(key) = key {
-        with_renderer_mut(move |r| r.lights.remove(key)).await;
+        with_renderer_mut(move |r| r.remove_light(key)).await;
     }
 }
 
@@ -1174,6 +1183,31 @@ async fn instance_template(
     drop(renderer);
 
     entry.model_meshes.lock().unwrap().extend(created_meshes);
+    // Apply the authored per-mesh shadow flags to every instantiated
+    // mesh. Without this, a `Cast`/`Receive` toggle on a Model node in
+    // the inspector serialises to `project.json` but never reaches the
+    // renderer — the duplicated glTF meshes keep `cast_shadows = true`
+    // / `receive_shadows = true` (the renderer's defaults) regardless
+    // of what the user authored. Mirrors the post-materialize step in
+    // `procedural_sync::materialize_procedural` for Primitive / Mesh /
+    // Sweep / Instances kinds.
+    let shadow_cfg = match &*entry.node.kind.lock_ref() {
+        NodeKind::Model(r) => Some(r.shadow),
+        _ => None,
+    };
+    if let Some(cfg) = shadow_cfg {
+        let flags = mesh_shadow_flags_from_config(&cfg);
+        let mesh_keys: Vec<awsm_renderer::meshes::MeshKey> =
+            entry.model_meshes.lock().unwrap().clone();
+        if !mesh_keys.is_empty() {
+            with_renderer_mut(move |r| {
+                for mk in mesh_keys {
+                    let _ = r.set_mesh_shadow_flags(mk, flags);
+                }
+            })
+            .await;
+        }
+    }
     // Bump so any signal that derives from "is this Model splittable?"
     // re-evaluates now that mesh count is known.
     bridge().bump_nodes_revision();

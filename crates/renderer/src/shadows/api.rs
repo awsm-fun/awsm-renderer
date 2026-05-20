@@ -63,6 +63,18 @@ impl AwsmRenderer {
         self.shadows.params.get(key)
     }
 
+    /// Removes a light AND every piece of shadow state keyed on it:
+    /// the authored shadow params, the cube-pool slot cache (and the
+    /// slot's owner field), and any throttle history. Without this
+    /// coordinated removal, `params` would keep a stale entry with
+    /// `cast = true` forever — `caster_count` / `any_active` would
+    /// stay nonzero, and `write_gpu`'s per-frame caster-AABB sweep
+    /// would keep running for a light that no longer exists.
+    pub fn remove_light(&mut self, key: LightKey) {
+        self.shadows.on_light_removed(key);
+        self.lights.remove(key);
+    }
+
     /// Mutates a light's shadow params in place. Convenience over the
     /// get-clone-mutate-set pattern.
     pub fn update_light_shadow<F: FnOnce(&mut LightShadowParams)>(

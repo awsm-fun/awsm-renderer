@@ -1248,6 +1248,13 @@ impl Shadows {
                             } else {
                                 1
                             };
+                        if self.active_view_count >= MAX_SHADOW_VIEWS {
+                            tracing::warn!(
+                                "shadow view-slot budget exhausted ({MAX_SHADOW_VIEWS}) — \
+                                 dropping cascade {cascade_index} for this light"
+                            );
+                            break;
+                        }
                         let view_slot = self.active_view_count;
                         write_shadow_view_slot(
                             &mut *view_bytes,
@@ -1339,6 +1346,13 @@ impl Shadows {
                         f32::MAX,
                     );
 
+                    if self.active_view_count >= MAX_SHADOW_VIEWS {
+                        tracing::warn!(
+                            "shadow view-slot budget exhausted ({MAX_SHADOW_VIEWS}) — \
+                             dropping spot light shadow this frame"
+                        );
+                        continue;
+                    }
                     self.records.insert(
                         light_key,
                         LightShadowRecord {
@@ -1440,7 +1454,21 @@ impl Shadows {
                     // a redraw whenever the light or its descriptor
                     // moves enough to invalidate the cache.
                     let cube_update_period = params.cube_face_update_rate.period();
+                    // A single point light burns 6 view slots — the
+                    // descriptor-side capacity check above can't catch
+                    // this on its own, so guard before each face. If
+                    // the budget is exhausted we leave the rest of the
+                    // faces (and the rest of this light's descriptor)
+                    // unwritten — the corresponding cube layers stay
+                    // unrendered for the frame, which is the same
+                    // graceful-degradation behaviour the cube-pool
+                    // overflow path already gives.
+                    let mut view_overflow = false;
                     for (face_idx, (dir, up)) in face_dirs.iter().enumerate() {
+                        if self.active_view_count >= MAX_SHADOW_VIEWS {
+                            view_overflow = true;
+                            break;
+                        }
                         let view = glam::Mat4::look_at_rh(pos, pos + *dir, *up);
                         let vp = projection * view;
                         let view_slot = self.active_view_count;
@@ -1468,6 +1496,13 @@ impl Shadows {
                             should_render: true,
                             shadow_view_slot: view_slot,
                         });
+                    }
+                    if view_overflow {
+                        tracing::warn!(
+                            "shadow view-slot budget exhausted ({MAX_SHADOW_VIEWS}) — \
+                             dropped {} cube face(s) for this point light",
+                            6 - views.len()
+                        );
                     }
 
                     // Only one descriptor per point light. Sample-site
@@ -1640,5 +1675,26 @@ impl Shadows {
     /// Returns the per-light authored shadow params, if registered.
     pub fn light_params(&self, key: LightKey) -> Option<&LightShadowParams> {
         self.params.get(key)
+    }
+
+    /// Cleans every piece of shadow state keyed on `key`. Call this
+    /// from `AwsmRenderer::remove_light` (the public entry point) —
+    /// never call `Lights::remove` directly, or the shadow side
+    /// leaks: the cube-pool slot stays "owned" by a dead key (
+    /// `cube_slots[i] = Some(key)`), the throttle entry persists, and
+    /// `params` keeps a `cast = true` row that makes
+    /// `caster_count`/`any_active` lie and forces a per-frame
+    /// caster-AABB sweep for a nonexistent caster.
+    pub(super) fn on_light_removed(&mut self, key: LightKey) {
+        self.params.remove(key);
+        self.throttle.remove(key);
+        self.records.remove(key);
+        if let Some(idx) = self.cube_slot_for_light.remove(key) {
+            if let Some(slot) = self.cube_slots.get_mut(idx as usize) {
+                if *slot == Some(key) {
+                    *slot = None;
+                }
+            }
+        }
     }
 }
