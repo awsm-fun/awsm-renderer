@@ -401,13 +401,24 @@ impl RenderTexturesInner {
         // maybe multisampled, but a bit differnt since we need to resolve it later
         // and it has copy_dst
         let transparent = {
+            // The decal compute pass (Cluster 6.4) writes overlaid
+            // pixels into this texture after the opaque→transparent
+            // blit has primed it with the opaque shading result; it
+            // needs `STORAGE_BINDING` to bind the view as a storage
+            // texture write. MSAA textures can't be storage-bound,
+            // so the usage flag is conditional. (`Decals::write_gpu`
+            // CPU-side gates the render-graph slot on MSAA too.)
+            let mut usage = TextureUsage::new()
+                .with_render_attachment()
+                .with_texture_binding()
+                .with_copy_dst();
+            if anti_aliasing.msaa_sample_count.is_none() {
+                usage = usage.with_storage_binding();
+            }
             let mut descriptor = TextureDescriptor::new(
                 render_texture_formats.color,
                 Extent3d::new(width, Some(height), Some(1)),
-                TextureUsage::new()
-                    .with_render_attachment()
-                    .with_texture_binding()
-                    .with_copy_dst(),
+                usage,
             )
             .with_label("Transparent");
 

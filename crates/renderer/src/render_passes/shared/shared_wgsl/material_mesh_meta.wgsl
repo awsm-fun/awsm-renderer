@@ -36,5 +36,14 @@ struct MaterialMeshMeta {
     // are applied separately via the global prefix walk).
     light_slice_offset: u32,
     light_slice_count: u32,
-    padding_4: array<vec4<u32>, 11>,
+    // `1u` means the mesh opts into projection decals (Cluster 6.4);
+    // `0u` skips the per-decal volume test in `material_decal`'s
+    // compute. Matches `Mesh::receive_decals`.
+    receive_decals: u32,
+    // Reserved trailing u32s — keep the populated region at a vec4
+    // boundary so `padding_4` lays out cleanly.
+    _reserved0: u32,
+    _reserved1: u32,
+    _reserved2: u32,
+    padding_4: array<vec4<u32>, 10>,
 }

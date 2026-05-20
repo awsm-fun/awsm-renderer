@@ -12,6 +12,7 @@ pub mod buffer;
 pub mod camera;
 pub mod coverage;
 pub mod debug;
+pub mod decals;
 pub mod environment;
 pub mod error;
 pub mod frustum;
@@ -103,6 +104,10 @@ pub struct AwsmRenderer {
     /// the opaque material pipelines consume.
     pub material_classify_buffers:
         render_passes::material_classify::buffers::ClassifyBuffers,
+    /// Projection-decal subsystem (Cluster 6.4, plan §16.4). Owns
+    /// the per-decal GPU storage buffer the `material_decal` compute
+    /// pass reads at shading time.
+    pub decals: decals::Decals,
     /// Last-frame per-mesh pixel coverage (Cluster 6.2). Populated by
     /// the GPU coverage compute pass; consumed by the skinning-skip
     /// and material-LOD gates. Empty until the producer pass is wired.
@@ -425,6 +430,11 @@ impl AwsmRendererBuilder {
         let material_classify_buffers =
             render_passes::material_classify::buffers::ClassifyBuffers::new(&gpu, 1024)?;
 
+        // Decals subsystem — fixed-capacity GPU storage buffer
+        // allocated up front; per-frame upload only touches the
+        // bytes for currently-active decals.
+        let decals = decals::Decals::new(&gpu)?;
+
         let shadows = shadows::Shadows::new(
             &gpu,
             &mut bind_group_layouts,
@@ -450,6 +460,7 @@ impl AwsmRendererBuilder {
             light_buckets: LightMeshBuckets::default(),
             mesh_light_indices_gpu,
             material_classify_buffers,
+            decals,
             coverage: coverage::MeshCoverage::default(),
             frame_index: 0,
             shaders,

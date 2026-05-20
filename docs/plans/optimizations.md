@@ -1754,15 +1754,65 @@ indirect dispatch driven by a per-material tile bitmask. See plan
 
 #### 16.4 Cluster 6.4 — Decals as a material class
 
-**Status:** `blocked: depends on 16.3 (6.1) + decal authoring infrastructure`
+**Status:** `runtime done; schema + editor + HZB-tile classification pending`
 
-The current renderer has no projection-decal rasterization path.
-When decals are added authoring-side, the vis-buffer-native approach
-is to treat them as a material class consuming the same tile-bucket
-buffer Cluster 6.1 builds. See plan §8.4.
+**16.4.A Runtime (this session) — DONE.** Decima/D3-style projection
+decals (oriented unit cube, project along local -Z, alpha-blend).
+Landed pieces:
 
-**Pre-requisite:** decal authoring + decal-volume → mesh-AABB overlap
-test. Until that exists, this stays blocked.
+- `crates/renderer/src/decals/{mod,api,data,gpu}.rs` — `Decals` slotmap
+  + per-decal GPU storage buffer + `AwsmRenderer::{insert,update,remove}_decal`
+  public API.
+- `Mesh::receive_decals: bool` (default true) packed into
+  `MaterialMeshMeta` at the new `MATERIAL_MESH_META_RECEIVE_DECALS_OFFSET`;
+  the decal shader checks it per-pixel and skips the per-decal volume
+  test for opt-out meshes.
+- New `material_decal` compute pass at
+  `crates/renderer/src/render_passes/material_decal/`. Runs after the
+  opaque→transparent blit; reads opaque (sampled), depth + visibility +
+  mesh-meta + decals + camera + texture-pool; reconstructs world
+  position from depth; iterates active decals and alpha-blends each
+  whose inverse-transformed point lies inside the unit cube; writes
+  to the transparent texture (which the blit already primed). v1
+  ships alpha-blend only — additional blend modes are flagged at the
+  `decal.blend_mode` u32 dispatch site.
+- `transparent` render texture gained `STORAGE_BINDING` usage when
+  MSAA is disabled. MSAA path skips the dispatch (the multisampled
+  transparent texture can't be storage-bound); the §16.4.C note
+  below tracks the follow-up.
+- Browser-validated: no WebGPU validation errors with one box +
+  PBR/Toon/Unlit pipelines + classify all wired. Decals are
+  inert-but-correct until callers start invoking `insert_decal`.
+
+**16.4.B Schema + editor — next session.** Scene-schema decal node
+(transform + texture + alpha mode), editor authoring panel with the
+unit-cube gizmo, `renderer_bridge` wiring so scene loads materialize
+decals via `insert_decal`. Tracked as task **C2** in the chat task
+list.
+
+**16.4.C HZB-tile classification follow-up.** v1 dispatches the
+decal pass over every non-skybox tile; each pixel iterates every
+active decal. Fine at low decal counts, scales worse. After
+**16.6 (HZB)** lands, run a tile-decal classify step that, per
+screen tile, builds a list of decals whose screen-space AABB
+overlaps the tile, gated against HZB to skip occluded coverage.
+Bucket layout reuses the classify infrastructure from 6.1.
+
+**16.4.D MSAA path follow-up.** Multisampled `transparent` texture
+can't be storage-bound, so v1's decal dispatch is gated on
+"MSAA off". Lift the restriction by adding a dedicated
+`decal_color_tex` storage texture sized to the resolved viewport
+and a tiny composite step that reads opaque + decal_color into
+transparent. Tracked here so the gate doesn't become a permanent
+silent skip.
+
+**16.4.E Storage-budget opportunity.** The opaque main bind group
+is now at exactly 10/10 storage bindings. The dynamic-materials
+plan needs at least one more slot for `extras_pool`. Refactor
+candidate: pack `attribute_indices` (`u32`) and the
+`visibility_geometry_data_offset` field of `MaterialMeshMeta` into a
+shared buffer with offset-and-stride header — frees one slot.
+Tracked in §16.E1 below.
 
 #### 16.5 Cluster 4.3 — True cube PCSS
 
@@ -1880,6 +1930,48 @@ the data shape.
 Small refactor — single rename + import updates. No behaviour change.
 
 ---
+
+### Storage-budget refactor candidates
+
+The opaque main bind group is currently at exactly 10 of 10 storage
+bindings — the absolute cap with `with_max_storage_buffers_per_shader_stage`.
+Several upcoming features want one more slot:
+
+- **Dynamic materials** (`docs/plans/dynamic-materials.md`)
+  needs `extras_pool` for variable-length per-material buffer slots.
+- **GPU-driven culling (16.6/16.7/16.8)** wants the instance-list
+  storage as a separate binding.
+
+#### 16.E1 Pack `attribute_indices` into `MaterialMeshMeta`
+
+**Status:** `not started`
+
+`attribute_indices: array<u32>` (binding 8 on the opaque main bind
+group) holds vertex-attribute index buffers — one slice per mesh.
+Slices are looked up via `MaterialMeshMeta.vertex_attribute_indices_offset`,
+read at one offset per pixel for the active triangle. The same
+read pattern as `mesh_light_indices` (which moved its slice metadata
+into `MaterialMeshMeta` via Option F).
+
+Mirror that refactor: put the index data into a single shared
+`mesh_attribute_pool: array<u32>` (already present? — confirm
+during the refactor) and have `MaterialMeshMeta` carry the offset
++ length. Removes the dedicated `attribute_indices` binding.
+
+Saves one storage slot. Lands cleanly before either dynamic
+materials or GPU-driven culling.
+
+#### 16.E2 Pack `attribute_data` similarly
+
+**Status:** `not started`
+
+`attribute_data: array<f32>` (binding 9) — same shape as
+`attribute_indices` but for the actual vertex attribute floats. Same
+refactor: move slice metadata into `MaterialMeshMeta`, keep one
+shared pool buffer. Saves a second storage slot.
+
+After 16.E1 + 16.E2 the opaque main bind group sits at 8/10, with
+two slots free for dynamic-materials + GPU-driven culling.
 
 ### Tuning / profiling items (no new code)
 

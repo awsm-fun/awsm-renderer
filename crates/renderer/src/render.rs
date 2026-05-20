@@ -95,6 +95,9 @@ impl AwsmRenderer {
             &mut self.meshes,
             &mut self.bind_groups,
         )?;
+        // Decals (Cluster 6.4) — upload per-decal data if anything
+        // changed since last frame. No-op when no decals exist.
+        self.decals.write_gpu(&self.gpu, &mut self.bind_groups)?;
         self.meshes
             .meta
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
@@ -171,6 +174,7 @@ impl AwsmRenderer {
                 shadows: &self.shadows,
                 mesh_light_indices_gpu: &self.mesh_light_indices_gpu,
                 material_classify_buffers: &self.material_classify_buffers,
+                decals: &self.decals,
             },
             &mut self.render_passes,
             &mut self.picker,
@@ -376,6 +380,25 @@ impl AwsmRenderer {
                 &ctx.render_texture_views.transparent,
                 &ctx.command_encoder,
             )?;
+        }
+
+        // Projection decals (Cluster 6.4). Runs after the blit so
+        // `transparent_tex` already holds the opaque shading result;
+        // the decal pass overwrites the small subset of pixels its
+        // volumes cover with the alpha-blended composite, leaving
+        // every other pixel as the blit produced it. No-op when no
+        // decals are active or MSAA is on (the v1 path doesn't have
+        // a multisampled storage-binding target — see
+        // `MaterialDecalRenderPass::render`).
+        {
+            let _maybe_span_guard = if ctx.logging.render_timings {
+                Some(tracing::span!(tracing::Level::INFO, "Material Decal RenderPass").entered())
+            } else {
+                None
+            };
+            self.render_passes
+                .material_decal
+                .render(&ctx, &self.decals)?;
         }
 
         // Built-in line render pass — must run after the opaque->transparent

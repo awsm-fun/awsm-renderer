@@ -49,6 +49,10 @@ pub struct BindGroupRecreateContext<'a> {
     /// group; consumed as indirect-args by the opaque dispatch.
     pub material_classify_buffers:
         &'a crate::render_passes::material_classify::buffers::ClassifyBuffers,
+    /// Projection-decal subsystem (Cluster 6.4, plan §16.4). Holds
+    /// the per-decal GPU buffer the `material_decal` compute pass
+    /// reads at shading time.
+    pub decals: &'a crate::decals::Decals,
 }
 
 /// Reasons to recreate bind groups.
@@ -92,6 +96,12 @@ pub enum BindGroupCreate {
     /// (which reads the classify output for the tile lookup) must
     /// re-bind the new buffer.
     MaterialClassifyBuffersResize,
+    /// Decals GPU buffer was re-allocated (capacity grew). The decal
+    /// pass's main bind group must re-bind the new buffer handle.
+    /// In v1 the buffer is fixed-capacity so this event never fires;
+    /// kept here so a future dynamic-resize path (when MAX_DECAL_COUNT
+    /// becomes a per-frame value) doesn't need to add a new variant.
+    DecalsResize,
 }
 
 /// Tracks pending bind group recreations.
@@ -137,6 +147,8 @@ impl BindGroups {
             GeometryMeta,
             GeometryAnimation,
             MaterialClassify,
+            MaterialDecalMain,
+            MaterialDecalTextures,
             OpaqueMain,
             OpaqueLights,
             OpaqueTextures,
@@ -192,6 +204,7 @@ impl BindGroups {
                 BindGroupCreate::TextureViewRecreate => {
                     functions_to_call.insert(FunctionToCall::LightCulling);
                     functions_to_call.insert(FunctionToCall::MaterialClassify);
+                    functions_to_call.insert(FunctionToCall::MaterialDecalMain);
                     functions_to_call.insert(FunctionToCall::Display);
                     functions_to_call.insert(FunctionToCall::Effects);
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
@@ -201,6 +214,7 @@ impl BindGroups {
                 BindGroupCreate::TexturePool => {
                     functions_to_call.insert(FunctionToCall::OpaqueTextures);
                     functions_to_call.insert(FunctionToCall::TransparentTextures);
+                    functions_to_call.insert(FunctionToCall::MaterialDecalTextures);
                 }
                 BindGroupCreate::TextureTransformsResize => {
                     functions_to_call.insert(FunctionToCall::OpaqueTextures);
@@ -264,6 +278,11 @@ impl BindGroups {
                     // main re-binds the buckets read-only.
                     functions_to_call.insert(FunctionToCall::MaterialClassify);
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
+                }
+                BindGroupCreate::DecalsResize => {
+                    // Decals buffer is bound on the decal pass's
+                    // main bind group.
+                    functions_to_call.insert(FunctionToCall::MaterialDecalMain);
                 }
             }
         }
@@ -356,6 +375,18 @@ impl BindGroups {
                         .material_classify
                         .bind_groups
                         .recreate(&ctx)?;
+                }
+                FunctionToCall::MaterialDecalMain => {
+                    render_passes
+                        .material_decal
+                        .bind_groups
+                        .recreate_main(&ctx)?;
+                }
+                FunctionToCall::MaterialDecalTextures => {
+                    render_passes
+                        .material_decal
+                        .bind_groups
+                        .recreate_texture_pool(&ctx)?;
                 }
                 FunctionToCall::Effects => {
                     render_passes.effects.bind_groups.recreate(&ctx)?;

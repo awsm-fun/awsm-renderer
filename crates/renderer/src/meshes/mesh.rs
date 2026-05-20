@@ -95,6 +95,12 @@ pub struct Mesh {
     /// `Some`. The plan suggests letting Cluster 4.1's quality tier
     /// drive this — Low → 16, Medium → 64, High → 256, Ultra → 1024.
     pub cheap_material_pixel_threshold: u32,
+    /// Whether projection decals (Cluster 6.4) can land on this
+    /// mesh. Default `true`. The decal compute pass reads this from
+    /// each pixel's `MaterialMeshMeta` and skips the per-decal
+    /// volume test for non-receiving meshes — useful for sky-domes,
+    /// HUD-like geometry, or surfaces the artist wants kept clean.
+    pub receive_decals: bool,
 }
 
 impl Mesh {
@@ -122,6 +128,7 @@ impl Mesh {
             skin_update_period: 1,
             cheap_material_key: None,
             cheap_material_pixel_threshold: 64,
+            receive_decals: true,
         }
     }
 

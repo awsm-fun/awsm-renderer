@@ -42,7 +42,9 @@ pub const MATERIAL_MESH_META_MORPH_MATERIAL_BITMASK_TANGENT: u32 = 1 << 1;
 ///   17: receive_shadows
 ///   18: light_slice_offset (Option F)
 ///   19: light_slice_count  (Option F)
-pub const MATERIAL_MESH_META_BYTE_SIZE: usize = 80;
+///   20: receive_decals (Cluster 6.4)
+///   21..23: reserved / pad (keeps `padding_4` at vec4 alignment)
+pub const MATERIAL_MESH_META_BYTE_SIZE: usize = 96;
 /// Byte alignment for material mesh meta entries.
 pub const MATERIAL_MESH_META_BYTE_ALIGNMENT: usize = 256;
 /// Byte offset of the `receive_shadows` u32 inside the packed struct.
@@ -56,6 +58,10 @@ pub const MATERIAL_MESH_META_RECEIVE_SHADOWS_OFFSET: usize = 17 * 4;
 /// The 8 bytes from this offset hold the per-mesh light-slice metadata
 /// — `[offset_u32, count_u32]` — written per-frame by `MeshMeta::set_mesh_light_slice`.
 pub const MATERIAL_MESH_META_LIGHT_SLICE_OFFSET: usize = 18 * 4;
+/// Byte offset of the `receive_decals` u32 inside the packed struct.
+/// Used by `MeshMeta::set_receive_decals` for the in-place patch path
+/// so the decal toggle doesn't need to re-pack the entire struct.
+pub const MATERIAL_MESH_META_RECEIVE_DECALS_OFFSET: usize = 20 * 4;
 
 pub static MATERIAL_BUFFER_USAGE: LazyLock<BufferUsage> = LazyLock::new(|| {
     BufferUsage::new()
@@ -227,6 +233,18 @@ impl<'a> MaterialMeshMeta<'a> {
         // that never gets a slice walk this frame reads `count = 0`
         // and the punctual loop is empty (directional lights still
         // apply via the global prefix).
+        push_u32(0);
+        push_u32(0);
+
+        // receive_decals — consumed by the decal compute pass
+        // (Cluster 6.4) to skip the per-decal volume test when the
+        // mesh opted out. Matches the `receive_decals` u32 in
+        // `material_mesh_meta.wgsl`.
+        push_u32(if mesh.receive_decals { 1 } else { 0 });
+        // Reserved trailing u32s — keep the populated region at a
+        // vec4 multiple so `padding_4: array<vec4<u32>, _>` stays
+        // vec4-aligned.
+        push_u32(0);
         push_u32(0);
         push_u32(0);
 
