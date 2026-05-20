@@ -54,6 +54,61 @@ If you can't get something working through either editor, fall back to manually 
 
 ---
 
+## Update (post material classify + indirect dispatch)
+
+The opaque-shading compute kernel landscape has changed since this
+plan was written. Cluster 6.1 (plan
+`docs/plans/optimizations.md` §16.3) landed two related changes:
+
+1. **Shader split.** PBR / Unlit / Toon each compile to their own
+   specialized compute pipeline. The runtime `if (shader_id == X) {…}`
+   dispatch chain in the opaque shader was replaced with an askama
+   `{% match shader_id %}` template choice; only the matching
+   material's WGSL fragment ends up in each pipeline.
+2. **Material classify + indirect dispatch.** A new compute pass
+   (`render_passes/material_classify/`) scans the visibility buffer
+   per 8×8 tile and produces per-`MaterialShaderId` tile buckets +
+   `dispatchWorkgroupsIndirect` args. Each pipeline now runs only
+   over tiles its shader_id touches; mixed-material tiles are
+   shaded by every pipeline whose shader_id is present (the
+   per-pixel guard skips non-matching pixels).
+
+This changes a few load-bearing assumptions of this plan. Read
+together with the rest of the doc:
+
+- **Each registered Custom material adds its own compute pipeline**,
+  not a new branch in a shared dispatch chain. The classify-bucket
+  count grows with the registered dynamic-material count; the
+  classify shader gains a new bucket per `Custom` shader_id.
+- **`{{ shader_id_dispatch }}` is gone.** The template substitution
+  site that hosted the dispatch chain is now `{% match shader_id %}`
+  emitting exactly one material's shading body per pipeline. There
+  is no shared first-party + dynamic dispatch site to "append" to.
+- **`MaterialShaderId` newtype rewrite** (this plan's §"`MaterialShaderId`
+  partitioning") is still load-bearing — classify uses it as the
+  bucket key. The newtype shape goes from `enum { Pbr=1, Unlit=2,
+  Toon=3 }` to `struct MaterialShaderId(u32)` with `PBR` / `UNLIT` /
+  `TOON` consts + a `DYNAMIC_START = 10_000` reserved range.
+- **Storage budget watch.** The opaque main bind group is at 9 of
+  10 storage bindings after classify. Adding `extras_pool` (this
+  plan's "Storage strategy") pushes it to 10/10 — the absolute cap.
+  No headroom for further additions without an earlier pack.
+- **Skybox ownership.** PBR pipeline retains the skybox-fallback
+  block; non-PBR pipelines early-return on skybox without writing.
+  A `Custom` opaque shader inherits the non-PBR rule by default —
+  it must not write skybox tiles unless the material is explicitly
+  registered as a skybox-owner (a future "skybox bucket"
+  extension).
+
+The rest of this plan still applies as the implementation brief
+for everything else; the §"Storage strategy" and §"Render-graph
+slot" sections are the only ones whose details substantively
+shift. Treat the per-section text below as **mostly correct, with
+the dispatch-chain references swapped for per-pipeline match
+choices** at implementation time.
+
+---
+
 ## High-Level Direction
 
 We're adding a runtime registration path for **custom materials** to a visibility-buffer deferred renderer with a forward transparent pass. The motivating intent:
