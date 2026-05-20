@@ -197,6 +197,23 @@ fn main(
     let material_offset = material_mesh_meta.material_offset;
     let shader_id = material_load_shader_id(material_offset);
 
+    // Specialized pipeline guard: this shader was compiled for one
+    // `shader_id` (PBR / Unlit / Toon) — pixels whose material uses a
+    // different shader_id are handled by their own pipeline's
+    // dispatch. The runtime check is a safety net for the
+    // pre-classify world where every pipeline runs full-screen;
+    // once material classify (Cluster 6.1) lands, the dispatch
+    // bucket only covers tiles that contain this shader_id so the
+    // check is dead code that DCE removes.
+    {% match shader_id %}
+        {% when MaterialShaderId::Pbr %}
+            if (shader_id != SHADER_ID_PBR) { return; }
+        {% when MaterialShaderId::Unlit %}
+            if (shader_id != SHADER_ID_UNLIT) { return; }
+        {% when MaterialShaderId::Toon %}
+            if (shader_id != SHADER_ID_TOON) { return; }
+    {% endmatch %}
+
     let vertex_attribute_stride = material_mesh_meta.vertex_attribute_stride / 4; // 4 bytes per float
     let attribute_indices_offset = material_mesh_meta.vertex_attribute_indices_offset / 4;
     let attribute_data_offset = material_mesh_meta.vertex_attribute_data_offset / 4;
@@ -219,11 +236,16 @@ fn main(
 
     let lights_info = get_lights_info();
 
-    // Compute material color and apply lighting based on shader type
+    // Compute material color and apply lighting based on shader type.
+    // Each opaque pipeline is specialized for one `shader_id`; the
+    // template emits only the matching material's shading path
+    // (PBR / Unlit / Toon). The dropped runtime if/else used to live
+    // here — the askama match below replaces it.
     var color: vec3<f32>;
     var base_alpha: f32;
 
-    if (shader_id == SHADER_ID_UNLIT) {
+    {% match shader_id %}
+    {% when MaterialShaderId::Unlit %}
         // Unlit material path
         let unlit_material = unlit_get_material(material_offset);
         {% match mipmap %}
@@ -252,7 +274,7 @@ fn main(
         {% endmatch %}
         color = compute_unlit_output(unlit_color);
         base_alpha = unlit_color.base.a;
-    } else if (shader_id == SHADER_ID_TOON) {
+    {% when MaterialShaderId::Toon %}
         // Toon material path — banded N·L + stepped Blinn-Phong + rim.
         // Reads world position from the standard coordinates the surrounding
         // code already computes; doesn't sample textures (v1).
@@ -265,7 +287,7 @@ fn main(
             lights_info,
         );
         base_alpha = toon_material.base_color_factor.a;
-    } else {
+    {% when MaterialShaderId::Pbr %}
         // PBR material path (default)
         let pbr_material = pbr_get_material(material_offset);
 
@@ -325,8 +347,7 @@ fn main(
             );
         {% endif %}
         base_alpha = material_color.base.a;
-
-    }
+    {% endmatch %}
 
 
     // MSAA edge detection and per-sample processing

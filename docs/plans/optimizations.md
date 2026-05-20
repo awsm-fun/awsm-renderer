@@ -1636,43 +1636,99 @@ rendered-cascade count, not configured-cascade count.
 
 #### 16.3 Cluster 6.1 — Material classify + indirect dispatch
 
-**Status:** `deferred — needs codebase prerequisite (shader split)`
+**Status:** `prerequisite done; classify pass implementation pending`
 
-Implementation note (not yet started):
+**A. Shader split — DONE.** The opaque compute pass is now specialized
+per `MaterialShaderId` (PBR / Unlit / Toon). Concretely:
+- [`shader/cache_key.rs`](../../crates/renderer/src/render_passes/material_opaque/shader/cache_key.rs)
+  gained a `shader_id: MaterialShaderId` field.
+- [`shader/template.rs`](../../crates/renderer/src/render_passes/material_opaque/shader/template.rs)
+  passes `shader_id` into the compute template; the runtime `if
+  (shader_id == X) {…}` branch in `compute.wgsl` became a
+  `{% match shader_id %}` template choice.
+- [`pipeline.rs`](../../crates/renderer/src/render_passes/material_opaque/pipeline.rs)
+  caches pipelines per `(msaa, mipmaps, shader_id)` — 12 entries
+  upfront.
+- [`renderable.rs`](../../crates/renderer/src/renderable.rs) routes
+  each mesh's `effective_material_key` through
+  `Materials::shader_id()` to pick the matching pipeline.
+- Per-pixel guard `if (shader_id != THIS_PIPELINE_ID) { return; }` at
+  the top of each specialized shader catches the pre-classify case
+  where every pipeline runs full-screen. Removed by the classify
+  pass below — until then, expect a small perf regression on scenes
+  with 2+ shader_ids because each pipeline runs full-screen with the
+  guard tossing most pixels.
 
-The plan's design buckets tiles **per material pipeline key** so each
-material gets its own indirect dispatch. The renderer currently
-ships a single monolithic compute shader that handles every shader
-flavour (PBR + Unlit + Toon) via runtime branching on `shader_id`;
-`seen_pipeline_keys` in
-[`material_opaque/render_pass.rs`](../../crates/renderer/src/render_passes/material_opaque/render_pass.rs)
-dedupes to typically one pipeline per frame. With N = 1, the
-per-bucket workgroup-count win is zero — the bucket is the whole
-screen.
+**B. Classify pass — to land next session.** Implementation design:
 
-A correct landing of 16.3 needs to land in two steps:
+*Module skeleton (new):* `crates/renderer/src/render_passes/material_classify/`
+mirroring the `light_culling` pass — `mod.rs` (visibility),
+`render_pass.rs` (`MaterialClassifyRenderPass` struct + `render(ctx)`),
+`bind_group.rs`, `pipeline.rs`, `shader/{cache_key.rs, template.rs,
+material_classify_wgsl/{bind_groups.wgsl, compute.wgsl}}`.
 
-1. **Shader split.** Specialize the material shader by `shader_id`
-   so PBR, Unlit, Toon each become their own compute pipeline (the
-   `seen_pipeline_keys` map then naturally grows to N ≥ 2 entries).
-   Required so the per-bucket dispatch actually represents distinct
-   workloads.
-2. **Classify + indirect** (the §8.1 spec): new
-   `render_passes/material_classify/` module producing per-bucket
-   tile lists + indirect args. Material pass switches to
-   `dispatch_workgroups_indirect`; shader maps `workgroup_id.x` to a
-   tile in its bucket. Skybox-only tiles routed through a separate
-   tiny compute that only does the skybox sample (so the geometry
-   buckets skip them entirely).
+*Compute shader:* one workgroup per 8×8 tile. Each invocation reads
+its pixel's `visibility_data` → `material_meta_offset` → per-mesh
+`material_offset` → `shader_id`. Skybox pixels (`triangle_index ==
+U32_MAX`) are treated as if they were PBR — the PBR pipeline keeps
+the existing skybox-fallback `textureStore(skybox_color)` block
+and shades them; non-PBR pipelines gain a matching early-return on
+skybox so a mixed-material tile shaded by Unlit + skybox doesn't
+double-write its skybox pixels.
 
-Storage-budget cost: one additional read-only storage binding
-(tile-bucket buffer) on the material pass; indirect-args buffers
-don't count against the storage budget. Today we sit at exactly
-9-of-10 storage bindings — adding the bucket buffer needs another
-`MaterialMeshMeta`-style pack to free a slot first.
+Per workgroup, an `atomicOr` on a 4-bit shared mask (one bit per
+shader_id) collects the union; thread 0 then for each set bit
+atomically appends the tile coords to `bucket[shader_id]` and
+increments `indirect_args[shader_id].x`.
 
-Defer until shader-specialization lands (or until material count
-empirically passes the §8.1 break-even of ~6).
+*Output buffer layout* (one storage binding, read-write in classify,
+read-only in opaque):
+```
+ClassifyOutput {
+    indirect_args: array<DispatchArgs, 3>, // 12 B × 3 = 36 B, aligned to 48 B
+    bucket_offsets: array<u32, 3>,         // per-bucket starting index into `tiles`
+    bucket_capacities: array<u32, 3>,      // overrun guard
+    tiles: array<vec2<u32>>,               // packed tile coords, partitioned by bucket
+}
+```
+Capacity per bucket = ceil(width/8) × ceil(height/8) (worst case: a
+tile contains every shader_id). At 4K: ~138 K tiles × 8 B = ~1.1 MB
+per bucket × 3 = ~3.3 MB total. Cheap.
+
+*Material pass changes:*
+- Add the classify-output buffer as a read-only storage binding to
+  the material-opaque main bind group (storage count goes 8 → 9 of
+  10 — still within budget; no packing needed).
+- Replace `dispatch_workgroups(W/8, H/8, 1)` with
+  `dispatch_workgroups_indirect(classify_buffer, indirect_args_offset)`
+  per pipeline. The dispatch dedupe in
+  [`render_pass.rs`](../../crates/renderer/src/render_passes/material_opaque/render_pass.rs)
+  stays — each unique pipeline still dispatches once.
+- Shader's first line replaces `let coords = vec2<i32>(gid.xy);` with
+  `let tile = classify.tiles[classify.bucket_offsets[SHADER_ID] +
+  workgroup_id.x]; let coords = vec2<i32>(tile * 8u + local_invocation_id.xy);`.
+- The per-pixel guard added by the shader split becomes dead code
+  (and DCE-removes itself) because each pipeline's dispatch only
+  covers tiles its shader_id is in.
+
+*Render graph:* classify runs after geometry and before
+`material_opaque.render()`. The classify pass's pipeline + bind
+group construction follows the `light_culling` template (which is
+currently a TODO stub — `LightCullingRenderPass::render` is empty,
+so material_classify will be the first non-trivial compute pass on
+this scaffold).
+
+*Acceptance:*
+- Visual parity with the pre-classify build (each pipeline shades
+  exactly its pixels; skybox handled by PBR).
+- At a fixed 4K viewport with `N=3` shader_ids spatially separated,
+  total workgroup launches across the opaque pass ≈ tile_count
+  (one bucket-entry per tile) instead of `3 × tile_count`. The
+  per-pixel guard's regression from the shader-split alone goes
+  away.
+
+Decals (Cluster 6.4, §16.4) reuse the same bucket infrastructure —
+decals become a fourth shader_id with the same classify pipeline.
 
 Replace the screen-wide compute dispatch per material with an
 indirect dispatch driven by a per-material tile bitmask. See plan

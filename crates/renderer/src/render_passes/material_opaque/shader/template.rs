@@ -1,6 +1,7 @@
 //! Shader templates for the opaque material pass.
 
 use askama::Template;
+use awsm_materials::MaterialShaderId;
 
 use crate::{
     render_passes::material_opaque::shader::cache_key::{
@@ -66,6 +67,12 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     /// Generated `const SHADER_ID_X: u32 = N;` lines — see
     /// `awsm_materials::registry::build_shader_id_consts`.
     pub shader_id_consts: String,
+    /// Which material shader_id this specialized pipeline handles.
+    /// The compute.wgsl template renders only the matching material's
+    /// shading code (PBR / Unlit / Toon), with a per-pixel guard
+    /// early-returning on mismatch so a full-screen dispatch is
+    /// correct even before classify+indirect lands.
+    pub shader_id: MaterialShaderId,
 }
 
 impl ShaderTemplateMaterialOpaqueCompute {
@@ -125,6 +132,7 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 use_mesh_light_slices: true,
                 materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
                 shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
+                shader_id: value.shader_id,
             },
         };
 

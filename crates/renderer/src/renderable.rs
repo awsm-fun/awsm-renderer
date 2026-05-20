@@ -89,21 +89,6 @@ impl AwsmRenderer {
         };
 
         for (mesh_key, mesh) in visible {
-            let renderable = Renderable::Mesh {
-                key: mesh_key,
-                mesh,
-                material_opaque_compute_pipeline_key: self
-                    .render_passes
-                    .material_opaque
-                    .pipelines
-                    .get_compute_pipeline_key(&self.anti_aliasing),
-                material_transparent_render_pipeline_key: self
-                    .render_passes
-                    .material_transparent
-                    .pipelines
-                    .get_render_pipeline_key(mesh_key),
-            };
-
             // Cluster 6.3: classify opaque vs transparent by the
             // *effective* material this frame. A mesh with a cheap
             // opaque variant + an expensive transmissive variant will
@@ -113,6 +98,28 @@ impl AwsmRenderer {
             // single hook handles the renderable-list classification.
             let effective_material =
                 mesh.effective_material_key(mesh_key, &self.coverage);
+
+            // After the shader split (Cluster 6.1 prereq), the
+            // opaque compute pipeline is specialized per
+            // `MaterialShaderId`. Look up the effective material's
+            // shader_id and pick the matching pipeline so PBR / Unlit
+            // / Toon route to their own specialized compute pass.
+            let shader_id = self.materials.shader_id(effective_material);
+
+            let renderable = Renderable::Mesh {
+                key: mesh_key,
+                mesh,
+                material_opaque_compute_pipeline_key: self
+                    .render_passes
+                    .material_opaque
+                    .pipelines
+                    .get_compute_pipeline_key(&self.anti_aliasing, shader_id),
+                material_transparent_render_pipeline_key: self
+                    .render_passes
+                    .material_transparent
+                    .pipelines
+                    .get_render_pipeline_key(mesh_key),
+            };
 
             if mesh.hud {
                 hud.push(renderable.clone());

@@ -75,6 +75,20 @@ pub enum Material {
 }
 
 impl Material {
+    /// Returns the shader-id of this material — the load-bearing
+    /// dispatch key for the opaque compute pass after the shader
+    /// split (Cluster 6.1 prereq). Pipelines are cached per
+    /// `(MsaaConfig, mipmaps, shader_id)` so a PBR mesh and a Toon
+    /// mesh in the same frame route to distinct, specialized
+    /// pipelines instead of one fat shader with a runtime branch.
+    pub fn shader_id(&self) -> MaterialShaderId {
+        match self {
+            Material::Pbr(_) => MaterialShaderId::Pbr,
+            Material::Unlit(_) => MaterialShaderId::Unlit,
+            Material::Toon(_) => MaterialShaderId::Toon,
+        }
+    }
+
     /// Returns true if the material renders in the transparency pass.
     pub fn is_transparency_pass(&self) -> bool {
         match self {
@@ -277,6 +291,19 @@ impl Materials {
     /// Returns true if the material uses the transparency pass.
     pub fn is_transparency_pass(&self, key: MaterialKey) -> bool {
         self._is_transparency_pass.contains_key(key)
+    }
+
+    /// Returns the material's `MaterialShaderId` (PBR / Unlit / Toon).
+    /// The opaque compute pass routes each mesh's `effective_material_key`
+    /// through this to pick the matching specialized compute pipeline.
+    /// Returns `Pbr` for unknown keys — defensive default; the caller
+    /// should never hit this path because the key came from a `Mesh`
+    /// already validated against `Materials::insert`.
+    pub fn shader_id(&self, key: MaterialKey) -> MaterialShaderId {
+        self.lookup
+            .get(key)
+            .map(|m| m.shader_id())
+            .unwrap_or(MaterialShaderId::Pbr)
     }
 
     /// Returns true if the material implements
