@@ -1163,6 +1163,14 @@ async fn instance_template(
             .unwrap_or_default()
     };
 
+    // Note: raster bitmap prefetch happens once per glb in
+    // `asset_cache::load_and_populate` (which is `Shared`, so it runs
+    // exactly once per asset id even though every Model node calls
+    // `cache.get_or_load`). Doing it here would re-run the prefetch
+    // N×primitives in parallel for the same texture set and create
+    // a thundering herd on `createImageBitmap`.
+    let _ = gltf_material_asset_ids;
+
     let handle = renderer_handle();
     let mut renderer = handle.lock().await;
 

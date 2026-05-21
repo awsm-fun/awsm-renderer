@@ -180,14 +180,44 @@ async fn load_and_populate(asset_id: AssetId) -> Result<AssetTemplate, String> {
         ))
         .map_err(|e| format!("gltf decode: {e}"))?;
 
+    // Walk the editable material assets the user already stamped onto
+    // this glb (via `extract_gltf_materials_into` at insert time) and
+    // pre-decode their raster textures into `ImageBitmap` via the
+    // browser's native off-main-thread `createImageBitmap`. We run
+    // this *in parallel with* `populate_gltf` — the two paths produce
+    // independent bitmaps (renderer-gltf has its own internal decode
+    // for the baked materials), so doing them concurrently halves
+    // the wall-clock cost on a multi-MB textured model.
+    //
+    // Doing this once here (instead of per-Model-node inside
+    // `instance_template`) matters because `load_and_populate` is
+    // returned via `fut.shared()` — N reactive Model nodes all see
+    // the same `Shared` future, so the prefetch fires exactly once
+    // per glb. Hoisting it into `instance_template` made N parallel
+    // `createImageBitmap` calls per texture race against each other.
+    let material_asset_ids: Vec<AssetId> = {
+        let assets = state.scene.assets.lock().unwrap();
+        assets
+            .get(asset_id)
+            .map(|e| e.gltf_material_asset_ids.clone())
+            .unwrap_or_default()
+    };
+
     // Populate holds the renderer lock across its own internal awaits.
     let handle = renderer_handle();
     let mut renderer = handle.lock().await;
 
-    let ctx = renderer
+    // Drive populate_gltf and the editor's raster bitmap prefetch
+    // concurrently. The prefetch doesn't touch the renderer, so
+    // holding the renderer lock across both `await`s is fine.
+    use futures::FutureExt;
+    let populate_fut = renderer
         .populate_gltf(gltf_data, None)
-        .await
-        .map_err(|e| format!("populate_gltf: {e}"))?;
+        .map(|r| r.map_err(|e| format!("populate_gltf: {e}")));
+    let prefetch_fut =
+        super::texture_cache::prefetch_raster_bitmaps_for_materials(&material_asset_ids);
+    let (ctx, ()) = futures::future::join(populate_fut, prefetch_fut).await;
+    let ctx = ctx?;
 
     let root = renderer.transforms.root_node;
     let (all_keys, key_to_node_index, key_to_label): (
