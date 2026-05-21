@@ -581,13 +581,15 @@ impl AwsmRenderer {
             hzb.render(&ctx)?;
         }
 
-        // Occlusion cull (Cluster 7.2 / §16.7 Phase 1). Pack the
-        // active opaque renderables' world AABBs into the GPU instance
-        // buffer, then dispatch a compute shader that frustum + HZB
-        // tests each. v1 doesn't *consume* the output yet — Phase 2
-        // splits the geometry pass into survivor halves and gates
-        // `drawIndirect` against this. Skipped entirely when
-        // `features.gpu_culling == false` (plan §16.F).
+        // Occlusion cull. Pack the active opaque renderables' world
+        // AABBs + mesh_meta_offset into the GPU instance buffer,
+        // then dispatch a compute shader that frustum + HZB tests
+        // each. The compaction step below atomicAdds 1 per visible
+        // instance into the matching mesh's
+        // `IndirectDrawArgs.instance_count`; the geometry pass under
+        // `features.gpu_culling` consumes that via `drawIndirect`.
+        // Skipped entirely when `features.gpu_culling == false`
+        // (see `RendererFeatures` in features.rs).
         if let (Some(occlusion_buffers), Some(occlusion_pass)) = (
             self.occlusion_buffers.as_ref(),
             self.render_passes.occlusion.as_ref(),
@@ -688,9 +690,10 @@ impl AwsmRenderer {
                 };
                 occlusion_pass.render(&ctx, occlusion_instance_count)?;
 
-                // §16.7 Phase 2 / §16.8 infra: compact the cull output into
-                // `IndirectDrawArgs.instance_count`. v1 doesn't consume
-                // the result yet — see the deferral note in §16.7.
+                // Compact the cull's `visible_this_frame[]` into
+                // per-mesh `IndirectDrawArgs.instance_count` — the
+                // geometry pass's `drawIndirect` consumer above
+                // reads this each frame.
                 if let Some(compaction_pass) =
                     self.render_passes.occlusion_compaction.as_ref()
                 {
