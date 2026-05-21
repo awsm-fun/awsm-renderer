@@ -150,8 +150,9 @@ When on, the GPU-driven culling pipeline becomes a 30–50%
 frame-time win at the 10K-mesh tier once the visible set is
 small. Below ~500 meshes it nets to a small loss (the always-on
 cull dispatch + per-frame CPU upload outweigh the few saved
-draws). **Set `gpu_culling = false` for scenes that stay under
-~500 meshes.**
+draws). The adaptive policy below handles this automatically —
+keep `gpu_culling = true` at the capability layer and let the
+policy disengage on small scenes.
 
 `insert_decal()` returns `AwsmDecalError::FeatureNotEnabled`
 when `features.decals = false`. Misuse fails loud rather than
@@ -160,6 +161,49 @@ silently dropping decals.
 In debug builds the scene-editor honors `?features=off` as a
 URL switch for A/B measurement. Release builds skip the URL
 parse entirely.
+
+### Adaptive policy (`RendererOptimizationPolicy`)
+
+`RendererFeatures` decides whether the GPU-driven *resources* exist;
+`RendererOptimizationPolicy` (`optimization_policy.rs`) decides whether
+to *engage them this frame*. The two layers exist because the
+always-on cull + compaction + drawIndirect path costs more than it
+saves on small scenes, but reallocating the buffers on every
+threshold flip would be worse than the win it buys.
+
+```rust
+RendererOptimizationPolicy {
+    gpu_culling: OptimizationMode::Auto,    // Off / Auto / Force
+    gpu_culling_enable_threshold: 800,      // engage at >= this opaque count
+    gpu_culling_disable_threshold: 500,     // disengage below this
+    gpu_culling_cooldown_frames: 30,        // min frames per mode before another flip
+}
+```
+
+`Auto` mode uses hysteresis (separate enable / disable thresholds)
+and a cooldown to keep the mode stable: a scene oscillating around
+600 visible meshes won't ping-pong the path on every frame. `Force`
+keeps the GPU path engaged regardless of scene size — editor builds
+use this so authoring exercises the pipeline. `Off` parks it for the
+session, but HZB still rebuilds when decals are active (`decals` use
+the same texture).
+
+Per-frame the policy lowers to a `FrameOptimizations { gpu_occlusion,
+indirect_geometry, hzb, decal_hzb_gate }` struct on `RenderContext`.
+Call sites consult `ctx.frame_optimizations.get()` rather than the raw
+features for runtime branching.
+
+**Args-ready poisoning.** When `gpu_occlusion` flips from `true` to
+`false` the renderer clears `compaction_buffers.args_ready`, so a
+later re-enable warms up through one frame of CPU-recorded geometry
+before drawIndirect resumes — no stale-args window.
+
+`compute_frame_optimizations(policy, stats, prev, frames_in_mode)` is
+pure and has 10 unit tests in `optimization_policy.rs`. To retune
+thresholds for a specific deployment: set them on the builder via
+`with_optimization_policy`, or at runtime via
+`AwsmRenderer::set_optimization_policy` (mode flips reset the cooldown
+so a Force → Auto / Auto → Off transition takes effect immediately).
 
 ---
 
