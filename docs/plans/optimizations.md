@@ -2167,7 +2167,7 @@ synthetic depth pattern.
 
 #### 16.7 Cluster 7.2 — Two-phase GPU occlusion culling
 
-**Status:** `Phase 1 + Phase 2 infrastructure done; geometry-pass draw-loop rewire deferred`
+**Status:** `Phase 1 + Phase 2 infrastructure done; geometry-pass draw-loop rewire deferred (pragmatic call — see §16.8 status block)`
 
 Phase 1 (cull pass) shipped as commit `2034023`. Phase 2 +
 §16.8's `IndirectDrawArgs` buffer + GPU compaction compute landed
@@ -2200,7 +2200,55 @@ the remaining piece. See §16.8 for the full plan.
 
 #### 16.8 Cluster 7.3 — GPU instance compaction + indirect draw
 
-**Status:** `infrastructure landed (commit 06bfc5f); geometry-pass draw-loop rewire pending`
+**Status:** `infrastructure landed (commit 06bfc5f); geometry-pass draw-loop rewire deferred to a dedicated session`
+
+*Pragmatic call (this resume session).* The rewire's surface area
+is wider than the brief's "geometry vertex shader meta lookup
+migration" framing: in addition to the WGSL change + the bind
+group layout flip (uniform-with-dynamic-offset →
+read-only-storage), it requires
+  - CPU-side population of `IndirectDrawArgs{index_count,
+    first_index, base_vertex, first_instance}` per mesh slot on
+    insert / update — currently the args buffer is uninitialised
+    except for the per-frame `instance_count` atomic-add.
+  - CPU-side population of `occlusion_instances[i].mesh_meta_offset`
+    in the per-frame instance upload — today it is hard-zeroed
+    (`render.rs:507` writes a `0u32` placeholder), which makes the
+    current compaction effectively a no-op (every visible mesh
+    bumps slot 0).
+  - A per-frame zero of `IndirectDrawArgs.instance_count` across
+    every mesh slot before the compaction dispatch — without this
+    the atomicAdd accumulates across frames.
+  - A separate handling path for actually-instanced meshes
+    (`Mesh::instanced`), since `instance_index` ranges of
+    different meshes would otherwise overlap in the meta lookup.
+    Either replicate meta across `instance_count` slots per mesh,
+    or keep instanced meshes on the legacy `draw_indexed_*` path.
+  - A pipeline-cache invalidation surface check: the bind-group
+    layout change ripples through `PipelineLayouts::get_key` and
+    invalidates any cached geometry render pipelines built against
+    the dynamic-offset shape (currently fine on a fresh boot, but
+    a runtime layout swap during the same renderer instance would
+    miss).
+  - The matching binding-shape change in the *transparent* pass
+    (`material_transparent/.../bind_groups.wgsl` binding 3 is
+    `var<uniform> geometry_mesh_meta`) since the shared WGSL
+    helpers reference the same symbol. Either keep transparent on
+    the old uniform binding (separate WGSL fork) or migrate both
+    in lockstep.
+
+Each of those is individually small; together they exceed the
+single-session budget that this resume session also has to spend
+on §16.4.C and §16.G. The infrastructure that ships with §16.F
+(opt-in `features.gpu_culling`) already lets library consumers
+opt out cleanly; the §15 measurement campaign can quantify the
+*always-on* overhead of HZB + occlusion + compaction even without
+the final drawIndirect consumer. Punting to its own focused
+session keeps that work atomic and reviewable rather than half-
+landed across two clusters.
+
+The original rewire spec (preserved below) remains the canonical
+plan for the dedicated session.
 
 **Infrastructure — DONE.** `render_passes/occlusion/compaction.rs`
 owns `CompactionBuffers` (per-mesh `IndirectDrawArgs` slots, 32 B
