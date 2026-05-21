@@ -499,17 +499,25 @@ impl BindGroups {
                         .recreate(&ctx)?;
                 }
                 FunctionToCall::Coverage => {
-                    // §8.2: rebuild both single-sample and
-                    // multisampled coverage bind groups so the
-                    // render-time MSAA pick is always valid.
-                    render_passes
-                        .coverage
-                        .bind_groups_singlesampled
-                        .recreate(&ctx)?;
-                    render_passes
-                        .coverage
-                        .bind_groups_multisampled
-                        .recreate(&ctx)?;
+                    // §8.2: only rebuild the bind group that matches
+                    // the current MSAA setting. Building both would
+                    // bind a multisampled visibility_data view through
+                    // a single-sample layout (or vice versa) →
+                    // validation error. The render-time `render()`
+                    // path picks the matching variant; the inactive
+                    // variant's bind group stays `None` and is
+                    // ignored.
+                    if ctx.anti_aliasing.msaa_sample_count.is_some() {
+                        render_passes
+                            .coverage
+                            .bind_groups_multisampled
+                            .recreate(&ctx)?;
+                    } else {
+                        render_passes
+                            .coverage
+                            .bind_groups_singlesampled
+                            .recreate(&ctx)?;
+                    }
                 }
                 FunctionToCall::MaterialDecalMain => {
                     render_passes
