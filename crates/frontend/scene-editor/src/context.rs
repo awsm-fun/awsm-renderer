@@ -215,8 +215,13 @@ struct AppContext {
 /// Reads the renderer-feature gate from the current URL's query
 /// string. Defaults to `gpu_culling = true, decals = true` so the
 /// editor's default boot is unchanged; `?features=off` disables
-/// both gates (plan §16.G measurement A/B). Anything else (missing,
-/// or an unrecognised value) falls back to the "both on" default.
+/// both gates (plan §16.G measurement A/B).
+///
+/// `#[cfg(debug_assertions)]`-gated — release builds skip the URL
+/// parse entirely and always boot with both features on. Dev-only
+/// escape hatch for the measurement harness; production users have
+/// no way to flip features at runtime.
+#[cfg(debug_assertions)]
 fn parse_features_from_url() -> RendererFeatures {
     let on = RendererFeatures {
         gpu_culling: true,
@@ -233,6 +238,14 @@ fn parse_features_from_url() -> RendererFeatures {
     match params.get("features").as_deref() {
         Some("off") => RendererFeatures::default(),
         _ => on,
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn parse_features_from_url() -> RendererFeatures {
+    RendererFeatures {
+        gpu_culling: true,
+        decals: true,
     }
 }
 
