@@ -1,0 +1,965 @@
+{
+  "name": "tuning-importance-tiers",
+  "environment": {
+    "skybox": "built_in_default",
+    "ibl": "built_in_default"
+  },
+  "shadows": {
+    "sscs_enabled": false,
+    "sscs_step_count": 16,
+    "atlas_size": 4096,
+    "evsm_atlas_size": 2048,
+    "evsm_exponent": 10.0,
+    "evsm_blur_radius": 6,
+    "max_point_shadows": 8,
+    "point_shadow_resolution": 1024,
+    "debug_cascade_colors": false
+  },
+  "assets": {},
+  "nodes": [
+    {
+      "id": "502d387f-d914-461c-bdd5-f8f215d8b93c",
+      "name": "floor",
+      "transform": {
+        "translation": [
+          0.0,
+          -0.01,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "kind": {
+        "primitive": {
+          "shape": {
+            "plane": {
+              "width": 80.0,
+              "depth": 80.0,
+              "segments_x": 1,
+              "segments_z": 1
+            }
+          },
+          "material": null,
+          "inline_material": {
+            "label": "",
+            "base_color": [
+              0.3,
+              0.3,
+              0.3,
+              1.0
+            ],
+            "base_color_texture": null,
+            "metallic": 0.0,
+            "roughness": 0.9,
+            "metallic_roughness_texture": null,
+            "emissive": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "emissive_texture": null,
+            "normal_texture": null,
+            "occlusion_texture": null,
+            "double_sided": false,
+            "vertex_colors_enabled": false,
+            "alpha_mode": "opaque",
+            "shading": "pbr"
+          },
+          "shadow": {
+            "cast": true,
+            "receive": true
+          }
+        }
+      },
+      "locked": false,
+      "visible": true,
+      "prefab": false,
+      "children": []
+    },
+    {
+      "id": "49e46eb7-a2b6-4c19-9996-12f18c949d8e",
+      "name": "lights",
+      "transform": {
+        "translation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "kind": "group",
+      "locked": false,
+      "visible": true,
+      "prefab": false,
+      "children": [
+        {
+          "id": "0247ace6-dc74-405d-8fc3-0bd5367ffda6",
+          "name": "light_d1_i1",
+          "transform": {
+            "translation": [
+              1.0,
+              3.0,
+              0.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "light": {
+              "point": {
+                "color": [
+                  1.0,
+                  0.3,
+                  0.3
+                ],
+                "intensity": 1.0,
+                "range": 3.0,
+                "shadow": {
+                  "cast": true,
+                  "depth_bias": 0.0005,
+                  "normal_bias": 0.05,
+                  "resolution": 1024,
+                  "hardness": "soft",
+                  "pcss_penumbra_scale": 1.0,
+                  "max_distance": 60.0,
+                  "cascade_count": 4,
+                  "cascade_split_lambda": 0.5,
+                  "evsm_cutoff": "last_cascade",
+                  "far_cascade_update_rate": "every4_frames",
+                  "cube_face_update_rate": "every_frame"
+                }
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "45101338-873b-4b2c-92cb-01445ad850fe",
+          "name": "light_d1_i10",
+          "transform": {
+            "translation": [
+              0.9238795,
+              3.0,
+              0.38268346
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "light": {
+              "point": {
+                "color": [
+                  1.0,
+                  0.5625,
+                  0.3
+                ],
+                "intensity": 10.0,
+                "range": 3.0,
+                "shadow": {
+                  "cast": true,
+                  "depth_bias": 0.0005,
+                  "normal_bias": 0.05,
+                  "resolution": 1024,
+                  "hardness": "soft",
+                  "pcss_penumbra_scale": 1.0,
+                  "max_distance": 60.0,
+                  "cascade_count": 4,
+                  "cascade_split_lambda": 0.5,
+                  "evsm_cutoff": "last_cascade",
+                  "far_cascade_update_rate": "every4_frames",
+                  "cube_face_update_rate": "every_frame"
+                }
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "c5a6eca4-74fd-4603-aa5b-8f3f6e4ea7c2",
+          "name": "light_d1_i100",
+          "transform": {
+            "translation": [
+              0.70710677,
+              3.0,
+              0.70710677
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "light": {
+              "point": {
+                "color": [
+                  1.0,
+                  0.825,
+                  0.3
+                ],
+                "intensity": 100.0,
+                "range": 3.0,
+                "shadow": {
+                  "cast": true,
+                  "depth_bias": 0.0005,
+                  "normal_bias": 0.05,
+                  "resolution": 1024,
+                  "hardness": "soft",
+                  "pcss_penumbra_scale": 1.0,
+                  "max_distance": 60.0,
+                  "cascade_count": 4,
+                  "cascade_split_lambda": 0.5,
+                  "evsm_cutoff": "last_cascade",
+                  "far_cascade_update_rate": "every4_frames",
+                  "cube_face_update_rate": "every_frame"
+                }
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "95a0678c-1693-4b3a-b7fb-21188d3d7d5c",
+          "name": "light_d1_i1000",
+          "transform": {
+            "translation": [
+              0.38268343,
+              3.0,
+              0.9238795
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "light": {
+              "point": {
+                "color": [
+                  0.9125,
+                  1.0,
+                  0.3
+                ],
+                "intensity": 1000.0,
+                "range": 3.0,
+                "shadow": {
+                  "cast": true,
+                  "depth_bias": 0.0005,
+                  "normal_bias": 0.05,
+                  "resolution": 1024,
+                  "hardness": "soft",
+                  "pcss_penumbra_scale": 1.0,
+                  "max_distance": 60.0,
+                  "cascade_count": 4,
+                  "cascade_split_lambda": 0.5,
+                  "evsm_cutoff": "last_cascade",
+                  "far_cascade_update_rate": "every4_frames",
+                  "cube_face_update_rate": "every_frame"
+                }
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "38b45b15-0d13-408b-a299-3421aea9fbc6",
+          "name": "light_d5_i1",
+          "transform": {
+            "translation": [
+              -2.1855695e-7,
+              3.0,
+              5.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "light": {
+              "point": {
+                "color": [
+                  0.65,
+                  1.0,
+                  0.3
+                ],
+                "intensity": 1.0,
+                "range": 5.0,
+                "shadow": {
+                  "cast": true,
+                  "depth_bias": 0.0005,
+                  "normal_bias": 0.05,
+                  "resolution": 1024,
+                  "hardness": "soft",
+                  "pcss_penumbra_scale": 1.0,
+                  "max_distance": 60.0,
+                  "cascade_count": 4,
+                  "cascade_split_lambda": 0.5,
+                  "evsm_cutoff": "last_cascade",
+                  "far_cascade_update_rate": "every4_frames",
+                  "cube_face_update_rate": "every_frame"
+                }
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "9a2216de-bc50-4bed-98a6-34c36f7a0b31",
+          "name": "light_d5_i10",
+          "transform": {
+            "translation": [
+              -1.9134176,
+              3.0,
+              4.6193976
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "light": {
+              "point": {
+                "color": [
+                  0.3875,
+                  1.0,
+                  0.3
+                ],
+                "intensity": 10.0,
+                "range": 5.0,
+                "shadow": {
+                  "cast": true,
+                  "depth_bias": 0.0005,
+                  "normal_bias": 0.05,
+                  "resolution": 1024,
+                  "hardness": "soft",
+                  "pcss_penumbra_scale": 1.0,
+                  "max_distance": 60.0,
+                  "cascade_count": 4,
+                  "cascade_split_lambda": 0.5,
+                  "evsm_cutoff": "last_cascade",
+                  "far_cascade_update_rate": "every4_frames",
+                  "cube_face_update_rate": "every_frame"
+                }
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "7872c421-2570-430c-9592-09a377959757",
+          "name": "light_d5_i100",
+          "transform": {
+            "translation": [
+              -3.535534,
+              3.0,
+              3.535534
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "light": {
+              "point": {
+                "color": [
+                  0.3,
+                  1.0,
+                  0.47500002
+                ],
+                "intensity": 100.0,
+                "range": 5.0,
+                "shadow": {
+                  "cast": true,
+                  "depth_bias": 0.0005,
+                  "normal_bias": 0.05,
+                  "resolution": 1024,
+                  "hardness": "soft",
+                  "pcss_penumbra_scale": 1.0,
+                  "max_distance": 60.0,
+                  "cascade_count": 4,
+                  "cascade_split_lambda": 0.5,
+                  "evsm_cutoff": "last_cascade",
+                  "far_cascade_update_rate": "every4_frames",
+                  "cube_face_update_rate": "every_frame"
+                }
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "79b8cb06-0372-4087-b399-64de95bd212e",
+          "name": "light_d5_i1000",
+          "transform": {
+            "translation": [
+              -4.619398,
+              3.0,
+              1.9134164
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "light": {
+              "point": {
+                "color": [
+                  0.3,
+                  1.0,
+                  0.7375
+                ],
+                "intensity": 1000.0,
+                "range": 5.0,
+                "shadow": {
+                  "cast": true,
+                  "depth_bias": 0.0005,
+                  "normal_bias": 0.05,
+                  "resolution": 1024,
+                  "hardness": "soft",
+                  "pcss_penumbra_scale": 1.0,
+                  "max_distance": 60.0,
+                  "cascade_count": 4,
+                  "cascade_split_lambda": 0.5,
+                  "evsm_cutoff": "last_cascade",
+                  "far_cascade_update_rate": "every4_frames",
+                  "cube_face_update_rate": "every_frame"
+                }
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "4f394792-7dbb-43df-b1a0-a9df7b9d2abf",
+          "name": "light_d15_i1",
+          "transform": {
+            "translation": [
+              -15.0,
+              3.0,
+              -0.0000013113416
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "light": {
+              "point": {
+                "color": [
+                  0.3,
+                  1.0,
+                  1.0
+                ],
+                "intensity": 1.0,
+                "range": 15.0,
+                "shadow": {
+                  "cast": true,
+                  "depth_bias": 0.0005,
+                  "normal_bias": 0.05,
+                  "resolution": 1024,
+                  "hardness": "soft",
+                  "pcss_penumbra_scale": 1.0,
+                  "max_distance": 60.0,
+                  "cascade_count": 4,
+                  "cascade_split_lambda": 0.5,
+                  "evsm_cutoff": "last_cascade",
+                  "far_cascade_update_rate": "every4_frames",
+                  "cube_face_update_rate": "every_frame"
+                }
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "5b52762b-6d6e-465e-8e93-ca5291881274",
+          "name": "light_d15_i10",
+          "transform": {
+            "translation": [
+              -13.858192,
+              3.0,
+              -5.7402515
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "light": {
+              "point": {
+                "color": [
+                  0.3,
+                  0.7375,
+                  1.0
+                ],
+                "intensity": 10.0,
+                "range": 15.0,
+                "shadow": {
+                  "cast": true,
+                  "depth_bias": 0.0005,
+                  "normal_bias": 0.05,
+                  "resolution": 1024,
+                  "hardness": "soft",
+                  "pcss_penumbra_scale": 1.0,
+                  "max_distance": 60.0,
+                  "cascade_count": 4,
+                  "cascade_split_lambda": 0.5,
+                  "evsm_cutoff": "last_cascade",
+                  "far_cascade_update_rate": "every4_frames",
+                  "cube_face_update_rate": "every_frame"
+                }
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "9c2a59de-ac67-495d-9f45-86bd228292ea",
+          "name": "light_d15_i100",
+          "transform": {
+            "translation": [
+              -10.6066,
+              3.0,
+              -10.606604
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "light": {
+              "point": {
+                "color": [
+                  0.3,
+                  0.47500002,
+                  1.0
+                ],
+                "intensity": 100.0,
+                "range": 15.0,
+                "shadow": {
+                  "cast": true,
+                  "depth_bias": 0.0005,
+                  "normal_bias": 0.05,
+                  "resolution": 1024,
+                  "hardness": "soft",
+                  "pcss_penumbra_scale": 1.0,
+                  "max_distance": 60.0,
+                  "cascade_count": 4,
+                  "cascade_split_lambda": 0.5,
+                  "evsm_cutoff": "last_cascade",
+                  "far_cascade_update_rate": "every4_frames",
+                  "cube_face_update_rate": "every_frame"
+                }
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "391a5715-68d2-493f-a857-5ad49ececec5",
+          "name": "light_d15_i1000",
+          "transform": {
+            "translation": [
+              -5.740247,
+              3.0,
+              -13.858195
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "light": {
+              "point": {
+                "color": [
+                  0.3875,
+                  0.3,
+                  1.0
+                ],
+                "intensity": 1000.0,
+                "range": 15.0,
+                "shadow": {
+                  "cast": true,
+                  "depth_bias": 0.0005,
+                  "normal_bias": 0.05,
+                  "resolution": 1024,
+                  "hardness": "soft",
+                  "pcss_penumbra_scale": 1.0,
+                  "max_distance": 60.0,
+                  "cascade_count": 4,
+                  "cascade_split_lambda": 0.5,
+                  "evsm_cutoff": "last_cascade",
+                  "far_cascade_update_rate": "every4_frames",
+                  "cube_face_update_rate": "every_frame"
+                }
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "c21ec3a5-89d9-49df-ab68-63c86f1aa6c0",
+          "name": "light_d50_i1",
+          "transform": {
+            "translation": [
+              5.9624404e-7,
+              3.0,
+              -50.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "light": {
+              "point": {
+                "color": [
+                  0.65,
+                  0.3,
+                  1.0
+                ],
+                "intensity": 1.0,
+                "range": 50.0,
+                "shadow": {
+                  "cast": true,
+                  "depth_bias": 0.0005,
+                  "normal_bias": 0.05,
+                  "resolution": 1024,
+                  "hardness": "soft",
+                  "pcss_penumbra_scale": 1.0,
+                  "max_distance": 60.0,
+                  "cascade_count": 4,
+                  "cascade_split_lambda": 0.5,
+                  "evsm_cutoff": "last_cascade",
+                  "far_cascade_update_rate": "every4_frames",
+                  "cube_face_update_rate": "every_frame"
+                }
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "f8064675-21fb-41f7-8da7-cad198613865",
+          "name": "light_d50_i10",
+          "transform": {
+            "translation": [
+              19.13418,
+              3.0,
+              -46.193974
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "light": {
+              "point": {
+                "color": [
+                  0.9125,
+                  0.3,
+                  1.0
+                ],
+                "intensity": 10.0,
+                "range": 50.0,
+                "shadow": {
+                  "cast": true,
+                  "depth_bias": 0.0005,
+                  "normal_bias": 0.05,
+                  "resolution": 1024,
+                  "hardness": "soft",
+                  "pcss_penumbra_scale": 1.0,
+                  "max_distance": 60.0,
+                  "cascade_count": 4,
+                  "cascade_split_lambda": 0.5,
+                  "evsm_cutoff": "last_cascade",
+                  "far_cascade_update_rate": "every4_frames",
+                  "cube_face_update_rate": "every_frame"
+                }
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "c275649e-8342-4de8-8795-b58605a1c47b",
+          "name": "light_d50_i100",
+          "transform": {
+            "translation": [
+              35.35535,
+              3.0,
+              -35.355328
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "light": {
+              "point": {
+                "color": [
+                  1.0,
+                  0.3,
+                  0.825
+                ],
+                "intensity": 100.0,
+                "range": 50.0,
+                "shadow": {
+                  "cast": true,
+                  "depth_bias": 0.0005,
+                  "normal_bias": 0.05,
+                  "resolution": 1024,
+                  "hardness": "soft",
+                  "pcss_penumbra_scale": 1.0,
+                  "max_distance": 60.0,
+                  "cascade_count": 4,
+                  "cascade_split_lambda": 0.5,
+                  "evsm_cutoff": "last_cascade",
+                  "far_cascade_update_rate": "every4_frames",
+                  "cube_face_update_rate": "every_frame"
+                }
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "66bbfa2e-845a-48e7-a7ac-981c6edffc0b",
+          "name": "light_d50_i1000",
+          "transform": {
+            "translation": [
+              46.193977,
+              3.0,
+              -19.13417
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "light": {
+              "point": {
+                "color": [
+                  1.0,
+                  0.3,
+                  0.5625
+                ],
+                "intensity": 1000.0,
+                "range": 50.0,
+                "shadow": {
+                  "cast": true,
+                  "depth_bias": 0.0005,
+                  "normal_bias": 0.05,
+                  "resolution": 1024,
+                  "hardness": "soft",
+                  "pcss_penumbra_scale": 1.0,
+                  "max_distance": 60.0,
+                  "cascade_count": 4,
+                  "cascade_split_lambda": 0.5,
+                  "evsm_cutoff": "last_cascade",
+                  "far_cascade_update_rate": "every4_frames",
+                  "cube_face_update_rate": "every_frame"
+                }
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        }
+      ]
+    }
+  ]
+}

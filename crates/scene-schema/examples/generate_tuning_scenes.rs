@@ -16,6 +16,7 @@
 //! 4. `tuning-open-world`       — terrain plane + ocean plane + skybox + 50 props.
 //! 5. `tuning-coverage`         — 100 small props at varying camera distances.
 //! 6. `tuning-10k-meshes`       — 10K boxes (100×100×1 grid).
+//! 7. `tuning-importance-tiers` — 16 lights spanning a 4×4 (distance, intensity) grid; drives §15 row T3.
 
 use std::{fs, path::PathBuf};
 
@@ -38,6 +39,7 @@ fn main() -> std::io::Result<()> {
         ("tuning-open-world", scene_open_world()),
         ("tuning-coverage", scene_coverage()),
         ("tuning-10k-meshes", scene_10k_meshes()),
+        ("tuning-importance-tiers", scene_importance_tiers()),
     ] {
         let dir = out_root.join(name);
         fs::create_dir_all(&dir)?;
@@ -685,4 +687,66 @@ fn hsv_to_rgb_arr(h: f32, s: f32, v: f32) -> [f32; 3] {
         4 => [t, p, v],
         _ => [v, p, q],
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Scene 7 — importance-tier histogram source. Drives §15 row T3.
+//
+// 4 × 4 grid: distance from camera ∈ {1, 5, 15, 50} × intensity ∈
+// {1, 10, 100, 1000}. With the camera at origin facing +X (the
+// editors default), lights are placed along a ring at the given
+// distance so the score = intensity / (1 + d²) lands at predictable
+// values:
+//
+//   d \ i      1         10        100       1000
+//    1     0.5(M)    5(U)      50(U)    500(U)
+//    5     0.04(L)   0.4(M)    3.8(H)   38(U)
+//   15     0.004(L)  0.04(L)   0.44(M)  4.4(U)
+//   50     0.0004(L) 0.004(L)  0.04(L)  0.4(M)
+//
+// With the current cutoffs (0.1 / 1 / 4): 6 Low, 4 Medium, 1 High,
+// 5 Ultra. The High band is sparse — only a single (d=5, i=100)
+// combo lands there. T3 re-tuning either widens High (bump Ultra
+// cutoff above 4) or accepts that mid-distance + bright is rare.
+// ─────────────────────────────────────────────────────────────────────
+
+fn scene_importance_tiers() -> EditorProject {
+    let mut project = empty_project("tuning-importance-tiers");
+
+    // A 40×40 floor + a few props so the lights have something to
+    // illuminate. The visual output is incidental — what matters is
+    // the per-light score the renderer computes during
+    // `refresh_light_importance_budgets`.
+    project.nodes.push(plane_node(
+        "floor",
+        [0.0, -0.01, 0.0],
+        80.0,
+        80.0,
+        [0.3, 0.3, 0.3, 1.0],
+    ));
+
+    let mut light_children = Vec::with_capacity(16);
+    let distances = [1.0_f32, 5.0, 15.0, 50.0];
+    let intensities = [1.0_f32, 10.0, 100.0, 1000.0];
+    for (di, &dist) in distances.iter().enumerate() {
+        for (ii, &intensity) in intensities.iter().enumerate() {
+            // Spread the 16 lights around a circle at each distance
+            // tier so they dont occlude each other in the editors
+            // default view.
+            let theta = (di * 4 + ii) as f32 / 16.0 * std::f32::consts::TAU;
+            let x = theta.cos() * dist;
+            let z = theta.sin() * dist;
+            let hue = (di * 4 + ii) as f32 / 16.0;
+            light_children.push(point_light(
+                &format!("light_d{:.0}_i{:.0}", dist, intensity),
+                [x, 3.0, z],
+                hsv_to_rgb_arr(hue, 0.7, 1.0),
+                intensity,
+                dist.max(3.0),
+                shadow_high(),
+            ));
+        }
+    }
+    project.nodes.push(root_group("lights", light_children));
+    project
 }

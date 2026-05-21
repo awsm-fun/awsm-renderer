@@ -18,7 +18,7 @@
   "assets": {},
   "nodes": [
     {
-      "id": "67556795-82f8-4e8c-a00b-0cd50f9edcad",
+      "id": "45c2aa4b-e4ad-4ba5-9506-a547b54693d3",
       "name": "floor",
       "transform": {
         "translation": [
@@ -86,7 +86,7 @@
       "children": []
     },
     {
-      "id": "877a77cf-464d-46bf-b26e-641e0626cb95",
+      "id": "f144251d-1a8f-4290-b0df-650a7dc9d4d7",
       "name": "meshes",
       "transform": {
         "translation": [
@@ -112,7 +112,7 @@
       "prefab": false,
       "children": [
         {
-          "id": "4e77fa3e-9208-49bd-875a-8425aaf358df",
+          "id": "f1d746bd-d8cf-45f1-8d31-5e00b15d235b",
           "name": "mesh_0",
           "transform": {
             "translation": [
@@ -179,7 +179,7 @@
           "children": []
         },
         {
-          "id": "0cddddb0-700b-4218-ab8c-fcb91b438a5a",
+          "id": "6bdaae26-e1e8-4705-bad3-0398725d2491",
           "name": "mesh_1",
           "transform": {
             "translation": [
@@ -246,7 +246,7 @@
           "children": []
         },
         {
-          "id": "d98ee86b-25de-45b4-ba5a-52b1ff265373",
+          "id": "28561fbe-c03a-4fca-b374-0d4395bb09fb",
           "name": "mesh_2",
           "transform": {
             "translation": [
@@ -313,7 +313,7 @@
           "children": []
         },
         {
-          "id": "7106f5f6-1c1a-4c55-b0b8-88132c10dfd2",
+          "id": "ec972164-86e2-409f-a26d-44e07059aa65",
           "name": "mesh_3",
           "transform": {
             "translation": [
@@ -380,7 +380,7 @@
           "children": []
         },
         {
-          "id": "c254bfd1-7405-4e13-a5c9-65bb148706fd",
+          "id": "9c593b67-8ca6-4f4d-8b64-ba5893a74c58",
           "name": "mesh_4",
           "transform": {
             "translation": [
@@ -447,7 +447,7 @@
           "children": []
         },
         {
-          "id": "451855fa-a9bc-4f49-9708-54a6f94dcf68",
+          "id": "1470246b-3ee0-45e5-9008-1f144d0b4079",
           "name": "mesh_5",
           "transform": {
             "translation": [
@@ -514,7 +514,7 @@
           "children": []
         },
         {
-          "id": "55e60073-1e6b-48dc-b683-bbdd2b6ad888",
+          "id": "d63170ff-5b89-4e8e-8b3d-fa7c6d5a85ce",
           "name": "mesh_6",
           "transform": {
             "translation": [
@@ -581,7 +581,7 @@
           "children": []
         },
         {
-          "id": "9d21a42f-94dc-4612-8fb2-a2659e27df33",
+          "id": "c17323a6-e1b9-4fce-ba8b-b5681d2e893e",
           "name": "mesh_7",
           "transform": {
             "translation": [
@@ -648,7 +648,7 @@
           "children": []
         },
         {
-          "id": "da218517-77a3-42a7-b598-5bc0314a6db9",
+          "id": "5d27767a-fc3b-43ff-ae94-3d94de8f8822",
           "name": "mesh_8",
           "transform": {
             "translation": [
@@ -715,7 +715,7 @@
           "children": []
         },
         {
-          "id": "957918d2-cde3-4e32-be5a-52f89fb82037",
+          "id": "6f7b37df-750f-4ed1-bc37-c87080a60f6f",
           "name": "mesh_9",
           "transform": {
             "translation": [
@@ -784,7 +784,7 @@
       ]
     },
     {
-      "id": "6d1690db-9e25-4de2-9f20-1f6116ffcc80",
+      "id": "3f724a94-48ad-435f-a0d8-3364fd8bf6af",
       "name": "lights",
       "transform": {
         "translation": [
@@ -810,7 +810,7 @@
       "prefab": false,
       "children": [
         {
-          "id": "60483889-bcbb-4cd4-aeb6-d1602901c606",
+          "id": "a84b7f20-971c-4815-94fd-d73b210a616b",
           "name": "point_0",
           "transform": {
             "translation": [
@@ -863,7 +863,7 @@
           "children": []
         },
         {
-          "id": "2611a691-e345-4111-9f55-1e673e296934",
+          "id": "5722081d-118b-4b76-bcb9-bed573156772",
           "name": "spot_1",
           "transform": {
             "translation": [
@@ -918,7 +918,7 @@
           "children": []
         },
         {
-          "id": "54095a85-479e-45f1-81b1-566b8d5abc6a",
+          "id": "39420db9-d1da-4306-8bc8-9c3cc9ed1b27",
           "name": "point_2",
           "transform": {
             "translation": [
@@ -971,7 +971,7 @@
           "children": []
         },
         {
-          "id": "65f0e144-ac36-4c2b-921f-456305bc23f9",
+          "id": "012bae7d-6ff3-4b2d-a965-b778077b071e",
           "name": "spot_3",
           "transform": {
             "translation": [
@@ -1026,7 +1026,7 @@
           "children": []
         },
         {
-          "id": "af3bb765-e945-497b-a749-e3bcf859058b",
+          "id": "1fefa29c-ca0b-4c8b-9dce-630690224ea8",
           "name": "point_4",
           "transform": {
             "translation": [
@@ -1079,7 +1079,7 @@
           "children": []
         },
         {
-          "id": "ed9ce3a9-02be-42a9-90d9-578f42e7ad2f",
+          "id": "5c8b74be-c32d-4a9d-b62f-1d1df50c3bfe",
           "name": "spot_5",
           "transform": {
             "translation": [
@@ -1134,7 +1134,7 @@
           "children": []
         },
         {
-          "id": "f140d7e5-b7fa-4de3-9906-745eeab18ef4",
+          "id": "c13a2e1e-d84e-4406-b66e-0764268ff6c8",
           "name": "point_6",
           "transform": {
             "translation": [
@@ -1187,7 +1187,7 @@
           "children": []
         },
         {
-          "id": "1b3aeb6a-5193-4997-bb50-a84c152deebd",
+          "id": "3c5de4ad-8d43-4e92-8faa-32f0db5862a0",
           "name": "spot_7",
           "transform": {
             "translation": [
@@ -1242,7 +1242,7 @@
           "children": []
         },
         {
-          "id": "6340bfa0-7449-4738-8d90-988e707d62cc",
+          "id": "a7269a78-2967-46e4-b911-8e03cb953e3a",
           "name": "point_8",
           "transform": {
             "translation": [
@@ -1295,7 +1295,7 @@
           "children": []
         },
         {
-          "id": "8a8b9652-4062-4302-867d-eec77c62259e",
+          "id": "1eb351c1-b6fc-441d-9c7e-a0174dd55f2b",
           "name": "spot_9",
           "transform": {
             "translation": [
@@ -1350,7 +1350,7 @@
           "children": []
         },
         {
-          "id": "3ce36e2d-e918-44a7-8fca-ca8be83034be",
+          "id": "ba268dbd-9307-4c4a-b8af-d68e7060027e",
           "name": "point_10",
           "transform": {
             "translation": [
@@ -1403,7 +1403,7 @@
           "children": []
         },
         {
-          "id": "ec31928f-d455-4ef2-ace8-4a686a7ab9eb",
+          "id": "db822a8a-039c-4ecc-bc0b-131bf89f2455",
           "name": "spot_11",
           "transform": {
             "translation": [
@@ -1458,7 +1458,7 @@
           "children": []
         },
         {
-          "id": "4d4459a1-849e-46dd-be40-724b231fd894",
+          "id": "2ad085be-2af6-44cc-a2e9-b3987f00b0e7",
           "name": "point_12",
           "transform": {
             "translation": [
@@ -1511,7 +1511,7 @@
           "children": []
         },
         {
-          "id": "fbd29da9-4ad2-4a3e-b170-7c819009ac55",
+          "id": "9dfa6ecd-333a-4e3d-9265-7be668164981",
           "name": "spot_13",
           "transform": {
             "translation": [
@@ -1566,7 +1566,7 @@
           "children": []
         },
         {
-          "id": "3c992f0c-7b01-4590-813c-a25321dc4288",
+          "id": "40976f53-1c91-4d4f-b67f-e59d41787330",
           "name": "point_14",
           "transform": {
             "translation": [
@@ -1619,7 +1619,7 @@
           "children": []
         },
         {
-          "id": "2f307ff7-bd27-4809-a14f-48fb59a963d1",
+          "id": "ad3e3551-a109-4db7-a72a-81385c0da363",
           "name": "spot_15",
           "transform": {
             "translation": [
@@ -1674,7 +1674,7 @@
           "children": []
         },
         {
-          "id": "a93c5e53-b6d9-47be-80dd-d6fe22c2971f",
+          "id": "e6f9c5f4-e732-4182-823a-cb7e92972854",
           "name": "point_16",
           "transform": {
             "translation": [
@@ -1727,7 +1727,7 @@
           "children": []
         },
         {
-          "id": "727de1f7-4509-42b6-83d2-d450a407b7d4",
+          "id": "32833b01-3cc9-4d10-af50-4ce651f014f4",
           "name": "spot_17",
           "transform": {
             "translation": [
@@ -1782,7 +1782,7 @@
           "children": []
         },
         {
-          "id": "b391bd90-69f4-437f-9116-56e878dabe47",
+          "id": "3342c2f2-cc8b-43fc-8fb1-5de183d18353",
           "name": "point_18",
           "transform": {
             "translation": [
@@ -1835,7 +1835,7 @@
           "children": []
         },
         {
-          "id": "a3e26e75-1a96-4f92-8f92-117e9962865a",
+          "id": "4e20bc41-3764-45e4-a804-8ca339eebf7f",
           "name": "spot_19",
           "transform": {
             "translation": [
@@ -1890,7 +1890,7 @@
           "children": []
         },
         {
-          "id": "3d4cecb2-6215-4334-ace0-84c601c77219",
+          "id": "50dacf13-8eb3-46d3-91d7-ae3c7389ad4b",
           "name": "point_20",
           "transform": {
             "translation": [
@@ -1943,7 +1943,7 @@
           "children": []
         },
         {
-          "id": "336b64bf-48bb-4229-b28e-de522cd7b696",
+          "id": "6ad331a0-0248-49a7-af0e-0263a530353f",
           "name": "spot_21",
           "transform": {
             "translation": [
@@ -1998,7 +1998,7 @@
           "children": []
         },
         {
-          "id": "d3357147-80a0-4830-a875-9dddc45938f1",
+          "id": "accb5cb4-7a1d-4591-a517-b833d4805b91",
           "name": "point_22",
           "transform": {
             "translation": [
@@ -2051,7 +2051,7 @@
           "children": []
         },
         {
-          "id": "37938350-336c-4942-b547-60a13353fe18",
+          "id": "9392630f-a322-4637-b371-dc6bdafcd73a",
           "name": "spot_23",
           "transform": {
             "translation": [
@@ -2106,7 +2106,7 @@
           "children": []
         },
         {
-          "id": "e147bd9c-bda8-48b0-9931-6a8be0495b75",
+          "id": "dfa476e0-8249-45c1-9f92-b0f85d089138",
           "name": "point_24",
           "transform": {
             "translation": [
@@ -2159,7 +2159,7 @@
           "children": []
         },
         {
-          "id": "c8775112-859b-4b64-8aae-4ef125b22407",
+          "id": "d605068e-c10d-405b-80db-4dfadac1b6ed",
           "name": "spot_25",
           "transform": {
             "translation": [
@@ -2214,7 +2214,7 @@
           "children": []
         },
         {
-          "id": "f73f0f18-cd6a-4466-8e96-15e606c96cbd",
+          "id": "863b0974-65a6-474b-b40a-329f2512941c",
           "name": "point_26",
           "transform": {
             "translation": [
@@ -2267,7 +2267,7 @@
           "children": []
         },
         {
-          "id": "532fea8a-bdd4-4dc2-afce-7054b3d70626",
+          "id": "29e2561f-8d98-42c8-be2c-4feccc0853f1",
           "name": "spot_27",
           "transform": {
             "translation": [
@@ -2322,7 +2322,7 @@
           "children": []
         },
         {
-          "id": "6904a301-f07f-4d44-85e7-f57d136d54cb",
+          "id": "a871fcd6-d02c-436c-b8bf-8943429c6777",
           "name": "point_28",
           "transform": {
             "translation": [
@@ -2375,7 +2375,7 @@
           "children": []
         },
         {
-          "id": "a4104061-aec6-4591-9a5b-fd315324804a",
+          "id": "844628d2-a64b-4bfa-a744-859203f5440b",
           "name": "spot_29",
           "transform": {
             "translation": [
@@ -2430,7 +2430,7 @@
           "children": []
         },
         {
-          "id": "c4129a8d-aafc-40de-b97b-4b08d161ebd1",
+          "id": "17fac36b-addd-43f2-a004-d6f98f600512",
           "name": "point_30",
           "transform": {
             "translation": [
@@ -2483,7 +2483,7 @@
           "children": []
         },
         {
-          "id": "595de1f1-bab9-4c10-9c2b-3e8fe6ddb682",
+          "id": "1898b956-210c-44f7-b88e-def89601b51d",
           "name": "spot_31",
           "transform": {
             "translation": [
@@ -2538,7 +2538,7 @@
           "children": []
         },
         {
-          "id": "b40fd760-918a-4f5b-8e37-0c462d11f69b",
+          "id": "23d91bee-dfca-4d84-99c9-dacf98fe32b9",
           "name": "point_32",
           "transform": {
             "translation": [
@@ -2591,7 +2591,7 @@
           "children": []
         },
         {
-          "id": "29188efe-a6c4-43f0-b760-731425431733",
+          "id": "06ae28de-f12a-4d99-ad64-b66ae5ff1ed1",
           "name": "spot_33",
           "transform": {
             "translation": [
@@ -2646,7 +2646,7 @@
           "children": []
         },
         {
-          "id": "7df2560d-5858-4e71-9a05-a323dfaa2f03",
+          "id": "13c5376f-1590-48e8-b8aa-ab50cadcc065",
           "name": "point_34",
           "transform": {
             "translation": [
@@ -2699,7 +2699,7 @@
           "children": []
         },
         {
-          "id": "a50cc861-f616-4b74-9bf9-ad490a72536c",
+          "id": "c514485a-00a5-4c17-ac19-02b049918193",
           "name": "spot_35",
           "transform": {
             "translation": [
@@ -2754,7 +2754,7 @@
           "children": []
         },
         {
-          "id": "5a418257-aadf-4469-8336-bd7953f33318",
+          "id": "d97e8e22-ae86-4e4b-a5d0-9a1b6b92fa72",
           "name": "point_36",
           "transform": {
             "translation": [
@@ -2807,7 +2807,7 @@
           "children": []
         },
         {
-          "id": "154ad1c1-7e3b-42e3-b2cf-e3a949b34ee8",
+          "id": "399e2caf-425f-44a8-a0fd-c263f38a3753",
           "name": "spot_37",
           "transform": {
             "translation": [
@@ -2862,7 +2862,7 @@
           "children": []
         },
         {
-          "id": "e8137b44-ab4e-45d0-bc60-5c76a673c1c2",
+          "id": "aa8b4139-7f44-4be7-bb8c-b566e0591443",
           "name": "point_38",
           "transform": {
             "translation": [
@@ -2915,7 +2915,7 @@
           "children": []
         },
         {
-          "id": "a0107cbf-5419-4ee8-97f2-0767f5582fee",
+          "id": "dee056cf-d682-49b7-a8b6-d082afef160a",
           "name": "spot_39",
           "transform": {
             "translation": [
@@ -2970,7 +2970,7 @@
           "children": []
         },
         {
-          "id": "210045b2-bc3e-463b-936c-fd989a2c5e04",
+          "id": "82c37e49-dab5-4c87-a522-644330ed5aa9",
           "name": "point_40",
           "transform": {
             "translation": [
@@ -3023,7 +3023,7 @@
           "children": []
         },
         {
-          "id": "2077679e-20cc-439d-8215-bf1d5c6069bb",
+          "id": "35d124b7-dd93-4654-91b0-87fea4fa6fcd",
           "name": "spot_41",
           "transform": {
             "translation": [
@@ -3078,7 +3078,7 @@
           "children": []
         },
         {
-          "id": "82a6f975-aacb-4310-91e4-ec0e23b2e9a0",
+          "id": "8e0d75f5-da3a-4e50-abe4-a6e88e04c854",
           "name": "point_42",
           "transform": {
             "translation": [
@@ -3131,7 +3131,7 @@
           "children": []
         },
         {
-          "id": "6e22e8a5-6859-44ba-ab57-65e5bfcb7692",
+          "id": "af3cbb07-5b38-437e-8855-494e7c7fe1d8",
           "name": "spot_43",
           "transform": {
             "translation": [
@@ -3186,7 +3186,7 @@
           "children": []
         },
         {
-          "id": "46e38007-02eb-4803-bf75-e5ec2530ec9f",
+          "id": "5193f182-9039-4348-a7b1-cba0c1221665",
           "name": "point_44",
           "transform": {
             "translation": [
@@ -3239,7 +3239,7 @@
           "children": []
         },
         {
-          "id": "f336881c-3a38-442b-82ec-9ebd6b027aaa",
+          "id": "cab44054-45dd-43db-b9ae-ac293571d7c6",
           "name": "spot_45",
           "transform": {
             "translation": [
@@ -3294,7 +3294,7 @@
           "children": []
         },
         {
-          "id": "c7190b9f-efe4-47d0-887f-57511a545ff6",
+          "id": "95e3a856-2993-4dbc-a38d-40c8501f909e",
           "name": "point_46",
           "transform": {
             "translation": [
@@ -3347,7 +3347,7 @@
           "children": []
         },
         {
-          "id": "16bc3590-9634-483b-8f12-f19e92762474",
+          "id": "31bfe9b5-6f3b-46a1-ae31-75af68266f90",
           "name": "spot_47",
           "transform": {
             "translation": [
@@ -3402,7 +3402,7 @@
           "children": []
         },
         {
-          "id": "671abdf8-37c8-44d0-9f6d-b6da1562f497",
+          "id": "5bdd62ad-a3a6-43a9-97e6-26413b1c17d4",
           "name": "point_48",
           "transform": {
             "translation": [
@@ -3455,7 +3455,7 @@
           "children": []
         },
         {
-          "id": "6332a660-6022-431b-88fd-a8edbbbf34fb",
+          "id": "fd7191ca-30a8-4f50-9b14-37f22b37ec0e",
           "name": "spot_49",
           "transform": {
             "translation": [
@@ -3510,7 +3510,7 @@
           "children": []
         },
         {
-          "id": "98078033-2614-44c2-8cde-84c3dd4158d3",
+          "id": "9075dfad-29f8-4963-b0fe-0d393bf44c6d",
           "name": "point_50",
           "transform": {
             "translation": [
@@ -3563,7 +3563,7 @@
           "children": []
         },
         {
-          "id": "ab052674-9848-47a7-9059-183260e188ca",
+          "id": "631d4ef1-c3ef-4e2b-9cf7-71b66cc8906f",
           "name": "spot_51",
           "transform": {
             "translation": [
@@ -3618,7 +3618,7 @@
           "children": []
         },
         {
-          "id": "1689fa62-9fd4-4c89-a2dc-4b45e7e2c8f7",
+          "id": "94b27609-6a5b-4b47-b01c-d6507a1484f5",
           "name": "point_52",
           "transform": {
             "translation": [
@@ -3671,7 +3671,7 @@
           "children": []
         },
         {
-          "id": "dd53e7ae-9f37-4826-9f34-8378f1df1a13",
+          "id": "23efb652-198c-423c-8703-42fc2876961e",
           "name": "spot_53",
           "transform": {
             "translation": [
@@ -3726,7 +3726,7 @@
           "children": []
         },
         {
-          "id": "4b9ddfe3-275f-4dcb-a3b6-88b2161b4db9",
+          "id": "2c640c39-cc35-4d8d-96e7-28a7c63855fe",
           "name": "point_54",
           "transform": {
             "translation": [
@@ -3779,7 +3779,7 @@
           "children": []
         },
         {
-          "id": "61c37d6c-2fad-4b23-b26c-eff8634e8438",
+          "id": "b3c1b63c-2621-4a9d-9fb9-e28530efd748",
           "name": "spot_55",
           "transform": {
             "translation": [
@@ -3834,7 +3834,7 @@
           "children": []
         },
         {
-          "id": "94c4ecd6-bb62-46e3-9c5b-ae4dcbe51501",
+          "id": "7b7e7bba-2dbf-49f1-8378-c4f222225f06",
           "name": "point_56",
           "transform": {
             "translation": [
@@ -3887,7 +3887,7 @@
           "children": []
         },
         {
-          "id": "43ded55f-fc29-4ca8-a463-bd39355681ec",
+          "id": "4d5bfdad-b374-4aed-9208-7fea59678844",
           "name": "spot_57",
           "transform": {
             "translation": [
@@ -3942,7 +3942,7 @@
           "children": []
         },
         {
-          "id": "76311cc0-55a1-4575-9c32-82797d1b47d4",
+          "id": "789dbbe4-4884-487a-bd37-b2f25fae582f",
           "name": "point_58",
           "transform": {
             "translation": [
@@ -3995,7 +3995,7 @@
           "children": []
         },
         {
-          "id": "66613756-1570-43e2-9de0-7ec1e1ada1e5",
+          "id": "b634af2f-2309-4991-b0cf-1969bdc3d431",
           "name": "spot_59",
           "transform": {
             "translation": [
@@ -4050,7 +4050,7 @@
           "children": []
         },
         {
-          "id": "186ac49e-3954-46e8-85eb-e9efc48f93e0",
+          "id": "cb22f07f-1cee-4800-b684-275851c71298",
           "name": "point_60",
           "transform": {
             "translation": [
@@ -4103,7 +4103,7 @@
           "children": []
         },
         {
-          "id": "4f207a52-e6b2-47dc-a2ba-74dda117ee68",
+          "id": "9a141323-6503-48f4-8e77-8c21c91defdb",
           "name": "spot_61",
           "transform": {
             "translation": [
@@ -4158,7 +4158,7 @@
           "children": []
         },
         {
-          "id": "9e9e7ccf-288d-479e-bc73-6200e5461337",
+          "id": "213988ae-3f4d-441a-b6e2-130cd0349de9",
           "name": "point_62",
           "transform": {
             "translation": [
@@ -4211,7 +4211,7 @@
           "children": []
         },
         {
-          "id": "c5a73dc2-36c0-44f7-9c68-66102f60f821",
+          "id": "d4d38f2f-5c4c-4dfc-84e5-3a9188ac82b8",
           "name": "spot_63",
           "transform": {
             "translation": [

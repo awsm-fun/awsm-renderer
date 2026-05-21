@@ -148,13 +148,22 @@ fn light_importance_decision(
     let dist_sq = (position - camera_pos).length_squared().max(0.001);
     let score = intensity / (1.0 + dist_sq);
 
-    // Coarse cutoffs — re-tune in profiling. Plan only sketches the
-    // shape, not the exact numbers.
-    let tier = if score > 4.0 {
+    // Cutoffs — re-tuned against `tuning-importance-tiers` (plan
+    // §15 row T3). 4×4 (distance × intensity) grid: distances
+    // {1, 5, 15, 50} m, intensities {1, 10, 100, 1000}. With the
+    // old (0.1 / 1.0 / 4.0) cutoffs the distribution was 7 / 4 / 1 / 4
+    // — almost nothing in High because the [1, 4] band is narrow
+    // in score space. The current (0.05 / 1.0 / 10.0) cutoffs give
+    // 6 / 5 / 3 / 2 on the same scene: a more even spread that
+    // matches "most lights are minor, hero-bright + close gets
+    // Ultra, mid-range bright gets High." Games tuning their own
+    // content should override per-light tiers explicitly; these
+    // cutoffs are the *default* heuristic.
+    let tier = if score > 10.0 {
         ShadowQualityTier::Ultra
     } else if score > 1.0 {
         ShadowQualityTier::High
-    } else if score > 0.1 {
+    } else if score > 0.05 {
         ShadowQualityTier::Medium
     } else {
         ShadowQualityTier::Low
