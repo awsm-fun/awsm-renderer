@@ -24,8 +24,18 @@ pub const GEOMETRY_MESH_META_BYTE_SIZE: usize = 48;
 /// Byte alignment for geometry mesh meta buffer entries.
 pub const GEOMETRY_MESH_META_BYTE_ALIGNMENT: usize = 256;
 
-pub static GEOMETRY_BUFFER_USAGE: LazyLock<BufferUsage> =
-    LazyLock::new(|| BufferUsage::new().with_copy_dst().with_uniform());
+// Plan §16.7/§16.8: the geometry-meta GPU buffer is bound at
+// `@group(2) @binding(0)` of the geometry pass — as a
+// uniform-with-dynamic-offset for instanced meshes (legacy) AND as
+// a read-only storage array for non-instanced meshes (new). The
+// same physical buffer backs both bindings, so its `usage` flags
+// have to satisfy both: `Uniform | Storage | CopyDst`.
+pub static GEOMETRY_BUFFER_USAGE: LazyLock<BufferUsage> = LazyLock::new(|| {
+    BufferUsage::new()
+        .with_copy_dst()
+        .with_uniform()
+        .with_storage()
+});
 
 /// Geometry meta fields used by shaders.
 /// See `meta.wgsl` for the corresponding struct.
