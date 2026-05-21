@@ -31,10 +31,18 @@ struct OcclusionInstance {
     _pad2: u32,
 };
 
+struct OcclusionParams {
+    active_count: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+};
+
 @group(0) @binding(0) var<uniform> camera_raw: CameraRaw;
 @group(0) @binding(1) var hzb_tex: texture_2d<f32>;
 @group(0) @binding(2) var<storage, read> instances: array<OcclusionInstance>;
 @group(0) @binding(3) var<storage, read_write> visible_this_frame: array<u32>;
+@group(0) @binding(4) var<uniform> params: OcclusionParams;
 
 // Extract the 6 frustum planes (left, right, bottom, top, near, far)
 // in world-space from a row-major view_proj. WGSL `mat4x4<f32>` is
@@ -136,7 +144,14 @@ fn aabb_to_screen(
 
 @compute @workgroup_size(64)
 fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let count = arrayLength(&instances);
+    // `arrayLength(&instances)` returns the binding's *capacity*
+    // (the OcclusionBuffers `INITIAL_CAPACITY` × grow-by-2 sizing),
+    // not this frame's active count. The CPU dispatches
+    // `ceil(active/64)` workgroups, so tail threads in the rounded
+    // dispatch land inside arrayLength and would otherwise process
+    // stale `instances[i]` left over from prior frames. Bound by
+    // `params.active_count` to keep them inert.
+    let count = params.active_count;
     let i = gid.x;
     if (i >= count) {
         return;

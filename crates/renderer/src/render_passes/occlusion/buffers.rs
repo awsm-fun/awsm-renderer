@@ -49,6 +49,14 @@ pub struct OcclusionBuffers {
     /// Per-instance visibility output (`array<u32>`). Cull shader
     /// writes 0/1. Consumers (Phase 2) read back.
     pub visible_buffer: web_sys::GpuBuffer,
+    /// 16 B uniform carrying `active_count: u32` (+ 12 B pad). The
+    /// cull and compaction shaders bound their per-thread loops by
+    /// `params.active_count` rather than `arrayLength(&instances)`,
+    /// which returns *capacity*. Without this, tail invocations from
+    /// the workgroup-rounded dispatch process stale slot data left
+    /// over from previous frames and either mark phantom meshes
+    /// visible or increment the wrong `IndirectDrawArgs.instance_count`.
+    pub params_buffer: web_sys::GpuBuffer,
     /// Number of instance slots both buffers can hold without resizing.
     pub capacity: u32,
     /// Reusable CPU scratch for the per-frame instance staging — sized
@@ -87,9 +95,18 @@ impl OcclusionBuffers {
             )
             .into(),
         )?;
+        let params_buffer = gpu.create_buffer(
+            &BufferDescriptor::new(
+                Some("OcclusionParams"),
+                16,
+                BufferUsage::new().with_uniform().with_copy_dst(),
+            )
+            .into(),
+        )?;
         Ok(Self {
             instances_buffer,
             visible_buffer,
+            params_buffer,
             capacity,
             staging: vec![0u8; instances_bytes],
         })
@@ -109,5 +126,19 @@ impl OcclusionBuffers {
         let new_capacity = needed.saturating_mul(2).max(needed);
         *self = Self::with_capacity(gpu, new_capacity)?;
         Ok(true)
+    }
+
+    /// Writes this frame's active instance count into the params
+    /// uniform. The cull + compaction shaders bound their per-thread
+    /// `if (i >= count)` against this rather than `arrayLength`, so
+    /// tail invocations don't read or mark stale slot data.
+    pub fn write_params(
+        &self,
+        gpu: &AwsmRendererWebGpu,
+        active_count: u32,
+    ) -> Result<(), AwsmCoreError> {
+        let mut bytes = vec![0u8; 16];
+        bytes[0..4].copy_from_slice(&active_count.to_le_bytes());
+        gpu.write_buffer(&self.params_buffer, None, bytes.as_slice(), None, None)
     }
 }

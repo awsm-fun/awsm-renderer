@@ -5,6 +5,7 @@
 //!   1 hzb_tex         sampled R32Float texture (full mip chain)
 //!   2 instances       storage[RO] OcclusionInstance array
 //!   3 visible         storage[RW] u32 array
+//!   4 params          uniform (active_count)
 
 use std::borrow::Cow;
 
@@ -62,6 +63,15 @@ impl OcclusionBindGroups {
             BindGroupLayoutCacheKeyEntry {
                 resource: BindGroupLayoutResource::Buffer(
                     BufferBindingLayout::new().with_binding_type(BufferBindingType::Storage),
+                ),
+                visibility_vertex: false,
+                visibility_fragment: false,
+                visibility_compute: true,
+            },
+            // params — uniform (active_count)
+            BindGroupLayoutCacheKeyEntry {
+                resource: BindGroupLayoutResource::Buffer(
+                    BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
                 ),
                 visibility_vertex: false,
                 visibility_fragment: false,
@@ -125,6 +135,12 @@ impl OcclusionBindGroups {
                 3,
                 BindGroupResource::Buffer(BufferBinding::new(
                     &occlusion_buffers.visible_buffer,
+                )),
+            ),
+            BindGroupEntry::new(
+                4,
+                BindGroupResource::Buffer(BufferBinding::new(
+                    &occlusion_buffers.params_buffer,
                 )),
             ),
         ];

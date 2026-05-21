@@ -56,6 +56,20 @@ pub struct CompactionBuffers {
     /// pass reads it as indirect args.
     pub args_buffer: web_sys::GpuBuffer,
     pub capacity: u32,
+    /// `true` once a frame has completed a CPU args prep + GPU
+    /// compaction pass — meaning the buffer holds a valid
+    /// previous-frame visibility set. The geometry pass under
+    /// `features.gpu_culling` falls back to the legacy CPU
+    /// `draw_indexed_with_first_instance` path until this flips,
+    /// so frame 0 (and any frame after a `ensure_capacity` resize,
+    /// which zeroes the args buffer) doesn't drawIndirect against
+    /// a zero `instance_count`.
+    ///
+    /// `Cell` so render.rs can set it after the compaction dispatch
+    /// while `RenderContext` still holds an immutable borrow on the
+    /// buffers (the alternative would be to drop the ctx early or
+    /// add a separate bookkeeping field on `AwsmRenderer`).
+    pub args_ready: std::cell::Cell<bool>,
 }
 
 impl CompactionBuffers {
@@ -82,6 +96,7 @@ impl CompactionBuffers {
         Ok(Self {
             args_buffer,
             capacity,
+            args_ready: std::cell::Cell::new(false),
         })
     }
 
@@ -141,6 +156,15 @@ impl CompactionBindGroups {
                 visibility_fragment: false,
                 visibility_compute: true,
             },
+            // params (active_count uniform — shared with cull pass)
+            BindGroupLayoutCacheKeyEntry {
+                resource: BindGroupLayoutResource::Buffer(
+                    BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
+                ),
+                visibility_vertex: false,
+                visibility_fragment: false,
+                visibility_compute: true,
+            },
         ];
         let layout_key = ctx
             .bind_group_layouts
@@ -187,6 +211,12 @@ impl CompactionBindGroups {
             BindGroupEntry::new(
                 2,
                 BindGroupResource::Buffer(BufferBinding::new(&compaction_buffers.args_buffer)),
+            ),
+            BindGroupEntry::new(
+                3,
+                BindGroupResource::Buffer(BufferBinding::new(
+                    &occlusion_buffers.params_buffer,
+                )),
             ),
         ];
         let descriptor = BindGroupDescriptor::new(

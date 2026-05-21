@@ -40,9 +40,17 @@ struct IndirectDrawArgs {
     _pad2: u32,
 };
 
+struct OcclusionParams {
+    active_count: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+};
+
 @group(0) @binding(0) var<storage, read> instances: array<OcclusionInstance>;
 @group(0) @binding(1) var<storage, read> visible_this_frame: array<u32>;
 @group(0) @binding(2) var<storage, read_write> indirect_args: array<IndirectDrawArgs>;
+@group(0) @binding(3) var<uniform> params: OcclusionParams;
 
 // Must match `MATERIAL_MESH_META_BYTE_ALIGNMENT` (256 B). The cull
 // stages a mesh_meta_offset in bytes; we divide to get the per-mesh
@@ -52,7 +60,13 @@ const MESH_META_STRIDE_BYTES: u32 = 256u;
 @compute @workgroup_size(64)
 fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
-    let count = arrayLength(&instances);
+    // Bound by the active instance count, not `arrayLength` (which
+    // returns capacity). Tail threads in the workgroup-rounded
+    // dispatch would otherwise read `visible_this_frame[i]` from
+    // slots that the cull's matching `if (i >= count) return` left
+    // untouched — i.e. last frame's value — and double-count phantom
+    // mesh instances. See cull.wgsl for the matched comment.
+    let count = params.active_count;
     if (i >= count) {
         return;
     }
