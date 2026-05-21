@@ -271,12 +271,24 @@ async fn create_renderer(canvas: web_sys::HtmlCanvasElement) -> EditorResult<Aws
     // time). Falls back to "both on" for any other value (including
     // missing).
     let features = parse_features_from_url();
+    // Editor wants the GPU-driven path engaged regardless of scene
+    // size so it's actually exercised during authoring (Auto would
+    // park it off below ~500 opaque meshes, hiding regressions until
+    // someone loads a heavy scene). The runtime default of `Auto` is
+    // right for shipping games; editor overrides with `Force`. The
+    // `?features=off` escape hatch already drops the capability via
+    // `with_features`, which makes the policy decision moot.
+    let policy = awsm_renderer::optimization_policy::RendererOptimizationPolicy {
+        gpu_culling: awsm_renderer::optimization_policy::OptimizationMode::Force,
+        ..Default::default()
+    };
     let renderer = AwsmRendererBuilder::new(gpu_builder)
         .with_logging(AwsmRendererLogging {
             render_timings: cfg!(debug_assertions),
         })
         .with_clear_color(Color::MID_GREY)
         .with_features(features)
+        .with_optimization_policy(policy)
         .build()
         .await?;
 

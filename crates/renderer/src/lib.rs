@@ -16,6 +16,7 @@ pub mod decals;
 pub mod environment;
 pub mod error;
 pub mod features;
+pub mod optimization_policy;
 pub mod frustum;
 pub mod instances;
 pub mod light_buckets;
@@ -189,6 +190,21 @@ pub struct AwsmRenderer {
     pub shadows: shadows::Shadows,
     /// Opt-in feature gates picked at construction time (plan §16.F).
     pub features: RendererFeatures,
+    /// Adaptive runtime policy on top of `features`. `RendererFeatures`
+    /// decides which buffers/passes exist; `RendererOptimizationPolicy`
+    /// decides which of those are engaged this frame. Mutable via
+    /// `set_optimization_policy` — flips take effect on the next
+    /// `render()` call.
+    pub optimization_policy: crate::optimization_policy::RendererOptimizationPolicy,
+    /// Most recently computed per-frame derived flags. Used as the
+    /// previous-frame state for the next call to
+    /// `compute_frame_optimizations` (hysteresis input).
+    pub frame_optimizations: crate::optimization_policy::FrameOptimizations,
+    /// Consecutive frames the current `gpu_occlusion` mode has held.
+    /// Bumped each frame `frame_optimizations.gpu_occlusion` stays the
+    /// same; reset to 1 on a flip. Feeds the Auto-mode cooldown check
+    /// in `compute_frame_optimizations`.
+    pub frames_in_current_mode: u32,
     /// Global default for `Mesh::cheap_material_pixel_threshold`
     /// (plan §15 row T4). Per-mesh override still wins; this is
     /// the value used when a mesh has its threshold set to `None`.
@@ -236,6 +252,7 @@ impl AwsmRenderer {
             .with_clear_color(self._clear_color.clone())
             .with_render_texture_formats(self.render_textures.formats.clone())
             .with_features(self.features.clone())
+            .with_optimization_policy(self.optimization_policy.clone())
             .build()
             .await?;
 
@@ -246,6 +263,34 @@ impl AwsmRenderer {
     /// Returns the active feature gates picked at construction time.
     pub fn features(&self) -> &RendererFeatures {
         &self.features
+    }
+
+    /// Returns the current adaptive policy.
+    pub fn optimization_policy(
+        &self,
+    ) -> &crate::optimization_policy::RendererOptimizationPolicy {
+        &self.optimization_policy
+    }
+
+    /// Replaces the adaptive policy. Takes effect on the next
+    /// `render()`. If the new policy disables `gpu_occlusion`
+    /// (Force→Off, or Auto's hysteresis later landing there), the next
+    /// frame's `compute_frame_optimizations` will flip
+    /// `frame_optimizations.gpu_occlusion = false`, which render.rs
+    /// uses to poison `compaction_buffers.args_ready` — so a future
+    /// re-enable warms up through the CPU geometry path for one frame
+    /// before drawIndirect resumes.
+    pub fn set_optimization_policy(
+        &mut self,
+        policy: crate::optimization_policy::RendererOptimizationPolicy,
+    ) {
+        // Reset cooldown when the mode itself changes — flipping from
+        // Auto to Force (or vice versa) shouldn't be held off by a
+        // residual Auto cooldown counter.
+        if policy.gpu_culling != self.optimization_policy.gpu_culling {
+            self.frames_in_current_mode = u32::MAX / 2;
+        }
+        self.optimization_policy = policy;
     }
 }
 
@@ -273,6 +318,11 @@ pub struct AwsmRendererBuilder {
     /// `false` so library consumers pay zero cost for unused
     /// GPU-driven culling / decal infrastructure.
     features: RendererFeatures,
+    /// Adaptive runtime policy. Defaults to `Auto` mode for the
+    /// gpu_culling path; library consumers can override at build time
+    /// (or via `AwsmRenderer::set_optimization_policy` later) to force
+    /// the path on/off or to retune the Auto thresholds.
+    optimization_policy: crate::optimization_policy::RendererOptimizationPolicy,
 }
 
 /// WebGPU builder input for `AwsmRendererBuilder`.
@@ -340,6 +390,8 @@ impl AwsmRendererBuilder {
             post_processing: PostProcessing::default(),
             shadows_config: None,
             features: RendererFeatures::default(),
+            optimization_policy:
+                crate::optimization_policy::RendererOptimizationPolicy::default(),
         }
     }
 
@@ -349,6 +401,20 @@ impl AwsmRendererBuilder {
     /// editor builds should set this explicitly.
     pub fn with_features(mut self, features: RendererFeatures) -> Self {
         self.features = features;
+        self
+    }
+
+    /// Sets the adaptive runtime policy. Independent of
+    /// `with_features`: features gate **allocation** (does the HZB
+    /// texture exist?), policy gates **engagement** (do we build it
+    /// this frame?). Default is `Auto` for `gpu_culling`; pass
+    /// `OptimizationMode::Force` for editor / regression-testing
+    /// builds, or `Off` for a CPU-only baseline.
+    pub fn with_optimization_policy(
+        mut self,
+        policy: crate::optimization_policy::RendererOptimizationPolicy,
+    ) -> Self {
+        self.optimization_policy = policy;
         self
     }
 
@@ -425,6 +491,7 @@ impl AwsmRendererBuilder {
             post_processing,
             shadows_config,
             features,
+            optimization_policy,
         } = self;
 
         let mut gpu = match gpu {
@@ -616,6 +683,21 @@ impl AwsmRendererBuilder {
             opaque_mipgen,
             shadows,
             features,
+            optimization_policy,
+            // First frame's previous-state input. All flags `false` is
+            // the safe baseline: render.rs's policy computation pass
+            // will derive `gpu_occlusion=false` for Auto until the
+            // cooldown elapses (so the first frames after init route
+            // through the CPU path) and Force / Off behave per spec
+            // from frame 0.
+            frame_optimizations: crate::optimization_policy::FrameOptimizations::default(),
+            // Set to the cooldown threshold so Auto can flip on at the
+            // very first qualifying frame instead of waiting through a
+            // cooldown of empty frames after startup. Without this,
+            // every fresh renderer would burn `gpu_culling_cooldown_frames`
+            // before Auto could engage — a poor UX for editor builds
+            // that load a large scene immediately.
+            frames_in_current_mode: u32::MAX / 2,
             default_cheap_material_pixel_threshold: 64,
             #[cfg(feature = "animation")]
             animations,

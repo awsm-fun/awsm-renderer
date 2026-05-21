@@ -257,11 +257,7 @@ impl Mesh {
                 .transform_instance_count(self.transform_key)
                 .ok_or(AwsmMeshError::InstancingMissingTransforms(mesh_key))?;
             render_pass.draw_indexed_with_instance_count(index_count, instance_count as u32);
-        } else if ctx.features.gpu_culling
-            && ctx
-                .compaction_buffers
-                .map(|cb| cb.args_ready.get())
-                .unwrap_or(false)
+        } else if ctx.frame_optimizations.get().indirect_geometry
             && self.world_aabb.is_some()
         {
             // §16.7/§16.8 drawIndirect path. The compaction shader
@@ -271,10 +267,15 @@ impl Mesh {
             // frame-latent visibility set.
             //
             // Gates:
-            // - `args_ready` — frame 0 (and any frame after a
-            //   `ensure_capacity` resize, which zeroes the args
-            //   buffer) routes through the legacy CPU path. See
-            //   `CompactionBuffers::args_ready`.
+            // - `frame_optimizations.indirect_geometry` — the per-frame
+            //   policy decision rolls up `gpu_occlusion && args_ready`.
+            //   `args_ready` is false on frame 0, after any
+            //   `ensure_capacity` resize (which zeroes the args
+            //   buffer), or after `gpu_occlusion` flipped off (the
+            //   policy poisons args_ready on disengage). The
+            //   `gpu_occlusion` side rolls up the `Off / Auto /
+            //   Force` runtime knob — see
+            //   `crate::optimization_policy`.
             // - `self.world_aabb.is_some()` — `collect_renderables`
             //   conservatively keeps no-AABB opaque meshes visible,
             //   but `opaque_snapshots` in render.rs filters them out

@@ -308,6 +308,13 @@ impl AwsmRenderer {
             features: &self.features,
             compaction_buffers: self.compaction_buffers.as_ref(),
             coverage_buffers: Some(&self.coverage_buffers),
+            // Filled in below once `collect_renderables` + the opaque
+            // snapshot have produced the stats. Interior mutability
+            // (Cell) so the per-pass code reads the final value through
+            // an immutable `&RenderContext` without re-creating ctx.
+            frame_optimizations: std::cell::Cell::new(
+                crate::optimization_policy::FrameOptimizations::default(),
+            ),
         };
 
         let renderables = self.collect_renderables(&ctx)?;
@@ -358,6 +365,59 @@ impl AwsmRenderer {
                 }
             })
             .collect();
+
+        // Compute this frame's optimization decision now that we have
+        // the renderable counts + opaque snapshot. The pure function
+        // takes (policy, stats, prev_frame, frames_in_current_mode)
+        // and emits the new `FrameOptimizations`. Tests live in
+        // `crate::optimization_policy::tests`.
+        let frame_opts_stats = crate::optimization_policy::FrameOptimizationStats {
+            features_gpu_culling: self.features.gpu_culling,
+            features_decals: self.features.decals,
+            opaque_count: renderables.opaque.len() as u32,
+            non_instanced_with_aabb_count: opaque_snapshots.len() as u32,
+            decals_count: self
+                .decals
+                .as_ref()
+                .map(|d| d.len() as u32)
+                .unwrap_or(0),
+            args_ready: self
+                .compaction_buffers
+                .as_ref()
+                .map(|cb| cb.args_ready.get())
+                .unwrap_or(false),
+        };
+        let frame_opts = crate::optimization_policy::compute_frame_optimizations(
+            &self.optimization_policy,
+            &frame_opts_stats,
+            &self.frame_optimizations,
+            self.frames_in_current_mode,
+        );
+        ctx.frame_optimizations.set(frame_opts);
+        // Cooldown bookkeeping uses `gpu_occlusion` as the flip
+        // detector; the other derived flags follow from inputs the
+        // policy doesn't gate on. Computed here while we hold the
+        // pre-update prev-frame state, then applied at end of
+        // `render()` (after `renderables` is dropped) so we can take
+        // `&mut self` to write the renderer state.
+        let next_frames_in_current_mode =
+            if frame_opts.stable_mode(&self.frame_optimizations) {
+                self.frames_in_current_mode.saturating_add(1)
+            } else {
+                1
+            };
+
+        // Args-buffer poisoning rule: when `gpu_occlusion` is false
+        // (Off, Auto-disengaged, or capability missing) the compaction
+        // pass won't run, so any `args_ready=true` from a prior frame
+        // would let `mesh.rs` issue stale `drawIndirect` calls. Clear
+        // the flag so a future re-enable warms up through one frame of
+        // CPU geometry before drawIndirect resumes.
+        if !frame_opts.gpu_occlusion {
+            if let Some(compaction_buffers) = self.compaction_buffers.as_ref() {
+                compaction_buffers.args_ready.set(false);
+            }
+        }
 
         if let Some(hook) = hooks.and_then(|h| h.first_pass.as_ref()) {
             {
@@ -576,15 +636,23 @@ impl AwsmRenderer {
         // shading so the depth buffer holds the final scene depth,
         // but BEFORE the decal pass — the decal classify (§16.4.C)
         // uses the HZB to gate per-tile decal append. Also consumed
-        // by the occlusion-cull pass below. Skipped when
-        // `features.gpu_culling == false` (plan §16.F).
-        if let Some(hzb) = self.render_passes.hzb.as_ref() {
-            let _maybe_span_guard = if self.logging.render_timings {
-                Some(tracing::span!(tracing::Level::INFO, "HZB RenderPass").entered())
-            } else {
-                None
-            };
-            hzb.render(&ctx)?;
+        // by the occlusion-cull pass below.
+        //
+        // Allocation gate is `features.gpu_culling` (the HZB texture
+        // lives behind that Option). Per-frame engagement is
+        // `frame_optimizations.hzb`, which the policy derives as
+        // `gpu_occlusion || decal_hzb_gate` — so we still rebuild HZB
+        // when decals are active even if mesh occlusion is disengaged
+        // this frame.
+        if frame_opts.hzb {
+            if let Some(hzb) = self.render_passes.hzb.as_ref() {
+                let _maybe_span_guard = if self.logging.render_timings {
+                    Some(tracing::span!(tracing::Level::INFO, "HZB RenderPass").entered())
+                } else {
+                    None
+                };
+                hzb.render(&ctx)?;
+            }
         }
 
         // Projection decals (Cluster 6.4). Runs after the blit so
@@ -622,7 +690,15 @@ impl AwsmRenderer {
         // `features.gpu_culling` consumes that via `drawIndirect`.
         // Skipped entirely when `features.gpu_culling == false`
         // (see `RendererFeatures` in features.rs).
-        if let (Some(occlusion_buffers), Some(occlusion_pass)) = (
+        // Gate the entire cull + compaction block on the per-frame
+        // policy decision. `features.gpu_culling` allocates the
+        // resources; `frame_opts.gpu_occlusion` engages the work.
+        // When this is `false`, the args-buffer poison above already
+        // flipped `args_ready` so the geometry pass routes through the
+        // CPU branch — and the cull/compaction passes are simply
+        // skipped, saving the compute dispatches on small scenes.
+        if frame_opts.gpu_occlusion {
+          if let (Some(occlusion_buffers), Some(occlusion_pass)) = (
             self.occlusion_buffers.as_ref(),
             self.render_passes.occlusion.as_ref(),
         ) {
@@ -760,6 +836,7 @@ impl AwsmRenderer {
                     }
                 }
             }
+        }
         }
 
         // Built-in line render pass — must run after the opaque->transparent
@@ -970,6 +1047,13 @@ impl AwsmRenderer {
                 hook(self)?;
             }
         }
+
+        // Commit the deferred optimization-policy bookkeeping. We
+        // couldn't write these earlier because `renderables` held a
+        // borrow on `&self` through the rest of the render flow.
+        self.frame_optimizations = frame_opts;
+        self.frames_in_current_mode = next_frames_in_current_mode;
+
         Ok(())
     }
 }
@@ -1015,6 +1099,17 @@ pub struct RenderContext<'a> {
     /// into the readback buffer both reach through this field.
     pub coverage_buffers:
         Option<&'a crate::render_passes::coverage::buffers::CoverageBuffers>,
+    /// Per-frame derived flags from
+    /// [`crate::optimization_policy::compute_frame_optimizations`].
+    /// `Cell` because the values aren't known until after
+    /// `collect_renderables` + the opaque snapshot have run, but
+    /// `RenderContext` itself is constructed before that — pass-level
+    /// code reads via `.get()`. Call sites consult this rather than
+    /// `features` for runtime branching: `features.gpu_culling = true`
+    /// means "the HZB/cull/compaction infrastructure exists,"
+    /// `frame_optimizations.get().gpu_occlusion = true` means "run it
+    /// this frame."
+    pub frame_optimizations: std::cell::Cell<crate::optimization_policy::FrameOptimizations>,
 }
 
 impl<'a> RenderContext<'a> {
