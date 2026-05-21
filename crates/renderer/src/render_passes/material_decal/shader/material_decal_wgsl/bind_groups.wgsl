@@ -62,6 +62,18 @@ struct DecalsBuffer {
 
 @group(0) @binding(6) var<uniform> camera_raw: CameraRaw;
 
+// §16.4.C tile bucket. Read-only here; classify owns the read_write
+// view. Layout mirrors `DecalClassifyBuffers` in `classify/buffers.rs`:
+//   header (4 u32) | per-tile (count + array<u32, capacity>)*tile_count
+struct DecalBuckets {
+    tile_count_x: u32,
+    tile_count_y: u32,
+    bucket_capacity: u32,
+    _pad: u32,
+    payload: array<u32>,
+};
+@group(0) @binding(7) var<storage, read> decal_buckets: DecalBuckets;
+
 {% for i in 0..texture_pool_arrays_len %}
     @group(1) @binding({{ i }}u) var pool_tex_{{ i }}: texture_2d_array<f32>;
 {% endfor %}

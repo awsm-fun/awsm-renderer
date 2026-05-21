@@ -62,16 +62,30 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let world_h = camera_raw.inv_view_proj * vec4<f32>(ndc, 1.0);
     let world_pos = world_h.xyz / world_h.w;
 
-    let count = decals_buffer.count;
-    if count == 0u {
+    // §16.4.C: pick decals from the per-tile bucket instead of the
+    // global decals_buffer. Each workgroup is 8×8, so `gid.xy / 8`
+    // identifies the tile. The bucket holds at most
+    // `bucket_capacity` entries (overflow silently dropped on the
+    // classify side).
+    let tile_x = gid.x / 8u;
+    let tile_y = gid.y / 8u;
+    if (tile_x >= decal_buckets.tile_count_x || tile_y >= decal_buckets.tile_count_y) {
+        textureStore(transparent_tex_out, coords, vec4<f32>(0.0));
+        return;
+    }
+    let per_tile_stride = 1u + decal_buckets.bucket_capacity;
+    let tile_base = (tile_y * decal_buckets.tile_count_x + tile_x) * per_tile_stride;
+    let tile_count = min(decal_buckets.payload[tile_base], decal_buckets.bucket_capacity);
+    if tile_count == 0u {
         textureStore(transparent_tex_out, coords, vec4<f32>(0.0));
         return;
     }
     let opaque_color = textureLoad(opaque_tex_in, coords, 0);
     var accum = opaque_color;
     var any_decal_hit = false;
-    for (var i = 0u; i < count; i = i + 1u) {
-        let decal = decals_buffer.items[i];
+    for (var i = 0u; i < tile_count; i = i + 1u) {
+        let decal_index = decal_buckets.payload[tile_base + 1u + i];
+        let decal = decals_buffer.items[decal_index];
         let local_h = decal.inverse_transform * vec4<f32>(world_pos, 1.0);
         let local = local_h.xyz / local_h.w;
         // Inside-the-oriented-unit-cube test. Decals project down the

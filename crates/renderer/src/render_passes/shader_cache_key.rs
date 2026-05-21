@@ -7,6 +7,7 @@ use crate::render_passes::{
     hzb::shader::cache_key::{ShaderCacheKeyHzbReduce, ShaderCacheKeyHzbSeed},
     light_culling::shader::cache_key::ShaderCacheKeyLightCulling,
     material_classify::shader::cache_key::ShaderCacheKeyMaterialClassify,
+    material_decal::classify::shader::cache_key::ShaderCacheKeyDecalClassify,
     material_decal::shader::cache_key::ShaderCacheKeyMaterialDecal,
     material_opaque::shader::cache_key::{
         ShaderCacheKeyMaterialOpaque, ShaderCacheKeyMaterialOpaqueEmpty,
@@ -23,6 +24,7 @@ pub enum ShaderCacheKeyRenderPass {
     HzbReduce(ShaderCacheKeyHzbReduce),
     LightCulling(ShaderCacheKeyLightCulling),
     MaterialClassify(ShaderCacheKeyMaterialClassify),
+    DecalClassify(ShaderCacheKeyDecalClassify),
     MaterialDecal(ShaderCacheKeyMaterialDecal),
     MaterialOpaque(ShaderCacheKeyMaterialOpaque),
     MaterialOpaqueEmpty(ShaderCacheKeyMaterialOpaqueEmpty),

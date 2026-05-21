@@ -8,19 +8,22 @@ use crate::{
     render::RenderContext,
     render_passes::{
         material_decal::{
-            bind_group::MaterialDecalBindGroups, composite::MaterialDecalComposite,
-            pipeline::MaterialDecalPipelines,
+            bind_group::MaterialDecalBindGroups,
+            classify::render_pass::DecalClassifyRenderPass,
+            composite::MaterialDecalComposite, pipeline::MaterialDecalPipelines,
         },
         RenderPassInitContext,
     },
 };
 
-/// Material decal pass bind groups, compute pipelines, and the
-/// downstream composite pass (§16.4.D).
+/// Material decal pass bind groups, compute pipelines, the
+/// downstream composite pass (§16.4.D), and the upstream
+/// per-tile classify pass (§16.4.C).
 pub struct MaterialDecalRenderPass {
     pub bind_groups: MaterialDecalBindGroups,
     pub pipelines: MaterialDecalPipelines,
     pub composite: MaterialDecalComposite,
+    pub classify_pass: DecalClassifyRenderPass,
 }
 
 impl MaterialDecalRenderPass {
@@ -28,20 +31,26 @@ impl MaterialDecalRenderPass {
         let bind_groups = MaterialDecalBindGroups::new(ctx).await?;
         let pipelines = MaterialDecalPipelines::new(ctx, &bind_groups).await?;
         let composite = MaterialDecalComposite::new(ctx).await?;
+        let classify_pass = DecalClassifyRenderPass::new(ctx).await?;
         Ok(Self {
             bind_groups,
             pipelines,
             composite,
+            classify_pass,
         })
     }
 
-    /// Dispatches the decal compute (always to `decal_color`, regardless
-    /// of AA). The composite pass downstream is what blits to the
-    /// `transparent` target. Skipped only when no decals are active.
+    /// Dispatches: classify → compute → composite. Skipped when no
+    /// decals are active.
     pub fn render(&self, ctx: &RenderContext, decals: &Decals) -> Result<()> {
         if decals.is_empty() {
             return Ok(());
         }
+
+        // §16.4.C: tile-bucket classify must run before the shading
+        // compute so per-pixel iteration reads from a fresh per-tile
+        // decal list.
+        self.classify_pass.render(ctx, decals.len() as u32)?;
 
         let pipeline_key = if ctx.anti_aliasing.msaa_sample_count.is_some() {
             self.pipelines.multisampled_pipeline_key

@@ -8,6 +8,7 @@ use crate::{
         hzb::shader::template::{ShaderTemplateHzbReduce, ShaderTemplateHzbSeed},
         light_culling::shader::template::ShaderTemplateLightCulling,
         material_classify::shader::template::ShaderTemplateMaterialClassify,
+        material_decal::classify::shader::template::ShaderTemplateDecalClassify,
         material_decal::shader::template::ShaderTemplateMaterialDecal,
         material_opaque::shader::template::{
             ShaderTemplateMaterialOpaque, ShaderTemplateMaterialOpaqueEmpty,
@@ -26,6 +27,7 @@ pub enum ShaderTemplateRenderPass {
     HzbReduce(ShaderTemplateHzbReduce),
     LightCulling(ShaderTemplateLightCulling),
     MaterialClassify(ShaderTemplateMaterialClassify),
+    DecalClassify(ShaderTemplateDecalClassify),
     MaterialDecal(ShaderTemplateMaterialDecal),
     MaterialOpaque(ShaderTemplateMaterialOpaque),
     MaterialOpaqueEmpty(ShaderTemplateMaterialOpaqueEmpty),
@@ -54,6 +56,9 @@ impl TryFrom<&ShaderCacheKeyRenderPass> for ShaderTemplateRenderPass {
             ),
             ShaderCacheKeyRenderPass::MaterialClassify(cache_key) => Ok(
                 ShaderTemplateRenderPass::MaterialClassify(cache_key.try_into()?),
+            ),
+            ShaderCacheKeyRenderPass::DecalClassify(cache_key) => Ok(
+                ShaderTemplateRenderPass::DecalClassify(cache_key.try_into()?),
             ),
             ShaderCacheKeyRenderPass::MaterialDecal(cache_key) => Ok(
                 ShaderTemplateRenderPass::MaterialDecal(cache_key.try_into()?),
@@ -89,6 +94,7 @@ impl ShaderTemplateRenderPass {
             ShaderTemplateRenderPass::HzbReduce(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::LightCulling(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::MaterialClassify(tmpl) => tmpl.into_source(),
+            ShaderTemplateRenderPass::DecalClassify(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::MaterialDecal(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::MaterialOpaque(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::MaterialOpaqueEmpty(tmpl) => tmpl.into_source(),
@@ -108,6 +114,7 @@ impl ShaderTemplateRenderPass {
             ShaderTemplateRenderPass::HzbReduce(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::LightCulling(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::MaterialClassify(tmpl) => tmpl.debug_label(),
+            ShaderTemplateRenderPass::DecalClassify(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::MaterialDecal(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::MaterialOpaque(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::MaterialOpaqueEmpty(tmpl) => tmpl.debug_label(),

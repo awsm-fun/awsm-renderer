@@ -113,6 +113,10 @@ impl MaterialDecalBindGroups {
                 6,
                 BindGroupResource::Buffer(BufferBinding::new(&ctx.camera.gpu_buffer)),
             ),
+            BindGroupEntry::new(
+                7,
+                BindGroupResource::Buffer(BufferBinding::new(&ctx.decal_classify_buffers.buffer)),
+            ),
         ];
 
         let descriptor = BindGroupDescriptor::new(
@@ -225,6 +229,15 @@ async fn create_main_layout(
         BindGroupLayoutCacheKeyEntry {
             resource: BindGroupLayoutResource::Buffer(
                 BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
+            ),
+            visibility_vertex: false,
+            visibility_fragment: false,
+            visibility_compute: true,
+        },
+        // decal_buckets (storage RO; §16.4.C per-tile bucket)
+        BindGroupLayoutCacheKeyEntry {
+            resource: BindGroupLayoutResource::Buffer(
+                BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),
             ),
             visibility_vertex: false,
             visibility_fragment: false,

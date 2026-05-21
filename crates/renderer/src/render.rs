@@ -184,6 +184,20 @@ impl AwsmRenderer {
                 .mark_create(BindGroupCreate::OcclusionBuffersResize);
         }
 
+        // §16.4.C: decal classify buckets sized to viewport tile count.
+        let decal_tile_x = render_texture_views.width.div_ceil(8);
+        let decal_tile_y = render_texture_views.height.div_ceil(8);
+        if self
+            .decal_classify_buffers
+            .ensure_capacity(&self.gpu, decal_tile_x, decal_tile_y)?
+        {
+            self.bind_groups
+                .mark_create(BindGroupCreate::DecalClassifyBuffersResize);
+        }
+        // Reset the per-tile atomic counts every frame so classify
+        // starts against an empty bucket set.
+        self.decal_classify_buffers.reset(&self.gpu)?;
+
         self.bind_groups.recreate(
             BindGroupRecreateContext {
                 gpu: &self.gpu,
@@ -204,6 +218,7 @@ impl AwsmRenderer {
                 decals: &self.decals,
                 occlusion_buffers: &self.occlusion_buffers,
                 hzb_full_view: self.render_passes.hzb.texture.view_all.clone(),
+                decal_classify_buffers: &self.decal_classify_buffers,
             },
             &mut self.render_passes,
             &mut self.picker,

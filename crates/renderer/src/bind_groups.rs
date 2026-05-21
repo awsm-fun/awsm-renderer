@@ -59,6 +59,9 @@ pub struct BindGroupRecreateContext<'a> {
     /// Full-chain HZB view used by the cull pass to sample at
     /// per-instance mip levels.
     pub hzb_full_view: web_sys::GpuTextureView,
+    /// Per-tile decal classify buckets (§16.4.C).
+    pub decal_classify_buffers:
+        &'a crate::render_passes::material_decal::classify::buffers::DecalClassifyBuffers,
 }
 
 /// Reasons to recreate bind groups.
@@ -87,6 +90,10 @@ pub enum BindGroupCreate {
     /// Occlusion-cull instance / visibility buffers were reallocated
     /// (§16.7 Phase 1). Only the cull pass's bind group binds them.
     OcclusionBuffersResize,
+    /// Decal classify buckets were reallocated (§16.4.C, viewport
+    /// tile-count grew). The classify pass + decal shading pass both
+    /// rebind.
+    DecalClassifyBuffersResize,
     MaterialResize,
     TextureViewRecreate,
     TexturePool,
@@ -163,6 +170,7 @@ impl BindGroups {
             MaterialClassify,
             MaterialDecalMain,
             MaterialDecalComposite,
+            MaterialDecalClassify,
             MaterialDecalTextures,
             OpaqueMain,
             OpaqueLights,
@@ -300,6 +308,10 @@ impl BindGroups {
                 BindGroupCreate::OcclusionBuffersResize => {
                     functions_to_call.insert(FunctionToCall::Occlusion);
                 }
+                BindGroupCreate::DecalClassifyBuffersResize => {
+                    functions_to_call.insert(FunctionToCall::MaterialDecalClassify);
+                    functions_to_call.insert(FunctionToCall::MaterialDecalMain);
+                }
             }
         }
 
@@ -407,6 +419,13 @@ impl BindGroups {
                 }
                 FunctionToCall::MaterialDecalComposite => {
                     render_passes.material_decal.composite.recreate(&ctx)?;
+                }
+                FunctionToCall::MaterialDecalClassify => {
+                    render_passes
+                        .material_decal
+                        .classify_pass
+                        .bind_groups
+                        .recreate(&ctx)?;
                 }
                 FunctionToCall::MaterialDecalTextures => {
                     render_passes

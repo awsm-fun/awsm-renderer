@@ -114,6 +114,11 @@ pub struct AwsmRenderer {
     /// consume the result — Phase 2 / §16.8 will gate `drawIndirect`
     /// against it.
     pub occlusion_buffers: render_passes::occlusion::buffers::OcclusionBuffers,
+    /// Per-tile decal classify buckets (§16.4.C). Populated by a
+    /// `decal_classify` compute pass run before the decal shading
+    /// pass; the shading pass reads only the per-tile subset.
+    pub decal_classify_buffers:
+        render_passes::material_decal::classify::buffers::DecalClassifyBuffers,
     /// Last-frame per-mesh pixel coverage (Cluster 6.2). Populated by
     /// the GPU coverage compute pass; consumed by the skinning-skip
     /// and material-LOD gates. Empty until the producer pass is wired.
@@ -446,6 +451,12 @@ impl AwsmRendererBuilder {
         let occlusion_buffers =
             render_passes::occlusion::buffers::OcclusionBuffers::new(&gpu)?;
 
+        // Decal classify buckets (§16.4.C). Starts at 1×1 tiles;
+        // `ensure_capacity` resizes against the live viewport on
+        // first render.
+        let decal_classify_buffers =
+            render_passes::material_decal::classify::buffers::DecalClassifyBuffers::new(&gpu)?;
+
         let shadows = shadows::Shadows::new(
             &gpu,
             &mut bind_group_layouts,
@@ -473,6 +484,7 @@ impl AwsmRendererBuilder {
             material_classify_buffers,
             decals,
             occlusion_buffers,
+            decal_classify_buffers,
             coverage: coverage::MeshCoverage::default(),
             frame_index: 0,
             shaders,
