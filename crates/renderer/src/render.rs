@@ -71,6 +71,21 @@ impl AwsmRenderer {
 
         self.render_textures.next_frame();
 
+        // Plan §8.2: ingest any coverage snapshot that a prior
+        // frame's `mapAsync` task resolved into
+        // `coverage_readback_state.pending_snapshot`. The producer
+        // pass dispatched N frames ago; the consumer (skin skip /
+        // material LOD) sees this-frame counts on the very next
+        // frame this hook runs. No-op when the table is empty.
+        let pending_snapshot = self
+            .coverage_readback_state
+            .borrow_mut()
+            .pending_snapshot
+            .take();
+        if let Some(snapshot) = pending_snapshot {
+            self.coverage.ingest(snapshot, self.frame_index);
+        }
+
         self.transforms
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
         self.materials
@@ -220,6 +235,22 @@ impl AwsmRenderer {
             }
         }
 
+        // §8.2 GPU coverage: ensure the per-mesh counts buffer
+        // covers every slot, then zero it for this frame so the
+        // compute pass's atomicAdd starts clean. Sizing follows
+        // the same `meshes.len()` upper bound as the §16.7/§16.8
+        // args buffer; sparse meta-slot indices leave gaps that
+        // stay at zero across frames (harmless — consumers treat
+        // zero counts as "not visible last frame").
+        if self
+            .coverage_buffers
+            .ensure_capacity(&self.gpu, self.meshes.len() as u32)?
+        {
+            self.bind_groups
+                .mark_create(BindGroupCreate::CoverageBuffersResize);
+        }
+        self.coverage_buffers.reset_counts(&self.gpu)?;
+
         self.bind_groups.recreate(
             BindGroupRecreateContext {
                 gpu: &self.gpu,
@@ -246,6 +277,7 @@ impl AwsmRenderer {
                     .map(|hzb| hzb.texture.view_all.clone()),
                 decal_classify_buffers: self.decal_classify_buffers.as_ref(),
                 compaction_buffers: self.compaction_buffers.as_ref(),
+                coverage_buffers: Some(&self.coverage_buffers),
                 features: &self.features,
             },
             &mut self.render_passes,
@@ -272,6 +304,7 @@ impl AwsmRenderer {
             material_classify_buffers: &self.material_classify_buffers,
             features: &self.features,
             compaction_buffers: self.compaction_buffers.as_ref(),
+            coverage_buffers: Some(&self.coverage_buffers),
         };
 
         let renderables = self.collect_renderables(&ctx)?;
@@ -361,6 +394,20 @@ impl AwsmRenderer {
                 };
                 hook(&ctx)?;
             }
+        }
+
+        // Plan §8.2 GPU coverage tally — one atomicAdd per pixel
+        // into the per-mesh counts buffer. Runs after the geometry
+        // passes (so the full visibility buffer is populated) and
+        // also schedules a `copyBufferToBuffer` into the readback
+        // buffer that next-frame's `mapAsync` task picks up.
+        {
+            let _maybe_span_guard = if self.logging.render_timings {
+                Some(tracing::span!(tracing::Level::INFO, "Coverage RenderPass").entered())
+            } else {
+                None
+            };
+            self.render_passes.coverage.render(&ctx)?;
         }
 
         // Shadow generation pass — runs between the geometry passes
@@ -780,7 +827,83 @@ impl AwsmRenderer {
             }
         }
 
+        // Plan §8.2: build the slot → MeshKey map now (while we
+        // still own `self.meshes`) so the async readback task can
+        // route raw `u32` slot counts back into the `MeshCoverage`
+        // table without re-borrowing the renderer. Drops to an
+        // empty snapshot when a prior frame's `mapAsync` is still
+        // in flight (single-buffered readback path — see
+        // `CoverageReadbackState`).
+        //
+        // Slot indexing uses the *material* meta offset (not the
+        // geometry meta) because the visibility-buffer's per-pixel
+        // `material_mesh_meta_offset` is what the geometry fragment
+        // wrote and what the coverage compute shader divides by
+        // `MATERIAL_MESH_META_BYTE_ALIGNMENT` to index the counts
+        // buffer. The geometry and material meta SecondaryMaps can
+        // assign different slot indices to the same `MeshKey` under
+        // fragmentation, so reading `geometry_buffer_offset` here
+        // would silently miss.
+        let coverage_slot_map: Option<Vec<(crate::meshes::MeshKey, usize)>> =
+            if !self.coverage_readback_state.borrow().inflight {
+                Some(
+                    self.meshes
+                        .iter()
+                        .filter_map(|(mesh_key, _)| {
+                            let off = self.meshes.meta.material_buffer_offset(mesh_key).ok()?;
+                            let slot = off
+                                / crate::meshes::meta::material_meta::MATERIAL_MESH_META_BYTE_ALIGNMENT;
+                            Some((mesh_key, slot))
+                        })
+                        .collect(),
+                )
+            } else {
+                None
+            };
+
         self.gpu.submit_commands(&ctx.command_encoder.finish());
+
+        // Plan §8.2: kick the `mapAsync` readback so next frame's
+        // `MeshCoverage::ingest` sees this frame's counts. Skipped
+        // when a previous map hasn't yet resolved (single-buffered
+        // path — under high mapping latency we lose a frame of
+        // coverage rather than ringing the buffer).
+        if let Some(slot_map) = coverage_slot_map {
+            let readback_buffer = self.coverage_buffers.readback_buffer.clone();
+            let readback_size_bytes =
+                (self.coverage_buffers.capacity as u32).saturating_mul(4);
+            let state = self.coverage_readback_state.clone();
+            state.borrow_mut().inflight = true;
+            wasm_bindgen_futures::spawn_local(async move {
+                let result = crate::core::buffers::extract_buffer_vec(
+                    &readback_buffer,
+                    Some(readback_size_bytes),
+                )
+                .await;
+                let snapshot: Vec<(crate::meshes::MeshKey, u32)> = match result {
+                    Ok(bytes) => slot_map
+                        .into_iter()
+                        .filter_map(|(mesh_key, slot)| {
+                            let base = slot * 4;
+                            if base + 4 > bytes.len() {
+                                return None;
+                            }
+                            let count = u32::from_le_bytes(
+                                bytes[base..base + 4].try_into().ok()?,
+                            );
+                            Some((mesh_key, count))
+                        })
+                        .collect(),
+                    Err(err) => {
+                        tracing::warn!("coverage readback mapAsync failed: {err:?}");
+                        Vec::new()
+                    }
+                };
+                let mut state = state.borrow_mut();
+                state.pending_snapshot = Some(snapshot);
+                state.inflight = false;
+            });
+        }
 
         if let Some(hook) = hooks.and_then(|h| h.post_render.as_ref()) {
             {
@@ -831,6 +954,12 @@ pub struct RenderContext<'a> {
     /// pass reads it as the indirect-args source for `drawIndirect`.
     pub compaction_buffers:
         Option<&'a crate::render_passes::occlusion::compaction::CompactionBuffers>,
+    /// GPU mesh-pixel-coverage producer buffers — plan §8.2. Always
+    /// present (the coverage pass runs unconditionally). The
+    /// coverage render pass + the per-frame `copyBufferToBuffer`
+    /// into the readback buffer both reach through this field.
+    pub coverage_buffers:
+        Option<&'a crate::render_passes::coverage::buffers::CoverageBuffers>,
 }
 
 impl<'a> RenderContext<'a> {

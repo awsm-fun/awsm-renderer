@@ -98,6 +98,42 @@ pub async fn load_scene_by_path(scene_name: String) -> Result<(), JsValue> {
     Ok(())
 }
 
+/// Read the renderer's `MeshCoverage` state — plan §8.2 readback
+/// verification. Returns `{ "entries": N, "frame_when_populated": F,
+/// "min": M, "max": X, "nonzero": K }` so the measurement harness
+/// can confirm the GPU coverage producer actually wired its
+/// counts back into the CPU table.
+#[wasm_bindgen]
+pub async fn read_mesh_coverage_stats() -> String {
+    let stats = crate::context::with_renderer_mut(|r| {
+        let entries = r.coverage.len();
+        let frame = r.coverage.frame_when_populated();
+        let mut min: u32 = u32::MAX;
+        let mut max: u32 = 0;
+        let mut nonzero: u32 = 0;
+        for (key, _) in r.meshes.iter() {
+            if let Some(c) = r.coverage.pixel_count(key) {
+                if c < min {
+                    min = c;
+                }
+                if c > max {
+                    max = c;
+                }
+                if c > 0 {
+                    nonzero += 1;
+                }
+            }
+        }
+        let min_out = if min == u32::MAX { 0 } else { min };
+        (entries, frame, min_out, max, nonzero)
+    })
+    .await;
+    format!(
+        "{{\"entries\":{},\"frame_when_populated\":{},\"min\":{},\"max\":{},\"nonzero\":{}}}",
+        stats.0, stats.1, stats.2, stats.3, stats.4
+    )
+}
+
 /// Read the renderer's light-bucket telemetry — plan §15 row T6.
 /// Returns a JSON string `{ "last_max_bucket": N, "oversized_count": M }`
 /// for the most-recently-rebuilt `LightMeshBuckets`. Drive from

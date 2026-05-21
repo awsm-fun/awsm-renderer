@@ -73,6 +73,10 @@ pub struct BindGroupRecreateContext<'a> {
     /// (plan §16.F).
     pub compaction_buffers:
         Option<&'a crate::render_passes::occlusion::compaction::CompactionBuffers>,
+    /// GPU mesh-pixel-coverage producer buffers — plan §8.2.
+    /// Always present (the coverage producer is unconditional).
+    pub coverage_buffers:
+        Option<&'a crate::render_passes::coverage::buffers::CoverageBuffers>,
     /// Active feature gates (plan §16.F) — the dispatcher uses these
     /// to skip recreating bind groups for passes whose feature is
     /// disabled.
@@ -112,6 +116,9 @@ pub enum BindGroupCreate {
     /// Compaction `IndirectDrawArgs` buffer was reallocated (§16.7
     /// Phase 2 + §16.8 infra). Only the compaction pass binds it.
     CompactionBuffersResize,
+    /// GPU coverage `counts_buffer` was reallocated (plan §8.2).
+    /// Only the coverage pass binds it.
+    CoverageBuffersResize,
     MaterialResize,
     TextureViewRecreate,
     TexturePool,
@@ -190,6 +197,7 @@ impl BindGroups {
             Hzb,
             Occlusion,
             OcclusionCompaction,
+            Coverage,
             MaterialClassify,
             MaterialDecalMain,
             MaterialDecalComposite,
@@ -264,6 +272,9 @@ impl BindGroups {
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
                     functions_to_call.insert(FunctionToCall::TransparentMain);
                     functions_to_call.insert(FunctionToCall::Picker);
+                    // §8.2: coverage pass binds `visibility_data`;
+                    // rebuild on view recreate.
+                    functions_to_call.insert(FunctionToCall::Coverage);
                 }
                 BindGroupCreate::TexturePool => {
                     functions_to_call.insert(FunctionToCall::OpaqueTextures);
@@ -305,6 +316,10 @@ impl BindGroups {
                 BindGroupCreate::AntiAliasingChange => {
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
                     functions_to_call.insert(FunctionToCall::TransparentMain);
+                    // §8.2: coverage pass binds a multisampled vs
+                    // single-sample visibility-data view depending
+                    // on the active MSAA setting.
+                    functions_to_call.insert(FunctionToCall::Coverage);
                 }
                 BindGroupCreate::InstanceAttributesResize => {
                     // Per-instance attribute storage buffer is bound on the
@@ -339,6 +354,9 @@ impl BindGroups {
                 }
                 BindGroupCreate::CompactionBuffersResize => {
                     functions_to_call.insert(FunctionToCall::OcclusionCompaction);
+                }
+                BindGroupCreate::CoverageBuffersResize => {
+                    functions_to_call.insert(FunctionToCall::Coverage);
                 }
                 BindGroupCreate::DecalClassifyBuffersResize => {
                     functions_to_call.insert(FunctionToCall::MaterialDecalClassify);
@@ -478,6 +496,19 @@ impl BindGroups {
                     render_passes
                         .material_classify
                         .bind_groups
+                        .recreate(&ctx)?;
+                }
+                FunctionToCall::Coverage => {
+                    // §8.2: rebuild both single-sample and
+                    // multisampled coverage bind groups so the
+                    // render-time MSAA pick is always valid.
+                    render_passes
+                        .coverage
+                        .bind_groups_singlesampled
+                        .recreate(&ctx)?;
+                    render_passes
+                        .coverage
+                        .bind_groups_multisampled
                         .recreate(&ctx)?;
                 }
                 FunctionToCall::MaterialDecalMain => {

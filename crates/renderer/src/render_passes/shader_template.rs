@@ -2,6 +2,7 @@
 
 use crate::{
     render_passes::{
+        coverage::shader::template::ShaderTemplateCoverage,
         display::shader::template::ShaderTemplateDisplay,
         effects::shader::template::ShaderTemplateEffects,
         geometry::shader::template::ShaderTemplateGeometry,
@@ -24,6 +25,7 @@ use crate::{
 
 /// Render-pass shader template variants.
 pub enum ShaderTemplateRenderPass {
+    Coverage(ShaderTemplateCoverage),
     Geometry(ShaderTemplateGeometry),
     HzbSeed(ShaderTemplateHzbSeed),
     HzbReduce(ShaderTemplateHzbReduce),
@@ -45,6 +47,9 @@ impl TryFrom<&ShaderCacheKeyRenderPass> for ShaderTemplateRenderPass {
 
     fn try_from(value: &ShaderCacheKeyRenderPass) -> std::result::Result<Self, Self::Error> {
         match value {
+            ShaderCacheKeyRenderPass::Coverage(cache_key) => {
+                Ok(ShaderTemplateRenderPass::Coverage(cache_key.try_into()?))
+            }
             ShaderCacheKeyRenderPass::Geometry(cache_key) => {
                 Ok(ShaderTemplateRenderPass::Geometry(cache_key.try_into()?))
             }
@@ -95,6 +100,7 @@ impl ShaderTemplateRenderPass {
     /// Renders the template into WGSL source.
     pub fn into_source(self) -> std::result::Result<String, AwsmShaderError> {
         match self {
+            ShaderTemplateRenderPass::Coverage(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::Geometry(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::HzbSeed(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::HzbReduce(tmpl) => tmpl.into_source(),
@@ -116,6 +122,7 @@ impl ShaderTemplateRenderPass {
     /// Returns an optional debug label for shader compilation.
     pub fn debug_label(&self) -> Option<&str> {
         match self {
+            ShaderTemplateRenderPass::Coverage(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::Geometry(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::HzbSeed(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::HzbReduce(tmpl) => tmpl.debug_label(),

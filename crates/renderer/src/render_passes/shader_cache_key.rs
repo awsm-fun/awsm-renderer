@@ -1,6 +1,7 @@
 //! Render-pass shader cache keys.
 
 use crate::render_passes::{
+    coverage::shader::cache_key::ShaderCacheKeyCoverage,
     display::shader::cache_key::ShaderCacheKeyDisplay,
     effects::shader::cache_key::ShaderCacheKeyEffects,
     geometry::shader::cache_key::ShaderCacheKeyGeometry,
@@ -21,6 +22,7 @@ use crate::render_passes::{
 /// Cache key variants for render-pass shader templates.
 #[derive(Hash, Debug, Clone, PartialEq, Eq)]
 pub enum ShaderCacheKeyRenderPass {
+    Coverage(ShaderCacheKeyCoverage),
     Geometry(ShaderCacheKeyGeometry),
     HzbSeed(ShaderCacheKeyHzbSeed),
     HzbReduce(ShaderCacheKeyHzbReduce),

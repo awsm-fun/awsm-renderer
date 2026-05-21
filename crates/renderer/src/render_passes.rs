@@ -1,5 +1,6 @@
 //! Render pass orchestration and initialization.
 
+pub mod coverage;
 pub mod display;
 pub mod effects;
 pub mod geometry;
@@ -25,6 +26,7 @@ use crate::{
     pipeline_layouts::PipelineLayouts,
     pipelines::Pipelines,
     render_passes::{
+        coverage::render_pass::CoverageRenderPass,
         display::render_pass::DisplayRenderPass, geometry::render_pass::GeometryRenderPass,
         hzb::render_pass::HzbRenderPass,
         light_culling::render_pass::LightCullingRenderPass,
@@ -43,6 +45,10 @@ use crate::{
 /// Collection of render passes used by the renderer.
 pub struct RenderPasses {
     pub geometry: GeometryRenderPass,
+    /// GPU mesh-pixel-coverage producer — plan §8.2. Always built;
+    /// the dispatch is gated each frame on a coverage-buffer being
+    /// present.
+    pub coverage: CoverageRenderPass,
     /// HZB build pass — `None` when `features.gpu_culling == false`
     /// (plan §16.F).
     pub hzb: Option<HzbRenderPass>,
@@ -73,6 +79,7 @@ impl RenderPasses {
     ) -> Result<Self> {
         Ok(Self {
             geometry: GeometryRenderPass::new(ctx).await?,
+            coverage: CoverageRenderPass::new(ctx).await?,
             hzb: if features.gpu_culling {
                 Some(HzbRenderPass::new(ctx).await?)
             } else {
