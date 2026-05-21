@@ -1,11 +1,22 @@
 //! Importance-based per-light shadow budgets.
 //!
-//! The heuristic is `contribution = bounds_overlap_with_camera_frustum *
-//! intensity / (1 + distance_squared)`. The resulting score maps each
-//! shadow-casting light to a coarse tier and then to a preset table
-//! that scales `resolution`, `cascade_count`, and (for point lights)
-//! `cube_face_update_rate`. Directional lights get a fixed High tier
-//! — they affect the whole scene and quality scaling them is wrong.
+//! The heuristic is two-stage:
+//!
+//!   1. **Frustum gate** (boolean): if the light's world AABB doesn't
+//!      intersect the camera frustum, the light drops straight to Low.
+//!      No partial-overlap fraction is computed — the test is a single
+//!      `Frustum::intersects_aabb` call.
+//!   2. **Score** (continuous): for lights that pass the gate,
+//!      `score = intensity / (1 + distance_squared)`, where `distance`
+//!      is the light position → camera position. The score maps into
+//!      coarse `ShadowQualityTier` bands (Low / Medium / High / Ultra)
+//!      via fixed cutoffs in `light_importance_decision`.
+//!
+//! The resulting tier flows through `ShadowQualityPreset::apply_to_light_params`
+//! to scale `resolution`, `cascade_count`, `hardness`, and (for point
+//! lights) `cube_face_update_rate`. Directional lights bypass the
+//! score entirely and pin to High — they affect the whole scene and
+//! tier-scaling them looks wrong.
 //!
 //! Lands materially better with `SceneSpatial` in place because the
 //! cheap "is this light's bounds even in the camera frustum?" check

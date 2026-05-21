@@ -37,10 +37,11 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
 
     // Pack visibility buffer data
     let t = split16(input.triangle_index);
-    // this is not the material material_offset
-    // it's the the material_mesh_meta offset (which contains the material_offset).
-    // Sourced from the flat varying so non-instanced meshes route
-    // through the right slot even though the fragment stage's
+    // This is NOT the material's `material_offset` — it's the byte
+    // offset of the per-mesh entry in the `material_mesh_meta` storage
+    // buffer (which in turn contains the material_offset). Sourced
+    // from the flat varying so non-instanced meshes route through the
+    // right slot even though the fragment stage's
     // `var<private> geometry_mesh_meta` is uninitialised.
     let m = split16(input.material_mesh_meta_offset);
     // it's 16 bits, not u32, but we store as u32 for simplicity

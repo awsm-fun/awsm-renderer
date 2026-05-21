@@ -37,7 +37,14 @@ pub enum ShadowQualityTier {
 pub struct ShadowQualityPreset {
     pub atlas_size: u32,
     pub cascade_count: u8,
-    pub pcf_taps: u32,
+    /// Filter mode applied to per-light shadows in this tier. Stored
+    /// directly (rather than derived from a tap count) so the preset
+    /// table is unambiguous about which mode High/Ultra actually use
+    /// — earlier revisions stored a `pcf_taps: u32` and mapped it via
+    /// a match in `apply_to_light_params`, but the 16-tap value the
+    /// High/Ultra presets specified fell into the default-arm
+    /// (leave-untouched) branch, leaving the field effectively dead.
+    pub hardness: LightShadowHardness,
     pub max_point_shadows: u32,
     pub evsm_cutoff: EvsmCutoff,
     pub sscs_enabled: bool,
@@ -52,7 +59,7 @@ impl ShadowQualityTier {
             ShadowQualityTier::Low => ShadowQualityPreset {
                 atlas_size: 1024,
                 cascade_count: 2,
-                pcf_taps: 4,
+                hardness: LightShadowHardness::Soft,
                 max_point_shadows: 2,
                 evsm_cutoff: EvsmCutoff::Off,
                 sscs_enabled: false,
@@ -60,7 +67,7 @@ impl ShadowQualityTier {
             ShadowQualityTier::Medium => ShadowQualityPreset {
                 atlas_size: 2048,
                 cascade_count: 3,
-                pcf_taps: 8,
+                hardness: LightShadowHardness::Soft,
                 max_point_shadows: 4,
                 evsm_cutoff: EvsmCutoff::LastCascade,
                 sscs_enabled: false,
@@ -68,7 +75,7 @@ impl ShadowQualityTier {
             ShadowQualityTier::High => ShadowQualityPreset {
                 atlas_size: 4096,
                 cascade_count: 4,
-                pcf_taps: 16,
+                hardness: LightShadowHardness::Pcss,
                 max_point_shadows: 8,
                 evsm_cutoff: EvsmCutoff::LastTwoCascades,
                 sscs_enabled: true,
@@ -76,7 +83,7 @@ impl ShadowQualityTier {
             ShadowQualityTier::Ultra => ShadowQualityPreset {
                 atlas_size: 8192,
                 cascade_count: 4,
-                pcf_taps: 16,
+                hardness: LightShadowHardness::Pcss,
                 max_point_shadows: 16,
                 evsm_cutoff: EvsmCutoff::LastTwoCascades,
                 sscs_enabled: true,
@@ -118,14 +125,7 @@ impl ShadowQualityPreset {
     pub fn apply_to_light_params(&self, params: &mut LightShadowParams) {
         params.cascade_count = self.cascade_count;
         params.evsm_cutoff = self.evsm_cutoff;
-        // PCF tap count is implicit in the hardness — `Hard` is 1-tap,
-        // `Soft` is the fixed 3x3 (== 9 taps); `Pcss` is variable. The
-        // tier's `pcf_taps` budget maps to the appropriate hardness.
-        params.hardness = match self.pcf_taps {
-            0..=1 => LightShadowHardness::Hard,
-            2..=8 => LightShadowHardness::Soft,
-            _ => params.hardness,
-        };
+        params.hardness = self.hardness;
     }
 }
 
@@ -161,5 +161,20 @@ mod tests {
         assert!(params.cast, "tier application must not touch cast flag");
         assert_eq!(params.cascade_count, 4);
         assert_eq!(params.evsm_cutoff, EvsmCutoff::LastTwoCascades);
+        assert_eq!(params.hardness, LightShadowHardness::Pcss);
+    }
+
+    #[test]
+    fn low_and_medium_apply_soft_hardness() {
+        for tier in [ShadowQualityTier::Low, ShadowQualityTier::Medium] {
+            let preset = tier.preset_unchecked();
+            let mut params = LightShadowParams::default();
+            preset.apply_to_light_params(&mut params);
+            assert_eq!(
+                params.hardness,
+                LightShadowHardness::Soft,
+                "tier {tier:?} should apply Soft hardness"
+            );
+        }
     }
 }
