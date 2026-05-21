@@ -566,6 +566,21 @@ impl AwsmRenderer {
             )?;
         }
 
+        // HZB build (Cluster 7.1, plan §16.6). Runs after opaque
+        // shading so the depth buffer holds the final scene depth,
+        // but BEFORE the decal pass — the decal classify (§16.4.C)
+        // uses the HZB to gate per-tile decal append. Also consumed
+        // by the occlusion-cull pass below. Skipped when
+        // `features.gpu_culling == false` (plan §16.F).
+        if let Some(hzb) = self.render_passes.hzb.as_ref() {
+            let _maybe_span_guard = if self.logging.render_timings {
+                Some(tracing::span!(tracing::Level::INFO, "HZB RenderPass").entered())
+            } else {
+                None
+            };
+            hzb.render(&ctx)?;
+        }
+
         // Projection decals (Cluster 6.4). Runs after the blit so
         // `transparent_tex` already holds the opaque shading result;
         // the decal pass overwrites the small subset of pixels its
@@ -575,6 +590,11 @@ impl AwsmRenderer {
         // a multisampled storage-binding target — see
         // `MaterialDecalRenderPass::render`). Skipped entirely when
         // `features.decals == false` (plan §16.F).
+        //
+        // Order constraint: must run AFTER the HZB build above so
+        // the per-tile classify reads a populated HZB. The previous
+        // arrangement built HZB after the decal pass, leaving the
+        // classify reading an empty/stale HZB on every frame.
         if let (Some(material_decal), Some(decals)) = (
             self.render_passes.material_decal.as_ref(),
             self.decals.as_ref(),
@@ -585,19 +605,6 @@ impl AwsmRenderer {
                 None
             };
             material_decal.render(&ctx, decals)?;
-        }
-
-        // HZB build (Cluster 7.1, plan §16.6). Runs after opaque /
-        // decal so the depth buffer holds the final scene depth.
-        // Consumed by the occlusion-cull pass below. Skipped when
-        // `features.gpu_culling == false` (plan §16.F).
-        if let Some(hzb) = self.render_passes.hzb.as_ref() {
-            let _maybe_span_guard = if self.logging.render_timings {
-                Some(tracing::span!(tracing::Level::INFO, "HZB RenderPass").entered())
-            } else {
-                None
-            };
-            hzb.render(&ctx)?;
         }
 
         // Occlusion cull. Pack the active opaque renderables' world
@@ -694,6 +701,15 @@ impl AwsmRenderer {
                 }
                 count
             };
+            // Write the `OcclusionParams` uniform every frame so the
+            // cull + compaction shaders bound their per-thread loops
+            // by this frame's active count rather than the buffer's
+            // capacity. Without this, tail threads in the
+            // workgroup-rounded dispatch process stale instance slots
+            // and double-count phantom meshes into
+            // `IndirectDrawArgs.instance_count`.
+            occlusion_buffers.write_params(&self.gpu, occlusion_instance_count)?;
+
             if occlusion_instance_count > 0 {
                 let _maybe_span_guard = if self.logging.render_timings {
                     Some(
@@ -711,8 +727,12 @@ impl AwsmRenderer {
 
                 // Compact the cull's `visible_this_frame[]` into
                 // per-mesh `IndirectDrawArgs.instance_count` — the
-                // geometry pass's `drawIndirect` consumer above
-                // reads this each frame.
+                // *next* frame's geometry pass `drawIndirect`
+                // consumer reads this. (The geometry pass at the
+                // top of this frame already consumed last frame's
+                // compaction result; that's the one-frame-latent
+                // visibility model documented in §16.7/§16.8 and on
+                // `CompactionBuffers::args_ready`.)
                 if let Some(compaction_pass) =
                     self.render_passes.occlusion_compaction.as_ref()
                 {
@@ -729,6 +749,17 @@ impl AwsmRenderer {
                         None
                     };
                     compaction_pass.render(&ctx, occlusion_instance_count)?;
+                    // Mark the args buffer as containing a valid
+                    // previous-frame visibility set for the next
+                    // frame's geometry pass. The `ensure_capacity`
+                    // resize earlier in this function constructs a
+                    // fresh zero-initialized `CompactionBuffers`
+                    // which resets this back to `false`, so a
+                    // grow event correctly flips us back to the
+                    // CPU path until the next compaction completes.
+                    if let Some(compaction_buffers) = self.compaction_buffers.as_ref() {
+                        compaction_buffers.args_ready.set(true);
+                    }
                 }
             }
         }

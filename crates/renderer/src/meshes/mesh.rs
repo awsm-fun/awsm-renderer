@@ -257,13 +257,24 @@ impl Mesh {
                 .transform_instance_count(self.transform_key)
                 .ok_or(AwsmMeshError::InstancingMissingTransforms(mesh_key))?;
             render_pass.draw_indexed_with_instance_count(index_count, instance_count as u32);
-        } else if ctx.features.gpu_culling {
+        } else if ctx.features.gpu_culling
+            && ctx
+                .compaction_buffers
+                .map(|cb| cb.args_ready.get())
+                .unwrap_or(false)
+        {
             // §16.7/§16.8 drawIndirect path. The compaction shader
             // populated `IndirectDrawArgs[mesh_meta_idx].instance_count`
-            // for this frame from `visible_this_frame[]`; the static
+            // *last frame* from that frame's `visible_this_frame[]`;
+            // this is the one-frame-latent visibility set. The static
             // fields (`index_count`, `first_instance = mesh_meta_idx`)
-            // were pre-uploaded by the per-frame
-            // `populate_indirect_args` pass in `render.rs`.
+            // were uploaded by the per-frame args-prep block in
+            // `render.rs` at the end of the previous frame.
+            //
+            // The `args_ready` gate keeps the geometry pass on the
+            // legacy CPU path for frame 0 (and after any
+            // `ensure_capacity` resize, which zeroes the args buffer);
+            // see `CompactionBuffers::args_ready`'s doc-comment.
             let args_buffer = ctx
                 .compaction_buffers
                 .expect("compaction buffers missing despite gpu_culling feature on")
