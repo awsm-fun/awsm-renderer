@@ -11,12 +11,19 @@
 //!    +4..   array<u32, bucket_capacity> entries  // decal indices
 //! ```
 //!
-//! Re-allocated on viewport resize via `ensure_capacity`. Per-frame,
-//! `reset_header` zeros the atomic counts so a fresh classify starts
-//! against an empty bucket set.
+//! Re-allocated on viewport resize via `ensure_capacity`. The header
+//! is written once at allocation (it's static for the buffer's
+//! lifetime). Per-frame, `reset_counts` is recorded into the command
+//! encoder as a `clear_buffer` over the per-tile region only — that
+//! zeros every atomic count while leaving the (mostly-stale) entries
+//! tail untouched. Earlier revisions uploaded a full-buffer-sized
+//! CPU scratch (~17 MB/frame at 4K); the encoder-side clear runs in
+//! command order strictly before the classify dispatch reads the
+//! counts and costs no CPU upload bandwidth.
 
 use awsm_renderer_core::{
     buffers::{BufferDescriptor, BufferUsage},
+    command::CommandEncoder,
     error::AwsmCoreError,
     renderer::AwsmRendererWebGpu,
 };
@@ -37,11 +44,6 @@ pub struct DecalClassifyBuffers {
     pub tile_count_x: u32,
     pub tile_count_y: u32,
     pub size_bytes: u32,
-    /// CPU staging for the per-frame header reset — re-uploads the
-    /// header constants (tile_count_x, tile_count_y, bucket_capacity)
-    /// and zeros the atomic counts in the tile region tail. The
-    /// allocation is dominated by the zero tail.
-    header_scratch: Vec<u8>,
 }
 
 impl DecalClassifyBuffers {
@@ -69,18 +71,19 @@ impl DecalClassifyBuffers {
             .into(),
         )?;
 
-        // Header + zeroed tail (the atomic counts at each per-tile
-        // offset). The `entries` slots can keep stale data — they're
-        // only read up to `count`, which the classify resets to 0
-        // before appending.
-        let mut header_scratch = vec![0u8; size_bytes as usize];
-        write_header(&mut header_scratch, tile_count_x, tile_count_y);
+        // Static header — never changes for this allocation; per-tile
+        // counts are zeroed each frame via `reset_counts` (encoder
+        // `clear_buffer`). `createBuffer` zero-initializes by default
+        // so the per-tile region starts clean.
+        let mut header_bytes = [0u8; HEADER_BYTES as usize];
+        write_header(&mut header_bytes, tile_count_x, tile_count_y);
+        gpu.write_buffer(&buffer, None, header_bytes.as_slice(), None, None)?;
+
         Ok(Self {
             buffer,
             tile_count_x,
             tile_count_y,
             size_bytes,
-            header_scratch,
         })
     }
 
@@ -102,16 +105,20 @@ impl DecalClassifyBuffers {
         Ok(true)
     }
 
-    /// Per-frame upload — writes the header constants + zero the
-    /// per-tile atomic counts. The `entries` tail is untouched.
-    pub fn reset(&self, gpu: &AwsmRendererWebGpu) -> Result<(), AwsmCoreError> {
-        gpu.write_buffer(
+    /// Per-frame reset of the atomic counts. Recorded into the command
+    /// encoder so it runs in command order strictly before the
+    /// classify dispatch reads the counts and writes via atomicAdd.
+    /// Zeros the entire per-tile region (counts + entries); the
+    /// entries are only read up to `count`, so wiping them too is
+    /// harmless and saves having to walk per-tile offsets with a
+    /// stride-aware clear (the WebGPU `clearBuffer` API only supports
+    /// contiguous ranges).
+    pub fn reset_counts(&self, encoder: &CommandEncoder) {
+        encoder.clear_buffer(
             &self.buffer,
-            None,
-            self.header_scratch.as_slice(),
-            None,
-            None,
-        )
+            Some(HEADER_BYTES),
+            Some(self.size_bytes.saturating_sub(HEADER_BYTES)),
+        );
     }
 }
 
@@ -120,6 +127,4 @@ fn write_header(dst: &mut [u8], tile_count_x: u32, tile_count_y: u32) {
     dst[4..8].copy_from_slice(&tile_count_y.to_ne_bytes());
     dst[8..12].copy_from_slice(&BUCKET_CAPACITY.to_ne_bytes());
     dst[12..16].copy_from_slice(&0u32.to_ne_bytes());
-    // The remaining bytes stay zero — that zeros every per-tile
-    // atomic count which is what classify starts from each frame.
 }

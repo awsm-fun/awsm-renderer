@@ -217,9 +217,12 @@ impl AwsmRenderer {
                 self.bind_groups
                     .mark_create(BindGroupCreate::DecalClassifyBuffersResize);
             }
-            // Reset the per-tile atomic counts every frame so classify
-            // starts against an empty bucket set.
-            decal_classify_buffers.reset(&self.gpu)?;
+            // Per-tile atomic-count reset moved off the CPU upload path
+            // — see `decal_classify_buffers.reset_counts(...)` below,
+            // recorded into the command encoder just before the
+            // material_decal pass. The original `gpu.write_buffer`
+            // re-uploaded the *entire* bucket buffer every frame
+            // (~17 MB at 4K, scaled with viewport).
         }
 
         // §16.7 Phase 2 / §16.8 infra: ensure the compaction args
@@ -666,6 +669,14 @@ impl AwsmRenderer {
             } else {
                 None
             };
+            // Zero the per-tile atomic counts before classify reads
+            // them. Recorded into the command encoder so it runs in
+            // command order strictly before the classify dispatch
+            // (queue.writeBuffer wouldn't — see the matching comment
+            // on the args-buffer clear in the occlusion block).
+            if let Some(decal_classify_buffers) = self.decal_classify_buffers.as_ref() {
+                decal_classify_buffers.reset_counts(&ctx.command_encoder);
+            }
             material_decal.render(&ctx, decals)?;
         }
 
