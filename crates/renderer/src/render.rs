@@ -835,6 +835,19 @@ impl AwsmRenderer {
                         compaction_buffers.args_ready.set(true);
                     }
                 }
+            } else {
+                // Zero-instance frame: the `clear_buffer` above
+                // zeroed args, but no compaction ran to repopulate
+                // them. If `args_ready` carried `true` from a prior
+                // frame, the next frame's geometry pass would
+                // drawIndirect against the cleared (all-zero) buffer
+                // — every non-instanced AABB mesh would vanish for
+                // one frame on the way back in. Poison it now so the
+                // next frame routes through the CPU path until a
+                // real compaction lands.
+                if let Some(compaction_buffers) = self.compaction_buffers.as_ref() {
+                    compaction_buffers.args_ready.set(false);
+                }
             }
         }
         }

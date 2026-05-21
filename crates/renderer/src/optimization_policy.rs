@@ -50,10 +50,13 @@ impl Default for OptimizationMode {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RendererOptimizationPolicy {
     pub gpu_culling: OptimizationMode,
-    /// Auto-mode: enable GPU culling when opaque renderable count
-    /// reaches this threshold.
+    /// Auto-mode: enable GPU culling when the *optimizable* mesh count
+    /// (non-instanced, world-AABB present) reaches this threshold.
+    /// Counting just `opaque_count` would happily engage the full
+    /// HZB/cull/clear path for a scene of, say, 10k instanced meshes
+    /// where none of the work is recoverable via drawIndirect.
     pub gpu_culling_enable_threshold: u32,
-    /// Auto-mode: disable GPU culling when opaque renderable count
+    /// Auto-mode: disable GPU culling when the optimizable mesh count
     /// drops below this threshold. Must be < enable threshold for
     /// hysteresis to do its job.
     pub gpu_culling_disable_threshold: u32,
@@ -128,10 +131,20 @@ pub struct FrameOptimizationStats {
 /// based on the returned flags (see `FrameOptimizations::stable_mode`).
 ///
 /// Hysteresis lives entirely in the Auto branch:
-///   - if `prev.gpu_occlusion` was on, stay on unless opaque count drops
-///     below `gpu_culling_disable_threshold` AND cooldown elapsed
-///   - if it was off, stay off unless opaque count reaches
+///   - if `prev.gpu_occlusion` was on, stay on unless the optimizable
+///     count (`non_instanced_with_aabb_count`) drops below
+///     `gpu_culling_disable_threshold` AND cooldown elapsed
+///   - if it was off, stay off unless the optimizable count reaches
 ///     `gpu_culling_enable_threshold` AND cooldown elapsed
+///
+/// The threshold reads `non_instanced_with_aabb_count` rather than
+/// `opaque_count` because the HZB/cull/compaction work only pays back
+/// for the optimizable subset — instanced meshes stay on the legacy
+/// uniform path, and no-AABB meshes are conservatively visible (no
+/// cull data to act on). A scene with 5000 instanced meshes and 50
+/// non-instanced ones shouldn't engage the GPU path; the 5000 instanced
+/// meshes aren't paying it back.
+///
 /// `Off` and `Force` ignore stats entirely.
 pub fn compute_frame_optimizations(
     policy: &RendererOptimizationPolicy,
@@ -149,12 +162,13 @@ pub fn compute_frame_optimizations(
             OptimizationMode::Auto => {
                 let cooldown_elapsed =
                     frames_in_current_mode >= policy.gpu_culling_cooldown_frames;
+                let optimizable = stats.non_instanced_with_aabb_count;
                 if prev.gpu_occlusion {
                     // Currently on. Flip off only if both cooldown
-                    // elapsed AND opaque count dropped below the
-                    // disable threshold.
+                    // elapsed AND the optimizable count dropped below
+                    // the disable threshold.
                     if cooldown_elapsed
-                        && stats.opaque_count < policy.gpu_culling_disable_threshold
+                        && optimizable < policy.gpu_culling_disable_threshold
                     {
                         false
                     } else {
@@ -162,10 +176,10 @@ pub fn compute_frame_optimizations(
                     }
                 } else {
                     // Currently off. Flip on only if both cooldown
-                    // elapsed AND opaque count reached the enable
-                    // threshold.
+                    // elapsed AND the optimizable count reached the
+                    // enable threshold.
                     if cooldown_elapsed
-                        && stats.opaque_count >= policy.gpu_culling_enable_threshold
+                        && optimizable >= policy.gpu_culling_enable_threshold
                     {
                         true
                     } else {
@@ -358,6 +372,44 @@ mod tests {
         // texture is allocated under gpu_culling).
         assert!(!out.decal_hzb_gate);
         assert!(!out.hzb);
+    }
+
+    // Auto ignores `opaque_count` when the optimizable subset stays
+    // small — e.g. a scene full of instanced meshes. Without this,
+    // a 10k-instance scene would engage the GPU path even though
+    // none of the work is recoverable via drawIndirect.
+    #[test]
+    fn auto_ignores_opaque_when_optimizable_subset_is_small() {
+        let p = policy(); // enable=800
+        let stats = FrameOptimizationStats {
+            features_gpu_culling: true,
+            features_decals: false,
+            opaque_count: 10_000, // huge, but all instanced/no-AABB
+            non_instanced_with_aabb_count: 10,
+            decals_count: 0,
+            args_ready: false,
+        };
+        let out = compute_frame_optimizations(&p, &stats, &off_prev(), 1000);
+        assert!(!out.gpu_occlusion,
+            "Auto must look at the optimizable subset, not opaque_count");
+    }
+
+    #[test]
+    fn auto_engages_on_optimizable_subset_threshold() {
+        let p = policy(); // enable=800
+        // Conversely, even a small opaque_count is enough if the
+        // optimizable subset hits the threshold (in practice they're
+        // typically the same; this just locks in the gating field).
+        let stats = FrameOptimizationStats {
+            features_gpu_culling: true,
+            features_decals: false,
+            opaque_count: 800,
+            non_instanced_with_aabb_count: 800,
+            decals_count: 0,
+            args_ready: false,
+        };
+        let out = compute_frame_optimizations(&p, &stats, &off_prev(), 1000);
+        assert!(out.gpu_occlusion);
     }
 
     #[test]

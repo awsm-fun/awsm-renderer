@@ -387,4 +387,3 @@ fn aabb_overlap(a_min: Vec3, a_max: Vec3, b_min: Vec3, b_max: Vec3) -> bool {
         && a_min.z <= b_max.z
         && a_max.z >= b_min.z
 }
-
