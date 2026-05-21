@@ -18,6 +18,7 @@ pub mod shared;
 use awsm_renderer_core::renderer::AwsmRendererWebGpu;
 
 use crate::error::Result;
+use crate::features::RendererFeatures;
 use crate::render_passes::effects::render_pass::EffectsRenderPass;
 use crate::{
     bind_group_layout::BindGroupLayouts,
@@ -42,12 +43,20 @@ use crate::{
 /// Collection of render passes used by the renderer.
 pub struct RenderPasses {
     pub geometry: GeometryRenderPass,
-    pub hzb: HzbRenderPass,
-    pub occlusion: OcclusionRenderPass,
-    pub occlusion_compaction: CompactionRenderPass,
+    /// HZB build pass — `None` when `features.gpu_culling == false`
+    /// (plan §16.F).
+    pub hzb: Option<HzbRenderPass>,
+    /// GPU occlusion-cull pass — `None` when
+    /// `features.gpu_culling == false` (plan §16.F).
+    pub occlusion: Option<OcclusionRenderPass>,
+    /// Compaction `IndirectDrawArgs` pass — `None` when
+    /// `features.gpu_culling == false` (plan §16.F).
+    pub occlusion_compaction: Option<CompactionRenderPass>,
     pub light_culling: LightCullingRenderPass,
     pub material_classify: MaterialClassifyRenderPass,
-    pub material_decal: MaterialDecalRenderPass,
+    /// Decal classify + shading + composite pass — `None` when
+    /// `features.decals == false` (plan §16.F).
+    pub material_decal: Option<MaterialDecalRenderPass>,
     pub material_opaque: MaterialOpaqueRenderPass,
     pub material_transparent: MaterialTransparentRenderPass,
     pub effects: EffectsRenderPass,
@@ -55,16 +64,37 @@ pub struct RenderPasses {
 }
 
 impl RenderPasses {
-    /// Creates all render passes for the renderer.
-    pub async fn new<'a>(ctx: &mut RenderPassInitContext<'a>) -> Result<Self> {
+    /// Creates all render passes for the renderer. Passes gated by
+    /// [`RendererFeatures`] are skipped at construction; their slots
+    /// stay `None` (plan §16.F).
+    pub async fn new<'a>(
+        ctx: &mut RenderPassInitContext<'a>,
+        features: &RendererFeatures,
+    ) -> Result<Self> {
         Ok(Self {
             geometry: GeometryRenderPass::new(ctx).await?,
-            hzb: HzbRenderPass::new(ctx).await?,
-            occlusion: OcclusionRenderPass::new(ctx).await?,
-            occlusion_compaction: CompactionRenderPass::new(ctx).await?,
+            hzb: if features.gpu_culling {
+                Some(HzbRenderPass::new(ctx).await?)
+            } else {
+                None
+            },
+            occlusion: if features.gpu_culling {
+                Some(OcclusionRenderPass::new(ctx).await?)
+            } else {
+                None
+            },
+            occlusion_compaction: if features.gpu_culling {
+                Some(CompactionRenderPass::new(ctx).await?)
+            } else {
+                None
+            },
             light_culling: LightCullingRenderPass::new(ctx).await?,
             material_classify: MaterialClassifyRenderPass::new(ctx).await?,
-            material_decal: MaterialDecalRenderPass::new(ctx).await?,
+            material_decal: if features.decals {
+                Some(MaterialDecalRenderPass::new(ctx).await?)
+            } else {
+                None
+            },
             material_opaque: MaterialOpaqueRenderPass::new(ctx).await?,
             material_transparent: MaterialTransparentRenderPass::new(ctx).await?,
             effects: EffectsRenderPass::new(ctx).await?,

@@ -15,6 +15,7 @@ pub mod debug;
 pub mod decals;
 pub mod environment;
 pub mod error;
+pub mod features;
 pub mod frustum;
 pub mod instances;
 pub mod light_buckets;
@@ -71,6 +72,7 @@ use crate::{
     bind_group_layout::BindGroupLayouts,
     debug::AwsmRendererLogging,
     environment::{Environment, Skybox},
+    features::RendererFeatures,
     lights::ibl::{Ibl, IblTexture},
     picker::Picker,
     pipeline_layouts::PipelineLayouts,
@@ -106,25 +108,27 @@ pub struct AwsmRenderer {
         render_passes::material_classify::buffers::ClassifyBuffers,
     /// Projection-decal subsystem (Cluster 6.4, plan §16.4). Owns
     /// the per-decal GPU storage buffer the `material_decal` compute
-    /// pass reads at shading time.
-    pub decals: decals::Decals,
+    /// pass reads at shading time. `None` when
+    /// `features.decals == false` (plan §16.F).
+    pub decals: Option<decals::Decals>,
     /// GPU occlusion-cull buffers (Cluster 7.2 / §16.7 Phase 1). The
     /// per-frame instance list (CPU-populated) + the per-instance
-    /// visibility output. v1 dispatches the cull but doesn't yet
-    /// consume the result — Phase 2 / §16.8 will gate `drawIndirect`
-    /// against it.
-    pub occlusion_buffers: render_passes::occlusion::buffers::OcclusionBuffers,
+    /// visibility output. `None` when `features.gpu_culling == false`
+    /// (plan §16.F).
+    pub occlusion_buffers:
+        Option<render_passes::occlusion::buffers::OcclusionBuffers>,
     /// Per-tile decal classify buckets (§16.4.C). Populated by a
     /// `decal_classify` compute pass run before the decal shading
-    /// pass; the shading pass reads only the per-tile subset.
-    pub decal_classify_buffers:
+    /// pass; the shading pass reads only the per-tile subset. `None`
+    /// when `features.decals == false` (plan §16.F).
+    pub decal_classify_buffers: Option<
         render_passes::material_decal::classify::buffers::DecalClassifyBuffers,
+    >,
     /// GPU compaction `IndirectDrawArgs` buffer (§16.7 Phase 2 +
-    /// §16.8 infrastructure). Per-frame, the compaction compute
-    /// atomically populates `instance_count` from the cull's
-    /// `visible_this_frame`. v1 doesn't consume it yet — the
-    /// geometry pass still records per-mesh `draw_indexed` calls.
-    pub compaction_buffers: render_passes::occlusion::compaction::CompactionBuffers,
+    /// §16.8 infrastructure). `None` when
+    /// `features.gpu_culling == false` (plan §16.F).
+    pub compaction_buffers:
+        Option<render_passes::occlusion::compaction::CompactionBuffers>,
     /// Last-frame per-mesh pixel coverage (Cluster 6.2). Populated by
     /// the GPU coverage compute pass; consumed by the skinning-skip
     /// and material-LOD gates. Empty until the producer pass is wired.
@@ -155,6 +159,8 @@ pub struct AwsmRenderer {
     /// cube-array pool, descriptors, and the comparison / filterable
     /// samplers used by the shadow-aware shading passes.
     pub shadows: shadows::Shadows,
+    /// Opt-in feature gates picked at construction time (plan §16.F).
+    pub features: RendererFeatures,
     // we pick between these on the fly
     _clear_color_perceptual_to_linear: Color,
     _clear_color: Color,
@@ -193,11 +199,17 @@ impl AwsmRenderer {
             .with_logging(self.logging.clone())
             .with_clear_color(self._clear_color.clone())
             .with_render_texture_formats(self.render_textures.formats.clone())
+            .with_features(self.features.clone())
             .build()
             .await?;
 
         *self = renderer;
         Ok(())
+    }
+
+    /// Returns the active feature gates picked at construction time.
+    pub fn features(&self) -> &RendererFeatures {
+        &self.features
     }
 }
 
@@ -221,6 +233,10 @@ pub struct AwsmRendererBuilder {
     /// shadow textures; runtime tweaks of those need a renderer
     /// rebuild. Defaults via `ShadowsConfig::default()` if unset.
     shadows_config: Option<shadows::ShadowsConfig>,
+    /// Opt-in feature gates (plan §16.F). Defaults to both flags
+    /// `false` so library consumers pay zero cost for unused
+    /// GPU-driven culling / decal infrastructure.
+    features: RendererFeatures,
 }
 
 /// WebGPU builder input for `AwsmRendererBuilder`.
@@ -287,7 +303,17 @@ impl AwsmRendererBuilder {
             anti_aliasing: AntiAliasing::default(),
             post_processing: PostProcessing::default(),
             shadows_config: None,
+            features: RendererFeatures::default(),
         }
+    }
+
+    /// Opts into renderer features (plan §16.F). Both flags default
+    /// to `false` so library consumers pay no cost for GPU-driven
+    /// culling / decals when they don't need them. Game-side and
+    /// editor builds should set this explicitly.
+    pub fn with_features(mut self, features: RendererFeatures) -> Self {
+        self.features = features;
+        self
     }
 
     /// Pins a renderer-wide shadow configuration that the new
@@ -362,6 +388,7 @@ impl AwsmRendererBuilder {
             anti_aliasing,
             post_processing,
             shadows_config,
+            features,
         } = self;
 
         let mut gpu = match gpu {
@@ -413,10 +440,11 @@ impl AwsmRendererBuilder {
             render_texture_formats: &mut render_texture_formats,
             textures: &mut textures,
         };
-        let render_passes = RenderPasses::new(&mut render_pass_init).await?;
+        let render_passes = RenderPasses::new(&mut render_pass_init, &features).await?;
 
-        let bind_groups = BindGroups::new();
-        let render_textures = RenderTextures::new(&gpu, render_texture_formats).await?;
+        let bind_groups = BindGroups::new(&features);
+        let render_textures =
+            RenderTextures::new(&gpu, render_texture_formats, &features).await?;
 
         let picker = Picker::new(
             &gpu,
@@ -449,23 +477,45 @@ impl AwsmRendererBuilder {
 
         // Decals subsystem — fixed-capacity GPU storage buffer
         // allocated up front; per-frame upload only touches the
-        // bytes for currently-active decals.
-        let decals = decals::Decals::new(&gpu)?;
+        // bytes for currently-active decals. Gated by `features.decals`
+        // (plan §16.F).
+        let decals = if features.decals {
+            Some(decals::Decals::new(&gpu)?)
+        } else {
+            None
+        };
 
         // Occlusion-cull buffers (§16.7 Phase 1). Starts at 1024
-        // instances; grows 2× when needed.
-        let occlusion_buffers =
-            render_passes::occlusion::buffers::OcclusionBuffers::new(&gpu)?;
+        // instances; grows 2× when needed. Gated by
+        // `features.gpu_culling` (plan §16.F).
+        let occlusion_buffers = if features.gpu_culling {
+            Some(render_passes::occlusion::buffers::OcclusionBuffers::new(&gpu)?)
+        } else {
+            None
+        };
 
         // Decal classify buckets (§16.4.C). Starts at 1×1 tiles;
         // `ensure_capacity` resizes against the live viewport on
-        // first render.
-        let decal_classify_buffers =
-            render_passes::material_decal::classify::buffers::DecalClassifyBuffers::new(&gpu)?;
+        // first render. Gated by `features.decals` (plan §16.F).
+        let decal_classify_buffers = if features.decals {
+            Some(
+                render_passes::material_decal::classify::buffers::DecalClassifyBuffers::new(
+                    &gpu,
+                )?,
+            )
+        } else {
+            None
+        };
 
         // GPU compaction args buffer (§16.7 Phase 2 + §16.8 infra).
-        let compaction_buffers =
-            render_passes::occlusion::compaction::CompactionBuffers::new(&gpu)?;
+        // Gated by `features.gpu_culling` (plan §16.F).
+        let compaction_buffers = if features.gpu_culling {
+            Some(render_passes::occlusion::compaction::CompactionBuffers::new(
+                &gpu,
+            )?)
+        } else {
+            None
+        };
 
         let shadows = shadows::Shadows::new(
             &gpu,
@@ -518,6 +568,7 @@ impl AwsmRendererBuilder {
             lines,
             opaque_mipgen,
             shadows,
+            features,
             #[cfg(feature = "animation")]
             animations,
         };

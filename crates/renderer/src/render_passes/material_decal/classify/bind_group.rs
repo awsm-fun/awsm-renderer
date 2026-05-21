@@ -68,10 +68,16 @@ impl DecalClassifyBindGroups {
     }
 
     pub fn recreate(&mut self, ctx: &BindGroupRecreateContext<'_>) -> Result<()> {
+        let decals = ctx
+            .decals
+            .expect("Decals subsystem missing despite decals feature on");
+        let decal_classify_buffers = ctx
+            .decal_classify_buffers
+            .expect("decal classify buffers missing despite decals feature on");
         let entries = vec![
             BindGroupEntry::new(
                 0,
-                BindGroupResource::Buffer(BufferBinding::new(ctx.decals.gpu_buffer())),
+                BindGroupResource::Buffer(BufferBinding::new(decals.gpu_buffer())),
             ),
             BindGroupEntry::new(
                 1,
@@ -79,7 +85,7 @@ impl DecalClassifyBindGroups {
             ),
             BindGroupEntry::new(
                 2,
-                BindGroupResource::Buffer(BufferBinding::new(&ctx.decal_classify_buffers.buffer)),
+                BindGroupResource::Buffer(BufferBinding::new(&decal_classify_buffers.buffer)),
             ),
         ];
         let descriptor = BindGroupDescriptor::new(

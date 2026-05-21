@@ -222,4 +222,11 @@ impl Decals {
 pub enum AwsmDecalError {
     #[error("too many decals (cap: {0})")]
     TooManyDecals(u32),
+    /// Returned by `insert_decal` when the renderer was built with
+    /// the `decals` feature gate off (plan §16.F). The per-decal GPU
+    /// buffer + classify + shading + composite passes are not
+    /// allocated in that mode, so any decal insertion would be a
+    /// silent no-op without this error.
+    #[error("decals feature is not enabled (RendererFeatures::decals = false)")]
+    FeatureNotEnabled,
 }

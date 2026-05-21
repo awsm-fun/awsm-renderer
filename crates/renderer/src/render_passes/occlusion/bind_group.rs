@@ -89,6 +89,9 @@ impl OcclusionBindGroups {
     /// occlusion buffers. Called when:
     /// - HZB texture was reallocated (`TextureViewRecreate`).
     /// - Occlusion buffers grew (`OcclusionBuffersResize`).
+    ///
+    /// Only invoked when `features.gpu_culling` is on (plan §16.F),
+    /// so the gated context fields are always `Some` here.
     pub fn recreate(&mut self, ctx: &BindGroupRecreateContext<'_>) -> Result<()> {
         // Use the HZB's mip-0 view as the full-chain sampler view? The
         // existing per-mip views don't include the full chain. For the
@@ -96,6 +99,13 @@ impl OcclusionBindGroups {
         // that requires the texture's *default* view (whole mip chain).
         // Both `hzb.views_per_mip[0]` (single-level) and a full-chain
         // view differ; the latter is what we want here.
+        let hzb_full_view = ctx
+            .hzb_full_view
+            .as_ref()
+            .expect("HZB view missing despite gpu_culling feature on");
+        let occlusion_buffers = ctx
+            .occlusion_buffers
+            .expect("Occlusion buffers missing despite gpu_culling feature on");
         let entries = vec![
             BindGroupEntry::new(
                 0,
@@ -103,18 +113,18 @@ impl OcclusionBindGroups {
             ),
             BindGroupEntry::new(
                 1,
-                BindGroupResource::TextureView(Cow::Borrowed(&ctx.hzb_full_view)),
+                BindGroupResource::TextureView(Cow::Borrowed(hzb_full_view)),
             ),
             BindGroupEntry::new(
                 2,
                 BindGroupResource::Buffer(BufferBinding::new(
-                    &ctx.occlusion_buffers.instances_buffer,
+                    &occlusion_buffers.instances_buffer,
                 )),
             ),
             BindGroupEntry::new(
                 3,
                 BindGroupResource::Buffer(BufferBinding::new(
-                    &ctx.occlusion_buffers.visible_buffer,
+                    &occlusion_buffers.visible_buffer,
                 )),
             ),
         ];

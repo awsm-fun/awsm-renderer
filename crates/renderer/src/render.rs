@@ -96,8 +96,11 @@ impl AwsmRenderer {
             &mut self.bind_groups,
         )?;
         // Decals (Cluster 6.4) — upload per-decal data if anything
-        // changed since last frame. No-op when no decals exist.
-        self.decals.write_gpu(&self.gpu, &mut self.bind_groups)?;
+        // changed since last frame. Skipped entirely when the decals
+        // feature is off (plan §16.F).
+        if let Some(decals) = self.decals.as_mut() {
+            decals.write_gpu(&self.gpu, &mut self.bind_groups)?;
+        }
         self.meshes
             .meta
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
@@ -144,13 +147,16 @@ impl AwsmRenderer {
         // recreates the per-mip views, so the HZB bind groups must
         // also be rebuilt — the `TextureViewRecreate` event above
         // covers that since size_changed implies viewport resize.
-        if self
-            .render_passes
-            .hzb
-            .ensure_size(&self.gpu, render_texture_views.width, render_texture_views.height)?
-        {
-            self.bind_groups
-                .mark_create(BindGroupCreate::TextureViewRecreate);
+        // Skipped when `features.gpu_culling == false` (plan §16.F).
+        if let Some(hzb) = self.render_passes.hzb.as_mut() {
+            if hzb.ensure_size(
+                &self.gpu,
+                render_texture_views.width,
+                render_texture_views.height,
+            )? {
+                self.bind_groups
+                    .mark_create(BindGroupCreate::TextureViewRecreate);
+            }
         }
 
         // Classify buckets are sized to fit the current viewport's
@@ -174,38 +180,44 @@ impl AwsmRenderer {
         // occlusion-cull buffers before bind groups are recreated.
         // Refining this to the actual opaque-renderable count requires
         // `collect_renderables` which runs later; this upper bound is
-        // fine for capacity planning.
+        // fine for capacity planning. Skipped when
+        // `features.gpu_culling == false` (plan §16.F).
         let occlusion_needed = self.meshes.len() as u32;
-        if self
-            .occlusion_buffers
-            .ensure_capacity(&self.gpu, occlusion_needed)?
-        {
-            self.bind_groups
-                .mark_create(BindGroupCreate::OcclusionBuffersResize);
+        if let Some(occlusion_buffers) = self.occlusion_buffers.as_mut() {
+            if occlusion_buffers.ensure_capacity(&self.gpu, occlusion_needed)? {
+                self.bind_groups
+                    .mark_create(BindGroupCreate::OcclusionBuffersResize);
+            }
         }
 
         // §16.4.C: decal classify buckets sized to viewport tile count.
-        let decal_tile_x = render_texture_views.width.div_ceil(8);
-        let decal_tile_y = render_texture_views.height.div_ceil(8);
-        if self
-            .decal_classify_buffers
-            .ensure_capacity(&self.gpu, decal_tile_x, decal_tile_y)?
-        {
-            self.bind_groups
-                .mark_create(BindGroupCreate::DecalClassifyBuffersResize);
+        // Skipped when `features.decals == false` (plan §16.F).
+        if let Some(decal_classify_buffers) = self.decal_classify_buffers.as_mut() {
+            let decal_tile_x = render_texture_views.width.div_ceil(8);
+            let decal_tile_y = render_texture_views.height.div_ceil(8);
+            if decal_classify_buffers.ensure_capacity(
+                &self.gpu,
+                decal_tile_x,
+                decal_tile_y,
+            )? {
+                self.bind_groups
+                    .mark_create(BindGroupCreate::DecalClassifyBuffersResize);
+            }
+            // Reset the per-tile atomic counts every frame so classify
+            // starts against an empty bucket set.
+            decal_classify_buffers.reset(&self.gpu)?;
         }
-        // Reset the per-tile atomic counts every frame so classify
-        // starts against an empty bucket set.
-        self.decal_classify_buffers.reset(&self.gpu)?;
 
         // §16.7 Phase 2 / §16.8 infra: ensure the compaction args
-        // buffer covers every mesh slot.
-        if self
-            .compaction_buffers
-            .ensure_capacity(&self.gpu, self.meshes.len() as u32)?
-        {
-            self.bind_groups
-                .mark_create(BindGroupCreate::CompactionBuffersResize);
+        // buffer covers every mesh slot. Skipped when
+        // `features.gpu_culling == false` (plan §16.F).
+        if let Some(compaction_buffers) = self.compaction_buffers.as_mut() {
+            if compaction_buffers
+                .ensure_capacity(&self.gpu, self.meshes.len() as u32)?
+            {
+                self.bind_groups
+                    .mark_create(BindGroupCreate::CompactionBuffersResize);
+            }
         }
 
         self.bind_groups.recreate(
@@ -225,11 +237,16 @@ impl AwsmRenderer {
                 shadows: &self.shadows,
                 mesh_light_indices_gpu: &self.mesh_light_indices_gpu,
                 material_classify_buffers: &self.material_classify_buffers,
-                decals: &self.decals,
-                occlusion_buffers: &self.occlusion_buffers,
-                hzb_full_view: self.render_passes.hzb.texture.view_all.clone(),
-                decal_classify_buffers: &self.decal_classify_buffers,
-                compaction_buffers: &self.compaction_buffers,
+                decals: self.decals.as_ref(),
+                occlusion_buffers: self.occlusion_buffers.as_ref(),
+                hzb_full_view: self
+                    .render_passes
+                    .hzb
+                    .as_ref()
+                    .map(|hzb| hzb.texture.view_all.clone()),
+                decal_classify_buffers: self.decal_classify_buffers.as_ref(),
+                compaction_buffers: self.compaction_buffers.as_ref(),
+                features: &self.features,
             },
             &mut self.render_passes,
             &mut self.picker,
@@ -454,28 +471,31 @@ impl AwsmRenderer {
         // every other pixel as the blit produced it. No-op when no
         // decals are active or MSAA is on (the v1 path doesn't have
         // a multisampled storage-binding target — see
-        // `MaterialDecalRenderPass::render`).
-        {
+        // `MaterialDecalRenderPass::render`). Skipped entirely when
+        // `features.decals == false` (plan §16.F).
+        if let (Some(material_decal), Some(decals)) = (
+            self.render_passes.material_decal.as_ref(),
+            self.decals.as_ref(),
+        ) {
             let _maybe_span_guard = if ctx.logging.render_timings {
                 Some(tracing::span!(tracing::Level::INFO, "Material Decal RenderPass").entered())
             } else {
                 None
             };
-            self.render_passes
-                .material_decal
-                .render(&ctx, &self.decals)?;
+            material_decal.render(&ctx, decals)?;
         }
 
         // HZB build (Cluster 7.1, plan §16.6). Runs after opaque /
         // decal so the depth buffer holds the final scene depth.
-        // Consumed by the occlusion-cull pass below.
-        {
+        // Consumed by the occlusion-cull pass below. Skipped when
+        // `features.gpu_culling == false` (plan §16.F).
+        if let Some(hzb) = self.render_passes.hzb.as_ref() {
             let _maybe_span_guard = if self.logging.render_timings {
                 Some(tracing::span!(tracing::Level::INFO, "HZB RenderPass").entered())
             } else {
                 None
             };
-            self.render_passes.hzb.render(&ctx)?;
+            hzb.render(&ctx)?;
         }
 
         // Occlusion cull (Cluster 7.2 / §16.7 Phase 1). Pack the
@@ -483,74 +503,78 @@ impl AwsmRenderer {
         // buffer, then dispatch a compute shader that frustum + HZB
         // tests each. v1 doesn't *consume* the output yet — Phase 2
         // splits the geometry pass into survivor halves and gates
-        // `drawIndirect` against this.
-        let occlusion_instance_count = {
-            let stride =
-                crate::render_passes::occlusion::buffers::OCCLUSION_INSTANCE_STRIDE;
-            let mut bytes: Vec<u8> = Vec::with_capacity(occlusion_aabbs.len() * stride);
-            for aabb in &occlusion_aabbs {
-                bytes.extend_from_slice(&aabb.min.x.to_le_bytes());
-                bytes.extend_from_slice(&aabb.min.y.to_le_bytes());
-                bytes.extend_from_slice(&aabb.min.z.to_le_bytes());
-                bytes.extend_from_slice(&0u32.to_le_bytes()); // _pad0
-                bytes.extend_from_slice(&aabb.max.x.to_le_bytes());
-                bytes.extend_from_slice(&aabb.max.y.to_le_bytes());
-                bytes.extend_from_slice(&aabb.max.z.to_le_bytes());
-                bytes.extend_from_slice(&0u32.to_le_bytes()); // _pad1
-                bytes.extend_from_slice(&0u32.to_le_bytes()); // mesh_meta_offset (unused in v1)
-                bytes.extend_from_slice(&0u32.to_le_bytes()); // instance_attr_base
-                bytes.extend_from_slice(&0u32.to_le_bytes()); // last_frame_visible
-                bytes.extend_from_slice(&0u32.to_le_bytes()); // _pad2
-            }
-            let count = (bytes.len() / stride) as u32;
-            if count > 0 {
-                self.gpu.write_buffer(
-                    &self.occlusion_buffers.instances_buffer,
-                    None,
-                    bytes.as_slice(),
-                    None,
-                    None,
-                )?;
-            }
-            count
-        };
-        if occlusion_instance_count > 0 {
-            let _maybe_span_guard = if self.logging.render_timings {
-                Some(
-                    tracing::span!(
-                        tracing::Level::INFO,
-                        "Occlusion Cull RenderPass",
-                        instances = occlusion_instance_count
-                    )
-                    .entered(),
-                )
-            } else {
-                None
+        // `drawIndirect` against this. Skipped entirely when
+        // `features.gpu_culling == false` (plan §16.F).
+        if let (Some(occlusion_buffers), Some(occlusion_pass)) = (
+            self.occlusion_buffers.as_ref(),
+            self.render_passes.occlusion.as_ref(),
+        ) {
+            let occlusion_instance_count = {
+                let stride =
+                    crate::render_passes::occlusion::buffers::OCCLUSION_INSTANCE_STRIDE;
+                let mut bytes: Vec<u8> = Vec::with_capacity(occlusion_aabbs.len() * stride);
+                for aabb in &occlusion_aabbs {
+                    bytes.extend_from_slice(&aabb.min.x.to_le_bytes());
+                    bytes.extend_from_slice(&aabb.min.y.to_le_bytes());
+                    bytes.extend_from_slice(&aabb.min.z.to_le_bytes());
+                    bytes.extend_from_slice(&0u32.to_le_bytes()); // _pad0
+                    bytes.extend_from_slice(&aabb.max.x.to_le_bytes());
+                    bytes.extend_from_slice(&aabb.max.y.to_le_bytes());
+                    bytes.extend_from_slice(&aabb.max.z.to_le_bytes());
+                    bytes.extend_from_slice(&0u32.to_le_bytes()); // _pad1
+                    bytes.extend_from_slice(&0u32.to_le_bytes()); // mesh_meta_offset (unused in v1)
+                    bytes.extend_from_slice(&0u32.to_le_bytes()); // instance_attr_base
+                    bytes.extend_from_slice(&0u32.to_le_bytes()); // last_frame_visible
+                    bytes.extend_from_slice(&0u32.to_le_bytes()); // _pad2
+                }
+                let count = (bytes.len() / stride) as u32;
+                if count > 0 {
+                    self.gpu.write_buffer(
+                        &occlusion_buffers.instances_buffer,
+                        None,
+                        bytes.as_slice(),
+                        None,
+                        None,
+                    )?;
+                }
+                count
             };
-            self.render_passes
-                .occlusion
-                .render(&ctx, occlusion_instance_count)?;
-        }
+            if occlusion_instance_count > 0 {
+                let _maybe_span_guard = if self.logging.render_timings {
+                    Some(
+                        tracing::span!(
+                            tracing::Level::INFO,
+                            "Occlusion Cull RenderPass",
+                            instances = occlusion_instance_count
+                        )
+                        .entered(),
+                    )
+                } else {
+                    None
+                };
+                occlusion_pass.render(&ctx, occlusion_instance_count)?;
 
-        // §16.7 Phase 2 / §16.8 infra: compact the cull output into
-        // `IndirectDrawArgs.instance_count`. v1 doesn't consume the
-        // result yet — see the deferral note in §16.7.
-        if occlusion_instance_count > 0 {
-            let _maybe_span_guard = if self.logging.render_timings {
-                Some(
-                    tracing::span!(
-                        tracing::Level::INFO,
-                        "Occlusion Compaction",
-                        instances = occlusion_instance_count
-                    )
-                    .entered(),
-                )
-            } else {
-                None
-            };
-            self.render_passes
-                .occlusion_compaction
-                .render(&ctx, occlusion_instance_count)?;
+                // §16.7 Phase 2 / §16.8 infra: compact the cull output into
+                // `IndirectDrawArgs.instance_count`. v1 doesn't consume
+                // the result yet — see the deferral note in §16.7.
+                if let Some(compaction_pass) =
+                    self.render_passes.occlusion_compaction.as_ref()
+                {
+                    let _maybe_span_guard = if self.logging.render_timings {
+                        Some(
+                            tracing::span!(
+                                tracing::Level::INFO,
+                                "Occlusion Compaction",
+                                instances = occlusion_instance_count
+                            )
+                            .entered(),
+                        )
+                    } else {
+                        None
+                    };
+                    compaction_pass.render(&ctx, occlusion_instance_count)?;
+                }
+            }
         }
 
         // Built-in line render pass — must run after the opaque->transparent

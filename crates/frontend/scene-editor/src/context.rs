@@ -8,7 +8,8 @@
 use std::sync::{Arc, OnceLock};
 
 use awsm_renderer::{
-    debug::AwsmRendererLogging, render::RenderHooks, AwsmRenderer, AwsmRendererBuilder,
+    debug::AwsmRendererLogging, features::RendererFeatures, render::RenderHooks, AwsmRenderer,
+    AwsmRendererBuilder,
 };
 use awsm_renderer_core::{
     command::color::Color,
@@ -221,11 +222,18 @@ async fn create_renderer(canvas: web_sys::HtmlCanvasElement) -> EditorResult<Aws
         )
         .with_device_request_limits(DeviceRequestLimits::max_all());
 
+    // Editor opts into the full GPU-driven pipeline + decals (plan
+    // §16.F). Library consumers / runtime games choose their own
+    // feature set via `with_features`.
     let renderer = AwsmRendererBuilder::new(gpu_builder)
         .with_logging(AwsmRendererLogging {
             render_timings: cfg!(debug_assertions),
         })
         .with_clear_color(Color::MID_GREY)
+        .with_features(RendererFeatures {
+            gpu_culling: true,
+            decals: true,
+        })
         .build()
         .await?;
 

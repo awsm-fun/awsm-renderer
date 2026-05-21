@@ -64,6 +64,12 @@ impl MaterialDecalBindGroups {
     }
 
     /// Rebuilds the decal main bind group against current resources.
+    ///
+    /// The caller (`BindGroups::recreate`) is responsible for gating
+    /// this on `features.decals == true`; when the gate is off, the
+    /// upstream `decal_color` view, `decals` buffer, and
+    /// `decal_classify_buffers` are all `None` and this would panic
+    /// — but the dispatcher will simply not call it.
     pub fn recreate_main(&mut self, ctx: &BindGroupRecreateContext<'_>) -> Result<()> {
         // §16.4.D: the decal compute now always writes to `decal_color`
         // (single-sample storage). On MSAA-off the composite step blits
@@ -76,6 +82,17 @@ impl MaterialDecalBindGroups {
         } else {
             self.main_layout_key_singlesampled
         };
+        let decal_color_view = ctx
+            .render_texture_views
+            .decal_color
+            .as_ref()
+            .expect("decal_color view missing despite decals feature on");
+        let decals = ctx
+            .decals
+            .expect("Decals subsystem missing despite decals feature on");
+        let decal_classify_buffers = ctx
+            .decal_classify_buffers
+            .expect("decal classify buffers missing despite decals feature on");
         let entries = vec![
             BindGroupEntry::new(
                 0,
@@ -95,9 +112,7 @@ impl MaterialDecalBindGroups {
             ),
             BindGroupEntry::new(
                 3,
-                BindGroupResource::TextureView(Cow::Borrowed(
-                    &ctx.render_texture_views.decal_color,
-                )),
+                BindGroupResource::TextureView(Cow::Borrowed(decal_color_view)),
             ),
             BindGroupEntry::new(
                 4,
@@ -107,7 +122,7 @@ impl MaterialDecalBindGroups {
             ),
             BindGroupEntry::new(
                 5,
-                BindGroupResource::Buffer(BufferBinding::new(ctx.decals.gpu_buffer())),
+                BindGroupResource::Buffer(BufferBinding::new(decals.gpu_buffer())),
             ),
             BindGroupEntry::new(
                 6,
@@ -115,7 +130,7 @@ impl MaterialDecalBindGroups {
             ),
             BindGroupEntry::new(
                 7,
-                BindGroupResource::Buffer(BufferBinding::new(&ctx.decal_classify_buffers.buffer)),
+                BindGroupResource::Buffer(BufferBinding::new(&decal_classify_buffers.buffer)),
             ),
         ];
 

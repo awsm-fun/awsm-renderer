@@ -2330,9 +2330,24 @@ underlies the transparent path's per-mesh vertex / index buffers).
 
 #### 16.F `RendererFeatures` — gate the always-on infra
 
-**Status:** `not started` — **picking-order item #1**, must land
-before §16.7/§16.8's draw-loop rewire (the rewire's geometry
-pass branches on the same `features.gpu_culling` flag).
+**Status:** `done`. `crates/renderer/src/features.rs` carries the
+`RendererFeatures { gpu_culling, decals }` config; both default
+`false`. `AwsmRendererBuilder::with_features` plumbs it through;
+`AwsmRenderer::features()` exposes it. Gated owning fields
+(`decals`, `occlusion_buffers`, `decal_classify_buffers`,
+`compaction_buffers`) plus the `material_decal` / `hzb` /
+`occlusion` / `occlusion_compaction` render passes plus the
+`decal_color` render texture are `Option<...>` and skipped when
+their feature is off. The `BindGroups::new` constructor filters
+gated `BindGroupCreate` variants and the recreate dispatcher
+additionally early-returns on gated function calls. Per-frame
+dispatches in `render.rs` (HZB ensure_size, occlusion ensure
++ writeBuffer + dispatch, compaction ensure + dispatch, decal
+classify ensure/reset, decal pass dispatch) live inside
+`if let Some(...)` blocks. `insert_decal` returns
+`AwsmDecalError::FeatureNotEnabled` when `features.decals == false`.
+Scene-editor opts both flags on at construction. Tests added in
+`features.rs` (default = both off). Test suite at 102.
 
 `AwsmRenderer` currently allocates and dispatches three GPU-
 driven pipelines + two large render textures every frame

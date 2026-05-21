@@ -160,22 +160,29 @@ impl CompactionBindGroups {
             BindGroupDescriptor, BindGroupEntry, BindGroupResource,
         };
         use awsm_renderer_core::buffers::BufferBinding;
+        // Only invoked when `features.gpu_culling` is on (plan §16.F).
+        let occlusion_buffers = ctx
+            .occlusion_buffers
+            .expect("Occlusion buffers missing despite gpu_culling feature on");
+        let compaction_buffers = ctx
+            .compaction_buffers
+            .expect("Compaction buffers missing despite gpu_culling feature on");
         let entries = vec![
             BindGroupEntry::new(
                 0,
                 BindGroupResource::Buffer(BufferBinding::new(
-                    &ctx.occlusion_buffers.instances_buffer,
+                    &occlusion_buffers.instances_buffer,
                 )),
             ),
             BindGroupEntry::new(
                 1,
                 BindGroupResource::Buffer(BufferBinding::new(
-                    &ctx.occlusion_buffers.visible_buffer,
+                    &occlusion_buffers.visible_buffer,
                 )),
             ),
             BindGroupEntry::new(
                 2,
-                BindGroupResource::Buffer(BufferBinding::new(&ctx.compaction_buffers.args_buffer)),
+                BindGroupResource::Buffer(BufferBinding::new(&compaction_buffers.args_buffer)),
             ),
         ];
         let descriptor = BindGroupDescriptor::new(

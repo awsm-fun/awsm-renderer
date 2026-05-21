@@ -152,11 +152,18 @@ impl MaterialDecalComposite {
     }
 
     /// Rebuilds the composite's bind group against the live
-    /// `decal_color` view. Called on `TextureViewRecreate`.
+    /// `decal_color` view. Called on `TextureViewRecreate`. Only
+    /// invoked when `features.decals` is on (plan §16.F), so the
+    /// `decal_color` view is always `Some` here.
     pub fn recreate(&mut self, ctx: &BindGroupRecreateContext<'_>) -> Result<()> {
+        let decal_color_view = ctx
+            .render_texture_views
+            .decal_color
+            .as_ref()
+            .expect("decal_color view missing despite decals feature on");
         let entries = vec![BindGroupEntry::new(
             0,
-            BindGroupResource::TextureView(Cow::Borrowed(&ctx.render_texture_views.decal_color)),
+            BindGroupResource::TextureView(Cow::Borrowed(decal_color_view)),
         )];
         let descriptor = BindGroupDescriptor::new(
             &self.bind_group_layout,

@@ -8,8 +8,8 @@ use thiserror::Error;
 
 use crate::{
     anti_alias::AntiAliasing, bind_group_layout::BindGroupLayouts, camera::CameraBuffer,
-    environment::Environment, instances::Instances, lights::Lights, materials::Materials,
-    meshes::Meshes, picker::Picker, render_passes::RenderPasses,
+    environment::Environment, features::RendererFeatures, instances::Instances, lights::Lights,
+    materials::Materials, meshes::Meshes, picker::Picker, render_passes::RenderPasses,
     render_textures::RenderTextureViews, shadows::Shadows, textures::Textures,
     transforms::Transforms,
 };
@@ -51,21 +51,32 @@ pub struct BindGroupRecreateContext<'a> {
         &'a crate::render_passes::material_classify::buffers::ClassifyBuffers,
     /// Projection-decal subsystem (Cluster 6.4, plan §16.4). Holds
     /// the per-decal GPU buffer the `material_decal` compute pass
-    /// reads at shading time.
-    pub decals: &'a crate::decals::Decals,
+    /// reads at shading time. `None` when `features.decals == false`
+    /// (plan §16.F) — the decal pass's bind groups are skipped in
+    /// that mode.
+    pub decals: Option<&'a crate::decals::Decals>,
     /// Occlusion-cull instance + visibility buffers (§16.7 Phase 1).
+    /// `None` when `features.gpu_culling == false` (plan §16.F).
     pub occlusion_buffers:
-        &'a crate::render_passes::occlusion::buffers::OcclusionBuffers,
+        Option<&'a crate::render_passes::occlusion::buffers::OcclusionBuffers>,
     /// Full-chain HZB view used by the cull pass to sample at
-    /// per-instance mip levels.
-    pub hzb_full_view: web_sys::GpuTextureView,
-    /// Per-tile decal classify buckets (§16.4.C).
-    pub decal_classify_buffers:
+    /// per-instance mip levels. `None` when
+    /// `features.gpu_culling == false` (plan §16.F).
+    pub hzb_full_view: Option<web_sys::GpuTextureView>,
+    /// Per-tile decal classify buckets (§16.4.C). `None` when
+    /// `features.decals == false` (plan §16.F).
+    pub decal_classify_buffers: Option<
         &'a crate::render_passes::material_decal::classify::buffers::DecalClassifyBuffers,
+    >,
     /// GPU compaction `IndirectDrawArgs` buffer (§16.7 Phase 2 +
-    /// §16.8 infra).
+    /// §16.8 infra). `None` when `features.gpu_culling == false`
+    /// (plan §16.F).
     pub compaction_buffers:
-        &'a crate::render_passes::occlusion::compaction::CompactionBuffers,
+        Option<&'a crate::render_passes::occlusion::compaction::CompactionBuffers>,
+    /// Active feature gates (plan §16.F) — the dispatcher uses these
+    /// to skip recreating bind groups for passes whose feature is
+    /// disabled.
+    pub features: &'a RendererFeatures,
 }
 
 /// Reasons to recreate bind groups.
@@ -135,19 +146,23 @@ pub struct BindGroups {
     create_list: HashSet<BindGroupCreate>,
 }
 
-impl Default for BindGroups {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl BindGroups {
     /// Creates a bind group tracker with all groups marked dirty.
-    pub fn new() -> Self {
-        Self {
-            // startup means all bind groups are "re"created
-            create_list: BindGroupCreate::iter().collect::<HashSet<_>>(),
-        }
+    /// Variants belonging to passes gated off by [`RendererFeatures`]
+    /// (plan §16.F) are filtered out — they would otherwise fire on
+    /// the first frame and try to bind resources that were never
+    /// allocated.
+    pub fn new(features: &RendererFeatures) -> Self {
+        let create_list = BindGroupCreate::iter()
+            .filter(|v| match v {
+                BindGroupCreate::OcclusionBuffersResize
+                | BindGroupCreate::CompactionBuffersResize => features.gpu_culling,
+                BindGroupCreate::DecalsResize
+                | BindGroupCreate::DecalClassifyBuffersResize => features.decals,
+                _ => true,
+            })
+            .collect::<HashSet<_>>();
+        Self { create_list }
     }
 
     /// Marks a bind group recreation reason.
@@ -327,7 +342,26 @@ impl BindGroups {
             }
         }
 
-        for f in functions_to_call {
+        // Plan §16.F: gate the function calls for passes whose
+        // feature is off. The dispatcher receives events from
+        // unrelated resources (e.g. `TextureViewRecreate` fires for
+        // every pass that owns a texture-view-dependent bind group,
+        // including the HZB / occlusion / decal passes); without
+        // this filter, the recreators would try to bind buffers
+        // / texture views that were never allocated.
+        let features = ctx.features;
+        let allow_function = |f: FunctionToCall| match f {
+            FunctionToCall::Hzb
+            | FunctionToCall::Occlusion
+            | FunctionToCall::OcclusionCompaction => features.gpu_culling,
+            FunctionToCall::MaterialDecalMain
+            | FunctionToCall::MaterialDecalComposite
+            | FunctionToCall::MaterialDecalClassify
+            | FunctionToCall::MaterialDecalTextures => features.decals,
+            _ => true,
+        };
+
+        for f in functions_to_call.into_iter().filter(|f| allow_function(*f)) {
             match f {
                 FunctionToCall::GeometryCamera => {
                     render_passes.geometry.bind_groups.camera.recreate(&ctx)?;
@@ -411,15 +445,27 @@ impl BindGroups {
                     render_passes.light_culling.bind_groups.recreate(&ctx)?;
                 }
                 FunctionToCall::Hzb => {
-                    let hzb = &mut render_passes.hzb;
+                    // `allow_function` already gated this on
+                    // `features.gpu_culling`; the unwrap is sound.
+                    let hzb = render_passes
+                        .hzb
+                        .as_mut()
+                        .expect("HZB pass missing despite gpu_culling feature on");
                     hzb.bind_groups.recreate(&ctx, &hzb.texture)?;
                 }
                 FunctionToCall::Occlusion => {
-                    render_passes.occlusion.bind_groups.recreate(&ctx)?;
+                    render_passes
+                        .occlusion
+                        .as_mut()
+                        .expect("Occlusion pass missing despite gpu_culling feature on")
+                        .bind_groups
+                        .recreate(&ctx)?;
                 }
                 FunctionToCall::OcclusionCompaction => {
                     render_passes
                         .occlusion_compaction
+                        .as_mut()
+                        .expect("Compaction pass missing despite gpu_culling feature on")
                         .bind_groups
                         .recreate(&ctx)?;
                 }
@@ -432,15 +478,24 @@ impl BindGroups {
                 FunctionToCall::MaterialDecalMain => {
                     render_passes
                         .material_decal
+                        .as_mut()
+                        .expect("Decal pass missing despite decals feature on")
                         .bind_groups
                         .recreate_main(&ctx)?;
                 }
                 FunctionToCall::MaterialDecalComposite => {
-                    render_passes.material_decal.composite.recreate(&ctx)?;
+                    render_passes
+                        .material_decal
+                        .as_mut()
+                        .expect("Decal pass missing despite decals feature on")
+                        .composite
+                        .recreate(&ctx)?;
                 }
                 FunctionToCall::MaterialDecalClassify => {
                     render_passes
                         .material_decal
+                        .as_mut()
+                        .expect("Decal pass missing despite decals feature on")
                         .classify_pass
                         .bind_groups
                         .recreate(&ctx)?;
@@ -448,6 +503,8 @@ impl BindGroups {
                 FunctionToCall::MaterialDecalTextures => {
                     render_passes
                         .material_decal
+                        .as_mut()
+                        .expect("Decal pass missing despite decals feature on")
                         .bind_groups
                         .recreate_texture_pool(&ctx)?;
                 }
