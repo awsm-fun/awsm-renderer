@@ -1212,35 +1212,35 @@ impl Meshes {
             }
         }
 
-        // Skin LOD gate (Cluster 8.3 + 6.2). Precompute the set of skins
-        // we'll *skip* this frame:
-        //
-        //   1. Cluster 8.3 — `skin_update_period` cadence says "not this
-        //      frame".
-        //   2. Cluster 6.2 — coverage of every consumer mesh was zero
-        //      last frame AND the mesh isn't conservatively visible to
-        //      the BVH. (For now we only have coverage; the BVH-visible
-        //      override is the caller's responsibility — if it wants a
-        //      mesh to skin regardless of coverage, it can set the
-        //      mesh's `skin_update_period` to 1 transiently.)
-        //
-        // Done as a separate pass because the period / coverage lookups
-        // borrow `&self` while `skins.update_transforms` borrows
+        // Skin LOD gate (Cluster 8.3). Precompute the set of skins
+        // we'll *skip* this frame based on the `skin_update_period`
+        // cadence. Done as a separate pass because the lookup
+        // borrows `&self` while `skins.update_transforms` borrows
         // `&mut self.skins`.
+        //
+        // The Cluster 6.2 coverage-driven skin-skip is intentionally
+        // not wired here. Reason: characters built from multiple
+        // overlapping submeshes (e.g. BrainStem's 59 primitives
+        // sharing one skeleton) routinely have submeshes
+        // self-occluded by adjacent body parts for a frame or two.
+        // Skipping their skin update freezes them in their last
+        // pose — typically the bind pose, since the freeze happens
+        // before the first animation tick they would have run.
+        // When the occluding submesh moves and reveals them, they
+        // pop into view in rest pose while the rest of the
+        // character keeps animating. The plan called out this
+        // hazard and prescribed a grace-period + BVH-visible
+        // override; until that lands, run skinning for every
+        // visible skin every frame. `cheap_material_pixel_threshold`
+        // (the other coverage consumer) is unaffected — material
+        // LOD doesn't suffer from rest-pose persistence.
+        let _ = coverage;
         let mut skip_skins: std::collections::HashSet<SkinKey> =
             std::collections::HashSet::new();
         if frame_index > 0 {
             let skin_keys: Vec<SkinKey> = self.skins.iter_skin_keys().collect();
             for skin_key in skin_keys {
                 if !self.skin_should_update_this_frame(skin_key, frame_index) {
-                    skip_skins.insert(skin_key);
-                    continue;
-                }
-                // Coverage override: skip if EVERY mesh consumer was
-                // zero-coverage last frame. Conservative — if any
-                // consumer was visible, the skin still updates.
-                if !coverage.is_empty() && self.skin_all_consumers_zero_coverage(skin_key, coverage)
-                {
                     skip_skins.insert(skin_key);
                 }
             }
