@@ -196,10 +196,10 @@ impl MeshMeta {
     /// material metadata. Called once per frame, per
     /// mesh-with-overlapping-lights, by the light-bucket upload path.
     ///
-    /// Returns `Ok(false)` if the mesh has no meta slot yet — callers
+    /// Returns `false` if the mesh has no meta slot yet — callers
     /// (per-frame bucket walk) treat that as "skip this mesh", since a
-    /// mesh without a meta slot can't be shaded anyway. `Ok(true)`
-    /// means the patch landed.
+    /// mesh without a meta slot can't be shaded anyway. `true` means
+    /// the patch landed.
     pub fn set_mesh_light_slice(&mut self, mesh_key: MeshKey, offset: u32, count: u32) -> bool {
         if !self.material_buffers.contains_key(mesh_key) {
             return false;

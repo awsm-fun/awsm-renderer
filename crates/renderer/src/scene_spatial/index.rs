@@ -200,6 +200,12 @@ impl SceneSpatial {
             if let Some(stored) = self.nodes.get_mut(mesh_key) {
                 stored.flags.dynamic = true;
             }
+            // The `rtree.remove` above erodes tree quality the same way
+            // `remove` / `update` do; without bumping the dirty counter
+            // a large static→dynamic flip would never contribute to
+            // the rebuild threshold and `rebuild_if_needed` would lose
+            // its only signal for "tree quality has degraded".
+            self.dirty_since_rebuild = self.dirty_since_rebuild.saturating_add(1);
         } else {
             self.dynamic.retain(|n| n.mesh_key != mesh_key);
             self.in_dynamic.remove(mesh_key);

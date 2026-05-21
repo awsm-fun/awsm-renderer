@@ -63,9 +63,12 @@ pub struct Decal {
     /// Blend accumulation mode. v1 ships alpha-blend only.
     pub blend_mode: DecalBlendMode,
     /// World-space AABB of the transformed unit cube. Recomputed on
-    /// `update_decal`. A future HZB-based decal-tile classification
-    /// will use this to scope the per-tile decal list; v1 dispatches
-    /// over every non-skybox tile and tests against every decal.
+    /// `update_decal`. Used by the decal classify pass
+    /// (`render_passes::material_decal::classify`) to bucket each decal
+    /// into the screen tiles its AABB touches, optionally HZB-gated
+    /// when `features.gpu_culling` is on; the shading compute then
+    /// reads each tile's per-bucket list rather than testing every
+    /// decal at every pixel.
     pub world_aabb: Aabb,
 }
 
