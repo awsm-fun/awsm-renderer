@@ -40,6 +40,9 @@ Frame structure (per `crates/renderer/src/render.rs::render`):
 ┌──────────▼───────────┐
 │ Coverage tally       │  Per-pixel atomicAdd → mesh_pixel_counts.
 │ (compute)            │  Feeds MeshCoverage (one frame lag).
+│                      │  Drives cheap-material LOD; the skin-skip
+│                      │  consumer is currently parked (needs the
+│                      │  grace-period mitigation — see §10).
 └──────────┬───────────┘
            │
 ┌──────────▼───────────┐
@@ -478,7 +481,38 @@ generate_tuning_scenes -p awsm-scene-schema`):
 
 ---
 
-## 10. What *not* to do (preserves correctness)
+## 10. Known limits / parked optimizations
+
+* **Coverage-driven skin-skip** is built but unwired. The §8.2
+  GPU coverage producer populates `MeshCoverage` correctly,
+  but enabling the skin-skip consumer freezes self-occluded
+  submeshes in their last-skinned pose — a hazard the plan
+  called out as the "pop-in" problem. Multi-primitive
+  characters (BrainStem's 59 primitives sharing one skeleton)
+  are the canonical failure mode: a briefly-occluded body
+  part stops re-skinning, then pops into view in rest pose
+  when the occluder moves. The fix needs:
+  - A 1–2 frame grace period before applying coverage = 0.
+  - A BVH-visible override: if a mesh's world AABB is
+    in-frustum, still skin even when last-frame coverage
+    was zero (it's likely about to disocclude).
+
+  Until both land, `meshes::update_world` skips only the
+  `Mesh::skin_update_period` cadence path. The cheap-material
+  LOD consumer of `MeshCoverage` stays wired — momentary
+  LOD degradation is harmless where momentary rest-pose
+  freezing is jarring.
+
+* **Coverage-driven shadow-receiver gate** (§8.5) is partial.
+  CPU side is live (`LightMeshBuckets::mark_shadow_receivers`),
+  WGSL receiver-gate is not yet OR'd with the existing
+  `receive_shadows` flag.
+
+* **Cube `Pcss` PCF tap count** is fixed at 16. The blocker
+  search is also 16-tap. A variable tap count by distance is
+  a future tuning knob.
+
+## 11. What *not* to do (preserves correctness)
 
 - **Don't bump `with_max_storage_buffers_per_shader_stage` past
   10.** Adapter caps at 10/10. The opaque main bind group peaks
@@ -506,7 +540,7 @@ generate_tuning_scenes -p awsm-scene-schema`):
 
 ---
 
-## 11. References
+## 12. References
 
 **Architecture:**
 - Burns & Hunt, "The Visibility Buffer" (JCGT 2013).
@@ -535,7 +569,7 @@ generate_tuning_scenes -p awsm-scene-schema`):
 
 ---
 
-## 12. Updating this doc
+## 13. Updating this doc
 
 This file is the durable reference. When you land a change that
 moves performance numbers measurably, or adds/removes a tuning
