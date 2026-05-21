@@ -27,7 +27,12 @@ struct OcclusionInstance {
     _pad1: u32,
     mesh_meta_offset: u32,
     instance_attr_base: u32,
-    last_frame_visible: u32,
+    // Carried into the compaction shader so it can write the
+    // full IndirectDrawArgs slot (static fields + atomicAdded
+    // instance_count). This breaks the previous race where CPU
+    // `queue.writeBuffer` overwrote the args slot before the
+    // submitted command buffer's geometry pass executed.
+    index_count: u32,
     _pad2: u32,
 };
 

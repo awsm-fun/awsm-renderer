@@ -331,13 +331,20 @@ impl AwsmRenderer {
             aabb: crate::bounds::Aabb,
             mesh_meta_offset: u32,
             index_count: u32,
-            instanced: bool,
         }
+        // Instanced meshes stay on the legacy
+        // `draw_indexed_with_instance_count` path (their `instance_index`
+        // ranges would collide across meshes in the shared storage-array
+        // meta lookup), so they don't need cull-pass instances or
+        // IndirectDrawArgs slots — skip them here.
         let opaque_snapshots: Vec<OcclusionSnapshot> = renderables
             .opaque
             .iter()
             .filter_map(|r| match r {
                 crate::renderable::Renderable::Mesh { mesh, key, .. } => {
+                    if mesh.instanced {
+                        return None;
+                    }
                     let aabb = mesh.world_aabb.clone()?;
                     let meta_offset = ctx.meshes.meta.geometry_buffer_offset(*key).ok()? as u32;
                     let buffer_info = ctx.meshes.buffer_info(*key).ok()?;
@@ -347,7 +354,6 @@ impl AwsmRenderer {
                         aabb,
                         mesh_meta_offset: meta_offset,
                         index_count,
-                        instanced: mesh.instanced,
                     })
                 }
             })
@@ -620,52 +626,17 @@ impl AwsmRenderer {
             self.occlusion_buffers.as_ref(),
             self.render_passes.occlusion.as_ref(),
         ) {
-            // Pre-upload `IndirectDrawArgs` static fields per non-
-            // instanced mesh slot. The compaction shader then atomic-
-            // adds `instance_count` (1 per visible cull instance) on
-            // top. Per-frame because slot indices stay stable but the
-            // visible set + index_counts can shift across renders;
-            // unreferenced slots stay zeroed which makes them no-op
-            // draws (`instance_count = 0`). Plan §16.7/§16.8.
-            if let Some(compaction_buffers) = self.compaction_buffers.as_ref() {
-                let stride =
-                    crate::render_passes::occlusion::compaction::INDIRECT_DRAW_ARGS_STRIDE;
-                let slot_count = compaction_buffers.capacity as usize;
-                let mut args_bytes = vec![0u8; slot_count * stride];
-                for snap in &opaque_snapshots {
-                    if snap.instanced {
-                        // Instanced meshes don't drawIndirect — they
-                        // stay on `draw_indexed_with_instance_count`.
-                        // Their args slot is left zeroed.
-                        continue;
-                    }
-                    let slot = (snap.mesh_meta_offset
-                        / crate::meshes::meta::geometry_meta::GEOMETRY_MESH_META_BYTE_ALIGNMENT
-                            as u32) as usize;
-                    if slot >= slot_count {
-                        continue;
-                    }
-                    let base = slot * stride;
-                    // Layout: (index_count, instance_count=0,
-                    // first_index=0, base_vertex=0, first_instance=slot,
-                    // _pad×3). instance_count is GPU-written by the
-                    // compaction shader; first_instance lands the
-                    // vertex shader's `geometry_mesh_metas[instance_index]`
-                    // on the right meta slot.
-                    args_bytes[base..base + 4]
-                        .copy_from_slice(&snap.index_count.to_le_bytes());
-                    args_bytes[base + 16..base + 20]
-                        .copy_from_slice(&(slot as u32).to_le_bytes());
-                }
-                self.gpu.write_buffer(
-                    &compaction_buffers.args_buffer,
-                    None,
-                    args_bytes.as_slice(),
-                    None,
-                    None,
-                )?;
-            }
-
+            // Pack the OcclusionInstance buffer. The compaction shader
+            // now owns the full `IndirectDrawArgs` slot write — see
+            // compaction.wgsl for why the previous CPU
+            // `queue.writeBuffer` of args was a race against the
+            // already-recorded geometry pass. Instanced meshes are
+            // still uploaded (they need to be cull-tested for their
+            // own bookkeeping if instancing extensions reuse this
+            // buffer) but compaction skips slot writes for slots used
+            // by instanced meshes via `mesh_meta_offset` lookup; in
+            // the current single-instance path each non-instanced
+            // mesh owns its own slot, so there's no contention.
             let occlusion_instance_count = {
                 let stride =
                     crate::render_passes::occlusion::buffers::OCCLUSION_INSTANCE_STRIDE;
@@ -686,7 +657,13 @@ impl AwsmRenderer {
                     // the same alignment so this byte offset works.
                     bytes.extend_from_slice(&snap.mesh_meta_offset.to_le_bytes());
                     bytes.extend_from_slice(&0u32.to_le_bytes()); // instance_attr_base
-                    bytes.extend_from_slice(&0u32.to_le_bytes()); // last_frame_visible
+                    // index_count flows through cull → compaction so
+                    // the compaction shader can write the static
+                    // `IndirectDrawArgs.index_count` field itself.
+                    // (Compaction also synthesises `first_instance =
+                    // mesh_slot`; first_index / base_vertex stay at
+                    // zero from the `clear_buffer` below.)
+                    bytes.extend_from_slice(&snap.index_count.to_le_bytes());
                     bytes.extend_from_slice(&0u32.to_le_bytes()); // _pad2
                 }
                 let count = (bytes.len() / stride) as u32;
@@ -709,6 +686,27 @@ impl AwsmRenderer {
             // and double-count phantom meshes into
             // `IndirectDrawArgs.instance_count`.
             occlusion_buffers.write_params(&self.gpu, occlusion_instance_count)?;
+
+            // Clear the IndirectDrawArgs buffer in COMMAND order so it
+            // executes strictly after the geometry pass's earlier
+            // `draw_indexed_indirect` reads of this same buffer and
+            // strictly before the compaction shader's writes. A CPU-
+            // side `queue.writeBuffer` would have raced ahead of the
+            // recorded geometry pass (queue order ≠ command order),
+            // zeroing the args that an in-flight drawIndirect needed
+            // to read. Compaction repopulates the static fields
+            // (`index_count`, `first_instance`) and atomicAdds
+            // `instance_count` from this zero base; slots not touched
+            // by compaction stay zero, which makes their drawIndirect
+            // a 0-index, 0-instance no-op (correct for meshes that
+            // dropped out of the renderable set this frame).
+            if let Some(compaction_buffers) = self.compaction_buffers.as_ref() {
+                ctx.command_encoder.clear_buffer(
+                    &compaction_buffers.args_buffer,
+                    None,
+                    None,
+                );
+            }
 
             if occlusion_instance_count > 0 {
                 let _maybe_span_guard = if self.logging.render_timings {

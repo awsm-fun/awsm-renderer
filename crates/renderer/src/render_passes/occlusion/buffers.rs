@@ -28,7 +28,14 @@ use awsm_renderer_core::{
 ///  28..32   _pad1: u32
 ///  32..36   mesh_meta_offset: u32      // for cross-ref to MaterialMeshMeta
 ///  36..40   instance_attr_base: u32    // index into instance attribute buffer
-///  40..44   last_frame_visible: u32    // 1 if drawn last frame
+///  40..44   index_count: u32           // static drawIndirect arg, written
+///                                      // by compaction shader to the args
+///                                      // buffer (was `last_frame_visible`,
+///                                      // never read — repurposed so the
+///                                      // compaction pass owns the full
+///                                      // IndirectDrawArgs layout and the
+///                                      // CPU side no longer races against
+///                                      // the in-flight geometry pass).
 ///  44..48   _pad2: u32
 /// ```
 pub const OCCLUSION_INSTANCE_STRIDE: usize = 48;

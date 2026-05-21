@@ -21,7 +21,10 @@ struct OcclusionInstance {
     _pad1: u32,
     mesh_meta_offset: u32,
     instance_attr_base: u32,
-    last_frame_visible: u32,
+    // See cull.wgsl — repurposed slot, written into the
+    // IndirectDrawArgs by this shader so the CPU is no longer
+    // a writer of `args_buffer`.
+    index_count: u32,
     _pad2: u32,
 };
 
@@ -79,5 +82,24 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (mesh_slot >= args_capacity) {
         return;
     }
+    // Write the static drawIndirect fields here rather than from the
+    // CPU. `queue.writeBuffer` would have overwritten them BEFORE the
+    // already-recorded geometry pass executed (queue order ≠ command
+    // order), so a CPU-side prep zeroed `instance_count` ahead of the
+    // earlier-recorded `draw_indexed_indirect` consumer. Doing the
+    // writes here keeps args_buffer GPU-owned: every update happens
+    // in command order strictly after the geometry pass's read.
+    //
+    // first_index / base_vertex stay at zero — the args_buffer was
+    // cleared by `command_encoder.clear_buffer` between geometry and
+    // cull (see render.rs), so we don't need to re-emit them. For
+    // non-instanced meshes (the only path through drawIndirect),
+    // each mesh_slot is touched by at most one thread, so the
+    // non-atomic write of `index_count` and `first_instance` has no
+    // races; instance_count is still atomicAdded since the cull may
+    // mark multiple instances of one mesh visible under future
+    // instancing extensions.
+    indirect_args[mesh_slot].index_count = instances[i].index_count;
+    indirect_args[mesh_slot].first_instance = mesh_slot;
     atomicAdd(&indirect_args[mesh_slot].instance_count, 1u);
 }

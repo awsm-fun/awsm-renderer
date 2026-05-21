@@ -262,19 +262,26 @@ impl Mesh {
                 .compaction_buffers
                 .map(|cb| cb.args_ready.get())
                 .unwrap_or(false)
+            && self.world_aabb.is_some()
         {
             // §16.7/§16.8 drawIndirect path. The compaction shader
-            // populated `IndirectDrawArgs[mesh_meta_idx].instance_count`
-            // *last frame* from that frame's `visible_this_frame[]`;
-            // this is the one-frame-latent visibility set. The static
-            // fields (`index_count`, `first_instance = mesh_meta_idx`)
-            // were uploaded by the per-frame args-prep block in
-            // `render.rs` at the end of the previous frame.
+            // populated `IndirectDrawArgs[mesh_meta_idx]` *last frame*
+            // — static fields (`index_count`, `first_instance`) and
+            // `instance_count` are all GPU-written; this is the one-
+            // frame-latent visibility set.
             //
-            // The `args_ready` gate keeps the geometry pass on the
-            // legacy CPU path for frame 0 (and after any
-            // `ensure_capacity` resize, which zeroes the args buffer);
-            // see `CompactionBuffers::args_ready`'s doc-comment.
+            // Gates:
+            // - `args_ready` — frame 0 (and any frame after a
+            //   `ensure_capacity` resize, which zeroes the args
+            //   buffer) routes through the legacy CPU path. See
+            //   `CompactionBuffers::args_ready`.
+            // - `self.world_aabb.is_some()` — `collect_renderables`
+            //   conservatively keeps no-AABB opaque meshes visible,
+            //   but `opaque_snapshots` in render.rs filters them out
+            //   (no AABB → can't be cull-tested), so the compaction
+            //   shader never writes their args slot. Without this
+            //   gate, drawIndirect would consume zeroed args and
+            //   render nothing for the no-AABB case.
             let args_buffer = ctx
                 .compaction_buffers
                 .expect("compaction buffers missing despite gpu_culling feature on")
