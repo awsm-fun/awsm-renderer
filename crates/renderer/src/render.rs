@@ -198,6 +198,16 @@ impl AwsmRenderer {
         // starts against an empty bucket set.
         self.decal_classify_buffers.reset(&self.gpu)?;
 
+        // §16.7 Phase 2 / §16.8 infra: ensure the compaction args
+        // buffer covers every mesh slot.
+        if self
+            .compaction_buffers
+            .ensure_capacity(&self.gpu, self.meshes.len() as u32)?
+        {
+            self.bind_groups
+                .mark_create(BindGroupCreate::CompactionBuffersResize);
+        }
+
         self.bind_groups.recreate(
             BindGroupRecreateContext {
                 gpu: &self.gpu,
@@ -219,6 +229,7 @@ impl AwsmRenderer {
                 occlusion_buffers: &self.occlusion_buffers,
                 hzb_full_view: self.render_passes.hzb.texture.view_all.clone(),
                 decal_classify_buffers: &self.decal_classify_buffers,
+                compaction_buffers: &self.compaction_buffers,
             },
             &mut self.render_passes,
             &mut self.picker,
@@ -518,6 +529,27 @@ impl AwsmRenderer {
             };
             self.render_passes
                 .occlusion
+                .render(&ctx, occlusion_instance_count)?;
+        }
+
+        // §16.7 Phase 2 / §16.8 infra: compact the cull output into
+        // `IndirectDrawArgs.instance_count`. v1 doesn't consume the
+        // result yet — see the deferral note in §16.7.
+        if occlusion_instance_count > 0 {
+            let _maybe_span_guard = if self.logging.render_timings {
+                Some(
+                    tracing::span!(
+                        tracing::Level::INFO,
+                        "Occlusion Compaction",
+                        instances = occlusion_instance_count
+                    )
+                    .entered(),
+                )
+            } else {
+                None
+            };
+            self.render_passes
+                .occlusion_compaction
                 .render(&ctx, occlusion_instance_count)?;
         }
 

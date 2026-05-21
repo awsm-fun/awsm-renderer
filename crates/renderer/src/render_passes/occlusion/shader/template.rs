@@ -1,9 +1,11 @@
-//! Occlusion-cull shader templates.
+//! Occlusion compute shader templates.
 
 use askama::Template;
 
 use crate::{
-    render_passes::occlusion::shader::cache_key::ShaderCacheKeyOcclusionCull,
+    render_passes::occlusion::shader::cache_key::{
+        ShaderCacheKeyOcclusionCompaction, ShaderCacheKeyOcclusionCull,
+    },
     shaders::{AwsmShaderError, Result},
 };
 
@@ -27,5 +29,28 @@ impl ShaderTemplateOcclusionCull {
     #[cfg(debug_assertions)]
     pub fn debug_label(&self) -> Option<&str> {
         Some("Occlusion Cull")
+    }
+}
+
+#[derive(Template, Debug, Default)]
+#[template(path = "occlusion_wgsl/compaction.wgsl", whitespace = "minimize")]
+pub struct ShaderTemplateOcclusionCompaction;
+
+impl TryFrom<&ShaderCacheKeyOcclusionCompaction> for ShaderTemplateOcclusionCompaction {
+    type Error = AwsmShaderError;
+
+    fn try_from(_value: &ShaderCacheKeyOcclusionCompaction) -> Result<Self> {
+        Ok(Self)
+    }
+}
+
+impl ShaderTemplateOcclusionCompaction {
+    pub fn into_source(self) -> Result<String> {
+        self.render().map_err(AwsmShaderError::from)
+    }
+
+    #[cfg(debug_assertions)]
+    pub fn debug_label(&self) -> Option<&str> {
+        Some("Occlusion Compaction")
     }
 }

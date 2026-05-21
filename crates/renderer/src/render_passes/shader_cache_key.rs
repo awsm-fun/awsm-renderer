@@ -13,7 +13,9 @@ use crate::render_passes::{
         ShaderCacheKeyMaterialOpaque, ShaderCacheKeyMaterialOpaqueEmpty,
     },
     material_transparent::shader::cache_key::ShaderCacheKeyMaterialTransparent,
-    occlusion::shader::cache_key::ShaderCacheKeyOcclusionCull,
+    occlusion::shader::cache_key::{
+        ShaderCacheKeyOcclusionCompaction, ShaderCacheKeyOcclusionCull,
+    },
 };
 
 /// Cache key variants for render-pass shader templates.
@@ -30,6 +32,7 @@ pub enum ShaderCacheKeyRenderPass {
     MaterialOpaqueEmpty(ShaderCacheKeyMaterialOpaqueEmpty),
     MaterialTransparent(ShaderCacheKeyMaterialTransparent),
     OcclusionCull(ShaderCacheKeyOcclusionCull),
+    OcclusionCompaction(ShaderCacheKeyOcclusionCompaction),
     Effects(ShaderCacheKeyEffects),
     Display(ShaderCacheKeyDisplay),
 }

@@ -62,6 +62,10 @@ pub struct BindGroupRecreateContext<'a> {
     /// Per-tile decal classify buckets (§16.4.C).
     pub decal_classify_buffers:
         &'a crate::render_passes::material_decal::classify::buffers::DecalClassifyBuffers,
+    /// GPU compaction `IndirectDrawArgs` buffer (§16.7 Phase 2 +
+    /// §16.8 infra).
+    pub compaction_buffers:
+        &'a crate::render_passes::occlusion::compaction::CompactionBuffers,
 }
 
 /// Reasons to recreate bind groups.
@@ -94,6 +98,9 @@ pub enum BindGroupCreate {
     /// tile-count grew). The classify pass + decal shading pass both
     /// rebind.
     DecalClassifyBuffersResize,
+    /// Compaction `IndirectDrawArgs` buffer was reallocated (§16.7
+    /// Phase 2 + §16.8 infra). Only the compaction pass binds it.
+    CompactionBuffersResize,
     MaterialResize,
     TextureViewRecreate,
     TexturePool,
@@ -167,6 +174,7 @@ impl BindGroups {
             GeometryAnimation,
             Hzb,
             Occlusion,
+            OcclusionCompaction,
             MaterialClassify,
             MaterialDecalMain,
             MaterialDecalComposite,
@@ -307,6 +315,10 @@ impl BindGroups {
                 }
                 BindGroupCreate::OcclusionBuffersResize => {
                     functions_to_call.insert(FunctionToCall::Occlusion);
+                    functions_to_call.insert(FunctionToCall::OcclusionCompaction);
+                }
+                BindGroupCreate::CompactionBuffersResize => {
+                    functions_to_call.insert(FunctionToCall::OcclusionCompaction);
                 }
                 BindGroupCreate::DecalClassifyBuffersResize => {
                     functions_to_call.insert(FunctionToCall::MaterialDecalClassify);
@@ -404,6 +416,12 @@ impl BindGroups {
                 }
                 FunctionToCall::Occlusion => {
                     render_passes.occlusion.bind_groups.recreate(&ctx)?;
+                }
+                FunctionToCall::OcclusionCompaction => {
+                    render_passes
+                        .occlusion_compaction
+                        .bind_groups
+                        .recreate(&ctx)?;
                 }
                 FunctionToCall::MaterialClassify => {
                     render_passes

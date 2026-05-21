@@ -119,6 +119,12 @@ pub struct AwsmRenderer {
     /// pass; the shading pass reads only the per-tile subset.
     pub decal_classify_buffers:
         render_passes::material_decal::classify::buffers::DecalClassifyBuffers,
+    /// GPU compaction `IndirectDrawArgs` buffer (§16.7 Phase 2 +
+    /// §16.8 infrastructure). Per-frame, the compaction compute
+    /// atomically populates `instance_count` from the cull's
+    /// `visible_this_frame`. v1 doesn't consume it yet — the
+    /// geometry pass still records per-mesh `draw_indexed` calls.
+    pub compaction_buffers: render_passes::occlusion::compaction::CompactionBuffers,
     /// Last-frame per-mesh pixel coverage (Cluster 6.2). Populated by
     /// the GPU coverage compute pass; consumed by the skinning-skip
     /// and material-LOD gates. Empty until the producer pass is wired.
@@ -457,6 +463,10 @@ impl AwsmRendererBuilder {
         let decal_classify_buffers =
             render_passes::material_decal::classify::buffers::DecalClassifyBuffers::new(&gpu)?;
 
+        // GPU compaction args buffer (§16.7 Phase 2 + §16.8 infra).
+        let compaction_buffers =
+            render_passes::occlusion::compaction::CompactionBuffers::new(&gpu)?;
+
         let shadows = shadows::Shadows::new(
             &gpu,
             &mut bind_group_layouts,
@@ -485,6 +495,7 @@ impl AwsmRendererBuilder {
             decals,
             occlusion_buffers,
             decal_classify_buffers,
+            compaction_buffers,
             coverage: coverage::MeshCoverage::default(),
             frame_index: 0,
             shaders,

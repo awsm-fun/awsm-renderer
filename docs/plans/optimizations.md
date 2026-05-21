@@ -2036,28 +2036,27 @@ synthetic depth pattern.
 
 #### 16.7 Cluster 7.2 — Two-phase GPU occlusion culling
 
-**Status:** `Phase 1 done; Phase 2 deferred (depends on geometry-shader restructure shared with §16.8)`
+**Status:** `Phase 1 + Phase 2 infrastructure done; geometry-pass draw-loop rewire deferred`
 
-Phase 1 (infrastructure) shipped as commit `2034023`. The cull pass
-writes `visible_this_frame[i]` per BVH-visible opaque instance; v1
-does not consume the output (it's surfaced via tracing spans for
-measurement).
+Phase 1 (cull pass) shipped as commit `2034023`. Phase 2 +
+§16.8's `IndirectDrawArgs` buffer + GPU compaction compute landed
+together — the cull writes `visible_this_frame[i]`, then a
+compaction shader atomically aggregates per-instance visibility
+into per-mesh `IndirectDrawArgs.instance_count`. The full pipeline
+is observable end-to-end via tracing spans.
 
-**Phase 2 deferral note.** The Phase 2 split as written — "Pass 1
-draws survivors; HZB rebuild; Pass 2 draws newly-visible
-candidates" — needs Pass 2's draws to be gated by the fresh GPU
-cull output. The only practical way to feed GPU compute results
-back into a per-mesh draw count on the same frame is
-`drawIndirect`. Async readback (`mapAsync`) gives a one-frame
-delay and defeats the point.
-
-So Phase 2 is effectively bundled with §16.8's drawIndirect
-rewire. The bundled task additionally needs the geometry pass's
-per-mesh dynamic-offset uniform bind group to be replaced with a
-storage-buffer array indexed by `@builtin(instance_index)` (since
-drawIndirect doesn't change bind groups per-draw). That shader
-restructure is the load-bearing piece and deserves its own
-focused session.
+**Remaining work — geometry draw-loop rewire.** The compaction's
+args buffer isn't yet consumed by the geometry pass: the existing
+CPU per-mesh `draw_indexed` loop stays. To swap it to
+`drawIndirect`, the geometry vertex shader's per-mesh
+`geometry_mesh_meta` lookup must migrate from a dynamic-offset
+uniform bind group to a storage-buffer array indexed by
+`@builtin(instance_index)`. That's a real architectural change
+touching the instancing model: `instance_index` currently increments
+per actual instance within a draw, but the rewire needs it to
+identify the mesh slot — for actually-instanced meshes, instance
+data has to move into a parallel per-instance attribute array.
+Deferred to its own focused session.
 
 Sousa/Karis two-phase pattern. The HZB (from §16.6) is the
 load-bearing input.

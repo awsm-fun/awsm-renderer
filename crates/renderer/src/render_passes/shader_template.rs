@@ -14,7 +14,9 @@ use crate::{
             ShaderTemplateMaterialOpaque, ShaderTemplateMaterialOpaqueEmpty,
         },
         material_transparent::shader::template::ShaderTemplateMaterialTransparent,
-        occlusion::shader::template::ShaderTemplateOcclusionCull,
+        occlusion::shader::template::{
+            ShaderTemplateOcclusionCompaction, ShaderTemplateOcclusionCull,
+        },
         shader_cache_key::ShaderCacheKeyRenderPass,
     },
     shaders::AwsmShaderError,
@@ -33,6 +35,7 @@ pub enum ShaderTemplateRenderPass {
     MaterialOpaqueEmpty(ShaderTemplateMaterialOpaqueEmpty),
     MaterialTransparent(ShaderTemplateMaterialTransparent),
     OcclusionCull(ShaderTemplateOcclusionCull),
+    OcclusionCompaction(ShaderTemplateOcclusionCompaction),
     Effects(ShaderTemplateEffects),
     Display(ShaderTemplateDisplay),
 }
@@ -75,6 +78,9 @@ impl TryFrom<&ShaderCacheKeyRenderPass> for ShaderTemplateRenderPass {
             ShaderCacheKeyRenderPass::OcclusionCull(cache_key) => Ok(
                 ShaderTemplateRenderPass::OcclusionCull(cache_key.try_into()?),
             ),
+            ShaderCacheKeyRenderPass::OcclusionCompaction(cache_key) => Ok(
+                ShaderTemplateRenderPass::OcclusionCompaction(cache_key.try_into()?),
+            ),
             ShaderCacheKeyRenderPass::Effects(cache_key) => {
                 Ok(ShaderTemplateRenderPass::Effects(cache_key.try_into()?))
             }
@@ -100,6 +106,7 @@ impl ShaderTemplateRenderPass {
             ShaderTemplateRenderPass::MaterialOpaqueEmpty(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::MaterialTransparent(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::OcclusionCull(tmpl) => tmpl.into_source(),
+            ShaderTemplateRenderPass::OcclusionCompaction(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::Effects(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::Display(tmpl) => tmpl.into_source(),
         }
@@ -120,6 +127,7 @@ impl ShaderTemplateRenderPass {
             ShaderTemplateRenderPass::MaterialOpaqueEmpty(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::MaterialTransparent(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::OcclusionCull(tmpl) => tmpl.debug_label(),
+            ShaderTemplateRenderPass::OcclusionCompaction(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::Effects(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::Display(tmpl) => tmpl.debug_label(),
         }
