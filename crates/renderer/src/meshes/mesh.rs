@@ -92,9 +92,12 @@ pub struct Mesh {
     pub cheap_material_key: Option<MaterialKey>,
     /// Coverage threshold (in pixels) below which the cheap material
     /// variant takes over. Only consulted when `cheap_material_key` is
-    /// `Some`. The plan suggests letting Cluster 4.1's quality tier
-    /// drive this — Low → 16, Medium → 64, High → 256, Ultra → 1024.
-    pub cheap_material_pixel_threshold: u32,
+    /// `Some`. `None` falls back to the renderer's
+    /// `default_cheap_material_pixel_threshold` (plan §15 row T4 —
+    /// global knob; not tier-coupled). Per-mesh override stays on
+    /// top so artists can dial individual props up / down without
+    /// touching the global.
+    pub cheap_material_pixel_threshold: Option<u32>,
     /// Whether projection decals (Cluster 6.4) can land on this
     /// mesh. Default `true`. The decal compute pass reads this from
     /// each pixel's `MaterialMeshMeta` and skips the per-decal
@@ -127,7 +130,7 @@ impl Mesh {
             receive_shadows: true,
             skin_update_period: 1,
             cheap_material_key: None,
-            cheap_material_pixel_threshold: 64,
+            cheap_material_pixel_threshold: None,
             receive_decals: true,
         }
     }
@@ -135,7 +138,8 @@ impl Mesh {
     /// Effective material to use for this frame given last-frame
     /// coverage. Returns `cheap_material_key` when it's set AND the
     /// mesh's last-frame coverage is below
-    /// `cheap_material_pixel_threshold`; otherwise the authored
+    /// `cheap_material_pixel_threshold` (falling back to
+    /// `default_threshold` when `None`); otherwise the authored
     /// `material_key`. Cluster 6.3 hook — call from
     /// `collect_renderables` or any other place that picks the
     /// material pipeline.
@@ -143,9 +147,13 @@ impl Mesh {
         &self,
         mesh_key: MeshKey,
         coverage: &crate::coverage::MeshCoverage,
+        default_threshold: u32,
     ) -> MaterialKey {
         if let Some(cheap) = self.cheap_material_key {
-            if coverage.is_below_threshold(mesh_key, self.cheap_material_pixel_threshold) {
+            let threshold = self
+                .cheap_material_pixel_threshold
+                .unwrap_or(default_threshold);
+            if coverage.is_below_threshold(mesh_key, threshold) {
                 return cheap;
             }
         }

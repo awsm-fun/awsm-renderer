@@ -189,6 +189,14 @@ pub struct AwsmRenderer {
     pub shadows: shadows::Shadows,
     /// Opt-in feature gates picked at construction time (plan §16.F).
     pub features: RendererFeatures,
+    /// Global default for `Mesh::cheap_material_pixel_threshold`
+    /// (plan §15 row T4). Per-mesh override still wins; this is
+    /// the value used when a mesh has its threshold set to `None`.
+    /// Default `64`. Games tying material LOD to their own quality
+    /// system can write this directly each frame; no automatic
+    /// coupling to `ShadowQualityTier` (which is per-light, not
+    /// global).
+    pub default_cheap_material_pixel_threshold: u32,
     // we pick between these on the fly
     _clear_color_perceptual_to_linear: Color,
     _clear_color: Color,
@@ -608,6 +616,7 @@ impl AwsmRendererBuilder {
             opaque_mipgen,
             shadows,
             features,
+            default_cheap_material_pixel_threshold: 64,
             #[cfg(feature = "animation")]
             animations,
         };

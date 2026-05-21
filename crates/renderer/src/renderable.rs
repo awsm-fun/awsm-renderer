@@ -96,8 +96,11 @@ impl AwsmRenderer {
             // deeper opaque-shading material swap (which would need
             // to re-pack `MaterialMeshMeta`) is a follow-up; this
             // single hook handles the renderable-list classification.
-            let effective_material =
-                mesh.effective_material_key(mesh_key, &self.coverage);
+            let effective_material = mesh.effective_material_key(
+                mesh_key,
+                &self.coverage,
+                self.default_cheap_material_pixel_threshold,
+            );
 
             // After the shader split (Cluster 6.1 prereq), the
             // opaque compute pipeline is specialized per
