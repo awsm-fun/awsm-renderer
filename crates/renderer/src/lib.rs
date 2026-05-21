@@ -138,30 +138,31 @@ pub struct AwsmRenderer {
     /// when `features.decals == false` (plan §16.F).
     pub decal_classify_buffers:
         Option<render_passes::material_decal::classify::buffers::DecalClassifyBuffers>,
-    /// GPU compaction `IndirectDrawArgs` buffer (§16.7 Phase 2 +
-    /// §16.8 infrastructure). `None` when
-    /// `features.gpu_culling == false` (plan §16.F).
+    /// GPU compaction `IndirectDrawArgs` buffer. `None` when
+    /// `features.gpu_culling == false`.
     pub compaction_buffers: Option<render_passes::occlusion::compaction::CompactionBuffers>,
-    /// Last-frame per-mesh pixel coverage (Cluster 6.2). Populated by
-    /// the GPU coverage compute pass via `coverage_buffers` +
-    /// asynchronous readback; consumed by the skinning-skip and
-    /// material-LOD gates.
+    /// Last-frame per-mesh pixel coverage. Populated by the GPU
+    /// coverage compute pass via `coverage_buffers` + asynchronous
+    /// readback; consumed by skin-skip / material-LOD gates. The
+    /// table itself is always present (it's CPU-only and tiny); when
+    /// `features.coverage_lod == false` it just stays empty, which
+    /// makes `is_below_threshold` return `false` for everything.
     pub coverage: coverage::MeshCoverage,
-    /// GPU coverage producer buffers — plan §8.2. The producer
-    /// pass (`render_passes/coverage/`) atomic-adds per-pixel into
+    /// GPU coverage producer buffers. The producer pass
+    /// (`render_passes/coverage/`) atomic-adds per-pixel into
     /// `counts_buffer`; the renderer copies to `readback_buffer`
     /// each frame and a `mapAsync` resolves with last-frame's
     /// counts on a future frame. The result feeds
-    /// [`MeshCoverage::ingest`].
-    pub coverage_buffers: render_passes::coverage::buffers::CoverageBuffers,
+    /// [`MeshCoverage::ingest`]. `None` when
+    /// `features.coverage_lod == false`.
+    pub coverage_buffers: Option<render_passes::coverage::buffers::CoverageBuffers>,
     /// State for the coverage readback loop. `Rc<RefCell<...>>` so
     /// the `spawn_local`-detached `mapAsync` future can write back
     /// into it without re-borrowing the renderer.
     pub coverage_readback_state: std::rc::Rc<std::cell::RefCell<CoverageReadbackState>>,
     /// Monotonic frame index. Wraps every ~272 years at 60 Hz — safe to
     /// treat as unbounded for any practical session. Drives the
-    /// `skin_update_period` gate (Cluster 8.3) and other "every Nth
-    /// frame" cadences.
+    /// `skin_update_period` gate and other "every Nth frame" cadences.
     pub frame_index: u64,
     pub shaders: Shaders,
     pub materials: Materials,
@@ -610,10 +611,17 @@ impl AwsmRendererBuilder {
             None
         };
 
-        // GPU mesh-pixel-coverage producer buffers — plan §8.2.
-        // Always allocated; the producer pass runs every frame
-        // (cheap) and feeds the CPU-side `MeshCoverage` table.
-        let coverage_buffers = render_passes::coverage::buffers::CoverageBuffers::new(&gpu)?;
+        // GPU mesh-pixel-coverage producer buffers. Allocated only
+        // when `features.coverage_lod` is on — the producer pass
+        // populates `MeshCoverage`, and with no opt-in consumer the
+        // per-frame compute + readback would be pure waste.
+        let coverage_buffers = if features.coverage_lod {
+            Some(render_passes::coverage::buffers::CoverageBuffers::new(
+                &gpu,
+            )?)
+        } else {
+            None
+        };
 
         let shadows = shadows::Shadows::new(
             &gpu,

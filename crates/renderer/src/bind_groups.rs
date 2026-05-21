@@ -502,16 +502,12 @@ impl BindGroups {
                     // path picks the matching variant; the inactive
                     // variant's bind group stays `None` and is
                     // ignored.
-                    if ctx.anti_aliasing.msaa_sample_count.is_some() {
-                        render_passes
-                            .coverage
-                            .bind_groups_multisampled
-                            .recreate(&ctx)?;
-                    } else {
-                        render_passes
-                            .coverage
-                            .bind_groups_singlesampled
-                            .recreate(&ctx)?;
+                    if let Some(coverage) = render_passes.coverage.as_mut() {
+                        if ctx.anti_aliasing.msaa_sample_count.is_some() {
+                            coverage.bind_groups_multisampled.recreate(&ctx)?;
+                        } else {
+                            coverage.bind_groups_singlesampled.recreate(&ctx)?;
+                        }
                     }
                 }
                 FunctionToCall::MaterialDecalMain => {

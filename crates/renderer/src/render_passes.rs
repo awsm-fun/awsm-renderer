@@ -43,23 +43,25 @@ use crate::{
 /// Collection of render passes used by the renderer.
 pub struct RenderPasses {
     pub geometry: GeometryRenderPass,
-    /// GPU mesh-pixel-coverage producer — plan §8.2. Always built;
-    /// the dispatch is gated each frame on a coverage-buffer being
-    /// present.
-    pub coverage: CoverageRenderPass,
-    /// HZB build pass — `None` when `features.gpu_culling == false`
-    /// (plan §16.F).
+    /// GPU mesh-pixel-coverage producer. `None` when
+    /// `features.coverage_lod == false`. Consumers read the resulting
+    /// `MeshCoverage` table via `is_below_threshold`; with the
+    /// producer disabled that always returns `false`, which routes
+    /// every consumer to its "above threshold / use the expensive
+    /// variant" path — the safe default.
+    pub coverage: Option<CoverageRenderPass>,
+    /// HZB build pass. `None` when `features.gpu_culling == false`.
     pub hzb: Option<HzbRenderPass>,
-    /// GPU occlusion-cull pass — `None` when
-    /// `features.gpu_culling == false` (plan §16.F).
+    /// GPU occlusion-cull pass. `None` when
+    /// `features.gpu_culling == false`.
     pub occlusion: Option<OcclusionRenderPass>,
-    /// Compaction `IndirectDrawArgs` pass — `None` when
-    /// `features.gpu_culling == false` (plan §16.F).
+    /// Compaction `IndirectDrawArgs` pass. `None` when
+    /// `features.gpu_culling == false`.
     pub occlusion_compaction: Option<CompactionRenderPass>,
     pub light_culling: LightCullingRenderPass,
     pub material_classify: MaterialClassifyRenderPass,
-    /// Decal classify + shading + composite pass — `None` when
-    /// `features.decals == false` (plan §16.F).
+    /// Decal classify + shading + composite pass. `None` when
+    /// `features.decals == false`.
     pub material_decal: Option<MaterialDecalRenderPass>,
     pub material_opaque: MaterialOpaqueRenderPass,
     pub material_transparent: MaterialTransparentRenderPass,
@@ -70,14 +72,18 @@ pub struct RenderPasses {
 impl RenderPasses {
     /// Creates all render passes for the renderer. Passes gated by
     /// [`RendererFeatures`] are skipped at construction; their slots
-    /// stay `None` (plan §16.F).
+    /// stay `None`.
     pub async fn new<'a>(
         ctx: &mut RenderPassInitContext<'a>,
         features: &RendererFeatures,
     ) -> Result<Self> {
         Ok(Self {
             geometry: GeometryRenderPass::new(ctx).await?,
-            coverage: CoverageRenderPass::new(ctx).await?,
+            coverage: if features.coverage_lod {
+                Some(CoverageRenderPass::new(ctx).await?)
+            } else {
+                None
+            },
             hzb: if features.gpu_culling {
                 Some(HzbRenderPass::new(ctx).await?)
             } else {

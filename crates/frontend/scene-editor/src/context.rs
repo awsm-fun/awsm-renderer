@@ -223,9 +223,14 @@ struct AppContext {
 /// no way to flip features at runtime.
 #[cfg(debug_assertions)]
 fn parse_features_from_url() -> RendererFeatures {
+    // `coverage_lod` stays off — both its consumers (skin-skip,
+    // cheap-material LOD) are parked, so engaging the producer in the
+    // editor would just be measurement noise. Flip on per-build when
+    // you wire up a consumer.
     let on = RendererFeatures {
         gpu_culling: true,
         decals: true,
+        coverage_lod: false,
     };
     let Some(window) = web_sys::window() else {
         return on;
@@ -246,6 +251,7 @@ fn parse_features_from_url() -> RendererFeatures {
     RendererFeatures {
         gpu_culling: true,
         decals: true,
+        coverage_lod: false,
     }
 }
 
