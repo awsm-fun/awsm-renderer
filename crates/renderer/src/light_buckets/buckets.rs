@@ -24,6 +24,7 @@ use crate::scene_spatial::SceneSpatial;
 ///   - its AABB diagonal exceeds `OVERSIZED_AABB_DIAGONAL_METERS`
 ///   - and it appears in at least one light bucket whose list-count
 ///     exceeds `OVERSIZED_LIST_COUNT_THRESHOLD`.
+///
 /// The future cluster-light-list path (2.1.d full implementation)
 /// reads these flags and routes the offending meshes through the
 /// fallback list rather than the per-mesh slice.
@@ -236,12 +237,6 @@ impl LightMeshBuckets {
     ///
     /// Cluster 2.1.b consumes this to populate `mesh_light_slices` and
     /// `mesh_light_indices`.
-    /// Test-only accessor for the punctual-light order.
-    #[cfg(test)]
-    pub(crate) fn light_order(&self) -> &[LightKey] {
-        &self.light_order
-    }
-
     pub fn transpose_per_mesh(&self, lights: &Lights) -> SecondaryMap<MeshKey, Vec<u32>> {
         let mut per_mesh: SecondaryMap<MeshKey, Vec<u32>> = SecondaryMap::new();
         for (light_key, bucket) in self.iter_punctual() {

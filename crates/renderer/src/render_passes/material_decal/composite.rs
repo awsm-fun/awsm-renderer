@@ -85,10 +85,7 @@ impl MaterialDecalComposite {
         let shader_module = gpu.compile_shader(
             &ShaderModuleDescriptor::new(SHADER_SOURCE, Some("Decal Composite shader")).into(),
         );
-        shader_module
-            .validate_shader()
-            .await
-            .map_err(awsm_renderer_core::error::AwsmCoreError::from)?;
+        shader_module.validate_shader().await?;
 
         let bind_group_layout = gpu.create_bind_group_layout(
             &BindGroupLayoutDescriptor::new(Some("Decal Composite BGL"))

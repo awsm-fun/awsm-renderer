@@ -77,11 +77,15 @@ fn decal_blend_select(node: Arc<Node>) -> Dom {
                 })
             }))
             .event(clone!(kind, select => move |_: events::Change| {
+                let _ = select.value();
                 let mut k = kind.get_cloned();
                 if let NodeKind::Decal(ref mut d) = k {
-                    d.blend_mode = match select.value().as_str() {
-                        _ => DecalBlendMode::AlphaBlend,
-                    };
+                    // Only one blend mode is exposed today. Reads from
+                    // the `<select>` are kept (so the side effect of
+                    // touching `select.value()` stays in case the DOM
+                    // implementation cares) but the value isn't yet
+                    // mapped to any other variant.
+                    d.blend_mode = DecalBlendMode::AlphaBlend;
                     kind.set(k);
                 }
             }))

@@ -39,7 +39,7 @@ pub struct DecalClassifyBuffers {
     pub size_bytes: u32,
     /// CPU staging for the per-frame header reset — re-uploads the
     /// header constants (tile_count_x, tile_count_y, bucket_capacity)
-    /// + zeros the atomic counts in the tile region tail. The
+    /// and zeros the atomic counts in the tile region tail. The
     /// allocation is dominated by the zero tail.
     header_scratch: Vec<u8>,
 }

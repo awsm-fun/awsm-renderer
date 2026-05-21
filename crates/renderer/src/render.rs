@@ -999,7 +999,7 @@ impl AwsmRenderer {
         // coverage rather than ringing the buffer).
         if let Some(slot_map) = coverage_slot_map {
             let readback_buffer = self.coverage_buffers.readback_buffer.clone();
-            let readback_size_bytes = (self.coverage_buffers.capacity as u32).saturating_mul(4);
+            let readback_size_bytes = self.coverage_buffers.capacity.saturating_mul(4);
             let state = self.coverage_readback_state.clone();
             state.borrow_mut().inflight = true;
             wasm_bindgen_futures::spawn_local(async move {

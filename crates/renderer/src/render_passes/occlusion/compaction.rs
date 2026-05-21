@@ -24,7 +24,6 @@
 use awsm_renderer_core::{
     buffers::{BufferDescriptor, BufferUsage},
     command::compute_pass::ComputePassDescriptor,
-    error::AwsmCoreError,
     renderer::AwsmRendererWebGpu,
 };
 
@@ -80,19 +79,17 @@ impl CompactionBuffers {
     fn with_capacity(gpu: &AwsmRendererWebGpu, capacity: u32) -> Result<Self> {
         let capacity = capacity.max(1);
         let size_bytes = capacity as usize * INDIRECT_DRAW_ARGS_STRIDE;
-        let args_buffer = gpu
-            .create_buffer(
-                &BufferDescriptor::new(
-                    Some("CompactionIndirectArgs"),
-                    size_bytes,
-                    BufferUsage::new()
-                        .with_storage()
-                        .with_indirect()
-                        .with_copy_dst(),
-                )
-                .into(),
+        let args_buffer = gpu.create_buffer(
+            &BufferDescriptor::new(
+                Some("CompactionIndirectArgs"),
+                size_bytes,
+                BufferUsage::new()
+                    .with_storage()
+                    .with_indirect()
+                    .with_copy_dst(),
             )
-            .map_err(AwsmCoreError::from)?;
+            .into(),
+        )?;
         Ok(Self {
             args_buffer,
             capacity,

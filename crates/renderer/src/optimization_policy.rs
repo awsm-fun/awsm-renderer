@@ -18,7 +18,7 @@
 /// User-facing toggle for an adaptive optimization. The same enum
 /// could gate other paths in the future, but v1 ships with one knob
 /// (`RendererOptimizationPolicy::gpu_culling`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum OptimizationMode {
     /// Never run the optimization this session. The capability resources
     /// may still exist (allocated by `RendererFeatures`) but the
@@ -27,17 +27,12 @@ pub enum OptimizationMode {
     /// Engage the optimization when scene stats cross the enable
     /// threshold; disengage below the disable threshold. Hysteresis +
     /// cooldown keep the mode stable.
+    #[default]
     Auto,
     /// Always run the optimization this session — useful for editor
     /// builds where the user wants to validate the GPU-driven path
     /// regardless of scene size.
     Force,
-}
-
-impl Default for OptimizationMode {
-    fn default() -> Self {
-        Self::Auto
-    }
 }
 
 /// Per-renderer runtime policy. Distinct from `RendererFeatures`:
@@ -170,20 +165,12 @@ pub fn compute_frame_optimizations(
                     // Currently on. Flip off only if both cooldown
                     // elapsed AND the optimizable count dropped below
                     // the disable threshold.
-                    if cooldown_elapsed && optimizable < policy.gpu_culling_disable_threshold {
-                        false
-                    } else {
-                        true
-                    }
+                    !(cooldown_elapsed && optimizable < policy.gpu_culling_disable_threshold)
                 } else {
                     // Currently off. Flip on only if both cooldown
                     // elapsed AND the optimizable count reached the
                     // enable threshold.
-                    if cooldown_elapsed && optimizable >= policy.gpu_culling_enable_threshold {
-                        true
-                    } else {
-                        false
-                    }
+                    cooldown_elapsed && optimizable >= policy.gpu_culling_enable_threshold
                 }
             }
         }

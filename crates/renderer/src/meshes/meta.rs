@@ -191,10 +191,11 @@ impl MeshMeta {
         Ok(())
     }
 
-    /// In-place patch of the per-mesh light slice (`light_slice_offset`
-    /// + `light_slice_count`) inside the material metadata. Called once
-    /// per frame, per mesh-with-overlapping-lights, by the light-bucket
-    /// upload path (Option F follow-up to Cluster 2.1.c).
+    /// In-place patch of the per-mesh light slice
+    /// (`light_slice_offset` and `light_slice_count`) inside the
+    /// material metadata. Called once per frame, per
+    /// mesh-with-overlapping-lights, by the light-bucket upload path
+    /// (Option F follow-up to Cluster 2.1.c).
     ///
     /// Returns `Ok(false)` if the mesh has no meta slot yet — callers
     /// (per-frame bucket walk) treat that as "skip this mesh", since a

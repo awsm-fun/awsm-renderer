@@ -226,6 +226,7 @@ pub struct AwsmRenderer {
 ///     attribute_data, transforms (packed model + normal — Option E),
 ///     texture_transforms, instance_attrs.
 ///   * 1 storage buffer in `@group(1)`: mesh_light_indices.
+///
 /// Total = 9, leaving 1 spare under a 10-buffer limit. lights +
 /// lights_info are uniforms in group(1) (Option F). The per-mesh
 /// slice (`light_slice_offset` + `light_slice_count`) is packed into

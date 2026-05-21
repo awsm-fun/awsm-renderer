@@ -44,20 +44,18 @@ impl HzbTexture {
         let mip_count = 32u32 - max_dim.leading_zeros();
         let mip_count = mip_count.max(1);
 
-        let texture = gpu
-            .create_texture(
-                &TextureDescriptor::new(
-                    TextureFormat::R32float,
-                    Extent3d::new(width, Some(height), Some(1)),
-                    TextureUsage::new()
-                        .with_storage_binding()
-                        .with_texture_binding(),
-                )
-                .with_label("HZB")
-                .with_mip_level_count(mip_count)
-                .into(),
+        let texture = gpu.create_texture(
+            &TextureDescriptor::new(
+                TextureFormat::R32float,
+                Extent3d::new(width, Some(height), Some(1)),
+                TextureUsage::new()
+                    .with_storage_binding()
+                    .with_texture_binding(),
             )
-            .map_err(AwsmCoreError::from)?;
+            .with_label("HZB")
+            .with_mip_level_count(mip_count)
+            .into(),
+        )?;
 
         let view_all = {
             let descriptor: web_sys::GpuTextureViewDescriptor =

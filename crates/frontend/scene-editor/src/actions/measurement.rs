@@ -117,10 +117,15 @@ pub async fn load_scene_by_path(scene_name: String) -> Result<(), JsValue> {
 pub async fn read_importance_tier_histogram() -> String {
     use awsm_renderer::lights::Light;
     let result = crate::context::with_renderer_mut(|r| {
-        let Some(matrices) = r.camera.last_matrices.as_ref() else {
-            return None;
-        };
-        let camera_pos = matrices.view.inverse().transpose().w_axis.truncate();
+        let matrices = r.camera.last_matrices.as_ref()?;
+        // Match the importance-scoring camera_pos (translation column
+        // of the inverse view). The earlier `.transpose()` here
+        // mirrored a bug in shadows::importance that was fixed; this
+        // measurement helper should compute the same value the
+        // scoring path uses, otherwise its histogram doesn't reflect
+        // what `refresh_light_importance_budgets` would actually
+        // produce.
+        let camera_pos = matrices.view.inverse().w_axis.truncate();
         let frustum =
             awsm_renderer::frustum::Frustum::from_view_projection(matrices.view_projection());
         let mut low = 0u32;

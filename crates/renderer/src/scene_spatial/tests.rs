@@ -173,9 +173,9 @@ fn frustum_query_parity_with_linear_scan() {
         .query_frustum(&frustum, NodeFilter::default())
         .map(|n| n.mesh_key)
         .collect();
-    tree_hits.sort_by_key(|k| slotmap::Key::data(k));
+    tree_hits.sort_by_key(slotmap::Key::data);
     let mut linear_sorted = linear_hits.clone();
-    linear_sorted.sort_by_key(|k| slotmap::Key::data(k));
+    linear_sorted.sort_by_key(slotmap::Key::data);
 
     assert_eq!(
         tree_hits, linear_sorted,
