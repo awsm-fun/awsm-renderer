@@ -294,8 +294,12 @@ impl Materials {
     }
 
     /// Returns the material's `MaterialShaderId` (PBR / Unlit / Toon).
-    /// The opaque compute pass routes each mesh's `effective_material_key`
+    /// `collect_renderables` passes each mesh's authored `material_key`
     /// through this to pick the matching specialized compute pipeline.
+    /// (Cluster 6.3's cheap-material LOD wired the *effective* key here
+    /// for one release; that's parked until the cheap material's
+    /// offset is also plumbed into `MaterialMeshMeta` — otherwise the
+    /// pipeline doesn't match the data the shader reads.)
     /// Returns `Pbr` for unknown keys — defensive default; the caller
     /// should never hit this path because the key came from a `Mesh`
     /// already validated against `Materials::insert`.

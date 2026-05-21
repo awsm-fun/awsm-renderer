@@ -331,7 +331,7 @@ Mesh {
     cast_shadows: bool,                       // appears in shadow gen
     receive_shadows: bool,                    // samples shadow maps
     receive_decals: bool,                     // decal compute affects
-    cheap_material_key: Option<MaterialKey>,  // distance LOD swap
+    cheap_material_key: Option<MaterialKey>,  // distance LOD swap (parked — see §10)
     cheap_material_pixel_threshold: Option<u32>, // None → renderer default
     skin_update_period: u8,                   // 1=every frame, 2=half, etc.
     billboard_mode: BillboardMode,            // camera-facing override
@@ -542,10 +542,21 @@ generate_tuning_scenes -p awsm-scene-schema`):
     was zero (it's likely about to disocclude).
 
   Until both land, `meshes::update_world` skips only the
-  `Mesh::skin_update_period` cadence path. The cheap-material
-  LOD consumer of `MeshCoverage` stays wired — momentary
-  LOD degradation is harmless where momentary rest-pose
-  freezing is jarring.
+  `Mesh::skin_update_period` cadence path.
+
+* **Cheap-material LOD routing** is parked at the renderable site.
+  `Mesh::effective_material_key` resolves correctly against
+  last-frame coverage (the §8.2 readback feeds it), but
+  `MaterialMeshMeta` still packs the authored `material_key` —
+  so feeding the *cheap* key into `collect_renderables`'
+  opaque/transparent classification or `MaterialShaderId` pipeline
+  selection routed meshes to a pass / pipeline that didn't match
+  the data the compute shader actually read. Same-pass cheap
+  materials silently no-op'd, cross-pass routing dropped
+  transmission, cross-shader routing risked layout mismatches.
+  Hook stays available on `Mesh`; finishing the feature requires
+  re-packing meta on a coverage-cross-threshold transition so the
+  shader's `material_offset` matches the routed pipeline.
 
 * **Coverage-driven shadow-receiver gate** (§8.5) is partial.
   CPU side is live (`LightMeshBuckets::mark_shadow_receivers`),

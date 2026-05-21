@@ -140,9 +140,16 @@ impl Mesh {
     /// mesh's last-frame coverage is below
     /// `cheap_material_pixel_threshold` (falling back to
     /// `default_threshold` when `None`); otherwise the authored
-    /// `material_key`. Cluster 6.3 hook — call from
-    /// `collect_renderables` or any other place that picks the
-    /// material pipeline.
+    /// `material_key`. Cluster 6.3 hook.
+    ///
+    /// **Currently unused at the routing site.** `MaterialMeshMeta`
+    /// still packs the authored `material_key`, so feeding the cheap
+    /// key into pass-routing / pipeline selection mismatched what the
+    /// compute shader actually read. `collect_renderables` is back on
+    /// `material_key`; this function stays available for the eventual
+    /// follow-up that also re-packs meta when coverage crosses
+    /// threshold (so the shader's `material_offset` matches the
+    /// routed pipeline).
     pub fn effective_material_key(
         &self,
         mesh_key: MeshKey,

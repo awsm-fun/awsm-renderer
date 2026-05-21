@@ -89,25 +89,25 @@ impl AwsmRenderer {
         };
 
         for (mesh_key, mesh) in visible {
-            // Cluster 6.3: classify opaque vs transparent by the
-            // *effective* material this frame. A mesh with a cheap
-            // opaque variant + an expensive transmissive variant will
-            // route through the cheap opaque pass when distant. The
-            // deeper opaque-shading material swap (which would need
-            // to re-pack `MaterialMeshMeta`) is a follow-up; this
-            // single hook handles the renderable-list classification.
-            let effective_material = mesh.effective_material_key(
-                mesh_key,
-                &self.coverage,
-                self.default_cheap_material_pixel_threshold,
-            );
+            // Cluster 6.3 cheap-material LOD was wired here to route by
+            // `effective_material_key`, but `MaterialMeshMeta` is still
+            // packed from `mesh.material_key` (see `meshes::meta`), so
+            // the actual shading uses the original material in every
+            // case — same-pass cheap materials silently no-op, and
+            // cross-pass / cross-shader hooks route to a pipeline that
+            // doesn't match the bound material's data. Until the
+            // effective material offset is also plumbed into meta
+            // (re-pack on coverage-cross-threshold), gate routing on
+            // the authored material so the visible behaviour matches
+            // what shaders actually run. `effective_material_key`
+            // stays available on `Mesh` for the eventual full wiring.
+            let routing_material = mesh.material_key;
 
-            // After the shader split (Cluster 6.1 prereq), the
-            // opaque compute pipeline is specialized per
-            // `MaterialShaderId`. Look up the effective material's
-            // shader_id and pick the matching pipeline so PBR / Unlit
-            // / Toon route to their own specialized compute pass.
-            let shader_id = self.materials.shader_id(effective_material);
+            // The opaque compute pipeline is specialized per
+            // `MaterialShaderId` (PBR / Unlit / Toon). Look up the
+            // routing material's shader_id so the pipeline matches
+            // the data the shader will read.
+            let shader_id = self.materials.shader_id(routing_material);
 
             let renderable = Renderable::Mesh {
                 key: mesh_key,
@@ -126,7 +126,7 @@ impl AwsmRenderer {
 
             if mesh.hud {
                 hud.push(renderable.clone());
-            } else if self.materials.is_transparency_pass(effective_material) {
+            } else if self.materials.is_transparency_pass(routing_material) {
                 transparent.push(renderable);
             } else {
                 opaque.push(renderable);
