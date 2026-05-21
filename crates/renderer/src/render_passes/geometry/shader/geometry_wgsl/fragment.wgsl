@@ -7,6 +7,15 @@ struct FragmentInput {
     @location(2) world_normal: vec3<f32>,     // Transformed world-space normal
     @location(3) world_tangent: vec4<f32>,    // Transformed world-space tangent (w = handedness)
     @location(4) @interpolate(flat) instance_id: u32, // U32_MAX for non-instanced draws
+    // Plan §16.7/§16.8: forwarded from vertex so the fragment
+    // doesn't have to re-read `geometry_mesh_meta`. The
+    // non-instanced storage-array path populates the vertex's
+    // `var<private> geometry_mesh_meta` at vertex entry, which
+    // doesn't propagate to fragment (private storage is
+    // per-shader-stage). Without this flat varying the fragment
+    // reads byte offset 0 for every pixel and routes every mesh's
+    // shading through material slot 0.
+    @location(5) @interpolate(flat) material_mesh_meta_offset: u32,
 }
 
 struct FragmentOutput {
@@ -29,8 +38,11 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
     // Pack visibility buffer data
     let t = split16(input.triangle_index);
     // this is not the material material_offset
-    // it's the the material_mesh_meta offset (which contains the material_offset)
-    let m = split16(geometry_mesh_meta.material_mesh_meta_offset);
+    // it's the the material_mesh_meta offset (which contains the material_offset).
+    // Sourced from the flat varying so non-instanced meshes route
+    // through the right slot even though the fragment stage's
+    // `var<private> geometry_mesh_meta` is uninitialised.
+    let m = split16(input.material_mesh_meta_offset);
     // it's 16 bits, not u32, but we store as u32 for simplicity
     out.visibility_data = vec4<u32>(
         t.x,t.y,
