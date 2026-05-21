@@ -1,4 +1,4 @@
-//! Generates the §16.G tuning reference scenes under
+//! Generates the tuning reference scenes under
 //! `assets/world/<name>/project.json`. Run from the workspace root with
 //! `cargo run --example generate_tuning_scenes -p awsm-scene-schema`
 //! (or via `cargo run --manifest-path crates/scene-schema/Cargo.toml
@@ -16,7 +16,7 @@
 //! 4. `tuning-open-world`       — terrain plane + ocean plane + skybox + 50 props.
 //! 5. `tuning-coverage`         — 100 small props at varying camera distances.
 //! 6. `tuning-10k-meshes`       — 10K boxes (100×100×1 grid).
-//! 7. `tuning-importance-tiers` — 16 lights spanning a 4×4 (distance, intensity) grid; drives §15 row T3.
+//! 7. `tuning-importance-tiers` — 16 lights spanning a 4×4 (distance, intensity) grid; drives importance-tier cutoff tuning.
 
 use std::{fs, path::PathBuf};
 
@@ -695,7 +695,7 @@ fn hsv_to_rgb_arr(h: f32, s: f32, v: f32) -> [f32; 3] {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Scene 7 — importance-tier histogram source. Drives §15 row T3.
+// Scene 7 — importance-tier histogram source. Drives importance-tier cutoff tuning.
 //
 // 4 × 4 grid: distance from camera ∈ {1, 5, 15, 50} × intensity ∈
 // {1, 10, 100, 1000}. With the camera at origin facing +X (the

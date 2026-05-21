@@ -105,8 +105,8 @@ fn main(
     @builtin(workgroup_id) wg_id: vec3<u32>,
     @builtin(local_invocation_id) lid: vec3<u32>
 ) {
-    // Tile lookup — the material classify pass (Cluster 6.1, plan
-    // §16.3.B) populated `classify_buckets.tiles` with packed
+    // Tile lookup — the material classify pass populated
+    // `classify_buckets.tiles` with packed
     // `(tile_x, tile_y)` coords per `shader_id` bucket. Our
     // pipeline's specialized `shader_id` picks the matching offset
     // statically; `workgroup_id.x` is the bucket entry index;
@@ -238,9 +238,7 @@ fn main(
     // Per-pixel `shader_id` guard. The material classify pass already
     // scopes our dispatch to tiles containing our specialized
     // `shader_id`, so the guard rejects only pixels of a *different*
-    // shader_id that share a mixed-material tile with ours — exactly
-    // the tile-bucket-overlap correctness case described in plan
-    // §16.3.B.
+    // shader_id that share a mixed-material tile with ours.
     {% match shader_id %}
         {% when MaterialShaderId::Pbr %}
             if (shader_id != SHADER_ID_PBR) { return; }

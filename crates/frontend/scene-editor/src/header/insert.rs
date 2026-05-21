@@ -36,9 +36,9 @@ pub(super) fn render_insert_row() -> Dom {
             .with_size(ButtonSize::Sm)
             .with_on_click(actions::insert::camera)
             .render())
-        // Procedural primitives (D-1 / Phase 3 — load through `awsm-meshgen`
-        // at materialize time; each variant ships with its default param
-        // set so the node renders out of the box).
+        // Procedural primitives — load through `awsm-meshgen` at
+        // materialize time; each variant ships with its default param
+        // set so the node renders out of the box.
         .child(render_dropdown_button("Primitive…", vec![
             ("Plane", Arc::new(actions::insert::primitive_plane)),
             ("Box", Arc::new(actions::insert::primitive_box)),
@@ -47,17 +47,17 @@ pub(super) fn render_insert_row() -> Dom {
             ("Cone", Arc::new(actions::insert::primitive_cone)),
             ("Torus", Arc::new(actions::insert::primitive_torus)),
         ]))
-        // Curves + their consumers (Phase 5 / 6 / 7). Sweep + Instances
-        // both reference a Curve `NodeId`; the user picks it via the
-        // inspector after insert.
+        // Curves + their consumers. Sweep + Instances both reference
+        // a Curve `NodeId`; the user picks it via the inspector after
+        // insert.
         .child(render_dropdown_button("Curve…", vec![
             ("Curve", Arc::new(actions::insert::curve)),
             ("Sweep along curve", Arc::new(actions::insert::sweep)),
             ("Instances along curve", Arc::new(actions::insert::instances)),
         ]))
-        // Visual primitives (Phase 4 / 9 / 10) — Line is the B-2 fat-line
-        // pipeline, Sprite is the billboarded textured quad, Particle is
-        // the simulator-backed emitter.
+        // Visual primitives — Line is the fat-line pipeline, Sprite is
+        // the billboarded textured quad, Particle is the simulator-
+        // backed emitter.
         .child(render_dropdown_button("Visual…", vec![
             ("Line", Arc::new(actions::insert::line)),
             ("Sprite", Arc::new(actions::insert::sprite)),

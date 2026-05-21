@@ -244,12 +244,11 @@ impl MaterialOpaqueBindGroups {
             entries.len() as u32,
             BindGroupResource::Buffer(BufferBinding::new(&ctx.materials.gpu_buffer)),
         ));
-        // §16.E1/E2: `attribute_indices` and `attribute_data` are no
-        // longer separate storage bindings — both live as sections of
-        // the merged geometry pool that's already bound here as
-        // `visibility_data` (binding 5). WGSL reads them through that
-        // single binding at the per-mesh sub-offsets carried by
-        // MaterialMeshMeta.
+        // `attribute_indices` and `attribute_data` are not separate
+        // storage bindings — both live as sections of the merged
+        // geometry pool that's already bound here as `visibility_data`
+        // (binding 5). WGSL reads them through that single binding at
+        // the per-mesh sub-offsets carried by MaterialMeshMeta.
         // transforms — packed (model + normal). See `Transforms`.
         entries.push(BindGroupEntry::new(
             entries.len() as u32,
@@ -320,7 +319,7 @@ impl MaterialOpaqueBindGroups {
             entries.len() as u32,
             BindGroupResource::Buffer(BufferBinding::new(ctx.instances.gpu_attribute_buffer())),
         ));
-        // Classify output buckets (Cluster 6.1, plan §16.3.B). The
+        // Classify output buckets. The
         // opaque compute shader reads `pbr_offset` / `unlit_offset` /
         // `toon_offset` + `tiles[…]` to look up its workgroup's tile;
         // the indirect-args header is consumed via
@@ -530,10 +529,9 @@ async fn create_main_bind_group_layout_key(
             visibility_fragment: false,
             visibility_compute: true,
         },
-        // §16.E1/E2: layout entries for attribute_indices/attribute_data
-        // were removed — both live inside the merged geometry pool that
-        // entry 5 (visibility data) already binds. Two storage slots
-        // freed for §16.7 (occlusion) and dynamic-materials extras_pool.
+        // No separate layout entries for attribute_indices/attribute_data
+        // — both live inside the merged geometry pool that entry 5
+        // (visibility data) already binds.
         // Packed transforms buffer — model (mat4x4) + normal (mat3x3)
         // in one struct (Option E). The normal matrix lives at
         // `Transforms::NORMAL_OFFSET` inside each entry, so no separate
@@ -656,9 +654,9 @@ async fn create_main_bind_group_layout_key(
             visibility_fragment: false,
             visibility_compute: true,
         },
-        // Material classify output buckets (Cluster 6.1). Read-only
-        // declaration — the read-write atomic view lives on the
-        // classify pass's own bind group.
+        // Material classify output buckets. Read-only declaration —
+        // the read-write atomic view lives on the classify pass's
+        // own bind group.
         BindGroupLayoutCacheKeyEntry {
             resource: BindGroupLayoutResource::Buffer(
                 BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),

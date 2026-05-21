@@ -1,6 +1,8 @@
 // Shadow bind-group declarations. The bind-group slot is supplied by
 // the containing template via `shadow_group_index` — opaque uses slot
-// 3. Transparent is deferred to Phase 9.
+// 3. The transparent pass currently doesn't bind these (the adapter's
+// `maxBindGroups=4` budget is fully consumed by transparent's existing
+// groups).
 //
 // Bindings 0..=7 must stay in lockstep with
 // `shared::material::bind_group::shadow_bind_group_layout_entries`.
@@ -16,10 +18,10 @@ struct ShadowDescriptor {
     bias_params: vec4<f32>,
     // (split_far_view_z, cascade_index, cascade_count_in_light, evsm_flag)
     // `evsm_flag` is 1.0 when this cascade should sample EVSM moments
-    // from `evsm_atlas` instead of the PCF depth atlas. Phase 5 lands
-    // the flag + sample-site dispatch; the moment-write compute pass
-    // and Gaussian blur are deferred — until they land, EVSM cascades
-    // transparently fall back to PCF sampling on `shadow_atlas`.
+    // from `evsm_atlas` instead of the PCF depth atlas. The flag +
+    // sample-site dispatch are wired; the moment-write compute pass
+    // and Gaussian blur landed alongside it. If a future tweak leaves
+    // EVSM disabled the cascade falls back to PCF on `shadow_atlas`.
     cascade_info: vec4<f32>,
 };
 
@@ -96,8 +98,8 @@ fn pcss_rotate(v: vec2<f32>, sin_a: f32, cos_a: f32) -> vec2<f32> {
 // occluders that the shadow map misses (gaps under feet, hair, etc.).
 //
 // `shadow_globals.evsm_sscs.w` is the master enable; `.z` is the step
-// count. Phase 10 ships single-sample depth reads even when the
-// geometry pass was rendered with MSAA (we read sample 0).
+// count. Uses single-sample depth reads even when the geometry pass
+// was rendered with MSAA (we read sample 0).
 //
 // The transparent pass doesn't bind a `depth_tex` (sampling the
 // in-progress depth target on the same pass would be a feedback loop),
@@ -703,7 +705,7 @@ fn sample_shadow_cascade_array(
 // Hardness branches:
 //   0.0 = Hard, 1-tap.
 //   1.0 = Soft, 3x3 PCF.
-//   2.0 = PCSS (phase 6 — currently falls back to Soft).
+//   2.0 = PCSS — blocker search + variable-kernel PCF.
 fn sample_shadow_descriptor(
     descriptor_index: u32,
     world_pos: vec3<f32>,

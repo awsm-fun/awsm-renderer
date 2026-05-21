@@ -1,4 +1,4 @@
-//! Distance-based skinning-LOD helpers (Cluster 8.3).
+//! Distance-based skinning-LOD helpers.
 //!
 //! Skinned characters far from the camera don't need a per-frame joint
 //! matrix refresh — the visible motion is well below per-pixel
@@ -6,9 +6,9 @@
 //! walks the spatial index and assigns each skinned mesh's
 //! `skin_update_period` from a user-supplied threshold table.
 //!
-//! Pair with Cluster 6.2's coverage-driven skinning skip: coverage
-//! answers "skip this frame entirely?", period answers "what's the
-//! background cadence when not skipped?".
+//! Pairs with the coverage-driven skinning skip: coverage answers
+//! "skip this frame entirely?", period answers "what's the background
+//! cadence when not skipped?".
 
 use glam::Vec3;
 

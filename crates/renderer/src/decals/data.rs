@@ -63,10 +63,9 @@ pub struct Decal {
     /// Blend accumulation mode. v1 ships alpha-blend only.
     pub blend_mode: DecalBlendMode,
     /// World-space AABB of the transformed unit cube. Recomputed on
-    /// `update_decal`. The HZB-based decal-tile classification
-    /// (Cluster 7.x follow-up, plan §16.4 step 3) will use this to
-    /// scope the per-tile decal list; v1 dispatches over every
-    /// non-skybox tile and tests against every decal.
+    /// `update_decal`. A future HZB-based decal-tile classification
+    /// will use this to scope the per-tile decal list; v1 dispatches
+    /// over every non-skybox tile and tests against every decal.
     pub world_aabb: Aabb,
 }
 

@@ -1,4 +1,4 @@
-// Per-pixel mesh-coverage tally — plan §8.2 producer.
+// Per-pixel mesh-coverage tally.
 //
 // One thread per pixel. For each pixel that holds a real material
 // (skybox / cleared pixels are skipped), extract the
@@ -6,8 +6,8 @@
 // recovers the per-fragment u32), divide by the meta stride to get
 // the mesh slot, and atomicAdd 1 into `mesh_pixel_counts[slot]`.
 //
-// The slot indexing matches the per-mesh args buffer used by §16.7/§16.8
-// drawIndirect — `mesh_meta_offset / 256 = slot`. The CPU reads the
+// The slot indexing matches the per-mesh drawIndirect args buffer —
+// `mesh_meta_offset / 256 = slot`. The CPU reads the
 // counts back next frame and routes them through
 // `MeshCoverage::ingest` so downstream consumers (skinning skip,
 // material LOD) can branch on last-frame visibility.
@@ -27,7 +27,7 @@
 // Must match `MaterialMeshMeta` / `GeometryMeshMeta` slot alignment.
 // The meta_offset field in visibility_data is a byte offset into the
 // material meta buffer; both metas use the same 256 B stride so the
-// resulting slot index is shared with the §16.7/§16.8 args buffer.
+// resulting slot index is shared with the drawIndirect args buffer.
 const MESH_META_STRIDE_BYTES: u32 = 256u;
 
 // Triangle index sentinel used to mark skybox / cleared pixels —

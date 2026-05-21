@@ -1,4 +1,4 @@
-// Material decal compute pass (Cluster 6.4, plan §16.4).
+// Material decal compute pass.
 //
 // Per pixel: skip skybox + non-decal-receiver meshes; reconstruct
 // world position from depth; iterate every active decal and
@@ -20,7 +20,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
-    // §16.4.D: this compute writes to a dedicated single-sample
+    // This compute writes to a dedicated single-sample
     // `decal_color` (storage RGBA16float); a downstream composite
     // alpha-blits it onto `transparent` (multi- or single-sample).
     // Pixels with no decal hit *must* write 0 so the composite's
@@ -62,7 +62,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let world_h = camera_raw.inv_view_proj * vec4<f32>(ndc, 1.0);
     let world_pos = world_h.xyz / world_h.w;
 
-    // §16.4.C: pick decals from the per-tile bucket instead of the
+    // Pick decals from the per-tile bucket instead of the
     // global decals_buffer. Each workgroup is 8×8, so `gid.xy / 8`
     // identifies the tile. The bucket holds at most
     // `bucket_capacity` entries (overflow silently dropped on the

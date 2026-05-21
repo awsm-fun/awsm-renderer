@@ -66,8 +66,7 @@ pub struct Shadows {
     pub atlas_texture: web_sys::GpuTexture,
     /// Default view of the atlas.
     pub atlas_view: web_sys::GpuTextureView,
-    /// Atlas resolution in texels (square). Phase 2 uses the full atlas
-    /// for the one supported caster; phase 4 swaps in a packer.
+    /// Atlas resolution in texels (square).
     pub atlas_size: u32,
     /// EVSM atlas (`RGBA16F`) — moments storage for far directional
     /// cascades. Sized at `config.evsm_atlas_size`. Usage includes
@@ -205,10 +204,10 @@ pub struct Shadows {
     /// Shadow generation pipeline layouts — `[shadow_view,
     /// transforms, meta, animation]`. Forked by `@group(2)` meta
     /// binding shape: `*_storage` for the non-instanced shadow
-    /// pipelines (plan §16.7/§16.8 storage-array meta), `*_uniform`
-    /// for instanced shadow pipelines (legacy uniform with dynamic
-    /// offset). Held for parity with other passes; the pipelines
-    /// themselves are built once in `new`.
+    /// pipelines (storage-array meta indexed by `instance_index`),
+    /// `*_uniform` for instanced shadow pipelines (uniform binding
+    /// with a per-draw dynamic offset). Held for parity with other
+    /// passes; the pipelines themselves are built once in `new`.
     #[allow(dead_code)]
     shadow_pipeline_layout_key_storage: PipelineLayoutKey,
     #[allow(dead_code)]
@@ -525,10 +524,10 @@ impl Shadows {
         // Pipeline layout: [shadow_view, transforms, meta, animation].
         // Slots 1..=3 reuse the geometry pass's layouts so the same
         // model_transforms / geometry_mesh_meta / morph + skin buffers
-        // are accessible verbatim from the shadow VS. Plan §16.7/§16.8
-        // forks @group(2) by instancing: non-instanced shadow shaders
-        // use the storage-array meta layout, instanced shaders keep
-        // the legacy uniform-with-dynamic-offset layout.
+        // are accessible verbatim from the shadow VS. `@group(2)`
+        // forks by instancing: non-instanced shadow shaders use the
+        // storage-array meta layout (indexed by `instance_index`),
+        // instanced shaders use uniform-with-dynamic-offset.
         let shadow_pipeline_layout_key_storage = pipeline_layouts.get_key(
             gpu,
             bind_group_layouts,
@@ -731,8 +730,8 @@ impl Shadows {
     }
 
     /// `[0.0, 1.0]` — fraction of the 2D atlas occupied by active
-    /// cascades + spots. Phase 2: returns 1.0 if any caster is active,
-    /// 0 otherwise.
+    /// cascades + spots. Currently a coarse indicator: returns 1.0 if
+    /// any caster is active, 0 otherwise.
     pub fn atlas_utilization(&self) -> f32 {
         if self.caster_count() > 0 {
             1.0
@@ -741,7 +740,9 @@ impl Shadows {
         }
     }
 
-    /// Fraction of cube-array slots occupied. Phase 8 wires this up.
+    /// Fraction of cube-array slots occupied. Currently a stub —
+    /// the cube-pool allocator needs to surface its watermark for a
+    /// meaningful value here.
     pub fn cube_pool_utilization(&self) -> f32 {
         0.0
     }
@@ -1036,11 +1037,11 @@ impl Shadows {
             self.apply_pending_resource_recreate(gpu, bind_group_layouts, bind_groups)?;
         }
 
-        // Phase 13: dynamic atlas resize. If the previous frame's
-        // packer ran out of room we grow the atlas to the next power
-        // of two (capped at `SHADOW_ATLAS_MAX_SIZE`) before this
-        // frame's pack. Recreates the texture + view and tells the
-        // bind-group reconciler to rebind the opaque shadow group.
+        // Dynamic atlas resize. If the previous frame's packer ran
+        // out of room we grow the atlas to the next power of two
+        // (capped at `SHADOW_ATLAS_MAX_SIZE`) before this frame's
+        // pack. Recreates the texture + view and tells the bind-group
+        // reconciler to rebind the opaque shadow group.
         if self.pending_atlas_grow {
             self.pending_atlas_grow = false;
             let new_size = (self.atlas_size.saturating_mul(2)).min(SHADOW_ATLAS_MAX_SIZE);
@@ -1124,10 +1125,9 @@ impl Shadows {
         }
 
         // Refit cascades for every casting directional light against
-        // the current camera. Phase 2 supports one directional caster
-        // with a single cascade covering the entire view. If the
-        // camera hasn't been updated yet (very first frame, before
-        // `update_camera`) we skip — the next frame picks up.
+        // the current camera. If the camera hasn't been updated yet
+        // (very first frame, before `update_camera`) we skip — the
+        // next frame picks up.
         let Some(camera_matrices) = camera.last_matrices.as_ref() else {
             self.frame_count = self.frame_count.wrapping_add(1);
             return Ok(());
@@ -1189,9 +1189,9 @@ impl Shadows {
         }
         let caster_world_aabbs = self.caster_aabbs_scratch.as_slice();
 
-        // Cursor for the row-pack atlas allocator. Phase 13 will
-        // replace this with a real packer; for now we walk left-to-
-        // right and wrap to the next row when the current row fills.
+        // Cursor for the row-pack atlas allocator. A future replacement
+        // can swap in a real packer; for now we walk left-to-right
+        // and wrap to the next row when the current row fills.
         let mut atlas_x: u32 = 0;
         let mut atlas_y: u32 = 0;
         // Layer cursor for the cascade-array. Each directional
@@ -1560,14 +1560,14 @@ impl Shadows {
 
                     let descriptor_index = alloc.descriptor_base;
                     let off = descriptor_index as usize * SHADOW_DESCRIPTOR_BYTES;
-                    // Cluster 4.4 of the optimisation plan: scale the
-                    // authored `pcss_penumbra_scale` by `tan(outer_angle * 0.5)`
-                    // before baking it into the descriptor. Without this,
-                    // a wider spot cone with the same authored scale
-                    // gives a *narrower* perceived penumbra (the PCSS
-                    // disc radius is measured in shadow-space NDC and the
-                    // wider cone spreads the disc across more world).
-                    // Multiplying by `tan(half_cone)` keeps the world-
+                    // Scale the authored `pcss_penumbra_scale` by
+                    // `tan(outer_angle * 0.5)` before baking it into
+                    // the descriptor. Without this, a wider spot cone
+                    // with the same authored scale gives a *narrower*
+                    // perceived penumbra (the PCSS disc radius is
+                    // measured in shadow-space NDC and the wider cone
+                    // spreads the disc across more world). Multiplying
+                    // by `tan(half_cone)` keeps the world-
                     // space penumbra width invariant to the cone angle.
                     let spot_pcss_penumbra_scale =
                         params.pcss_penumbra_scale * (outer_angle * 0.5).tan();
@@ -1914,7 +1914,7 @@ impl Shadows {
 
         self.frame_count = self.frame_count.wrapping_add(1);
 
-        // Descriptor / view bookkeeping invariants (Cluster 5.2). The
+        // Descriptor / view bookkeeping invariants. The
         // per-frame `active_*_count` fields drive the uniform buffer
         // slices the shading passes bind via dynamic offset; if they
         // disagree with the per-light record list, the binding picks up

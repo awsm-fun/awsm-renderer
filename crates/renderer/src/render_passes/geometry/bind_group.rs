@@ -168,7 +168,7 @@ impl GeometryBindGroupTransforms {
 
 /// Bind group for mesh metadata in the geometry pass.
 ///
-/// Plan §16.7/§16.8: the layout forks on the instancing flag. The
+/// The layout forks on the instancing flag. The
 /// non-instanced shader variant binds a storage-array of
 /// `GeometryMeshMeta` and indexes it by `@builtin(instance_index)`
 /// (enabling `drawIndirect` under `features.gpu_culling`), while

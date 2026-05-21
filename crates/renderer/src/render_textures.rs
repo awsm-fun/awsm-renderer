@@ -22,7 +22,7 @@ pub struct RenderTextures {
     pub transparent_to_composite_blit_pipeline_no_anti_alias: BlitPipeline,
     /// Feature gates picked at construction time. Threaded through to
     /// [`RenderTexturesInner`] so the gated `decal_color` allocation
-    /// can be skipped when `features.decals == false` (plan §16.F).
+    /// can be skipped when `features.decals == false`.
     features: RendererFeatures,
     frame_count: u32,
     inner: Option<RenderTexturesInner>,
@@ -208,9 +208,9 @@ pub struct RenderTextureViews {
     /// Single-sample storage target the decal compute writes to when
     /// MSAA is enabled (the multisampled `transparent` can't be storage-
     /// bound). A small composite pass then alpha-blits it over the
-    /// multisampled transparent target. §16.4.D. `None` when
-    /// `features.decals == false` (plan §16.F) — the texture is gated
-    /// because it's ~16 MB at 4K.
+    /// multisampled transparent target. `None` when
+    /// `features.decals == false` — the texture is gated because it's
+    /// ~16 MB at 4K.
     pub decal_color: Option<web_sys::GpuTextureView>,
 
     // Output from composite pass
@@ -311,9 +311,9 @@ pub struct RenderTexturesInner {
     /// when MSAA is on (the multisampled `transparent` can't be
     /// storage-bound). A small composite pass alpha-blits it over the
     /// multisampled `transparent` target. `None` when
-    /// `features.decals == false` (plan §16.F) — the bind-group shape
-    /// stays stable because the decal pass's bind groups are also
-    /// skipped in that mode.
+    /// `features.decals == false` — the bind-group shape stays stable
+    /// because the decal pass's bind groups are also skipped in that
+    /// mode.
     pub decal_color: Option<web_sys::GpuTexture>,
     pub decal_color_view: Option<web_sys::GpuTextureView>,
 
@@ -432,13 +432,13 @@ impl RenderTexturesInner {
         // maybe multisampled, but a bit differnt since we need to resolve it later
         // and it has copy_dst
         let transparent = {
-            // The decal compute pass (Cluster 6.4) writes overlaid
-            // pixels into this texture after the opaque→transparent
-            // blit has primed it with the opaque shading result; it
-            // needs `STORAGE_BINDING` to bind the view as a storage
-            // texture write. MSAA textures can't be storage-bound,
-            // so the usage flag is conditional. (`Decals::write_gpu`
-            // CPU-side gates the render-graph slot on MSAA too.)
+            // The decal compute pass writes overlaid pixels into this
+            // texture after the opaque→transparent blit has primed it
+            // with the opaque shading result; it needs
+            // `STORAGE_BINDING` to bind the view as a storage texture
+            // write. MSAA textures can't be storage-bound, so the
+            // usage flag is conditional. (`Decals::write_gpu` CPU-side
+            // gates the render-graph slot on MSAA too.)
             let mut usage = TextureUsage::new()
                 .with_render_attachment()
                 .with_texture_binding()
@@ -461,11 +461,11 @@ impl RenderTexturesInner {
                 .map_err(AwsmRenderTextureError::CreateTexture)?
         };
 
-        // §16.4.D. Single-sample storage-write target the decal compute
-        // uses when MSAA is on; the composite step alpha-blits it onto
-        // the multisampled transparent target. Gated by
-        // `features.decals` — the texture is ~16 MB at 4K, and skipping
-        // it is the largest single saving in plan §16.F.
+        // Single-sample storage-write target the decal compute uses
+        // when MSAA is on; the composite step alpha-blits it onto the
+        // multisampled transparent target. Gated by `features.decals`
+        // — the texture is ~16 MB at 4K, and skipping it is the
+        // largest single allocation behind the decals feature flag.
         let decal_color = if features.decals {
             Some(
                 gpu.create_texture(

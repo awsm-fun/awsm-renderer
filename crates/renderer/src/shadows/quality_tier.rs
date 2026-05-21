@@ -1,12 +1,9 @@
 //! Coarse-grained shadow-quality presets.
 //!
-//! Cluster 4.1 of the optimisation plan. Each tier is a flat preset
-//! over the renderer-wide `ShadowsConfig` plus a per-light
-//! `LightShadowParams` template; callers pick a tier, the preset table
-//! fills in every knob. `Custom` preserves the per-knob authoring path
-//! for users who want full control.
-//!
-//! The preset numbers match §6.1 of the plan exactly.
+//! Each tier is a flat preset over the renderer-wide `ShadowsConfig`
+//! plus a per-light `LightShadowParams` template; callers pick a tier,
+//! the preset table fills in every knob. `Custom` preserves the
+//! per-knob authoring path for users who want full control.
 
 use crate::shadows::{
     config::ShadowsConfig,

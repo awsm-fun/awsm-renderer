@@ -9,9 +9,9 @@ use crate::render_passes::material_decal::{
 use crate::render_passes::RenderPassInitContext;
 
 /// Compute pipelines for the decal pass — one per MSAA mode.
-/// §16.4.D made both pipelines active: the MSAA path writes to a
-/// single-sample `decal_color` (via the shared binding shape), and a
-/// composite step alpha-blits it onto the multisampled `transparent`.
+/// Both pipelines write to a single-sample `decal_color` (via the
+/// shared binding shape); the MSAA path then alpha-blits it onto the
+/// multisampled `transparent` via a composite step.
 pub struct MaterialDecalPipelines {
     pub singlesampled_pipeline_key: ComputePipelineKey,
     pub multisampled_pipeline_key: ComputePipelineKey,

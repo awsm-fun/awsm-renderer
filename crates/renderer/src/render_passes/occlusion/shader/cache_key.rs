@@ -13,8 +13,7 @@ impl From<ShaderCacheKeyOcclusionCull> for ShaderCacheKey {
     }
 }
 
-/// Cache key for the GPU instance-compaction shader (§16.7 Phase 2 +
-/// §16.8 infrastructure).
+/// Cache key for the GPU instance-compaction shader.
 #[derive(Hash, Debug, Clone, PartialEq, Eq, Default)]
 pub struct ShaderCacheKeyOcclusionCompaction;
 

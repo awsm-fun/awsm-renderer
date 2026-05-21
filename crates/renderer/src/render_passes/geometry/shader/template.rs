@@ -24,7 +24,7 @@ pub struct ShaderTemplateGeometryBindGroups {
     /// mode `@group(2) @binding(0)` keeps the legacy
     /// `uniform`-with-dynamic-offset shape; the non-instanced
     /// variant uses a `storage, read` array indexed by
-    /// `@builtin(instance_index)` (plan §16.7/§16.8).
+    /// `@builtin(instance_index)`.
     instancing_transforms: bool,
 }
 

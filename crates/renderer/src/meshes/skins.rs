@@ -183,7 +183,7 @@ impl Skins {
     ///
     /// `should_update_skin` is consulted once per `SkinKey` and lets the
     /// caller throttle expensive skin matrix refreshes for distant /
-    /// low-coverage characters (Cluster 8.3). Default predicate `|_| true`
+    /// low-coverage characters. Default predicate `|_| true`
     /// preserves the previous behaviour.
     pub fn update_transforms(
         &mut self,

@@ -131,7 +131,7 @@ fn spot_falloff(inner_cos: f32, outer_cos: f32, cos_l: f32) -> f32 {
 }
 
 {% if use_mesh_light_slices %}
-// Cluster 2.1.c: per-mesh-sliced light walk. Replaces the flat
+// Per-mesh-sliced light walk. Replaces the flat
 // `for i in 0..n_lights` punctual walk with an inner loop driven by
 // `mesh_light_slices[meta_index]`, so each pixel only shades the
 // lights whose AABB overlaps its mesh. Directional lights stay on the
@@ -142,7 +142,7 @@ fn apply_lighting_per_mesh(
     world_position: vec3<f32>,
     lights_info: LightsInfo,
     receive_shadows: u32,
-    // Per-mesh slice (Option F follow-up): the caller already has
+    // Per-mesh slice: the caller already has
     // these on hand from its `material_mesh_metas[meta_index]` fetch,
     // so we take them as parameters instead of refetching.
     slice_offset: u32,

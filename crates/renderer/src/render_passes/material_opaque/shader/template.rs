@@ -53,13 +53,13 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     pub multisampled_geometry: bool,
     pub msaa_sample_count: u32, // 0 if no MSAA
     /// Whether to wire shadow sampling into `apply_lighting`. Opaque
-    /// is always `true` once Phase 2 lands; the empty / transparent
-    /// templates leave it `false` until they pull in the shadow
-    /// bind-group declarations themselves.
+    /// is always `true`; the empty / transparent templates leave it
+    /// `false` until they pull in the shadow bind-group declarations
+    /// themselves.
     pub shadows_enabled: bool,
-    /// Cluster 2.1.c: switch the punctual-light walk to the per-mesh
-    /// slice fed by `mesh_light_slices` + `mesh_light_indices`. Opaque
-    /// is true; transparent stays false (plan §12 Q8 default).
+    /// Switch the punctual-light walk to the per-mesh slice fed by
+    /// `mesh_light_slices` + `mesh_light_indices`. Opaque is true;
+    /// transparent stays false.
     pub use_mesh_light_slices: bool,
     /// Concatenated `wgsl_fragment()` of every enabled material — see
     /// `awsm_materials::registry::build_materials_wgsl`.

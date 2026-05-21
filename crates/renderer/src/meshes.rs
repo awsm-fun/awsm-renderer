@@ -476,7 +476,7 @@ pub struct Meshes {
     resources: DenseSlotMap<MeshResourceKey, MeshResource>,
     mesh_to_resource: SecondaryMap<MeshKey, MeshResourceKey>,
     transform_to_meshes: SecondaryMap<TransformKey, Vec<MeshKey>>,
-    // Merged geometry pool (§16.E1/E2): one allocation per mesh holds
+    // Merged geometry pool: one allocation per mesh holds
     // [visibility_data || custom_attribute_index || custom_attribute_data]
     // contiguously. Per-mesh sub-offsets live in `MeshResource`. Bound
     // once as `visibility_data` on the opaque compute pass and reused as
@@ -1148,7 +1148,7 @@ impl Meshes {
         // Coverage data is consulted at gate time. Empty = consumers
         // fall through to their conservative defaults (always update),
         // so the parameter is harmless when the GPU coverage pass
-        // isn't wired yet (Cluster 6.2 producer side).
+        // isn't wired yet on the producer side.
         coverage: &crate::coverage::MeshCoverage,
     ) -> Vec<MeshKey> {
         let mut update_keys = std::collections::HashSet::new();
@@ -1212,26 +1212,25 @@ impl Meshes {
             }
         }
 
-        // Skin LOD gate (Cluster 8.3). Precompute the set of skins
+        // Distance-based skin LOD gate. Precompute the set of skins
         // we'll *skip* this frame based on the `skin_update_period`
         // cadence. Done as a separate pass because the lookup
         // borrows `&self` while `skins.update_transforms` borrows
         // `&mut self.skins`.
         //
-        // The Cluster 6.2 coverage-driven skin-skip is intentionally
-        // not wired here. Reason: characters built from multiple
-        // overlapping submeshes (e.g. BrainStem's 59 primitives
-        // sharing one skeleton) routinely have submeshes
-        // self-occluded by adjacent body parts for a frame or two.
-        // Skipping their skin update freezes them in their last
-        // pose — typically the bind pose, since the freeze happens
-        // before the first animation tick they would have run.
-        // When the occluding submesh moves and reveals them, they
-        // pop into view in rest pose while the rest of the
-        // character keeps animating. The plan called out this
-        // hazard and prescribed a grace-period + BVH-visible
-        // override; until that lands, run skinning for every
-        // visible skin every frame. `cheap_material_pixel_threshold`
+        // Coverage-driven skin-skip is intentionally not wired here.
+        // Reason: characters built from multiple overlapping
+        // submeshes (e.g. BrainStem's 59 primitives sharing one
+        // skeleton) routinely have submeshes self-occluded by
+        // adjacent body parts for a frame or two. Skipping their
+        // skin update freezes them in their last pose — typically
+        // the bind pose, since the freeze happens before the first
+        // animation tick they would have run. When the occluding
+        // submesh moves and reveals them, they pop into view in rest
+        // pose while the rest of the character keeps animating.
+        // A grace-period + BVH-visible override would fix this; until
+        // that lands, run skinning for every visible skin every
+        // frame. `cheap_material_pixel_threshold`
         // (the other coverage consumer) is unaffected — material
         // LOD doesn't suffer from rest-pose persistence.
         let _ = coverage;
@@ -1411,11 +1410,11 @@ impl Meshes {
     }
 
     /// Smallest `skin_update_period` across every mesh that references
-    /// `skin_key`. Used by the per-frame skinning-LOD gate
-    /// (Cluster 8.3): a skin is updated this frame if ANY of its
-    /// consumer meshes wants the update, which is the conservative
-    /// choice for shared skeletons. Returns `1` if no meshes reference
-    /// the skin (forces an update if anything dirties the joints).
+    /// `skin_key`. Used by the per-frame skinning-LOD gate: a skin is
+    /// updated this frame if ANY of its consumer meshes wants the
+    /// update, which is the conservative choice for shared skeletons.
+    /// Returns `1` if no meshes reference the skin (forces an update
+    /// if anything dirties the joints).
     pub fn skin_smallest_period(&self, skin_key: SkinKey) -> u8 {
         let mut min_period: u8 = u8::MAX;
         for (mesh_key, mesh) in self.iter() {
@@ -1437,7 +1436,7 @@ impl Meshes {
         }
     }
 
-    /// Coverage gate for skinning skip (Cluster 6.2). Returns true if
+    /// Coverage gate for skinning skip. Returns true if
     /// EVERY mesh that references `skin_key` had zero pixels last frame.
     /// One non-zero consumer is enough to keep the skin updating.
     pub fn skin_all_consumers_zero_coverage(
@@ -1478,9 +1477,8 @@ impl Meshes {
         frame_index % period == 0
     }
 
-    /// Returns the GPU buffer for visibility geometry vertex data.
-    /// Returns the merged geometry pool GPU buffer (§16.E1/E2). All three
-    /// per-mesh sections — visibility, attribute indices, attribute data —
+    /// Returns the merged geometry pool GPU buffer. All three per-mesh
+    /// sections — visibility, attribute indices, attribute data —
     /// live in this one buffer; per-mesh sub-offsets in `MeshResource`
     /// (visibility/custom_attribute_index/custom_attribute_data_offset)
     /// say where each section starts.

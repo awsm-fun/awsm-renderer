@@ -20,8 +20,7 @@ use crate::{
     AwsmRenderer, AwsmRendererLogging,
 };
 
-// Lights live in a uniform buffer (Option F of the storage-buffer-
-// reduction work — Cluster 2.1.c follow-up): the access pattern is the
+// Lights live in a uniform buffer: the access pattern is the
 // canonical "every pixel of a wavefront reads the same light index in
 // lockstep", which is exactly what uniform memory + constant cache are
 // tuned for. Practical light count is bounded by the 64 KB uniform-max

@@ -1,4 +1,4 @@
-//! GPU instance compaction (§16.7 Phase 2 + §16.8 infrastructure).
+//! GPU instance compaction.
 //!
 //! Reads `visible_this_frame[]` from the occlusion-cull pass and
 //! atomically bumps the matching per-mesh `IndirectDrawArgs.instance_count`.
@@ -181,7 +181,7 @@ impl CompactionBindGroups {
             BindGroupDescriptor, BindGroupEntry, BindGroupResource,
         };
         use awsm_renderer_core::buffers::BufferBinding;
-        // Only invoked when `features.gpu_culling` is on (plan §16.F).
+        // Only invoked when `features.gpu_culling` is on.
         let occlusion_buffers = ctx
             .occlusion_buffers
             .expect("Occlusion buffers missing despite gpu_culling feature on");

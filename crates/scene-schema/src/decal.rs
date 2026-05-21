@@ -1,7 +1,7 @@
 //! Authored decal configuration. The runtime equivalent lives in
 //! `awsm_renderer::decals::Decal`; the editor's renderer bridge
 //! resolves the texture ref and pushes a runtime decal via
-//! `AwsmRenderer::insert_decal` (Cluster 6.4 / plan §16.4).
+//! `AwsmRenderer::insert_decal`.
 //!
 //! The decal is an *oriented unit cube* in world space — the node's
 //! transform supplies position / orientation / size. Local-space xy

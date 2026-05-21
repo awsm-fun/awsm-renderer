@@ -25,8 +25,9 @@ struct TransformPacked {
 };
 @group(1) @binding(0) var<storage, read> transforms: array<TransformPacked>;
 {% if instancing_transforms %}
-// Instanced shadow draws keep the legacy uniform-with-dynamic-offset
-// binding (plan §16.7/§16.8 — see geometry pass for the rationale).
+// Instanced shadow draws use uniform-with-dynamic-offset binding
+// (matches the geometry pass — see its bind_groups.wgsl for the
+// rationale).
 @group(2) @binding(0) var<uniform> geometry_mesh_meta: GeometryMeshMeta;
 {% else %}
 // Non-instanced shadow draws use the same storage-array meta

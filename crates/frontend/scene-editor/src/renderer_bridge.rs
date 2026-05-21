@@ -173,12 +173,12 @@ fn render_one_frame() {
             .unwrap_or(0.0);
         particles_sync::tick_all(now_ms, renderer);
 
-        // Phase 2 hook: push world position/direction into every active
-        // light. Extracted to a separate function so Phase 2 can add logic
-        // without touching the render loop body.
+        // Push world position/direction into every active light.
+        // Extracted to a separate function so additional sync logic
+        // can be added without touching the render loop body.
         sync_lights_pre_render(renderer);
         // Mirror: push each Decal node's world transform into the
-        // matching runtime decal (Cluster 6.4 / §16.4.B).
+        // matching runtime decal.
         sync_decals_pre_render(renderer);
 
         // B-2: rebuild every editor-only overlay wireframe (collider

@@ -4,7 +4,7 @@
 //!   0  decals_buffer (storage RO; the same buffer the shading pass reads)
 //!   1  camera_raw    (uniform; for `view_proj` to project AABBs)
 //!   2  buckets       (storage RW; atomics + per-tile entry array)
-//!   3  hzb_texture   (sampled texture; §16.4.C HZB occlusion gate).
+//!   3  hzb_texture   (sampled texture; HZB occlusion gate).
 //!                    Only present when both `features.gpu_culling`
 //!                    and `features.decals` are on — picked at
 //!                    construction via `hzb_enabled`.
@@ -24,10 +24,9 @@ use crate::{bind_group_layout::BindGroupLayoutKey, render_passes::RenderPassInit
 
 pub struct DecalClassifyBindGroups {
     pub layout_key: BindGroupLayoutKey,
-    /// True when the classify shader includes the HZB occlusion
-    /// gate (plan §16.4.C). Matches `features.gpu_culling` at
-    /// construction time — both the layout and the pipeline carry
-    /// the matching HZB binding when set.
+    /// True when the classify shader includes the HZB occlusion gate.
+    /// Matches `features.gpu_culling` at construction time — both the
+    /// layout and the pipeline carry the matching HZB binding when set.
     pub hzb_enabled: bool,
     bind_group: Option<web_sys::GpuBindGroup>,
 }
@@ -63,7 +62,7 @@ impl DecalClassifyBindGroups {
             },
         ];
         if hzb_enabled {
-            // §16.4.C: HZB sampled texture. UnfilterableFloat keeps the
+            // HZB sampled texture. UnfilterableFloat keeps the
             // binding compatible with the renderer's `r32float` HZB
             // (no filterable sampler needed; the shader uses
             // `textureLoad`).

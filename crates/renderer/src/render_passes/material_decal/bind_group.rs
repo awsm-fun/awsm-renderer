@@ -71,7 +71,7 @@ impl MaterialDecalBindGroups {
     /// `decal_classify_buffers` are all `None` and this would panic
     /// — but the dispatcher will simply not call it.
     pub fn recreate_main(&mut self, ctx: &BindGroupRecreateContext<'_>) -> Result<()> {
-        // §16.4.D: the decal compute now always writes to `decal_color`
+        // The decal compute always writes to `decal_color`
         // (single-sample storage). On MSAA-off the composite step blits
         // through to `transparent`; on MSAA the composite alpha-blits to
         // the multisampled target. Either way the bind-group shape is
@@ -249,7 +249,7 @@ async fn create_main_layout(
             visibility_fragment: false,
             visibility_compute: true,
         },
-        // decal_buckets (storage RO; §16.4.C per-tile bucket)
+        // decal_buckets (storage RO; per-tile bucket)
         BindGroupLayoutCacheKeyEntry {
             resource: BindGroupLayoutResource::Buffer(
                 BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),

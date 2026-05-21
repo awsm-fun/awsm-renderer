@@ -1,4 +1,4 @@
-//! Projection-decal compute pass (Cluster 6.4, plan §16.4).
+//! Projection-decal compute pass.
 //!
 //! Runs once per frame after the opaque material pipelines have
 //! settled `opaque_tex`. Per pixel: reconstruct world position from

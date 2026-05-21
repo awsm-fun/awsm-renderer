@@ -54,15 +54,15 @@ impl AwsmRenderer {
             self.sync_spatial_for_mesh(mesh_key);
         }
 
-        // Periodic BVH refresh (Cluster 1.7).
+        // Periodic BVH refresh.
         self.scene_spatial.rebuild_if_needed();
 
-        // Per-frame per-light → per-mesh bucket rebuild (Cluster 2.1.a).
-        // Cheap (one `query_envelope` per active punctual light).
+        // Per-frame per-light → per-mesh bucket rebuild — cheap (one
+        // `query_envelope` per active punctual light).
         self.light_buckets
             .rebuild(&self.lights, &self.scene_spatial);
 
-        // Cluster 6.5: per-mesh "any shadow-caster reaches me" flag.
+        // Per-mesh "any shadow-caster reaches me" flag.
         let shadows_ref = &self.shadows;
         self.light_buckets
             .mark_shadow_receivers(&self.lights, |key| {

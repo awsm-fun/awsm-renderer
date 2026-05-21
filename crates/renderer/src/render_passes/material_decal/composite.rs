@@ -1,4 +1,4 @@
-//! Decal composite pass (§16.4.D).
+//! Decal composite pass.
 //!
 //! After the decal compute writes its per-pixel result into
 //! `decal_color`, this pass alpha-blits the touched pixels onto the
@@ -150,8 +150,8 @@ impl MaterialDecalComposite {
 
     /// Rebuilds the composite's bind group against the live
     /// `decal_color` view. Called on `TextureViewRecreate`. Only
-    /// invoked when `features.decals` is on (plan §16.F), so the
-    /// `decal_color` view is always `Some` here.
+    /// invoked when `features.decals` is on, so the `decal_color`
+    /// view is always `Some` here.
     pub fn recreate(&mut self, ctx: &BindGroupRecreateContext<'_>) -> Result<()> {
         let decal_color_view = ctx
             .render_texture_views

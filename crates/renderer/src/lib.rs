@@ -83,7 +83,7 @@ use crate::{
     render_textures::{RenderTextureFormats, RenderTextures},
 };
 
-/// Per-frame state for the GPU coverage readback loop (plan §8.2).
+/// Per-frame state for the GPU coverage readback loop.
 ///
 /// The renderer dispatches `coverage` after geometry, copies the
 /// counts into a CPU-mappable buffer, and kicks a `mapAsync` that
@@ -113,29 +113,27 @@ pub struct AwsmRenderer {
     pub scene_spatial: SceneSpatial,
     /// Per-light → per-mesh AABB-overlap buckets, rebuilt once per
     /// frame from `scene_spatial`. Feeds the per-mesh light-list shader
-    /// path (Cluster 2.1).
+    /// path.
     pub light_buckets: LightMeshBuckets,
-    /// GPU storage buffers backing `light_buckets` for the shader path
-    /// (Cluster 2.1.b). Uploaded per-frame from the transposed buckets.
+    /// GPU storage buffers backing `light_buckets` for the shader path.
+    /// Uploaded per-frame from the transposed buckets.
     pub mesh_light_indices_gpu: MeshLightIndicesGpu,
-    /// Per-frame classify-pass output (Cluster 6.1, plan §16.3.B).
-    /// Holds the per-`shader_id` tile buckets + indirect-dispatch args
-    /// the opaque material pipelines consume.
+    /// Per-frame classify-pass output. Holds the per-`shader_id` tile
+    /// buckets + indirect-dispatch args the opaque material pipelines
+    /// consume.
     pub material_classify_buffers: render_passes::material_classify::buffers::ClassifyBuffers,
-    /// Projection-decal subsystem (Cluster 6.4, plan §16.4). Owns
-    /// the per-decal GPU storage buffer the `material_decal` compute
-    /// pass reads at shading time. `None` when
-    /// `features.decals == false` (plan §16.F).
+    /// Projection-decal subsystem. Owns the per-decal GPU storage
+    /// buffer the `material_decal` compute pass reads at shading time.
+    /// `None` when `features.decals == false`.
     pub decals: Option<decals::Decals>,
-    /// GPU occlusion-cull buffers (Cluster 7.2 / §16.7 Phase 1). The
-    /// per-frame instance list (CPU-populated) + the per-instance
-    /// visibility output. `None` when `features.gpu_culling == false`
-    /// (plan §16.F).
+    /// GPU occlusion-cull buffers. The per-frame instance list
+    /// (CPU-populated) + the per-instance visibility output. `None`
+    /// when `features.gpu_culling == false`.
     pub occlusion_buffers: Option<render_passes::occlusion::buffers::OcclusionBuffers>,
-    /// Per-tile decal classify buckets (§16.4.C). Populated by a
-    /// `decal_classify` compute pass run before the decal shading
-    /// pass; the shading pass reads only the per-tile subset. `None`
-    /// when `features.decals == false` (plan §16.F).
+    /// Per-tile decal classify buckets. Populated by a `decal_classify`
+    /// compute pass run before the decal shading pass; the shading pass
+    /// reads only the per-tile subset. `None` when
+    /// `features.decals == false`.
     pub decal_classify_buffers:
         Option<render_passes::material_decal::classify::buffers::DecalClassifyBuffers>,
     /// GPU compaction `IndirectDrawArgs` buffer. `None` when
@@ -185,7 +183,7 @@ pub struct AwsmRenderer {
     /// cube-array pool, descriptors, and the comparison / filterable
     /// samplers used by the shadow-aware shading passes.
     pub shadows: shadows::Shadows,
-    /// Opt-in feature gates picked at construction time (plan §16.F).
+    /// Opt-in feature gates picked at construction time.
     pub features: RendererFeatures,
     /// Adaptive runtime policy on top of `features`. `RendererFeatures`
     /// decides which buffers/passes exist; `RendererOptimizationPolicy`
@@ -202,9 +200,9 @@ pub struct AwsmRenderer {
     /// same; reset to 1 on a flip. Feeds the Auto-mode cooldown check
     /// in `compute_frame_optimizations`.
     pub frames_in_current_mode: u32,
-    /// Global default for `Mesh::cheap_material_pixel_threshold`
-    /// (plan §15 row T4). Per-mesh override still wins; this is
-    /// the value used when a mesh has its threshold set to `None`.
+    /// Global default for `Mesh::cheap_material_pixel_threshold`.
+    /// Per-mesh override still wins; this is the value used when a
+    /// mesh has its threshold set to `None`.
     /// Default `64`. Games tying material LOD to their own quality
     /// system can write this directly each frame; no automatic
     /// coupling to `ShadowQualityTier` (which is per-light, not
@@ -310,9 +308,9 @@ pub struct AwsmRendererBuilder {
     /// shadow textures; runtime tweaks of those need a renderer
     /// rebuild. Defaults via `ShadowsConfig::default()` if unset.
     shadows_config: Option<shadows::ShadowsConfig>,
-    /// Opt-in feature gates (plan §16.F). Defaults to both flags
-    /// `false` so library consumers pay zero cost for unused
-    /// GPU-driven culling / decal infrastructure.
+    /// Opt-in feature gates. Defaults to both flags `false` so library
+    /// consumers pay zero cost for unused GPU-driven culling / decal
+    /// infrastructure.
     features: RendererFeatures,
     /// Adaptive runtime policy. Defaults to `Auto` mode for the
     /// gpu_culling path; library consumers can override at build time
@@ -390,10 +388,10 @@ impl AwsmRendererBuilder {
         }
     }
 
-    /// Opts into renderer features (plan §16.F). Both flags default
-    /// to `false` so library consumers pay no cost for GPU-driven
-    /// culling / decals when they don't need them. Game-side and
-    /// editor builds should set this explicitly.
+    /// Opts into renderer features. Both flags default to `false` so
+    /// library consumers pay no cost for GPU-driven culling / decals
+    /// when they don't need them. Game-side and editor builds should
+    /// set this explicitly.
     pub fn with_features(mut self, features: RendererFeatures) -> Self {
         self.features = features;
         self
@@ -575,17 +573,15 @@ impl AwsmRendererBuilder {
 
         // Decals subsystem — fixed-capacity GPU storage buffer
         // allocated up front; per-frame upload only touches the
-        // bytes for currently-active decals. Gated by `features.decals`
-        // (plan §16.F).
+        // bytes for currently-active decals. Gated by `features.decals`.
         let decals = if features.decals {
             Some(decals::Decals::new(&gpu)?)
         } else {
             None
         };
 
-        // Occlusion-cull buffers (§16.7 Phase 1). Starts at 1024
-        // instances; grows 2× when needed. Gated by
-        // `features.gpu_culling` (plan §16.F).
+        // Occlusion-cull buffers. Starts at 1024 instances; grows 2×
+        // when needed. Gated by `features.gpu_culling`.
         let occlusion_buffers = if features.gpu_culling {
             Some(render_passes::occlusion::buffers::OcclusionBuffers::new(
                 &gpu,
@@ -594,17 +590,16 @@ impl AwsmRendererBuilder {
             None
         };
 
-        // Decal classify buckets (§16.4.C). Starts at 1×1 tiles;
-        // `ensure_capacity` resizes against the live viewport on
-        // first render. Gated by `features.decals` (plan §16.F).
+        // Decal classify buckets. Starts at 1×1 tiles; `ensure_capacity`
+        // resizes against the live viewport on first render. Gated by
+        // `features.decals`.
         let decal_classify_buffers = if features.decals {
             Some(render_passes::material_decal::classify::buffers::DecalClassifyBuffers::new(&gpu)?)
         } else {
             None
         };
 
-        // GPU compaction args buffer (§16.7 Phase 2 + §16.8 infra).
-        // Gated by `features.gpu_culling` (plan §16.F).
+        // GPU compaction args buffer. Gated by `features.gpu_culling`.
         let compaction_buffers = if features.gpu_culling {
             Some(render_passes::occlusion::compaction::CompactionBuffers::new(&gpu)?)
         } else {

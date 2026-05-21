@@ -62,8 +62,8 @@ struct DecalsBuffer {
 
 @group(0) @binding(6) var<uniform> camera_raw: CameraRaw;
 
-// §16.4.C tile bucket. Read-only here; classify owns the read_write
-// view. Layout mirrors `DecalClassifyBuffers` in `classify/buffers.rs`:
+// Tile bucket. Read-only here; classify owns the read_write view.
+// Layout mirrors `DecalClassifyBuffers` in `classify/buffers.rs`:
 //   header (4 u32) | per-tile (count + array<u32, capacity>)*tile_count
 struct DecalBuckets {
     tile_count_x: u32,

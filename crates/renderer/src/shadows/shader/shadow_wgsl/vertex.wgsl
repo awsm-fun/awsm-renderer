@@ -45,10 +45,10 @@ fn vert_main(
     @builtin(instance_index) instance_index: u32,
 ) -> @builtin(position) vec4<f32> {
     {% if !instancing_transforms %}
-    // Plan §16.7/§16.8: load per-mesh meta from the storage array
-    // indexed by `instance_index`. Mirrors the geometry pass's
-    // non-instanced lookup; the CPU sets `first_instance =
-    // mesh_meta_idx` per shadow draw.
+    // Load per-mesh meta from the storage array indexed by
+    // `instance_index`. Mirrors the geometry pass's non-instanced
+    // lookup; the CPU sets `first_instance = mesh_meta_idx` per
+    // shadow draw.
     geometry_mesh_meta = geometry_mesh_metas[instance_index];
     {% endif %}
 

@@ -1,5 +1,4 @@
-//! Dev-only programmatic scene loading + measurement helpers
-//! (plan §16.G).
+//! Dev-only programmatic scene loading + measurement helpers.
 //!
 //! Hidden behind `#[cfg(debug_assertions)]` — release builds never
 //! see this module. Used by an external driver (Claude Preview MCP
@@ -99,7 +98,7 @@ pub async fn load_scene_by_path(scene_name: String) -> Result<(), JsValue> {
 }
 
 /// Importance-score histogram across all shadow-casting lights —
-/// plan §15 row T3 tuning aid. Mirrors
+/// importance-tier cutoff tuning aid. Mirrors
 /// `shadows::importance::light_importance_decision`'s scoring
 /// (`intensity / (1 + dist²)`) so the cutoff buckets can be
 /// observed against any loaded scene without depending on the
@@ -174,8 +173,8 @@ pub async fn read_importance_tier_histogram() -> String {
             scores.push(score);
             // Mirrors the live cutoffs in
             // `shadows::importance::light_importance_decision`
-            // (re-tuned to 0.05 / 1.0 / 10.0 against this scene —
-            // see §15 row T3).
+            // (re-tuned to 0.05 / 1.0 / 10.0 against the
+            // tuning-importance-tiers scene).
             if score > 10.0 {
                 ultra += 1;
             } else if score > 1.0 {
@@ -207,8 +206,8 @@ pub async fn read_importance_tier_histogram() -> String {
     )
 }
 
-/// Read the renderer's `MeshCoverage` state — plan §8.2 readback
-/// verification. Returns `{ "entries": N, "frame_when_populated": F,
+/// Read the renderer's `MeshCoverage` state — GPU coverage producer
+/// readback verification. Returns `{ "entries": N, "frame_when_populated": F,
 /// "min": M, "max": X, "nonzero": K }` so the measurement harness
 /// can confirm the GPU coverage producer actually wired its
 /// counts back into the CPU table.
@@ -243,7 +242,7 @@ pub async fn read_mesh_coverage_stats() -> String {
     )
 }
 
-/// Read the renderer's light-bucket telemetry — plan §15 row T6.
+/// Read the renderer's light-bucket telemetry.
 /// Returns a JSON string `{ "last_max_bucket": N, "oversized_count": M }`
 /// for the most-recently-rebuilt `LightMeshBuckets`. Drive from
 /// preview_eval after loading `tuning-open-world` (or any authored

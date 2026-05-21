@@ -100,11 +100,10 @@ impl AwsmRenderer {
         self.meshes
             .morphs
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
-        // Per-mesh light slice path (Option F follow-up to Cluster
-        // 2.1.c). Patches slice fields into each affected mesh's
-        // MaterialMeshMeta and uploads the packed indices buffer.
-        // MUST run BEFORE `meshes.meta.write_gpu` so the slice patches
-        // land in the same meta upload.
+        // Per-mesh light slice path. Patches slice fields into each
+        // affected mesh's MaterialMeshMeta and uploads the packed
+        // indices buffer. MUST run BEFORE `meshes.meta.write_gpu` so
+        // the slice patches land in the same meta upload.
         self.mesh_light_indices_gpu.write_gpu(
             &self.gpu,
             &self.light_buckets,
@@ -112,9 +111,8 @@ impl AwsmRenderer {
             &mut self.meshes,
             &mut self.bind_groups,
         )?;
-        // Decals (Cluster 6.4) — upload per-decal data if anything
-        // changed since last frame. Skipped entirely when the decals
-        // feature is off (plan §16.F).
+        // Decals — upload per-decal data if anything changed since last
+        // frame. Skipped entirely when the decals feature is off.
         if let Some(decals) = self.decals.as_mut() {
             decals.write_gpu(&self.gpu, &mut self.bind_groups)?;
         }
@@ -164,7 +162,7 @@ impl AwsmRenderer {
         // recreates the per-mip views, so the HZB bind groups must
         // also be rebuilt — the `TextureViewRecreate` event above
         // covers that since size_changed implies viewport resize.
-        // Skipped when `features.gpu_culling == false` (plan §16.F).
+        // Skipped when `features.gpu_culling == false`.
         if let Some(hzb) = self.render_passes.hzb.as_mut() {
             if hzb.ensure_size(
                 &self.gpu,
@@ -202,7 +200,7 @@ impl AwsmRenderer {
         // Refining this to the actual opaque-renderable count requires
         // `collect_renderables` which runs later; this upper bound is
         // fine for capacity planning. Skipped when
-        // `features.gpu_culling == false` (plan §16.F).
+        // `features.gpu_culling == false`.
         let occlusion_needed = self.meshes.len() as u32;
         if let Some(occlusion_buffers) = self.occlusion_buffers.as_mut() {
             if occlusion_buffers.ensure_capacity(&self.gpu, occlusion_needed)? {
@@ -211,9 +209,9 @@ impl AwsmRenderer {
             }
         }
 
-        // §16.4.C: decal classify buckets sized to viewport tile count.
+        // Decal classify buckets sized to viewport tile count.
         // Reuses the `tile_x` / `tile_y` calculated above.
-        // Skipped when `features.decals == false` (plan §16.F).
+        // Skipped when `features.decals == false`.
         if let Some(decal_classify_buffers) = self.decal_classify_buffers.as_mut() {
             if decal_classify_buffers.ensure_capacity(&self.gpu, tile_x, tile_y)? {
                 self.bind_groups
@@ -227,9 +225,8 @@ impl AwsmRenderer {
             // (~17 MB at 4K, scaled with viewport).
         }
 
-        // §16.7 Phase 2 / §16.8 infra: ensure the compaction args
-        // buffer covers every mesh slot. Skipped when
-        // `features.gpu_culling == false` (plan §16.F).
+        // Ensure the compaction args buffer covers every mesh slot.
+        // Skipped when `features.gpu_culling == false`.
         if let Some(compaction_buffers) = self.compaction_buffers.as_mut() {
             if compaction_buffers.ensure_capacity(&self.gpu, self.meshes.len() as u32)? {
                 self.bind_groups
@@ -332,7 +329,6 @@ impl AwsmRenderer {
         //                            `draw_indexed_with_instance_count`
         //                            path and don't get a `drawIndirect`
         //                            args entry
-        // Plan §16.7/§16.8.
         struct OcclusionSnapshot {
             aabb: crate::bounds::Aabb,
             mesh_meta_offset: u32,
@@ -631,11 +627,10 @@ impl AwsmRenderer {
             )?;
         }
 
-        // HZB build (Cluster 7.1, plan §16.6). Runs after opaque
-        // shading so the depth buffer holds the final scene depth,
-        // but BEFORE the decal pass — the decal classify (§16.4.C)
-        // uses the HZB to gate per-tile decal append. Also consumed
-        // by the occlusion-cull pass below.
+        // HZB build. Runs after opaque shading so the depth buffer
+        // holds the final scene depth, but BEFORE the decal pass — the
+        // decal classify uses the HZB to gate per-tile decal append.
+        // Also consumed by the occlusion-cull pass below.
         //
         // Allocation gate is `features.gpu_culling` (the HZB texture
         // lives behind that Option). Per-frame engagement is
@@ -654,15 +649,15 @@ impl AwsmRenderer {
             }
         }
 
-        // Projection decals (Cluster 6.4). Runs after the blit so
-        // `transparent_tex` already holds the opaque shading result;
-        // the decal pass overwrites the small subset of pixels its
-        // volumes cover with the alpha-blended composite, leaving
-        // every other pixel as the blit produced it. No-op when no
-        // decals are active or MSAA is on (the v1 path doesn't have
-        // a multisampled storage-binding target — see
+        // Projection decals. Runs after the blit so `transparent_tex`
+        // already holds the opaque shading result; the decal pass
+        // overwrites the small subset of pixels its volumes cover with
+        // the alpha-blended composite, leaving every other pixel as
+        // the blit produced it. No-op when no decals are active or
+        // MSAA is on (the v1 path doesn't have a multisampled
+        // storage-binding target — see
         // `MaterialDecalRenderPass::render`). Skipped entirely when
-        // `features.decals == false` (plan §16.F).
+        // `features.decals == false`.
         //
         // Order constraint: must run AFTER the HZB build above so
         // the per-tile classify reads a populated HZB. The previous
@@ -733,9 +728,8 @@ impl AwsmRenderer {
                         bytes.extend_from_slice(&snap.aabb.max.y.to_le_bytes());
                         bytes.extend_from_slice(&snap.aabb.max.z.to_le_bytes());
                         bytes.extend_from_slice(&0u32.to_le_bytes()); // _pad1
-                                                                      // mesh_meta_offset — plan §16.7/§16.8. The
-                                                                      // compaction shader divides by
-                                                                      // `MaterialMeshMeta` stride (256 B) to derive
+                                                                      // mesh_meta_offset — the compaction shader divides
+                                                                      // by `MaterialMeshMeta` stride (256 B) to derive
                                                                       // the args-buffer slot; the geometry meta uses
                                                                       // the same alignment so this byte offset works.
                         bytes.extend_from_slice(&snap.mesh_meta_offset.to_le_bytes());
@@ -809,7 +803,7 @@ impl AwsmRenderer {
                     // consumer reads this. (The geometry pass at the
                     // top of this frame already consumed last frame's
                     // compaction result; that's the one-frame-latent
-                    // visibility model documented in §16.7/§16.8 and on
+                    // visibility model documented on
                     // `CompactionBuffers::args_ready`.)
                     if let Some(compaction_pass) = self.render_passes.occlusion_compaction.as_ref()
                     {
@@ -1096,25 +1090,25 @@ pub struct RenderContext<'a> {
     /// Renderer-owned spatial index. Per-pass culling (camera + shadow)
     /// descends through this instead of walking `meshes` linearly.
     pub scene_spatial: &'a SceneSpatial,
-    /// Classify-pass output (Cluster 6.1). The opaque material pass
-    /// uses this buffer both as a storage binding (for the per-bucket
-    /// tile lookup) and as the indirect-args source for
+    /// Classify-pass output. The opaque material pass uses this
+    /// buffer both as a storage binding (for the per-bucket tile
+    /// lookup) and as the indirect-args source for
     /// `dispatchWorkgroupsIndirect`.
     pub material_classify_buffers:
         &'a crate::render_passes::material_classify::buffers::ClassifyBuffers,
-    /// Active feature gates (plan §16.F). Read by the geometry pass
-    /// to fork between `drawIndirect` (under `gpu_culling`) and the
-    /// legacy CPU-recorded `draw_indexed_*` loop.
+    /// Active feature gates. Read by the geometry pass to fork
+    /// between `drawIndirect` (under `gpu_culling`) and the legacy
+    /// CPU-recorded `draw_indexed_*` loop.
     pub features: &'a crate::features::RendererFeatures,
-    /// GPU compaction `IndirectDrawArgs` buffer (plan §16.7/§16.8).
-    /// `Some` only when `features.gpu_culling` is on. The geometry
-    /// pass reads it as the indirect-args source for `drawIndirect`.
+    /// GPU compaction `IndirectDrawArgs` buffer. `Some` only when
+    /// `features.gpu_culling` is on. The geometry pass reads it as
+    /// the indirect-args source for `drawIndirect`.
     pub compaction_buffers:
         Option<&'a crate::render_passes::occlusion::compaction::CompactionBuffers>,
-    /// GPU mesh-pixel-coverage producer buffers — plan §8.2. Always
-    /// present (the coverage pass runs unconditionally). The
-    /// coverage render pass + the per-frame `copyBufferToBuffer`
-    /// into the readback buffer both reach through this field.
+    /// GPU mesh-pixel-coverage producer buffers. `Some` only when
+    /// `features.coverage_lod` is on. The coverage render pass + the
+    /// per-frame `copyBufferToBuffer` into the readback buffer both
+    /// reach through this field.
     pub coverage_buffers: Option<&'a crate::render_passes::coverage::buffers::CoverageBuffers>,
     /// Per-frame derived flags from
     /// [`crate::optimization_policy::compute_frame_optimizations`].

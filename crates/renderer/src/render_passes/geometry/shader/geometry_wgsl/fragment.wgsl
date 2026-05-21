@@ -7,8 +7,8 @@ struct FragmentInput {
     @location(2) world_normal: vec3<f32>,     // Transformed world-space normal
     @location(3) world_tangent: vec4<f32>,    // Transformed world-space tangent (w = handedness)
     @location(4) @interpolate(flat) instance_id: u32, // U32_MAX for non-instanced draws
-    // Plan §16.7/§16.8: forwarded from vertex so the fragment
-    // doesn't have to re-read `geometry_mesh_meta`. The
+    // Forwarded from vertex so the fragment doesn't have to
+    // re-read `geometry_mesh_meta`. The
     // non-instanced storage-array path populates the vertex's
     // `var<private> geometry_mesh_meta` at vertex entry, which
     // doesn't propagate to fragment (private storage is

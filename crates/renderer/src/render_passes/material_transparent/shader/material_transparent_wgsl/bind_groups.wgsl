@@ -22,7 +22,7 @@ struct TransformPacked {
 @group(0) @binding(7) var<storage, read> texture_transforms: array<TextureTransform>;
 @group(0) @binding(8) var opaque_tex: texture_2d<f32>;
 @group(0) @binding(9) var<storage, read> instance_attrs: array<InstanceAttr>;
-// ─── Lights folded into group 0 in 16.B (was @group(1)) ────────────
+// ─── Lights (folded into group 0) ──────────────────────────────────
 @group(0) @binding(10) var ibl_filtered_env_tex: texture_cube<f32>;
 @group(0) @binding(11) var ibl_filtered_env_sampler: sampler;
 @group(0) @binding(12) var ibl_irradiance_tex: texture_cube<f32>;
@@ -30,11 +30,10 @@ struct TransformPacked {
 @group(0) @binding(14) var brdf_lut_tex: texture_2d<f32>;
 @group(0) @binding(15) var brdf_lut_sampler: sampler;
 @group(0) @binding(16) var<uniform> lights_info: LightsInfoPacked;
-// Lights are uniform (Option F follow-up to Cluster 2.1.c). Same
-// fixed-size 1024-entry array as the opaque pass.
+// Lights are uniform. Same fixed-size 1024-entry array as the opaque pass.
 @group(0) @binding(17) var<uniform> lights: array<LightPacked, 1024>;
 
-// ─── Shadow bind group (group 1 in 16.B) ───────────────────────────
+// ─── Shadow bind group (group 1) ───────────────────────────────────
 // Includes the shared shadow bindings (atlas + cube + EVSM + globals
 // + descriptor uniform array) plus the helper functions used by
 // `apply_lighting`-style sampling. The `shadow_group_index` template

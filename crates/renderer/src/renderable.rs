@@ -89,18 +89,13 @@ impl AwsmRenderer {
         };
 
         for (mesh_key, mesh) in visible {
-            // Cluster 6.3 cheap-material LOD was wired here to route by
-            // `effective_material_key`, but `MaterialMeshMeta` is still
-            // packed from `mesh.material_key` (see `meshes::meta`), so
-            // the actual shading uses the original material in every
-            // case — same-pass cheap materials silently no-op, and
-            // cross-pass / cross-shader hooks route to a pipeline that
-            // doesn't match the bound material's data. Until the
-            // effective material offset is also plumbed into meta
-            // (re-pack on coverage-cross-threshold), gate routing on
-            // the authored material so the visible behaviour matches
-            // what shaders actually run. `effective_material_key`
-            // stays available on `Mesh` for the eventual full wiring.
+            // Route by the authored `material_key`: `MaterialMeshMeta`
+            // is still packed from `mesh.material_key` (see
+            // `meshes::meta`), so routing by `effective_material_key`
+            // would pick a pipeline that doesn't match the data the
+            // shader reads. `effective_material_key` stays available
+            // on `Mesh` for a future cheap-material LOD wiring once
+            // the cheap material's offset is also plumbed into meta.
             let routing_material = mesh.material_key;
 
             // The opaque compute pipeline is specialized per

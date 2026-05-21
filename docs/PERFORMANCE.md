@@ -429,7 +429,7 @@ move the needle:
 ### "drawIndirect path renders garbage / misses meshes"
 
 1. Check `occlusion_instances[i].mesh_meta_offset` is populated
-   correctly. Pre-§16.7/§16.8 rewire it was a `0u32`
+   correctly. An earlier rewire left it as a `0u32`
    placeholder; the compaction shader divides by 256 to derive
    the slot index, so a wrong offset is silently a no-op.
 2. Confirm the geometry meta + material meta slot indices for
@@ -527,7 +527,7 @@ generate_tuning_scenes -p awsm-scene-schema`):
 
 ## 10. Known limits / parked optimizations
 
-* **Coverage-driven skin-skip** is built but unwired. The §8.2
+* **Coverage-driven skin-skip** is built but unwired. The
   GPU coverage producer populates `MeshCoverage` correctly,
   but enabling the skin-skip consumer freezes self-occluded
   submeshes in their last-skinned pose — a hazard the plan
@@ -546,7 +546,7 @@ generate_tuning_scenes -p awsm-scene-schema`):
 
 * **Cheap-material LOD routing** is parked at the renderable site.
   `Mesh::effective_material_key` resolves correctly against
-  last-frame coverage (the §8.2 readback feeds it), but
+  last-frame coverage (the GPU coverage readback feeds it), but
   `MaterialMeshMeta` still packs the authored `material_key` —
   so feeding the *cheap* key into `collect_renderables`'
   opaque/transparent classification or `MaterialShaderId` pipeline
@@ -558,7 +558,7 @@ generate_tuning_scenes -p awsm-scene-schema`):
   re-packing meta on a coverage-cross-threshold transition so the
   shader's `material_offset` matches the routed pipeline.
 
-* **Coverage-driven shadow-receiver gate** (§8.5) is partial.
+* **Coverage-driven shadow-receiver gate** is partial.
   CPU side is live (`LightMeshBuckets::mark_shadow_receivers`),
   WGSL receiver-gate is not yet OR'd with the existing
   `receive_shadows` flag.

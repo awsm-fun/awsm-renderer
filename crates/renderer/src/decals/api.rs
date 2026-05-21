@@ -1,6 +1,6 @@
-//! Public `AwsmRenderer` entry points for managing projection decals
-//! (Cluster 6.4, plan §16.4). Mirrors the shape of the Lights API —
-//! insert / update / remove return / take a [`DecalKey`].
+//! Public `AwsmRenderer` entry points for managing projection decals.
+//! Mirrors the shape of the Lights API — insert / update / remove
+//! return / take a [`DecalKey`].
 
 use glam::Mat4;
 
@@ -16,10 +16,10 @@ impl AwsmRenderer {
     /// [`DecalKey`] handle for later mutation / removal.
     ///
     /// Returns [`AwsmDecalError::FeatureNotEnabled`] when the
-    /// `decals` feature flag is off (plan §16.F) — the per-decal GPU
-    /// buffer and shading pass don't exist in that mode, so silently
-    /// accepting the decal would be a no-op that later renders as
-    /// "decal missing".
+    /// `decals` feature flag is off — the per-decal GPU buffer and
+    /// shading pass don't exist in that mode, so silently accepting
+    /// the decal would be a no-op that later renders as "decal
+    /// missing".
     pub fn insert_decal(
         &mut self,
         transform: Mat4,
@@ -37,8 +37,8 @@ impl AwsmRenderer {
     /// — if the caller changes `transform`, they should re-derive
     /// `inverse_transform` + `world_aabb` (use [`Decal::new`] as the
     /// canonical constructor instead). No-op when the decals feature
-    /// is off (plan §16.F) — there can be no live keys without an
-    /// allocated [`Decals`] subsystem.
+    /// is off — there can be no live keys without an allocated
+    /// [`Decals`] subsystem.
     pub fn update_decal(&mut self, key: DecalKey, f: impl FnOnce(&mut Decal)) {
         if let Some(decals) = self.decals.as_mut() {
             decals.update(key, f);
@@ -46,7 +46,7 @@ impl AwsmRenderer {
     }
 
     /// Removes the decal. Returns `true` if it existed. Always
-    /// `false` when the decals feature is off (plan §16.F).
+    /// `false` when the decals feature is off.
     pub fn remove_decal(&mut self, key: DecalKey) -> bool {
         match self.decals.as_mut() {
             Some(decals) => decals.remove(key),

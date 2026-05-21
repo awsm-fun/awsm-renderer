@@ -26,7 +26,7 @@ struct GeometryMeshMeta {
     // points at the camera). See `BillboardMode` in `meshes/mesh.rs`.
     billboard_mode: u32,
     // Pad the struct out to `GEOMETRY_MESH_META_BYTE_ALIGNMENT` (256 B)
-    // so the storage-array binding shape (plan §16.7/§16.8) matches
+    // so the storage-array binding shape matches
     // the CPU buffer layout. The CPU side strides slots at 256 B
     // because the *legacy* uniform-with-dynamic-offset path's
     // dynamic-offset alignment requires it; the two bindings now share

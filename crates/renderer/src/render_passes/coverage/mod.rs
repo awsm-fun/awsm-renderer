@@ -1,4 +1,4 @@
-//! GPU mesh-pixel-coverage producer — plan §8.2.
+//! GPU mesh-pixel-coverage producer.
 //!
 //! Tiny compute pass run after the geometry pass. One thread per
 //! pixel reads the visibility buffer, recovers

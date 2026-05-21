@@ -79,12 +79,11 @@ pub struct Mesh {
     /// metres — the visual difference at that distance is below the per-
     /// pixel threshold and the GPU animation budget drops linearly.
     ///
-    /// Cluster 8.3 of the optimisation plan. Pairs with the coverage-
-    /// driven skinning skip from Cluster 6.2 — coverage answers "skip
-    /// this frame entirely?", `skin_update_period` answers "what's the
-    /// background cadence when not skipped?".
+    /// Pairs with the coverage-driven skinning skip — coverage
+    /// answers "skip this frame entirely?", `skin_update_period`
+    /// answers "what's the background cadence when not skipped?".
     pub skin_update_period: u8,
-    /// Cheap material variant for low-coverage shading (Cluster 6.3).
+    /// Cheap material variant for low-coverage shading.
     /// When set, the renderer swaps `material_key` → this key for any
     /// frame where the mesh's last-frame coverage is below
     /// `cheap_material_pixel_threshold`. `None` (the default) opts out
@@ -93,12 +92,11 @@ pub struct Mesh {
     /// Coverage threshold (in pixels) below which the cheap material
     /// variant takes over. Only consulted when `cheap_material_key` is
     /// `Some`. `None` falls back to the renderer's
-    /// `default_cheap_material_pixel_threshold` (plan §15 row T4 —
-    /// global knob; not tier-coupled). Per-mesh override stays on
-    /// top so artists can dial individual props up / down without
-    /// touching the global.
+    /// `default_cheap_material_pixel_threshold` (global knob; not
+    /// tier-coupled). Per-mesh override stays on top so artists can
+    /// dial individual props up / down without touching the global.
     pub cheap_material_pixel_threshold: Option<u32>,
-    /// Whether projection decals (Cluster 6.4) can land on this
+    /// Whether projection decals can land on this
     /// mesh. Default `true`. The decal compute pass reads this from
     /// each pixel's `MaterialMeshMeta` and skips the per-decal
     /// volume test for non-receiving meshes — useful for sky-domes,
@@ -140,7 +138,7 @@ impl Mesh {
     /// mesh's last-frame coverage is below
     /// `cheap_material_pixel_threshold` (falling back to
     /// `default_threshold` when `None`); otherwise the authored
-    /// `material_key`. Cluster 6.3 hook.
+    /// `material_key`.
     ///
     /// **Currently unused at the routing site.** `MaterialMeshMeta`
     /// still packs the authored `material_key`, so feeding the cheap
@@ -185,8 +183,8 @@ impl Mesh {
 
     /// Pushes geometry pass draw commands for this mesh.
     ///
-    /// Plan §16.7/§16.8: non-instanced meshes route through the new
-    /// storage-array meta binding and either `drawIndirect` (under
+    /// Non-instanced meshes route through the storage-array meta
+    /// binding and either `drawIndirect` (under
     /// `features.gpu_culling`) or
     /// `draw_indexed_with_first_instance` (legacy). The legacy
     /// `first_instance = mesh_meta_idx` makes the vertex shader's
@@ -265,7 +263,7 @@ impl Mesh {
                 .ok_or(AwsmMeshError::InstancingMissingTransforms(mesh_key))?;
             render_pass.draw_indexed_with_instance_count(index_count, instance_count as u32);
         } else if ctx.frame_optimizations.get().indirect_geometry && self.world_aabb.is_some() {
-            // §16.7/§16.8 drawIndirect path. The compaction shader
+            // drawIndirect path. The compaction shader
             // populated `IndirectDrawArgs[mesh_meta_idx]` *last frame*
             // — static fields (`index_count`, `first_instance`) and
             // `instance_count` are all GPU-written; this is the one-

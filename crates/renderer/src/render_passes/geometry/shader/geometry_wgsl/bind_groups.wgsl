@@ -13,14 +13,14 @@ struct TransformPacked {
 // legacy uniform-with-dynamic-offset binding. The `instance_index`
 // range across instances of one drawIndirect would otherwise
 // collide with neighboring meshes' meta slots if it indexed a
-// shared storage array (plan §16.8 — "actually-instanced meshes
-// must move their per-instance data into a parallel attribute
-// array"). For now they stay on the dynamic-offset path and the
-// CPU `draw_indexed_with_instance_count` recording.
+// shared storage array — moving them off this path requires their
+// per-instance data to live in a parallel attribute array. For now
+// they stay on the dynamic-offset path and the CPU
+// `draw_indexed_with_instance_count` recording.
 @group(2) @binding(0) var<uniform> geometry_mesh_meta: GeometryMeshMeta;
 {% else %}
 // Non-instanced meshes read meta from a storage-buffer array
-// indexed by `@builtin(instance_index)` (plan §16.7/§16.8). The
+// indexed by `@builtin(instance_index)`. The
 // CPU sets `first_instance = mesh_meta_idx` so each mesh's draw
 // picks the correct slot, allowing one shared @group(2) binding
 // across all draws + an indirect-draw path under

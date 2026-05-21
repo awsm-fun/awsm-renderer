@@ -1,6 +1,6 @@
 //! GPU storage buffer backing the per-mesh light-indices path.
 //!
-//! Architecture (post Option F follow-up to Cluster 2.1.c):
+//! Architecture:
 //!
 //! - **Slice metadata (`offset`, `count`)** lives inside each mesh's
 //!   `MaterialMeshMeta` struct at `MATERIAL_MESH_META_LIGHT_SLICE_OFFSET`.

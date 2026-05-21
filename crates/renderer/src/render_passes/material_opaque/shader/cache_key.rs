@@ -6,10 +6,10 @@ use crate::{render_passes::shader_cache_key::ShaderCacheKeyRenderPass, shaders::
 
 /// Cache key for opaque material shaders.
 ///
-/// After the shader split (Cluster 6.1 prereq), the opaque pass keys
-/// per `(MsaaConfig, mipmaps, shader_id)`. Each variant lives in its
-/// own compute pipeline so the runtime `if (shader_id == PBR) …`
-/// branch becomes a static `{% match shader_id %}` template choice.
+/// The opaque pass keys per `(MsaaConfig, mipmaps, shader_id)`. Each
+/// variant lives in its own compute pipeline so the runtime `if
+/// (shader_id == PBR) …` branch becomes a static `{% match shader_id %}`
+/// template choice.
 #[derive(Hash, Debug, Clone, PartialEq, Eq)]
 pub struct ShaderCacheKeyMaterialOpaque {
     pub texture_pool_arrays_len: u32,

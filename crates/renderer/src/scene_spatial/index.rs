@@ -24,8 +24,8 @@ pub struct SceneSpatialConfig {
 
 impl Default for SceneSpatialConfig {
     fn default() -> Self {
-        // Sized for the 1k-mesh tier. Cluster 1.7 adapts these by total
-        // static-node count once the dynamic-sidecar policy lands.
+        // Sized for the 1k-mesh tier. A future dynamic-sidecar policy
+        // could adapt these by total static-node count.
         Self {
             rebuild_dirty_threshold: 200,
             rebuild_period_frames: 600,
@@ -178,7 +178,7 @@ impl SceneSpatial {
     }
 
     /// Moves a node between the static R*-tree and the dynamic sidecar.
-    /// Cluster 1.7 calls this automatically for skinned/instanced meshes.
+    /// Called automatically for skinned/instanced meshes.
     pub fn set_dynamic(&mut self, mesh_key: MeshKey, dynamic: bool) {
         let Some(node) = self.nodes.get(mesh_key).cloned() else {
             return;

@@ -1,4 +1,4 @@
-// Material classify compute pass — Cluster 6.1, plan §16.3.B.
+// Material classify compute pass.
 //
 // Per 8×8 tile, scan the visibility buffer and discover which opaque
 // `shader_id`s its pixels belong to. Aggregate via a workgroup-shared

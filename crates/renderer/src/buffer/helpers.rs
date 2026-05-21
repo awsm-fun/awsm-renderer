@@ -195,9 +195,9 @@ fn write_buffer_with_dirty_ranges_config(
     Ok(())
 }
 
-// Cluster 8.1 verification: coalescing already lives here. Tests below
-// pin the merge behaviour so a future refactor can't silently degrade
-// the upload path back to many small `writeBuffer` calls.
+// Coalesces adjacent dirty ranges to minimise `writeBuffer` calls.
+// Tests below pin the merge behaviour so a future refactor can't
+// silently degrade the upload path back to many small calls.
 fn coalesce_ranges(ranges: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
     if ranges.is_empty() {
         return ranges;

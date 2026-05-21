@@ -119,11 +119,11 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
                 None,
             )?;
 
-            // Plan §16.7/§16.8 split: non-instanced shadow draws use
-            // the storage-array meta binding (no dynamic offset;
-            // shader reads `geometry_mesh_metas[instance_index]`);
-            // instanced shadow draws keep the legacy uniform-with-
-            // dynamic-offset binding.
+            // Non-instanced shadow draws use the storage-array meta
+            // binding (no dynamic offset; shader reads
+            // `geometry_mesh_metas[instance_index]`); instanced
+            // shadow draws keep the legacy uniform-with-dynamic-
+            // offset binding.
             let meta_storage_bind_group = ctx
                 .render_passes
                 .geometry
@@ -228,8 +228,8 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
                             .draw_indexed_with_instance_count(index_count, instance_count as u32);
                     }
                 } else {
-                    // Plan §16.7/§16.8: `first_instance = mesh_meta_idx`
-                    // so the storage-array shader lookup
+                    // `first_instance = mesh_meta_idx` so the
+                    // storage-array shader lookup
                     // `geometry_mesh_metas[instance_index]` resolves
                     // to this mesh's meta slot. Shadow draws skip the
                     // GPU compaction path — shadow-caster visibility

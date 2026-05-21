@@ -215,7 +215,7 @@ struct AppContext {
 /// Reads the renderer-feature gate from the current URL's query
 /// string. Defaults to `gpu_culling = true, decals = true` so the
 /// editor's default boot is unchanged; `?features=off` disables
-/// both gates (plan §16.G measurement A/B).
+/// both gates so the measurement harness can A/B them.
 ///
 /// `#[cfg(debug_assertions)]`-gated — release builds skip the URL
 /// parse entirely and always boot with both features on. Dev-only
@@ -265,13 +265,13 @@ async fn create_renderer(canvas: web_sys::HtmlCanvasElement) -> EditorResult<Aws
         )
         .with_device_request_limits(DeviceRequestLimits::max_all());
 
-    // Editor opts into the full GPU-driven pipeline + decals (plan
-    // §16.F). Library consumers / runtime games choose their own
-    // feature set via `with_features`.
+    // Editor opts into the full GPU-driven pipeline + decals.
+    // Library consumers / runtime games choose their own feature set
+    // via `with_features`.
     //
     // Dev-only escape hatch: a `?features=off` query param disables
-    // both gates so the §16.G measurement campaign can A/B the
-    // always-on overhead against the default editor build. The flag
+    // both gates so the measurement harness can A/B the always-on
+    // overhead against the default editor build. The flag
     // is read once at construction; toggling it requires a page
     // reload (the renderer's gated fields are populated at build
     // time). Falls back to "both on" for any other value (including

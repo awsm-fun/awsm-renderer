@@ -1,6 +1,6 @@
-//! Material classify render pass execution — Cluster 6.1, plan
-//! §16.3.B. Produces per-`shader_id` tile buckets + indirect-dispatch
-//! args consumed by the opaque material pipelines.
+//! Material classify render pass execution. Produces per-`shader_id`
+//! tile buckets + indirect-dispatch args consumed by the opaque
+//! material pipelines.
 
 use awsm_renderer_core::command::compute_pass::ComputePassDescriptor;
 

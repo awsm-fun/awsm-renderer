@@ -1,4 +1,4 @@
-//! Projection decals — Cluster 6.4, plan §16.4.
+//! Projection decals.
 //!
 //! Decima/D3-style oriented-unit-cube decals projecting their texture
 //! down the local -Z axis onto whatever geometry sits inside the

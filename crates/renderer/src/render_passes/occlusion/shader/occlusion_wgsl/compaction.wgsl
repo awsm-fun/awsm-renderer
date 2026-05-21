@@ -1,18 +1,10 @@
-// GPU instance compaction — §16.7 Phase 2 / §16.8 infrastructure.
+// GPU instance compaction.
 //
 // One thread per occlusion instance. For each instance, if the
 // cull's `visible_this_frame[i]` is 1, atomicAdd 1 to the matching
 // per-mesh `IndirectDrawArgs.instance_count`. The per-mesh slot
 // index comes from `instances[i].mesh_meta_offset / META_SIZE` —
 // matching MaterialMeshMeta's per-mesh stride.
-//
-// v1 (this Phase 2 + §16.8 *infrastructure* landing): no consumer
-// yet. The geometry pass still records per-mesh `draw_indexed`
-// calls. The compaction's args buffer is correctly populated and
-// observable; a future session swaps the geometry draw loop to
-// `drawIndirect` against it once the per-mesh-meta lookup migrates
-// from dynamic-offset uniform to a storage-array indexed by
-// `@builtin(instance_index)`.
 
 struct OcclusionInstance {
     world_aabb_min: vec3<f32>,

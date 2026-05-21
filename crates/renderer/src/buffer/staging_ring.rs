@@ -1,4 +1,4 @@
-//! Triple-buffered staging buffer ring (Cluster 8.2).
+//! Triple-buffered staging buffer ring.
 //!
 //! For per-frame uploads that go through `mapAsync` + `copyBufferToBuffer`
 //! rather than `writeBuffer`, the canonical pattern is a ring of N

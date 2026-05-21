@@ -1,4 +1,4 @@
-//! HZB build render pass execution — Cluster 7.1, plan §16.6.
+//! HZB build render pass execution.
 //!
 //! Two-step build: seed (depth → mip 0), then a reduce dispatch per
 //! mip level (`1..mip_count`). Each reduce dispatch is sized to the

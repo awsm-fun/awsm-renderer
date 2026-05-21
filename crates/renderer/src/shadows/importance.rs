@@ -1,6 +1,6 @@
-//! Importance-based per-light shadow budgets (Cluster 4.2).
+//! Importance-based per-light shadow budgets.
 //!
-//! The heuristic is the plan's `contribution = bounds_overlap_with_camera_frustum *
+//! The heuristic is `contribution = bounds_overlap_with_camera_frustum *
 //! intensity / (1 + distance_squared)`. The resulting score maps each
 //! shadow-casting light to a coarse tier and then to a preset table
 //! that scales `resolution`, `cascade_count`, and (for point lights)
@@ -151,8 +151,8 @@ fn light_importance_decision(
     let dist_sq = (position - camera_pos).length_squared().max(0.001);
     let score = intensity / (1.0 + dist_sq);
 
-    // Cutoffs — re-tuned against `tuning-importance-tiers` (plan
-    // §15 row T3). 4×4 (distance × intensity) grid: distances
+    // Cutoffs — tuned against `tuning-importance-tiers`.
+    // 4×4 (distance × intensity) grid: distances
     // {1, 5, 15, 50} m, intensities {1, 10, 100, 1000}. With the
     // old (0.1 / 1.0 / 4.0) cutoffs the distribution was 7 / 4 / 1 / 4
     // — almost nothing in High because the [1, 4] band is narrow

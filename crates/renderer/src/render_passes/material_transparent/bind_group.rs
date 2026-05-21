@@ -364,10 +364,11 @@ impl MaterialTransparentBindGroups {
     }
 
     /// Recreates the shadow bind group for transparent materials.
-    /// Phase 0 / Phase 9 placeholder — the bind group itself is built
-    /// but isn't currently set on the pipeline since `maxBindGroups=4`
-    /// on the target adapter. Phase 9 wires it in after consolidating
-    /// existing bind groups.
+    /// Placeholder — the bind group itself is built but isn't
+    /// currently set on the pipeline because `maxBindGroups = 4` on
+    /// the target adapter and the transparent pass's other bind
+    /// groups already saturate the budget. Consolidating those
+    /// existing groups is the prerequisite to wiring this in.
     pub fn recreate_shadows(&mut self, ctx: &BindGroupRecreateContext<'_>) -> Result<()> {
         let entries = build_shadow_bind_group_entries(ctx);
 

@@ -133,7 +133,9 @@ impl TexturePoolDeps {
 }
 
 /// Layout entries for the shared shadow bind group (slot 3 in the
-/// material-opaque pipeline; Phase 9 will wire it into transparent).
+/// material-opaque pipeline; transparent doesn't bind it yet — its
+/// existing bind groups already saturate the adapter's
+/// `maxBindGroups=4` budget).
 ///
 /// Layout — must stay in sync with `shared_wgsl/shadow/bind_groups.wgsl`:
 /// 0 texture `shadow_atlas` (depth 2d — spot lights only now)

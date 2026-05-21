@@ -42,7 +42,7 @@ pub const MATERIAL_MESH_META_MORPH_MATERIAL_BITMASK_TANGENT: u32 = 1 << 1;
 ///   17: receive_shadows
 ///   18: light_slice_offset (Option F)
 ///   19: light_slice_count  (Option F)
-///   20: receive_decals (Cluster 6.4)
+///   20: receive_decals
 ///   21..23: reserved / pad (keeps `padding_4` at vec4 alignment)
 pub const MATERIAL_MESH_META_BYTE_SIZE: usize = 96;
 /// Byte alignment for material mesh meta entries.
@@ -226,8 +226,7 @@ impl<'a> MaterialMeshMeta<'a> {
         // `material_mesh_meta.wgsl`.
         push_u32(if mesh.receive_shadows { 1 } else { 0 });
 
-        // Per-mesh light-slice (Option F follow-up to Cluster 2.1.c).
-        // Initialised to zero — the per-frame
+        // Per-mesh light-slice. Initialised to zero — the per-frame
         // `MeshMeta::set_mesh_light_slice` patches these two u32s with
         // the live offset / count into `mesh_light_indices`. A mesh
         // that never gets a slice walk this frame reads `count = 0`
@@ -236,10 +235,9 @@ impl<'a> MaterialMeshMeta<'a> {
         push_u32(0);
         push_u32(0);
 
-        // receive_decals — consumed by the decal compute pass
-        // (Cluster 6.4) to skip the per-decal volume test when the
-        // mesh opted out. Matches the `receive_decals` u32 in
-        // `material_mesh_meta.wgsl`.
+        // receive_decals — consumed by the decal compute pass to skip
+        // the per-decal volume test when the mesh opted out. Matches
+        // the `receive_decals` u32 in `material_mesh_meta.wgsl`.
         push_u32(if mesh.receive_decals { 1 } else { 0 });
         // Reserved trailing u32s — keep the populated region at a
         // vec4 multiple so `padding_4: array<vec4<u32>, _>` stays

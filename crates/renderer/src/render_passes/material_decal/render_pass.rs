@@ -1,4 +1,4 @@
-//! Material decal render pass execution — Cluster 6.4, plan §16.4.
+//! Material decal render pass execution.
 
 use awsm_renderer_core::command::compute_pass::ComputePassDescriptor;
 
@@ -16,8 +16,7 @@ use crate::{
 };
 
 /// Material decal pass bind groups, compute pipelines, the
-/// downstream composite pass (§16.4.D), and the upstream
-/// per-tile classify pass (§16.4.C).
+/// downstream composite pass, and the upstream per-tile classify pass.
 pub struct MaterialDecalRenderPass {
     pub bind_groups: MaterialDecalBindGroups,
     pub pipelines: MaterialDecalPipelines,
@@ -46,9 +45,8 @@ impl MaterialDecalRenderPass {
             return Ok(());
         }
 
-        // §16.4.C: tile-bucket classify must run before the shading
-        // compute so per-pixel iteration reads from a fresh per-tile
-        // decal list.
+        // Tile-bucket classify must run before the shading compute so
+        // per-pixel iteration reads from a fresh per-tile decal list.
         self.classify_pass.render(ctx, decals.len() as u32)?;
 
         let pipeline_key = if ctx.anti_aliasing.msaa_sample_count.is_some() {

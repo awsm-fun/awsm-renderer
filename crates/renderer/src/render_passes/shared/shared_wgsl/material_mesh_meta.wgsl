@@ -28,7 +28,7 @@ struct MaterialMeshMeta {
     // slot in `MaterialMeshMeta::to_bytes` — keep the byte offset in
     // lockstep when adding fields above.
     receive_shadows: u32,
-    // Per-mesh light slice (Option F follow-up to Cluster 2.1.c).
+    // Per-mesh light slice.
     // `light_slice_offset` is the start index into
     // `mesh_light_indices`; `light_slice_count` is the number of
     // punctual lights overlapping this mesh. `count = 0` means no
@@ -36,7 +36,7 @@ struct MaterialMeshMeta {
     // are applied separately via the global prefix walk).
     light_slice_offset: u32,
     light_slice_count: u32,
-    // `1u` means the mesh opts into projection decals (Cluster 6.4);
+    // `1u` means the mesh opts into projection decals;
     // `0u` skips the per-decal volume test in `material_decal`'s
     // compute. Matches `Mesh::receive_decals`.
     receive_decals: u32,

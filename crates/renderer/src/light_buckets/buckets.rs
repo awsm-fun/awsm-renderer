@@ -1,17 +1,13 @@
 //! Per-light → per-mesh AABB-overlap buckets, used by the
 //! visibility-buffer-native lighting path.
 //!
-//! Cluster 2.1 of the optimisation plan: instead of per-tile / per-
-//! cluster light lists (the classical forward+ / clustered-deferred
-//! shape), we exploit the visibility buffer's per-pixel mesh identity
-//! and build **per-mesh** light lists. For each active punctual light,
-//! one `SceneSpatial::query_envelope` produces the meshes it can
-//! possibly affect; the transpose then gives every mesh its own short
-//! list of overlapping lights.
-//!
-//! Cluster 2.1.a (this module) lands the CPU side only — the shader
-//! still walks the flat light array. 2.1.b adds the GPU storage
-//! buffers and 2.1.c switches the shader loop.
+//! Instead of per-tile / per-cluster light lists (the classical
+//! forward+ / clustered-deferred shape), we exploit the visibility
+//! buffer's per-pixel mesh identity and build **per-mesh** light
+//! lists. For each active punctual light, one
+//! `SceneSpatial::query_envelope` produces the meshes it can possibly
+//! affect; the transpose then gives every mesh its own short list of
+//! overlapping lights.
 
 use slotmap::SecondaryMap;
 
@@ -19,15 +15,15 @@ use crate::lights::{Light, LightKey, Lights};
 use crate::meshes::MeshKey;
 use crate::scene_spatial::SceneSpatial;
 
-/// Provisional default for the oversized-mesh thresholds (Cluster
-/// 2.1.4). A mesh is "oversized" when both:
+/// Provisional default for the oversized-mesh thresholds. A mesh is
+/// "oversized" when both:
 ///   - its AABB diagonal exceeds `OVERSIZED_AABB_DIAGONAL_METERS`
 ///   - and it appears in at least one light bucket whose list-count
 ///     exceeds `OVERSIZED_LIST_COUNT_THRESHOLD`.
 ///
-/// The future cluster-light-list path (2.1.d full implementation)
-/// reads these flags and routes the offending meshes through the
-/// fallback list rather than the per-mesh slice.
+/// The future cluster-light-list fallback path reads these flags and
+/// routes the offending meshes through the fallback list rather than
+/// the per-mesh slice.
 pub const OVERSIZED_LIST_COUNT_THRESHOLD: usize = 16;
 pub const OVERSIZED_AABB_DIAGONAL_METERS: f32 = 50.0;
 
@@ -51,11 +47,11 @@ pub struct LightMeshBuckets {
     /// Mesh keys flagged "oversized" this frame — they belong to at
     /// least one bucket that crossed `OVERSIZED_LIST_COUNT_THRESHOLD`
     /// AND have an AABB diagonal > `OVERSIZED_AABB_DIAGONAL_METERS`.
-    /// The cluster-light-list fallback (Cluster 2.1.d) routes these
+    /// The cluster-light-list fallback routes these
     /// through a coarser path. Empty when no oversized mesh is present
     /// — the cluster path stays unconstructed in the common case.
     oversized_meshes: Vec<MeshKey>,
-    /// Per-mesh shadow-receiver flag (Cluster 6.5): true when at least
+    /// Per-mesh shadow-receiver flag: true when at least
     /// one shadow-casting punctual light overlaps the mesh's AABB this
     /// frame. Used by the shading path to AND with the per-mesh
     /// `receive_shadows` gate and skip the shadow-sample branch entirely
@@ -101,7 +97,7 @@ impl LightMeshBuckets {
                         .collect();
                     self.last_max_bucket = self.last_max_bucket.max(bucket.len());
 
-                    // Oversized-mesh detection (Cluster 2.1.d). A bucket
+                    // Oversized-mesh detection. A bucket
                     // larger than the threshold means *something* in it
                     // is acting like an "every-mesh" target. Any mesh in
                     // such a bucket with a diagonal > 50 m is the likely
@@ -128,15 +124,15 @@ impl LightMeshBuckets {
         }
     }
 
-    /// Mesh keys flagged "oversized" for the current frame. The plan's
-    /// future cluster-light-list path routes these through a fallback
-    /// shader; until that path lands the field is consultative
+    /// Mesh keys flagged "oversized" for the current frame. A future
+    /// cluster-light-list path would route these through a fallback
+    /// shader; until that lands the field is consultative
     /// (instrumentation / debug overlay).
     pub fn oversized_meshes(&self) -> &[MeshKey] {
         &self.oversized_meshes
     }
 
-    /// Cluster 6.5: walk the bucket set and stamp the per-mesh
+    /// Walk the bucket set and stamp the per-mesh
     /// "shadow-receiver" flag. `casts_shadow_for` is a callback that
     /// answers "does this light have a shadow descriptor this frame?"
     /// — typically `|key| shadows.params.get(key).map(|p| p.cast).unwrap_or(false)`.
@@ -223,8 +219,8 @@ impl LightMeshBuckets {
     }
 
     /// Largest single-light bucket seen in the most recent rebuild.
-    /// Cluster 2.1.4's oversized-mesh fallback consults this to decide
-    /// when to flip the cluster path on.
+    /// The oversized-mesh fallback consults this to decide when to
+    /// flip the cluster path on.
     pub fn last_max_bucket(&self) -> usize {
         self.last_max_bucket
     }
@@ -235,7 +231,7 @@ impl LightMeshBuckets {
     /// `lights` storage buffer (matching `Lights::iter()` order). The
     /// directional prefix is NOT included — those are global.
     ///
-    /// Cluster 2.1.b consumes this to populate `mesh_light_slices` and
+    /// Consumed to populate `mesh_light_slices` and
     /// `mesh_light_indices`.
     pub fn transpose_per_mesh(&self, lights: &Lights) -> SecondaryMap<MeshKey, Vec<u32>> {
         let mut per_mesh: SecondaryMap<MeshKey, Vec<u32>> = SecondaryMap::new();

@@ -1,4 +1,4 @@
-//! Per-tile decal classify pass (§16.4.C).
+//! Per-tile decal classify pass.
 //!
 //! For each active decal, project its world-space AABB to screen
 //! coordinates and atomic-append the decal's index to the bucket of
@@ -7,12 +7,9 @@
 //! global decal list, lifting the per-pixel cost from `O(decals)` to
 //! `O(decals_overlapping_tile)`.
 //!
-//! v1 ships *frustum* gating (decals fully behind / beside the camera
-//! never enter any bucket). The §16.4.C spec also calls for HZB
-//! occlusion gating — a per-tile depth read that drops decals whose
-//! closest-screen-depth sits behind the HZB lookup. That's a 30-line
-//! follow-up to the classify shader once we want it; the bucket layout
-//! / dispatch shape don't change.
+//! Frustum gating drops decals fully behind / beside the camera. When
+//! `features.gpu_culling` is on, an additional HZB occlusion gate
+//! drops decals whose closest-screen-depth sits behind the HZB lookup.
 
 pub mod bind_group;
 pub mod buffers;

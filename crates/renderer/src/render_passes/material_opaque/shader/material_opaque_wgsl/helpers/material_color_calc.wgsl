@@ -805,7 +805,7 @@ fn _get_vertex_tangent(
     let vertex_start = attribute_data_offset + (vertex_index * vertex_attribute_stride);
     let base = vertex_start + 3u; // tangents follow normals (3 float offset)
 
-    // §16.E2: attribute_data lives in the merged geometry pool aliased
+    // attribute_data lives in the merged geometry pool aliased
     // here by `visibility_data` (binding 5).
     return vec4<f32>(
         visibility_data[base],

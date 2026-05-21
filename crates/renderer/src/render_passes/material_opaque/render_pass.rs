@@ -1,7 +1,7 @@
 //! Opaque material render pass execution.
 //!
-//! After Cluster 6.1 (plan §16.3.B), each shader_id-specialized
-//! pipeline (PBR / Unlit / Toon) dispatches *indirectly* — the
+//! Each shader_id-specialized pipeline (PBR / Unlit / Toon)
+//! dispatches *indirectly* — the
 //! material classify pass already produced per-bucket
 //! `(workgroup_count, 1, 1)` indirect args + a per-bucket tile list
 //! the shader reads to map `workgroup_id.x → (tile_x, tile_y)`. So

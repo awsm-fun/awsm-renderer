@@ -111,8 +111,8 @@ impl AwsmRenderer {
     /// a Directional→Point flip would leave the previous cube-pool
     /// allocation (or lack of one) attached to the new kind: a point
     /// light without a cube slot, or a directional light still owning
-    /// one. The plan's §7.3 fix: detect the discriminant change and
-    /// re-run the shadow side's add/remove handshake.
+    /// one. Detect the discriminant change and re-run the shadow
+    /// side's add/remove handshake.
     ///
     /// `params` are preserved across the kind flip so the user's
     /// `cast = true` survives.

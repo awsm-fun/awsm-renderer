@@ -1,10 +1,9 @@
 //! Material opaque pass pipeline setup.
 //!
-//! Pipelines are cached per `(msaa_sample_count, mipmaps, shader_id)`
-//! after the shader split (Cluster 6.1 prereq). With three enabled
-//! material shaders (PBR / Unlit / Toon) and two-each MSAA / mipmaps
-//! axes, that's a 12-entry cache — built once at construction; lookup
-//! is a direct hash hit on the hot path.
+//! Pipelines are cached per `(msaa_sample_count, mipmaps, shader_id)`.
+//! With three enabled material shaders (PBR / Unlit / Toon) and
+//! two-each MSAA / mipmaps axes, that's a 12-entry cache — built once
+//! at construction; lookup is a direct hash hit on the hot path.
 
 use std::collections::HashMap;
 

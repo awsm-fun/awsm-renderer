@@ -100,7 +100,7 @@ impl OcclusionBindGroups {
     /// - HZB texture was reallocated (`TextureViewRecreate`).
     /// - Occlusion buffers grew (`OcclusionBuffersResize`).
     ///
-    /// Only invoked when `features.gpu_culling` is on (plan §16.F),
+    /// Only invoked when `features.gpu_culling` is on,
     /// so the gated context fields are always `Some` here.
     pub fn recreate(&mut self, ctx: &BindGroupRecreateContext<'_>) -> Result<()> {
         // Use the HZB's mip-0 view as the full-chain sampler view? The

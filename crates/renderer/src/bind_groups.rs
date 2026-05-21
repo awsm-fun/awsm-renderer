@@ -39,44 +39,41 @@ pub struct BindGroupRecreateContext<'a> {
     pub instances: &'a Instances,
     pub anti_aliasing: &'a AntiAliasing,
     pub shadows: &'a Shadows,
-    /// Per-mesh light-slice storage buffers (Cluster 2.1.c). Bound at
-    /// group(1) bindings 2/3 of the material-opaque + material-transparent
+    /// Per-mesh light-slice storage buffers. Bound at group(1)
+    /// bindings 2/3 of the material-opaque + material-transparent
     /// shading passes.
     pub mesh_light_indices_gpu: &'a crate::light_buckets::MeshLightIndicesGpu,
-    /// Classify-pass output buffer (Cluster 6.1, plan §16.3.B). Bound
-    /// read-write by the classify pass; bound read-only as the
-    /// per-`shader_id` tile bucket source on the opaque main bind
-    /// group; consumed as indirect-args by the opaque dispatch.
+    /// Classify-pass output buffer. Bound read-write by the classify
+    /// pass; bound read-only as the per-`shader_id` tile bucket source
+    /// on the opaque main bind group; consumed as indirect-args by
+    /// the opaque dispatch.
     pub material_classify_buffers:
         &'a crate::render_passes::material_classify::buffers::ClassifyBuffers,
-    /// Projection-decal subsystem (Cluster 6.4, plan §16.4). Holds
-    /// the per-decal GPU buffer the `material_decal` compute pass
-    /// reads at shading time. `None` when `features.decals == false`
-    /// (plan §16.F) — the decal pass's bind groups are skipped in
-    /// that mode.
+    /// Projection-decal subsystem. Holds the per-decal GPU buffer the
+    /// `material_decal` compute pass reads at shading time. `None`
+    /// when `features.decals == false` — the decal pass's bind groups
+    /// are skipped in that mode.
     pub decals: Option<&'a crate::decals::Decals>,
-    /// Occlusion-cull instance + visibility buffers (§16.7 Phase 1).
-    /// `None` when `features.gpu_culling == false` (plan §16.F).
+    /// Occlusion-cull instance + visibility buffers. `None` when
+    /// `features.gpu_culling == false`.
     pub occlusion_buffers: Option<&'a crate::render_passes::occlusion::buffers::OcclusionBuffers>,
     /// Full-chain HZB view used by the cull pass to sample at
     /// per-instance mip levels. `None` when
-    /// `features.gpu_culling == false` (plan §16.F).
+    /// `features.gpu_culling == false`.
     pub hzb_full_view: Option<web_sys::GpuTextureView>,
-    /// Per-tile decal classify buckets (§16.4.C). `None` when
-    /// `features.decals == false` (plan §16.F).
+    /// Per-tile decal classify buckets. `None` when
+    /// `features.decals == false`.
     pub decal_classify_buffers:
         Option<&'a crate::render_passes::material_decal::classify::buffers::DecalClassifyBuffers>,
-    /// GPU compaction `IndirectDrawArgs` buffer (§16.7 Phase 2 +
-    /// §16.8 infra). `None` when `features.gpu_culling == false`
-    /// (plan §16.F).
+    /// GPU compaction `IndirectDrawArgs` buffer. `None` when
+    /// `features.gpu_culling == false`.
     pub compaction_buffers:
         Option<&'a crate::render_passes::occlusion::compaction::CompactionBuffers>,
-    /// GPU mesh-pixel-coverage producer buffers — plan §8.2.
-    /// Always present (the coverage producer is unconditional).
+    /// GPU mesh-pixel-coverage producer buffers. `None` when
+    /// `features.coverage_lod == false`.
     pub coverage_buffers: Option<&'a crate::render_passes::coverage::buffers::CoverageBuffers>,
-    /// Active feature gates (plan §16.F) — the dispatcher uses these
-    /// to skip recreating bind groups for passes whose feature is
-    /// disabled.
+    /// Active feature gates — the dispatcher uses these to skip
+    /// recreating bind groups for passes whose feature is disabled.
     pub features: &'a RendererFeatures,
 }
 
@@ -98,23 +95,22 @@ pub enum BindGroupCreate {
     SkinJointIndexAndWeightsResize,
     GeometryMeshMetaResize,
     MaterialMeshMetaResize,
-    /// Merged geometry pool (§16.E1/E2) was reallocated — opaque main
-    /// must rebind the new buffer handle (transparent's vertex/index
-    /// buffers are bound per-draw via setVertexBuffer / setIndexBuffer,
-    /// so its main bind group is unaffected).
+    /// Merged geometry pool was reallocated — opaque main must rebind
+    /// the new buffer handle (transparent's vertex/index buffers are
+    /// bound per-draw via setVertexBuffer / setIndexBuffer, so its
+    /// main bind group is unaffected).
     MeshGeometryPoolResize,
-    /// Occlusion-cull instance / visibility buffers were reallocated
-    /// (§16.7 Phase 1). Only the cull pass's bind group binds them.
+    /// Occlusion-cull instance / visibility buffers were reallocated.
+    /// Only the cull pass's bind group binds them.
     OcclusionBuffersResize,
-    /// Decal classify buckets were reallocated (§16.4.C, viewport
-    /// tile-count grew). The classify pass + decal shading pass both
-    /// rebind.
+    /// Decal classify buckets were reallocated (viewport tile-count
+    /// grew). The classify pass + decal shading pass both rebind.
     DecalClassifyBuffersResize,
-    /// Compaction `IndirectDrawArgs` buffer was reallocated (§16.7
-    /// Phase 2 + §16.8 infra). Only the compaction pass binds it.
+    /// Compaction `IndirectDrawArgs` buffer was reallocated. Only the
+    /// compaction pass binds it.
     CompactionBuffersResize,
-    /// GPU coverage `counts_buffer` was reallocated (plan §8.2).
-    /// Only the coverage pass binds it.
+    /// GPU coverage `counts_buffer` was reallocated. Only the
+    /// coverage pass binds it.
     CoverageBuffersResize,
     MaterialResize,
     TextureViewRecreate,
@@ -153,9 +149,8 @@ pub struct BindGroups {
 impl BindGroups {
     /// Creates a bind group tracker with all groups marked dirty.
     /// Variants belonging to passes gated off by [`RendererFeatures`]
-    /// (plan §16.F) are filtered out — they would otherwise fire on
-    /// the first frame and try to bind resources that were never
-    /// allocated.
+    /// are filtered out — they would otherwise fire on the first
+    /// frame and try to bind resources that were never allocated.
     pub fn new(features: &RendererFeatures) -> Self {
         let create_list = BindGroupCreate::iter()
             .filter(|v| match v {
@@ -260,18 +255,18 @@ impl BindGroups {
                     functions_to_call.insert(FunctionToCall::MaterialClassify);
                     functions_to_call.insert(FunctionToCall::MaterialDecalMain);
                     functions_to_call.insert(FunctionToCall::MaterialDecalComposite);
-                    // §16.4.C: the decal classify bind group binds the
-                    // HZB view when `gpu_culling && decals`; rebuild on
-                    // every HZB view recreate. No-op when the HZB is
-                    // off (the dispatcher filter below short-circuits).
+                    // The decal classify bind group binds the HZB view
+                    // when `gpu_culling && decals`; rebuild on every
+                    // HZB view recreate. No-op when the HZB is off
+                    // (the dispatcher filter below short-circuits).
                     functions_to_call.insert(FunctionToCall::MaterialDecalClassify);
                     functions_to_call.insert(FunctionToCall::Display);
                     functions_to_call.insert(FunctionToCall::Effects);
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
                     functions_to_call.insert(FunctionToCall::TransparentMain);
                     functions_to_call.insert(FunctionToCall::Picker);
-                    // §8.2: coverage pass binds `visibility_data`;
-                    // rebuild on view recreate.
+                    // Coverage pass binds `visibility_data`; rebuild
+                    // on view recreate.
                     functions_to_call.insert(FunctionToCall::Coverage);
                 }
                 BindGroupCreate::TexturePool => {
@@ -314,7 +309,7 @@ impl BindGroups {
                 BindGroupCreate::AntiAliasingChange => {
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
                     functions_to_call.insert(FunctionToCall::TransparentMain);
-                    // §8.2: coverage pass binds a multisampled vs
+                    // Coverage pass binds a multisampled vs
                     // single-sample visibility-data view depending
                     // on the active MSAA setting.
                     functions_to_call.insert(FunctionToCall::Coverage);
@@ -363,13 +358,13 @@ impl BindGroups {
             }
         }
 
-        // Plan §16.F: gate the function calls for passes whose
-        // feature is off. The dispatcher receives events from
-        // unrelated resources (e.g. `TextureViewRecreate` fires for
-        // every pass that owns a texture-view-dependent bind group,
-        // including the HZB / occlusion / decal passes); without
-        // this filter, the recreators would try to bind buffers
-        // / texture views that were never allocated.
+        // Gate the function calls for passes whose feature is off.
+        // The dispatcher receives events from unrelated resources
+        // (e.g. `TextureViewRecreate` fires for every pass that owns
+        // a texture-view-dependent bind group, including the HZB /
+        // occlusion / decal passes); without this filter, the
+        // recreators would try to bind buffers / texture views that
+        // were never allocated.
         let features = ctx.features;
         let allow_function = |f: FunctionToCall| match f {
             FunctionToCall::Hzb
@@ -494,10 +489,10 @@ impl BindGroups {
                     render_passes.material_classify.bind_groups.recreate(&ctx)?;
                 }
                 FunctionToCall::Coverage => {
-                    // §8.2: only rebuild the bind group that matches
-                    // the current MSAA setting. Building both would
-                    // bind a multisampled visibility_data view through
-                    // a single-sample layout (or vice versa) →
+                    // Only rebuild the bind group that matches the
+                    // current MSAA setting. Building both would bind
+                    // a multisampled visibility_data view through a
+                    // single-sample layout (or vice versa) →
                     // validation error. The render-time `render()`
                     // path picks the matching variant; the inactive
                     // variant's bind group stays `None` and is

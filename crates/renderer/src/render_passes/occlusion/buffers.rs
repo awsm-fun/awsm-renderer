@@ -6,9 +6,8 @@
 //!   `writeBuffer`. Sized at `INITIAL_CAPACITY` instances and grows
 //!   by 2× when the renderables list exceeds capacity.
 //! - `visible_this_frame`: `array<u32>` of length `capacity`. The
-//!   cull shader writes `1u` or `0u` per instance. v1 only emits a
-//!   tracing span over the input count; consumers (Phase 2) will
-//!   read this back to gate the geometry-pass survivor split.
+//!   cull shader writes `1u` or `0u` per instance. The compaction
+//!   pass reads this back to gate the geometry-pass survivor split.
 
 use awsm_renderer_core::{
     buffers::{BufferDescriptor, BufferUsage},
@@ -54,7 +53,7 @@ pub struct OcclusionBuffers {
     /// CPU writes the per-frame active range; cull shader reads.
     pub instances_buffer: web_sys::GpuBuffer,
     /// Per-instance visibility output (`array<u32>`). Cull shader
-    /// writes 0/1. Consumers (Phase 2) read back.
+    /// writes 0/1; the compaction pass reads back.
     pub visible_buffer: web_sys::GpuBuffer,
     /// 16 B uniform carrying `active_count: u32` (+ 12 B pad). The
     /// cull and compaction shaders bound their per-thread loops by

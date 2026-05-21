@@ -150,7 +150,7 @@ pub enum NodeKind {
     Sprite(SpriteDef),
     /// CPU particle emitter.
     ParticleEmitter(ParticleEmitterDef),
-    /// Projection decal (Cluster 6.4 / plan §16.4). The node's
+    /// Projection decal. The node's
     /// transform supplies the oriented unit-cube volume; the
     /// renderer projects the configured texture down the local -Z
     /// axis onto whatever opaque geometry sits inside.

@@ -1,4 +1,4 @@
-// Decal classify — §16.4.C.
+// Decal classify.
 //
 // One thread per decal. Each thread:
 //   1. Reconstructs the decal's world-space AABB from its
@@ -51,7 +51,7 @@ struct Buckets {
 @group(0) @binding(1) var<uniform> camera_raw: CameraRaw;
 @group(0) @binding(2) var<storage, read_write> buckets: Buckets;
 {% if hzb_enabled %}
-// §16.4.C: HZB occlusion gate. Bound only when
+// HZB occlusion gate. Bound only when
 // `features.gpu_culling && features.decals` — the HZB texture is
 // itself gated on `gpu_culling`. Stores the *maximum* clip-space
 // depth per texel (canonical Karis/Sousa orientation), so the
@@ -164,7 +164,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let tile_max_y_c = min(tile_max_y, buckets.tile_count_y - 1u);
 
     {% if hzb_enabled %}
-    // §16.4.C HZB occlusion gate. Pick the smallest mip whose texel
+    // HZB occlusion gate. Pick the smallest mip whose texel
     // covers the decal's screen-AABB so a single texel-load gives
     // a conservative "max depth across this footprint" reading,
     // then drop the decal when its closest-screen-depth sits

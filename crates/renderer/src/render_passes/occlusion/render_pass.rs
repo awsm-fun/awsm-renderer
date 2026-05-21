@@ -1,5 +1,4 @@
-//! Occlusion-cull render pass execution — Cluster 7.2 / plan §16.7
-//! Phase 1.
+//! Occlusion-cull render pass execution.
 
 use awsm_renderer_core::command::compute_pass::ComputePassDescriptor;
 

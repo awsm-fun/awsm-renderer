@@ -16,8 +16,8 @@
     @group(0) @binding(3) var normal_tangent_tex: texture_2d<f32>;
     @group(0) @binding(4) var barycentric_derivatives_tex: texture_2d<f32>;
 {% endif %}
-// §16.E1/E2: `visibility_data` is now a view over the merged geometry
-// pool — per-mesh sections (visibility, attribute_indices, attribute_data)
+// `visibility_data` is a view over the merged geometry pool — per-mesh
+// sections (visibility, attribute_indices, attribute_data)
 // are addressed at the sub-offsets carried by MaterialMeshMeta. The
 // declared element type stays `f32` because position/normal reads stay
 // natural; u32 reads (attribute indices) come through `bitcast<u32>(…)`.
@@ -64,13 +64,13 @@ struct ClassifyBuckets {
 @group(0) @binding(21) var<storage, read> classify_buckets: ClassifyBuckets;
 
 @group(1) @binding(0) var<uniform> lights_info: LightsInfoPacked;
-// `lights` is a uniform array (Option F follow-up to Cluster 2.1.c).
+// `lights` is a uniform array.
 // Uniform memory is constant-cached for the lockstep per-pixel walk;
 // the hard cap (64 KB / 64 B) is `MAX_PUNCTUAL_LIGHTS` = 1024 lights.
 // `MAX_PUNCTUAL_LIGHTS` is the Rust-side constant; the WGSL array
 // length must match it exactly for binding-size validation.
 @group(1) @binding(1) var<uniform> lights: array<LightPacked, 1024>;
-// Per-mesh light-list path (Cluster 2.1.c). Slice metadata
+// Per-mesh light-list path. Slice metadata
 // (`light_slice_offset` + `light_slice_count`) now lives inside
 // `MaterialMeshMeta` so each pixel reads it for free as part of the
 // already-required `material_mesh_metas[meta_index]` load — one
@@ -86,6 +86,4 @@ struct ClassifyBuckets {
 {% endfor %}
 
 // === Shadow bind group (group 3) ===
-// Layout fixed across phases — actual sampling helpers added when the
-// real shadow generation lands. Phase 0: declarations only.
 {% include "shared_wgsl/shadow/bind_groups.wgsl" %}

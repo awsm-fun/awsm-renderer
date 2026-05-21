@@ -98,7 +98,7 @@ pub static VERTEX_BUFFER_LAYOUT_INSTANCING: LazyLock<VertexBufferLayout> = LazyL
 /// Pipeline layout and render pipelines for the geometry pass.
 pub struct GeometryPipelines {
     /// Pipeline layout for the non-instanced variant — @group(2) is
-    /// the storage-array meta binding (plan §16.7/§16.8).
+    /// the storage-array meta binding.
     pub pipeline_layout_key_storage: PipelineLayoutKey,
     /// Pipeline layout for the instanced variant — @group(2) is the
     /// legacy uniform-with-dynamic-offset meta binding.
@@ -222,8 +222,8 @@ pub struct GeometryRenderPipelineKeysLevel1 {
 
 impl GeometryRenderPipelineKeysLevel1 {
     /// Creates geometry pipeline keys for instancing and non-instancing.
-    /// Non-instanced pipelines reference the storage-array layout
-    /// (plan §16.7/§16.8); instanced pipelines reference the legacy
+    /// Non-instanced pipelines reference the storage-array layout;
+    /// instanced pipelines reference the legacy
     /// uniform-with-dynamic-offset layout.
     pub async fn new(
         ctx: &mut RenderPassInitContext<'_>,

@@ -33,7 +33,7 @@ struct VertexOutput {
     // Stage-1 leaves this at U32_MAX always; Stage-2 wires
     // `geometry_mesh_meta.instance_attr_base + @builtin(instance_index)`.
     @location(4) @interpolate(flat) instance_id: u32,
-    // Plan §16.7/§16.8: non-instanced meshes pull `geometry_mesh_meta`
+    // Non-instanced meshes pull `geometry_mesh_meta`
     // from a storage-array binding into a `var<private>` at vertex
     // entry. `var<private>` is per-shader-stage, so the fragment
     // shader's copy is uninitialised — passing the material-meta
@@ -55,7 +55,7 @@ fn vert_main(
     var out: VertexOutput;
 
     {% if !instancing_transforms %}
-    // Plan §16.7/§16.8: load per-mesh meta from the storage array
+    // Load per-mesh meta from the storage array
     // indexed by `instance_index`. The CPU sets
     // `first_instance = mesh_meta_idx` for each draw (legacy
     // `draw_indexed_with_first_instance` or
@@ -100,7 +100,7 @@ fn vert_main(
         out.instance_id = base + instance_index;
     }
 
-    // Plan §16.7/§16.8: forward the per-mesh material-meta byte
+    // Forward the per-mesh material-meta byte
     // offset to the fragment stage so the fragment's
     // visibility_data write resolves to the correct slot. See
     // VertexOutput's docstring for the rationale.

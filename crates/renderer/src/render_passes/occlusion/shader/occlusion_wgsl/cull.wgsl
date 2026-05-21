@@ -1,4 +1,4 @@
-// Occlusion cull compute — Cluster 7.2 / plan §16.7 Phase 1.
+// Occlusion cull compute.
 //
 // One workgroup_size(64) thread per instance. For each instance:
 //   1. Frustum-test the world AABB against the 6 view-proj-derived
@@ -15,8 +15,7 @@
 //      occluded.
 //
 // `visible_this_frame[i]` ends as 1u (visible) or 0u (culled).
-// Phase 1 does NOT consume this output — Phase 2 will gate the
-// geometry pass's survivor split.
+// Consumed by the compaction pass to gate `drawIndirect.instance_count`.
 
 {% include "shared_wgsl/camera.wgsl" %}
 

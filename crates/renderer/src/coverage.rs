@@ -1,22 +1,22 @@
 //! Last-frame pixel coverage per mesh.
 //!
-//! Cluster 6.2 of the optimisation plan. The GPU coverage pass (a tiny
-//! compute pass that does one atomic-add per pixel into
-//! `mesh_pixel_counts[meta_index]`) is the producer; this module is
-//! the **consumer** — CPU-side state that downstream paths
-//! (skinning-skip, material-LOD) consult.
+//! The GPU coverage pass (a tiny compute pass that does one atomic-add
+//! per pixel into `mesh_pixel_counts[meta_index]`) is the producer;
+//! this module is the **consumer** — CPU-side state that downstream
+//! paths (skinning-skip, material-LOD) consult.
 //!
-//! Until the GPU pass lands, the table stays empty and consumers fall
-//! through to their conservative "always update" behaviour. The
-//! producer just calls `MeshCoverage::ingest` once per frame with the
+//! When the producer is disabled (`features.coverage_lod == false`)
+//! the table stays empty and consumers fall through to their
+//! conservative "always update" behaviour. The producer calls
+//! `MeshCoverage::ingest` once per frame with the
 //! `{mesh_key → pixel_count}` snapshot read back from the GPU buffer.
 
 use slotmap::SecondaryMap;
 
 use crate::meshes::MeshKey;
 
-/// Per-frame pixel coverage table. The plan's "last-frame coverage"
-/// signal — read by the skinning gate and the material-LOD path.
+/// Per-frame pixel coverage table — read by the skinning gate and
+/// the material-LOD path.
 #[derive(Default)]
 pub struct MeshCoverage {
     counts: SecondaryMap<MeshKey, u32>,
@@ -47,10 +47,10 @@ impl MeshCoverage {
         self.pixel_count(mesh_key).map(|c| c > 0).unwrap_or(true)
     }
 
-    /// True when this mesh's coverage is below `threshold` pixels — the
-    /// signal Cluster 6.3 uses to swap to a cheap material variant.
-    /// `None` (no readback yet) is treated as above threshold so the
-    /// expensive variant runs by default.
+    /// True when this mesh's coverage is below `threshold` pixels —
+    /// the signal a cheap-material LOD path uses to swap to a cheaper
+    /// material variant. `None` (no readback yet) is treated as above
+    /// threshold so the expensive variant runs by default.
     pub fn is_below_threshold(&self, mesh_key: MeshKey, threshold: u32) -> bool {
         self.pixel_count(mesh_key)
             .map(|c| c < threshold)

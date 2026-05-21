@@ -30,7 +30,7 @@ const INITIAL_CAPACITY: u32 = 1024;
 
 pub struct CoverageBuffers {
     /// Storage buffer the compute pass atomic-adds into. One u32
-    /// per mesh slot; matches the indexing of the §16.7/§16.8 args
+    /// per mesh slot; matches the indexing of the drawIndirect args
     /// buffer (`mesh_meta_offset / 256`).
     pub counts_buffer: web_sys::GpuBuffer,
     /// CPU-mappable readback. The renderer's

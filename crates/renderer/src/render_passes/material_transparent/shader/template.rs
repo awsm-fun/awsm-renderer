@@ -32,12 +32,12 @@ pub struct ShaderTemplateTransparentMaterialIncludes {
     pub uv_sets: u32,
     pub debug: ShaderTemplateMaterialTransparentDebug,
     /// Whether `lights.wgsl` should wire shadow sampling into
-    /// `apply_lighting`. 16.B turned this on for the transparent pass
-    /// once the shared shadow bind group landed at slot 1.
+    /// `apply_lighting`. Enabled for the transparent pass; the shared
+    /// shadow bind group sits at slot 1.
     pub shadows_enabled: bool,
-    /// Per plan §12 Q8 default: transparent stays on the flat light
-    /// loop. The field exists so the shared `lights.wgsl` `{% if
-    /// use_mesh_light_slices %}` resolves; always `false` here.
+    /// Transparent stays on the flat light loop. The field exists so
+    /// the shared `lights.wgsl` `{% if use_mesh_light_slices %}`
+    /// resolves; always `false` here.
     pub use_mesh_light_slices: bool,
     /// Concatenated `wgsl_fragment()` of every enabled material — see
     /// `awsm_materials::registry::build_materials_wgsl`.

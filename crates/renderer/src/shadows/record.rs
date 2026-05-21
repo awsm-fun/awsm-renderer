@@ -95,7 +95,7 @@ pub struct EvsmDispatchEntry {
 /// Per-light shadow state recorded each frame.
 #[derive(Clone, Debug)]
 pub struct LightShadowRecord {
-    /// One entry per cascade / face / spot. Phase 2 always has one.
+    /// One entry per cascade / face / spot.
     pub views: Vec<LightShadowView>,
     /// Base index into the descriptor uniform array; the shading
     /// shader fetches `shadow_descriptors[descriptor_base]`.
@@ -126,7 +126,7 @@ pub struct LightShadowView {
     /// frame; the far directional cascade may bump this to 2/4/8 via
     /// `LightShadowParams::far_cascade_update_rate`.
     pub update_period: u64,
-    /// Decision flag set by the temporal throttle (Phase 11): `true`
+    /// Decision flag set by the temporal throttle: `true`
     /// means the render pass should re-render this view, `false`
     /// means the cached atlas tile is still valid for this frame.
     pub should_render: bool,
@@ -149,9 +149,9 @@ pub struct ShadowViewThrottle {
     /// significant camera / light movement forces an early refresh.
     pub last_view_projection: Mat4,
     /// Last atlas rect we rendered into. If the row-pack allocator
-    /// moves this view to a different rect (Phase 13 will re-pack on
-    /// caster-set changes), we invalidate the throttle entry so the
-    /// stale rect isn't sampled at its new location.
+    /// moves this view to a different rect, we invalidate the
+    /// throttle entry so the stale rect isn't sampled at its new
+    /// location.
     pub last_atlas_rect: [u32; 4],
     /// Last cascade-array layer this view rendered into. If the layer
     /// cursor reassigns the cascade to a different layer (e.g. an
