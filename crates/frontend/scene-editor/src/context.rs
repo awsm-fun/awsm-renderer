@@ -212,6 +212,30 @@ struct AppContext {
     _drop_tracker: Arc<AppContextDropTracker>,
 }
 
+/// Reads the renderer-feature gate from the current URL's query
+/// string. Defaults to `gpu_culling = true, decals = true` so the
+/// editor's default boot is unchanged; `?features=off` disables
+/// both gates (plan §16.G measurement A/B). Anything else (missing,
+/// or an unrecognised value) falls back to the "both on" default.
+fn parse_features_from_url() -> RendererFeatures {
+    let on = RendererFeatures {
+        gpu_culling: true,
+        decals: true,
+    };
+    let Some(window) = web_sys::window() else {
+        return on;
+    };
+    let search = window.location().search().unwrap_or_default();
+    let params = match web_sys::UrlSearchParams::new_with_str(&search) {
+        Ok(p) => p,
+        Err(_) => return on,
+    };
+    match params.get("features").as_deref() {
+        Some("off") => RendererFeatures::default(),
+        _ => on,
+    }
+}
+
 async fn create_renderer(canvas: web_sys::HtmlCanvasElement) -> EditorResult<AwsmRenderer> {
     let gpu = web_sys::window().unwrap().navigator().gpu();
     let gpu_builder = AwsmRendererWebGpuBuilder::new(gpu, canvas)
@@ -225,15 +249,21 @@ async fn create_renderer(canvas: web_sys::HtmlCanvasElement) -> EditorResult<Aws
     // Editor opts into the full GPU-driven pipeline + decals (plan
     // §16.F). Library consumers / runtime games choose their own
     // feature set via `with_features`.
+    //
+    // Dev-only escape hatch: a `?features=off` query param disables
+    // both gates so the §16.G measurement campaign can A/B the
+    // always-on overhead against the default editor build. The flag
+    // is read once at construction; toggling it requires a page
+    // reload (the renderer's gated fields are populated at build
+    // time). Falls back to "both on" for any other value (including
+    // missing).
+    let features = parse_features_from_url();
     let renderer = AwsmRendererBuilder::new(gpu_builder)
         .with_logging(AwsmRendererLogging {
             render_timings: cfg!(debug_assertions),
         })
         .with_clear_color(Color::MID_GREY)
-        .with_features(RendererFeatures {
-            gpu_culling: true,
-            decals: true,
-        })
+        .with_features(features)
         .build()
         .await?;
 

@@ -685,7 +685,7 @@ pub fn new_project() {
 /// (load / new) so the next project starts from a clean pool — stale
 /// cached keys binding new entries would either silently reuse the
 /// wrong texture or grow the pool unbounded across reloads.
-async fn drop_renderer_caches() {
+pub(crate) async fn drop_renderer_caches() {
     let texture_keys = crate::renderer_bridge::texture_cache::drain();
     let material_keys = crate::renderer_bridge::material_cache::drain();
     if texture_keys.is_empty() && material_keys.is_empty() {

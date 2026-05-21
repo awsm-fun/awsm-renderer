@@ -11,6 +11,17 @@
             deploy — no separate media server required at runtime.
         -->
         <link data-trunk rel="copy-dir" href="assets" data-target-path="assets" />
+        <!--
+            Dev-only: the §16.G tuning scenes live at the repo root
+            (`assets/world/<name>/project.json`). Trunk copies the
+            world folder into `assets/world/` of the dist so the
+            programmatic `load_scene_by_path` helper (debug builds
+            only) can fetch via `web_sys::fetch`. Adds ~20 MB to the
+            dev server's served tree; harmless. Not used by any
+            production code path — release builds gate the loader on
+            `#[cfg(debug_assertions)]`.
+        -->
+        <link data-trunk rel="copy-dir" href="../../../assets/world" data-target-path="assets/world" />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
         <link
