@@ -59,7 +59,13 @@ impl AwsmRenderer {
         let Some(matrices) = self.camera.last_matrices.as_ref() else {
             return;
         };
-        let camera_pos = matrices.view.inverse().transpose().w_axis.truncate();
+        // World-space camera position = translation column of the inverse view.
+        // The earlier `.transpose()` here read the bottom row of `view.inverse()`,
+        // which is (0,0,0,1) for any affine view → camera_pos was effectively
+        // (0,0,0) regardless of camera. That broke the `distance_squared` term
+        // in `light_importance_decision`, so importance scores treated every
+        // light as if the camera were at the origin.
+        let camera_pos = matrices.view.inverse().w_axis.truncate();
         let frustum = Frustum::from_view_projection(matrices.view_projection());
 
         // Snapshot the light keys + state so we can mutate
