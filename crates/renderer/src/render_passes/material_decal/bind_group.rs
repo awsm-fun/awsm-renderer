@@ -49,6 +49,32 @@ impl MaterialDecalBindGroups {
         })
     }
 
+    /// Rebuilds the texture-pool layout from the current pool state so
+    /// the layout matches the entries `recreate_texture_pool` will
+    /// produce. Required when the pool grows (or its sampler set
+    /// changes) after initial construction — the cached layout would
+    /// otherwise be `[]` and reject the populated bind group.
+    pub fn clone_because_texture_pool_changed(
+        &self,
+        ctx: &mut RenderPassInitContext<'_>,
+    ) -> Result<Self> {
+        let TexturePoolDeps {
+            bind_group_layout_key: texture_pool_layout_key,
+            arrays_len: texture_pool_arrays_len,
+            sampler_keys,
+        } = TexturePoolDeps::new(ctx, TexturePoolVisibility::Compute)?;
+
+        Ok(Self {
+            main_layout_key_multisampled: self.main_layout_key_multisampled,
+            main_layout_key_singlesampled: self.main_layout_key_singlesampled,
+            texture_pool_layout_key,
+            texture_pool_arrays_len,
+            texture_pool_samplers_len: sampler_keys.len() as u32,
+            main_bind_group: self.main_bind_group.clone(),
+            texture_pool_bind_group: None,
+        })
+    }
+
     pub fn get_main(&self) -> std::result::Result<&web_sys::GpuBindGroup, AwsmBindGroupError> {
         self.main_bind_group
             .as_ref()

@@ -38,6 +38,20 @@ impl MaterialDecalRenderPass {
         })
     }
 
+    /// Rebuilds the texture-pool layout + dependent pipelines after the
+    /// texture pool changes. Mirrors the opaque / transparent passes;
+    /// without this the cached `texture_pool_layout_key` stays pinned
+    /// to the empty layout captured at init time and the populated
+    /// texture-pool bind group fails validation.
+    pub async fn texture_pool_changed(
+        &mut self,
+        ctx: &mut RenderPassInitContext<'_>,
+    ) -> Result<()> {
+        self.bind_groups = self.bind_groups.clone_because_texture_pool_changed(ctx)?;
+        self.pipelines = MaterialDecalPipelines::new(ctx, &self.bind_groups).await?;
+        Ok(())
+    }
+
     /// Dispatches: classify → compute → composite. Skipped when no
     /// decals are active.
     pub fn render(&self, ctx: &RenderContext, decals: &Decals) -> Result<()> {

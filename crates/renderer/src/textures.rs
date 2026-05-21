@@ -80,6 +80,13 @@ impl AwsmRenderer {
                 .material_transparent
                 .texture_pool_changed(&mut render_pass_ctx)
                 .await?;
+
+            // Decal compute pass also binds the texture pool. Mirror
+            // the opaque/transparent treatment so the cached pool
+            // layout doesn't lag behind the populated bind group.
+            if let Some(decal) = self.render_passes.material_decal.as_mut() {
+                decal.texture_pool_changed(&mut render_pass_ctx).await?;
+            }
         }
 
         // Pre-pass: compile every transparent shader we'll need
