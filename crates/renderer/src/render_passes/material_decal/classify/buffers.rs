@@ -105,7 +105,13 @@ impl DecalClassifyBuffers {
     /// Per-frame upload — writes the header constants + zero the
     /// per-tile atomic counts. The `entries` tail is untouched.
     pub fn reset(&self, gpu: &AwsmRendererWebGpu) -> Result<(), AwsmCoreError> {
-        gpu.write_buffer(&self.buffer, None, self.header_scratch.as_slice(), None, None)
+        gpu.write_buffer(
+            &self.buffer,
+            None,
+            self.header_scratch.as_slice(),
+            None,
+            None,
+        )
     }
 }
 

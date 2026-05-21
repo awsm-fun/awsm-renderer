@@ -110,12 +110,16 @@ pub struct FrameOptimizationStats {
     pub features_gpu_culling: bool,
     /// Whether the `decals` capability is allocated.
     pub features_decals: bool,
-    /// Total opaque renderables this frame (post-`collect_renderables`).
-    /// Drives the Auto-mode threshold decision.
+    /// Total opaque renderables this frame
+    /// (post-`collect_renderables`). Surfaced for diagnostics / future
+    /// tuning; the Auto-mode threshold reads
+    /// `non_instanced_with_aabb_count` (below) since instanced and
+    /// no-AABB meshes don't pay back the GPU-driven path.
     pub opaque_count: u32,
     /// Subset of `opaque_count` that would actually use drawIndirect —
-    /// non-instanced, world_aabb=Some. Reserved for future per-frame
-    /// tuning; v1 only uses `opaque_count` for the threshold check.
+    /// non-instanced, world_aabb=Some. Drives the Auto-mode enable /
+    /// disable threshold comparison in
+    /// [`compute_frame_optimizations`].
     pub non_instanced_with_aabb_count: u32,
     /// Decals active this frame (used by `decal_hzb_gate`).
     pub decals_count: u32,
@@ -160,16 +164,13 @@ pub fn compute_frame_optimizations(
             OptimizationMode::Off => false,
             OptimizationMode::Force => true,
             OptimizationMode::Auto => {
-                let cooldown_elapsed =
-                    frames_in_current_mode >= policy.gpu_culling_cooldown_frames;
+                let cooldown_elapsed = frames_in_current_mode >= policy.gpu_culling_cooldown_frames;
                 let optimizable = stats.non_instanced_with_aabb_count;
                 if prev.gpu_occlusion {
                     // Currently on. Flip off only if both cooldown
                     // elapsed AND the optimizable count dropped below
                     // the disable threshold.
-                    if cooldown_elapsed
-                        && optimizable < policy.gpu_culling_disable_threshold
-                    {
+                    if cooldown_elapsed && optimizable < policy.gpu_culling_disable_threshold {
                         false
                     } else {
                         true
@@ -178,9 +179,7 @@ pub fn compute_frame_optimizations(
                     // Currently off. Flip on only if both cooldown
                     // elapsed AND the optimizable count reached the
                     // enable threshold.
-                    if cooldown_elapsed
-                        && optimizable >= policy.gpu_culling_enable_threshold
-                    {
+                    if cooldown_elapsed && optimizable >= policy.gpu_culling_enable_threshold {
                         true
                     } else {
                         false
@@ -194,9 +193,8 @@ pub fn compute_frame_optimizations(
     // mesh occlusion is disabled — they're independent consumers of
     // the same texture. Requires the gpu_culling capability because
     // that's what allocates the HZB texture itself.
-    let decal_hzb_gate = stats.features_gpu_culling
-        && stats.features_decals
-        && stats.decals_count > 0;
+    let decal_hzb_gate =
+        stats.features_gpu_culling && stats.features_decals && stats.decals_count > 0;
 
     let hzb = gpu_occlusion || decal_hzb_gate;
     let indirect_geometry = gpu_occlusion && stats.args_ready;
@@ -261,7 +259,10 @@ mod tests {
         assert!(!out.gpu_occlusion);
         assert!(!out.indirect_geometry);
         assert!(out.decal_hzb_gate);
-        assert!(out.hzb, "hzb must still be built so decal classify sees fresh data");
+        assert!(
+            out.hzb,
+            "hzb must still be built so decal classify sees fresh data"
+        );
     }
 
     #[test]
@@ -283,7 +284,10 @@ mod tests {
         let s = stats(10, 0, false);
         let out = compute_frame_optimizations(&p, &s, &off_prev(), 0);
         assert!(out.gpu_occlusion, "Force ignores opaque_count");
-        assert!(!out.indirect_geometry, "indirect_geometry waits on args_ready");
+        assert!(
+            !out.indirect_geometry,
+            "indirect_geometry waits on args_ready"
+        );
         assert!(out.hzb);
     }
 
@@ -302,7 +306,7 @@ mod tests {
     #[test]
     fn auto_enables_only_when_threshold_and_cooldown_met() {
         let p = policy(); // enable=800, disable=500, cooldown=30
-        // Just below threshold → stay off
+                          // Just below threshold → stay off
         let out = compute_frame_optimizations(&p, &stats(799, 0, false), &off_prev(), 60);
         assert!(!out.gpu_occlusion);
         // At threshold but cooldown not met → stay off
@@ -316,8 +320,8 @@ mod tests {
     #[test]
     fn auto_holds_on_inside_hysteresis_band() {
         let p = policy(); // enable=800, disable=500
-        // Currently on; opaque drops between disable (500) and enable
-        // (800) — should stay on (hysteresis band).
+                          // Currently on; opaque drops between disable (500) and enable
+                          // (800) — should stay on (hysteresis band).
         let out = compute_frame_optimizations(&p, &stats(700, 0, true), &on_prev(), 60);
         assert!(out.gpu_occlusion);
         let out = compute_frame_optimizations(&p, &stats(501, 0, true), &on_prev(), 60);
@@ -390,16 +394,18 @@ mod tests {
             args_ready: false,
         };
         let out = compute_frame_optimizations(&p, &stats, &off_prev(), 1000);
-        assert!(!out.gpu_occlusion,
-            "Auto must look at the optimizable subset, not opaque_count");
+        assert!(
+            !out.gpu_occlusion,
+            "Auto must look at the optimizable subset, not opaque_count"
+        );
     }
 
     #[test]
     fn auto_engages_on_optimizable_subset_threshold() {
         let p = policy(); // enable=800
-        // Conversely, even a small opaque_count is enough if the
-        // optimizable subset hits the threshold (in practice they're
-        // typically the same; this just locks in the gating field).
+                          // Conversely, even a small opaque_count is enough if the
+                          // optimizable subset hits the threshold (in practice they're
+                          // typically the same; this just locks in the gating field).
         let stats = FrameOptimizationStats {
             features_gpu_culling: true,
             features_decals: false,
@@ -414,7 +420,10 @@ mod tests {
 
     #[test]
     fn stable_mode_helper_tracks_occlusion_flips() {
-        let on = FrameOptimizations { gpu_occlusion: true, ..Default::default() };
+        let on = FrameOptimizations {
+            gpu_occlusion: true,
+            ..Default::default()
+        };
         let off = FrameOptimizations::default();
         assert!(on.stable_mode(&on));
         assert!(off.stable_mode(&off));

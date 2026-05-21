@@ -59,7 +59,8 @@ impl AwsmRenderer {
 
         // Per-frame per-light → per-mesh bucket rebuild (Cluster 2.1.a).
         // Cheap (one `query_envelope` per active punctual light).
-        self.light_buckets.rebuild(&self.lights, &self.scene_spatial);
+        self.light_buckets
+            .rebuild(&self.lights, &self.scene_spatial);
 
         // Cluster 6.5: per-mesh "any shadow-caster reaches me" flag.
         let shadows_ref = &self.shadows;
@@ -427,9 +428,8 @@ impl Transforms {
 
             // Model matrix: 64 bytes.
             let model_values = world_matrix.to_cols_array();
-            let model_bytes = unsafe {
-                std::slice::from_raw_parts(model_values.as_ptr() as *const u8, 64)
-            };
+            let model_bytes =
+                unsafe { std::slice::from_raw_parts(model_values.as_ptr() as *const u8, 64) };
             packed[0..64].copy_from_slice(model_bytes);
 
             // Normal matrix: 9 floats laid out as 3 columns × (vec3 +

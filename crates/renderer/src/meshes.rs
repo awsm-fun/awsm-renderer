@@ -177,9 +177,9 @@ impl AwsmRenderer {
 
     /// Splits a mesh out to a new transform key.
     pub fn split_mesh(&mut self, mesh_key: MeshKey) -> crate::error::Result<TransformKey> {
-        let new_transform_key = self
-            .meshes
-            .split_mesh(mesh_key, &mut self.transforms, &self.materials)?;
+        let new_transform_key =
+            self.meshes
+                .split_mesh(mesh_key, &mut self.transforms, &self.materials)?;
         self.sync_spatial_for_mesh(mesh_key);
         Ok(new_transform_key)
     }
@@ -1235,8 +1235,7 @@ impl Meshes {
         // (the other coverage consumer) is unaffected — material
         // LOD doesn't suffer from rest-pose persistence.
         let _ = coverage;
-        let mut skip_skins: std::collections::HashSet<SkinKey> =
-            std::collections::HashSet::new();
+        let mut skip_skins: std::collections::HashSet<SkinKey> = std::collections::HashSet::new();
         if frame_index > 0 {
             let skin_keys: Vec<SkinKey> = self.skins.iter_skin_keys().collect();
             for skin_key in skin_keys {

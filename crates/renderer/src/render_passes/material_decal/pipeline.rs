@@ -22,10 +22,20 @@ impl MaterialDecalPipelines {
         ctx: &mut RenderPassInitContext<'_>,
         bind_groups: &MaterialDecalBindGroups,
     ) -> Result<Self> {
-        let singlesampled_pipeline_key =
-            build(ctx, bind_groups, bind_groups.main_layout_key_singlesampled, None).await?;
-        let multisampled_pipeline_key =
-            build(ctx, bind_groups, bind_groups.main_layout_key_multisampled, Some(4)).await?;
+        let singlesampled_pipeline_key = build(
+            ctx,
+            bind_groups,
+            bind_groups.main_layout_key_singlesampled,
+            None,
+        )
+        .await?;
+        let multisampled_pipeline_key = build(
+            ctx,
+            bind_groups,
+            bind_groups.main_layout_key_multisampled,
+            Some(4),
+        )
+        .await?;
         Ok(Self {
             singlesampled_pipeline_key,
             multisampled_pipeline_key,
@@ -41,11 +51,9 @@ async fn build(
 ) -> Result<ComputePipelineKey> {
     let pipeline_layout_cache_key =
         PipelineLayoutCacheKey::new(vec![main_layout_key, bind_groups.texture_pool_layout_key]);
-    let pipeline_layout_key = ctx.pipeline_layouts.get_key(
-        ctx.gpu,
-        ctx.bind_group_layouts,
-        pipeline_layout_cache_key,
-    )?;
+    let pipeline_layout_key =
+        ctx.pipeline_layouts
+            .get_key(ctx.gpu, ctx.bind_group_layouts, pipeline_layout_cache_key)?;
 
     let shader_key = ctx
         .shaders

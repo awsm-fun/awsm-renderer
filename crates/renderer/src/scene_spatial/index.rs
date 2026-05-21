@@ -151,8 +151,7 @@ impl SceneSpatial {
         if self.in_dynamic.remove(mesh_key).is_some() {
             self.dynamic.retain(|n| n.mesh_key != mesh_key);
         } else {
-            self.rtree
-                .remove(&Leaf::new(node.rstar_rect(), mesh_key));
+            self.rtree.remove(&Leaf::new(node.rstar_rect(), mesh_key));
             self.dirty_since_rebuild = self.dirty_since_rebuild.saturating_add(1);
         }
     }
@@ -193,8 +192,7 @@ impl SceneSpatial {
         }
 
         if dynamic {
-            self.rtree
-                .remove(&Leaf::new(node.rstar_rect(), mesh_key));
+            self.rtree.remove(&Leaf::new(node.rstar_rect(), mesh_key));
             let mut moved = node;
             moved.flags.dynamic = true;
             self.dynamic.push(moved.clone());
@@ -205,8 +203,7 @@ impl SceneSpatial {
         } else {
             self.dynamic.retain(|n| n.mesh_key != mesh_key);
             self.in_dynamic.remove(mesh_key);
-            self.rtree
-                .insert(Leaf::new(node.rstar_rect(), mesh_key));
+            self.rtree.insert(Leaf::new(node.rstar_rect(), mesh_key));
             if let Some(stored) = self.nodes.get_mut(mesh_key) {
                 stored.flags.dynamic = false;
             }
@@ -301,9 +298,10 @@ impl SceneSpatial {
             .filter_map(move |leaf| self.nodes.get(leaf.data));
         let aabb_min = aabb.min;
         let aabb_max = aabb.max;
-        let from_dyn = self.dynamic.iter().filter(move |node| {
-            aabb_overlap(aabb_min, aabb_max, node.aabb.min, node.aabb.max)
-        });
+        let from_dyn = self
+            .dynamic
+            .iter()
+            .filter(move |node| aabb_overlap(aabb_min, aabb_max, node.aabb.min, node.aabb.max));
         from_tree.chain(from_dyn)
     }
 

@@ -257,9 +257,7 @@ impl Mesh {
                 .transform_instance_count(self.transform_key)
                 .ok_or(AwsmMeshError::InstancingMissingTransforms(mesh_key))?;
             render_pass.draw_indexed_with_instance_count(index_count, instance_count as u32);
-        } else if ctx.frame_optimizations.get().indirect_geometry
-            && self.world_aabb.is_some()
-        {
+        } else if ctx.frame_optimizations.get().indirect_geometry && self.world_aabb.is_some() {
             // §16.7/§16.8 drawIndirect path. The compaction shader
             // populated `IndirectDrawArgs[mesh_meta_idx]` *last frame*
             // — static fields (`index_count`, `first_instance`) and

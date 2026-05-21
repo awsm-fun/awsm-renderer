@@ -4,9 +4,7 @@ use crate::{
     error::Result,
     render::RenderContext,
     render_passes::{
-        coverage::{
-            bind_group::CoverageBindGroups, pipeline::CoveragePipelines,
-        },
+        coverage::{bind_group::CoverageBindGroups, pipeline::CoveragePipelines},
         RenderPassInitContext,
     },
 };
@@ -27,8 +25,7 @@ impl CoverageRenderPass {
         let bind_groups_multisampled = CoverageBindGroups::new(ctx, true).await?;
         let pipelines_singlesampled =
             CoveragePipelines::new(ctx, &bind_groups_singlesampled).await?;
-        let pipelines_multisampled =
-            CoveragePipelines::new(ctx, &bind_groups_multisampled).await?;
+        let pipelines_multisampled = CoveragePipelines::new(ctx, &bind_groups_multisampled).await?;
         Ok(Self {
             bind_groups_singlesampled,
             bind_groups_multisampled,

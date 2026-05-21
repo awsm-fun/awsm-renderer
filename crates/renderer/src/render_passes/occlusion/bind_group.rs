@@ -127,21 +127,15 @@ impl OcclusionBindGroups {
             ),
             BindGroupEntry::new(
                 2,
-                BindGroupResource::Buffer(BufferBinding::new(
-                    &occlusion_buffers.instances_buffer,
-                )),
+                BindGroupResource::Buffer(BufferBinding::new(&occlusion_buffers.instances_buffer)),
             ),
             BindGroupEntry::new(
                 3,
-                BindGroupResource::Buffer(BufferBinding::new(
-                    &occlusion_buffers.visible_buffer,
-                )),
+                BindGroupResource::Buffer(BufferBinding::new(&occlusion_buffers.visible_buffer)),
             ),
             BindGroupEntry::new(
                 4,
-                BindGroupResource::Buffer(BufferBinding::new(
-                    &occlusion_buffers.params_buffer,
-                )),
+                BindGroupResource::Buffer(BufferBinding::new(&occlusion_buffers.params_buffer)),
             ),
         ];
         let descriptor = BindGroupDescriptor::new(

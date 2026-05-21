@@ -21,10 +21,9 @@
 use std::{fs, path::PathBuf};
 
 use awsm_scene_schema::{
-    AssetTable, CubeFaceUpdateRate, EditorNode, EditorProject, EnvironmentConfig,
-    EvsmCutoff, FarCascadeUpdateRate, LightConfig, LightShadowConfig,
-    LightShadowHardness, MaterialDef, MaterialShading, MeshShadowConfig, NodeId,
-    NodeKind, PrimitiveShape, ShadowsConfig, Trs,
+    AssetTable, CubeFaceUpdateRate, EditorNode, EditorProject, EnvironmentConfig, EvsmCutoff,
+    FarCascadeUpdateRate, LightConfig, LightShadowConfig, LightShadowHardness, MaterialDef,
+    MaterialShading, MeshShadowConfig, NodeId, NodeKind, PrimitiveShape, ShadowsConfig, Trs,
 };
 
 fn main() -> std::io::Result<()> {
@@ -44,8 +43,8 @@ fn main() -> std::io::Result<()> {
         let dir = out_root.join(name);
         fs::create_dir_all(&dir)?;
         let path = dir.join("project.json");
-        let json = serde_json::to_string_pretty(&project)
-            .expect("EditorProject serializes cleanly");
+        let json =
+            serde_json::to_string_pretty(&project).expect("EditorProject serializes cleanly");
         fs::write(&path, json)?;
         println!("wrote {}", path.display());
     }
@@ -119,7 +118,13 @@ fn box_node(name: &str, position: [f32; 3], dims: [f32; 3], color: [f32; 4]) -> 
     }
 }
 
-fn plane_node(name: &str, position: [f32; 3], width: f32, depth: f32, color: [f32; 4]) -> EditorNode {
+fn plane_node(
+    name: &str,
+    position: [f32; 3],
+    width: f32,
+    depth: f32,
+    color: [f32; 4],
+) -> EditorNode {
     EditorNode {
         id: NodeId::new(),
         name: name.to_string(),
@@ -479,7 +484,7 @@ fn scene_mixed_intensity() -> EditorProject {
     let mut light_children = Vec::with_capacity(20);
     for i in 0..20 {
         let t = i as f32 / 19.0; // 0..1
-        // Log-spaced intensity from 0.1 to 50.
+                                 // Log-spaced intensity from 0.1 to 50.
         let intensity = 0.1 * (500.0_f32).powf(t);
         let theta = (i as f32 / 20.0) * std::f32::consts::TAU;
         let r = 12.0;
@@ -593,7 +598,7 @@ fn scene_coverage() -> EditorProject {
     let mut props = Vec::with_capacity(100);
     for i in 0..100 {
         let z = -2.0 - (i as f32) * 1.0; // -2, -3, ..., -101
-        // Spread along X to avoid total overlap.
+                                         // Spread along X to avoid total overlap.
         let x = ((i as f32) * 0.7).sin() * 2.0;
         let y = 0.25;
         props.push(box_node(

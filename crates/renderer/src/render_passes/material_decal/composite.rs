@@ -165,11 +165,8 @@ impl MaterialDecalComposite {
             0,
             BindGroupResource::TextureView(Cow::Borrowed(decal_color_view)),
         )];
-        let descriptor = BindGroupDescriptor::new(
-            &self.bind_group_layout,
-            Some("Decal Composite"),
-            entries,
-        );
+        let descriptor =
+            BindGroupDescriptor::new(&self.bind_group_layout, Some("Decal Composite"), entries);
         self.bind_group = Some(ctx.gpu.create_bind_group(&descriptor.into()));
         Ok(())
     }

@@ -213,11 +213,7 @@ impl AwsmRenderer {
         // Reuses the `tile_x` / `tile_y` calculated above.
         // Skipped when `features.decals == false` (plan §16.F).
         if let Some(decal_classify_buffers) = self.decal_classify_buffers.as_mut() {
-            if decal_classify_buffers.ensure_capacity(
-                &self.gpu,
-                tile_x,
-                tile_y,
-            )? {
+            if decal_classify_buffers.ensure_capacity(&self.gpu, tile_x, tile_y)? {
                 self.bind_groups
                     .mark_create(BindGroupCreate::DecalClassifyBuffersResize);
             }
@@ -230,9 +226,7 @@ impl AwsmRenderer {
         // buffer covers every mesh slot. Skipped when
         // `features.gpu_culling == false` (plan §16.F).
         if let Some(compaction_buffers) = self.compaction_buffers.as_mut() {
-            if compaction_buffers
-                .ensure_capacity(&self.gpu, self.meshes.len() as u32)?
-            {
+            if compaction_buffers.ensure_capacity(&self.gpu, self.meshes.len() as u32)? {
                 self.bind_groups
                     .mark_create(BindGroupCreate::CompactionBuffersResize);
             }
@@ -355,8 +349,7 @@ impl AwsmRenderer {
                     let aabb = mesh.world_aabb.clone()?;
                     let meta_offset = ctx.meshes.meta.geometry_buffer_offset(*key).ok()? as u32;
                     let buffer_info = ctx.meshes.buffer_info(*key).ok()?;
-                    let index_count =
-                        buffer_info.triangles.vertex_attribute_indices.count as u32;
+                    let index_count = buffer_info.triangles.vertex_attribute_indices.count as u32;
                     Some(OcclusionSnapshot {
                         aabb,
                         mesh_meta_offset: meta_offset,
@@ -376,11 +369,7 @@ impl AwsmRenderer {
             features_decals: self.features.decals,
             opaque_count: renderables.opaque.len() as u32,
             non_instanced_with_aabb_count: opaque_snapshots.len() as u32,
-            decals_count: self
-                .decals
-                .as_ref()
-                .map(|d| d.len() as u32)
-                .unwrap_or(0),
+            decals_count: self.decals.as_ref().map(|d| d.len() as u32).unwrap_or(0),
             args_ready: self
                 .compaction_buffers
                 .as_ref()
@@ -400,12 +389,11 @@ impl AwsmRenderer {
         // pre-update prev-frame state, then applied at end of
         // `render()` (after `renderables` is dropped) so we can take
         // `&mut self` to write the renderer state.
-        let next_frames_in_current_mode =
-            if frame_opts.stable_mode(&self.frame_optimizations) {
-                self.frames_in_current_mode.saturating_add(1)
-            } else {
-                1
-            };
+        let next_frames_in_current_mode = if frame_opts.stable_mode(&self.frame_optimizations) {
+            self.frames_in_current_mode.saturating_add(1)
+        } else {
+            1
+        };
 
         // Args-buffer poisoning rule: when `gpu_occlusion` is false
         // (Off, Auto-disengaged, or capability missing) the compaction
@@ -698,123 +686,95 @@ impl AwsmRenderer {
         // CPU branch — and the cull/compaction passes are simply
         // skipped, saving the compute dispatches on small scenes.
         if frame_opts.gpu_occlusion {
-          if let (Some(occlusion_buffers), Some(occlusion_pass)) = (
-            self.occlusion_buffers.as_ref(),
-            self.render_passes.occlusion.as_ref(),
-        ) {
-            // Pack the OcclusionInstance buffer. The compaction shader
-            // now owns the full `IndirectDrawArgs` slot write — see
-            // compaction.wgsl for why the previous CPU
-            // `queue.writeBuffer` of args was a race against the
-            // already-recorded geometry pass. Instanced meshes are
-            // still uploaded (they need to be cull-tested for their
-            // own bookkeeping if instancing extensions reuse this
-            // buffer) but compaction skips slot writes for slots used
-            // by instanced meshes via `mesh_meta_offset` lookup; in
-            // the current single-instance path each non-instanced
-            // mesh owns its own slot, so there's no contention.
-            let occlusion_instance_count = {
-                let stride =
-                    crate::render_passes::occlusion::buffers::OCCLUSION_INSTANCE_STRIDE;
-                let mut bytes: Vec<u8> = Vec::with_capacity(opaque_snapshots.len() * stride);
-                for snap in &opaque_snapshots {
-                    bytes.extend_from_slice(&snap.aabb.min.x.to_le_bytes());
-                    bytes.extend_from_slice(&snap.aabb.min.y.to_le_bytes());
-                    bytes.extend_from_slice(&snap.aabb.min.z.to_le_bytes());
-                    bytes.extend_from_slice(&0u32.to_le_bytes()); // _pad0
-                    bytes.extend_from_slice(&snap.aabb.max.x.to_le_bytes());
-                    bytes.extend_from_slice(&snap.aabb.max.y.to_le_bytes());
-                    bytes.extend_from_slice(&snap.aabb.max.z.to_le_bytes());
-                    bytes.extend_from_slice(&0u32.to_le_bytes()); // _pad1
-                    // mesh_meta_offset — plan §16.7/§16.8. The
-                    // compaction shader divides by
-                    // `MaterialMeshMeta` stride (256 B) to derive
-                    // the args-buffer slot; the geometry meta uses
-                    // the same alignment so this byte offset works.
-                    bytes.extend_from_slice(&snap.mesh_meta_offset.to_le_bytes());
-                    bytes.extend_from_slice(&0u32.to_le_bytes()); // instance_attr_base
-                    // index_count flows through cull → compaction so
-                    // the compaction shader can write the static
-                    // `IndirectDrawArgs.index_count` field itself.
-                    // (Compaction also synthesises `first_instance =
-                    // mesh_slot`; first_index / base_vertex stay at
-                    // zero from the `clear_buffer` below.)
-                    bytes.extend_from_slice(&snap.index_count.to_le_bytes());
-                    bytes.extend_from_slice(&0u32.to_le_bytes()); // _pad2
-                }
-                let count = (bytes.len() / stride) as u32;
-                if count > 0 {
-                    self.gpu.write_buffer(
-                        &occlusion_buffers.instances_buffer,
-                        None,
-                        bytes.as_slice(),
-                        None,
-                        None,
-                    )?;
-                }
-                count
-            };
-            // Write the `OcclusionParams` uniform every frame so the
-            // cull + compaction shaders bound their per-thread loops
-            // by this frame's active count rather than the buffer's
-            // capacity. Without this, tail threads in the
-            // workgroup-rounded dispatch process stale instance slots
-            // and double-count phantom meshes into
-            // `IndirectDrawArgs.instance_count`.
-            occlusion_buffers.write_params(&self.gpu, occlusion_instance_count)?;
-
-            // Clear the IndirectDrawArgs buffer in COMMAND order so it
-            // executes strictly after the geometry pass's earlier
-            // `draw_indexed_indirect` reads of this same buffer and
-            // strictly before the compaction shader's writes. A CPU-
-            // side `queue.writeBuffer` would have raced ahead of the
-            // recorded geometry pass (queue order ≠ command order),
-            // zeroing the args that an in-flight drawIndirect needed
-            // to read. Compaction repopulates the static fields
-            // (`index_count`, `first_instance`) and atomicAdds
-            // `instance_count` from this zero base; slots not touched
-            // by compaction stay zero, which makes their drawIndirect
-            // a 0-index, 0-instance no-op (correct for meshes that
-            // dropped out of the renderable set this frame).
-            if let Some(compaction_buffers) = self.compaction_buffers.as_ref() {
-                ctx.command_encoder.clear_buffer(
-                    &compaction_buffers.args_buffer,
-                    None,
-                    None,
-                );
-            }
-
-            if occlusion_instance_count > 0 {
-                let _maybe_span_guard = if self.logging.render_timings {
-                    Some(
-                        tracing::span!(
-                            tracing::Level::INFO,
-                            "Occlusion Cull RenderPass",
-                            instances = occlusion_instance_count
-                        )
-                        .entered(),
-                    )
-                } else {
-                    None
+            if let (Some(occlusion_buffers), Some(occlusion_pass)) = (
+                self.occlusion_buffers.as_ref(),
+                self.render_passes.occlusion.as_ref(),
+            ) {
+                // Pack the OcclusionInstance buffer. The compaction shader
+                // now owns the full `IndirectDrawArgs` slot write — see
+                // compaction.wgsl for why the previous CPU
+                // `queue.writeBuffer` of args was a race against the
+                // already-recorded geometry pass. Instanced meshes are
+                // still uploaded (they need to be cull-tested for their
+                // own bookkeeping if instancing extensions reuse this
+                // buffer) but compaction skips slot writes for slots used
+                // by instanced meshes via `mesh_meta_offset` lookup; in
+                // the current single-instance path each non-instanced
+                // mesh owns its own slot, so there's no contention.
+                let occlusion_instance_count = {
+                    let stride =
+                        crate::render_passes::occlusion::buffers::OCCLUSION_INSTANCE_STRIDE;
+                    let mut bytes: Vec<u8> = Vec::with_capacity(opaque_snapshots.len() * stride);
+                    for snap in &opaque_snapshots {
+                        bytes.extend_from_slice(&snap.aabb.min.x.to_le_bytes());
+                        bytes.extend_from_slice(&snap.aabb.min.y.to_le_bytes());
+                        bytes.extend_from_slice(&snap.aabb.min.z.to_le_bytes());
+                        bytes.extend_from_slice(&0u32.to_le_bytes()); // _pad0
+                        bytes.extend_from_slice(&snap.aabb.max.x.to_le_bytes());
+                        bytes.extend_from_slice(&snap.aabb.max.y.to_le_bytes());
+                        bytes.extend_from_slice(&snap.aabb.max.z.to_le_bytes());
+                        bytes.extend_from_slice(&0u32.to_le_bytes()); // _pad1
+                                                                      // mesh_meta_offset — plan §16.7/§16.8. The
+                                                                      // compaction shader divides by
+                                                                      // `MaterialMeshMeta` stride (256 B) to derive
+                                                                      // the args-buffer slot; the geometry meta uses
+                                                                      // the same alignment so this byte offset works.
+                        bytes.extend_from_slice(&snap.mesh_meta_offset.to_le_bytes());
+                        bytes.extend_from_slice(&0u32.to_le_bytes()); // instance_attr_base
+                                                                      // index_count flows through cull → compaction so
+                                                                      // the compaction shader can write the static
+                                                                      // `IndirectDrawArgs.index_count` field itself.
+                                                                      // (Compaction also synthesises `first_instance =
+                                                                      // mesh_slot`; first_index / base_vertex stay at
+                                                                      // zero from the `clear_buffer` below.)
+                        bytes.extend_from_slice(&snap.index_count.to_le_bytes());
+                        bytes.extend_from_slice(&0u32.to_le_bytes()); // _pad2
+                    }
+                    let count = (bytes.len() / stride) as u32;
+                    if count > 0 {
+                        self.gpu.write_buffer(
+                            &occlusion_buffers.instances_buffer,
+                            None,
+                            bytes.as_slice(),
+                            None,
+                            None,
+                        )?;
+                    }
+                    count
                 };
-                occlusion_pass.render(&ctx, occlusion_instance_count)?;
+                // Write the `OcclusionParams` uniform every frame so the
+                // cull + compaction shaders bound their per-thread loops
+                // by this frame's active count rather than the buffer's
+                // capacity. Without this, tail threads in the
+                // workgroup-rounded dispatch process stale instance slots
+                // and double-count phantom meshes into
+                // `IndirectDrawArgs.instance_count`.
+                occlusion_buffers.write_params(&self.gpu, occlusion_instance_count)?;
 
-                // Compact the cull's `visible_this_frame[]` into
-                // per-mesh `IndirectDrawArgs.instance_count` — the
-                // *next* frame's geometry pass `drawIndirect`
-                // consumer reads this. (The geometry pass at the
-                // top of this frame already consumed last frame's
-                // compaction result; that's the one-frame-latent
-                // visibility model documented in §16.7/§16.8 and on
-                // `CompactionBuffers::args_ready`.)
-                if let Some(compaction_pass) =
-                    self.render_passes.occlusion_compaction.as_ref()
-                {
+                // Clear the IndirectDrawArgs buffer in COMMAND order so it
+                // executes strictly after the geometry pass's earlier
+                // `draw_indexed_indirect` reads of this same buffer and
+                // strictly before the compaction shader's writes. A CPU-
+                // side `queue.writeBuffer` would have raced ahead of the
+                // recorded geometry pass (queue order ≠ command order),
+                // zeroing the args that an in-flight drawIndirect needed
+                // to read. Compaction repopulates the static fields
+                // (`index_count`, `first_instance`) and atomicAdds
+                // `instance_count` from this zero base; slots not touched
+                // by compaction stay zero, which makes their drawIndirect
+                // a 0-index, 0-instance no-op (correct for meshes that
+                // dropped out of the renderable set this frame).
+                if let Some(compaction_buffers) = self.compaction_buffers.as_ref() {
+                    ctx.command_encoder
+                        .clear_buffer(&compaction_buffers.args_buffer, None, None);
+                }
+
+                if occlusion_instance_count > 0 {
                     let _maybe_span_guard = if self.logging.render_timings {
                         Some(
                             tracing::span!(
                                 tracing::Level::INFO,
-                                "Occlusion Compaction",
+                                "Occlusion Cull RenderPass",
                                 instances = occlusion_instance_count
                             )
                             .entered(),
@@ -822,34 +782,58 @@ impl AwsmRenderer {
                     } else {
                         None
                     };
-                    compaction_pass.render(&ctx, occlusion_instance_count)?;
-                    // Mark the args buffer as containing a valid
-                    // previous-frame visibility set for the next
-                    // frame's geometry pass. The `ensure_capacity`
-                    // resize earlier in this function constructs a
-                    // fresh zero-initialized `CompactionBuffers`
-                    // which resets this back to `false`, so a
-                    // grow event correctly flips us back to the
-                    // CPU path until the next compaction completes.
+                    occlusion_pass.render(&ctx, occlusion_instance_count)?;
+
+                    // Compact the cull's `visible_this_frame[]` into
+                    // per-mesh `IndirectDrawArgs.instance_count` — the
+                    // *next* frame's geometry pass `drawIndirect`
+                    // consumer reads this. (The geometry pass at the
+                    // top of this frame already consumed last frame's
+                    // compaction result; that's the one-frame-latent
+                    // visibility model documented in §16.7/§16.8 and on
+                    // `CompactionBuffers::args_ready`.)
+                    if let Some(compaction_pass) = self.render_passes.occlusion_compaction.as_ref()
+                    {
+                        let _maybe_span_guard = if self.logging.render_timings {
+                            Some(
+                                tracing::span!(
+                                    tracing::Level::INFO,
+                                    "Occlusion Compaction",
+                                    instances = occlusion_instance_count
+                                )
+                                .entered(),
+                            )
+                        } else {
+                            None
+                        };
+                        compaction_pass.render(&ctx, occlusion_instance_count)?;
+                        // Mark the args buffer as containing a valid
+                        // previous-frame visibility set for the next
+                        // frame's geometry pass. The `ensure_capacity`
+                        // resize earlier in this function constructs a
+                        // fresh zero-initialized `CompactionBuffers`
+                        // which resets this back to `false`, so a
+                        // grow event correctly flips us back to the
+                        // CPU path until the next compaction completes.
+                        if let Some(compaction_buffers) = self.compaction_buffers.as_ref() {
+                            compaction_buffers.args_ready.set(true);
+                        }
+                    }
+                } else {
+                    // Zero-instance frame: the `clear_buffer` above
+                    // zeroed args, but no compaction ran to repopulate
+                    // them. If `args_ready` carried `true` from a prior
+                    // frame, the next frame's geometry pass would
+                    // drawIndirect against the cleared (all-zero) buffer
+                    // — every non-instanced AABB mesh would vanish for
+                    // one frame on the way back in. Poison it now so the
+                    // next frame routes through the CPU path until a
+                    // real compaction lands.
                     if let Some(compaction_buffers) = self.compaction_buffers.as_ref() {
-                        compaction_buffers.args_ready.set(true);
+                        compaction_buffers.args_ready.set(false);
                     }
                 }
-            } else {
-                // Zero-instance frame: the `clear_buffer` above
-                // zeroed args, but no compaction ran to repopulate
-                // them. If `args_ready` carried `true` from a prior
-                // frame, the next frame's geometry pass would
-                // drawIndirect against the cleared (all-zero) buffer
-                // — every non-instanced AABB mesh would vanish for
-                // one frame on the way back in. Poison it now so the
-                // next frame routes through the CPU path until a
-                // real compaction lands.
-                if let Some(compaction_buffers) = self.compaction_buffers.as_ref() {
-                    compaction_buffers.args_ready.set(false);
-                }
             }
-        }
         }
 
         // Built-in line render pass — must run after the opaque->transparent
@@ -1015,8 +999,7 @@ impl AwsmRenderer {
         // coverage rather than ringing the buffer).
         if let Some(slot_map) = coverage_slot_map {
             let readback_buffer = self.coverage_buffers.readback_buffer.clone();
-            let readback_size_bytes =
-                (self.coverage_buffers.capacity as u32).saturating_mul(4);
+            let readback_size_bytes = (self.coverage_buffers.capacity as u32).saturating_mul(4);
             let state = self.coverage_readback_state.clone();
             state.borrow_mut().inflight = true;
             wasm_bindgen_futures::spawn_local(async move {
@@ -1033,9 +1016,7 @@ impl AwsmRenderer {
                             if base + 4 > bytes.len() {
                                 return None;
                             }
-                            let count = u32::from_le_bytes(
-                                bytes[base..base + 4].try_into().ok()?,
-                            );
+                            let count = u32::from_le_bytes(bytes[base..base + 4].try_into().ok()?);
                             Some((mesh_key, count))
                         })
                         .collect(),
@@ -1110,8 +1091,7 @@ pub struct RenderContext<'a> {
     /// present (the coverage pass runs unconditionally). The
     /// coverage render pass + the per-frame `copyBufferToBuffer`
     /// into the readback buffer both reach through this field.
-    pub coverage_buffers:
-        Option<&'a crate::render_passes::coverage::buffers::CoverageBuffers>,
+    pub coverage_buffers: Option<&'a crate::render_passes::coverage::buffers::CoverageBuffers>,
     /// Per-frame derived flags from
     /// [`crate::optimization_policy::compute_frame_optimizations`].
     /// `Cell` because the values aren't known until after

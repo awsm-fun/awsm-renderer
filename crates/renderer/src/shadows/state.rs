@@ -46,10 +46,10 @@ use crate::{
         evsm::EvsmPass,
         helpers::{
             build_cascade_layer_views, build_cube_face_views, build_evsm_blur_bind_group,
-            build_evsm_moment_write_bind_group, build_shadow_pipeline,
-            create_cascade_array_view, create_cube_2d_array_view, create_cube_array_view,
-            extract_near_far, view_projection_drift, write_shadow_cascade_array_descriptor,
-            write_shadow_descriptor, write_shadow_view_slot, SHADOW_DESCRIPTOR_UNIFORM_BYTES,
+            build_evsm_moment_write_bind_group, build_shadow_pipeline, create_cascade_array_view,
+            create_cube_2d_array_view, create_cube_array_view, extract_near_far,
+            view_projection_drift, write_shadow_cascade_array_descriptor, write_shadow_descriptor,
+            write_shadow_view_slot, SHADOW_DESCRIPTOR_UNIFORM_BYTES,
         },
         light_shadow::{EvsmCutoff, LightShadowParams},
         record::{
@@ -1869,8 +1869,7 @@ impl Shadows {
                 // views are forced to render every frame until a
                 // per-tile clear lands. `update_period` for spot views
                 // is hard-coded to 1 above, so this just reasserts.
-                let has_own_attachment =
-                    view.cube_layer.is_some() || view.cascade_layer.is_some();
+                let has_own_attachment = view.cube_layer.is_some() || view.cascade_layer.is_some();
                 view.should_render = due || !has_own_attachment;
                 if view.should_render {
                     t.last_rendered_frame = frame;

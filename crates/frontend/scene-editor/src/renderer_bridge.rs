@@ -231,8 +231,7 @@ fn sync_decals_pre_render(renderer: &mut awsm_renderer::AwsmRenderer) {
         // Hidden decals contribute zero — easier than removing /
         // re-inserting on every eye-toggle flip.
         let alpha = if visible { cfg.alpha } else { 0.0 };
-        let texture_index =
-            crate::renderer_bridge::node_sync::decal_texture_index(&cfg);
+        let texture_index = crate::renderer_bridge::node_sync::decal_texture_index(&cfg);
         renderer.update_decal(decal_key, |decal| {
             *decal = awsm_renderer::decals::Decal::new(world, texture_index, alpha);
         });

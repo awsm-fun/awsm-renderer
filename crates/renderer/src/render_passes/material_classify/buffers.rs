@@ -63,10 +63,7 @@ impl ClassifyBuffers {
     /// Creates the classify buffer sized to a tile-count-per-bucket of
     /// `capacity`. Cheap on a small viewport (~megabytes) — the
     /// upfront allocation amortizes vs growing on first frame.
-    pub fn new(
-        gpu: &AwsmRendererWebGpu,
-        bucket_capacity: u32,
-    ) -> Result<Self, AwsmCoreError> {
+    pub fn new(gpu: &AwsmRendererWebGpu, bucket_capacity: u32) -> Result<Self, AwsmCoreError> {
         let bucket_capacity = bucket_capacity.max(1);
         let tiles_bytes = bucket_capacity
             .saturating_mul(BUCKET_COUNT)
@@ -147,8 +144,7 @@ fn write_header(dst: &mut [u8; HEADER_BYTES as usize], bucket_capacity: u32) {
     let base = (BUCKET_COUNT * INDIRECT_ARGS_STRIDE) as usize;
     dst[base..base + 4].copy_from_slice(&0u32.to_ne_bytes());
     dst[base + 4..base + 8].copy_from_slice(&bucket_capacity.to_ne_bytes());
-    dst[base + 8..base + 12]
-        .copy_from_slice(&bucket_capacity.saturating_mul(2).to_ne_bytes());
+    dst[base + 8..base + 12].copy_from_slice(&bucket_capacity.saturating_mul(2).to_ne_bytes());
     dst[base + 12..base + 16].copy_from_slice(&bucket_capacity.to_ne_bytes());
 }
 

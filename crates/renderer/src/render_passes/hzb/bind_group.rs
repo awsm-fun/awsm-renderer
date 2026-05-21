@@ -67,11 +67,7 @@ impl HzbBindGroups {
     /// texture view. Called on viewport resize (which recreated both
     /// the depth and HZB textures) and any time `BindGroups`
     /// triggers a `TextureViewRecreate` event.
-    pub fn recreate(
-        &mut self,
-        ctx: &BindGroupRecreateContext<'_>,
-        hzb: &HzbTexture,
-    ) -> Result<()> {
+    pub fn recreate(&mut self, ctx: &BindGroupRecreateContext<'_>, hzb: &HzbTexture) -> Result<()> {
         // Seed.
         let seed_layout = if ctx.anti_aliasing.msaa_sample_count.is_some() {
             self.seed_layout_key_msaa

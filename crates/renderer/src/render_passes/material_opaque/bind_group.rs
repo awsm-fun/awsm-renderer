@@ -329,9 +329,7 @@ impl MaterialOpaqueBindGroups {
         // own (read-write) view of the same buffer.
         entries.push(BindGroupEntry::new(
             entries.len() as u32,
-            BindGroupResource::Buffer(BufferBinding::new(
-                &ctx.material_classify_buffers.buffer,
-            )),
+            BindGroupResource::Buffer(BufferBinding::new(&ctx.material_classify_buffers.buffer)),
         ));
 
         let descriptor = BindGroupDescriptor::new(

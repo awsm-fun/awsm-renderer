@@ -439,7 +439,9 @@ impl Light {
         use glam::Vec3;
         match self {
             Light::Directional { .. } => None,
-            Light::Point { position, range, .. } => {
+            Light::Point {
+                position, range, ..
+            } => {
                 let center = Vec3::from_array(*position);
                 let extent = Vec3::splat(*range);
                 Some(crate::bounds::Aabb {

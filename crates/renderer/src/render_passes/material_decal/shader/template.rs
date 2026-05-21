@@ -14,10 +14,7 @@ pub struct ShaderTemplateMaterialDecal {
 }
 
 #[derive(Template, Debug)]
-#[template(
-    path = "material_decal_wgsl/bind_groups.wgsl",
-    whitespace = "minimize"
-)]
+#[template(path = "material_decal_wgsl/bind_groups.wgsl", whitespace = "minimize")]
 pub struct ShaderTemplateMaterialDecalBindGroups {
     pub multisampled_geometry: bool,
     pub texture_pool_arrays_len: u32,
@@ -25,10 +22,7 @@ pub struct ShaderTemplateMaterialDecalBindGroups {
 }
 
 #[derive(Template, Debug)]
-#[template(
-    path = "material_decal_wgsl/compute.wgsl",
-    whitespace = "minimize"
-)]
+#[template(path = "material_decal_wgsl/compute.wgsl", whitespace = "minimize")]
 pub struct ShaderTemplateMaterialDecalCompute {
     pub multisampled_geometry: bool,
     pub texture_pool_arrays_len: u32,

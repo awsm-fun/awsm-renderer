@@ -914,10 +914,9 @@ async fn apply_kind_decal(entry: Arc<RendererNode>, cfg: awsm_scene_schema::Deca
     entry.node.asset_status.set(AssetStatus::Idle);
     let texture_index = decal_texture_index(&cfg);
     let alpha = cfg.alpha;
-    let key = with_renderer_mut(move |r| {
-        r.insert_decal(glam::Mat4::IDENTITY, texture_index, alpha)
-    })
-    .await;
+    let key =
+        with_renderer_mut(move |r| r.insert_decal(glam::Mat4::IDENTITY, texture_index, alpha))
+            .await;
     match key {
         Ok(key) => {
             *entry.decal_key.lock().unwrap() = Some(key);
@@ -937,9 +936,7 @@ pub(crate) fn decal_texture_index(cfg: &awsm_scene_schema::DecalConfig) -> u32 {
     let Some(tex_ref) = cfg.texture else {
         return 0;
     };
-    let Some(texture_key) =
-        crate::renderer_bridge::texture_cache::lookup(tex_ref.0)
-    else {
+    let Some(texture_key) = crate::renderer_bridge::texture_cache::lookup(tex_ref.0) else {
         return 0;
     };
     let handle = renderer_handle();

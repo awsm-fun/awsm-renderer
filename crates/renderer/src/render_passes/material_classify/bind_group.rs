@@ -34,10 +34,8 @@ impl MaterialClassifyBindGroups {
     /// the first frame, on viewport resize, when classify buffers are
     /// recreated).
     pub async fn new(ctx: &mut RenderPassInitContext<'_>) -> Result<Self> {
-        let multisampled_bind_group_layout_key =
-            create_bind_group_layout_key(ctx, true).await?;
-        let singlesampled_bind_group_layout_key =
-            create_bind_group_layout_key(ctx, false).await?;
+        let multisampled_bind_group_layout_key = create_bind_group_layout_key(ctx, true).await?;
+        let singlesampled_bind_group_layout_key = create_bind_group_layout_key(ctx, false).await?;
 
         Ok(Self {
             multisampled_bind_group_layout_key,
@@ -48,7 +46,9 @@ impl MaterialClassifyBindGroups {
 
     /// Returns the live classify bind group. Errors if
     /// [`Self::recreate`] hasn't been called yet this session.
-    pub fn get_bind_group(&self) -> std::result::Result<&web_sys::GpuBindGroup, AwsmBindGroupError> {
+    pub fn get_bind_group(
+        &self,
+    ) -> std::result::Result<&web_sys::GpuBindGroup, AwsmBindGroupError> {
         self.bind_group
             .as_ref()
             .ok_or_else(|| AwsmBindGroupError::NotFound("Material Classify".to_string()))

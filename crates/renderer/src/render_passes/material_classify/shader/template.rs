@@ -37,10 +37,7 @@ pub struct ShaderTemplateMaterialClassifyBindGroups {
 
 /// Compute shader body for the classify pass.
 #[derive(Template, Debug)]
-#[template(
-    path = "material_classify_wgsl/compute.wgsl",
-    whitespace = "minimize"
-)]
+#[template(path = "material_classify_wgsl/compute.wgsl", whitespace = "minimize")]
 pub struct ShaderTemplateMaterialClassifyCompute {
     pub multisampled_geometry: bool,
     /// Generated `const SHADER_ID_X: u32 = N;` lines — same source

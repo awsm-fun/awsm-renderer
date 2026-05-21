@@ -38,7 +38,8 @@ pub const DECAL_STRIDE_BYTES: usize = 80;
 /// decal array starts at `HEADER_BYTES`.
 pub const DECAL_HEADER_BYTES: usize = 16;
 
-const TOTAL_BUFFER_BYTES: usize = DECAL_HEADER_BYTES + DECAL_STRIDE_BYTES * MAX_DECAL_COUNT as usize;
+const TOTAL_BUFFER_BYTES: usize =
+    DECAL_HEADER_BYTES + DECAL_STRIDE_BYTES * MAX_DECAL_COUNT as usize;
 
 /// Runtime decal collection.
 ///
@@ -147,9 +148,9 @@ impl Decals {
     /// Iterates active decals — used by the render pass for
     /// per-frame data uploads or by debug overlays.
     pub fn iter(&self) -> impl Iterator<Item = (DecalKey, &Decal)> + '_ {
-        self.order.iter().filter_map(|k| {
-            self.decals.get(*k).map(|d| (*k, d))
-        })
+        self.order
+            .iter()
+            .filter_map(|k| self.decals.get(*k).map(|d| (*k, d)))
     }
 
     /// Per-frame GPU upload. Walks active decals in `order`, packs
@@ -184,13 +185,11 @@ impl Decals {
             self.staging_bytes[base..base + 64].copy_from_slice(bytes);
             self.staging_bytes[base + 64..base + 68]
                 .copy_from_slice(&decal.texture_index.to_le_bytes());
-            self.staging_bytes[base + 68..base + 72]
-                .copy_from_slice(&decal.alpha.to_le_bytes());
+            self.staging_bytes[base + 68..base + 72].copy_from_slice(&decal.alpha.to_le_bytes());
             let blend_mode_u32 = match decal.blend_mode {
                 DecalBlendMode::AlphaBlend => 0u32,
             };
-            self.staging_bytes[base + 72..base + 76]
-                .copy_from_slice(&blend_mode_u32.to_le_bytes());
+            self.staging_bytes[base + 72..base + 76].copy_from_slice(&blend_mode_u32.to_le_bytes());
             // Trailing 4 bytes stay zero — vec4 alignment pad.
             self.staging_bytes[base + 76..base + 80].copy_from_slice(&[0u8; 4]);
         }

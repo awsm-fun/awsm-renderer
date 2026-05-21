@@ -40,7 +40,11 @@ fn insert_and_envelope_query_finds_node() {
     let mut spatial = SceneSpatial::default();
 
     let key = fake_mesh_key(&mut keys);
-    spatial.insert(node(key, Vec3::new(-1.0, -1.0, -1.0), Vec3::new(1.0, 1.0, 1.0)));
+    spatial.insert(node(
+        key,
+        Vec3::new(-1.0, -1.0, -1.0),
+        Vec3::new(1.0, 1.0, 1.0),
+    ));
 
     let hits: Vec<_> = spatial
         .query_envelope(&Aabb {
@@ -58,7 +62,11 @@ fn update_replaces_old_envelope() {
     let mut spatial = SceneSpatial::default();
 
     let key = fake_mesh_key(&mut keys);
-    spatial.insert(node(key, Vec3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 1.0, 1.0)));
+    spatial.insert(node(
+        key,
+        Vec3::new(0.0, 0.0, 0.0),
+        Vec3::new(1.0, 1.0, 1.0),
+    ));
 
     // Move the node out to 100 units. The old envelope at the origin
     // must NOT match anymore.

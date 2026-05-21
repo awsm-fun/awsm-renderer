@@ -5,7 +5,7 @@
 use glam::Mat4;
 
 use crate::{
-    decals::{Decal, DecalKey, gpu::AwsmDecalError},
+    decals::{gpu::AwsmDecalError, Decal, DecalKey},
     AwsmRenderer,
 };
 

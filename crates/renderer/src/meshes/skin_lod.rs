@@ -90,9 +90,18 @@ mod tests {
     #[test]
     fn lod_levels_pick_first_match() {
         let levels = [
-            SkinLodLevel { max_distance: 10.0, period: 1 },
-            SkinLodLevel { max_distance: 30.0, period: 2 },
-            SkinLodLevel { max_distance: 80.0, period: 4 },
+            SkinLodLevel {
+                max_distance: 10.0,
+                period: 1,
+            },
+            SkinLodLevel {
+                max_distance: 30.0,
+                period: 2,
+            },
+            SkinLodLevel {
+                max_distance: 80.0,
+                period: 4,
+            },
         ];
         // Simulate the find() the function uses.
         let pick = |d: f32| -> u8 {
@@ -105,6 +114,10 @@ mod tests {
         assert_eq!(pick(5.0), 1);
         assert_eq!(pick(20.0), 2);
         assert_eq!(pick(50.0), 4);
-        assert_eq!(pick(200.0), 4, "past last threshold, sticks at slowest tier");
+        assert_eq!(
+            pick(200.0),
+            4,
+            "past last threshold, sticks at slowest tier"
+        );
     }
 }

@@ -8,8 +8,7 @@ use crate::{
     render::RenderContext,
     render_passes::{
         material_decal::{
-            bind_group::MaterialDecalBindGroups,
-            classify::render_pass::DecalClassifyRenderPass,
+            bind_group::MaterialDecalBindGroups, classify::render_pass::DecalClassifyRenderPass,
             composite::MaterialDecalComposite, pipeline::MaterialDecalPipelines,
         },
         RenderPassInitContext,

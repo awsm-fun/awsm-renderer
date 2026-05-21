@@ -16,7 +16,6 @@ pub mod decals;
 pub mod environment;
 pub mod error;
 pub mod features;
-pub mod optimization_policy;
 pub mod frustum;
 pub mod instances;
 pub mod light_buckets;
@@ -24,6 +23,7 @@ pub mod lights;
 pub mod materials;
 pub mod meshes;
 pub mod opaque_mipgen;
+pub mod optimization_policy;
 pub mod picker;
 pub mod pipeline_layouts;
 pub mod pipelines;
@@ -121,8 +121,7 @@ pub struct AwsmRenderer {
     /// Per-frame classify-pass output (Cluster 6.1, plan §16.3.B).
     /// Holds the per-`shader_id` tile buckets + indirect-dispatch args
     /// the opaque material pipelines consume.
-    pub material_classify_buffers:
-        render_passes::material_classify::buffers::ClassifyBuffers,
+    pub material_classify_buffers: render_passes::material_classify::buffers::ClassifyBuffers,
     /// Projection-decal subsystem (Cluster 6.4, plan §16.4). Owns
     /// the per-decal GPU storage buffer the `material_decal` compute
     /// pass reads at shading time. `None` when
@@ -132,20 +131,17 @@ pub struct AwsmRenderer {
     /// per-frame instance list (CPU-populated) + the per-instance
     /// visibility output. `None` when `features.gpu_culling == false`
     /// (plan §16.F).
-    pub occlusion_buffers:
-        Option<render_passes::occlusion::buffers::OcclusionBuffers>,
+    pub occlusion_buffers: Option<render_passes::occlusion::buffers::OcclusionBuffers>,
     /// Per-tile decal classify buckets (§16.4.C). Populated by a
     /// `decal_classify` compute pass run before the decal shading
     /// pass; the shading pass reads only the per-tile subset. `None`
     /// when `features.decals == false` (plan §16.F).
-    pub decal_classify_buffers: Option<
-        render_passes::material_decal::classify::buffers::DecalClassifyBuffers,
-    >,
+    pub decal_classify_buffers:
+        Option<render_passes::material_decal::classify::buffers::DecalClassifyBuffers>,
     /// GPU compaction `IndirectDrawArgs` buffer (§16.7 Phase 2 +
     /// §16.8 infrastructure). `None` when
     /// `features.gpu_culling == false` (plan §16.F).
-    pub compaction_buffers:
-        Option<render_passes::occlusion::compaction::CompactionBuffers>,
+    pub compaction_buffers: Option<render_passes::occlusion::compaction::CompactionBuffers>,
     /// Last-frame per-mesh pixel coverage (Cluster 6.2). Populated by
     /// the GPU coverage compute pass via `coverage_buffers` +
     /// asynchronous readback; consumed by the skinning-skip and
@@ -266,9 +262,7 @@ impl AwsmRenderer {
     }
 
     /// Returns the current adaptive policy.
-    pub fn optimization_policy(
-        &self,
-    ) -> &crate::optimization_policy::RendererOptimizationPolicy {
+    pub fn optimization_policy(&self) -> &crate::optimization_policy::RendererOptimizationPolicy {
         &self.optimization_policy
     }
 
@@ -390,8 +384,7 @@ impl AwsmRendererBuilder {
             post_processing: PostProcessing::default(),
             shadows_config: None,
             features: RendererFeatures::default(),
-            optimization_policy:
-                crate::optimization_policy::RendererOptimizationPolicy::default(),
+            optimization_policy: crate::optimization_policy::RendererOptimizationPolicy::default(),
         }
     }
 
@@ -547,8 +540,7 @@ impl AwsmRendererBuilder {
         let render_passes = RenderPasses::new(&mut render_pass_init, &features).await?;
 
         let bind_groups = BindGroups::new(&features);
-        let render_textures =
-            RenderTextures::new(&gpu, render_texture_formats, &features).await?;
+        let render_textures = RenderTextures::new(&gpu, render_texture_formats, &features).await?;
 
         let picker = Picker::new(
             &gpu,
@@ -593,7 +585,9 @@ impl AwsmRendererBuilder {
         // instances; grows 2× when needed. Gated by
         // `features.gpu_culling` (plan §16.F).
         let occlusion_buffers = if features.gpu_culling {
-            Some(render_passes::occlusion::buffers::OcclusionBuffers::new(&gpu)?)
+            Some(render_passes::occlusion::buffers::OcclusionBuffers::new(
+                &gpu,
+            )?)
         } else {
             None
         };
@@ -602,11 +596,7 @@ impl AwsmRendererBuilder {
         // `ensure_capacity` resizes against the live viewport on
         // first render. Gated by `features.decals` (plan §16.F).
         let decal_classify_buffers = if features.decals {
-            Some(
-                render_passes::material_decal::classify::buffers::DecalClassifyBuffers::new(
-                    &gpu,
-                )?,
-            )
+            Some(render_passes::material_decal::classify::buffers::DecalClassifyBuffers::new(&gpu)?)
         } else {
             None
         };
@@ -614,9 +604,7 @@ impl AwsmRendererBuilder {
         // GPU compaction args buffer (§16.7 Phase 2 + §16.8 infra).
         // Gated by `features.gpu_culling` (plan §16.F).
         let compaction_buffers = if features.gpu_culling {
-            Some(render_passes::occlusion::compaction::CompactionBuffers::new(
-                &gpu,
-            )?)
+            Some(render_passes::occlusion::compaction::CompactionBuffers::new(&gpu)?)
         } else {
             None
         };
@@ -624,8 +612,7 @@ impl AwsmRendererBuilder {
         // GPU mesh-pixel-coverage producer buffers — plan §8.2.
         // Always allocated; the producer pass runs every frame
         // (cheap) and feeds the CPU-side `MeshCoverage` table.
-        let coverage_buffers =
-            render_passes::coverage::buffers::CoverageBuffers::new(&gpu)?;
+        let coverage_buffers = render_passes::coverage::buffers::CoverageBuffers::new(&gpu)?;
 
         let shadows = shadows::Shadows::new(
             &gpu,

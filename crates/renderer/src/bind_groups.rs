@@ -57,17 +57,15 @@ pub struct BindGroupRecreateContext<'a> {
     pub decals: Option<&'a crate::decals::Decals>,
     /// Occlusion-cull instance + visibility buffers (§16.7 Phase 1).
     /// `None` when `features.gpu_culling == false` (plan §16.F).
-    pub occlusion_buffers:
-        Option<&'a crate::render_passes::occlusion::buffers::OcclusionBuffers>,
+    pub occlusion_buffers: Option<&'a crate::render_passes::occlusion::buffers::OcclusionBuffers>,
     /// Full-chain HZB view used by the cull pass to sample at
     /// per-instance mip levels. `None` when
     /// `features.gpu_culling == false` (plan §16.F).
     pub hzb_full_view: Option<web_sys::GpuTextureView>,
     /// Per-tile decal classify buckets (§16.4.C). `None` when
     /// `features.decals == false` (plan §16.F).
-    pub decal_classify_buffers: Option<
-        &'a crate::render_passes::material_decal::classify::buffers::DecalClassifyBuffers,
-    >,
+    pub decal_classify_buffers:
+        Option<&'a crate::render_passes::material_decal::classify::buffers::DecalClassifyBuffers>,
     /// GPU compaction `IndirectDrawArgs` buffer (§16.7 Phase 2 +
     /// §16.8 infra). `None` when `features.gpu_culling == false`
     /// (plan §16.F).
@@ -75,8 +73,7 @@ pub struct BindGroupRecreateContext<'a> {
         Option<&'a crate::render_passes::occlusion::compaction::CompactionBuffers>,
     /// GPU mesh-pixel-coverage producer buffers — plan §8.2.
     /// Always present (the coverage producer is unconditional).
-    pub coverage_buffers:
-        Option<&'a crate::render_passes::coverage::buffers::CoverageBuffers>,
+    pub coverage_buffers: Option<&'a crate::render_passes::coverage::buffers::CoverageBuffers>,
     /// Active feature gates (plan §16.F) — the dispatcher uses these
     /// to skip recreating bind groups for passes whose feature is
     /// disabled.
@@ -164,8 +161,9 @@ impl BindGroups {
             .filter(|v| match v {
                 BindGroupCreate::OcclusionBuffersResize
                 | BindGroupCreate::CompactionBuffersResize => features.gpu_culling,
-                BindGroupCreate::DecalsResize
-                | BindGroupCreate::DecalClassifyBuffersResize => features.decals,
+                BindGroupCreate::DecalsResize | BindGroupCreate::DecalClassifyBuffersResize => {
+                    features.decals
+                }
                 _ => true,
             })
             .collect::<HashSet<_>>();
@@ -493,10 +491,7 @@ impl BindGroups {
                         .recreate(&ctx)?;
                 }
                 FunctionToCall::MaterialClassify => {
-                    render_passes
-                        .material_classify
-                        .bind_groups
-                        .recreate(&ctx)?;
+                    render_passes.material_classify.bind_groups.recreate(&ctx)?;
                 }
                 FunctionToCall::Coverage => {
                     // §8.2: only rebuild the bind group that matches

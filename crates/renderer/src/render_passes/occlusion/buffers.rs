@@ -78,10 +78,7 @@ impl OcclusionBuffers {
         Self::with_capacity(gpu, INITIAL_CAPACITY)
     }
 
-    fn with_capacity(
-        gpu: &AwsmRendererWebGpu,
-        capacity: u32,
-    ) -> Result<Self, AwsmCoreError> {
+    fn with_capacity(gpu: &AwsmRendererWebGpu, capacity: u32) -> Result<Self, AwsmCoreError> {
         let capacity = capacity.max(1);
         let instances_bytes = capacity as usize * OCCLUSION_INSTANCE_STRIDE;
         // 4 bytes per visible_this_frame slot (u32).
@@ -98,7 +95,10 @@ impl OcclusionBuffers {
             &BufferDescriptor::new(
                 Some("OcclusionVisible"),
                 visible_bytes,
-                BufferUsage::new().with_storage().with_copy_dst().with_copy_src(),
+                BufferUsage::new()
+                    .with_storage()
+                    .with_copy_dst()
+                    .with_copy_src(),
             )
             .into(),
         )?;

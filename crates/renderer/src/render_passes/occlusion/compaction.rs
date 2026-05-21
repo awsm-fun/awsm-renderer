@@ -102,11 +102,7 @@ impl CompactionBuffers {
 
     /// Grows the args buffer when the mesh slot count exceeds capacity.
     /// Returns `true` when reallocated.
-    pub fn ensure_capacity(
-        &mut self,
-        gpu: &AwsmRendererWebGpu,
-        needed: u32,
-    ) -> Result<bool> {
+    pub fn ensure_capacity(&mut self, gpu: &AwsmRendererWebGpu, needed: u32) -> Result<bool> {
         if needed <= self.capacity {
             return Ok(false);
         }
@@ -198,15 +194,11 @@ impl CompactionBindGroups {
         let entries = vec![
             BindGroupEntry::new(
                 0,
-                BindGroupResource::Buffer(BufferBinding::new(
-                    &occlusion_buffers.instances_buffer,
-                )),
+                BindGroupResource::Buffer(BufferBinding::new(&occlusion_buffers.instances_buffer)),
             ),
             BindGroupEntry::new(
                 1,
-                BindGroupResource::Buffer(BufferBinding::new(
-                    &occlusion_buffers.visible_buffer,
-                )),
+                BindGroupResource::Buffer(BufferBinding::new(&occlusion_buffers.visible_buffer)),
             ),
             BindGroupEntry::new(
                 2,
@@ -214,9 +206,7 @@ impl CompactionBindGroups {
             ),
             BindGroupEntry::new(
                 3,
-                BindGroupResource::Buffer(BufferBinding::new(
-                    &occlusion_buffers.params_buffer,
-                )),
+                BindGroupResource::Buffer(BufferBinding::new(&occlusion_buffers.params_buffer)),
             ),
         ];
         let descriptor = BindGroupDescriptor::new(

@@ -120,11 +120,9 @@ pub async fn read_importance_tier_histogram() -> String {
         let Some(matrices) = r.camera.last_matrices.as_ref() else {
             return None;
         };
-        let camera_pos =
-            matrices.view.inverse().transpose().w_axis.truncate();
-        let frustum = awsm_renderer::frustum::Frustum::from_view_projection(
-            matrices.view_projection(),
-        );
+        let camera_pos = matrices.view.inverse().transpose().w_axis.truncate();
+        let frustum =
+            awsm_renderer::frustum::Frustum::from_view_projection(matrices.view_projection());
         let mut low = 0u32;
         let mut medium = 0u32;
         let mut high = 0u32;
@@ -190,14 +188,8 @@ pub async fn read_importance_tier_histogram() -> String {
         return "{\"error\":\"no camera matrices yet\"}".to_string();
     };
     let total = low + medium + high + ultra;
-    let min_score = scores
-        .iter()
-        .copied()
-        .fold(f32::INFINITY, f32::min);
-    let max_score = scores
-        .iter()
-        .copied()
-        .fold(f32::NEG_INFINITY, f32::max);
+    let min_score = scores.iter().copied().fold(f32::INFINITY, f32::min);
+    let max_score = scores.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     let scores_str = scores
         .iter()
         .map(|s| format!("{s:.4}"))
@@ -258,15 +250,12 @@ pub async fn read_mesh_coverage_stats() -> String {
 /// `JSON.parse()`.
 #[wasm_bindgen]
 pub async fn read_oversized_mesh_stats() -> String {
-    let (last_max_bucket, oversized_count) =
-        crate::context::with_renderer_mut(|r| {
-            (
-                r.light_buckets.last_max_bucket(),
-                r.light_buckets.oversized_meshes().len(),
-            )
-        })
-        .await;
-    format!(
-        "{{\"last_max_bucket\":{last_max_bucket},\"oversized_count\":{oversized_count}}}"
-    )
+    let (last_max_bucket, oversized_count) = crate::context::with_renderer_mut(|r| {
+        (
+            r.light_buckets.last_max_bucket(),
+            r.light_buckets.oversized_meshes().len(),
+        )
+    })
+    .await;
+    format!("{{\"last_max_bucket\":{last_max_bucket},\"oversized_count\":{oversized_count}}}")
 }

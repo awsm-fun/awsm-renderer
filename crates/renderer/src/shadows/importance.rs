@@ -70,11 +70,8 @@ impl AwsmRenderer {
 
         // Snapshot the light keys + state so we can mutate
         // `shadows.params` without holding a borrow on `self.lights`.
-        let snapshot: Vec<(LightKey, Light)> = self
-            .lights
-            .iter()
-            .map(|(k, l)| (k, l.clone()))
-            .collect();
+        let snapshot: Vec<(LightKey, Light)> =
+            self.lights.iter().map(|(k, l)| (k, l.clone())).collect();
 
         for (light_key, light) in snapshot {
             // Skip if the light doesn't cast shadows.

@@ -12,9 +12,7 @@ use crate::{
     error::Result,
     render::RenderContext,
     render_passes::{
-        hzb::{
-            bind_group::HzbBindGroups, pipeline::HzbPipelines, texture::HzbTexture,
-        },
+        hzb::{bind_group::HzbBindGroups, pipeline::HzbPipelines, texture::HzbTexture},
         RenderPassInitContext,
     },
 };
@@ -68,9 +66,9 @@ impl HzbRenderPass {
     pub fn render(&self, ctx: &RenderContext) -> Result<()> {
         // Seed pass.
         {
-            let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
-                &ComputePassDescriptor::new(Some("HZB Seed")).into(),
-            ));
+            let compute_pass = ctx
+                .command_encoder
+                .begin_compute_pass(Some(&ComputePassDescriptor::new(Some("HZB Seed")).into()));
             let pipeline_key = if ctx.anti_aliasing.msaa_sample_count.is_some() {
                 self.pipelines.seed_msaa
             } else {
@@ -86,9 +84,9 @@ impl HzbRenderPass {
 
         // Reduce pass per mip transition.
         for transition in 0..(self.texture.mip_count.saturating_sub(1)) as usize {
-            let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
-                &ComputePassDescriptor::new(Some("HZB Reduce")).into(),
-            ));
+            let compute_pass = ctx
+                .command_encoder
+                .begin_compute_pass(Some(&ComputePassDescriptor::new(Some("HZB Reduce")).into()));
             compute_pass.set_pipeline(ctx.pipelines.compute.get(self.pipelines.reduce)?);
             compute_pass.set_bind_group(0, self.bind_groups.reduce_at(transition)?, None)?;
             let (dst_w, dst_h) = self.texture.mip_dims((transition + 1) as u32);

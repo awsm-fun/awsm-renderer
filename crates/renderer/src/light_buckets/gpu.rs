@@ -136,8 +136,7 @@ impl MeshLightIndicesGpu {
                 continue;
             }
             for index in light_indices {
-                self.indices_scratch
-                    .extend_from_slice(&index.to_le_bytes());
+                self.indices_scratch.extend_from_slice(&index.to_le_bytes());
             }
         }
 

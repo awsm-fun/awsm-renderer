@@ -9,7 +9,7 @@
 use glam::Vec3;
 use rstar::{
     primitives::{GeomWithData, Rectangle as RstarRectangle},
-    AABB as RstarAABB, SelectionFunction,
+    SelectionFunction, AABB as RstarAABB,
 };
 
 use crate::{frustum::Frustum, meshes::MeshKey};

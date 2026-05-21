@@ -156,12 +156,7 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
             let conservative_extra: Vec<_> = ctx
                 .meshes
                 .iter()
-                .filter(|(_, m)| {
-                    m.cast_shadows
-                        && !m.hidden
-                        && !m.hud
-                        && m.world_aabb.is_none()
-                })
+                .filter(|(_, m)| m.cast_shadows && !m.hidden && !m.hud && m.world_aabb.is_none())
                 .map(|(k, _)| k)
                 .collect();
 
@@ -179,8 +174,7 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
                     last_pipeline_key = Some(pipeline_key);
                 }
 
-                let geometry_meta_offset =
-                    ctx.meshes.meta.geometry_buffer_offset(mesh_key)? as u32;
+                let geometry_meta_offset = ctx.meshes.meta.geometry_buffer_offset(mesh_key)? as u32;
                 if mesh.instanced {
                     render_pass.set_bind_group(
                         2,
