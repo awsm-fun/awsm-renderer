@@ -270,18 +270,51 @@ impl AwsmRenderer {
             clear_color: &self._clear_color,
             scene_spatial: &self.scene_spatial,
             material_classify_buffers: &self.material_classify_buffers,
+            features: &self.features,
+            compaction_buffers: self.compaction_buffers.as_ref(),
         };
 
         let renderables = self.collect_renderables(&ctx)?;
 
-        // Snapshot the opaque renderables' world AABBs while we still
-        // hold the borrow (`renderables.opaque` is consumed by the
-        // material-opaque pass below). The occlusion-cull pass uses
-        // this snapshot once HZB is built.
-        let occlusion_aabbs: Vec<crate::bounds::Aabb> = renderables
+        // Snapshot per-opaque-renderable info that the occlusion + indirect-
+        // draw infrastructure needs after `renderables.opaque` is consumed
+        // by the material-opaque pass. For each opaque mesh-renderable
+        // with a world AABB:
+        //   - `aabb`               → cull pass instance bounds
+        //   - `mesh_meta_offset`   → compaction shader's slot identifier
+        //                            (`mesh_meta_offset / 256 = slot`)
+        //   - `index_count`        → drawIndirect args (static field
+        //                            populated by CPU; instance_count is
+        //                            GPU-populated by the compaction shader)
+        //   - `instanced`          → instanced meshes stay on the legacy
+        //                            `draw_indexed_with_instance_count`
+        //                            path and don't get a `drawIndirect`
+        //                            args entry
+        // Plan §16.7/§16.8.
+        struct OcclusionSnapshot {
+            aabb: crate::bounds::Aabb,
+            mesh_meta_offset: u32,
+            index_count: u32,
+            instanced: bool,
+        }
+        let opaque_snapshots: Vec<OcclusionSnapshot> = renderables
             .opaque
             .iter()
-            .filter_map(|r| r.world_aabb().cloned())
+            .filter_map(|r| match r {
+                crate::renderable::Renderable::Mesh { mesh, key, .. } => {
+                    let aabb = mesh.world_aabb.clone()?;
+                    let meta_offset = ctx.meshes.meta.geometry_buffer_offset(*key).ok()? as u32;
+                    let buffer_info = ctx.meshes.buffer_info(*key).ok()?;
+                    let index_count =
+                        buffer_info.triangles.vertex_attribute_indices.count as u32;
+                    Some(OcclusionSnapshot {
+                        aabb,
+                        mesh_meta_offset: meta_offset,
+                        index_count,
+                        instanced: mesh.instanced,
+                    })
+                }
+            })
             .collect();
 
         if let Some(hook) = hooks.and_then(|h| h.first_pass.as_ref()) {
@@ -509,20 +542,71 @@ impl AwsmRenderer {
             self.occlusion_buffers.as_ref(),
             self.render_passes.occlusion.as_ref(),
         ) {
+            // Pre-upload `IndirectDrawArgs` static fields per non-
+            // instanced mesh slot. The compaction shader then atomic-
+            // adds `instance_count` (1 per visible cull instance) on
+            // top. Per-frame because slot indices stay stable but the
+            // visible set + index_counts can shift across renders;
+            // unreferenced slots stay zeroed which makes them no-op
+            // draws (`instance_count = 0`). Plan §16.7/§16.8.
+            if let Some(compaction_buffers) = self.compaction_buffers.as_ref() {
+                let stride =
+                    crate::render_passes::occlusion::compaction::INDIRECT_DRAW_ARGS_STRIDE;
+                let slot_count = compaction_buffers.capacity as usize;
+                let mut args_bytes = vec![0u8; slot_count * stride];
+                for snap in &opaque_snapshots {
+                    if snap.instanced {
+                        // Instanced meshes don't drawIndirect — they
+                        // stay on `draw_indexed_with_instance_count`.
+                        // Their args slot is left zeroed.
+                        continue;
+                    }
+                    let slot = (snap.mesh_meta_offset
+                        / crate::meshes::meta::geometry_meta::GEOMETRY_MESH_META_BYTE_ALIGNMENT
+                            as u32) as usize;
+                    if slot >= slot_count {
+                        continue;
+                    }
+                    let base = slot * stride;
+                    // Layout: (index_count, instance_count=0,
+                    // first_index=0, base_vertex=0, first_instance=slot,
+                    // _pad×3). instance_count is GPU-written by the
+                    // compaction shader; first_instance lands the
+                    // vertex shader's `geometry_mesh_metas[instance_index]`
+                    // on the right meta slot.
+                    args_bytes[base..base + 4]
+                        .copy_from_slice(&snap.index_count.to_le_bytes());
+                    args_bytes[base + 16..base + 20]
+                        .copy_from_slice(&(slot as u32).to_le_bytes());
+                }
+                self.gpu.write_buffer(
+                    &compaction_buffers.args_buffer,
+                    None,
+                    args_bytes.as_slice(),
+                    None,
+                    None,
+                )?;
+            }
+
             let occlusion_instance_count = {
                 let stride =
                     crate::render_passes::occlusion::buffers::OCCLUSION_INSTANCE_STRIDE;
-                let mut bytes: Vec<u8> = Vec::with_capacity(occlusion_aabbs.len() * stride);
-                for aabb in &occlusion_aabbs {
-                    bytes.extend_from_slice(&aabb.min.x.to_le_bytes());
-                    bytes.extend_from_slice(&aabb.min.y.to_le_bytes());
-                    bytes.extend_from_slice(&aabb.min.z.to_le_bytes());
+                let mut bytes: Vec<u8> = Vec::with_capacity(opaque_snapshots.len() * stride);
+                for snap in &opaque_snapshots {
+                    bytes.extend_from_slice(&snap.aabb.min.x.to_le_bytes());
+                    bytes.extend_from_slice(&snap.aabb.min.y.to_le_bytes());
+                    bytes.extend_from_slice(&snap.aabb.min.z.to_le_bytes());
                     bytes.extend_from_slice(&0u32.to_le_bytes()); // _pad0
-                    bytes.extend_from_slice(&aabb.max.x.to_le_bytes());
-                    bytes.extend_from_slice(&aabb.max.y.to_le_bytes());
-                    bytes.extend_from_slice(&aabb.max.z.to_le_bytes());
+                    bytes.extend_from_slice(&snap.aabb.max.x.to_le_bytes());
+                    bytes.extend_from_slice(&snap.aabb.max.y.to_le_bytes());
+                    bytes.extend_from_slice(&snap.aabb.max.z.to_le_bytes());
                     bytes.extend_from_slice(&0u32.to_le_bytes()); // _pad1
-                    bytes.extend_from_slice(&0u32.to_le_bytes()); // mesh_meta_offset (unused in v1)
+                    // mesh_meta_offset — plan §16.7/§16.8. The
+                    // compaction shader divides by
+                    // `MaterialMeshMeta` stride (256 B) to derive
+                    // the args-buffer slot; the geometry meta uses
+                    // the same alignment so this byte offset works.
+                    bytes.extend_from_slice(&snap.mesh_meta_offset.to_le_bytes());
                     bytes.extend_from_slice(&0u32.to_le_bytes()); // instance_attr_base
                     bytes.extend_from_slice(&0u32.to_le_bytes()); // last_frame_visible
                     bytes.extend_from_slice(&0u32.to_le_bytes()); // _pad2
@@ -738,6 +822,15 @@ pub struct RenderContext<'a> {
     /// `dispatchWorkgroupsIndirect`.
     pub material_classify_buffers:
         &'a crate::render_passes::material_classify::buffers::ClassifyBuffers,
+    /// Active feature gates (plan §16.F). Read by the geometry pass
+    /// to fork between `drawIndirect` (under `gpu_culling`) and the
+    /// legacy CPU-recorded `draw_indexed_*` loop.
+    pub features: &'a crate::features::RendererFeatures,
+    /// GPU compaction `IndirectDrawArgs` buffer (plan §16.7/§16.8).
+    /// `Some` only when `features.gpu_culling` is on. The geometry
+    /// pass reads it as the indirect-args source for `drawIndirect`.
+    pub compaction_buffers:
+        Option<&'a crate::render_passes::occlusion::compaction::CompactionBuffers>,
 }
 
 impl<'a> RenderContext<'a> {

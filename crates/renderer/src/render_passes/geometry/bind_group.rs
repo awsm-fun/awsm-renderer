@@ -167,17 +167,45 @@ impl GeometryBindGroupTransforms {
 }
 
 /// Bind group for mesh metadata in the geometry pass.
+///
+/// Plan §16.7/§16.8: the layout forks on the instancing flag. The
+/// non-instanced shader variant binds a storage-array of
+/// `GeometryMeshMeta` and indexes it by `@builtin(instance_index)`
+/// (enabling `drawIndirect` under `features.gpu_culling`), while
+/// the instanced variant keeps the legacy uniform-with-dynamic-
+/// offset binding (its instance_index ranges would otherwise
+/// collide with neighbouring meshes' meta slots).
 #[derive(Default)]
 pub struct GeometryBindGroupMeta {
-    pub bind_group_layout_key: BindGroupLayoutKey,
-    // this is set via `recreate` mechanism
-    _bind_group: Option<web_sys::GpuBindGroup>,
+    /// Storage-array layout used by the non-instanced pipeline
+    /// variant. `@group(2) @binding(0)` is a `read` storage buffer
+    /// covering the whole geometry-meta buffer; the shader indexes
+    /// it by `instance_index`.
+    pub storage_layout_key: BindGroupLayoutKey,
+    /// Legacy uniform-with-dynamic-offset layout used by the
+    /// instanced pipeline variant. `@group(2) @binding(0)` is a
+    /// `uniform` of one `GeometryMeshMeta` with the dynamic offset
+    /// pointing at the active mesh's slot.
+    pub uniform_layout_key: BindGroupLayoutKey,
+    _storage_bind_group: Option<web_sys::GpuBindGroup>,
+    _uniform_bind_group: Option<web_sys::GpuBindGroup>,
 }
 
 impl GeometryBindGroupMeta {
-    /// Creates the metadata bind group layout.
+    /// Creates the metadata bind group layouts (storage + uniform).
     pub async fn new(ctx: &mut RenderPassInitContext<'_>) -> Result<Self> {
-        let bind_group_layout_cache_key = BindGroupLayoutCacheKey {
+        let storage_layout_cache_key = BindGroupLayoutCacheKey {
+            entries: vec![BindGroupLayoutCacheKeyEntry {
+                resource: BindGroupLayoutResource::Buffer(
+                    BufferBindingLayout::new()
+                        .with_binding_type(BufferBindingType::ReadOnlyStorage),
+                ),
+                visibility_vertex: true,
+                visibility_fragment: true,
+                visibility_compute: false,
+            }],
+        };
+        let uniform_layout_cache_key = BindGroupLayoutCacheKey {
             entries: vec![BindGroupLayoutCacheKeyEntry {
                 resource: BindGroupLayoutResource::Buffer(
                     BufferBindingLayout::new()
@@ -190,21 +218,43 @@ impl GeometryBindGroupMeta {
             }],
         };
 
-        let bind_group_layout_key = ctx
+        let storage_layout_key = ctx
             .bind_group_layouts
-            .get_key(ctx.gpu, bind_group_layout_cache_key)?;
+            .get_key(ctx.gpu, storage_layout_cache_key)?;
+        let uniform_layout_key = ctx
+            .bind_group_layouts
+            .get_key(ctx.gpu, uniform_layout_cache_key)?;
 
         Ok(Self {
-            bind_group_layout_key,
-            _bind_group: None,
+            storage_layout_key,
+            uniform_layout_key,
+            _storage_bind_group: None,
+            _uniform_bind_group: None,
         })
     }
 
-    /// Recreates the metadata bind group.
+    /// Recreates both metadata bind groups (storage-array + legacy
+    /// uniform-with-dynamic-offset) against the live geometry-meta
+    /// buffer.
     pub fn recreate(&mut self, ctx: &BindGroupRecreateContext<'_>) -> Result<()> {
-        let descriptor = BindGroupDescriptor::new(
-            ctx.bind_group_layouts.get(self.bind_group_layout_key)?,
-            Some("Geometry meta"),
+        // Storage view — whole buffer, no offset, no size override.
+        let storage_descriptor = BindGroupDescriptor::new(
+            ctx.bind_group_layouts.get(self.storage_layout_key)?,
+            Some("Geometry meta (storage array)"),
+            vec![BindGroupEntry::new(
+                0,
+                BindGroupResource::Buffer(BufferBinding::new(
+                    ctx.meshes.meta.geometry_gpu_buffer(),
+                )),
+            )],
+        );
+        self._storage_bind_group = Some(ctx.gpu.create_bind_group(&storage_descriptor.into()));
+
+        // Legacy uniform view — single-slot binding, dynamic offset
+        // is set per-draw by `push_geometry_pass_commands`.
+        let uniform_descriptor = BindGroupDescriptor::new(
+            ctx.bind_group_layouts.get(self.uniform_layout_key)?,
+            Some("Geometry meta (uniform + dyn offset)"),
             vec![BindGroupEntry::new(
                 0,
                 BindGroupResource::Buffer(
@@ -213,20 +263,28 @@ impl GeometryBindGroupMeta {
                 ),
             )],
         );
-
-        let bind_group = ctx.gpu.create_bind_group(&descriptor.into());
-        self._bind_group = Some(bind_group);
+        self._uniform_bind_group = Some(ctx.gpu.create_bind_group(&uniform_descriptor.into()));
 
         Ok(())
     }
 
-    /// Returns the active metadata bind group.
-    pub fn get_bind_group(
+    /// Returns the storage-array bind group (non-instanced path).
+    pub fn get_storage_bind_group(
         &self,
     ) -> std::result::Result<&web_sys::GpuBindGroup, AwsmBindGroupError> {
-        self._bind_group
+        self._storage_bind_group
             .as_ref()
-            .ok_or_else(|| AwsmBindGroupError::NotFound("Geometry meta".to_string()))
+            .ok_or_else(|| AwsmBindGroupError::NotFound("Geometry meta (storage)".to_string()))
+    }
+
+    /// Returns the uniform-with-dynamic-offset bind group (instanced
+    /// path).
+    pub fn get_uniform_bind_group(
+        &self,
+    ) -> std::result::Result<&web_sys::GpuBindGroup, AwsmBindGroupError> {
+        self._uniform_bind_group
+            .as_ref()
+            .ok_or_else(|| AwsmBindGroupError::NotFound("Geometry meta (uniform)".to_string()))
     }
 }
 

@@ -18,12 +18,22 @@ pub struct ShaderTemplateGeometry {
 /// Bind group template for the geometry pass.
 #[derive(Template, Debug)]
 #[template(path = "geometry_wgsl/bind_groups.wgsl", whitespace = "minimize")]
-pub struct ShaderTemplateGeometryBindGroups {}
+pub struct ShaderTemplateGeometryBindGroups {
+    /// `true` when this shader variant takes per-instance attribute
+    /// inputs (`location(6..9)` instance transform rows). In that
+    /// mode `@group(2) @binding(0)` keeps the legacy
+    /// `uniform`-with-dynamic-offset shape; the non-instanced
+    /// variant uses a `storage, read` array indexed by
+    /// `@builtin(instance_index)` (plan §16.7/§16.8).
+    instancing_transforms: bool,
+}
 
 impl ShaderTemplateGeometryBindGroups {
     /// Creates a bind group template from the cache key.
-    pub fn new(_cache_key: &ShaderCacheKeyGeometry) -> Self {
-        Self {}
+    pub fn new(cache_key: &ShaderCacheKeyGeometry) -> Self {
+        Self {
+            instancing_transforms: cache_key.instancing_transforms,
+        }
     }
 }
 

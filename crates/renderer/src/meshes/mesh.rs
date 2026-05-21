@@ -169,6 +169,19 @@ impl Mesh {
     }
 
     /// Pushes geometry pass draw commands for this mesh.
+    ///
+    /// Plan §16.7/§16.8: non-instanced meshes route through the new
+    /// storage-array meta binding and either `drawIndirect` (under
+    /// `features.gpu_culling`) or
+    /// `draw_indexed_with_first_instance` (legacy). The legacy
+    /// `first_instance = mesh_meta_idx` makes the vertex shader's
+    /// `geometry_mesh_metas[instance_index]` resolve to the right
+    /// slot. Instanced meshes keep the legacy uniform-with-dynamic-
+    /// offset binding + `draw_indexed_with_instance_count` — their
+    /// `instance_index` range across the actual instances would
+    /// collide with neighbouring meshes' meta slots if they used
+    /// the shared storage array, so they sit out the drawIndirect
+    /// path entirely.
     pub fn push_geometry_pass_commands(
         &self,
         ctx: &RenderContext,
@@ -177,8 +190,24 @@ impl Mesh {
         bind_groups: &GeometryBindGroups,
     ) -> Result<()> {
         let meta_offset = ctx.meshes.meta.geometry_buffer_offset(mesh_key)? as u32;
+        // Mesh slot index = byte offset / aligned slot size. The
+        // geometry meta uses `GEOMETRY_MESH_META_BYTE_ALIGNMENT`
+        // (256 B) per slot.
+        let mesh_meta_idx = meta_offset
+            / crate::meshes::meta::geometry_meta::GEOMETRY_MESH_META_BYTE_ALIGNMENT as u32;
 
-        render_pass.set_bind_group(2, bind_groups.meta.get_bind_group()?, Some(&[meta_offset]))?;
+        if self.instanced {
+            render_pass.set_bind_group(
+                2,
+                bind_groups.meta.get_uniform_bind_group()?,
+                Some(&[meta_offset]),
+            )?;
+        } else {
+            // Non-instanced uses the storage-array binding; no dynamic
+            // offset, the shader reads
+            // `geometry_mesh_metas[instance_index]`.
+            render_pass.set_bind_group(2, bind_groups.meta.get_storage_bind_group()?, None)?;
+        }
 
         render_pass.set_vertex_buffer(
             0,
@@ -220,8 +249,33 @@ impl Mesh {
                 .transform_instance_count(self.transform_key)
                 .ok_or(AwsmMeshError::InstancingMissingTransforms(mesh_key))?;
             render_pass.draw_indexed_with_instance_count(index_count, instance_count as u32);
+        } else if ctx.features.gpu_culling {
+            // §16.7/§16.8 drawIndirect path. The compaction shader
+            // populated `IndirectDrawArgs[mesh_meta_idx].instance_count`
+            // for this frame from `visible_this_frame[]`; the static
+            // fields (`index_count`, `first_instance = mesh_meta_idx`)
+            // were pre-uploaded by the per-frame
+            // `populate_indirect_args` pass in `render.rs`.
+            let args_buffer = ctx
+                .compaction_buffers
+                .expect("compaction buffers missing despite gpu_culling feature on")
+                .args_buffer
+                .clone();
+            let args_offset = (mesh_meta_idx as u64)
+                * crate::render_passes::occlusion::compaction::INDIRECT_DRAW_ARGS_STRIDE as u64;
+            render_pass.draw_indexed_indirect_with_f64(&args_buffer, args_offset as f64);
         } else {
-            render_pass.draw_indexed(index_count);
+            // Legacy CPU-recorded path. `first_instance` carries the
+            // slot index so the vertex shader's storage-array lookup
+            // still resolves to this mesh's meta.
+            render_pass
+                .draw_indexed_with_instance_count_and_first_index_and_base_vertex_and_first_instance(
+                    index_count,
+                    1,
+                    0,
+                    0,
+                    mesh_meta_idx,
+                );
         }
 
         Ok(())

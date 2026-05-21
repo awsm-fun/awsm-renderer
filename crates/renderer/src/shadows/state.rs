@@ -202,11 +202,17 @@ pub struct Shadows {
     shadow_view_bind_group_layout_key: BindGroupLayoutKey,
     /// Cached shadow_view bind group.
     shadow_view_bind_group: web_sys::GpuBindGroup,
-    /// Shadow generation pipeline layout — `[shadow_view, transforms,
-    /// meta, animation]`. Held for parity with other passes; the
-    /// pipelines themselves are built once in `new`.
+    /// Shadow generation pipeline layouts — `[shadow_view,
+    /// transforms, meta, animation]`. Forked by `@group(2)` meta
+    /// binding shape: `*_storage` for the non-instanced shadow
+    /// pipelines (plan §16.7/§16.8 storage-array meta), `*_uniform`
+    /// for instanced shadow pipelines (legacy uniform with dynamic
+    /// offset). Held for parity with other passes; the pipelines
+    /// themselves are built once in `new`.
     #[allow(dead_code)]
-    shadow_pipeline_layout_key: PipelineLayoutKey,
+    shadow_pipeline_layout_key_storage: PipelineLayoutKey,
+    #[allow(dead_code)]
+    shadow_pipeline_layout_key_uniform: PipelineLayoutKey,
     /// Depth-only shadow pipeline (non-instancing).
     shadow_pipeline_no_instancing: RenderPipelineKey,
     /// Depth-only shadow pipeline (instancing).
@@ -519,22 +525,37 @@ impl Shadows {
         // Pipeline layout: [shadow_view, transforms, meta, animation].
         // Slots 1..=3 reuse the geometry pass's layouts so the same
         // model_transforms / geometry_mesh_meta / morph + skin buffers
-        // are accessible verbatim from the shadow VS.
-        let shadow_pipeline_layout_cache_key = PipelineLayoutCacheKey::new(vec![
-            shadow_view_bind_group_layout_key,
-            geometry_bind_groups.transforms.bind_group_layout_key,
-            geometry_bind_groups.meta.bind_group_layout_key,
-            geometry_bind_groups.animation.bind_group_layout_key,
-        ]);
-        let shadow_pipeline_layout_key =
-            pipeline_layouts.get_key(gpu, bind_group_layouts, shadow_pipeline_layout_cache_key)?;
+        // are accessible verbatim from the shadow VS. Plan §16.7/§16.8
+        // forks @group(2) by instancing: non-instanced shadow shaders
+        // use the storage-array meta layout, instanced shaders keep
+        // the legacy uniform-with-dynamic-offset layout.
+        let shadow_pipeline_layout_key_storage = pipeline_layouts.get_key(
+            gpu,
+            bind_group_layouts,
+            PipelineLayoutCacheKey::new(vec![
+                shadow_view_bind_group_layout_key,
+                geometry_bind_groups.transforms.bind_group_layout_key,
+                geometry_bind_groups.meta.storage_layout_key,
+                geometry_bind_groups.animation.bind_group_layout_key,
+            ]),
+        )?;
+        let shadow_pipeline_layout_key_uniform = pipeline_layouts.get_key(
+            gpu,
+            bind_group_layouts,
+            PipelineLayoutCacheKey::new(vec![
+                shadow_view_bind_group_layout_key,
+                geometry_bind_groups.transforms.bind_group_layout_key,
+                geometry_bind_groups.meta.uniform_layout_key,
+                geometry_bind_groups.animation.bind_group_layout_key,
+            ]),
+        )?;
 
         let shadow_pipeline_no_instancing = build_shadow_pipeline(
             gpu,
             shaders,
             pipelines,
             pipeline_layouts,
-            shadow_pipeline_layout_key,
+            shadow_pipeline_layout_key_storage,
             false,
             false,
         )
@@ -544,7 +565,7 @@ impl Shadows {
             shaders,
             pipelines,
             pipeline_layouts,
-            shadow_pipeline_layout_key,
+            shadow_pipeline_layout_key_uniform,
             true,
             false,
         )
@@ -554,7 +575,7 @@ impl Shadows {
             shaders,
             pipelines,
             pipeline_layouts,
-            shadow_pipeline_layout_key,
+            shadow_pipeline_layout_key_storage,
             false,
             true,
         )
@@ -564,7 +585,7 @@ impl Shadows {
             shaders,
             pipelines,
             pipeline_layouts,
-            shadow_pipeline_layout_key,
+            shadow_pipeline_layout_key_uniform,
             true,
             true,
         )
@@ -646,7 +667,8 @@ impl Shadows {
             active_view_count: 0,
             shadow_view_bind_group_layout_key,
             shadow_view_bind_group,
-            shadow_pipeline_layout_key,
+            shadow_pipeline_layout_key_storage,
+            shadow_pipeline_layout_key_uniform,
             shadow_pipeline_no_instancing,
             shadow_pipeline_instancing,
             shadow_pipeline_cube_no_instancing,

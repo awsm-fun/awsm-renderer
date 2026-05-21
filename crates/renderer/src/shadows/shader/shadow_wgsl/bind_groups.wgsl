@@ -24,7 +24,18 @@ struct TransformPacked {
     normal_world: mat3x3<f32>,
 };
 @group(1) @binding(0) var<storage, read> transforms: array<TransformPacked>;
+{% if instancing_transforms %}
+// Instanced shadow draws keep the legacy uniform-with-dynamic-offset
+// binding (plan §16.7/§16.8 — see geometry pass for the rationale).
 @group(2) @binding(0) var<uniform> geometry_mesh_meta: GeometryMeshMeta;
+{% else %}
+// Non-instanced shadow draws use the same storage-array meta
+// binding as the geometry pass. `first_instance = mesh_meta_idx`
+// is set per draw so `geometry_mesh_metas[instance_index]` resolves
+// to this mesh's slot.
+@group(2) @binding(0) var<storage, read> geometry_mesh_metas: array<GeometryMeshMeta>;
+var<private> geometry_mesh_meta: GeometryMeshMeta;
+{% endif %}
 @group(3) @binding(0) var<storage, read> geometry_morph_weights: array<f32>;
 @group(3) @binding(1) var<storage, read> geometry_morph_values: array<f32>;
 @group(3) @binding(2) var<storage, read> skin_joint_matrices: array<mat4x4<f32>>;

@@ -97,7 +97,12 @@ pub static VERTEX_BUFFER_LAYOUT_INSTANCING: LazyLock<VertexBufferLayout> = LazyL
 
 /// Pipeline layout and render pipelines for the geometry pass.
 pub struct GeometryPipelines {
-    pub pipeline_layout_key: PipelineLayoutKey,
+    /// Pipeline layout for the non-instanced variant — @group(2) is
+    /// the storage-array meta binding (plan §16.7/§16.8).
+    pub pipeline_layout_key_storage: PipelineLayoutKey,
+    /// Pipeline layout for the instanced variant — @group(2) is the
+    /// legacy uniform-with-dynamic-offset meta binding.
+    pub pipeline_layout_key_uniform: PipelineLayoutKey,
     render_pipeline_keys: GeometryRenderPipelineKeys,
 }
 
@@ -107,24 +112,37 @@ impl GeometryPipelines {
         ctx: &mut RenderPassInitContext<'_>,
         bind_groups: &GeometryBindGroups,
     ) -> Result<Self> {
-        let pipeline_layout_cache_key = PipelineLayoutCacheKey::new(vec![
-            bind_groups.camera.bind_group_layout_key,
-            bind_groups.transforms.bind_group_layout_key,
-            bind_groups.meta.bind_group_layout_key,
-            bind_groups.animation.bind_group_layout_key,
-        ]);
-
-        let pipeline_layout_key = ctx.pipeline_layouts.get_key(
+        let pipeline_layout_key_storage = ctx.pipeline_layouts.get_key(
             ctx.gpu,
             ctx.bind_group_layouts,
-            pipeline_layout_cache_key,
+            PipelineLayoutCacheKey::new(vec![
+                bind_groups.camera.bind_group_layout_key,
+                bind_groups.transforms.bind_group_layout_key,
+                bind_groups.meta.storage_layout_key,
+                bind_groups.animation.bind_group_layout_key,
+            ]),
+        )?;
+        let pipeline_layout_key_uniform = ctx.pipeline_layouts.get_key(
+            ctx.gpu,
+            ctx.bind_group_layouts,
+            PipelineLayoutCacheKey::new(vec![
+                bind_groups.camera.bind_group_layout_key,
+                bind_groups.transforms.bind_group_layout_key,
+                bind_groups.meta.uniform_layout_key,
+                bind_groups.animation.bind_group_layout_key,
+            ]),
         )?;
 
-        let render_pipeline_keys =
-            GeometryRenderPipelineKeys::new(ctx, pipeline_layout_key).await?;
+        let render_pipeline_keys = GeometryRenderPipelineKeys::new(
+            ctx,
+            pipeline_layout_key_storage,
+            pipeline_layout_key_uniform,
+        )
+        .await?;
 
         Ok(Self {
-            pipeline_layout_key,
+            pipeline_layout_key_storage,
+            pipeline_layout_key_uniform,
             render_pipeline_keys,
         })
     }
@@ -174,14 +192,21 @@ impl GeometryRenderPipelineKeys {
     /// Creates geometry pipeline keys for all supported configurations.
     pub async fn new(
         ctx: &mut RenderPassInitContext<'_>,
-        pipeline_layout_key: PipelineLayoutKey,
+        pipeline_layout_key_storage: PipelineLayoutKey,
+        pipeline_layout_key_uniform: PipelineLayoutKey,
     ) -> Result<Self> {
         Ok(Self {
-            no_anti_alias: GeometryRenderPipelineKeysLevel1::new(ctx, pipeline_layout_key, None)
-                .await?,
+            no_anti_alias: GeometryRenderPipelineKeysLevel1::new(
+                ctx,
+                pipeline_layout_key_storage,
+                pipeline_layout_key_uniform,
+                None,
+            )
+            .await?,
             msaa_4_anti_alias: GeometryRenderPipelineKeysLevel1::new(
                 ctx,
-                pipeline_layout_key,
+                pipeline_layout_key_storage,
+                pipeline_layout_key_uniform,
                 Some(4),
             )
             .await?,
@@ -197,22 +222,26 @@ pub struct GeometryRenderPipelineKeysLevel1 {
 
 impl GeometryRenderPipelineKeysLevel1 {
     /// Creates geometry pipeline keys for instancing and non-instancing.
+    /// Non-instanced pipelines reference the storage-array layout
+    /// (plan §16.7/§16.8); instanced pipelines reference the legacy
+    /// uniform-with-dynamic-offset layout.
     pub async fn new(
         ctx: &mut RenderPassInitContext<'_>,
-        pipeline_layout_key: PipelineLayoutKey,
+        pipeline_layout_key_storage: PipelineLayoutKey,
+        pipeline_layout_key_uniform: PipelineLayoutKey,
         msaa_samples: Option<u32>,
     ) -> Result<Self> {
         Ok(Self {
             no_instancing: GeometryRenderPipelineKeysLevel2::new(
                 ctx,
-                pipeline_layout_key,
+                pipeline_layout_key_storage,
                 msaa_samples,
                 false,
             )
             .await?,
             instancing: GeometryRenderPipelineKeysLevel2::new(
                 ctx,
-                pipeline_layout_key,
+                pipeline_layout_key_uniform,
                 msaa_samples,
                 true,
             )

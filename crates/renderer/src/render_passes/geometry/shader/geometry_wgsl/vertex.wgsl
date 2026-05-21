@@ -42,6 +42,17 @@ fn vert_main(
 ) -> VertexOutput {
     var out: VertexOutput;
 
+    {% if !instancing_transforms %}
+    // Plan §16.7/§16.8: load per-mesh meta from the storage array
+    // indexed by `instance_index`. The CPU sets
+    // `first_instance = mesh_meta_idx` for each draw (legacy
+    // `draw_indexed_with_first_instance` or
+    // `IndirectDrawArgs.first_instance` via `drawIndirect`), so
+    // `instance_index` lands on this mesh's slot for both
+    // `features.gpu_culling` paths.
+    geometry_mesh_meta = geometry_mesh_metas[instance_index];
+    {% endif %}
+
     let camera = camera_from_raw(camera_raw);
 
     let applied = apply_vertex(ApplyVertexInput(

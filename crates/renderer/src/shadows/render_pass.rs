@@ -119,12 +119,23 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
                 None,
             )?;
 
-            let meta_bind_group = ctx
+            // Plan §16.7/§16.8 split: non-instanced shadow draws use
+            // the storage-array meta binding (no dynamic offset;
+            // shader reads `geometry_mesh_metas[instance_index]`);
+            // instanced shadow draws keep the legacy uniform-with-
+            // dynamic-offset binding.
+            let meta_storage_bind_group = ctx
                 .render_passes
                 .geometry
                 .bind_groups
                 .meta
-                .get_bind_group()?;
+                .get_storage_bind_group()?;
+            let meta_uniform_bind_group = ctx
+                .render_passes
+                .geometry
+                .bind_groups
+                .meta
+                .get_uniform_bind_group()?;
 
             // Per-view frustum culling. Directional cascades especially
             // see geometry the camera doesn't, so we test against the
@@ -168,8 +179,17 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
                     last_pipeline_key = Some(pipeline_key);
                 }
 
-                let geometry_meta_offset = ctx.meshes.meta.geometry_buffer_offset(mesh_key)? as u32;
-                render_pass.set_bind_group(2, meta_bind_group, Some(&[geometry_meta_offset]))?;
+                let geometry_meta_offset =
+                    ctx.meshes.meta.geometry_buffer_offset(mesh_key)? as u32;
+                if mesh.instanced {
+                    render_pass.set_bind_group(
+                        2,
+                        meta_uniform_bind_group,
+                        Some(&[geometry_meta_offset]),
+                    )?;
+                } else {
+                    render_pass.set_bind_group(2, meta_storage_bind_group, None)?;
+                }
 
                 render_pass.set_vertex_buffer(
                     0,
@@ -214,7 +234,24 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
                             .draw_indexed_with_instance_count(index_count, instance_count as u32);
                     }
                 } else {
-                    render_pass.draw_indexed(index_count);
+                    // Plan §16.7/§16.8: `first_instance = mesh_meta_idx`
+                    // so the storage-array shader lookup
+                    // `geometry_mesh_metas[instance_index]` resolves
+                    // to this mesh's meta slot. Shadow draws skip the
+                    // GPU compaction path — shadow-caster visibility
+                    // is BVH-pruned CPU-side per-view, so always
+                    // emit one instance directly.
+                    let mesh_meta_idx = geometry_meta_offset
+                        / crate::meshes::meta::geometry_meta::GEOMETRY_MESH_META_BYTE_ALIGNMENT
+                            as u32;
+                    render_pass
+                        .draw_indexed_with_instance_count_and_first_index_and_base_vertex_and_first_instance(
+                            index_count,
+                            1,
+                            0,
+                            0,
+                            mesh_meta_idx,
+                        );
                 }
             }
 
