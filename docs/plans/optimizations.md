@@ -1557,48 +1557,109 @@ criteria. Read the corresponding plan section before starting a step.
 Browser preview is available via the Claude Preview MCP (see launch
 config `.claude/launch.json`, server name `scene-editor`).
 
-### Resume sequencing (recommended order for the next sessions)
+### Handoff brief for the next session
 
-The list below is the priority order for picking up cold. Each entry
-is one focused session — don't try to bundle them; the diffs are
-already large.
+The next session is expected to run **fully autonomously** —
+nothing in this section requires human input. There are exactly
+**two code items + one measurement campaign** left. Do them in
+order; commit per item; archive §16 when §15's table is fully
+populated and both code items are landed.
 
-1. **§16.E1 + §16.E2 storage-budget refactor** (~300 LoC; ~1 session).
-   Pack `attribute_indices` + `attribute_data` slice metadata into
-   `MaterialMeshMeta` so the opaque main bind group drops from 10/10
-   storage bindings to 8/10. Strict prerequisite for §16.7 / §16.8
-   (each wants at least one new storage binding on the geometry
-   pipeline) and for the dynamic-materials plan's `extras_pool`.
-2. **§16.4.B Decals — scene-schema + editor** (~1 session). Adds a
-   decal node type to `awsm_scene_schema`, an editor authoring panel
-   with the unit-cube gizmo, and the `renderer_bridge` wiring so
-   loaded projects call `AwsmRenderer::insert_decal`. The runtime
-   path is already live — task **C2** in the chat task list.
-3. **§16.7 Two-phase GPU occlusion culling — Phase 1** (~1 session).
-   The instance-list storage buffer + GPU cull compute pass + the
-   "draw last-frame survivors" geometry-pass split. No `drawIndirect`
-   yet; the cull output is consumed by the BVH-survivor-set CPU walk
-   so the shape is testable before §16.8.
-4. **§16.7 Two-phase GPU occlusion culling — Phase 2 + §16.8 GPU
-   instance compaction + indirect draw** (~1–2 sessions). The
-   `drawIndirect` rewire of the geometry pass. Per-material
-   `drawIndirect` reusing Cluster 6.1's tile-bucket idea for the
-   draw-args side.
-5. **§16.4.C HZB-tile classify for decals** (~½ session). Tighter
-   decal tile coverage via HZB. Lifts the v1 "iterate every decal
-   per pixel" cost.
-6. **§16.4.D Decal MSAA path** (~½ session). Dedicated
-   `decal_color_tex` + composite step so MSAA isn't a silent skip.
-7. **§16 tuning items (T1–T7)** (~1 session of authoring + measuring).
-   Hand-author the JSON scenes under `assets/world/`, instrument
-   with `tracing` spans, fill in §15 numbers.
+**Branch state.** `optimizations`, HEAD as listed in "What has
+shipped" below. `cargo check --target wasm32-unknown-unknown
+--workspace` and `cargo test -p awsm-renderer --lib` (100 tests)
+are both green at HEAD; preserve that.
 
-After all of the above land, archive §16 — its work is done.
+**Picking order:**
 
-### What has shipped (this conversation's session)
+1. **§16.7 / §16.8 geometry draw-loop rewire** (~1–2 sessions of
+   focused work; biggest remaining lift).
 
-All committed to the `optimizations` branch as of `2034023`. Each
-commit is a clean checkpoint:
+   The compaction's `IndirectDrawArgs` buffer is correctly
+   populated each frame but unconsumed. To wire `drawIndirect`,
+   migrate the geometry vertex shader's per-mesh
+   `geometry_mesh_meta` lookup from the dynamic-offset uniform
+   bind group
+   ([`geometry/bind_group.rs::GeometryBindGroupMeta`](../../crates/renderer/src/render_passes/geometry/bind_group.rs))
+   to a storage-buffer array indexed by `@builtin(instance_index)`.
+
+   This touches the *instancing model*: today `instance_index`
+   increments per actual instance within a draw, but bundled
+   `drawIndirect` needs it to identify a unique mesh slot.
+   Actually-instanced meshes (the `Mesh::instanced` flag, used by
+   `InstancesAlongCurve` and friends) must move their per-instance
+   data into a parallel attribute array.
+
+   Acceptance: visual parity; geometry-pass CPU recording time
+   drops (tracing span); 10K-mesh stress scene
+   (`assets/world/tuning-10k-meshes`) measures a frame-time win.
+   See §16.8 for the full plan.
+
+2. **§16.4.C HZB occlusion-gating follow-up** (~½ session, ~20
+   lines of WGSL + a bind-group plumbing).
+
+   The decal classify shader
+   ([`material_decal/classify/shader/decal_classify_wgsl/compute.wgsl`](../../crates/renderer/src/render_passes/material_decal/classify/shader/decal_classify_wgsl/compute.wgsl))
+   currently culls on frustum + clamped screen-AABB only. Add the
+   HZB texture binding (mirror the occlusion-cull pass's
+   `hzb_full_view` plumbing in `BindGroupRecreateContext`), sample
+   at the mip whose texel covers the decal's screen-AABB, skip the
+   `append_to_tile` call when the decal's closest-screen-depth
+   sits behind the HZB max. Pure additive.
+
+3. **§16.G measurements + §15 table population** (~1 session
+   running everything via the Claude Preview MCP).
+
+   The six scenes already exist under `assets/world/tuning-*/project.json`
+   (committed in `66db810`). The measurement campaign needs:
+
+   1. **Programmatic scene loader** — the editor's File menu uses
+      a directory picker, which the MCP can't drive. Land a small
+      `#[wasm_bindgen]` window-exposed function that mirrors
+      `actions::project::load_inner` but takes a path string and
+      fetches the project.json via `web_sys::fetch` from the
+      trunk dev server's URL. Call it
+      `window.wasmBindings.load_scene_by_path(<name>)`. Exact
+      shape:
+      ```rust
+      #[wasm_bindgen]
+      pub async fn load_scene_by_path(path: String) -> Result<(), JsValue> {
+          // 1. fetch /assets/world/<path>/project.json
+          // 2. serde_json::from_str → SceneSnapshot
+          // 3. drop prior caches (mirror load_inner lines 455-462)
+          // 4. dispatch through the same materialize path
+      }
+      ```
+      Hide it behind a `#[cfg(debug_assertions)]` so it doesn't
+      ship in release builds.
+
+   2. **Tracing-span harness** — add a `#[wasm_bindgen]` toggle to
+      enable `awsm_renderer::AwsmRendererLogging.render_timings`
+      and a getter that returns the last-N-frame span timings as
+      JSON (the spans already exist — see `render.rs` for the
+      catalogue). The next session reads these via `preview_eval`.
+
+   3. **Measurement loop** — for each scene:
+      ```js
+      await wasmBindings.load_scene_by_path("tuning-1k-meshes");
+      wasmBindings.enable_render_timings(true);
+      // wait 60 frames (rAF)
+      const timings = wasmBindings.collect_timing_samples();
+      ```
+      Pull the relevant spans for each §16.T row, paste into §15.
+
+   4. **Fill §15** — every `__ ms / frame` row must have measured
+      numbers. §16.T1–§16.T6 each map to a §15 row; §16.T7 stays
+      "ongoing".
+
+   Acceptance: every row in §15 has measured numbers; §16.T1–T6
+   marked `done`; archive §16 entirely (delete the section — it's
+   served its purpose).
+
+### What has shipped
+
+All committed to the `optimizations` branch. Each commit is a clean
+checkpoint:
 
 ```
 682053a  shader split — opaque compute by shader_id
@@ -1611,6 +1672,11 @@ c60ba56  docs(optimizations): full handoff for resume session
 2c03fa9  merged mesh geometry pool (§16.E1 / §16.E2)
 def39a7  decals scene-schema + editor authoring (§16.4.B)
 2034023  GPU occlusion cull pass — Phase 1 infrastructure (§16.7)
+57d17e9  docs(optimizations): §16 status + §16.7 Phase 2 deferral note
+66db810  tuning reference scenes (§16.G scenes)
+f40945b  decal MSAA composite path (§16.4.D)
+5d170d5  decal per-tile classify (§16.4.C)
+06bfc5f  GPU compaction infra (§16.7 Phase 2 + §16.8 infra)
 ```
 
 ### Load-bearing constraints a resume session must respect
@@ -1640,6 +1706,17 @@ def39a7  decals scene-schema + editor authoring (§16.4.B)
   silently miss it (see history note in this section's archive).
 - **Tests count: 100.** Don't drop any; add tests for new pure-CPU
   modules.
+- **MCP measurement caveat.** The Claude Preview MCP boots the
+  scene-editor in a headless Chrome; rAF runs, WebGPU works. The
+  `tuning-10k-meshes` scene (17.7 MB JSON, 10K box materializations)
+  may need 30–60 s to settle after `load_scene_by_path` resolves.
+  Wait for `MeshCoverage` to stabilize (or just `setTimeout(2000)`)
+  before sampling timings; otherwise the first reading is dominated
+  by gltf-style materialize / pipeline warmup.
+- **Programmatic scene load = dev-only.** The `load_scene_by_path`
+  helper must be `#[cfg(debug_assertions)]` gated. Editor users
+  load via the picker; the helper is purely for the measurement
+  campaign and should not ship in release builds.
 
 ---
 
@@ -1838,122 +1915,50 @@ indirect dispatch driven by a per-material tile bitmask. See plan
 
 #### 16.4 Cluster 6.4 — Decals as a material class
 
-**Status:** `runtime done; schema + editor + HZB-tile classification pending`
+**Status:** `done apart from a small HZB-gating follow-up on §16.4.C`
 
-**16.4.A Runtime (this session) — DONE.** Decima/D3-style projection
-decals (oriented unit cube, project along local -Z, alpha-blend).
-Landed pieces:
+**16.4.A Runtime — DONE** (commit `bac0b1f`). Decima/D3-style
+projection decals: `crates/renderer/src/decals/{mod,api,data,gpu}.rs`
+hold the `Decals` slotmap + per-decal GPU storage buffer +
+`AwsmRenderer::{insert,update,remove}_decal` public API. The
+`material_decal` compute pass reconstructs world position from
+depth, iterates the per-tile decal list, alpha-blends each whose
+inverse-transformed point lies inside the unit cube.
 
-- `crates/renderer/src/decals/{mod,api,data,gpu}.rs` — `Decals` slotmap
-  + per-decal GPU storage buffer + `AwsmRenderer::{insert,update,remove}_decal`
-  public API.
-- `Mesh::receive_decals: bool` (default true) packed into
-  `MaterialMeshMeta` at the new `MATERIAL_MESH_META_RECEIVE_DECALS_OFFSET`;
-  the decal shader checks it per-pixel and skips the per-decal volume
-  test for opt-out meshes.
-- New `material_decal` compute pass at
-  `crates/renderer/src/render_passes/material_decal/`. Runs after the
-  opaque→transparent blit; reads opaque (sampled), depth + visibility +
-  mesh-meta + decals + camera + texture-pool; reconstructs world
-  position from depth; iterates active decals and alpha-blends each
-  whose inverse-transformed point lies inside the unit cube; writes
-  to the transparent texture (which the blit already primed). v1
-  ships alpha-blend only — additional blend modes are flagged at the
-  `decal.blend_mode` u32 dispatch site.
-- `transparent` render texture gained `STORAGE_BINDING` usage when
-  MSAA is disabled. MSAA path skips the dispatch (the multisampled
-  transparent texture can't be storage-bound); the §16.4.C note
-  below tracks the follow-up.
-- Browser-validated: no WebGPU validation errors with one box +
-  PBR/Toon/Unlit pipelines + classify all wired. Decals are
-  inert-but-correct until callers start invoking `insert_decal`.
+**16.4.B Schema + editor — DONE** (commit `def39a7`). `NodeKind::Decal`
+in `awsm-scene-schema` with `DecalConfig { texture, alpha,
+blend_mode }`. Insert ▸ Visual ▸ Decal entry, properties panel
+(texture/alpha/blend), tree icon, and `renderer_bridge` wiring
+(`decal_key` per RendererNode + `sync_decals_pre_render` pushes
+each frame's world transform via `update_decal`; hidden nodes get
+`alpha = 0`).
 
-**16.4.B Schema + editor — next session.** Scene-schema decal node
-(transform + texture + alpha mode), editor authoring panel with the
-unit-cube gizmo, `renderer_bridge` wiring so scene loads materialize
-decals via `insert_decal`. Tracked as task **C2** in the chat task
-list.
+**16.4.C Per-tile classify — DONE** (commit `5d170d5`). The
+classify pass projects every decal's world AABB to screen and
+atomic-appends the decal index to every overlapping 8×8 tile
+(bucket capacity 32, overflow drops). The shading pass then
+iterates only the per-tile subset.
 
-Implementation outline:
+**16.4.C HZB occlusion-gating follow-up — REMAINING.** The classify
+shader currently gates only on frustum + clamped screen-AABB. The
+spec also calls for a per-tile HZB-lookup gate: drop a decal from
+a tile when its closest-screen-depth sits behind the HZB max for
+that tile. ~20-line WGSL append to
+[`material_decal/classify/shader/decal_classify_wgsl/compute.wgsl`](../../crates/renderer/src/render_passes/material_decal/classify/shader/decal_classify_wgsl/compute.wgsl) —
+add the HZB texture binding (mirror the occlusion-cull pass's
+`hzb_full_view` plumbing in `BindGroupRecreateContext`), sample at
+the mip whose texel covers the screen-AABB, skip the
+`append_to_tile` when occluded. Pure additive.
 
-1. **Schema** — add `DecalNode` to `crates/scene-schema/src/`:
-   ```rust
-   pub struct DecalNode {
-       pub transform: Transform,         // world-space (re-use existing Transform)
-       pub texture: TextureReference,    // re-use the same texture-import flow
-                                          // PBR/Unlit/Toon already use
-       pub alpha: f32,                   // global alpha multiplier (1.0 default)
-       pub blend_mode: DecalBlendMode,   // mirror of the runtime enum
-   }
-   pub enum DecalBlendMode {
-       AlphaBlend,                       // v1 only — runtime supports just this
-   }
-   ```
-   Add to `Project::decals: Vec<DecalNode>` (or fold into the existing
-   node-tree alongside lights / meshes — match whichever pattern lights
-   already follow).
+**16.4.D MSAA path — DONE** (commit `f40945b`). Decal compute now
+always writes to a dedicated single-sample `decal_color` storage
+texture; a fullscreen-tri composite pass (`composite.rs`,
+single + 4× MSAA variants) alpha-blits it onto `transparent` with
+per-fragment `discard`.
 
-2. **Scene-editor authoring panel** at
-   `crates/frontend/scene-editor/src/panels/decal.rs` (or wherever the
-   light panel lives — `panels/light.rs` is the reference shape).
-   Required controls: transform widget (re-use), texture picker
-   (re-use the PBR base-color picker), alpha slider, blend-mode
-   dropdown (only "Alpha Blend" populated in v1 — comment notes the
-   runtime supports additional modes via the `blend_mode` u32).
-   Add a "Decal" entry to the "Insert ▸" menu next to "Light",
-   "Primitive", etc.
-
-3. **Editor viewport gizmo.** A wireframe unit cube drawn at the
-   decal's world transform shows the projection volume. The line
-   renderer (`crates/renderer/src/render_passes/lines/`) already
-   handles wire gizmos for lights and cameras — replicate that
-   pattern. The gizmo should highlight when the decal is selected
-   in the scene tree.
-
-4. **`renderer_bridge` wiring** at
-   `crates/frontend/scene-editor/src/renderer_bridge/decals_sync.rs`.
-   Mirror `shadows_sync.rs`: on project load, iterate
-   `project.decals` and call `AwsmRenderer::insert_decal`. On node
-   add/update/remove from the editor, mirror the change via the
-   `update_decal` / `remove_decal` APIs. The `DecalKey` should be
-   tracked by the bridge so editor updates can target the right
-   runtime entry.
-
-5. **Optional polish:** decal asset folder under
-   `assets/decals/<name>/{decal.json, texture.png}` paralleling the
-   dynamic-materials folder format — but the schema can hold the
-   texture inline for v1 to ship faster. Treat folder format as
-   follow-up if needed.
-
-*Acceptance:* in scene-editor, insert a decal node, pick a
-checker-pattern texture, drop it on top of a box mesh, see the
-checker pattern alpha-blended onto the box's PBR shading. Move the
-decal around and watch the projection follow. Save the project,
-reload — decal round-trips through `project.json`.
-
-**16.4.C HZB-tile classification follow-up.** v1 dispatches the
-decal pass over every non-skybox tile; each pixel iterates every
-active decal. Fine at low decal counts, scales worse. After
-**16.6 (HZB)** lands, run a tile-decal classify step that, per
-screen tile, builds a list of decals whose screen-space AABB
-overlaps the tile, gated against HZB to skip occluded coverage.
-Bucket layout reuses the classify infrastructure from 6.1.
-
-**16.4.D MSAA path follow-up.** Multisampled `transparent` texture
-can't be storage-bound, so v1's decal dispatch is gated on
-"MSAA off". Lift the restriction by adding a dedicated
-`decal_color_tex` storage texture sized to the resolved viewport
-and a tiny composite step that reads opaque + decal_color into
-transparent. Tracked here so the gate doesn't become a permanent
-silent skip.
-
-**16.4.E Storage-budget opportunity.** The opaque main bind group
-is now at exactly 10/10 storage bindings. The dynamic-materials
-plan needs at least one more slot for `extras_pool`. Refactor
-candidate: pack `attribute_indices` (`u32`) and the
-`visibility_geometry_data_offset` field of `MaterialMeshMeta` into a
-shared buffer with offset-and-stride header — frees one slot.
-Tracked in §16.E1 below.
+**16.4.E Storage-budget opportunity — SUBSUMED by §16.E1/§16.E2**
+(commit `2c03fa9`). Opaque main bind group dropped from 10/10 to
+7/10 via the merged geometry pool.
 
 #### 16.5 Cluster 4.3 — True cube PCSS
 
@@ -2059,131 +2064,67 @@ data has to move into a parallel per-instance attribute array.
 Deferred to its own focused session.
 
 Sousa/Karis two-phase pattern. The HZB (from §16.6) is the
-load-bearing input.
-
-##### Phase 1 (this is the first sub-step to land)
-
-*Goal:* introduce the GPU-side instance-list storage buffer and a
-compute pass that classifies every BVH-visible instance as
-"already-visible last frame" vs "newly visible candidate". No
-`drawIndirect` rewire yet — keep the existing CPU-recorded draw
-loop, but feed it from the new GPU buffer.
-
-*Module:* `crates/renderer/src/render_passes/occlusion/`. Mirror
-the `material_classify` shape — `mod.rs`, `bind_group.rs`,
-`pipeline.rs`, `render_pass.rs`, `shader/{cache_key.rs,
-template.rs, occlusion_wgsl/*.wgsl}`.
-
-*New storage buffer* (`crates/renderer/src/occlusion.rs` or fold
-into the render pass's `buffers.rs`):
-```
-struct OcclusionInstance {
-    world_aabb_min: vec3<f32>,  // 12 B
-    _pad0: u32,                  //  4 B
-    world_aabb_max: vec3<f32>,  // 12 B
-    _pad1: u32,                  //  4 B
-    mesh_meta_offset: u32,        //  4 B
-    instance_attr_base: u32,      //  4 B
-    last_frame_visible: u32,      //  4 B  (read-write by the cull)
-    _pad2: u32,                  //  4 B  → 48 B per instance
-}
-```
-Capacity: bounded by mesh count × max instance per mesh; size for
-the open-world tier (10K).
-
-*Compute shader* (`occlusion_cull.wgsl`):
-1. One workgroup per instance (or `workgroup_size(64)` over a
-   per-instance index range).
-2. Read `OcclusionInstance` at `gid.x`.
-3. Frustum test against the camera planes (use the `Frustum` math
-   already in `crates/renderer/src/frustum.rs` — replicate it in
-   WGSL, or pass the 6 planes as uniforms).
-4. Compute the screen-space AABB by projecting the 8 corners of
-   the world AABB through `view_proj`; take min/max.
-5. Pick the appropriate HZB mip from the screen-space AABB extent
-   (`mip = ceil(log2(max(width_px, height_px)))`).
-6. Sample HZB at that mip; if `closest_z_of_aabb > hzb_value`, the
-   instance is occluded.
-7. Output 0/1 to a per-instance `visible_this_frame: array<u32>`
-   storage. CPU reads this back next frame to populate `last_frame_visible`.
-
-*Render-graph slot:* runs between `material_decal` and `hzb` is
-wrong order — HZB has to be built *before* the cull. Correct order:
-1. Geometry pass — draws ALL instances (temporary; phase 2 splits
-   this into two halves).
-2. Material opaque + decal (as today).
-3. HZB build (already in place after `6eef59c`).
-4. **NEW** occlusion-cull compute → writes `visible_this_frame`.
-5. Line + transparent + display passes (as today).
-
-For phase 1 the cull output isn't consumed yet — it's CPU-readback'd
-at the end of the frame and stored as `last_frame_visible` for next
-frame. The win comes in phase 2.
-
-*Acceptance for phase 1:* a debug overlay (or `tracing` span)
-shows the per-frame "instances marked visible by GPU cull" count
-roughly matching the BVH-visible count on a sparse scene and
-shrinking on dense / heavy-occluder scenes.
-
-##### Phase 2
-
-After phase 1 lands and the cull output is trustworthy:
-
-1. Split the geometry pass into two CPU-recorded loops:
-   - **Pass 1 draws:** instances whose `last_frame_visible == 1`.
-   - **Pass 2 draws:** instances whose phase 2 cull marked
-     visible (newly visible candidates that survived the HZB test).
-2. The HZB rebuild happens *between* Pass 1 and Pass 2 — Pass 1's
-   depth seeds the HZB the Pass 2 cull tests against.
-3. `tracing` spans on each half so the perf benefit can be measured.
-
-*Acceptance:* on a hallway-style scene, "drawn instances" drops
-toward "visible instances" (the actual unhidden subset). Frame
-time at the open-world tier improves measurably; at sparse tiers
-it's no worse than ±5%.
+load-bearing input. The full design is captured in the deferral
+note above (Phase 2 split needs `drawIndirect`, which needs the
+geometry vertex shader's meta lookup to migrate from
+dynamic-offset uniform to storage-array indexed by
+`@builtin(instance_index)`). The infrastructure (cull pass +
+compaction compute) is in place; the geometry draw-loop rewire is
+the remaining piece. See §16.8 for the full plan.
 
 #### 16.8 Cluster 7.3 — GPU instance compaction + indirect draw
 
-**Status:** `not started; depends on §16.7`
+**Status:** `infrastructure landed (commit 06bfc5f); geometry-pass draw-loop rewire pending`
 
-Final step: the geometry pass stops recording per-mesh
-`draw_indexed` calls and switches to `drawIndirect` driven by GPU-
-compacted args buffers.
+**Infrastructure — DONE.** `render_passes/occlusion/compaction.rs`
+owns `CompactionBuffers` (per-mesh `IndirectDrawArgs` slots, 32 B
+stride, STORAGE | INDIRECT | COPY_DST flags) + `CompactionRenderPass`.
+The compaction compute (`occlusion_wgsl/compaction.wgsl`) runs
+one thread per occlusion instance: reads `visible_this_frame[i]`
+from §16.7 Phase 1, and on visible atomicAdds 1 to
+`indirect_args[mesh_slot].instance_count` where
+`mesh_slot = instances[i].mesh_meta_offset / 256` (the
+MaterialMeshMeta stride). Dispatched after the cull, inside a
+tracing span tagged with the input instance count. Bind-group
+recreate routed via `CompactionBuffersResize` +
+`OcclusionBuffersResize`.
 
-*New buffer* — per-mesh `IndirectDrawArgs`:
-```
-struct IndirectDrawArgs {
-    index_count: u32,
-    instance_count: u32,  // atomically populated by compaction
-    first_index: u32,
-    base_vertex: i32,
-    first_instance: u32,  // base into the instance attribute buffer
-}
-```
-One slot per `MeshKey`. The compaction compute walks
-`visible_this_frame` from §16.7, writes `instance_count++` to the
-matching `IndirectDrawArgs[mesh.material_meta_offset / META_SIZE]`,
-and appends the per-instance attribute index to a packed list.
+**Remaining — geometry pass draw-loop rewire.** The compaction's
+args buffer is correctly populated each frame but isn't consumed.
+The geometry pass still records the per-mesh `draw_indexed` loop
+([`renderable.rs`](../../crates/renderer/src/renderable.rs) →
+[`meshes/mesh.rs::push_geometry_pass_commands`](../../crates/renderer/src/meshes/mesh.rs)).
 
-*Geometry pass change:* replace the
-[`renderable.rs`](../../crates/renderer/src/renderable.rs)-driven
-per-mesh `draw_indexed` loop with a `drawIndirect` loop. Order
-matters — `multi_draw_indirect` is NOT in core WebGPU (experimental
-Chrome flag); the v1 path is one `drawIndirect` per *material
-pipeline key* (reusing Cluster 6.1's per-shader_id partitioning).
-At N=3 active opaque shaders that's 3 `drawIndirect` calls instead
-of N draw_indexed-per-mesh calls.
+To wire `drawIndirect`, the load-bearing change is in the geometry
+*vertex* shader's per-mesh meta lookup. Today it's a uniform with
+a per-draw dynamic offset
+([`geometry/bind_group.rs::GeometryBindGroupMeta`](../../crates/renderer/src/render_passes/geometry/bind_group.rs)).
+`drawIndirect` can't change bind-group offsets between draws, so
+the meta needs to migrate to a storage-buffer array indexed by
+`@builtin(instance_index)` (and the instancing model needs to
+disambiguate: today `instance_index` increments per actual instance
+within a draw, but with bundled drawIndirect each "instance" slot
+identifies a unique mesh — actually-instanced meshes have to move
+into a parallel per-instance attribute array).
 
-*Storage budget:* needs one more storage on the geometry pipeline
-(the compacted instance attribute list). §16.E1 + §16.E2 must
-have landed first so the geometry pass has slots free.
+*Recommended shape* once that lands:
+- One `drawIndirect` call per *material pipeline key* (reusing
+  Cluster 6.1's per-shader_id partitioning, since
+  `multi_draw_indirect` is not in core WebGPU). At N=3 active
+  opaque shaders → 3 `drawIndirect` calls instead of N per-mesh
+  draws.
+- The geometry vertex shader reads
+  `geometry_mesh_metas[instance_index]` from the new storage
+  array.
+- The CPU populates `IndirectDrawArgs[mesh].first_instance =
+  mesh_meta_index` and the GPU compaction sets `instance_count`.
 
 *Acceptance:*
 - Visual parity with the per-mesh `draw_indexed` path.
 - A `tracing` span around the geometry pass shows CPU command
-  recording time dropped (the per-mesh loop is gone).
-- 10K-mesh stress scene from §16.G measures a frame-time win vs
-  the pre-`drawIndirect` baseline.
+  recording time dropped.
+- 10K-mesh stress scene (`assets/world/tuning-10k-meshes`)
+  measures a frame-time win vs the pre-`drawIndirect` baseline.
 
 #### 16.9 Cluster 5.1 — Shadow render-pass integration tests
 
@@ -2233,48 +2174,7 @@ Several upcoming features want one more slot:
 
 #### 16.E1 Pack `attribute_indices` into `MaterialMeshMeta`
 
-**Status:** `done` (landed together with §16.E2 as the merged geometry pool refactor)
-
-`attribute_indices: array<u32>` (binding 8 on the opaque main bind
-group) holds vertex-attribute index buffers — one slice per mesh.
-Slices are looked up via
-`MaterialMeshMeta.vertex_attribute_indices_offset`, read at one
-offset per pixel for the active triangle.
-
-The relevant precedent: `mesh_light_indices` (`light_buckets/gpu.rs`)
-already follows this shape — slice metadata in `MaterialMeshMeta`
-(via the `light_slice_offset` + `light_slice_count` fields), data
-in a shared storage buffer. Mirror that refactor.
-
-*Implementation outline:*
-
-1. **Confirm there's only one underlying buffer.**
-   `attribute_indices` is currently bound from
-   `ctx.meshes.custom_attribute_index_gpu_buffer()` —
-   [`meshes.rs`](../../crates/renderer/src/meshes.rs) is already the
-   single source. Good; the refactor is purely a binding-shape
-   change, not a data layout one.
-2. **Drop `attribute_indices` from the opaque main bind group**
-   layout and entries
-   ([`material_opaque/bind_group.rs`](../../crates/renderer/src/render_passes/material_opaque/bind_group.rs)
-   binding 8). Also drop from the transparent pass + the picker
-   pass + the material_classify and material_decal passes if any
-   of them bind it (they don't today; verify).
-3. **WGSL: replace** `attribute_indices[i]` in
-   `material_opaque_wgsl/`, `material_transparent_wgsl/`, and any
-   shared helpers with reads through the existing pattern. Likely
-   already factored — confirm by `grep -rn attribute_indices`.
-4. **No `MaterialMeshMeta` change needed** if the existing
-   `vertex_attribute_indices_offset` already drives a different
-   bound buffer. Worth double-checking in the refactor — the goal
-   is to fold the lookup through a buffer that's *already bound*.
-
-Net effect: opaque main goes from 10/10 storage to 9/10. Frees one
-slot for §16.7.
-
-*Acceptance:* visual parity with the pre-refactor build
-(opaque/transparent/picker pixels identical), test suite stays at
-100 green.
+**Status:** `done` (landed together with §16.E2 as the merged geometry pool refactor; commit `2c03fa9`)
 
 #### 16.E2 Pack `attribute_data` similarly
 
@@ -2337,35 +2237,20 @@ File → Load… → pick `project.json` for each scene, capture span
 timings via the browser console (`tracing_subscriber` emits
 them), paste into §15.
 
-The unifying entry — this is one focused session that author the
-scenes T1-T6 need, runs the measurements, and fills in §15. Do it
-after the code-shipping items (§16.E / §16.7 / §16.8) so the
-"after" numbers reflect the optimized renderer.
+*Measurement workflow* (autonomous via Claude Preview MCP — see
+the "Handoff brief for the next session" header at the top of §16
+for the prescribed playbook).
 
-*Scenes to author* (in priority order; each in its own
-`assets/world/<name>/project.json`):
-
-1. **`tuning-1k-meshes`** — 1024 boxes in a 32×32 grid + 20
-   shadow-casting lights. Drives T1 (Cluster 1 shadow-pass timing).
-2. **`tuning-64-lights`** — 64 mixed punctual lights + ~500K
-   verts across ~10 meshes + 10 shadowed views. Drives T2.
-3. **`tuning-mixed-intensity`** — 20 lights at varied intensities
-   (0.1× to 50×). Drives T3 (importance-tier histogram).
-4. **`tuning-open-world`** — terrain plane (1km×1km) + ocean
-   plane + skybox + ~50 props. Drives T6 (oversized-mesh
-   threshold tuning).
-5. **`tuning-coverage`** — 100 small props at varying camera
-   distances. Drives T4 (cheap-material-pixel-threshold decision).
-6. **`tuning-10k-meshes`** — 10K boxes in a 100×100×1 grid.
-   Drives T5 (SceneSpatial rebuild thresholds).
-
-*Measurement workflow per item:*
-1. Add `tracing` spans where they're missing (`shadows::record`,
-   `material_opaque::render`, `material_classify::render`, the
-   per-pipeline indirect dispatches, geometry-pass CPU loop).
-2. Boot scene-editor via Claude Preview MCP, load the project,
-   capture span timings via `tracing_subscriber` browser output.
-3. Write the before/after numbers into §15.
+Each scene is loaded via the editor's File picker today. To
+automate end-to-end without a human clicking the picker, the next
+session should land a tiny dev-only helper that fetches a
+`project.json` via `web_sys::fetch` from the trunk dev server's
+URL (`/assets/world/<name>/project.json`) and feeds the parsed
+`SceneSnapshot` through the existing materializer (the same path
+`actions::project::load_inner` walks after the picker resolves).
+Exposing that as a `#[wasm_bindgen]` window function — e.g.
+`window.wasmBindings.load_scene_by_path("tuning-1k-meshes")` —
+lets `preview_eval` drive each scene end-to-end.
 
 *Acceptance:* every row in §15 has measured numbers, not
 `__ ms / frame` placeholders.
