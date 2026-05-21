@@ -174,14 +174,18 @@ impl AwsmRenderer {
             }
         }
 
+        // Tile counts are reused by both the opaque classify buckets
+        // (here) and the decal classify buckets (below). Calculate
+        // once so the two callers can't drift if the workgroup tile
+        // size ever changes.
+        let tile_x = render_texture_views.width.div_ceil(8);
+        let tile_y = render_texture_views.height.div_ceil(8);
+        let tile_count = tile_x.saturating_mul(tile_y);
+
         // Classify buckets are sized to fit the current viewport's
         // tile count. The grow-with-2x path keeps the reallocation
         // away from the steady-state per-frame work. Reset the header
         // every frame so the atomic counters start at 0.
-        let tile_count = render_texture_views
-            .width
-            .div_ceil(8)
-            .saturating_mul(render_texture_views.height.div_ceil(8));
         if self
             .material_classify_buffers
             .ensure_capacity(&self.gpu, tile_count)?
@@ -206,14 +210,13 @@ impl AwsmRenderer {
         }
 
         // §16.4.C: decal classify buckets sized to viewport tile count.
+        // Reuses the `tile_x` / `tile_y` calculated above.
         // Skipped when `features.decals == false` (plan §16.F).
         if let Some(decal_classify_buffers) = self.decal_classify_buffers.as_mut() {
-            let decal_tile_x = render_texture_views.width.div_ceil(8);
-            let decal_tile_y = render_texture_views.height.div_ceil(8);
             if decal_classify_buffers.ensure_capacity(
                 &self.gpu,
-                decal_tile_x,
-                decal_tile_y,
+                tile_x,
+                tile_y,
             )? {
                 self.bind_groups
                     .mark_create(BindGroupCreate::DecalClassifyBuffersResize);
