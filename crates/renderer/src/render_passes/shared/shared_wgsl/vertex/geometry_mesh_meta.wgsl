@@ -24,5 +24,17 @@ struct GeometryMeshMeta {
     // skinning. 0 = none (default), 1 = Y-axis (yaw-around-up only — sprite
     // stays upright), 2 = full (rotates the local basis so the model +Z axis
     // points at the camera). See `BillboardMode` in `meshes/mesh.rs`.
-    billboard_mode: u32
+    billboard_mode: u32,
+    // Pad the struct out to `GEOMETRY_MESH_META_BYTE_ALIGNMENT` (256 B)
+    // so the storage-array binding shape (plan §16.7/§16.8) matches
+    // the CPU buffer layout. The CPU side strides slots at 256 B
+    // because the *legacy* uniform-with-dynamic-offset path's
+    // dynamic-offset alignment requires it; the two bindings now share
+    // one physical buffer, so the WGSL struct stride must agree.
+    // Without the padding, `array<GeometryMeshMeta>[N]` for N > 0
+    // reads garbage from the previous slot's padding region — which
+    // manifests as black morph meshes, wrong skinning offsets, and
+    // wrong material_mesh_meta_offset for every mesh past slot 0.
+    // 12 active u32s + 52 padding u32s = 64 u32s = 256 B.
+    _pad: array<u32, 52>
 }
