@@ -1534,6 +1534,7 @@ Fill in after each step lands.
 | 8.1  | many small writes       | coalesced writes            | Verified. `buffer/helpers.rs::write_buffer_with_dirty_ranges` already sorts + coalesces; 4 unit tests pin the merge behaviour. |
 | 8.2  | per-upload allocations  | staging ring                | N/A for current arch. `gpu.write_buffer` (WebGPU `queue.writeBuffer`) handles staging internally; explicit ring only matters under `mapAsync` upload path. |
 | 8.3  | 60Hz skinning everywhere | distance-LOD'd skinning    | Landed. `Mesh::skin_update_period` field, `AwsmRenderer::set_mesh_skin_update_period(s)_by_distance` helpers, gate inside `Meshes::update_world` via `Skins::update_transforms` predicate. |
+| 16.F | always-on infra (HZB, occlusion cull, compaction, decal resources) | opt-in via `RendererFeatures` | __ ms / frame default-off vs __ ms / frame both-on, on the empty-scene baseline. Default-off allocation footprint should drop by ~33 MB vs HEAD at 4K. |
 
 ---
 
@@ -1561,9 +1562,9 @@ config `.claude/launch.json`, server name `scene-editor`).
 
 The next session is expected to run **fully autonomously** —
 nothing in this section requires human input. There are exactly
-**two code items + one measurement campaign** left. Do them in
+**three code items + one measurement campaign** left. Do them in
 order; commit per item; archive §16 when §15's table is fully
-populated and both code items are landed.
+populated and all three code items are landed.
 
 **Branch state.** `optimizations`, HEAD as listed in "What has
 shipped" below. `cargo check --target wasm32-unknown-unknown
@@ -1572,8 +1573,105 @@ are both green at HEAD; preserve that.
 
 **Picking order:**
 
-1. **§16.7 / §16.8 geometry draw-loop rewire** (~1–2 sessions of
-   focused work; biggest remaining lift).
+1. **§16.F Feature-gate the always-on infra** (~½–1 session;
+   landing this first means the measurement campaign can compare
+   feature-off vs feature-on cleanly, and the §16.7/§16.8 wiring
+   slots straight into the gate that already exists).
+
+   Today three pieces of GPU-driven infrastructure dispatch every
+   frame even when no consumer reads their output, and two
+   resources sit always-allocated even when unused:
+   - HZB build (commit `6eef59c`) — ~50–200 µs/frame GPU.
+   - Occlusion cull (commit `2034023`) — ~100–500 µs/frame +
+     per-frame CPU `writeBuffer` of the instance list.
+   - Compaction compute (commit `06bfc5f`) — ~50 µs/frame.
+   - `decal_color` render texture (commit `f40945b`) — ~16 MB
+     GPU at 4K, always allocated.
+   - `decal_classify_buffers` + classify pass (commit `5d170d5`) —
+     ~17 MB GPU at 4K + a per-frame header reset, always.
+
+   Net always-on cost: ~25–35 MB GPU memory + ~200–500 µs/frame
+   GPU work for a project that uses none of the new features.
+   Library consumers — especially editor / 2D / tools use-cases —
+   shouldn't pay that.
+
+   *Design:* introduce a `RendererFeatures` config on
+   `AwsmRendererBuilder`. Both gates default to `false` so the
+   "drop into someone else's project" path stays cheap;
+   game-side consumers that want the optimization paths opt in
+   explicitly.
+
+   ```rust
+   // crates/renderer/src/features.rs (new)
+   #[derive(Clone, Debug, Default, PartialEq, Eq)]
+   pub struct RendererFeatures {
+       /// Enable the GPU-driven culling pipeline: HZB build,
+       /// occlusion cull compute, and `IndirectDrawArgs`
+       /// compaction. Pays ~200–500 µs GPU/frame + ~50 KB CPU
+       /// upload per 1K meshes. Required for the §16.7/§16.8
+       /// `drawIndirect` rewire to actually filter draws — at the
+       /// 10K-mesh tier this becomes a 30–50% frame-time win;
+       /// below ~500 meshes it's a small net cost.
+       pub gpu_culling: bool,
+       /// Enable projection decals. Allocates `decal_color`
+       /// (~16 MB GPU at 4K) + `decal_classify_buffers`
+       /// (~17 MB GPU at 4K) up-front and dispatches the
+       /// classify + compute + composite passes whenever
+       /// `Decals::len() > 0`. When `false`, `insert_decal()`
+       /// returns `FeatureNotEnabled` and none of the decal
+       /// resources are touched.
+       pub decals: bool,
+   }
+   ```
+
+   *Wiring:*
+   - Add `with_features(RendererFeatures)` on
+     `AwsmRendererBuilder`; thread the config into `AwsmRenderer`.
+   - Expose `AwsmRenderer::features() -> &RendererFeatures` for
+     downstream branches.
+   - In `lib.rs::AwsmRenderer::new`, wrap each gated allocation
+     in `if features.gpu_culling { ... }` / `if features.decals
+     { ... }`. The owning fields become `Option<...>`.
+   - In `render.rs`, every per-frame dispatch site for the gated
+     passes already has a natural early-return; just add the
+     feature check at the top:
+     ```rust
+     if !self.features.gpu_culling { /* skip HZB + cull + compaction */ }
+     if !self.features.decals      { /* skip decal classify + compute + composite + reset */ }
+     ```
+   - The decal API (`insert_decal` / `update_decal` / `remove_decal`)
+     should return `Err(AwsmDecalError::FeatureNotEnabled)` when
+     `!features.decals`, so misuse is loud rather than silently
+     racey.
+   - In `BindGroupRecreateContext`, the `occlusion_buffers` /
+     `compaction_buffers` / `decal_classify_buffers` /
+     `hzb_full_view` fields become `Option<&...>` /
+     `Option<GpuTextureView>` for the gated case.
+   - The bind-group recreate dispatch for any gated pass should
+     short-circuit when the feature is off.
+
+   *Editor wiring:* the scene-editor opts in to both features so
+   its UX doesn't change:
+   ```rust
+   AwsmRendererBuilder::new(gpu)
+       .with_features(RendererFeatures { gpu_culling: true, decals: true })
+       ...
+   ```
+   Update `crates/frontend/scene-editor/src/...` wherever the
+   builder is constructed.
+
+   *Tests:* add a small unit test that builds the renderer with
+   the default `RendererFeatures` (both off) and asserts the
+   gated fields are `None` / un-allocated.
+
+   *Acceptance:* the test suite stays at 100; the scene-editor
+   still renders correctly (it opts in); a renderer built with
+   `RendererFeatures::default()` produces no `HZB`/`Occlusion`/
+   `Decal` tracing spans during a frame.
+
+2. **§16.7 / §16.8 geometry draw-loop rewire** (~1–2 sessions of
+   focused work; biggest remaining lift; gated behind
+   `features.gpu_culling`).
 
    The compaction's `IndirectDrawArgs` buffer is correctly
    populated each frame but unconsumed. To wire `drawIndirect`,
@@ -1590,13 +1688,22 @@ are both green at HEAD; preserve that.
    `InstancesAlongCurve` and friends) must move their per-instance
    data into a parallel attribute array.
 
-   Acceptance: visual parity; geometry-pass CPU recording time
-   drops (tracing span); 10K-mesh stress scene
+   *Feature gate:* the geometry pass picks between the legacy CPU
+   `draw_indexed` loop (when `!features.gpu_culling`) and the new
+   `drawIndirect` loop (when on). Keep both paths alive so
+   library consumers who haven't opted into the GPU pipeline
+   still get correct rendering.
+
+   Acceptance: visual parity in both modes; geometry-pass CPU
+   recording time drops in the `gpu_culling = true` path
+   (tracing span); 10K-mesh stress scene
    (`assets/world/tuning-10k-meshes`) measures a frame-time win.
    See §16.8 for the full plan.
 
-2. **§16.4.C HZB occlusion-gating follow-up** (~½ session, ~20
-   lines of WGSL + a bind-group plumbing).
+3. **§16.4.C HZB occlusion-gating follow-up** (~½ session, ~20
+   lines of WGSL + a bind-group plumbing). Gated behind
+   `features.decals && features.gpu_culling` (the HZB only exists
+   when GPU culling is enabled).
 
    The decal classify shader
    ([`material_decal/classify/shader/decal_classify_wgsl/compute.wgsl`](../../crates/renderer/src/render_passes/material_decal/classify/shader/decal_classify_wgsl/compute.wgsl))
@@ -1607,7 +1714,7 @@ are both green at HEAD; preserve that.
    `append_to_tile` call when the decal's closest-screen-depth
    sits behind the HZB max. Pure additive.
 
-3. **§16.G measurements + §15 table population** (~1 session
+4. **§16.G measurements + §15 table population** (~1 session
    running everything via the Claude Preview MCP).
 
    The six scenes already exist under `assets/world/tuning-*/project.json`
@@ -1639,22 +1746,41 @@ are both green at HEAD; preserve that.
       JSON (the spans already exist — see `render.rs` for the
       catalogue). The next session reads these via `preview_eval`.
 
-   3. **Measurement loop** — for each scene:
+   3. **Feature-flag harness** — expose a `set_features(json)`
+      helper so a single editor boot can measure both
+      `RendererFeatures::default()` (everything off) and
+      `RendererFeatures { gpu_culling: true, decals: true }`
+      against the same scene. Internally this rebuilds the
+      renderer (the gates are construction-time), so the harness
+      should `drop_renderer_caches()` + re-init analogous to a
+      project load.
+
+   4. **Measurement loop** — for each scene × each feature
+      configuration:
       ```js
+      await wasmBindings.set_features({ gpu_culling: false, decals: false });
       await wasmBindings.load_scene_by_path("tuning-1k-meshes");
       wasmBindings.enable_render_timings(true);
       // wait 60 frames (rAF)
-      const timings = wasmBindings.collect_timing_samples();
-      ```
-      Pull the relevant spans for each §16.T row, paste into §15.
+      const baseline = wasmBindings.collect_timing_samples();
 
-   4. **Fill §15** — every `__ ms / frame` row must have measured
+      await wasmBindings.set_features({ gpu_culling: true, decals: true });
+      await wasmBindings.load_scene_by_path("tuning-1k-meshes");
+      // wait 60 frames
+      const optimized = wasmBindings.collect_timing_samples();
+      ```
+      Pull the relevant spans for each §16.T row, paste into
+      §15. Record both the baseline (features-off) and optimized
+      (features-on) numbers so the always-on overhead is
+      visible.
+
+   5. **Fill §15** — every `__ ms / frame` row must have measured
       numbers. §16.T1–§16.T6 each map to a §15 row; §16.T7 stays
       "ongoing".
 
-   Acceptance: every row in §15 has measured numbers; §16.T1–T6
-   marked `done`; archive §16 entirely (delete the section — it's
-   served its purpose).
+   Acceptance: every row in §15 has measured numbers in both
+   feature configurations; §16.T1–T6 marked `done`; archive §16
+   entirely (delete the section — it's served its purpose).
 
 ### What has shipped
 
@@ -2200,6 +2326,135 @@ dynamic-materials' `extras_pool`. Buffer usage flags on the pool
 are `copy_dst | vertex | storage | index` (the same buffer
 underlies the transparent path's per-mesh vertex / index buffers).
 
+### Opt-in feature gates
+
+#### 16.F `RendererFeatures` — gate the always-on infra
+
+**Status:** `not started` — **picking-order item #1**, must land
+before §16.7/§16.8's draw-loop rewire (the rewire's geometry
+pass branches on the same `features.gpu_culling` flag).
+
+`AwsmRenderer` currently allocates and dispatches three GPU-
+driven pipelines + two large render textures every frame
+regardless of whether any caller uses them:
+
+| Resource / pass | Always-on cost | Required by |
+|---|---|---|
+| HZB build (commit `6eef59c`) | ~50–200 µs/frame GPU; ~MB-class texture | §16.7 cull, §16.4.C HZB-gating |
+| Occlusion cull (commit `2034023`) | ~100–500 µs/frame + per-frame CPU `writeBuffer` of 48 B × N instances | §16.8 draw-loop rewire |
+| Compaction (commit `06bfc5f`) | ~50 µs/frame | §16.8 draw-loop rewire |
+| `decal_color` render texture (commit `f40945b`) | ~16 MB GPU at 4K, always allocated | decals only |
+| `decal_classify_buffers` + classify pass (commit `5d170d5`) | ~17 MB GPU at 4K + per-frame header reset | decals only |
+
+Library consumers (editor / tools / 2D-with-some-3D) shouldn't
+pay this. Two opt-in flags collapse the cost to zero when off.
+
+*Public API:*
+```rust
+// crates/renderer/src/features.rs (new)
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RendererFeatures {
+    /// Enable GPU-driven culling: HZB build, occlusion cull,
+    /// `IndirectDrawArgs` compaction, and the `drawIndirect`
+    /// geometry path. Required for the §16.7/§16.8 draw-loop
+    /// to filter visible meshes GPU-side. At the 10K-mesh tier
+    /// this is a 30–50% frame-time win; below ~500 meshes the
+    /// always-on dispatch + per-frame CPU upload nets out to a
+    /// small loss.
+    pub gpu_culling: bool,
+    /// Enable projection decals. Allocates `decal_color` (~16 MB
+    /// at 4K) + `decal_classify_buffers` (~17 MB at 4K) up-front
+    /// and dispatches the classify + decal compute + composite
+    /// passes whenever `Decals::len() > 0`. When `false`,
+    /// `insert_decal()` returns
+    /// `AwsmDecalError::FeatureNotEnabled` and none of the
+    /// decal resources are allocated.
+    pub decals: bool,
+}
+
+// crates/renderer/src/lib.rs — on AwsmRendererBuilder:
+impl AwsmRendererBuilder {
+    pub fn with_features(mut self, features: RendererFeatures) -> Self {
+        self.features = features;
+        self
+    }
+}
+
+// crates/renderer/src/lib.rs — on AwsmRenderer:
+impl AwsmRenderer {
+    pub fn features(&self) -> &RendererFeatures {
+        &self.features
+    }
+}
+```
+
+Both flags default to `false`. Scene-editor and game-side
+consumers that want the optimization paths opt in explicitly:
+
+```rust
+AwsmRendererBuilder::new(gpu)
+    .with_features(RendererFeatures {
+        gpu_culling: true,
+        decals: true,
+    })
+    ...
+```
+
+*Implementation outline:*
+
+1. Add `crates/renderer/src/features.rs` with `RendererFeatures`.
+   Re-export from `lib.rs`.
+2. `AwsmRendererBuilder` carries a `RendererFeatures` field;
+   `with_features` setter.
+3. `AwsmRenderer` carries a `features: RendererFeatures` field
+   (public via `features()`).
+4. In `AwsmRenderer::new`, wrap each gated allocation in `if
+   features.gpu_culling { ... }` / `if features.decals { ... }`:
+   - `gpu_culling` gates: `occlusion_buffers`,
+     `compaction_buffers`, `HzbRenderPass`, `OcclusionRenderPass`,
+     `CompactionRenderPass`. Either make them `Option<...>` on
+     `AwsmRenderer` + `RenderPasses` or land a `Disabled`
+     variant per pass.
+   - `decals` gates: `decals` (the `Decals` slotmap),
+     `decal_classify_buffers`, `RenderTexturesInner.decal_color`
+     allocation, `MaterialDecalRenderPass`.
+5. In `render.rs`, every per-frame dispatch site for gated
+   passes early-returns on the feature check before any work:
+   ```rust
+   if self.features.gpu_culling {
+       // existing HZB + cull + compaction blocks
+   }
+   if self.features.decals {
+       // existing decal_classify_buffers.ensure_capacity +
+       // reset + dispatch blocks; the decal pass itself still
+       // early-returns when Decals::is_empty()
+   }
+   ```
+6. The decal API returns `Err(AwsmDecalError::FeatureNotEnabled)`
+   when `!features.decals` — loud misuse beats silent racing.
+7. `BindGroupRecreateContext`'s `occlusion_buffers` /
+   `compaction_buffers` / `decal_classify_buffers` /
+   `hzb_full_view` fields become `Option<...>` for the gated
+   case; the matching bind-group recreate dispatchers early-
+   return when `None`.
+8. Editor wiring — `crates/frontend/scene-editor/src/`
+   constructs the renderer with both features on so the editor
+   UX is unchanged.
+
+*Tests:* unit test that builds the renderer with
+`RendererFeatures::default()` and asserts the gated fields are
+`None` (and a parallel test with both features on confirming the
+allocations exist).
+
+*Acceptance:* test suite stays at 100; scene-editor still
+renders correctly (it opts in); a renderer built with
+`RendererFeatures::default()` produces no `HZB` / `Occlusion` /
+`Compaction` / `Decal` tracing spans during a frame; the
+default-construction memory footprint drops by ~33 MB at 4K vs
+HEAD.
+
+---
+
 ### Tuning / profiling items (no new code)
 
 These need browser-side measurements or authoring decisions. The
@@ -2264,9 +2519,11 @@ Capture a `tracing` span around `shadows/render_pass::record` at the
 pre-Cluster-1 linear sweep.
 
 ```
-Before (linear sweep):  __ ms / frame
-After  (BVH query):     __ ms / frame
-Ratio:                   __ ×
+Scene: tuning-1k-meshes
+                          features off   features on
+Before (linear sweep):    __ ms          __ ms
+After  (BVH query):       __ ms          __ ms
+Ratio:                    __ ×           __ ×
 ```
 
 #### 16.T2 F + E perf validation
@@ -2276,9 +2533,11 @@ Ratio:                   __ ×
 At 64 lights / 500K verts / 10 shadow views, measure:
 
 ```
-Material opaque (64 lights):  Before __ ms  After __ ms
-Geometry pass  (500K verts):  Before __ ms  After __ ms
-Shadow gen     (10 views):    Before __ ms  After __ ms
+Scene: tuning-64-lights
+                              features off          features on
+Material opaque (64 lights):  Before __ / After __  Before __ / After __ ms
+Geometry pass  (500K verts):  Before __ / After __  Before __ / After __ ms
+Shadow gen     (10 views):    Before __ / After __  Before __ / After __ ms
 ```
 
 If E shows a regression, revert in
