@@ -401,17 +401,36 @@ impl AwsmRenderer {
 
         // Plan §8.2 GPU coverage tally — one atomicAdd per pixel
         // into the per-mesh counts buffer. Runs after the geometry
-        // passes (so the full visibility buffer is populated) and
-        // also schedules a `copyBufferToBuffer` into the readback
-        // buffer that next-frame's `mapAsync` task picks up.
-        {
+        // passes (so the full visibility buffer is populated). The
+        // `copyBufferToBuffer` that primes the readback buffer is
+        // recorded *only* when the prior frame's `mapAsync` has
+        // resolved (single-buffered readback path — writing to a
+        // pending-map buffer is a WebGPU validation error). When
+        // the prior readback is still in flight we just drop this
+        // frame's coverage signal; downstream consumers fall back
+        // to "conservatively visible".
+        let kick_coverage_readback = {
             let _maybe_span_guard = if self.logging.render_timings {
                 Some(tracing::span!(tracing::Level::INFO, "Coverage RenderPass").entered())
             } else {
                 None
             };
             self.render_passes.coverage.render(&ctx)?;
-        }
+            let prior_inflight = self.coverage_readback_state.borrow().inflight;
+            if !prior_inflight {
+                let bytes_to_copy = self.coverage_buffers.capacity.saturating_mul(4);
+                ctx.command_encoder.copy_buffer_to_buffer(
+                    &self.coverage_buffers.counts_buffer,
+                    0,
+                    &self.coverage_buffers.readback_buffer,
+                    0,
+                    bytes_to_copy,
+                )?;
+                true
+            } else {
+                false
+            }
+        };
 
         // Shadow generation pass — runs between the geometry passes
         // and light culling so the shading passes downstream sample
@@ -836,10 +855,11 @@ impl AwsmRenderer {
         // Plan §8.2: build the slot → MeshKey map now (while we
         // still own `self.meshes`) so the async readback task can
         // route raw `u32` slot counts back into the `MeshCoverage`
-        // table without re-borrowing the renderer. Drops to an
-        // empty snapshot when a prior frame's `mapAsync` is still
-        // in flight (single-buffered readback path — see
-        // `CoverageReadbackState`).
+        // table without re-borrowing the renderer. Only collected
+        // when this frame actually recorded a copy-to-readback —
+        // the encoder block above gates the copy on
+        // `coverage_readback_state.inflight`, so a missed copy
+        // means there's nothing for the spawn_local task to read.
         //
         // Slot indexing uses the *material* meta offset (not the
         // geometry meta) because the visibility-buffer's per-pixel
@@ -851,7 +871,7 @@ impl AwsmRenderer {
         // fragmentation, so reading `geometry_buffer_offset` here
         // would silently miss.
         let coverage_slot_map: Option<Vec<(crate::meshes::MeshKey, usize)>> =
-            if !self.coverage_readback_state.borrow().inflight {
+            if kick_coverage_readback {
                 Some(
                     self.meshes
                         .iter()

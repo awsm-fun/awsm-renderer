@@ -37,11 +37,14 @@ impl CoverageRenderPass {
         })
     }
 
-    /// Dispatches the per-pixel tally + copies the result into the
-    /// readback buffer for the next frame's `mapAsync`. The caller
+    /// Dispatches the per-pixel tally. The `copy_buffer_to_buffer`
+    /// that primes the readback for `mapAsync` is intentionally NOT
+    /// recorded here — `render.rs` does it conditionally so the
+    /// in-flight readback gate also covers the copy (writing to a
+    /// pending-map buffer is a WebGPU validation error). The caller
     /// in `render.rs` zeros the counts buffer before this runs.
     pub fn render(&self, ctx: &RenderContext) -> Result<()> {
-        let coverage_buffers = ctx
+        let _ = ctx
             .coverage_buffers
             .expect("coverage_buffers missing during coverage render");
         let msaa = ctx.anti_aliasing.msaa_sample_count.is_some();
@@ -63,19 +66,6 @@ impl CoverageRenderPass {
         let workgroups_y = ctx.render_texture_views.height.div_ceil(8);
         compute_pass.dispatch_workgroups(workgroups_x, Some(workgroups_y), Some(1));
         compute_pass.end();
-
-        // Copy counts → readback for the next-frame `mapAsync`. Cheap
-        // (`coverage_buffers.capacity * 4 B` per frame). Skipped when
-        // a previous frame's readback is still mapped (the renderer
-        // checks `readback_inflight` in `try_kick_readback`).
-        let bytes_to_copy = coverage_buffers.capacity.saturating_mul(4);
-        ctx.command_encoder.copy_buffer_to_buffer(
-            &coverage_buffers.counts_buffer,
-            0,
-            &coverage_buffers.readback_buffer,
-            0,
-            bytes_to_copy,
-        )?;
 
         Ok(())
     }
