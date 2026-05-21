@@ -97,3 +97,28 @@ pub async fn load_scene_by_path(scene_name: String) -> Result<(), JsValue> {
     tracing::info!("measurement: scene {scene_name} loaded + materialised");
     Ok(())
 }
+
+/// Read the renderer's light-bucket telemetry — plan §15 row T6.
+/// Returns a JSON string `{ "last_max_bucket": N, "oversized_count": M }`
+/// for the most-recently-rebuilt `LightMeshBuckets`. Drive from
+/// preview_eval after loading `tuning-open-world` (or any authored
+/// scene with terrain / ocean / skyboxes) to inform re-tuning of
+/// `OVERSIZED_LIST_COUNT_THRESHOLD` (default 16) and
+/// `OVERSIZED_AABB_DIAGONAL_METERS` (default 50.0). Returns JSON
+/// (rather than a JS object) to dodge a `serde_wasm_bindgen`
+/// dependency the editor doesn't otherwise carry; the caller does
+/// `JSON.parse()`.
+#[wasm_bindgen]
+pub async fn read_oversized_mesh_stats() -> String {
+    let (last_max_bucket, oversized_count) =
+        crate::context::with_renderer_mut(|r| {
+            (
+                r.light_buckets.last_max_bucket(),
+                r.light_buckets.oversized_meshes().len(),
+            )
+        })
+        .await;
+    format!(
+        "{{\"last_max_bucket\":{last_max_bucket},\"oversized_count\":{oversized_count}}}"
+    )
+}
