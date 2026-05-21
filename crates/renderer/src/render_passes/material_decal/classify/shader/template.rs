@@ -7,13 +7,17 @@ use crate::{
 
 #[derive(Template, Debug, Default)]
 #[template(path = "decal_classify_wgsl/compute.wgsl", whitespace = "minimize")]
-pub struct ShaderTemplateDecalClassify;
+pub struct ShaderTemplateDecalClassify {
+    pub hzb_enabled: bool,
+}
 
 impl TryFrom<&ShaderCacheKeyDecalClassify> for ShaderTemplateDecalClassify {
     type Error = AwsmShaderError;
 
-    fn try_from(_value: &ShaderCacheKeyDecalClassify) -> Result<Self> {
-        Ok(Self)
+    fn try_from(value: &ShaderCacheKeyDecalClassify) -> Result<Self> {
+        Ok(Self {
+            hzb_enabled: value.hzb_enabled,
+        })
     }
 }
 

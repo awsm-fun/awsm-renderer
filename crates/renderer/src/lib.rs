@@ -439,6 +439,7 @@ impl AwsmRendererBuilder {
             shaders: &mut shaders,
             render_texture_formats: &mut render_texture_formats,
             textures: &mut textures,
+            features: &features,
         };
         let render_passes = RenderPasses::new(&mut render_pass_init, &features).await?;
 

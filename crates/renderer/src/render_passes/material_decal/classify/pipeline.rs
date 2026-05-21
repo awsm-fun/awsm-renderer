@@ -22,7 +22,12 @@ impl DecalClassifyPipelines {
         )?;
         let shader_key = ctx
             .shaders
-            .get_key(ctx.gpu, ShaderCacheKeyDecalClassify)
+            .get_key(
+                ctx.gpu,
+                ShaderCacheKeyDecalClassify {
+                    hzb_enabled: bind_groups.hzb_enabled,
+                },
+            )
             .await?;
         let cull = ctx
             .pipelines

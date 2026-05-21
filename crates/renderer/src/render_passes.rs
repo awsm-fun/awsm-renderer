@@ -112,4 +112,8 @@ pub struct RenderPassInitContext<'a> {
     pub pipelines: &'a mut Pipelines,
     pub shaders: &'a mut Shaders,
     pub render_texture_formats: &'a mut RenderTextureFormats,
+    /// Active feature gates (plan §16.F). Lets construction-time
+    /// code (e.g. decal classify's HZB binding switch in §16.4.C)
+    /// pick the variant that matches the live feature set.
+    pub features: &'a RendererFeatures,
 }

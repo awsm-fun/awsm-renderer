@@ -254,6 +254,11 @@ impl BindGroups {
                     functions_to_call.insert(FunctionToCall::MaterialClassify);
                     functions_to_call.insert(FunctionToCall::MaterialDecalMain);
                     functions_to_call.insert(FunctionToCall::MaterialDecalComposite);
+                    // §16.4.C: the decal classify bind group binds the
+                    // HZB view when `gpu_culling && decals`; rebuild on
+                    // every HZB view recreate. No-op when the HZB is
+                    // off (the dispatcher filter below short-circuits).
+                    functions_to_call.insert(FunctionToCall::MaterialDecalClassify);
                     functions_to_call.insert(FunctionToCall::Display);
                     functions_to_call.insert(FunctionToCall::Effects);
                     functions_to_call.insert(FunctionToCall::OpaqueMain);

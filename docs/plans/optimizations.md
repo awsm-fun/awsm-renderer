@@ -2041,7 +2041,7 @@ indirect dispatch driven by a per-material tile bitmask. See plan
 
 #### 16.4 Cluster 6.4 — Decals as a material class
 
-**Status:** `done apart from a small HZB-gating follow-up on §16.4.C`
+**Status:** `done`
 
 **16.4.A Runtime — DONE** (commit `bac0b1f`). Decima/D3-style
 projection decals: `crates/renderer/src/decals/{mod,api,data,gpu}.rs`
@@ -2065,16 +2065,23 @@ atomic-appends the decal index to every overlapping 8×8 tile
 (bucket capacity 32, overflow drops). The shading pass then
 iterates only the per-tile subset.
 
-**16.4.C HZB occlusion-gating follow-up — REMAINING.** The classify
-shader currently gates only on frustum + clamped screen-AABB. The
-spec also calls for a per-tile HZB-lookup gate: drop a decal from
-a tile when its closest-screen-depth sits behind the HZB max for
-that tile. ~20-line WGSL append to
-[`material_decal/classify/shader/decal_classify_wgsl/compute.wgsl`](../../crates/renderer/src/render_passes/material_decal/classify/shader/decal_classify_wgsl/compute.wgsl) —
-add the HZB texture binding (mirror the occlusion-cull pass's
-`hzb_full_view` plumbing in `BindGroupRecreateContext`), sample at
-the mip whose texel covers the screen-AABB, skip the
-`append_to_tile` when occluded. Pure additive.
+**16.4.C HZB occlusion-gating follow-up — DONE.** The classify
+shader now gates on frustum + clamped screen-AABB + HZB-max
+when both `features.decals` and `features.gpu_culling` are on
+(the HZB texture only exists in that mode). Gated via a new
+`hzb_enabled` field on `ShaderCacheKeyDecalClassify`; the
+template's `{% if hzb_enabled %}` block conditionally emits the
+`@group(0) @binding(3) hzb_texture` binding plus the per-decal
+mip-selection + occlusion gate. The matching HZB binding on the
+classify bind-group layout is added at construction when
+`features.gpu_culling` is on, and the recreate now fires on
+`BindGroupCreate::TextureViewRecreate` so HZB resizes are
+picked up. The decal's *closest* screen depth (smallest
+`clip.z / clip.w` across the 8 projected corners) is compared
+against the HZB max at the chosen mip; if behind, the
+`append_to_tile` is skipped entirely. Decals straddling the
+near plane bypass the gate (the screen-AABB was already
+conservatively widened to the full viewport).
 
 **16.4.D MSAA path — DONE** (commit `f40945b`). Decal compute now
 always writes to a dedicated single-sample `decal_color` storage

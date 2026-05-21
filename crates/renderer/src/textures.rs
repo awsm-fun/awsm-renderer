@@ -57,6 +57,7 @@ impl AwsmRenderer {
                 render_texture_formats: &mut self.render_textures.formats,
                 bind_group_layouts: &mut self.bind_group_layouts,
                 pipeline_layouts: &mut self.pipeline_layouts,
+                features: &self.features,
             };
 
             self.bind_groups.mark_create(BindGroupCreate::TexturePool);

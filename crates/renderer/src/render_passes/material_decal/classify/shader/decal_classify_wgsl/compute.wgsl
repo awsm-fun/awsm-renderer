@@ -50,6 +50,15 @@ struct Buckets {
 @group(0) @binding(0) var<storage, read> decals_buffer: DecalsBuffer;
 @group(0) @binding(1) var<uniform> camera_raw: CameraRaw;
 @group(0) @binding(2) var<storage, read_write> buckets: Buckets;
+{% if hzb_enabled %}
+// §16.4.C: HZB occlusion gate. Bound only when
+// `features.gpu_culling && features.decals` — the HZB texture is
+// itself gated on `gpu_culling`. Stores the *maximum* clip-space
+// depth per texel (canonical Karis/Sousa orientation), so the
+// gate fires when a decal's *closest* projected depth sits
+// behind the HZB max for the tile.
+@group(0) @binding(3) var hzb_texture: texture_2d<f32>;
+{% endif %}
 
 const TILE_PX: f32 = 8.0;
 
@@ -93,7 +102,9 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let view_proj = camera_raw.view_proj;
     var uv_min = vec2<f32>(2.0, 2.0);
     var uv_max = vec2<f32>(-1.0, -1.0);
+    var min_depth = 1.0;
     var any_in_front = false;
+    var any_behind_near = false;
     let xs = array<f32, 2>(-1.0, 1.0);
     let ys = array<f32, 2>(-1.0, 1.0);
     let zs = array<f32, 2>(-1.0, 1.0);
@@ -110,6 +121,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (clip.w <= 0.0) {
             uv_min = vec2<f32>(0.0, 0.0);
             uv_max = vec2<f32>(1.0, 1.0);
+            any_behind_near = true;
             any_in_front = true;
             break;
         }
@@ -118,6 +130,12 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
         uv_min = min(uv_min, uv);
         uv_max = max(uv_max, uv);
+        // Track the *closest* (smallest) screen-space depth across
+        // the 8 projected corners. WebGPU clip-space is `[0, 1]`
+        // with 0 = near, 1 = far. The HZB stores maximum depth
+        // per texel; the gate fires when this min depth sits
+        // behind the HZB max for the screen-AABB's footprint.
+        min_depth = min(min_depth, clip.z * inv_w);
         any_in_front = true;
     }
     if (!any_in_front) {
@@ -144,6 +162,51 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let tile_min_y_c = min(tile_min_y, buckets.tile_count_y - 1u);
     let tile_max_x_c = min(tile_max_x, buckets.tile_count_x - 1u);
     let tile_max_y_c = min(tile_max_y, buckets.tile_count_y - 1u);
+
+    {% if hzb_enabled %}
+    // §16.4.C HZB occlusion gate. Pick the smallest mip whose texel
+    // covers the decal's screen-AABB so a single texel-load gives
+    // a conservative "max depth across this footprint" reading,
+    // then drop the decal when its closest-screen-depth sits
+    // behind that max. Skipped for decals that straddle the near
+    // plane (clip.w <= 0 for any corner) since the screen-AABB
+    // was conservatively widened to the full viewport above and
+    // the per-tile gate wouldn't be meaningful.
+    if (!any_behind_near) {
+        let mip0_dims = textureDimensions(hzb_texture, 0);
+        let mip0_w = f32(mip0_dims.x);
+        let mip0_h = f32(mip0_dims.y);
+        let aabb_w_px = (uv_max.x - uv_min.x) * mip0_w;
+        let aabb_h_px = (uv_max.y - uv_min.y) * mip0_h;
+        // Mip M's texel covers 2^M pixels of mip 0. Pick the
+        // smallest M such that one texel covers the AABB extent.
+        let extent_px = max(aabb_w_px, aabb_h_px);
+        let max_mip = textureNumLevels(hzb_texture) - 1u;
+        var mip: u32 = 0u;
+        if (extent_px > 1.0) {
+            // ceil(log2(extent_px)) — `firstLeadingBit` works on u32;
+            // round extent up first so a 3.x pixel AABB picks mip 2
+            // (4-px texel), not mip 1.
+            let e_int = u32(ceil(extent_px));
+            mip = min(31u - firstLeadingBit(e_int), max_mip);
+            if ((1u << mip) < e_int) {
+                mip = min(mip + 1u, max_mip);
+            }
+        }
+        let mip_dims = textureDimensions(hzb_texture, mip);
+        let center_uv = (uv_min + uv_max) * 0.5;
+        let center_px = vec2<u32>(
+            min(u32(center_uv.x * f32(mip_dims.x)), mip_dims.x - 1u),
+            min(u32(center_uv.y * f32(mip_dims.y)), mip_dims.y - 1u),
+        );
+        let hzb_max = textureLoad(hzb_texture, center_px, mip).r;
+        // Decal fully behind the closest geometry covering the
+        // screen-AABB footprint — drop it from every tile.
+        if (min_depth > hzb_max) {
+            return;
+        }
+    }
+    {% endif %}
 
     for (var ty = tile_min_y_c; ty <= tile_max_y_c; ty++) {
         for (var tx = tile_min_x_c; tx <= tile_max_x_c; tx++) {
