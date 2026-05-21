@@ -9,13 +9,17 @@
 //! mesh insert time; the compaction zeros + repopulates `instance_count`
 //! per frame.
 //!
-//! Phase-1 status: infrastructure-only. The geometry pass still records
-//! per-mesh `draw_indexed` calls; the populated `IndirectDrawArgs`
-//! buffer is not consumed until a later session swaps the draw loop
-//! to `drawIndirect` (which requires the geometry vertex shader's per-
-//! mesh meta lookup to migrate from dynamic-offset uniform to a
-//! storage-array indexed by `@builtin(instance_index)` — see the
-//! deferral note in `docs/plans/optimizations.md §16.7`).
+//! The geometry pass's `drawIndirect` path consumes this buffer
+//! when `features.gpu_culling` is on: each non-instanced mesh's
+//! slot carries `(index_count, instance_count, first_index=0,
+//! base_vertex=0, first_instance=slot)`, with `instance_count`
+//! GPU-written by this compaction shader. The geometry vertex
+//! shader reads `geometry_mesh_metas[instance_index]` from a
+//! storage-array binding indexed by `@builtin(instance_index)`;
+//! `first_instance = slot` lands the lookup on the right meta.
+//! Instanced meshes stay on the legacy
+//! `draw_indexed_with_instance_count` path (their `instance_index`
+//! ranges would collide between meshes in the shared lookup).
 
 use awsm_renderer_core::{
     buffers::{BufferDescriptor, BufferUsage},

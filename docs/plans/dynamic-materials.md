@@ -57,8 +57,9 @@ If you can't get something working through either editor, fall back to manually 
 ## Update (post material classify + indirect dispatch)
 
 The opaque-shading compute kernel landscape has changed since this
-plan was written. Cluster 6.1 (plan
-`docs/plans/optimizations.md` §16.3) landed two related changes:
+plan was written. The material classify + indirect dispatch cluster
+(see `docs/PERFORMANCE.md` §1 frame diagram + §15 row 6.1 in git
+history) landed two related changes:
 
 1. **Shader split.** PBR / Unlit / Toon each compile to their own
    specialized compute pipeline. The runtime `if (shader_id == X) {…}`

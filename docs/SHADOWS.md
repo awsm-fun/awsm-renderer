@@ -218,8 +218,10 @@ visibility buffer all have their own footprints.
 1. Insert a Point Light.
 2. Position it and set `range` to cover what you want lit. `max_distance`
    gates the receiver-side fade; usually leave equal to `range`.
-3. **Hardness** — `Soft` is the sweet spot. `Pcss` is not available
-   for points (cube PCSS is deferred).
+3. **Hardness** — `Soft` is the sweet spot. `Pcss` runs a real
+   16-tap blocker search on the cube pool's 2D-array depth view
+   before the variable-kernel PCF — slide `pcss_penumbra_scale`
+   from 0.5 to 5.0 to widen the penumbra.
 4. If the light is static, set `cube_face_update_rate` to
    `Every2Frames` or higher.
 
@@ -452,15 +454,14 @@ Recipe for an unambiguous EVSM-vs-PCF demo:
 
 ## Known limits / deferred work
 
-* **Cube `Pcss` is a fixed-kernel widened-Soft, not a true
-  blocker-search PCSS** — `texture_depth_cube_array` doesn't expose
-  raw depth reads in WGSL (only comparison sampling), so the cube
-  path can't run the variable-kernel blocker-search the 2D path
-  does. The `Pcss` hardness on a point light therefore samples the
-  same 16-tap rotated-Poisson disc as `Soft` but widens the disc by
-  `pcss_penumbra_scale * 3`. The slider still works for "more or
-  less penumbra"; the visual difference vs true PCSS is subtle at
-  typical point-light scales (range 1–30 m).
+* **Cube `Pcss` is a real blocker-search PCSS** — the cube pool
+  now exposes a second view (`cube_2d_array_view`,
+  `texture_depth_2d_array`) used by the PCSS path for raw
+  `textureLoad` blocker reads. The face-projection math is
+  inlined at the call site (a forward-declared helper tripped a
+  Dawn validation error). Penumbra width follows
+  `(z_recv − z_blocker_avg) / z_blocker_avg`, mapped to a
+  world-space disc radius clamped to `[10 cm, 1 m]`.
 * **Spot light PCSS** — supported (it's a 2D shadow), but you may
   want to tune `pcss_penumbra_scale` per-spot since the cone half-
   angle affects the apparent penumbra.
