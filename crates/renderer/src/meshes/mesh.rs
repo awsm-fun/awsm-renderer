@@ -173,6 +173,11 @@ impl Mesh {
             .get_render_pipeline_key(GeometryRenderPipelineKeyOpts {
                 anti_aliasing: ctx.anti_aliasing,
                 instancing: self.instanced,
+                // Only non-instanced meshes branch on the meta-binding
+                // shape; the instanced path always uses
+                // uniform-with-dynamic-offset (see `pipeline.rs`).
+                meta_storage_array: !self.instanced
+                    && ctx.features.indirect_first_instance_enabled(),
                 cull_mode: if self.double_sided {
                     awsm_renderer_core::pipeline::primitive::CullMode::None
                 } else {
@@ -183,18 +188,26 @@ impl Mesh {
 
     /// Pushes geometry pass draw commands for this mesh.
     ///
-    /// Non-instanced meshes route through the storage-array meta
-    /// binding and either `drawIndirect` (under
-    /// `features.gpu_culling`) or
-    /// `draw_indexed_with_first_instance` (legacy). The legacy
-    /// `first_instance = mesh_meta_idx` makes the vertex shader's
-    /// `geometry_mesh_metas[instance_index]` resolve to the right
-    /// slot. Instanced meshes keep the legacy uniform-with-dynamic-
-    /// offset binding + `draw_indexed_with_instance_count` — their
+    /// Two non-instanced variants exist, picked by
+    /// `features.indirect_first_instance_enabled()`:
+    /// - **storage-array meta** (feature on): single shared
+    ///   `@group(2)` storage binding across every non-instanced draw;
+    ///   the slot identity lives in `IndirectDrawArgs.first_instance`
+    ///   (compaction) or in CPU `firstInstance` (legacy path), with
+    ///   the vertex shader's `geometry_mesh_metas[instance_index]`
+    ///   resolving to the right slot. Cheapest at the per-draw site
+    ///   (no `setBindGroup` call).
+    /// - **uniform-with-dynamic-offset meta** (feature off, portable):
+    ///   the same shape the instanced path uses. CPU calls
+    ///   `setBindGroup(2, group, &[meta_offset])` per draw; the args
+    ///   buffer's `first_instance` stays at 0 (required —
+    ///   `indirect-first-instance` is unavailable). One extra binding
+    ///   set per draw vs. the storage-array path, but no other cost.
+    ///
+    /// Instanced meshes always use uniform-with-dynamic-offset (their
     /// `instance_index` range across the actual instances would
-    /// collide with neighbouring meshes' meta slots if they used
-    /// the shared storage array, so they sit out the drawIndirect
-    /// path entirely.
+    /// collide with neighbouring meshes' meta slots in a shared
+    /// storage array).
     pub fn push_geometry_pass_commands(
         &self,
         ctx: &RenderContext,
@@ -209,17 +222,18 @@ impl Mesh {
         let mesh_meta_idx = meta_offset
             / crate::meshes::meta::geometry_meta::GEOMETRY_MESH_META_BYTE_ALIGNMENT as u32;
 
-        if self.instanced {
+        // Bind-group selection mirrors the pipeline-variant selection
+        // in `geometry_render_pipeline_key`.
+        let use_storage_meta =
+            !self.instanced && ctx.features.indirect_first_instance_enabled();
+        if use_storage_meta {
+            render_pass.set_bind_group(2, bind_groups.meta.get_storage_bind_group()?, None)?;
+        } else {
             render_pass.set_bind_group(
                 2,
                 bind_groups.meta.get_uniform_bind_group()?,
                 Some(&[meta_offset]),
             )?;
-        } else {
-            // Non-instanced uses the storage-array binding; no dynamic
-            // offset, the shader reads
-            // `geometry_mesh_metas[instance_index]`.
-            render_pass.set_bind_group(2, bind_groups.meta.get_storage_bind_group()?, None)?;
         }
 
         render_pass.set_vertex_buffer(
@@ -294,10 +308,11 @@ impl Mesh {
             let args_offset = (mesh_meta_idx as u64)
                 * crate::render_passes::occlusion::compaction::INDIRECT_DRAW_ARGS_STRIDE as u64;
             render_pass.draw_indexed_indirect_with_f64(&args_buffer, args_offset as f64);
-        } else {
-            // Legacy CPU-recorded path. `first_instance` carries the
-            // slot index so the vertex shader's storage-array lookup
-            // still resolves to this mesh's meta.
+        } else if use_storage_meta {
+            // CPU-recorded path with storage-array meta. `first_instance`
+            // carries the slot index so the vertex shader's
+            // `geometry_mesh_metas[instance_index]` resolves to this
+            // mesh's meta.
             render_pass
                 .draw_indexed_with_instance_count_and_first_index_and_base_vertex_and_first_instance(
                     index_count,
@@ -306,6 +321,13 @@ impl Mesh {
                     0,
                     mesh_meta_idx,
                 );
+        } else {
+            // CPU-recorded path with uniform-with-dynamic-offset meta.
+            // The bind-group dynamic offset above already pointed the
+            // uniform at this mesh's meta slot; `first_instance` stays
+            // at 0 (portable shape, no `indirect-first-instance`
+            // feature requirement).
+            render_pass.draw_indexed_with_instance_count(index_count, 1);
         }
 
         Ok(())

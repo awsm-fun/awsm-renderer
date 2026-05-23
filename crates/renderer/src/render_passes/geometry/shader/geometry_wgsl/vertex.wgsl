@@ -54,14 +54,16 @@ fn vert_main(
 ) -> VertexOutput {
     var out: VertexOutput;
 
-    {% if !instancing_transforms %}
-    // Load per-mesh meta from the storage array
-    // indexed by `instance_index`. The CPU sets
-    // `first_instance = mesh_meta_idx` for each draw (legacy
-    // `draw_indexed_with_first_instance` or
-    // `IndirectDrawArgs.first_instance` via `drawIndirect`), so
-    // `instance_index` lands on this mesh's slot for both
-    // `features.gpu_culling` paths.
+    {% if meta_storage_array %}
+    // Load per-mesh meta from the storage array indexed by
+    // `instance_index`. The compaction shader (or CPU
+    // draw_indexed_with_first_instance) sets `first_instance =
+    // mesh_meta_idx` so `instance_index` lands on this mesh's slot.
+    // Only reachable when the device exposes the
+    // `indirect-first-instance` WebGPU feature; the portable
+    // fallback (uniform-with-dynamic-offset) leaves
+    // `geometry_mesh_meta` populated by the bind-group dynamic
+    // offset and skips this load.
     geometry_mesh_meta = geometry_mesh_metas[instance_index];
     {% endif %}
 

@@ -15,7 +15,16 @@ impl From<ShaderCacheKeyOcclusionCull> for ShaderCacheKey {
 
 /// Cache key for the GPU instance-compaction shader.
 #[derive(Hash, Debug, Clone, PartialEq, Eq, Default)]
-pub struct ShaderCacheKeyOcclusionCompaction;
+pub struct ShaderCacheKeyOcclusionCompaction {
+    /// Whether to write a non-zero `IndirectDrawArgs.first_instance`
+    /// (the per-mesh slot index) into the args buffer. Requires the
+    /// `indirect-first-instance` WebGPU feature on the device — when
+    /// the feature is absent (portable fallback path), the field
+    /// must stay 0 or drawIndexedIndirect generates a validation
+    /// error. The CPU passes the slot identity via bind-group dynamic
+    /// offset instead.
+    pub write_first_instance: bool,
+}
 
 impl From<ShaderCacheKeyOcclusionCompaction> for ShaderCacheKey {
     fn from(key: ShaderCacheKeyOcclusionCompaction) -> Self {

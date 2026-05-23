@@ -34,13 +34,21 @@ impl ShaderTemplateOcclusionCull {
 
 #[derive(Template, Debug, Default)]
 #[template(path = "occlusion_wgsl/compaction.wgsl", whitespace = "minimize")]
-pub struct ShaderTemplateOcclusionCompaction;
+pub struct ShaderTemplateOcclusionCompaction {
+    /// Mirrors `ShaderCacheKeyOcclusionCompaction::write_first_instance`.
+    /// Gates the `indirect_args[mesh_slot].first_instance = mesh_slot`
+    /// write in the WGSL — only emitted when the device supports the
+    /// `indirect-first-instance` feature.
+    write_first_instance: bool,
+}
 
 impl TryFrom<&ShaderCacheKeyOcclusionCompaction> for ShaderTemplateOcclusionCompaction {
     type Error = AwsmShaderError;
 
-    fn try_from(_value: &ShaderCacheKeyOcclusionCompaction) -> Result<Self> {
-        Ok(Self)
+    fn try_from(value: &ShaderCacheKeyOcclusionCompaction) -> Result<Self> {
+        Ok(Self {
+            write_first_instance: value.write_first_instance,
+        })
     }
 }
 

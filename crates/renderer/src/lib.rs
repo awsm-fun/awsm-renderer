@@ -483,13 +483,48 @@ impl AwsmRendererBuilder {
             anti_aliasing,
             post_processing,
             shadows_config,
-            features,
+            mut features,
             optimization_policy,
         } = self;
 
         let mut gpu = match gpu {
             AwsmRendererGpuBuilderKind::WebGpuBuilder(builder) => builder.build().await?,
             AwsmRendererGpuBuilderKind::WebGpuBuilt(gpu) => gpu,
+        };
+
+        // Resolve `indirect_first_instance` against device capability.
+        // After this point any `Auto` in the toggle is replaced by
+        // `On` (when the device exposes the feature) or `Off` (when it
+        // doesn't), so downstream code can read `.resolve(false)` and
+        // get a deterministic boolean. `On` / `Off` overrides bypass
+        // the capability probe entirely — useful for forcing the
+        // portable fallback on a supported device (testing) or for
+        // forcing the optimized path when out-of-band knowledge says
+        // the device supports it.
+        //
+        // The two paths are *both* fully optimized for their config —
+        // see [`crate::features::FeatureToggle`] and
+        // [`AwsmRendererWebGpu::has_indirect_first_instance`] for the
+        // capability semantics, and the geometry-pass + compaction
+        // templating for the per-path code paths.
+        let indirect_capability = gpu.has_indirect_first_instance();
+        let resolved_indirect = features
+            .indirect_first_instance
+            .resolve(indirect_capability);
+        if matches!(features.indirect_first_instance, crate::features::FeatureToggle::On)
+            && !indirect_capability
+        {
+            tracing::warn!(
+                "`indirect_first_instance = On` but the device doesn't expose \
+                 the `indirect-first-instance` WebGPU feature. drawIndirect \
+                 calls with non-zero firstInstance will silently fail. \
+                 Switch to Auto (default) or Off to use the portable path."
+            );
+        }
+        features.indirect_first_instance = if resolved_indirect {
+            crate::features::FeatureToggle::On
+        } else {
+            crate::features::FeatureToggle::Off
         };
 
         let mut render_texture_formats = match render_texture_formats {

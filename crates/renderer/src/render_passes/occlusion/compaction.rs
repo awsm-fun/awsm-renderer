@@ -232,7 +232,21 @@ impl CompactionPipeline {
         )?;
         let shader_key = ctx
             .shaders
-            .get_key(ctx.gpu, ShaderCacheKeyOcclusionCompaction)
+            .get_key(
+                ctx.gpu,
+                ShaderCacheKeyOcclusionCompaction {
+                    // Mirror the geometry pass's variant choice. When the
+                    // device exposes `indirect-first-instance`, compaction
+                    // writes the per-mesh slot index into
+                    // `IndirectDrawArgs.first_instance` and the geometry
+                    // pass's storage-array meta lookup picks it up; when
+                    // it doesn't, the compaction-shader branch is templated
+                    // out so the field stays 0 (required for portable
+                    // drawIndirect) and the geometry pass threads the
+                    // slot identity via bind-group dynamic offset instead.
+                    write_first_instance: ctx.features.indirect_first_instance_enabled(),
+                },
+            )
             .await?;
         let key = ctx
             .pipelines

@@ -92,6 +92,17 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // mark multiple instances of one mesh visible under future
     // instancing extensions.
     indirect_args[mesh_slot].index_count = instances[i].index_count;
+    {% if write_first_instance %}
+    // Per-mesh slot index goes into `first_instance` so the vertex
+    // shader's `geometry_mesh_metas[instance_index]` storage-array
+    // read resolves to this mesh's meta. Requires the
+    // `indirect-first-instance` WebGPU feature on the device — the
+    // CPU only constructs the shader with this template branch when
+    // the feature is on. The portable path (toggle off) instead leaves
+    // first_instance at 0 (kept from `clear_buffer`) and threads the
+    // slot identity through a uniform-with-dynamic-offset bind group
+    // set per draw.
     indirect_args[mesh_slot].first_instance = mesh_slot;
+    {% endif %}
     atomicAdd(&indirect_args[mesh_slot].instance_count, 1u);
 }

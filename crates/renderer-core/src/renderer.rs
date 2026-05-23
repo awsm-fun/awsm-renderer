@@ -10,6 +10,11 @@ use crate::{
     error::{AwsmCoreError, Result},
 };
 
+/// WebGPU feature name for `firstInstance` in indirect draws.
+/// Required for the geometry pass's `drawIndexedIndirect` calls to honor
+/// non-zero `firstInstance` values written by the compaction shader.
+const INDIRECT_FIRST_INSTANCE_FEATURE: &str = "indirect-first-instance";
+
 /// WebGPU device and canvas context wrapper.
 /// Relatively cheap to clone.
 #[derive(Clone)]
@@ -18,6 +23,18 @@ pub struct AwsmRendererWebGpu {
     pub adapter: web_sys::GpuAdapter,
     pub device: web_sys::GpuDevice,
     pub context: web_sys::GpuCanvasContext,
+}
+
+impl AwsmRendererWebGpu {
+    /// Whether the active `GpuDevice` was created with the
+    /// `indirect-first-instance` feature. Upper-layer renderer code
+    /// consults this before engaging any path that issues
+    /// `drawIndirect` / `drawIndexedIndirect` with a non-zero
+    /// `firstInstance` in the indirect args — without the feature,
+    /// WebGPU silently drops the call.
+    pub fn has_indirect_first_instance(&self) -> bool {
+        self.device.features().has(INDIRECT_FIRST_INSTANCE_FEATURE)
+    }
 }
 
 /// Builder for creating an `AwsmRendererWebGpu`.
@@ -102,16 +119,32 @@ impl AwsmRendererWebGpuBuilder {
         let device: web_sys::GpuDevice = match self.device {
             Some(device) => device,
             None => {
+                let descriptor = web_sys::GpuDeviceDescriptor::new();
+                // `indirect-first-instance` is required for the geometry
+                // pass's `drawIndexedIndirect` to honor a non-zero
+                // `firstInstance` in the args buffer. Without it, the
+                // first_instance slot is treated as 0 (or fails
+                // validation) and any non-instanced mesh whose meta slot
+                // index is > 0 renders nothing — silently. Requested
+                // only when the adapter exposes it so the device-create
+                // doesn't fail on hardware that lacks the feature
+                // (callers can detect and disable `RendererFeatures::gpu_culling`
+                // upstream if needed).
+                let features = adapter.features();
+                if features.has(INDIRECT_FIRST_INSTANCE_FEATURE) {
+                    let required: [js_sys::JsString; 1] =
+                        [js_sys::JsString::from(INDIRECT_FIRST_INSTANCE_FEATURE)];
+                    descriptor.set_required_features(&required);
+                }
                 if let Some(limits) = self.device_req_limits {
                     let adapter_limits = adapter.limits();
                     if adapter_limits.is_null() || adapter_limits.is_undefined() {
                         tracing::warn!("adapter limits are null or undefined");
-                        JsFuture::from(adapter.request_device())
+                        JsFuture::from(adapter.request_device_with_descriptor(&descriptor))
                             .await
                             .map_err(AwsmCoreError::gpu_device)?
                             .unchecked_into()
                     } else {
-                        let descriptor = web_sys::GpuDeviceDescriptor::new();
                         descriptor.set_required_limits(
                             &limits.into_js(&adapter.limits()).unchecked_into(),
                         );
@@ -121,7 +154,7 @@ impl AwsmRendererWebGpuBuilder {
                             .unchecked_into()
                     }
                 } else {
-                    JsFuture::from(adapter.request_device())
+                    JsFuture::from(adapter.request_device_with_descriptor(&descriptor))
                         .await
                         .map_err(AwsmCoreError::gpu_device)?
                         .unchecked_into()

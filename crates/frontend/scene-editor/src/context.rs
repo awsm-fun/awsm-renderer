@@ -223,14 +223,21 @@ struct AppContext {
 /// no way to flip features at runtime.
 #[cfg(debug_assertions)]
 fn parse_features_from_url() -> RendererFeatures {
+    use awsm_renderer::features::FeatureToggle;
     // `coverage_lod` stays off — both its consumers (skin-skip,
     // cheap-material LOD) are parked, so engaging the producer in the
     // editor would just be measurement noise. Flip on per-build when
     // you wire up a consumer.
-    let on = RendererFeatures {
+    //
+    // `indirect_first_instance` defaults to Auto (capability-detect).
+    // The dev-only `?ifi=off` / `?ifi=on` query knob below forces the
+    // portable / optimized path respectively so the test harness can
+    // exercise both code paths on a single machine.
+    let mut on = RendererFeatures {
         gpu_culling: true,
         decals: true,
         coverage_lod: false,
+        indirect_first_instance: FeatureToggle::Auto,
     };
     let Some(window) = web_sys::window() else {
         return on;
@@ -240,6 +247,14 @@ fn parse_features_from_url() -> RendererFeatures {
         Ok(p) => p,
         Err(_) => return on,
     };
+    match params.get("ifi").as_deref() {
+        Some("on") => on.indirect_first_instance = FeatureToggle::On,
+        Some("off") => on.indirect_first_instance = FeatureToggle::Off,
+        Some("auto") | None => {} // already Auto
+        Some(other) => {
+            tracing::warn!("unrecognized ?ifi value {other:?} — falling back to Auto");
+        }
+    }
     match params.get("features").as_deref() {
         Some("off") => RendererFeatures::default(),
         _ => on,
@@ -252,6 +267,7 @@ fn parse_features_from_url() -> RendererFeatures {
         gpu_culling: true,
         decals: true,
         coverage_lod: false,
+        indirect_first_instance: awsm_renderer::features::FeatureToggle::Auto,
     }
 }
 
