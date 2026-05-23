@@ -5,52 +5,36 @@ were scoped out of the recent optimization sprints. Each entry tries
 to be concrete enough that someone (human or LLM) can pick it up cold.
 
 Status legend:
-- 🔥 — blocking a real user-facing problem
 - 🚀 — clear measurable win
 - 🧊 — speculative or low-impact
 - ⚠️ — has a known correctness caveat
 
 ---
 
-## 🔥 Pre-existing renderer bug (out of scope for the recent sprint)
+## ✅ Recently landed
 
-**Problem:** Inserting any user mesh on the optimizations branch
-(Primitive Box, Sprite, glTF Model, etc.) succeeds at the bookkeeping
-level — bridge entry created, `model_meshes` populated,
-`asset_status = Ready` — but the geometry never appears in the
-viewport. Only the editor's transform-controller gizmo + grid render.
+These were on this list previously; they've shipped and are noted
+here so the doc stays an accurate "still TODO" list rather than a
+mixed pile.
 
-**Evidence:**
-- `main` renders Primitive Box correctly.
-- Every commit on the `optimizations` branch tested
-  (`cc491fc` parent of recent work, `510b391`, current HEAD) is
-  broken. The bisect midpoint `a17a1a7` is *more* broken (full black
-  canvas, not even the grid renders).
-- The regression is somewhere in the GPU-driven rendering pipeline
-  introduced between `main` and `cc491fc`: classify pass, indirect
-  dispatch, HZB build, occlusion cull, coverage, material_classify
-  bucketing.
-- Optimization commits added on top (decal layout fix, IBL parallelize,
-  shader pre-warm, was_dirty gate, createImageBitmap, batched
-  materializer, indexed light/decal sync) do not introduce or fix this
-  bug — Box renders / doesn't-render identically across them.
-
-**Where to start digging:**
-1. Verify the geometry pass actually writes per-pixel mesh IDs into
-   `visibility_data` for a newly-inserted Primitive Box (capture a
-   WebGPU command buffer; check the texture).
-2. Verify the material_classify compute reads those mesh IDs and
-   produces a non-empty bucket for the right `shader_id` (PBR).
-3. Verify the per-shader_id opaque indirect dispatch actually runs
-   (workgroup count != 0).
-4. Check whether the `MaterialMeshMeta` upload includes the new
-   mesh's slot (`material_dirty` + buffer write in the per-frame
-   `render()` flow).
-5. Confirm `add_raw_mesh` doesn't need an extra `mark_create`
-   (BindGroupCreate event) that the gltf path implicitly gets from
-   `finalize_gpu_textures`.
-
-A separate session is set up to focus on this.
+- ✅ **`apply_visibility_to_node` identity guard** — bridge entry
+  skips renderer round-trip when effective visibility didn't change.
+- ✅ **`apply_visibility_subtree` batches into one
+  `with_renderer_mut`** — per-mesh hide/show ops for a whole subtree
+  flip now collect into one renderer-lock acquisition instead of N.
+- ✅ **`MeshLightIndicesGpu::write_gpu` fast path on empty scenes** —
+  when neither this frame nor the prior frame had any per-mesh light
+  slices, the per-mesh-meta zero walk is skipped. Saves O(meshes)
+  writes per frame for directional-only / no-light scenes.
+- ✅ **`Materials::write_gpu` uses dirty-range tracking** — was
+  already done; doc entry was stale.
+- ✅ **Coverage readback `mapAsync` skips when inflight** — was
+  already done; doc entry was stale.
+- ✅ **`indirect-first-instance` dual-path architecture** — see
+  [`docs/PERFORMANCE.md`](../PERFORMANCE.md) for the two paths
+  (storage-array meta when the device exposes the feature, portable
+  uniform-with-dynamic-offset when it doesn't). `FeatureToggle`
+  with `Auto` / `On` / `Off` controls which path is taken.
 
 ---
 
@@ -89,18 +73,6 @@ A separate session is set up to focus on this.
   Currently mesh nodes are reached through the `model_meshes` Vec
   on each bridge entry, so no per-frame walk exists — file under
   "if it becomes hot."
-
-- **🚀 Skip `apply_visibility_to_node`'s renderer round-trip when
-  effective visibility didn't change.** Currently the bridge entry's
-  `effective_visible` is overwritten unconditionally, and a
-  `spawn_local` + `with_renderer_mut` fires even when the value
-  is the same. Add a `if old == new { return; }` guard.
-
-- **🚀 `apply_visibility_subtree` already runs in O(N + root-depth)
-  after the recent fix, but each `apply_visibility_to_node` *still*
-  spawns one `spawn_local` task per descendant.** Batch all
-  hide/show ops for a subtree flip into a single `with_renderer_mut`
-  closure. Saves N × renderer-lock-acquire on every Group hide/show.
 
 - **🧊 Camera-list cache for the header dropdown.** `list_authored_cameras`
   does a full tree DFS on every open. Add a cached `Vec<(NodeId,
@@ -141,18 +113,14 @@ A separate session is set up to focus on this.
 
 ## 🚀 Renderer per-frame
 
-- **Skip `material_classify_buffers::reset_header` when the prior
-  frame's bucket counts are known to be zero.** The atomic-counter
-  zero only matters if classify is going to dispatch and the buckets
-  could carry over. With no opaque renderables (empty scene or
-  fully-culled), the reset is wasted.
-
-- **Coverage readback `mapAsync` could be skipped on frames where
-  `coverage_readback_state.inflight` is true.** Right now the
-  per-frame `coverage::dispatch` runs even when the prior `mapAsync`
-  hasn't resolved; the readback just queues up. Gating dispatch on
-  `!inflight` keeps GPU pressure lower while the consumer (skin-skip
-  / material LOD) is still using last-frame counts.
+- **⚠️ Cache `transpose_per_mesh` output across frames when neither
+  lights nor mesh AABBs moved.** `MeshLightIndicesGpu::write_gpu` now
+  fast-paths the no-light-overlap case (see "Recently landed" above),
+  but the *with*-lights case still rebuilds the packed `u32` index
+  array every frame and re-patches every per-mesh slice. A dirty-flag
+  on `LightMeshBuckets` (set whenever a light is added/removed/moved
+  or a relevant mesh AABB changes) would let the GPU upload reuse
+  last frame's bytes byte-for-byte on static scenes.
 
 - **`scene_spatial::rebuild_if_needed` cadence tuning.** The current
   defaults are `rebuild_period_frames = 600` and
@@ -163,18 +131,10 @@ A separate session is set up to focus on this.
 
 ## 🚀 Renderer memory / allocation
 
-- **`MeshLightIndicesGpu::write_gpu` rebuilds a packed `u32` index
-  array every frame.** Could maintain a dirty bit per light bucket
-  and only re-pack the affected ones.
-
 - **Hot-path `Vec` allocations** in `renderable.rs::collect`,
   particle simulator, line strip vertex packing. Could use
-  thread-local pooling for these.
-
-- **`Materials::write_gpu` pessimistically uploads on every
-  material_dirty event.** Could track per-material dirty ranges via
-  `DynamicUniformBuffer::dirty_ranges` (already implemented for the
-  meta buffer).
+  thread-local pooling for these. The renderable Vecs are reset
+  every frame; keep them on `AwsmRenderer` and clear-in-place.
 
 ## 🚀 Editor reactive system
 
@@ -215,18 +175,22 @@ A separate session is set up to focus on this.
 
 ---
 
-## Notes for the bug-fix session
+## Notes for future sessions
 
-When you pick up the pre-existing rendering bug at the top:
-- The `optimizations` branch on origin has all 7 optimization
-  commits from the most recent sprint. They're individually correct
-  and tested green (`cargo test --workspace`, `cargo clippy --workspace`).
-- The repro is: launch editor (`task scene-editor-dev`), click Insert
-  → Primitive… → Box. Nothing visible in viewport (only grid).
-  Compare to `git checkout main` where the same action shows a gray cube.
-- Insert Model with a small glb (e.g. `crates/frontend/scene-editor/assets/gizmo.glb`)
-  is fast and reaches `asset_status = Ready` but the meshes don't
-  render — same root cause as the Primitive Box bug.
-- A 27 MB skinned `robot-001.glb` loads end-to-end in ~1.5 s after
-  these optimizations (down from a 15 s materialize-timeout error
-  before the sprint).
+When you pick up an item from above:
+- The `optimizations` branch should test green
+  (`cargo test --workspace`, `cargo clippy --workspace`) and visually
+  render correctly in the editor under all three
+  `?ifi=on / off / auto` modes. Smoke-test both paths before adding
+  more work — silent failure on one path is the easiest mistake.
+- Repro setup: launch editor (`task scene-editor:dev`), insert a
+  Primitive Box and confirm it renders. Toggle
+  `?ifi=off` and confirm it still renders. Toggle `?ifi=on` likewise.
+- A 27 MB skinned `robot-001.glb` loads end-to-end in ~1.5 s on the
+  current branch (down from a 15 s materialize-timeout error before
+  the optimization sprint).
+- The `indirect-first-instance` WebGPU feature has narrow real-world
+  support (Firefox: none; Chrome desktop: Linux-Intel only as of
+  mid-2026), so the portable `ifi=off` path is the one most player
+  devices will hit in shipped games. Both paths are first-class —
+  benchmarks should cover both before any "optimization" claim.

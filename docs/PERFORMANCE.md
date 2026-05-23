@@ -113,19 +113,71 @@ named `tracing` span whose timings surface via
 
 ## 2. Opt-in features
 
-`RendererFeatures` (`crates/renderer/src/features.rs`) gates two
-clusters of always-on infrastructure. **Both default to
-`false`**, so library consumers pay zero overhead for features
-they don't use. Game-side and editor builds opt in explicitly.
+`RendererFeatures` (`crates/renderer/src/features.rs`) gates always-on
+infrastructure. **Boolean fields default to `false`**, so library
+consumers pay zero overhead for features they don't use. Game-side
+and editor builds opt in explicitly. Capability-tied features use
+`FeatureToggle::Auto` (capability-detect at device creation) by
+default — see [§2.1](#21-feature-toggles-vs-bool-fields) below.
 
 ```rust
 RendererFeatures {
-    gpu_culling: bool, // HZB + occlusion cull + compaction +
-                       // drawIndirect geometry path
-    decals: bool,      // projection-decal classify, compute,
-                       // composite + ~33 MB GPU at 4K
+    gpu_culling: bool,                       // HZB + occlusion cull +
+                                             // compaction + drawIndirect
+    decals: bool,                            // projection-decal classify,
+                                             // compute, composite +
+                                             // ~33 MB GPU at 4K
+    coverage_lod: bool,                      // per-mesh pixel-coverage
+                                             // producer (consumers parked)
+    indirect_first_instance: FeatureToggle,  // see §2.1
 }
 ```
+
+### 2.1 Feature toggles vs bool fields
+
+A `bool` field means "the consumer decides whether to allocate this
+subsystem at all." A `FeatureToggle` (`Auto` / `On` / `Off`) wraps a
+*capability* that may or may not be available on the target device:
+
+- **`Auto`** (default): probe the adapter at device-creation time.
+  Resolves to `true` when the underlying WebGPU feature is exposed,
+  `false` otherwise.
+- **`On`**: assume the feature is present; bypass the probe. Useful
+  for testing the optimized path on a device where Auto's probe is
+  misbehaving, or for forcing engagement in a benchmark harness.
+- **`Off`**: assume the feature is absent. Forces the portable
+  fallback path even on a device that supports the optimized one —
+  useful for testing the fallback path on your dev machine, or for
+  side-stepping a driver bug.
+
+The renderer carries **both** code paths for any toggle-gated
+feature; neither is a "degraded" mode. Both are independently
+optimized for their respective device class.
+
+#### `indirect_first_instance`
+
+Controls how the non-instanced geometry pass passes the per-mesh
+"which slot in the meta buffer am I?" identity to the vertex shader:
+
+- **Toggle resolves to true** (`indirect-first-instance` available):
+  one shared storage-array binding services every non-instanced
+  draw. The compaction shader writes the per-mesh slot index into
+  `IndirectDrawArgs.first_instance`; the vertex shader reads
+  `geometry_mesh_metas[@builtin(instance_index)]`. No per-draw
+  `setBindGroup` cost. Requires the WebGPU `indirect-first-instance`
+  feature on the device.
+- **Toggle resolves to false** (portable fallback): the non-instanced
+  path uses the same uniform-with-dynamic-offset binding the
+  instanced path uses. CPU calls
+  `setBindGroup(2, meta_group, &[meta_offset])` before each
+  `drawIndexedIndirect`. The args buffer's `first_instance` stays at
+  0; compaction templates out the slot-index write. GPU culling
+  itself is preserved (compaction still writes `instance_count`).
+
+Browser support for `indirect-first-instance` is narrow as of
+mid-2026 — Firefox: none; Chrome desktop: Linux-Intel only — so most
+player devices in shipped games will hit the portable path. Both
+paths must stay first-class and benchmarked.
 
 Measured overhead when both are on (Claude Preview MCP,
 120-frame mean):
@@ -276,7 +328,12 @@ much more expensive than a spot or directional. See §5's
 
 ```rust
 AwsmRendererBuilder::new(gpu)
-    .with_features(RendererFeatures { gpu_culling, decals })
+    .with_features(RendererFeatures {
+        gpu_culling: true,
+        decals: true,
+        coverage_lod: false,
+        indirect_first_instance: FeatureToggle::Auto,
+    })
     .with_shadows_config(ShadowsConfig { ... })
     .with_anti_aliasing(AntiAliasing { msaa_sample_count, mipmap })
     .build()
@@ -287,6 +344,8 @@ AwsmRendererBuilder::new(gpu)
 |---|---|---|---|
 | `RendererFeatures::gpu_culling` | features.rs | `false` | Enables HZB + occlusion cull + drawIndirect. Worth it ≥ 500-mesh scenes; small net loss below that. |
 | `RendererFeatures::decals` | features.rs | `false` | Allocates ~33 MB at 4K. Required for `insert_decal`. |
+| `RendererFeatures::coverage_lod` | features.rs | `false` | Allocates the per-mesh-pixel-coverage producer + readback buffer. Consumers (skin-skip, cheap-material LOD) are currently parked. |
+| `RendererFeatures::indirect_first_instance` | features.rs | `FeatureToggle::Auto` | Resolves at device creation. `On` requires the WebGPU feature; `Off` forces the portable uniform-with-dynamic-offset path. See §2.1. |
 | `ShadowsConfig::atlas_size` | shadows/config.rs | 4096 | 2D shadow atlas. Memory = `size² × 4 bytes`. Per-light shadow resolutions max out at this. |
 | `ShadowsConfig::cascade_resolution` | shadows/config.rs | 2048 | Directional-cascade layer dimensions. `cascade_count × resolution² × 4 bytes × max_layers` for the cascade array texture. |
 | `ShadowsConfig::cascade_array_max_layers` | shadows/config.rs | 16 | Maximum directional-cascade layers across all directional lights × cascades. |
@@ -376,7 +435,7 @@ move the needle:
 |---|---|---|
 | `render.rs::AwsmRenderer::render` | The per-frame entry point. Wraps every other pass. | New work added here regresses every frame. Be sure new GPU writes are gated on a dirty flag. |
 | `renderable.rs::collect_renderables` | Builds the per-frame opaque/transparent/HUD lists. Runs every frame. | Per-mesh allocations or material-key recomputation. The BVH query + per-mesh `effective_material_key` are the only intended work. |
-| `meshes/mesh.rs::push_geometry_pass_commands` | Per-mesh draw recording. | Vertex/index buffer rebinds. Instanced meshes still use the legacy uniform-with-dynamic-offset path; non-instanced use storage-array meta + drawIndirect. |
+| `meshes/mesh.rs::push_geometry_pass_commands` | Per-mesh draw recording. | Vertex/index buffer rebinds. Two non-instanced variants picked by `features.indirect_first_instance_enabled()`: storage-array meta (shared bind group, requires `indirect-first-instance`) or uniform-with-dynamic-offset (portable, one `setBindGroup` per draw). Instanced meshes always use uniform-with-dynamic-offset. |
 | `shadows/state.rs::write_gpu` | Reconciles shadow descriptors + throttle state. | Per-light writes scale with shadow caster count × cascade/cube count. |
 | `light_buckets/buckets.rs::rebuild` | Per-mesh × per-light AABB overlap. Runs every frame. | O(meshes × lights) cost — but BVH-driven for normal meshes, and oversized meshes skip the per-light walk. |
 | `scene_spatial/*` | The BVH (rstar). Per-pass frustum culling descends through this instead of walking meshes. | Don't add full mesh-walk fallbacks — they re-introduce the cost the BVH eliminates. |
@@ -428,19 +487,31 @@ move the needle:
 
 ### "drawIndirect path renders garbage / misses meshes"
 
-1. Check `occlusion_instances[i].mesh_meta_offset` is populated
-   correctly. An earlier rewire left it as a `0u32`
-   placeholder; the compaction shader divides by 256 to derive
-   the slot index, so a wrong offset is silently a no-op.
-2. Confirm the geometry meta + material meta slot indices for
+1. Check which `indirect_first_instance` variant is active. The
+   storage-array path writes `first_instance = mesh_slot` from the
+   compaction shader and requires the WebGPU
+   `indirect-first-instance` feature. The portable path writes
+   `first_instance = 0` and routes the slot identity through a
+   uniform-with-dynamic-offset bind group set per draw. A
+   mismatched variant (shader expects one, runtime feeds the other)
+   silently produces no draws on the storage-array path — log
+   `features.indirect_first_instance_enabled()` at render entry to
+   confirm. The `?ifi=on/off` URL switch in the editor (debug
+   builds) forces a specific variant for A/B testing.
+2. Check `occlusion_instances[i].mesh_meta_offset` is populated
+   correctly. An earlier rewire left it as a `0u32` placeholder;
+   the compaction shader divides by 256 to derive the slot index,
+   so a wrong offset is silently a no-op.
+3. Confirm the geometry meta + material meta slot indices for
    the same `MeshKey` align (they should because both
    `SecondaryMap`s are inserted/removed in lockstep). The
    coverage producer uses *material* slot indices because
    visibility_data carries `material_mesh_meta_offset`.
-3. Instanced meshes are intentionally on the legacy
-   `draw_indexed_with_instance_count` path — `instance_index`
-   ranges would otherwise collide between meshes in the shared
-   storage-array meta lookup.
+4. Instanced meshes are always on the
+   uniform-with-dynamic-offset path regardless of
+   `indirect_first_instance` — their `instance_index` ranges would
+   otherwise collide between meshes in the shared storage-array
+   meta lookup.
 
 ---
 
