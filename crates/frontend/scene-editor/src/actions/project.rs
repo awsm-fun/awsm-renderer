@@ -302,13 +302,14 @@ pub fn cleanup_unused_assets() -> usize {
     // Free renderer-side resources for the removed Texture + Material
     // assets. Async, so spawned; the table mutation above already took
     // effect synchronously, so the cascade observes the post-delete
-    // state when it runs.
+    // state when it runs. Materials are batched into one scene walk —
+    // see `cascade_after_delete_batch`.
     spawn_local(async move {
         for id in texture_ids {
             crate::renderer_bridge::texture_cache::update_existing(id).await;
         }
-        for id in material_ids {
-            crate::renderer_bridge::material_cache::cascade_after_delete(id).await;
+        if !material_ids.is_empty() {
+            crate::renderer_bridge::material_cache::cascade_after_delete_batch(&material_ids).await;
         }
     });
 
@@ -370,12 +371,13 @@ pub fn delete_asset_entries(ids: &[AssetId]) {
 
     // Free renderer-side resources for the deleted Texture + Material
     // assets. See `cleanup_unused_assets` for the same pattern.
+    // Materials are batched into one scene walk.
     spawn_local(async move {
         for id in texture_ids {
             crate::renderer_bridge::texture_cache::update_existing(id).await;
         }
-        for id in material_ids {
-            crate::renderer_bridge::material_cache::cascade_after_delete(id).await;
+        if !material_ids.is_empty() {
+            crate::renderer_bridge::material_cache::cascade_after_delete_batch(&material_ids).await;
         }
     });
 
