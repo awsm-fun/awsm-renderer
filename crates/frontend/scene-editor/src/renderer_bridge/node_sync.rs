@@ -125,6 +125,14 @@ pub struct Bridge {
     /// that need to react to bridge state (e.g. the gizmo rebinding
     /// when its target first appears) combine this with `selected`.
     pub nodes_revision: Mutable<u64>,
+    /// Index of node ids whose kind has populated `light_key`. Kept
+    /// in lockstep with `apply_kind_light` / `clear_light` /
+    /// `remove_node` so the per-frame `sync_lights_pre_render` can
+    /// iterate only the nodes that actually own lights instead of
+    /// walking the entire bridge table every frame.
+    pub light_node_ids: Mutex<std::collections::HashSet<NodeId>>,
+    /// Mirror of [`light_node_ids`] for Decal kinds.
+    pub decal_node_ids: Mutex<std::collections::HashSet<NodeId>>,
 }
 
 impl Bridge {
@@ -134,6 +142,8 @@ impl Bridge {
             assets: Arc::new(AssetCache::new()),
             child_order: Mutex::new(HashMap::new()),
             nodes_revision: Mutable::new(0),
+            light_node_ids: Mutex::new(std::collections::HashSet::new()),
+            decal_node_ids: Mutex::new(std::collections::HashSet::new()),
         })
     }
 
@@ -357,6 +367,16 @@ async fn remove_node(node_id: NodeId) {
         std::mem::take(&mut *entry.line_keys.lock().unwrap());
     let light_key = entry.light_key.lock().unwrap().take();
     let decal_key = entry.decal_key.lock().unwrap().take();
+
+    // Remove from the per-frame sync indices regardless of whether
+    // the key was set — set ops are O(1) and the "absent" case is
+    // fine. Done before the renderer-mut hop so the next frame's
+    // sync never sees a stale node id.
+    {
+        let bridge = bridge();
+        bridge.light_node_ids.lock().unwrap().remove(&node_id);
+        bridge.decal_node_ids.lock().unwrap().remove(&node_id);
+    }
 
     with_renderer_mut(|r| {
         if let Some(key) = light_key {
@@ -664,6 +684,10 @@ async fn apply_kind_light(entry: Arc<RendererNode>, cfg: crate::scene::LightConf
     .await;
     if let Ok(key) = key {
         *entry.light_key.lock().unwrap() = Some(key);
+        // Add to the per-frame sync index so the render-loop's
+        // `sync_lights_pre_render` only touches actual light entries
+        // instead of scanning the entire bridge node table.
+        bridge().light_node_ids.lock().unwrap().insert(entry.node_id);
     }
 }
 
@@ -886,6 +910,11 @@ async fn try_sweep_material_only_update(entry: &Arc<RendererNode>, kind: &NodeKi
 
 async fn clear_light(entry: &Arc<RendererNode>) {
     let key = entry.light_key.lock().unwrap().take();
+    bridge()
+        .light_node_ids
+        .lock()
+        .unwrap()
+        .remove(&entry.node_id);
     if let Some(key) = key {
         with_renderer_mut(move |r| r.remove_light(key)).await;
     }
@@ -893,6 +922,11 @@ async fn clear_light(entry: &Arc<RendererNode>) {
 
 async fn clear_decal(entry: &Arc<RendererNode>) {
     let key = entry.decal_key.lock().unwrap().take();
+    bridge()
+        .decal_node_ids
+        .lock()
+        .unwrap()
+        .remove(&entry.node_id);
     if let Some(key) = key {
         with_renderer_mut(move |r| {
             r.remove_decal(key);
@@ -915,6 +949,9 @@ async fn apply_kind_decal(entry: Arc<RendererNode>, cfg: awsm_scene_schema::Deca
     match key {
         Ok(key) => {
             *entry.decal_key.lock().unwrap() = Some(key);
+            // Add to the per-frame sync index — sync_decals_pre_render
+            // iterates this set instead of the whole bridge node table.
+            bridge().decal_node_ids.lock().unwrap().insert(entry.node_id);
         }
         Err(err) => {
             tracing::warn!("insert_decal failed: {err:?}");

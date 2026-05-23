@@ -206,14 +206,22 @@ fn render_one_frame() {
 /// the inverse_transform + world_aabb cache is rebuilt in lockstep
 /// with the new transform.
 fn sync_decals_pre_render(renderer: &mut awsm_renderer::AwsmRenderer) {
+    // Walk the per-frame decal index instead of the full bridge node
+    // table — for scenes with many Group/Model nodes but few decals
+    // this turns an O(N) scan + N decal_key mutex acquisitions into
+    // an O(decal_count) walk. Kept in sync by apply_kind_decal /
+    // clear_decal / remove_node.
     let bridge_handle = bridge();
-    let entries: Vec<Arc<RendererNode>> = bridge_handle
-        .nodes
-        .lock()
-        .unwrap()
-        .values()
-        .cloned()
-        .collect();
+    let entries: Vec<Arc<RendererNode>> = {
+        let nodes = bridge_handle.nodes.lock().unwrap();
+        bridge_handle
+            .decal_node_ids
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|id| nodes.get(id).cloned())
+            .collect()
+    };
 
     for entry in entries {
         let decal_key = *entry.decal_key.lock().unwrap();
@@ -243,16 +251,20 @@ fn sync_lights_pre_render(renderer: &mut awsm_renderer::AwsmRenderer) {
     use awsm_renderer::lights::Light;
     use glam::Vec3;
 
-    // Snapshot bridge nodes (cheap Arc clones) so we don't hold the bridge
-    // lock while we mutate the renderer.
+    // Same per-frame index trick as `sync_decals_pre_render` — walk
+    // only entries that own a runtime light, not the full bridge
+    // node table.
     let bridge_handle = bridge();
-    let entries: Vec<Arc<RendererNode>> = bridge_handle
-        .nodes
-        .lock()
-        .unwrap()
-        .values()
-        .cloned()
-        .collect();
+    let entries: Vec<Arc<RendererNode>> = {
+        let nodes = bridge_handle.nodes.lock().unwrap();
+        bridge_handle
+            .light_node_ids
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|id| nodes.get(id).cloned())
+            .collect()
+    };
 
     for entry in entries {
         let light_key = *entry.light_key.lock().unwrap();
