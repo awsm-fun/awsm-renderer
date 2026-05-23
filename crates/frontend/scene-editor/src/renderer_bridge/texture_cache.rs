@@ -122,9 +122,7 @@ pub async fn ensure_raster_bitmap(asset_id: AssetId) -> bool {
 /// sniffing too, but a correct MIME silences the spec's "unknown
 /// type" warning path on Chromium and is essentially free.
 fn detect_image_mime(bytes: &[u8]) -> &'static str {
-    if bytes.len() >= 8
-        && bytes[0..8] == [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
-    {
+    if bytes.len() >= 8 && bytes[0..8] == [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A] {
         "image/png"
     } else if bytes.len() >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF {
         "image/jpeg"
@@ -306,8 +304,7 @@ pub fn get_or_upload(
                 drop_raster_bitmap(asset_id);
                 result.ok()?
             } else {
-                let (rgba, width, height) =
-                    decode_raster_from_pending(asset_id, display_name)?;
+                let (rgba, width, height) = decode_raster_from_pending(asset_id, display_name)?;
                 renderer
                     .textures
                     .add_image_rgba_raw(&rgba, width, height, sampler_key, color)

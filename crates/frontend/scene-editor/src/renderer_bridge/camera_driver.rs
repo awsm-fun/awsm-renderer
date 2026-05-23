@@ -62,7 +62,12 @@ pub fn evaluate(
     // game-art glb of 30+ nodes) was paying a re-scan per frame for
     // no good reason — the bridge already mirrors every node id →
     // entry, and the kind is reachable directly from `entry.node`.
-    let entry = super::node_sync::bridge().nodes.lock().unwrap().get(&node_id).cloned()?;
+    let entry = super::node_sync::bridge()
+        .nodes
+        .lock()
+        .unwrap()
+        .get(&node_id)
+        .cloned()?;
     let cfg = match &*entry.node.kind.lock_ref() {
         NodeKind::Camera(c) => c.clone(),
         _ => return None,
@@ -209,7 +214,12 @@ fn lookup_curve_def(node_id: NodeId) -> Option<awsm_scene_schema::CurveDef> {
     // Same O(1) bridge-map lookup pattern as `evaluate` — used by
     // `RailAlongCurve` cameras, called once per frame while a rail
     // camera is selected.
-    let entry = super::node_sync::bridge().nodes.lock().unwrap().get(&node_id).cloned()?;
+    let entry = super::node_sync::bridge()
+        .nodes
+        .lock()
+        .unwrap()
+        .get(&node_id)
+        .cloned()?;
     let kind = entry.node.kind.get_cloned();
     match kind {
         NodeKind::Curve(c) => Some(c),

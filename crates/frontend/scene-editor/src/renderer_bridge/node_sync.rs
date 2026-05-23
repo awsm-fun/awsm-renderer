@@ -606,7 +606,6 @@ fn ancestors_all_visible_to(scene: &crate::scene::Scene, node_id: NodeId) -> boo
     true
 }
 
-
 async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
     // F-A identity check: if this kind equals the last one we
     // materialized for the node, the bridge state is already correct
@@ -699,11 +698,19 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
             apply_kind_passive(&entry);
         }
         NodeKind::Collider(_) => {
-            bridge().collider_node_ids.lock().unwrap().insert(entry.node_id);
+            bridge()
+                .collider_node_ids
+                .lock()
+                .unwrap()
+                .insert(entry.node_id);
             apply_kind_passive(&entry);
         }
         NodeKind::Camera(_) => {
-            bridge().camera_node_ids.lock().unwrap().insert(entry.node_id);
+            bridge()
+                .camera_node_ids
+                .lock()
+                .unwrap()
+                .insert(entry.node_id);
             apply_kind_passive(&entry);
         }
         NodeKind::Primitive { .. }
@@ -764,7 +771,11 @@ async fn apply_kind_light(entry: Arc<RendererNode>, cfg: crate::scene::LightConf
         // Add to the per-frame sync index so the render-loop's
         // `sync_lights_pre_render` only touches actual light entries
         // instead of scanning the entire bridge node table.
-        bridge().light_node_ids.lock().unwrap().insert(entry.node_id);
+        bridge()
+            .light_node_ids
+            .lock()
+            .unwrap()
+            .insert(entry.node_id);
     }
 }
 
@@ -1028,7 +1039,11 @@ async fn apply_kind_decal(entry: Arc<RendererNode>, cfg: awsm_scene_schema::Deca
             *entry.decal_key.lock().unwrap() = Some(key);
             // Add to the per-frame sync index — sync_decals_pre_render
             // iterates this set instead of the whole bridge node table.
-            bridge().decal_node_ids.lock().unwrap().insert(entry.node_id);
+            bridge()
+                .decal_node_ids
+                .lock()
+                .unwrap()
+                .insert(entry.node_id);
         }
         Err(err) => {
             tracing::warn!("insert_decal failed: {err:?}");

@@ -164,7 +164,10 @@ mod tests {
     #[test]
     fn feature_toggle_resolves_correctly() {
         assert!(FeatureToggle::Auto.resolve(true), "Auto follows capability");
-        assert!(!FeatureToggle::Auto.resolve(false), "Auto follows capability");
+        assert!(
+            !FeatureToggle::Auto.resolve(false),
+            "Auto follows capability"
+        );
         assert!(FeatureToggle::On.resolve(true), "On ignores capability");
         assert!(FeatureToggle::On.resolve(false), "On ignores capability");
         assert!(!FeatureToggle::Off.resolve(true), "Off ignores capability");

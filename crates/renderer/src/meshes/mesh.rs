@@ -224,8 +224,7 @@ impl Mesh {
 
         // Bind-group selection mirrors the pipeline-variant selection
         // in `geometry_render_pipeline_key`.
-        let use_storage_meta =
-            !self.instanced && ctx.features.indirect_first_instance_enabled();
+        let use_storage_meta = !self.instanced && ctx.features.indirect_first_instance_enabled();
         if use_storage_meta {
             render_pass.set_bind_group(2, bind_groups.meta.get_storage_bind_group()?, None)?;
         } else {

@@ -511,8 +511,10 @@ impl AwsmRendererBuilder {
         let resolved_indirect = features
             .indirect_first_instance
             .resolve(indirect_capability);
-        if matches!(features.indirect_first_instance, crate::features::FeatureToggle::On)
-            && !indirect_capability
+        if matches!(
+            features.indirect_first_instance,
+            crate::features::FeatureToggle::On
+        ) && !indirect_capability
         {
             tracing::warn!(
                 "`indirect_first_instance = On` but the device doesn't expose \
@@ -556,22 +558,18 @@ impl AwsmRendererBuilder {
         // touches the shared `textures` table and must stay sync, so
         // the helpers are split into `prepare_resources` (async,
         // standalone) + `register` (sync, takes `&mut Textures`).
-        let (
-            ibl_filtered_resources,
-            ibl_irradiance_resources,
-            skybox_resources,
-            brdf_lut,
-        ) = futures::future::try_join4(
-            IblTexture::prepare_resources(&gpu, ibl_filtered_env_colors),
-            IblTexture::prepare_resources(&gpu, ibl_irradiance_colors),
-            Skybox::prepare_resources(&gpu, skybox_colors),
-            async {
-                BrdfLut::new(&gpu, brdf_lut_options)
-                    .await
-                    .map_err(crate::error::AwsmError::from)
-            },
-        )
-        .await?;
+        let (ibl_filtered_resources, ibl_irradiance_resources, skybox_resources, brdf_lut) =
+            futures::future::try_join4(
+                IblTexture::prepare_resources(&gpu, ibl_filtered_env_colors),
+                IblTexture::prepare_resources(&gpu, ibl_irradiance_colors),
+                Skybox::prepare_resources(&gpu, skybox_colors),
+                async {
+                    BrdfLut::new(&gpu, brdf_lut_options)
+                        .await
+                        .map_err(crate::error::AwsmError::from)
+                },
+            )
+            .await?;
 
         let lights = Lights::new(
             &gpu,
@@ -585,7 +583,8 @@ impl AwsmRendererBuilder {
         let transforms = Transforms::new(&gpu)?;
         let instances = Instances::new(&gpu)?;
         let materials = Materials::new(&gpu)?;
-        let environment = Environment::new(Skybox::register(&gpu, &mut textures, skybox_resources)?);
+        let environment =
+            Environment::new(Skybox::register(&gpu, &mut textures, skybox_resources)?);
 
         // temporarily push into an init struct for creating render passes
         // we'll then destructure it to get our values back

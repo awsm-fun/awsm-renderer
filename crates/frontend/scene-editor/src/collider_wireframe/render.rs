@@ -171,7 +171,9 @@ fn collect_shapes() -> Vec<(TransformKey, ColliderShape)> {
     let nodes = bridge.nodes.lock().unwrap();
     let mut out = Vec::with_capacity(ids.len());
     for id in ids {
-        let Some(entry) = nodes.get(&id) else { continue };
+        let Some(entry) = nodes.get(&id) else {
+            continue;
+        };
         if !*entry.effective_visible.lock().unwrap() {
             continue;
         }
@@ -194,7 +196,9 @@ fn collect_cameras() -> Vec<(TransformKey, CameraConfig)> {
     let nodes = bridge.nodes.lock().unwrap();
     let mut out = Vec::with_capacity(ids.len());
     for id in ids {
-        let Some(entry) = nodes.get(&id) else { continue };
+        let Some(entry) = nodes.get(&id) else {
+            continue;
+        };
         if !*entry.effective_visible.lock().unwrap() {
             continue;
         }

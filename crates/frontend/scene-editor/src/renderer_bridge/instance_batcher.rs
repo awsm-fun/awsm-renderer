@@ -71,7 +71,8 @@ struct BatcherState {
     coordinator_active: HashMap<AssetId, ()>,
 }
 
-static BATCHER: LazyLock<Mutex<BatcherState>> = LazyLock::new(|| Mutex::new(BatcherState::default()));
+static BATCHER: LazyLock<Mutex<BatcherState>> =
+    LazyLock::new(|| Mutex::new(BatcherState::default()));
 
 /// Enqueue an entry for batched materialization. Returns immediately
 /// — the actual work runs on the per-asset coordinator task. The
@@ -125,11 +126,7 @@ async fn coordinator(asset_id: AssetId) {
             }
             Err(err) => {
                 for pending in pendings {
-                    report_model_load_failure(
-                        pending.entry.clone(),
-                        asset_id,
-                        err.clone(),
-                    );
+                    report_model_load_failure(pending.entry.clone(), asset_id, err.clone());
                     let _ = pending.done.send(());
                 }
             }
@@ -258,20 +255,16 @@ async fn materialize_batch(
                     let _ = renderer.set_mesh_hidden(new_mesh, !visible);
 
                     if let Some(gltf_mat_idx) = gltf_material_indices.get(i).copied().flatten() {
-                        if let Some(&override_asset_id) =
-                            gltf_material_asset_ids.get(gltf_mat_idx)
+                        if let Some(&override_asset_id) = gltf_material_asset_ids.get(gltf_mat_idx)
                         {
-                            let override_ref =
-                                awsm_scene_schema::MaterialRef(override_asset_id);
+                            let override_ref = awsm_scene_schema::MaterialRef(override_asset_id);
                             match super::material_cache::get_or_create(
                                 &mut renderer,
                                 &scene_for_materials,
                                 override_ref,
                             ) {
                                 Some(key) => {
-                                    if let Err(err) =
-                                        renderer.set_mesh_material(new_mesh, key)
-                                    {
+                                    if let Err(err) = renderer.set_mesh_material(new_mesh, key) {
                                         tracing::warn!(
                                             "instance_batcher: set_mesh_material for editable \
                                              gltf material {gltf_mat_idx} (asset \
