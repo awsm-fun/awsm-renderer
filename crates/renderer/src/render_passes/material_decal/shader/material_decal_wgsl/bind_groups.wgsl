@@ -23,11 +23,8 @@
 {% include "shared_wgsl/camera.wgsl" %}
 /*************** END camera.wgsl ******************/
 
-// `join32` — inlined helper to avoid double-including math.wgsl.
-fn join32(hi: u32, lo: u32) -> u32 {
-    return (hi << 16u) | lo;
-}
-const U32_MAX: u32 = 4294967295u;
+// `join32` and `U32_MAX` come from `shared_wgsl/math.wgsl`, included
+// once by `compute.wgsl` (concatenated after this file).
 
 {% if multisampled_geometry %}
 @group(0) @binding(0) var visibility_data_tex: texture_multisampled_2d<u32>;

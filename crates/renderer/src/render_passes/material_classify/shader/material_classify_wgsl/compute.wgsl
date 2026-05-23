@@ -15,8 +15,7 @@
 
 {{ shader_id_consts|safe }}
 
-// `U32_MAX` is already declared in `shared_wgsl/math.wgsl`, which the
-// bind-groups WGSL above pulls in.
+{% include "shared_wgsl/math.wgsl" %}
 
 // Bits in the workgroup-shared mask. Match the
 // `classify_output.{pbr,unlit,toon}_offset` ordering on the host side

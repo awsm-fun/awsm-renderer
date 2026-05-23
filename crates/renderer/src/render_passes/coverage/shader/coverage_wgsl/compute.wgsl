@@ -1,3 +1,5 @@
+{% include "shared_wgsl/math.wgsl" %}
+
 // Per-pixel mesh-coverage tally.
 //
 // One thread per pixel. For each pixel that holds a real material
@@ -30,15 +32,6 @@
 // resulting slot index is shared with the drawIndirect args buffer.
 const MESH_META_STRIDE_BYTES: u32 = 256u;
 
-// Triangle index sentinel used to mark skybox / cleared pixels —
-// matches `shared_wgsl/visibility.wgsl` (replicated to avoid an
-// include chain into the geometry pass's shared wgsl).
-const TRIANGLE_INDEX_NONE: u32 = 0xFFFFFFFFu;
-
-fn join32(hi: u32, lo: u32) -> u32 {
-    return (hi << 16u) | (lo & 0xFFFFu);
-}
-
 @compute @workgroup_size(8, 8)
 fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dims = textureDimensions(visibility_data);
@@ -51,7 +44,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let vis = textureLoad(visibility_data, vec2<i32>(i32(gid.x), i32(gid.y)), 0);
     {% endif %}
     let tri = join32(vis.x, vis.y);
-    if (tri == TRIANGLE_INDEX_NONE) {
+    if (tri == U32_MAX) {
         return;
     }
     let meta_offset = join32(vis.z, vis.w);

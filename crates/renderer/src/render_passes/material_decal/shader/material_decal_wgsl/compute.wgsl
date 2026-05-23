@@ -1,3 +1,5 @@
+{% include "shared_wgsl/math.wgsl" %}
+
 // Material decal compute pass.
 //
 // Per pixel: skip skybox + non-decal-receiver meshes; reconstruct
