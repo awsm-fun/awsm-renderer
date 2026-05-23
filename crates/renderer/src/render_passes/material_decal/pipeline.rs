@@ -22,6 +22,31 @@ impl MaterialDecalPipelines {
         ctx: &mut RenderPassInitContext<'_>,
         bind_groups: &MaterialDecalBindGroups,
     ) -> Result<Self> {
+        // Pre-warm both shader variants in parallel — the singlesampled
+        // and multisampled variants are independent compiles. Without
+        // this they serialise through `ctx.shaders.get_key().await`
+        // inside each `build()`. Pipeline creation itself stays
+        // sequential because `ctx` is `&mut`, but the expensive part
+        // (WGSL compile + validation) overlaps.
+        ctx.shaders
+            .ensure_keys(
+                ctx.gpu,
+                [
+                    ShaderCacheKeyMaterialDecal {
+                        msaa_sample_count: None,
+                        texture_pool_arrays_len: bind_groups.texture_pool_arrays_len,
+                        texture_pool_samplers_len: bind_groups.texture_pool_samplers_len,
+                    }
+                    .into(),
+                    ShaderCacheKeyMaterialDecal {
+                        msaa_sample_count: Some(4),
+                        texture_pool_arrays_len: bind_groups.texture_pool_arrays_len,
+                        texture_pool_samplers_len: bind_groups.texture_pool_samplers_len,
+                    }
+                    .into(),
+                ],
+            )
+            .await?;
         let singlesampled_pipeline_key = build(
             ctx,
             bind_groups,

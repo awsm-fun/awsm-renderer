@@ -20,6 +20,25 @@ impl HzbPipelines {
         ctx: &mut RenderPassInitContext<'_>,
         bind_groups: &HzbBindGroups,
     ) -> Result<Self> {
+        // Pre-warm all 3 shader variants concurrently (seed-msaa,
+        // seed-single, reduce). Pipeline assembly stays serial because
+        // `ctx` is `&mut`.
+        ctx.shaders
+            .ensure_keys(
+                ctx.gpu,
+                [
+                    ShaderCacheKeyHzbSeed {
+                        msaa_sample_count: Some(4),
+                    }
+                    .into(),
+                    ShaderCacheKeyHzbSeed {
+                        msaa_sample_count: None,
+                    }
+                    .into(),
+                    ShaderCacheKeyHzbReduce.into(),
+                ],
+            )
+            .await?;
         let seed_msaa = build_seed(ctx, bind_groups, true).await?;
         let seed_single = build_seed(ctx, bind_groups, false).await?;
         let reduce = build_reduce(ctx, bind_groups).await?;

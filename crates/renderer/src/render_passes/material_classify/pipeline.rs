@@ -22,6 +22,24 @@ impl MaterialClassifyPipelines {
         ctx: &mut RenderPassInitContext<'_>,
         bind_groups: &MaterialClassifyBindGroups,
     ) -> Result<Self> {
+        // Pre-warm both MSAA variants concurrently. Same pattern as
+        // material_opaque/decal: compile in parallel, build pipelines
+        // serially (since `ctx` is `&mut`).
+        ctx.shaders
+            .ensure_keys(
+                ctx.gpu,
+                [
+                    ShaderCacheKeyMaterialClassify {
+                        msaa_sample_count: Some(4),
+                    }
+                    .into(),
+                    ShaderCacheKeyMaterialClassify {
+                        msaa_sample_count: None,
+                    }
+                    .into(),
+                ],
+            )
+            .await?;
         let multisampled = build(ctx, bind_groups, true).await?;
         let singlesampled = build(ctx, bind_groups, false).await?;
         Ok(Self {

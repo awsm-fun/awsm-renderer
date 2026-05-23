@@ -82,9 +82,49 @@ impl MaterialOpaquePipelines {
         let texture_pool_arrays_len = bind_groups.texture_pool_arrays_len;
         let texture_pool_samplers_len = bind_groups.texture_pool_sampler_keys.len() as u32;
 
-        // Build the (msaa × mipmaps × shader_id) cube — small (≤ 12
-        // entries) and the upfront cost amortizes vs lazy creation on
-        // first-use, which would block a frame while the shader compiles.
+        // Pre-warm: fire all 14 shader compiles concurrently before
+        // creating any pipelines. `Shaders::ensure_keys` issues every
+        // `compile_shader` synchronously, then awaits all validations
+        // in parallel — so the browser can compile the (3 shader_id
+        // × 2 msaa × 2 mipmaps = 12 main) + (2 empty) variants on its
+        // shader-compile pool instead of strict serial. Without this,
+        // every pipeline-layout-changing event (renderer init, every
+        // texture-pool dirty cycle on model insert) paid 14 × wall-
+        // clock per-shader cost.
+        let mut warmup_keys: Vec<crate::shaders::ShaderCacheKey> =
+            Vec::with_capacity(OPAQUE_SHADER_IDS.len() * 4 + 2);
+        for &shader_id in OPAQUE_SHADER_IDS {
+            for &msaa in &[Some(4_u32), None] {
+                for &mipmaps in &[true, false] {
+                    warmup_keys.push(
+                        ShaderCacheKeyMaterialOpaque {
+                            texture_pool_arrays_len,
+                            texture_pool_samplers_len,
+                            msaa_sample_count: msaa,
+                            mipmaps,
+                            shader_id,
+                        }
+                        .into(),
+                    );
+                }
+            }
+        }
+        for &msaa in &[Some(4_u32), None] {
+            warmup_keys.push(
+                ShaderCacheKeyMaterialOpaqueEmpty {
+                    texture_pool_arrays_len,
+                    texture_pool_samplers_len,
+                    msaa_sample_count: msaa,
+                }
+                .into(),
+            );
+        }
+        ctx.shaders.ensure_keys(ctx.gpu, warmup_keys).await?;
+
+        // Build the (msaa × mipmaps × shader_id) cube. Shader compiles
+        // are now warm (cache hits), so `create_pipeline` only does
+        // the cheaper pipeline-creation work; no per-iteration shader
+        // wall-clock cost.
         let mut main = HashMap::with_capacity(OPAQUE_SHADER_IDS.len() * 4);
         for &shader_id in OPAQUE_SHADER_IDS {
             for &(msaa, layout_key) in &[

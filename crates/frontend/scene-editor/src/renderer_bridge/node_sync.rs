@@ -14,9 +14,11 @@ use crate::renderer_bridge::asset_cache::{AssetCache, AssetEntry};
 use crate::scene::{AssetId, AssetStatus, Node, NodeId, NodeKind, Trs};
 use crate::state::app_state;
 use awsm_renderer::transforms::{Transform, TransformKey};
+use futures::channel::oneshot;
 use futures_signals::signal_vec::VecDiff;
 use glam::{Quat, Vec3};
 use std::collections::HashMap;
+use std::sync::LazyLock;
 use wasm_bindgen_futures::spawn_local;
 
 /// One bridge entry per live scene node.
