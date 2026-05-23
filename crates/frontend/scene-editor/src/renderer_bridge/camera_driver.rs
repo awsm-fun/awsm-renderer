@@ -55,14 +55,18 @@ pub fn evaluate(
     renderer: &AwsmRenderer,
     wall_clock_ms: f64,
 ) -> Option<CameraMatrices> {
-    let state = app_state();
-    let scene_nodes = state.scene.nodes.lock_ref();
-    let node = find_node_recursive(&scene_nodes, node_id)?;
-    let cfg = match &*node.kind.lock_ref() {
+    // Per-frame hot path — O(1) hash lookup via the bridge map
+    // instead of the prior `find_node_recursive` full-tree DFS. The
+    // authored-camera path runs every requestAnimationFrame when an
+    // authored camera is selected; a deep scene tree (typical
+    // game-art glb of 30+ nodes) was paying a re-scan per frame for
+    // no good reason — the bridge already mirrors every node id →
+    // entry, and the kind is reachable directly from `entry.node`.
+    let entry = super::node_sync::bridge().nodes.lock().unwrap().get(&node_id).cloned()?;
+    let cfg = match &*entry.node.kind.lock_ref() {
         NodeKind::Camera(c) => c.clone(),
         _ => return None,
     };
-    drop(scene_nodes);
 
     let t_secs = (wall_clock_ms / 1000.0) as f32;
     let (camera_pos, camera_rot) = match &cfg.behavior {
@@ -202,10 +206,11 @@ fn transform_key_for(node_id: NodeId) -> Option<awsm_renderer::transforms::Trans
 }
 
 fn lookup_curve_def(node_id: NodeId) -> Option<awsm_scene_schema::CurveDef> {
-    let state = app_state();
-    let scene_nodes = state.scene.nodes.lock_ref();
-    let node = find_node_recursive(&scene_nodes, node_id)?;
-    let kind = node.kind.get_cloned();
+    // Same O(1) bridge-map lookup pattern as `evaluate` — used by
+    // `RailAlongCurve` cameras, called once per frame while a rail
+    // camera is selected.
+    let entry = super::node_sync::bridge().nodes.lock().unwrap().get(&node_id).cloned()?;
+    let kind = entry.node.kind.get_cloned();
     match kind {
         NodeKind::Curve(c) => Some(c),
         _ => None,

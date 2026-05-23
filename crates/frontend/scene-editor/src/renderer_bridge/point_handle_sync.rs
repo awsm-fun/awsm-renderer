@@ -152,12 +152,21 @@ fn target_node_id(target: PointHandleTarget) -> NodeId {
 /// they already snapshotted under the renderer lock — keeps this
 /// function pure + sync.
 fn world_positions_for_target(target: PointHandleTarget, parent_world: Mat4) -> Vec<Vec3> {
-    let state = app_state();
-    let scene_nodes = state.scene.nodes.lock_ref();
-    let Some(node) = find_node_recursive(&scene_nodes, target_node_id(target)) else {
+    // O(1) bridge-map lookup. Was a full-tree DFS via
+    // `find_node_recursive`; called every frame from `per_frame_update`
+    // whenever a Curve/Line is selected. A deep scene tree was paying
+    // a per-frame re-scan for an O(1) hash answer.
+    let bridge = super::node_sync::bridge();
+    let Some(entry) = bridge
+        .nodes
+        .lock()
+        .unwrap()
+        .get(&target_node_id(target))
+        .cloned()
+    else {
         return Vec::new();
     };
-    let kind = node.kind.get_cloned();
+    let kind = entry.node.kind.get_cloned();
     world_positions_from_kind(&kind, parent_world)
 }
 
