@@ -12,6 +12,7 @@ pub mod asset_cache;
 pub mod camera_driver;
 pub mod env_sync;
 pub mod gizmo;
+pub mod instance_batcher;
 pub mod material_cache;
 pub mod mesh_cache;
 pub mod node_sync;

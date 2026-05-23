@@ -10,7 +10,7 @@
 
 use crate::context::{renderer_handle, with_renderer_mut};
 use crate::prelude::*;
-use crate::renderer_bridge::asset_cache::{AssetCache, AssetEntry};
+use crate::renderer_bridge::asset_cache::AssetCache;
 use crate::scene::{AssetId, AssetStatus, Node, NodeId, NodeKind, Trs};
 use crate::state::app_state;
 use awsm_renderer::transforms::{Transform, TransformKey};
@@ -18,7 +18,6 @@ use futures::channel::oneshot;
 use futures_signals::signal_vec::VecDiff;
 use glam::{Quat, Vec3};
 use std::collections::HashMap;
-use std::sync::LazyLock;
 use wasm_bindgen_futures::spawn_local;
 
 /// One bridge entry per live scene node.
@@ -677,55 +676,49 @@ fn apply_kind_model(entry: Arc<RendererNode>, model_ref: crate::scene::ModelRef)
     let asset_id = model_ref.asset_id;
     *entry.asset_id.lock().unwrap() = Some(asset_id);
 
-    let cache = bridge().assets.clone();
-    let asset_entry: AssetEntry = cache.get_or_load(asset_id);
-
     entry.node.asset_status.set(AssetStatus::Loading);
 
-    let entry_for_load = entry.clone();
-    let asset_entry_for_load = asset_entry.clone();
-    entry.asset_loader.load(async move {
-        match asset_entry_for_load.wait().await {
-            Ok(template) => instantiate_model_template(entry_for_load, asset_id, template).await,
-            Err(err) => report_model_load_failure(entry_for_load, asset_id, err),
-        }
-    });
-}
-
-async fn instantiate_model_template(
-    entry: Arc<RendererNode>,
-    asset_id: AssetId,
-    template: super::asset_cache::AssetTemplate,
-) {
-    // Guard: did this node get removed or change kind while we were
-    // loading?
-    {
-        let cur = *entry.asset_id.lock().unwrap();
-        if cur != Some(asset_id) {
-            return;
-        }
-    }
+    // Resolve which gltf node + (optional) primitive index this editor
+    // node represents up front — the kind is already known here, and
+    // the materializer needs both values.
     let (node_index, primitive_index) = match &*entry.node.kind.lock_ref() {
         NodeKind::Model(r) => (r.node_index, r.primitive_index),
         _ => (0, None),
     };
-    instance_template(
-        entry.clone(),
-        asset_id,
-        template,
-        node_index,
-        primitive_index,
-    )
-    .await;
-    entry.node.asset_status.set(AssetStatus::Ready);
-    app_state().clear_asset_failure(entry.node_id);
+
+    let entry_for_load = entry.clone();
+    entry.asset_loader.load(async move {
+        // Enqueue into the per-asset batcher. A single coordinator
+        // task per `asset_id` will await `cache.get_or_load`, then
+        // process every queued entry in one renderer-lock acquisition
+        // — this is how the editor avoids 38 separate `lock().await`
+        // calls competing with the render loop for a model with 38
+        // primitives.
+        let (tx, rx) = oneshot::channel();
+        super::instance_batcher::enqueue(super::instance_batcher::PendingInstance {
+            entry: entry_for_load,
+            asset_id,
+            node_index,
+            primitive_index,
+            done: tx,
+        });
+        // Keep the asset_loader task alive until the batch finishes
+        // materializing us, so kind-change cancellation (which drops
+        // the loader) reflects the right "in-flight" state. Drop of
+        // `rx` is a no-op for the coordinator; it'll silently
+        // discard the resulting `send(())`.
+        let _ = rx.await;
+    });
 }
 
-fn report_model_load_failure(entry: Arc<RendererNode>, asset_id: AssetId, err: String) {
+/// Public so the batched materializer can route failures through the
+/// same editor-side bookkeeping the per-node path used: sets the
+/// node's `asset_status = Failed` and records the missing asset in
+/// the `failed_assets_by_node` map that drives the editor's missing-
+/// assets indicator. Called from `instance_batcher::coordinator` when
+/// `cache.get_or_load` resolves to an `Err`.
+pub fn report_model_load_failure(entry: Arc<RendererNode>, asset_id: AssetId, err: String) {
     entry.node.asset_status.set(AssetStatus::Failed(err));
-    // Resolve the asset id back to a filename for the user-facing
-    // error surface; if the table no longer has it (e.g. cleanup
-    // raced), fall back to the raw id string.
     let label = app_state()
         .scene
         .assets
@@ -1098,194 +1091,9 @@ async fn clear_model_instance(entry: &Arc<RendererNode>) {
     .await;
 }
 
-async fn instance_template(
-    entry: Arc<RendererNode>,
-    asset_id: AssetId,
-    template: super::asset_cache::AssetTemplate,
-    node_index: u32,
-    primitive_index: Option<u32>,
-) {
-    let parent_tk = entry.transform_key;
-
-    // Find the gltf node this editor `Node` represents. Children of that
-    // gltf node are NOT instanced here — `Insert Model` already created
-    // independent editor `Node`s for them, and the bridge's children
-    // observer will spawn their own meshes.
-    let Some(template_node) = template.find_by_node_index(node_index) else {
-        tracing::warn!(
-            "instance_template: gltf node_index={node_index} not found in template; \
-             nothing to render for this node"
-        );
-        return;
-    };
-
-    if template_node.mesh_keys.is_empty() {
-        return;
-    }
-
-    // `primitive_index = Some(i)` means the editor node was peeled off
-    // by Split and represents only the i-th primitive of this gltf node.
-    // `None` (the common case) means render every primitive. We carry the
-    // parallel `gltf_material_indices` Vec so the override step below
-    // sees the right index per duplicated mesh even after Split.
-    let (mesh_keys, gltf_material_indices): (Vec<_>, Vec<Option<usize>>) = match primitive_index {
-        None => (
-            template_node.mesh_keys.clone(),
-            template_node.mesh_gltf_material_indices.clone(),
-        ),
-        Some(i) => match template_node.mesh_keys.get(i as usize).copied() {
-            Some(k) => {
-                let mat_idx = template_node
-                    .mesh_gltf_material_indices
-                    .get(i as usize)
-                    .copied()
-                    .unwrap_or(None);
-                (vec![k], vec![mat_idx])
-            }
-            None => {
-                tracing::warn!(
-                    "instance_template: primitive_index={i} out of range for gltf \
-                     node_index={node_index} (has {} primitives)",
-                    template_node.mesh_keys.len()
-                );
-                return;
-            }
-        },
-    };
-
-    // Look up the gltf asset's editable-material override map (if any
-    // was populated at Insert Model time). Empty for pre-extension
-    // projects, in which case the renderer keeps its baked materials.
-    let gltf_material_asset_ids: Vec<awsm_scene_schema::AssetId> = {
-        let scene = crate::state::app_state().scene.clone();
-        let assets = scene.assets.lock().unwrap();
-        assets
-            .get(asset_id)
-            .map(|e| e.gltf_material_asset_ids.clone())
-            .unwrap_or_default()
-    };
-
-    // Note: raster bitmap prefetch happens once per glb in
-    // `asset_cache::load_and_populate` (which is `Shared`, so it runs
-    // exactly once per asset id even though every Model node calls
-    // `cache.get_or_load`). Doing it here would re-run the prefetch
-    // N×primitives in parallel for the same texture set and create
-    // a thundering herd on `createImageBitmap`.
-    let _ = gltf_material_asset_ids;
-
-    let handle = renderer_handle();
-    let mut renderer = handle.lock().await;
-
-    // Honor the node's effective visibility at instance time. Without
-    // this a node hydrated as `visible = false` would briefly flash
-    // visible while we wait for the gltf to finish loading.
-    let visible = *entry.effective_visible.lock().unwrap();
-
-    let scene = crate::state::app_state().scene.clone();
-    let mut created_meshes = Vec::new();
-    for (i, mesh_key) in mesh_keys.iter().enumerate() {
-        match renderer.duplicate_mesh_with_transform(*mesh_key, parent_tk) {
-            Ok(new_mesh) => {
-                // The template mesh is kept hidden so the original doesn't
-                // render at the world origin as a ghost; duplicates inherit
-                // that flag via `mesh.clone()`, so set it explicitly to
-                // match the node's current effective visibility.
-                let _ = renderer.set_mesh_hidden(new_mesh, !visible);
-
-                // If this primitive's glTF material has been extracted
-                // into an editable MaterialDef asset, swap the renderer-
-                // baked material for ours so subsequent edits in the
-                // inspector propagate to the rendered model.
-                if let Some(gltf_mat_idx) = gltf_material_indices.get(i).copied().flatten() {
-                    if let Some(&override_asset_id) = gltf_material_asset_ids.get(gltf_mat_idx) {
-                        let override_ref = awsm_scene_schema::MaterialRef(override_asset_id);
-                        match super::material_cache::get_or_create(
-                            &mut renderer,
-                            &scene,
-                            override_ref,
-                        ) {
-                            Some(key) => {
-                                tracing::debug!(
-                                    "instance_template: override gltf material {gltf_mat_idx} \
-                                     (asset {override_asset_id}) on mesh {new_mesh:?}"
-                                );
-                                if let Err(err) = renderer.set_mesh_material(new_mesh, key) {
-                                    tracing::warn!(
-                                        "instance_template: set_mesh_material for editable \
-                                         gltf material {gltf_mat_idx} (asset \
-                                         {override_asset_id}) failed: {err}"
-                                    );
-                                }
-                            }
-                            None => {
-                                tracing::warn!(
-                                    "instance_template: get_or_create for gltf material \
-                                     {gltf_mat_idx} (asset {override_asset_id}) returned \
-                                     None — falling back to renderer-baked material"
-                                );
-                            }
-                        }
-                    } else {
-                        tracing::debug!(
-                            "instance_template: gltf material {gltf_mat_idx} has no \
-                             override entry (map len {})",
-                            gltf_material_asset_ids.len()
-                        );
-                    }
-                } else {
-                    tracing::debug!("instance_template: primitive {i} has no gltf material index");
-                }
-                created_meshes.push(new_mesh);
-            }
-            Err(err) => tracing::warn!("duplicate_mesh_with_transform failed: {err}"),
-        }
-    }
-
-    // If the material override path uploaded any new raster textures,
-    // they're sitting in the renderer's texture pool but the bind-group
-    // layouts + pipelines haven't been rebuilt to bind them yet. Mirror
-    // what `populate_gltf` does at the end of its own load: finalize the
-    // pool while we still hold the lock so the meshes we just inserted
-    // can sample the new textures from the very next frame.
-    //
-    // No-op (cheap) when nothing actually changed — finalize gates on a
-    // dirty flag internally.
-    if let Err(err) = renderer.finalize_gpu_textures().await {
-        tracing::warn!("instance_template: finalize_gpu_textures failed: {err}");
-    }
-
-    drop(renderer);
-
-    entry.model_meshes.lock().unwrap().extend(created_meshes);
-    // Apply the authored per-mesh shadow flags to every instantiated
-    // mesh. Without this, a `Cast`/`Receive` toggle on a Model node in
-    // the inspector serialises to `project.json` but never reaches the
-    // renderer — the duplicated glTF meshes keep `cast_shadows = true`
-    // / `receive_shadows = true` (the renderer's defaults) regardless
-    // of what the user authored. Mirrors the post-materialize step in
-    // `procedural_sync::materialize_procedural` for Primitive / Mesh /
-    // Sweep / Instances kinds.
-    let shadow_cfg = match &*entry.node.kind.lock_ref() {
-        NodeKind::Model(r) => Some(r.shadow),
-        _ => None,
-    };
-    if let Some(cfg) = shadow_cfg {
-        let flags = mesh_shadow_flags_from_config(&cfg);
-        let mesh_keys: Vec<awsm_renderer::meshes::MeshKey> =
-            entry.model_meshes.lock().unwrap().clone();
-        if !mesh_keys.is_empty() {
-            with_renderer_mut(move |r| {
-                for mk in mesh_keys {
-                    let _ = r.set_mesh_shadow_flags(mk, flags);
-                }
-            })
-            .await;
-        }
-    }
-    // Bump so any signal that derives from "is this Model splittable?"
-    // re-evaluates now that mesh count is known.
-    bridge().bump_nodes_revision();
-}
+// `instance_template` was here. Model materialization is now batched
+// per-glb in `super::instance_batcher` so the editor pays one
+// renderer-lock acquisition per glb insert instead of N per-primitive.
 
 pub fn trs_to_transform(trs: &Trs) -> Transform {
     Transform {
