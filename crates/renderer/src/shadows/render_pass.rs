@@ -18,6 +18,7 @@ use awsm_renderer_core::pipeline::primitive::IndexFormat;
 use crate::error::Result;
 use crate::frustum::Frustum;
 use crate::render::RenderContext;
+use crate::scene_spatial::NodeFilter;
 use crate::shadows::Shadows;
 
 /// Records every shadow-generation render pass for the current frame.
@@ -25,14 +26,12 @@ use crate::shadows::Shadows;
 /// Called between the geometry pass and light culling. Skipped
 /// entirely when [`Shadows::any_active`] returns `false`.
 pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
-    // The 2D atlas is shared by every cascade / spot view. A
-    // render-pass clear is attachment-wide (not viewport-scoped), so
-    // if every per-cascade pass used `LoadOp::Clear`, each pass would
-    // wipe the previous cascade's tile and only the last-written
-    // cascade would survive. Clear it exactly once — on the first
-    // 2D-atlas pass we record this frame — and `Load` on every
-    // subsequent 2D pass to preserve already-written tiles. Cube-face
-    // passes target their own per-face views and clear independently.
+    // The 2D `shadow_atlas` is still shared across spot-light views,
+    // and `LoadOp::Clear` there is attachment-wide. So we clear it on
+    // the first spot-atlas pass of the frame and `Load` on subsequent
+    // spot passes to preserve already-written tiles. Cube faces and
+    // cascade layers each target their own per-attachment view and
+    // can always clear independently.
     let mut atlas_cleared = false;
 
     for (_light_key, record) in shadows.records() {
@@ -45,14 +44,24 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
             // — Shadows::write_gpu uploaded every slot once, up front.
 
             let is_cube = view.cube_layer.is_some();
-            let depth_view = match view.cube_layer {
-                Some(layer) => shadows
+            let is_cascade = view.cascade_layer.is_some();
+            let depth_view = if let Some(layer) = view.cube_layer {
+                shadows
                     .cube_face_views
                     .get(layer as usize)
-                    .unwrap_or(&shadows.atlas_view),
-                None => &shadows.atlas_view,
+                    .unwrap_or(&shadows.atlas_view)
+            } else if let Some(layer) = view.cascade_layer {
+                shadows
+                    .cascade_layer_views
+                    .get(layer as usize)
+                    .unwrap_or(&shadows.atlas_view)
+            } else {
+                &shadows.atlas_view
             };
-            let load_op = if is_cube || !atlas_cleared {
+            // Per-attachment views (cube faces, cascade layers) always
+            // clear — they own their own depth surface. The 2D atlas
+            // clears once per frame, then loads.
+            let load_op = if is_cube || is_cascade || !atlas_cleared {
                 LoadOp::Clear
             } else {
                 LoadOp::Load
@@ -61,7 +70,7 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
                 .with_depth_load_op(load_op)
                 .with_depth_store_op(StoreOp::Store)
                 .with_depth_clear_value(1.0);
-            if !is_cube {
+            if !is_cube && !is_cascade {
                 atlas_cleared = true;
             }
 
@@ -110,12 +119,23 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
                 None,
             )?;
 
-            let meta_bind_group = ctx
+            // Non-instanced shadow draws use the storage-array meta
+            // binding (no dynamic offset; shader reads
+            // `geometry_mesh_metas[instance_index]`); instanced
+            // shadow draws keep the legacy uniform-with-dynamic-
+            // offset binding.
+            let meta_storage_bind_group = ctx
                 .render_passes
                 .geometry
                 .bind_groups
                 .meta
-                .get_bind_group()?;
+                .get_storage_bind_group()?;
+            let meta_uniform_bind_group = ctx
+                .render_passes
+                .geometry
+                .bind_groups
+                .meta
+                .get_uniform_bind_group()?;
 
             // Per-view frustum culling. Directional cascades especially
             // see geometry the camera doesn't, so we test against the
@@ -124,24 +144,29 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
             // from `view_projection`).
             let shadow_frustum = Frustum::from_view_projection(view.view_projection);
 
+            // Surviving caster set: BVH-pruned + shadow-caster filter
+            // (cast_shadows && !hidden && !hud). Meshes without a
+            // world AABB aren't in the index — fall back to a tail
+            // walk so procedural / mid-load content draws conservatively.
+            let bvh_visible: Vec<_> = ctx
+                .scene_spatial
+                .query_frustum(&shadow_frustum, NodeFilter::shadow_caster())
+                .map(|node| node.mesh_key)
+                .collect();
+            let conservative_extra: Vec<_> = ctx
+                .meshes
+                .iter()
+                .filter(|(_, m)| m.cast_shadows && !m.hidden && !m.hud && m.world_aabb.is_none())
+                .map(|(k, _)| k)
+                .collect();
+
             // Cache the last-bound pipeline key so we don't re-bind
             // when consecutive draws share the same variant.
             let mut last_pipeline_key = None;
-            for (mesh_key, mesh) in ctx.meshes.iter() {
-                if !mesh.cast_shadows || mesh.hidden || mesh.hud {
+            for mesh_key in bvh_visible.into_iter().chain(conservative_extra) {
+                let Ok(mesh) = ctx.meshes.get(mesh_key) else {
                     continue;
-                }
-                // HUD overlay primitives also shouldn't cast shadows.
-
-                // Frustum cull against the light-space view. Meshes
-                // without a cached world AABB are conservative kept
-                // (they're typically procedural / dynamic content
-                // whose bounds haven't been computed yet).
-                if let Some(aabb) = &mesh.world_aabb {
-                    if !shadow_frustum.intersects_aabb(aabb) {
-                        continue;
-                    }
-                }
+                };
 
                 let pipeline_key = shadows.shadow_pipeline_key(mesh.instanced, is_cube);
                 if last_pipeline_key != Some(pipeline_key) {
@@ -150,7 +175,15 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
                 }
 
                 let geometry_meta_offset = ctx.meshes.meta.geometry_buffer_offset(mesh_key)? as u32;
-                render_pass.set_bind_group(2, meta_bind_group, Some(&[geometry_meta_offset]))?;
+                if mesh.instanced {
+                    render_pass.set_bind_group(
+                        2,
+                        meta_uniform_bind_group,
+                        Some(&[geometry_meta_offset]),
+                    )?;
+                } else {
+                    render_pass.set_bind_group(2, meta_storage_bind_group, None)?;
+                }
 
                 render_pass.set_vertex_buffer(
                     0,
@@ -195,7 +228,24 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
                             .draw_indexed_with_instance_count(index_count, instance_count as u32);
                     }
                 } else {
-                    render_pass.draw_indexed(index_count);
+                    // `first_instance = mesh_meta_idx` so the
+                    // storage-array shader lookup
+                    // `geometry_mesh_metas[instance_index]` resolves
+                    // to this mesh's meta slot. Shadow draws skip the
+                    // GPU compaction path — shadow-caster visibility
+                    // is BVH-pruned CPU-side per-view, so always
+                    // emit one instance directly.
+                    let mesh_meta_idx = geometry_meta_offset
+                        / crate::meshes::meta::geometry_meta::GEOMETRY_MESH_META_BYTE_ALIGNMENT
+                            as u32;
+                    render_pass
+                        .draw_indexed_with_instance_count_and_first_index_and_base_vertex_and_first_instance(
+                            index_count,
+                            1,
+                            0,
+                            0,
+                            mesh_meta_idx,
+                        );
                 }
             }
 
@@ -232,6 +282,14 @@ fn dispatch_evsm(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
         .get(shadows.evsm_pass.blur_v_pipeline_key)?;
 
     for entry in &shadows.evsm_dispatch_queue {
+        // Skip EVSM dispatch for throttled cascades — the source
+        // cascade layer wasn't rendered this frame, so its prior
+        // moments in `evsm_atlas` are still valid. With the far
+        // cascade on a 4-frame update period, 3 of 4 frames hit this
+        // path and skip the moment-write + 2 blur passes.
+        if !entry.should_render {
+            continue;
+        }
         let dst_w = entry.evsm_rect[2];
         let dst_h = entry.evsm_rect[3];
         if dst_w == 0 || dst_h == 0 {

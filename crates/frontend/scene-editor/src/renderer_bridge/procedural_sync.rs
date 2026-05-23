@@ -334,43 +334,34 @@ pub(super) fn sweep_geometry_hash(def: &SweepAlongCurveDef, curve_def: &CurveDef
 }
 
 pub(super) fn lookup_curve_def(node_id: NodeId) -> Option<CurveDef> {
-    let scene = app_state().scene.clone();
-    let nodes = scene.nodes.lock_ref();
-    find_curve_recursive(&nodes, node_id)
-}
-
-fn find_curve_recursive(nodes: &[Arc<crate::scene::Node>], target: NodeId) -> Option<CurveDef> {
-    for n in nodes.iter() {
-        if n.id == target {
-            if let NodeKind::Curve(c) = &*n.kind.lock_ref() {
-                return Some(c.clone());
-            }
-        }
-        let children = n.children.lock_ref();
-        if let Some(found) = find_curve_recursive(&children, target) {
-            return Some(found);
-        }
+    // O(1) bridge-map lookup. Was a full-tree DFS via `find_curve_recursive`;
+    // called every frame from `behavior_rail` and on every Sweep
+    // materialize. Scenes with deep node trees (typical art glb)
+    // were paying a per-frame O(N) walk for an O(1) hash answer.
+    let entry = super::node_sync::bridge()
+        .nodes
+        .lock()
+        .unwrap()
+        .get(&node_id)
+        .cloned()?;
+    let kind = entry.node.kind.lock_ref().clone();
+    if let NodeKind::Curve(c) = kind {
+        Some(c)
+    } else {
+        None
     }
-    None
 }
 
 fn lookup_node_kind(node_id: NodeId) -> Option<NodeKind> {
-    let scene = app_state().scene.clone();
-    let nodes = scene.nodes.lock_ref();
-    find_node_kind_recursive(&nodes, node_id)
-}
-
-fn find_node_kind_recursive(nodes: &[Arc<crate::scene::Node>], target: NodeId) -> Option<NodeKind> {
-    for n in nodes.iter() {
-        if n.id == target {
-            return Some(n.kind.lock_ref().clone());
-        }
-        let children = n.children.lock_ref();
-        if let Some(found) = find_node_kind_recursive(&children, target) {
-            return Some(found);
-        }
-    }
-    None
+    // Same O(1) bridge-map win as `lookup_curve_def`.
+    let entry = super::node_sync::bridge()
+        .nodes
+        .lock()
+        .unwrap()
+        .get(&node_id)
+        .cloned()?;
+    let kind = entry.node.kind.lock_ref().clone();
+    Some(kind)
 }
 
 async fn materialize_primitive(

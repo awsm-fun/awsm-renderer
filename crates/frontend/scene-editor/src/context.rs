@@ -8,7 +8,8 @@
 use std::sync::{Arc, OnceLock};
 
 use awsm_renderer::{
-    debug::AwsmRendererLogging, render::RenderHooks, AwsmRenderer, AwsmRendererBuilder,
+    debug::AwsmRendererLogging, features::RendererFeatures, render::RenderHooks, AwsmRenderer,
+    AwsmRendererBuilder,
 };
 use awsm_renderer_core::{
     command::color::Color,
@@ -211,6 +212,65 @@ struct AppContext {
     _drop_tracker: Arc<AppContextDropTracker>,
 }
 
+/// Reads the renderer-feature gate from the current URL's query
+/// string. Defaults to `gpu_culling = true, decals = true` so the
+/// editor's default boot is unchanged; `?features=off` disables
+/// both gates so the measurement harness can A/B them.
+///
+/// `#[cfg(debug_assertions)]`-gated — release builds skip the URL
+/// parse entirely and always boot with both features on. Dev-only
+/// escape hatch for the measurement harness; production users have
+/// no way to flip features at runtime.
+#[cfg(debug_assertions)]
+fn parse_features_from_url() -> RendererFeatures {
+    use awsm_renderer::features::FeatureToggle;
+    // `coverage_lod` stays off — both its consumers (skin-skip,
+    // cheap-material LOD) are parked, so engaging the producer in the
+    // editor would just be measurement noise. Flip on per-build when
+    // you wire up a consumer.
+    //
+    // `indirect_first_instance` defaults to Auto (capability-detect).
+    // The dev-only `?ifi=off` / `?ifi=on` query knob below forces the
+    // portable / optimized path respectively so the test harness can
+    // exercise both code paths on a single machine.
+    let mut on = RendererFeatures {
+        gpu_culling: true,
+        decals: true,
+        coverage_lod: false,
+        indirect_first_instance: FeatureToggle::Auto,
+    };
+    let Some(window) = web_sys::window() else {
+        return on;
+    };
+    let search = window.location().search().unwrap_or_default();
+    let params = match web_sys::UrlSearchParams::new_with_str(&search) {
+        Ok(p) => p,
+        Err(_) => return on,
+    };
+    match params.get("ifi").as_deref() {
+        Some("on") => on.indirect_first_instance = FeatureToggle::On,
+        Some("off") => on.indirect_first_instance = FeatureToggle::Off,
+        Some("auto") | None => {} // already Auto
+        Some(other) => {
+            tracing::warn!("unrecognized ?ifi value {other:?} — falling back to Auto");
+        }
+    }
+    match params.get("features").as_deref() {
+        Some("off") => RendererFeatures::default(),
+        _ => on,
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn parse_features_from_url() -> RendererFeatures {
+    RendererFeatures {
+        gpu_culling: true,
+        decals: true,
+        coverage_lod: false,
+        indirect_first_instance: awsm_renderer::features::FeatureToggle::Auto,
+    }
+}
+
 async fn create_renderer(canvas: web_sys::HtmlCanvasElement) -> EditorResult<AwsmRenderer> {
     let gpu = web_sys::window().unwrap().navigator().gpu();
     let gpu_builder = AwsmRendererWebGpuBuilder::new(gpu, canvas)
@@ -221,11 +281,36 @@ async fn create_renderer(canvas: web_sys::HtmlCanvasElement) -> EditorResult<Aws
         )
         .with_device_request_limits(DeviceRequestLimits::max_all());
 
+    // Editor opts into the full GPU-driven pipeline + decals.
+    // Library consumers / runtime games choose their own feature set
+    // via `with_features`.
+    //
+    // Dev-only escape hatch: a `?features=off` query param disables
+    // both gates so the measurement harness can A/B the always-on
+    // overhead against the default editor build. The flag
+    // is read once at construction; toggling it requires a page
+    // reload (the renderer's gated fields are populated at build
+    // time). Falls back to "both on" for any other value (including
+    // missing).
+    let features = parse_features_from_url();
+    // Editor wants the GPU-driven path engaged regardless of scene
+    // size so it's actually exercised during authoring (Auto would
+    // park it off below ~500 opaque meshes, hiding regressions until
+    // someone loads a heavy scene). The runtime default of `Auto` is
+    // right for shipping games; editor overrides with `Force`. The
+    // `?features=off` escape hatch already drops the capability via
+    // `with_features`, which makes the policy decision moot.
+    let policy = awsm_renderer::optimization_policy::RendererOptimizationPolicy {
+        gpu_culling: awsm_renderer::optimization_policy::OptimizationMode::Force,
+        ..Default::default()
+    };
     let renderer = AwsmRendererBuilder::new(gpu_builder)
         .with_logging(AwsmRendererLogging {
             render_timings: cfg!(debug_assertions),
         })
         .with_clear_color(Color::MID_GREY)
+        .with_features(features)
+        .with_optimization_policy(policy)
         .build()
         .await?;
 

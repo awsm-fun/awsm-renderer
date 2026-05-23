@@ -16,8 +16,27 @@ struct ShadowView {
 };
 
 @group(0) @binding(0) var<uniform> shadow_view: ShadowView;
-@group(1) @binding(0) var<storage, read> model_transforms : array<mat4x4<f32>>;
+// Packed transforms (model + normal). Shadow pass only needs
+// `.model_world` — same `get_model_transform` helper as the geometry
+// pass.
+struct TransformPacked {
+    model_world: mat4x4<f32>,
+    normal_world: mat3x3<f32>,
+};
+@group(1) @binding(0) var<storage, read> transforms: array<TransformPacked>;
+{% if instancing_transforms %}
+// Instanced shadow draws use uniform-with-dynamic-offset binding
+// (matches the geometry pass — see its bind_groups.wgsl for the
+// rationale).
 @group(2) @binding(0) var<uniform> geometry_mesh_meta: GeometryMeshMeta;
+{% else %}
+// Non-instanced shadow draws use the same storage-array meta
+// binding as the geometry pass. `first_instance = mesh_meta_idx`
+// is set per draw so `geometry_mesh_metas[instance_index]` resolves
+// to this mesh's slot.
+@group(2) @binding(0) var<storage, read> geometry_mesh_metas: array<GeometryMeshMeta>;
+var<private> geometry_mesh_meta: GeometryMeshMeta;
+{% endif %}
 @group(3) @binding(0) var<storage, read> geometry_morph_weights: array<f32>;
 @group(3) @binding(1) var<storage, read> geometry_morph_values: array<f32>;
 @group(3) @binding(2) var<storage, read> skin_joint_matrices: array<mat4x4<f32>>;

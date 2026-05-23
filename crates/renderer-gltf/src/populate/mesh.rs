@@ -357,7 +357,7 @@ impl GltfMeshExt for AwsmRenderer {
             let attribute_index = &ctx.data.buffers.index_bytes
                 [custom_attribute_index_start..custom_attribute_index_end];
 
-            self.meshes.insert(
+            let key = self.meshes.insert(
                 mesh,
                 &self.materials,
                 &self.transforms,
@@ -370,7 +370,9 @@ impl GltfMeshExt for AwsmRenderer {
                 geometry_morph_key,
                 material_morph_key,
                 skin_key,
-            )?
+            )?;
+            self.sync_spatial_for_mesh(key);
+            key
         };
 
         // Record the originating glTF material index so downstream

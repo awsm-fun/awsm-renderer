@@ -195,6 +195,9 @@ fn write_buffer_with_dirty_ranges_config(
     Ok(())
 }
 
+// Coalesces adjacent dirty ranges to minimise `writeBuffer` calls.
+// Tests below pin the merge behaviour so a future refactor can't
+// silently degrade the upload path back to many small calls.
 fn coalesce_ranges(ranges: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
     if ranges.is_empty() {
         return ranges;
@@ -217,4 +220,33 @@ fn coalesce_ranges(ranges: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
 
     merged.push((current_start, current_end - current_start));
     merged
+}
+
+#[cfg(test)]
+mod coalesce_tests {
+    use super::coalesce_ranges;
+
+    #[test]
+    fn adjacent_ranges_merge() {
+        let ranges = vec![(0, 16), (16, 16), (32, 8)];
+        assert_eq!(coalesce_ranges(ranges), vec![(0, 40)]);
+    }
+
+    #[test]
+    fn overlapping_ranges_merge() {
+        let ranges = vec![(0, 32), (16, 32)];
+        assert_eq!(coalesce_ranges(ranges), vec![(0, 48)]);
+    }
+
+    #[test]
+    fn disjoint_ranges_stay_separate() {
+        let ranges = vec![(0, 16), (32, 16)];
+        assert_eq!(coalesce_ranges(ranges), vec![(0, 16), (32, 16)]);
+    }
+
+    #[test]
+    fn empty_input_is_empty_output() {
+        let ranges: Vec<(usize, usize)> = vec![];
+        assert_eq!(coalesce_ranges(ranges), vec![]);
+    }
 }

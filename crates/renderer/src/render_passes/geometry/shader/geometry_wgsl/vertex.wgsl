@@ -33,6 +33,18 @@ struct VertexOutput {
     // Stage-1 leaves this at U32_MAX always; Stage-2 wires
     // `geometry_mesh_meta.instance_attr_base + @builtin(instance_index)`.
     @location(4) @interpolate(flat) instance_id: u32,
+    // Non-instanced meshes pull `geometry_mesh_meta`
+    // from a storage-array binding into a `var<private>` at vertex
+    // entry. `var<private>` is per-shader-stage, so the fragment
+    // shader's copy is uninitialised — passing the material-meta
+    // byte offset as a flat varying gives the fragment access to
+    // the right slot's value without re-loading it (which the
+    // fragment can't easily do; it doesn't have `instance_index`).
+    // For the instanced path the value comes from the uniform
+    // binding directly — but since the field is identical across
+    // stages there either way, threading it as a varying is the
+    // cheaper / more uniform fix.
+    @location(5) @interpolate(flat) material_mesh_meta_offset: u32,
 }
 
 @vertex
@@ -41,6 +53,19 @@ fn vert_main(
     @builtin(instance_index) instance_index: u32,
 ) -> VertexOutput {
     var out: VertexOutput;
+
+    {% if meta_storage_array %}
+    // Load per-mesh meta from the storage array indexed by
+    // `instance_index`. The compaction shader (or CPU
+    // draw_indexed_with_first_instance) sets `first_instance =
+    // mesh_meta_idx` so `instance_index` lands on this mesh's slot.
+    // Only reachable when the device exposes the
+    // `indirect-first-instance` WebGPU feature; the portable
+    // fallback (uniform-with-dynamic-offset) leaves
+    // `geometry_mesh_meta` populated by the bind-group dynamic
+    // offset and skips this load.
+    geometry_mesh_meta = geometry_mesh_metas[instance_index];
+    {% endif %}
 
     let camera = camera_from_raw(camera_raw);
 
@@ -76,6 +101,12 @@ fn vert_main(
     } else {
         out.instance_id = base + instance_index;
     }
+
+    // Forward the per-mesh material-meta byte
+    // offset to the fragment stage so the fragment's
+    // visibility_data write resolves to the correct slot. See
+    // VertexOutput's docstring for the rationale.
+    out.material_mesh_meta_offset = geometry_mesh_meta.material_mesh_meta_offset;
 
     return out;
 }

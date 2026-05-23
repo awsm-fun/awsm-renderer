@@ -45,6 +45,10 @@ impl From<schema::ShadowsConfig> for ShadowsConfig {
             max_point_shadows: s.max_point_shadows,
             point_shadow_resolution: s.point_shadow_resolution,
             debug_cascade_colors: s.debug_cascade_colors,
+            // Cascade-array fields aren't authored in the on-disk
+            // schema yet — fall back to defaults. Once the editor
+            // exposes them they can be threaded through here.
+            ..ShadowsConfig::default()
         }
     }
 }

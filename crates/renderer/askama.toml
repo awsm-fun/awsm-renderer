@@ -2,10 +2,16 @@
 # Directories to search for templates, relative to the crate root.
 dirs = [
     "src/render_passes/shared",
+    "src/render_passes/coverage/shader",
     "src/render_passes/geometry/shader",
+    "src/render_passes/hzb/shader",
     "src/render_passes/light_culling/shader",
+    "src/render_passes/material_classify/shader",
+    "src/render_passes/material_decal/shader",
+    "src/render_passes/material_decal/classify/shader",
     "src/render_passes/material_opaque/shader",
     "src/render_passes/material_transparent/shader",
+    "src/render_passes/occlusion/shader",
     "src/render_passes/display/shader",
     "src/render_passes/effects/shader",
     "src/picker/shader",

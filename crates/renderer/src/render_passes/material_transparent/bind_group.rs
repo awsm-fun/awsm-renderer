@@ -207,6 +207,7 @@ impl MaterialTransparentBindGroups {
                 visibility_fragment: true,
                 visibility_compute: false,
             },
+            // lights_info uniform
             BindGroupLayoutCacheKeyEntry {
                 resource: BindGroupLayoutResource::Buffer(
                     BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
@@ -215,10 +216,11 @@ impl MaterialTransparentBindGroups {
                 visibility_fragment: true,
                 visibility_compute: false,
             },
+            // lights — uniform (matches opaque pass; same fixed-size
+            // allocation feeding both passes).
             BindGroupLayoutCacheKeyEntry {
                 resource: BindGroupLayoutResource::Buffer(
-                    BufferBindingLayout::new()
-                        .with_binding_type(BufferBindingType::ReadOnlyStorage),
+                    BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
                 ),
                 visibility_vertex: true,
                 visibility_fragment: true,
@@ -362,10 +364,11 @@ impl MaterialTransparentBindGroups {
     }
 
     /// Recreates the shadow bind group for transparent materials.
-    /// Phase 0 / Phase 9 placeholder — the bind group itself is built
-    /// but isn't currently set on the pipeline since `maxBindGroups=4`
-    /// on the target adapter. Phase 9 wires it in after consolidating
-    /// existing bind groups.
+    /// Bound at slot 1 by `MaterialTransparentRenderPass::render`
+    /// (after 16.B folded lights into `main`, freeing the slot).
+    /// Transparent is at the adapter's `maxBindGroups = 4` ceiling
+    /// — adding any *further* bind group would exceed budget without
+    /// consolidating something else first.
     pub fn recreate_shadows(&mut self, ctx: &BindGroupRecreateContext<'_>) -> Result<()> {
         let entries = build_shadow_bind_group_entries(ctx);
 

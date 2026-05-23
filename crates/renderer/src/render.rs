@@ -20,6 +20,7 @@ use crate::pipelines::Pipelines;
 use crate::post_process::PostProcessing;
 use crate::render_passes::RenderPasses;
 use crate::render_textures::{RenderTextureViews, RenderTextures};
+use crate::scene_spatial::SceneSpatial;
 use crate::transforms::Transforms;
 use crate::{AwsmRenderer, AwsmRendererLogging};
 
@@ -70,6 +71,23 @@ impl AwsmRenderer {
 
         self.render_textures.next_frame();
 
+        // Ingest any coverage snapshot that a prior frame's
+        // `mapAsync` task resolved into
+        // `coverage_readback_state.pending_snapshot`. The producer
+        // pass dispatched N frames ago; consumers (skin-skip /
+        // material LOD) see this-frame counts on the very next
+        // frame this hook runs. No-op when nothing has been
+        // resolved — including when `features.coverage_lod` is off,
+        // since no producer was scheduled.
+        let pending_snapshot = self
+            .coverage_readback_state
+            .borrow_mut()
+            .pending_snapshot
+            .take();
+        if let Some(snapshot) = pending_snapshot {
+            self.coverage.ingest(snapshot, self.frame_index);
+        }
+
         self.transforms
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
         self.materials
@@ -82,6 +100,22 @@ impl AwsmRenderer {
         self.meshes
             .morphs
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
+        // Per-mesh light slice path. Patches slice fields into each
+        // affected mesh's MaterialMeshMeta and uploads the packed
+        // indices buffer. MUST run BEFORE `meshes.meta.write_gpu` so
+        // the slice patches land in the same meta upload.
+        self.mesh_light_indices_gpu.write_gpu(
+            &self.gpu,
+            &self.light_buckets,
+            &self.lights,
+            &mut self.meshes,
+            &mut self.bind_groups,
+        )?;
+        // Decals — upload per-decal data if anything changed since last
+        // frame. Skipped entirely when the decals feature is off.
+        if let Some(decals) = self.decals.as_mut() {
+            decals.write_gpu(&self.gpu, &mut self.bind_groups)?;
+        }
         self.meshes
             .meta
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
@@ -105,7 +139,7 @@ impl AwsmRenderer {
             &mut self.bind_groups,
             &self.camera,
             &self.lights,
-            &self.meshes,
+            &self.scene_spatial,
         )?;
         {
             let shadows = &self.shadows;
@@ -124,6 +158,98 @@ impl AwsmRenderer {
                 .mark_create(BindGroupCreate::TextureViewRecreate);
         }
 
+        // Resize the HZB texture to match the live viewport. This
+        // recreates the per-mip views, so the HZB bind groups must
+        // also be rebuilt — the `TextureViewRecreate` event above
+        // covers that since size_changed implies viewport resize.
+        // Skipped when `features.gpu_culling == false`.
+        if let Some(hzb) = self.render_passes.hzb.as_mut() {
+            if hzb.ensure_size(
+                &self.gpu,
+                render_texture_views.width,
+                render_texture_views.height,
+            )? {
+                self.bind_groups
+                    .mark_create(BindGroupCreate::TextureViewRecreate);
+            }
+        }
+
+        // Tile counts are reused by both the opaque classify buckets
+        // (here) and the decal classify buckets (below). Calculate
+        // once so the two callers can't drift if the workgroup tile
+        // size ever changes.
+        let tile_x = render_texture_views.width.div_ceil(8);
+        let tile_y = render_texture_views.height.div_ceil(8);
+        let tile_count = tile_x.saturating_mul(tile_y);
+
+        // Classify buckets are sized to fit the current viewport's
+        // tile count. The grow-with-2x path keeps the reallocation
+        // away from the steady-state per-frame work. Reset the header
+        // every frame so the atomic counters start at 0.
+        if self
+            .material_classify_buffers
+            .ensure_capacity(&self.gpu, tile_count)?
+        {
+            self.bind_groups
+                .mark_create(BindGroupCreate::MaterialClassifyBuffersResize);
+        }
+        self.material_classify_buffers.reset_header(&self.gpu)?;
+
+        // Build a snapshot of the active mesh count so we can size the
+        // occlusion-cull buffers before bind groups are recreated.
+        // Refining this to the actual opaque-renderable count requires
+        // `collect_renderables` which runs later; this upper bound is
+        // fine for capacity planning. Skipped when
+        // `features.gpu_culling == false`.
+        let occlusion_needed = self.meshes.len() as u32;
+        if let Some(occlusion_buffers) = self.occlusion_buffers.as_mut() {
+            if occlusion_buffers.ensure_capacity(&self.gpu, occlusion_needed)? {
+                self.bind_groups
+                    .mark_create(BindGroupCreate::OcclusionBuffersResize);
+            }
+        }
+
+        // Decal classify buckets sized to viewport tile count.
+        // Reuses the `tile_x` / `tile_y` calculated above.
+        // Skipped when `features.decals == false`.
+        if let Some(decal_classify_buffers) = self.decal_classify_buffers.as_mut() {
+            if decal_classify_buffers.ensure_capacity(&self.gpu, tile_x, tile_y)? {
+                self.bind_groups
+                    .mark_create(BindGroupCreate::DecalClassifyBuffersResize);
+            }
+            // Per-tile atomic-count reset moved off the CPU upload path
+            // — see `decal_classify_buffers.reset_counts(...)` below,
+            // recorded into the command encoder just before the
+            // material_decal pass. The original `gpu.write_buffer`
+            // re-uploaded the *entire* bucket buffer every frame
+            // (~17 MB at 4K, scaled with viewport).
+        }
+
+        // Ensure the compaction args buffer covers every mesh slot.
+        // Skipped when `features.gpu_culling == false`.
+        if let Some(compaction_buffers) = self.compaction_buffers.as_mut() {
+            if compaction_buffers.ensure_capacity(&self.gpu, self.meshes.len() as u32)? {
+                self.bind_groups
+                    .mark_create(BindGroupCreate::CompactionBuffersResize);
+            }
+        }
+
+        // GPU coverage producer: ensure the per-mesh counts buffer
+        // covers every slot, then zero it for this frame so the
+        // compute pass's atomicAdd starts clean. Sizing follows
+        // the same `meshes.len()` upper bound as the compaction
+        // args buffer; sparse meta-slot indices leave gaps that
+        // stay at zero across frames (harmless — consumers treat
+        // zero counts as "not visible last frame"). Skipped
+        // entirely when `features.coverage_lod == false`.
+        if let Some(coverage_buffers) = self.coverage_buffers.as_mut() {
+            if coverage_buffers.ensure_capacity(&self.gpu, self.meshes.len() as u32)? {
+                self.bind_groups
+                    .mark_create(BindGroupCreate::CoverageBuffersResize);
+            }
+            coverage_buffers.reset_counts(&self.gpu)?;
+        }
+
         self.bind_groups.recreate(
             BindGroupRecreateContext {
                 gpu: &self.gpu,
@@ -139,6 +265,19 @@ impl AwsmRenderer {
                 instances: &self.instances,
                 anti_aliasing: &self.anti_aliasing,
                 shadows: &self.shadows,
+                mesh_light_indices_gpu: &self.mesh_light_indices_gpu,
+                material_classify_buffers: &self.material_classify_buffers,
+                decals: self.decals.as_ref(),
+                occlusion_buffers: self.occlusion_buffers.as_ref(),
+                hzb_full_view: self
+                    .render_passes
+                    .hzb
+                    .as_ref()
+                    .map(|hzb| hzb.texture.view_all.clone()),
+                decal_classify_buffers: self.decal_classify_buffers.as_ref(),
+                compaction_buffers: self.compaction_buffers.as_ref(),
+                coverage_buffers: self.coverage_buffers.as_ref(),
+                features: &self.features,
             },
             &mut self.render_passes,
             &mut self.picker,
@@ -160,9 +299,114 @@ impl AwsmRenderer {
             anti_aliasing: &self.anti_aliasing,
             post_processing: &self.post_processing,
             clear_color: &self._clear_color,
+            scene_spatial: &self.scene_spatial,
+            material_classify_buffers: &self.material_classify_buffers,
+            features: &self.features,
+            compaction_buffers: self.compaction_buffers.as_ref(),
+            coverage_buffers: self.coverage_buffers.as_ref(),
+            // Filled in below once `collect_renderables` + the opaque
+            // snapshot have produced the stats. Interior mutability
+            // (Cell) so the per-pass code reads the final value through
+            // an immutable `&RenderContext` without re-creating ctx.
+            frame_optimizations: std::cell::Cell::new(
+                crate::optimization_policy::FrameOptimizations::default(),
+            ),
         };
 
         let renderables = self.collect_renderables(&ctx)?;
+
+        // Snapshot per-opaque-renderable info that the occlusion + indirect-
+        // draw infrastructure needs after `renderables.opaque` is consumed
+        // by the material-opaque pass. For each opaque mesh-renderable
+        // with a world AABB:
+        //   - `aabb`               → cull pass instance bounds
+        //   - `mesh_meta_offset`   → compaction shader's slot identifier
+        //                            (`mesh_meta_offset / 256 = slot`)
+        //   - `index_count`        → drawIndirect args (static field
+        //                            populated by CPU; instance_count is
+        //                            GPU-populated by the compaction shader)
+        //   - `instanced`          → instanced meshes stay on the legacy
+        //                            `draw_indexed_with_instance_count`
+        //                            path and don't get a `drawIndirect`
+        //                            args entry
+        struct OcclusionSnapshot {
+            aabb: crate::bounds::Aabb,
+            mesh_meta_offset: u32,
+            index_count: u32,
+        }
+        // Instanced meshes stay on the legacy
+        // `draw_indexed_with_instance_count` path (their `instance_index`
+        // ranges would collide across meshes in the shared storage-array
+        // meta lookup), so they don't need cull-pass instances or
+        // IndirectDrawArgs slots — skip them here.
+        let opaque_snapshots: Vec<OcclusionSnapshot> = renderables
+            .opaque
+            .iter()
+            .filter_map(|r| match r {
+                crate::renderable::Renderable::Mesh { mesh, key, .. } => {
+                    if mesh.instanced {
+                        return None;
+                    }
+                    let aabb = mesh.world_aabb.clone()?;
+                    let meta_offset = ctx.meshes.meta.geometry_buffer_offset(*key).ok()? as u32;
+                    let buffer_info = ctx.meshes.buffer_info(*key).ok()?;
+                    let index_count = buffer_info.triangles.vertex_attribute_indices.count as u32;
+                    Some(OcclusionSnapshot {
+                        aabb,
+                        mesh_meta_offset: meta_offset,
+                        index_count,
+                    })
+                }
+            })
+            .collect();
+
+        // Compute this frame's optimization decision now that we have
+        // the renderable counts + opaque snapshot. The pure function
+        // takes (policy, stats, prev_frame, frames_in_current_mode)
+        // and emits the new `FrameOptimizations`. Tests live in
+        // `crate::optimization_policy::tests`.
+        let frame_opts_stats = crate::optimization_policy::FrameOptimizationStats {
+            features_gpu_culling: self.features.gpu_culling,
+            features_decals: self.features.decals,
+            opaque_count: renderables.opaque.len() as u32,
+            non_instanced_with_aabb_count: opaque_snapshots.len() as u32,
+            decals_count: self.decals.as_ref().map(|d| d.len() as u32).unwrap_or(0),
+            args_ready: self
+                .compaction_buffers
+                .as_ref()
+                .map(|cb| cb.args_ready.get())
+                .unwrap_or(false),
+        };
+        let frame_opts = crate::optimization_policy::compute_frame_optimizations(
+            &self.optimization_policy,
+            &frame_opts_stats,
+            &self.frame_optimizations,
+            self.frames_in_current_mode,
+        );
+        ctx.frame_optimizations.set(frame_opts);
+        // Cooldown bookkeeping uses `gpu_occlusion` as the flip
+        // detector; the other derived flags follow from inputs the
+        // policy doesn't gate on. Computed here while we hold the
+        // pre-update prev-frame state, then applied at end of
+        // `render()` (after `renderables` is dropped) so we can take
+        // `&mut self` to write the renderer state.
+        let next_frames_in_current_mode = if frame_opts.stable_mode(&self.frame_optimizations) {
+            self.frames_in_current_mode.saturating_add(1)
+        } else {
+            1
+        };
+
+        // Args-buffer poisoning rule: when `gpu_occlusion` is false
+        // (Off, Auto-disengaged, or capability missing) the compaction
+        // pass won't run, so any `args_ready=true` from a prior frame
+        // would let `mesh.rs` issue stale `drawIndirect` calls. Clear
+        // the flag so a future re-enable warms up through one frame of
+        // CPU geometry before drawIndirect resumes.
+        if !frame_opts.gpu_occlusion {
+            if let Some(compaction_buffers) = self.compaction_buffers.as_ref() {
+                compaction_buffers.args_ready.set(false);
+            }
+        }
 
         if let Some(hook) = hooks.and_then(|h| h.first_pass.as_ref()) {
             {
@@ -210,6 +454,45 @@ impl AwsmRenderer {
             }
         }
 
+        // GPU coverage tally — one atomicAdd per pixel into the
+        // per-mesh counts buffer. Runs after the geometry passes (so
+        // the full visibility buffer is populated). The
+        // `copyBufferToBuffer` that primes the readback buffer is
+        // recorded *only* when the prior frame's `mapAsync` has
+        // resolved (single-buffered readback path — writing to a
+        // pending-map buffer is a WebGPU validation error). When the
+        // prior readback is still in flight we just drop this frame's
+        // coverage signal; downstream consumers fall back to
+        // "conservatively visible". Skipped entirely when
+        // `features.coverage_lod == false`.
+        let kick_coverage_readback = if let (Some(coverage_pass), Some(coverage_buffers)) = (
+            self.render_passes.coverage.as_ref(),
+            self.coverage_buffers.as_ref(),
+        ) {
+            let _maybe_span_guard = if self.logging.render_timings {
+                Some(tracing::span!(tracing::Level::INFO, "Coverage RenderPass").entered())
+            } else {
+                None
+            };
+            coverage_pass.render(&ctx)?;
+            let prior_inflight = self.coverage_readback_state.borrow().inflight;
+            if !prior_inflight {
+                let bytes_to_copy = coverage_buffers.capacity.saturating_mul(4);
+                ctx.command_encoder.copy_buffer_to_buffer(
+                    &coverage_buffers.counts_buffer,
+                    0,
+                    &coverage_buffers.readback_buffer,
+                    0,
+                    bytes_to_copy,
+                )?;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
         // Shadow generation pass — runs between the geometry passes
         // and light culling so the shading passes downstream sample
         // the freshly-written shadow maps. Short-circuits when there
@@ -241,6 +524,19 @@ impl AwsmRenderer {
             };
 
             self.render_textures.clear_opaque(&self.gpu)?;
+        }
+
+        // Material classify: per-tile scan of the visibility buffer
+        // produces the indirect-dispatch args + tile buckets the
+        // opaque pipelines consume below. Runs once per frame; cheap
+        // (~few hundred microseconds on a 4K viewport).
+        {
+            let _maybe_span_guard = if self.logging.render_timings {
+                Some(tracing::span!(tracing::Level::INFO, "Material Classify RenderPass").entered())
+            } else {
+                None
+            };
+            self.render_passes.material_classify.render(&ctx)?;
         }
 
         {
@@ -329,6 +625,228 @@ impl AwsmRenderer {
                 &ctx.render_texture_views.transparent,
                 &ctx.command_encoder,
             )?;
+        }
+
+        // HZB build. Runs after opaque shading so the depth buffer
+        // holds the final scene depth, but BEFORE the decal pass — the
+        // decal classify uses the HZB to gate per-tile decal append.
+        // Also consumed by the occlusion-cull pass below.
+        //
+        // Allocation gate is `features.gpu_culling` (the HZB texture
+        // lives behind that Option). Per-frame engagement is
+        // `frame_optimizations.hzb`, which the policy derives as
+        // `gpu_occlusion || decal_hzb_gate` — so we still rebuild HZB
+        // when decals are active even if mesh occlusion is disengaged
+        // this frame.
+        if frame_opts.hzb {
+            if let Some(hzb) = self.render_passes.hzb.as_ref() {
+                let _maybe_span_guard = if self.logging.render_timings {
+                    Some(tracing::span!(tracing::Level::INFO, "HZB RenderPass").entered())
+                } else {
+                    None
+                };
+                hzb.render(&ctx)?;
+            }
+        }
+
+        // Projection decals. Runs after the blit so `transparent_tex`
+        // already holds the opaque shading result; the decal pass
+        // overwrites the small subset of pixels its volumes cover with
+        // the alpha-blended composite, leaving every other pixel as
+        // the blit produced it. No-op when no decals are active or
+        // MSAA is on (the v1 path doesn't have a multisampled
+        // storage-binding target — see
+        // `MaterialDecalRenderPass::render`). Skipped entirely when
+        // `features.decals == false`.
+        //
+        // Order constraint: must run AFTER the HZB build above so
+        // the per-tile classify reads a populated HZB. The previous
+        // arrangement built HZB after the decal pass, leaving the
+        // classify reading an empty/stale HZB on every frame.
+        if let (Some(material_decal), Some(decals)) = (
+            self.render_passes.material_decal.as_ref(),
+            self.decals.as_ref(),
+        ) {
+            let _maybe_span_guard = if ctx.logging.render_timings {
+                Some(tracing::span!(tracing::Level::INFO, "Material Decal RenderPass").entered())
+            } else {
+                None
+            };
+            // Zero the per-tile atomic counts before classify reads
+            // them. Recorded into the command encoder so it runs in
+            // command order strictly before the classify dispatch
+            // (queue.writeBuffer wouldn't — see the matching comment
+            // on the args-buffer clear in the occlusion block).
+            if let Some(decal_classify_buffers) = self.decal_classify_buffers.as_ref() {
+                decal_classify_buffers.reset_counts(&ctx.command_encoder);
+            }
+            material_decal.render(&ctx, decals)?;
+        }
+
+        // Occlusion cull. Pack the active opaque renderables' world
+        // AABBs + mesh_meta_offset into the GPU instance buffer,
+        // then dispatch a compute shader that frustum + HZB tests
+        // each. The compaction step below atomicAdds 1 per visible
+        // instance into the matching mesh's
+        // `IndirectDrawArgs.instance_count`; the geometry pass under
+        // `features.gpu_culling` consumes that via `drawIndirect`.
+        // Skipped entirely when `features.gpu_culling == false`
+        // (see `RendererFeatures` in features.rs).
+        // Gate the entire cull + compaction block on the per-frame
+        // policy decision. `features.gpu_culling` allocates the
+        // resources; `frame_opts.gpu_occlusion` engages the work.
+        // When this is `false`, the args-buffer poison above already
+        // flipped `args_ready` so the geometry pass routes through the
+        // CPU branch — and the cull/compaction passes are simply
+        // skipped, saving the compute dispatches on small scenes.
+        if frame_opts.gpu_occlusion {
+            if let (Some(occlusion_buffers), Some(occlusion_pass)) = (
+                self.occlusion_buffers.as_ref(),
+                self.render_passes.occlusion.as_ref(),
+            ) {
+                // Pack the OcclusionInstance buffer. The compaction shader
+                // now owns the full `IndirectDrawArgs` slot write — see
+                // compaction.wgsl for why the previous CPU
+                // `queue.writeBuffer` of args was a race against the
+                // already-recorded geometry pass. Instanced meshes are
+                // still uploaded (they need to be cull-tested for their
+                // own bookkeeping if instancing extensions reuse this
+                // buffer) but compaction skips slot writes for slots used
+                // by instanced meshes via `mesh_meta_offset` lookup; in
+                // the current single-instance path each non-instanced
+                // mesh owns its own slot, so there's no contention.
+                let occlusion_instance_count = {
+                    let stride =
+                        crate::render_passes::occlusion::buffers::OCCLUSION_INSTANCE_STRIDE;
+                    let mut bytes: Vec<u8> = Vec::with_capacity(opaque_snapshots.len() * stride);
+                    for snap in &opaque_snapshots {
+                        bytes.extend_from_slice(&snap.aabb.min.x.to_le_bytes());
+                        bytes.extend_from_slice(&snap.aabb.min.y.to_le_bytes());
+                        bytes.extend_from_slice(&snap.aabb.min.z.to_le_bytes());
+                        bytes.extend_from_slice(&0u32.to_le_bytes()); // _pad0
+                        bytes.extend_from_slice(&snap.aabb.max.x.to_le_bytes());
+                        bytes.extend_from_slice(&snap.aabb.max.y.to_le_bytes());
+                        bytes.extend_from_slice(&snap.aabb.max.z.to_le_bytes());
+                        bytes.extend_from_slice(&0u32.to_le_bytes()); // _pad1
+                                                                      // mesh_meta_offset — the compaction shader divides
+                                                                      // by `MaterialMeshMeta` stride (256 B) to derive
+                                                                      // the args-buffer slot; the geometry meta uses
+                                                                      // the same alignment so this byte offset works.
+                        bytes.extend_from_slice(&snap.mesh_meta_offset.to_le_bytes());
+                        bytes.extend_from_slice(&0u32.to_le_bytes()); // instance_attr_base
+                                                                      // index_count flows through cull → compaction so
+                                                                      // the compaction shader can write the static
+                                                                      // `IndirectDrawArgs.index_count` field itself.
+                                                                      // (Compaction also synthesises `first_instance =
+                                                                      // mesh_slot`; first_index / base_vertex stay at
+                                                                      // zero from the `clear_buffer` below.)
+                        bytes.extend_from_slice(&snap.index_count.to_le_bytes());
+                        bytes.extend_from_slice(&0u32.to_le_bytes()); // _pad2
+                    }
+                    let count = (bytes.len() / stride) as u32;
+                    if count > 0 {
+                        self.gpu.write_buffer(
+                            &occlusion_buffers.instances_buffer,
+                            None,
+                            bytes.as_slice(),
+                            None,
+                            None,
+                        )?;
+                    }
+                    count
+                };
+                // Write the `OcclusionParams` uniform every frame so the
+                // cull + compaction shaders bound their per-thread loops
+                // by this frame's active count rather than the buffer's
+                // capacity. Without this, tail threads in the
+                // workgroup-rounded dispatch process stale instance slots
+                // and double-count phantom meshes into
+                // `IndirectDrawArgs.instance_count`.
+                occlusion_buffers.write_params(&self.gpu, occlusion_instance_count)?;
+
+                // Clear the IndirectDrawArgs buffer in COMMAND order so it
+                // executes strictly after the geometry pass's earlier
+                // `draw_indexed_indirect` reads of this same buffer and
+                // strictly before the compaction shader's writes. A CPU-
+                // side `queue.writeBuffer` would have raced ahead of the
+                // recorded geometry pass (queue order ≠ command order),
+                // zeroing the args that an in-flight drawIndirect needed
+                // to read. Compaction repopulates the static fields
+                // (`index_count`, `first_instance`) and atomicAdds
+                // `instance_count` from this zero base; slots not touched
+                // by compaction stay zero, which makes their drawIndirect
+                // a 0-index, 0-instance no-op (correct for meshes that
+                // dropped out of the renderable set this frame).
+                if let Some(compaction_buffers) = self.compaction_buffers.as_ref() {
+                    ctx.command_encoder
+                        .clear_buffer(&compaction_buffers.args_buffer, None, None);
+                }
+
+                if occlusion_instance_count > 0 {
+                    let _maybe_span_guard = if self.logging.render_timings {
+                        Some(
+                            tracing::span!(
+                                tracing::Level::INFO,
+                                "Occlusion Cull RenderPass",
+                                instances = occlusion_instance_count
+                            )
+                            .entered(),
+                        )
+                    } else {
+                        None
+                    };
+                    occlusion_pass.render(&ctx, occlusion_instance_count)?;
+
+                    // Compact the cull's `visible_this_frame[]` into
+                    // per-mesh `IndirectDrawArgs.instance_count` — the
+                    // *next* frame's geometry pass `drawIndirect`
+                    // consumer reads this. (The geometry pass at the
+                    // top of this frame already consumed last frame's
+                    // compaction result; that's the one-frame-latent
+                    // visibility model documented on
+                    // `CompactionBuffers::args_ready`.)
+                    if let Some(compaction_pass) = self.render_passes.occlusion_compaction.as_ref()
+                    {
+                        let _maybe_span_guard = if self.logging.render_timings {
+                            Some(
+                                tracing::span!(
+                                    tracing::Level::INFO,
+                                    "Occlusion Compaction",
+                                    instances = occlusion_instance_count
+                                )
+                                .entered(),
+                            )
+                        } else {
+                            None
+                        };
+                        compaction_pass.render(&ctx, occlusion_instance_count)?;
+                        // Mark the args buffer as containing a valid
+                        // previous-frame visibility set for the next
+                        // frame's geometry pass. The `ensure_capacity`
+                        // resize earlier in this function constructs a
+                        // fresh zero-initialized `CompactionBuffers`
+                        // which resets this back to `false`, so a
+                        // grow event correctly flips us back to the
+                        // CPU path until the next compaction completes.
+                        if let Some(compaction_buffers) = self.compaction_buffers.as_ref() {
+                            compaction_buffers.args_ready.set(true);
+                        }
+                    }
+                } else {
+                    // Zero-instance frame: the `clear_buffer` above
+                    // zeroed args, but no compaction ran to repopulate
+                    // them. If `args_ready` carried `true` from a prior
+                    // frame, the next frame's geometry pass would
+                    // drawIndirect against the cleared (all-zero) buffer
+                    // — every non-instanced AABB mesh would vanish for
+                    // one frame on the way back in. Poison it now so the
+                    // next frame routes through the CPU path until a
+                    // real compaction lands.
+                    if let Some(compaction_buffers) = self.compaction_buffers.as_ref() {
+                        compaction_buffers.args_ready.set(false);
+                    }
+                }
+            }
         }
 
         // Built-in line render pass — must run after the opaque->transparent
@@ -450,7 +968,86 @@ impl AwsmRenderer {
             }
         }
 
+        // Build the slot → MeshKey map now (while we still own
+        // `self.meshes`) so the async readback task can route raw
+        // `u32` slot counts back into the `MeshCoverage` table
+        // without re-borrowing the renderer. Only collected when
+        // this frame actually recorded a copy-to-readback — the
+        // encoder block above gates the copy on
+        // `coverage_readback_state.inflight`, so a missed copy
+        // means there's nothing for the spawn_local task to read.
+        //
+        // Slot indexing uses the *material* meta offset (not the
+        // geometry meta) because the visibility-buffer's per-pixel
+        // `material_mesh_meta_offset` is what the geometry fragment
+        // wrote and what the coverage compute shader divides by
+        // `MATERIAL_MESH_META_BYTE_ALIGNMENT` to index the counts
+        // buffer. The geometry and material meta SecondaryMaps can
+        // assign different slot indices to the same `MeshKey` under
+        // fragmentation, so reading `geometry_buffer_offset` here
+        // would silently miss.
+        let coverage_slot_map: Option<Vec<(crate::meshes::MeshKey, usize)>> =
+            if kick_coverage_readback {
+                Some(
+                    self.meshes
+                        .iter()
+                        .filter_map(|(mesh_key, _)| {
+                            let off = self.meshes.meta.material_buffer_offset(mesh_key).ok()?;
+                            let slot = off
+                                / crate::meshes::meta::material_meta::MATERIAL_MESH_META_BYTE_ALIGNMENT;
+                            Some((mesh_key, slot))
+                        })
+                        .collect(),
+                )
+            } else {
+                None
+            };
+
         self.gpu.submit_commands(&ctx.command_encoder.finish());
+
+        // Kick the `mapAsync` readback so next frame's
+        // `MeshCoverage::ingest` sees this frame's counts. Skipped
+        // when a previous map hasn't yet resolved (single-buffered
+        // path — under high mapping latency we lose a frame of
+        // coverage rather than ringing the buffer). The
+        // `coverage_buffers` here is always `Some` because
+        // `kick_coverage_readback` was only set to `true` inside the
+        // earlier `if let Some(coverage_buffers)` arm.
+        if let (Some(slot_map), Some(coverage_buffers)) =
+            (coverage_slot_map, self.coverage_buffers.as_ref())
+        {
+            let readback_buffer = coverage_buffers.readback_buffer.clone();
+            let readback_size_bytes = coverage_buffers.capacity.saturating_mul(4);
+            let state = self.coverage_readback_state.clone();
+            state.borrow_mut().inflight = true;
+            wasm_bindgen_futures::spawn_local(async move {
+                let result = crate::core::buffers::extract_buffer_vec(
+                    &readback_buffer,
+                    Some(readback_size_bytes),
+                )
+                .await;
+                let snapshot: Vec<(crate::meshes::MeshKey, u32)> = match result {
+                    Ok(bytes) => slot_map
+                        .into_iter()
+                        .filter_map(|(mesh_key, slot)| {
+                            let base = slot * 4;
+                            if base + 4 > bytes.len() {
+                                return None;
+                            }
+                            let count = u32::from_le_bytes(bytes[base..base + 4].try_into().ok()?);
+                            Some((mesh_key, count))
+                        })
+                        .collect(),
+                    Err(err) => {
+                        tracing::warn!("coverage readback mapAsync failed: {err:?}");
+                        Vec::new()
+                    }
+                };
+                let mut state = state.borrow_mut();
+                state.pending_snapshot = Some(snapshot);
+                state.inflight = false;
+            });
+        }
 
         if let Some(hook) = hooks.and_then(|h| h.post_render.as_ref()) {
             {
@@ -462,6 +1059,13 @@ impl AwsmRenderer {
                 hook(self)?;
             }
         }
+
+        // Commit the deferred optimization-policy bookkeeping. We
+        // couldn't write these earlier because `renderables` held a
+        // borrow on `&self` through the rest of the render flow.
+        self.frame_optimizations = frame_opts;
+        self.frames_in_current_mode = next_frames_in_current_mode;
+
         Ok(())
     }
 }
@@ -483,6 +1087,40 @@ pub struct RenderContext<'a> {
     pub anti_aliasing: &'a AntiAliasing,
     pub post_processing: &'a PostProcessing,
     pub clear_color: &'a Color,
+    /// Renderer-owned spatial index. Per-pass culling (camera + shadow)
+    /// descends through this instead of walking `meshes` linearly.
+    pub scene_spatial: &'a SceneSpatial,
+    /// Classify-pass output. The opaque material pass uses this
+    /// buffer both as a storage binding (for the per-bucket tile
+    /// lookup) and as the indirect-args source for
+    /// `dispatchWorkgroupsIndirect`.
+    pub material_classify_buffers:
+        &'a crate::render_passes::material_classify::buffers::ClassifyBuffers,
+    /// Active feature gates. Read by the geometry pass to fork
+    /// between `drawIndirect` (under `gpu_culling`) and the legacy
+    /// CPU-recorded `draw_indexed_*` loop.
+    pub features: &'a crate::features::RendererFeatures,
+    /// GPU compaction `IndirectDrawArgs` buffer. `Some` only when
+    /// `features.gpu_culling` is on. The geometry pass reads it as
+    /// the indirect-args source for `drawIndirect`.
+    pub compaction_buffers:
+        Option<&'a crate::render_passes::occlusion::compaction::CompactionBuffers>,
+    /// GPU mesh-pixel-coverage producer buffers. `Some` only when
+    /// `features.coverage_lod` is on. The coverage render pass + the
+    /// per-frame `copyBufferToBuffer` into the readback buffer both
+    /// reach through this field.
+    pub coverage_buffers: Option<&'a crate::render_passes::coverage::buffers::CoverageBuffers>,
+    /// Per-frame derived flags from
+    /// [`crate::optimization_policy::compute_frame_optimizations`].
+    /// `Cell` because the values aren't known until after
+    /// `collect_renderables` + the opaque snapshot have run, but
+    /// `RenderContext` itself is constructed before that — pass-level
+    /// code reads via `.get()`. Call sites consult this rather than
+    /// `features` for runtime branching: `features.gpu_culling = true`
+    /// means "the HZB/cull/compaction infrastructure exists,"
+    /// `frame_optimizations.get().gpu_occlusion = true` means "run it
+    /// this frame."
+    pub frame_optimizations: std::cell::Cell<crate::optimization_policy::FrameOptimizations>,
 }
 
 impl<'a> RenderContext<'a> {

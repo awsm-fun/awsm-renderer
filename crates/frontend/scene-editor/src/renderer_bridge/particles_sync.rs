@@ -184,29 +184,19 @@ async fn tear_down(node_id: NodeId) {
 }
 
 fn read_emitter_def(node_id: NodeId) -> Option<ParticleEmitterDef> {
-    let state = app_state();
-    let scene_nodes = state.scene.nodes.lock_ref();
-    let node = find_node_recursive(&scene_nodes, node_id)?;
-    match node.kind.get_cloned() {
+    // O(1) bridge-map lookup instead of full scene-tree DFS. Called
+    // from the per-emitter "playing" observer on every kind / play
+    // toggle — a deep tree was paying a re-scan per toggle.
+    let entry = super::node_sync::bridge()
+        .nodes
+        .lock()
+        .unwrap()
+        .get(&node_id)
+        .cloned()?;
+    match entry.node.kind.get_cloned() {
         crate::scene::NodeKind::ParticleEmitter(def) => Some(def),
         _ => None,
     }
-}
-
-fn find_node_recursive(
-    nodes: &[std::sync::Arc<crate::scene::Node>],
-    target: NodeId,
-) -> Option<std::sync::Arc<crate::scene::Node>> {
-    for n in nodes.iter() {
-        if n.id == target {
-            return Some(n.clone());
-        }
-        let children = n.children.lock_ref();
-        if let Some(found) = find_node_recursive(&children, target) {
-            return Some(found);
-        }
-    }
-    None
 }
 
 fn build_runtime(

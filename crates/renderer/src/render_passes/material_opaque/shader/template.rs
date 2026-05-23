@@ -1,6 +1,7 @@
 //! Shader templates for the opaque material pass.
 
 use askama::Template;
+use awsm_materials::MaterialShaderId;
 
 use crate::{
     render_passes::material_opaque::shader::cache_key::{
@@ -52,16 +53,26 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     pub multisampled_geometry: bool,
     pub msaa_sample_count: u32, // 0 if no MSAA
     /// Whether to wire shadow sampling into `apply_lighting`. Opaque
-    /// is always `true` once Phase 2 lands; the empty / transparent
-    /// templates leave it `false` until they pull in the shadow
-    /// bind-group declarations themselves.
+    /// is always `true`; the empty / transparent templates leave it
+    /// `false` until they pull in the shadow bind-group declarations
+    /// themselves.
     pub shadows_enabled: bool,
+    /// Switch the punctual-light walk to the per-mesh slice fed by
+    /// `mesh_light_slices` + `mesh_light_indices`. Opaque is true;
+    /// transparent stays false.
+    pub use_mesh_light_slices: bool,
     /// Concatenated `wgsl_fragment()` of every enabled material — see
     /// `awsm_materials::registry::build_materials_wgsl`.
     pub materials_wgsl: String,
     /// Generated `const SHADER_ID_X: u32 = N;` lines — see
     /// `awsm_materials::registry::build_shader_id_consts`.
     pub shader_id_consts: String,
+    /// Which material shader_id this specialized pipeline handles.
+    /// The compute.wgsl template renders only the matching material's
+    /// shading code (PBR / Unlit / Toon), with a per-pixel guard
+    /// early-returning on mismatch so a full-screen dispatch is
+    /// correct even before classify+indirect lands.
+    pub shader_id: MaterialShaderId,
 }
 
 impl ShaderTemplateMaterialOpaqueCompute {
@@ -118,8 +129,10 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 msaa_sample_count,
                 debug,
                 shadows_enabled: true,
+                use_mesh_light_slices: true,
                 materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
                 shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
+                shader_id: value.shader_id,
             },
         };
 
@@ -233,6 +246,7 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaqueEmpty> for ShaderTemplateMaterialOpaqu
             shadow_group_index: 3,
             shadows_enabled: false,
             sscs_available: false,
+            use_mesh_light_slices: false,
             materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
             shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
         })
@@ -256,6 +270,10 @@ pub struct ShaderTemplateMaterialOpaqueEmpty {
     /// Mirror of the opaque-compute flag. The empty template never
     /// runs SSCS, but the shared shadow include needs the symbol.
     pub sscs_available: bool,
+    /// Mirror of the opaque-compute flag. The empty template never
+    /// touches the per-mesh slice path but the shared lights include
+    /// needs the symbol in scope.
+    pub use_mesh_light_slices: bool,
     /// Concatenated `wgsl_fragment()` of every enabled material — see
     /// `awsm_materials::registry::build_materials_wgsl`.
     pub materials_wgsl: String,

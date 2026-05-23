@@ -12,7 +12,7 @@ use awsm_renderer_core::{
 };
 use thiserror::Error;
 
-use crate::anti_alias::AntiAliasing;
+use crate::{anti_alias::AntiAliasing, features::RendererFeatures};
 
 /// Render textures and cached views for the renderer.
 pub struct RenderTextures {
@@ -20,6 +20,10 @@ pub struct RenderTextures {
     pub opaque_to_transparent_blit_pipeline_msaa_4: BlitPipeline,
     pub opaque_to_transparent_blit_pipeline_no_anti_alias: BlitPipeline,
     pub transparent_to_composite_blit_pipeline_no_anti_alias: BlitPipeline,
+    /// Feature gates picked at construction time. Threaded through to
+    /// [`RenderTexturesInner`] so the gated `decal_color` allocation
+    /// can be skipped when `features.decals == false`.
+    features: RendererFeatures,
     frame_count: u32,
     inner: Option<RenderTexturesInner>,
 }
@@ -63,7 +67,11 @@ impl RenderTextureFormats {
 
 impl RenderTextures {
     /// Creates render texture managers and blit pipelines.
-    pub async fn new(gpu: &AwsmRendererWebGpu, formats: RenderTextureFormats) -> Result<Self> {
+    pub async fn new(
+        gpu: &AwsmRendererWebGpu,
+        formats: RenderTextureFormats,
+        features: &RendererFeatures,
+    ) -> Result<Self> {
         let opaque_to_transparent_blit_pipeline_no_anti_alias =
             blit_get_pipeline(gpu, formats.color, None)
                 .await
@@ -81,6 +89,7 @@ impl RenderTextures {
 
         Ok(Self {
             formats,
+            features: features.clone(),
             frame_count: 0,
             inner: None,
             opaque_to_transparent_blit_pipeline_msaa_4,
@@ -138,6 +147,7 @@ impl RenderTextures {
                 current_size.0,
                 current_size.1,
                 anti_aliasing,
+                &self.features,
             )?;
             self.inner = Some(inner);
         }
@@ -195,6 +205,14 @@ pub struct RenderTextureViews {
     // Output from transparent pass
     pub transparent: web_sys::GpuTextureView,
 
+    /// Single-sample storage target the decal compute writes to when
+    /// MSAA is enabled (the multisampled `transparent` can't be storage-
+    /// bound). A small composite pass then alpha-blits it over the
+    /// multisampled transparent target. `None` when
+    /// `features.decals == false` — the texture is gated because it's
+    /// ~16 MB at 4K.
+    pub decal_color: Option<web_sys::GpuTextureView>,
+
     // Output from composite pass
     pub composite: web_sys::GpuTextureView,
     pub transparent_to_composite_blit_bind_group_no_anti_alias: Option<web_sys::GpuBindGroup>,
@@ -242,6 +260,8 @@ impl RenderTextureViews {
                 .transparent_to_composite_blit_bind_group_no_anti_alias
                 .clone(),
             transparent: inner.transparent_view.clone(),
+            decal_color: inner.decal_color_view.clone(),
+            // ^ `Option::clone()` — stays `None` when decals are gated off.
             depth: inner.depth_view.clone(),
             hud_depth: inner.hud_depth_view.clone(),
             effects: inner.effects_view.clone(),
@@ -287,6 +307,16 @@ pub struct RenderTexturesInner {
     pub transparent: web_sys::GpuTexture,
     pub transparent_view: web_sys::GpuTextureView,
 
+    /// Single-sample storage target used as the decal compute's output
+    /// when MSAA is on (the multisampled `transparent` can't be
+    /// storage-bound). A small composite pass alpha-blits it over the
+    /// multisampled `transparent` target. `None` when
+    /// `features.decals == false` — the bind-group shape stays stable
+    /// because the decal pass's bind groups are also skipped in that
+    /// mode.
+    pub decal_color: Option<web_sys::GpuTexture>,
+    pub decal_color_view: Option<web_sys::GpuTextureView>,
+
     pub depth: web_sys::GpuTexture,
     pub depth_view: web_sys::GpuTextureView,
 
@@ -320,6 +350,7 @@ impl RenderTexturesInner {
         width: u32,
         height: u32,
         anti_aliasing: AntiAliasing,
+        features: &RendererFeatures,
     ) -> Result<Self> {
         let maybe_multisample_texture =
             |format: TextureFormat, label: &'static str| -> TextureDescriptor<'static> {
@@ -401,13 +432,24 @@ impl RenderTexturesInner {
         // maybe multisampled, but a bit differnt since we need to resolve it later
         // and it has copy_dst
         let transparent = {
+            // The decal compute pass writes overlaid pixels into this
+            // texture after the opaque→transparent blit has primed it
+            // with the opaque shading result; it needs
+            // `STORAGE_BINDING` to bind the view as a storage texture
+            // write. MSAA textures can't be storage-bound, so the
+            // usage flag is conditional. (`Decals::write_gpu` CPU-side
+            // gates the render-graph slot on MSAA too.)
+            let mut usage = TextureUsage::new()
+                .with_render_attachment()
+                .with_texture_binding()
+                .with_copy_dst();
+            if anti_aliasing.msaa_sample_count.is_none() {
+                usage = usage.with_storage_binding();
+            }
             let mut descriptor = TextureDescriptor::new(
                 render_texture_formats.color,
                 Extent3d::new(width, Some(height), Some(1)),
-                TextureUsage::new()
-                    .with_render_attachment()
-                    .with_texture_binding()
-                    .with_copy_dst(),
+                usage,
             )
             .with_label("Transparent");
 
@@ -417,6 +459,32 @@ impl RenderTexturesInner {
 
             gpu.create_texture(&descriptor.into())
                 .map_err(AwsmRenderTextureError::CreateTexture)?
+        };
+
+        // Single-sample storage-write target the decal compute uses
+        // when MSAA is on; the composite step alpha-blits it onto the
+        // multisampled transparent target. Gated by `features.decals`
+        // — the texture is ~16 MB at 4K, and skipping it is the
+        // largest single allocation behind the decals feature flag.
+        let decal_color = if features.decals {
+            Some(
+                gpu.create_texture(
+                    &TextureDescriptor::new(
+                        render_texture_formats.color,
+                        Extent3d::new(width, Some(height), Some(1)),
+                        TextureUsage::new()
+                            .with_storage_binding()
+                            .with_texture_binding()
+                            .with_render_attachment()
+                            .with_copy_dst(),
+                    )
+                    .with_label("DecalColor")
+                    .into(),
+                )
+                .map_err(AwsmRenderTextureError::CreateTexture)?,
+            )
+        } else {
+            None
         };
 
         let depth = gpu
@@ -533,6 +601,13 @@ impl RenderTexturesInner {
                 AwsmRenderTextureError::CreateTextureView(format!("opaque full: {e:?}"))
             })?;
 
+        let decal_color_view = match decal_color.as_ref() {
+            Some(tex) => Some(tex.create_view().map_err(|e| {
+                AwsmRenderTextureError::CreateTextureView(format!("decal_color: {e:?}"))
+            })?),
+            None => None,
+        };
+
         let transparent_view = transparent.create_view().map_err(|e| {
             AwsmRenderTextureError::CreateTextureView(format!("transparent: {e:?}"))
         })?;
@@ -607,6 +682,9 @@ impl RenderTexturesInner {
             transparent,
             transparent_view,
 
+            decal_color,
+            decal_color_view,
+
             depth,
             depth_view,
 
@@ -641,6 +719,9 @@ impl RenderTexturesInner {
         self.barycentric_derivatives.destroy();
         self.opaque.destroy();
         self.transparent.destroy();
+        if let Some(tex) = self.decal_color {
+            tex.destroy();
+        }
         self.depth.destroy();
         self.composite.destroy();
         self.effects.destroy();

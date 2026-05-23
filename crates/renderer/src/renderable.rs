@@ -11,6 +11,7 @@ use crate::{
     pipelines::{compute_pipeline::ComputePipelineKey, render_pipeline::RenderPipelineKey},
     render::RenderContext,
     render_passes::geometry::bind_group::GeometryBindGroups,
+    scene_spatial::NodeFilter,
     AwsmRenderer,
 };
 
@@ -52,12 +53,56 @@ impl AwsmRenderer {
             .as_ref()
             .map(|matrices| Frustum::from_view_projection(matrices.view_projection()));
 
-        for (mesh_key, mesh) in self.meshes.iter().filter(|(_k, m)| !m.hidden) {
-            if let (Some(frustum), Some(world_aabb)) = (&frustum, &mesh.world_aabb) {
-                if !frustum.intersects_aabb(world_aabb) {
-                    continue; // skip meshes not in the camera frustum
-                }
+        // Build the visible mesh-key set from the BVH instead of walking
+        // every mesh. The previous linear scan tested every mesh's cached
+        // `world_aabb` against the frustum on every frame; the BVH path
+        // descends hierarchically and surfaces only the surviving leaves.
+        // Meshes without a world AABB (procedural / mid-load) aren't in
+        // the index — fall back to a tail-walk of those so they still
+        // draw conservatively.
+        let visible: Vec<(MeshKey, &Mesh)> = match &frustum {
+            Some(f) => {
+                let mut out: Vec<(MeshKey, &Mesh)> = self
+                    .scene_spatial
+                    .query_frustum(f, NodeFilter::camera_default())
+                    .filter_map(|node| {
+                        self.meshes
+                            .get(node.mesh_key)
+                            .ok()
+                            .map(|m| (node.mesh_key, m))
+                    })
+                    .collect();
+                // Conservative fallback: any mesh without a world AABB
+                // can't be tested by the BVH; keep it in the visible set.
+                out.extend(
+                    self.meshes
+                        .iter()
+                        .filter(|(_, m)| !m.hidden && m.world_aabb.is_none()),
+                );
+                out
             }
+            None => self
+                .meshes
+                .iter()
+                .filter(|(_, m)| !m.hidden)
+                .collect::<Vec<_>>(),
+        };
+
+        for (mesh_key, mesh) in visible {
+            // Route by the authored `material_key`: `MaterialMeshMeta`
+            // is still packed from `mesh.material_key` (see
+            // `meshes::meta`), so routing by `effective_material_key`
+            // would pick a pipeline that doesn't match the data the
+            // shader reads. `effective_material_key` stays available
+            // on `Mesh` for a future cheap-material LOD wiring once
+            // the cheap material's offset is also plumbed into meta.
+            let routing_material = mesh.material_key;
+
+            // The opaque compute pipeline is specialized per
+            // `MaterialShaderId` (PBR / Unlit / Toon). Look up the
+            // routing material's shader_id so the pipeline matches
+            // the data the shader will read.
+            let shader_id = self.materials.shader_id(routing_material);
 
             let renderable = Renderable::Mesh {
                 key: mesh_key,
@@ -66,7 +111,7 @@ impl AwsmRenderer {
                     .render_passes
                     .material_opaque
                     .pipelines
-                    .get_compute_pipeline_key(&self.anti_aliasing),
+                    .get_compute_pipeline_key(&self.anti_aliasing, shader_id),
                 material_transparent_render_pipeline_key: self
                     .render_passes
                     .material_transparent
@@ -76,7 +121,7 @@ impl AwsmRenderer {
 
             if mesh.hud {
                 hud.push(renderable.clone());
-            } else if self.materials.is_transparency_pass(mesh.material_key) {
+            } else if self.materials.is_transparency_pass(routing_material) {
                 transparent.push(renderable);
             } else {
                 opaque.push(renderable);

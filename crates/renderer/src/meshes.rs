@@ -5,6 +5,7 @@ pub mod error;
 pub mod mesh;
 pub mod meta;
 pub mod morphs;
+pub mod skin_lod;
 pub mod skins;
 
 use std::collections::HashMap;
@@ -50,6 +51,8 @@ impl AwsmRenderer {
             .pipelines
             .clone_render_pipeline_key(mesh_key, new_mesh_key);
 
+        self.sync_spatial_for_mesh(new_mesh_key);
+
         Ok(new_mesh_key)
     }
 
@@ -90,6 +93,7 @@ impl AwsmRenderer {
                 .material_transparent
                 .pipelines
                 .clone_render_pipeline_key(source_mesh_key, new_mesh_key);
+            self.sync_spatial_for_mesh(new_mesh_key);
         }
 
         Ok((new_transform_key, new_mesh_keys))
@@ -99,6 +103,7 @@ impl AwsmRenderer {
     pub fn set_mesh_hidden(&mut self, mesh_key: MeshKey, hidden: bool) -> crate::error::Result<()> {
         let mesh = self.meshes.get_mut(mesh_key)?;
         mesh.hidden = hidden;
+        self.sync_spatial_for_mesh(mesh_key);
         Ok(())
     }
 
@@ -108,6 +113,7 @@ impl AwsmRenderer {
     pub fn set_mesh_hud(&mut self, mesh_key: MeshKey, hud: bool) -> crate::error::Result<()> {
         let mesh = self.meshes.get_mut(mesh_key)?;
         mesh.hud = hud;
+        self.sync_spatial_for_mesh(mesh_key);
         Ok(())
     }
 
@@ -148,6 +154,7 @@ impl AwsmRenderer {
                 .material_transparent
                 .pipelines
                 .remove_render_pipeline_key(*mesh_key);
+            self.drop_spatial_for_mesh(*mesh_key);
         }
 
         mesh_keys
@@ -162,6 +169,7 @@ impl AwsmRenderer {
                 .material_transparent
                 .pipelines
                 .remove_render_pipeline_key(mesh_key);
+            self.drop_spatial_for_mesh(mesh_key);
         }
 
         removed
@@ -169,9 +177,11 @@ impl AwsmRenderer {
 
     /// Splits a mesh out to a new transform key.
     pub fn split_mesh(&mut self, mesh_key: MeshKey) -> crate::error::Result<TransformKey> {
-        Ok(self
-            .meshes
-            .split_mesh(mesh_key, &mut self.transforms, &self.materials)?)
+        let new_transform_key =
+            self.meshes
+                .split_mesh(mesh_key, &mut self.transforms, &self.materials)?;
+        self.sync_spatial_for_mesh(mesh_key);
+        Ok(new_transform_key)
     }
 
     /// Splits all meshes under a transform into new transform keys.
@@ -179,11 +189,15 @@ impl AwsmRenderer {
         &mut self,
         transform_key: TransformKey,
     ) -> crate::error::Result<Vec<(MeshKey, TransformKey)>> {
-        Ok(self.meshes.split_meshes_by_transform_key(
+        let result = self.meshes.split_meshes_by_transform_key(
             transform_key,
             &mut self.transforms,
             &self.materials,
-        )?)
+        )?;
+        for (mesh_key, _) in &result {
+            self.sync_spatial_for_mesh(*mesh_key);
+        }
+        Ok(result)
     }
 
     /// Joins meshes under a shared transform, optionally overriding the transform.
@@ -192,12 +206,16 @@ impl AwsmRenderer {
         mesh_keys: &[MeshKey],
         transform_override: Option<Transform>,
     ) -> crate::error::Result<(TransformKey, Vec<MeshKey>)> {
-        Ok(self.meshes.join_meshes(
+        let (new_transform_key, moved) = self.meshes.join_meshes(
             mesh_keys,
             &mut self.transforms,
             &self.materials,
             transform_override,
-        )?)
+        )?;
+        for mesh_key in &moved {
+            self.sync_spatial_for_mesh(*mesh_key);
+        }
+        Ok((new_transform_key, moved))
     }
 
     /// Enables GPU instancing for an opaque mesh — sync because the
@@ -458,10 +476,14 @@ pub struct Meshes {
     resources: DenseSlotMap<MeshResourceKey, MeshResource>,
     mesh_to_resource: SecondaryMap<MeshKey, MeshResourceKey>,
     transform_to_meshes: SecondaryMap<TransformKey, Vec<MeshKey>>,
-    // visibility geometry data buffers (position, triangle-id, barycentric)
-    visibility_geometry_data_buffers: DynamicStorageBuffer<MeshResourceKey>,
-    visibility_geometry_data_gpu_buffer: web_sys::GpuBuffer,
-    visibility_geometry_data_dirty: bool,
+    // Merged geometry pool: one allocation per mesh holds
+    // [visibility_data || custom_attribute_index || custom_attribute_data]
+    // contiguously. Per-mesh sub-offsets live in `MeshResource`. Bound
+    // once as `visibility_data` on the opaque compute pass and reused as
+    // a vertex/index buffer by the geometry + transparent passes.
+    mesh_geometry_pool_buffers: DynamicStorageBuffer<MeshResourceKey>,
+    mesh_geometry_pool_gpu_buffer: web_sys::GpuBuffer,
+    mesh_geometry_pool_dirty: bool,
     // visibility geometry index buffers (position, triangle-id, barycentric, etc.)
     visibility_geometry_index_buffers: DynamicStorageBuffer<MeshResourceKey>,
     visibility_geometry_index_gpu_buffer: web_sys::GpuBuffer,
@@ -470,14 +492,6 @@ pub struct Meshes {
     transparency_geometry_data_buffers: DynamicStorageBuffer<MeshResourceKey>,
     transparency_geometry_data_gpu_buffer: web_sys::GpuBuffer,
     transparency_geometry_data_dirty: bool,
-    // attribute data buffers
-    custom_attribute_data_buffers: DynamicStorageBuffer<MeshResourceKey>,
-    custom_attribute_data_gpu_buffer: web_sys::GpuBuffer,
-    custom_attribute_data_dirty: bool,
-    // attribute index buffers (normals, uvs, colors, etc.)
-    custom_attribute_index_buffers: DynamicStorageBuffer<MeshResourceKey>,
-    custom_attribute_index_gpu_buffer: web_sys::GpuBuffer,
-    custom_attribute_index_dirty: bool,
     // buffer infos
     pub buffer_infos: MeshBufferInfos,
     // meta
@@ -502,6 +516,12 @@ impl Meshes {
     // For textureless models this will be 0, but buffer will grow as needed.
     const ATTRIBUTE_DATA_INITIAL_SIZE: usize = Self::INDICES_INITIAL_SIZE * 16;
 
+    // Merged pool capacity = vis_data + attr_index + attr_data
+    // (visibility-byte stride 56 + index stride 4 + attr stride 16).
+    const MESH_GEOMETRY_POOL_INITIAL_SIZE: usize = Self::VISIBILITY_GEOMETRY_INITIAL_SIZE
+        + Self::INDICES_INITIAL_SIZE
+        + Self::ATTRIBUTE_DATA_INITIAL_SIZE;
+
     /// Creates mesh storage and GPU buffers.
     pub fn new(gpu: &AwsmRendererWebGpu) -> Result<Self> {
         Ok(Self {
@@ -510,20 +530,24 @@ impl Meshes {
             mesh_to_resource: SecondaryMap::new(),
             transform_to_meshes: SecondaryMap::new(),
             buffer_infos: MeshBufferInfos::new(),
-            // visibility data
-            visibility_geometry_data_buffers: DynamicStorageBuffer::new(
-                Self::VISIBILITY_GEOMETRY_INITIAL_SIZE,
-                Some("MeshVisibilityData".to_string()),
+            // Merged geometry pool: vis_data + attr_index + attr_data per mesh.
+            mesh_geometry_pool_buffers: DynamicStorageBuffer::new(
+                Self::MESH_GEOMETRY_POOL_INITIAL_SIZE,
+                Some("MeshGeometryPool".to_string()),
             ),
-            visibility_geometry_data_gpu_buffer: gpu.create_buffer(
+            mesh_geometry_pool_gpu_buffer: gpu.create_buffer(
                 &BufferDescriptor::new(
-                    Some("MeshVisibilityData"),
-                    Self::VISIBILITY_GEOMETRY_INITIAL_SIZE,
-                    BufferUsage::new().with_copy_dst().with_vertex(),
+                    Some("MeshGeometryPool"),
+                    Self::MESH_GEOMETRY_POOL_INITIAL_SIZE,
+                    BufferUsage::new()
+                        .with_copy_dst()
+                        .with_vertex()
+                        .with_storage()
+                        .with_index(),
                 )
                 .into(),
             )?,
-            visibility_geometry_data_dirty: true,
+            mesh_geometry_pool_dirty: true,
             // visibility index
             visibility_geometry_index_buffers: DynamicStorageBuffer::new(
                 Self::INDICES_INITIAL_SIZE,
@@ -552,37 +576,6 @@ impl Meshes {
                 .into(),
             )?,
             transparency_geometry_data_dirty: true,
-            // attribute data
-            custom_attribute_data_buffers: DynamicStorageBuffer::new(
-                Self::ATTRIBUTE_DATA_INITIAL_SIZE,
-                Some("MeshAttributeData".to_string()),
-            ),
-            custom_attribute_data_gpu_buffer: gpu.create_buffer(
-                &BufferDescriptor::new(
-                    Some("MeshAttributeData"),
-                    Self::ATTRIBUTE_DATA_INITIAL_SIZE,
-                    BufferUsage::new()
-                        .with_copy_dst()
-                        .with_storage()
-                        .with_vertex(),
-                )
-                .into(),
-            )?,
-            custom_attribute_data_dirty: true,
-            // attribute index
-            custom_attribute_index_buffers: DynamicStorageBuffer::new(
-                Self::INDICES_INITIAL_SIZE,
-                Some("MeshAttributeIndex".to_string()),
-            ),
-            custom_attribute_index_gpu_buffer: gpu.create_buffer(
-                &BufferDescriptor::new(
-                    Some("MeshAttributeIndex"),
-                    Self::INDICES_INITIAL_SIZE,
-                    BufferUsage::new().with_copy_dst().with_storage(),
-                )
-                .into(),
-            )?,
-            custom_attribute_index_dirty: true,
             meta: MeshMeta::new(gpu)?,
             // attribute morphs and skins
             morphs: Morphs::new(gpu)?,
@@ -694,79 +687,106 @@ impl Meshes {
         });
 
         // Perform all fallible buffer updates in one pass so we can roll back on error.
+        // The merged geometry pool holds [vis_data || attr_index || attr_data] per mesh
+        // in one allocation; per-section offsets are computed from the section sizes.
+        let vis_data_len = visibility_geometry_data.map(|d| d.len()).unwrap_or(0);
+        let attr_index_len = attribute_index.len();
         let offsets_result: Result<(Option<usize>, Option<usize>, usize, usize)> = (|| {
-            let visibility_offset = match visibility_geometry_data {
-                Some(geometry_data) => {
-                    // visibility_geometry_vertex presence was already validated above.
-                    let vertex_info = buffer_info
-                        .visibility_geometry_vertex
-                        .as_ref()
-                        .expect("visibility_geometry_vertex presence pre-validated");
-                    let mut geometry_index = Vec::new();
-                    for i in 0..vertex_info.count {
-                        geometry_index.extend_from_slice(&(i as u32).to_le_bytes());
+            if let Some(geometry_data) = visibility_geometry_data {
+                let vertex_info = buffer_info
+                    .visibility_geometry_vertex
+                    .as_ref()
+                    .expect("visibility_geometry_vertex presence pre-validated");
+                let mut geometry_index = Vec::new();
+                for i in 0..vertex_info.count {
+                    geometry_index.extend_from_slice(&(i as u32).to_le_bytes());
+                }
+                self.visibility_geometry_index_buffers
+                    .update(resource_key, &geometry_index)
+                    .map_err(|e| {
+                        AwsmMeshError::BufferCapacityOverflow(format!(
+                            "visibility geometry index: {e}"
+                        ))
+                    })?;
+                self.visibility_geometry_index_dirty = true;
+
+                let mut combined =
+                    Vec::with_capacity(geometry_data.len() + attr_index_len + attribute_data.len());
+                combined.extend_from_slice(geometry_data);
+                combined.extend_from_slice(attribute_index);
+                combined.extend_from_slice(attribute_data);
+                let base = self
+                    .mesh_geometry_pool_buffers
+                    .update(resource_key, &combined)
+                    .map_err(|e| {
+                        AwsmMeshError::BufferCapacityOverflow(format!("mesh geometry pool: {e}"))
+                    })?;
+                self.mesh_geometry_pool_dirty = true;
+
+                let visibility_offset = Some(base);
+                let custom_attribute_indices_offset = base + vis_data_len;
+                let custom_attribute_data_offset = base + vis_data_len + attr_index_len;
+
+                let transparency_offset = match transparency_geometry_data {
+                    Some(geometry_data) => {
+                        let offset = self
+                            .transparency_geometry_data_buffers
+                            .update(resource_key, geometry_data)
+                            .map_err(|e| {
+                                AwsmMeshError::BufferCapacityOverflow(format!(
+                                    "transparency geometry data: {e}"
+                                ))
+                            })?;
+                        self.transparency_geometry_data_dirty = true;
+                        Some(offset)
                     }
-                    self.visibility_geometry_index_buffers
-                        .update(resource_key, &geometry_index)
-                        .map_err(|e| {
-                            AwsmMeshError::BufferCapacityOverflow(format!(
-                                "visibility geometry index: {e}"
-                            ))
-                        })?;
-                    self.visibility_geometry_index_dirty = true;
+                    None => None,
+                };
 
-                    let offset = self
-                        .visibility_geometry_data_buffers
-                        .update(resource_key, geometry_data)
-                        .map_err(|e| {
-                            AwsmMeshError::BufferCapacityOverflow(format!(
-                                "visibility geometry data: {e}"
-                            ))
-                        })?;
-                    self.visibility_geometry_data_dirty = true;
-                    Some(offset)
-                }
-                None => None,
-            };
+                Ok((
+                    visibility_offset,
+                    transparency_offset,
+                    custom_attribute_indices_offset,
+                    custom_attribute_data_offset,
+                ))
+            } else {
+                let mut combined = Vec::with_capacity(attr_index_len + attribute_data.len());
+                combined.extend_from_slice(attribute_index);
+                combined.extend_from_slice(attribute_data);
+                let base = self
+                    .mesh_geometry_pool_buffers
+                    .update(resource_key, &combined)
+                    .map_err(|e| {
+                        AwsmMeshError::BufferCapacityOverflow(format!("mesh geometry pool: {e}"))
+                    })?;
+                self.mesh_geometry_pool_dirty = true;
 
-            let transparency_offset = match transparency_geometry_data {
-                Some(geometry_data) => {
-                    let offset = self
-                        .transparency_geometry_data_buffers
-                        .update(resource_key, geometry_data)
-                        .map_err(|e| {
-                            AwsmMeshError::BufferCapacityOverflow(format!(
-                                "transparency geometry data: {e}"
-                            ))
-                        })?;
-                    self.transparency_geometry_data_dirty = true;
-                    Some(offset)
-                }
-                None => None,
-            };
+                let custom_attribute_indices_offset = base;
+                let custom_attribute_data_offset = base + attr_index_len;
 
-            let custom_attribute_indices_offset = self
-                .custom_attribute_index_buffers
-                .update(resource_key, attribute_index)
-                .map_err(|e| {
-                    AwsmMeshError::BufferCapacityOverflow(format!("custom attribute index: {e}"))
-                })?;
-            self.custom_attribute_index_dirty = true;
+                let transparency_offset = match transparency_geometry_data {
+                    Some(geometry_data) => {
+                        let offset = self
+                            .transparency_geometry_data_buffers
+                            .update(resource_key, geometry_data)
+                            .map_err(|e| {
+                                AwsmMeshError::BufferCapacityOverflow(format!(
+                                    "transparency geometry data: {e}"
+                                ))
+                            })?;
+                        self.transparency_geometry_data_dirty = true;
+                        Some(offset)
+                    }
+                    None => None,
+                };
 
-            let custom_attribute_data_offset = self
-                .custom_attribute_data_buffers
-                .update(resource_key, attribute_data)
-                .map_err(|e| {
-                    AwsmMeshError::BufferCapacityOverflow(format!("custom attribute data: {e}"))
-                })?;
-            self.custom_attribute_data_dirty = true;
-
-            Ok((
-                visibility_offset,
-                transparency_offset,
-                custom_attribute_indices_offset,
-                custom_attribute_data_offset,
-            ))
+                Ok((
+                    None,
+                    transparency_offset,
+                    custom_attribute_indices_offset,
+                    custom_attribute_data_offset,
+                ))
+            }
         })();
 
         let (
@@ -779,10 +799,8 @@ impl Meshes {
             Err(e) => {
                 // Roll back any partial buffer allocations and the resource entry itself.
                 self.visibility_geometry_index_buffers.remove(resource_key);
-                self.visibility_geometry_data_buffers.remove(resource_key);
+                self.mesh_geometry_pool_buffers.remove(resource_key);
                 self.transparency_geometry_data_buffers.remove(resource_key);
-                self.custom_attribute_index_buffers.remove(resource_key);
-                self.custom_attribute_data_buffers.remove(resource_key);
                 self.resources.remove(resource_key);
                 return Err(e);
             }
@@ -1116,16 +1134,28 @@ impl Meshes {
     }
 
     /// Updates world-space AABBs for meshes affected by dirty transforms or instances.
+    ///
+    /// Returns every mesh key whose `world_aabb` was potentially refreshed
+    /// this call. The caller (currently `AwsmRenderer::update_transforms`)
+    /// uses the list to mirror the new AABBs into the spatial index.
     pub fn update_world(
         &mut self,
         dirty_transforms: HashMap<TransformKey, Mat4>,
         dirty_instances: &std::collections::HashSet<TransformKey>,
         transforms: &Transforms,
         instances: &Instances,
-    ) {
+        frame_index: u64,
+        // Coverage data is consulted at gate time. Empty = consumers
+        // fall through to their conservative defaults (always update),
+        // so the parameter is harmless when the GPU coverage pass
+        // isn't wired yet on the producer side.
+        coverage: &crate::coverage::MeshCoverage,
+    ) -> Vec<MeshKey> {
         let mut update_keys = std::collections::HashSet::new();
         update_keys.extend(dirty_transforms.keys().copied());
         update_keys.extend(dirty_instances.iter().copied());
+
+        let mut touched = Vec::new();
 
         // This doesn't mark anything as dirty, it just updates the world AABB for frustum culling and depth sorting
         for transform_key in update_keys {
@@ -1177,12 +1207,48 @@ impl Meshes {
                     if let Some(mesh) = self.list.get_mut(*mesh_key) {
                         mesh.world_aabb = world_aabb;
                     }
+                    touched.push(*mesh_key);
+                }
+            }
+        }
+
+        // Distance-based skin LOD gate. Precompute the set of skins
+        // we'll *skip* this frame based on the `skin_update_period`
+        // cadence. Done as a separate pass because the lookup
+        // borrows `&self` while `skins.update_transforms` borrows
+        // `&mut self.skins`.
+        //
+        // Coverage-driven skin-skip is intentionally not wired here.
+        // Reason: characters built from multiple overlapping
+        // submeshes (e.g. BrainStem's 59 primitives sharing one
+        // skeleton) routinely have submeshes self-occluded by
+        // adjacent body parts for a frame or two. Skipping their
+        // skin update freezes them in their last pose — typically
+        // the bind pose, since the freeze happens before the first
+        // animation tick they would have run. When the occluding
+        // submesh moves and reveals them, they pop into view in rest
+        // pose while the rest of the character keeps animating.
+        // A grace-period + BVH-visible override would fix this; until
+        // that lands, run skinning for every visible skin every
+        // frame. `cheap_material_pixel_threshold`
+        // (the other coverage consumer) is unaffected — material
+        // LOD doesn't suffer from rest-pose persistence.
+        let _ = coverage;
+        let mut skip_skins: std::collections::HashSet<SkinKey> = std::collections::HashSet::new();
+        if frame_index > 0 {
+            let skin_keys: Vec<SkinKey> = self.skins.iter_skin_keys().collect();
+            for skin_key in skin_keys {
+                if !self.skin_should_update_this_frame(skin_key, frame_index) {
+                    skip_skins.insert(skin_key);
                 }
             }
         }
 
         // This does update the GPU as dirty, bit skins manage their own GPU dirty state
-        self.skins.update_transforms(dirty_transforms);
+        self.skins
+            .update_transforms(dirty_transforms, |skin_key| !skip_skins.contains(&skin_key));
+
+        touched
     }
 
     fn update_mesh_transform(
@@ -1335,15 +1401,105 @@ impl Meshes {
             .ok_or(AwsmMeshError::ResourceNotFound(resource_key))
     }
 
-    /// Returns the GPU buffer for visibility geometry vertex data.
-    pub fn visibility_geometry_data_gpu_buffer(&self) -> &web_sys::GpuBuffer {
-        &self.visibility_geometry_data_gpu_buffer
+    /// Convenience accessor for the optional `SkinKey` on a mesh resource.
+    /// Returns `None` if the mesh has no resource or no skin. Used by the
+    /// spatial-index auto-flagger to route skinned meshes through the
+    /// dynamic sidecar.
+    pub fn mesh_skin_key(&self, mesh_key: MeshKey) -> Option<Option<SkinKey>> {
+        self.resource(mesh_key).ok().map(|r| r.skin_key)
     }
-    /// Returns the offset into visibility geometry data for a mesh.
+
+    /// Smallest `skin_update_period` across every mesh that references
+    /// `skin_key`. Used by the per-frame skinning-LOD gate: a skin is
+    /// updated this frame if ANY of its consumer meshes wants the
+    /// update, which is the conservative choice for shared skeletons.
+    /// Returns `1` if no meshes reference the skin (forces an update
+    /// if anything dirties the joints).
+    pub fn skin_smallest_period(&self, skin_key: SkinKey) -> u8 {
+        let mut min_period: u8 = u8::MAX;
+        for (mesh_key, mesh) in self.iter() {
+            let same_skin = self
+                .resource(mesh_key)
+                .ok()
+                .and_then(|r| r.skin_key)
+                .map(|k| k == skin_key)
+                .unwrap_or(false);
+            if !same_skin {
+                continue;
+            }
+            min_period = min_period.min(mesh.skin_update_period.max(1));
+        }
+        if min_period == u8::MAX {
+            1
+        } else {
+            min_period
+        }
+    }
+
+    /// Coverage gate for skinning skip. Returns true if
+    /// EVERY mesh that references `skin_key` had zero pixels last frame.
+    /// One non-zero consumer is enough to keep the skin updating.
+    pub fn skin_all_consumers_zero_coverage(
+        &self,
+        skin_key: SkinKey,
+        coverage: &crate::coverage::MeshCoverage,
+    ) -> bool {
+        let mut had_any_consumer = false;
+        for (mesh_key, _mesh) in self.iter() {
+            let same_skin = self
+                .resource(mesh_key)
+                .ok()
+                .and_then(|r| r.skin_key)
+                .map(|k| k == skin_key)
+                .unwrap_or(false);
+            if !same_skin {
+                continue;
+            }
+            had_any_consumer = true;
+            if coverage.is_visible_last_frame(mesh_key) {
+                return false;
+            }
+        }
+        // If no consumers exist, the skin isn't actually rendered —
+        // skipping it is fine.
+        had_any_consumer
+    }
+
+    /// Whether the skin should run its per-joint matrix refresh on this
+    /// frame, given the renderer-wide `frame_index`. A skin updates if
+    /// `frame_index % min_period == 0`. Always updates on the first
+    /// frame after a load (frame_index == 0) so the initial pose lands.
+    pub fn skin_should_update_this_frame(&self, skin_key: SkinKey, frame_index: u64) -> bool {
+        let period = self.skin_smallest_period(skin_key).max(1) as u64;
+        if period == 1 || frame_index == 0 {
+            return true;
+        }
+        frame_index % period == 0
+    }
+
+    /// Returns the merged geometry pool GPU buffer. All three per-mesh
+    /// sections — visibility, attribute indices, attribute data —
+    /// live in this one buffer; per-mesh sub-offsets in `MeshResource`
+    /// (visibility/custom_attribute_index/custom_attribute_data_offset)
+    /// say where each section starts.
+    pub fn mesh_geometry_pool_gpu_buffer(&self) -> &web_sys::GpuBuffer {
+        &self.mesh_geometry_pool_gpu_buffer
+    }
+
+    /// Returns the merged geometry pool GPU buffer used by the opaque
+    /// compute pass for visibility-data reads. Same handle as
+    /// [`Self::mesh_geometry_pool_gpu_buffer`] — `visibility_data` in
+    /// WGSL is now a view over the pool.
+    pub fn visibility_geometry_data_gpu_buffer(&self) -> &web_sys::GpuBuffer {
+        &self.mesh_geometry_pool_gpu_buffer
+    }
+    /// Returns the offset into the merged geometry pool where this mesh's
+    /// visibility-data section starts.
     pub fn visibility_geometry_data_buffer_offset(&self, key: MeshKey) -> Result<usize> {
         let resource_key = self.resource_key(key)?;
-        self.visibility_geometry_data_buffers
-            .offset(resource_key)
+        self.resources
+            .get(resource_key)
+            .and_then(|r| r.visibility_geometry_data_offset)
             .ok_or(AwsmMeshError::VisibilityGeometryBufferNotFound(key))
     }
 
@@ -1359,15 +1515,18 @@ impl Meshes {
             .ok_or(AwsmMeshError::VisibilityGeometryBufferNotFound(key))
     }
 
-    /// Returns the GPU buffer for custom attribute vertex data.
+    /// Returns the merged geometry pool — custom attribute data is a
+    /// section inside it.
     pub fn custom_attribute_data_gpu_buffer(&self) -> &web_sys::GpuBuffer {
-        &self.custom_attribute_data_gpu_buffer
+        &self.mesh_geometry_pool_gpu_buffer
     }
-    /// Returns the offset into custom attribute vertex data for a mesh.
+    /// Returns the offset into the pool where this mesh's custom-attribute
+    /// data section starts.
     pub fn custom_attribute_data_buffer_offset(&self, key: MeshKey) -> Result<usize> {
         let resource_key = self.resource_key(key)?;
-        self.custom_attribute_data_buffers
-            .offset(resource_key)
+        self.resources
+            .get(resource_key)
+            .map(|r| r.custom_attribute_data_offset)
             .ok_or(AwsmMeshError::CustomAttributeBufferNotFound(key))
     }
 
@@ -1382,29 +1541,47 @@ impl Meshes {
             .offset(resource_key)
             .ok_or(AwsmMeshError::TransparencyGeometryBufferNotFound(key))
     }
-    // re-use the custom attribute index methods
-    /// Returns the GPU buffer for transparency geometry indices.
+    /// Returns the merged geometry pool used as the transparent draw's
+    /// index buffer.
     pub fn transparency_geometry_index_gpu_buffer(&self) -> &web_sys::GpuBuffer {
-        &self.custom_attribute_index_gpu_buffer
+        &self.mesh_geometry_pool_gpu_buffer
     }
-    /// Returns the offset into transparency geometry indices for a mesh.
+    /// Returns the offset into the pool where this mesh's attribute-index
+    /// section starts — reused as the transparent path's index-buffer
+    /// offset.
     pub fn transparency_geometry_index_buffer_offset(&self, key: MeshKey) -> Result<usize> {
         let resource_key = self.resource_key(key)?;
-        self.custom_attribute_index_buffers
-            .offset(resource_key)
+        self.resources
+            .get(resource_key)
+            .map(|r| r.custom_attribute_index_offset)
             .ok_or(AwsmMeshError::CustomAttributeBufferNotFound(key))
     }
 
-    /// Returns the GPU buffer for custom attribute indices.
+    /// Returns the merged geometry pool — custom attribute indices are a
+    /// section inside it.
     pub fn custom_attribute_index_gpu_buffer(&self) -> &web_sys::GpuBuffer {
-        &self.custom_attribute_index_gpu_buffer
+        &self.mesh_geometry_pool_gpu_buffer
     }
-    /// Returns the offset into custom attribute indices for a mesh.
+    /// Returns the offset into the pool where this mesh's custom-attribute
+    /// index section starts.
     pub fn custom_attribute_index_buffer_offset(&self, key: MeshKey) -> Result<usize> {
         let resource_key = self.resource_key(key)?;
-        self.custom_attribute_index_buffers
-            .offset(resource_key)
+        self.resources
+            .get(resource_key)
+            .map(|r| r.custom_attribute_index_offset)
             .ok_or(AwsmMeshError::CustomAttributeBufferNotFound(key))
+    }
+
+    /// Total number of `Mesh` entries (including hidden / non-renderable).
+    /// Used as an upper bound when sizing per-mesh GPU buffers before the
+    /// per-frame renderables list is collected.
+    pub fn len(&self) -> usize {
+        self.list.len()
+    }
+
+    /// True when there are no `Mesh` entries.
+    pub fn is_empty(&self) -> bool {
+        self.list.is_empty()
     }
 
     /// Iterates over meshes and their keys.
@@ -1467,24 +1644,18 @@ impl Meshes {
 
                 if should_remove_resource {
                     if let Some(resource) = self.resources.remove(resource_key) {
-                        self.visibility_geometry_data_buffers.remove(resource_key);
+                        self.mesh_geometry_pool_buffers.remove(resource_key);
                         self.visibility_geometry_index_buffers.remove(resource_key);
                         self.transparency_geometry_data_buffers.remove(resource_key);
-                        self.custom_attribute_data_buffers.remove(resource_key);
-                        self.custom_attribute_index_buffers.remove(resource_key);
 
-                        self.visibility_geometry_data_dirty = true;
+                        self.mesh_geometry_pool_dirty = true;
                         self.visibility_geometry_index_dirty = true;
                         self.transparency_geometry_data_dirty = true;
-                        self.custom_attribute_data_dirty = true;
-                        self.custom_attribute_index_dirty = true;
 
                         if self.buffer_infos.remove(resource.buffer_info_key).is_some() {
-                            self.visibility_geometry_data_dirty = true;
+                            self.mesh_geometry_pool_dirty = true;
                             self.visibility_geometry_index_dirty = true;
                             self.transparency_geometry_data_dirty = true;
-                            self.custom_attribute_data_dirty = true;
-                            self.custom_attribute_index_dirty = true;
                         }
 
                         if let Some(morph_key) = resource.geometry_morph_key {
@@ -1517,15 +1688,16 @@ impl Meshes {
     ) -> Result<()> {
         let to_check_dynamic = [
             (
-                self.visibility_geometry_data_dirty,
-                &mut self.visibility_geometry_data_buffers,
-                &mut self.visibility_geometry_data_gpu_buffer,
+                self.mesh_geometry_pool_dirty,
+                &mut self.mesh_geometry_pool_buffers,
+                &mut self.mesh_geometry_pool_gpu_buffer,
                 BufferUsage::new()
                     .with_copy_dst()
                     .with_vertex()
-                    .with_storage(),
-                "MeshVisibilityGeometryData",
-                None,
+                    .with_storage()
+                    .with_index(),
+                "MeshGeometryPool",
+                Some(BindGroupCreate::MeshGeometryPoolResize),
             ),
             (
                 self.visibility_geometry_index_dirty,
@@ -1545,28 +1717,6 @@ impl Meshes {
                     .with_storage(),
                 "MeshTransparencyGeometryData",
                 None,
-            ),
-            (
-                self.custom_attribute_data_dirty,
-                &mut self.custom_attribute_data_buffers,
-                &mut self.custom_attribute_data_gpu_buffer,
-                BufferUsage::new()
-                    .with_copy_dst()
-                    .with_storage()
-                    .with_vertex(),
-                "MeshCustomAttributeData",
-                Some(BindGroupCreate::MeshAttributeDataResize),
-            ),
-            (
-                self.custom_attribute_index_dirty,
-                &mut self.custom_attribute_index_buffers,
-                &mut self.custom_attribute_index_gpu_buffer,
-                BufferUsage::new()
-                    .with_copy_dst()
-                    .with_storage()
-                    .with_index(),
-                "MeshCustomAttributeIndex",
-                Some(BindGroupCreate::MeshAttributeIndexResize),
             ),
         ];
 
@@ -1606,11 +1756,9 @@ impl Meshes {
                 }
             }
 
-            self.visibility_geometry_data_dirty = false;
+            self.mesh_geometry_pool_dirty = false;
             self.visibility_geometry_index_dirty = false;
             self.transparency_geometry_data_dirty = false;
-            self.custom_attribute_data_dirty = false;
-            self.custom_attribute_index_dirty = false;
         }
 
         Ok(())
@@ -1619,11 +1767,9 @@ impl Meshes {
 
 impl Drop for Meshes {
     fn drop(&mut self) {
-        self.visibility_geometry_data_gpu_buffer.destroy();
+        self.mesh_geometry_pool_gpu_buffer.destroy();
         self.visibility_geometry_index_gpu_buffer.destroy();
         self.transparency_geometry_data_gpu_buffer.destroy();
-        self.custom_attribute_data_gpu_buffer.destroy();
-        self.custom_attribute_index_gpu_buffer.destroy();
     }
 }
 

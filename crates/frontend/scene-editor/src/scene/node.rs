@@ -169,6 +169,13 @@ impl Node {
         )
     }
 
+    pub fn new_decal(name: impl Into<String>) -> Arc<Self> {
+        Self::new_inner(
+            name,
+            NodeKind::Decal(awsm_scene_schema::DecalConfig::default()),
+        )
+    }
+
     /// `SweepAlongCurve` needs the user to pick a curve node id after
     /// insert (the inspector exposes the picker). Until then the def
     /// references the placeholder ID — the editor materializer logs a

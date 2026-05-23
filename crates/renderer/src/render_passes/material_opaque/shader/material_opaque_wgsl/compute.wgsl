@@ -102,9 +102,27 @@
 
 @compute @workgroup_size(8, 8)
 fn main(
-    @builtin(global_invocation_id) gid: vec3<u32>
+    @builtin(workgroup_id) wg_id: vec3<u32>,
+    @builtin(local_invocation_id) lid: vec3<u32>
 ) {
-    let coords = vec2<i32>(gid.xy);
+    // Tile lookup — the material classify pass populated
+    // `classify_buckets.tiles` with packed
+    // `(tile_x, tile_y)` coords per `shader_id` bucket. Our
+    // pipeline's specialized `shader_id` picks the matching offset
+    // statically; `workgroup_id.x` is the bucket entry index;
+    // `local_invocation_id.xy` is the 8×8 thread → pixel offset.
+    let bucket_offset =
+    {%- match shader_id -%}
+        {%- when MaterialShaderId::Pbr -%}
+        classify_buckets.pbr_offset
+        {%- when MaterialShaderId::Unlit -%}
+        classify_buckets.unlit_offset
+        {%- when MaterialShaderId::Toon -%}
+        classify_buckets.toon_offset
+    {%- endmatch -%}
+    ;
+    let tile = classify_buckets.tiles[bucket_offset + wg_id.x];
+    let coords = vec2<i32>(i32(tile.x * 8u + lid.x), i32(tile.y * 8u + lid.y));
     let screen_dims = textureDimensions(opaque_tex);
     let screen_dims_i32 = vec2<i32>(i32(screen_dims.x), i32(screen_dims.y));
     let screen_dims_f32 = vec2<f32>(f32(screen_dims.x), f32(screen_dims.y));
@@ -124,7 +142,12 @@ fn main(
     let camera = camera_from_raw(camera_raw);
 
 
-    // early return if we only hit skybox / no geometry (for all samples if MSAA)
+    // early return if we only hit skybox / no geometry (for all samples if MSAA).
+    //
+    // Classify routes skybox-containing tiles into the PBR bucket; Unlit / Toon
+    // pipelines also see the tile if any pixel uses their material, but for
+    // their skybox pixels they must *not* write — PBR owns the skybox sample
+    // so the output isn't double-written.
     {% if multisampled_geometry %}
         // With MSAA, check if ANY sample hit geometry before early returning
         var any_sample_hit = false;
@@ -143,34 +166,49 @@ fn main(
         }
 
         if (!any_sample_hit) {
-            // All samples are skybox - just render skybox
-            let color = sample_skybox(coords, screen_dims_f32, camera, skybox_tex, skybox_sampler);
-            textureStore(opaque_tex, coords, color);
+            {% match shader_id %}
+                {% when MaterialShaderId::Pbr %}
+                    // PBR pipeline owns skybox-only pixels.
+                    let color = sample_skybox(coords, screen_dims_f32, camera, skybox_tex, skybox_sampler);
+                    textureStore(opaque_tex, coords, color);
+                {% when _ %}
+                    // Unlit / Toon pipelines: don't shade skybox — PBR
+                    // pipeline's dispatch over the same tile handles it.
+                {% endmatch %}
             return;
         }
     {% else %}
         if (triangle_index == U32_MAX) {
-            let color = sample_skybox(coords, screen_dims_f32, camera, skybox_tex, skybox_sampler);
-            textureStore(opaque_tex, coords, color);
+            {% match shader_id %}
+                {% when MaterialShaderId::Pbr %}
+                    let color = sample_skybox(coords, screen_dims_f32, camera, skybox_tex, skybox_sampler);
+                    textureStore(opaque_tex, coords, color);
+                {% when _ %}
+                {% endmatch %}
             return;
         }
     {% endif %}
 
     // Special case: we've hit the skybox in our main sample (triangle_index is U32_MAX)
     // and yet at least one other MSAA sample hit geometry (any_sample_hit is true from above)
-    // so we need to blend all samples properly with the skybox and per-sample shading
+    // so we need to blend all samples properly with the skybox and per-sample shading.
+    // Same ownership rule as above — only PBR writes the resolve.
     {% if multisampled_geometry %}
         if (triangle_index == U32_MAX) {
-            let lights_info_sky = get_lights_info();
-            let resolve_result = msaa_resolve_samples(camera, coords, screen_dims, screen_dims_f32, lights_info_sky);
+            {% match shader_id %}
+                {% when MaterialShaderId::Pbr %}
+                    let lights_info_sky = get_lights_info();
+                    let resolve_result = msaa_resolve_samples(camera, coords, screen_dims, screen_dims_f32, lights_info_sky);
 
-            if (resolve_result.valid_samples > 0u) {
-                let final_color = resolve_result.color / f32(resolve_result.valid_samples);
-                let final_alpha = resolve_result.alpha / f32(resolve_result.valid_samples);
-                textureStore(opaque_tex, coords, vec4<f32>(final_color, final_alpha));
-            } else {
-                textureStore(opaque_tex, coords, vec4<f32>(1.0, 0.0, 1.0, 1.0));
-            }
+                    if (resolve_result.valid_samples > 0u) {
+                        let final_color = resolve_result.color / f32(resolve_result.valid_samples);
+                        let final_alpha = resolve_result.alpha / f32(resolve_result.valid_samples);
+                        textureStore(opaque_tex, coords, vec4<f32>(final_color, final_alpha));
+                    } else {
+                        textureStore(opaque_tex, coords, vec4<f32>(1.0, 0.0, 1.0, 1.0));
+                    }
+                {% when _ %}
+                {% endmatch %}
             return;
         }
     {% endif %}
@@ -197,6 +235,19 @@ fn main(
     let material_offset = material_mesh_meta.material_offset;
     let shader_id = material_load_shader_id(material_offset);
 
+    // Per-pixel `shader_id` guard. The material classify pass already
+    // scopes our dispatch to tiles containing our specialized
+    // `shader_id`, so the guard rejects only pixels of a *different*
+    // shader_id that share a mixed-material tile with ours.
+    {% match shader_id %}
+        {% when MaterialShaderId::Pbr %}
+            if (shader_id != SHADER_ID_PBR) { return; }
+        {% when MaterialShaderId::Unlit %}
+            if (shader_id != SHADER_ID_UNLIT) { return; }
+        {% when MaterialShaderId::Toon %}
+            if (shader_id != SHADER_ID_TOON) { return; }
+    {% endmatch %}
+
     let vertex_attribute_stride = material_mesh_meta.vertex_attribute_stride / 4; // 4 bytes per float
     let attribute_indices_offset = material_mesh_meta.vertex_attribute_indices_offset / 4;
     let attribute_data_offset = material_mesh_meta.vertex_attribute_data_offset / 4;
@@ -205,9 +256,9 @@ fn main(
 
     let base_triangle_index = attribute_indices_offset + (triangle_index * 3u);
     let triangle_indices = vec3<u32>(
-        attribute_indices[base_triangle_index],
-        attribute_indices[base_triangle_index + 1],
-        attribute_indices[base_triangle_index + 2]
+        bitcast<u32>(visibility_data[base_triangle_index]),
+        bitcast<u32>(visibility_data[base_triangle_index + 1]),
+        bitcast<u32>(visibility_data[base_triangle_index + 2])
     );
 
     let standard_coordinates = get_standard_coordinates(coords, screen_dims);
@@ -219,11 +270,16 @@ fn main(
 
     let lights_info = get_lights_info();
 
-    // Compute material color and apply lighting based on shader type
+    // Compute material color and apply lighting based on shader type.
+    // Each opaque pipeline is specialized for one `shader_id`; the
+    // template emits only the matching material's shading path
+    // (PBR / Unlit / Toon). The dropped runtime if/else used to live
+    // here — the askama match below replaces it.
     var color: vec3<f32>;
     var base_alpha: f32;
 
-    if (shader_id == SHADER_ID_UNLIT) {
+    {% match shader_id %}
+    {% when MaterialShaderId::Unlit %}
         // Unlit material path
         let unlit_material = unlit_get_material(material_offset);
         {% match mipmap %}
@@ -252,7 +308,7 @@ fn main(
         {% endmatch %}
         color = compute_unlit_output(unlit_color);
         base_alpha = unlit_color.base.a;
-    } else if (shader_id == SHADER_ID_TOON) {
+    {% when MaterialShaderId::Toon %}
         // Toon material path — banded N·L + stepped Blinn-Phong + rim.
         // Reads world position from the standard coordinates the surrounding
         // code already computes; doesn't sample textures (v1).
@@ -265,7 +321,7 @@ fn main(
             lights_info,
         );
         base_alpha = toon_material.base_color_factor.a;
-    } else {
+    {% when MaterialShaderId::Pbr %}
         // PBR material path (default)
         let pbr_material = pbr_get_material(material_offset);
 
@@ -305,16 +361,27 @@ fn main(
             return;
         }
 
-        color = apply_lighting(
-            material_color,
-            standard_coordinates.surface_to_camera,
-            standard_coordinates.world_position,
-            lights_info,
-            material_mesh_meta.receive_shadows,
-        );
+        {% if use_mesh_light_slices %}
+            color = apply_lighting_per_mesh(
+                material_color,
+                standard_coordinates.surface_to_camera,
+                standard_coordinates.world_position,
+                lights_info,
+                material_mesh_meta.receive_shadows,
+                material_mesh_meta.light_slice_offset,
+                material_mesh_meta.light_slice_count,
+            );
+        {% else %}
+            color = apply_lighting(
+                material_color,
+                standard_coordinates.surface_to_camera,
+                standard_coordinates.world_position,
+                lights_info,
+                material_mesh_meta.receive_shadows,
+            );
+        {% endif %}
         base_alpha = material_color.base.a;
-
-    }
+    {% endmatch %}
 
 
     // MSAA edge detection and per-sample processing
@@ -355,8 +422,8 @@ fn main(
 fn get_triangle_indices(attribute_indices_offset: u32, triangle_index: u32) -> vec3<u32> {
     let base = attribute_indices_offset + (triangle_index * 3u);
     return vec3<u32>(
-        attribute_indices[base],
-        attribute_indices[base + 1u],
-        attribute_indices[base + 2u],
+        bitcast<u32>(visibility_data[base]),
+        bitcast<u32>(visibility_data[base + 1u]),
+        bitcast<u32>(visibility_data[base + 2u]),
     );
 }

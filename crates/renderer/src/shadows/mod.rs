@@ -15,7 +15,9 @@ pub mod cascade;
 pub mod config;
 pub mod error;
 pub mod evsm;
+pub mod importance;
 pub mod light_shadow;
+pub mod quality_tier;
 pub mod render_pass;
 #[cfg(feature = "scene-schema")]
 pub mod schema_convert;
@@ -35,6 +37,7 @@ pub use light_shadow::{
     CubeFaceUpdateRate, EvsmCutoff, FarCascadeUpdateRate, LightShadowHardness, LightShadowParams,
     MeshShadowFlags,
 };
+pub use quality_tier::{ShadowQualityPreset, ShadowQualityTier};
 pub use shader::{cache_key::ShaderCacheKeyShadow, template::ShaderTemplateShadow};
 
 pub use consts::{

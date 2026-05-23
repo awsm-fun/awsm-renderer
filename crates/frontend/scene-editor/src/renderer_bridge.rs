@@ -12,6 +12,7 @@ pub mod asset_cache;
 pub mod camera_driver;
 pub mod env_sync;
 pub mod gizmo;
+pub mod instance_batcher;
 pub mod material_cache;
 pub mod mesh_cache;
 pub mod node_sync;
@@ -173,10 +174,13 @@ fn render_one_frame() {
             .unwrap_or(0.0);
         particles_sync::tick_all(now_ms, renderer);
 
-        // Phase 2 hook: push world position/direction into every active
-        // light. Extracted to a separate function so Phase 2 can add logic
-        // without touching the render loop body.
+        // Push world position/direction into every active light.
+        // Extracted to a separate function so additional sync logic
+        // can be added without touching the render loop body.
         sync_lights_pre_render(renderer);
+        // Mirror: push each Decal node's world transform into the
+        // matching runtime decal.
+        sync_decals_pre_render(renderer);
 
         // B-2: rebuild every editor-only overlay wireframe (collider
         // shapes, camera frustums, selection origin gizmos, selection
@@ -196,20 +200,71 @@ fn render_one_frame() {
     }));
 }
 
+/// Push every Decal node's current world transform / texture ref /
+/// alpha into the runtime decal table. The runtime API (`update_decal`)
+/// takes a closure over `&mut Decal`; we call `Decal::new` inside so
+/// the inverse_transform + world_aabb cache is rebuilt in lockstep
+/// with the new transform.
+fn sync_decals_pre_render(renderer: &mut awsm_renderer::AwsmRenderer) {
+    // Walk the per-frame decal index instead of the full bridge node
+    // table — for scenes with many Group/Model nodes but few decals
+    // this turns an O(N) scan + N decal_key mutex acquisitions into
+    // an O(decal_count) walk. Kept in sync by apply_kind_decal /
+    // clear_decal / remove_node.
+    let bridge_handle = bridge();
+    let entries: Vec<Arc<RendererNode>> = {
+        let nodes = bridge_handle.nodes.lock().unwrap();
+        bridge_handle
+            .decal_node_ids
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|id| nodes.get(id).cloned())
+            .collect()
+    };
+
+    for entry in entries {
+        let decal_key = *entry.decal_key.lock().unwrap();
+        let Some(decal_key) = decal_key else {
+            continue;
+        };
+        let world = match renderer.transforms.get_world(entry.transform_key) {
+            Ok(m) => *m,
+            Err(_) => continue,
+        };
+        let kind = entry.node.kind.get_cloned();
+        let crate::scene::NodeKind::Decal(cfg) = kind else {
+            continue;
+        };
+        let visible = *entry.effective_visible.lock().unwrap();
+        // Hidden decals contribute zero — easier than removing /
+        // re-inserting on every eye-toggle flip.
+        let alpha = if visible { cfg.alpha } else { 0.0 };
+        let texture_index = crate::renderer_bridge::node_sync::decal_texture_index(&cfg);
+        renderer.update_decal(decal_key, |decal| {
+            *decal = awsm_renderer::decals::Decal::new(world, texture_index, alpha);
+        });
+    }
+}
+
 fn sync_lights_pre_render(renderer: &mut awsm_renderer::AwsmRenderer) {
     use awsm_renderer::lights::Light;
     use glam::Vec3;
 
-    // Snapshot bridge nodes (cheap Arc clones) so we don't hold the bridge
-    // lock while we mutate the renderer.
+    // Same per-frame index trick as `sync_decals_pre_render` — walk
+    // only entries that own a runtime light, not the full bridge
+    // node table.
     let bridge_handle = bridge();
-    let entries: Vec<Arc<RendererNode>> = bridge_handle
-        .nodes
-        .lock()
-        .unwrap()
-        .values()
-        .cloned()
-        .collect();
+    let entries: Vec<Arc<RendererNode>> = {
+        let nodes = bridge_handle.nodes.lock().unwrap();
+        bridge_handle
+            .light_node_ids
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|id| nodes.get(id).cloned())
+            .collect()
+    };
 
     for entry in entries {
         let light_key = *entry.light_key.lock().unwrap();

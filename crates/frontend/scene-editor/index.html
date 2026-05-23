@@ -11,6 +11,24 @@
             deploy — no separate media server required at runtime.
         -->
         <link data-trunk rel="copy-dir" href="assets" data-target-path="assets" />
+        <!--
+            Dev-only: the tuning scenes live at the repo root
+            (`assets/world/<name>/project.json`). Trunk copies the
+            world folder into `assets/world/` of the dist so the
+            programmatic `load_scene_by_path` helper (debug builds
+            only) can fetch via `web_sys::fetch`. The consumer is
+            gated on `#[cfg(debug_assertions)]` — no production code
+            path reads these assets.
+
+            Trunk's `data-trunk` attributes don't support a
+            debug/release switch on `copy-dir`, so the copy still
+            runs unconditionally; the production Taskfile
+            (`taskfiles/frontend/scene-editor.yml`, `build` task) then
+            removes `dist/assets/world` before the artifacts are
+            staged, keeping the deployed tree ~20 MB lighter without
+            having to maintain two `index.html` files.
+        -->
+        <link data-trunk rel="copy-dir" href="../../../assets/world" data-target-path="assets/world" />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
         <link

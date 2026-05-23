@@ -73,17 +73,54 @@ impl IblTexture {
         textures: &mut Textures,
         default_colors: CubemapBitmapColors,
     ) -> Result<Self> {
+        let resources = Self::prepare_resources(gpu, default_colors).await?;
+        Self::register(gpu, textures, resources)
+    }
+
+    /// Phase-1 of [`Self::new_colors`]: async-only construction of the
+    /// GPU cubemap texture + view + mip count, without touching the
+    /// shared [`Textures`] table. Pair with
+    /// [`Self::register`] (synchronous, needs `&mut Textures`) to
+    /// finish setup. Splitting them lets `AwsmRendererBuilder::build`
+    /// drive the awaits for several IBL/skybox/LUT resources in
+    /// parallel before serially inserting them into `textures`.
+    pub async fn prepare_resources(
+        gpu: &AwsmRendererWebGpu,
+        default_colors: CubemapBitmapColors,
+    ) -> Result<IblTextureResources> {
         let (texture, view, mip_count) = CubemapImage::new_colors(default_colors, 256, 256)
             .await?
             .create_texture_and_view(gpu, Some("IBL Cubemap"))
             .await?;
-
-        let texture_key = textures.insert_cubemap(texture);
-
-        let sampler_key = textures.get_sampler_key(gpu, Self::sampler_cache_key())?;
-
-        let sampler = textures.get_sampler(sampler_key)?.clone();
-
-        Ok(Self::new(texture_key, view, sampler, mip_count))
+        Ok(IblTextureResources {
+            texture,
+            view,
+            mip_count,
+        })
     }
+
+    /// Phase-2 of [`Self::new_colors`]: sync registration of
+    /// pre-allocated resources into the shared [`Textures`] table.
+    pub fn register(
+        gpu: &AwsmRendererWebGpu,
+        textures: &mut Textures,
+        resources: IblTextureResources,
+    ) -> Result<Self> {
+        let texture_key = textures.insert_cubemap(resources.texture);
+        let sampler_key = textures.get_sampler_key(gpu, Self::sampler_cache_key())?;
+        let sampler = textures.get_sampler(sampler_key)?.clone();
+        Ok(Self::new(
+            texture_key,
+            resources.view,
+            sampler,
+            resources.mip_count,
+        ))
+    }
+}
+
+/// Detached GPU resources produced by [`IblTexture::prepare_resources`].
+pub struct IblTextureResources {
+    pub texture: web_sys::GpuTexture,
+    pub view: web_sys::GpuTextureView,
+    pub mip_count: u32,
 }

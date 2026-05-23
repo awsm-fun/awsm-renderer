@@ -2,8 +2,8 @@ use crate::prelude::*;
 use crate::scene::{ColliderShape, LightKind, Node, NodeKind};
 
 use super::{
-    camera, collider, curve, instances, light, line, mesh, model, particle, primitive, sprite,
-    sweep,
+    camera, collider, curve, decal, instances, light, line, mesh, model, particle, primitive,
+    sprite, sweep,
 };
 
 /// Top-level discriminant for `NodeKind`. The kind-editor's outer
@@ -26,6 +26,7 @@ pub(super) enum NodeKindTag {
     Line,
     Sprite,
     Particle,
+    Decal,
 }
 
 pub(super) fn node_kind_tag(k: &NodeKind) -> NodeKindTag {
@@ -43,6 +44,7 @@ pub(super) fn node_kind_tag(k: &NodeKind) -> NodeKindTag {
         NodeKind::Line(_) => NodeKindTag::Line,
         NodeKind::Sprite(_) => NodeKindTag::Sprite,
         NodeKind::ParticleEmitter(_) => NodeKindTag::Particle,
+        NodeKind::Decal(_) => NodeKindTag::Decal,
     }
 }
 
@@ -114,6 +116,7 @@ pub fn render(node: Arc<Node>) -> Dom {
                 NodeKindTag::Line => line::render(node.clone()),
                 NodeKindTag::Sprite => sprite::render(node.clone()),
                 NodeKindTag::Particle => particle::render(node.clone()),
+                NodeKindTag::Decal => decal::render(node.clone()),
             })
         })))
     })

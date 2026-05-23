@@ -44,6 +44,14 @@ fn vert_main(
     input: VertexInput,
     @builtin(instance_index) instance_index: u32,
 ) -> @builtin(position) vec4<f32> {
+    {% if !instancing_transforms %}
+    // Load per-mesh meta from the storage array indexed by
+    // `instance_index`. Mirrors the geometry pass's non-instanced
+    // lookup; the CPU sets `first_instance = mesh_meta_idx` per
+    // shadow draw.
+    geometry_mesh_meta = geometry_mesh_metas[instance_index];
+    {% endif %}
+
     var av_in: ApplyVertexInput;
     av_in.vertex_index = input.original_vertex_index;
     av_in.position = input.position;

@@ -4,6 +4,7 @@ use super::{
     camera::CameraConfig,
     collider::ColliderShape,
     curve::CurveDef,
+    decal::DecalConfig,
     instances::{InstancesAlongCurveDef, SweepAlongCurveDef},
     light::LightConfig,
     line::LineDef,
@@ -149,6 +150,11 @@ pub enum NodeKind {
     Sprite(SpriteDef),
     /// CPU particle emitter.
     ParticleEmitter(ParticleEmitterDef),
+    /// Projection decal. The node's
+    /// transform supplies the oriented unit-cube volume; the
+    /// renderer projects the configured texture down the local -Z
+    /// axis onto whatever opaque geometry sits inside.
+    Decal(DecalConfig),
 }
 
 /// Per-mesh shadow flags. Sprite, line, and particle nodes do NOT
@@ -207,6 +213,7 @@ impl NodeKind {
             Self::Line(_) => "line",
             Self::Sprite(_) => "sprite",
             Self::ParticleEmitter(_) => "particle",
+            Self::Decal(_) => "decal",
         }
     }
 

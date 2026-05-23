@@ -7,9 +7,8 @@
 - Font rendering
     - https://github.com/EricLengyel/Slug
     
-- Shadows ✅ — directional CSM + spot + point cube; PCF / PCSS; SSCS; temporal throttle on the far cascade.
-  - EVSM hybrid (descriptor flag landed; moment-write compute + Gaussian blur deferred)
-  - Transparent-pass shadow bind-group consolidation (Phase 9 deferred; blocked on adapter `maxBindGroups=4`)
+- Shadows ✅ — directional CSM (cascade-array texture) + spot + point cube; PCF / PCSS (including real cube blocker search); SSCS; temporal throttle on the far cascade; EVSM hybrid (moment-write compute + 2× Gaussian blur), per-cascade skip-unchanged.
+  - Transparent-pass shadow bind-group consolidation (deferred; blocked on adapter `maxBindGroups=4`)
   - Editor UI for the shadow controls panel (schema fields are editable in `project.json`)
 
 - SSAO

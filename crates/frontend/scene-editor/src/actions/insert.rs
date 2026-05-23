@@ -438,6 +438,10 @@ pub fn sprite() {
     insert_simple(|| Node::new_sprite("Sprite"), "insert::sprite");
 }
 
+pub fn decal() {
+    insert_simple(|| Node::new_decal("Decal"), "insert::decal");
+}
+
 pub fn particle() {
     insert_simple(
         || Node::new_particle("Particle Emitter"),

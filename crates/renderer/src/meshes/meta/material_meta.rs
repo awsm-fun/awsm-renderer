@@ -20,7 +20,31 @@ pub const MATERIAL_MESH_META_MORPH_MATERIAL_BITMASK_NORMAL: u32 = 1;
 /// Bitmask for tangent morphing.
 pub const MATERIAL_MESH_META_MORPH_MATERIAL_BITMASK_TANGENT: u32 = 1 << 1;
 /// Byte size for material mesh meta struct.
-pub const MATERIAL_MESH_META_BYTE_SIZE: usize = 72;
+///
+/// Layout (in u32 indices):
+///   0: mesh_key_high
+///   1: mesh_key_low
+///   2: morph_material_target_len
+///   3: morph_material_weights_offset
+///   4: morph_material_values_offset
+///   5: morph_material_bitmask
+///   6: material_offset
+///   7: transform_offset
+///   8: normal_matrix_offset
+///   9: vertex_attribute_indices_offset
+///   10: vertex_attribute_data_offset
+///   11: vertex_attribute_stride
+///   12: uv_sets_index
+///   13: uv_set_count
+///   14: color_set_count
+///   15: visibility_geometry_data_offset
+///   16: is_hud
+///   17: receive_shadows
+///   18: light_slice_offset (Option F)
+///   19: light_slice_count  (Option F)
+///   20: receive_decals
+///   21..23: reserved / pad (keeps `padding_4` at vec4 alignment)
+pub const MATERIAL_MESH_META_BYTE_SIZE: usize = 96;
 /// Byte alignment for material mesh meta entries.
 pub const MATERIAL_MESH_META_BYTE_ALIGNMENT: usize = 256;
 /// Byte offset of the `receive_shadows` u32 inside the packed struct.
@@ -30,6 +54,14 @@ pub const MATERIAL_MESH_META_BYTE_ALIGNMENT: usize = 256;
 /// path so the shadow toggle doesn't need to re-pack the entire
 /// struct (which would require Materials/Transforms/Morphs context).
 pub const MATERIAL_MESH_META_RECEIVE_SHADOWS_OFFSET: usize = 17 * 4;
+/// Byte offset of `light_slice_offset` (u32) inside the packed struct.
+/// The 8 bytes from this offset hold the per-mesh light-slice metadata
+/// — `[offset_u32, count_u32]` — written per-frame by `MeshMeta::set_mesh_light_slice`.
+pub const MATERIAL_MESH_META_LIGHT_SLICE_OFFSET: usize = 18 * 4;
+/// Byte offset of the `receive_decals` u32 inside the packed struct.
+/// Used by `MeshMeta::set_receive_decals` for the in-place patch path
+/// so the decal toggle doesn't need to re-pack the entire struct.
+pub const MATERIAL_MESH_META_RECEIVE_DECALS_OFFSET: usize = 20 * 4;
 
 pub static MATERIAL_BUFFER_USAGE: LazyLock<BufferUsage> = LazyLock::new(|| {
     BufferUsage::new()
@@ -193,6 +225,26 @@ impl<'a> MaterialMeshMeta<'a> {
         // opted out. Matches the `receive_shadows` u32 in
         // `material_mesh_meta.wgsl`.
         push_u32(if mesh.receive_shadows { 1 } else { 0 });
+
+        // Per-mesh light-slice. Initialised to zero — the per-frame
+        // `MeshMeta::set_mesh_light_slice` patches these two u32s with
+        // the live offset / count into `mesh_light_indices`. A mesh
+        // that never gets a slice walk this frame reads `count = 0`
+        // and the punctual loop is empty (directional lights still
+        // apply via the global prefix).
+        push_u32(0);
+        push_u32(0);
+
+        // receive_decals — consumed by the decal compute pass to skip
+        // the per-decal volume test when the mesh opted out. Matches
+        // the `receive_decals` u32 in `material_mesh_meta.wgsl`.
+        push_u32(if mesh.receive_decals { 1 } else { 0 });
+        // Reserved trailing u32s — keep the populated region at a
+        // vec4 multiple so `padding_4: array<vec4<u32>, _>` stays
+        // vec4-aligned.
+        push_u32(0);
+        push_u32(0);
+        push_u32(0);
 
         Ok(result)
     }

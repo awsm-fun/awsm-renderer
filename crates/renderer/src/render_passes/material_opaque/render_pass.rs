@@ -1,9 +1,27 @@
 //! Opaque material render pass execution.
+//!
+//! Each shader_id-specialized pipeline (PBR / Unlit / Toon)
+//! dispatches *indirectly* — the
+//! material classify pass already produced per-bucket
+//! `(workgroup_count, 1, 1)` indirect args + a per-bucket tile list
+//! the shader reads to map `workgroup_id.x → (tile_x, tile_y)`. So
+//! each pipeline's dispatch only covers tiles its shader_id touches.
+//!
+//! Three pipelines are always recorded (PBR / Unlit / Toon) regardless
+//! of whether the scene has meshes of each flavour. Indirect dispatch
+//! with `workgroup_count = 0` is a documented no-op, so empty buckets
+//! pay only the dispatch-record overhead. The PBR pipeline is the
+//! designated skybox owner — see compute.wgsl — so it's the one
+//! pipeline that *must* dispatch even when no PBR meshes are present.
+
+use awsm_materials::MaterialShaderId;
+use awsm_renderer_core::command::compute_pass::ComputePassDescriptor;
 
 use crate::{
     error::Result,
     render::RenderContext,
     render_passes::{
+        material_classify::buffers::indirect_args_offset,
         material_opaque::{
             bind_group::MaterialOpaqueBindGroups, pipeline::MaterialOpaquePipelines,
         },
@@ -11,8 +29,6 @@ use crate::{
     },
     renderable::Renderable,
 };
-use awsm_renderer_core::command::compute_pass::ComputePassDescriptor;
-use slotmap::SecondaryMap;
 
 /// Opaque material pass bind groups and pipelines.
 pub struct MaterialOpaqueRenderPass {
@@ -44,7 +60,13 @@ impl MaterialOpaqueRenderPass {
     }
 
     /// Executes the opaque material pass.
-    pub fn render(&self, ctx: &RenderContext, renderables: Vec<Renderable>) -> Result<()> {
+    ///
+    /// `renderables` is no longer consulted for dispatch — classify
+    /// determines the per-bucket tile lists. It's still in the
+    /// signature so the renderable list keeps flowing through the
+    /// render-graph API; future work may use it for skinning-skip /
+    /// material-LOD inputs.
+    pub fn render(&self, ctx: &RenderContext, _renderables: Vec<Renderable>) -> Result<()> {
         let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
             &ComputePassDescriptor::new(Some("Material Opaque Pass")).into(),
         ));
@@ -57,38 +79,27 @@ impl MaterialOpaqueRenderPass {
         compute_pass.set_bind_group(2u32, texture_bind_group, None)?;
         compute_pass.set_bind_group(3u32, shadows_bind_group, None)?;
 
-        let workgroup_size = (
-            ctx.render_texture_views.width.div_ceil(8),
-            ctx.render_texture_views.height.div_ceil(8),
-        );
+        let classify_buffer = &ctx.material_classify_buffers.buffer;
 
-        if renderables.is_empty() {
-            if let Some(key) = self
+        // PBR — also owns skybox, so always dispatched.
+        // Bucket index 0 == PBR; classify wrote its tiles starting at
+        // `pbr_offset` and its workgroup count to `args_pbr.x`.
+        for (shader_id, bucket_index) in [
+            (MaterialShaderId::Pbr, 0u32),
+            (MaterialShaderId::Unlit, 1u32),
+            (MaterialShaderId::Toon, 2u32),
+        ] {
+            let Some(pipeline_key) = self
                 .pipelines
-                .get_empty_compute_pipeline_key(ctx.anti_aliasing)
-            {
-                compute_pass.set_pipeline(ctx.pipelines.compute.get(key)?);
-                compute_pass.dispatch_workgroups(workgroup_size.0, Some(workgroup_size.1), Some(1));
-            }
-        } else {
-            let mut seen_pipeline_keys = SecondaryMap::new();
-            for renderable in renderables {
-                if let Some(compute_pipeline_key) =
-                    renderable.material_opaque_compute_pipeline_key()
-                {
-                    // only need to dispatch once per pipeline, not per renderable
-                    if !seen_pipeline_keys.contains_key(compute_pipeline_key) {
-                        seen_pipeline_keys.insert(compute_pipeline_key, ());
-
-                        compute_pass.set_pipeline(ctx.pipelines.compute.get(compute_pipeline_key)?);
-                        compute_pass.dispatch_workgroups(
-                            workgroup_size.0,
-                            Some(workgroup_size.1),
-                            Some(1),
-                        );
-                    }
-                }
-            }
+                .get_compute_pipeline_key(ctx.anti_aliasing, shader_id)
+            else {
+                continue;
+            };
+            compute_pass.set_pipeline(ctx.pipelines.compute.get(pipeline_key)?);
+            compute_pass.dispatch_workgroups_indirect_with_u32(
+                classify_buffer,
+                indirect_args_offset(bucket_index),
+            );
         }
 
         compute_pass.end();

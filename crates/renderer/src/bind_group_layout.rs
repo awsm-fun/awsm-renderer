@@ -79,13 +79,28 @@ impl BindGroupLayouts {
     #[cfg(debug_assertions)]
     fn update_max_counter(&mut self, cache_key: &BindGroupLayoutCacheKey) {
         use crate::COMPATIBITLIY_REQUIREMENTS;
+        use awsm_renderer_core::bind_groups::BufferBindingType;
 
         let mut counter = BindGroupLayoutCounter::default();
+        // Counts ONLY storage buffers — the
+        // `maxStorageBuffersPerShaderStage` adapter limit (which the
+        // compatibility requirement mirrors) doesn't count uniform-
+        // buffer bindings. Mixing them would produce spurious warnings
+        // every time we add a uniform binding while still being well
+        // under the storage cap.
+        let mut storage_buffers: u32 = 0;
 
         for entry in &cache_key.entries {
-            match entry.resource {
-                BindGroupLayoutResource::Buffer { .. } => {
+            match &entry.resource {
+                BindGroupLayoutResource::Buffer(layout) => {
                     counter.buffers += 1;
+                    let is_storage = matches!(
+                        layout.binding_type,
+                        Some(BufferBindingType::Storage) | Some(BufferBindingType::ReadOnlyStorage)
+                    );
+                    if is_storage {
+                        storage_buffers += 1;
+                    }
                 }
                 BindGroupLayoutResource::Sampler { .. } => {
                     counter.samplers += 1;
@@ -109,16 +124,17 @@ impl BindGroupLayouts {
         self.max.textures = self.max.textures.max(counter.textures);
         self.max.storage_textures = self.max.storage_textures.max(counter.storage_textures);
         self.max.external_textures = self.max.external_textures.max(counter.external_textures);
+        self.max.storage_buffers = self.max.storage_buffers.max(storage_buffers);
 
         if before != self.max {
             tracing::debug!("Updated BindGroupLayout max counts: {:#?}", self.max);
         }
 
         if let Some(required) = COMPATIBITLIY_REQUIREMENTS.storage_buffers {
-            if self.max.buffers > required {
+            if self.max.storage_buffers > required {
                 tracing::warn!(
-                    "Max bind group layout buffers {} exceeds compatibility requirement {}",
-                    self.max.buffers,
+                    "Max bind-group-layout STORAGE buffers {} exceeds compatibility requirement {}",
+                    self.max.storage_buffers,
                     required
                 );
             }
@@ -130,7 +146,13 @@ impl BindGroupLayouts {
 #[derive(Default, Debug, Clone, PartialEq, Eq)]
 /// Debug counter for bind group layout limits.
 pub struct BindGroupLayoutCounter {
+    /// Total buffer bindings (uniform + storage). Reported for parity
+    /// with the legacy debug output.
     pub buffers: u32,
+    /// Storage buffer bindings only — the
+    /// `maxStorageBuffersPerShaderStage` limit and the compatibility
+    /// requirement both count this, not the total.
+    pub storage_buffers: u32,
     pub samplers: u32,
     pub textures: u32,
     pub storage_textures: u32,

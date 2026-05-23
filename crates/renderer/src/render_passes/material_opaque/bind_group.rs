@@ -59,7 +59,22 @@ impl MaterialOpaqueBindGroups {
                 visibility_fragment: false,
                 visibility_compute: true,
             },
-            // punctual lights
+            // punctual lights — uniform binding (Option F follow-up).
+            // Access pattern is "every pixel reads the same light in
+            // lockstep" which is the canonical uniform-buffer case.
+            // 64 KB cap → MAX_PUNCTUAL_LIGHTS lights.
+            BindGroupLayoutCacheKeyEntry {
+                resource: BindGroupLayoutResource::Buffer(
+                    BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
+                ),
+                visibility_vertex: false,
+                visibility_fragment: false,
+                visibility_compute: true,
+            },
+            // mesh_light_indices (binding 2): packed u32 light indices
+            // referenced by `material_mesh_metas[meta_index]
+            // .light_slice_{offset,count}` (per-mesh slice now lives in
+            // MaterialMeshMeta — saves one storage-buffer slot).
             BindGroupLayoutCacheKeyEntry {
                 resource: BindGroupLayoutResource::Buffer(
                     BufferBindingLayout::new()
@@ -229,29 +244,15 @@ impl MaterialOpaqueBindGroups {
             entries.len() as u32,
             BindGroupResource::Buffer(BufferBinding::new(&ctx.materials.gpu_buffer)),
         ));
-        // Attribute index buffer
-        entries.push(BindGroupEntry::new(
-            entries.len() as u32,
-            BindGroupResource::Buffer(BufferBinding::new(
-                ctx.meshes.custom_attribute_index_gpu_buffer(),
-            )),
-        ));
-        // Attribute data buffer
-        entries.push(BindGroupEntry::new(
-            entries.len() as u32,
-            BindGroupResource::Buffer(BufferBinding::new(
-                ctx.meshes.custom_attribute_data_gpu_buffer(),
-            )),
-        ));
-        // transforms
+        // `attribute_indices` and `attribute_data` are not separate
+        // storage bindings — both live as sections of the merged
+        // geometry pool that's already bound here as `visibility_data`
+        // (binding 5). WGSL reads them through that single binding at
+        // the per-mesh sub-offsets carried by MaterialMeshMeta.
+        // transforms — packed (model + normal). See `Transforms`.
         entries.push(BindGroupEntry::new(
             entries.len() as u32,
             BindGroupResource::Buffer(BufferBinding::new(&ctx.transforms.gpu_buffer)),
-        ));
-        // normal matrices
-        entries.push(BindGroupEntry::new(
-            entries.len() as u32,
-            BindGroupResource::Buffer(BufferBinding::new(&ctx.transforms.normals_gpu_buffer)),
         ));
         // texture transforms
         entries.push(BindGroupEntry::new(
@@ -318,6 +319,17 @@ impl MaterialOpaqueBindGroups {
             entries.len() as u32,
             BindGroupResource::Buffer(BufferBinding::new(ctx.instances.gpu_attribute_buffer())),
         ));
+        // Classify output buckets. The
+        // opaque compute shader reads `pbr_offset` / `unlit_offset` /
+        // `toon_offset` + `tiles[…]` to look up its workgroup's tile;
+        // the indirect-args header is consumed via
+        // `dispatchWorkgroupsIndirect` on the host side. Bound
+        // read-only here — atomics live only in the classify pass's
+        // own (read-write) view of the same buffer.
+        entries.push(BindGroupEntry::new(
+            entries.len() as u32,
+            BindGroupResource::Buffer(BufferBinding::new(&ctx.material_classify_buffers.buffer)),
+        ));
 
         let descriptor = BindGroupDescriptor::new(
             ctx.bind_group_layouts
@@ -348,6 +360,17 @@ impl MaterialOpaqueBindGroups {
         entries.push(BindGroupEntry::new(
             entries.len() as u32,
             BindGroupResource::Buffer(BufferBinding::new(&ctx.lights.gpu_punctual_buffer)),
+        ));
+
+        // mesh_light_indices: packed u32 light indices. Slice metadata
+        // for each mesh moved into `MaterialMeshMeta.light_slice_*`
+        // fields so we save one binding (storage-buffer count, plan
+        // Option F).
+        entries.push(BindGroupEntry::new(
+            entries.len() as u32,
+            BindGroupResource::Buffer(BufferBinding::new(
+                &ctx.mesh_light_indices_gpu.indices_buffer,
+            )),
         ));
 
         let descriptor = BindGroupDescriptor::new(
@@ -506,34 +529,13 @@ async fn create_main_bind_group_layout_key(
             visibility_fragment: false,
             visibility_compute: true,
         },
-        // Attribute index buffer
-        BindGroupLayoutCacheKeyEntry {
-            resource: BindGroupLayoutResource::Buffer(
-                BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),
-            ),
-            visibility_vertex: false,
-            visibility_fragment: false,
-            visibility_compute: true,
-        },
-        // Attribute data buffer
-        BindGroupLayoutCacheKeyEntry {
-            resource: BindGroupLayoutResource::Buffer(
-                BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),
-            ),
-            visibility_vertex: false,
-            visibility_fragment: false,
-            visibility_compute: true,
-        },
-        // Transform buffer
-        BindGroupLayoutCacheKeyEntry {
-            resource: BindGroupLayoutResource::Buffer(
-                BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),
-            ),
-            visibility_vertex: false,
-            visibility_fragment: false,
-            visibility_compute: true,
-        },
-        // Normal matrices buffer
+        // No separate layout entries for attribute_indices/attribute_data
+        // — both live inside the merged geometry pool that entry 5
+        // (visibility data) already binds.
+        // Packed transforms buffer — model (mat4x4) + normal (mat3x3)
+        // in one struct (Option E). The normal matrix lives at
+        // `Transforms::NORMAL_OFFSET` inside each entry, so no separate
+        // binding for normal_matrices.
         BindGroupLayoutCacheKeyEntry {
             resource: BindGroupLayoutResource::Buffer(
                 BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),
@@ -644,6 +646,17 @@ async fn create_main_bind_group_layout_key(
             visibility_compute: true,
         },
         // Per-instance attribute storage buffer (read by shading pass for tint).
+        BindGroupLayoutCacheKeyEntry {
+            resource: BindGroupLayoutResource::Buffer(
+                BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),
+            ),
+            visibility_vertex: false,
+            visibility_fragment: false,
+            visibility_compute: true,
+        },
+        // Material classify output buckets. Read-only declaration —
+        // the read-write atomic view lives on the classify pass's
+        // own bind group.
         BindGroupLayoutCacheKeyEntry {
             resource: BindGroupLayoutResource::Buffer(
                 BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),

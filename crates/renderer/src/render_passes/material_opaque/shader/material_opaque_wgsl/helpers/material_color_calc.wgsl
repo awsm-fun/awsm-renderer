@@ -805,10 +805,12 @@ fn _get_vertex_tangent(
     let vertex_start = attribute_data_offset + (vertex_index * vertex_attribute_stride);
     let base = vertex_start + 3u; // tangents follow normals (3 float offset)
 
+    // attribute_data lives in the merged geometry pool aliased
+    // here by `visibility_data` (binding 5).
     return vec4<f32>(
-        attribute_data[base],
-        attribute_data[base + 1u],
-        attribute_data[base + 2u],
-        attribute_data[base + 3u],  // w component = handedness sign (±1)
+        visibility_data[base],
+        visibility_data[base + 1u],
+        visibility_data[base + 2u],
+        visibility_data[base + 3u],  // w component = handedness sign (±1)
     );
 }

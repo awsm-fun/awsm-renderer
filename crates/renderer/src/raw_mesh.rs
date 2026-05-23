@@ -315,6 +315,8 @@ impl AwsmRenderer {
             None,
         )?;
 
+        self.sync_spatial_for_mesh(mesh_key);
+
         Ok(mesh_key)
     }
 
@@ -500,6 +502,8 @@ impl AwsmRenderer {
             None,
             None,
         )?;
+
+        self.sync_spatial_for_mesh(mesh_key);
 
         // Register the per-mesh transparent pipeline key so the transparent
         // pass has a draw pipeline for this geometry. Mirrors what
