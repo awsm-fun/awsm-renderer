@@ -155,14 +155,23 @@ pub fn sync_editor_wireframes(renderer: &mut AwsmRenderer) {
     }
 }
 
-/// Walk the bridge's node map, emit `(transform_key, shape)` pairs for
-/// every Collision node whose effective visibility is on. Hidden ones
-/// get silently skipped.
+/// Walk the bridge's collider index, emit `(transform_key, shape)`
+/// pairs for every visible Collision node. Indexed lookup means we
+/// only touch the (typically small) set of collider authoring nodes
+/// per frame, instead of every bridge entry.
 fn collect_shapes() -> Vec<(TransformKey, ColliderShape)> {
     let bridge = crate::renderer_bridge::bridge();
+    let ids: Vec<_> = bridge
+        .collider_node_ids
+        .lock()
+        .unwrap()
+        .iter()
+        .copied()
+        .collect();
     let nodes = bridge.nodes.lock().unwrap();
-    let mut out = Vec::new();
-    for entry in nodes.values() {
+    let mut out = Vec::with_capacity(ids.len());
+    for id in ids {
+        let Some(entry) = nodes.get(&id) else { continue };
         if !*entry.effective_visible.lock().unwrap() {
             continue;
         }
@@ -175,9 +184,17 @@ fn collect_shapes() -> Vec<(TransformKey, ColliderShape)> {
 
 fn collect_cameras() -> Vec<(TransformKey, CameraConfig)> {
     let bridge = crate::renderer_bridge::bridge();
+    let ids: Vec<_> = bridge
+        .camera_node_ids
+        .lock()
+        .unwrap()
+        .iter()
+        .copied()
+        .collect();
     let nodes = bridge.nodes.lock().unwrap();
-    let mut out = Vec::new();
-    for entry in nodes.values() {
+    let mut out = Vec::with_capacity(ids.len());
+    for id in ids {
+        let Some(entry) = nodes.get(&id) else { continue };
         if !*entry.effective_visible.lock().unwrap() {
             continue;
         }
