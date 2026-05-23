@@ -123,19 +123,49 @@ impl Skybox {
         textures: &mut Textures,
         default_colors: CubemapBitmapColors,
     ) -> Result<Self> {
+        let resources = Self::prepare_resources(gpu, default_colors).await?;
+        Self::register(gpu, textures, resources)
+    }
+
+    /// Phase-1: async-only resource creation. See `IblTexture::prepare_resources`.
+    pub async fn prepare_resources(
+        gpu: &AwsmRendererWebGpu,
+        default_colors: CubemapBitmapColors,
+    ) -> Result<SkyboxResources> {
         let (texture, view, mip_count) = CubemapImage::new_colors(default_colors, 256, 256)
             .await?
             .create_texture_and_view(gpu, Some("Skybox Cubemap"))
             .await?;
-
-        let texture_key = textures.insert_cubemap(texture);
-
-        let sampler_key = textures.get_sampler_key(gpu, Self::sampler_cache_key())?;
-
-        let sampler = textures.get_sampler(sampler_key)?.clone();
-
-        Ok(Self::new(texture_key, view, sampler, mip_count))
+        Ok(SkyboxResources {
+            texture,
+            view,
+            mip_count,
+        })
     }
+
+    /// Phase-2: sync registration. See `IblTexture::register`.
+    pub fn register(
+        gpu: &AwsmRendererWebGpu,
+        textures: &mut Textures,
+        resources: SkyboxResources,
+    ) -> Result<Self> {
+        let texture_key = textures.insert_cubemap(resources.texture);
+        let sampler_key = textures.get_sampler_key(gpu, Self::sampler_cache_key())?;
+        let sampler = textures.get_sampler(sampler_key)?.clone();
+        Ok(Self::new(
+            texture_key,
+            resources.view,
+            sampler,
+            resources.mip_count,
+        ))
+    }
+}
+
+/// Detached GPU resources produced by [`Skybox::prepare_resources`].
+pub struct SkyboxResources {
+    pub texture: web_sys::GpuTexture,
+    pub view: web_sys::GpuTextureView,
+    pub mip_count: u32,
 }
 
 impl Environment {

@@ -510,20 +510,47 @@ impl AwsmRendererBuilder {
 
         let mut textures = Textures::new(&gpu)?;
         let camera = camera::CameraBuffer::new(&gpu)?;
+
+        // Three default-cubemap creations (prefiltered IBL / irradiance
+        // IBL / skybox) and the BRDF LUT generation are independent
+        // GPU operations that previously serialized through `.await?`
+        // chains. Run their async halves concurrently; the browser
+        // happily interleaves the underlying ImageBitmap + GPU work,
+        // which knocks ~3 IBL-creation worth of wall-clock off
+        // `AwsmRendererBuilder::build`. The post-await registration
+        // touches the shared `textures` table and must stay sync, so
+        // the helpers are split into `prepare_resources` (async,
+        // standalone) + `register` (sync, takes `&mut Textures`).
+        let (
+            ibl_filtered_resources,
+            ibl_irradiance_resources,
+            skybox_resources,
+            brdf_lut,
+        ) = futures::future::try_join4(
+            IblTexture::prepare_resources(&gpu, ibl_filtered_env_colors),
+            IblTexture::prepare_resources(&gpu, ibl_irradiance_colors),
+            Skybox::prepare_resources(&gpu, skybox_colors),
+            async {
+                BrdfLut::new(&gpu, brdf_lut_options)
+                    .await
+                    .map_err(crate::error::AwsmError::from)
+            },
+        )
+        .await?;
+
         let lights = Lights::new(
             &gpu,
             Ibl::new(
-                IblTexture::new_colors(&gpu, &mut textures, ibl_filtered_env_colors).await?,
-                IblTexture::new_colors(&gpu, &mut textures, ibl_irradiance_colors).await?,
+                IblTexture::register(&gpu, &mut textures, ibl_filtered_resources)?,
+                IblTexture::register(&gpu, &mut textures, ibl_irradiance_resources)?,
             ),
-            BrdfLut::new(&gpu, brdf_lut_options).await?,
+            brdf_lut,
         )?;
         let meshes = Meshes::new(&gpu)?;
         let transforms = Transforms::new(&gpu)?;
         let instances = Instances::new(&gpu)?;
         let materials = Materials::new(&gpu)?;
-        let environment =
-            Environment::new(Skybox::new_colors(&gpu, &mut textures, skybox_colors).await?);
+        let environment = Environment::new(Skybox::register(&gpu, &mut textures, skybox_resources)?);
 
         // temporarily push into an init struct for creating render passes
         // we'll then destructure it to get our values back
