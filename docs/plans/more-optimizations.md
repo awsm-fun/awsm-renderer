@@ -35,6 +35,47 @@ mixed pile.
   (storage-array meta when the device exposes the feature, portable
   uniform-with-dynamic-offset when it doesn't). `FeatureToggle`
   with `Auto` / `On` / `Off` controls which path is taken.
+- ✅ **`collect_renderables` Vec pooling** — opaque/transparent/HUD
+  Vecs now live on `AwsmRenderer::renderable_pool` and clear-in-place
+  each frame instead of fresh-allocating. `Renderable` itself is now
+  lifetime-free (no `&'a Mesh` borrow) so the pool survives across
+  frames. The geometry render-pipeline key is precomputed at
+  collection time so the sort comparator no longer needs
+  `RenderContext`.
+- ✅ **OpaqueMipgen folded into the IBL/BRDF parallel `try_join`** —
+  was sequential after `RenderPasses::new` for no reason; now runs
+  concurrently with IBL/skybox/BRDF prepare_resources.
+- ✅ **`RenderTextures::new` parallelizes its 3 blit-pipeline
+  compiles** — `try_join3` instead of sequential awaits.
+- ✅ **`material_cache::cascade_after_delete_batch`** — bulk asset
+  deletion now does one scene walk instead of N. Single-asset
+  `cascade_after_delete` is implemented as the size-1 batch shape.
+
+## ❌ Considered, not landed
+
+- ❌ **Lazy-allocate Occlusion/Compaction/Coverage feature buffers.**
+  Win is small (~70 KB GPU memory + ~4 buffer creates at builder
+  time, dominated by shader compilation). Refactor risk threading
+  None-state through more sites wasn't worth it.
+- ❌ **Cache `transpose_per_mesh` across frames when buckets
+  unchanged.** Would need dirty-event plumbing across all
+  light/mesh mutation paths. The empty-scene fast path covers the
+  most-common zero-cost case; the with-lights case re-runs cheaply
+  (~100us for 64-light tuning scene).
+- ❌ **Defer `OpaqueMipgen::new` until first transmissive mesh.**
+  Lazy-init pattern blocked on sync shader-compile (`new` is async
+  via `validate_shader().await` + `create_compute_pipeline_async`).
+  Folded into the IBL parallel block instead — same total work,
+  better wall-clock.
+- ❌ **Pre-warm gltf loader during editor startup.** Already done
+  *implicitly* — `gizmo.glb` loads at editor init via
+  `gizmo::init()`, which exercises both `GltfLoader::load` and
+  `populate_gltf` before the first user-inserted Model.
+- ❌ **Outer parallelization of `RenderPasses::new` ||
+  `RenderTextures::new`.** Blocked by `RenderPassInitContext.gpu`
+  being `&mut`; would need a wider context refactor to take `&gpu`.
+  Inner `try_join3` inside `RenderTextures::new` captures most of
+  the available win.
 
 ---
 
@@ -53,17 +94,19 @@ mixed pile.
   trigger it. Could be wrapped in `OnceCell` + lazy-init on first
   transmission path.
 
-- **Lazy-allocate the GPU-driven feature buffers when no meshes are
-  present.** `OcclusionBuffers`, `CompactionBuffers`, `CoverageBuffers`
-  all reserve 1024-slot capacity at init even for empty scenes. With
-  the feature gating already in place, these can stay `None` until
-  the first mesh insert dirties them.
-
 - **Pre-warm `LineRenderer` shaders in parallel with `Picker`.** Both
   go through the same shared `&mut shaders` so they're currently
   serial. `LineRenderer::load` and `Picker::new` each compile 1–2
   shaders; can be parallelized by collecting shader cache keys
-  up-front and issuing one `ensure_keys` batch.
+  up-front and issuing one `ensure_keys` batch. `LineRenderer`
+  currently uses `shaders.insert_uncached` so the wiring needs a
+  small refactor before `ensure_keys` can batch its shader.
+
+- **Refactor `RenderPassInitContext.gpu` from `&mut` to `&`.** Would
+  unblock outer parallelization of `RenderPasses::new` with
+  `RenderTextures::new` (the latter only needs `&gpu`). Probably
+  worth measuring first — the inner `try_join3` already captures the
+  blit-pipeline parallelism.
 
 ## 🚀 Editor per-frame loop
 
@@ -113,15 +156,6 @@ mixed pile.
 
 ## 🚀 Renderer per-frame
 
-- **⚠️ Cache `transpose_per_mesh` output across frames when neither
-  lights nor mesh AABBs moved.** `MeshLightIndicesGpu::write_gpu` now
-  fast-paths the no-light-overlap case (see "Recently landed" above),
-  but the *with*-lights case still rebuilds the packed `u32` index
-  array every frame and re-patches every per-mesh slice. A dirty-flag
-  on `LightMeshBuckets` (set whenever a light is added/removed/moved
-  or a relevant mesh AABB changes) would let the GPU upload reuse
-  last frame's bytes byte-for-byte on static scenes.
-
 - **`scene_spatial::rebuild_if_needed` cadence tuning.** The current
   defaults are `rebuild_period_frames = 600` and
   `rebuild_dirty_threshold = 200`. Both could be data-driven —
@@ -131,10 +165,10 @@ mixed pile.
 
 ## 🚀 Renderer memory / allocation
 
-- **Hot-path `Vec` allocations** in `renderable.rs::collect`,
-  particle simulator, line strip vertex packing. Could use
-  thread-local pooling for these. The renderable Vecs are reset
-  every frame; keep them on `AwsmRenderer` and clear-in-place.
+- **Particle simulator + line-strip vertex-pack `Vec` allocations.**
+  The renderable lists are now pooled on `AwsmRenderer`; the same
+  pattern would help these. Each frame rebuilds the per-particle /
+  per-line vertex buffer scratch from scratch.
 
 ## 🚀 Editor reactive system
 
@@ -143,15 +177,6 @@ mixed pile.
   changes; consumers (selection observer, gizmo, point-handle,
   inspector) re-derive their own state. For a multi-mesh model
   insert this can spike to dozens of cascades per frame.
-
-- **Debounce `material_cache::cascade_after_delete`-style cascades.**
-  Currently each MaterialAsset deletion walks the scene; multi-asset
-  cleanup pays N×scene-walk where 1 would do.
-
-- **Pre-warm the gltf loader during editor startup.** Currently the
-  first glb insert pays both `GltfLoader::load` parse cost +
-  `populate_gltf` cost as foreground work. Could fetch + parse the
-  gizmo + a "warmup nullary glb" during init.
 
 ## 🧊 Speculative / micro-optimizations
 
