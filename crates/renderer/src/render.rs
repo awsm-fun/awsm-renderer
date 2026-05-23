@@ -283,6 +283,13 @@ impl AwsmRenderer {
             &mut self.picker,
         )?;
 
+        // Populate the pooled renderable lists BEFORE building the
+        // RenderContext — `collect_renderables` takes `&mut self` to
+        // clear-and-extend the pool's Vecs in place, while ctx holds
+        // immutable references into `self`.
+        self.collect_renderables()?;
+        let renderables = self.renderables();
+
         let ctx = RenderContext {
             gpu: &self.gpu,
             command_encoder: self.gpu.create_command_encoder(Some("Rendering")),
@@ -313,8 +320,6 @@ impl AwsmRenderer {
             ),
         };
 
-        let renderables = self.collect_renderables(&ctx)?;
-
         // Snapshot per-opaque-renderable info that the occlusion + indirect-
         // draw infrastructure needs after `renderables.opaque` is consumed
         // by the material-opaque pass. For each opaque mesh-renderable
@@ -342,21 +347,19 @@ impl AwsmRenderer {
         let opaque_snapshots: Vec<OcclusionSnapshot> = renderables
             .opaque
             .iter()
-            .filter_map(|r| match r {
-                crate::renderable::Renderable::Mesh { mesh, key, .. } => {
-                    if mesh.instanced {
-                        return None;
-                    }
-                    let aabb = mesh.world_aabb.clone()?;
-                    let meta_offset = ctx.meshes.meta.geometry_buffer_offset(*key).ok()? as u32;
-                    let buffer_info = ctx.meshes.buffer_info(*key).ok()?;
-                    let index_count = buffer_info.triangles.vertex_attribute_indices.count as u32;
-                    Some(OcclusionSnapshot {
-                        aabb,
-                        mesh_meta_offset: meta_offset,
-                        index_count,
-                    })
+            .filter_map(|r| {
+                if r.instanced {
+                    return None;
                 }
+                let aabb = r.world_aabb.clone()?;
+                let meta_offset = ctx.meshes.meta.geometry_buffer_offset(r.key).ok()? as u32;
+                let buffer_info = ctx.meshes.buffer_info(r.key).ok()?;
+                let index_count = buffer_info.triangles.vertex_attribute_indices.count as u32;
+                Some(OcclusionSnapshot {
+                    aabb,
+                    mesh_meta_offset: meta_offset,
+                    index_count,
+                })
             })
             .collect();
 
@@ -428,7 +431,7 @@ impl AwsmRenderer {
 
             self.render_passes
                 .geometry
-                .render(&ctx, &renderables.opaque, false)?;
+                .render(&ctx, renderables.opaque, false)?;
         }
 
         {
@@ -440,7 +443,7 @@ impl AwsmRenderer {
 
             self.render_passes
                 .geometry
-                .render(&ctx, &renderables.hud, true)?;
+                .render(&ctx, renderables.hud, true)?;
         }
 
         if let Some(hook) = hooks.and_then(|h| h.after_geometry_pass.as_ref()) {

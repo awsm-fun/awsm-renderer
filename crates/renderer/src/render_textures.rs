@@ -72,20 +72,33 @@ impl RenderTextures {
         formats: RenderTextureFormats,
         features: &RendererFeatures,
     ) -> Result<Self> {
-        let opaque_to_transparent_blit_pipeline_no_anti_alias =
-            blit_get_pipeline(gpu, formats.color, None)
-                .await
-                .map_err(AwsmRenderTextureError::BlitPipeline)?;
-
-        let opaque_to_transparent_blit_pipeline_msaa_4 =
-            blit_get_pipeline(gpu, formats.color, Some(4))
-                .await
-                .map_err(AwsmRenderTextureError::BlitPipeline)?;
-
-        let transparent_to_composite_blit_pipeline_no_anti_alias =
-            blit_get_pipeline(gpu, formats.color, None)
-                .await
-                .map_err(AwsmRenderTextureError::BlitPipeline)?;
+        // The three blit pipelines are independent GPU operations
+        // (different shader variants, no shared mutable state). Compile
+        // them concurrently — the browser interleaves the shader
+        // validation under the hood, saving ~2/3 of the wall-clock
+        // each `await` would otherwise spend serial.
+        let (
+            opaque_to_transparent_blit_pipeline_no_anti_alias,
+            opaque_to_transparent_blit_pipeline_msaa_4,
+            transparent_to_composite_blit_pipeline_no_anti_alias,
+        ) = futures::future::try_join3(
+            async {
+                blit_get_pipeline(gpu, formats.color, None)
+                    .await
+                    .map_err(AwsmRenderTextureError::BlitPipeline)
+            },
+            async {
+                blit_get_pipeline(gpu, formats.color, Some(4))
+                    .await
+                    .map_err(AwsmRenderTextureError::BlitPipeline)
+            },
+            async {
+                blit_get_pipeline(gpu, formats.color, None)
+                    .await
+                    .map_err(AwsmRenderTextureError::BlitPipeline)
+            },
+        )
+        .await?;
 
         Ok(Self {
             formats,

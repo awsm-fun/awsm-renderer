@@ -1,13 +1,14 @@
 //! Renderable collection and draw helpers.
 
-use awsm_renderer_core::command::render_pass::RenderPassEncoder;
+use awsm_renderer_core::{command::render_pass::RenderPassEncoder, pipeline::primitive::CullMode};
 use glam::Mat4;
 
 use crate::{
     bounds::Aabb,
     error::AwsmError,
     frustum::Frustum,
-    meshes::{mesh::Mesh, MeshKey},
+    materials::MaterialKey,
+    meshes::MeshKey,
     pipelines::{compute_pipeline::ComputePipelineKey, render_pipeline::RenderPipelineKey},
     render::RenderContext,
     render_passes::geometry::bind_group::GeometryBindGroups,
@@ -15,11 +16,39 @@ use crate::{
     AwsmRenderer,
 };
 
-/// Renderable lists grouped by pass type.
-pub struct Renderables<'a> {
-    pub opaque: Vec<Renderable<'a>>,
-    pub transparent: Vec<Renderable<'a>>,
-    pub hud: Vec<Renderable<'a>>,
+/// Reusable scratch space for the per-frame renderable collection.
+///
+/// Held on [`AwsmRenderer`] (not on each frame's [`Renderables`]) so
+/// the Vecs survive across frames and `clear_in_place` reuses the
+/// existing allocation. For 10K-mesh scenes that's ~24 KB of avoided
+/// allocator churn per frame. Frame-to-frame the Vec contents are
+/// invalid (capacity is preserved, length is reset to 0 by `prepare`).
+#[derive(Default)]
+pub struct RenderablePool {
+    opaque: Vec<Renderable>,
+    transparent: Vec<Renderable>,
+    hud: Vec<Renderable>,
+}
+
+impl RenderablePool {
+    /// Drops the prior frame's content while keeping the underlying
+    /// allocations. Called at the top of each frame's
+    /// `collect_renderables`.
+    fn clear(&mut self) {
+        self.opaque.clear();
+        self.transparent.clear();
+        self.hud.clear();
+    }
+}
+
+/// Per-frame borrowed view over the [`RenderablePool`]'s populated
+/// slices. Constructed by [`AwsmRenderer::collect_renderables`] and
+/// passed to the per-pass `render` functions.
+#[derive(Copy, Clone)]
+pub struct Renderables<'r> {
+    pub opaque: &'r [Renderable],
+    pub transparent: &'r [Renderable],
+    pub hud: &'r [Renderable],
 }
 
 impl Renderables<'_> {
@@ -35,23 +64,48 @@ impl Renderables<'_> {
 }
 
 impl AwsmRenderer {
-    /// Collects renderables for the current frame.
-    pub fn collect_renderables<'a>(&'a self, ctx: &RenderContext) -> Result<Renderables<'a>> {
+    /// Returns a borrowed view over the [`RenderablePool`]. Cheap;
+    /// callers can re-call this on every pass without repopulating.
+    pub fn renderables(&self) -> Renderables<'_> {
+        Renderables {
+            opaque: &self.renderable_pool.opaque,
+            transparent: &self.renderable_pool.transparent,
+            hud: &self.renderable_pool.hud,
+        }
+    }
+
+    /// Populates the per-frame [`RenderablePool`] from the renderer's
+    /// current state. Clears the pool in-place and refills it.
+    /// Callers read the populated slices via [`Self::renderables`].
+    ///
+    /// Borrows `&mut self` only for the duration of population — once
+    /// the function returns, `self` is no longer mutably borrowed,
+    /// so the caller can construct a [`RenderContext`] over `&self`.
+    pub fn collect_renderables(&mut self) -> Result<()> {
         let _maybe_span_guard = if self.logging.render_timings {
             Some(tracing::span!(tracing::Level::INFO, "Collect renderables").entered())
         } else {
             None
         };
 
-        let mut opaque = Vec::new();
-        let mut transparent = Vec::new();
-        let mut hud = Vec::new();
+        // Take the pool out by std::mem::take so we can populate
+        // without holding a `&mut self` borrow during the read-only
+        // queries below. The pool gets put back at the end.
+        let mut pool = std::mem::take(&mut self.renderable_pool);
+        pool.clear();
 
         let frustum = self
             .camera
             .last_matrices
             .as_ref()
             .map(|matrices| Frustum::from_view_projection(matrices.view_projection()));
+
+        // Pre-size the visible scratch to the upper-bound mesh count.
+        // BVH culling usually returns far fewer, but this avoids any
+        // realloc-during-push on the conservative tail-walk path.
+        let mesh_upper_bound = self.meshes.len();
+        let mut visible: Vec<(MeshKey, &crate::meshes::mesh::Mesh)> =
+            Vec::with_capacity(mesh_upper_bound);
 
         // Build the visible mesh-key set from the BVH instead of walking
         // every mesh. The previous linear scan tested every mesh's cached
@@ -60,33 +114,30 @@ impl AwsmRenderer {
         // Meshes without a world AABB (procedural / mid-load) aren't in
         // the index — fall back to a tail-walk of those so they still
         // draw conservatively.
-        let visible: Vec<(MeshKey, &Mesh)> = match &frustum {
+        match &frustum {
             Some(f) => {
-                let mut out: Vec<(MeshKey, &Mesh)> = self
-                    .scene_spatial
-                    .query_frustum(f, NodeFilter::camera_default())
-                    .filter_map(|node| {
-                        self.meshes
-                            .get(node.mesh_key)
-                            .ok()
-                            .map(|m| (node.mesh_key, m))
-                    })
-                    .collect();
+                visible.extend(
+                    self.scene_spatial
+                        .query_frustum(f, NodeFilter::camera_default())
+                        .filter_map(|node| {
+                            self.meshes
+                                .get(node.mesh_key)
+                                .ok()
+                                .map(|m| (node.mesh_key, m))
+                        }),
+                );
                 // Conservative fallback: any mesh without a world AABB
                 // can't be tested by the BVH; keep it in the visible set.
-                out.extend(
+                visible.extend(
                     self.meshes
                         .iter()
                         .filter(|(_, m)| !m.hidden && m.world_aabb.is_none()),
                 );
-                out
             }
-            None => self
-                .meshes
-                .iter()
-                .filter(|(_, m)| !m.hidden)
-                .collect::<Vec<_>>(),
-        };
+            None => {
+                visible.extend(self.meshes.iter().filter(|(_, m)| !m.hidden));
+            }
+        }
 
         for (mesh_key, mesh) in visible {
             // Route by the authored `material_key`: `MaterialMeshMeta`
@@ -104,9 +155,36 @@ impl AwsmRenderer {
             // the data the shader will read.
             let shader_id = self.materials.shader_id(routing_material);
 
-            let renderable = Renderable::Mesh {
+            let cull_mode = if mesh.double_sided {
+                CullMode::None
+            } else {
+                CullMode::Back
+            };
+
+            let renderable = Renderable {
                 key: mesh_key,
-                mesh,
+                world_aabb: mesh.world_aabb.clone(),
+                instanced: mesh.instanced,
+                double_sided: mesh.double_sided,
+                cull_mode,
+                hud: mesh.hud,
+                material_key: routing_material,
+                geometry_render_pipeline_key: self
+                    .render_passes
+                    .geometry
+                    .pipelines
+                    .get_render_pipeline_key(
+                        crate::render_passes::geometry::pipeline::GeometryRenderPipelineKeyOpts {
+                            anti_aliasing: &self.anti_aliasing,
+                            instancing: mesh.instanced,
+                            cull_mode,
+                            // Mirrors the runtime branch in
+                            // `meshes/mesh.rs::push_geometry_pass_commands`.
+                            meta_storage_array: !mesh.instanced
+                                && self.features.indirect_first_instance_enabled(),
+                        },
+                    )
+                    .ok(),
                 material_opaque_compute_pipeline_key: self
                     .render_passes
                     .material_opaque
@@ -120,31 +198,31 @@ impl AwsmRenderer {
             };
 
             if mesh.hud {
-                hud.push(renderable.clone());
+                pool.hud.push(renderable);
             } else if self.materials.is_transparency_pass(routing_material) {
-                transparent.push(renderable);
+                pool.transparent.push(renderable);
             } else {
-                opaque.push(renderable);
+                pool.opaque.push(renderable);
             }
         }
 
         if let Some(camera_matrices) = self.camera.last_matrices.as_ref() {
             let view_proj = camera_matrices.view_projection();
-            opaque.sort_by(|a, b| geometry_sort_renderable(ctx, a, b, &view_proj, false));
-            transparent.sort_by(|a, b| geometry_sort_renderable(ctx, a, b, &view_proj, true));
-            hud.sort_by(|a, b| geometry_sort_renderable(ctx, a, b, &view_proj, true));
+            pool.opaque
+                .sort_by(|a, b| geometry_sort_renderable(a, b, &view_proj, false));
+            pool.transparent
+                .sort_by(|a, b| geometry_sort_renderable(a, b, &view_proj, true));
+            pool.hud
+                .sort_by(|a, b| geometry_sort_renderable(a, b, &view_proj, true));
         }
 
-        Ok(Renderables {
-            opaque,
-            transparent,
-            hud,
-        })
+        // Put the populated pool back; the mutable borrow ends here.
+        self.renderable_pool = pool;
+        Ok(())
     }
 }
 
 fn geometry_sort_renderable(
-    ctx: &RenderContext,
     a: &Renderable,
     b: &Renderable,
     view_proj: &Mat4,
@@ -162,13 +240,13 @@ fn geometry_sort_renderable(
     // decide.
     if !transparent {
         match (
-            a.geometry_render_pipeline_key(ctx),
-            b.geometry_render_pipeline_key(ctx),
+            a.geometry_render_pipeline_key,
+            b.geometry_render_pipeline_key,
         ) {
-            (Err(_), Err(_)) => return std::cmp::Ordering::Equal,
-            (Err(_), Ok(_)) => return std::cmp::Ordering::Greater,
-            (Ok(_), Err(_)) => return std::cmp::Ordering::Less,
-            (Ok(key_a), Ok(key_b)) => {
+            (None, None) => return std::cmp::Ordering::Equal,
+            (None, Some(_)) => return std::cmp::Ordering::Greater,
+            (Some(_), None) => return std::cmp::Ordering::Less,
+            (Some(key_a), Some(key_b)) => {
                 let pipeline_ordering = key_a.cmp(&key_b);
                 if pipeline_ordering != std::cmp::Ordering::Equal {
                     return pipeline_ordering;
@@ -177,7 +255,7 @@ fn geometry_sort_renderable(
         }
     }
 
-    match (a.world_aabb(), b.world_aabb()) {
+    match (a.world_aabb.as_ref(), b.world_aabb.as_ref()) {
         (Some(a_world_aabb), Some(b_world_aabb)) => {
             let a_min_z = view_proj.transform_point3(a_world_aabb.min).z;
             let a_max_z = view_proj.transform_point3(a_world_aabb.max).z;
@@ -204,60 +282,56 @@ fn geometry_sort_renderable(
     }
 }
 
-/// Single renderable entity.
+/// Single renderable entity. No lifetime — all fields are owned or
+/// `Copy`. The [`RenderablePool`] on [`AwsmRenderer`] stores these
+/// frame-to-frame and clears in place.
 #[derive(Debug, Clone)]
-pub enum Renderable<'a> {
-    Mesh {
-        key: MeshKey,
-        mesh: &'a Mesh,
-        material_opaque_compute_pipeline_key: Option<ComputePipelineKey>,
-        material_transparent_render_pipeline_key: Option<RenderPipelineKey>,
-    },
+pub struct Renderable {
+    /// Stable mesh identity; pass-time lookups (`ctx.meshes.get(key)`)
+    /// retrieve any field this struct doesn't already cache.
+    pub key: MeshKey,
+    /// Snapshot of the mesh's world AABB at the moment of
+    /// collection. Used by depth sorting and as the cull-pass instance
+    /// bounds. Cloned (24 B) so the renderable doesn't borrow from
+    /// `meshes`.
+    pub world_aabb: Option<Aabb>,
+    pub instanced: bool,
+    pub double_sided: bool,
+    pub cull_mode: CullMode,
+    pub hud: bool,
+    pub material_key: MaterialKey,
+    /// Precomputed at collection time so the per-frame sort
+    /// comparator stays free of `RenderContext` access (which lets
+    /// `collect_renderables` populate the pool before `ctx` is built).
+    pub geometry_render_pipeline_key: Option<RenderPipelineKey>,
+    pub material_opaque_compute_pipeline_key: Option<ComputePipelineKey>,
+    pub material_transparent_render_pipeline_key: Option<RenderPipelineKey>,
 }
 
-impl Renderable<'_> {
+impl Renderable {
     /// Returns the geometry render pipeline key.
-    pub fn geometry_render_pipeline_key(&self, ctx: &RenderContext) -> Result<RenderPipelineKey> {
-        match self {
-            Self::Mesh { mesh, .. } => mesh.geometry_render_pipeline_key(ctx),
-        }
+    pub fn geometry_render_pipeline_key(&self) -> Option<RenderPipelineKey> {
+        self.geometry_render_pipeline_key
     }
 
     /// Returns the opaque compute pipeline key, if any.
     pub fn material_opaque_compute_pipeline_key(&self) -> Option<ComputePipelineKey> {
-        match self {
-            Self::Mesh {
-                material_opaque_compute_pipeline_key,
-                ..
-            } => *material_opaque_compute_pipeline_key,
-        }
+        self.material_opaque_compute_pipeline_key
     }
 
     /// Returns the transparent render pipeline key, if any.
-    pub fn material_transparent_render_pipeline_key(
-        &self,
-        _ctx: &RenderContext,
-    ) -> Option<RenderPipelineKey> {
-        match self {
-            Self::Mesh {
-                material_transparent_render_pipeline_key,
-                ..
-            } => *material_transparent_render_pipeline_key,
-        }
+    pub fn material_transparent_render_pipeline_key(&self) -> Option<RenderPipelineKey> {
+        self.material_transparent_render_pipeline_key
     }
 
     /// Returns the material key for this renderable.
-    pub fn material_key(&self) -> crate::materials::MaterialKey {
-        match self {
-            Self::Mesh { mesh, .. } => mesh.material_key,
-        }
+    pub fn material_key(&self) -> MaterialKey {
+        self.material_key
     }
 
-    /// Returns the world-space AABB, if present.
-    pub fn world_aabb(&self) -> Option<&'_ Aabb> {
-        match self {
-            Self::Mesh { mesh, .. } => mesh.world_aabb.as_ref(),
-        }
+    /// Returns the world-space AABB snapshot, if present.
+    pub fn world_aabb(&self) -> Option<&Aabb> {
+        self.world_aabb.as_ref()
     }
 
     /// Pushes geometry pass commands for this renderable.
@@ -267,11 +341,8 @@ impl Renderable<'_> {
         render_pass: &RenderPassEncoder,
         geometry_bind_groups: &GeometryBindGroups,
     ) -> Result<()> {
-        match self {
-            Self::Mesh { mesh, key, .. } => {
-                mesh.push_geometry_pass_commands(ctx, *key, render_pass, geometry_bind_groups)
-            }
-        }
+        let mesh = ctx.meshes.get(self.key)?;
+        mesh.push_geometry_pass_commands(ctx, self.key, render_pass, geometry_bind_groups)
     }
 
     /// Pushes transparent material pass commands for this renderable.
@@ -281,14 +352,8 @@ impl Renderable<'_> {
         render_pass: &RenderPassEncoder,
         mesh_material_bind_group: &web_sys::GpuBindGroup,
     ) -> Result<()> {
-        match self {
-            Self::Mesh { mesh, key, .. } => mesh.push_material_transparent_pass_commands(
-                ctx,
-                *key,
-                render_pass,
-                mesh_material_bind_group,
-            ),
-        }
+        let mesh = ctx.meshes.get(self.key)?;
+        mesh.push_material_transparent_pass_commands(ctx, self.key, render_pass, mesh_material_bind_group)
     }
 }
 

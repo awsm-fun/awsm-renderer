@@ -131,8 +131,8 @@ impl GeometryRenderPass {
 
         let mut last_render_pipeline_key = None;
         for renderable in renderables {
-            match renderable.geometry_render_pipeline_key(ctx) {
-                Ok(render_pipeline_key) => {
+            match renderable.geometry_render_pipeline_key() {
+                Some(render_pipeline_key) => {
                     if last_render_pipeline_key != Some(render_pipeline_key) {
                         render_pass.set_pipeline(ctx.pipelines.render.get(render_pipeline_key)?);
                         last_render_pipeline_key = Some(render_pipeline_key);
@@ -140,13 +140,17 @@ impl GeometryRenderPass {
 
                     renderable.push_geometry_pass_commands(ctx, &render_pass, &self.bind_groups)?;
                 }
-                Err(err) => {
-                    debug_unique_string(DEBUG_ID_RENDERABLE, &err.to_string(), || {
-                        tracing::warn!(
-                            "Skipping renderable in Geometry Pass due to missing pipeline: {:?}",
-                            renderable
-                        )
-                    });
+                None => {
+                    debug_unique_string(
+                        DEBUG_ID_RENDERABLE,
+                        &format!("missing pipeline for mesh {:?}", renderable.key),
+                        || {
+                            tracing::warn!(
+                                "Skipping renderable in Geometry Pass due to missing pipeline: {:?}",
+                                renderable
+                            )
+                        },
+                    );
                 }
             }
         }
