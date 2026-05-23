@@ -133,6 +133,17 @@ pub struct Bridge {
     pub light_node_ids: Mutex<std::collections::HashSet<NodeId>>,
     /// Mirror of [`light_node_ids`] for Decal kinds.
     pub decal_node_ids: Mutex<std::collections::HashSet<NodeId>>,
+    /// Mirror for Collider kinds. Iterated by
+    /// `collider_wireframe::render::collect_shapes` each frame to
+    /// rebuild the editor's collider wireframe overlay; an indexed
+    /// set means a large art scene doesn't pay an O(N) walk +
+    /// kind-clone per frame just to find the (typically few)
+    /// collider authoring nodes.
+    pub collider_node_ids: Mutex<std::collections::HashSet<NodeId>>,
+    /// Mirror for Camera kinds. Iterated by
+    /// `collider_wireframe::render::collect_cameras` each frame to
+    /// draw the editor's camera-frustum wireframes.
+    pub camera_node_ids: Mutex<std::collections::HashSet<NodeId>>,
 }
 
 impl Bridge {
@@ -144,6 +155,8 @@ impl Bridge {
             nodes_revision: Mutable::new(0),
             light_node_ids: Mutex::new(std::collections::HashSet::new()),
             decal_node_ids: Mutex::new(std::collections::HashSet::new()),
+            collider_node_ids: Mutex::new(std::collections::HashSet::new()),
+            camera_node_ids: Mutex::new(std::collections::HashSet::new()),
         })
     }
 
@@ -376,6 +389,8 @@ async fn remove_node(node_id: NodeId) {
         let bridge = bridge();
         bridge.light_node_ids.lock().unwrap().remove(&node_id);
         bridge.decal_node_ids.lock().unwrap().remove(&node_id);
+        bridge.collider_node_ids.lock().unwrap().remove(&node_id);
+        bridge.camera_node_ids.lock().unwrap().remove(&node_id);
     }
 
     with_renderer_mut(|r| {
@@ -492,21 +507,41 @@ fn spawn_visibility_observer(node: Arc<Node>, entry: Arc<RendererNode>) {
 /// effective visibility to each descendant. Called whenever any node's
 /// own `visible` flag changes — descendants inherit ancestors so the
 /// only correct response is to recompute the subtree.
+///
+/// One pre-order DFS pass: visit each node once, AND its own
+/// `node.visible` into the inherited "ancestors-so-far visibility"
+/// (computed once via [`ancestors_all_visible_to`] for the root). The
+/// prior implementation walked all descendants, then re-walked each
+/// descendant's ancestor chain to the root — O(N×depth) per subtree
+/// flip. This is O(N + root-depth) — the descendant walk plus the
+/// single ancestor walk for the root.
 pub fn apply_visibility_subtree(node_id: NodeId) {
     let scene = app_state().scene.clone();
-    let descendants = collect_descendants_inclusive(&scene, node_id);
-    for desc_id in descendants {
-        let visible = compute_effective_visibility(&scene, desc_id);
-        apply_visibility_to_node(desc_id, visible);
+    let Some(root) = crate::scene::mutate::find_by_id(&scene, node_id) else {
+        return;
+    };
+    // Inherited visibility for the root: AND of every ancestor's
+    // `visible`. `find_parent` returns `None` at the scene root, which
+    // is the implicit "always visible" sentinel.
+    let inherited = ancestors_all_visible_to(&scene, node_id);
+
+    fn walk(node: &Arc<Node>, inherited: bool) {
+        let effective = inherited && node.visible.get();
+        apply_visibility_to_node(node.id, effective);
+        for child in node.children.lock_ref().iter() {
+            walk(child, effective);
+        }
     }
+    walk(&root, inherited);
 }
 
-/// `node_id`'s effective visibility is `node.visible AND ancestors.visible`.
-/// Walks parent-by-parent to the root via `mutate::find_parent`. Missing
-/// nodes (e.g. removed mid-flight) short-circuit to `true`.
-fn compute_effective_visibility(scene: &crate::scene::Scene, node_id: NodeId) -> bool {
+/// Walks strictly *above* `node_id` — returns true iff every ancestor
+/// of `node_id` has `visible == true`. The node itself isn't checked.
+/// Missing nodes short-circuit to `true` (matches the prior helper's
+/// "nothing to AND, treat as visible" semantics for the root).
+fn ancestors_all_visible_to(scene: &crate::scene::Scene, node_id: NodeId) -> bool {
     use crate::scene::mutate;
-    let mut current = mutate::find_by_id(scene, node_id);
+    let mut current = mutate::find_parent(scene, node_id);
     while let Some(node) = current {
         if !node.visible.get() {
             return false;
@@ -514,24 +549,6 @@ fn compute_effective_visibility(scene: &crate::scene::Scene, node_id: NodeId) ->
         current = mutate::find_parent(scene, node.id);
     }
     true
-}
-
-/// Depth-first pre-order collection of `node_id` + every descendant's
-/// `NodeId`. Returns an empty vec if the node has been removed.
-fn collect_descendants_inclusive(scene: &crate::scene::Scene, node_id: NodeId) -> Vec<NodeId> {
-    use crate::scene::mutate;
-    let Some(root) = mutate::find_by_id(scene, node_id) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    fn walk(node: &Arc<Node>, out: &mut Vec<NodeId>) {
-        out.push(node.id);
-        for child in node.children.lock_ref().iter() {
-            walk(child, out);
-        }
-    }
-    walk(&root, &mut out);
-    out
 }
 
 /// Update `effective_visible` on the bridge entry and push the new
@@ -543,7 +560,21 @@ fn apply_visibility_to_node(node_id: NodeId, visible: bool) {
         Some(e) => e,
         None => return,
     };
-    *entry.effective_visible.lock().unwrap() = visible;
+    // Identity guard: if the effective visibility is unchanged, skip
+    // the snapshot + `with_renderer_mut` round-trip entirely.
+    // `apply_visibility_subtree` walks every descendant on any
+    // ancestor flip; for typical edits only one node's own
+    // `visible` actually changed, so most descendants land here
+    // with the same value they already had.
+    let prev = {
+        let mut slot = entry.effective_visible.lock().unwrap();
+        let prev = *slot;
+        *slot = visible;
+        prev
+    };
+    if prev == visible {
+        return;
+    }
 
     // Snapshot the current mesh list so we can release the bridge lock
     // before crossing the renderer await.
@@ -625,8 +656,39 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
     // their last-applied-kind state updated.
     *entry.last_applied_kind.lock().unwrap() = Some(kind.clone());
 
+    // Maintain the per-frame index sets keyed by NodeKind variant.
+    // The clear_* helpers already drop the entry from light_node_ids
+    // / decal_node_ids; here we drop it from the collider / camera
+    // indices on every transition (set removal is O(1) and the
+    // "absent" case is a no-op) and re-add it in the new kind's arm
+    // below. This way the bridge's per-frame walks
+    // (`collider_wireframe::render::collect_*`) iterate only the
+    // entries that own the matching kind, instead of the full
+    // bridge table.
+    {
+        let bridge = bridge();
+        bridge
+            .collider_node_ids
+            .lock()
+            .unwrap()
+            .remove(&entry.node_id);
+        bridge
+            .camera_node_ids
+            .lock()
+            .unwrap()
+            .remove(&entry.node_id);
+    }
+
     match kind {
-        NodeKind::Group | NodeKind::Collider(_) | NodeKind::Camera(_) => {
+        NodeKind::Group => {
+            apply_kind_passive(&entry);
+        }
+        NodeKind::Collider(_) => {
+            bridge().collider_node_ids.lock().unwrap().insert(entry.node_id);
+            apply_kind_passive(&entry);
+        }
+        NodeKind::Camera(_) => {
+            bridge().camera_node_ids.lock().unwrap().insert(entry.node_id);
             apply_kind_passive(&entry);
         }
         NodeKind::Primitive { .. }
