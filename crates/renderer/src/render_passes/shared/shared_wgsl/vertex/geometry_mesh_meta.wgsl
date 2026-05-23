@@ -26,15 +26,20 @@ struct GeometryMeshMeta {
     // points at the camera). See `BillboardMode` in `meshes/mesh.rs`.
     billboard_mode: u32,
     // Pad the struct out to `GEOMETRY_MESH_META_BYTE_ALIGNMENT` (256 B)
-    // so the storage-array binding shape matches
-    // the CPU buffer layout. The CPU side strides slots at 256 B
-    // because the *legacy* uniform-with-dynamic-offset path's
-    // dynamic-offset alignment requires it; the two bindings now share
-    // one physical buffer, so the WGSL struct stride must agree.
-    // Without the padding, `array<GeometryMeshMeta>[N]` for N > 0
-    // reads garbage from the previous slot's padding region — which
-    // manifests as black morph meshes, wrong skinning offsets, and
-    // wrong material_mesh_meta_offset for every mesh past slot 0.
-    // 12 active u32s + 52 padding u32s = 64 u32s = 256 B.
-    _pad: array<u32, 52>
+    // so the storage-array binding shape matches the CPU buffer
+    // layout. The CPU side strides slots at 256 B because the
+    // uniform-with-dynamic-offset path's dynamic-offset alignment
+    // requires it; the same physical buffer backs both bindings, so
+    // the WGSL struct stride must agree.
+    //
+    // The padding is `array<vec4<u32>, 13>` (not `array<u32, 52>`)
+    // because when this struct is bound as a `uniform` (the
+    // instanced path, and the non-instanced portable path when
+    // `indirect_first_instance` is off), WGSL requires every array
+    // inside the uniform address space to have a 16-byte-aligned
+    // stride. Safari enforces this strictly; Chrome lets a
+    // `u32`-stride pass. 13 × 16 B = 208 B padding + 48 B active =
+    // 256 B total. Layout matches the prior `array<u32, 52>` shape
+    // byte-for-byte from the CPU's perspective.
+    _pad: array<vec4<u32>, 13>
 }
