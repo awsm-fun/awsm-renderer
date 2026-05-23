@@ -364,11 +364,11 @@ impl MaterialTransparentBindGroups {
     }
 
     /// Recreates the shadow bind group for transparent materials.
-    /// Placeholder — the bind group itself is built but isn't
-    /// currently set on the pipeline because `maxBindGroups = 4` on
-    /// the target adapter and the transparent pass's other bind
-    /// groups already saturate the budget. Consolidating those
-    /// existing groups is the prerequisite to wiring this in.
+    /// Bound at slot 1 by `MaterialTransparentRenderPass::render`
+    /// (after 16.B folded lights into `main`, freeing the slot).
+    /// Transparent is at the adapter's `maxBindGroups = 4` ceiling
+    /// — adding any *further* bind group would exceed budget without
+    /// consolidating something else first.
     pub fn recreate_shadows(&mut self, ctx: &BindGroupRecreateContext<'_>) -> Result<()> {
         let entries = build_shadow_bind_group_entries(ctx);
 
