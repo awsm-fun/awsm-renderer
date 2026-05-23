@@ -49,6 +49,15 @@ pub struct MeshLightIndicesGpu {
     /// prefix. The lighting shader applies these to every mesh
     /// unconditionally.
     directional_count: u32,
+    /// `true` if the prior frame uploaded any per-mesh light slices.
+    /// Gates the per-frame `zero_all_mesh_light_slices` walk: when
+    /// both the prior frame *and* this frame have no per-mesh entries,
+    /// every slice in `MaterialMeshMeta` is already zero and the walk
+    /// is a no-op write fest over every registered mesh. Skipping
+    /// saves an O(meshes) loop on scenes with no overlapping point /
+    /// spot lights — including every scene that uses only directional
+    /// lights, which are handled by the global prefix path.
+    prior_frame_had_per_mesh: bool,
 }
 
 impl MeshLightIndicesGpu {
@@ -69,6 +78,7 @@ impl MeshLightIndicesGpu {
             indices_scratch: Vec::with_capacity(initial_indices_capacity),
             indices_len: 0,
             directional_count: 0,
+            prior_frame_had_per_mesh: false,
         })
     }
 
@@ -103,21 +113,29 @@ impl MeshLightIndicesGpu {
         bind_groups: &mut crate::bind_groups::BindGroups,
     ) -> Result<(), awsm_renderer_core::error::AwsmCoreError> {
         let per_mesh = buckets.transpose_per_mesh(lights);
+        let has_per_mesh = !per_mesh.is_empty();
+
+        // Fast path for scenes with no overlapping point / spot lights.
+        // The slice fields in every mesh's `MaterialMeshMeta` are
+        // already zero (either from the prior frame's
+        // `zero_all_mesh_light_slices`, or from initialization), so
+        // there's nothing to patch this frame. Bumping the
+        // `directional_count` is still required — that prefix size can
+        // change frame-to-frame even when no point lights are involved.
+        if !self.prior_frame_had_per_mesh && !has_per_mesh {
+            self.indices_len = 0;
+            self.directional_count = buckets.directional_light_indices().len() as u32;
+            return Ok(());
+        }
 
         // ── Build indices buffer + patch per-mesh slice fields ────────
         self.indices_scratch.clear();
         // The previous-frame patch needs to be zeroed first for every
         // mesh that's no longer in the bucket — otherwise a mesh that
         // dropped out of every light's range would keep its stale
-        // count. Easier than tracking which meshes were patched last
-        // frame: walk `per_mesh` directly and patch every mesh in it;
-        // the rest stay at whatever they were. For meshes that lose
-        // their last light, that means their old `count` stays — a
-        // visible bug. Mitigation: zero all slices first.
-        //
-        // Cheap path: zero the slice fields for every mesh that has a
-        // meta entry. The dirty-range mechanism coalesces — runs of
-        // zero patches collapse into one write.
+        // count. Walk every mesh that has a meta entry and write zero;
+        // the dirty-range mechanism coalesces runs of adjacent zero
+        // patches into one buffer write.
         meshes.meta.zero_all_mesh_light_slices();
 
         for (mesh_key, light_indices) in per_mesh.iter() {
@@ -173,6 +191,8 @@ impl MeshLightIndicesGpu {
                 None,
             )?;
         }
+
+        self.prior_frame_had_per_mesh = has_per_mesh;
 
         Ok(())
     }

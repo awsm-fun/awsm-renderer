@@ -525,14 +525,69 @@ pub fn apply_visibility_subtree(node_id: NodeId) {
     // is the implicit "always visible" sentinel.
     let inherited = ancestors_all_visible_to(&scene, node_id);
 
-    fn walk(node: &Arc<Node>, inherited: bool) {
+    // Batched mesh-visibility ops: collect every descendant whose
+    // `effective_visible` actually flipped, then issue ONE
+    // `with_renderer_mut` for the whole subtree. The prior
+    // implementation spawned one `spawn_local` per descendant, paying
+    // N renderer-lock acquires on every Group hide/show. With the
+    // identity guard inside `update_visibility_entry_returning_meshes`,
+    // most descendants don't contribute any ops at all.
+    let mut pending_meshes: Vec<(awsm_renderer::meshes::MeshKey, bool)> = Vec::new();
+
+    fn walk(
+        node: &Arc<Node>,
+        inherited: bool,
+        pending_meshes: &mut Vec<(awsm_renderer::meshes::MeshKey, bool)>,
+    ) {
         let effective = inherited && node.visible.get();
-        apply_visibility_to_node(node.id, effective);
+        if let Some(meshes) = update_visibility_entry_returning_meshes(node.id, effective) {
+            for mesh in meshes {
+                pending_meshes.push((mesh, effective));
+            }
+        }
         for child in node.children.lock_ref().iter() {
-            walk(child, effective);
+            walk(child, effective, pending_meshes);
         }
     }
-    walk(&root, inherited);
+    walk(&root, inherited, &mut pending_meshes);
+
+    if pending_meshes.is_empty() {
+        return;
+    }
+    spawn_local(async move {
+        with_renderer_mut(move |r| {
+            for (mesh, visible) in pending_meshes {
+                let _ = r.set_mesh_hidden(mesh, !visible);
+            }
+        })
+        .await;
+    });
+}
+
+/// Updates the bridge entry's `effective_visible` to `visible`. Returns
+/// the entry's mesh-key list iff visibility actually flipped AND the
+/// entry has meshes — the caller (currently
+/// [`apply_visibility_subtree`]) is responsible for pushing the
+/// mesh-hide/show through the renderer.
+fn update_visibility_entry_returning_meshes(
+    node_id: NodeId,
+    visible: bool,
+) -> Option<Vec<awsm_renderer::meshes::MeshKey>> {
+    let entry = bridge().nodes.lock().unwrap().get(&node_id).cloned()?;
+    let prev = {
+        let mut slot = entry.effective_visible.lock().unwrap();
+        let prev = *slot;
+        *slot = visible;
+        prev
+    };
+    if prev == visible {
+        return None;
+    }
+    let meshes: Vec<awsm_renderer::meshes::MeshKey> = entry.model_meshes.lock().unwrap().clone();
+    if meshes.is_empty() {
+        return None;
+    }
+    Some(meshes)
 }
 
 /// Walks strictly *above* `node_id` — returns true iff every ancestor
@@ -551,46 +606,6 @@ fn ancestors_all_visible_to(scene: &crate::scene::Scene, node_id: NodeId) -> boo
     true
 }
 
-/// Update `effective_visible` on the bridge entry and push the new
-/// state into the renderer per-kind. Light + Collision read
-/// `effective_visible` themselves each frame, so this only needs to do
-/// direct work for Model nodes.
-fn apply_visibility_to_node(node_id: NodeId, visible: bool) {
-    let entry = match bridge().nodes.lock().unwrap().get(&node_id).cloned() {
-        Some(e) => e,
-        None => return,
-    };
-    // Identity guard: if the effective visibility is unchanged, skip
-    // the snapshot + `with_renderer_mut` round-trip entirely.
-    // `apply_visibility_subtree` walks every descendant on any
-    // ancestor flip; for typical edits only one node's own
-    // `visible` actually changed, so most descendants land here
-    // with the same value they already had.
-    let prev = {
-        let mut slot = entry.effective_visible.lock().unwrap();
-        let prev = *slot;
-        *slot = visible;
-        prev
-    };
-    if prev == visible {
-        return;
-    }
-
-    // Snapshot the current mesh list so we can release the bridge lock
-    // before crossing the renderer await.
-    let meshes: Vec<awsm_renderer::meshes::MeshKey> = entry.model_meshes.lock().unwrap().clone();
-    if meshes.is_empty() {
-        return;
-    }
-    spawn_local(async move {
-        with_renderer_mut(move |r| {
-            for mesh in &meshes {
-                let _ = r.set_mesh_hidden(*mesh, !visible);
-            }
-        })
-        .await;
-    });
-}
 
 async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
     // F-A identity check: if this kind equals the last one we
