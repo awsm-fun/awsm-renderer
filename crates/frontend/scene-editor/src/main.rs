@@ -23,7 +23,7 @@ use wasm_bindgen_futures::spawn_local;
 
 use crate::{
     canvas::render_canvas,
-    context::{create_context, with_canvas},
+    context::{create_context, renderer_handle, with_canvas},
     header::Header,
     sidebar::{SidebarLeft, SidebarRight},
 };
@@ -51,7 +51,11 @@ pub fn main() {
         return;
     }
 
-    awsm_web_shared::util::window::remove_boot_loader();
+    // Boot-loader stays visible through the multi-second cold-start
+    // window — `create_context` compiles ~14 pipelines and loads the
+    // gizmo asset before the editor UI is ready. We update its label
+    // through the phases below and remove it once `ctx_ready` flips.
+    awsm_web_shared::util::window::set_boot_loader_message("Initializing renderer");
     logger::init_logger();
     Modal::init_panic_hook();
     theme::stylesheet::init();
@@ -95,10 +99,40 @@ pub fn main() {
                 spawn_local(async move {
                     match create_context(canvas).await {
                         Ok(_) => {
+                            // Renderer is built; surface the discrete
+                            // phases that actually run before the
+                            // editor's first interactive frame so a
+                            // multi-hundred-ms wait isn't an opaque
+                            // "Loading". The boot-loader label gets
+                            // updated each step; `remove_boot_loader`
+                            // fires once `ctx_ready` flips.
+                            awsm_web_shared::util::window::set_boot_loader_message(
+                                "Compiling shaders",
+                            );
+                            // The renderer's pipelines are already
+                            // built at `AwsmRendererBuilder::build()`
+                            // time (see `AwsmRenderer::prewarm_pipelines`
+                            // doc for the catalogue); calling this is
+                            // a no-op today but holds the phase label
+                            // through the cold compile window and
+                            // gives the dynamic-materials sprint a
+                            // clean hook to extend.
+                            {
+                                let handle = renderer_handle();
+                                let mut r = handle.lock().await;
+                                if let Err(err) = r.prewarm_pipelines().await {
+                                    tracing::warn!("prewarm_pipelines: {err}");
+                                }
+                            }
+                            awsm_web_shared::util::window::set_boot_loader_message(
+                                "Loading editor assets",
+                            );
                             renderer_bridge::init();
                             ctx_ready.set(true);
+                            awsm_web_shared::util::window::remove_boot_loader();
                         }
                         Err(err) => {
+                            awsm_web_shared::util::window::remove_boot_loader();
                             Modal::error(format!("Failed to initialize AppContext: {err}"));
                         }
                     }

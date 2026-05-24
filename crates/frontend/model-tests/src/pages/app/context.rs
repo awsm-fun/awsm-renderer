@@ -28,6 +28,14 @@ pub struct AppContext {
 #[derive(Clone, Debug)]
 pub struct LoadingStatus {
     pub renderer: std::result::Result<bool, String>,
+    /// Set true while `AwsmRenderer::prewarm_pipelines()` runs — the
+    /// trailing edge of the cold-start shader-compile window that
+    /// otherwise hides inside the (already slow) `renderer` phase.
+    /// Surfaced separately so the user can see "Compiling shaders…"
+    /// distinctly from "Initializing renderer…" — particularly on the
+    /// first post-deploy load when the browser's PSO disk cache
+    /// (see PERFORMANCE.md §5g) misses on the new shader hashes.
+    pub shader_prewarm: std::result::Result<bool, String>,
     pub ibl: std::result::Result<bool, String>,
     pub skybox: std::result::Result<bool, String>,
     pub gltf_net: std::result::Result<bool, String>,
@@ -39,6 +47,7 @@ impl Default for LoadingStatus {
     fn default() -> Self {
         Self {
             renderer: Ok(false),
+            shader_prewarm: Ok(false),
             ibl: Ok(false),
             skybox: Ok(false),
             gltf_net: Ok(false),
@@ -51,6 +60,7 @@ impl Default for LoadingStatus {
 impl LoadingStatus {
     pub fn is_loading(&self) -> bool {
         matches!(self.renderer, Ok(true))
+            || matches!(self.shader_prewarm, Ok(true))
             || matches!(self.ibl, Ok(true))
             || matches!(self.skybox, Ok(true))
             || matches!(self.gltf_net, Ok(true))
@@ -63,6 +73,10 @@ impl LoadingStatus {
 
         if let Ok(true) = &self.renderer {
             statuses.push("Initializing Renderer...".to_string());
+        }
+
+        if let Ok(true) = &self.shader_prewarm {
+            statuses.push("Compiling shaders...".to_string());
         }
 
         if let Ok(true) = &self.ibl {
@@ -86,6 +100,7 @@ impl LoadingStatus {
 
     pub fn any_error(&self) -> bool {
         self.renderer.is_err()
+            || self.shader_prewarm.is_err()
             || self.ibl.is_err()
             || self.skybox.is_err()
             || self.gltf_net.is_err()
@@ -98,6 +113,9 @@ impl LoadingStatus {
 
         if let Err(err) = &self.renderer {
             errors.push(format!("Error initializing Renderer: {}", err));
+        }
+        if let Err(err) = &self.shader_prewarm {
+            errors.push(format!("Error compiling shaders: {}", err));
         }
         if let Err(err) = &self.ibl {
             errors.push(format!("Error loading IBL: {}", err));
