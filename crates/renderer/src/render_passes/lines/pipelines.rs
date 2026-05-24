@@ -10,7 +10,6 @@ use awsm_renderer_core::{
         primitive::PrimitiveState,
     },
     renderer::AwsmRendererWebGpu,
-    shaders::{ShaderModuleDescriptor, ShaderModuleExt},
 };
 
 use crate::{
@@ -23,6 +22,7 @@ use crate::{
         render_pipeline::{RenderPipelineCacheKey, RenderPipelineKey},
         Pipelines,
     },
+    render_passes::lines::shader::cache_key::ShaderCacheKeyLine,
     render_textures::RenderTextureFormats,
     shaders::Shaders,
 };
@@ -85,12 +85,14 @@ impl LinePipelines {
 
         let bind_group_layout_key = bind_group_layouts.get_key(gpu, bind_group_layout_cache_key)?;
 
-        let shader_source = include_str!("shader/line_wgsl/line.wgsl");
-        let shader_module = gpu.compile_shader(
-            &ShaderModuleDescriptor::new(shader_source, Some("line shader")).into(),
-        );
-        shader_module.validate_shader().await?;
-        let shader_key = shaders.insert_uncached(shader_module);
+        // Route through the shared `Shaders` cache. The shader has no
+        // per-variant parameters but going through the cache means
+        // `Shaders::ensure_keys` can pre-warm it alongside e.g. the
+        // picker's compute shaders, letting the browser do the
+        // parallel compile. The prior `insert_uncached` shape bypassed
+        // the cache entirely so the line compile always serialised
+        // behind whatever other shader work was in flight.
+        let shader_key = shaders.get_key(gpu, ShaderCacheKeyLine).await?;
 
         let pipeline_layout_key = pipeline_layouts.get_key(
             gpu,

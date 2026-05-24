@@ -64,7 +64,7 @@ use materials::Materials;
 use meshes::Meshes;
 use pipelines::Pipelines;
 use scene_spatial::SceneSpatial;
-use shaders::Shaders;
+use shaders::{ShaderCacheKey, Shaders};
 use textures::Textures;
 use transforms::Transforms;
 
@@ -633,6 +633,30 @@ impl AwsmRendererBuilder {
             },
         )
         .await?;
+
+        // Pre-warm the shader cache with everything Picker + LineRenderer
+        // need before constructing either. Picker has two compute shader
+        // variants (multisampled true/false); LineRenderer has one
+        // (parameter-free). Issuing all three through `ensure_keys` lets
+        // the browser kick off all `compile_shader` calls together and
+        // await every `validate_shader` in parallel — see the doc on
+        // `Shaders::ensure_keys`. The per-pass constructors then proceed
+        // sequentially through `&mut pipelines / &mut shaders`, but the
+        // slow part (shader compile) is already done.
+        shaders
+            .ensure_keys(
+                &gpu,
+                [
+                    ShaderCacheKey::Picker(picker::ShaderCacheKeyPicker {
+                        multisampled_geometry: false,
+                    }),
+                    ShaderCacheKey::Picker(picker::ShaderCacheKeyPicker {
+                        multisampled_geometry: true,
+                    }),
+                    ShaderCacheKey::Line(render_passes::lines::ShaderCacheKeyLine),
+                ],
+            )
+            .await?;
 
         let picker = Picker::new(
             &gpu,

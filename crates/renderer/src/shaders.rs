@@ -13,6 +13,7 @@ use awsm_renderer_core::shaders::ShaderModuleExt;
 use crate::{
     picker::{ShaderCacheKeyPicker, ShaderTemplatePicker},
     render_passes::{
+        lines::shader::{cache_key::ShaderCacheKeyLine, template::ShaderTemplateLine},
         shader_cache_key::ShaderCacheKeyRenderPass, shader_template::ShaderTemplateRenderPass,
     },
     shadows::shader::{cache_key::ShaderCacheKeyShadow, template::ShaderTemplateShadow},
@@ -152,6 +153,10 @@ pub enum ShaderCacheKey {
     RenderPass(ShaderCacheKeyRenderPass),
     Picker(ShaderCacheKeyPicker),
     Shadow(ShaderCacheKeyShadow),
+    /// Fat-line shader (renderer-built editor / debug overlays).
+    /// Hoisted out of `RenderPass` for the same reason as `Picker` —
+    /// it's a top-level renderer concern, not a per-pass variant.
+    Line(ShaderCacheKeyLine),
 }
 
 /// Shader template variants for renderer-managed shaders.
@@ -159,6 +164,7 @@ pub enum ShaderTemplate {
     RenderPass(ShaderTemplateRenderPass),
     Picker(ShaderTemplatePicker),
     Shadow(ShaderTemplateShadow),
+    Line(ShaderTemplateLine),
 }
 
 impl TryFrom<&ShaderCacheKey> for ShaderTemplate {
@@ -171,6 +177,7 @@ impl TryFrom<&ShaderCacheKey> for ShaderTemplate {
             }
             ShaderCacheKey::Picker(cache_key) => Ok(ShaderTemplate::Picker(cache_key.into())),
             ShaderCacheKey::Shadow(cache_key) => Ok(ShaderTemplate::Shadow(cache_key.try_into()?)),
+            ShaderCacheKey::Line(cache_key) => Ok(ShaderTemplate::Line(cache_key.try_into()?)),
         }
     }
 }
@@ -196,6 +203,7 @@ impl ShaderTemplate {
             ShaderTemplate::RenderPass(tmpl) => tmpl.debug_label(),
             ShaderTemplate::Picker(tmpl) => tmpl.debug_label(),
             ShaderTemplate::Shadow(tmpl) => tmpl.debug_label(),
+            ShaderTemplate::Line(tmpl) => tmpl.debug_label(),
         }
     }
 
@@ -205,6 +213,7 @@ impl ShaderTemplate {
             ShaderTemplate::RenderPass(tmpl) => tmpl.into_source()?,
             ShaderTemplate::Picker(tmpl) => tmpl.into_source()?,
             ShaderTemplate::Shadow(tmpl) => tmpl.into_source()?,
+            ShaderTemplate::Line(tmpl) => tmpl.into_source()?,
         };
         //tracing::info!("{:#?}", tmpl);
         // print_shader_source(&source, true);

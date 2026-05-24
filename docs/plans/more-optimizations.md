@@ -21,33 +21,6 @@ in both Chrome and Safari from the running editor.
 
 ## Phase 1 — Renderer init parallelization
 
-### 1.1 🚀 Refactor `RenderPassInitContext.gpu` from `&mut` to `&`
-
-[crates/renderer/src/render_passes.rs:119](../../crates/renderer/src/render_passes.rs) — `gpu: &'a mut AwsmRendererWebGpu`
-is never actually mutated downstream; the `&mut` is the *only* thing
-blocking `RenderTextures::new` from running concurrently with
-`RenderPasses::new` (the previous sprint had to settle for inner
-`try_join3` in `RenderTextures::new`). Walk every consumer; the
-WebGPU device handle is clonable / wrapped enough that `&` should be
-sufficient.
-
-After landing, wrap `RenderPasses::new` + `RenderTextures::new` in
-`futures::future::try_join` in [lib.rs](../../crates/renderer/src/lib.rs) — they share no
-mutable state (one takes `&mut shaders/pipelines/...`, the other
-takes owned `RenderTextureFormats` + `&gpu`).
-
-### 1.2 🚀 Pre-warm LineRenderer shaders in parallel with Picker
-
-Both currently serialize through `&mut shaders / pipelines /
-bind_group_layouts`. Approach: collect both passes' shader cache
-keys up-front, issue a single `shaders.ensure_keys` batch, then
-construct both with the cache already warm. **Prerequisite:**
-`LineRenderer` currently uses `shaders.insert_uncached` so its
-shader bypasses the cache entirely — needs a small refactor to a
-cache-keyed shader before `ensure_keys` can help it.
-
----
-
 ## Phase 2 — Per-frame upload consolidation
 
 ### 2.1 🚀 Consolidate per-frame `queue.writeBuffer` calls into a shared staging buffer
@@ -454,6 +427,24 @@ node mutations cascade once per frame instead of once per node.
 For PR context — these shipped in the prior sprint and the
 `indirect-first-instance` sprint before it.
 
+- ✅ Phase 1.2 — Pre-warmed LineRenderer + Picker shader compiles.
+  LineRenderer migrated off `shaders.insert_uncached` onto a real
+  `ShaderCacheKeyLine` (new `ShaderCacheKey::Line` variant + a
+  static `ShaderTemplateLine`). `lib.rs::build` now issues a
+  single `shaders.ensure_keys(...)` for the 1 Line + 2 Picker
+  shader variants before either constructor runs, so the browser
+  kicks off all three `compile_shader`s together and validates
+  them in parallel. The per-pass constructors then run
+  sequentially through `&mut shaders / &mut pipelines` (pipeline
+  state is fast vs. shader compile), but the slow part is
+  pre-warmed.
+- ✅ Phase 1.1 — `RenderPassInitContext.gpu: &mut` → `&`. Walk of
+  every consumer showed nothing actually mutated the handle. With
+  the shared borrow, `RenderPasses::new` + `RenderTextures::new`
+  now run inside a single `futures::future::try_join` in
+  `lib.rs::build` — both want `&gpu`, neither contends on the
+  other's `&mut` fields (RenderTextureFormats is cloned for the
+  textures side).
 - ✅ Phase 0.2 — `read_render_pass_timings(min_count)` measurement
   helper. The per-pass `performance.measure` entries already exist
   (`tracing-web::performance_layer` routes every renderer span
