@@ -35,6 +35,15 @@ pub fn model(file: File) {
                 crate::loading_modal::set("Materializing on GPU…");
                 let outcome = crate::loading_modal::wait_for_models_ready(&inserted).await;
                 if outcome.is_clean() {
+                    // Frame the camera on the just-inserted model so
+                    // it lands centered in view. Without this, small
+                    // models (DamagedHelmet ~2u AABB) under the editor's
+                    // default 36u-away camera show up as a speck and
+                    // look "blank" — even though textures + materials
+                    // are bound correctly. Mirrors `model-tests`'
+                    // `Camera::new_perspective(aabb, …)` behaviour.
+                    let mesh_keys = collect_template_mesh_keys(&template);
+                    super::camera::frame_on_meshes(mesh_keys).await;
                     crate::loading_modal::close();
                 } else {
                     Modal::error(outcome.error_message("Insert Model"));
@@ -283,6 +292,26 @@ fn insert_model_tree(
         template.roots.len()
     );
     inserted
+}
+
+/// Walk every `AssetTemplateNode` in `template` and flatten their
+/// `mesh_keys` into one Vec. Used by Insert Model to auto-frame the
+/// camera on the inserted model's bounds.
+fn collect_template_mesh_keys(template: &AssetTemplate) -> Vec<awsm_renderer::meshes::MeshKey> {
+    fn walk(
+        node: &AssetTemplateNode,
+        out: &mut Vec<awsm_renderer::meshes::MeshKey>,
+    ) {
+        out.extend(node.mesh_keys.iter().copied());
+        for child in &node.children {
+            walk(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    for root in &template.roots {
+        walk(root, &mut out);
+    }
+    out
 }
 
 fn build_editor_subtree(

@@ -751,6 +751,20 @@ work proportionally. At distance ≥ 20 m the visual difference
 is sub-pixel; use the
 `AwsmRenderer::set_mesh_skin_update_period_by_distance` helper.
 
+**Insert Model auto-framing (scene-editor UX).** After a glTF
+materialises on the GPU, the editor calls
+`actions::camera::frame_on_meshes` with the inserted template's
+mesh keys, unions their `world_aabb`s, and re-builds
+`FreeCamera::new_aabb(...)` at margin 1.5 (matching
+`model-tests`). Without this step, small models — e.g.
+`DamagedHelmet` (~2 unit AABB), `Corset` (~0.05 unit AABB) —
+appear as a speck against the editor's default 36-unit-away
+camera and look "blank" even though base color / normal /
+metallic-roughness textures are bound correctly. The user's
+projection mode (Perspective / Orthographic) is preserved, so
+no UI state flips. Programmatic inserts via
+`measurement::insert_model_from_url` get the same treatment.
+
 ---
 
 ## 9. Measurement harness
