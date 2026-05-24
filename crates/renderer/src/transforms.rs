@@ -19,7 +19,7 @@ use slotmap::{new_key_type, SecondaryMap, SlotMap};
 use crate::{
     bind_groups::{BindGroupCreate, BindGroups},
     buffer::dynamic_uniform::DynamicUniformBuffer,
-    buffer::helpers::write_buffer_with_dirty_ranges,
+    buffer::mapped_uploader::MappedUploader,
     meshes::skins::AwsmSkinError,
     AwsmRenderer, AwsmRendererLogging,
 };
@@ -115,6 +115,9 @@ pub struct Transforms {
     pub root_node: TransformKey,
     buffer: DynamicUniformBuffer<TransformKey>,
     pub(crate) gpu_buffer: web_sys::GpuBuffer,
+    /// Mapped-ring upload companion (Phase 2.1). Lazy-initialised on
+    /// first write_gpu call; sized to mirror `gpu_buffer`.
+    uploader: MappedUploader,
 }
 
 static BUFFER_USAGE: LazyLock<BufferUsage> =
@@ -180,7 +183,13 @@ impl Transforms {
             root_node,
             buffer,
             gpu_buffer,
+            uploader: MappedUploader::new("Transforms"),
         })
+    }
+
+    /// Mapped-ring upload telemetry for this subsystem.
+    pub fn upload_stats(&self) -> crate::buffer::mapped_staging_ring::UploadStats {
+        self.uploader.stats()
     }
 
     /// Inserts a transform and returns its key.
@@ -333,15 +342,19 @@ impl Transforms {
             }
 
             if transform_resized {
+                // Post-resize: dest buffer is uninitialised; do a full
+                // overwrite via writeBuffer (the bind-group rebuild
+                // makes upload latency irrelevant here).
                 self.buffer.clear_dirty_ranges();
                 gpu.write_buffer(&self.gpu_buffer, None, self.buffer.raw_slice(), None, None)?;
             } else {
                 let transform_ranges = self.buffer.take_dirty_ranges();
-                write_buffer_with_dirty_ranges(
+                self.uploader.write_dirty_ranges(
                     gpu,
                     &self.gpu_buffer,
+                    self.buffer.raw_slice().len(),
                     self.buffer.raw_slice(),
-                    transform_ranges,
+                    &transform_ranges,
                 )?;
             }
 

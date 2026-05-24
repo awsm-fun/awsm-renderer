@@ -48,7 +48,6 @@ use awsm_renderer_core::{
     renderer::AwsmRendererWebGpu,
 };
 use std::sync::LazyLock;
-use thiserror::Error;
 use wasm_bindgen_futures::{spawn_local, JsFuture};
 use web_sys::js_sys::Uint8Array;
 
@@ -161,7 +160,7 @@ impl<'a> MappedSlotWrite<'a> {
         encoder: &CommandEncoder,
         dest: &web_sys::GpuBuffer,
         copy_ranges: &[(usize, usize)],
-    ) -> Result<(), MappedRingError> {
+    ) -> Result<(), AwsmCoreError> {
         // unmap before copy — WebGPU forbids mapped buffers as copy
         // sources.
         self.ring.slots[self.slot_index].buffer.unmap();
@@ -171,15 +170,13 @@ impl<'a> MappedSlotWrite<'a> {
             if *size == 0 {
                 continue;
             }
-            encoder
-                .copy_buffer_to_buffer(
-                    &self.ring.slots[self.slot_index].buffer,
-                    *offset as u32,
-                    dest,
-                    *offset as u32,
-                    *size as u32,
-                )
-                .map_err(MappedRingError::from_core)?;
+            encoder.copy_buffer_to_buffer(
+                &self.ring.slots[self.slot_index].buffer,
+                *offset as u32,
+                dest,
+                *offset as u32,
+                *size as u32,
+            )?;
         }
 
         let total: usize = copy_ranges.iter().map(|(_, s)| *s).sum();
@@ -213,23 +210,6 @@ impl<'a> Drop for MappedSlotWrite<'a> {
     }
 }
 
-/// Errors out of [`MappedStagingRing`].
-#[derive(Debug, Error)]
-pub enum MappedRingError {
-    #[error("WebGPU buffer creation failed: {0}")]
-    BufferCreate(String),
-    #[error("getMappedRange failed: {0}")]
-    MappedRange(String),
-    #[error("copyBufferToBuffer failed: {0}")]
-    Copy(String),
-}
-
-impl MappedRingError {
-    fn from_core(err: AwsmCoreError) -> Self {
-        Self::Copy(format!("{err}"))
-    }
-}
-
 /// Triple-buffered (by default) ring of `MAP_WRITE | COPY_SRC` slots.
 ///
 /// Sized to match a single destination buffer; on dest growth the ring
@@ -255,7 +235,7 @@ impl MappedStagingRing {
         depth: usize,
         capacity: usize,
         label: impl Into<String>,
-    ) -> Result<Self, MappedRingError> {
+    ) -> Result<Self, AwsmCoreError> {
         let depth = depth.max(MIN_RING_DEPTH);
         let label = label.into();
         let mut slots = Vec::with_capacity(depth);
@@ -301,7 +281,7 @@ impl MappedStagingRing {
         &mut self,
         gpu: &AwsmRendererWebGpu,
         new_capacity: usize,
-    ) -> Result<(), MappedRingError> {
+    ) -> Result<(), AwsmCoreError> {
         if new_capacity == self.slot_capacity {
             return Ok(());
         }
@@ -489,12 +469,10 @@ impl MappedStagingRing {
         gpu: &AwsmRendererWebGpu,
         capacity: usize,
         label: &str,
-    ) -> Result<Slot, MappedRingError> {
+    ) -> Result<Slot, AwsmCoreError> {
         let descriptor = BufferDescriptor::new(Some(label), capacity, *STAGING_USAGE)
             .with_mapped_at_creation(true);
-        let buffer = gpu
-            .create_buffer(&descriptor.into())
-            .map_err(|err| MappedRingError::BufferCreate(format!("{err}")))?;
+        let buffer = gpu.create_buffer(&descriptor.into())?;
         Ok(Slot {
             buffer,
             state: SlotState::Mapped,

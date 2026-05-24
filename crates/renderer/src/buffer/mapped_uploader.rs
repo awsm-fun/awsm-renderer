@@ -28,24 +28,11 @@
 //! Dynamic" to "alongside Dynamic at the call site." Migration of
 //! every per-frame writeBuffer site is still in-scope.
 
-use awsm_renderer_core::{
-    command::CommandEncoder, error::AwsmCoreError, renderer::AwsmRendererWebGpu,
-};
+use awsm_renderer_core::{error::AwsmCoreError, renderer::AwsmRendererWebGpu};
 
 use crate::buffer::mapped_staging_ring::{
-    AcquireOutcome, MappedRingError, MappedStagingRing, UploadStats, DEFAULT_RING_DEPTH,
+    AcquireOutcome, MappedStagingRing, UploadStats, DEFAULT_RING_DEPTH,
 };
-
-use thiserror::Error;
-
-/// Errors out of [`MappedUploader`].
-#[derive(Debug, Error)]
-pub enum MappedUploaderError {
-    #[error(transparent)]
-    Ring(#[from] MappedRingError),
-    #[error(transparent)]
-    Core(#[from] AwsmCoreError),
-}
 
 /// Per-call-site mapped-upload companion. See module docs.
 pub struct MappedUploader {
@@ -115,12 +102,11 @@ impl MappedUploader {
     pub fn write_dirty_ranges(
         &mut self,
         gpu: &AwsmRendererWebGpu,
-        encoder: &CommandEncoder,
         dest: &web_sys::GpuBuffer,
         dest_size: usize,
         raw_data: &[u8],
         ranges: &[(usize, usize)],
-    ) -> Result<(), MappedUploaderError> {
+    ) -> Result<(), AwsmCoreError> {
         if ranges.is_empty() || raw_data.is_empty() {
             return Ok(());
         }
@@ -133,6 +119,15 @@ impl MappedUploader {
             .as_mut()
             .expect("ring is created by ensure_ring above");
 
+        // The MappedUploader owns a single ephemeral CommandEncoder per
+        // call so the copy_buffer_to_buffer command can be submitted
+        // immediately — this avoids threading a shared encoder through
+        // every renderer subsystem's `write_gpu(..)` signature (14 call
+        // sites). Submit cost is small (a few µs); we trade a handful
+        // of per-frame submits for keeping the existing
+        // `(logging, gpu, bind_groups)` signature stable everywhere.
+        let encoder = gpu.create_command_encoder(Some(&self.label));
+
         let exhausted = match ring.acquire() {
             AcquireOutcome::Acquired(slot) => {
                 // Memcpy each dirty range into the matching slot offset.
@@ -142,7 +137,8 @@ impl MappedUploader {
                         slot.write(*off, &raw_data[*off..end]);
                     }
                 }
-                slot.finalize(encoder, dest, ranges)?;
+                slot.finalize(&encoder, dest, ranges)?;
+                gpu.submit_commands(&encoder.finish());
                 false
             }
             AcquireOutcome::Exhausted => true,
@@ -179,7 +175,7 @@ impl MappedUploader {
         dest: &web_sys::GpuBuffer,
         offset: usize,
         bytes: &[u8],
-    ) -> Result<(), MappedUploaderError> {
+    ) -> Result<(), AwsmCoreError> {
         gpu.write_buffer(dest, Some(offset), bytes, None, None)?;
         if let Some(ring) = &mut self.ring {
             ring.note_writebuffer_bytes(bytes.len() as u64);
@@ -216,7 +212,7 @@ impl MappedUploader {
         &mut self,
         gpu: &AwsmRendererWebGpu,
         dest_size: usize,
-    ) -> Result<(), MappedUploaderError> {
+    ) -> Result<(), AwsmCoreError> {
         if dest_size == 0 {
             return Ok(());
         }
