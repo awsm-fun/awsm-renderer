@@ -304,7 +304,7 @@ impl AwsmRenderer {
         &'static str,
         crate::buffer::mapped_staging_ring::UploadStats,
     )> {
-        vec![
+        let mut v = vec![
             ("transforms", self.transforms.upload_stats()),
             ("materials", self.materials.upload_stats()),
             (
@@ -352,7 +352,19 @@ impl AwsmRenderer {
                 self.textures.texture_transforms_upload_stats(),
             ),
             ("meshes.pool", self.meshes.upload_stats()),
-        ]
+            // Phase-2.1 raw-writeBuffer promotions (this sprint):
+            ("camera", self.camera.upload_stats()),
+            ("lights", self.lights.upload_stats()),
+            (
+                "mesh_light_indices",
+                self.mesh_light_indices_gpu.upload_stats(),
+            ),
+            ("shadows", self.shadows.upload_stats()),
+        ];
+        if let Some(occ) = self.occlusion_buffers.as_ref() {
+            v.push(("occlusion", occ.upload_stats()));
+        }
+        v
     }
 }
 

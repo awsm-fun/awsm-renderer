@@ -58,6 +58,7 @@ pub struct MeshLightIndicesGpu {
     /// spot lights — including every scene that uses only directional
     /// lights, which are handled by the global prefix path.
     prior_frame_had_per_mesh: bool,
+    uploader: crate::buffer::mapped_uploader::MappedUploader,
 }
 
 impl MeshLightIndicesGpu {
@@ -79,7 +80,13 @@ impl MeshLightIndicesGpu {
             indices_len: 0,
             directional_count: 0,
             prior_frame_had_per_mesh: false,
+            uploader: crate::buffer::mapped_uploader::MappedUploader::new("MeshLightIndices"),
         })
+    }
+
+    /// Mapped-ring upload telemetry for the indices buffer.
+    pub fn upload_stats(&self) -> crate::buffer::mapped_staging_ring::UploadStats {
+        self.uploader.stats()
     }
 
     /// Number of valid bytes in the indices buffer this frame.
@@ -183,12 +190,13 @@ impl MeshLightIndicesGpu {
 
         // ── Upload ────────────────────────────────────────────────────
         if !self.indices_scratch.is_empty() {
-            gpu.write_buffer(
+            let n = self.indices_scratch.len();
+            self.uploader.write_dirty_ranges(
+                gpu,
                 &self.indices_buffer,
-                None,
+                self.indices_capacity,
                 self.indices_scratch.as_slice(),
-                None,
-                None,
+                &[(0, n)],
             )?;
         }
 

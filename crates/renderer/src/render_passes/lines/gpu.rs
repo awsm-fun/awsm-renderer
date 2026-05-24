@@ -95,16 +95,19 @@ pub(super) fn create_uniform_buffer(gpu: &AwsmRendererWebGpu) -> Result<web_sys:
 
 pub(super) fn write_segments(
     gpu: &AwsmRendererWebGpu,
+    uploader: &mut crate::buffer::mapped_uploader::MappedUploader,
     buffer: &web_sys::GpuBuffer,
+    capacity_bytes: usize,
     segments: &[GpuLineSegment],
 ) -> Result<()> {
+    let n = segments.len() * SEGMENT_BYTES;
+    if n == 0 {
+        return Ok(());
+    }
     let byte_data: &[u8] = unsafe {
-        std::slice::from_raw_parts(
-            segments.as_ptr() as *const u8,
-            segments.len() * SEGMENT_BYTES,
-        )
+        std::slice::from_raw_parts(segments.as_ptr() as *const u8, n)
     };
-    gpu.write_buffer(buffer, None, byte_data, None, None)?;
+    uploader.write_dirty_ranges(gpu, buffer, capacity_bytes, byte_data, &[(0, n)])?;
     Ok(())
 }
 

@@ -69,6 +69,13 @@ pub struct OcclusionBuffers {
     /// to `capacity * stride` and rewritten each frame before upload.
     /// Resized in lockstep with `capacity`.
     pub staging: Vec<u8>,
+    /// Mapped-staging-ring uploaders (Phase 2.1). Interior-mutable so
+    /// `write_*` keeps its `&self` signature against `render.rs`'s
+    /// existing borrow shape.
+    pub(crate) instances_uploader:
+        std::cell::RefCell<crate::buffer::mapped_uploader::MappedUploader>,
+    pub(crate) params_uploader:
+        std::cell::RefCell<crate::buffer::mapped_uploader::MappedUploader>,
 }
 
 impl OcclusionBuffers {
@@ -115,7 +122,27 @@ impl OcclusionBuffers {
             params_buffer,
             capacity,
             staging: vec![0u8; instances_bytes],
+            instances_uploader: std::cell::RefCell::new(
+                crate::buffer::mapped_uploader::MappedUploader::new("OcclusionInstances"),
+            ),
+            params_uploader: std::cell::RefCell::new(
+                crate::buffer::mapped_uploader::MappedUploader::new("OcclusionParams"),
+            ),
         })
+    }
+
+    /// Mapped-ring upload telemetry (instances + params aggregated).
+    pub fn upload_stats(&self) -> crate::buffer::mapped_staging_ring::UploadStats {
+        let mut s = self.instances_uploader.borrow().stats();
+        let b = self.params_uploader.borrow().stats();
+        s.peak_ring_depth_used = s.peak_ring_depth_used.max(b.peak_ring_depth_used);
+        s.fallback_count += b.fallback_count;
+        s.map_async_wait_ms += b.map_async_wait_ms;
+        s.bytes_uploaded_via_ring += b.bytes_uploaded_via_ring;
+        s.bytes_uploaded_via_fallback += b.bytes_uploaded_via_fallback;
+        s.bytes_uploaded_via_writebuffer += b.bytes_uploaded_via_writebuffer;
+        s.resize_count += b.resize_count;
+        s
     }
 
     /// If `needed > capacity`, reallocates both buffers (and resets
@@ -145,6 +172,34 @@ impl OcclusionBuffers {
     ) -> Result<(), AwsmCoreError> {
         let mut bytes = vec![0u8; 16];
         bytes[0..4].copy_from_slice(&active_count.to_le_bytes());
-        gpu.write_buffer(&self.params_buffer, None, bytes.as_slice(), None, None)
+        self.params_uploader.borrow_mut().write_dirty_ranges(
+            gpu,
+            &self.params_buffer,
+            16,
+            bytes.as_slice(),
+            &[(0, 16)],
+        )
+    }
+
+    /// Upload the per-frame instances payload via the mapped ring.
+    /// `bytes` is the active prefix (`count * stride`); the dest
+    /// buffer is sized to the full capacity.
+    pub fn write_instances(
+        &self,
+        gpu: &AwsmRendererWebGpu,
+        bytes: &[u8],
+    ) -> Result<(), AwsmCoreError> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let dest_size = self.capacity as usize * OCCLUSION_INSTANCE_STRIDE;
+        let n = bytes.len();
+        self.instances_uploader.borrow_mut().write_dirty_ranges(
+            gpu,
+            &self.instances_buffer,
+            dest_size,
+            bytes,
+            &[(0, n)],
+        )
     }
 }

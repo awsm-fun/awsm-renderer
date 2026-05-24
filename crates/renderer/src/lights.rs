@@ -166,6 +166,8 @@ pub struct Lights {
     // 64 KB for an 8-light scene) is the price for stable bindings.
     punctual_gpu_dirty: bool,
     lighting_info_gpu_dirty: bool,
+    punctual_uploader: crate::buffer::mapped_uploader::MappedUploader,
+    info_uploader: crate::buffer::mapped_uploader::MappedUploader,
 }
 
 impl Lights {
@@ -200,7 +202,26 @@ impl Lights {
             lighting_info_gpu_dirty: true,
             gpu_punctual_buffer,
             gpu_info_buffer,
+            punctual_uploader: crate::buffer::mapped_uploader::MappedUploader::new(
+                "Punctual Lights",
+            ),
+            info_uploader: crate::buffer::mapped_uploader::MappedUploader::new("Lights Info"),
         })
+    }
+
+    /// Mapped-ring upload telemetry for the lights buffers.
+    /// Aggregates punctual + info uploaders.
+    pub fn upload_stats(&self) -> crate::buffer::mapped_staging_ring::UploadStats {
+        let mut s = self.punctual_uploader.stats();
+        let b = self.info_uploader.stats();
+        s.peak_ring_depth_used = s.peak_ring_depth_used.max(b.peak_ring_depth_used);
+        s.fallback_count += b.fallback_count;
+        s.map_async_wait_ms += b.map_async_wait_ms;
+        s.bytes_uploaded_via_ring += b.bytes_uploaded_via_ring;
+        s.bytes_uploaded_via_fallback += b.bytes_uploaded_via_fallback;
+        s.bytes_uploaded_via_writebuffer += b.bytes_uploaded_via_writebuffer;
+        s.resize_count += b.resize_count;
+        s
     }
 
     /// Removes all lights. `pub(crate)` for the same reason as
@@ -364,12 +385,19 @@ impl Lights {
                 .collect();
 
             if !punctual_light_buffer.is_empty() {
-                gpu.write_buffer(
+                // The punctual buffer is fixed-size (MAX_PUNCTUAL_LIGHTS *
+                // PUNCTUAL_LIGHT_SIZE). We upload only the prefix that
+                // holds the live lights — the rest of the buffer stays
+                // at whatever its last contents were (the shader reads
+                // up to `info.light_count` so the tail is unobserved).
+                let n = punctual_light_buffer.len();
+                let buffer_size = MAX_PUNCTUAL_LIGHTS * Self::PUNCTUAL_LIGHT_SIZE;
+                self.punctual_uploader.write_dirty_ranges(
+                    gpu,
                     &self.gpu_punctual_buffer,
-                    None,
+                    buffer_size,
                     punctual_light_buffer.as_slice(),
-                    None,
-                    None,
+                    &[(0, n)],
                 )?;
             }
 
@@ -388,7 +416,13 @@ impl Lights {
             data[4..8].copy_from_slice(&self.ibl.prefiltered_env.mip_count.to_ne_bytes());
             data[8..12].copy_from_slice(&self.ibl.irradiance.mip_count.to_ne_bytes());
 
-            gpu.write_buffer(&self.gpu_info_buffer, None, &*data, None, None)?;
+            self.info_uploader.write_dirty_ranges(
+                gpu,
+                &self.gpu_info_buffer,
+                Self::INFO_SIZE,
+                &data,
+                &[(0, Self::INFO_SIZE)],
+            )?;
 
             self.lighting_info_gpu_dirty = false;
         }

@@ -252,6 +252,10 @@ pub struct Shadows {
     /// `shadow_view_buffer`. Sized to `SHADOW_VIEW_STRIDE *
     /// MAX_SHADOW_VIEWS` once at construction.
     view_bytes_scratch: Vec<u8>,
+    /// Mapped-staging-ring uploaders (Phase 2.1).
+    globals_uploader: crate::buffer::mapped_uploader::MappedUploader,
+    descriptors_uploader: crate::buffer::mapped_uploader::MappedUploader,
+    views_uploader: crate::buffer::mapped_uploader::MappedUploader,
 }
 
 /// Tracks which GPU resources need to be torn down + rebuilt because a
@@ -679,7 +683,35 @@ impl Shadows {
             caster_aabbs_scratch: Vec::new(),
             descriptor_bytes_scratch: vec![0u8; *SHADOW_DESCRIPTOR_UNIFORM_BYTES],
             view_bytes_scratch: vec![0u8; SHADOW_VIEW_STRIDE * MAX_SHADOW_VIEWS as usize],
+            globals_uploader: crate::buffer::mapped_uploader::MappedUploader::new(
+                "Shadow Globals",
+            ),
+            descriptors_uploader: crate::buffer::mapped_uploader::MappedUploader::new(
+                "Shadow Descriptors",
+            ),
+            views_uploader: crate::buffer::mapped_uploader::MappedUploader::new("Shadow Views"),
         })
+    }
+
+    /// Mapped-ring upload telemetry for the shadow buffers (globals +
+    /// descriptors + views aggregated).
+    pub fn upload_stats(&self) -> crate::buffer::mapped_staging_ring::UploadStats {
+        let mut s = self.globals_uploader.stats();
+        let b = self.descriptors_uploader.stats();
+        let c = self.views_uploader.stats();
+        s.peak_ring_depth_used = s
+            .peak_ring_depth_used
+            .max(b.peak_ring_depth_used)
+            .max(c.peak_ring_depth_used);
+        s.fallback_count += b.fallback_count + c.fallback_count;
+        s.map_async_wait_ms += b.map_async_wait_ms + c.map_async_wait_ms;
+        s.bytes_uploaded_via_ring += b.bytes_uploaded_via_ring + c.bytes_uploaded_via_ring;
+        s.bytes_uploaded_via_fallback +=
+            b.bytes_uploaded_via_fallback + c.bytes_uploaded_via_fallback;
+        s.bytes_uploaded_via_writebuffer +=
+            b.bytes_uploaded_via_writebuffer + c.bytes_uploaded_via_writebuffer;
+        s.resize_count += b.resize_count + c.resize_count;
+        s
     }
 
     /// Replaces the renderer-wide config.
@@ -1120,7 +1152,14 @@ impl Shadows {
             data[52..56].copy_from_slice(&cascade_size.to_ne_bytes());
             data[56..60].copy_from_slice(&(self.cascade_max_layers as f32).to_ne_bytes());
             data[60..64].copy_from_slice(&0.0_f32.to_ne_bytes());
-            gpu.write_buffer(&self.globals_buffer, None, data.as_slice(), None, None)?;
+            let n = data.len();
+            self.globals_uploader.write_dirty_ranges(
+                gpu,
+                &self.globals_buffer,
+                n,
+                data.as_slice(),
+                &[(0, n)],
+            )?;
             self.dirty = false;
         }
 
@@ -1797,12 +1836,15 @@ impl Shadows {
             // held last frame (harmless — those slots are not bound
             // as descriptor indices anywhere).
             let used = self.active_descriptor_count as usize * SHADOW_DESCRIPTOR_BYTES;
-            gpu.write_buffer(
+            // Dest buffer is fixed-size at MAX_SHADOW_DESCRIPTORS;
+            // pass the full descriptor-uniform byte size as dest_size
+            // so the ring slot matches.
+            self.descriptors_uploader.write_dirty_ranges(
+                gpu,
                 &self.descriptors_uniform,
-                None,
+                *SHADOW_DESCRIPTOR_UNIFORM_BYTES,
                 &descriptor_bytes[..used],
-                None,
-                None,
+                &[(0, used)],
             )?;
         }
         if self.active_view_count > 0 {
@@ -1813,12 +1855,13 @@ impl Shadows {
             // command buffer executes, so if we wrote per-pass we'd
             // see only the last matrix in every pass.
             let used = self.active_view_count as usize * SHADOW_VIEW_STRIDE;
-            gpu.write_buffer(
+            let buffer_size = SHADOW_VIEW_STRIDE * MAX_SHADOW_VIEWS as usize;
+            self.views_uploader.write_dirty_ranges(
+                gpu,
                 &self.shadow_view_buffer,
-                None,
+                buffer_size,
                 &view_bytes[..used],
-                None,
-                None,
+                &[(0, used)],
             )?;
         }
 

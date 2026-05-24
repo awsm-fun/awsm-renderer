@@ -748,13 +748,7 @@ impl AwsmRenderer {
                     }
                     let count = (bytes.len() / stride) as u32;
                     if count > 0 {
-                        self.gpu.write_buffer(
-                            &occlusion_buffers.instances_buffer,
-                            None,
-                            bytes.as_slice(),
-                            None,
-                            None,
-                        )?;
+                        occlusion_buffers.write_instances(&self.gpu, bytes.as_slice())?;
                     }
                     count
                 };
