@@ -59,9 +59,9 @@ use web_sys::js_sys;
 pub enum WorkerInputEvent {
     /// New canvas backing-buffer size.
     Resize { width: u32, height: u32 },
-    PointerMove { x: f64, y: f64, buttons: u32 },
-    PointerDown { x: f64, y: f64, buttons: u32 },
-    PointerUp { x: f64, y: f64, buttons: u32 },
+    PointerMove { x: i32, y: i32, buttons: u32 },
+    PointerDown { x: i32, y: i32, buttons: u32 },
+    PointerUp { x: i32, y: i32, buttons: u32 },
     Wheel { delta_x: f64, delta_y: f64 },
     KeyDown { code: String },
     KeyUp { code: String },
@@ -137,8 +137,8 @@ fn main_thread_boot() -> Result<(), JsValue> {
     let worker_for_move = worker.clone();
     let on_pointer_move = Closure::<dyn FnMut(web_sys::PointerEvent)>::new(move |e: web_sys::PointerEvent| {
         let event = WorkerInputEvent::PointerMove {
-            x: e.offset_x() as f64,
-            y: e.offset_y() as f64,
+            x: e.offset_x() as i32,
+            y: e.offset_y() as i32,
             buttons: e.buttons() as u32,
         };
         if let Ok(js) = serde_wasm_bindgen::to_value(&event) {

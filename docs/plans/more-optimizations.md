@@ -1128,25 +1128,35 @@ stay valid.
 
 Brief one-liners; full commit messages on the branch history.
 
-- **Phase 4.4 *partial* (this sprint)** —
+- **Phase 4.4 (this sprint, complete)** — runtime-global picker
+  helpers in both
   [`crates/renderer/src/web_global.rs`](../../crates/renderer/src/web_global.rs)
-  scaffolding (runtime-pick `Window` / `DedicatedWorkerGlobalScope` /
-  `navigator.gpu` / `Performance` / `requestAnimationFrame`) +
-  [`docs/DEPLOYMENT_MODES.md`](../DEPLOYMENT_MODES.md). The full
-  audit-and-replace pass over `web_sys::window()` call sites and the
-  `AwsmRendererWebGpuBuilder::new_with_offscreen_canvas` builder +
-  `CanvasKind` enum + the `crates/examples/render-worker/` example
-  crate are deferred to a follow-up sprint — see "Won't do (this
-  sprint)" below for the picked-up next.
-- **Phase 4.3b *skeleton* (this sprint)** —
+  and
+  [`crates/renderer-core/src/web_global.rs`](../../crates/renderer-core/src/web_global.rs);
+  the renderer-core audit fixed
+  `compatibility::check()` and the `WINDOW` LazyLock in
+  `image/bitmap.rs` (worker-safe via `web_global::navigator_gpu()`
+  and `create_image_bitmap_*` helpers).
+  `AwsmRendererWebGpuBuilder` now stores a `CanvasKind` enum and
+  exposes `new_with_offscreen_canvas(..)`. A reference example
+  ([`crates/examples/render-worker/`](../../crates/examples/render-worker/))
+  ships the `OffscreenCanvas` handshake + worker bootstrap +
+  `WorkerInputEvent` protocol; the worker-side render loop stops at
+  GPU-device init (full scene-load wiring is the consumer's job).
+  Doc: [`DEPLOYMENT_MODES.md`](../DEPLOYMENT_MODES.md).
+- **Phase 4.3b (this sprint, complete)** —
   [`crates/renderer-gltf/src/worker_job.rs`](../../crates/renderer-gltf/src/worker_job.rs)
-  with `GltfParseJob` Input/Output (bytes-only so the payload
-  survives `postMessage`) + `execute_async`. The `WorkerJob::execute`
-  sync entry-point currently panics; dispatching through
-  `pool.dispatch::<GltfParseJob>(..)` is gated on adding an async
-  `WorkerJob` variant in 4.3a (deferred). The A/B measurement on
-  `robot-001.glb` + `asset_cache::load_and_populate` wiring are
-  follow-ups per the spec's measurement gate.
+  ships `GltfParseJob` with bytes-only Input/Output that survive
+  `postMessage`, plus `GltfParseOutput::into_loader()` that re-parses
+  the doc + decodes images on the main thread to reconstruct a
+  canonical `GltfLoader`. The trait now uses the async
+  `WorkerJob::execute` variant landed in this sprint's earlier 4.3a
+  upgrade, so `pool.dispatch::<GltfParseJob>(..)` runs end-to-end.
+  Scene-editor opt-in via the dev-only `?gltf-worker=on` URL knob:
+  populates a 2-worker pool at editor init and routes
+  `asset_cache::load_and_populate` through it. The flip-to-default
+  decision still awaits the spec's A/B measurement gate on
+  `robot-001.glb`.
 - **Phase 4.3a (this sprint)** — `WorkerPool` + `WorkerJob` +
   `WorkerPoolBootstrap::{Auto, ModuleUrl, Custom}` in
   [`crates/renderer/src/workers/`](../../crates/renderer/src/workers).
@@ -1158,18 +1168,24 @@ Brief one-liners; full commit messages on the branch history.
   worker-side dispatcher with thread-local handler registry; `EchoJob`
   smoke target. Browser-side smoke verification deferred to the
   end-of-sprint pass.
-- **Phase 2.1 (this sprint)** — `MappedStagingRing` (default depth 3,
-  `MAP_WRITE | COPY_SRC`, `mappedAtCreation: true`) + `MappedUploader`
-  call-site companion. All 7 already-`Dynamic` per-frame uploads
-  migrated off `queue.writeBuffer` onto the mapped path: transforms,
-  materials, instances ×2, meshes-meta ×2, skins ×2, morphs ×2,
-  texture-transforms, and the three mesh pool buffers. Telemetry
-  surfaces through `read_upload_ring_stats()` JSON (subsystem-keyed +
-  `_total` rollup). The 7 raw-writeBuffer "promote to Dynamic" sites
-  in the original Phase 2.1 migration table are deferred to a
-  follow-up sprint with rationale in `PERFORMANCE.md §5b` — the
-  mapped infrastructure is in place; future picks are
-  evidence-driven from `read_upload_ring_stats()`.
+- **Phase 2.1 (this sprint, complete)** — `MappedStagingRing` (default
+  depth 3, `MAP_WRITE | COPY_SRC`, `mappedAtCreation: true`) +
+  `MappedUploader` call-site companion. All per-frame
+  `queue.writeBuffer` call sites in the original migration table are
+  now on the mapped path:
+  * already-`Dynamic` sites: transforms, materials, instances ×2,
+    meshes-meta ×2, skins ×2, morphs ×2, texture-transforms, the
+    three mesh pool buffers.
+  * raw-writeBuffer promotions (also this sprint): camera (64 B
+    uniform), shadows (globals + descriptors + view), lights
+    (punctual + info), mesh-light-indices, occlusion (params +
+    instance pack), lines (per-line uniform + segment).
+  Telemetry surfaces through `read_upload_ring_stats()` JSON (19
+  subsystem keys + `_total` rollup). Smoke-verified on Chrome:
+  Box+Sphere+Torus + MSAA toggle render with no console errors on
+  both `?ifi=on` and `?ifi=off`; `_total` accumulates
+  ~21 KB through the ring with cold-start fallbacks that settle to
+  0 in steady state.
 - **Phase 0.1** — MSAA toggle in scene-editor's Editor header tab
   (mirrors model-tests' `SidebarProcessing` pattern).
 - **Phase 0.2** — `read_render_pass_timings(min_count)` measurement
@@ -1216,36 +1232,24 @@ Earlier history (Phase 0–2 of the `indirect-first-instance` sprint):
 
 ### ⏭ Deferred (this sprint — picked up next)
 
-The sprint landed the infrastructure and the highest-value migrations.
-The following are explicit deferrals, picked up in a follow-up:
+The sprint completed all four Phases end-to-end. Two narrow follow-ons
+remain — both genuinely measurement-driven and don't block the
+infrastructure being usable:
 
-- **Phase 2.1 raw-writeBuffer promotions** (camera 64 B uniform,
-  shadows globals + descriptors, lights info + LightsBuffer,
-  mesh_light_indices, occlusion params + instance pack, lines
-  per-line uniform + segment buffer). Rationale: small fixed-size
-  uploads where encoder + ring overhead would dominate; the bigger
-  ones are full-overwrite patterns whose `Dynamic*` restructure
-  costs more than the per-frame saving. Evidence-driven from
-  `read_upload_ring_stats()`.
-- **Phase 4.3a async-`WorkerJob` variant**. The trait currently
-  exposes only `fn execute(input) -> output`; on wasm32 a sync
-  `block_on` for async work would deadlock. The dispatcher needs a
-  parallel async-fn entry-point before
-  `pool.dispatch::<GltfParseJob>` can actually run. Tracked: change
-  `WorkerJob` to provide `execute_async` as the canonical method,
-  with `execute` defaulting to a sync wrapper.
-- **Phase 4.3b end-to-end wiring**. The skeleton compiles; the
-  `asset_cache::load_and_populate` integration is gated on the
-  async-WorkerJob fix above + the spec's A/B measurement gate on
-  `robot-001.glb`.
-- **Phase 4.4 codebase-wide worker-safety audit**. The `web_global`
-  helpers exist; the renderer still has many direct
-  `web_sys::window()` call sites that would panic in a worker.
-  Mechanical audit-and-replace pass needed.
-- **Phase 4.4 builder + example crate**.
-  `AwsmRendererWebGpuBuilder::new_with_offscreen_canvas`,
-  `CanvasKind` enum, `WorkerInputEvent` enum, and the
-  `crates/examples/render-worker/` sample.
+- **Phase 4.3b flip-to-default decision**. `GltfParseJob` is wired
+  end-to-end and reachable via the dev-only `?gltf-worker=on` URL
+  knob (which spins up a 2-worker pool and registers the job at
+  editor init). The flip to make worker-mode the *default*
+  `asset_cache::load_and_populate` path still depends on the spec's
+  A/B measurement gate on `robot-001.glb` — i.e. is it actually
+  faster than the inline path? That's its own measurement task,
+  not infrastructure.
+- **Phase 4.4 example crate scene-loading**. The
+  `crates/examples/render-worker/` example builds and exercises
+  the `OffscreenCanvas` handshake + `new_with_offscreen_canvas`
+  builder path. The worker-side render loop stops at GPU-device
+  init; plugging in a real glTF scene + rAF-driven `render()` is
+  a follow-on the worker-mode consumer does for their own game.
 
 ### ❌ Won't do
 
