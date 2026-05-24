@@ -42,7 +42,18 @@ cross-references in commit messages stay valid.
 
 ## Phase 4 — Model insert UX
 
-### 4.3 🚀 First-class worker pool + glTF parse as first consumer
+### 4.3 🚀 First-class worker pool + glTF parse as first consumer  *(deferred — see "Won't do")*
+
+The full design — `WorkerPool` + `WorkerJob` trait, auto-bundle
+discovery via `import.meta.url`, shared `WebAssembly.Module`
+postMessage protocol, `linkme`-style distributed-slice job
+registry, `GltfParseJob` as first consumer, opt-in via config
+knob behind a per-pass measurement gate — is preserved below for
+the dedicated follow-up sprint. Reasoning for deferral is in
+"Won't do".
+
+<details>
+<summary>Full original design (preserved for follow-up sprint)</summary>
 
 This phase builds a **library-wide worker-job infrastructure** (4.3a)
 and uses glTF parse as its first consumer (4.3b). The infrastructure
@@ -340,6 +351,8 @@ config knob.
   startup cost (~5–50 ms per worker spawn). Scene loads with
   multiple glbs would pay it per file.
 
+</details>
+
 ---
 
 ## Phase 5 — Per-frame polish
@@ -457,6 +470,27 @@ For PR context — these shipped in the prior sprint and the
 
 For the next picker — items explicitly considered and rejected.
 
+- ❌ First-class worker pool + GltfParseJob (was Phase 4.3).
+  Rejected for this sprint — the plan's own measurement gate
+  ("Before landing 4.3b, wire 0.2's per-pass sub-spans and add a
+  `gltf-parse` measurement so the worker version can be compared
+  to the inline version. If the transfer cost dominates … the
+  pool can be opt-in via a config knob") makes it
+  measurement-required, and the implementation surface — wasm
+  worker init, shared `WebAssembly.Module` postMessage, dynamic
+  job dispatch with `linkme`-style registry, opt-in config knob,
+  the `gltf-parse` A/B measurement — is multi-day on its own.
+  wasm worker init also has notoriously fragile cross-browser
+  behaviour (Safari module-worker quirks, COOP/COEP
+  interactions) that a single-session blind run can't validate.
+  The full design — `WorkerPool`, `WorkerJob` trait, auto-bundle
+  discovery via `import.meta.url`, shared-Module shim, the
+  `GltfParseJob` consumer wiring — is preserved in the Phase 4.3
+  section above (collapsed under "Full original design") so the
+  follow-up sprint can pick it up cold. Recommended split:
+  Phase 4.3a (infra + Custom-bootstrap-only API) → Phase 4.3b
+  (`import.meta.url` auto-discovery + GltfParseJob + A/B
+  measurement → opt-in config knob).
 - ❌ Per-frame upload arena (was Phase 2.1). Rejected for this
   sprint — broad scope (touches ~10 subsystems' `write_gpu`:
   transforms, materials, instances, meshes/meta, textures,
