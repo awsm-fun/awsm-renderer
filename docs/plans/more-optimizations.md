@@ -165,6 +165,75 @@ the existing parse path, then decide.
 
 Biggest lift on this list; do last.
 
+**Library constraint.** `awsm-renderer` ships as a Rust library;
+consumers may use Trunk, webpack, Vite, or no bundler at all. We
+**cannot** assume a separate `worker.js` file is copied to a known
+path — the consumer's build pipeline might not produce one. The
+worker code has to come from somewhere the library can hand to
+`Worker::new` without filesystem assumptions.
+
+The portable shape is a **blob-URL worker** constructed at runtime
+from an inline JS string. Helper to start from (the consumer-side
+analogue exists in the lockstep codebase):
+
+```rust
+use js_sys::Array;
+use wasm_bindgen::JsValue;
+use web_sys::{Blob, BlobPropertyBag, Url, Worker, WorkerOptions};
+
+pub fn new_worker_from_js(
+    js: &str,
+    options: Option<WorkerOptions>,
+) -> Result<Worker, JsValue> {
+    let mut blob_options = BlobPropertyBag::new();
+    blob_options.type_("application/javascript");
+
+    let blob_parts = Array::new_with_length(1);
+    blob_parts.set(0, JsValue::from_str(js));
+
+    let blob = Blob::new_with_str_sequence_and_options(&blob_parts, &blob_options)?;
+    let blob_url = Url::create_object_url_with_blob(&blob)?;
+
+    let worker = match options {
+        Some(options) => Worker::new_with_options(&blob_url, &options)?,
+        None => Worker::new(&blob_url)?,
+    };
+
+    Url::revoke_object_url(&blob_url)?;
+    Ok(worker)
+}
+```
+
+The hard part *isn't* spawning the worker — it's getting the
+library's Wasm + wasm-bindgen glue running inside it. Two practical
+options to evaluate:
+
+1. **Pure-JS parse worker.** The worker's inline JS calls
+   `fetch(...)` + a tiny JS-side glTF parser (or just splits the
+   GLB chunks). Result is structured-cloned back. Avoids the
+   wasm-in-worker problem entirely but means parsing twice if any
+   Rust-side validation is wanted on the main thread.
+
+2. **Wasm-in-worker.** Inline JS does
+   `importScripts(MAIN_BUNDLE_URL)` (classic worker) or
+   `import(...)` (module worker) to load the SAME wasm-bindgen
+   output the main thread loaded, then calls an exported
+   `#[wasm_bindgen] pub fn parse_glb_in_worker(bytes: &[u8])`
+   function. The library would expose a builder that takes the
+   bundle URL as a parameter — consumer supplies it. Trunk
+   consumers can read it from `wasm_bindgen::module()`; bundler
+   consumers do whatever their bundler's url-import shape is.
+
+Option 1 ships faster but option 2 keeps the parse logic in Rust
+where it lives today. Pick after measuring whether the transfer
+cost is acceptable — for the 27 MB robot, the transfer alone might
+eat half the budget.
+
+Either way, the consumer-facing API should be: library exposes the
+worker-builder + a `parse_glb_async(handle, bytes) -> Future` that
+posts the work and awaits the result. The library never assumes a
+specific build setup.
+
 ---
 
 ## Phase 5 — Per-frame polish
