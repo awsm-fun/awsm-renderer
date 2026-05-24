@@ -213,7 +213,7 @@ fn msaa_process_sample(
                 standard_coordinates.surface_to_camera,
                 standard_coordinates.world_position,
                 lights_info,
-                sample_mesh_meta.receive_shadows,
+                (sample_mesh_meta.receive_shadows & sample_mesh_meta.shadow_receiver_gate),
                 sample_mesh_meta.light_slice_offset,
                 sample_mesh_meta.light_slice_count,
             );
@@ -223,7 +223,7 @@ fn msaa_process_sample(
                 standard_coordinates.surface_to_camera,
                 standard_coordinates.world_position,
                 lights_info,
-                sample_mesh_meta.receive_shadows,
+                (sample_mesh_meta.receive_shadows & sample_mesh_meta.shadow_receiver_gate),
             );
         {% endif %}
         return msaa_apply_instance_tint(color, mat_color.base.a, sample_instance_id);

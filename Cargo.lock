@@ -265,6 +265,7 @@ dependencies = [
  "indexmap",
  "ordered-float",
  "serde",
+ "serde-wasm-bindgen",
  "serde_bytes",
  "slotmap",
  "strum",

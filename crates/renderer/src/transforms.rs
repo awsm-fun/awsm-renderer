@@ -42,6 +42,17 @@ impl AwsmRenderer {
         self.transforms.update_world();
         let dirty_transforms = self.transforms.take_dirty_meshes();
         let dirty_instances = self.instances.take_dirty_transforms();
+        // Build a frustum from the last-known camera matrices so
+        // `Meshes::update_world` can run the coverage-driven
+        // skin-skip's BVH-visible override. `None` on the very
+        // first frame before `update_camera` has run; the skin-skip
+        // logic treats `None` conservatively (assume every consumer
+        // is in-frustum, so never skip via coverage).
+        let frustum = self
+            .camera
+            .last_matrices
+            .as_ref()
+            .map(|m| crate::frustum::Frustum::from_view_projection(m.view_projection()));
         let touched = self.meshes.update_world(
             dirty_transforms,
             &dirty_instances,
@@ -49,6 +60,7 @@ impl AwsmRenderer {
             &self.instances,
             self.frame_index,
             &self.coverage,
+            frustum.as_ref(),
         );
         for mesh_key in touched {
             self.sync_spatial_for_mesh(mesh_key);
@@ -81,6 +93,31 @@ impl AwsmRenderer {
                     .map(|p| p.cast)
                     .unwrap_or(false)
             });
+
+        // Project the bucket result onto each mesh's `shadow_receiver_gate`
+        // u32 inside `MaterialMeshMeta` so `apply_lighting*` in
+        // `lights.wgsl` can skip shadow sampling for meshes no caster
+        // reaches this frame. The patch path inside
+        // `MeshMeta::set_shadow_receiver_gate` caches the last-frame
+        // value and short-circuits unchanged writes, so the dirty-range
+        // set stays sparse on a steady-state stress scene.
+        {
+            let _maybe_span_guard = if self.logging.render_timings {
+                Some(tracing::span!(tracing::Level::INFO, "Shadow Receiver Gate").entered())
+            } else {
+                None
+            };
+            let mesh_keys: Vec<crate::meshes::MeshKey> =
+                self.meshes.iter().map(|(k, _)| k).collect();
+            for mesh_key in mesh_keys {
+                let gate: u32 = if self.light_buckets.is_shadow_receiver(mesh_key) {
+                    1
+                } else {
+                    0
+                };
+                self.meshes.meta.set_shadow_receiver_gate(mesh_key, gate);
+            }
+        }
 
         #[cfg(debug_assertions)]
         {

@@ -48,3 +48,4 @@ serde = { workspace = true }
 # `Array<Number>`. Critical for the worker-mode GltfParseJob payload
 # crossing postMessage (Phase 4.3b A/B; see PERFORMANCE.md §5c).
 serde_bytes = "0.11"
+serde-wasm-bindgen = { workspace = true }

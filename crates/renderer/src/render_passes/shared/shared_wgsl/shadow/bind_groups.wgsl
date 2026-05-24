@@ -30,7 +30,11 @@ struct ShadowGlobals {
     atlas_sizes: vec4<f32>,
     // (evsm_exponent, evsm_blur_radius, sscs_step_count, sscs_enabled)
     evsm_sscs: vec4<f32>,
-    // (debug_cascade_colors, max_point_shadows, pad, pad)
+    // (debug_cascade_colors, max_point_shadows, pcss_max_taps, pcss_min_taps)
+    // — `pcss_*_taps` drive `pcss_tap_count` below; static `for` loop
+    // limit stays 16 (Poisson-table size), with a dynamic `break` at
+    // `tap_count` keeping the runtime cost proportional to the
+    // distance-tapered count.
     flags: vec4<u32>,
     // (cascade_array.w, cascade_array.h, max_layers, _) — per-layer
     // dimensions of the directional cascade texture array.
@@ -89,6 +93,23 @@ fn pcss_disk_angle(coords: vec2<f32>) -> f32 {
 
 fn pcss_rotate(v: vec2<f32>, sin_a: f32, cos_a: f32) -> vec2<f32> {
     return vec2<f32>(v.x * cos_a - v.y * sin_a, v.x * sin_a + v.y * cos_a);
+}
+
+// Distance-tapered PCSS tap count. `dist_ratio` is the receiver's
+// normalised distance from the light (0 = touching, 1 = at maximum
+// reach). Returned count is `pcss_max_taps` at ratio 0 lerping linearly
+// to `pcss_min_taps` at ratio 1, clamped to `[1, 16]` so the static
+// `for i in 0..16u` loops never overshoot the Poisson-table size or
+// hit a divide-by-zero in the running average. Same helper drives the
+// blocker search, the variable-kernel PCF, and the Soft branch — they
+// all share the Poisson table and benefit equally from far-receiver
+// quality reduction.
+fn pcss_tap_count(dist_ratio: f32) -> u32 {
+    let max_t = f32(shadow_globals.flags.z);
+    let min_t = f32(shadow_globals.flags.w);
+    let t = clamp(dist_ratio, 0.0, 1.0);
+    let count = mix(max_t, min_t, t);
+    return clamp(u32(round(count)), 1u, 16u);
 }
 
 // Screen-space contact shadows (SSCS). Short ray-march in view space
@@ -330,10 +351,14 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
     let cos_a = cos(angle);
 
     if hardness < 1.5 {
-        // Soft — fixed 16-tap rotated Poisson, ~15 cm world disc.
+        // Soft — rotated Poisson, ~15 cm world disc. Tap count tapers
+        // from `pcss_max_taps` (close, full quality) to `pcss_min_taps`
+        // (far, cheaper) by receiver-to-light distance ratio.
         let SOFT_WORLD_RADIUS: f32 = 0.15;
+        let tap_count = pcss_tap_count(dist / range);
         var sum = 0.0;
         for (var i = 0u; i < 16u; i = i + 1u) {
+            if i >= tap_count { break; }
             let off = pcss_rotate(POISSON_DISK_16[i], sin_a, cos_a) * SOFT_WORLD_RADIUS;
             let tap_pos = biased_pos + tangent * off.x + bitangent * off.y;
             let tap_to_light = tap_pos - light_pos;
@@ -355,7 +380,7 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
                 tap_ref,
             );
         }
-        return sum / 16.0;
+        return sum / f32(tap_count);
     }
 
     // PCSS — real blocker search + variable kernel.
@@ -385,9 +410,16 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
     let cube_dims = textureDimensions(shadow_cube_2d_array, 0);
     let cube_face_size = vec2<f32>(f32(cube_dims.x), f32(cube_dims.y));
 
+    // Blocker + filter share the same distance-tapered tap count —
+    // the blocker estimate's noise floor needs to match the variable
+    // PCF's, otherwise far shadows would early-exit through the
+    // "all blockers" / "no blockers" shortcuts at different cadences
+    // than the smoothing kernel resolves at.
+    let pcss_tap_count_cube = pcss_tap_count(dist / range);
     var blocker_sum = 0.0;
     var blocker_count = 0u;
     for (var i = 0u; i < 16u; i = i + 1u) {
+        if i >= pcss_tap_count_cube { break; }
         let off = pcss_rotate(POISSON_DISK_16[i], sin_a, cos_a) * pcss_search_world_radius;
         let tap_pos = biased_pos + tangent * off.x + bitangent * off.y;
         let tap_to_light = tap_pos - light_pos;
@@ -447,7 +479,7 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
     if blocker_count == 0u {
         return 1.0;
     }
-    if blocker_count == 16u {
+    if blocker_count == pcss_tap_count_cube {
         return 0.0;
     }
     let avg_blocker = blocker_sum / f32(blocker_count);
@@ -473,6 +505,7 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
 
     var sum = 0.0;
     for (var i = 0u; i < 16u; i = i + 1u) {
+        if i >= pcss_tap_count_cube { break; }
         let off = pcss_rotate(POISSON_DISK_16[i], sin_a, cos_a) * penumbra_world_radius;
         let tap_pos = biased_pos + tangent * off.x + bitangent * off.y;
         let tap_to_light = tap_pos - light_pos;
@@ -494,7 +527,7 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
             tap_ref,
         );
     }
-    return sum / 16.0;
+    return sum / f32(pcss_tap_count_cube);
 }
 
 
@@ -626,8 +659,13 @@ fn sample_shadow_cascade_array(
         );
         let sin_a = sin(angle);
         let cos_a = cos(angle);
+        // Distance ratio for directional cascades: receiver NDC.z runs
+        // 0 at the cascade's near edge to 1 at its far edge — far
+        // receivers in distant cascades naturally get fewer taps.
+        let tap_count = pcss_tap_count(ndc.z);
         var sum = 0.0;
         for (var i = 0u; i < 16u; i = i + 1u) {
+            if i >= tap_count { break; }
             let off = pcss_rotate(POISSON_DISK_16[i], sin_a, cos_a) * radius_texels;
             sum += textureSampleCompareLevel(
                 shadow_cascade_array, shadow_atlas_sampler,
@@ -636,7 +674,7 @@ fn sample_shadow_cascade_array(
                 ref_depth,
             );
         }
-        return sum / 16.0;
+        return sum / f32(tap_count);
     }
     // PCSS — same recipe as the 2D path, with the cascade-array
     // texture and explicit `layer` arg.
@@ -657,11 +695,15 @@ fn sample_shadow_cascade_array(
         4.0,
         64.0,
     );
+    // Distance-tapered tap count shared by blocker + PCF — same NDC.z
+    // distance ratio rationale as the Soft branch above.
+    let pcss_tap_count_directional = pcss_tap_count(ndc.z);
     var blocker_sum = 0.0;
     var blocker_count = 0u;
     let tile_min_px = vec2<i32>(tile_min * atlas_uv_to_texels);
     let tile_max_px = vec2<i32>(tile_max * atlas_uv_to_texels);
     for (var i = 0u; i < 16u; i = i + 1u) {
+        if i >= pcss_tap_count_directional { break; }
         let off = pcss_rotate(POISSON_DISK_16[i], sin_a, cos_a) * search_radius_texels;
         let sample_uv = atlas_uv + off * inv_atlas;
         let coord = vec2<i32>(sample_uv * atlas_uv_to_texels);
@@ -675,7 +717,7 @@ fn sample_shadow_cascade_array(
     if blocker_count == 0u {
         return 1.0;
     }
-    if blocker_count == 16u {
+    if blocker_count == pcss_tap_count_directional {
         return 0.0;
     }
     let avg_blocker = blocker_sum / f32(blocker_count);
@@ -687,6 +729,7 @@ fn sample_shadow_cascade_array(
     );
     var pcf_sum = 0.0;
     for (var i = 0u; i < 16u; i = i + 1u) {
+        if i >= pcss_tap_count_directional { break; }
         let off = pcss_rotate(POISSON_DISK_16[i], sin_a, cos_a) * penumbra_texels;
         pcf_sum = pcf_sum + textureSampleCompareLevel(
             shadow_cascade_array,
@@ -696,7 +739,7 @@ fn sample_shadow_cascade_array(
             ref_depth,
         );
     }
-    return pcf_sum / 16.0;
+    return pcf_sum / f32(pcss_tap_count_directional);
 }
 
 // Sample a single shadow descriptor (cascade / spot / face). Returns
@@ -814,8 +857,12 @@ fn sample_shadow_descriptor(
         );
         let sin_a = sin(angle);
         let cos_a = cos(angle);
+        // Distance-tapered tap count: receivers near the cascade far
+        // plane (`ndc.z → 1`) get the cheaper minimum count.
+        let tap_count = pcss_tap_count(ndc.z);
         var sum = 0.0;
         for (var i = 0u; i < 16u; i = i + 1u) {
+            if i >= tap_count { break; }
             let off = pcss_rotate(POISSON_DISK_16[i], sin_a, cos_a) * radius_texels;
             sum += textureSampleCompareLevel(
                 shadow_atlas, shadow_atlas_sampler,
@@ -823,7 +870,7 @@ fn sample_shadow_descriptor(
                 ref_depth,
             );
         }
-        return sum / 16.0;
+        return sum / f32(tap_count);
     }
     // PCSS — blocker-search + variable-kernel PCF.
     //
@@ -868,11 +915,17 @@ fn sample_shadow_descriptor(
         64.0,
     );
 
+    // Distance-tapered tap count shared by blocker + PCF — same
+    // `ndc.z` distance ratio as the Soft branch above so the early
+    // exits (`blocker_count == 0u` / `blocker_count == tap_count`)
+    // remain in lockstep with the smoothing kernel that resolves them.
+    let pcss_tap_count_2d = pcss_tap_count(ndc.z);
     var blocker_sum = 0.0;
     var blocker_count = 0u;
     let tile_min_px = vec2<i32>(tile_min * atlas_uv_to_texels);
     let tile_max_px = vec2<i32>(tile_max * atlas_uv_to_texels);
     for (var i = 0u; i < 16u; i = i + 1u) {
+        if i >= pcss_tap_count_2d { break; }
         let off = pcss_rotate(POISSON_DISK_16[i], sin_a, cos_a) * search_radius_texels;
         let sample_uv = atlas_uv + off * inv_atlas;
         let coord = vec2<i32>(sample_uv * atlas_uv_to_texels);
@@ -888,13 +941,13 @@ fn sample_shadow_descriptor(
     if blocker_count == 0u {
         return 1.0; // fully lit fast path
     }
-    if blocker_count == 16u {
+    if blocker_count == pcss_tap_count_2d {
         // Every blocker-search sample was below the receiver's
         // biased depth — the receiver is deep inside the umbra
-        // and the second 16-tap variable-kernel PCF would average
-        // to ≈ 0 anyway. Skip it. Halves the work on fully-
-        // shadowed receivers (the symmetric counterpart of the
-        // fully-lit fast path above).
+        // and the second variable-kernel PCF would average to ≈ 0
+        // anyway. Skip it. Halves the work on fully-shadowed
+        // receivers (the symmetric counterpart of the fully-lit
+        // fast path above).
         return 0.0;
     }
     let avg_blocker = blocker_sum / f32(blocker_count);
@@ -902,8 +955,8 @@ fn sample_shadow_descriptor(
     // d_blocker`, but with light_size expressed in *world units* via
     // `world_per_texel`. The clamps keep the kernel between "more
     // than `Soft`" (4 texels, so PCSS is always visibly softer than
-    // `Soft`) and "still affordable" (40 texels — the 16-tap loop
-    // already amortises hardware bilinear so this is fine on a
+    // `Soft`) and "still affordable" (40 texels — the variable-tap
+    // loop already amortises hardware bilinear so this is fine on a
     // desktop GPU).
     let light_size_texels = pcss_light_world_radius / world_per_texel_pcss;
     let penumbra_texels = clamp(
@@ -913,6 +966,7 @@ fn sample_shadow_descriptor(
     );
     var pcf_sum = 0.0;
     for (var i = 0u; i < 16u; i = i + 1u) {
+        if i >= pcss_tap_count_2d { break; }
         let off = pcss_rotate(POISSON_DISK_16[i], sin_a, cos_a) * penumbra_texels;
         pcf_sum = pcf_sum + textureSampleCompareLevel(
             shadow_atlas,
@@ -921,7 +975,7 @@ fn sample_shadow_descriptor(
             ref_depth,
         );
     }
-    return pcf_sum / 16.0;
+    return pcf_sum / f32(pcss_tap_count_2d);
 }
 
 // Per-light cascade selection with smooth blending across split

@@ -230,7 +230,7 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
                 input.world_position,
                 lights_info,
                 transmission_background,
-                material_mesh_meta.receive_shadows,
+                (material_mesh_meta.receive_shadows & material_mesh_meta.shadow_receiver_gate),
             );
         } else {
             // Standard lighting without transmission
@@ -239,7 +239,7 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
                 surface_to_camera,
                 input.world_position,
                 lights_info,
-                material_mesh_meta.receive_shadows,
+                (material_mesh_meta.receive_shadows & material_mesh_meta.shadow_receiver_gate),
             );
         }
 

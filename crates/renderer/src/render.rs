@@ -88,6 +88,21 @@ impl AwsmRenderer {
             self.coverage.ingest(snapshot, self.frame_index);
         }
 
+        // Cheap-material LOD: re-route every mesh-with-a-cheap-variant
+        // to the effective material's GPU offset based on the
+        // just-ingested coverage. Idempotent — the
+        // `last_effective_material` sidecar inside `Meshes` short-
+        // circuits unchanged meshes, so steady-state writes are O(0)
+        // even when every mesh has a cheap variant authored. Must
+        // run BEFORE `meshes.meta.write_gpu` below so the patched
+        // offsets land in the same upload as other per-frame meta
+        // edits (light slice / shadow gate).
+        self.meshes.refresh_cheap_material_routing(
+            &self.materials,
+            &self.coverage,
+            self.default_cheap_material_pixel_threshold,
+        )?;
+
         self.transforms
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
         self.materials

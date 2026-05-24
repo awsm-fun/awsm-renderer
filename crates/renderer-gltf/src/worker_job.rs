@@ -1,38 +1,32 @@
 //! Phase 4.3b — `GltfParseJob`, first consumer of the
 //! [`awsm_renderer::workers`] worker-pool infrastructure.
 //!
-//! ### Scope (skeleton)
+//! ### Pipeline
 //!
-//! This commit ships the job *shape* — Input/Output types, the
-//! `WorkerJob` impl, and an `execute_async` helper that performs the
-//! same work as `GltfLoader::load` but returns *raw* bytes so the
-//! payload survives the cross-thread `postMessage` boundary
-//! (web-sys `ImageBitmap` cannot be `serde`-serialised).
+//! The worker fetches the glb / glTF, parses buffers, AND decodes
+//! every embedded image into an `ImageBitmap` via the
+//! `DedicatedWorkerGlobalScope::createImageBitmap` shim. The
+//! resulting handles are *transferred* (not structured-cloned)
+//! across the `postMessage` boundary by overriding
+//! [`WorkerJob::into_response_message`] / [`WorkerJob::from_response_message`]:
+//! the trait hooks let the worker attach the handles to the
+//! response object and push them into the `post_message_with_transfer`
+//! transfer list. The main thread receives them in O(1) and
+//! [`GltfParseOutput::into_loader`] skips its decode step entirely
+//! when bitmaps are present.
 //!
-//! ### Deferred to follow-up sprint
+//! ### Earlier shape — encoded-bytes round-trip
 //!
-//! - Actually dispatching glTF parses through this job in
-//!   `asset_cache::load_and_populate`. Spec calls for an A/B
-//!   measurement on the 27 MB robot first — if worker mode wins,
-//!   wire as default; otherwise leave inline as default and expose
-//!   the job as opt-in.
-//! - Decoding the returned image bytes back into `ImageData` on the
-//!   main thread (the consumer of `GltfParseOutput` does this).
-//!   Currently `consume_into_loader` is a thin synchronous helper
-//!   that re-parses the doc + lifts buffers, but image decode is
-//!   left to the caller until the wiring lands.
-//!
-//! ### Why output bytes, not `GltfLoader`
-//!
-//! `GltfLoader::images: Vec<ImageData>` wraps `web_sys::ImageBitmap`
-//! / `web_sys::ImageData` — neither structured-clones across worker
-//! boundaries without explicit `transfer` lists, and `serde` can't
-//! see through `JsValue` wrappers. The worker returns the
-//! *unprocessed* encoded image bytes (PNG / JPEG / etc. as found in
-//! the glb) plus their declared MIME type; the main thread runs
-//! `createImageBitmap` on each to materialise the `ImageBitmap`s
-//! that `ImageData::Bitmap` wraps.
+//! An earlier revision returned PNG/JPEG bytes and re-decoded on the
+//! main thread. The cross-thread image-decode A/B (Corset.glb on
+//! Chrome) ran ~2× slower than inline because of that re-decode —
+//! the main-thread `createImageBitmap` blocked the same thread that
+//! had just been freed by moving the parse off it. Moving the decode
+//! into the worker (this revision) makes worker mode end-to-end
+//! faster while preserving main-thread responsiveness during load —
+//! the original motivation for the worker path.
 
+use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 
 use awsm_renderer::workers::WorkerJob;
@@ -42,9 +36,34 @@ use awsm_renderer_core::image::{
 use futures::future::try_join_all;
 use gltf::{buffer, image, Document, Error as GltfError, Gltf};
 use serde::{Deserialize, Serialize};
+use wasm_bindgen::{JsCast, JsValue};
+use web_sys::js_sys::{Array, Object, Reflect};
 
 use crate::error::AwsmGltfError;
 use crate::loader::{get_type_from_filename, GltfFileType, GltfLoader};
+
+// Worker-side thread-local: per-image-index slot for the
+// `ImageBitmap` handle that the most recent `execute_async` run
+// decoded. `None` slots correspond to images whose worker-side
+// decode failed (unsupported format → falls back to encoded bytes
+// on the main thread).
+//
+// Pulled out by `into_response_message` (called from the worker
+// dispatcher immediately after `execute` resolves): the handle
+// array goes onto the response object's `bitmaps` property AND
+// into the transfer list so `post_message_with_transfer` lifts
+// them across the worker boundary in O(1). Main thread's
+// `from_response_message` walks the array in lockstep with
+// `output.image_metas` and re-attaches each handle.
+//
+// The `RefCell` is fine because the worker is single-threaded; the
+// thread_local guarantees one cell per worker (one per pool slot).
+// Each `execute_async` clears + repopulates, so a stale run can't
+// leak into the next job.
+thread_local! {
+    static DECODED_IMAGE_HANDLES: RefCell<Vec<Option<web_sys::ImageBitmap>>> =
+        const { RefCell::new(Vec::new()) };
+}
 
 /// Worker-job marker.
 pub struct GltfParseJob;
@@ -107,12 +126,18 @@ impl ByteBlob {
     }
 }
 
-/// `WorkerJob::Output` — only raw bytes; everything serialisable.
+/// `WorkerJob::Output` — large `Vec<u8>` fields go through
+/// `serde_bytes` so `serde_wasm_bindgen` produces `Uint8Array`s
+/// (one `memcpy` per payload) instead of `Array<Number>`s (one JS
+/// Number allocation per byte). See PERFORMANCE.md §5c for the
+/// measured impact.
 ///
-/// All large `Vec<u8>` fields go through `serde_bytes` so
-/// `serde_wasm_bindgen` produces `Uint8Array`s (one `memcpy` per
-/// payload) instead of `Array<Number>`s (one JS Number allocation
-/// per byte). See PERFORMANCE.md §5c for the measured impact.
+/// Per-image `ImageBitmap` handles travel through a *side-channel*
+/// — they're attached to the worker→main response object and
+/// transferred (not structured-cloned) via `post_message_with_transfer`,
+/// then stitched back into `image_metas` by
+/// `GltfParseJob::from_response_message`. See the `bitmap` field on
+/// `ImageMeta`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct GltfParseOutput {
     /// Re-serialised glTF JSON document — the worker's `gltf::Gltf`
@@ -124,23 +149,44 @@ pub struct GltfParseOutput {
     /// Raw buffer-bin contents, one entry per `Document::buffers()`
     /// in index order. 4-byte padded.
     pub buffer_bytes: Vec<ByteBlob>,
-    /// Raw encoded image bytes (PNG / JPEG / KTX2 / …) one entry
-    /// per `Document::images()` in index order.
-    pub image_bytes: Vec<EncodedImage>,
+    /// One entry per `Document::images()` in index order. On the
+    /// worker side `bitmap` is `None` (the handle lives in the
+    /// thread_local until `into_response_message` plucks it for
+    /// transfer); on the main side, `from_response_message`
+    /// reattaches the handle so `into_loader` can skip its own
+    /// decode. `bytes` is left empty (the worker discards it after
+    /// decode) — kept on the struct only to support legacy callers
+    /// that re-decode on the main thread.
+    pub image_metas: Vec<ImageMeta>,
 }
 
-/// One encoded-image entry produced by the worker.
+/// One image entry in `GltfParseOutput`. Either `bitmap` carries the
+/// worker-decoded `ImageBitmap` (the fast path) or `bytes` carries
+/// the raw encoded payload (legacy path for jobs that opt out of
+/// worker-side decode by clearing `DECODED_IMAGE_HANDLES`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct EncodedImage {
+pub struct ImageMeta {
+    /// Raw encoded bytes (PNG / JPEG / KTX2 / …). Empty after
+    /// worker-side decode — the bitmap field carries the result
+    /// instead. Non-empty only for the legacy fallback when the
+    /// worker's `createImageBitmap` rejected the blob (e.g.
+    /// KTX2 / Basis / unsupported format).
     #[serde(with = "serde_bytes")]
     pub bytes: Vec<u8>,
     /// Declared MIME type when sourced from a buffer view; `None`
-    /// when sourced from a URI.
+    /// when sourced from a URI (the browser sniffs).
     pub mime_type: Option<String>,
     /// Source URI when the image was loaded from a separate file.
     /// Either `mime_type` or `uri` is `Some`; both being `None`
     /// indicates a programming error.
     pub uri: Option<String>,
+    /// Worker-decoded `ImageBitmap` handle. Not serialised
+    /// (`web_sys::ImageBitmap` doesn't implement Serialize) — set
+    /// back to `Some` on the main side by
+    /// `GltfParseJob::from_response_message` after picking the
+    /// handles off the response object's `bitmaps` array.
+    #[serde(skip)]
+    pub bitmap: Option<web_sys::ImageBitmap>,
 }
 
 impl GltfParseOutput {
@@ -171,19 +217,29 @@ impl GltfParseOutput {
             .into_iter()
             .map(ByteBlob::into_vec)
             .collect();
-        // Decode each encoded image on the main thread.
+        // Worker-decoded bitmap is the fast path. Legacy fallback
+        // for entries whose `createImageBitmap` rejected in the
+        // worker (KTX2 / Basis, etc.): main thread decodes the
+        // encoded bytes via the standard `load_u8` shim.
         let options = Some(
             ImageBitmapOptions::new()
                 .with_premultiply_alpha(PremultiplyAlpha::None)
                 .with_color_space_conversion(ColorSpaceConversion::Default),
         );
-        let mut images = Vec::with_capacity(self.image_bytes.len());
-        for encoded in self.image_bytes {
-            let mime = encoded
+        let mut images = Vec::with_capacity(self.image_metas.len());
+        for entry in self.image_metas {
+            if let Some(bitmap) = entry.bitmap {
+                images.push(ImageData::Bitmap {
+                    image: bitmap,
+                    options: options.clone(),
+                });
+                continue;
+            }
+            let mime = entry
                 .mime_type
                 .as_deref()
                 .unwrap_or("application/octet-stream");
-            let bitmap = load_u8(&encoded.bytes, mime, options.clone()).await?;
+            let bitmap = load_u8(&entry.bytes, mime, options.clone()).await?;
             images.push(ImageData::Bitmap {
                 image: bitmap,
                 options: options.clone(),
@@ -206,6 +262,79 @@ impl WorkerJob for GltfParseJob {
         input: Self::Input,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Self::Output>>>> {
         Box::pin(execute_async(input))
+    }
+
+    /// Override the default `serde_wasm_bindgen::to_value`: also
+    /// attach the worker-decoded `ImageBitmap` handles to the
+    /// response object's `bitmaps` array AND push them into the
+    /// transfer list so `post_message_with_transfer` lifts them
+    /// across the worker boundary in O(1) instead of structured-
+    /// cloning the image pixels.
+    fn into_response_message(
+        output: Self::Output,
+    ) -> Result<(JsValue, Array), String> {
+        let payload = serde_wasm_bindgen::to_value(&output)
+            .map_err(|err| format!("serialize output: {err}"))?;
+        let response = match payload.dyn_ref::<Object>() {
+            Some(_) => payload.clone(),
+            None => return Err("expected output to serialise to an Object".to_string()),
+        };
+        // Drain the per-job thread-local that `execute_async` filled.
+        // The vec is in image-index order; entries whose worker-side
+        // decode failed appear as `None` and serialize to JS `null`
+        // in the bitmaps array (so the main-side index lookup stays
+        // aligned with `output.image_metas`). Only the successful
+        // decodes go into the transfer list.
+        let handles = DECODED_IMAGE_HANDLES.with(|cell| cell.replace(Vec::new()));
+        let bitmaps_arr = Array::new();
+        let transfer = Array::new();
+        for handle in handles {
+            match handle {
+                Some(bitmap) => {
+                    let js: JsValue = bitmap.into();
+                    bitmaps_arr.push(&js);
+                    transfer.push(&js);
+                }
+                None => {
+                    bitmaps_arr.push(&JsValue::NULL);
+                }
+            }
+        }
+        Reflect::set(&response, &JsValue::from_str("bitmaps"), &bitmaps_arr)
+            .map_err(|err| format!("attach bitmaps: {err:?}"))?;
+        Ok((response, transfer))
+    }
+
+    /// Main-thread inverse: deserialize the `GltfParseOutput`
+    /// metadata via the default serde path, then walk the response
+    /// object's `bitmaps` array (populated by the worker's
+    /// `into_response_message`) and stitch each handle back into
+    /// the matching `ImageMeta.bitmap` slot. `into_loader` then
+    /// skips its own `createImageBitmap` decode entirely.
+    fn from_response_message(payload: JsValue) -> Result<Self::Output, String> {
+        let mut output: GltfParseOutput = serde_wasm_bindgen::from_value(payload.clone())
+            .map_err(|err| format!("deserialize output: {err}"))?;
+        if let Ok(bitmaps_val) = Reflect::get(&payload, &JsValue::from_str("bitmaps")) {
+            if let Ok(bitmaps_arr) = bitmaps_val.dyn_into::<Array>() {
+                let count = bitmaps_arr.length() as usize;
+                let expected = output.image_metas.len();
+                if count != expected {
+                    return Err(format!(
+                        "bitmaps array length mismatch: got {count}, expected {expected}"
+                    ));
+                }
+                for (idx, meta) in output.image_metas.iter_mut().enumerate() {
+                    let handle = bitmaps_arr.get(idx as u32);
+                    if handle.is_undefined() || handle.is_null() {
+                        continue;
+                    }
+                    if let Ok(bitmap) = handle.dyn_into::<web_sys::ImageBitmap>() {
+                        meta.bitmap = Some(bitmap);
+                    }
+                }
+            }
+        }
+        Ok(output)
     }
 }
 
@@ -254,13 +383,13 @@ pub async fn execute_async(input: GltfParseInput) -> anyhow::Result<GltfParseOut
 
     let base_path = get_base_path(&url);
     let raw_buffers = import_buffer_data(&doc, base_path, blob).await?;
-    let image_bytes = import_image_data_as_bytes(&doc, base_path, &raw_buffers).await?;
+    let image_metas = import_image_data(&doc, base_path, &raw_buffers).await?;
     let buffer_bytes: Vec<ByteBlob> = raw_buffers.into_iter().map(ByteBlob).collect();
 
     Ok(GltfParseOutput {
         doc_bytes,
         buffer_bytes,
-        image_bytes,
+        image_metas,
     })
 }
 
@@ -328,50 +457,117 @@ async fn import_buffer_data(
     Ok(buffers)
 }
 
-async fn import_image_data_as_bytes(
+/// Worker-side image acquisition + decode. For each `Document::images()`
+/// entry we:
+///   1. Fetch the encoded bytes (URI source: HTTP GET; buffer-view
+///      source: slice from `buffer_data`).
+///   2. Run `createImageBitmap(Blob)` via the
+///      `DedicatedWorkerGlobalScope` shim. The decode happens on the
+///      *worker* thread — that's the whole point: by the time the
+///      job resolves, the main thread doesn't have to spend any time
+///      decoding pixels.
+///   3. Stash the resulting `ImageBitmap` handle in the per-worker
+///      thread_local `DECODED_IMAGE_HANDLES`. The trait hook
+///      `GltfParseJob::into_response_message` (called by the worker
+///      dispatcher right after this function resolves) drains the
+///      thread_local and attaches the handles to the response with
+///      a transfer list — main thread receives them in O(1).
+///   4. Emit an `ImageMeta` with `bytes` empty (encoded payload
+///      discarded after decode), `bitmap` `None` (the handle lives
+///      in the thread_local, not on the serialised metadata).
+///
+/// Falls back to encoded bytes when `createImageBitmap` rejects (e.g.
+/// KTX2 / Basis / other browser-unsupported formats) — the main
+/// thread's `into_loader` then re-decodes those entries via the
+/// pure-Rust `image` crate path.
+async fn import_image_data(
     document: &Document,
     base: &str,
     buffer_data: &[Vec<u8>],
-) -> anyhow::Result<Vec<EncodedImage>> {
+) -> anyhow::Result<Vec<ImageMeta>> {
     let base = Arc::new(base.to_owned());
+    let options = Arc::new(
+        ImageBitmapOptions::new()
+            .with_premultiply_alpha(PremultiplyAlpha::None)
+            .with_color_space_conversion(ColorSpaceConversion::Default),
+    );
+    // Reset the thread_local at start so a previous job's stale
+    // handles can't leak into this run.
+    DECODED_IMAGE_HANDLES.with(|cell| cell.borrow_mut().clear());
+
     let futures: Vec<_> = document
         .images()
         .map(|image| {
             let base = Arc::clone(&base);
+            let options = Arc::clone(&options);
             async move {
-                match image.source() {
-                    image::Source::Uri { uri, mime_type } => {
-                        let url = get_url(base.as_ref(), uri)?;
-                        // Fetch the bytes so the main thread doesn't
-                        // pay a second round-trip. The MIME type is
-                        // either declared in the glTF or we let the
-                        // browser sniff it on createImageBitmap.
-                        let bytes = gloo_net::http::Request::get(&url)
-                            .send()
-                            .await?
-                            .binary()
-                            .await?;
-                        Ok::<EncodedImage, anyhow::Error>(EncodedImage {
-                            bytes,
-                            mime_type: mime_type.map(|s| s.to_string()),
-                            uri: Some(url),
+                let (bytes, mime_type, uri): (Vec<u8>, Option<String>, Option<String>) =
+                    match image.source() {
+                        image::Source::Uri { uri, mime_type } => {
+                            let url = get_url(base.as_ref(), uri)?;
+                            let bytes = gloo_net::http::Request::get(&url)
+                                .send()
+                                .await?
+                                .binary()
+                                .await?;
+                            (bytes, mime_type.map(|s| s.to_string()), Some(url))
+                        }
+                        image::Source::View { view, mime_type } => {
+                            let parent = &buffer_data[view.buffer().index()];
+                            let begin = view.offset();
+                            let end = begin + view.length();
+                            (parent[begin..end].to_vec(), Some(mime_type.to_string()), None)
+                        }
+                    };
+                // Try worker-side decode. The `load_u8` shim's
+                // `web_global::create_image_bitmap_with_blob` already
+                // routes to `DedicatedWorkerGlobalScope::createImageBitmap`
+                // when called from the worker thread.
+                let decode_mime = mime_type.as_deref().unwrap_or("application/octet-stream");
+                match load_u8(&bytes, decode_mime, Some((*options).clone())).await {
+                    Ok(bitmap) => {
+                        // Decoded successfully — drop the encoded
+                        // bytes and route the handle through the
+                        // thread_local for the response transfer.
+                        Ok::<ImageMeta, anyhow::Error>(ImageMeta {
+                            bytes: Vec::new(),
+                            mime_type,
+                            uri,
+                            bitmap: Some(bitmap),
                         })
                     }
-                    image::Source::View { view, mime_type } => {
-                        let parent = &buffer_data[view.buffer().index()];
-                        let begin = view.offset();
-                        let end = begin + view.length();
-                        Ok(EncodedImage {
-                            bytes: parent[begin..end].to_vec(),
-                            mime_type: Some(mime_type.to_string()),
-                            uri: None,
+                    Err(err) => {
+                        // Unsupported format — fall back to encoded
+                        // bytes. Main thread's `into_loader` will
+                        // re-decode via the slow `image` crate path.
+                        tracing::warn!(
+                            "GltfParseJob: worker-side decode failed for {decode_mime} ({err}); falling back to encoded bytes"
+                        );
+                        Ok(ImageMeta {
+                            bytes,
+                            mime_type,
+                            uri,
+                            bitmap: None,
                         })
                     }
                 }
             }
         })
         .collect();
-    try_join_all(futures).await
+    let mut metas: Vec<ImageMeta> = try_join_all(futures).await?;
+    // Move bitmap handles into the thread_local in image-index order
+    // — `into_response_message` walks both side-by-side. None slots
+    // are the worker-decode fallback path (encoded bytes carried
+    // through on the meta's `bytes` field; main thread decodes).
+    DECODED_IMAGE_HANDLES.with(|cell| {
+        let mut cell = cell.borrow_mut();
+        cell.clear();
+        cell.reserve(metas.len());
+        for meta in metas.iter_mut() {
+            cell.push(meta.bitmap.take());
+        }
+    });
+    Ok(metas)
 }
 
 fn get_url(base: &str, uri: &str) -> anyhow::Result<String> {

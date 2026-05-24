@@ -367,7 +367,7 @@ fn main(
                 standard_coordinates.surface_to_camera,
                 standard_coordinates.world_position,
                 lights_info,
-                material_mesh_meta.receive_shadows,
+                (material_mesh_meta.receive_shadows & material_mesh_meta.shadow_receiver_gate),
                 material_mesh_meta.light_slice_offset,
                 material_mesh_meta.light_slice_count,
             );
@@ -377,7 +377,7 @@ fn main(
                 standard_coordinates.surface_to_camera,
                 standard_coordinates.world_position,
                 lights_info,
-                material_mesh_meta.receive_shadows,
+                (material_mesh_meta.receive_shadows & material_mesh_meta.shadow_receiver_gate),
             );
         {% endif %}
         base_alpha = material_color.base.a;

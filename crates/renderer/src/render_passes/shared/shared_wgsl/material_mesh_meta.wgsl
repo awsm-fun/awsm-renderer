@@ -40,10 +40,20 @@ struct MaterialMeshMeta {
     // `0u` skips the per-decal volume test in `material_decal`'s
     // compute. Matches `Mesh::receive_decals`.
     receive_decals: u32,
+    // Per-frame coverage-driven shadow gate. Defaults to `1u`
+    // (fully-lit / sample shadows). Set to `0u` by the CPU when
+    // `LightMeshBuckets::mark_shadow_receivers` determines no
+    // shadow-caster reaches this mesh this frame — the shading path
+    // bitwise-ANDs this with the authored `receive_shadows` flag to
+    // produce the effective gate, so callsites that read
+    // `material_mesh_meta.receive_shadows` should AND in this field
+    // before passing it to `apply_lighting*`. Filled from the
+    // corresponding `u32` slot in `MaterialMeshMeta::to_bytes`
+    // (offset `MATERIAL_MESH_META_SHADOW_RECEIVER_GATE_OFFSET`).
+    shadow_receiver_gate: u32,
     // Reserved trailing u32s — keep the populated region at a vec4
     // boundary so `padding_4` lays out cleanly.
     _reserved0: u32,
     _reserved1: u32,
-    _reserved2: u32,
     padding_4: array<vec4<u32>, 10>,
 }

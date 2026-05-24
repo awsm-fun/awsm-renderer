@@ -57,6 +57,19 @@ pub struct ShadowsConfig {
     /// Tints each directional cascade range so the splits are visible
     /// in the editor. Drives a debug bitmask flag in the opaque pass.
     pub debug_cascade_colors: bool,
+    /// PCSS / soft-shadow tap count at the *closest* (`dist_ratio = 0`)
+    /// receiver-to-light distance. Higher = smoother contact shadows on
+    /// near surfaces. The WGSL kernel uses a static `for i in 0..16u`
+    /// loop with a dynamic `break` so values above 16 silently clamp.
+    /// Drives both the blocker search and the variable-kernel PCF in
+    /// `sample_shadow_cube` and `sample_shadow_cascade_array`.
+    pub pcss_max_taps: u32,
+    /// PCSS / soft-shadow tap count at the *farthest* (`dist_ratio = 1`)
+    /// receiver-to-light distance. Lower = cheaper distant shadows.
+    /// Values below 4 risk visible Poisson noise; 4 is the AAA-typical
+    /// floor for far-cascade PCF. Linearly interpolated against
+    /// `pcss_max_taps` by `pcss_tap_count` in `bind_groups.wgsl`.
+    pub pcss_min_taps: u32,
 }
 
 impl Default for ShadowsConfig {
@@ -82,6 +95,14 @@ impl Default for ShadowsConfig {
             max_point_shadows: 8,
             point_shadow_resolution: 1024,
             debug_cascade_colors: false,
+            // 16 = the max the Poisson table holds and the historical
+            // PCSS quality bar. Anything more would need a longer table.
+            pcss_max_taps: 16,
+            // 4 = the typical floor: enough taps to keep distant
+            // penumbras smooth without visible Poisson noise. Drops the
+            // per-PCSS-pixel fragment cost by ~4× on distant receivers
+            // vs the historical fixed-16 path.
+            pcss_min_taps: 4,
         }
     }
 }

@@ -82,6 +82,43 @@ pub trait WorkerJob: 'static {
     fn execute(
         input: Self::Input,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Self::Output>>>>;
+
+    /// Worker-side hook: turn the resolved `Output` into the
+    /// `(payload, transfer_list)` pair the worker postMessages back.
+    /// Default behaviour is `serde_wasm_bindgen::to_value(&output)`
+    /// with an empty transfer list — the simple structured-clone
+    /// path that suits jobs whose Output is pure-data (no JS handles).
+    ///
+    /// Override for jobs whose Output carries JS-side handles
+    /// (`ImageBitmap`, `ArrayBuffer`, `MessagePort`, …) that must
+    /// be *transferred* rather than structured-cloned. The override
+    /// can:
+    ///   1. Attach the handles to the response payload as named
+    ///      properties (e.g. `payload.bitmaps = [ib0, ib1, …]`).
+    ///   2. Push the same handles into the returned `js_sys::Array`
+    ///      so the worker's `post_message_with_transfer` lifts them
+    ///      across the thread boundary in O(1) instead of cloning.
+    ///
+    /// `from_response_message` then stitches the handles back into
+    /// the typed Output on the main side.
+    fn into_response_message(
+        output: Self::Output,
+    ) -> Result<(JsValue, web_sys::js_sys::Array), String> {
+        let payload =
+            serde_wasm_bindgen::to_value(&output).map_err(|err| format!("serialize output: {err}"))?;
+        Ok((payload, web_sys::js_sys::Array::new()))
+    }
+
+    /// Main-thread inverse of `into_response_message`. Default:
+    /// `serde_wasm_bindgen::from_value`. Override when the worker
+    /// attached transferred handles that need to be merged back into
+    /// the Output. The hook receives the *full* response message
+    /// (including any properties the worker attached on top of the
+    /// serialised payload) — pull whatever it needs and combine with
+    /// the standard deserialised body to reconstruct the Output.
+    fn from_response_message(payload: JsValue) -> Result<Self::Output, String> {
+        serde_wasm_bindgen::from_value(payload).map_err(|err| format!("deserialize output: {err}"))
+    }
 }
 
 /// Bundle-URL discovery strategy. Default is `Auto` (read
@@ -400,8 +437,13 @@ impl WorkerPool {
         post_result.map_err(|err| WorkerPoolError::from_js("dispatch postMessage", err))?;
 
         match rx.await {
-            Ok(Ok(payload)) => serde_wasm_bindgen::from_value(payload)
-                .map_err(|err| WorkerPoolError::Serde(format!("output: {err}"))),
+            // `J::from_response_message` is the trait hook for jobs
+            // whose worker→main payload carries attached JS handles
+            // (e.g. `ImageBitmap`s transferred by GltfParseJob). The
+            // default impl is a thin `serde_wasm_bindgen::from_value`
+            // wrapper, identical to the prior behaviour for pure-data
+            // jobs.
+            Ok(Ok(payload)) => J::from_response_message(payload).map_err(WorkerPoolError::Serde),
             Ok(Err(err)) => {
                 let msg = err.as_string().unwrap_or_else(|| format!("{err:?}"));
                 Err(WorkerPoolError::JobFailed(msg))

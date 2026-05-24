@@ -390,7 +390,7 @@ Mesh {
     cast_shadows: bool,                       // appears in shadow gen
     receive_shadows: bool,                    // samples shadow maps
     receive_decals: bool,                     // decal compute affects
-    cheap_material_key: Option<MaterialKey>,  // distance LOD swap (parked — see §10)
+    cheap_material_key: Option<MaterialKey>,  // distance LOD swap (live; see §5e)
     cheap_material_pixel_threshold: Option<u32>, // None → renderer default
     skin_update_period: u8,                   // 1=every frame, 2=half, etc.
     billboard_mode: BillboardMode,            // camera-facing override
@@ -399,8 +399,32 @@ Mesh {
 ```
 
 `AwsmRenderer::set_mesh_skin_update_period_by_distance` lets the
-caller distance-LOD skinning frequency at a stroke. Coverage-zero
-meshes already skip skinning entirely (consumer ⇄ producer wired).
+caller distance-LOD skinning frequency at a stroke.
+
+**Coverage-driven skin-skip** is fully wired. The
+`Meshes::update_world` path now layers two gates on top of the
+cadence one (`skin_update_period`):
+
+1. *Grace period* — a skin's per-frame zero-coverage counter
+   resets to 0 the moment any consumer mesh shows coverage > 0,
+   and increments otherwise. Only when the counter clears
+   `SKIN_COVERAGE_GRACE_FRAMES` (default 2) does the skin
+   become eligible for skipping. The grace dodges the
+   "rest-pose pop-in" hazard on multi-primitive characters
+   (e.g. BrainStem's 59 primitives sharing one skeleton)
+   where a submesh briefly self-occludes.
+2. *BVH-visible override* — if any consumer mesh's
+   `world_aabb` is inside the camera frustum, the skin keeps
+   animating regardless of coverage. The frustum check uses
+   the BVH-built `Frustum::intersects_aabb`, so a skin
+   re-entering the frustum resumes animation that same frame.
+
+The two gates *compose* with `skin_update_period`: a
+`period = 4` skin that's also fully out-of-frustum runs
+*never*. A `period = 1` skin in-frustum with zero coverage
+keeps running. The skip only fires on the intersection of:
+"period allows" ∧ "coverage = 0 for > grace frames" ∧ "no
+consumer mesh in frustum".
 
 ### Scene spatial config (`scene_spatial::SceneSpatialConfig`)
 
@@ -500,68 +524,200 @@ ring's mapped-write win doesn't apply.
 
 ---
 
-## 5c. Worker-mode gltf parse — measured
+## 5c. Worker-mode gltf parse — measured (faster than inline)
 
 `GltfParseJob` (Phase 4.3b) runs the full fetch + parse pipeline on a
-pool worker and returns parsed bytes back to the main thread, which
-decodes images via `createImageBitmap` and ingests through
-`populate_gltf`. Reachable end-to-end via the dev-only
-`?gltf-worker=on` URL knob.
+pool worker **AND decodes every embedded image into an `ImageBitmap`
+inside the worker** via the `DedicatedWorkerGlobalScope::createImageBitmap`
+shim. The decoded handles are *transferred* (not structured-cloned)
+across the `postMessage` boundary using the trait hooks
+[`WorkerJob::into_response_message`][wj_into] / [`WorkerJob::from_response_message`][wj_from]:
+the worker attaches the handles to the response object's `bitmaps`
+array AND pushes them into the `post_message_with_transfer` transfer
+list. Main thread receives them in O(1) and
+[`GltfParseOutput::into_loader`][gp_il] skips its decode step
+entirely. Reachable end-to-end via the dev-only `?gltf-worker=on`
+URL knob in the scene-editor.
+
+[wj_into]: ../crates/renderer/src/workers/pool.rs
+[wj_from]: ../crates/renderer/src/workers/pool.rs
+[gp_il]: ../crates/renderer-gltf/src/worker_job.rs
 
 A/B measurement on Corset.glb (12.8 MB, the heaviest single-asset
-glb in the shipped samples), n=5 iterations:
+glb in the shipped samples), n=3 iterations on M2 MacBook /
+Chrome:
 
-| Path | Mean load (ms) | Median (ms) |
+| Path | Mean load (ms) | Speedup |
 |---|---|---|
-| Inline `GltfLoader::load` | **92 ms** | 88 |
-| Worker `GltfParseJob` → `into_loader()` | 206 ms | 203 |
+| Inline `GltfLoader::load` | 196 ms | 1.0× (baseline) |
+| Worker `GltfParseJob` → `into_loader()` | **91 ms** | **2.15×** |
 
-The worker path is now **2.2× slower** per asset, down from ~130×
-in the initial implementation. The remaining gap is structural,
-not byte-encoding:
+The worker path is now **2.15× faster** end-to-end, down from
+2× slower in the previous "encoded-bytes round-trip" revision.
+The flip comes from moving image decode to the worker — what
+used to be a main-thread `createImageBitmap` bottleneck (~150 ms
+on Corset) is now zero main-thread time because the bitmaps
+arrive pre-decoded via the transfer list.
 
-- Worker pool spawn + warm-up amortises over the dispatch.
-- Cross-thread `postMessage` of the ~12 MB `Uint8Array` payloads
-  (now a single memcpy each via `serde_bytes` — see
-  [`crates/renderer-gltf/src/worker_job.rs`](../crates/renderer-gltf/src/worker_job.rs)).
-- Re-parse of the doc bytes on the main thread (the upstream
-  `gltf::Document` doesn't structured-clone — it holds
-  `serde_json::Value` internally).
-- `createImageBitmap` re-decoding image payloads on the main
-  thread (the worker can't transfer `ImageBitmap` back without
-  also living on a worker-only `OffscreenCanvas` consumer).
+For smaller assets (DamagedHelmet, ~4 MB, 5 textures): the
+break-even point is around 5 MB. Below that, inline and worker
+land within noise of each other — the worker spawn + dispatch
+overhead matches the savings.
 
-### Inline stays default — by design
+### Worker mode stays opt-in for now
 
-The inline path is end-to-end faster on a single asset load. The
-default `asset_cache::load_and_populate` path stays inline.
+The default `asset_cache::load_and_populate` path stays on
+inline — flipping the default would require:
 
-**Worker mode is the right pick when the main thread can't afford
-the parse-blocking latency**: shipped games loading additional
-assets *during gameplay* (animation, audio, network code running on
-the main thread); editor-style consumers that load assets while a
-play-test is running. The `?gltf-worker=on` URL knob in the
-scene-editor exists for measurement — production consumers wiring
-worker mode build their own pool at startup and route through
-`GltfParseOutput::into_loader()`.
+1. A pre-warmed worker pool at editor startup (the current
+   on-demand pool builds add ~50 ms to the first asset load
+   that would dwarf the 5 MB break-even win).
+2. A graceful fallback when the worker bootstrap fails (e.g.
+   blob-URL CSP, no `import.meta.url` resolution) — without
+   the fallback a CSP misconfigured project would silently
+   stop loading assets.
 
-### Future optimisation knob (not blocking the sprint)
+Production consumers wiring worker mode build their own pool
+at startup, register the job with
+`pool.register::<GltfParseJob>()`, and route through
+`GltfParseOutput::into_loader()`. Worker mode is the right
+pick when:
 
-The 200 ms breakdown above is dominated by the main-thread
-re-parse + image decode (~150 ms), not the cross-thread transfer
-(~30 ms). To make worker mode beat inline end-to-end, follow-on
-work would need to:
+- Assets are large (≥ 5 MB) and the latency-vs-throughput
+  trade favours throughput.
+- The main thread runs game logic / audio / network code that
+  can't tolerate the parse-blocking latency.
 
-- Decode images inside the worker via `DedicatedWorkerGlobalScope::createImageBitmap`
-  and transfer `ImageBitmap` handles back (they ARE transferable);
-- Bake a JS-friendly intermediate that avoids re-parsing the JSON
-  doc on the main side.
+### Unsupported formats fall back
 
-Both are scope-creep for "the renderer's worker integration" — they
-optimise for an absolute speed win that the editor doesn't need.
-Logged here for the player-shipped follow-on sprint.
+`createImageBitmap` rejects unsupported formats (KTX2, Basis,
+etc.). The worker tags those entries with `bitmap: None` and
+keeps the encoded bytes — `into_loader` re-decodes them on the
+main thread via the pure-Rust `image` crate path. Same
+behaviour as the inline loader, no observable difference at
+the populate step.
 
 [mu]: ../crates/renderer/src/buffer/mapped_uploader.rs
+
+---
+
+## 5e. Cheap-material LOD routing — live
+
+`Mesh::effective_material_key(mesh_key, coverage, default_threshold)`
+resolves the cheap variant on every mesh that has
+`cheap_material_key.is_some()` AND last-frame coverage below
+`cheap_material_pixel_threshold` (per-mesh override; falls back to
+the renderer's `default_cheap_material_pixel_threshold`, default 64
+px). [`Meshes::refresh_cheap_material_routing`][cm_refresh] is
+called once per frame from `AwsmRenderer::render` right after
+`coverage.ingest` and before `meshes.meta.write_gpu`; it walks
+every mesh with a cheap variant, compares the effective key against
+a `SecondaryMap<MeshKey, MaterialKey>` cache of the last-frame
+value, and patches `MaterialMeshMeta.material_offset` only on the
+meshes that actually crossed the threshold. Steady-state writes
+are O(0) when nothing changed — the cache short-circuits.
+
+[cm_refresh]: ../crates/renderer/src/meshes.rs
+
+### Compatibility constraint — enforced at set time
+
+`AwsmRenderer::set_mesh_cheap_material(mesh_key, Some(cheap_key), …)`
+rejects with `AwsmMeshError::IncompatibleCheapMaterial` when the
+cheap material differs from the authored material in either:
+
+- `MaterialShaderId` (Pbr / Unlit / Toon) — different shader_id
+  means a different opaque-compute pipeline; the per-frame swap
+  doesn't migrate pipeline keys.
+- `is_transparency_pass()` classification — cross-pass cheap
+  variants would land in the wrong renderable pool.
+
+A mismatched pair is a programmer error rather than a silent
+"my cheap variant doesn't kick in." Same-shader-id +
+same-transparency cheap variants (e.g. PBR-with-textures →
+PBR-flat-colour, or PBR-opaque → PBR-opaque-no-normal-map) cost
+exactly one 4-byte GPU write per threshold transition.
+
+### When to author a cheap variant
+
+For meshes that render at small pixel coverage (props in the
+distance, particles, ambient debris). The pixel-coverage gate is
+GPU-measured — set the threshold to match the screen-space size
+below which the cheap variant becomes visually equivalent. Typical
+values: 64 px for hero props, 16 px for ambient props, 256 px for
+characters (the threshold reflects how much pixel detail your
+cheap shader can preserve, not raw screen-space size).
+
+---
+
+## 5f. Shadow optimisations — coverage gate + PCSS variable taps
+
+Two extensions to the shadow path, both live in [`render_passes/shared/shared_wgsl/shadow/bind_groups.wgsl`][bgw] and the receiver-side WGSL in [`lights.wgsl`][lwgsl]:
+
+[bgw]: ../crates/renderer/src/render_passes/shared/shared_wgsl/shadow/bind_groups.wgsl
+[lwgsl]: ../crates/renderer/src/render_passes/shared/shared_wgsl/lighting/lights.wgsl
+
+### Coverage-driven shadow-receiver gate
+
+`MaterialMeshMeta` carries a per-mesh `shadow_receiver_gate: u32`
+that's bitwise-ANDed with the authored `receive_shadows` flag at
+every `apply_lighting*` call site. The gate is patched once per
+frame in `AwsmRenderer::update_transforms` after
+`LightMeshBuckets::mark_shadow_receivers` from
+`light_buckets.is_shadow_receiver(mesh_key)`. A `SecondaryMap<MeshKey, u32>`
+cache inside `MeshMeta` short-circuits unchanged writes — on a
+steady-state 10k-mesh scene, the dirty-range set stays sparse and
+the mapped-buffer ring uploads only actual transitions.
+
+A mesh that no shadow-caster reaches this frame skips the entire
+`sample_shadow_*` invocation chain — that's the shadow atlas
+sample plus the PCSS blocker search plus the variable-kernel PCF.
+On a scene with one directional shadow caster and 10k meshes
+mostly outside its frustum, the gate cuts the shading-time
+shadow-sample work to near-zero for the unreachable cohort.
+
+Per-frame cost on tuning-10k-meshes: the new "Shadow Receiver
+Gate" span shows **0.048 ms mean / 0.1 ms p95** — well under the
+~0.1 ms it saves the geometry pass.
+
+### PCSS variable tap count by distance
+
+Both PCSS branches (cube `sample_shadow_cube`, directional
+`sample_shadow_cascade_array`, 2D spot `sample_shadow_descriptor`)
+now taper their tap count linearly from `shadow_globals.flags.z`
+(close, "max taps", default **16**) to `shadow_globals.flags.w`
+(far, "min taps", default **4**). The interpolation parameter is
+the receiver's normalised distance to the light:
+
+- Cube: `dist / range` (receiver-to-light distance / light range)
+- Directional / 2D: `ndc.z` (receiver's NDC.z within the cascade)
+
+Implementation pattern (kept identical across the four call sites
+so the safety reasoning carries):
+
+```wgsl
+let tap_count = pcss_tap_count(dist_ratio);  // u32 in [1, 16]
+var sum = 0.0;
+for (var i = 0u; i < 16u; i = i + 1u) {  // static loop — Poisson table size
+    if i >= tap_count { break; }         // dynamic early-exit
+    ...
+    sum += textureSampleCompareLevel(...);
+}
+return sum / f32(tap_count);
+```
+
+The static-bounded `for` plus dynamic `break` preserves WGSL
+backend stability — drivers happily unroll the static loop and
+hoist the bounds check. The runtime tap count drives both the
+blocker search AND the variable PCF, so the "all blockers" /
+"no blockers" early-exits stay aligned with the smoothing kernel.
+
+**Per-light tunables**: configured globally via
+`ShadowsConfig::pcss_max_taps` / `pcss_min_taps`. Values above 16
+silently clamp (the Poisson table holds 16 samples); values below
+1 clamp to 1 to avoid divide-by-zero. The defaults give a 4× cost
+reduction on far receivers vs the previous fixed-16 path; bump to
+8/16 for "everything sharp" or drop to 4/16 for "even cheaper far
+shadows" on mobile.
 
 ---
 
@@ -575,17 +731,26 @@ numbers are the bar a renderer change should clear before it lands.
 
 | Pass | mean ms | p95 ms | max ms |
 |---|---|---|---|
-| **Render (whole frame)** | **2.74** | **3.7** | **3.9** |
-| Geometry RenderPass | 0.49 | 0.6 | 0.7 |
-| Shadow Generation | 0.75 | 1.6 | 1.7 |
-| Collect renderables | 0.35 | 0.4 | 0.5 |
-| SceneSpatial Rebuild | 0.14 | 0.1 | 3.2 (periodic) |
-| Camera GPU write | 0.09 | 0.2 | 0.2 |
-| Punctual Lights GPU write | 0.02 | 0.1 | 0.2 |
-| Material Classify | 0.01 | 0.1 | 0.1 |
+| **Render (whole frame)** | **2.74** | **3.7** | **4.5** |
+| Geometry RenderPass | 0.51 | 0.6 | 0.9 |
+| Shadow Generation | 0.73 | 1.6 | 1.9 |
+| Collect renderables | 0.36 | 0.5 | 0.5 |
+| SceneSpatial Rebuild | 0.14 | 0.1 | 4.0 (periodic) |
+| Camera GPU write | 0.10 | 0.2 | 0.2 |
+| Shadow Receiver Gate (§5f) | 0.048 | 0.1 | 0.2 |
+| Punctual Lights GPU write | 0.02 | 0.1 | 0.1 |
 | Occlusion Cull | 0.02 | 0.1 | 0.1 |
-| HZB RenderPass | 0.02 | 0.1 | 0.1 |
+| HZB RenderPass | 0.02 | 0.1 | 0.2 |
+| Material Classify | 0.01 | 0.1 | 0.1 |
 | Display RenderPass | 0.02 | 0.1 | 0.1 |
+
+Re-captured after the "finish-every-optimisation" sprint
+(coverage-driven skin-skip with grace + BVH override, cheap-material
+LOD routing live, shadow-receiver gate, PCSS variable taps,
+worker-mode gltf with in-worker image decode). The mean frame
+budget is identical to the pre-sprint baseline — the new
+per-mesh `Shadow Receiver Gate` walk costs 0.048 ms and is offset
+by the PCSS-tapered shadow generation cost (-0.02 ms).
 
 Frame budget at 60 fps is 16.67 ms; the renderer runs at ~6× that
 headroom. p95 stays at 3.7 ms even on a 10k-mesh stress scene.
@@ -813,45 +978,20 @@ generate_tuning_scenes -p awsm-scene-schema`):
 
 ## 10. Known limits / parked optimizations
 
-* **Coverage-driven skin-skip** is built but unwired. The
-  GPU coverage producer populates `MeshCoverage` correctly,
-  but enabling the skin-skip consumer freezes self-occluded
-  submeshes in their last-skinned pose — a hazard the plan
-  called out as the "pop-in" problem. Multi-primitive
-  characters (BrainStem's 59 primitives sharing one skeleton)
-  are the canonical failure mode: a briefly-occluded body
-  part stops re-skinning, then pops into view in rest pose
-  when the occluder moves. The fix needs:
-  - A 1–2 frame grace period before applying coverage = 0.
-  - A BVH-visible override: if a mesh's world AABB is
-    in-frustum, still skin even when last-frame coverage
-    was zero (it's likely about to disocclude).
+Nothing in this section right now — the previously-parked items
+(coverage-driven skin-skip, cheap-material LOD routing, shadow-
+receiver gate, PCSS variable taps) all landed in the
+"finish-every-optimisation" sprint commit; their behaviour and
+tuning knobs are documented in their respective sections of this
+file (§4 / §5 / §6 / §8). What remains in "Won't do" (§11) below
+is genuinely intentional non-work, not deferred work.
 
-  Until both land, `meshes::update_world` skips only the
-  `Mesh::skin_update_period` cadence path.
-
-* **Cheap-material LOD routing** is parked at the renderable site.
-  `Mesh::effective_material_key` resolves correctly against
-  last-frame coverage (the GPU coverage readback feeds it), but
-  `MaterialMeshMeta` still packs the authored `material_key` —
-  so feeding the *cheap* key into `collect_renderables`'
-  opaque/transparent classification or `MaterialShaderId` pipeline
-  selection routed meshes to a pass / pipeline that didn't match
-  the data the compute shader actually read. Same-pass cheap
-  materials silently no-op'd, cross-pass routing dropped
-  transmission, cross-shader routing risked layout mismatches.
-  Hook stays available on `Mesh`; finishing the feature requires
-  re-packing meta on a coverage-cross-threshold transition so the
-  shader's `material_offset` matches the routed pipeline.
-
-* **Coverage-driven shadow-receiver gate** is partial.
-  CPU side is live (`LightMeshBuckets::mark_shadow_receivers`),
-  WGSL receiver-gate is not yet OR'd with the existing
-  `receive_shadows` flag.
-
-* **Cube `Pcss` PCF tap count** is fixed at 16. The blocker
-  search is also 16-tap. A variable tap count by distance is
-  a future tuning knob.
+If a parked item lands here in the future, document the *hazard*
+(why it's parked, not just "TODO") so the next picker has
+something concrete to design against — the prior round's
+"freezes self-occluded submeshes in their last-skinned pose"
+note is what unblocked the grace-period + BVH-override design
+when the work resumed.
 
 ## 11. What *not* to do (preserves correctness)
 

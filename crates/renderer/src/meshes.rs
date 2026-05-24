@@ -134,6 +134,75 @@ impl AwsmRenderer {
         Ok(())
     }
 
+    /// Sets (or clears) the cheap-material variant for a mesh. The
+    /// cheap variant takes over the mesh's shading whenever last-frame
+    /// coverage drops below the threshold (per-mesh
+    /// `cheap_material_pixel_threshold`, falling back to the
+    /// renderer's `default_cheap_material_pixel_threshold`).
+    ///
+    /// Constraint (validated here): the cheap material MUST share the
+    /// authored material's [`MaterialShaderId`] AND its
+    /// [`is_transparency_pass`] classification. The per-frame routing
+    /// in `Meshes::refresh_cheap_material_routing` only swaps the
+    /// GPU-side `material_offset` — it doesn't migrate the mesh
+    /// between the opaque / transparent renderable pools or rebuild
+    /// the opaque-compute pipeline key. A mismatched pair would
+    /// either silently no-op the cheap path (same-pass, different
+    /// shader_id → wrong compute kernel) or, worse, run a transparent
+    /// material through the opaque pipeline → layout mismatch /
+    /// garbage shading. Returns `IncompatibleCheapMaterial` rather
+    /// than swallowing the mistake.
+    ///
+    /// Pass `cheap_material_key = None` to clear an existing cheap
+    /// variant. The next frame's `refresh_cheap_material_routing`
+    /// re-patches the mesh's `material_offset` back to the authored
+    /// material.
+    pub fn set_mesh_cheap_material(
+        &mut self,
+        mesh_key: MeshKey,
+        cheap_material_key: Option<crate::materials::MaterialKey>,
+        cheap_material_pixel_threshold: Option<u32>,
+    ) -> crate::error::Result<()> {
+        let authored_material = {
+            let mesh = self.meshes.get(mesh_key)?;
+            mesh.material_key
+        };
+        if let Some(cheap) = cheap_material_key {
+            let authored_shader = self.materials.shader_id(authored_material);
+            let cheap_shader = self.materials.shader_id(cheap);
+            if authored_shader != cheap_shader {
+                return Err(crate::meshes::AwsmMeshError::IncompatibleCheapMaterial {
+                    authored: authored_material,
+                    cheap,
+                    reason: format!(
+                        "shader_id mismatch (authored {authored_shader:?} vs cheap {cheap_shader:?}) — \
+                         the per-frame routing only swaps material_offset; cross-shader cheap variants \
+                         need a separate pipeline + render pool migration that isn't wired."
+                    ),
+                }
+                .into());
+            }
+            let authored_blend = self.materials.is_transparency_pass(authored_material);
+            let cheap_blend = self.materials.is_transparency_pass(cheap);
+            if authored_blend != cheap_blend {
+                return Err(crate::meshes::AwsmMeshError::IncompatibleCheapMaterial {
+                    authored: authored_material,
+                    cheap,
+                    reason: format!(
+                        "transparency-pass classification mismatch (authored opaque?={} vs cheap opaque?={}) — \
+                         a cheap variant on the opposite pass would land in the wrong renderable list.",
+                        !authored_blend, !cheap_blend
+                    ),
+                }
+                .into());
+            }
+        }
+        let mesh = self.meshes.get_mut(mesh_key)?;
+        mesh.cheap_material_key = cheap_material_key;
+        mesh.cheap_material_pixel_threshold = cheap_material_pixel_threshold;
+        Ok(())
+    }
+
     /// Removes all meshes under a transform and clears any pass-local mesh state.
     pub fn remove_meshes_by_transform_key(&mut self, transform_key: TransformKey) -> Vec<MeshKey> {
         let mesh_keys = self
@@ -501,6 +570,26 @@ pub struct Meshes {
     // morphs and skins
     pub morphs: Morphs,
     pub skins: Skins,
+    /// Last-frame effective `MaterialKey` per mesh — the value
+    /// `Mesh::effective_material_key` resolved to. Used by
+    /// `refresh_cheap_material_routing` to detect coverage-cross-threshold
+    /// transitions and patch `MaterialMeshMeta.material_offset` only on
+    /// the meshes that actually crossed; steady-state writes are O(0)
+    /// even when every mesh has a cheap variant authored.
+    last_effective_material: SecondaryMap<MeshKey, crate::materials::MaterialKey>,
+    /// Per-skin "frames-since-last-frame-with-coverage > 0" counter,
+    /// driving the coverage-skin-skip grace period in `update_world`.
+    ///
+    /// Tracks: while ANY consumer mesh of a skin had non-zero coverage
+    /// last frame, the counter resets to 0. When every consumer hit
+    /// zero coverage, the counter increments. The skip gate only
+    /// fires once the counter clears the grace threshold AND no
+    /// consumer mesh sits inside the camera frustum (the BVH override).
+    ///
+    /// Default 0 = never-observed-skin / fresh-insertion = "still in
+    /// grace period" so the very first frame after a skin's meshes
+    /// materialise, skinning runs normally (no rest-pose pop).
+    skin_zero_coverage_grace: SecondaryMap<SkinKey, u32>,
 }
 impl Meshes {
     // Initial sizes assume ~1000 vertices per mesh
@@ -590,7 +679,62 @@ impl Meshes {
             // attribute morphs and skins
             morphs: Morphs::new(gpu)?,
             skins: Skins::new(gpu)?,
+            last_effective_material: SecondaryMap::new(),
+            skin_zero_coverage_grace: SecondaryMap::new(),
         })
+    }
+
+    /// Walk every mesh with a `cheap_material_key` authored and patch
+    /// its `MaterialMeshMeta.material_offset` to point at the
+    /// *effective* material for this frame (cheap when coverage is
+    /// below threshold, authored otherwise). Idempotent — the
+    /// `last_effective_material` sidecar tracks the last patched
+    /// value, so meshes whose effective key didn't change generate no
+    /// GPU writes.
+    ///
+    /// Safety: callers MUST have validated cheap-material
+    /// compatibility via `validate_cheap_material_compat` (same
+    /// shader_id + same transparency-pass classification) at
+    /// authoring time. The routing layer (`collect_renderables`) reads
+    /// `mesh.material_key` for pipeline + pass selection and assumes
+    /// the cheap variant lands on the same pass — without the compat
+    /// check, a cross-pass cheap material would land in the wrong
+    /// renderable list relative to the meta data the shader reads
+    /// and either silently no-op the cheap path or, worse, route a
+    /// transparent material through the opaque pipeline.
+    ///
+    /// Called once per frame from `AwsmRenderer::render` after
+    /// `coverage.ingest` and before `meshes.meta.write_gpu`.
+    pub fn refresh_cheap_material_routing(
+        &mut self,
+        materials: &crate::materials::Materials,
+        coverage: &crate::coverage::MeshCoverage,
+        default_threshold: u32,
+    ) -> Result<()> {
+        // Two-pass to avoid the immutable-borrow-of-self vs
+        // mutable-borrow-of-self.meta conflict — gather updates first,
+        // then apply.
+        let mut updates: Vec<(MeshKey, u32, crate::materials::MaterialKey)> = Vec::new();
+        for (mesh_key, mesh) in self.list.iter() {
+            if mesh.cheap_material_key.is_none() {
+                continue;
+            }
+            let effective = mesh.effective_material_key(mesh_key, coverage, default_threshold);
+            let last = self.last_effective_material.get(mesh_key).copied();
+            if last == Some(effective) {
+                continue;
+            }
+            // Resolve to GPU offset now (still inside the immutable
+            // borrow) so the update step doesn't need `materials`
+            // access — keeps the mutation set tiny.
+            let offset = materials.buffer_offset(effective)? as u32;
+            updates.push((mesh_key, offset, effective));
+        }
+        for (mesh_key, offset, effective) in updates {
+            self.meta.set_material_offset(mesh_key, offset);
+            self.last_effective_material.insert(mesh_key, effective);
+        }
+        Ok(())
     }
 
     /// Mapped-ring upload telemetry for mesh-side per-frame buffers.
@@ -1182,6 +1326,16 @@ impl Meshes {
         // so the parameter is harmless when the GPU coverage pass
         // isn't wired yet on the producer side.
         coverage: &crate::coverage::MeshCoverage,
+        // Current camera frustum, if any. The coverage-driven
+        // skin-skip uses this as a "BVH-visible override": a skin
+        // whose consumer meshes' world AABBs are all *out of frustum*
+        // is genuinely off-screen; if any AABB is in-frustum the
+        // skin is likely about to (or already) disocclude, so we
+        // continue animating to dodge rest-pose pop-in. `None` is
+        // treated conservatively (assume in-frustum, never skip
+        // via coverage) — used by first-frame paths that don't
+        // have a camera matrix yet.
+        frustum: Option<&crate::frustum::Frustum>,
     ) -> Vec<MeshKey> {
         let mut update_keys = std::collections::HashSet::new();
         update_keys.extend(dirty_transforms.keys().copied());
@@ -1244,33 +1398,118 @@ impl Meshes {
             }
         }
 
-        // Distance-based skin LOD gate. Precompute the set of skins
-        // we'll *skip* this frame based on the `skin_update_period`
-        // cadence. Done as a separate pass because the lookup
-        // borrows `&self` while `skins.update_transforms` borrows
-        // `&mut self.skins`.
+        // Skin-skip gate. Two layers compose:
         //
-        // Coverage-driven skin-skip is intentionally not wired here.
-        // Reason: characters built from multiple overlapping
-        // submeshes (e.g. BrainStem's 59 primitives sharing one
-        // skeleton) routinely have submeshes self-occluded by
-        // adjacent body parts for a frame or two. Skipping their
-        // skin update freezes them in their last pose — typically
-        // the bind pose, since the freeze happens before the first
-        // animation tick they would have run. When the occluding
-        // submesh moves and reveals them, they pop into view in rest
-        // pose while the rest of the character keeps animating.
-        // A grace-period + BVH-visible override would fix this; until
-        // that lands, run skinning for every visible skin every
-        // frame. `cheap_material_pixel_threshold`
-        // (the other coverage consumer) is unaffected — material
-        // LOD doesn't suffer from rest-pose persistence.
-        let _ = coverage;
+        //   1. `skin_update_period` cadence — purely period-based, no
+        //      coverage / frustum input. A `period = 4` skin only
+        //      updates on frames whose `frame_index % 4 == 0`. Drives
+        //      the distance-LOD skinning policy.
+        //
+        //   2. Coverage-driven skip with grace period + BVH override.
+        //      Layer (1) gates *cadence*; this gates *visibility*. A
+        //      skin every one of whose consumer meshes had coverage = 0
+        //      last frame AND whose AABBs all sit outside the camera
+        //      frustum is genuinely off-screen → safe to skip.
+        //
+        //      The grace period (`SKIN_COVERAGE_GRACE_FRAMES`) protects
+        //      multi-primitive characters (e.g. BrainStem's 59
+        //      primitives sharing one skeleton) where one submesh
+        //      briefly self-occludes another for a frame or two. Without
+        //      grace, that submesh freezes in its last-skinned pose;
+        //      when the occluder moves and reveals it, it pops into
+        //      view in rest pose. The grace counter lets the skin
+        //      keep animating for the first ~2 frames of zero coverage
+        //      so a brief self-occlusion doesn't propagate.
+        //
+        //      The BVH override (`frustum.intersects_aabb`) catches the
+        //      complementary case: a skin re-entering the frustum is
+        //      about to disocclude, so we resume animation immediately
+        //      regardless of last-frame coverage.
+        //
+        // `cheap_material_pixel_threshold` (the other coverage consumer)
+        // doesn't suffer from rest-pose persistence — it just picks
+        // a cheaper shader on the next frame.
+        const SKIN_COVERAGE_GRACE_FRAMES: u32 = 2;
         let mut skip_skins: std::collections::HashSet<SkinKey> = std::collections::HashSet::new();
+        // Build the inverted index skin_key → Vec<MeshKey> once so the
+        // per-skin BVH / coverage walk is O(meshes) total instead of
+        // O(skins × meshes). Empty entries are fine (a skin with no
+        // consumer meshes can't show pop-in by definition).
+        let mut skin_consumers: HashMap<SkinKey, Vec<MeshKey>> = HashMap::new();
+        for (mesh_key, _mesh) in self.list.iter() {
+            let Some(resource_key) = self.mesh_to_resource.get(mesh_key).copied() else {
+                continue;
+            };
+            let Some(resource) = self.resources.get(resource_key) else {
+                continue;
+            };
+            if let Some(skin_key) = resource.skin_key {
+                skin_consumers.entry(skin_key).or_default().push(mesh_key);
+            }
+        }
+
         if frame_index > 0 {
             let skin_keys: Vec<SkinKey> = self.skins.iter_skin_keys().collect();
             for skin_key in skin_keys {
+                // Layer 1: cadence gate.
                 if !self.skin_should_update_this_frame(skin_key, frame_index) {
+                    skip_skins.insert(skin_key);
+                    continue;
+                }
+
+                // Layer 2: coverage + BVH + grace.
+                let consumers = skin_consumers
+                    .get(&skin_key)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+
+                // A skin with no live consumers — its meshes were
+                // removed but the skin slot lingers. No pop-in
+                // possible, but no work to do either; the cadence
+                // gate already lets it run if `period` allows, and
+                // the skip below would also fire (no visible consumers,
+                // no in-frustum consumers, grace counter expired
+                // immediately since there's nothing to keep the
+                // counter at 0). The default branch handles it
+                // cleanly so we don't need a special case here.
+                let any_visible_last_frame = consumers
+                    .iter()
+                    .any(|mk| !coverage.is_below_threshold(*mk, 1));
+
+                let any_in_frustum = match frustum {
+                    None => true, // conservative: assume in-frustum
+                    Some(f) => consumers.iter().any(|mk| {
+                        self.list
+                            .get(*mk)
+                            .and_then(|m| m.world_aabb.as_ref())
+                            .map(|aabb| f.intersects_aabb(aabb))
+                            .unwrap_or(true)
+                    }),
+                };
+
+                // Grace counter: reset to 0 the moment ANY consumer
+                // showed coverage last frame; otherwise increment
+                // (saturating so it never wraps).
+                let grace = if any_visible_last_frame {
+                    0
+                } else {
+                    self.skin_zero_coverage_grace
+                        .get(skin_key)
+                        .copied()
+                        .unwrap_or(0)
+                        .saturating_add(1)
+                };
+                self.skin_zero_coverage_grace.insert(skin_key, grace);
+
+                // Skip only when (a) the BVH agrees the skin is
+                // off-screen AND (b) coverage has been zero for long
+                // enough that a brief self-occlusion is unlikely to
+                // be the cause AND (c) no consumer showed coverage
+                // last frame.
+                if !any_visible_last_frame
+                    && !any_in_frustum
+                    && grace > SKIN_COVERAGE_GRACE_FRAMES
+                {
                     skip_skins.insert(skin_key);
                 }
             }
@@ -1656,6 +1895,10 @@ impl Meshes {
     pub(crate) fn remove(&mut self, mesh_key: MeshKey) -> Option<Mesh> {
         if let Some(mesh) = self.list.remove(mesh_key) {
             self.meta.remove(mesh_key);
+            // Drop the cheap-material LOD cache entry so a recycled
+            // MeshKey can't inherit a stale "effective_material was X"
+            // hit (which would suppress the first frame's patch).
+            self.last_effective_material.remove(mesh_key);
 
             if let Some(meshes) = self.transform_to_meshes.get_mut(mesh.transform_key) {
                 meshes.retain(|&key| key != mesh_key)
@@ -1700,6 +1943,10 @@ impl Meshes {
 
                         if let Some(skin_key) = resource.skin_key {
                             self.skins.remove(skin_key, None);
+                            // Drop the grace-period cache entry so a
+                            // recycled SkinKey can't inherit a stale
+                            // "out-of-frustum for N frames" counter.
+                            self.skin_zero_coverage_grace.remove(skin_key);
                         }
                     }
                 }

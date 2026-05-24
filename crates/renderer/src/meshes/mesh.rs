@@ -79,9 +79,13 @@ pub struct Mesh {
     /// metres — the visual difference at that distance is below the per-
     /// pixel threshold and the GPU animation budget drops linearly.
     ///
-    /// Pairs with the coverage-driven skinning skip — coverage
-    /// answers "skip this frame entirely?", `skin_update_period`
-    /// answers "what's the background cadence when not skipped?".
+    /// Pairs with the coverage-driven skinning skip (live in
+    /// `Meshes::update_world` since the grace-period + BVH-visible
+    /// override landed) — coverage answers "skip this frame
+    /// entirely?", `skin_update_period` answers "what's the
+    /// background cadence when not skipped?". The two stack: a
+    /// `period = 4` skin that's also out-of-frustum runs *never*
+    /// until either gate flips.
     pub skin_update_period: u8,
     /// Cheap material variant for low-coverage shading.
     /// When set, the renderer swaps `material_key` → this key for any
@@ -140,14 +144,16 @@ impl Mesh {
     /// `default_threshold` when `None`); otherwise the authored
     /// `material_key`.
     ///
-    /// **Currently unused at the routing site.** `MaterialMeshMeta`
-    /// still packs the authored `material_key`, so feeding the cheap
-    /// key into pass-routing / pipeline selection mismatched what the
-    /// compute shader actually read. `collect_renderables` is back on
-    /// `material_key`; this function stays available for the eventual
-    /// follow-up that also re-packs meta when coverage crosses
-    /// threshold (so the shader's `material_offset` matches the
-    /// routed pipeline).
+    /// Called once per frame per mesh by
+    /// `Meshes::refresh_cheap_material_routing`, which patches the
+    /// resolved key's GPU offset into
+    /// `MaterialMeshMeta.material_offset` so the shader sees the same
+    /// material the renderable pool routed the mesh through. Safety
+    /// constraint (validated by `AwsmRenderer::set_mesh_cheap_material`):
+    /// the cheap variant must share the authored material's shader_id
+    /// AND transparency-pass classification, so the per-frame swap
+    /// is a single 4-byte patch instead of a full pass-pool / pipeline
+    /// migration.
     pub fn effective_material_key(
         &self,
         mesh_key: MeshKey,

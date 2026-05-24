@@ -1238,8 +1238,35 @@ Earlier history (Phase 0–2 of the `indirect-first-instance` sprint):
 
 ### ⏭ Deferred (this sprint — picked up next)
 
-**Nothing.** The sprint completed all four Phases end-to-end and
-ran every measurement gate the spec called for:
+**Nothing.** The sprint completed all four Phases end-to-end AND
+the follow-up "finish-every-optimisation" pass that closed every
+previously-parked item in [`PERFORMANCE.md §10`](../PERFORMANCE.md):
+
+- Coverage-driven skin-skip with 1–2-frame grace period + BVH-visible
+  override ([`crates/renderer/src/meshes.rs`](../../crates/renderer/src/meshes.rs)
+  `update_world` plus the `skin_zero_coverage_grace` sidecar).
+- Cheap-material LOD routing with per-frame `MaterialMeshMeta.material_offset`
+  re-pack on coverage-cross-threshold transitions (same file plus
+  `MeshMeta::set_material_offset`); compatibility constraint enforced
+  at `set_mesh_cheap_material` set time.
+- Coverage-driven shadow-receiver gate in WGSL (the four `apply_lighting*`
+  call sites in
+  [`render_passes/shared/shared_wgsl/lighting/lights.wgsl`](../../crates/renderer/src/render_passes/shared/shared_wgsl/lighting/lights.wgsl)
+  AND-in the new `material_mesh_meta.shadow_receiver_gate` field).
+- PCSS variable tap count by distance: `pcss_tap_count(dist_ratio)`
+  helper in
+  [`render_passes/shared/shared_wgsl/shadow/bind_groups.wgsl`](../../crates/renderer/src/render_passes/shared/shared_wgsl/shadow/bind_groups.wgsl)
+  drives both blocker search and PCF filter in every PCSS branch
+  (cube / directional / 2D spot). Tunables on `ShadowsConfig::pcss_max_taps`
+  / `pcss_min_taps`.
+- Worker-mode gltf parse with in-worker `createImageBitmap` +
+  ImageBitmap transfer back to main via the new
+  `WorkerJob::into_response_message` / `from_response_message`
+  hooks ([`crates/renderer/src/workers/pool.rs`](../../crates/renderer/src/workers/pool.rs)).
+  Measured 2.15× faster than inline on Corset.glb (12.8 MB);
+  break-even ~5 MB.
+
+Sprint-original gates:
 
 - Phase 2.1 migration table — every per-frame `queue.writeBuffer`
   call site landed on the mapped path; steady-state perf captured

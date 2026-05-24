@@ -23,11 +23,20 @@ use web_sys::{DedicatedWorkerGlobalScope, MessageEvent};
 use crate::workers::pool::WorkerJob;
 
 /// Async handler signature: given the deserialised JsValue input,
-/// return a future that resolves to either the serialised output or
-/// an error string. The future is driven via `spawn_local` so the
-/// worker thread stays responsive to the next incoming message.
+/// return a future that resolves to either `(payload, transfer_list)`
+/// (the worker→main response) or an error string. The future is
+/// driven via `spawn_local` so the worker thread stays responsive to
+/// the next incoming message.
+///
+/// The `transfer_list` lets the job hand off ownership of JS handles
+/// (`ImageBitmap`, `ArrayBuffer`, …) instead of structured-cloning
+/// them. Pure-data jobs return an empty array; `GltfParseJob`'s
+/// `into_response_message` override fills it with the decoded image
+/// bitmaps and the worker dispatcher routes through
+/// `postMessage(_, transfer)` so the main thread receives the
+/// handles in O(1).
 type HandlerFn = Box<
-    dyn Fn(JsValue) -> Pin<Box<dyn Future<Output = Result<JsValue, String>>>>
+    dyn Fn(JsValue) -> Pin<Box<dyn Future<Output = Result<(JsValue, web_sys::js_sys::Array), String>>>>
         + 'static,
 >;
 
@@ -75,7 +84,12 @@ pub(crate) fn register<J: WorkerJob>() {
                 let output = J::execute(input)
                     .await
                     .map_err(|e| format!("execute: {e}"))?;
-                serde_wasm_bindgen::to_value(&output).map_err(|e| format!("serialize output: {e}"))
+                // Trait hook: jobs that produce JS handles (ImageBitmap,
+                // ArrayBuffer, …) override this to attach them to the
+                // payload object AND collect them into the transfer
+                // list so `post_message_with_transfer` lifts them
+                // across the worker boundary in O(1).
+                J::into_response_message(output)
             })
         });
         r.insert(J::NAME, handler);
@@ -139,14 +153,18 @@ pub fn awsm_worker_entry() {
                     let outcome = fut.await;
                     let response = Object::new();
                     let _ = Reflect::set(&response, &JsValue::from_str("id"), &JsValue::from_f64(id as f64));
+                    let mut transfer_list: Option<web_sys::js_sys::Array> = None;
                     match outcome {
-                        Ok(payload) => {
+                        Ok((payload, transfer)) => {
                             let _ = Reflect::set(
                                 &response,
                                 &JsValue::from_str("kind"),
                                 &JsValue::from_str("awsm-result"),
                             );
                             let _ = Reflect::set(&response, &JsValue::from_str("payload"), &payload);
+                            if transfer.length() > 0 {
+                                transfer_list = Some(transfer);
+                            }
                         }
                         Err(msg) => {
                             let _ = Reflect::set(
@@ -161,7 +179,11 @@ pub fn awsm_worker_entry() {
                             );
                         }
                     }
-                    if let Err(err) = scope.post_message(&response) {
+                    let post_result = match transfer_list {
+                        Some(arr) => scope.post_message_with_transfer(&response, &arr),
+                        None => scope.post_message(&response),
+                    };
+                    if let Err(err) = post_result {
                         tracing::warn!("worker post_message failed: {err:?}");
                     }
                 });
