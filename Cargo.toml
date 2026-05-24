@@ -13,6 +13,7 @@ members = [
     "crates/web-shared",
     "crates/frontend/model-tests",
     "crates/frontend/scene-editor",
+    "crates/examples/render-worker",
 ]
 resolver = "2"
 

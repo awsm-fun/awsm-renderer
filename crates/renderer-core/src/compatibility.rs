@@ -73,7 +73,10 @@ impl Compatibility {
     pub async fn check(requirements: Option<CompatibilityRequirements>) -> Self {
         let requirements = requirements.unwrap_or_default();
 
-        let gpu = web_sys::window().unwrap().navigator().gpu();
+        let gpu = match crate::web_global::navigator_gpu() {
+            Some(gpu) => gpu,
+            None => return Self::MissingGpu,
+        };
 
         if gpu.is_null() || gpu.is_undefined() {
             return Self::MissingGpu;
