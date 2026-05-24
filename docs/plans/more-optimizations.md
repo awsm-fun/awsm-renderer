@@ -479,41 +479,39 @@ For PR context — these shipped in the prior sprint and the
 For the next picker — items explicitly considered and rejected.
 
 - ❌ First-class worker pool + GltfParseJob (was Phase 4.3).
-  Rejected for this sprint — the plan's own measurement gate
-  ("Before landing 4.3b, wire 0.2's per-pass sub-spans and add a
-  `gltf-parse` measurement so the worker version can be compared
-  to the inline version. If the transfer cost dominates … the
-  pool can be opt-in via a config knob") makes it
-  measurement-required, and the implementation surface — wasm
-  worker init, shared `WebAssembly.Module` postMessage, dynamic
-  job dispatch with `linkme`-style registry, opt-in config knob,
-  the `gltf-parse` A/B measurement — is multi-day on its own.
-  wasm worker init also has notoriously fragile cross-browser
-  behaviour (Safari module-worker quirks, COOP/COEP
-  interactions) that a single-session blind run can't validate.
-  The full design — `WorkerPool`, `WorkerJob` trait, auto-bundle
-  discovery via `import.meta.url`, shared-Module shim, the
-  `GltfParseJob` consumer wiring — is preserved in the Phase 4.3
-  section above (collapsed under "Full original design") so the
-  follow-up sprint can pick it up cold. Recommended split:
-  Phase 4.3a (infra + Custom-bootstrap-only API) → Phase 4.3b
-  (`import.meta.url` auto-discovery + GltfParseJob + A/B
-  measurement → opt-in config knob).
-- ❌ Per-frame upload arena (was Phase 2.1). Rejected for this
-  sprint — broad scope (touches ~10 subsystems' `write_gpu`:
-  transforms, materials, instances, meshes/meta, textures,
-  camera, lights, shadows globals + descriptors, skins, morphs,
-  plus several reset paths), and the plan's own framing says it
-  needs before/after measurement on Chrome AND Safari to confirm
-  the win — Chrome already amortises `writeBuffer` well, the
-  Safari delta is the load-bearing benefit. Landing a
-  cross-subsystem refactor blind on Chrome-only carries the
-  highest bug-surface of any sprint item; staking the
-  measurement-required claim without a Safari-side number is
-  unjustified. The dirty-range coalescing in
-  `write_buffer_with_dirty_ranges` already buys most of the
-  Chrome-side gain (~5-10 ranges per call typically). Should be
-  re-picked as its own sprint with Safari hardware in the loop.
+  Deferred to its own sprint — multi-day implementation surface
+  (wasm worker init, shared `WebAssembly.Module` postMessage
+  protocol, dynamic job dispatch with `linkme`-style registry,
+  opt-in config knob, the `gltf-parse` A/B measurement). The
+  plan's own measurement gate ("Before landing 4.3b, wire 0.2's
+  per-pass sub-spans and add a `gltf-parse` measurement so the
+  worker version can be compared to the inline version. If the
+  transfer cost dominates … the pool can be opt-in via a config
+  knob") makes 4.3b conditional on the measurement coming in
+  favourably. The full design — `WorkerPool`, `WorkerJob` trait,
+  auto-bundle discovery via `import.meta.url`, shared-Module
+  shim, the `GltfParseJob` consumer wiring — is preserved in
+  the Phase 4.3 section above (collapsed under "Full original
+  design") so the follow-up sprint can pick it up cold.
+  Recommended split: Phase 4.3a (infra + Custom-bootstrap-only
+  API) → Phase 4.3b (`import.meta.url` auto-discovery +
+  GltfParseJob + Chrome A/B measurement → opt-in config knob).
+- ❌ Per-frame upload arena (was Phase 2.1). Deferred to its own
+  sprint — broad cross-subsystem refactor (touches ~10
+  subsystems' `write_gpu`: transforms, materials, instances,
+  meshes/meta, textures, camera, lights, shadows globals +
+  descriptors, skins, morphs, plus several reset paths). The
+  dirty-range coalescing in `write_buffer_with_dirty_ranges`
+  already buys most of the within-subsystem gain (~5-10 ranges
+  per call typically); the arena win is in cross-subsystem
+  consolidation of those into a single `writeBuffer` +
+  `copyBufferToBuffer` blits. Wants its own sprint because it's
+  the largest refactor in this picklist and benefits from a
+  focused implementation pass with measurement (the Phase 0.2
+  `read_render_pass_timings` helper is the load-bearing
+  prerequisite that landed in this sprint). Worth weighing
+  mapped-buffer ring (StagingBelt-style) at the same time — see
+  the architecture note below.
 - ❌ `Arc<Mutex<...>>` → `Rc<RefCell<...>>`. Rejected: the
   `Send`/`Sync` shape is intentional future-proofing for
   multi-threading. On wasm32 the lock-acquire is essentially free.
