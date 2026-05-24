@@ -563,28 +563,46 @@ impl AppScene {
     }
 
     pub async fn populate(self: &Arc<Self>) {
-        async fn inner(scene: &Arc<AppScene>) -> Result<()> {
+        // Phase 1: GPU upload (the slow one on cold loads).
+        //
+        // Inside `populate_gltf`: per-mesh meta/material/buffer
+        // allocation, the per-image texture uploads, and the
+        // mipmap-generation finalize step. On a fresh visit to a
+        // multi-MB glTF this can dominate the visible loading window,
+        // so it gets its own label — previously this whole chunk
+        // hid behind a single opaque "Populating scene".
+        async fn upload_phase(scene: &Arc<AppScene>) -> Result<()> {
+            let data = {
+                let data = scene.latest_gltf_data.lock().unwrap();
+                data.as_ref()
+                    .expect("No GLTF data to populate")
+                    .heavy_clone()
+            };
+
+            let mut renderer = scene.renderer.lock().await;
+
+            // Drop any lights that came from a previous gltf load before
+            // populating the next one, so KHR_lights_punctual additions
+            // stay scoped to the model that owns them.
             {
-                let data = {
-                    let data = scene.latest_gltf_data.lock().unwrap();
-                    data.as_ref()
-                        .expect("No GLTF data to populate")
-                        .heavy_clone()
-                };
-
-                let mut renderer = scene.renderer.lock().await;
-
-                // Drop any lights that came from a previous gltf load before
-                // populating the next one, so KHR_lights_punctual additions
-                // stay scoped to the model that owns them.
-                {
-                    let mut prev = scene.gltf_punctual_lights.lock().unwrap();
-                    for key in prev.drain(..) {
-                        renderer.remove_light(key);
-                    }
+                let mut prev = scene.gltf_punctual_lights.lock().unwrap();
+                for key in prev.drain(..) {
+                    renderer.remove_light(key);
                 }
-                let populate_ctx = renderer.populate_gltf(data, None).await?;
-                *scene.gltf_punctual_lights.lock().unwrap() = populate_ctx.punctual_lights;
+            }
+            let populate_ctx = renderer.populate_gltf(data, None).await?;
+            *scene.gltf_punctual_lights.lock().unwrap() = populate_ctx.punctual_lights;
+
+            Ok(())
+        }
+
+        // Phase 2: finalise — gizmo + IBL + skybox + light/material
+        // resets. Fast on warm cache; surfaced separately so the
+        // user sees the bar advance past the heavy upload phase
+        // instead of staying parked on a single label.
+        async fn finalize_phase(scene: &Arc<AppScene>) -> Result<()> {
+            {
+                let mut renderer = scene.renderer.lock().await;
 
                 let editor_gizmo_gltf_data = {
                     let editor_guard = scene.editor.lock().unwrap();
@@ -645,15 +663,19 @@ impl AppScene {
             Ok(())
         }
 
-        self.ctx.loading_status.lock_mut().populate = Ok(true);
-        match inner(self).await {
-            Ok(()) => {
-                self.ctx.loading_status.lock_mut().populate = Ok(false);
-            }
-            Err(err) => {
-                self.ctx.loading_status.lock_mut().populate = Err(err.to_string());
-            }
+        self.ctx.loading_status.lock_mut().populate_gpu_upload = Ok(true);
+        if let Err(err) = upload_phase(self).await {
+            self.ctx.loading_status.lock_mut().populate_gpu_upload = Err(err.to_string());
+            return;
         }
+        self.ctx.loading_status.lock_mut().populate_gpu_upload = Ok(false);
+
+        self.ctx.loading_status.lock_mut().populate_finalize = Ok(true);
+        if let Err(err) = finalize_phase(self).await {
+            self.ctx.loading_status.lock_mut().populate_finalize = Err(err.to_string());
+            return;
+        }
+        self.ctx.loading_status.lock_mut().populate_finalize = Ok(false);
     }
 
     pub async fn reset_punctual_lights(self: &Arc<Self>) -> Result<()> {

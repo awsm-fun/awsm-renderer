@@ -40,7 +40,26 @@ pub struct LoadingStatus {
     pub skybox: std::result::Result<bool, String>,
     pub gltf_net: std::result::Result<bool, String>,
     pub gltf_data: std::result::Result<bool, String>,
-    pub populate: std::result::Result<bool, String>,
+    /// True while the main glTF's `populate_gltf` runs. Covers mesh
+    /// resource allocation, per-mesh meta upload, AND
+    /// `finalize_gpu_textures` (texture-array bind group rebuild +
+    /// mipmap generation pass). On a cold first load this is where
+    /// the multi-MB PBR textures incur their GPU upload cost AND
+    /// where the WebGPU driver actually finalises any pipelines
+    /// whose layout depended on the new bind groups — see
+    /// `PERFORMANCE.md §5g` for the browser-PSO-cache mechanics.
+    /// Naming reflects the work the user can actually see ("uploading
+    /// to GPU") rather than the renderer-internal call name
+    /// ("populate_gltf").
+    pub populate_gpu_upload: std::result::Result<bool, String>,
+    /// True for the trailing-edge work after `populate_gltf` resolves
+    /// — gizmo populate, IBL set, skybox bind, light/material/anti-
+    /// alias state resets. Quick on warm cache; the slowness on
+    /// cold first load is in `populate_gpu_upload` above, not here.
+    /// Surfaced separately so users see the bar move past the
+    /// heavy phase instead of staying on "Populating scene" all
+    /// the way through.
+    pub populate_finalize: std::result::Result<bool, String>,
 }
 
 impl Default for LoadingStatus {
@@ -52,7 +71,8 @@ impl Default for LoadingStatus {
             skybox: Ok(false),
             gltf_net: Ok(false),
             gltf_data: Ok(false),
-            populate: Ok(false),
+            populate_gpu_upload: Ok(false),
+            populate_finalize: Ok(false),
         }
     }
 }
@@ -65,7 +85,8 @@ impl LoadingStatus {
             || matches!(self.skybox, Ok(true))
             || matches!(self.gltf_net, Ok(true))
             || matches!(self.gltf_data, Ok(true))
-            || matches!(self.populate, Ok(true))
+            || matches!(self.populate_gpu_upload, Ok(true))
+            || matches!(self.populate_finalize, Ok(true))
     }
 
     pub fn ok_strings(&self) -> Vec<String> {
@@ -89,10 +110,13 @@ impl LoadingStatus {
             statuses.push("Loading GLTF from network...".to_string());
         }
         if let Ok(true) = &self.gltf_data {
-            statuses.push("Loading GLTF data...".to_string());
+            statuses.push("Decoding GLTF (textures + meshes)...".to_string());
         }
-        if let Ok(true) = &self.populate {
-            statuses.push("Populating scene...".to_string());
+        if let Ok(true) = &self.populate_gpu_upload {
+            statuses.push("Uploading meshes + textures to GPU...".to_string());
+        }
+        if let Ok(true) = &self.populate_finalize {
+            statuses.push("Finalizing scene (IBL, skybox, lights)...".to_string());
         }
 
         statuses
@@ -105,7 +129,8 @@ impl LoadingStatus {
             || self.skybox.is_err()
             || self.gltf_net.is_err()
             || self.gltf_data.is_err()
-            || self.populate.is_err()
+            || self.populate_gpu_upload.is_err()
+            || self.populate_finalize.is_err()
     }
 
     pub fn err_strings(&self) -> Vec<String> {
@@ -127,10 +152,13 @@ impl LoadingStatus {
             errors.push(format!("Error loading GLTF from network: {}", err));
         }
         if let Err(err) = &self.gltf_data {
-            errors.push(format!("Error loading GLTF data: {}", err));
+            errors.push(format!("Error decoding GLTF: {}", err));
         }
-        if let Err(err) = &self.populate {
-            errors.push(format!("Error populating scene: {}", err));
+        if let Err(err) = &self.populate_gpu_upload {
+            errors.push(format!("Error uploading scene to GPU: {}", err));
+        }
+        if let Err(err) = &self.populate_finalize {
+            errors.push(format!("Error finalizing scene: {}", err));
         }
         errors
     }
