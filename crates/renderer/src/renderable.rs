@@ -184,6 +184,17 @@ impl AwsmRenderer {
                                 && self.features.indirect_first_instance_enabled(),
                         },
                     )
+                    .inspect_err(|err| {
+                        // Log the *actual* failure reason at collection
+                        // time — `Renderable` only stores
+                        // `Option<RenderPipelineKey>`, so the geometry
+                        // pass's `None` path can only emit a generic
+                        // "missing pipeline" warning. Surface the
+                        // structured error here while we still have it.
+                        tracing::warn!(
+                            "geometry pipeline key lookup failed for mesh {mesh_key:?}: {err:?}"
+                        );
+                    })
                     .ok(),
                 material_opaque_compute_pipeline_key: self
                     .render_passes
