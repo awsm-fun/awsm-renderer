@@ -5,6 +5,7 @@
 //! GPU. This way Load also fires the same path (hydrating env → observer
 //! applies it to the renderer).
 
+use crate::context::renderer_handle;
 use crate::scene::{AssetId, IblConfig, SkyboxConfig};
 use crate::state::app_state;
 use awsm_web_shared::atoms::modal::Modal;
@@ -23,6 +24,33 @@ pub fn set_gizmo_enabled(enabled: bool) {
     let state = app_state();
     state.gizmo_enabled.set_neq(enabled);
     tracing::info!("action: view::set_gizmo_enabled({enabled})");
+}
+
+/// Toggle MSAA (`msaa_sample_count: Some(4)` ↔ `None`) on the
+/// AppState mirror and push the result into the renderer. Mirrors
+/// model-tests' `SidebarProcessing::render_msaa_selector` flow.
+pub fn toggle_msaa() {
+    let state = app_state();
+    let aa = {
+        let mut lock = state.anti_aliasing.lock_mut();
+        lock.msaa_sample_count = if lock.msaa_sample_count.is_some() {
+            None
+        } else {
+            Some(4)
+        };
+        lock.clone()
+    };
+    tracing::info!(
+        "action: view::toggle_msaa → msaa_sample_count={:?}",
+        aa.msaa_sample_count
+    );
+    spawn_local(async move {
+        let handle = renderer_handle();
+        let mut renderer = handle.lock().await;
+        if let Err(err) = renderer.set_anti_aliasing(aa).await {
+            tracing::error!("set_anti_aliasing failed: {err}");
+        }
+    });
 }
 
 // ---------------- Skybox ----------------

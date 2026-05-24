@@ -19,18 +19,6 @@ the bottom of this doc before starting.
 These don't change perf; they let every later item be A/B'd cheaply
 in both Chrome and Safari from the running editor.
 
-### 0.1 ⚙️ MSAA toggle in the Editor section
-
-Add an `MSAA Anti-Aliasing` checkbox to the scene-editor's Editor
-header tab ([crates/frontend/scene-editor/src/header/editor.rs](../../crates/frontend/scene-editor/src/header/editor.rs)) — mirror the pattern in [model-tests' SidebarProcessing::render_msaa_selector](../../crates/frontend/model-tests/src/pages/app/sidebar/processing.rs)
-(`msaa_sample_count: Option<u32>` — `Some(4)` ↔ `None`). Re-init the
-renderer's anti-aliasing on change via the existing
-`set_anti_aliasing(..)` flow. **Runtime toggles like this should be
-editor UI, not URL switches** — the project convention is to expose
-everything switch-able through the header tabs (Editor / Camera /
-Environment / etc.). The existing `?ifi=on/off` was the wrong shape
-and should ALSO migrate to an Editor toggle in this phase if cheap.
-
 ### 0.2 ⚙️ Per-pass `performance.measure` sub-spans
 
 The top-level `Render` span already lands in
@@ -479,6 +467,12 @@ node mutations cascade once per frame instead of once per node.
 For PR context — these shipped in the prior sprint and the
 `indirect-first-instance` sprint before it.
 
+- ✅ Phase 0.1 (partial) — `MSAA Anti-Aliasing` checkbox in the
+  scene-editor's Editor header tab. Mirrors the pattern in
+  model-tests' `SidebarProcessing::render_msaa_selector`; routes
+  through a new `actions::view::toggle_msaa()` that calls
+  `renderer.set_anti_aliasing(..)`. `?ifi` / `?features` migration
+  was carved out — see "Won't do".
 - ✅ `apply_visibility_to_node` identity guard
 - ✅ `apply_visibility_subtree` batches into one `with_renderer_mut`
 - ✅ `MeshLightIndicesGpu::write_gpu` fast path on empty scenes
@@ -511,9 +505,17 @@ For the next picker — items explicitly considered and rejected.
   multi-threading. On wasm32 the lock-acquire is essentially free.
 - ❌ URL switches for runtime-togglable behavior. Project
   convention: editor header tabs (Editor / Camera / Environment /
-  etc.). The pre-existing `?ifi=on/off` and `?features=off`
-  switches predate this convention and should migrate to Editor
-  toggles in Phase 0.1.
+  etc.). MSAA migrated as part of Phase 0.1; **`?ifi` /
+  `?features` migration deferred** — `RendererFeatures` is read at
+  builder time (see `features.rs` doc: "Toggling a gate after
+  `build()` requires a renderer rebuild"). A live editor-tab
+  toggle would either (a) require a full renderer rebuild path
+  (drop renderer, recreate, re-establish all bridge observers /
+  hooks / RAF) or (b) flip the URL param and reload the page,
+  which destroys unsaved scene state. Both are out of scope for
+  this sprint. The dev-only `?ifi=` / `?features=` URL knobs (gated
+  on `cfg(debug_assertions)`) stay as the measurement-harness
+  escape hatch.
 - ❌ Lazy-allocate Occlusion/Compaction/Coverage feature buffers
   when no meshes. Win is microscopic (~70 KB GPU memory + 4 buffer
   creates at builder time, dominated by shader compilation).
