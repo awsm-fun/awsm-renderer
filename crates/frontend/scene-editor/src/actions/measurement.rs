@@ -317,7 +317,7 @@ pub fn read_render_pass_timings(min_count: u32) -> String {
     // Clear so the next call observes a fresh window. `clear_measures`
     // also drops any `performance.mark` entries we never explicitly
     // emit, which is fine.
-    let _ = perf.clear_measures();
+    perf.clear_measures();
     out
 }
 
