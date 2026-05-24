@@ -13,19 +13,26 @@ use crate::{
 
 use super::types::{GpuLineSegment, LineTopology, LINE_UNIFORM_BYTES, SEGMENT_BYTES};
 
-pub(super) fn pack(
+/// Pack `(positions, colors, topology)` into `out`. Clears + extends
+/// in place so the caller can hand in a long-lived scratch buffer
+/// (see `LineRenderer::pack_buf`) and pay zero per-call allocation in
+/// the steady state. Leaves `out.is_empty()` when fewer than two
+/// positions are supplied (no segments to draw).
+pub(super) fn pack_into(
+    out: &mut Vec<GpuLineSegment>,
     positions: &[Vec3],
     colors: &[Vec4],
     topology: LineTopology,
-) -> Vec<GpuLineSegment> {
+) {
+    out.clear();
     if positions.len() < 2 {
-        return Vec::new();
+        return;
     }
     let last_color = colors.last().copied().unwrap_or(Vec4::ONE);
     let color_at = |i: usize| -> Vec4 { colors.get(i).copied().unwrap_or(last_color) };
     match topology {
         LineTopology::Strip => {
-            let mut out = Vec::with_capacity(positions.len() - 1);
+            out.reserve(positions.len() - 1);
             for i in 0..positions.len() - 1 {
                 out.push(GpuLineSegment {
                     a: [positions[i].x, positions[i].y, positions[i].z, 0.0],
@@ -39,11 +46,10 @@ pub(super) fn pack(
                     color_b: color_at(i + 1).to_array(),
                 });
             }
-            out
         }
         LineTopology::Segments => {
             let pair_count = positions.len() / 2;
-            let mut out = Vec::with_capacity(pair_count);
+            out.reserve(pair_count);
             for i in 0..pair_count {
                 let a = positions[2 * i];
                 let b = positions[2 * i + 1];
@@ -54,7 +60,6 @@ pub(super) fn pack(
                     color_b: color_at(2 * i + 1).to_array(),
                 });
             }
-            out
         }
     }
 }

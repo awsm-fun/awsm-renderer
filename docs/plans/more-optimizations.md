@@ -357,12 +357,6 @@ config knob.
 
 ## Phase 5 — Per-frame polish
 
-### 5.1 Particle simulator + line-strip vertex-pack Vec pooling
-
-Same pattern as the recent `RenderablePool` work — hold the scratch
-Vecs on the simulator / LineRenderer and `clear_in_place` per frame
-instead of fresh-allocating.
-
 ### 5.2 `scene_spatial::rebuild_if_needed` cadence tuning
 
 Defaults are `rebuild_period_frames = 600` and
@@ -388,6 +382,15 @@ node mutations cascade once per frame instead of once per node.
 For PR context — these shipped in the prior sprint and the
 `indirect-first-instance` sprint before it.
 
+- ✅ Phase 5.1 — `LineRenderer` carries a `pack_buf:
+  Vec<GpuLineSegment>` scratch buffer; `pack()` became
+  `pack_into(out, ...)` which `out.clear()`s + extends in place.
+  Editor overlays (collider wireframes, point handles, selection
+  outlines) re-pack many small line strips per frame and were
+  bouncing the allocator per call; this pulls them off the alloc
+  path. Simulator side already pooled (`Simulator.packed: Vec
+  <InstanceAttr>` is held + clear+pushed in `tick()`) — Phase 5.1
+  needed only the LineRenderer half.
 - ✅ Phase 4.2 — Raster bitmap prefetch fires from `prepare_model`
   the moment the gltf texture bytes are in `pending_assets`
   (right after `extract_gltf_materials_into`), as a
