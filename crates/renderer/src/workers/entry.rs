@@ -9,20 +9,30 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 
 use serde::{de::DeserializeOwned, Serialize};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen_futures::spawn_local;
 use web_sys::js_sys::{Object, Reflect};
-use web_sys::MessageEvent;
+use web_sys::{DedicatedWorkerGlobalScope, MessageEvent};
 
 use crate::workers::pool::WorkerJob;
 
-type HandlerFn = Box<dyn Fn(JsValue) -> Result<JsValue, String> + 'static>;
+/// Async handler signature: given the deserialised JsValue input,
+/// return a future that resolves to either the serialised output or
+/// an error string. The future is driven via `spawn_local` so the
+/// worker thread stays responsive to the next incoming message.
+type HandlerFn = Box<
+    dyn Fn(JsValue) -> Pin<Box<dyn Future<Output = Result<JsValue, String>>>>
+        + 'static,
+>;
 
 thread_local! {
-    /// Job-name → execute closure. Populated by `register::<J>()`.
+    /// Job-name → handler closure. Populated by `register::<J>()`.
     /// On the worker thread this is the dispatch table; on the main
     /// thread it's the registration sanity-check table.
     static REGISTRY: RefCell<HashMap<&'static str, HandlerFn>> = RefCell::new(HashMap::new());
@@ -42,10 +52,14 @@ pub(crate) fn register<J: WorkerJob>() {
             return;
         }
         let handler: HandlerFn = Box::new(|input_js: JsValue| {
-            let input: J::Input = serde_wasm_bindgen::from_value(input_js)
-                .map_err(|e| format!("deserialize input: {e}"))?;
-            let output = J::execute(input);
-            serde_wasm_bindgen::to_value(&output).map_err(|e| format!("serialize output: {e}"))
+            Box::pin(async move {
+                let input: J::Input = serde_wasm_bindgen::from_value(input_js)
+                    .map_err(|e| format!("deserialize input: {e}"))?;
+                let output = J::execute(input)
+                    .await
+                    .map_err(|e| format!("execute: {e}"))?;
+                serde_wasm_bindgen::to_value(&output).map_err(|e| format!("serialize output: {e}"))
+            })
         });
         r.insert(J::NAME, handler);
     });
@@ -63,11 +77,8 @@ pub(crate) fn is_registered(name: &str) -> bool {
 /// listener that dispatches incoming `awsm-job` messages.
 #[wasm_bindgen]
 pub fn awsm_worker_entry() {
-    // Grab the worker global scope; if we're on the main thread (which
-    // shouldn't happen — the bootstrap JS only fires this in workers
-    // — bail rather than crash).
     let global = web_sys::js_sys::global();
-    let worker_scope = match global.dyn_into::<web_sys::DedicatedWorkerGlobalScope>() {
+    let worker_scope = match global.dyn_into::<DedicatedWorkerGlobalScope>() {
         Ok(s) => s,
         Err(_) => {
             tracing::warn!("awsm_worker_entry called outside a worker; no-op");
@@ -96,44 +107,69 @@ pub fn awsm_worker_entry() {
             .unwrap_or_default();
         let input = Reflect::get(&data, &JsValue::from_str("input")).unwrap_or(JsValue::UNDEFINED);
 
-        let result_kind;
-        let payload_or_msg: JsValue;
-        let outcome = REGISTRY.with(|r| {
+        // Resolve the handler synchronously (cheap registry lookup),
+        // then drive its future with `spawn_local` so the dispatch
+        // loop returns immediately and can process the next message.
+        let handler_future = REGISTRY.with(|r| {
             let r = r.borrow();
-            match r.get(name.as_str()) {
-                Some(handler) => (handler)(input),
-                None => Err(format!("unknown job: {name}")),
-            }
+            r.get(name.as_str()).map(|handler| (handler)(input))
         });
-        match outcome {
-            Ok(payload) => {
-                result_kind = "awsm-result";
-                payload_or_msg = payload;
-            }
-            Err(msg) => {
-                result_kind = "awsm-error";
-                payload_or_msg = JsValue::from_str(&msg);
-            }
-        }
 
-        let response = Object::new();
-        let _ = Reflect::set(
-            &response,
-            &JsValue::from_str("kind"),
-            &JsValue::from_str(result_kind),
-        );
-        let _ = Reflect::set(
-            &response,
-            &JsValue::from_str("id"),
-            &JsValue::from_f64(id as f64),
-        );
-        if result_kind == "awsm-result" {
-            let _ = Reflect::set(&response, &JsValue::from_str("payload"), &payload_or_msg);
-        } else {
-            let _ = Reflect::set(&response, &JsValue::from_str("message"), &payload_or_msg);
-        }
-        if let Err(err) = worker_scope_clone.post_message(&response) {
-            tracing::warn!("worker post_message failed: {err:?}");
+        let scope = worker_scope_clone.clone();
+        match handler_future {
+            Some(fut) => {
+                spawn_local(async move {
+                    let outcome = fut.await;
+                    let response = Object::new();
+                    let _ = Reflect::set(&response, &JsValue::from_str("id"), &JsValue::from_f64(id as f64));
+                    match outcome {
+                        Ok(payload) => {
+                            let _ = Reflect::set(
+                                &response,
+                                &JsValue::from_str("kind"),
+                                &JsValue::from_str("awsm-result"),
+                            );
+                            let _ = Reflect::set(&response, &JsValue::from_str("payload"), &payload);
+                        }
+                        Err(msg) => {
+                            let _ = Reflect::set(
+                                &response,
+                                &JsValue::from_str("kind"),
+                                &JsValue::from_str("awsm-error"),
+                            );
+                            let _ = Reflect::set(
+                                &response,
+                                &JsValue::from_str("message"),
+                                &JsValue::from_str(&msg),
+                            );
+                        }
+                    }
+                    if let Err(err) = scope.post_message(&response) {
+                        tracing::warn!("worker post_message failed: {err:?}");
+                    }
+                });
+            }
+            None => {
+                let response = Object::new();
+                let _ = Reflect::set(
+                    &response,
+                    &JsValue::from_str("kind"),
+                    &JsValue::from_str("awsm-error"),
+                );
+                let _ = Reflect::set(
+                    &response,
+                    &JsValue::from_str("id"),
+                    &JsValue::from_f64(id as f64),
+                );
+                let _ = Reflect::set(
+                    &response,
+                    &JsValue::from_str("message"),
+                    &JsValue::from_str(&format!("unknown job: {name}")),
+                );
+                if let Err(err) = scope.post_message(&response) {
+                    tracing::warn!("worker post_message failed: {err:?}");
+                }
+            }
         }
     });
     worker_scope.set_onmessage(Some(
@@ -141,15 +177,12 @@ pub fn awsm_worker_entry() {
             .as_ref()
             .unchecked_ref::<web_sys::js_sys::Function>(),
     ));
-    // Keep the closure alive for the worker's lifetime.
     ONMESSAGE_HOLDER.with(|h| {
         *h.borrow_mut() = Some(onmessage);
     });
 }
 
-/// A trivial `WorkerJob` used by the round-trip smoke test in
-/// `tests/`. Lives next to the dispatcher so consumers can flip the
-/// feature on for diagnostics.
+/// A trivial `WorkerJob` used by the round-trip smoke test.
 pub struct EchoJob;
 
 #[derive(Clone, Debug, Serialize, serde::Deserialize)]
@@ -167,13 +200,16 @@ impl WorkerJob for EchoJob {
     type Input = EchoInput;
     type Output = EchoOutput;
 
-    fn execute(input: Self::Input) -> Self::Output {
-        EchoOutput {
-            message: format!("echo: {}", input.message),
-        }
+    fn execute(
+        input: Self::Input,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Self::Output>>>> {
+        Box::pin(async move {
+            Ok(EchoOutput {
+                message: format!("echo: {}", input.message),
+            })
+        })
     }
 }
 
-// Keep `DeserializeOwned` referenced so the auto-bound is exercised.
 #[allow(dead_code)]
 fn _enforce_bounds<T: Serialize + DeserializeOwned>() {}

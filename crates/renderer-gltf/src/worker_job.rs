@@ -125,28 +125,10 @@ impl WorkerJob for GltfParseJob {
     type Input = GltfParseInput;
     type Output = GltfParseOutput;
 
-    fn execute(input: Self::Input) -> Self::Output {
-        // The worker runtime drives an async wasm-bindgen-futures
-        // executor; we use a blocking single-poll path via
-        // `futures::executor::block_on` (available in this
-        // workspace) is *not* an option on wasm32 — it'd deadlock.
-        // Instead, the worker's WorkerJob::execute is invoked from
-        // an `async` dispatch boundary in [`crate::workers::entry`]'s
-        // wrapper. So this body has to remain synchronous and
-        // panic on async ops.
-        //
-        // The wiring needed to make `execute` an `async fn` is
-        // tracked as Phase 4.3b follow-up — for now, callers use
-        // [`execute_async`] directly and the WorkerJob impl serves
-        // as the protocol marker. The dispatcher in the worker
-        // entry point can be specialised to await
-        // `execute_async(input)` instead of `execute(input)` once
-        // the trait gains an `async` variant.
-        let _ = input;
-        unimplemented!(
-            "GltfParseJob::execute requires the async dispatch path; \
-             call execute_async(input) directly until WorkerJob gains an async fn variant."
-        );
+    fn execute(
+        input: Self::Input,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Self::Output>>>> {
+        Box::pin(execute_async(input))
     }
 }
 

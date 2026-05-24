@@ -63,15 +63,25 @@ impl WorkerPoolError {
 ///
 /// Stateless by design — implementations only act on `input`. State
 /// the job needs (e.g. a shared cache) goes inside the input.
+///
+/// `execute` is async so jobs can fetch network resources, await
+/// `mapAsync` resolutions, etc. without resorting to a deadlock-prone
+/// `block_on`. The worker-side dispatcher (`awsm_worker_entry`) drives
+/// the future via `wasm_bindgen_futures::spawn_local` and posts the
+/// serialised result back to the main thread when it resolves.
 pub trait WorkerJob: 'static {
     /// Unique string identifier; used in the postMessage dispatch.
     const NAME: &'static str;
 
-    type Input: Serialize + DeserializeOwned;
-    type Output: Serialize + DeserializeOwned;
+    type Input: Serialize + DeserializeOwned + 'static;
+    type Output: Serialize + DeserializeOwned + 'static;
 
-    /// Runs on the worker thread.
-    fn execute(input: Self::Input) -> Self::Output;
+    /// Runs on the worker thread. Returns a result so transient
+    /// failures (network, parsing) can flow back to the main thread
+    /// as `WorkerPoolError::JobFailed` rather than a worker panic.
+    fn execute(
+        input: Self::Input,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Self::Output>>>>;
 }
 
 /// Bundle-URL discovery strategy. Default is `Auto` (read
