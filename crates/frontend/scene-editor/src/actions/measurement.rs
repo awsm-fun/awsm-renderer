@@ -414,6 +414,106 @@ pub async fn read_upload_ring_stats() -> String {
     out
 }
 
+/// Phase 4.3b A/B measurement — load `url` via both the inline
+/// `GltfLoader::load` and the worker `GltfParseJob` (re-entered N
+/// times each via the dev-only `?gltf-worker=on` URL knob's pool).
+/// Returns JSON `{ "inline_ms": [...], "worker_ms": [...],
+/// "inline_mean": f, "worker_mean": f, "speedup": f }` so the
+/// driver can decide whether to flip
+/// `asset_cache::load_and_populate`'s default.
+///
+/// Per the spec: a real measurement against `robot-001.glb`
+/// drives the flip decision. The repo ships a 12.8 MB substitute
+/// (Corset.glb, copied into `assets/stress/Corset.glb` by trunk in
+/// dev builds) reachable as `/assets/stress/Corset.glb` — large
+/// enough to amortise worker spawn cost without ballooning every
+/// dev rebuild.
+#[wasm_bindgen]
+pub async fn measure_gltf_load_ab(url: String, iterations: u32) -> String {
+    use awsm_renderer::workers::{WorkerPool, WorkerPoolBootstrap};
+    use awsm_renderer_gltf::loader::{get_type_from_filename, GltfLoader};
+    use awsm_renderer_gltf::worker_job::{FileTypeHint, GltfParseInput, GltfParseJob};
+
+    let perf = match web_sys::window().and_then(|w| w.performance()) {
+        Some(p) => p,
+        None => return "{\"error\":\"no performance\"}".to_string(),
+    };
+
+    let file_type = get_type_from_filename(&url);
+
+    // Build a dedicated pool for the measurement. Cheaper than
+    // reusing the editor's pool (which the user might or might not
+    // have enabled via `?gltf-worker=on`) — guarantees a clean
+    // measurement either way.
+    let pool = match WorkerPool::new(WorkerPoolBootstrap::Auto, 2).await {
+        Ok(p) => p,
+        Err(err) => return format!("{{\"error\":\"pool: {err}\"}}"),
+    };
+    pool.register::<GltfParseJob>();
+
+    let mut inline_ms: Vec<f64> = Vec::with_capacity(iterations as usize);
+    let mut worker_ms: Vec<f64> = Vec::with_capacity(iterations as usize);
+
+    for _ in 0..iterations {
+        let start = perf.now();
+        match GltfLoader::load(&url, file_type.as_ref().map(file_type_clone)).await {
+            Ok(_) => {}
+            Err(err) => return format!("{{\"error\":\"inline: {err}\"}}"),
+        }
+        inline_ms.push(perf.now() - start);
+    }
+
+    for _ in 0..iterations {
+        let start = perf.now();
+        let input = GltfParseInput {
+            url: url.clone(),
+            file_type: file_type.as_ref().map(FileTypeHint::from),
+        };
+        match pool.dispatch::<GltfParseJob>(input).await {
+            Ok(out) => match out.into_loader().await {
+                Ok(_) => {}
+                Err(err) => return format!("{{\"error\":\"worker into_loader: {err}\"}}"),
+            },
+            Err(err) => return format!("{{\"error\":\"worker dispatch: {err}\"}}"),
+        }
+        worker_ms.push(perf.now() - start);
+    }
+
+    let inline_mean: f64 = inline_ms.iter().sum::<f64>() / inline_ms.len() as f64;
+    let worker_mean: f64 = worker_ms.iter().sum::<f64>() / worker_ms.len() as f64;
+    let speedup = if worker_mean > 0.0 {
+        inline_mean / worker_mean
+    } else {
+        f64::NAN
+    };
+
+    let fmt_arr = |arr: &[f64]| -> String {
+        let parts: Vec<String> = arr.iter().map(|v| format!("{v:.2}")).collect();
+        format!("[{}]", parts.join(","))
+    };
+
+    format!(
+        "{{\"url\":{url_json},\"iterations\":{iterations},\
+         \"inline_ms\":{inline_arr},\"worker_ms\":{worker_arr},\
+         \"inline_mean\":{inline_mean:.2},\"worker_mean\":{worker_mean:.2},\
+         \"speedup\":{speedup:.3}}}",
+        url_json = serde_json::to_string(&url).unwrap_or_else(|_| "\"\"".to_string()),
+        inline_arr = fmt_arr(&inline_ms),
+        worker_arr = fmt_arr(&worker_ms),
+    )
+}
+
+// `GltfFileType` doesn't implement Clone, so we hand-roll one for the
+// measurement loop that needs to pass the same hint into both paths.
+fn file_type_clone(t: &awsm_renderer_gltf::loader::GltfFileType) -> awsm_renderer_gltf::loader::GltfFileType {
+    use awsm_renderer_gltf::loader::GltfFileType::*;
+    match t {
+        Json => Json,
+        Glb => Glb,
+        Draco => Draco,
+    }
+}
+
 #[wasm_bindgen]
 pub async fn read_oversized_mesh_stats() -> String {
     let (last_max_bucket, oversized_count) = crate::context::with_renderer_mut(|r| {

@@ -29,6 +29,22 @@
             having to maintain two `index.html` files.
         -->
         <link data-trunk rel="copy-dir" href="../../../assets/world" data-target-path="assets/world" />
+        <!--
+            Dev-only: stress glb for the Phase 4.3b A/B measurement
+            (inline GltfLoader::load vs worker GltfParseJob). Same
+            strip-on-prod treatment as `assets/world` above — the
+            Taskfile `build` task removes `dist/assets/stress` before
+            release. Corset is the heaviest skinned glb in the
+            shipped samples after ABeautifulGame; chosen at 12.8 MB
+            because it's enough to amortise worker startup while
+            keeping dev rebuilds fast.
+        -->
+        <link
+            data-trunk
+            rel="copy-file"
+            href="../../../media/glTF-Sample-Assets/Models/Corset/glTF-Binary/Corset.glb"
+            data-target-path="assets/stress"
+        />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
         <link

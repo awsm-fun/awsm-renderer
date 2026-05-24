@@ -490,6 +490,48 @@ shows the migrated sites take the heat.
 
 ---
 
+## 5c. Worker-mode gltf parse — measured + decision
+
+`GltfParseJob` (Phase 4.3b) runs the full fetch + parse pipeline on a
+pool worker and returns the parsed bytes back to the main thread,
+which decodes images and ingests via `populate_gltf`. The worker
+path is **reachable end-to-end** via the dev-only
+`?gltf-worker=on` URL knob, but **not the default**.
+
+A/B measurement on Corset.glb (12.8 MB, the heaviest single-asset
+glb in the shipped samples):
+
+| Path | Mean load (ms) |
+|---|---|
+| Inline `GltfLoader::load` | **184 ms** |
+| Worker `GltfParseJob` → `into_loader()` | 24 209 ms |
+
+The worker path is ~130× slower at this asset size. The bottleneck
+is **not** parse work; it's `serde_wasm_bindgen` encoding the multi-MB
+`Vec<u8>` payloads (`doc_bytes`, `buffer_bytes: Vec<Vec<u8>>`,
+`image_bytes: Vec<EncodedImage>`) into nested JS-native Objects
+before structured-clone across postMessage. Serde's byte-by-byte
+visitor is the cost — *not* the cross-thread transfer itself.
+
+To make worker mode actually faster, future work needs to:
+
+1. Bypass `serde_wasm_bindgen` for the giant byte payloads — pack
+   them into `js_sys::Uint8Array`s constructed from the Rust `Vec<u8>`s
+   directly and ride them across via `dispatch_with_transfer`'s
+   Transferable list.
+2. Keep `serde_wasm_bindgen` for the small structural fields
+   (`url`, mime types, lengths) only.
+3. Possibly avoid re-parsing the doc on the main thread — bake the
+   parsed `Document` shape into a more JS-friendly intermediate.
+
+Until then `asset_cache::load_and_populate` stays on the inline
+path; the worker path is opt-in via `?gltf-worker=on` for
+measurement / experimentation only.
+
+[mu]: ../crates/renderer/src/buffer/mapped_uploader.rs
+
+---
+
 ## 6. Hot-path catalogue
 
 When optimizing or reviewing a PR, these are the files that
@@ -636,6 +678,7 @@ scene-editor exposes four `#[cfg(debug_assertions)]`
 | `read_oversized_mesh_stats()` | JSON string | `{ last_max_bucket, oversized_count }` from `LightMeshBuckets`. |
 | `read_render_pass_timings(min_count)` | JSON string | Per-pass `count / mean / p50 / p95 / max / total` (ms). Strips the `[id]: span-measure` suffix `tracing-web` appends so call sites collapse into one bucket. Clears measures after sampling. Pass `min_count=0` to include rare init spans (GLTF parse, etc.). |
 | `read_upload_ring_stats()` | JSON string | Phase-2.1 mapped-upload-ring telemetry, keyed by subsystem (`transforms`, `materials`, `instances.transforms`, `meshes.meta.*`, …) plus a `_total` rollup. Each entry includes `peak_ring_depth_used / fallback_count / map_async_wait_ms / bytes_uploaded_via_{ring,fallback,writebuffer} / resize_count`. Steady state on `tuning-10k-meshes` should see `_total.fallback_count == 0`; non-zero means a buffer's ring depth (default 3) is too shallow for its frame cadence. |
+| `measure_gltf_load_ab(url, iterations)` | JSON string | Phase-4.3b A/B: `{ inline_ms[], worker_ms[], inline_mean, worker_mean, speedup }`. Drives the flip-to-default decision on `asset_cache::load_and_populate`. Result on Corset.glb (12.8 MB): inline 184 ms / worker 24209 ms → **inline stays default**. The bottleneck is `serde_wasm_bindgen` encoding the multi-MB `Vec<u8>` payloads (buffers + image bytes) into JS-native nested Objects before structured-clone across postMessage. See [§Worker-mode gltf parse](#worker-mode-gltf-parse) below for what's needed to make worker mode viable. |
 
 Per-frame render-pass timings come from
 `performance.getEntriesByType('measure')` — `tracing-web`'s

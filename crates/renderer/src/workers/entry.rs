@@ -42,8 +42,25 @@ thread_local! {
     static ONMESSAGE_HOLDER: RefCell<Option<Closure<dyn FnMut(MessageEvent)>>> = RefCell::new(None);
 }
 
-/// Register a `WorkerJob` impl. Idempotent — duplicate registrations
-/// for the same `NAME` are no-ops with a debug log.
+/// Register a `WorkerJob` impl in the *current* thread's registry.
+///
+/// Each worker spawned by [`crate::workers::WorkerPool`] has its own
+/// wasm linear memory and therefore its own thread-local registry.
+/// The pool's `register::<J>()` only populates the main-thread
+/// registry; for the worker side to recognise the job, *both* sides
+/// have to call `register_job::<J>()`. The recommended pattern is to
+/// extract registration into a free fn the consumer's wasm
+/// entry-point (the `pub fn main()` Trunk wires up) calls
+/// unconditionally — the same wasm bundle then registers the same
+/// jobs on both main thread and pool workers without per-side
+/// branching.
+///
+/// Idempotent — duplicate registrations for the same `NAME` are
+/// no-ops with a debug log.
+pub fn register_job<J: WorkerJob>() {
+    register::<J>()
+}
+
 pub(crate) fn register<J: WorkerJob>() {
     REGISTRY.with(|r| {
         let mut r = r.borrow_mut();

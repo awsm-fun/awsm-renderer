@@ -27,5 +27,5 @@ mod blob;
 mod entry;
 mod pool;
 
-pub use entry::{awsm_worker_entry, EchoInput, EchoJob, EchoOutput};
+pub use entry::{awsm_worker_entry, register_job, EchoInput, EchoJob, EchoOutput};
 pub use pool::{WorkerJob, WorkerPool, WorkerPoolBootstrap, WorkerPoolError, WorkerPoolStats};

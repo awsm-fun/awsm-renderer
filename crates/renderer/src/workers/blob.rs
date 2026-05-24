@@ -52,9 +52,19 @@ pub fn current_wasm_module() -> Result<JsValue, JsValue> {
 /// wasm-bindgen JS glue. The library author can't predict the
 /// consumer's bundle filename (Trunk hashes release builds, Vite
 /// chunks ESM, etc.), so we read the resolved URL at runtime.
-#[wasm_bindgen::prelude::wasm_bindgen(
-    inline_js = "export function awsm_bundle_url() { return import.meta.url; }"
-)]
+#[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+export function awsm_bundle_url() {
+    if (typeof document !== "undefined") {
+        const scripts = document.querySelectorAll("script[type=module]");
+        for (const s of scripts) {
+            const t = s.textContent || "";
+            const m = t.match(/from\s+['"]([^'"]+\.js)['"]/);
+            if (m) return new URL(m[1], location.href).href;
+        }
+    }
+    return import.meta.url;
+}
+"#)]
 extern "C" {
     pub fn awsm_bundle_url() -> String;
 }

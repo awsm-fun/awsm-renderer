@@ -29,6 +29,28 @@ use crate::{
 };
 
 pub fn main() {
+    // Phase 4.3a / 4.4: register every `WorkerJob` the editor wants
+    // available — runs on *both* main thread and pool workers (the
+    // worker side re-runs this same wasm `main` during its
+    // `wbg.default(wasm_module)` init). Registration is idempotent
+    // and cheap; keeping it before the worker-bail below means the
+    // dispatcher's thread-local registry has the right impls
+    // populated regardless of which side we're on.
+    awsm_renderer::workers::register_job::<awsm_renderer_gltf::worker_job::GltfParseJob>();
+
+    // Phase 4.3a / 4.4: the scene-editor's wasm bundle is also
+    // loaded inside the WorkerPool's pool workers (the inline-JS
+    // shim re-imports this glue + runs `wbg.default(wasm_module)`).
+    // The worker side runs `awsm_worker_entry()` explicitly and
+    // doesn't want the editor's DOM-side bootstrap. Bail before any
+    // `document` / `window`-touching setup if there's no Window.
+    if web_sys::window().is_none() {
+        // We're in a worker context — `awsm_worker_entry` is invoked
+        // separately by the bootstrap JS and installs its dispatch
+        // listener. Nothing else to do here.
+        return;
+    }
+
     awsm_web_shared::util::window::remove_boot_loader();
     logger::init_logger();
     Modal::init_panic_hook();
