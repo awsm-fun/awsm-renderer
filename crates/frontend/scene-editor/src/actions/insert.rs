@@ -164,6 +164,39 @@ async fn prepare_model(file: File) -> anyhow::Result<ModelPrep> {
         }
     }
 
+    // Phase 4.2 — fire the editor's raster bitmap prefetch *as soon
+    // as the texture bytes are in `pending_assets`* (i.e. right after
+    // `extract_gltf_materials_into` stamps them). Decoding via
+    // `createImageBitmap` is off-main-thread and doesn't touch the
+    // renderer; running it as a background spawn here means it
+    // overlaps with the rest of `prepare_model` (the
+    // "Uploading to GPU…" modal copy below, the renderer-lock
+    // acquisition inside `load_and_populate`, and the populate_gltf
+    // wall-clock itself) instead of running serially during populate.
+    // For a multi-MB textured glb this recovers ~the entire
+    // `createImageBitmap` window out of the user-visible insert path.
+    //
+    // The cache is idempotent — `load_and_populate` still calls the
+    // same prefetch helper as a safety net for paths that didn't
+    // route through `prepare_model` (project Load, programmatic
+    // `load_scene_by_path`), so a no-bytes case here is harmless.
+    let prefetch_material_ids: Vec<AssetId> = state
+        .scene
+        .assets
+        .lock()
+        .unwrap()
+        .get(asset_id)
+        .map(|e| e.gltf_material_asset_ids.clone())
+        .unwrap_or_default();
+    if !prefetch_material_ids.is_empty() {
+        spawn_local(async move {
+            crate::renderer_bridge::texture_cache::prefetch_raster_bitmaps_for_materials(
+                &prefetch_material_ids,
+            )
+            .await;
+        });
+    }
+
     // Kick off the asset load + wait for the populated template so we
     // know how many top-level nodes it has. A concurrent insert of the
     // same path will share this load.
@@ -845,10 +878,24 @@ pub(crate) fn extract_gltf_materials_into(
         }
     }
 
+    // Densify image_to_texture_asset into a Vec indexed by gltf image
+    // index. The renderer-gltf side will reuse this to seed the editor's
+    // texture cache with the renderer-side `TextureKey`s — saves a
+    // second decode + upload per glb texture for the editor's material
+    // override path (Phase 4.1 dedup).
+    let image_count = document.images().len();
+    let mut image_asset_ids: Vec<AssetId> = vec![AssetId::default(); image_count];
+    for (img_idx, asset_id) in image_to_texture_asset.iter() {
+        if *img_idx < image_asset_ids.len() {
+            image_asset_ids[*img_idx] = *asset_id;
+        }
+    }
+
     // ── Stamp the per-primitive lookup onto the gltf's AssetEntry ──────
     {
         if let Some(entry) = assets.entries.get_mut(&gltf_asset_id) {
             entry.gltf_material_asset_ids = material_asset_ids;
+            entry.gltf_image_asset_ids = image_asset_ids;
         }
     }
 

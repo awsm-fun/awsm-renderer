@@ -144,6 +144,16 @@ pub struct Bridge {
     /// `collider_wireframe::render::collect_cameras` each frame to
     /// draw the editor's camera-frustum wireframes.
     pub camera_node_ids: Mutex<std::collections::HashSet<NodeId>>,
+    /// Pending coalesced `nodes_revision` bump, owned so its
+    /// `AnimationFrame` callback stays alive until it fires.
+    /// `bump_nodes_revision` consults this — if it's already
+    /// `Some`, a bump is already scheduled and the call is a
+    /// no-op. When the rAF fires it `take()`s itself out of the
+    /// slot, drops the frame handle (already-fired so cancel is
+    /// a no-op), and bumps the revision once. Result: N
+    /// per-frame `bump_nodes_revision` calls collapse into a
+    /// single signal-graph cascade per animation frame.
+    pub pending_bump_raf: Mutex<Option<gloo_render::AnimationFrame>>,
 }
 
 impl Bridge {
@@ -157,12 +167,43 @@ impl Bridge {
             decal_node_ids: Mutex::new(std::collections::HashSet::new()),
             collider_node_ids: Mutex::new(std::collections::HashSet::new()),
             camera_node_ids: Mutex::new(std::collections::HashSet::new()),
+            pending_bump_raf: Mutex::new(None),
         })
     }
 
+    /// Schedules a `nodes_revision` bump for the next animation
+    /// frame, coalescing every call that lands inside the same
+    /// frame into a single signal-graph cascade. Consumers
+    /// (selection observer, gizmo, point-handle, inspector) all
+    /// re-derive on every revision bump, so for a multi-mesh
+    /// model insert (which used to fire `bump_nodes_revision`
+    /// per node during `insert_node` and again per node during
+    /// `remove_node`) this collapses dozens of cascades into one.
+    /// Reactive observers don't expect synchronous response —
+    /// they're all `signal()` subscribers — so a one-frame delay
+    /// is invisible.
     pub fn bump_nodes_revision(&self) {
-        let prev = self.nodes_revision.get();
-        self.nodes_revision.set(prev.wrapping_add(1));
+        // Hold the slot lock across the whole check → schedule → store
+        // sequence. `request_animation_frame` only *registers* the
+        // callback (it never runs it inline), so the rAF closure — which
+        // locks `pending_bump_raf` itself — can't fire until this guard
+        // drops, well after this function returns. Taking the lock once
+        // and keeping it also closes the check-then-act window: two
+        // callers can't both observe `None` and each queue a frame.
+        let mut slot = self.pending_bump_raf.lock().unwrap();
+        if slot.is_some() {
+            return;
+        }
+        let frame = gloo_render::request_animation_frame(|_| {
+            let b = bridge();
+            // Drop the held frame handle first — already-fired,
+            // so this is just slot cleanup; lets the next bump
+            // schedule another rAF.
+            b.pending_bump_raf.lock().unwrap().take();
+            let prev = b.nodes_revision.get();
+            b.nodes_revision.set(prev.wrapping_add(1));
+        });
+        *slot = Some(frame);
     }
 }
 

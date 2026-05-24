@@ -19,84 +19,7 @@ the bottom of this doc before starting.
 These don't change perf; they let every later item be A/B'd cheaply
 in both Chrome and Safari from the running editor.
 
-### 0.1 ⚙️ MSAA toggle in the Editor section
-
-Add an `MSAA Anti-Aliasing` checkbox to the scene-editor's Editor
-header tab ([crates/frontend/scene-editor/src/header/editor.rs](../../crates/frontend/scene-editor/src/header/editor.rs)) — mirror the pattern in [model-tests' SidebarProcessing::render_msaa_selector](../../crates/frontend/model-tests/src/pages/app/sidebar/processing.rs)
-(`msaa_sample_count: Option<u32>` — `Some(4)` ↔ `None`). Re-init the
-renderer's anti-aliasing on change via the existing
-`set_anti_aliasing(..)` flow. **Runtime toggles like this should be
-editor UI, not URL switches** — the project convention is to expose
-everything switch-able through the header tabs (Editor / Camera /
-Environment / etc.). The existing `?ifi=on/off` was the wrong shape
-and should ALSO migrate to an Editor toggle in this phase if cheap.
-
-### 0.2 ⚙️ Per-pass `performance.measure` sub-spans
-
-The top-level `Render` span already lands in
-`performance.getEntriesByType('measure')`. Wire per-pass children so
-the Chrome-vs-Safari comparison can attribute the gap to a specific
-pass without manual instrumentation. Pattern: extend the
-`tracing::span!(... "Geometry RenderPass")` blocks in
-[render.rs](../../crates/renderer/src/render.rs) to also emit a
-`performance.mark` start/end pair when `logging.render_timings` is
-on. The instrumentation should be zero-cost when the flag is off.
-
----
-
 ## Phase 1 — Renderer init parallelization
-
-### 1.1 🚀 Refactor `RenderPassInitContext.gpu` from `&mut` to `&`
-
-[crates/renderer/src/render_passes.rs:119](../../crates/renderer/src/render_passes.rs) — `gpu: &'a mut AwsmRendererWebGpu`
-is never actually mutated downstream; the `&mut` is the *only* thing
-blocking `RenderTextures::new` from running concurrently with
-`RenderPasses::new` (the previous sprint had to settle for inner
-`try_join3` in `RenderTextures::new`). Walk every consumer; the
-WebGPU device handle is clonable / wrapped enough that `&` should be
-sufficient.
-
-After landing, wrap `RenderPasses::new` + `RenderTextures::new` in
-`futures::future::try_join` in [lib.rs](../../crates/renderer/src/lib.rs) — they share no
-mutable state (one takes `&mut shaders/pipelines/...`, the other
-takes owned `RenderTextureFormats` + `&gpu`).
-
-### 1.2 🚀 Pre-warm LineRenderer shaders in parallel with Picker
-
-Both currently serialize through `&mut shaders / pipelines /
-bind_group_layouts`. Approach: collect both passes' shader cache
-keys up-front, issue a single `shaders.ensure_keys` batch, then
-construct both with the cache already warm. **Prerequisite:**
-`LineRenderer` currently uses `shaders.insert_uncached` so its
-shader bypasses the cache entirely — needs a small refactor to a
-cache-keyed shader before `ensure_keys` can help it.
-
----
-
-## Phase 2 — Per-frame upload consolidation
-
-### 2.1 🚀 Consolidate per-frame `queue.writeBuffer` calls into a shared staging buffer
-
-Every frame the renderer fires ~15–25 distinct `writeBuffer` calls
-(transforms, materials, instances, meta, shadows, light indices,
-occlusion instances, occlusion params, coverage reset, classify
-reset, decal reset, mesh-light-indices upload, etc.). On Safari each
-call is a Metal staging-buffer create + blit + sync; Chrome amortises
-better but still benefits.
-
-Approach: introduce a per-frame **upload arena** — a single
-GPU-resident staging buffer that subsystems append to via a small
-`UploadHandle { offset, len }`, then one `copyBufferToBuffer` per
-destination (or one `writeBuffer` of the whole arena followed by
-`copyBufferToBuffer` blits). The dirty-range tracking in
-`DynamicUniformBuffer` / `DynamicStorageBuffer` already coalesces;
-the change here is replacing N small `writeBuffer`s with one large
-one.
-
-Worth measuring before+after on both browsers — should be the
-biggest Safari delta of this sprint.
-
----
 
 ## Phase 3 — *(retired — see "Recently landed" below)*
 
@@ -119,34 +42,18 @@ cross-references in commit messages stay valid.
 
 ## Phase 4 — Model insert UX
 
-### 4.1 🚀 Deduplicate the two GPU texture-pool uploads per glb texture
+### 4.3 🚀 First-class worker pool + glTF parse as first consumer  *(deferred — see "Won't do")*
 
-The `renderer-gltf` path uploads each image via
-`Textures::add_image(ImageData::Bitmap)` for the baked materials,
-AND the editor's `texture_cache::get_or_upload` uploads the same
-image (separate `createImageBitmap` decode + separate pool slot) so
-the editor's editable material override has its own copy. That's
-**2× GPU storage + 2× decode** per texture on every model insert.
+The full design — `WorkerPool` + `WorkerJob` trait, auto-bundle
+discovery via `import.meta.url`, shared `WebAssembly.Module`
+postMessage protocol, `linkme`-style distributed-slice job
+registry, `GltfParseJob` as first consumer, opt-in via config
+knob behind a per-pass measurement gate — is preserved below for
+the dedicated follow-up sprint. Reasoning for deferral is in
+"Won't do".
 
-Approach: plumb a mapping `AssetId → existing TextureKey` from
-`renderer-gltf` into the editor's `texture_cache` so the override
-path reuses the renderer-gltf-side pool slot. Touch points:
-[crates/renderer-gltf/src/populate/](../../crates/renderer-gltf/src/populate) (publish the mapping) and
-[crates/frontend/scene-editor/src/renderer_bridge/texture_cache.rs](../../crates/frontend/scene-editor/src/renderer_bridge/texture_cache.rs)
-(consume it).
-
-Probably the single biggest model-insert-UX win in this list.
-
-### 4.2 🚀 Pre-decode raster bitmaps eagerly
-
-The raster prefetch is currently hoisted into `load_and_populate`,
-which runs once per glb. Move it to fire *synchronously the moment
-the bytes land in `pending_assets`* so it overlaps with the
-user-visible loading modal instead of running during populate.
-Saves ~1 s of `createImageBitmap` wall-clock during the loading
-window for large glbs.
-
-### 4.3 🚀 First-class worker pool + glTF parse as first consumer
+<details>
+<summary>Full original design (preserved for follow-up sprint)</summary>
 
 This phase builds a **library-wide worker-job infrastructure** (4.3a)
 and uses glTF parse as its first consumer (4.3b). The infrastructure
@@ -444,41 +351,106 @@ config knob.
   startup cost (~5–50 ms per worker spawn). Scene loads with
   multiple glbs would pay it per file.
 
+</details>
+
 ---
 
 ## Phase 5 — Per-frame polish
-
-### 5.1 Particle simulator + line-strip vertex-pack Vec pooling
-
-Same pattern as the recent `RenderablePool` work — hold the scratch
-Vecs on the simulator / LineRenderer and `clear_in_place` per frame
-instead of fresh-allocating.
-
-### 5.2 `scene_spatial::rebuild_if_needed` cadence tuning
-
-Defaults are `rebuild_period_frames = 600` and
-`rebuild_dirty_threshold = 200`. Both could be data-driven —
-larger scenes benefit from less-frequent rebuilds (rebuild cost
-scales with mesh count); smaller scenes can rebuild more eagerly
-for tighter query quality. **Measure first** with 0.2's sub-spans
-on the `tuning-10k-meshes` scene.
-
-### 5.3 Coalesce reactive signal cascades
-
-`bump_nodes_revision` in `renderer_bridge` fires when any bridge
-entry changes; consumers (selection observer, gizmo, point-handle,
-inspector) re-derive their own state on every fire. For a multi-
-mesh model insert this can spike to dozens of cascades per frame.
-Approach: debounce / batch via `request_animation_frame` so multi-
-node mutations cascade once per frame instead of once per node.
-
----
 
 ## ✅ Recently landed (do not redo)
 
 For PR context — these shipped in the prior sprint and the
 `indirect-first-instance` sprint before it.
 
+- ✅ Phase 5.3 — `Bridge::bump_nodes_revision` debounces via
+  `gloo_render::request_animation_frame`. A pending-frame slot
+  on `Bridge` short-circuits subsequent bumps inside the same
+  frame; the rAF callback `take()`s itself out and does the
+  actual `Mutable::set`. Multi-mesh model inserts (which fired
+  `bump_nodes_revision` per node during `insert_node` and again
+  per node during `remove_node`) now cascade once per frame
+  instead of once per node, collapsing dozens of selection /
+  gizmo / point-handle / inspector re-derivations into one.
+  Safe because every consumer is a `signal()` subscriber — none
+  expect synchronous response.
+- ✅ Phase 5.2 — added a `tracing::span!("SceneSpatial Rebuild")`
+  around `scene_spatial.rebuild_if_needed` in `update_transforms`
+  so `read_render_pass_timings(0)` attributes the rebuild cost.
+  Measured on `tuning-10k-meshes` (151 frames, steady state,
+  Chrome): mean 0.15ms, p50 0, p95 0.1, max 4.0, total 22.7ms.
+  The defaults (`rebuild_period_frames=600`,
+  `rebuild_dirty_threshold=200`) keep the worst-case 4ms rebuild
+  to roughly one hit per 10s @60fps — the per-frame budget
+  (`Render` mean 2.17ms) is dominated by `Geometry RenderPass`
+  (0.36ms), `Collect renderables` (0.27ms), and `Shadow
+  Generation` (0.66ms), so no clear tuning win is visible. Kept
+  the defaults; the new span is the load-bearing artifact —
+  future tuning has a measurement foundation that didn't exist
+  before this sprint.
+- ✅ Phase 5.1 — `LineRenderer` carries a `pack_buf:
+  Vec<GpuLineSegment>` scratch buffer; `pack()` became
+  `pack_into(out, ...)` which `out.clear()`s + extends in place.
+  Editor overlays (collider wireframes, point handles, selection
+  outlines) re-pack many small line strips per frame and were
+  bouncing the allocator per call; this pulls them off the alloc
+  path. Simulator side already pooled (`Simulator.packed: Vec
+  <InstanceAttr>` is held + clear+pushed in `tick()`) — Phase 5.1
+  needed only the LineRenderer half.
+- ✅ Phase 4.2 — Raster bitmap prefetch fires from `prepare_model`
+  the moment the gltf texture bytes are in `pending_assets`
+  (right after `extract_gltf_materials_into`), as a
+  `spawn_local` background task. Overlaps the `createImageBitmap`
+  wall-clock with the rest of the insert path (modal copy,
+  renderer-lock acquisition inside `load_and_populate`, the
+  populate_gltf compile/upload window) instead of running
+  serially inside populate. The original prefetch call inside
+  `load_and_populate` stays as a safety net (idempotent cache)
+  for paths that don't route through `prepare_model` — gizmo
+  init, procedural_sync, project Load.
+- ✅ Phase 4.1 — Editor texture_cache seeded from renderer-gltf
+  uploads. `extract_gltf_materials_into` now stashes a per-image
+  `gltf_image_asset_ids` Vec on the gltf's AssetEntry. After
+  `populate_gltf` lands, `asset_cache::seed_texture_cache_from_populate`
+  walks `ctx.textures`, resolves each (texture_index, color)
+  back to the gltf image index, and seeds the editor's
+  `texture_cache` with the renderer-gltf-side `TextureKey`. The
+  override path's `get_or_upload(asset_id, ...)` now hits the
+  shared key instead of re-decoding + re-uploading the same image
+  — recovers the **2× GPU storage + 2× decode** per glb texture
+  that the editor was paying.
+- ✅ Phase 1.2 — Pre-warmed LineRenderer + Picker shader compiles.
+  LineRenderer migrated off `shaders.insert_uncached` onto a real
+  `ShaderCacheKeyLine` (new `ShaderCacheKey::Line` variant + a
+  static `ShaderTemplateLine`). `lib.rs::build` now issues a
+  single `shaders.ensure_keys(...)` for the 1 Line + 2 Picker
+  shader variants before either constructor runs, so the browser
+  kicks off all three `compile_shader`s together and validates
+  them in parallel. The per-pass constructors then run
+  sequentially through `&mut shaders / &mut pipelines` (pipeline
+  state is fast vs. shader compile), but the slow part is
+  pre-warmed.
+- ✅ Phase 1.1 — `RenderPassInitContext.gpu: &mut` → `&`. Walk of
+  every consumer showed nothing actually mutated the handle. With
+  the shared borrow, `RenderPasses::new` + `RenderTextures::new`
+  now run inside a single `futures::future::try_join` in
+  `lib.rs::build` — both want `&gpu`, neither contends on the
+  other's `&mut` fields (RenderTextureFormats is cloned for the
+  textures side).
+- ✅ Phase 0.2 — `read_render_pass_timings(min_count)` measurement
+  helper. The per-pass `performance.measure` entries already exist
+  (`tracing-web::performance_layer` routes every renderer span
+  automatically); the new helper groups by base name — stripping
+  the `[id]: span-measure` suffix — and returns
+  `{count, mean_ms, p50_ms, p95_ms, max_ms, total_ms}` per pass
+  as JSON, then clears measures so the next sample window starts
+  fresh. Drives the Chrome-vs-Safari per-pass comparison in one
+  `preview_eval` call. Zero-cost when `render_timings = false`.
+- ✅ Phase 0.1 (partial) — `MSAA Anti-Aliasing` checkbox in the
+  scene-editor's Editor header tab. Mirrors the pattern in
+  model-tests' `SidebarProcessing::render_msaa_selector`; routes
+  through a new `actions::view::toggle_msaa()` that calls
+  `renderer.set_anti_aliasing(..)`. `?ifi` / `?features` migration
+  was carved out — see "Won't do".
 - ✅ `apply_visibility_to_node` identity guard
 - ✅ `apply_visibility_subtree` batches into one `with_renderer_mut`
 - ✅ `MeshLightIndicesGpu::write_gpu` fast path on empty scenes
@@ -506,14 +478,58 @@ For PR context — these shipped in the prior sprint and the
 
 For the next picker — items explicitly considered and rejected.
 
+- ❌ First-class worker pool + GltfParseJob (was Phase 4.3).
+  Rejected for this sprint — the plan's own measurement gate
+  ("Before landing 4.3b, wire 0.2's per-pass sub-spans and add a
+  `gltf-parse` measurement so the worker version can be compared
+  to the inline version. If the transfer cost dominates … the
+  pool can be opt-in via a config knob") makes it
+  measurement-required, and the implementation surface — wasm
+  worker init, shared `WebAssembly.Module` postMessage, dynamic
+  job dispatch with `linkme`-style registry, opt-in config knob,
+  the `gltf-parse` A/B measurement — is multi-day on its own.
+  wasm worker init also has notoriously fragile cross-browser
+  behaviour (Safari module-worker quirks, COOP/COEP
+  interactions) that a single-session blind run can't validate.
+  The full design — `WorkerPool`, `WorkerJob` trait, auto-bundle
+  discovery via `import.meta.url`, shared-Module shim, the
+  `GltfParseJob` consumer wiring — is preserved in the Phase 4.3
+  section above (collapsed under "Full original design") so the
+  follow-up sprint can pick it up cold. Recommended split:
+  Phase 4.3a (infra + Custom-bootstrap-only API) → Phase 4.3b
+  (`import.meta.url` auto-discovery + GltfParseJob + A/B
+  measurement → opt-in config knob).
+- ❌ Per-frame upload arena (was Phase 2.1). Rejected for this
+  sprint — broad scope (touches ~10 subsystems' `write_gpu`:
+  transforms, materials, instances, meshes/meta, textures,
+  camera, lights, shadows globals + descriptors, skins, morphs,
+  plus several reset paths), and the plan's own framing says it
+  needs before/after measurement on Chrome AND Safari to confirm
+  the win — Chrome already amortises `writeBuffer` well, the
+  Safari delta is the load-bearing benefit. Landing a
+  cross-subsystem refactor blind on Chrome-only carries the
+  highest bug-surface of any sprint item; staking the
+  measurement-required claim without a Safari-side number is
+  unjustified. The dirty-range coalescing in
+  `write_buffer_with_dirty_ranges` already buys most of the
+  Chrome-side gain (~5-10 ranges per call typically). Should be
+  re-picked as its own sprint with Safari hardware in the loop.
 - ❌ `Arc<Mutex<...>>` → `Rc<RefCell<...>>`. Rejected: the
   `Send`/`Sync` shape is intentional future-proofing for
   multi-threading. On wasm32 the lock-acquire is essentially free.
 - ❌ URL switches for runtime-togglable behavior. Project
   convention: editor header tabs (Editor / Camera / Environment /
-  etc.). The pre-existing `?ifi=on/off` and `?features=off`
-  switches predate this convention and should migrate to Editor
-  toggles in Phase 0.1.
+  etc.). MSAA migrated as part of Phase 0.1; **`?ifi` /
+  `?features` migration deferred** — `RendererFeatures` is read at
+  builder time (see `features.rs` doc: "Toggling a gate after
+  `build()` requires a renderer rebuild"). A live editor-tab
+  toggle would either (a) require a full renderer rebuild path
+  (drop renderer, recreate, re-establish all bridge observers /
+  hooks / RAF) or (b) flip the URL param and reload the page,
+  which destroys unsaved scene state. Both are out of scope for
+  this sprint. The dev-only `?ifi=` / `?features=` URL knobs (gated
+  on `cfg(debug_assertions)`) stay as the measurement-harness
+  escape hatch.
 - ❌ Lazy-allocate Occlusion/Compaction/Coverage feature buffers
   when no meshes. Win is microscopic (~70 KB GPU memory + 4 buffer
   creates at builder time, dominated by shader compilation).
@@ -544,34 +560,59 @@ For the next picker — items explicitly considered and rejected.
 
 When picking up an item:
 
-- **Branch**: work from `main`; create a feature branch per logical
-  chunk, or work straight on a sprint branch like the prior
-  `more-optimizations` if doing many items.
-- **Verification**: `cargo check --workspace` (or
-  `cargo clippy --workspace`) + `cargo test --workspace` must stay
-  green at every commit. **Don't run `cargo build --workspace`** —
-  it's wasted wall-clock; `check` / `clippy` cover compile
-  validation and the trunk dev-server is the real "does it run"
-  check. For full visual verification, ensure the trunk server is
-  running (`task scene-editor:dev` or the
-  `mcp__Claude_Preview__preview_start` helper) and exercise the
-  editor in the browser. The editor must render correctly on both
-  `?ifi=on` and `?ifi=off` (or the Editor toggle equivalent once
-  Phase 0.1 lands).
-- **Smoke test**: launch `task scene-editor:dev`, insert a Box +
-  Sphere + Torus, confirm all three render. Repeat on the opposite
-  ifi setting before claiming done.
-- **Test in Safari + Chrome** where possible — the
-  `indirect-first-instance` saga showed how easily a Chrome-only
-  validation pass can mask Safari breakage. The Safari GPU process
-  is also more sensitive to dev-session state churn; a fresh
-  restart is the meaningful comparison.
-- **Commits**: small, logical, descriptive. End each with
+- **Branch**: work on the `optimizations` branch. Do *not* spin
+  up feature branches per chunk — the whole sprint lands on
+  `optimizations`. The branch will be PR'd to `main` as a single
+  batch once everything has landed.
+- **Commits**: small, logical, descriptive — sized for git-bisect
+  to be useful. Each commit should map to one Phase item (or a
+  clean sub-step of one). End each commit message with
   `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>`.
+- **Verification policy** *(important — this is different from the
+  prior sprint)*: it is **acceptable for the workspace to be in a
+  broken state between commits** during this sprint. Don't pad
+  each individual commit with compatibility shims, redundant
+  conversions, or temporary forwarders just to keep the tree
+  compiling mid-sequence — that work would all be deleted later
+  and the technical debt is worse than the broken-middle state.
+  Verification (`cargo check`, `cargo clippy`, `cargo test`,
+  editor smoke test) is required **only at the end of the whole
+  sprint** before requesting review. Intermediate compile
+  failures are fine *if* the failure scope is bounded and the
+  next commit fixes it.
+
+  Use git-bisect semantics as the guide: a future bisector wants
+  *logical* boundaries, not "every commit must build." Tight,
+  honest commits beat fake-greenness.
+
+  Within a single commit, however: keep the diff coherent. Don't
+  ship "added field but forgot to update use sites" if updating
+  the use sites is a one-line change — that's just sloppy. The
+  "broken middle" permission is for genuine cross-file refactors
+  (e.g., a trait signature change that takes 30 use sites to
+  update) where staging matters for bisect.
+
+  **Don't run `cargo build --workspace`** at any point —
+  `cargo check` is cheaper and covers compile validation. The
+  trunk dev-server + editor browser smoke test are the real
+  "does it run" check at the end.
+
+- **End-of-sprint verification** (do once, before opening the PR):
+  - `cargo check --workspace` clean
+  - `cargo clippy --workspace` clean
+  - `cargo test --workspace` green
+  - Editor renders Primitive Box + Sphere + Torus on both
+    `?ifi=on` and `?ifi=off` (or the Editor toggle equivalent
+    once Phase 0.1 lands)
+  - Repeat the smoke test on Safari if possible; cold-restart
+    Safari is the meaningful comparison since dev-session
+    degradation is a dev-loop artifact, not a renderer bug
+
 - **Doc maintenance**: when a Phase item lands, move it to
   "Recently landed" with a one-line summary. When an item turns
-  out to be unwise, move it to "Won't do" with the reason. Keep
-  this doc the source of truth — don't let it drift.
+  out to be unwise mid-implementation, move it to "Won't do"
+  with the reason. Keep this doc the source of truth — don't let
+  it drift, even mid-sprint when other things are broken.
 
 Reference docs:
 - [`docs/PERFORMANCE.md`](../PERFORMANCE.md) — permanent renderer

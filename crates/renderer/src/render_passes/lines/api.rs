@@ -3,7 +3,7 @@ use glam::{Vec3, Vec4};
 use crate::{error::Result, AwsmRenderer};
 
 use super::gpu::{
-    create_bind_group, create_segment_buffer, create_uniform_buffer, pack, segments_byte_size,
+    create_bind_group, create_segment_buffer, create_uniform_buffer, pack_into, segments_byte_size,
     write_segments,
 };
 use super::types::{LineEntry, LineKey, LineTopology};
@@ -58,14 +58,16 @@ impl AwsmRenderer {
         depth_test_always: bool,
         topology: LineTopology,
     ) -> Result<Option<LineKey>> {
-        let segments = pack(positions, colors, topology);
+        pack_into(&mut self.lines.pack_buf, positions, colors, topology);
+        let segments = &self.lines.pack_buf;
         if segments.is_empty() {
             return Ok(None);
         }
-        let segment_bytes = segments_byte_size(segments.len());
+        let segment_count = segments.len();
+        let segment_bytes = segments_byte_size(segment_count);
 
         let segment_buffer = create_segment_buffer(&self.gpu, segment_bytes)?;
-        write_segments(&self.gpu, &segment_buffer, &segments)?;
+        write_segments(&self.gpu, &segment_buffer, segments)?;
 
         let uniform_buffer = create_uniform_buffer(&self.gpu)?;
 
@@ -80,7 +82,7 @@ impl AwsmRenderer {
         )?;
 
         let key = self.lines.entries.insert(LineEntry {
-            segment_count: segments.len() as u32,
+            segment_count: segment_count as u32,
             width_px: width.max(0.5),
             depth_test_always,
             segment_buffer,
@@ -124,13 +126,14 @@ impl AwsmRenderer {
             return Ok(());
         }
         let bind_group_layout_key = self.lines.pipelines.bind_group_layout_key;
-        let segments = pack(positions, colors, topology);
+        pack_into(&mut self.lines.pack_buf, positions, colors, topology);
+        let segment_count = self.lines.pack_buf.len();
         let entry = self.lines.entries.get_mut(key).expect("checked above");
-        if segments.is_empty() {
+        if segment_count == 0 {
             entry.segment_count = 0;
             return Ok(());
         }
-        let new_bytes = segments_byte_size(segments.len());
+        let new_bytes = segments_byte_size(segment_count);
         if new_bytes > entry.segment_capacity_bytes {
             entry.segment_buffer = create_segment_buffer(&self.gpu, new_bytes)?;
             entry.segment_capacity_bytes = new_bytes;
@@ -143,8 +146,8 @@ impl AwsmRenderer {
                 &entry.uniform_buffer,
             )?;
         }
-        write_segments(&self.gpu, &entry.segment_buffer, &segments)?;
-        entry.segment_count = segments.len() as u32;
+        write_segments(&self.gpu, &entry.segment_buffer, &self.lines.pack_buf)?;
+        entry.segment_count = segment_count as u32;
         Ok(())
     }
 

@@ -100,6 +100,28 @@ pub struct AssetEntry {
     /// hint — an empty Vec serializes as zero length anyway.
     #[serde(default)]
     pub gltf_material_asset_ids: Vec<AssetId>,
+    /// Editable `Texture` asset ids extracted from a glTF file on
+    /// import, indexed by glTF *image* index (not texture index —
+    /// multiple glTF textures can share the same image with
+    /// different samplers, but the editor stores one Texture asset
+    /// per image so the assets library stays tidy). Empty for
+    /// non-glTF entries (and for glTFs imported before this
+    /// feature shipped).
+    ///
+    /// Used at populate-glb time to seed the editor's
+    /// `texture_cache` with the `TextureKey`s the renderer-gltf
+    /// side already uploaded — without this, every editor
+    /// material override would re-decode + re-upload the same
+    /// image, doubling GPU storage and decode wall-clock per glTF
+    /// texture. See `crates/frontend/scene-editor/src/renderer_bridge/asset_cache.rs::seed_texture_cache_from_populate`.
+    ///
+    /// Vec position is the glTF image index; gaps are filled with
+    /// `AssetId::default()` if the document skips one (rare —
+    /// glTF documents almost always pack image indices densely).
+    /// `#[serde(default)]` keeps pre-feature project.json files
+    /// round-tripping cleanly.
+    #[serde(default)]
+    pub gltf_image_asset_ids: Vec<AssetId>,
     /// SHA-256 of the on-disk file's content, as lowercase hex. Drives
     /// the disk path (see [`asset_disk_path`]) and the upload-time
     /// dedup check — two uploads of identical bytes reuse the same
@@ -122,6 +144,7 @@ impl AssetEntry {
         Self {
             source,
             gltf_material_asset_ids: Vec::new(),
+            gltf_image_asset_ids: Vec::new(),
             content_hash: String::new(),
         }
     }
@@ -134,6 +157,7 @@ impl AssetEntry {
         Self {
             source,
             gltf_material_asset_ids: Vec::new(),
+            gltf_image_asset_ids: Vec::new(),
             content_hash,
         }
     }

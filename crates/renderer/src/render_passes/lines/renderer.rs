@@ -8,12 +8,20 @@ use crate::{
 };
 
 use super::pipelines::{LinePipelines, LineVariantKey};
-use super::types::{LineEntry, LineKey, LINE_UNIFORM_BYTES};
+use super::types::{GpuLineSegment, LineEntry, LineKey, LINE_UNIFORM_BYTES};
 
 /// Renderer-side state owning the four line pipelines and every registered line strip.
 pub struct LineRenderer {
     pub(super) pipelines: LinePipelines,
     pub(super) entries: SlotMap<LineKey, LineEntry>,
+    /// Scratch packing buffer reused across `add_line` / `update_line`
+    /// calls. The `pack_into` helper clears + extends in place so
+    /// per-call allocation cost goes to zero in the steady state.
+    /// Held on the renderer (not on each call site) so editor
+    /// overlays that re-pack many small line strips per frame
+    /// (collider wireframes, point handles, selection outlines)
+    /// don't bounce the allocator.
+    pub(super) pack_buf: Vec<GpuLineSegment>,
 }
 
 impl LineRenderer {
@@ -38,6 +46,7 @@ impl LineRenderer {
         Ok(Self {
             pipelines,
             entries: SlotMap::with_key(),
+            pack_buf: Vec::new(),
         })
     }
 

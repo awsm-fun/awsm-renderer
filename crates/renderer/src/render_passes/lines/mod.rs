@@ -18,7 +18,9 @@ mod api;
 mod gpu;
 pub mod pipelines;
 mod renderer;
+pub mod shader;
 mod types;
 
 pub use renderer::LineRenderer;
+pub use shader::cache_key::ShaderCacheKeyLine;
 pub use types::{LineKey, LineTopology};

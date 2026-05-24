@@ -15,6 +15,7 @@ use crate::renderer_bridge::gizmo::MoveAction;
 use crate::renderer_bridge::Bridge;
 use crate::scene::{AssetId, NodeId, Scene, SceneSnapshot};
 use crate::tree::drag::DropZone;
+use awsm_renderer::anti_alias::AntiAliasing;
 use awsm_renderer_editor::{
     point_handle::PointHandleSet, transform_controller::TransformController,
 };
@@ -79,6 +80,13 @@ pub struct AppState {
     /// hidden even with a selected node, and its handles aren't
     /// pickable (the GPU pick uses mesh visibility).
     pub gizmo_enabled: Mutable<bool>,
+    /// Anti-aliasing settings mirror (MSAA + SMAA + mipmap). The
+    /// Editor header's `MSAA Anti-Aliasing` checkbox writes here; an
+    /// `actions::view::reset_anti_aliasing()` call pushes the current
+    /// value into the renderer via `set_anti_aliasing`. Initialized
+    /// to `AntiAliasing::default()` so the editor's boot matches the
+    /// renderer's defaults.
+    pub anti_aliasing: Mutable<AntiAliasing>,
     pub rotation_display: Mutable<RotationDisplay>,
     /// Active viewport projection. The header `Camera` tab's dropdown is
     /// the single source of truth; `actions::camera::set_projection_mode`
@@ -166,6 +174,7 @@ impl AppState {
             project_name: Mutable::new(None),
             grid_enabled: Mutable::new(true),
             gizmo_enabled: Mutable::new(true),
+            anti_aliasing: Mutable::new(AntiAliasing::default()),
             rotation_display: Mutable::new(RotationDisplay::EulerDegrees),
             projection_mode: Mutable::new(ProjectionMode::Perspective),
             editor_camera_target: Mutable::new(None),

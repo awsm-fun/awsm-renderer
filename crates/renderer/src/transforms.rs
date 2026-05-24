@@ -54,8 +54,18 @@ impl AwsmRenderer {
             self.sync_spatial_for_mesh(mesh_key);
         }
 
-        // Periodic BVH refresh.
-        self.scene_spatial.rebuild_if_needed();
+        // Periodic BVH refresh. Span so `read_render_pass_timings`
+        // can attribute the rebuild cost when tuning the cadence
+        // defaults (`SceneSpatialConfig::rebuild_period_frames` /
+        // `rebuild_dirty_threshold`).
+        {
+            let _maybe_span_guard = if self.logging.render_timings {
+                Some(tracing::span!(tracing::Level::INFO, "SceneSpatial Rebuild").entered())
+            } else {
+                None
+            };
+            self.scene_spatial.rebuild_if_needed();
+        }
 
         // Per-frame per-light → per-mesh bucket rebuild — cheap (one
         // `query_envelope` per active punctual light).

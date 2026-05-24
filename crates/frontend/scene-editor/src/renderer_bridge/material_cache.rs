@@ -93,29 +93,25 @@ pub fn drain() -> Vec<MaterialKey> {
     with_cache(|m| m.drain().map(|(_, k)| k).collect())
 }
 
-/// Cascade a `MaterialAsset` deletion through the renderer:
+/// Cascade-delete a batch of `MaterialAsset`s through the renderer
+/// in a single scene walk. For each asset id in the batch:
 ///
-/// 1. Drop the cached `MaterialKey` (so future `get_or_create` calls
-///    for the deleted id fall back to inline material via `resolve`).
-/// 2. For every editor node whose `material_ref` points at this
-///    asset, invalidate the apply-kind identity cache + re-emit the
-///    node's kind so the bridge re-resolves through `resolve`
-///    (which now falls back to inline because the table no longer
-///    has the entry).
-/// 3. Free the old `MaterialKey` from the renderer pool. Done last,
-///    after every referencing node has re-bound, so no live draw
-///    still points at the freed slot.
+/// 1. Drop the cached `MaterialKey` (so future `get_or_create`
+///    calls fall back to inline material via `resolve`).
+/// 2. For every editor node whose `material_ref` points at one of
+///    the deleted assets, invalidate the apply-kind identity
+///    cache + re-emit the node's kind so the bridge re-resolves
+///    through `resolve` (which now falls back to inline because
+///    the asset table no longer has the entry).
+/// 3. Free the old `MaterialKey`s from the renderer pool. Done
+///    last, after every referencing node has re-bound, so no
+///    live draw still points at a freed slot.
 ///
-/// Mirrors the structure of `texture_cache::update_existing` for the
-/// delete case. Implemented as the single-asset shape of
-/// [`cascade_after_delete_batch`].
-///
-/// Cascade-delete a batch of `MaterialAsset`s in a single scene walk.
-///
-/// Replaces an N-asset cleanup's N × scene walk with one. Each asset
-/// id still gets its own `MaterialKey` freed via `remove_material`;
-/// the saving is purely in the per-node identity check and the
+/// Replaces what would otherwise be N × scene-walk for an N-asset
+/// cleanup. The per-asset saving is in the node identity check +
 /// `kind.set` reemit, which scale with `scene_nodes × assets`.
+/// Mirrors the structure of `texture_cache::update_existing` for
+/// the delete case.
 pub async fn cascade_after_delete_batch(asset_ids: &[AssetId]) {
     use crate::context::with_renderer_mut;
     use crate::scene::{Node, NodeKind};

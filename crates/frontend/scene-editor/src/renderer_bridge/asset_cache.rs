@@ -15,6 +15,7 @@ use crate::scene::{AssetId, AssetSource, AssetStatus};
 use crate::state::app_state;
 use awsm_renderer::{
     meshes::MeshKey,
+    textures::TextureKey,
     transforms::{Transform, TransformKey},
 };
 use awsm_renderer_gltf::{
@@ -219,6 +220,21 @@ async fn load_and_populate(asset_id: AssetId) -> Result<AssetTemplate, String> {
     let (ctx, ()) = futures::future::join(populate_fut, prefetch_fut).await;
     let ctx = ctx?;
 
+    // Phase 4.1 — seed the editor's texture_cache with the
+    // `TextureKey`s renderer-gltf just uploaded so the override-path
+    // `texture_cache::get_or_upload(asset_id, ...)` returns the
+    // existing slot instead of re-decoding + re-uploading the same
+    // image. The renderer-gltf side keys by `(gltf_texture_index,
+    // color)`; the editor's cache keys by editor `AssetId`. We
+    // resolve the join via the gltf doc's `texture → image` map and
+    // the editor's per-image `gltf_image_asset_ids` (stashed at
+    // insert time by `extract_gltf_materials_into`). Multiple
+    // (texture_index, color) pairs can map to the same image — the
+    // first one to land wins; the editor cache is keyed by AssetId
+    // only (it doesn't track srgb/linear role per entry), so this
+    // matches the existing semantics.
+    seed_texture_cache_from_populate(&state, asset_id, &ctx);
+
     let root = renderer.transforms.root_node;
     let (all_keys, key_to_node_index, key_to_label): (
         Vec<TransformKey>,
@@ -270,6 +286,72 @@ async fn load_and_populate(asset_id: AssetId) -> Result<AssetTemplate, String> {
     hide_template_meshes(&mut renderer, &roots);
 
     Ok(AssetTemplate { roots })
+}
+
+fn seed_texture_cache_from_populate(
+    state: &crate::state::AppState,
+    gltf_asset_id: AssetId,
+    ctx: &awsm_renderer_gltf::populate::GltfPopulateContext,
+) {
+    let image_asset_ids = {
+        let table = state.scene.assets.lock().unwrap();
+        match table.get(gltf_asset_id) {
+            Some(e) if !e.gltf_image_asset_ids.is_empty() => e.gltf_image_asset_ids.clone(),
+            _ => return,
+        }
+    };
+    let textures = ctx.textures.lock().unwrap();
+    // One source image can back several `GltfTextureKey`s: the key
+    // carries the gltf *texture* index plus `color`, so the same image
+    // referenced srgb as a base-color in one material AND linear as a
+    // normal map in another (or via two distinct texture entries) lands
+    // under multiple keys, each with its own renderer `TextureKey`. The
+    // editor's texture cache keys purely on `AssetId` — one slot per
+    // image — so a multi-variant image has no single "correct" key to
+    // seed, and HashMap iteration order would otherwise pick the variant
+    // arbitrarily, silently overriding the role-specific upload that
+    // `texture_cache::get_or_upload` would have done.
+    //
+    // Resolve every renderer texture to its backing image first, then
+    // seed only images that map to exactly one renderer `TextureKey`.
+    // Ambiguous images fall back to the (correct, role-aware) on-demand
+    // upload — losing the dedup only for the rare multi-variant case,
+    // never binding the wrong color. `Some(None)` marks "ambiguous".
+    let mut per_image: HashMap<AssetId, Option<TextureKey>> = HashMap::new();
+    for (gltf_texture_key, texture_key) in textures.iter() {
+        // gltf::Document::textures() is ordered by texture index; we
+        // pull the image's index off the matching texture entry. If
+        // the gltf doc was malformed or trimmed between insert and
+        // populate (shouldn't happen — same bytes), skip silently.
+        let Some(gltf_texture) = ctx.data.doc.textures().nth(gltf_texture_key.index) else {
+            continue;
+        };
+        let image_index = gltf_texture.source().index();
+        let Some(asset_id) = image_asset_ids.get(image_index).copied() else {
+            continue;
+        };
+        // `AssetId::default()` is the "no extracted asset for this
+        // image" sentinel from extract_gltf_materials_into (e.g.
+        // URI-sourced images get skipped). Don't seed those.
+        if asset_id == AssetId::default() {
+            continue;
+        }
+        per_image
+            .entry(asset_id)
+            .and_modify(|slot| {
+                // A second *distinct* renderer key for this image ⇒
+                // ambiguous variant; clear the slot so we skip seeding.
+                if *slot != Some(*texture_key) {
+                    *slot = None;
+                }
+            })
+            .or_insert(Some(*texture_key));
+    }
+    for (asset_id, key) in per_image {
+        if let Some(texture_key) = key {
+            super::texture_cache::seed(asset_id, texture_key);
+        }
+    }
 }
 
 fn hide_template_meshes(renderer: &mut awsm_renderer::AwsmRenderer, roots: &[AssetTemplateNode]) {
