@@ -21,6 +21,240 @@ in both Chrome and Safari from the running editor.
 
 ## Phase 1 — Renderer init parallelization
 
+## Phase 2 — Per-frame upload consolidation via mapped-buffer rings
+
+### 2.1 🚀 Mapped-buffer ring inside `Dynamic{Storage,Uniform}Buffer`
+
+**Goal.** Replace `queue.writeBuffer` as the per-frame upload
+mechanism for renderer-owned dirty-tracked data. The mapped path
+writes directly into GPU-visible memory and skips the browser's
+internal staging-copy hop that `queue.writeBuffer` performs.
+`queue.writeBuffer` stays as the canonical path for ingesting
+*foreign* `ArrayBuffer`s (worker output, file decode results) —
+those are one-shot uploads where the mapped ring adds complexity
+without saving the memcpy.
+
+#### Design summary
+
+- Each `DynamicStorageBuffer` / `DynamicUniformBuffer` instance
+  owns a small ring (default 3) of `MAP_WRITE | COPY_SRC` staging
+  buffers, plus the existing `Vec<u8>` (CPU-authoritative state)
+  and the existing destination `GpuBuffer`.
+- `write_gpu()` flow per frame:
+  1. Find the currently-mapped staging slot (always one available
+     in steady state; see exhaustion handling).
+  2. Copy the Vec's dirty ranges into the mapped slot's
+     `getMappedRange()`-returned `ArrayBuffer`.
+  3. `unmap()` the slot.
+  4. Record `copyBufferToBuffer` from slot → destination into the
+     frame's command encoder.
+  5. Mark the slot in-flight.
+  6. On a slot in the *post-submit, pre-map-resolved* state,
+     proactively call `mapAsync()` so it's ready by the time the
+     ring rotates back to it.
+- The `Vec<u8>` stays because it's the only thing that's *always*
+  CPU-writable — the mapped staging slots cycle through the
+  mapped/in-flight/pending-map states, so synchronous subsystem
+  writes (`update_slot(7, &bytes)`) cannot be served by the ring
+  alone. The Vec is also what carries authoritative slot contents
+  across ring rotations (a freshly-mapped slot has stale contents
+  from N frames ago; only the Vec knows what slot 7's neighbours
+  are supposed to look like *now*).
+
+#### Public API (additions)
+
+```rust
+impl DynamicStorageBuffer {
+    /// Existing constructor — uses default ring depth (3).
+    pub fn new(...) -> Self { /* ... */ }
+
+    /// Override the ring depth. Use when the caller has out-of-
+    /// band knowledge that the buffer will grow large (e.g.,
+    /// mesh meta in a 100k-mesh open-world scene at ~25 MB per
+    /// slot → 75 MB at 3-deep; passing 2 trades a tighter ring
+    /// for halved GPU-side overhead).
+    pub fn new_with_ring_depth(depth: usize, ...) -> Self { /* ... */ }
+}
+// (mirror on DynamicUniformBuffer)
+```
+
+The subsystem-facing API (`update`, `update_at`, `take_dirty_ranges`,
+`raw_slice`, …) **does not change**. Migration of standalone
+writeBuffer sites is a refactor to use the existing Dynamic
+type's API, not a new API.
+
+#### Ring lifecycle (per slot)
+
+Each slot is in one of four states:
+
+- **`Mapped`** — `getMappedRange()` returned an `ArrayBuffer` we
+  can memcpy into. CPU-writable.
+- **`Submitted`** — `unmap()` called, `copyBufferToBuffer` recorded,
+  command encoder submitted. GPU-owned; the slot's prior `mapAsync`
+  reservation has not yet been issued for the next round.
+- **`Pending`** — `mapAsync()` called, awaiting resolution. Cannot
+  be written.
+- **`Ready`** — `mapAsync()` resolved (callback fired); the slot
+  can be promoted back to `Mapped` on next access.
+
+Rotation cadence: one slot transitions `Mapped → Submitted` per
+`write_gpu()` call. The previously-submitted slot is promoted
+`Submitted → Pending` (mapAsync kicked) on the same beat. A
+`Ready` slot is promoted to `Mapped` lazily on the next
+`write_gpu()` that needs one.
+
+#### Exhaustion handling
+
+If `write_gpu()` is called and no `Ready`/`Mapped` slot is
+available (all are `Pending` or `Submitted`):
+
+- **Debug build (`cfg(debug_assertions)`)**: `debug_assert!`-panic
+  with a descriptive message. We want to catch ring-depth-too-shallow
+  during development.
+- **Release build**: fall back to `queue.writeBuffer` for this
+  frame's upload. The fallback path stays as a one-line escape
+  hatch; bumps a telemetry counter so a future profile can see
+  it happening.
+
+The fallback path is intentionally not the "fast" path — its job
+is to never crash a shipped game. If a release build is regularly
+hitting fallback, the fix is to bump that buffer's ring depth via
+`new_with_ring_depth(...)`.
+
+#### Telemetry
+
+Each `Dynamic{Storage,Uniform}Buffer` exposes (and the renderer
+aggregates):
+
+- `peak_ring_depth_used: usize` — max number of slots
+  simultaneously non-`Ready` since last reset. Reveals whether the
+  ring is correctly sized.
+- `fallback_count: u64` — times `queue.writeBuffer` fallback fired.
+- `map_async_wait_ms: f64` — accumulated wall-clock time spent
+  in mapAsync resolution waits (mostly zero in steady state; spikes
+  when a slot's prior submit is stuck on the GPU).
+- `bytes_uploaded_via_ring: u64` / `bytes_uploaded_via_fallback: u64`
+  — relative path usage.
+
+These surface through `read_render_pass_timings()` JSON (Phase
+0.2's helper) under a new `upload_rings` top-level key so the
+measurement harness picks them up alongside per-pass timings.
+
+#### Standalone writeBuffer sites — migration in scope
+
+Phase 2.1 migrates every per-frame `queue.writeBuffer` call site
+that owns renderer-internal data to use `Dynamic{Storage,Uniform}Buffer`:
+
+| Site | Current shape | Target |
+|---|---|---|
+| `transforms` (already Dynamic) | DynamicStorageBuffer | inherits the ring |
+| `materials` (already Dynamic) | DynamicStorageBuffer | inherits the ring |
+| `instances` (already Dynamic) | DynamicStorageBuffer (×2) | inherit the ring |
+| `meshes.meta` (already Dynamic) | DynamicStorageBuffer | inherits the ring |
+| `meshes.skins` / `morphs` (already Dynamic) | DynamicStorageBuffer | inherit the ring |
+| `textures.write_texture_transforms_gpu` (already Dynamic) | DynamicStorageBuffer | inherits the ring |
+| `camera.write_gpu` | raw writeBuffer (~64 B) | promote to DynamicUniformBuffer |
+| `shadows.write_gpu` globals | raw writeBuffer | promote to DynamicStorageBuffer |
+| `lights` (info + LightsBuffer) | raw writeBuffer | promote to DynamicStorageBuffer |
+| `mesh_light_indices_gpu.write_gpu` | raw writeBuffer | promote to DynamicStorageBuffer |
+| `occlusion_buffers.write_params` | raw writeBuffer | promote to DynamicUniformBuffer |
+| `occlusion` instance buffer pack (in `render.rs`) | raw writeBuffer (variable size) | promote to DynamicStorageBuffer |
+| `lines/renderer.rs` per-line uniform | raw writeBuffer | promote to DynamicUniformBuffer |
+| `lines/gpu.rs` per-line segment write | raw writeBuffer | promote to DynamicStorageBuffer |
+
+Out of scope (intentional): the per-frame *reset* writes
+(`coverage_buffers.reset_counts`, `material_classify_buffers.reset_header`,
+`decal_classify_buffers.reset_counts`). These are full-replace
+of small fixed-content payloads (zeros / static headers); the ring's
+mapped-write win doesn't apply to "upload these constant bytes
+again." A possible future cleanup is to switch them to
+`clear_buffer` GPU commands, but that's not Phase 2.1's concern.
+
+#### Foreign `ArrayBuffer` ingestion — explicitly NOT in scope
+
+When a glTF parse completes (worker or main-thread), the result
+is a set of `ArrayBuffer`s the renderer needs to upload to
+geometry / texture buffers. The mapped-staging path would require
+copying from the `ArrayBuffer` into the mapped region — same
+memcpy as `queue.writeBuffer(arrayBuffer)`. So `queue.writeBuffer`
+stays as the canonical path for foreign-bytes ingestion and the
+upcoming Phase 4.3 worker-pool zero-copy work plugs into that
+direct path, *not* into the ring.
+
+Phase 2.1 documents this split explicitly in the
+`Dynamic{Storage,Uniform}Buffer` types' module docs so future
+contributors don't mistakenly route worker results through the
+ring.
+
+#### Implementation order (suggested commit-by-commit)
+
+1. `MappedStagingRing<const N: usize>` type — generic over ring
+   depth, owns the `MAP_WRITE | COPY_SRC` buffer slots, the
+   per-slot state machine, the mapAsync bookkeeping, and the
+   telemetry counters. No `Dynamic*Buffer` integration yet.
+   Standalone unit tests for the state machine.
+2. Integrate the ring into `DynamicStorageBuffer`: replace the
+   write_gpu path; keep the Vec; add `new_with_ring_depth(...)`.
+3. Same for `DynamicUniformBuffer`.
+4. Migrate the already-Dynamic call sites — should be no-op
+   (they already use the type's API).
+5. Promote `camera.write_gpu` to `DynamicUniformBuffer`.
+6. Promote `shadows` globals + descriptors.
+7. Promote `lights` info + LightsBuffer.
+8. Promote `mesh_light_indices_gpu`.
+9. Promote `occlusion_buffers.write_params` + the occlusion
+   instance pack in `render.rs`.
+10. Promote `lines` per-line uniform + per-line segment buffer.
+11. Wire telemetry into `read_render_pass_timings()` JSON output
+    under `upload_rings`.
+12. Add a measurement-doc note (in `PERFORMANCE.md`) on how to
+    read `upload_rings` telemetry and what the expected values
+    look like for the editor's tuning scenes.
+
+git-bisect-able: each promotion commit is one site at a time;
+intermediate states are mixed-mode (some Dynamic, some writeBuffer)
+but always correct.
+
+#### Open questions for the implementation sprint
+
+- **`mappedAtCreation: true` for ring-warm-up**: ring slots can be
+  born mapped, so the first frame doesn't need to wait for a
+  mapAsync. Almost certainly the right default; flag in case a
+  measurement disagrees.
+- **Ring depth for the LIGHTSGE / morphs / skins buffers**: these
+  can be sparse + huge in a worst-case rig. Telemetry-driven; ship
+  3-deep, revisit if `peak_ring_depth_used` consistently shows 1-2
+  (over-provisioned) or `fallback_count > 0` (under-provisioned).
+- **Should the fallback path be removed entirely once the design
+  matures**: if a year of telemetry shows zero fallbacks in
+  production, the fallback path can be a `debug_assert!` always
+  and a hard error in release. Defer to evidence.
+
+#### Alternatives considered (rejected)
+
+- **Shared StagingBelt across all subsystems** — adds a new
+  coordination layer (someone needs to own per-frame rotation
+  cadence; `UploadHandle { offset, len }` returned per write); for
+  per-instance localisation, per-buffer rings are strictly simpler
+  with negligible memory overhead at small buffer sizes.
+- **Eliminate the `Vec<u8>` entirely** — would require either
+  full-write-every-frame (kills the dirty-range optimization) or
+  copy-from-prev-ring-slot on rotation (forces a CPU sync wait for
+  the in-flight slot to release). Vec is cheap; eliminating it
+  saves ~25% memory but is a worse trade-off.
+- **`queue.writeBuffer` of a single CPU arena per frame + N
+  `copyBufferToBuffer` blits** — captures the "fewer writeBuffer
+  calls" win but not the "skip browser's internal staging copy"
+  win. Strictly less optimal than the mapped ring; the only
+  argument for it was simplicity, which the per-instance-ring design
+  also captures.
+- **Adaptive ring-depth-by-buffer-size heuristic** — rejected in
+  favour of caller-driven `new_with_ring_depth(depth)`. The engine
+  author knows "this buffer will grow huge" better than a generic
+  size threshold; explicit is better.
+
+---
+
 ## Phase 3 — *(retired — see "Recently landed" below)*
 
 The original Phase 3 ("merge opaque PBR/Unlit/Toon compute pipelines
@@ -496,22 +730,6 @@ For the next picker — items explicitly considered and rejected.
   Recommended split: Phase 4.3a (infra + Custom-bootstrap-only
   API) → Phase 4.3b (`import.meta.url` auto-discovery +
   GltfParseJob + Chrome A/B measurement → opt-in config knob).
-- ❌ Per-frame upload arena (was Phase 2.1). Deferred to its own
-  sprint — broad cross-subsystem refactor (touches ~10
-  subsystems' `write_gpu`: transforms, materials, instances,
-  meshes/meta, textures, camera, lights, shadows globals +
-  descriptors, skins, morphs, plus several reset paths). The
-  dirty-range coalescing in `write_buffer_with_dirty_ranges`
-  already buys most of the within-subsystem gain (~5-10 ranges
-  per call typically); the arena win is in cross-subsystem
-  consolidation of those into a single `writeBuffer` +
-  `copyBufferToBuffer` blits. Wants its own sprint because it's
-  the largest refactor in this picklist and benefits from a
-  focused implementation pass with measurement (the Phase 0.2
-  `read_render_pass_timings` helper is the load-bearing
-  prerequisite that landed in this sprint). Worth weighing
-  mapped-buffer ring (StagingBelt-style) at the same time — see
-  the architecture note below.
 - ❌ `Arc<Mutex<...>>` → `Rc<RefCell<...>>`. Rejected: the
   `Send`/`Sync` shape is intentional future-proofing for
   multi-threading. On wasm32 the lock-acquire is essentially free.
