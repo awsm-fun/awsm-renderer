@@ -707,6 +707,10 @@ fn resolve_particle_texture(
         .textures
         .get_sampler_key(&renderer.gpu, SamplerCacheKey::default())
         .ok()?;
+    // See the matching comment in `procedural_sync::resolve_material_texture`
+    // — register the sampler so `sampler_index` lookup at draw time
+    // succeeds for cache-hit `TextureKey`s.
+    renderer.textures.ensure_sampler_in_pool(sampler_key);
     Some(awsm_renderer::materials::MaterialTexture {
         key,
         sampler_key: Some(sampler_key),

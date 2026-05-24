@@ -661,6 +661,23 @@ impl Textures {
         )
     }
 
+    /// Register `sampler_key` in `pool_sampler_set` if it's not already
+    /// there, so the next material bind-group rebuild includes it.
+    ///
+    /// `add_image` already inserts the sampler that was passed at upload
+    /// time, but a sampler that's only ever bound to a *cache-hit*
+    /// texture (the editor's MaterialDef override path resolving a
+    /// renderer-gltf-seeded `TextureKey`) wouldn't reach `add_image` —
+    /// it'd silently fail `sampler_index` lookup at draw time and the
+    /// shader would `SkipTexture` (rendering the material's base-color
+    /// factor alone, i.e. pure white for a [1,1,1,1] default).
+    ///
+    /// Call this from any path that binds an existing `TextureKey` to
+    /// a new sampler that wasn't previously in the pool.
+    pub fn ensure_sampler_in_pool(&mut self, sampler_key: SamplerKey) {
+        self.pool_sampler_set.insert(sampler_key);
+    }
+
     /// Returns a sampler by key.
     pub fn get_sampler(&self, key: SamplerKey) -> Result<&web_sys::GpuSampler> {
         self.samplers

@@ -823,6 +823,18 @@ fn resolve_material_texture(
         .textures
         .get_sampler_key(&renderer.gpu, SamplerCacheKey::default())
         .ok()?;
+    // Register the sampler in `pool_sampler_set` (the bind-group's
+    // sampler array). Without this, a cache-hit `TextureKey` bound
+    // to a not-yet-seen sampler resolves to `sampler_index = None`
+    // at draw time and the WGSL writer emits `SkipTexture` —
+    // textures vanish and the material renders its base-color
+    // factor alone (white for the default [1,1,1,1]). The override
+    // path on glTFs whose textures were *all* seeded from
+    // renderer-gltf (e.g. DamagedHelmet — 5 textures, each used in
+    // exactly one role → all 5 seeds succeed → `add_image` never
+    // runs on the editor side → default sampler never reaches the
+    // pool) is the canonical reproduction.
+    renderer.textures.ensure_sampler_in_pool(sampler_key);
     Some(awsm_renderer::materials::MaterialTexture {
         key,
         sampler_key: Some(sampler_key),

@@ -693,6 +693,72 @@ pub async fn read_mesh_debug_stats() -> String {
     .await
 }
 
+/// Diagnose texture binding correctness. For each visible non-HUD mesh
+/// whose material is PBR, dumps every texture binding's sampler-index
+/// resolution. A sampler that's not in `pool_sampler_set` returns
+/// `null` — that's the symptom of the "all-white" override bug.
+#[wasm_bindgen]
+pub async fn read_material_sampler_diag() -> String {
+    use awsm_renderer::materials::Material;
+    use awsm_renderer::materials::TextureContext as _;
+    crate::context::with_renderer(|r| {
+        let mut out = String::from("[");
+        let mut first = true;
+        for (mk, mesh) in r.meshes.iter() {
+            if mesh.hidden || mesh.hud {
+                continue;
+            }
+            let Ok(Material::Pbr(pbr)) = r.materials.get(mesh.material_key) else {
+                continue;
+            };
+            let probe = |label: &str,
+                         t: &Option<awsm_renderer::materials::MaterialTexture>,
+                         buf: &mut String| {
+                let Some(mt) = t.as_ref() else {
+                    buf.push_str(&format!("\"{label}\":\"none\","));
+                    return;
+                };
+                let key_idx = format!("{:?}", mt.key);
+                let sk = mt.sampler_key;
+                let sampler_index = sk.and_then(|s| r.textures.sampler_index(s));
+                let entry = r.textures.get_entry(mt.key).ok().map(|e| {
+                    format!(
+                        "{{\"array\":{},\"layer\":{},\"srgb_to_linear\":{}}}",
+                        e.array_index, e.layer_index, e.color.srgb_to_linear
+                    )
+                });
+                buf.push_str(&format!(
+                    "\"{label}\":{{\"key\":\"{key_idx}\",\"sampler_index\":{},\"uv\":{},\"entry\":{}}},",
+                    sampler_index
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "null".to_string()),
+                    mt.uv_index
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "null".to_string()),
+                    entry.unwrap_or_else(|| "null".to_string()),
+                ));
+            };
+            let mut row = String::new();
+            probe("bc", &pbr.base_color_tex, &mut row);
+            probe("mr", &pbr.metallic_roughness_tex, &mut row);
+            probe("normal", &pbr.normal_tex, &mut row);
+            probe("ao", &pbr.occlusion_tex, &mut row);
+            probe("emissive", &pbr.emissive_tex, &mut row);
+            if row.ends_with(',') {
+                row.pop();
+            }
+            if !first {
+                out.push(',');
+            }
+            first = false;
+            out.push_str(&format!("{{\"mesh\":\"{mk:?}\",{}}}", row));
+        }
+        out.push(']');
+        out
+    })
+    .await
+}
+
 #[wasm_bindgen]
 pub async fn read_oversized_mesh_stats() -> String {
     let (last_max_bucket, oversized_count) = crate::context::with_renderer_mut(|r| {
