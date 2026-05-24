@@ -1232,24 +1232,16 @@ Earlier history (Phase 0–2 of the `indirect-first-instance` sprint):
 
 ### ⏭ Deferred (this sprint — picked up next)
 
-The sprint completed all four Phases end-to-end. Two narrow follow-ons
-remain — both genuinely measurement-driven and don't block the
-infrastructure being usable:
-
-- **Phase 4.3b flip-to-default decision**. `GltfParseJob` is wired
-  end-to-end and reachable via the dev-only `?gltf-worker=on` URL
-  knob (which spins up a 2-worker pool and registers the job at
-  editor init). The flip to make worker-mode the *default*
-  `asset_cache::load_and_populate` path still depends on the spec's
-  A/B measurement gate on `robot-001.glb` — i.e. is it actually
-  faster than the inline path? That's its own measurement task,
-  not infrastructure.
-- **Phase 4.4 example crate scene-loading**. The
-  `crates/examples/render-worker/` example builds and exercises
-  the `OffscreenCanvas` handshake + `new_with_offscreen_canvas`
-  builder path. The worker-side render loop stops at GPU-device
-  init; plugging in a real glTF scene + rAF-driven `render()` is
-  a follow-on the worker-mode consumer does for their own game.
+The sprint completed all four Phases end-to-end. **All deferred items
+from earlier in the sprint have landed.** The measurement gate on
+Phase 4.3b ran (Corset.glb, 12.8 MB; inline 184 ms / worker 24209 ms
+— 130× slower) and the data points to the bottleneck being
+`serde_wasm_bindgen` encoding of multi-MB Vec<u8> payloads, *not*
+the cross-thread transfer itself. The flip-to-default decision is
+therefore "don't" — worker mode stays opt-in via `?gltf-worker=on`
+until a follow-up sprint replaces the `serde` path for the byte
+blobs with raw `Uint8Array` + Transferable. See
+`PERFORMANCE.md §5c` for the implementation notes.
 
 ### ❌ Won't do
 
