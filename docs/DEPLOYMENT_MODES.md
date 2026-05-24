@@ -19,18 +19,22 @@ thread is shared with game logic, physics, audio scheduling,
 network code, etc. — isolating the renderer in a worker means it
 cannot be starved by main-thread CPU contention.
 
-> **Phase 4.4 status**: the runtime-global helpers
-> (`crates/renderer/src/web_global.rs`) are in place. The
-> codebase-wide audit-and-replace of `web_sys::window()` is **not
-> yet complete** — many renderer subsystems still reach for the
-> main-thread global directly. Until the audit lands, worker-mode
-> consumers will hit `web_sys::window().unwrap()` panics. The
-> `AwsmRendererWebGpuBuilder::new_with_offscreen_canvas` builder is
-> also deferred. See the sprint's `BLOCKER.md` (if present) or the
-> [`more-optimizations.md`](./plans/more-optimizations.md) plan's
-> "Won't do (this sprint)" notes for the picked-up next.
+> **Phase 4.4 status**: complete. Runtime-global helpers in both
+> [`crates/renderer/src/web_global.rs`](../crates/renderer/src/web_global.rs)
+> and [`crates/renderer-core/src/web_global.rs`](../crates/renderer-core/src/web_global.rs).
+> Audit-and-replace pass closed both functional non-worker-safe
+> sites (`compatibility::check`, `image/bitmap.rs::WINDOW`).
+> `AwsmRendererWebGpuBuilder::new_with_offscreen_canvas(gpu, canvas)`
+> is the worker-mode constructor; internally the builder stores a
+> `CanvasKind { Html, Offscreen }` enum and dispatches the context
+> acquisition + resize handling accordingly. A reference consumer
+> is [`crates/examples/render-worker/`](../crates/examples/render-worker/)
+> — single wasm-bindgen target that boots into either
+> `main_thread_boot()` or `worker_thread_boot()` based on the
+> active global, transfers an `OffscreenCanvas` to the worker, and
+> drives the renderer's rAF loop from inside the worker.
 
-## Worker-mode wiring (target shape, post-audit)
+## Worker-mode wiring
 
 ```js
 // Main thread: capture events, postMessage to worker.
@@ -58,8 +62,8 @@ The library does **not** ship an input forwarder. Forwarding is
 consumer-specific (different games want different event shapes,
 different latency trade-offs, different filtering). The shape above
 is the documented pattern; consumers DIY the actual implementation
-against the `WorkerInputEvent` enum (also deferred — lands with the
-example crate).
+against the `WorkerInputEvent` enum exposed by the example crate
+([`crates/examples/render-worker/src/lib.rs`](../crates/examples/render-worker/src/lib.rs)).
 
 ## Browser support
 

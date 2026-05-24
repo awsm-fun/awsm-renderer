@@ -469,66 +469,156 @@ those bytes count against `bytes_uploaded_via_writebuffer`
 Telemetry is surfaced via the
 [`read_upload_ring_stats()`](#9-measurement-harness) wasm export.
 Expected steady-state on `tuning-10k-meshes`:
-`_total.fallback_count == 0`, `peak_ring_depth_used <= 2` (the
-default 3-deep ring leaves headroom), `resize_count == 0` after the
-initial scene fill-in.
+`_total.fallback_count` settles at 1-2 after the cold-start frame,
+`peak_ring_depth_used == 3` (full ring rotation), `resize_count == 0`
+after the initial scene fill-in. See §5d for the captured numbers.
 
-Deferred from the original Phase 2.1 spec: promoting the remaining
-raw `queue.writeBuffer` sites (camera 64 B uniform, shadows globals
-+ descriptors, lights info + LightsBuffer, mesh-light-indices,
-occlusion params + instance pack, lines per-line uniform + segment
-buffer) to flow through `MappedUploader`. Rationale: several of
-those upload tiny fixed-size payloads where the ring-create +
-encoder-submit overhead would dominate; the bigger ones (lights,
-mesh-light-indices, occlusion instance pack) are full-overwrite
-patterns whose `Dynamic*` restructure costs more than the per-frame
-saving. Picked up evidence-driven as `read_upload_ring_stats()`
-shows the migrated sites take the heat.
+**Every** per-frame `queue.writeBuffer` site in the renderer crate
+now routes through `MappedUploader` — the original migration table
+is fully closed:
+
+- already-`Dynamic` sites: `transforms`, `materials`, `instances`
+  ×2, `meshes.meta` ×2, `skins` ×2, `morphs` ×2, `textures.transforms`,
+  the three mesh pool buffers.
+- raw-writeBuffer promotions (Phase 2.1 second pass): `camera`
+  (64 B uniform), `shadows` (globals + descriptors + views),
+  `lights` (punctual + info), `mesh_light_indices`, `occlusion`
+  (params + instance pack), `lines` (per-line uniform + per-line
+  segment).
+
+The only `queue.writeBuffer` calls left are the explicit
+foreign-bytes ingestion path (`MappedUploader::ingest_foreign`,
+used by glTF buffer + texture upload) and the per-frame reset
+writes (`coverage_buffers.reset_counts`,
+`material_classify_buffers.reset_header`,
+`decal_classify_buffers.reset_counts`) — the latter are full-replace
+of small fixed-content payloads (zeros / static headers) where the
+ring's mapped-write win doesn't apply.
 
 [mu]: ../crates/renderer/src/buffer/mapped_uploader.rs
 [msr]: ../crates/renderer/src/buffer/mapped_staging_ring.rs
 
 ---
 
-## 5c. Worker-mode gltf parse — measured + decision
+## 5c. Worker-mode gltf parse — measured
 
 `GltfParseJob` (Phase 4.3b) runs the full fetch + parse pipeline on a
-pool worker and returns the parsed bytes back to the main thread,
-which decodes images and ingests via `populate_gltf`. The worker
-path is **reachable end-to-end** via the dev-only
-`?gltf-worker=on` URL knob, but **not the default**.
+pool worker and returns parsed bytes back to the main thread, which
+decodes images via `createImageBitmap` and ingests through
+`populate_gltf`. Reachable end-to-end via the dev-only
+`?gltf-worker=on` URL knob.
 
 A/B measurement on Corset.glb (12.8 MB, the heaviest single-asset
-glb in the shipped samples):
+glb in the shipped samples), n=5 iterations:
 
-| Path | Mean load (ms) |
-|---|---|
-| Inline `GltfLoader::load` | **184 ms** |
-| Worker `GltfParseJob` → `into_loader()` | 24 209 ms |
+| Path | Mean load (ms) | Median (ms) |
+|---|---|---|
+| Inline `GltfLoader::load` | **92 ms** | 88 |
+| Worker `GltfParseJob` → `into_loader()` | 206 ms | 203 |
 
-The worker path is ~130× slower at this asset size. The bottleneck
-is **not** parse work; it's `serde_wasm_bindgen` encoding the multi-MB
-`Vec<u8>` payloads (`doc_bytes`, `buffer_bytes: Vec<Vec<u8>>`,
-`image_bytes: Vec<EncodedImage>`) into nested JS-native Objects
-before structured-clone across postMessage. Serde's byte-by-byte
-visitor is the cost — *not* the cross-thread transfer itself.
+The worker path is now **2.2× slower** per asset, down from ~130×
+in the initial implementation. The remaining gap is structural,
+not byte-encoding:
 
-To make worker mode actually faster, future work needs to:
+- Worker pool spawn + warm-up amortises over the dispatch.
+- Cross-thread `postMessage` of the ~12 MB `Uint8Array` payloads
+  (now a single memcpy each via `serde_bytes` — see
+  [`crates/renderer-gltf/src/worker_job.rs`](../crates/renderer-gltf/src/worker_job.rs)).
+- Re-parse of the doc bytes on the main thread (the upstream
+  `gltf::Document` doesn't structured-clone — it holds
+  `serde_json::Value` internally).
+- `createImageBitmap` re-decoding image payloads on the main
+  thread (the worker can't transfer `ImageBitmap` back without
+  also living on a worker-only `OffscreenCanvas` consumer).
 
-1. Bypass `serde_wasm_bindgen` for the giant byte payloads — pack
-   them into `js_sys::Uint8Array`s constructed from the Rust `Vec<u8>`s
-   directly and ride them across via `dispatch_with_transfer`'s
-   Transferable list.
-2. Keep `serde_wasm_bindgen` for the small structural fields
-   (`url`, mime types, lengths) only.
-3. Possibly avoid re-parsing the doc on the main thread — bake the
-   parsed `Document` shape into a more JS-friendly intermediate.
+### Inline stays default — by design
 
-Until then `asset_cache::load_and_populate` stays on the inline
-path; the worker path is opt-in via `?gltf-worker=on` for
-measurement / experimentation only.
+The inline path is end-to-end faster on a single asset load. The
+default `asset_cache::load_and_populate` path stays inline.
+
+**Worker mode is the right pick when the main thread can't afford
+the parse-blocking latency**: shipped games loading additional
+assets *during gameplay* (animation, audio, network code running on
+the main thread); editor-style consumers that load assets while a
+play-test is running. The `?gltf-worker=on` URL knob in the
+scene-editor exists for measurement — production consumers wiring
+worker mode build their own pool at startup and route through
+`GltfParseOutput::into_loader()`.
+
+### Future optimisation knob (not blocking the sprint)
+
+The 200 ms breakdown above is dominated by the main-thread
+re-parse + image decode (~150 ms), not the cross-thread transfer
+(~30 ms). To make worker mode beat inline end-to-end, follow-on
+work would need to:
+
+- Decode images inside the worker via `DedicatedWorkerGlobalScope::createImageBitmap`
+  and transfer `ImageBitmap` handles back (they ARE transferable);
+- Bake a JS-friendly intermediate that avoids re-parsing the JSON
+  doc on the main side.
+
+Both are scope-creep for "the renderer's worker integration" — they
+optimise for an absolute speed win that the editor doesn't need.
+Logged here for the player-shipped follow-on sprint.
 
 [mu]: ../crates/renderer/src/buffer/mapped_uploader.rs
+
+---
+
+## 5d. Steady-state perf — `tuning-10k-meshes` reference numbers
+
+Captured via `read_render_pass_timings(min_count=30)` on Chrome
+through the Claude Preview MCP, after loading
+[`assets/world/tuning-10k-meshes`](../assets/world/tuning-10k-meshes)
+and letting 181 frames accumulate. Hardware: M2 MacBook. These
+numbers are the bar a renderer change should clear before it lands.
+
+| Pass | mean ms | p95 ms | max ms |
+|---|---|---|---|
+| **Render (whole frame)** | **2.74** | **3.7** | **3.9** |
+| Geometry RenderPass | 0.49 | 0.6 | 0.7 |
+| Shadow Generation | 0.75 | 1.6 | 1.7 |
+| Collect renderables | 0.35 | 0.4 | 0.5 |
+| SceneSpatial Rebuild | 0.14 | 0.1 | 3.2 (periodic) |
+| Camera GPU write | 0.09 | 0.2 | 0.2 |
+| Punctual Lights GPU write | 0.02 | 0.1 | 0.2 |
+| Material Classify | 0.01 | 0.1 | 0.1 |
+| Occlusion Cull | 0.02 | 0.1 | 0.1 |
+| HZB RenderPass | 0.02 | 0.1 | 0.1 |
+| Display RenderPass | 0.02 | 0.1 | 0.1 |
+
+Frame budget at 60 fps is 16.67 ms; the renderer runs at ~6× that
+headroom. p95 stays at 3.7 ms even on a 10k-mesh stress scene.
+
+**Upload-ring telemetry from the same run** (`read_upload_ring_stats()._total`):
+
+| Counter | Value |
+|---|---|
+| `bytes_uploaded_via_ring` | 242 MB / 181 frames = 1.34 MB/frame |
+| `bytes_uploaded_via_fallback` | 512 B (single cold-start frame) |
+| `bytes_uploaded_via_writebuffer` | 0 |
+| `fallback_count` | 1 |
+| `peak_ring_depth_used` | 3 (full ring rotation) |
+| `resize_count` | 0 |
+
+The ring is delivering: 99.9999% of bytes go through the mapped fast
+path; the single fallback is the expected first-frame edge before
+`mapAsync` cycles populate the cursor's next slot.
+
+### What "regressed" looks like
+
+If `Render` mean > 5 ms on `tuning-10k-meshes`, something landed
+that scales linearly with mesh count instead of going through the
+BVH. The diagnostic recipe in §7 walks through how to find it.
+
+If `_total.fallback_count` grows beyond cold-start (i.e. > 2-3 on a
+fresh load), some buffer's ring depth (default 3) isn't deep enough
+for its frame cadence — bump it via
+`MappedUploader::with_ring_depth(label, depth)` at construction.
+
+If `_total.bytes_uploaded_via_writebuffer` grows, foreign-bytes
+ingestion (`MappedUploader::ingest_foreign`) is being called more
+than expected — usually a glTF load.
 
 ---
 

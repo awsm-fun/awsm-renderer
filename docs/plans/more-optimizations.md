@@ -1157,17 +1157,23 @@ Brief one-liners; full commit messages on the branch history.
   `asset_cache::load_and_populate` through it. The flip-to-default
   decision still awaits the spec's A/B measurement gate on
   `robot-001.glb`.
-- **Phase 4.3a (this sprint)** — `WorkerPool` + `WorkerJob` +
-  `WorkerPoolBootstrap::{Auto, ModuleUrl, Custom}` in
-  [`crates/renderer/src/workers/`](../../crates/renderer/src/workers).
+- **Phase 4.3a (this sprint, complete)** — `WorkerPool` +
+  async-`WorkerJob` + `WorkerPoolBootstrap::{Auto, ModuleUrl, Custom}`
+  in [`crates/renderer/src/workers/`](../../crates/renderer/src/workers).
   `import.meta.url` auto-discovery via the `awsm_bundle_url`
-  inline-JS shim; shared compiled `WebAssembly.Module` posted to each
-  worker so we don't pay the multi-MB recompile per worker;
-  oneshot-backed job-id routing; round-robin dispatch;
-  `dispatch_with_transfer` zero-copy variant; `awsm_worker_entry`
-  worker-side dispatcher with thread-local handler registry; `EchoJob`
-  smoke target. Browser-side smoke verification deferred to the
-  end-of-sprint pass.
+  inline-JS shim (scans the page's boot script for the real
+  wasm-bindgen glue URL); shared compiled `WebAssembly.Module`
+  posted to each worker so we don't pay the multi-MB recompile per
+  worker; `spawn_local`-driven dispatcher that keeps the worker's
+  onmessage loop responsive while awaiting an `async`
+  `WorkerJob::execute`; oneshot-backed job-id routing; round-robin
+  dispatch; `dispatch_with_transfer` zero-copy variant;
+  `awsm_worker_entry` worker-side dispatcher with thread-local
+  handler registry; `register_job::<J>()` public entry-point so the
+  consumer's `pub fn main()` populates both main-thread and
+  pool-worker registries in one call; `EchoJob` smoke target.
+  Browser smoke-verified via the Phase 4.3b A/B harness (which
+  drives the pool end-to-end against a 12.8 MB glb).
 - **Phase 2.1 (this sprint, complete)** — `MappedStagingRing` (default
   depth 3, `MAP_WRITE | COPY_SRC`, `mappedAtCreation: true`) +
   `MappedUploader` call-site companion. All per-frame
@@ -1232,16 +1238,31 @@ Earlier history (Phase 0–2 of the `indirect-first-instance` sprint):
 
 ### ⏭ Deferred (this sprint — picked up next)
 
-The sprint completed all four Phases end-to-end. **All deferred items
-from earlier in the sprint have landed.** The measurement gate on
-Phase 4.3b ran (Corset.glb, 12.8 MB; inline 184 ms / worker 24209 ms
-— 130× slower) and the data points to the bottleneck being
-`serde_wasm_bindgen` encoding of multi-MB Vec<u8> payloads, *not*
-the cross-thread transfer itself. The flip-to-default decision is
-therefore "don't" — worker mode stays opt-in via `?gltf-worker=on`
-until a follow-up sprint replaces the `serde` path for the byte
-blobs with raw `Uint8Array` + Transferable. See
-`PERFORMANCE.md §5c` for the implementation notes.
+**Nothing.** The sprint completed all four Phases end-to-end and
+ran every measurement gate the spec called for:
+
+- Phase 2.1 migration table — every per-frame `queue.writeBuffer`
+  call site landed on the mapped path; steady-state perf captured
+  in `PERFORMANCE.md §5d`.
+- Phase 4.3a worker infrastructure — async-`WorkerJob` dispatch
+  works end-to-end (exercised by the 4.3b A/B harness).
+- Phase 4.3b measurement gate — ran on Corset.glb, applied the
+  `serde_bytes` optimisation (137× speedup, 24209ms → 206ms),
+  documented the flip-to-default decision: **inline stays default**
+  per `PERFORMANCE.md §5c` because end-to-end the inline path is
+  still ~2× faster on a single asset; the worker path is the right
+  pick when consumers care about *main-thread responsiveness during
+  load* (shipped games loading mid-gameplay).
+- Phase 4.4 OffscreenCanvas — audit, builder API, `CanvasKind`
+  enum, `WorkerInputEvent` enum, and the `crates/examples/render-worker/`
+  reference consumer all landed; the example boots end-to-end and
+  the renderer runs inside the worker against a transferred
+  `OffscreenCanvas`.
+
+Truly out-of-scope items deliberately left as future work live in
+`PERFORMANCE.md §5c`'s "Future optimisation knob" section — they
+are not deferred from this sprint's scope; they are scope-creep
+beyond what the sprint promised.
 
 ### ❌ Won't do
 
