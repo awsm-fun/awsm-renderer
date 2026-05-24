@@ -94,7 +94,9 @@ pub enum AwsmMeshError {
     /// can't share the authored material's render path. See the safety
     /// comment on `set_mesh_cheap_material` for the routing-pool /
     /// pipeline-key constraint that drives this.
-    #[error("[mesh] incompatible cheap material: authored {authored:?} / cheap {cheap:?}: {reason}")]
+    #[error(
+        "[mesh] incompatible cheap material: authored {authored:?} / cheap {cheap:?}: {reason}"
+    )]
     IncompatibleCheapMaterial {
         authored: crate::materials::MaterialKey,
         cheap: crate::materials::MaterialKey,

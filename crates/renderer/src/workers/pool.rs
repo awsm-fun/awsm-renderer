@@ -104,8 +104,8 @@ pub trait WorkerJob: 'static {
     fn into_response_message(
         output: Self::Output,
     ) -> Result<(JsValue, web_sys::js_sys::Array), String> {
-        let payload =
-            serde_wasm_bindgen::to_value(&output).map_err(|err| format!("serialize output: {err}"))?;
+        let payload = serde_wasm_bindgen::to_value(&output)
+            .map_err(|err| format!("serialize output: {err}"))?;
         Ok((payload, web_sys::js_sys::Array::new()))
     }
 

@@ -92,10 +92,7 @@ impl AwsmRendererWebGpuBuilder {
     /// already called `transferControlToOffscreen()` on a DOM canvas
     /// on the main thread and posted the resulting `OffscreenCanvas`
     /// to the worker, where this is called.
-    pub fn new_with_offscreen_canvas(
-        gpu: web_sys::Gpu,
-        canvas: web_sys::OffscreenCanvas,
-    ) -> Self {
+    pub fn new_with_offscreen_canvas(gpu: web_sys::Gpu, canvas: web_sys::OffscreenCanvas) -> Self {
         Self {
             gpu,
             canvas: CanvasKind::Offscreen(canvas),

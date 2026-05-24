@@ -59,13 +59,35 @@ use web_sys::js_sys;
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum WorkerInputEvent {
     /// New canvas backing-buffer size.
-    Resize { width: u32, height: u32 },
-    PointerMove { x: i32, y: i32, buttons: u32 },
-    PointerDown { x: i32, y: i32, buttons: u32 },
-    PointerUp { x: i32, y: i32, buttons: u32 },
-    Wheel { delta_x: f64, delta_y: f64 },
-    KeyDown { code: String },
-    KeyUp { code: String },
+    Resize {
+        width: u32,
+        height: u32,
+    },
+    PointerMove {
+        x: i32,
+        y: i32,
+        buttons: u32,
+    },
+    PointerDown {
+        x: i32,
+        y: i32,
+        buttons: u32,
+    },
+    PointerUp {
+        x: i32,
+        y: i32,
+        buttons: u32,
+    },
+    Wheel {
+        delta_x: f64,
+        delta_y: f64,
+    },
+    KeyDown {
+        code: String,
+    },
+    KeyUp {
+        code: String,
+    },
 }
 
 /// `true` when we're running inside a `DedicatedWorkerGlobalScope`.
@@ -150,7 +172,11 @@ fn main_thread_boot() -> Result<(), JsValue> {
     onmessage.forget();
 
     let init_msg = js_sys::Object::new();
-    let _ = js_sys::Reflect::set(&init_msg, &JsValue::from_str("kind"), &JsValue::from_str("render-init"));
+    let _ = js_sys::Reflect::set(
+        &init_msg,
+        &JsValue::from_str("kind"),
+        &JsValue::from_str("render-init"),
+    );
     let _ = js_sys::Reflect::set(&init_msg, &JsValue::from_str("wasm_module"), &wasm_module);
     let _ = js_sys::Reflect::set(
         &init_msg,
@@ -164,18 +190,21 @@ fn main_thread_boot() -> Result<(), JsValue> {
 
     // Forward pointer events (extend per game).
     let worker_for_move = worker.clone();
-    let on_pointer_move = Closure::<dyn FnMut(web_sys::PointerEvent)>::new(move |e: web_sys::PointerEvent| {
-        let event = WorkerInputEvent::PointerMove {
-            x: e.offset_x() as i32,
-            y: e.offset_y() as i32,
-            buttons: e.buttons() as u32,
-        };
-        if let Ok(js) = serde_wasm_bindgen::to_value(&event) {
-            let _ = worker_for_move.post_message(&js);
-        }
-    });
-    canvas
-        .add_event_listener_with_callback("pointermove", on_pointer_move.as_ref().unchecked_ref())?;
+    let on_pointer_move =
+        Closure::<dyn FnMut(web_sys::PointerEvent)>::new(move |e: web_sys::PointerEvent| {
+            let event = WorkerInputEvent::PointerMove {
+                x: e.offset_x() as i32,
+                y: e.offset_y() as i32,
+                buttons: e.buttons() as u32,
+            };
+            if let Ok(js) = serde_wasm_bindgen::to_value(&event) {
+                let _ = worker_for_move.post_message(&js);
+            }
+        });
+    canvas.add_event_listener_with_callback(
+        "pointermove",
+        on_pointer_move.as_ref().unchecked_ref(),
+    )?;
     on_pointer_move.forget();
 
     // Forward resize via ResizeObserver.
@@ -322,19 +351,12 @@ fn start_worker_renderer(canvas: web_sys::OffscreenCanvas) -> Result<(), JsValue
                 // frame so the renderer's `last_matrices`-based dirty
                 // tracking marks the camera buffer dirty in the
                 // initial frames.
-                let view = Mat4::look_at_rh(
-                    Vec3::new(0.0, 1.5, 3.0),
-                    Vec3::new(0.0, 0.0, -3.0),
-                    Vec3::Y,
-                );
+                let view =
+                    Mat4::look_at_rh(Vec3::new(0.0, 1.5, 3.0), Vec3::new(0.0, 0.0, -3.0), Vec3::Y);
                 // Aspect = canvas width / height; the OffscreenCanvas
                 // is fixed at 800x600 in index.html.
-                let projection = Mat4::perspective_rh(
-                    60.0_f32.to_radians(),
-                    800.0 / 600.0,
-                    0.1,
-                    100.0,
-                );
+                let projection =
+                    Mat4::perspective_rh(60.0_f32.to_radians(), 800.0 / 600.0, 0.1, 100.0);
                 let _ = r.update_camera(CameraMatrices {
                     view,
                     projection,

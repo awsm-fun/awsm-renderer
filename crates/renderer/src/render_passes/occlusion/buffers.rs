@@ -74,8 +74,7 @@ pub struct OcclusionBuffers {
     /// existing borrow shape.
     pub(crate) instances_uploader:
         std::cell::RefCell<crate::buffer::mapped_uploader::MappedUploader>,
-    pub(crate) params_uploader:
-        std::cell::RefCell<crate::buffer::mapped_uploader::MappedUploader>,
+    pub(crate) params_uploader: std::cell::RefCell<crate::buffer::mapped_uploader::MappedUploader>,
 }
 
 impl OcclusionBuffers {

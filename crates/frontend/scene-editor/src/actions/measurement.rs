@@ -505,7 +505,9 @@ pub async fn measure_gltf_load_ab(url: String, iterations: u32) -> String {
 
 // `GltfFileType` doesn't implement Clone, so we hand-roll one for the
 // measurement loop that needs to pass the same hint into both paths.
-fn file_type_clone(t: &awsm_renderer_gltf::loader::GltfFileType) -> awsm_renderer_gltf::loader::GltfFileType {
+fn file_type_clone(
+    t: &awsm_renderer_gltf::loader::GltfFileType,
+) -> awsm_renderer_gltf::loader::GltfFileType {
     use awsm_renderer_gltf::loader::GltfFileType::*;
     match t {
         Json => Json,

@@ -104,9 +104,7 @@ pub(super) fn write_segments(
     if n == 0 {
         return Ok(());
     }
-    let byte_data: &[u8] = unsafe {
-        std::slice::from_raw_parts(segments.as_ptr() as *const u8, n)
-    };
+    let byte_data: &[u8] = unsafe { std::slice::from_raw_parts(segments.as_ptr() as *const u8, n) };
     uploader.write_dirty_ranges(gpu, buffer, capacity_bytes, byte_data, &[(0, n)])?;
     Ok(())
 }

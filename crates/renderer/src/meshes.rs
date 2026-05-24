@@ -1506,9 +1506,7 @@ impl Meshes {
                 // enough that a brief self-occlusion is unlikely to
                 // be the cause AND (c) no consumer showed coverage
                 // last frame.
-                if !any_visible_last_frame
-                    && !any_in_frustum
-                    && grace > SKIN_COVERAGE_GRACE_FRAMES
+                if !any_visible_last_frame && !any_in_frustum && grace > SKIN_COVERAGE_GRACE_FRAMES
                 {
                     skip_skins.insert(skin_key);
                 }

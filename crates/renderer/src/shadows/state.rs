@@ -683,9 +683,7 @@ impl Shadows {
             caster_aabbs_scratch: Vec::new(),
             descriptor_bytes_scratch: vec![0u8; *SHADOW_DESCRIPTOR_UNIFORM_BYTES],
             view_bytes_scratch: vec![0u8; SHADOW_VIEW_STRIDE * MAX_SHADOW_VIEWS as usize],
-            globals_uploader: crate::buffer::mapped_uploader::MappedUploader::new(
-                "Shadow Globals",
-            ),
+            globals_uploader: crate::buffer::mapped_uploader::MappedUploader::new("Shadow Globals"),
             descriptors_uploader: crate::buffer::mapped_uploader::MappedUploader::new(
                 "Shadow Descriptors",
             ),

@@ -270,9 +270,7 @@ impl WorkerJob for GltfParseJob {
     /// transfer list so `post_message_with_transfer` lifts them
     /// across the worker boundary in O(1) instead of structured-
     /// cloning the image pixels.
-    fn into_response_message(
-        output: Self::Output,
-    ) -> Result<(JsValue, Array), String> {
+    fn into_response_message(output: Self::Output) -> Result<(JsValue, Array), String> {
         let payload = serde_wasm_bindgen::to_value(&output)
             .map_err(|err| format!("serialize output: {err}"))?;
         let response = match payload.dyn_ref::<Object>() {

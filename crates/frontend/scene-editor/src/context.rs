@@ -187,7 +187,9 @@ async fn maybe_build_worker_pool() -> Option<WorkerPool> {
     match WorkerPool::new(WorkerPoolBootstrap::Auto, 2).await {
         Ok(pool) => {
             pool.register::<awsm_renderer_gltf::worker_job::GltfParseJob>();
-            tracing::info!("?gltf-worker=on — WorkerPool built (2 workers); GltfParseJob registered");
+            tracing::info!(
+                "?gltf-worker=on — WorkerPool built (2 workers); GltfParseJob registered"
+            );
             Some(pool)
         }
         Err(err) => {

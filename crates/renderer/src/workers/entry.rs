@@ -36,7 +36,10 @@ use crate::workers::pool::WorkerJob;
 /// `postMessage(_, transfer)` so the main thread receives the
 /// handles in O(1).
 type HandlerFn = Box<
-    dyn Fn(JsValue) -> Pin<Box<dyn Future<Output = Result<(JsValue, web_sys::js_sys::Array), String>>>>
+    dyn Fn(
+            JsValue,
+        )
+            -> Pin<Box<dyn Future<Output = Result<(JsValue, web_sys::js_sys::Array), String>>>>
         + 'static,
 >;
 
@@ -152,7 +155,11 @@ pub fn awsm_worker_entry() {
                 spawn_local(async move {
                     let outcome = fut.await;
                     let response = Object::new();
-                    let _ = Reflect::set(&response, &JsValue::from_str("id"), &JsValue::from_f64(id as f64));
+                    let _ = Reflect::set(
+                        &response,
+                        &JsValue::from_str("id"),
+                        &JsValue::from_f64(id as f64),
+                    );
                     let mut transfer_list: Option<web_sys::js_sys::Array> = None;
                     match outcome {
                         Ok((payload, transfer)) => {
@@ -161,7 +168,8 @@ pub fn awsm_worker_entry() {
                                 &JsValue::from_str("kind"),
                                 &JsValue::from_str("awsm-result"),
                             );
-                            let _ = Reflect::set(&response, &JsValue::from_str("payload"), &payload);
+                            let _ =
+                                Reflect::set(&response, &JsValue::from_str("payload"), &payload);
                             if transfer.length() > 0 {
                                 transfer_list = Some(transfer);
                             }
@@ -239,9 +247,7 @@ impl WorkerJob for EchoJob {
     type Input = EchoInput;
     type Output = EchoOutput;
 
-    fn execute(
-        input: Self::Input,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Self::Output>>>> {
+    fn execute(input: Self::Input) -> Pin<Box<dyn Future<Output = anyhow::Result<Self::Output>>>> {
         Box::pin(async move {
             Ok(EchoOutput {
                 message: format!("echo: {}", input.message),

@@ -173,10 +173,10 @@ async fn load_and_populate(asset_id: AssetId) -> Result<AssetTemplate, String> {
     // init. Otherwise fall back to the canonical inline path.
     let pool_handle = worker_pool_handle();
     let loader_result = if let Some(pool) = pool_handle.as_ref() {
-        use awsm_renderer_gltf::worker_job::{
-            FileTypeHint, GltfParseInput, GltfParseJob,
-        };
-        let hint = detect_file_type(&resolved.filename).as_ref().map(FileTypeHint::from);
+        use awsm_renderer_gltf::worker_job::{FileTypeHint, GltfParseInput, GltfParseJob};
+        let hint = detect_file_type(&resolved.filename)
+            .as_ref()
+            .map(FileTypeHint::from);
         let input = GltfParseInput {
             url: url.clone(),
             file_type: hint,

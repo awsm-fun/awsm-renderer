@@ -56,8 +56,7 @@ pub struct MeshMeta {
     /// every meta slot every frame and the mapped-buffer ring would
     /// spend an unreasonable chunk of its budget on a u32 that hasn't
     /// changed since N frames ago.
-    shadow_receiver_gate_cache:
-        slotmap::SecondaryMap<MeshKey, u32>,
+    shadow_receiver_gate_cache: slotmap::SecondaryMap<MeshKey, u32>,
 }
 
 impl MeshMeta {

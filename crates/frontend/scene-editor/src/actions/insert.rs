@@ -298,10 +298,7 @@ fn insert_model_tree(
 /// `mesh_keys` into one Vec. Used by Insert Model to auto-frame the
 /// camera on the inserted model's bounds.
 fn collect_template_mesh_keys(template: &AssetTemplate) -> Vec<awsm_renderer::meshes::MeshKey> {
-    fn walk(
-        node: &AssetTemplateNode,
-        out: &mut Vec<awsm_renderer::meshes::MeshKey>,
-    ) {
+    fn walk(node: &AssetTemplateNode, out: &mut Vec<awsm_renderer::meshes::MeshKey>) {
         out.extend(node.mesh_keys.iter().copied());
         for child in &node.children {
             walk(child, out);

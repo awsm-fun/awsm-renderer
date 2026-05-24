@@ -36,10 +36,8 @@ pub(super) struct LineEntry {
     /// in lockstep. `RefCell` so the per-frame `render(&self, ..)`
     /// keeps its existing borrow shape (`self.lines.render` runs
     /// alongside `self.renderables` in `render.rs`).
-    pub segments_uploader:
-        std::cell::RefCell<crate::buffer::mapped_uploader::MappedUploader>,
-    pub uniform_uploader:
-        std::cell::RefCell<crate::buffer::mapped_uploader::MappedUploader>,
+    pub segments_uploader: std::cell::RefCell<crate::buffer::mapped_uploader::MappedUploader>,
+    pub uniform_uploader: std::cell::RefCell<crate::buffer::mapped_uploader::MappedUploader>,
 }
 
 /// Packing topology for `positions`/`colors` into `GpuLineSegment` records.
