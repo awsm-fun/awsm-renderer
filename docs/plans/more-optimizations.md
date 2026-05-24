@@ -249,15 +249,61 @@ extern "C" {
 pub fn awsm_worker_entry();
 ```
 
-**Inline JS shim** (built and blob-URL'd by `WorkerPool::new`,
-`{BUNDLE_URL}` substituted from `WorkerPoolBootstrap::ModuleUrl`):
+**Inline JS shim** (built and blob-URL'd by `WorkerPool::new`).
+The shim does **not** call `init()` immediately — it waits for the
+main thread to post the pre-compiled `WebAssembly.Module` and the
+bundle URL, then initializes with the shared Module. This avoids
+re-compiling the multi-MB Rust binary in every worker:
 
 ```js
-import init, { awsm_worker_entry } from "{BUNDLE_URL}";
-await init();
-self.postMessage({ kind: "ready" });
-awsm_worker_entry();
+self.onmessage = async (e) => {
+    if (e.data && e.data.kind === "awsm-init") {
+        const { wasm_module, glue_url } = e.data;
+        const wbg = await import(glue_url);
+        await wbg.default(wasm_module);  // re-uses the compiled Module
+        wbg.awsm_worker_entry();
+        self.postMessage({ kind: "awsm-ready" });
+        return;
+    }
+    // Subsequent messages are job dispatches — handled by
+    // `awsm_worker_entry`'s installed listener.
+};
 ```
+
+The main thread's pool ctor:
+
+1. Reads its own `WebAssembly.Module` via
+   `wasm_bindgen::module().dyn_into::<WebAssembly::Module>()` (or
+   the equivalent unchecked cast). The Module is the compiled
+   artifact, *not* the linear-memory Instance — so it's safe to
+   share.
+2. Reads the bundle URL via the `awsm_bundle_url()` snippet.
+3. Spawns each worker from the blob-URL shim above.
+4. `postMessage({ kind: "awsm-init", wasm_module, glue_url })` to
+   each worker — `WebAssembly.Module` is structured-cloneable, no
+   copy of the wasm bytes is performed by the browser; each worker
+   gets a reference to the same compiled artifact.
+5. Awaits `{ kind: "awsm-ready" }` from each before resolving
+   `WorkerPool::new`.
+
+**What's actually duplicated per worker:**
+
+- The JS glue (~10–30 KB; re-imported by each worker's
+  `await import(glue_url)`). Mostly cheap; runs once per worker
+  at startup.
+- The wasm Instance — each worker has its own linear memory.
+  That's intentional and is the boundary we want: workers can't
+  see main-thread heap directly, all I/O is via `postMessage`
+  with structured clone (or `Transferable` for large
+  `ArrayBuffer`s, see `dispatch_with_transfer`).
+
+**What's NOT duplicated:**
+
+- The compiled `WebAssembly.Module` itself. Browser compiles it
+  once on the main thread; workers reference the same
+  compilation. No 100 ms–1 s re-compile per worker.
+- The .wasm bytes on the wire. Browser cache + the shared
+  `Module` means the network/disk side is touched once.
 
 **Helper for the blob-URL plumbing** (drop-in from the lockstep
 codebase):
@@ -381,6 +427,15 @@ config knob.
   hard-code a filename that the build system is the one source of
   truth for. Auto-discovery via `import.meta.url` from a library-
   internal inline-JS snippet is portable across all of these.
+- **Naive worker `init()` (let each worker compile the .wasm from
+  the URL).** Rejected: for a multi-MB Rust binary, the wasm
+  compile step is 100 ms–1 s *per worker*. With 2–4 workers in
+  the pool, pool startup alone would burn 200 ms–4 s of cold
+  cost — unacceptable for editor open / project load. The
+  shared-`WebAssembly.Module` shape (compile once on the main
+  thread, structured-clone the Module to each worker, each worker
+  instantiates a fresh Instance from the shared compilation) is
+  the standard fix and what wasm-bindgen-rayon does.
 - **`Custom`-only API (no auto-discovery)**. Rejected: pushes the
   inline-JS shim + URL plumbing onto every consumer. The whole
   point of a first-class abstraction is that simple use is one
