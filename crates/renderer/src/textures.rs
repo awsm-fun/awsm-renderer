@@ -23,7 +23,6 @@ use thiserror::Error;
 use crate::{
     bind_groups::{BindGroupCreate, BindGroups},
     buffer::dynamic_uniform::DynamicUniformBuffer,
-    buffer::helpers::write_buffer_with_dirty_ranges,
     error::AwsmError,
     render_passes::RenderPassInitContext,
     AwsmRenderer, AwsmRendererLogging,
@@ -251,6 +250,7 @@ pub struct Textures {
     texture_transforms_buffer: DynamicUniformBuffer<TextureTransformKey>,
     texture_transforms_gpu_dirty: bool,
     pub(crate) texture_transforms_gpu_buffer: web_sys::GpuBuffer,
+    texture_transforms_uploader: crate::buffer::mapped_uploader::MappedUploader,
 }
 
 /// Cache key for samplers.
@@ -404,7 +404,17 @@ impl Textures {
             samplers,
             sampler_cache,
             sampler_address_modes,
+            texture_transforms_uploader: crate::buffer::mapped_uploader::MappedUploader::new(
+                "Texture Transforms",
+            ),
         })
+    }
+
+    /// Mapped-ring upload telemetry for the texture transforms buffer.
+    pub fn texture_transforms_upload_stats(
+        &self,
+    ) -> crate::buffer::mapped_staging_ring::UploadStats {
+        self.texture_transforms_uploader.stats()
     }
 
     /// Adds an image to the texture pool and returns its key.
@@ -596,11 +606,12 @@ impl Textures {
                 )?;
             } else {
                 let ranges = self.texture_transforms_buffer.take_dirty_ranges();
-                write_buffer_with_dirty_ranges(
+                self.texture_transforms_uploader.write_dirty_ranges(
                     gpu,
                     &self.texture_transforms_gpu_buffer,
+                    self.texture_transforms_buffer.raw_slice().len(),
                     self.texture_transforms_buffer.raw_slice(),
-                    ranges,
+                    &ranges,
                 )?;
             }
 

@@ -13,7 +13,6 @@ use thiserror::Error;
 use crate::{
     bind_groups::{AwsmBindGroupError, BindGroupCreate, BindGroups},
     buffer::dynamic_storage::DynamicStorageBuffer,
-    buffer::helpers::write_buffer_with_dirty_ranges,
     transforms::{Transform, TransformKey, Transforms},
     AwsmRendererLogging,
 };
@@ -87,6 +86,8 @@ pub struct Instances {
     cpu_attributes: SecondaryMap<TransformKey, Vec<InstanceAttr>>,
     gpu_attribute_buffer: web_sys::GpuBuffer,
     attribute_gpu_dirty: bool,
+    transform_uploader: crate::buffer::mapped_uploader::MappedUploader,
+    attribute_uploader: crate::buffer::mapped_uploader::MappedUploader,
 }
 
 impl Instances {
@@ -118,7 +119,23 @@ impl Instances {
             attribute_count: SecondaryMap::new(),
             cpu_attributes: SecondaryMap::new(),
             attribute_gpu_dirty: false,
+            transform_uploader: crate::buffer::mapped_uploader::MappedUploader::new(
+                "Instance Transforms",
+            ),
+            attribute_uploader: crate::buffer::mapped_uploader::MappedUploader::new(
+                "Instance Attributes",
+            ),
         })
+    }
+
+    /// Mapped-ring upload telemetry for the instance transform buffer.
+    pub fn transform_upload_stats(&self) -> crate::buffer::mapped_staging_ring::UploadStats {
+        self.transform_uploader.stats()
+    }
+
+    /// Mapped-ring upload telemetry for the instance attribute buffer.
+    pub fn attribute_upload_stats(&self) -> crate::buffer::mapped_staging_ring::UploadStats {
+        self.attribute_uploader.stats()
     }
 
     /// Inserts instance transforms for a key.
@@ -425,11 +442,12 @@ impl Instances {
                 )?;
             } else {
                 let ranges = self.transform_buffer.take_dirty_ranges();
-                write_buffer_with_dirty_ranges(
+                self.transform_uploader.write_dirty_ranges(
                     gpu,
                     &self.gpu_transform_buffer,
+                    self.transform_buffer.raw_slice().len(),
                     self.transform_buffer.raw_slice(),
-                    ranges,
+                    &ranges,
                 )?;
             }
 
@@ -461,11 +479,12 @@ impl Instances {
                 )?;
             } else {
                 let ranges = self.attribute_buffer.take_dirty_ranges();
-                write_buffer_with_dirty_ranges(
+                self.attribute_uploader.write_dirty_ranges(
                     gpu,
                     &self.gpu_attribute_buffer,
+                    self.attribute_buffer.raw_slice().len(),
                     self.attribute_buffer.raw_slice(),
-                    ranges,
+                    &ranges,
                 )?;
             }
 

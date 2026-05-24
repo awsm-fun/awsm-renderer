@@ -8,7 +8,6 @@ use awsm_renderer_core::{buffers::BufferDescriptor, renderer::AwsmRendererWebGpu
 use crate::{
     bind_groups::{BindGroupCreate, BindGroups},
     buffer::dynamic_uniform::DynamicUniformBuffer,
-    buffer::helpers::write_buffer_with_dirty_ranges,
     debug::AwsmRendererLogging,
     materials::Materials,
     meshes::{
@@ -49,6 +48,8 @@ pub struct MeshMeta {
     material_buffers: DynamicUniformBuffer<MeshKey>,
     material_gpu_buffer: web_sys::GpuBuffer,
     material_dirty: bool,
+    geometry_uploader: crate::buffer::mapped_uploader::MappedUploader,
+    material_uploader: crate::buffer::mapped_uploader::MappedUploader,
 }
 
 impl MeshMeta {
@@ -83,7 +84,23 @@ impl MeshMeta {
                 ),
             ))?,
             material_dirty: true,
+            geometry_uploader: crate::buffer::mapped_uploader::MappedUploader::new(
+                "GeometryMeshMetaData",
+            ),
+            material_uploader: crate::buffer::mapped_uploader::MappedUploader::new(
+                "MaterialMeshMetaData",
+            ),
         })
+    }
+
+    /// Mapped-ring upload telemetry for the geometry-meta buffer.
+    pub fn geometry_upload_stats(&self) -> crate::buffer::mapped_staging_ring::UploadStats {
+        self.geometry_uploader.stats()
+    }
+
+    /// Mapped-ring upload telemetry for the material-meta buffer.
+    pub fn material_upload_stats(&self) -> crate::buffer::mapped_staging_ring::UploadStats {
+        self.material_uploader.stats()
     }
     /// Writes mesh metadata into GPU-bound buffers.
     #[allow(clippy::too_many_arguments)]
@@ -283,11 +300,12 @@ impl MeshMeta {
                 )?;
             } else {
                 let ranges = self.geometry_buffers.take_dirty_ranges();
-                write_buffer_with_dirty_ranges(
+                self.geometry_uploader.write_dirty_ranges(
                     gpu,
                     &self.geometry_gpu_buffer,
+                    self.geometry_buffers.raw_slice().len(),
                     self.geometry_buffers.raw_slice(),
-                    ranges,
+                    &ranges,
                 )?;
             }
 
@@ -320,11 +338,12 @@ impl MeshMeta {
                 )?;
             } else {
                 let ranges = self.material_buffers.take_dirty_ranges();
-                write_buffer_with_dirty_ranges(
+                self.material_uploader.write_dirty_ranges(
                     gpu,
                     &self.material_gpu_buffer,
+                    self.material_buffers.raw_slice().len(),
                     self.material_buffers.raw_slice(),
-                    ranges,
+                    &ranges,
                 )?;
             }
 

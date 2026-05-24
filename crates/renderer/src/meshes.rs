@@ -18,7 +18,6 @@ use slotmap::{new_key_type, DenseSlotMap, SecondaryMap};
 use crate::bind_groups::{BindGroupCreate, BindGroups};
 use crate::bounds::Aabb;
 use crate::buffer::dynamic_storage::DynamicStorageBuffer;
-use crate::buffer::helpers::write_buffer_with_dirty_ranges;
 use crate::instances::Instances;
 use crate::materials::Materials;
 use crate::meshes::buffer_info::MeshBufferVertexInfo;
@@ -492,6 +491,9 @@ pub struct Meshes {
     transparency_geometry_data_buffers: DynamicStorageBuffer<MeshResourceKey>,
     transparency_geometry_data_gpu_buffer: web_sys::GpuBuffer,
     transparency_geometry_data_dirty: bool,
+    mesh_geometry_pool_uploader: crate::buffer::mapped_uploader::MappedUploader,
+    visibility_geometry_index_uploader: crate::buffer::mapped_uploader::MappedUploader,
+    transparency_geometry_data_uploader: crate::buffer::mapped_uploader::MappedUploader,
     // buffer infos
     pub buffer_infos: MeshBufferInfos,
     // meta
@@ -576,11 +578,40 @@ impl Meshes {
                 .into(),
             )?,
             transparency_geometry_data_dirty: true,
+            mesh_geometry_pool_uploader: crate::buffer::mapped_uploader::MappedUploader::new(
+                "MeshGeometryPool",
+            ),
+            visibility_geometry_index_uploader:
+                crate::buffer::mapped_uploader::MappedUploader::new("MeshVisibilityIndex"),
+            transparency_geometry_data_uploader:
+                crate::buffer::mapped_uploader::MappedUploader::new("MeshTransparencyData"),
             meta: MeshMeta::new(gpu)?,
             // attribute morphs and skins
             morphs: Morphs::new(gpu)?,
             skins: Skins::new(gpu)?,
         })
+    }
+
+    /// Mapped-ring upload telemetry for mesh-side per-frame buffers.
+    /// Aggregates the three internal uploaders (geometry pool,
+    /// visibility index, transparency data) into one rollup.
+    pub fn upload_stats(&self) -> crate::buffer::mapped_staging_ring::UploadStats {
+        let mut s = self.mesh_geometry_pool_uploader.stats();
+        let b = self.visibility_geometry_index_uploader.stats();
+        let c = self.transparency_geometry_data_uploader.stats();
+        s.peak_ring_depth_used = s
+            .peak_ring_depth_used
+            .max(b.peak_ring_depth_used)
+            .max(c.peak_ring_depth_used);
+        s.fallback_count += b.fallback_count + c.fallback_count;
+        s.map_async_wait_ms += b.map_async_wait_ms + c.map_async_wait_ms;
+        s.bytes_uploaded_via_ring += b.bytes_uploaded_via_ring + c.bytes_uploaded_via_ring;
+        s.bytes_uploaded_via_fallback +=
+            b.bytes_uploaded_via_fallback + c.bytes_uploaded_via_fallback;
+        s.bytes_uploaded_via_writebuffer +=
+            b.bytes_uploaded_via_writebuffer + c.bytes_uploaded_via_writebuffer;
+        s.resize_count += b.resize_count + c.resize_count;
+        s
     }
 
     /// Public wrapper around `insert` for the raw-mesh path. Same semantics —
@@ -1686,41 +1717,9 @@ impl Meshes {
         gpu: &AwsmRendererWebGpu,
         bind_groups: &mut BindGroups,
     ) -> Result<()> {
-        let to_check_dynamic = [
-            (
-                self.mesh_geometry_pool_dirty,
-                &mut self.mesh_geometry_pool_buffers,
-                &mut self.mesh_geometry_pool_gpu_buffer,
-                BufferUsage::new()
-                    .with_copy_dst()
-                    .with_vertex()
-                    .with_storage()
-                    .with_index(),
-                "MeshGeometryPool",
-                Some(BindGroupCreate::MeshGeometryPoolResize),
-            ),
-            (
-                self.visibility_geometry_index_dirty,
-                &mut self.visibility_geometry_index_buffers,
-                &mut self.visibility_geometry_index_gpu_buffer,
-                BufferUsage::new().with_copy_dst().with_index(),
-                "MeshVisibilityIndex",
-                None,
-            ),
-            (
-                self.transparency_geometry_data_dirty,
-                &mut self.transparency_geometry_data_buffers,
-                &mut self.transparency_geometry_data_gpu_buffer,
-                BufferUsage::new()
-                    .with_copy_dst()
-                    .with_vertex()
-                    .with_storage(),
-                "MeshTransparencyGeometryData",
-                None,
-            ),
-        ];
-
-        let any_dirty = to_check_dynamic.iter().any(|(dirty, _, _, _, _, _)| *dirty);
+        let any_dirty = self.mesh_geometry_pool_dirty
+            || self.visibility_geometry_index_dirty
+            || self.transparency_geometry_data_dirty;
 
         if any_dirty {
             let _maybe_span_guard = if logging.render_timings {
@@ -1728,31 +1727,118 @@ impl Meshes {
             } else {
                 None
             };
-            for (dirty, buffer, gpu_buffer, usage, label, bind_group_create) in to_check_dynamic {
-                if dirty {
-                    let mut resized = false;
-                    if let Some(new_size) = buffer.take_gpu_needs_resize() {
-                        *gpu_buffer = gpu.create_buffer(
-                            &BufferDescriptor::new(Some(label), new_size, usage).into(),
-                        )?;
 
-                        if let Some(create) = bind_group_create {
-                            bind_groups.mark_create(create);
-                        }
-                        resized = true;
-                    }
-                    if resized {
-                        buffer.clear_dirty_ranges();
-                        gpu.write_buffer(gpu_buffer, None, buffer.raw_slice(), None, None)?;
-                    } else {
-                        let ranges = buffer.take_dirty_ranges();
-                        write_buffer_with_dirty_ranges(
-                            gpu,
-                            gpu_buffer,
-                            buffer.raw_slice(),
-                            ranges,
-                        )?;
-                    }
+            if self.mesh_geometry_pool_dirty {
+                let mut resized = false;
+                if let Some(new_size) = self.mesh_geometry_pool_buffers.take_gpu_needs_resize() {
+                    self.mesh_geometry_pool_gpu_buffer = gpu.create_buffer(
+                        &BufferDescriptor::new(
+                            Some("MeshGeometryPool"),
+                            new_size,
+                            BufferUsage::new()
+                                .with_copy_dst()
+                                .with_vertex()
+                                .with_storage()
+                                .with_index(),
+                        )
+                        .into(),
+                    )?;
+                    bind_groups.mark_create(BindGroupCreate::MeshGeometryPoolResize);
+                    resized = true;
+                }
+                if resized {
+                    self.mesh_geometry_pool_buffers.clear_dirty_ranges();
+                    gpu.write_buffer(
+                        &self.mesh_geometry_pool_gpu_buffer,
+                        None,
+                        self.mesh_geometry_pool_buffers.raw_slice(),
+                        None,
+                        None,
+                    )?;
+                } else {
+                    let ranges = self.mesh_geometry_pool_buffers.take_dirty_ranges();
+                    self.mesh_geometry_pool_uploader.write_dirty_ranges(
+                        gpu,
+                        &self.mesh_geometry_pool_gpu_buffer,
+                        self.mesh_geometry_pool_buffers.raw_slice().len(),
+                        self.mesh_geometry_pool_buffers.raw_slice(),
+                        &ranges,
+                    )?;
+                }
+            }
+
+            if self.visibility_geometry_index_dirty {
+                let mut resized = false;
+                if let Some(new_size) =
+                    self.visibility_geometry_index_buffers.take_gpu_needs_resize()
+                {
+                    self.visibility_geometry_index_gpu_buffer = gpu.create_buffer(
+                        &BufferDescriptor::new(
+                            Some("MeshVisibilityIndex"),
+                            new_size,
+                            BufferUsage::new().with_copy_dst().with_index(),
+                        )
+                        .into(),
+                    )?;
+                    resized = true;
+                }
+                if resized {
+                    self.visibility_geometry_index_buffers.clear_dirty_ranges();
+                    gpu.write_buffer(
+                        &self.visibility_geometry_index_gpu_buffer,
+                        None,
+                        self.visibility_geometry_index_buffers.raw_slice(),
+                        None,
+                        None,
+                    )?;
+                } else {
+                    let ranges = self.visibility_geometry_index_buffers.take_dirty_ranges();
+                    self.visibility_geometry_index_uploader.write_dirty_ranges(
+                        gpu,
+                        &self.visibility_geometry_index_gpu_buffer,
+                        self.visibility_geometry_index_buffers.raw_slice().len(),
+                        self.visibility_geometry_index_buffers.raw_slice(),
+                        &ranges,
+                    )?;
+                }
+            }
+
+            if self.transparency_geometry_data_dirty {
+                let mut resized = false;
+                if let Some(new_size) =
+                    self.transparency_geometry_data_buffers.take_gpu_needs_resize()
+                {
+                    self.transparency_geometry_data_gpu_buffer = gpu.create_buffer(
+                        &BufferDescriptor::new(
+                            Some("MeshTransparencyGeometryData"),
+                            new_size,
+                            BufferUsage::new()
+                                .with_copy_dst()
+                                .with_vertex()
+                                .with_storage(),
+                        )
+                        .into(),
+                    )?;
+                    resized = true;
+                }
+                if resized {
+                    self.transparency_geometry_data_buffers.clear_dirty_ranges();
+                    gpu.write_buffer(
+                        &self.transparency_geometry_data_gpu_buffer,
+                        None,
+                        self.transparency_geometry_data_buffers.raw_slice(),
+                        None,
+                        None,
+                    )?;
+                } else {
+                    let ranges = self.transparency_geometry_data_buffers.take_dirty_ranges();
+                    self.transparency_geometry_data_uploader.write_dirty_ranges(
+                        gpu,
+                        &self.transparency_geometry_data_gpu_buffer,
+                        self.transparency_geometry_data_buffers.raw_slice().len(),
+                        self.transparency_geometry_data_buffers.raw_slice(),
+                        &ranges,
+                    )?;
                 }
             }
 
