@@ -39,6 +39,7 @@ pub mod shadows;
 pub mod textures;
 pub mod transforms;
 pub mod update;
+pub mod web_global;
 pub mod workers;
 // re-export
 pub mod core {

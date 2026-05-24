@@ -1128,6 +1128,36 @@ stay valid.
 
 Brief one-liners; full commit messages on the branch history.
 
+- **Phase 4.4 *partial* (this sprint)** —
+  [`crates/renderer/src/web_global.rs`](../../crates/renderer/src/web_global.rs)
+  scaffolding (runtime-pick `Window` / `DedicatedWorkerGlobalScope` /
+  `navigator.gpu` / `Performance` / `requestAnimationFrame`) +
+  [`docs/DEPLOYMENT_MODES.md`](../DEPLOYMENT_MODES.md). The full
+  audit-and-replace pass over `web_sys::window()` call sites and the
+  `AwsmRendererWebGpuBuilder::new_with_offscreen_canvas` builder +
+  `CanvasKind` enum + the `crates/examples/render-worker/` example
+  crate are deferred to a follow-up sprint — see "Won't do (this
+  sprint)" below for the picked-up next.
+- **Phase 4.3b *skeleton* (this sprint)** —
+  [`crates/renderer-gltf/src/worker_job.rs`](../../crates/renderer-gltf/src/worker_job.rs)
+  with `GltfParseJob` Input/Output (bytes-only so the payload
+  survives `postMessage`) + `execute_async`. The `WorkerJob::execute`
+  sync entry-point currently panics; dispatching through
+  `pool.dispatch::<GltfParseJob>(..)` is gated on adding an async
+  `WorkerJob` variant in 4.3a (deferred). The A/B measurement on
+  `robot-001.glb` + `asset_cache::load_and_populate` wiring are
+  follow-ups per the spec's measurement gate.
+- **Phase 4.3a (this sprint)** — `WorkerPool` + `WorkerJob` +
+  `WorkerPoolBootstrap::{Auto, ModuleUrl, Custom}` in
+  [`crates/renderer/src/workers/`](../../crates/renderer/src/workers).
+  `import.meta.url` auto-discovery via the `awsm_bundle_url`
+  inline-JS shim; shared compiled `WebAssembly.Module` posted to each
+  worker so we don't pay the multi-MB recompile per worker;
+  oneshot-backed job-id routing; round-robin dispatch;
+  `dispatch_with_transfer` zero-copy variant; `awsm_worker_entry`
+  worker-side dispatcher with thread-local handler registry; `EchoJob`
+  smoke target. Browser-side smoke verification deferred to the
+  end-of-sprint pass.
 - **Phase 2.1 (this sprint)** — `MappedStagingRing` (default depth 3,
   `MAP_WRITE | COPY_SRC`, `mappedAtCreation: true`) + `MappedUploader`
   call-site companion. All 7 already-`Dynamic` per-frame uploads
@@ -1183,6 +1213,39 @@ Earlier history (Phase 0–2 of the `indirect-first-instance` sprint):
   `array<vec4<u32>, 13>` (16-byte-aligned stride).
 - Opaque material pass uses a single `beginComputePass` with
   shared bind groups and a per-`shader_id` dispatch loop.
+
+### ⏭ Deferred (this sprint — picked up next)
+
+The sprint landed the infrastructure and the highest-value migrations.
+The following are explicit deferrals, picked up in a follow-up:
+
+- **Phase 2.1 raw-writeBuffer promotions** (camera 64 B uniform,
+  shadows globals + descriptors, lights info + LightsBuffer,
+  mesh_light_indices, occlusion params + instance pack, lines
+  per-line uniform + segment buffer). Rationale: small fixed-size
+  uploads where encoder + ring overhead would dominate; the bigger
+  ones are full-overwrite patterns whose `Dynamic*` restructure
+  costs more than the per-frame saving. Evidence-driven from
+  `read_upload_ring_stats()`.
+- **Phase 4.3a async-`WorkerJob` variant**. The trait currently
+  exposes only `fn execute(input) -> output`; on wasm32 a sync
+  `block_on` for async work would deadlock. The dispatcher needs a
+  parallel async-fn entry-point before
+  `pool.dispatch::<GltfParseJob>` can actually run. Tracked: change
+  `WorkerJob` to provide `execute_async` as the canonical method,
+  with `execute` defaulting to a sync wrapper.
+- **Phase 4.3b end-to-end wiring**. The skeleton compiles; the
+  `asset_cache::load_and_populate` integration is gated on the
+  async-WorkerJob fix above + the spec's A/B measurement gate on
+  `robot-001.glb`.
+- **Phase 4.4 codebase-wide worker-safety audit**. The `web_global`
+  helpers exist; the renderer still has many direct
+  `web_sys::window()` call sites that would panic in a worker.
+  Mechanical audit-and-replace pass needed.
+- **Phase 4.4 builder + example crate**.
+  `AwsmRendererWebGpuBuilder::new_with_offscreen_canvas`,
+  `CanvasKind` enum, `WorkerInputEvent` enum, and the
+  `crates/examples/render-worker/` sample.
 
 ### ❌ Won't do
 
