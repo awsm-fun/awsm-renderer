@@ -76,9 +76,11 @@ pub trait WorkerJob: 'static {
 
 /// Bundle-URL discovery strategy. Default is `Auto` (read
 /// `import.meta.url` from the wasm-bindgen JS glue at runtime).
+#[derive(Default)]
 pub enum WorkerPoolBootstrap {
     /// Auto-discover via `import.meta.url`. Works for any
     /// wasm-bindgen `--target web` consumer regardless of bundler.
+    #[default]
     Auto,
     /// Explicit bundle URL — for the rare consumer whose build setup
     /// doesn't expose `import.meta.url`.
@@ -86,12 +88,6 @@ pub enum WorkerPoolBootstrap {
     /// Escape hatch — consumer constructs the `Worker` themselves;
     /// the pool drives the postMessage protocol on the handle.
     Custom(Box<dyn Fn() -> Result<Worker, JsValue> + 'static>),
-}
-
-impl Default for WorkerPoolBootstrap {
-    fn default() -> Self {
-        WorkerPoolBootstrap::Auto
-    }
 }
 
 /// Telemetry counters.
