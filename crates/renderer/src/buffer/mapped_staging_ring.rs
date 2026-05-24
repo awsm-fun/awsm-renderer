@@ -185,14 +185,17 @@ impl<'a> MappedSlotWrite<'a> {
         self.ring.slots[self.slot_index].state = SlotState::Submitted;
         self.ring.update_peak();
 
-        // The slot that was Submitted N-1 acquires ago is the one we
-        // want to kick `mapAsync` on now. We find the *oldest*
-        // `Submitted` slot — at steady state there's at most one (the
-        // freshly-submitted one stays Submitted; everything older has
-        // already moved to Pending or Ready), but the discovery cost
-        // is N comparisons either way.
-        self.ring.kick_oldest_submitted();
-
+        // NOTE: we intentionally do *not* kick `mapAsync` here. The
+        // copy command we just recorded references this slot's buffer
+        // as a copy source; if we put the buffer into a
+        // pending-mapAsync state before the encoder has been submitted,
+        // WebGPU validation rejects the submit ("buffer is used in a
+        // submission while a map is pending"). The caller is required
+        // to submit the encoder *first*, then call
+        // [`MappedStagingRing::kick_in_flight_slots`] to roll the
+        // Submitted slots forward to Pending. See
+        // [`crate::buffer::mapped_uploader::MappedUploader::write_dirty_ranges`]
+        // for the canonical ordering.
         self.finalized = true;
         Ok(())
     }
@@ -406,19 +409,22 @@ impl MappedStagingRing {
         }
     }
 
-    /// Find the oldest still-`Submitted` slot and kick its `mapAsync`,
-    /// transitioning it to `Pending`. "Oldest" means furthest behind
-    /// the cursor in round-robin order. Called from `finalize`.
-    fn kick_oldest_submitted(&mut self) {
-        // Walk slots starting from `next` (= the next-to-acquire slot)
-        // and wrap; the *first* Submitted we hit is the oldest because
-        // we always advance `next` forward.
+    /// Kick `mapAsync` on every slot currently in `Submitted` state,
+    /// transitioning them to `Pending`. **Must be called *after* the
+    /// command buffer that records the slot's copy command has been
+    /// submitted to the queue** — otherwise WebGPU rejects the
+    /// submission because the buffer would be in a pending-map state
+    /// while still referenced by a not-yet-submitted command buffer.
+    ///
+    /// The canonical caller is
+    /// [`crate::buffer::mapped_uploader::MappedUploader::write_dirty_ranges`],
+    /// which interleaves: acquire → write → finalize (records copy +
+    /// marks Submitted) → `gpu.submit_commands(...)` → this method.
+    pub fn kick_submitted_slots(&mut self) {
         let depth = self.slots.len();
-        for offset in 0..depth {
-            let idx = (self.next + offset) % depth;
+        for idx in 0..depth {
             if self.slots[idx].state == SlotState::Submitted {
                 self.start_map_async(idx);
-                return;
             }
         }
     }

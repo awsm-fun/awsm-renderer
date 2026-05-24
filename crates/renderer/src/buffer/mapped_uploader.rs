@@ -128,7 +128,7 @@ impl MappedUploader {
         // `(logging, gpu, bind_groups)` signature stable everywhere.
         let encoder = gpu.create_command_encoder(Some(&self.label));
 
-        let exhausted = match ring.acquire() {
+        let acquired = match ring.acquire() {
             AcquireOutcome::Acquired(slot) => {
                 // Memcpy each dirty range into the matching slot offset.
                 for (off, sz) in ranges {
@@ -137,12 +137,23 @@ impl MappedUploader {
                         slot.write(*off, &raw_data[*off..end]);
                     }
                 }
+                // Record the copy command and mark the slot
+                // Submitted. `finalize` deliberately does NOT call
+                // `mapAsync` here — the slot is still referenced by
+                // the encoder we're about to submit, and queuing a
+                // map on it before submit fails WebGPU validation.
                 slot.finalize(&encoder, dest, ranges)?;
-                gpu.submit_commands(&encoder.finish());
-                false
+                true
             }
-            AcquireOutcome::Exhausted => true,
+            AcquireOutcome::Exhausted => false,
         };
+        if acquired {
+            gpu.submit_commands(&encoder.finish());
+            // *After* submit, the buffer is in the queue's in-flight
+            // set and `mapAsync` can safely queue behind it.
+            ring.kick_submitted_slots();
+        }
+        let exhausted = !acquired;
 
         if exhausted {
             // Fallback: writeBuffer the dirty ranges. The ring's
