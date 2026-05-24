@@ -230,8 +230,9 @@ impl WorkerPool {
                     new_worker_from_js(WORKER_BOOTSTRAP_JS, Some(opts))
                         .map_err(|err| WorkerPoolError::bootstrap_from_js("worker spawn", err))?
                 }
-                WorkerPoolBootstrap::Custom(factory) => factory()
-                    .map_err(|err| WorkerPoolError::bootstrap_from_js("custom worker factory", err))?,
+                WorkerPoolBootstrap::Custom(factory) => factory().map_err(|err| {
+                    WorkerPoolError::bootstrap_from_js("custom worker factory", err)
+                })?,
             };
 
             // Ready future — resolved by the first `awsm-ready` event.
@@ -450,7 +451,8 @@ impl WorkerPool {
             Some(arr) => worker.post_message_with_transfer(&msg, &arr),
             None => worker.post_message(&msg),
         };
-        post_result.map_err(|err| WorkerPoolError::post_message_from_js("dispatch postMessage", err))?;
+        post_result
+            .map_err(|err| WorkerPoolError::post_message_from_js("dispatch postMessage", err))?;
 
         match rx.await {
             // `J::from_response_message` is the trait hook for jobs
