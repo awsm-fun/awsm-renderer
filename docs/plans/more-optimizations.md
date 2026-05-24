@@ -57,10 +57,31 @@ without saving the memcpy.
 
 ### Design summary
 
-- Each `DynamicStorageBuffer` / `DynamicUniformBuffer` instance
-  owns a small ring (default 3) of `MAP_WRITE | COPY_SRC` staging
-  buffers, plus the existing `Vec<u8>` (CPU-authoritative state)
-  and the existing destination `GpuBuffer`.
+> **Spec amendment (mid-implementation, kept as record):** the
+> originally-described "ring inside `DynamicStorageBuffer`" placement
+> was reconsidered when we hit the cross-cutting cost of moving
+> `gpu_buffer` ownership out of every call site (`Transforms`,
+> `Materials`, `Instances`, …) and threading `&AwsmRendererWebGpu`
+> through previously-sync, CPU-only Dynamic constructors used in unit
+> tests. The functional design — mapped-write upload path replacing
+> per-frame `queue.writeBuffer` — is unchanged. The implementation
+> places the ring in a per-call-site companion
+> [`MappedUploader`](../../crates/renderer/src/buffer/mapped_uploader.rs)
+> that owns a [`MappedStagingRing`](../../crates/renderer/src/buffer/mapped_staging_ring.rs)
+> sized to the consumer's destination buffer and exposes
+> `write_dirty_ranges(..)` as a one-line swap for `write_buffer_with_dirty_ranges`.
+> Call sites stay in charge of their `gpu_buffer` field; the
+> Dynamic types' public API doesn't change at all. Telemetry is
+> aggregated by walking subsystems instead of by walking Dynamic
+> instances. Migration of every per-frame writeBuffer site
+> (Phase 2.1 main objective) is still in-scope.
+
+- Each renderer subsystem with a per-frame upload owns a
+  `MappedUploader` companion that holds a small ring (default 3) of
+  `MAP_WRITE | COPY_SRC` staging buffers. The consumer's
+  `DynamicStorageBuffer` / `DynamicUniformBuffer` still owns the
+  `Vec<u8>` (CPU-authoritative state); the consumer's existing
+  `gpu_buffer` field is still the destination `GpuBuffer`.
 - `write_gpu()` flow per frame:
   1. Acquire the current `Mapped` slot (always one available in
      steady state; see [Exhaustion handling](#exhaustion-handling)).
@@ -83,10 +104,13 @@ without saving the memcpy.
 
 ### Public API additions
 
+**Post-amendment shape** (the `Dynamic*` API is unchanged; new types
+live alongside):
+
 ```rust
-impl DynamicStorageBuffer {
-    /// Existing constructor — uses default ring depth (3).
-    pub fn new(/* existing args */) -> Self { /* ... */ }
+impl MappedUploader {
+    /// Default ring depth (3).
+    pub fn new(label: impl Into<String>) -> Self;
 
     /// Override the ring depth. Use when the caller has out-of-
     /// band knowledge that the buffer will grow large (e.g. mesh
@@ -94,13 +118,32 @@ impl DynamicStorageBuffer {
     /// 75 MB at 3-deep; passing 2 trades a tighter ring for
     /// halved GPU-side overhead, and 1 falls back to writeBuffer
     /// every frame).
-    pub fn new_with_ring_depth(depth: usize, /* existing args */) -> Self;
+    pub fn with_ring_depth(label: impl Into<String>, depth: usize) -> Self;
+
+    /// One-line swap for `write_buffer_with_dirty_ranges`.
+    pub fn write_dirty_ranges(
+        &mut self,
+        gpu: &AwsmRendererWebGpu,
+        encoder: &CommandEncoder,
+        dest: &web_sys::GpuBuffer,
+        dest_size: usize,
+        raw_data: &[u8],
+        ranges: &[(usize, usize)],
+    ) -> Result<(), MappedUploaderError>;
+
+    /// Foreign-bytes ingestion path (worker job output, file decode
+    /// results). Bypasses the ring.
+    pub fn ingest_foreign(
+        &mut self,
+        gpu: &AwsmRendererWebGpu,
+        dest: &web_sys::GpuBuffer,
+        offset: usize,
+        bytes: &[u8],
+    ) -> Result<(), MappedUploaderError>;
 
     /// Telemetry accessor.
-    pub fn upload_stats(&self) -> UploadStats;
+    pub fn stats(&self) -> UploadStats;
 }
-
-// Same surface on DynamicUniformBuffer.
 
 /// Renderer-wide aggregator. Exposed via `read_render_pass_timings`
 /// JSON under the `upload_rings` key.
