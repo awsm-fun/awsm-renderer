@@ -721,6 +721,130 @@ shadows" on mobile.
 
 ---
 
+## 5g. Shader cache warmup — what the browser caches, what we don't
+
+The browser caches compiled WebGPU pipeline objects (PSOs — the
+driver-compiled shader + render-state bundle returned by
+`device.createComputePipeline()` / `createRenderPipeline()`) on
+disk, keyed by `(driver version, GPU adapter, hash of WGSL source
++ pipeline descriptor)`. After the first compile, subsequent page
+loads on the same wasm bundle restore the compiled pipeline in
+microseconds instead of recompiling.
+
+What that means for our renderer:
+
+- **A pipeline compiles the first time it's drawn**, not when its
+  material is registered. So `populate_gltf` finishing doesn't
+  guarantee the PBR-opaque-compute pipeline is warm — the first
+  visible draw of a PBR mesh does.
+- **Hidden meshes don't drive compilation.** They're filtered out
+  of `collect_renderables`. The scene-editor's `gizmo.glb` loads
+  at init but stays hidden until selection; its PBR /
+  HUD-geometry pipelines don't compile until a *user-visible*
+  PBR mesh materialises. The first Insert Model therefore pays
+  the full compile tax — often hundreds of ms across PBR-opaque
+  / PBR-transparent / geometry / shadow-generation pipelines.
+- **Any WGSL source change busts the disk cache** for the
+  affected pipeline. The hash changes, the cached entry doesn't
+  match, the next page load recompiles. This isn't ours to fix
+  — it's a correctness property of the cache.
+
+### Per-origin, persistent across reloads, not across origins
+
+Chrome's GPU disk cache lives in the user's profile directory
+(`~/Library/Application Support/Google/Chrome/Default/GPUCache`
+on macOS) and persists until the user clears browser data,
+Chrome itself is updated, or the GPU driver changes. The cache
+is keyed per-origin to prevent fingerprinting: a shader cached
+on site A doesn't unlock the same shader on site B. CDN-hosted
+wasm running on a project-specific domain still pays the
+per-origin first-compile tax for each origin independently.
+
+Firefox / Safari have weaker / not-yet-shipped equivalents.
+Cross-browser, the correctness model is "expect a cold first
+compile every time you can't prove the cache is warm."
+
+### The "first-visible-frame stutter" we observed
+
+After the "finish-every-optimisation" commit, the WGSL source
+for every material pipeline changed (added
+`shadow_receiver_gate: u32` to `MaterialMeshMeta`, changed the
+four `apply_lighting*` callsites). Every user's first page load
+post-deploy hit a cache miss and recompiled ~12 pipelines
+serially in the render loop. The first Insert Model was a
+multi-hundred-ms stall; the second was instant.
+
+A production game should not ship that behaviour. The fix is to
+explicitly drive a draw of every routinely-used pipeline during
+the load screen, where the user is already looking at a
+progress bar.
+
+### The recipe (not yet wired as a renderer API)
+
+The minimum-viable shader-warmup pass walks the
+`Materials::enabled_materials()` table, picks one mesh per
+`MaterialShaderId` × `is_transparency_pass` × MSAA mode, and
+ensures it draws at least once during init. For first-party
+materials that's PBR / Unlit / Toon × {opaque, transparent} ×
+{MSAA off, MSAA on} × {mipmaps off, mipmaps on} = up to **24
+pipelines** to warm before the user can touch the viewport.
+
+In the editor's case, the simplest concrete step is to unhide a
+gizmo mesh from each material shader for one rAF tick, then
+re-hide. That forces `collect_renderables` to route the
+gizmo through every active pipeline, the geometry / opaque /
+transparent / shadow passes to draw something, and WebGPU to
+compile.
+
+### Interaction with the planned dynamic-materials sprint
+
+This warmup story gets **more important** once the
+[`docs/plans/dynamic-materials.md`](plans/dynamic-materials.md)
+work lands. That plan adds runtime registration of custom
+material shaders — `MaterialDefinition` data + a `shader.wgsl`
+fragment, both registered at startup (or mid-frame, with a
+recompile). Two new wrinkles to handle in the warmup:
+
+1. **Custom shader_ids aren't known until the consumer
+   registers them.** First-party materials are enumerable at
+   compile time (`enabled_materials()`); dynamic ones come from
+   `MaterialRegistry::register()`. The warmup pass needs to run
+   *after* every dynamic registration the consumer cares about
+   — usually right after game-init finishes loading material
+   defs, before the first gameplay frame.
+2. **Mid-frame registration forces a recompile.** The dynamic-
+   materials plan calls this out explicitly: registering a new
+   material mid-frame busts the cached opaque-compute /
+   transparent-fragment pipelines (the dispatch chain text
+   changes). A game that streams in custom materials during play
+   would see exactly the same stutter pattern this section
+   describes, but mid-gameplay instead of at boot. The fix is
+   the same — pre-warm by drawing one mesh per
+   newly-registered shader_id before the next user-interactive
+   frame.
+
+So whoever picks up the dynamic-materials sprint should land a
+**`AwsmRenderer::prewarm_pipelines()` API** alongside the
+registry work: walks every active (shader_id × variant) combo
+the renderer knows about, fakes a one-pixel draw to compile,
+then drops the fake renderables. Callers invoke it at end of
+game-init AND after every burst of dynamic registrations
+they're about to surface to the player. Until that API exists,
+shipping consumers should follow the load-screen trick in §8a
+step 5.
+
+The cost of the warmup pass *is* the compile tax — it doesn't
+make compilation faster, it just relocates it to a frame the
+user expects to be slow (the splash) instead of one they expect
+to be instant (the first interactive draw). On Chrome with a
+warm GPU disk cache, the warmup pass itself takes <5 ms; on a
+cold cache (first-ever visit, post-redeploy reload), it takes
+50–500 ms depending on how many pipelines and how heavy the
+shader. That cost is unavoidable — what changes is *when* the
+user pays it.
+
+---
+
 ## 5d. Steady-state perf — `tuning-10k-meshes` reference numbers
 
 Captured via `read_render_pass_timings(min_count=30)` on Chrome
@@ -1041,32 +1165,22 @@ mesh.receive_decals = false;  // skip per-decal volume test
 `Mesh::hud` is the heavy-hammer "skip every cull / pass / shadow"
 flag — set it on HUD overlays and screen-space effects.
 
-#### 5. Pre-warm the renderer's PSO cache
+#### 5. Pre-warm the shader/PSO cache
 
-The first time a pipeline variant is actually *drawn*, WebGPU
-compiles its shader. Subsequent draws hit the cached pipeline.
-For low-stutter starts, draw a dummy 1-pixel triangle of every
-authored material early in the load screen.
+The first time a pipeline is actually *drawn*, WebGPU compiles
+its shader; the browser then caches the compiled binary on
+disk and subsequent page loads restore it in microseconds. See
+[§5g](#5g-shader-cache-warmup--what-the-browser-caches-what-we-dont)
+for the full mechanics — what the cache keys on, when it
+invalidates, and how this will interact with the upcoming
+dynamic-materials sprint.
 
-**Important gotcha:** *hidden* meshes don't drive pipeline
-compilation — they're filtered out of `collect_renderables`. The
-editor's `gizmo.glb` loads at init but stays hidden until a
-selection appears, so its PBR-opaque-compute pipeline doesn't
-actually compile until the *user's first visible PBR mesh*
-materialises. That can show up as a multi-hundred-ms stall on
-the first Insert Model after any change that busts the
-browser's pipeline cache (a shader-source diff, a wasm-bundle
-hash change after redeploy, opening the page from a fresh
-profile). Subsequent inserts on the same page hit the cache
-and feel instant — but the first one isn't representative of
-steady-state perf.
-
-If your game cares about smooth-from-cold-load: unhide one PBR
-+ one Unlit + one Toon mesh briefly during the load screen so
-WebGPU compiles their opaque-compute pipelines while the user
-is still looking at the splash, not at a frozen viewport. The
-same trick covers MSAA on/off if the game switches modes at
-runtime.
+The short version for game-shipping: unhide one mesh per
+`MaterialShaderId` (PBR / Unlit / Toon) — plus the MSAA-on
+variants if your game lets the player toggle MSAA — briefly
+during the load screen so WebGPU compiles their pipelines
+while the user is still looking at the splash, not at a frozen
+viewport on first gameplay frame.
 
 ### Tuning knobs by play style
 
