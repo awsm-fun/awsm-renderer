@@ -491,7 +491,7 @@ impl AwsmRendererBuilder {
             optimization_policy,
         } = self;
 
-        let mut gpu = match gpu {
+        let gpu = match gpu {
             AwsmRendererGpuBuilderKind::WebGpuBuilder(builder) => builder.build().await?,
             AwsmRendererGpuBuilderKind::WebGpuBuilt(gpu) => gpu,
         };
@@ -603,10 +603,19 @@ impl AwsmRendererBuilder {
         let environment =
             Environment::new(Skybox::register(&gpu, &mut textures, skybox_resources)?);
 
-        // temporarily push into an init struct for creating render passes
-        // we'll then destructure it to get our values back
+        // Parallelise `RenderPasses::new` with `RenderTextures::new`.
+        // Both subsystems compile pipelines + shaders against the same
+        // shared `&gpu` handle (no contention; WebGPU's device queue
+        // serialises internally) but touch disjoint owned state —
+        // RenderPasses mutates the shader / pipeline / bind-group-layout
+        // caches; RenderTextures::new is self-contained. The
+        // `RenderPassInitContext.gpu: &AwsmRendererWebGpu` shape (was
+        // `&mut`) is what unblocks the join — see the doc on
+        // `RenderPassInitContext`.
+        let formats_for_textures = render_texture_formats.clone();
+        let bind_groups = BindGroups::new(&features);
         let mut render_pass_init = RenderPassInitContext {
-            gpu: &mut gpu,
+            gpu: &gpu,
             bind_group_layouts: &mut bind_group_layouts,
             pipeline_layouts: &mut pipeline_layouts,
             pipelines: &mut pipelines,
@@ -615,15 +624,15 @@ impl AwsmRendererBuilder {
             textures: &mut textures,
             features: &features,
         };
-        let render_passes = RenderPasses::new(&mut render_pass_init, &features).await?;
-
-        let bind_groups = BindGroups::new(&features);
-        // RenderTextures itself uses `try_join3` internally to compile
-        // its 3 blit pipelines concurrently — see `render_textures.rs`.
-        // Parallelising at *this* level (between RenderPasses::new and
-        // RenderTextures::new) would require an `&gpu` shape across the
-        // RenderPassInitContext that the init currently keeps mutable.
-        let render_textures = RenderTextures::new(&gpu, render_texture_formats, &features).await?;
+        let (render_passes, render_textures) = futures::future::try_join(
+            RenderPasses::new(&mut render_pass_init, &features),
+            async {
+                RenderTextures::new(&gpu, formats_for_textures, &features)
+                    .await
+                    .map_err(crate::error::AwsmError::from)
+            },
+        )
+        .await?;
 
         let picker = Picker::new(
             &gpu,

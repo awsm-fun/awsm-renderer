@@ -115,8 +115,16 @@ impl RenderPasses {
 }
 
 /// Shared context used to initialize render passes.
+///
+/// `gpu` is `&` (not `&mut`) on purpose — no init path mutates the
+/// `AwsmRendererWebGpu` handle; everything goes through the shared
+/// `device` / `queue` JS handles which are `Clone`-cheap on
+/// `wasm-bindgen` types. Keeping it shared lets `RenderPasses::new`
+/// and `RenderTextures::new` run inside the same `futures::try_join`
+/// in `lib.rs` — both want `&gpu`, neither contends on the other's
+/// `&mut` fields.
 pub struct RenderPassInitContext<'a> {
-    pub gpu: &'a mut AwsmRendererWebGpu,
+    pub gpu: &'a AwsmRendererWebGpu,
     pub bind_group_layouts: &'a mut BindGroupLayouts,
     pub textures: &'a mut Textures,
     pub pipeline_layouts: &'a mut PipelineLayouts,
