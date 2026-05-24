@@ -242,6 +242,85 @@ pub async fn read_mesh_coverage_stats() -> String {
     )
 }
 
+/// Group every `performance.measure` entry by tracing-span base
+/// name (the `[id]: span-measure` suffix that `tracing-web` appends
+/// is stripped), then summarise per-pass timing as
+/// `{ "count": N, "mean_ms": f, "p50_ms": f, "p95_ms": f,
+///   "max_ms": f, "total_ms": f }`. Useful for the Chrome-vs-Safari
+/// comparison the optimization sprint calls out: a single
+/// `preview_eval` call returns a JSON map of per-pass distributions
+/// without any client-side bucketing logic. Clears the entries
+/// after sampling so the next call starts fresh.
+///
+/// Skips spans whose count is below `min_count` (default 30) so
+/// rare one-shot init spans (GLTF parse, texture upload) don't
+/// dominate the output. Pass `min_count = 0` to include everything.
+#[wasm_bindgen]
+pub fn read_render_pass_timings(min_count: u32) -> String {
+    use js_sys::{Array, JsString, Reflect};
+    use std::collections::BTreeMap;
+    let window = match web_sys::window() {
+        Some(w) => w,
+        None => return "{\"error\":\"no window\"}".to_string(),
+    };
+    let perf = match window.performance() {
+        Some(p) => p,
+        None => return "{\"error\":\"no performance\"}".to_string(),
+    };
+    let entries: Array = perf.get_entries_by_type("measure");
+    let mut buckets: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    for entry in entries.iter() {
+        let name = Reflect::get(&entry, &JsValue::from_str("name"))
+            .ok()
+            .and_then(|v| v.dyn_into::<JsString>().ok())
+            .map(String::from)
+            .unwrap_or_default();
+        let dur = Reflect::get(&entry, &JsValue::from_str("duration"))
+            .ok()
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        // `tracing-web` formats every span as `"<base> [<id>]: span-measure"`.
+        // Strip the suffix so different span ids for the same call site
+        // collapse into one bucket. Entries without the suffix (e.g.
+        // manually-emitted measures) pass through untouched.
+        let base = match name.rfind(" [") {
+            Some(idx) => name[..idx].to_string(),
+            None => name,
+        };
+        buckets.entry(base).or_default().push(dur);
+    }
+    let min_count = min_count as usize;
+    let mut out = String::from("{");
+    let mut first = true;
+    for (name, mut samples) in buckets {
+        if samples.len() < min_count.max(1) {
+            continue;
+        }
+        samples.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let n = samples.len();
+        let sum: f64 = samples.iter().sum();
+        let mean = sum / n as f64;
+        let p50 = samples[n / 2];
+        let p95 = samples[((n as f64 * 0.95) as usize).min(n - 1)];
+        let max = *samples.last().unwrap_or(&0.0);
+        if !first {
+            out.push(',');
+        }
+        first = false;
+        out.push_str(&format!(
+            "{}:{{\"count\":{},\"mean_ms\":{:.4},\"p50_ms\":{:.4},\"p95_ms\":{:.4},\"max_ms\":{:.4},\"total_ms\":{:.4}}}",
+            serde_json::to_string(&name).unwrap_or_else(|_| "\"\"".to_string()),
+            n, mean, p50, p95, max, sum
+        ));
+    }
+    out.push('}');
+    // Clear so the next call observes a fresh window. `clear_measures`
+    // also drops any `performance.mark` entries we never explicitly
+    // emit, which is fine.
+    let _ = perf.clear_measures();
+    out
+}
+
 /// Read the renderer's light-bucket telemetry.
 /// Returns a JSON string `{ "last_max_bucket": N, "oversized_count": M }`
 /// for the most-recently-rebuilt `LightMeshBuckets`. Drive from

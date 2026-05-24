@@ -19,19 +19,6 @@ the bottom of this doc before starting.
 These don't change perf; they let every later item be A/B'd cheaply
 in both Chrome and Safari from the running editor.
 
-### 0.2 ⚙️ Per-pass `performance.measure` sub-spans
-
-The top-level `Render` span already lands in
-`performance.getEntriesByType('measure')`. Wire per-pass children so
-the Chrome-vs-Safari comparison can attribute the gap to a specific
-pass without manual instrumentation. Pattern: extend the
-`tracing::span!(... "Geometry RenderPass")` blocks in
-[render.rs](../../crates/renderer/src/render.rs) to also emit a
-`performance.mark` start/end pair when `logging.render_timings` is
-on. The instrumentation should be zero-cost when the flag is off.
-
----
-
 ## Phase 1 — Renderer init parallelization
 
 ### 1.1 🚀 Refactor `RenderPassInitContext.gpu` from `&mut` to `&`
@@ -467,6 +454,15 @@ node mutations cascade once per frame instead of once per node.
 For PR context — these shipped in the prior sprint and the
 `indirect-first-instance` sprint before it.
 
+- ✅ Phase 0.2 — `read_render_pass_timings(min_count)` measurement
+  helper. The per-pass `performance.measure` entries already exist
+  (`tracing-web::performance_layer` routes every renderer span
+  automatically); the new helper groups by base name — stripping
+  the `[id]: span-measure` suffix — and returns
+  `{count, mean_ms, p50_ms, p95_ms, max_ms, total_ms}` per pass
+  as JSON, then clears measures so the next sample window starts
+  fresh. Drives the Chrome-vs-Safari per-pass comparison in one
+  `preview_eval` call. Zero-cost when `render_timings = false`.
 - ✅ Phase 0.1 (partial) — `MSAA Anti-Aliasing` checkbox in the
   scene-editor's Editor header tab. Mirrors the pattern in
   model-tests' `SidebarProcessing::render_msaa_selector`; routes

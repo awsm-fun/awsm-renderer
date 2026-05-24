@@ -570,11 +570,14 @@ scene-editor exposes four `#[cfg(debug_assertions)]`
 | `read_mesh_coverage_stats()` | JSON string | Verifies the GPU coverage producer reached the CPU table. |
 | `read_importance_tier_histogram()` | JSON string | Shadow-caster-light tier histogram. |
 | `read_oversized_mesh_stats()` | JSON string | `{ last_max_bucket, oversized_count }` from `LightMeshBuckets`. |
+| `read_render_pass_timings(min_count)` | JSON string | Per-pass `count / mean / p50 / p95 / max / total` (ms). Strips the `[id]: span-measure` suffix `tracing-web` appends so call sites collapse into one bucket. Clears measures after sampling. Pass `min_count=0` to include rare init spans (GLTF parse, etc.). |
 
 Per-frame render-pass timings come from
 `performance.getEntriesByType('measure')` — `tracing-web`'s
 `performance_layer` routes every renderer span through the
-browser's Performance API. No custom JSON harness required.
+browser's Performance API. `read_render_pass_timings(...)` is the
+one-shot summariser if you don't want to walk the entries
+manually.
 
 URL switch `?features=off` (debug only) flips
 `RendererFeatures::default()` for A/B comparison without
