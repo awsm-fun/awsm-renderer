@@ -42,24 +42,6 @@ cross-references in commit messages stay valid.
 
 ## Phase 4 — Model insert UX
 
-### 4.1 🚀 Deduplicate the two GPU texture-pool uploads per glb texture
-
-The `renderer-gltf` path uploads each image via
-`Textures::add_image(ImageData::Bitmap)` for the baked materials,
-AND the editor's `texture_cache::get_or_upload` uploads the same
-image (separate `createImageBitmap` decode + separate pool slot) so
-the editor's editable material override has its own copy. That's
-**2× GPU storage + 2× decode** per texture on every model insert.
-
-Approach: plumb a mapping `AssetId → existing TextureKey` from
-`renderer-gltf` into the editor's `texture_cache` so the override
-path reuses the renderer-gltf-side pool slot. Touch points:
-[crates/renderer-gltf/src/populate/](../../crates/renderer-gltf/src/populate) (publish the mapping) and
-[crates/frontend/scene-editor/src/renderer_bridge/texture_cache.rs](../../crates/frontend/scene-editor/src/renderer_bridge/texture_cache.rs)
-(consume it).
-
-Probably the single biggest model-insert-UX win in this list.
-
 ### 4.2 🚀 Pre-decode raster bitmaps eagerly
 
 The raster prefetch is currently hoisted into `load_and_populate`,
@@ -402,6 +384,17 @@ node mutations cascade once per frame instead of once per node.
 For PR context — these shipped in the prior sprint and the
 `indirect-first-instance` sprint before it.
 
+- ✅ Phase 4.1 — Editor texture_cache seeded from renderer-gltf
+  uploads. `extract_gltf_materials_into` now stashes a per-image
+  `gltf_image_asset_ids` Vec on the gltf's AssetEntry. After
+  `populate_gltf` lands, `asset_cache::seed_texture_cache_from_populate`
+  walks `ctx.textures`, resolves each (texture_index, color)
+  back to the gltf image index, and seeds the editor's
+  `texture_cache` with the renderer-gltf-side `TextureKey`. The
+  override path's `get_or_upload(asset_id, ...)` now hits the
+  shared key instead of re-decoding + re-uploading the same image
+  — recovers the **2× GPU storage + 2× decode** per glb texture
+  that the editor was paying.
 - ✅ Phase 1.2 — Pre-warmed LineRenderer + Picker shader compiles.
   LineRenderer migrated off `shaders.insert_uncached` onto a real
   `ShaderCacheKeyLine` (new `ShaderCacheKey::Line` variant + a

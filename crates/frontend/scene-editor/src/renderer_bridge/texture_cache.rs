@@ -218,6 +218,22 @@ pub fn lookup(asset_id: AssetId) -> Option<TextureKey> {
     with_cache(|m| m.get(&asset_id).copied())
 }
 
+/// Insert a pre-existing `TextureKey` into the cache for `asset_id` —
+/// idempotent if the asset is already mapped (keeps the first-seen
+/// key, which avoids ping-ponging if a glb is re-loaded while the
+/// editor's override has already picked the prior key).
+///
+/// Used by `asset_cache::load_and_populate` to seed the cache from
+/// the `TextureKey`s renderer-gltf already uploaded — without that
+/// seeding, the editor's override path would re-decode +
+/// re-upload the same image, doubling GPU storage and decode wall-
+/// clock per glb texture. (Phase 4.1.)
+pub fn seed(asset_id: AssetId, texture_key: TextureKey) {
+    with_cache(|m| {
+        m.entry(asset_id).or_insert(texture_key);
+    });
+}
+
 /// How the renderer should interpret the pixel data of a raster
 /// texture. Mirrors the glTF convention: `Srgb` for visible-color
 /// channels (base color, emissive) — the bytes are gamma-encoded and

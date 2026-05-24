@@ -845,10 +845,24 @@ pub(crate) fn extract_gltf_materials_into(
         }
     }
 
+    // Densify image_to_texture_asset into a Vec indexed by gltf image
+    // index. The renderer-gltf side will reuse this to seed the editor's
+    // texture cache with the renderer-side `TextureKey`s — saves a
+    // second decode + upload per glb texture for the editor's material
+    // override path (Phase 4.1 dedup).
+    let image_count = document.images().len();
+    let mut image_asset_ids: Vec<AssetId> = vec![AssetId::default(); image_count];
+    for (img_idx, asset_id) in image_to_texture_asset.iter() {
+        if *img_idx < image_asset_ids.len() {
+            image_asset_ids[*img_idx] = *asset_id;
+        }
+    }
+
     // ── Stamp the per-primitive lookup onto the gltf's AssetEntry ──────
     {
         if let Some(entry) = assets.entries.get_mut(&gltf_asset_id) {
             entry.gltf_material_asset_ids = material_asset_ids;
+            entry.gltf_image_asset_ids = image_asset_ids;
         }
     }
 
