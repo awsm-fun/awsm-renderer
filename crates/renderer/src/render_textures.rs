@@ -72,16 +72,21 @@ impl RenderTextures {
         formats: RenderTextureFormats,
         features: &RendererFeatures,
     ) -> Result<Self> {
-        // The three blit pipelines are independent GPU operations
-        // (different shader variants, no shared mutable state). Compile
-        // them concurrently — the browser interleaves the shader
-        // validation under the hood, saving ~2/3 of the wall-clock
-        // each `await` would otherwise spend serial.
-        let (
-            opaque_to_transparent_blit_pipeline_no_anti_alias,
-            opaque_to_transparent_blit_pipeline_msaa_4,
-            transparent_to_composite_blit_pipeline_no_anti_alias,
-        ) = futures::future::try_join3(
+        // Two distinct blit pipeline variants: the `None` (single-
+        // sample) variant is used by *both* the opaque→transparent
+        // and the transparent→composite blits — they share the same
+        // shader + color target + (no) MSAA, so a single compiled
+        // GpuRenderPipeline is reused. The `Some(4)` (MSAA-4) variant
+        // is used by the opaque→transparent blit only. Compile both
+        // variants concurrently; the `None` result is cloned into
+        // the two destination fields (wasm-bindgen JS handle clone =
+        // refcount bump, not a pipeline copy).
+        //
+        // Earlier shape compiled the `None` variant twice inside one
+        // `try_join3` — `blit_get_pipeline` has no in-flight dedupe,
+        // so the two futures genuinely did the same work twice. Fixed
+        // here by compiling each variant exactly once.
+        let (single_sample_pipeline, msaa_4_pipeline) = futures::future::try_join(
             async {
                 blit_get_pipeline(gpu, formats.color, None)
                     .await
@@ -89,11 +94,6 @@ impl RenderTextures {
             },
             async {
                 blit_get_pipeline(gpu, formats.color, Some(4))
-                    .await
-                    .map_err(AwsmRenderTextureError::BlitPipeline)
-            },
-            async {
-                blit_get_pipeline(gpu, formats.color, None)
                     .await
                     .map_err(AwsmRenderTextureError::BlitPipeline)
             },
@@ -105,9 +105,9 @@ impl RenderTextures {
             features: features.clone(),
             frame_count: 0,
             inner: None,
-            opaque_to_transparent_blit_pipeline_msaa_4,
-            opaque_to_transparent_blit_pipeline_no_anti_alias,
-            transparent_to_composite_blit_pipeline_no_anti_alias,
+            opaque_to_transparent_blit_pipeline_msaa_4: msaa_4_pipeline,
+            opaque_to_transparent_blit_pipeline_no_anti_alias: single_sample_pipeline.clone(),
+            transparent_to_composite_blit_pipeline_no_anti_alias: single_sample_pipeline,
         })
     }
 
