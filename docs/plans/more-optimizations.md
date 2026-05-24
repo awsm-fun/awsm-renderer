@@ -146,28 +146,94 @@ user-visible loading modal instead of running during populate.
 Saves ~1 s of `createImageBitmap` wall-clock during the loading
 window for large glbs.
 
-### 4.3 🚀 Web Worker for glTF JSON+buffer parse
+### 4.3 🚀 First-class worker pool + glTF parse as first consumer
 
-`GltfBuffers::new` takes ~900 ms for the 27 MB robot purely on Wasm-
-side CPU. Move parse to a dedicated worker; accept a
-structured-clone transfer of the parsed result. Caveat: transfer
-cost for the 27 MB blob may eat the win unless the *whole* pipeline
-(fetch + parse + texture decode) moves to the worker. Treat this as
-a **measurement-driven** item — wire 0.2's sub-spans first, profile
-the existing parse path, then decide.
-
-Biggest lift on this list; do last.
+This phase builds a **library-wide worker-job infrastructure** (4.3a)
+and uses glTF parse as its first consumer (4.3b). The infrastructure
+lands first because future items (e.g., mesh tangent computation,
+animation baking, environment-map filtering, large-scene BVH
+rebuild) will plug into the same pool.
 
 **Library constraint.** `awsm-renderer` ships as a Rust library;
-consumers may use Trunk, webpack, Vite, or no bundler at all. We
-**cannot** assume a separate `worker.js` file is copied to a known
-path — the consumer's build pipeline might not produce one. The
-worker code has to come from somewhere the library can hand to
-`Worker::new` without filesystem assumptions.
+consumers may use Trunk, webpack, Vite, or no bundler at all. The
+worker abstraction **cannot** assume a separate `worker.js` file is
+copied to a known path — the consumer's build pipeline might not
+produce one.
 
-The portable shape is a **blob-URL worker** constructed at runtime
-from an inline JS string. Helper to start from (the consumer-side
-analogue exists in the lockstep codebase):
+#### 4.3a — `awsm-renderer::workers` module: `WorkerPool` + `WorkerJob`
+
+Public surface (decided shape — see "Alternatives considered" at
+the bottom of this section for what was rejected and why):
+
+```rust
+pub trait WorkerJob: 'static {
+    /// Identifies this job in the worker's postMessage dispatch.
+    /// Use a unique string per job type (e.g. "gltf-parse",
+    /// "mesh-tangents").
+    const NAME: &'static str;
+    type Input: Serialize + DeserializeOwned;
+    type Output: Serialize + DeserializeOwned;
+
+    /// Runs on the worker thread. No `&self` — implementations are
+    /// stateless and only act on `input`.
+    fn execute(input: Self::Input) -> Self::Output;
+}
+
+pub struct WorkerPool { /* private */ }
+
+pub enum WorkerPoolBootstrap {
+    /// Common case. Library generates a tiny inline-JS module-worker
+    /// shim that `import`s the consumer's wasm-bindgen bundle.
+    /// Trunk emits a known path; bundler users supply theirs.
+    ModuleUrl { bundle_url: String },
+
+    /// Escape hatch — consumers whose build doesn't expose a stable
+    /// URL construct the `Worker` themselves; the pool then drives
+    /// the postMessage protocol.
+    Custom(Box<dyn Fn() -> Result<web_sys::Worker, JsValue> + 'static>),
+}
+
+impl WorkerPool {
+    pub async fn new(
+        bootstrap: WorkerPoolBootstrap,
+        worker_count: usize,
+    ) -> Result<Self, AwsmError> { /* … */ }
+
+    pub async fn dispatch<J: WorkerJob>(
+        &self,
+        input: J::Input,
+    ) -> Result<J::Output, AwsmError> { /* … */ }
+
+    /// Zero-copy path — `transfer` lists `ArrayBuffer`s the protocol
+    /// should `postMessage(..., { transfer })` instead of
+    /// structured-cloning. Critical for the 27 MB robot case;
+    /// otherwise the cross-thread copy eats most of the saving.
+    pub async fn dispatch_with_transfer<J: WorkerJob>(
+        &self,
+        input: J::Input,
+        transfer: js_sys::Array,
+    ) -> Result<J::Output, AwsmError> { /* … */ }
+}
+
+/// Exported entry point the worker's wasm-bindgen init calls after
+/// the module is loaded. Installs the postMessage listener and
+/// dispatches incoming jobs by `NAME` to registered handlers.
+#[wasm_bindgen]
+pub fn awsm_worker_entry();
+```
+
+**Inline JS shim** (built and blob-URL'd by `WorkerPool::new`,
+`{BUNDLE_URL}` substituted from `WorkerPoolBootstrap::ModuleUrl`):
+
+```js
+import init, { awsm_worker_entry } from "{BUNDLE_URL}";
+await init();
+self.postMessage({ kind: "ready" });
+awsm_worker_entry();
+```
+
+**Helper for the blob-URL plumbing** (drop-in from the lockstep
+codebase):
 
 ```rust
 use js_sys::Array;
@@ -180,52 +246,93 @@ pub fn new_worker_from_js(
 ) -> Result<Worker, JsValue> {
     let mut blob_options = BlobPropertyBag::new();
     blob_options.type_("application/javascript");
-
     let blob_parts = Array::new_with_length(1);
     blob_parts.set(0, JsValue::from_str(js));
-
     let blob = Blob::new_with_str_sequence_and_options(&blob_parts, &blob_options)?;
     let blob_url = Url::create_object_url_with_blob(&blob)?;
-
     let worker = match options {
         Some(options) => Worker::new_with_options(&blob_url, &options)?,
         None => Worker::new(&blob_url)?,
     };
-
     Url::revoke_object_url(&blob_url)?;
     Ok(worker)
 }
 ```
 
-The hard part *isn't* spawning the worker — it's getting the
-library's Wasm + wasm-bindgen glue running inside it. Two practical
-options to evaluate:
+**Job registry.** `awsm_worker_entry` maintains a static registry of
+`(NAME, dispatcher)` pairs populated via a `linkme`-style distributed
+slice or a one-time-init function. Each `impl WorkerJob` is registered
+automatically; consumer crates that define their own `WorkerJob`
+implementations register the same way.
 
-1. **Pure-JS parse worker.** The worker's inline JS calls
-   `fetch(...)` + a tiny JS-side glTF parser (or just splits the
-   GLB chunks). Result is structured-cloned back. Avoids the
-   wasm-in-worker problem entirely but means parsing twice if any
-   Rust-side validation is wanted on the main thread.
+**Lifecycle.** `WorkerPool::new` spawns `worker_count` workers, waits
+for each to send its `{ kind: "ready" }` message, then resolves.
+`dispatch` round-robins jobs across workers (or picks the least-busy
+if instrumented; start with round-robin). Pending jobs hold a
+`oneshot::Sender<JsValue>` keyed by an incrementing `JobId`; the
+incoming `{ kind: "result", id, payload }` message routes back via
+the keyed sender.
 
-2. **Wasm-in-worker.** Inline JS does
-   `importScripts(MAIN_BUNDLE_URL)` (classic worker) or
-   `import(...)` (module worker) to load the SAME wasm-bindgen
-   output the main thread loaded, then calls an exported
-   `#[wasm_bindgen] pub fn parse_glb_in_worker(bytes: &[u8])`
-   function. The library would expose a builder that takes the
-   bundle URL as a parameter — consumer supplies it. Trunk
-   consumers can read it from `wasm_bindgen::module()`; bundler
-   consumers do whatever their bundler's url-import shape is.
+**Error handling.** A worker that panics or hits an uncaught
+exception posts `{ kind: "error", id, message }`; the pool surfaces
+this as `AwsmError::WorkerJobFailed`. The worker stays alive for the
+next job — one job's failure doesn't tear down the pool.
 
-Option 1 ships faster but option 2 keeps the parse logic in Rust
-where it lives today. Pick after measuring whether the transfer
-cost is acceptable — for the 27 MB robot, the transfer alone might
-eat half the budget.
+#### 4.3b — `GltfParseJob`: glTF parse moves to the pool
 
-Either way, the consumer-facing API should be: library exposes the
-worker-builder + a `parse_glb_async(handle, bytes) -> Future` that
-posts the work and awaits the result. The library never assumes a
-specific build setup.
+```rust
+// awsm-renderer-gltf
+pub struct GltfParseJob;
+impl WorkerJob for GltfParseJob {
+    const NAME: &'static str = "gltf-parse";
+    type Input = GltfParseInput;     // { url, file_type }
+    type Output = GltfParseOutput;   // { doc bytes, buffers, image data }
+    fn execute(input: Self::Input) -> Self::Output { /* existing GltfLoader::load body */ }
+}
+```
+
+Consumer wires it up:
+
+```rust
+// scene-editor (or any game using the renderer)
+let pool = WorkerPool::new(
+    WorkerPoolBootstrap::ModuleUrl {
+        bundle_url: bundle_url_helper(),  // wasm_bindgen::module() / hardcoded / etc.
+    },
+    2,
+).await?;
+
+let parsed = pool.dispatch::<GltfParseJob>(input).await?;
+```
+
+For the 27 MB robot the parsed `Vec<u8>` buffers go through
+`dispatch_with_transfer` — they were going to be consumed once
+(uploaded to GPU), so transferring ownership across the thread
+boundary is free.
+
+#### Measurement gate
+
+Before landing 4.3b, wire 0.2's per-pass sub-spans and add a
+`gltf-parse` measurement so the worker version can be compared to
+the inline version. If the transfer cost dominates (small glbs,
+where the parse itself is fast), the pool can be opt-in via a
+config knob.
+
+#### Alternatives considered (rejected)
+
+- **Pure-JS workers** (worker code is JS, no Rust in worker).
+  Rejected: doubles the maintenance burden, duplicates parse logic.
+- **wasm-bindgen-rayon-style with SharedArrayBuffer** for
+  fine-grained parallelism. Rejected: requires COOP/COEP headers
+  on the consumer's deployment. We don't need fine-grained
+  parallelism — coarse job offload via postMessage is enough.
+- **`Custom`-only API (no `ModuleUrl` helper)**. Rejected: pushes
+  the inline-JS shim work onto every consumer. The shim is 5
+  lines but multiplying it by every consumer crate is exactly the
+  kind of friction a first-class abstraction should remove.
+- **Single-worker-per-job (no pool)**. Rejected: doesn't amortize
+  startup cost (~5–50 ms per worker spawn). Scene loads with
+  multiple glbs would pay it per file.
 
 ---
 
