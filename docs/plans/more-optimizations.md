@@ -181,19 +181,38 @@ pub trait WorkerJob: 'static {
 
 pub struct WorkerPool { /* private */ }
 
+#[derive(Default)]
 pub enum WorkerPoolBootstrap {
-    /// Common case. Library generates a tiny inline-JS module-worker
-    /// shim that `import`s the consumer's wasm-bindgen bundle.
-    /// Trunk emits a known path; bundler users supply theirs.
+    /// Default. Auto-discovers the consumer's wasm-bindgen bundle
+    /// URL via `import.meta.url` from the main thread's JS glue.
+    /// Works for any wasm-bindgen `--target web` consumer (Trunk,
+    /// Vite ESM, etc.) — the library reads its own
+    /// `import.meta.url` via a `#[wasm_bindgen(inline_js = ...)]`
+    /// snippet, which the wasm-bindgen tool embeds in the
+    /// consumer's bundle output, so the URL is *always* the
+    /// consumer's bundle URL regardless of how that bundle is
+    /// named or hashed.
+    #[default]
+    Auto,
+
+    /// Explicit bundle URL — for consumers whose build setup
+    /// doesn't expose `import.meta.url` in a usable form (rare —
+    /// some legacy non-module-worker builds). Library tries `Auto`
+    /// first and only falls back to this if explicitly asked.
     ModuleUrl { bundle_url: String },
 
-    /// Escape hatch — consumers whose build doesn't expose a stable
-    /// URL construct the `Worker` themselves; the pool then drives
-    /// the postMessage protocol.
+    /// Escape hatch — consumer constructs the `Worker` themselves;
+    /// the pool then drives the postMessage protocol over the
+    /// caller-supplied handle.
     Custom(Box<dyn Fn() -> Result<web_sys::Worker, JsValue> + 'static>),
 }
 
 impl WorkerPool {
+    /// Most common shape: `WorkerPool::with_workers(2).await?`.
+    /// Uses `WorkerPoolBootstrap::Auto`, defaults `worker_count` to
+    /// `min(navigator.hardwareConcurrency, 4)` if `None`.
+    pub async fn with_workers(worker_count: Option<usize>) -> Result<Self, AwsmError> { /* … */ }
+
     pub async fn new(
         bootstrap: WorkerPoolBootstrap,
         worker_count: usize,
@@ -213,6 +232,14 @@ impl WorkerPool {
         input: J::Input,
         transfer: js_sys::Array,
     ) -> Result<J::Output, AwsmError> { /* … */ }
+}
+
+// Bundle URL auto-discovery — runs in the consumer's wasm-bindgen
+// module context, so `import.meta.url` is the consumer's bundle
+// regardless of name / hash / build tool.
+#[wasm_bindgen(inline_js = "export function awsm_bundle_url() { return import.meta.url; }")]
+extern "C" {
+    fn awsm_bundle_url() -> String;
 }
 
 /// Exported entry point the worker's wasm-bindgen init calls after
@@ -291,24 +318,44 @@ impl WorkerJob for GltfParseJob {
 }
 ```
 
-Consumer wires it up:
+Consumer wires it up (works identically for editor and for shipped
+games — no consumer-supplied bundle URL anywhere):
 
 ```rust
-// scene-editor (or any game using the renderer)
-let pool = WorkerPool::new(
-    WorkerPoolBootstrap::ModuleUrl {
-        bundle_url: bundle_url_helper(),  // wasm_bindgen::module() / hardcoded / etc.
-    },
-    2,
-).await?;
+// scene-editor / game / any consumer
+let pool = WorkerPool::with_workers(None).await?;  // Auto, default count
 
-let parsed = pool.dispatch::<GltfParseJob>(input).await?;
+// Loading a project — fire concurrent glb parses, pool round-robins:
+let (a, b, c) = futures::try_join!(
+    pool.dispatch::<GltfParseJob>(input_a),
+    pool.dispatch::<GltfParseJob>(input_b),
+    pool.dispatch::<GltfParseJob>(input_c),
+)?;
 ```
 
 For the 27 MB robot the parsed `Vec<u8>` buffers go through
-`dispatch_with_transfer` — they were going to be consumed once
-(uploaded to GPU), so transferring ownership across the thread
-boundary is free.
+`dispatch_with_transfer` — they're consumed once (uploaded to GPU),
+so transferring ownership across the thread boundary is free.
+
+#### Why auto-discovery instead of consumer-supplied URL
+
+The earlier draft had a consumer-supplied `bundle_url: String`.
+That doesn't survive contact with reality:
+
+- Trunk hashes the JS filename in release builds (`scene-editor-
+  abc123.js`); the consumer doesn't know the hash at compile time.
+- Each consumer's bundle has a different name — `scene-editor.js`
+  in the editor, `my-game.js` in a shipped game, `bundle.js` in
+  the third one.
+- Bundlers may chunk into multiple files; the "main" file isn't
+  obvious.
+
+`import.meta.url` from inside the library's `#[wasm_bindgen(inline_js
+= ...)]` snippet sidesteps all of this. The snippet gets embedded
+into the consumer's wasm-bindgen JS module by the wasm-bindgen
+tool at build time; when called at runtime, `import.meta.url`
+resolves to whatever URL the consumer's bundle is being served
+from. Renames, hashes, chunking — none of it matters.
 
 #### Measurement gate
 
@@ -326,10 +373,18 @@ config knob.
   fine-grained parallelism. Rejected: requires COOP/COEP headers
   on the consumer's deployment. We don't need fine-grained
   parallelism — coarse job offload via postMessage is enough.
-- **`Custom`-only API (no `ModuleUrl` helper)**. Rejected: pushes
-  the inline-JS shim work onto every consumer. The shim is 5
-  lines but multiplying it by every consumer crate is exactly the
-  kind of friction a first-class abstraction should remove.
+- **Consumer-supplied `bundle_url: String` as the primary
+  bootstrap.** Rejected: bundle filenames vary across consumers
+  (editor vs each game), vary across build profiles (Trunk hashes
+  release builds), and vary across build tools (chunking, ESM vs
+  classic, etc.). The library has no business asking consumers to
+  hard-code a filename that the build system is the one source of
+  truth for. Auto-discovery via `import.meta.url` from a library-
+  internal inline-JS snippet is portable across all of these.
+- **`Custom`-only API (no auto-discovery)**. Rejected: pushes the
+  inline-JS shim + URL plumbing onto every consumer. The whole
+  point of a first-class abstraction is that simple use is one
+  line.
 - **Single-worker-per-job (no pool)**. Rejected: doesn't amortize
   startup cost (~5–50 ms per worker spawn). Scene loads with
   multiple glbs would pay it per file.
