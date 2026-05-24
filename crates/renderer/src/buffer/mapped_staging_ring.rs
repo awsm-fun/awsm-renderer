@@ -118,8 +118,10 @@ pub enum AcquireOutcome<'a> {
 
 /// RAII handle returned by a successful acquire. Holds the mapped
 /// `Uint8Array` and remembers the slot index for the matching
-/// finalize call. Drop without finalize will `unmap()` to keep WebGPU
-/// validation happy.
+/// finalize call. Drop without finalize is a deliberate no-op: the
+/// slot is left in its `Mapped` state so the next `acquire(..)`
+/// returns it again — typical for callers that `?`-bail mid-write
+/// before recording the copy.
 pub struct MappedSlotWrite<'a> {
     ring: &'a mut MappedStagingRing,
     slot_index: usize,
@@ -127,7 +129,9 @@ pub struct MappedSlotWrite<'a> {
     /// crossing the wasm/JS boundary per byte.
     view: Uint8Array,
     capacity: usize,
-    /// Set true on `finalize`; suppresses the `Drop` unmap.
+    /// Set true on `finalize`; the `Drop` impl reads this only to
+    /// distinguish "committed" from "abandoned"; both branches keep
+    /// the slot mapped — see the `Drop` impl below for why.
     finalized: bool,
 }
 
@@ -192,7 +196,7 @@ impl<'a> MappedSlotWrite<'a> {
         // WebGPU validation rejects the submit ("buffer is used in a
         // submission while a map is pending"). The caller is required
         // to submit the encoder *first*, then call
-        // [`MappedStagingRing::kick_in_flight_slots`] to roll the
+        // [`MappedStagingRing::kick_submitted_slots`] to roll the
         // Submitted slots forward to Pending. See
         // [`crate::buffer::mapped_uploader::MappedUploader::write_dirty_ranges`]
         // for the canonical ordering.
@@ -456,10 +460,20 @@ impl MappedStagingRing {
     }
 
     fn update_peak(&mut self) {
+        // Only `Submitted` + `Pending` count as oversubscription
+        // pressure — those slots are owned by the GPU / waiting on
+        // `mapAsync` and can't be acquired for the next write.
+        // `Mapped` and `Ready` are both *acquirable* (Mapped right
+        // now, Ready promotes to Mapped on the next `acquire`), so
+        // including them would make `peak_ring_depth_used` ≈ ring
+        // depth in steady state regardless of actual contention.
+        // The metric should answer "how close did we come to
+        // exhausting the ring?" — that's exactly the non-acquirable
+        // count.
         let used = self
             .slots
             .iter()
-            .filter(|s| s.state != SlotState::Ready)
+            .filter(|s| matches!(s.state, SlotState::Submitted | SlotState::Pending))
             .count();
         if used > self.stats.peak_ring_depth_used {
             self.stats.peak_ring_depth_used = used;

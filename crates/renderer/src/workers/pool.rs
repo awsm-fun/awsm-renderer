@@ -46,16 +46,32 @@ pub enum WorkerPoolError {
 }
 
 impl WorkerPoolError {
-    fn from_js(prefix: &'static str, err: JsValue) -> Self {
-        let msg = err
-            .as_string()
+    /// Extract a human-readable message from a JS error value, falling
+    /// back to the `Debug` format when neither `.toString()` nor a
+    /// `.message` property is present.
+    fn js_message(err: JsValue) -> String {
+        err.as_string()
             .or_else(|| {
                 Reflect::get(&err, &JsValue::from_str("message"))
                     .ok()
                     .and_then(|v| v.as_string())
             })
-            .unwrap_or_else(|| format!("{err:?}"));
-        WorkerPoolError::Bootstrap(format!("{prefix}: {msg}"))
+            .unwrap_or_else(|| format!("{err:?}"))
+    }
+
+    /// Build a `Bootstrap` variant from a JS error raised during pool
+    /// construction (worker spawn, custom factory, init postMessage,
+    /// shared-module discovery).
+    fn bootstrap_from_js(prefix: &'static str, err: JsValue) -> Self {
+        WorkerPoolError::Bootstrap(format!("{prefix}: {}", Self::js_message(err)))
+    }
+
+    /// Build a `PostMessage` variant from a JS error raised during a
+    /// live `dispatch_*` call. Distinct from `Bootstrap` so callers
+    /// can distinguish a worker that failed to spawn from one that
+    /// dropped a per-frame message.
+    fn post_message_from_js(prefix: &'static str, err: JsValue) -> Self {
+        WorkerPoolError::PostMessage(format!("{prefix}: {}", Self::js_message(err)))
     }
 }
 
@@ -195,7 +211,7 @@ impl WorkerPool {
             WorkerPoolBootstrap::Custom(_) => String::new(),
         };
         let wasm_module = current_wasm_module()
-            .map_err(|err| WorkerPoolError::from_js("current_wasm_module", err))?;
+            .map_err(|err| WorkerPoolError::bootstrap_from_js("current_wasm_module", err))?;
 
         let pending: Rc<RefCell<HashMap<u64, PendingSender>>> =
             Rc::new(RefCell::new(HashMap::new()));
@@ -212,10 +228,10 @@ impl WorkerPool {
                     let opts = WorkerOptions::new();
                     opts.set_type(WorkerType::Module);
                     new_worker_from_js(WORKER_BOOTSTRAP_JS, Some(opts))
-                        .map_err(|err| WorkerPoolError::from_js("worker spawn", err))?
+                        .map_err(|err| WorkerPoolError::bootstrap_from_js("worker spawn", err))?
                 }
                 WorkerPoolBootstrap::Custom(factory) => factory()
-                    .map_err(|err| WorkerPoolError::from_js("custom worker factory", err))?,
+                    .map_err(|err| WorkerPoolError::bootstrap_from_js("custom worker factory", err))?,
             };
 
             // Ready future — resolved by the first `awsm-ready` event.
@@ -305,18 +321,18 @@ impl WorkerPool {
                 &JsValue::from_str("kind"),
                 &JsValue::from_str("awsm-init"),
             )
-            .map_err(|err| WorkerPoolError::from_js("init msg", err))?;
+            .map_err(|err| WorkerPoolError::bootstrap_from_js("init msg", err))?;
             Reflect::set(&init_msg, &JsValue::from_str("wasm_module"), &wasm_module)
-                .map_err(|err| WorkerPoolError::from_js("init msg", err))?;
+                .map_err(|err| WorkerPoolError::bootstrap_from_js("init msg", err))?;
             Reflect::set(
                 &init_msg,
                 &JsValue::from_str("glue_url"),
                 &JsValue::from_str(&glue_url),
             )
-            .map_err(|err| WorkerPoolError::from_js("init msg", err))?;
+            .map_err(|err| WorkerPoolError::bootstrap_from_js("init msg", err))?;
             worker
                 .post_message(&init_msg)
-                .map_err(|err| WorkerPoolError::from_js("init postMessage", err))?;
+                .map_err(|err| WorkerPoolError::bootstrap_from_js("init postMessage", err))?;
 
             workers.push(WorkerSlot { worker });
             ready_futures.push(ready_rx);
@@ -434,7 +450,7 @@ impl WorkerPool {
             Some(arr) => worker.post_message_with_transfer(&msg, &arr),
             None => worker.post_message(&msg),
         };
-        post_result.map_err(|err| WorkerPoolError::from_js("dispatch postMessage", err))?;
+        post_result.map_err(|err| WorkerPoolError::post_message_from_js("dispatch postMessage", err))?;
 
         match rx.await {
             // `J::from_response_message` is the trait hook for jobs

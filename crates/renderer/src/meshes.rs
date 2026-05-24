@@ -692,16 +692,19 @@ impl Meshes {
     /// value, so meshes whose effective key didn't change generate no
     /// GPU writes.
     ///
-    /// Safety: callers MUST have validated cheap-material
-    /// compatibility via `validate_cheap_material_compat` (same
-    /// shader_id + same transparency-pass classification) at
-    /// authoring time. The routing layer (`collect_renderables`) reads
-    /// `mesh.material_key` for pipeline + pass selection and assumes
-    /// the cheap variant lands on the same pass — without the compat
-    /// check, a cross-pass cheap material would land in the wrong
-    /// renderable list relative to the meta data the shader reads
-    /// and either silently no-op the cheap path or, worse, route a
-    /// transparent material through the opaque pipeline.
+    /// Safety: the cheap-material compatibility constraint (same
+    /// `MaterialShaderId` AND same `is_transparency_pass()`
+    /// classification) is enforced by
+    /// [`AwsmRenderer::set_mesh_cheap_material`] at authoring time —
+    /// it returns `AwsmMeshError::IncompatibleCheapMaterial` on any
+    /// pair that would violate it. This per-frame refresh therefore
+    /// only swaps `material_offset`, not pipeline keys or pass-list
+    /// membership. Without that constraint a cross-pass cheap
+    /// material would land in the wrong renderable list relative to
+    /// the meta data the shader reads and either silently no-op the
+    /// cheap path or, worse, route a transparent material through
+    /// the opaque pipeline. There is no separate validation helper —
+    /// the public setter IS the validation entrypoint.
     ///
     /// Called once per frame from `AwsmRenderer::render` after
     /// `coverage.ingest` and before `meshes.meta.write_gpu`.

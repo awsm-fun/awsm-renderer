@@ -681,15 +681,26 @@ Gate" span shows **0.048 ms mean / 0.1 ms p95** — well under the
 
 ### PCSS variable tap count by distance
 
-Both PCSS branches (cube `sample_shadow_cube`, directional
+The three PCSS branches (cube `sample_shadow_cube`, directional
 `sample_shadow_cascade_array`, 2D spot `sample_shadow_descriptor`)
-now taper their tap count linearly from `shadow_globals.flags.z`
-(close, "max taps", default **16**) to `shadow_globals.flags.w`
-(far, "min taps", default **4**). The interpolation parameter is
-the receiver's normalised distance to the light:
+taper their blocker-search + PCF tap counts linearly from
+`shadow_globals.flags.z` (close, "max taps", default **16**) to
+`shadow_globals.flags.w` (far, "min taps", default **4**). The
+interpolation parameter is the receiver's normalised distance to
+the light:
 
 - Cube: `dist / range` (receiver-to-light distance / light range)
 - Directional / 2D: `ndc.z` (receiver's NDC.z within the cascade)
+
+The **Soft** (hardness < 1.5) branch is intentionally NOT
+tapered — it stays at a fixed 16-tap Poisson kernel. Tapering it
+during the initial sprint introduced visible disk-rotation
+banding on large smooth receivers (e.g. a floor plane under a
+directional light). The Soft path is the user's
+"smooth-and-cheap" knob; PCSS is the "contact-hardening +
+variable kernel" knob. Only the latter has the dynamic-kernel
+math that absorbs the noise floor a smaller sample count
+introduces.
 
 Implementation pattern (kept identical across the four call sites
 so the safety reasoning carries):
