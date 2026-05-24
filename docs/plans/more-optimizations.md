@@ -21,31 +21,6 @@ in both Chrome and Safari from the running editor.
 
 ## Phase 1 — Renderer init parallelization
 
-## Phase 2 — Per-frame upload consolidation
-
-### 2.1 🚀 Consolidate per-frame `queue.writeBuffer` calls into a shared staging buffer
-
-Every frame the renderer fires ~15–25 distinct `writeBuffer` calls
-(transforms, materials, instances, meta, shadows, light indices,
-occlusion instances, occlusion params, coverage reset, classify
-reset, decal reset, mesh-light-indices upload, etc.). On Safari each
-call is a Metal staging-buffer create + blit + sync; Chrome amortises
-better but still benefits.
-
-Approach: introduce a per-frame **upload arena** — a single
-GPU-resident staging buffer that subsystems append to via a small
-`UploadHandle { offset, len }`, then one `copyBufferToBuffer` per
-destination (or one `writeBuffer` of the whole arena followed by
-`copyBufferToBuffer` blits). The dirty-range tracking in
-`DynamicUniformBuffer` / `DynamicStorageBuffer` already coalesces;
-the change here is replacing N small `writeBuffer`s with one large
-one.
-
-Worth measuring before+after on both browsers — should be the
-biggest Safari delta of this sprint.
-
----
-
 ## Phase 3 — *(retired — see "Recently landed" below)*
 
 The original Phase 3 ("merge opaque PBR/Unlit/Toon compute pipelines
@@ -487,6 +462,21 @@ For PR context — these shipped in the prior sprint and the
 
 For the next picker — items explicitly considered and rejected.
 
+- ❌ Per-frame upload arena (was Phase 2.1). Rejected for this
+  sprint — broad scope (touches ~10 subsystems' `write_gpu`:
+  transforms, materials, instances, meshes/meta, textures,
+  camera, lights, shadows globals + descriptors, skins, morphs,
+  plus several reset paths), and the plan's own framing says it
+  needs before/after measurement on Chrome AND Safari to confirm
+  the win — Chrome already amortises `writeBuffer` well, the
+  Safari delta is the load-bearing benefit. Landing a
+  cross-subsystem refactor blind on Chrome-only carries the
+  highest bug-surface of any sprint item; staking the
+  measurement-required claim without a Safari-side number is
+  unjustified. The dirty-range coalescing in
+  `write_buffer_with_dirty_ranges` already buys most of the
+  Chrome-side gain (~5-10 ranges per call typically). Should be
+  re-picked as its own sprint with Safari hardware in the loop.
 - ❌ `Arc<Mutex<...>>` → `Rc<RefCell<...>>`. Rejected: the
   `Send`/`Sync` shape is intentional future-proofing for
   multi-threading. On wasm32 the lock-acquire is essentially free.
