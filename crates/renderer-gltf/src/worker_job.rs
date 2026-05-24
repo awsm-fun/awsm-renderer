@@ -36,12 +36,15 @@
 use std::sync::{Arc, Mutex};
 
 use awsm_renderer::workers::WorkerJob;
+use awsm_renderer_core::image::{
+    bitmap::load_u8, ColorSpaceConversion, ImageBitmapOptions, ImageData, PremultiplyAlpha,
+};
 use futures::future::try_join_all;
 use gltf::{buffer, image, Document, Error as GltfError, Gltf};
 use serde::{Deserialize, Serialize};
 
 use crate::error::AwsmGltfError;
-use crate::loader::{get_type_from_filename, GltfFileType};
+use crate::loader::{get_type_from_filename, GltfFileType, GltfLoader};
 
 /// Worker-job marker.
 pub struct GltfParseJob;
@@ -118,6 +121,56 @@ pub struct EncodedImage {
     /// Either `mime_type` or `uri` is `Some`; both being `None`
     /// indicates a programming error.
     pub uri: Option<String>,
+}
+
+impl GltfParseOutput {
+    /// Bridge worker output back into a `GltfLoader`. Re-parses the
+    /// doc bytes (`Gltf::from_slice`) and runs `createImageBitmap`
+    /// on each encoded image — both happen on the main thread, since
+    /// `web_sys::ImageBitmap` doesn't cross the worker postMessage
+    /// boundary cleanly.
+    ///
+    /// Consumers that opt into the worker-mode gltf-parse path
+    /// (Phase 4.3b) call:
+    ///
+    /// ```ignore
+    /// let out = pool.dispatch::<GltfParseJob>(input).await?;
+    /// let loader = out.into_loader().await?;
+    /// renderer.populate_gltf(loader.into_data(None)?, None).await?;
+    /// ```
+    ///
+    /// The default `asset_cache::load_and_populate` path stays on
+    /// the inline `GltfLoader::load` until the A/B measurement gate
+    /// in the Phase 4.3b spec confirms a real win on representative
+    /// scenes (e.g. the 27 MB robot stress asset).
+    pub async fn into_loader(self) -> anyhow::Result<GltfLoader> {
+        let Gltf { document: doc, .. } = Gltf::from_slice(&self.doc_bytes)?;
+        // Buffers are already 4-byte padded by `execute_async`.
+        let buffers = self.buffer_bytes;
+        // Decode each encoded image on the main thread.
+        let options = Some(
+            ImageBitmapOptions::new()
+                .with_premultiply_alpha(PremultiplyAlpha::None)
+                .with_color_space_conversion(ColorSpaceConversion::Default),
+        );
+        let mut images = Vec::with_capacity(self.image_bytes.len());
+        for encoded in self.image_bytes {
+            let mime = encoded
+                .mime_type
+                .as_deref()
+                .unwrap_or("application/octet-stream");
+            let bitmap = load_u8(&encoded.bytes, mime, options.clone()).await?;
+            images.push(ImageData::Bitmap {
+                image: bitmap,
+                options: options.clone(),
+            });
+        }
+        Ok(GltfLoader {
+            doc,
+            buffers,
+            images,
+        })
+    }
 }
 
 impl WorkerJob for GltfParseJob {

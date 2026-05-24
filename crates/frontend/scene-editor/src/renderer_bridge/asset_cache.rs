@@ -8,7 +8,7 @@
 
 #![allow(clippy::type_complexity)]
 
-use crate::context::{renderer_handle, with_renderer};
+use crate::context::{renderer_handle, with_renderer, worker_pool_handle};
 use crate::fs::ProjectDir;
 use crate::prelude::*;
 use crate::scene::{AssetId, AssetSource, AssetStatus};
@@ -168,9 +168,31 @@ async fn load_and_populate(asset_id: AssetId) -> Result<AssetTemplate, String> {
     let blob = make_blob(&resolved.bytes, mime).map_err(|e| format!("blob: {e:?}"))?;
     let url = Url::create_object_url_with_blob(&blob).map_err(|e| format!("url: {e:?}"))?;
 
-    let loader_result = GltfLoader::load(&url, detect_file_type(&resolved.filename))
-        .await
-        .map_err(|e| format!("gltf load: {e}"));
+    // Phase-4.3b worker-mode opt-in: dispatch GltfParseJob when the
+    // `?gltf-worker=on` URL knob populated the worker pool at editor
+    // init. Otherwise fall back to the canonical inline path.
+    let pool_handle = worker_pool_handle();
+    let loader_result = if let Some(pool) = pool_handle.as_ref() {
+        use awsm_renderer_gltf::worker_job::{
+            FileTypeHint, GltfParseInput, GltfParseJob,
+        };
+        let hint = detect_file_type(&resolved.filename).as_ref().map(FileTypeHint::from);
+        let input = GltfParseInput {
+            url: url.clone(),
+            file_type: hint,
+        };
+        match pool.dispatch::<GltfParseJob>(input).await {
+            Ok(out) => match out.into_loader().await {
+                Ok(loader) => Ok(loader),
+                Err(e) => Err(format!("gltf worker into_loader: {e}")),
+            },
+            Err(e) => Err(format!("gltf worker dispatch: {e}")),
+        }
+    } else {
+        GltfLoader::load(&url, detect_file_type(&resolved.filename))
+            .await
+            .map_err(|e| format!("gltf load: {e}"))
+    };
     let _ = Url::revoke_object_url(&url);
     let loader = loader_result?;
 
