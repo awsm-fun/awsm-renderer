@@ -169,6 +169,8 @@ name = "awsm-render-worker-example"
 version = "0.1.7"
 dependencies = [
  "anyhow",
+ "awsm-materials",
+ "awsm-meshgen",
  "awsm-renderer",
  "awsm-renderer-core",
  "glam 0.32.1",
