@@ -367,24 +367,23 @@ pub async fn read_upload_ring_stats() -> String {
     use std::fmt::Write;
     let buckets = crate::context::with_renderer(|r| r.upload_ring_stats()).await;
 
-    let fmt_stats =
-        |s: &awsm_renderer::buffer::mapped_staging_ring::UploadStats| -> String {
-            format!(
-                "{{\"peak_ring_depth_used\":{},\"fallback_count\":{},\
+    let fmt_stats = |s: &awsm_renderer::buffer::mapped_staging_ring::UploadStats| -> String {
+        format!(
+            "{{\"peak_ring_depth_used\":{},\"fallback_count\":{},\
                  \"map_async_wait_ms\":{:.4},\
                  \"bytes_uploaded_via_ring\":{},\
                  \"bytes_uploaded_via_fallback\":{},\
                  \"bytes_uploaded_via_writebuffer\":{},\
                  \"resize_count\":{}}}",
-                s.peak_ring_depth_used,
-                s.fallback_count,
-                s.map_async_wait_ms,
-                s.bytes_uploaded_via_ring,
-                s.bytes_uploaded_via_fallback,
-                s.bytes_uploaded_via_writebuffer,
-                s.resize_count,
-            )
-        };
+            s.peak_ring_depth_used,
+            s.fallback_count,
+            s.map_async_wait_ms,
+            s.bytes_uploaded_via_ring,
+            s.bytes_uploaded_via_fallback,
+            s.bytes_uploaded_via_writebuffer,
+            s.resize_count,
+        )
+    };
 
     let mut total = awsm_renderer::buffer::mapped_staging_ring::UploadStats::default();
     let mut out = String::from("{");

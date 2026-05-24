@@ -118,9 +118,7 @@ impl<Key: slotmap::Key, Info: MorphInfo> MorphData<Key, Info> {
             infos: SlotMap::with_key(),
             gpu_buffer_weights,
             gpu_buffer_values,
-            weights_uploader: crate::buffer::mapped_uploader::MappedUploader::new(
-                "Morph Weights",
-            ),
+            weights_uploader: crate::buffer::mapped_uploader::MappedUploader::new("Morph Weights"),
             values_uploader: crate::buffer::mapped_uploader::MappedUploader::new("Morph Values"),
         })
     }

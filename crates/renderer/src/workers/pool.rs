@@ -17,11 +17,11 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use futures::channel::oneshot;
-use web_sys::js_sys::{Array, Function, Object, Reflect};
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
+use web_sys::js_sys::{Array, Function, Object, Reflect};
 use web_sys::{MessageEvent, Worker, WorkerOptions, WorkerType};
 
 use crate::workers::blob::{
@@ -257,8 +257,12 @@ impl WorkerPool {
 
             // Kick init: post the shared module + glue URL.
             let init_msg = Object::new();
-            Reflect::set(&init_msg, &JsValue::from_str("kind"), &JsValue::from_str("awsm-init"))
-                .map_err(|err| WorkerPoolError::from_js("init msg", err))?;
+            Reflect::set(
+                &init_msg,
+                &JsValue::from_str("kind"),
+                &JsValue::from_str("awsm-init"),
+            )
+            .map_err(|err| WorkerPoolError::from_js("init msg", err))?;
             Reflect::set(&init_msg, &JsValue::from_str("wasm_module"), &wasm_module)
                 .map_err(|err| WorkerPoolError::from_js("init msg", err))?;
             Reflect::set(
@@ -320,7 +324,10 @@ impl WorkerPool {
     }
 
     /// Dispatch a job. Round-robins workers.
-    pub async fn dispatch<J: WorkerJob>(&self, input: J::Input) -> Result<J::Output, WorkerPoolError> {
+    pub async fn dispatch<J: WorkerJob>(
+        &self,
+        input: J::Input,
+    ) -> Result<J::Output, WorkerPoolError> {
         self.dispatch_inner::<J>(input, None).await
     }
 
@@ -363,9 +370,21 @@ impl WorkerPool {
             .map_err(|err| WorkerPoolError::Serde(format!("input: {err}")))?;
 
         let msg = Object::new();
-        let _ = Reflect::set(&msg, &JsValue::from_str("kind"), &JsValue::from_str("awsm-job"));
-        let _ = Reflect::set(&msg, &JsValue::from_str("id"), &JsValue::from_f64(id as f64));
-        let _ = Reflect::set(&msg, &JsValue::from_str("name"), &JsValue::from_str(J::NAME));
+        let _ = Reflect::set(
+            &msg,
+            &JsValue::from_str("kind"),
+            &JsValue::from_str("awsm-job"),
+        );
+        let _ = Reflect::set(
+            &msg,
+            &JsValue::from_str("id"),
+            &JsValue::from_f64(id as f64),
+        );
+        let _ = Reflect::set(
+            &msg,
+            &JsValue::from_str("name"),
+            &JsValue::from_str(J::NAME),
+        );
         let _ = Reflect::set(&msg, &JsValue::from_str("input"), &input_js);
 
         let post_result = match transfer {

@@ -41,3 +41,4 @@ strum = { workspace = true }
 ordered-float = { workspace = true }
 indexmap = { workspace = true }
 bevy_mikktspace = { workspace = true }
+serde = { workspace = true }

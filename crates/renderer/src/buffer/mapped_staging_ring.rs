@@ -384,11 +384,7 @@ impl MappedStagingRing {
         self.return_mapped_with_view(idx, Uint8Array::new(&array))
     }
 
-    fn return_mapped_with_view(
-        &mut self,
-        idx: usize,
-        view: Uint8Array,
-    ) -> AcquireOutcome<'_> {
+    fn return_mapped_with_view(&mut self, idx: usize, view: Uint8Array) -> AcquireOutcome<'_> {
         self.next = (idx + 1) % self.slots.len();
         let capacity = self.slot_capacity;
         AcquireOutcome::Acquired(MappedSlotWrite {
@@ -433,8 +429,7 @@ impl MappedStagingRing {
         let capacity = self.slot_capacity as u32;
         let label = self.label.clone();
         ready_flag.set(false);
-        let promise =
-            buffer.map_async_with_u32_and_u32(MapMode::Write as u32, 0, capacity);
+        let promise = buffer.map_async_with_u32_and_u32(MapMode::Write as u32, 0, capacity);
         spawn_local(async move {
             match JsFuture::from(promise).await {
                 Ok(_) => {

@@ -7,17 +7,14 @@
 //! travels inside the wasm bundle and the consumer's build pipeline
 //! sees a single artifact.
 
-use web_sys::js_sys::Array;
 use wasm_bindgen::{JsCast, JsValue};
+use web_sys::js_sys::Array;
 use web_sys::{Blob, BlobPropertyBag, Url, Worker, WorkerOptions};
 
 /// Build a `Worker` from inline JS source. The returned worker owns
 /// the blob URL; we revoke immediately after spawn (the worker has
 /// already loaded the source by then).
-pub fn new_worker_from_js(
-    js: &str,
-    options: Option<WorkerOptions>,
-) -> Result<Worker, JsValue> {
+pub fn new_worker_from_js(js: &str, options: Option<WorkerOptions>) -> Result<Worker, JsValue> {
     let blob_options = BlobPropertyBag::new();
     blob_options.set_type("application/javascript");
     let blob_parts = Array::new_with_length(1);

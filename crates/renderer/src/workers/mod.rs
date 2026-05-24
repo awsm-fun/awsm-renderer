@@ -28,6 +28,4 @@ mod entry;
 mod pool;
 
 pub use entry::{awsm_worker_entry, EchoInput, EchoJob, EchoOutput};
-pub use pool::{
-    WorkerJob, WorkerPool, WorkerPoolBootstrap, WorkerPoolError, WorkerPoolStats,
-};
+pub use pool::{WorkerJob, WorkerPool, WorkerPoolBootstrap, WorkerPoolError, WorkerPoolStats};

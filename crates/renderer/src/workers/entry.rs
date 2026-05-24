@@ -10,11 +10,11 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use web_sys::js_sys::{Object, Reflect};
 use serde::{de::DeserializeOwned, Serialize};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::{JsCast, JsValue};
+use web_sys::js_sys::{Object, Reflect};
 use web_sys::MessageEvent;
 
 use crate::workers::pool::WorkerJob;
@@ -94,8 +94,7 @@ pub fn awsm_worker_entry() {
             .ok()
             .and_then(|v| v.as_string())
             .unwrap_or_default();
-        let input = Reflect::get(&data, &JsValue::from_str("input"))
-            .unwrap_or(JsValue::UNDEFINED);
+        let input = Reflect::get(&data, &JsValue::from_str("input")).unwrap_or(JsValue::UNDEFINED);
 
         let result_kind;
         let payload_or_msg: JsValue;
@@ -123,7 +122,11 @@ pub fn awsm_worker_entry() {
             &JsValue::from_str("kind"),
             &JsValue::from_str(result_kind),
         );
-        let _ = Reflect::set(&response, &JsValue::from_str("id"), &JsValue::from_f64(id as f64));
+        let _ = Reflect::set(
+            &response,
+            &JsValue::from_str("id"),
+            &JsValue::from_f64(id as f64),
+        );
         if result_kind == "awsm-result" {
             let _ = Reflect::set(&response, &JsValue::from_str("payload"), &payload_or_msg);
         } else {
@@ -133,7 +136,11 @@ pub fn awsm_worker_entry() {
             tracing::warn!("worker post_message failed: {err:?}");
         }
     });
-    worker_scope.set_onmessage(Some(onmessage.as_ref().unchecked_ref::<web_sys::js_sys::Function>()));
+    worker_scope.set_onmessage(Some(
+        onmessage
+            .as_ref()
+            .unchecked_ref::<web_sys::js_sys::Function>(),
+    ));
     // Keep the closure alive for the worker's lifetime.
     ONMESSAGE_HOLDER.with(|h| {
         *h.borrow_mut() = Some(onmessage);

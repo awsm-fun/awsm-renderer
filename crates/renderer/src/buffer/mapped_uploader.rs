@@ -218,12 +218,8 @@ impl MappedUploader {
         }
         match self.ring.as_mut() {
             None => {
-                let ring = MappedStagingRing::new(
-                    gpu,
-                    self.ring_depth,
-                    dest_size,
-                    self.label.clone(),
-                )?;
+                let ring =
+                    MappedStagingRing::new(gpu, self.ring_depth, dest_size, self.label.clone())?;
                 self.ring = Some(ring);
                 self.last_dest_size = dest_size;
             }

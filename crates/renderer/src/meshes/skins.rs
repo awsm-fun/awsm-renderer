@@ -78,9 +78,7 @@ impl Skins {
             joint_index_weights_gpu_dirty: true,
             matrices_gpu_buffer,
             joint_index_weights_gpu_buffer,
-            matrices_uploader: crate::buffer::mapped_uploader::MappedUploader::new(
-                "Skin Matrices",
-            ),
+            matrices_uploader: crate::buffer::mapped_uploader::MappedUploader::new("Skin Matrices"),
             joint_index_weights_uploader: crate::buffer::mapped_uploader::MappedUploader::new(
                 "Skin Joint Index Weights",
             ),

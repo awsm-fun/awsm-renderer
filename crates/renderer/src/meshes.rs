@@ -581,8 +581,9 @@ impl Meshes {
             mesh_geometry_pool_uploader: crate::buffer::mapped_uploader::MappedUploader::new(
                 "MeshGeometryPool",
             ),
-            visibility_geometry_index_uploader:
-                crate::buffer::mapped_uploader::MappedUploader::new("MeshVisibilityIndex"),
+            visibility_geometry_index_uploader: crate::buffer::mapped_uploader::MappedUploader::new(
+                "MeshVisibilityIndex",
+            ),
             transparency_geometry_data_uploader:
                 crate::buffer::mapped_uploader::MappedUploader::new("MeshTransparencyData"),
             meta: MeshMeta::new(gpu)?,
@@ -1769,8 +1770,9 @@ impl Meshes {
 
             if self.visibility_geometry_index_dirty {
                 let mut resized = false;
-                if let Some(new_size) =
-                    self.visibility_geometry_index_buffers.take_gpu_needs_resize()
+                if let Some(new_size) = self
+                    .visibility_geometry_index_buffers
+                    .take_gpu_needs_resize()
                 {
                     self.visibility_geometry_index_gpu_buffer = gpu.create_buffer(
                         &BufferDescriptor::new(
@@ -1805,8 +1807,9 @@ impl Meshes {
 
             if self.transparency_geometry_data_dirty {
                 let mut resized = false;
-                if let Some(new_size) =
-                    self.transparency_geometry_data_buffers.take_gpu_needs_resize()
+                if let Some(new_size) = self
+                    .transparency_geometry_data_buffers
+                    .take_gpu_needs_resize()
                 {
                     self.transparency_geometry_data_gpu_buffer = gpu.create_buffer(
                         &BufferDescriptor::new(
@@ -1832,13 +1835,14 @@ impl Meshes {
                     )?;
                 } else {
                     let ranges = self.transparency_geometry_data_buffers.take_dirty_ranges();
-                    self.transparency_geometry_data_uploader.write_dirty_ranges(
-                        gpu,
-                        &self.transparency_geometry_data_gpu_buffer,
-                        self.transparency_geometry_data_buffers.raw_slice().len(),
-                        self.transparency_geometry_data_buffers.raw_slice(),
-                        &ranges,
-                    )?;
+                    self.transparency_geometry_data_uploader
+                        .write_dirty_ranges(
+                            gpu,
+                            &self.transparency_geometry_data_gpu_buffer,
+                            self.transparency_geometry_data_buffers.raw_slice().len(),
+                            self.transparency_geometry_data_buffers.raw_slice(),
+                            &ranges,
+                        )?;
                 }
             }
 
