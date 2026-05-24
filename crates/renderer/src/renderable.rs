@@ -353,7 +353,12 @@ impl Renderable {
         mesh_material_bind_group: &web_sys::GpuBindGroup,
     ) -> Result<()> {
         let mesh = ctx.meshes.get(self.key)?;
-        mesh.push_material_transparent_pass_commands(ctx, self.key, render_pass, mesh_material_bind_group)
+        mesh.push_material_transparent_pass_commands(
+            ctx,
+            self.key,
+            render_pass,
+            mesh_material_bind_group,
+        )
     }
 }
 

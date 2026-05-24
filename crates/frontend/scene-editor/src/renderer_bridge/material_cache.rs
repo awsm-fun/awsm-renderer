@@ -143,9 +143,9 @@ pub async fn cascade_after_delete_batch(asset_ids: &[AssetId]) {
             let matches = match &*n.kind.lock_ref() {
                 NodeKind::Primitive { material, .. }
                 | NodeKind::SweepAlongCurve { material, .. }
-                | NodeKind::Mesh { material, .. } => {
-                    material.map(|r| r.0).is_some_and(|id| asset_set.contains(&id))
-                }
+                | NodeKind::Mesh { material, .. } => material
+                    .map(|r| r.0)
+                    .is_some_and(|id| asset_set.contains(&id)),
                 _ => false,
             };
             if matches {
