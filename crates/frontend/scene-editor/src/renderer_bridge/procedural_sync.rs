@@ -815,13 +815,12 @@ fn resolve_material_texture(
     texture_ref: Option<awsm_scene_schema::TextureRef>,
     role: super::texture_cache::TextureColorRole,
 ) -> Option<awsm_renderer::materials::MaterialTexture> {
-    use awsm_renderer::textures::SamplerCacheKey;
     let texture_ref = texture_ref?;
     let source = super::texture_cache::asset_source(texture_ref.0)?;
     let key = super::texture_cache::get_or_upload(renderer, texture_ref.0, &source, role)?;
     let sampler_key = renderer
         .textures
-        .get_sampler_key(&renderer.gpu, SamplerCacheKey::default())
+        .get_sampler_key(&renderer.gpu, default_material_sampler_key())
         .ok()?;
     // Register the sampler in `pool_sampler_set` (the bind-group's
     // sampler array). Without this, a cache-hit `TextureKey` bound
@@ -841,4 +840,28 @@ fn resolve_material_texture(
         uv_index: Some(0),
         transform_key: None,
     })
+}
+
+/// Default sampler config for material textures bound through the
+/// editor's override path. Matches `renderer-gltf`'s
+/// `create_sampler_key` defaults: Linear min/mag/mip filter, Repeat
+/// wrap, max anisotropy 16. `SamplerCacheKey::default()` leaves every
+/// field as `None`, which the WebGPU driver resolves to
+/// Nearest / ClampToEdge / no anisotropy — pixelated and dim on
+/// any non-trivial PBR texture. Matching gltf's defaults keeps the
+/// editor's `MaterialDef` override visually equivalent to the
+/// renderer-baked path on freshly-inserted glTFs.
+fn default_material_sampler_key() -> awsm_renderer::textures::SamplerCacheKey {
+    use awsm_renderer::textures::SamplerCacheKey;
+    use awsm_renderer_core::sampler::{AddressMode, FilterMode, MipmapFilterMode};
+    SamplerCacheKey {
+        min_filter: Some(FilterMode::Linear),
+        mag_filter: Some(FilterMode::Linear),
+        mipmap_filter: Some(MipmapFilterMode::Linear),
+        address_mode_u: Some(AddressMode::Repeat),
+        address_mode_v: Some(AddressMode::Repeat),
+        address_mode_w: Some(AddressMode::Repeat),
+        max_anisotropy: Some(16),
+        ..Default::default()
+    }
 }
