@@ -180,6 +180,7 @@ dependencies = [
  "ordered-float",
  "rstar",
  "serde",
+ "serde-wasm-bindgen",
  "slotmap",
  "strum",
  "thiserror 2.0.18",

@@ -34,6 +34,7 @@ pub mod render_passes;
 pub mod render_textures;
 pub mod renderable;
 pub mod scene_spatial;
+pub mod workers;
 pub mod shaders;
 pub mod shadows;
 pub mod textures;

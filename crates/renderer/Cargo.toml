@@ -24,7 +24,11 @@ all = ["animation", "awsm-renderer-core/all", "scene-schema"]
 animation = []
 # Optional features to enable optional parts of awsm-renderer-core
 ktx = ["awsm-renderer-core/ktx"]
-serde = ["dep:serde", "awsm-renderer-core/serde"]
+# `serde` is now a required dep (Phase 4.3a worker jobs need it); the
+# feature is retained as a no-op marker so consumers enabling it
+# don't break, and forwards the inner serde feature on
+# `awsm-renderer-core`.
+serde = ["awsm-renderer-core/serde"]
 mega-texture = ["awsm-renderer-core/mega-texture"]
 exr = ["awsm-renderer-core/exr"]
 texture-export = ["awsm-renderer-core/texture-export"]
@@ -45,7 +49,6 @@ wasm-bindgen-futures = {workspace = true}
 tracing = {workspace = true}
 thiserror = {workspace = true}
 anyhow = {workspace = true}
-futures = {workspace = true}
 slotmap = {workspace = true}
 glam = {workspace = true}
 askama = {workspace = true}
@@ -54,4 +57,10 @@ ordered-float = {workspace = true}
 indexmap = { workspace = true}
 bevy_mikktspace = { workspace = true}
 rstar = "0.12"
-serde = { workspace = true, optional = true}
+# Required unconditionally by the `workers/` module (Phase 4.3a) — job
+# Input/Output must be serializable. The legacy optional `serde`
+# feature still works as a no-op marker (kept so existing consumers
+# enabling it don't break).
+serde = { workspace = true }
+serde-wasm-bindgen = {workspace = true}
+futures = {workspace = true}
