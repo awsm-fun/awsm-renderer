@@ -98,29 +98,22 @@ biggest Safari delta of this sprint.
 
 ---
 
-## Phase 3 — Per-frame compute pass merging
+## Phase 3 — *(retired — see "Recently landed" below)*
 
-### 3.1 🚀 Merge opaque PBR/Unlit/Toon compute pipelines into one shader-id-branched pass
+The original Phase 3 ("merge opaque PBR/Unlit/Toon compute pipelines
+into one shader-id-branched pass") was rejected for not scaling to
+many materials. On closer look the narrow-scope alternative —
+running all opaque pipelines inside a single `beginComputePass` /
+`endComputePass` boundary — is *already implemented* in
+[`render_pass.rs`](../../crates/renderer/src/render_passes/material_opaque/render_pass.rs):
+one pass, shared bind groups, a for-loop of `set_pipeline` +
+`dispatch_workgroups_indirect` per `shader_id`. Per-material
+pipeline specialization is preserved (each shader stays small),
+intra-workgroup divergence stays zero, and adding a new material
+is one entry in the dispatch loop.
 
-The opaque material pass currently issues **three** separate
-`dispatchWorkgroupsIndirect` calls (one per `MaterialShaderId`),
-each preceded by `set_pipeline` and bookended by
-`beginComputePass`/`endComputePass`. Each pair has overhead, and on
-Safari that overhead stacks per frame.
-
-Approach: single pipeline with a shader-id `select` at the top —
-the per-pixel `if (shader_id != SHADER_ID_PBR) return;` guard
-already exists in the templated shader; lift it from a per-pipeline
-specialization to a runtime branch and emit one dispatch over the
-union of all three tile buckets. The classify pass would need to
-write into a single combined bucket instead of three; alternatively
-keep three buckets and dispatch each via `(start, count)` slice in
-one pipeline.
-
-Caveat: this trades compile-time specialisation for runtime branch
-divergence. Worth gating behind a feature flag + benchmarking before
-committing — if PBR-heavy scenes regress, keep the split. Phase 0.2's
-per-pass sub-spans make the measurement cheap.
+No work needed here. Phase 3 retired; renumbering left as-is so
+cross-references in commit messages stay valid.
 
 ---
 
@@ -284,6 +277,11 @@ For PR context — these shipped in the prior sprint and the
   for bulk deletes
 - ✅ Safari uniform-binding fix: `GeometryMeshMeta._pad` from
   `array<u32, 52>` → `array<vec4<u32>, 13>` (16-byte-aligned stride)
+- ✅ Opaque material pass uses a single `beginComputePass` with
+  shared bind groups and a per-`shader_id` dispatch loop (turned
+  out to already be the structure when Phase 3 was investigated).
+  Per-pipeline specialization preserved; future-proof for more
+  material types.
 
 ---
 
