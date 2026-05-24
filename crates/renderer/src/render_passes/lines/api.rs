@@ -3,8 +3,8 @@ use glam::{Vec3, Vec4};
 use crate::{error::Result, AwsmRenderer};
 
 use super::gpu::{
-    create_bind_group, create_segment_buffer, create_uniform_buffer, pack_into,
-    segments_byte_size, write_segments,
+    create_bind_group, create_segment_buffer, create_uniform_buffer, pack_into, segments_byte_size,
+    write_segments,
 };
 use super::types::{LineEntry, LineKey, LineTopology};
 

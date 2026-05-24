@@ -624,15 +624,13 @@ impl AwsmRendererBuilder {
             textures: &mut textures,
             features: &features,
         };
-        let (render_passes, render_textures) = futures::future::try_join(
-            RenderPasses::new(&mut render_pass_init, &features),
-            async {
+        let (render_passes, render_textures) =
+            futures::future::try_join(RenderPasses::new(&mut render_pass_init, &features), async {
                 RenderTextures::new(&gpu, formats_for_textures, &features)
                     .await
                     .map_err(crate::error::AwsmError::from)
-            },
-        )
-        .await?;
+            })
+            .await?;
 
         // Pre-warm the shader cache with everything Picker + LineRenderer
         // need before constructing either. Picker has two compute shader

@@ -81,7 +81,7 @@ pub struct MaterialDecalComposite {
 
 impl MaterialDecalComposite {
     pub async fn new(ctx: &mut RenderPassInitContext<'_>) -> Result<Self> {
-        let gpu = &*ctx.gpu;
+        let gpu = ctx.gpu;
         let shader_module = gpu.compile_shader(
             &ShaderModuleDescriptor::new(SHADER_SOURCE, Some("Decal Composite shader")).into(),
         );

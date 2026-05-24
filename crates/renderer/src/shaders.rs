@@ -14,7 +14,8 @@ use crate::{
     picker::{ShaderCacheKeyPicker, ShaderTemplatePicker},
     render_passes::{
         lines::shader::{cache_key::ShaderCacheKeyLine, template::ShaderTemplateLine},
-        shader_cache_key::ShaderCacheKeyRenderPass, shader_template::ShaderTemplateRenderPass,
+        shader_cache_key::ShaderCacheKeyRenderPass,
+        shader_template::ShaderTemplateRenderPass,
     },
     shadows::shader::{cache_key::ShaderCacheKeyShadow, template::ShaderTemplateShadow},
 };
