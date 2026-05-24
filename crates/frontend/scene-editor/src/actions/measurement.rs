@@ -252,9 +252,11 @@ pub async fn read_mesh_coverage_stats() -> String {
 /// without any client-side bucketing logic. Clears the entries
 /// after sampling so the next call starts fresh.
 ///
-/// Skips spans whose count is below `min_count` (default 30) so
-/// rare one-shot init spans (GLTF parse, texture upload) don't
-/// dominate the output. Pass `min_count = 0` to include everything.
+/// Skips spans whose count is below `min_count` so rare one-shot
+/// init spans (GLTF parse, texture upload) don't dominate the output
+/// — pass e.g. 30 to focus on steady-state passes. The arg is
+/// required (no Rust default on a `#[wasm_bindgen]` export); pass
+/// `min_count = 0` to include everything.
 #[wasm_bindgen]
 pub fn read_render_pass_timings(min_count: u32) -> String {
     use js_sys::{Array, JsString, Reflect};
@@ -279,14 +281,15 @@ pub fn read_render_pass_timings(min_count: u32) -> String {
             .ok()
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0);
-        // `tracing-web` formats every span as `"<base> [<id>]: span-measure"`.
-        // Strip the suffix so different span ids for the same call site
-        // collapse into one bucket. Entries without the suffix (e.g.
-        // manually-emitted measures) pass through untouched.
-        let base = match name.rfind(" [") {
-            Some(idx) => name[..idx].to_string(),
-            None => name,
-        };
+        // `tracing-web` formats every span measure as
+        // `"<base> [<id>]: span-measure"`. Strip the suffix so different
+        // span ids for the same call site collapse into one bucket.
+        // Match the full pattern (not just a bare `" ["`) so a
+        // non-tracing measure whose name happens to contain `" ["` passes
+        // through untouched.
+        let base = strip_tracing_span_suffix(&name)
+            .map(str::to_string)
+            .unwrap_or(name);
         buckets.entry(base).or_default().push(dur);
     }
     let min_count = min_count as usize;
@@ -319,6 +322,22 @@ pub fn read_render_pass_timings(min_count: u32) -> String {
     // emit, which is fine.
     perf.clear_measures();
     out
+}
+
+/// Strip the `tracing-web` span suffix from a `performance.measure`
+/// name, returning the span's base name. `tracing-web` formats every
+/// span measure as `"<base> [<id>]: span-measure"` (see its
+/// `performance_layer`), so the suffix is matched in full: the name
+/// must end with `"]: span-measure"` and contain the opening `" ["` of
+/// the id group. Returns `None` for anything that doesn't match — a
+/// manually-emitted measure whose name merely contains `" ["` is left
+/// alone rather than truncated.
+fn strip_tracing_span_suffix(name: &str) -> Option<&str> {
+    // `<base> [<id>` — the numeric span id holds no `]` or `" ["`, so the
+    // last `" ["` opens the id group.
+    let head = name.strip_suffix("]: span-measure")?;
+    let idx = head.rfind(" [")?;
+    Some(&head[..idx])
 }
 
 /// Read the renderer's light-bucket telemetry.

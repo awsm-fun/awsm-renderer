@@ -183,11 +183,16 @@ impl Bridge {
     /// they're all `signal()` subscribers — so a one-frame delay
     /// is invisible.
     pub fn bump_nodes_revision(&self) {
-        {
-            let slot = self.pending_bump_raf.lock().unwrap();
-            if slot.is_some() {
-                return;
-            }
+        // Hold the slot lock across the whole check → schedule → store
+        // sequence. `request_animation_frame` only *registers* the
+        // callback (it never runs it inline), so the rAF closure — which
+        // locks `pending_bump_raf` itself — can't fire until this guard
+        // drops, well after this function returns. Taking the lock once
+        // and keeping it also closes the check-then-act window: two
+        // callers can't both observe `None` and each queue a frame.
+        let mut slot = self.pending_bump_raf.lock().unwrap();
+        if slot.is_some() {
+            return;
         }
         let frame = gloo_render::request_animation_frame(|_| {
             let b = bridge();
@@ -198,7 +203,7 @@ impl Bridge {
             let prev = b.nodes_revision.get();
             b.nodes_revision.set(prev.wrapping_add(1));
         });
-        *self.pending_bump_raf.lock().unwrap() = Some(frame);
+        *slot = Some(frame);
     }
 }
 

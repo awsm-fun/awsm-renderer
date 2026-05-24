@@ -15,6 +15,7 @@ use crate::scene::{AssetId, AssetSource, AssetStatus};
 use crate::state::app_state;
 use awsm_renderer::{
     meshes::MeshKey,
+    textures::TextureKey,
     transforms::{Transform, TransformKey},
 };
 use awsm_renderer_gltf::{
@@ -300,6 +301,23 @@ fn seed_texture_cache_from_populate(
         }
     };
     let textures = ctx.textures.lock().unwrap();
+    // One source image can back several `GltfTextureKey`s: the key
+    // carries the gltf *texture* index plus `color`, so the same image
+    // referenced srgb as a base-color in one material AND linear as a
+    // normal map in another (or via two distinct texture entries) lands
+    // under multiple keys, each with its own renderer `TextureKey`. The
+    // editor's texture cache keys purely on `AssetId` — one slot per
+    // image — so a multi-variant image has no single "correct" key to
+    // seed, and HashMap iteration order would otherwise pick the variant
+    // arbitrarily, silently overriding the role-specific upload that
+    // `texture_cache::get_or_upload` would have done.
+    //
+    // Resolve every renderer texture to its backing image first, then
+    // seed only images that map to exactly one renderer `TextureKey`.
+    // Ambiguous images fall back to the (correct, role-aware) on-demand
+    // upload — losing the dedup only for the rare multi-variant case,
+    // never binding the wrong color. `Some(None)` marks "ambiguous".
+    let mut per_image: HashMap<AssetId, Option<TextureKey>> = HashMap::new();
     for (gltf_texture_key, texture_key) in textures.iter() {
         // gltf::Document::textures() is ordered by texture index; we
         // pull the image's index off the matching texture entry. If
@@ -318,7 +336,21 @@ fn seed_texture_cache_from_populate(
         if asset_id == AssetId::default() {
             continue;
         }
-        super::texture_cache::seed(asset_id, *texture_key);
+        per_image
+            .entry(asset_id)
+            .and_modify(|slot| {
+                // A second *distinct* renderer key for this image ⇒
+                // ambiguous variant; clear the slot so we skip seeding.
+                if *slot != Some(*texture_key) {
+                    *slot = None;
+                }
+            })
+            .or_insert(Some(*texture_key));
+    }
+    for (asset_id, key) in per_image {
+        if let Some(texture_key) = key {
+            super::texture_cache::seed(asset_id, texture_key);
+        }
     }
 }
 
