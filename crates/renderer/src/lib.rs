@@ -290,6 +290,30 @@ impl AwsmRenderer {
         }
         self.optimization_policy = policy;
     }
+
+    /// Aggregate Phase-2.1 upload-ring telemetry across every
+    /// renderer subsystem with a `MappedUploader`. Returned as a
+    /// `(label, stats)` list so callers (e.g. the scene-editor's
+    /// `read_upload_ring_stats` wasm export) can render per-subsystem
+    /// + rolled-up totals.
+    pub fn upload_ring_stats(&self) -> Vec<(&'static str, crate::buffer::mapped_staging_ring::UploadStats)> {
+        vec![
+            ("transforms", self.transforms.upload_stats()),
+            ("materials", self.materials.upload_stats()),
+            ("instances.transforms", self.instances.transform_upload_stats()),
+            ("instances.attributes", self.instances.attribute_upload_stats()),
+            ("meshes.meta.geometry", self.meshes.meta.geometry_upload_stats()),
+            ("meshes.meta.material", self.meshes.meta.material_upload_stats()),
+            ("meshes.skins.matrices", self.meshes.skins.matrices_upload_stats()),
+            ("meshes.skins.joint_index_weights", self.meshes.skins.joint_index_weights_upload_stats()),
+            ("meshes.morphs.geometry.weights", self.meshes.morphs.geometry.weights_upload_stats()),
+            ("meshes.morphs.geometry.values", self.meshes.morphs.geometry.values_upload_stats()),
+            ("meshes.morphs.material.weights", self.meshes.morphs.material.weights_upload_stats()),
+            ("meshes.morphs.material.values", self.meshes.morphs.material.values_upload_stats()),
+            ("textures.transforms", self.textures.texture_transforms_upload_stats()),
+            ("meshes.pool", self.meshes.upload_stats()),
+        ]
+    }
 }
 
 /// Builder for `AwsmRenderer`.

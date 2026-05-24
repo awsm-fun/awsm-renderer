@@ -350,6 +350,71 @@ fn strip_tracing_span_suffix(name: &str) -> Option<&str> {
 /// (rather than a JS object) to dodge a `serde_wasm_bindgen`
 /// dependency the editor doesn't otherwise carry; the caller does
 /// `JSON.parse()`.
+/// Phase-2.1 upload-ring telemetry. Returns a JSON object keyed by
+/// renderer subsystem (`transforms`, `materials`, `instances.transforms`,
+/// …) plus a `_total` rollup. Each entry exposes
+/// `{ peak_ring_depth_used, fallback_count, map_async_wait_ms,
+///    bytes_uploaded_via_ring, bytes_uploaded_via_fallback,
+///    bytes_uploaded_via_writebuffer, resize_count }`.
+///
+/// Drive from `preview_eval` on `tuning-10k-meshes` to confirm
+/// `_total.fallback_count == 0` in steady state — a non-zero count
+/// means a buffer's ring depth is too shallow for its frame cadence
+/// and should be bumped via the (not-yet-wired) `with_ring_depth`
+/// constructor.
+#[wasm_bindgen]
+pub async fn read_upload_ring_stats() -> String {
+    use std::fmt::Write;
+    let buckets = crate::context::with_renderer(|r| r.upload_ring_stats()).await;
+
+    let fmt_stats =
+        |s: &awsm_renderer::buffer::mapped_staging_ring::UploadStats| -> String {
+            format!(
+                "{{\"peak_ring_depth_used\":{},\"fallback_count\":{},\
+                 \"map_async_wait_ms\":{:.4},\
+                 \"bytes_uploaded_via_ring\":{},\
+                 \"bytes_uploaded_via_fallback\":{},\
+                 \"bytes_uploaded_via_writebuffer\":{},\
+                 \"resize_count\":{}}}",
+                s.peak_ring_depth_used,
+                s.fallback_count,
+                s.map_async_wait_ms,
+                s.bytes_uploaded_via_ring,
+                s.bytes_uploaded_via_fallback,
+                s.bytes_uploaded_via_writebuffer,
+                s.resize_count,
+            )
+        };
+
+    let mut total = awsm_renderer::buffer::mapped_staging_ring::UploadStats::default();
+    let mut out = String::from("{");
+    for (label, s) in &buckets {
+        if out.len() > 1 {
+            out.push(',');
+        }
+        let _ = write!(
+            out,
+            "{}:{}",
+            serde_json::to_string(label).unwrap_or_else(|_| "\"\"".to_string()),
+            fmt_stats(s)
+        );
+        // Roll up.
+        total.peak_ring_depth_used = total.peak_ring_depth_used.max(s.peak_ring_depth_used);
+        total.fallback_count += s.fallback_count;
+        total.map_async_wait_ms += s.map_async_wait_ms;
+        total.bytes_uploaded_via_ring += s.bytes_uploaded_via_ring;
+        total.bytes_uploaded_via_fallback += s.bytes_uploaded_via_fallback;
+        total.bytes_uploaded_via_writebuffer += s.bytes_uploaded_via_writebuffer;
+        total.resize_count += s.resize_count;
+    }
+    if !buckets.is_empty() {
+        out.push(',');
+    }
+    let _ = write!(out, "\"_total\":{}", fmt_stats(&total));
+    out.push('}');
+    out
+}
+
 #[wasm_bindgen]
 pub async fn read_oversized_mesh_stats() -> String {
     let (last_max_bucket, oversized_count) = crate::context::with_renderer_mut(|r| {

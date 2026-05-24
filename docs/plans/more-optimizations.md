@@ -1128,6 +1128,18 @@ stay valid.
 
 Brief one-liners; full commit messages on the branch history.
 
+- **Phase 2.1 (this sprint)** — `MappedStagingRing` (default depth 3,
+  `MAP_WRITE | COPY_SRC`, `mappedAtCreation: true`) + `MappedUploader`
+  call-site companion. All 7 already-`Dynamic` per-frame uploads
+  migrated off `queue.writeBuffer` onto the mapped path: transforms,
+  materials, instances ×2, meshes-meta ×2, skins ×2, morphs ×2,
+  texture-transforms, and the three mesh pool buffers. Telemetry
+  surfaces through `read_upload_ring_stats()` JSON (subsystem-keyed +
+  `_total` rollup). The 7 raw-writeBuffer "promote to Dynamic" sites
+  in the original Phase 2.1 migration table are deferred to a
+  follow-up sprint with rationale in `PERFORMANCE.md §5b` — the
+  mapped infrastructure is in place; future picks are
+  evidence-driven from `read_upload_ring_stats()`.
 - **Phase 0.1** — MSAA toggle in scene-editor's Editor header tab
   (mirrors model-tests' `SidebarProcessing` pattern).
 - **Phase 0.2** — `read_render_pass_timings(min_count)` measurement

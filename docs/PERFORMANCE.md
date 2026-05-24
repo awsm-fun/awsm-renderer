@@ -426,6 +426,70 @@ oversized-classification missing terrain-class meshes.
 
 ---
 
+## 5b. Per-frame upload path — `MappedStagingRing` + `MappedUploader`
+
+Renderer-owned per-frame uploads (transforms, materials, instances,
+meshes meta, skins, morphs, texture-transforms, the three mesh pool
+buffers) flow through a **mapped staging ring** instead of
+`queue.writeBuffer`.
+
+- Each migrated call site owns a [`MappedUploader`][mu] companion
+  alongside its existing CPU-side `DynamicStorageBuffer` /
+  `DynamicUniformBuffer` and destination `GpuBuffer`.
+- On `write_gpu`: the uploader acquires the next slot of its internal
+  [`MappedStagingRing`][msr] (default depth 3,
+  `MAP_WRITE | COPY_SRC`, `mappedAtCreation: true`), `memcpy`s the
+  dirty ranges into the mapped `ArrayBuffer`, `unmap()`s, records
+  `copyBufferToBuffer(slot → dest)` for each range into a
+  per-upload command encoder, and submits.
+- Once a slot has been submitted the uploader auto-kicks `mapAsync`
+  on the oldest still-`Submitted` slot so its bytes are ready by the
+  time the cursor wraps back. `spawn_local` + a shared `Cell<bool>`
+  flag in the slot promotes `Pending → Ready` on the main thread.
+- On dest-buffer growth: the ring rebuilds at the new size in one
+  shot (live `Mapped` slots are explicitly `unmap`ped to keep
+  validation quiet; in-flight slots ride their `GpuBuffer`
+  destructor). The first post-resize frame falls back to
+  `queue.writeBuffer` since the dest contents are uninitialised
+  anyway.
+- On ring exhaustion (debug build): `debug_assert!` so depth bugs
+  surface in development. Release: silently falls back to
+  `queue.writeBuffer` and bumps `fallback_count`.
+
+`queue.writeBuffer` stays as the canonical path for foreign-bytes
+ingestion — glTF parse output, raster bitmap decode results,
+worker-job payloads. The mapped path doesn't help there because the
+source bytes already live in a JS `ArrayBuffer` / Rust `Vec` and the
+memcpy is the same either way. Each `MappedUploader` exposes an
+`ingest_foreign(..)` entrypoint for this so call sites use a
+documented method instead of reaching for raw `gpu.write_buffer`;
+those bytes count against `bytes_uploaded_via_writebuffer`
+(separate from the ring's `bytes_uploaded_via_fallback`).
+
+Telemetry is surfaced via the
+[`read_upload_ring_stats()`](#9-measurement-harness) wasm export.
+Expected steady-state on `tuning-10k-meshes`:
+`_total.fallback_count == 0`, `peak_ring_depth_used <= 2` (the
+default 3-deep ring leaves headroom), `resize_count == 0` after the
+initial scene fill-in.
+
+Deferred from the original Phase 2.1 spec: promoting the remaining
+raw `queue.writeBuffer` sites (camera 64 B uniform, shadows globals
++ descriptors, lights info + LightsBuffer, mesh-light-indices,
+occlusion params + instance pack, lines per-line uniform + segment
+buffer) to flow through `MappedUploader`. Rationale: several of
+those upload tiny fixed-size payloads where the ring-create +
+encoder-submit overhead would dominate; the bigger ones (lights,
+mesh-light-indices, occlusion instance pack) are full-overwrite
+patterns whose `Dynamic*` restructure costs more than the per-frame
+saving. Picked up evidence-driven as `read_upload_ring_stats()`
+shows the migrated sites take the heat.
+
+[mu]: ../crates/renderer/src/buffer/mapped_uploader.rs
+[msr]: ../crates/renderer/src/buffer/mapped_staging_ring.rs
+
+---
+
 ## 6. Hot-path catalogue
 
 When optimizing or reviewing a PR, these are the files that
@@ -571,6 +635,7 @@ scene-editor exposes four `#[cfg(debug_assertions)]`
 | `read_importance_tier_histogram()` | JSON string | Shadow-caster-light tier histogram. |
 | `read_oversized_mesh_stats()` | JSON string | `{ last_max_bucket, oversized_count }` from `LightMeshBuckets`. |
 | `read_render_pass_timings(min_count)` | JSON string | Per-pass `count / mean / p50 / p95 / max / total` (ms). Strips the `[id]: span-measure` suffix `tracing-web` appends so call sites collapse into one bucket. Clears measures after sampling. Pass `min_count=0` to include rare init spans (GLTF parse, etc.). |
+| `read_upload_ring_stats()` | JSON string | Phase-2.1 mapped-upload-ring telemetry, keyed by subsystem (`transforms`, `materials`, `instances.transforms`, `meshes.meta.*`, …) plus a `_total` rollup. Each entry includes `peak_ring_depth_used / fallback_count / map_async_wait_ms / bytes_uploaded_via_{ring,fallback,writebuffer} / resize_count`. Steady state on `tuning-10k-meshes` should see `_total.fallback_count == 0`; non-zero means a buffer's ring depth (default 3) is too shallow for its frame cadence. |
 
 Per-frame render-pass timings come from
 `performance.getEntriesByType('measure')` — `tracing-web`'s
