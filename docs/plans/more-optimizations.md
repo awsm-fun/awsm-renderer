@@ -42,15 +42,6 @@ cross-references in commit messages stay valid.
 
 ## Phase 4 — Model insert UX
 
-### 4.2 🚀 Pre-decode raster bitmaps eagerly
-
-The raster prefetch is currently hoisted into `load_and_populate`,
-which runs once per glb. Move it to fire *synchronously the moment
-the bytes land in `pending_assets`* so it overlaps with the
-user-visible loading modal instead of running during populate.
-Saves ~1 s of `createImageBitmap` wall-clock during the loading
-window for large glbs.
-
 ### 4.3 🚀 First-class worker pool + glTF parse as first consumer
 
 This phase builds a **library-wide worker-job infrastructure** (4.3a)
@@ -384,6 +375,17 @@ node mutations cascade once per frame instead of once per node.
 For PR context — these shipped in the prior sprint and the
 `indirect-first-instance` sprint before it.
 
+- ✅ Phase 4.2 — Raster bitmap prefetch fires from `prepare_model`
+  the moment the gltf texture bytes are in `pending_assets`
+  (right after `extract_gltf_materials_into`), as a
+  `spawn_local` background task. Overlaps the `createImageBitmap`
+  wall-clock with the rest of the insert path (modal copy,
+  renderer-lock acquisition inside `load_and_populate`, the
+  populate_gltf compile/upload window) instead of running
+  serially inside populate. The original prefetch call inside
+  `load_and_populate` stays as a safety net (idempotent cache)
+  for paths that don't route through `prepare_model` — gizmo
+  init, procedural_sync, project Load.
 - ✅ Phase 4.1 — Editor texture_cache seeded from renderer-gltf
   uploads. `extract_gltf_materials_into` now stashes a per-image
   `gltf_image_asset_ids` Vec on the gltf's AssetEntry. After
