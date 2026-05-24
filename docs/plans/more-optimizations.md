@@ -544,34 +544,59 @@ For the next picker — items explicitly considered and rejected.
 
 When picking up an item:
 
-- **Branch**: work from `main`; create a feature branch per logical
-  chunk, or work straight on a sprint branch like the prior
-  `more-optimizations` if doing many items.
-- **Verification**: `cargo check --workspace` (or
-  `cargo clippy --workspace`) + `cargo test --workspace` must stay
-  green at every commit. **Don't run `cargo build --workspace`** —
-  it's wasted wall-clock; `check` / `clippy` cover compile
-  validation and the trunk dev-server is the real "does it run"
-  check. For full visual verification, ensure the trunk server is
-  running (`task scene-editor:dev` or the
-  `mcp__Claude_Preview__preview_start` helper) and exercise the
-  editor in the browser. The editor must render correctly on both
-  `?ifi=on` and `?ifi=off` (or the Editor toggle equivalent once
-  Phase 0.1 lands).
-- **Smoke test**: launch `task scene-editor:dev`, insert a Box +
-  Sphere + Torus, confirm all three render. Repeat on the opposite
-  ifi setting before claiming done.
-- **Test in Safari + Chrome** where possible — the
-  `indirect-first-instance` saga showed how easily a Chrome-only
-  validation pass can mask Safari breakage. The Safari GPU process
-  is also more sensitive to dev-session state churn; a fresh
-  restart is the meaningful comparison.
-- **Commits**: small, logical, descriptive. End each with
+- **Branch**: work on the `optimizations` branch. Do *not* spin
+  up feature branches per chunk — the whole sprint lands on
+  `optimizations`. The branch will be PR'd to `main` as a single
+  batch once everything has landed.
+- **Commits**: small, logical, descriptive — sized for git-bisect
+  to be useful. Each commit should map to one Phase item (or a
+  clean sub-step of one). End each commit message with
   `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>`.
+- **Verification policy** *(important — this is different from the
+  prior sprint)*: it is **acceptable for the workspace to be in a
+  broken state between commits** during this sprint. Don't pad
+  each individual commit with compatibility shims, redundant
+  conversions, or temporary forwarders just to keep the tree
+  compiling mid-sequence — that work would all be deleted later
+  and the technical debt is worse than the broken-middle state.
+  Verification (`cargo check`, `cargo clippy`, `cargo test`,
+  editor smoke test) is required **only at the end of the whole
+  sprint** before requesting review. Intermediate compile
+  failures are fine *if* the failure scope is bounded and the
+  next commit fixes it.
+
+  Use git-bisect semantics as the guide: a future bisector wants
+  *logical* boundaries, not "every commit must build." Tight,
+  honest commits beat fake-greenness.
+
+  Within a single commit, however: keep the diff coherent. Don't
+  ship "added field but forgot to update use sites" if updating
+  the use sites is a one-line change — that's just sloppy. The
+  "broken middle" permission is for genuine cross-file refactors
+  (e.g., a trait signature change that takes 30 use sites to
+  update) where staging matters for bisect.
+
+  **Don't run `cargo build --workspace`** at any point —
+  `cargo check` is cheaper and covers compile validation. The
+  trunk dev-server + editor browser smoke test are the real
+  "does it run" check at the end.
+
+- **End-of-sprint verification** (do once, before opening the PR):
+  - `cargo check --workspace` clean
+  - `cargo clippy --workspace` clean
+  - `cargo test --workspace` green
+  - Editor renders Primitive Box + Sphere + Torus on both
+    `?ifi=on` and `?ifi=off` (or the Editor toggle equivalent
+    once Phase 0.1 lands)
+  - Repeat the smoke test on Safari if possible; cold-restart
+    Safari is the meaningful comparison since dev-session
+    degradation is a dev-loop artifact, not a renderer bug
+
 - **Doc maintenance**: when a Phase item lands, move it to
   "Recently landed" with a one-line summary. When an item turns
-  out to be unwise, move it to "Won't do" with the reason. Keep
-  this doc the source of truth — don't let it drift.
+  out to be unwise mid-implementation, move it to "Won't do"
+  with the reason. Keep this doc the source of truth — don't let
+  it drift, even mid-sprint when other things are broken.
 
 Reference docs:
 - [`docs/PERFORMANCE.md`](../PERFORMANCE.md) — permanent renderer
