@@ -357,22 +357,22 @@ config knob.
 
 ## Phase 5 — Per-frame polish
 
-### 5.3 Coalesce reactive signal cascades
-
-`bump_nodes_revision` in `renderer_bridge` fires when any bridge
-entry changes; consumers (selection observer, gizmo, point-handle,
-inspector) re-derive their own state on every fire. For a multi-
-mesh model insert this can spike to dozens of cascades per frame.
-Approach: debounce / batch via `request_animation_frame` so multi-
-node mutations cascade once per frame instead of once per node.
-
----
-
 ## ✅ Recently landed (do not redo)
 
 For PR context — these shipped in the prior sprint and the
 `indirect-first-instance` sprint before it.
 
+- ✅ Phase 5.3 — `Bridge::bump_nodes_revision` debounces via
+  `gloo_render::request_animation_frame`. A pending-frame slot
+  on `Bridge` short-circuits subsequent bumps inside the same
+  frame; the rAF callback `take()`s itself out and does the
+  actual `Mutable::set`. Multi-mesh model inserts (which fired
+  `bump_nodes_revision` per node during `insert_node` and again
+  per node during `remove_node`) now cascade once per frame
+  instead of once per node, collapsing dozens of selection /
+  gizmo / point-handle / inspector re-derivations into one.
+  Safe because every consumer is a `signal()` subscriber — none
+  expect synchronous response.
 - ✅ Phase 5.2 — added a `tracing::span!("SceneSpatial Rebuild")`
   around `scene_spatial.rebuild_if_needed` in `update_transforms`
   so `read_render_pass_timings(0)` attributes the rebuild cost.
