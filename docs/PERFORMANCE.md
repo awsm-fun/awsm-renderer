@@ -679,28 +679,32 @@ Per-frame cost on tuning-10k-meshes: the new "Shadow Receiver
 Gate" span shows **0.048 ms mean / 0.1 ms p95** — well under the
 ~0.1 ms it saves the geometry pass.
 
-### PCSS variable tap count by distance
+### PCSS variable tap count by distance — **parked**
 
 The three PCSS branches (cube `sample_shadow_cube`, directional
 `sample_shadow_cascade_array`, 2D spot `sample_shadow_descriptor`)
-taper their blocker-search + PCF tap counts linearly from
-`shadow_globals.flags.z` (close, "max taps", default **16**) to
-`shadow_globals.flags.w` (far, "min taps", default **4**). The
-interpolation parameter is the receiver's normalised distance to
-the light:
+all run at a **fixed 16-tap kernel** today. The earlier variable-
+tap implementation tapered tap count from
+`shadow_globals.flags.z` (default 16) to `flags.w` (default 4)
+by receiver distance and showed visible disc-rotation banding
+across directional shadows in the canonical "character on a
+floor" test — `ndc.z` (the directional distance ratio used) is
+uncorrelated with penumbra width, so a fragment at `ndc.z ≈ 1`
+ended up with 4 samples spread across a wide PCSS kernel: too
+few to hide the rotated-Poisson pattern.
 
-- Cube: `dist / range` (receiver-to-light distance / light range)
-- Directional / 2D: `ndc.z` (receiver's NDC.z within the cascade)
+The helper `pcss_tap_count` and the `ShadowsConfig::pcss_*_taps`
+config knobs are kept compiled so the
+`shadow_globals.flags.{z,w}` packing doesn't dangle and so a
+quality-preserving future budget can re-enable the path without
+redoing the CPU plumbing. The correct re-introduction would key
+tap count on **penumbra width** (already computed inside the
+PCSS branch as `penumbra_texels` / `penumbra_world_radius`), not
+on receiver distance — small penumbras can tolerate fewer
+samples; wide ones cannot.
 
-The **Soft** (hardness < 1.5) branch is intentionally NOT
-tapered — it stays at a fixed 16-tap Poisson kernel. Tapering it
-during the initial sprint introduced visible disk-rotation
-banding on large smooth receivers (e.g. a floor plane under a
-directional light). The Soft path is the user's
-"smooth-and-cheap" knob; PCSS is the "contact-hardening +
-variable kernel" knob. Only the latter has the dynamic-kernel
-math that absorbs the noise floor a smaller sample count
-introduces.
+The **Soft** (hardness < 1.5) branch was also previously
+tapered with the same banding hazard; now also fixed 16-tap.
 
 Implementation pattern (kept identical across the four call sites
 so the safety reasoning carries):
@@ -1082,7 +1086,7 @@ default to game-friendly values; the items below are the
 | Mapped-buffer ring (Phase 2.1) | Always on | Every per-frame `writeBuffer` site is routed through `MappedUploader`. 99.9999% of bytes go through the mapped fast path on 10k meshes. |
 | Coverage-driven skin-skip (§5d) | Always on | Off-screen skins stop animating after a 2-frame grace; in-frustum skins resume that same frame via the BVH override. |
 | Shadow-receiver gate (§5f) | Always on | Meshes no caster reaches skip the entire shadow-sample chain. 0.048 ms / frame to maintain on 10k meshes. |
-| PCSS variable taps (§5f) | 16 → 4 by distance | Far receivers cost 4× less; near receivers get full quality. |
+| PCSS tap count | Fixed 16 (cube + directional + 2D spot) | Variable-tap path is parked (§5f) — the disc-rotation banding hazard on directional shadows isn't worth the 1–2× saving on far receivers. |
 | Adaptive optimization policy | On with `Auto` cooldown | `RendererOptimizationPolicy` flips `indirect_first_instance`, `occlusion`, `coverage_lod` etc. based on per-frame signals. Manual override only for A/B testing. |
 | Scene-spatial BVH | `rebuild_dirty_threshold: 200`, `rebuild_period_frames: 600` | Right for 1K–5K dynamic meshes. Bump for 10K+ static-heavy scenes. |
 | `default_cheap_material_pixel_threshold` | 64 px | Below this, the cheap variant takes over on any mesh that has one authored. Per-mesh override always wins. |
@@ -1197,11 +1201,15 @@ viewport on first gameplay frame.
 
 | Game style | What to bump | Why |
 |---|---|---|
-| **Twin-stick action / racing** | `ShadowsConfig::pcss_min_taps: 8` | Camera moves fast; smoother far shadows hide cascade snap. |
-| **First-person exploration** | `ShadowsConfig::pcss_max_taps: 24` (clamped to 16 → stays at 16) | Camera is stationary; near shadows benefit from quality. |
+| **Twin-stick action / racing** | `Hardness::Soft` on most lights | Camera moves fast; the fixed 16-tap Soft path is the cheapest smooth-shadow setting. PCSS is overkill when motion blur hides edge quality anyway. |
+| **First-person exploration** | `Hardness::Pcss` on hero lights, `Soft` on rest | Camera is stationary; near contact-hardening matters and 16-tap PCSS resolves it cleanly. |
 | **Crowd / RTS** | `default_cheap_material_pixel_threshold: 128`, `SkinLodLevel { 50.0, period: 8 }` | Most meshes are far. Aggressive material LOD + slow skinning. |
-| **Mobile / low-end desktop** | `ShadowsConfig::point_shadow_resolution: 512`, `pcss_min_taps: 4` | Cut VRAM (4× drop) + cheaper shadows. |
+| **Mobile / low-end desktop** | `ShadowsConfig::point_shadow_resolution: 512`, `Hardness::Soft` everywhere | Cut VRAM (4× drop) + use 16-tap Soft instead of 32-tap PCSS. |
 | **Cinematic / promo** | All defaults, `?features=on` | Quality wins; the editor's debug knobs are off. |
+
+The previous `pcss_min_taps` / `pcss_max_taps` knobs are still
+on `ShadowsConfig` but currently unused — see §5f "PCSS variable
+tap count by distance — parked" for why.
 
 ### What to monitor in production
 
