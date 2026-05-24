@@ -332,10 +332,17 @@ When picking up an item:
 - **Branch**: work from `main`; create a feature branch per logical
   chunk, or work straight on a sprint branch like the prior
   `more-optimizations` if doing many items.
-- **Verification**: `cargo test --workspace` and
-  `cargo clippy --workspace` must stay green at every commit. The
-  editor must render correctly on both `?ifi=on` and `?ifi=off`
-  (or the Editor toggle equivalent once Phase 0.1 lands).
+- **Verification**: `cargo check --workspace` (or
+  `cargo clippy --workspace`) + `cargo test --workspace` must stay
+  green at every commit. **Don't run `cargo build --workspace`** —
+  it's wasted wall-clock; `check` / `clippy` cover compile
+  validation and the trunk dev-server is the real "does it run"
+  check. For full visual verification, ensure the trunk server is
+  running (`task scene-editor:dev` or the
+  `mcp__Claude_Preview__preview_start` helper) and exercise the
+  editor in the browser. The editor must render correctly on both
+  `?ifi=on` and `?ifi=off` (or the Editor toggle equivalent once
+  Phase 0.1 lands).
 - **Smoke test**: launch `task scene-editor:dev`, insert a Box +
   Sphere + Torus, confirm all three render. Repeat on the opposite
   ifi setting before claiming done.
