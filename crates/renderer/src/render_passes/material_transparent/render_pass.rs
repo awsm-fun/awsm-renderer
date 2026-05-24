@@ -45,7 +45,7 @@ impl MaterialTransparentRenderPass {
     pub fn render(
         &self,
         ctx: &RenderContext,
-        renderables: Vec<Renderable>,
+        renderables: &[Renderable],
         is_hud: bool,
     ) -> Result<()> {
         let render_pass = if is_hud {
@@ -65,8 +65,7 @@ impl MaterialTransparentRenderPass {
 
         let mut last_render_pipeline_key = None;
         for renderable in renderables {
-            if let Some(render_pipeline_key) =
-                renderable.material_transparent_render_pipeline_key(ctx)
+            if let Some(render_pipeline_key) = renderable.material_transparent_render_pipeline_key()
             {
                 if last_render_pipeline_key != Some(render_pipeline_key) {
                     render_pass.set_pipeline(ctx.pipelines.render.get(render_pipeline_key)?);

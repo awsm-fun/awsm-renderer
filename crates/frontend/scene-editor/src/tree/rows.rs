@@ -320,7 +320,7 @@ fn render_prefab_badge(node: Arc<Node>) -> Dom {
             .style("font-weight", "700")
             .style("letter-spacing", "0.05em")
             .style("pointer-events", "none")
-            .style("user-select", "none")
+            .style(["-moz-user-select", "user-select", "-webkit-user-select"], "none")
         }
     });
 

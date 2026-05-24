@@ -66,7 +66,7 @@ impl MaterialOpaqueRenderPass {
     /// signature so the renderable list keeps flowing through the
     /// render-graph API; future work may use it for skinning-skip /
     /// material-LOD inputs.
-    pub fn render(&self, ctx: &RenderContext, _renderables: Vec<Renderable>) -> Result<()> {
+    pub fn render(&self, ctx: &RenderContext, _renderables: &[Renderable]) -> Result<()> {
         let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
             &ComputePassDescriptor::new(Some("Material Opaque Pass")).into(),
         ));

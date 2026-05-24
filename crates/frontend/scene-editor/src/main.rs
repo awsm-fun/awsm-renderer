@@ -45,12 +45,10 @@ pub fn main() {
     // Inputs + textareas + any explicit contenteditable surface opt back
     // in below so typing / copying still works normally.
     stylesheet!("body", {
-        .style("user-select", "none")
-        .style("-webkit-user-select", "none")
+        .style(["-moz-user-select", "user-select", "-webkit-user-select"], "none")
     });
     stylesheet!("input, textarea, [contenteditable='true']", {
-        .style("user-select", "text")
-        .style("-webkit-user-select", "text")
+        .style(["-moz-user-select", "user-select", "-webkit-user-select"], "text")
     });
 
     let ctx_ready = Mutable::new(false);

@@ -208,6 +208,10 @@ pub struct AwsmRenderer {
     /// coupling to `ShadowQualityTier` (which is per-light, not
     /// global).
     pub default_cheap_material_pixel_threshold: u32,
+    /// Reusable scratch space for the per-frame renderable lists.
+    /// Held here (not constructed per-frame) so the Vec allocations
+    /// survive across frames; `collect_renderables` clears-in-place.
+    pub(crate) renderable_pool: crate::renderable::RenderablePool,
     // we pick between these on the fly
     _clear_color_perceptual_to_linear: Color,
     _clear_color: Color,
@@ -549,27 +553,40 @@ impl AwsmRendererBuilder {
         let camera = camera::CameraBuffer::new(&gpu)?;
 
         // Three default-cubemap creations (prefiltered IBL / irradiance
-        // IBL / skybox) and the BRDF LUT generation are independent
-        // GPU operations that previously serialized through `.await?`
-        // chains. Run their async halves concurrently; the browser
-        // happily interleaves the underlying ImageBitmap + GPU work,
-        // which knocks ~3 IBL-creation worth of wall-clock off
+        // IBL / skybox), the BRDF LUT generation, and the opaque
+        // mipgen pipeline are independent `&gpu`-only GPU operations.
+        // Run their async halves concurrently; the browser interleaves
+        // the underlying ImageBitmap decodes + GPU shader/pipeline
+        // compiles, knocking several creations worth of wall-clock off
         // `AwsmRendererBuilder::build`. The post-await registration
         // touches the shared `textures` table and must stay sync, so
         // the helpers are split into `prepare_resources` (async,
         // standalone) + `register` (sync, takes `&mut Textures`).
-        let (ibl_filtered_resources, ibl_irradiance_resources, skybox_resources, brdf_lut) =
-            futures::future::try_join4(
-                IblTexture::prepare_resources(&gpu, ibl_filtered_env_colors),
-                IblTexture::prepare_resources(&gpu, ibl_irradiance_colors),
-                Skybox::prepare_resources(&gpu, skybox_colors),
-                async {
-                    BrdfLut::new(&gpu, brdf_lut_options)
-                        .await
-                        .map_err(crate::error::AwsmError::from)
-                },
-            )
-            .await?;
+        // OpaqueMipgen joins this block because it's needed later in
+        // the builder but has no shared mutable state — keeping it in
+        // its prior sequential slot served no purpose.
+        let (
+            ibl_filtered_resources,
+            ibl_irradiance_resources,
+            skybox_resources,
+            brdf_lut,
+            opaque_mipgen,
+        ) = futures::future::try_join5(
+            IblTexture::prepare_resources(&gpu, ibl_filtered_env_colors),
+            IblTexture::prepare_resources(&gpu, ibl_irradiance_colors),
+            Skybox::prepare_resources(&gpu, skybox_colors),
+            async {
+                BrdfLut::new(&gpu, brdf_lut_options)
+                    .await
+                    .map_err(crate::error::AwsmError::from)
+            },
+            async {
+                opaque_mipgen::OpaqueMipgen::new(&gpu)
+                    .await
+                    .map_err(crate::error::AwsmError::from)
+            },
+        )
+        .await?;
 
         let lights = Lights::new(
             &gpu,
@@ -601,6 +618,11 @@ impl AwsmRendererBuilder {
         let render_passes = RenderPasses::new(&mut render_pass_init, &features).await?;
 
         let bind_groups = BindGroups::new(&features);
+        // RenderTextures itself uses `try_join3` internally to compile
+        // its 3 blit pipelines concurrently — see `render_textures.rs`.
+        // Parallelising at *this* level (between RenderPasses::new and
+        // RenderTextures::new) would require an `&gpu` shape across the
+        // RenderPassInitContext that the init currently keeps mutable.
         let render_textures = RenderTextures::new(&gpu, render_texture_formats, &features).await?;
 
         let picker = Picker::new(
@@ -621,8 +643,6 @@ impl AwsmRendererBuilder {
             &render_textures.formats,
         )
         .await?;
-
-        let opaque_mipgen = opaque_mipgen::OpaqueMipgen::new(&gpu).await?;
 
         let mesh_light_indices_gpu = MeshLightIndicesGpu::new(&gpu)?;
 
@@ -751,6 +771,7 @@ impl AwsmRendererBuilder {
             // that load a large scene immediately.
             frames_in_current_mode: u32::MAX / 2,
             default_cheap_material_pixel_threshold: 64,
+            renderable_pool: crate::renderable::RenderablePool::default(),
             #[cfg(feature = "animation")]
             animations,
         };

@@ -107,34 +107,55 @@ pub fn drain() -> Vec<MaterialKey> {
 ///    still points at the freed slot.
 ///
 /// Mirrors the structure of `texture_cache::update_existing` for the
-/// delete case.
-pub async fn cascade_after_delete(asset_id: AssetId) {
+/// delete case. Implemented as the single-asset shape of
+/// [`cascade_after_delete_batch`].
+///
+/// Cascade-delete a batch of `MaterialAsset`s in a single scene walk.
+///
+/// Replaces an N-asset cleanup's N × scene walk with one. Each asset
+/// id still gets its own `MaterialKey` freed via `remove_material`;
+/// the saving is purely in the per-node identity check and the
+/// `kind.set` reemit, which scale with `scene_nodes × assets`.
+pub async fn cascade_after_delete_batch(asset_ids: &[AssetId]) {
     use crate::context::with_renderer_mut;
     use crate::scene::{Node, NodeKind};
+    use std::collections::HashSet;
     use std::sync::Arc;
 
-    let old_key = invalidate(asset_id);
+    if asset_ids.is_empty() {
+        return;
+    }
+
+    // Drop every cached `MaterialKey` for the batch up-front so
+    // any racing reader sees the cache-miss state before we touch
+    // the affected nodes.
+    let asset_set: HashSet<AssetId> = asset_ids.iter().copied().collect();
+    let old_keys: Vec<MaterialKey> = asset_ids.iter().filter_map(|id| invalidate(*id)).collect();
+
     let scene = crate::state::app_state().scene.clone();
 
-    // Walk every node whose material_ref points at the deleted asset.
+    // One scene walk: collect every node whose `material_ref` points
+    // at any asset in the batch.
     let nodes_lock = scene.nodes.lock_ref();
     let mut affected: Vec<Arc<Node>> = Vec::new();
-    fn walk(nodes: &[Arc<Node>], asset_id: AssetId, out: &mut Vec<Arc<Node>>) {
+    fn walk(nodes: &[Arc<Node>], asset_set: &HashSet<AssetId>, out: &mut Vec<Arc<Node>>) {
         for n in nodes.iter() {
             let matches = match &*n.kind.lock_ref() {
                 NodeKind::Primitive { material, .. }
                 | NodeKind::SweepAlongCurve { material, .. }
-                | NodeKind::Mesh { material, .. } => material.map(|r| r.0) == Some(asset_id),
+                | NodeKind::Mesh { material, .. } => material
+                    .map(|r| r.0)
+                    .is_some_and(|id| asset_set.contains(&id)),
                 _ => false,
             };
             if matches {
                 out.push(n.clone());
             }
             let children = n.children.lock_ref();
-            walk(&children, asset_id, out);
+            walk(&children, asset_set, out);
         }
     }
-    walk(&nodes_lock, asset_id, &mut affected);
+    walk(&nodes_lock, &asset_set, &mut affected);
     drop(nodes_lock);
 
     for n in affected {
@@ -143,9 +164,11 @@ pub async fn cascade_after_delete(asset_id: AssetId) {
         n.kind.set(k);
     }
 
-    if let Some(k) = old_key {
+    if !old_keys.is_empty() {
         with_renderer_mut(move |r| {
-            r.remove_material(k);
+            for k in old_keys {
+                r.remove_material(k);
+            }
         })
         .await;
     }

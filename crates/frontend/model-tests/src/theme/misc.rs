@@ -2,7 +2,7 @@ use crate::prelude::*;
 
 pub static USER_SELECT_NONE: LazyLock<String> = LazyLock::new(|| {
     class! {
-        .style(["-moz-user-select", "user-select"], "none")
+        .style(["-moz-user-select", "user-select", "-webkit-user-select"], "none")
     }
 });
 
