@@ -932,6 +932,152 @@ no UI state flips. Programmatic inserts via
 
 ---
 
+## 8a. Shipping a game — defaults audit + recipe
+
+This is the one-stop reference for "I'm shipping a game on this
+renderer; what do I need to do beyond the defaults?" Most knobs
+default to game-friendly values; the items below are the
+*explicit* setup a production consumer should do.
+
+### Defaults that are already game-friendly (no action)
+
+| Default | Value | Why it's right |
+|---|---|---|
+| `AwsmRendererLogging::render_timings` | `false` | The per-pass `tracing::span!` `performance.measure()` calls only fire when this is on. Off by default → zero overhead for shipped games. |
+| Mapped-buffer ring (Phase 2.1) | Always on | Every per-frame `writeBuffer` site is routed through `MappedUploader`. 99.9999% of bytes go through the mapped fast path on 10k meshes. |
+| Coverage-driven skin-skip (§5d) | Always on | Off-screen skins stop animating after a 2-frame grace; in-frustum skins resume that same frame via the BVH override. |
+| Shadow-receiver gate (§5f) | Always on | Meshes no caster reaches skip the entire shadow-sample chain. 0.048 ms / frame to maintain on 10k meshes. |
+| PCSS variable taps (§5f) | 16 → 4 by distance | Far receivers cost 4× less; near receivers get full quality. |
+| Adaptive optimization policy | On with `Auto` cooldown | `RendererOptimizationPolicy` flips `indirect_first_instance`, `occlusion`, `coverage_lod` etc. based on per-frame signals. Manual override only for A/B testing. |
+| Scene-spatial BVH | `rebuild_dirty_threshold: 200`, `rebuild_period_frames: 600` | Right for 1K–5K dynamic meshes. Bump for 10K+ static-heavy scenes. |
+| `default_cheap_material_pixel_threshold` | 64 px | Below this, the cheap variant takes over on any mesh that has one authored. Per-mesh override always wins. |
+
+### What a game must do at startup
+
+#### 1. Pre-warm the worker pool (for mid-gameplay asset loads)
+
+The `asset_cache::load_and_populate` path defaults to inline
+because the on-demand worker spawn cost dwarfs the win on small
+assets. For shipped games loading additional content during play
+(level streaming, animation rigs, audio-paired assets, …), build
+a pool at startup so the dispatch cost is amortised:
+
+```rust
+use awsm_renderer::workers::{WorkerPool, WorkerPoolBootstrap};
+use awsm_renderer_gltf::worker_job::GltfParseJob;
+
+// Run during game-init splash, before the first frame.
+let pool = WorkerPool::with_workers(Some(2)).await?;
+pool.register::<GltfParseJob>();
+awsm_renderer::workers::register_job::<GltfParseJob>();
+```
+
+Then route asset loads through the pool:
+
+```rust
+let out = pool.dispatch::<GltfParseJob>(GltfParseInput {
+    url: asset_url.into(),
+    file_type: None,
+}).await?;
+let loader = out.into_loader().await?;
+renderer.populate_gltf(loader.into_data(None)?, None).await?;
+```
+
+Measured break-even: ~5 MB. Below that, inline is within noise of
+worker; above, worker beats inline by 2× and the main thread
+stays free for game logic. (Corset.glb 12.8 MB: inline 196 ms /
+worker 91 ms = **2.15× speedup** with the in-worker
+`createImageBitmap` + transfer path.)
+
+#### 2. Author cheap-material variants on distant props
+
+For meshes that render at small pixel coverage in the typical
+play frustum (rocks, distant trees, ambient debris), author a
+cheap material in the asset pipeline and bind it once at insert
+time:
+
+```rust
+renderer.set_mesh_cheap_material(
+    mesh_key,
+    Some(cheap_material_key),   // same shader_id + same alpha mode
+    Some(32),                   // per-mesh override; None → renderer default (64 px)
+)?;
+```
+
+The cheap variant kicks in on every frame coverage < threshold;
+re-pack of `material_offset` is a single 4-byte patch via the
+mapped-buffer ring. Steady-state writes are O(0) when nothing
+crossed the threshold.
+
+#### 3. Distance-LOD skinning for character/crowd scenes
+
+Crowds and distant NPCs don't need per-frame joint updates.
+Drive the cadence from a per-second tick (call once every 10
+frames is plenty):
+
+```rust
+use awsm_renderer::meshes::skin_lod::SkinLodLevel;
+
+renderer.set_skin_update_periods_by_distance(camera_pos, &[
+    SkinLodLevel { max_distance: 10.0, period: 1 },  // hero — every frame
+    SkinLodLevel { max_distance: 30.0, period: 2 },  // mid — every other
+    SkinLodLevel { max_distance: 80.0, period: 4 },  // far — quarter-rate
+    // past the last threshold, the slowest tier sticks
+]);
+```
+
+Pairs with the coverage-driven skip on §5d: out-of-frustum
+crowds drop to zero work entirely; visible crowds run at the
+period above.
+
+#### 4. Per-mesh shadow opt-outs for HUD / sky / particles
+
+```rust
+mesh.cast_shadows = false;    // skip from shadow generation
+mesh.receive_shadows = false; // skip from sample-side shadow lookup
+mesh.receive_decals = false;  // skip per-decal volume test
+```
+
+`Mesh::hud` is the heavy-hammer "skip every cull / pass / shadow"
+flag — set it on HUD overlays and screen-space effects.
+
+#### 5. Pre-warm the renderer's PSO cache
+
+The first frame compiles every shader variant the scene needs;
+subsequent frames hit cached pipelines. For low-stutter starts,
+draw a dummy 1-pixel triangle of every authored material early
+in the load screen (the editor does this implicitly via
+`gizmo.glb`'s 9 HUD meshes covering Pbr / Unlit / Toon).
+
+### Tuning knobs by play style
+
+| Game style | What to bump | Why |
+|---|---|---|
+| **Twin-stick action / racing** | `ShadowsConfig::pcss_min_taps: 8` | Camera moves fast; smoother far shadows hide cascade snap. |
+| **First-person exploration** | `ShadowsConfig::pcss_max_taps: 24` (clamped to 16 → stays at 16) | Camera is stationary; near shadows benefit from quality. |
+| **Crowd / RTS** | `default_cheap_material_pixel_threshold: 128`, `SkinLodLevel { 50.0, period: 8 }` | Most meshes are far. Aggressive material LOD + slow skinning. |
+| **Mobile / low-end desktop** | `ShadowsConfig::point_shadow_resolution: 512`, `pcss_min_taps: 4` | Cut VRAM (4× drop) + cheaper shadows. |
+| **Cinematic / promo** | All defaults, `?features=on` | Quality wins; the editor's debug knobs are off. |
+
+### What to monitor in production
+
+The `read_render_pass_timings` + `read_upload_ring_stats` helpers
+in `crates/frontend/scene-editor/src/actions/measurement.rs` are
+debug-only, but the same data is on the renderer's tracing spans
+— production consumers can subscribe to the `tracing` subscriber
+and emit metrics to their own telemetry system.
+
+The two metrics to watch:
+
+- **Render mean ms** crossing the frame budget. On `tuning-10k-meshes`
+  the reference is 2.74 ms (§5d); a steady-state cross past ~5 ms
+  is a regression.
+- **Upload-ring `bytes_uploaded_via_writebuffer` growing**. Means
+  foreign-bytes ingestion fired more than expected — usually a
+  gltf load. Look at the call site, not the upload.
+
+---
+
 ## 9. Measurement harness
 
 Driven by the Claude Preview MCP (or any equivalent). The
