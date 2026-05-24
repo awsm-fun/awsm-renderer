@@ -357,15 +357,6 @@ config knob.
 
 ## Phase 5 — Per-frame polish
 
-### 5.2 `scene_spatial::rebuild_if_needed` cadence tuning
-
-Defaults are `rebuild_period_frames = 600` and
-`rebuild_dirty_threshold = 200`. Both could be data-driven —
-larger scenes benefit from less-frequent rebuilds (rebuild cost
-scales with mesh count); smaller scenes can rebuild more eagerly
-for tighter query quality. **Measure first** with 0.2's sub-spans
-on the `tuning-10k-meshes` scene.
-
 ### 5.3 Coalesce reactive signal cascades
 
 `bump_nodes_revision` in `renderer_bridge` fires when any bridge
@@ -382,6 +373,20 @@ node mutations cascade once per frame instead of once per node.
 For PR context — these shipped in the prior sprint and the
 `indirect-first-instance` sprint before it.
 
+- ✅ Phase 5.2 — added a `tracing::span!("SceneSpatial Rebuild")`
+  around `scene_spatial.rebuild_if_needed` in `update_transforms`
+  so `read_render_pass_timings(0)` attributes the rebuild cost.
+  Measured on `tuning-10k-meshes` (151 frames, steady state,
+  Chrome): mean 0.15ms, p50 0, p95 0.1, max 4.0, total 22.7ms.
+  The defaults (`rebuild_period_frames=600`,
+  `rebuild_dirty_threshold=200`) keep the worst-case 4ms rebuild
+  to roughly one hit per 10s @60fps — the per-frame budget
+  (`Render` mean 2.17ms) is dominated by `Geometry RenderPass`
+  (0.36ms), `Collect renderables` (0.27ms), and `Shadow
+  Generation` (0.66ms), so no clear tuning win is visible. Kept
+  the defaults; the new span is the load-bearing artifact —
+  future tuning has a measurement foundation that didn't exist
+  before this sprint.
 - ✅ Phase 5.1 — `LineRenderer` carries a `pack_buf:
   Vec<GpuLineSegment>` scratch buffer; `pack()` became
   `pack_into(out, ...)` which `out.clear()`s + extends in place.
