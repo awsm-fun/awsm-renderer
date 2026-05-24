@@ -42,3 +42,9 @@ ordered-float = { workspace = true }
 indexmap = { workspace = true }
 bevy_mikktspace = { workspace = true }
 serde = { workspace = true }
+# `serde_bytes` opts `Vec<u8>` fields into serde's `serialize_bytes`
+# path — serde_wasm_bindgen turns those into `Uint8Array`s in one
+# memcpy instead of iterating element-by-element into a giant JS
+# `Array<Number>`. Critical for the worker-mode GltfParseJob payload
+# crossing postMessage (Phase 4.3b A/B; see PERFORMANCE.md §5c).
+serde_bytes = "0.11"

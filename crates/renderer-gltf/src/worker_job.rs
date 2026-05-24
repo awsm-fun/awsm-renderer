@@ -89,33 +89,53 @@ impl From<FileTypeHint> for GltfFileType {
     }
 }
 
+/// Newtype wrapper for `Vec<u8>` that opts into `serde_bytes` —
+/// without this, a bare `Vec<u8>` inside another `Vec` would be
+/// serialised as a sequence of JS Numbers (one per byte), which is
+/// the slow path that made the worker A/B 130× slower than inline
+/// (see PERFORMANCE.md §5c). The `#[serde(transparent)]` keeps the
+/// wire-format equivalent to a raw `Vec<u8>` (just a `Uint8Array`)
+/// so callers can `output.buffer_bytes[i].0` to get at the inner
+/// vec.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ByteBlob(#[serde(with = "serde_bytes")] pub Vec<u8>);
+
+impl ByteBlob {
+    pub fn into_vec(self) -> Vec<u8> {
+        self.0
+    }
+}
+
 /// `WorkerJob::Output` — only raw bytes; everything serialisable.
+///
+/// All large `Vec<u8>` fields go through `serde_bytes` so
+/// `serde_wasm_bindgen` produces `Uint8Array`s (one `memcpy` per
+/// payload) instead of `Array<Number>`s (one JS Number allocation
+/// per byte). See PERFORMANCE.md §5c for the measured impact.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct GltfParseOutput {
     /// Re-serialised glTF JSON document — the worker's `gltf::Gltf`
     /// can't survive structured-clone (uses `serde_json::Value`
     /// internally), so we re-emit the bytes here and the main
-    /// thread re-parses with `Gltf::from_slice`. Cheap (the
-    /// document is rarely > a few hundred KB even for huge scenes).
+    /// thread re-parses with `Gltf::from_slice`.
+    #[serde(with = "serde_bytes")]
     pub doc_bytes: Vec<u8>,
     /// Raw buffer-bin contents, one entry per `Document::buffers()`
-    /// in index order. 4-byte padded to match what the renderer
-    /// expects downstream.
-    pub buffer_bytes: Vec<Vec<u8>>,
+    /// in index order. 4-byte padded.
+    pub buffer_bytes: Vec<ByteBlob>,
     /// Raw encoded image bytes (PNG / JPEG / KTX2 / …) one entry
-    /// per `Document::images()` in index order. The main thread
-    /// runs `createImageBitmap` to materialise `ImageBitmap`s once
-    /// the bytes arrive.
+    /// per `Document::images()` in index order.
     pub image_bytes: Vec<EncodedImage>,
 }
 
 /// One encoded-image entry produced by the worker.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EncodedImage {
+    #[serde(with = "serde_bytes")]
     pub bytes: Vec<u8>,
     /// Declared MIME type when sourced from a buffer view; `None`
-    /// when sourced from a URI (the main thread re-fetches via the
-    /// stored URI in that case — kept for future cleanup).
+    /// when sourced from a URI.
     pub mime_type: Option<String>,
     /// Source URI when the image was loaded from a separate file.
     /// Either `mime_type` or `uri` is `Some`; both being `None`
@@ -146,7 +166,11 @@ impl GltfParseOutput {
     pub async fn into_loader(self) -> anyhow::Result<GltfLoader> {
         let Gltf { document: doc, .. } = Gltf::from_slice(&self.doc_bytes)?;
         // Buffers are already 4-byte padded by `execute_async`.
-        let buffers = self.buffer_bytes;
+        let buffers: Vec<Vec<u8>> = self
+            .buffer_bytes
+            .into_iter()
+            .map(ByteBlob::into_vec)
+            .collect();
         // Decode each encoded image on the main thread.
         let options = Some(
             ImageBitmapOptions::new()
@@ -229,8 +253,9 @@ pub async fn execute_async(input: GltfParseInput) -> anyhow::Result<GltfParseOut
     };
 
     let base_path = get_base_path(&url);
-    let buffer_bytes = import_buffer_data(&doc, base_path, blob).await?;
-    let image_bytes = import_image_data_as_bytes(&doc, base_path, &buffer_bytes).await?;
+    let raw_buffers = import_buffer_data(&doc, base_path, blob).await?;
+    let image_bytes = import_image_data_as_bytes(&doc, base_path, &raw_buffers).await?;
+    let buffer_bytes: Vec<ByteBlob> = raw_buffers.into_iter().map(ByteBlob).collect();
 
     Ok(GltfParseOutput {
         doc_bytes,
