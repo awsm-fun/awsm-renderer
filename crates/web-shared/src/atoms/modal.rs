@@ -194,7 +194,7 @@ impl ModalInstance {
                 // (e.g. into bug reports). Buttons inside still get
                 // the default no-select treatment from their own
                 // styling.
-                .style(["-webkit-user-select", "user-select"], "text")
+                .style(["-moz-user-select", "user-select", "-webkit-user-select"], "text")
             }
         });
 

@@ -219,7 +219,7 @@ static DROP_ZONE_CLASS: LazyLock<String> = LazyLock::new(|| {
         .style("border-radius", "1rem")
         .style("background", ChromeFill::Canvas.value())
         .style("cursor", "pointer")
-        .style("user-select", "none")
+        .style(["-moz-user-select", "user-select", "-webkit-user-select"], "none")
         .style("transition", "border-color 170ms ease, background 170ms ease")
     }
 });
