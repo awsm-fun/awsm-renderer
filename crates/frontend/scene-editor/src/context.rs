@@ -98,6 +98,27 @@ pub fn with_camera_mut<T>(f: impl FnOnce(&mut Camera) -> T) -> T {
     })
 }
 
+/// Fallible variant of [`with_camera_mut`] — returns `None` instead
+/// of panicking when `create_context` hasn't completed yet. Used by
+/// the canvas's event listeners (wheel / pointer), which are wired
+/// up at `render_canvas` mount time *before* the async
+/// `create_context` future resolves. A wheel scroll during that
+/// race window (typically <100ms but not zero on slow boots) would
+/// otherwise panic the wasm.
+///
+/// Event-handler callers should use this; explicit "I am running
+/// after init" code (action handlers, render hooks) keeps using
+/// [`with_camera_mut`] so a genuinely-uninitialized access stays
+/// a panic rather than silently disappearing.
+pub fn try_with_camera_mut<T>(f: impl FnOnce(&mut Camera) -> T) -> Option<T> {
+    APP_CONTEXT.with(|ctx| {
+        ctx.get().map(|ctx| {
+            let mut camera = ctx.camera.lock().unwrap();
+            f(&mut camera)
+        })
+    })
+}
+
 pub fn with_camera<T>(f: impl FnOnce(&Camera) -> T) -> T {
     APP_CONTEXT.with(|ctx| {
         if let Some(ctx) = ctx.get() {

@@ -1043,11 +1043,30 @@ flag — set it on HUD overlays and screen-space effects.
 
 #### 5. Pre-warm the renderer's PSO cache
 
-The first frame compiles every shader variant the scene needs;
-subsequent frames hit cached pipelines. For low-stutter starts,
-draw a dummy 1-pixel triangle of every authored material early
-in the load screen (the editor does this implicitly via
-`gizmo.glb`'s 9 HUD meshes covering Pbr / Unlit / Toon).
+The first time a pipeline variant is actually *drawn*, WebGPU
+compiles its shader. Subsequent draws hit the cached pipeline.
+For low-stutter starts, draw a dummy 1-pixel triangle of every
+authored material early in the load screen.
+
+**Important gotcha:** *hidden* meshes don't drive pipeline
+compilation — they're filtered out of `collect_renderables`. The
+editor's `gizmo.glb` loads at init but stays hidden until a
+selection appears, so its PBR-opaque-compute pipeline doesn't
+actually compile until the *user's first visible PBR mesh*
+materialises. That can show up as a multi-hundred-ms stall on
+the first Insert Model after any change that busts the
+browser's pipeline cache (a shader-source diff, a wasm-bundle
+hash change after redeploy, opening the page from a fresh
+profile). Subsequent inserts on the same page hit the cache
+and feel instant — but the first one isn't representative of
+steady-state perf.
+
+If your game cares about smooth-from-cold-load: unhide one PBR
++ one Unlit + one Toon mesh briefly during the load screen so
+WebGPU compiles their opaque-compute pipelines while the user
+is still looking at the splash, not at a frozen viewport. The
+same trick covers MSAA on/off if the game switches modes at
+runtime.
 
 ### Tuning knobs by play style
 

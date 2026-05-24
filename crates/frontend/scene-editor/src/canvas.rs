@@ -8,7 +8,7 @@
 //!    current `move_action`.
 //! 3. Pointerup finalises whichever drag was live.
 
-use crate::context::{renderer_handle, with_camera_mut};
+use crate::context::{renderer_handle, try_with_camera_mut, with_camera_mut};
 use crate::prelude::*;
 use crate::renderer_bridge::gizmo::{self, MoveAction};
 use crate::renderer_bridge::point_handle_sync;
@@ -59,7 +59,11 @@ pub fn render_canvas(on_ready: impl FnOnce(web_sys::HtmlCanvasElement) + 'static
             })
             .event(move |event: events::Wheel| {
                 event.prevent_default();
-                with_camera_mut(|c| c.on_wheel(event.delta_y()));
+                // `render_canvas` mounts before `create_context` resolves.
+                // A wheel scroll during that race window would otherwise
+                // panic the wasm — silently drop instead, the user will
+                // scroll again once the editor's actually ready.
+                try_with_camera_mut(|c| c.on_wheel(event.delta_y()));
             })
         })
     })
@@ -167,8 +171,12 @@ fn on_pointer_down(canvas: &web_sys::HtmlCanvasElement, x: i32, y: i32, _shift: 
         }
 
         if !started_gizmo {
-            with_camera_mut(|c| c.on_pointer_down());
-            state.move_action.set(Some(MoveAction::CameraMoving));
+            // Tolerate the same init race as the wheel handler — a
+            // pointer-down before `create_context` resolves is a no-op
+            // (no camera to start orbiting yet).
+            if try_with_camera_mut(|c| c.on_pointer_down()).is_some() {
+                state.move_action.set(Some(MoveAction::CameraMoving));
+            }
         }
     });
 }
@@ -209,6 +217,11 @@ fn on_pointer_move(dx: i32, dy: i32, panning: bool) {
             });
         }
         Some(MoveAction::CameraMoving) => {
+            // CameraMoving is only set after `on_pointer_down`
+            // confirmed AppContext is ready, so `with_camera_mut`
+            // here can stay panicking — if it ever fires before
+            // init that's a real bug (a CameraMoving move_action
+            // somehow set without a successful pointer_down).
             with_camera_mut(|c| c.on_pointer_move(dx, dy, panning));
         }
         None => {}
@@ -228,7 +241,10 @@ fn on_pointer_up() {
         state.point_handles.lock().unwrap().end_drag();
     }
 
-    with_camera_mut(|c| c.on_pointer_up());
+    // PointerUp can fire from outside the canvas if a pointer-down
+    // raced ahead of `create_context`. Same race as the wheel
+    // handler — tolerate, don't panic.
+    try_with_camera_mut(|c| c.on_pointer_up());
 
     if was_gizmo {
         // Commit the drag as a single history entry.
