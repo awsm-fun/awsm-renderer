@@ -483,7 +483,6 @@ async fn create_renderer(canvas: web_sys::HtmlCanvasElement) -> EditorResult<Aws
                 awsm_renderer::RendererLoadingPhase::BuildingPipelines => {
                     "Building render pipelines"
                 }
-                awsm_renderer::RendererLoadingPhase::FinalizingScene => "Finalising renderer setup",
                 awsm_renderer::RendererLoadingPhase::Ready => return,
             };
             awsm_web_shared::util::window::set_boot_loader_message(msg);

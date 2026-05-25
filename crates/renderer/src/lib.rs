@@ -542,31 +542,25 @@ impl AwsmRenderer {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RendererLoadingPhase {
     /// Adapter / device acquisition + initial bookkeeping +
-    /// supporting resource generation (IBL default cubemaps, BRDF
-    /// LUT compute, opaque-mipgen pipeline). Quick on every load.
+    /// supporting GPU resource generation (IBL default cubemaps,
+    /// BRDF LUT compute, opaque-mipgen pipeline) + render-pass
+    /// shader cache key collection. No Dawn shader / pipeline
+    /// compile work in this phase — it's the concurrent setup that
+    /// feeds the cross-renderer pool.
     Init,
-    /// The main render-pass pipeline build — `RenderPasses::new`
-    /// concurrently with `RenderTextures::new`. On a cold PSO disk
-    /// cache this is the dominant cost (Dawn lowers every WGSL
-    /// variant to MSL and then compiles every pipeline against the
-    /// new module); on a warm cache it's effectively instant.
-    /// Shader compilation and pipeline assembly happen interleaved
-    /// inside this phase — they're not cleanly separable into two
-    /// distinct stages, which is why there's only one phase variant
-    /// for both. Includes shadow shaders, geometry, material,
-    /// classify, HZB, effects, etc.
+    /// The cross-renderer shader pool is running:
+    /// one `Shaders::ensure_keys` covering every shader the
+    /// renderer compiles (RenderPasses + Picker + LineRenderer +
+    /// Shadows caster + Effects + Display), joined with EVSM
+    /// inline-shader `validate_shader` futures. On a cold PSO disk
+    /// cache this is where Dawn lowers WGSL → MSL; on a warm cache
+    /// it's a cache-hit lookup.
     CompilingShaders,
-    /// Remaining renderer-side pipeline construction *after* the
-    /// main `RenderPasses::new` batch: picker / line-renderer /
-    /// material-classify buffers / occlusion / coverage / decal
-    /// allocation. Each is light by itself, but they happen serially
-    /// so the cumulative wall-clock is visible to the user on cold
-    /// loads.
+    /// The cross-renderer pipeline pool is running: one
+    /// `try_join`'d `ComputePipelines::ensure_keys` +
+    /// `RenderPipelines::ensure_keys` covering every compute and
+    /// render pipeline across the entire renderer.
     BuildingPipelines,
-    /// Shadow subsystem build (shadow caster + EVSM pipelines) +
-    /// anti-aliasing / post-processing setter pipelines. Roughly the
-    /// last shader-compile work before the renderer is interactive.
-    FinalizingScene,
     /// All renderer-init work done; ready to render.
     Ready,
 }
@@ -911,15 +905,21 @@ impl AwsmRendererBuilder {
             features: &features,
         };
 
-        emit_phase(RendererLoadingPhase::CompilingShaders);
-
         // Phase A of RenderPasses (bind groups + shader cache key
         // collection) joins the texture-prep block. RenderPasses is
-        // NOT a full `new()` here anymore — item (2) split it into 3
+        // NOT a full `new()` here anymore — it's split into 3
         // stages so the orchestrator below can pool RenderPasses'
         // shader + pipeline cache keys with every tail subsystem
         // into one cross-renderer shader ensure_keys and one
         // try_join'd compute + render ensure_keys.
+        //
+        // The work inside this try_join! falls under
+        // `RendererLoadingPhase::Init` per the enum's contract
+        // (adapter / device + supporting GPU resources + cache-key
+        // collection — no Dawn compile yet). The `CompilingShaders`
+        // transition fires further down, right before the
+        // cross-renderer `Shaders::ensure_keys` call where actual
+        // WGSL → MSL compilation begins.
         let (
             ibl_filtered_resources,
             ibl_irradiance_resources,
@@ -990,8 +990,6 @@ impl AwsmRendererBuilder {
         // is `describe_shaders → describe_pipelines → from_resolved`,
         // none of which compile pipelines themselves. See
         // `docs/PERFORMANCE.md` §5g for the architectural rationale.
-        emit_phase(RendererLoadingPhase::BuildingPipelines);
-
         let mesh_light_indices_gpu = MeshLightIndicesGpu::new(&gpu)?;
 
         // Sized for a small initial viewport; recreated by
@@ -1047,14 +1045,6 @@ impl AwsmRendererBuilder {
             None
         };
 
-        // Tail-pool start. Shadows + Effects + Display + the final
-        // anti-aliasing / post-processing pipeline configuration are
-        // pipelines created here are needed for the first frame but
-        // they don't dominate the cold-load cost the way the
-        // RenderPasses block does. Signal the transition so frontends
-        // can swap to a less alarming "Finalising scene…" message.
-        emit_phase(RendererLoadingPhase::FinalizingScene);
-
         // ── 1. Cross-renderer shader pool. Assemble every shader
         //       cache key — RenderPasses-owned (from the describe
         //       phase) + tail subsystems' statically-known keys. ONE
@@ -1079,6 +1069,10 @@ impl AwsmRendererBuilder {
                 &post_processing,
             ),
         );
+        // Phase transition: the actual WGSL → MSL compile happens
+        // inside the next await. Emit `CompilingShaders` here so the
+        // frontend's "Browser is compiling shaders…" label is correct.
+        emit_phase(RendererLoadingPhase::CompilingShaders);
         shaders.ensure_keys(&gpu, all_shader_keys).await?;
 
         // ── 2. Tail descriptors (cache-hit shader resolutions for
@@ -1244,6 +1238,11 @@ impl AwsmRendererBuilder {
                 .await
                 .map_err(crate::error::AwsmError::from)
         };
+        // Phase transition: every shader is now warm; the pipeline
+        // assembly happens inside the next await. Emit
+        // `BuildingPipelines` so the frontend's "Building render
+        // pipelines…" label is correct.
+        emit_phase(RendererLoadingPhase::BuildingPipelines);
         let (compute_keys, render_keys) =
             futures::future::try_join(compute_fut, render_fut).await?;
 

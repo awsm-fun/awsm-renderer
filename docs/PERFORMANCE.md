@@ -867,48 +867,52 @@ pool starts on all of them in parallel, then `join_all` the
 
 #### Cross-renderer pool inside `AwsmRendererBuilder::build`
 
-`build()` drives **three pool awaits** that together cover every
-shader + pipeline compile in the whole renderer:
+`build()` runs in **three stages**, each ending in one main await.
+Stages 2 and 3 are the actual cross-renderer Dawn pool work; stage
+1 is the concurrent setup that feeds them.
 
-1. **One `try_join!`** at the top runs in parallel:
-   - Three default-cubemap `prepare_resources` futures (prefiltered
-     IBL, irradiance IBL, skybox),
-   - BRDF LUT generation,
-   - opaque-mipgen pipeline construction,
-   - `RenderTextures::new`,
-   - `RenderPasses::describe_shaders` — phase 1 of the
-     `describe_shaders → describe_pipelines → from_resolved` split.
-     Returns bind groups + the union of every render pass's shader
-     cache keys, no Dawn compile yet.
+**Stage 1 — concurrent setup (one `try_join!`).** Texture prep
++ render-texture creation + cache key collection all run in
+parallel against `&gpu`:
 
-2. **One cross-renderer `Shaders::ensure_keys`** covering every
-   shader the renderer ever compiles: RenderPasses' own (opaque ×
-   14, geometry × 18, hzb × 3, classify × 2, decal × 2+2, coverage
-   × 1–2, occlusion × 1, compaction × 1), shadow caster (× 2),
-   picker (× 2, gated by `features.picking`), line, effects (× 5,
-   AA + post-processing dependent), and display (× 1).
+- Three default-cubemap `prepare_resources` futures (prefiltered
+  IBL, irradiance IBL, skybox),
+- BRDF LUT generation,
+- opaque-mipgen pipeline construction,
+- `RenderTextures::new`,
+- `RenderPasses::describe_shaders` — phase 1 of the
+  `describe_shaders → describe_pipelines → from_resolved` split.
+  Returns bind groups + the union of every render pass's shader
+  cache keys. No Dawn shader/pipeline compile in this stage.
 
-3. **One EVSM inline-shader validate join** — `Shadows::build_descriptors`
-   issues 3 `compile_shader` calls inline (the EVSM moment-write +
-   blur shaders bypass the shared shader cache); the orchestrator
-   joins their `validate_shader` futures via `join_all`. The 3
-   modules go into the shader cache via `Shaders::insert_uncached`
-   afterwards.
+**Stage 2 — cross-renderer shader pool.** One
+`Shaders::ensure_keys` covering every shader the renderer
+compiles: RenderPasses' own (opaque × 14, geometry × 18, hzb × 3,
+classify × 2, decal × 2+2, coverage × 1–2, occlusion × 1,
+compaction × 1), shadow caster (× 2), picker (× 2, gated by
+`features.picking`), line, effects (× 5, AA + post-processing
+dependent), and display (× 1). Joined via `futures::join` with
+the EVSM inline-shader `validate_shader` futures —
+`Shadows::build_descriptors` issues 3 `compile_shader` calls for
+the EVSM moment-write + blur shaders (which bypass the shared
+shader cache); their validate futures are joined here so EVSM
+validation overlaps with the rest of the shader pool. The 3 EVSM
+modules then enter the shader cache via
+`Shaders::insert_uncached`.
 
-4. **One `try_join`'d `ComputePipelines::ensure_keys` +
-   `RenderPipelines::ensure_keys`** covering every compute + render
-   pipeline across the entire renderer (~36 compute + ~27 render on
-   a fully-featured build). Compute + render compile concurrently
-   inside Dawn's worker pool via a split-borrow on
-   `Pipelines.compute` / `Pipelines.render` (disjoint `&mut`
-   fields).
+**Stage 3 — cross-renderer pipeline pool.** One `try_join`'d
+`ComputePipelines::ensure_keys` + `RenderPipelines::ensure_keys`
+covering every compute + render pipeline across the entire
+renderer (~36 compute + ~27 render on a fully-featured build).
+Compute + render compile concurrently inside Dawn's worker pool
+via a split-borrow on `Pipelines.compute` / `Pipelines.render`
+(disjoint `&mut` fields).
 
-5. **Sync fold-up** — each subsystem's `from_resolved` /
-   `install_resolved` consumes its slice of the resolved keys.
-   `RenderPasses` is assembled from `RenderPasses::from_resolved`;
-   the tail subsystems (Picker, LineRenderer, Shadows + EVSM,
-   Effects' and Display's typed `Pipelines` inside `RenderPasses`)
-   each have a matching `from_resolved` / `install_resolved`.
+After stage 3, sync fold-up assembles the typed
+`RenderPasses` via `RenderPasses::from_resolved` and each tail
+subsystem (Picker, LineRenderer, Shadows + EVSM, Effects' and
+Display's typed `Pipelines` inside `RenderPasses`) via its own
+`from_resolved` / `install_resolved` — no further awaits.
 
 #### Architectural guarantees
 
