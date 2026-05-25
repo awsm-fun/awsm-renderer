@@ -54,7 +54,7 @@ use awsm_scene_schema::{
 };
 use glam::{Quat, Vec3};
 
-use crate::context::with_renderer_mut;
+use crate::context::{renderer_handle, with_renderer_mut};
 use crate::renderer_bridge::node_sync::RendererNode;
 use crate::state::app_state;
 
@@ -421,20 +421,29 @@ async fn materialize_line(entry: Arc<RendererNode>, parent_tk: TransformKey, def
 async fn materialize_sprite(entry: Arc<RendererNode>, parent_tk: TransformKey, def: SpriteDef) {
     let mesh_data = sprite_quad(def.size[0], def.size[1]);
     let raw = to_raw_mesh(mesh_data);
-    let sprite_mat = MaterialDef {
-        base_color: def.tint,
-        metallic: 0.0,
-        roughness: 1.0,
-        emissive: [def.tint[0] * 1.8, def.tint[1] * 1.8, def.tint[2] * 1.8],
-        double_sided: true,
-        ..MaterialDef::default()
-    };
     let mode = match def.billboard {
         awsm_scene_schema::BillboardMode::None => BillboardMode::None,
         awsm_scene_schema::BillboardMode::YAxis => BillboardMode::YAxis,
         awsm_scene_schema::BillboardMode::Full => BillboardMode::Full,
     };
-    let mesh_key = upload_and_track_returning(entry, parent_tk, raw, None, sprite_mat).await;
+
+    let mesh_key = if let Some(flipbook_def) = def.flipbook {
+        // Flipbook-animated sprite. Build the FlipBookMaterial directly
+        // (no MaterialDef detour — the material-cache shape was authored
+        // for PBR-shaped data and would force-multiplex this through a
+        // bunch of irrelevant fields).
+        spawn_flipbook_sprite(entry.clone(), parent_tk, raw, &def, flipbook_def).await
+    } else {
+        let sprite_mat = MaterialDef {
+            base_color: def.tint,
+            metallic: 0.0,
+            roughness: 1.0,
+            emissive: [def.tint[0] * 1.8, def.tint[1] * 1.8, def.tint[2] * 1.8],
+            double_sided: true,
+            ..MaterialDef::default()
+        };
+        upload_and_track_returning(entry, parent_tk, raw, None, sprite_mat).await
+    };
     if let Some(mk) = mesh_key {
         with_renderer_mut(move |r| {
             let _ = r.set_mesh_billboard_mode(mk, mode);
@@ -450,6 +459,127 @@ async fn materialize_sprite(entry: Arc<RendererNode>, parent_tk: TransformKey, d
             );
         })
         .await;
+    }
+}
+
+/// Builds a FlipBookMaterial-backed sprite. Any non-Opaque alpha mode
+/// (Blend or Mask) routes through `add_raw_mesh_transparent` — the
+/// renderer's sync `add_raw_mesh` errors on transparency-pass
+/// materials, and `FlipBookMaterial::is_transparency_pass()` is true
+/// for both Blend and Mask (the latter discards in the transparent
+/// fragment shader). Only Opaque uses the sync path.
+async fn spawn_flipbook_sprite(
+    entry: Arc<RendererNode>,
+    parent_tk: TransformKey,
+    raw: RawMeshData,
+    sprite: &SpriteDef,
+    flipbook: awsm_scene_schema::SpriteFlipBookDef,
+) -> Option<awsm_renderer::meshes::MeshKey> {
+    use awsm_renderer::materials::flipbook::{FlipBookMaterial, FlipBookMode};
+    let alpha_mode = match sprite.alpha_mode {
+        awsm_scene_schema::SpriteAlphaMode::Opaque => MaterialAlphaMode::Opaque,
+        awsm_scene_schema::SpriteAlphaMode::Mask { cutoff_x1000 } => MaterialAlphaMode::Mask {
+            cutoff: cutoff_x1000 as f32 / 1000.0,
+        },
+        awsm_scene_schema::SpriteAlphaMode::Blend => MaterialAlphaMode::Blend,
+    };
+    let mode = match flipbook.mode {
+        awsm_scene_schema::FlipBookModeDef::Loop => FlipBookMode::Loop,
+        awsm_scene_schema::FlipBookModeDef::PingPong => FlipBookMode::PingPong,
+        awsm_scene_schema::FlipBookModeDef::Clamp => FlipBookMode::Clamp,
+        awsm_scene_schema::FlipBookModeDef::Once => FlipBookMode::Once,
+    };
+    // Anything other than Opaque must go through the transparent
+    // path — Mask materials are transparency-pass too (the WGSL
+    // `discard`s on cutoff in the transparent fragment shader), and
+    // the sync `add_raw_mesh` rejects every transparency-pass
+    // material with an error.
+    let is_transparent_pass = !matches!(alpha_mode, MaterialAlphaMode::Opaque);
+    let texture_ref = sprite.texture;
+    let tint = sprite.tint;
+    let entry_for_track = entry.clone();
+    let mut fb = FlipBookMaterial::new(alpha_mode, true);
+    fb.tint = tint;
+    fb.cols = flipbook.cols;
+    fb.rows = flipbook.rows;
+    fb.frame_count = flipbook.frame_count;
+    fb.fps = flipbook.fps;
+    fb.time_offset = flipbook.time_offset;
+    fb.mode = mode;
+    fb.flip_y = flipbook.flip_y;
+
+    if is_transparent_pass {
+        // Transparent path is async because `add_raw_mesh_transparent`
+        // builds + caches a transparent pipeline for the mesh.
+        let handle = renderer_handle();
+        let mut r = handle.lock().await;
+        fb.atlas_tex = texture_ref.and_then(|t| {
+            resolve_material_texture(
+                &mut r,
+                Some(t),
+                super::texture_cache::TextureColorRole::Srgb,
+            )
+        });
+        // Split borrow: `materials.insert` takes `&mut self.materials`
+        // and `&self.textures` from disjoint fields on AwsmRenderer.
+        // Re-borrow through `&mut *r` so the compiler sees the field
+        // split explicitly instead of one fat `&mut MutexGuard` borrow.
+        let renderer_ref: &mut AwsmRenderer = &mut r;
+        let material_key = renderer_ref
+            .materials
+            .insert(Material::FlipBook(Box::new(fb)), &renderer_ref.textures);
+        let tk = r.transforms.insert(Transform::IDENTITY, Some(parent_tk));
+        let mesh_key = match r.add_raw_mesh_transparent(raw, tk, material_key).await {
+            Ok(mk) => mk,
+            Err(err) => {
+                tracing::warn!("flipbook sprite: add_raw_mesh_transparent failed: {err}");
+                r.remove_material(material_key);
+                r.transforms.remove(tk);
+                return None;
+            }
+        };
+        entry_for_track.model_meshes.lock().unwrap().push(mesh_key);
+        entry_for_track.model_transforms.lock().unwrap().push(tk);
+        entry_for_track
+            .material_keys
+            .lock()
+            .unwrap()
+            .push(material_key);
+        // Ensure any freshly-uploaded atlas texture is visible to the
+        // transparent pipeline's bind groups.
+        if let Err(err) = r.finalize_gpu_textures().await {
+            tracing::warn!("flipbook sprite: finalize_gpu_textures failed: {err}");
+        }
+        Some(mesh_key)
+    } else {
+        with_renderer_mut(move |r| {
+            fb.atlas_tex = texture_ref.and_then(|t| {
+                resolve_material_texture(r, Some(t), super::texture_cache::TextureColorRole::Srgb)
+            });
+            let material_key = r
+                .materials
+                .insert(Material::FlipBook(Box::new(fb)), &r.textures);
+            let tk = r.transforms.insert(Transform::IDENTITY, Some(parent_tk));
+            match r.add_raw_mesh(raw, tk, material_key) {
+                Ok(mk) => {
+                    entry_for_track.model_meshes.lock().unwrap().push(mk);
+                    entry_for_track.model_transforms.lock().unwrap().push(tk);
+                    entry_for_track
+                        .material_keys
+                        .lock()
+                        .unwrap()
+                        .push(material_key);
+                    Some(mk)
+                }
+                Err(err) => {
+                    tracing::warn!("flipbook sprite: add_raw_mesh failed: {err}");
+                    r.remove_material(material_key);
+                    r.transforms.remove(tk);
+                    None
+                }
+            }
+        })
+        .await
     }
 }
 

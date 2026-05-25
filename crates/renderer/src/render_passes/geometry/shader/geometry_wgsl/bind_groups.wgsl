@@ -1,4 +1,8 @@
 @group(0) @binding(0) var<uniform> camera_raw: CameraRaw;
+// Renderer-wide per-frame uniform (time / delta_time / frame_count /
+// resolution). Rides alongside camera on the same group; one upload
+// per frame. See `shared_wgsl/frame_globals.wgsl`.
+@group(0) @binding(1) var<uniform> frame_globals_raw: FrameGlobalsRaw;
 // Packed transforms (model + normal). Geometry pass only uses
 // `.model_world` — see `get_model_transform` in
 // `shared_wgsl/vertex/transform.wgsl`. The normal matrix slot is

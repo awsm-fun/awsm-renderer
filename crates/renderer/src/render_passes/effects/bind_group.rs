@@ -96,6 +96,10 @@ impl EffectsBindGroups {
             entries.len() as u32,
             BindGroupResource::TextureView(Cow::Borrowed(&ctx.render_texture_views.effects)),
         ));
+        entries.push(BindGroupEntry::new(
+            entries.len() as u32,
+            BindGroupResource::Buffer(BufferBinding::new(&ctx.frame_globals.gpu_buffer)),
+        ));
 
         let descriptor = BindGroupDescriptor::new(
             ctx.bind_group_layouts
@@ -131,6 +135,10 @@ impl EffectsBindGroups {
         entries.push(BindGroupEntry::new(
             entries.len() as u32,
             BindGroupResource::TextureView(Cow::Borrowed(&ctx.render_texture_views.bloom)),
+        ));
+        entries.push(BindGroupEntry::new(
+            entries.len() as u32,
+            BindGroupResource::Buffer(BufferBinding::new(&ctx.frame_globals.gpu_buffer)),
         ));
 
         let descriptor = BindGroupDescriptor::new(
@@ -205,6 +213,15 @@ fn bind_group_layout_cache_key(
                     StorageTextureBindingLayout::new(render_texture_formats.color)
                         .with_view_dimension(TextureViewDimension::N2d)
                         .with_access(StorageTextureAccess::WriteOnly),
+                ),
+                visibility_vertex: false,
+                visibility_fragment: false,
+                visibility_compute: true,
+            },
+            // FrameGlobals uniform.
+            BindGroupLayoutCacheKeyEntry {
+                resource: BindGroupLayoutResource::Buffer(
+                    BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
                 ),
                 visibility_vertex: false,
                 visibility_fragment: false,

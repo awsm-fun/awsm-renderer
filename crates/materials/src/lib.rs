@@ -25,6 +25,9 @@ pub mod unlit;
 #[cfg(feature = "toon")]
 pub mod toon;
 
+#[cfg(feature = "flipbook")]
+pub mod flipbook;
+
 pub use alpha_mode::MaterialAlphaMode;
 pub use shader::MaterialShader;
 pub use shader_id::MaterialShaderId;

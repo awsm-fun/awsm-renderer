@@ -79,13 +79,19 @@ impl CameraBuffer {
     //  inv_projection      (mat4)  64 bytes
     //  inv_view            (mat4)  64 bytes
     //  position (vec4, w=unused) 16 bytes
-    //  frame_count_and_padding (vec4<u32>) 16 bytes
     //  frustum corner rays (4 * vec4) 64 bytes
     //  viewport (vec4) 16 bytes
     //  dof_params (vec4: focus_distance, aperture, unused, unused) 16 bytes
-    // Total = 512 bytes (all members 16-byte aligned, no implicit gaps)
+    // Total = 496 bytes (all members 16-byte aligned, no implicit gaps)
+    //
+    // A `vec4<u32>` slot used to live between `position` and
+    // `frustum_rays` carrying `render_textures.frame_count()` as
+    // `frame_count_and_padding.x`. No WGSL ever read it; the monotonic
+    // frame counter now lives on the `frame_globals` uniform (see
+    // `crates/renderer/src/frame_globals`). The slot was removed —
+    // Camera is 16 bytes slimmer.
     /// Byte size of the camera uniform buffer.
-    pub const BYTE_SIZE: usize = 512;
+    pub const BYTE_SIZE: usize = 496;
 
     /// Creates a camera buffer on the GPU.
     pub fn new(gpu: &AwsmRendererWebGpu) -> Result<Self> {
@@ -190,15 +196,9 @@ impl CameraBuffer {
         // Write position as vec4 (xyz + unused w component)
         let position = camera_matrices.position_world.extend(0.0).to_array();
         write_f32_slice(&mut self.raw_data, &mut offset, &position);
-        // Write frame_count_and_padding as vec4<u32> (x = frame_count, yzw = padding)
-        write_u32(
-            &mut self.raw_data,
-            &mut offset,
-            render_textures.frame_count(),
-        );
-        write_u32(&mut self.raw_data, &mut offset, 0);
-        write_u32(&mut self.raw_data, &mut offset, 0);
-        write_u32(&mut self.raw_data, &mut offset, 0);
+        // The 16-byte `frame_count_and_padding` slot that used to sit
+        // here is removed — see `BYTE_SIZE`'s rationale. frustum_rays
+        // follows directly.
 
         for ray in frustum_rays.iter() {
             let ray_values = ray.to_array();
@@ -330,13 +330,6 @@ fn write_f32_slice(buffer: &mut [u8], offset: &mut usize, values: &[f32]) {
     let bytes = unsafe { std::slice::from_raw_parts(values.as_ptr() as *const u8, byte_len) };
     buffer[*offset..*offset + byte_len].copy_from_slice(bytes);
     *offset += byte_len;
-}
-
-fn write_u32(buffer: &mut [u8], offset: &mut usize, value: u32) {
-    // WGSL requires 16-byte alignment. We store the frame counter alongside the camera position,
-    // treating it as a padded vec4 on the shader side.
-    buffer[*offset..*offset + 4].copy_from_slice(&value.to_ne_bytes());
-    *offset += 4;
 }
 
 /// Result type for camera operations.

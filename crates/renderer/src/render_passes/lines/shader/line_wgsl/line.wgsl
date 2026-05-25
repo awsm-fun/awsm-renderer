@@ -1,5 +1,8 @@
 @group(0) @binding(0) var<uniform> camera_raw: CameraRaw;
 
+// Mirrors `shared_wgsl/camera.wgsl::CameraRaw`. `frame_count_and_padding`
+// was removed when the monotonic frame counter migrated to the
+// `frame_globals` uniform.
 struct CameraRaw {
     view: mat4x4<f32>,
     proj: mat4x4<f32>,
@@ -8,7 +11,6 @@ struct CameraRaw {
     inv_proj: mat4x4<f32>,
     inv_view: mat4x4<f32>,
     position: vec4<f32>,
-    frame_count_and_padding: vec4<u32>,
     frustum_rays: array<vec4<f32>, 4>,
     _padding_end: array<vec4<f32>, 2>,
 };

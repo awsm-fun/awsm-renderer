@@ -167,12 +167,12 @@ fn render_one_frame() {
         point_handle_sync::per_frame_update(renderer);
 
         // Tick every "playing" emitter's simulator before transforms get
-        // pushed to GPU.
-        let now_ms = web_sys::window()
-            .and_then(|w| w.performance())
-            .map(|p| p.now())
-            .unwrap_or(0.0);
-        particles_sync::tick_all(now_ms, renderer);
+        // pushed to GPU. `delta_time` is sourced from
+        // `renderer.frame_globals()` inside `tick_all` — the per-runtime
+        // `last_ts_ms` book-keeping that used to live here moved to the
+        // central `FrameGlobals` clock, so `set_time_source` overrides
+        // (pause / time-scale / replay) automatically flow to particles.
+        particles_sync::tick_all(renderer);
 
         // Push world position/direction into every active light.
         // Extracted to a separate function so additional sync logic

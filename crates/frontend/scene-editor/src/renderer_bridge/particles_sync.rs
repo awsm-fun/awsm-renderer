@@ -60,7 +60,6 @@ struct EmitterRuntime {
     /// transform sweeps the whole cloud as the emitter moves).
     /// `World` mode ignores this and uses the live position instead.
     base_world_pos: Vec3,
-    last_ts_ms: f64,
 }
 
 static RUNTIMES: Mutex<Option<HashMap<NodeId, EmitterRuntime>>> = Mutex::new(None);
@@ -314,7 +313,6 @@ fn build_runtime(
         transforms_buf: vec![dead_transform; max],
         attrs_buf: vec![dead_attr; max],
         base_world_pos: parent_world_pos,
-        last_ts_ms: 0.0,
     })
 }
 
@@ -449,23 +447,32 @@ async fn build_runtime_blend(
         transforms_buf: vec![dead_transform; max],
         attrs_buf: vec![dead_attr; max],
         base_world_pos: parent_world_pos,
-        last_ts_ms: 0.0,
     })
 }
 
 /// Per-frame: tick every "playing" emitter runtime. Mirrors the player's
 /// `scene::particles::tick_all` minus the multi-emitter map ordering quirks.
 /// Caller is the editor's render loop, with the renderer locked.
-pub fn tick_all(now_ms: f64, renderer: &mut AwsmRenderer) {
+///
+/// `delta_time` comes from
+/// [`AwsmRenderer::frame_globals`][awsm_renderer::AwsmRenderer::frame_globals],
+/// so pause / time-scale / replay flows that route through
+/// [`AwsmRenderer::set_time_source`][awsm_renderer::AwsmRenderer::set_time_source]
+/// automatically reach the particle simulator.
+pub fn tick_all(renderer: &mut AwsmRenderer) {
+    // Pass `delta_time` through verbatim, including the legitimate
+    // `0.0` cases:
+    //   * paused gameplay (`set_time_source` pumped the same `time`
+    //     twice) — simulations correctly stop advancing.
+    //   * the very first render() before any prior frame.
+    // The previous code path here substituted `0.016` whenever
+    // `delta_time == 0.0`, which broke pause semantics by ticking
+    // particles at 60 Hz against the paused clock. The first-frame
+    // case takes a single "lost" emit tick instead, which is a
+    // ~16 ms cosmetic delay nobody notices.
+    let dt = renderer.frame_globals().delta_time;
     with_runtimes(|map| {
         for (_, runtime) in map.iter_mut() {
-            let dt = if runtime.last_ts_ms > 0.0 {
-                ((now_ms - runtime.last_ts_ms) / 1000.0).clamp(0.0, 0.1) as f32
-            } else {
-                0.016
-            };
-            runtime.last_ts_ms = now_ms;
-
             // In `World` space new spawns need to come out of the
             // emitter's CURRENT world position so a moving emitter
             // leaves a trail; in `Local` space we keep using the
@@ -618,7 +625,6 @@ pub async fn try_rebuild_preserving_simulator(
     // overflow particles cleanly while a max_alive grow shows them
     // immediately.
     new_runtime.simulator = salvaged.simulator;
-    new_runtime.last_ts_ms = salvaged.last_ts_ms;
 
     with_runtimes(|m| {
         m.insert(node_id, new_runtime);

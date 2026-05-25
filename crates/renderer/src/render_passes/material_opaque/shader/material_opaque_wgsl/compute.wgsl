@@ -10,6 +10,10 @@
 {% include "shared_wgsl/camera.wgsl" %}
 /*************** END camera.wgsl ******************/
 
+/*************** START frame_globals.wgsl ******************/
+{% include "shared_wgsl/frame_globals.wgsl" %}
+/*************** END frame_globals.wgsl ******************/
+
 /*************** START math.wgsl ******************/
 {% include "shared_wgsl/math.wgsl" %}
 /*************** END math.wgsl ******************/
@@ -119,6 +123,8 @@ fn main(
         classify_buckets.unlit_offset
         {%- when MaterialShaderId::Toon -%}
         classify_buckets.toon_offset
+        {%- when MaterialShaderId::FlipBook -%}
+        classify_buckets.flipbook_offset
     {%- endmatch -%}
     ;
     let tile = classify_buckets.tiles[bucket_offset + wg_id.x];
@@ -140,6 +146,7 @@ fn main(
 
 
     let camera = camera_from_raw(camera_raw);
+    let frame_globals = frame_globals_from_raw(frame_globals_raw);
 
 
     // early return if we only hit skybox / no geometry (for all samples if MSAA).
@@ -246,6 +253,8 @@ fn main(
             if (shader_id != SHADER_ID_UNLIT) { return; }
         {% when MaterialShaderId::Toon %}
             if (shader_id != SHADER_ID_TOON) { return; }
+        {% when MaterialShaderId::FlipBook %}
+            if (shader_id != SHADER_ID_FLIPBOOK) { return; }
     {% endmatch %}
 
     let vertex_attribute_stride = material_mesh_meta.vertex_attribute_stride / 4; // 4 bytes per float
@@ -381,6 +390,52 @@ fn main(
             );
         {% endif %}
         base_alpha = material_color.base.a;
+    {% when MaterialShaderId::FlipBook %}
+        // FlipBook: grid-uniform sprite-sheet, sampled per
+        // `frame_globals.time + time_offset`. Tints by `material.tint`.
+        let flipbook_material = flipbook_get_material(material_offset);
+        var flipbook_sampled: vec4<f32> = vec4<f32>(1.0);
+        if flipbook_material.atlas_tex_info.exists {
+            let flipbook_uv_attr = texture_uv(
+                attribute_data_offset,
+                triangle_indices,
+                barycentric,
+                flipbook_material.atlas_tex_info,
+                vertex_attribute_stride,
+                uv_sets_index,
+            );
+            let flipbook_cell_uv = flipbook_compute_cell_uv(
+                flipbook_material,
+                flipbook_uv_attr,
+                frame_globals.time,
+            );
+            // Mip-mode-aware sample. Even on the gradient template,
+            // flipbook quads sample at the cell-UV (which jumps
+            // discontinuously between cells, breaking hardware
+            // derivative-driven mip selection); pass zero derivatives
+            // so the grad path lands at mip 0.
+            {% match mipmap %}
+                {% when MipmapMode::Gradient %}
+                    let flipbook_uv_derivs = UvDerivs(vec2<f32>(0.0), vec2<f32>(0.0));
+                    flipbook_sampled = texture_pool_sample_grad(
+                        flipbook_material.atlas_tex_info,
+                        flipbook_cell_uv,
+                        flipbook_uv_derivs,
+                    );
+                {% when MipmapMode::None %}
+                    flipbook_sampled = texture_pool_sample_no_mips(
+                        flipbook_material.atlas_tex_info,
+                        flipbook_cell_uv,
+                    );
+            {% endmatch %}
+        }
+        let flipbook_result = flipbook_finalize_color(
+            flipbook_material,
+            flipbook_sampled,
+            frame_globals.time,
+        );
+        color = flipbook_result.rgb;
+        base_alpha = flipbook_result.a;
     {% endmatch %}
 
 

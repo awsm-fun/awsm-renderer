@@ -14,6 +14,7 @@ use std::sync::LazyLock;
 pub struct Config {
     pub camera_focus_distance: f32,
     pub camera_aperture: f32,
+    pub media_base_url_additional_assets: String,
 }
 
 impl Config {
@@ -23,11 +24,30 @@ impl Config {
     pub fn gizmo_url(&self) -> &'static str {
         "assets/gizmo.glb"
     }
+
+    /// Base URL for the `awsm-renderer-assets` repo. Used by the
+    /// debug-only `load_external_test_scene` wasm export so test
+    /// fixtures live in one canonical place (the sibling assets repo)
+    /// instead of being duplicated into the editor's dist. Set at
+    /// build time via the `MEDIA_BASE_URL_ADDITIONAL_ASSETS` env var
+    /// in `taskfiles/frontend/scene-editor.yml`. Dev points at
+    /// `http://localhost:9083` (the media-additional-assets server);
+    /// prod points at `https://dakom.github.io/awsm-renderer-assets`.
+    pub fn media_base_url_additional_assets(&self) -> &str {
+        &self.media_base_url_additional_assets
+    }
 }
 
+#[allow(clippy::option_env_unwrap)]
 pub static CONFIG: LazyLock<Config> = LazyLock::new(|| Config {
     camera_aperture: 5.6,
     camera_focus_distance: 10.0,
+    media_base_url_additional_assets: option_env!("MEDIA_BASE_URL_ADDITIONAL_ASSETS")
+        .expect(
+            "MEDIA_BASE_URL_ADDITIONAL_ASSETS must be set — see \
+             `taskfiles/frontend/scene-editor.yml`",
+        )
+        .to_string(),
 });
 
 /// Keyboard shortcut bindings for the editor. Matched against

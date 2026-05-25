@@ -15,13 +15,15 @@ rustc-args = ["--cfg=web_sys_unstable_apis"]
 rustdoc-args = ["--cfg=web_sys_unstable_apis"]
 
 [features]
-default = ["pbr-standard", "unlit", "toon"]
+default = ["pbr-standard", "unlit", "toon", "flipbook"]
 # Each material is a Cargo feature. Adding a new material = one new module +
 # one feature entry + one trait impl, with zero edits to `awsm-renderer`.
 pbr-standard = []
 unlit = []
 toon = []
+flipbook = []
 
 [dependencies]
 awsm-renderer-core = { path = "../renderer-core", features = ["texture-pool"] }
 thiserror = { workspace = true }
+tracing = { workspace = true }

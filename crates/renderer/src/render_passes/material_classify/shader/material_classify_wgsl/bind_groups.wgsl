@@ -35,17 +35,23 @@ struct ClassifyIndirectArgs {
 };
 
 // Storage-buffer layout — must stay in lockstep with the byte writer
-// in `material_classify::buffers::write_header`. The three indirect
-// args slots are at offsets 0/16/32; `dispatchWorkgroupsIndirect`
+// in `material_classify::buffers::write_header`. The four indirect
+// args slots are at offsets 0/16/32/48; `dispatchWorkgroupsIndirect`
 // reads each as `(x, y, z)` from the bound buffer.
 struct ClassifyOutput {
     args_pbr: ClassifyIndirectArgs,
     args_unlit: ClassifyIndirectArgs,
     args_toon: ClassifyIndirectArgs,
+    args_flipbook: ClassifyIndirectArgs,
     pbr_offset: u32,
     unlit_offset: u32,
     toon_offset: u32,
+    flipbook_offset: u32,
     bucket_capacity: u32,
+    // Alignment padding — header is 96 B so the trailing tiles array
+    // (vec2<u32>, 8 B stride) starts 16-byte aligned. The Rust writer
+    // leaves the three trailing u32s zero.
+    _pad_align: vec3<u32>,
     tiles: array<vec2<u32>>,
 };
 

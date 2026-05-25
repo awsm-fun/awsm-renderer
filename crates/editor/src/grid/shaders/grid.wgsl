@@ -1,6 +1,13 @@
 @group(0) @binding(0) var<uniform> camera_raw: CameraRaw;
 
-// Raw camera uniform structure (matches GPU buffer layout with padding)
+// Raw camera uniform structure (matches GPU buffer layout with padding).
+//
+// Mirrors `shared_wgsl/camera.wgsl`'s `CameraRaw` minus the trailing
+// fields this shader doesn't need. `frame_count_and_padding` was
+// removed when the monotonic frame counter migrated to the
+// `frame_globals` uniform (see `crates/renderer/src/frame_globals`).
+// Total layout is now 496 bytes; the `_padding_end` array sizes
+// the locally-declared struct out to that figure.
 struct CameraRaw {
     view: mat4x4<f32>,
     proj: mat4x4<f32>,
@@ -9,9 +16,8 @@ struct CameraRaw {
     inv_proj: mat4x4<f32>,
     inv_view: mat4x4<f32>,
     position: vec4<f32>,  // .xyz = position, .w = unused
-    frame_count_and_padding: vec4<u32>,  // .x = frame_count, .yzw = padding
     frustum_rays: array<vec4<f32>, 4>,
-    _padding_end: array<vec4<f32>, 2>,  // Total: 512 bytes
+    _padding_end: array<vec4<f32>, 2>,  // viewport + dof_params (this shader doesn't use them)
 };
 
 // Friendly camera structure (no padding, easier to work with)
@@ -23,7 +29,6 @@ struct Camera {
     inv_proj: mat4x4<f32>,
     inv_view: mat4x4<f32>,
     position: vec3<f32>,
-    frame_count: u32,
     frustum_rays: array<vec4<f32>, 4>,
 };
 
@@ -37,7 +42,6 @@ fn camera_from_raw(raw: CameraRaw) -> Camera {
     camera.inv_proj = raw.inv_proj;
     camera.inv_view = raw.inv_view;
     camera.position = raw.position.xyz;
-    camera.frame_count = raw.frame_count_and_padding.x;
     camera.frustum_rays = raw.frustum_rays;
     return camera;
 }

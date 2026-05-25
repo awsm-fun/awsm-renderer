@@ -32,6 +32,10 @@ struct TransformPacked {
 @group(0) @binding(16) var<uniform> lights_info: LightsInfoPacked;
 // Lights are uniform. Same fixed-size 1024-entry array as the opaque pass.
 @group(0) @binding(17) var<uniform> lights: array<LightPacked, 1024>;
+// Renderer-wide per-frame uniform (time / delta_time / frame_count /
+// resolution). Rides alongside camera; see
+// `shared_wgsl/frame_globals.wgsl`.
+@group(0) @binding(18) var<uniform> frame_globals_raw: FrameGlobalsRaw;
 
 // ─── Shadow bind group (group 1) ───────────────────────────────────
 // Includes the shared shadow bindings (atlas + cube + EVSM + globals

@@ -123,15 +123,14 @@ together with the rest of the doc:
   *renderer-owned per-frame writable* data (each `register_material`
   / instance change updates a slice), so it falls under that rule.
   See §"Extras pool" below for the corrected wiring.
-- **Always-in-scope helpers.** The `temporal-shaders` plan adds a
-  `frame_globals` uniform (`time` / `delta_time` / `frame_count` /
-  `resolution`) bound alongside `camera` in every pass that does
-  material shading. If that plan has landed at audit time
-  (Phase 1), its `shared_wgsl/frame_globals.wgsl` is part of the
-  always-in-scope helper set for both `contract-opaque.md` and
-  `contract-transparent.md`. If it hasn't, write the contract docs
-  against the current `shared_wgsl/` set and add `frame_globals`
-  as a follow-up edit once it lands.
+- **Always-in-scope helpers.** The `frame_globals` uniform
+  (`time` / `delta_time` / `frame_count` / `resolution`) ships
+  bound alongside `camera` in every pass that does material shading
+  — see [`TEMPORAL_SHADERS.md`](../TEMPORAL_SHADERS.md). Its
+  `shared_wgsl/frame_globals.wgsl` is part of the always-in-scope
+  helper set for both `contract-opaque.md` and
+  `contract-transparent.md` and the contract docs should list it
+  alongside the other shared helpers.
 
 The rest of this plan still applies as the implementation brief
 for everything else; the §"Storage strategy", §"Render-graph
@@ -939,7 +938,7 @@ Expected outcome: scene-editor + model-tests still build and render identically 
 4. **Round-trip test**: write a hand-built `MaterialDefinition` (including a `BufferSlot` with a default `.bin` reference) to a temp folder, load it back, assert deep equality on both the layout and the resolved buffer bytes.
 5. **Audit the first-party shading contract.** Read every first-party material WGSL (`materials/src/wgsl/pbr/*`, `unlit_material.wgsl`, `toon_material.wgsl`) and the compute-kernel template (`shared_wgsl/material.wgsl` + the opaque-compute pass shaders) and the transparent fragment shader. Document precisely:
    - Function signature each first-party fragment exposes (input struct, output struct, name pattern).
-   - Helpers reachable from inside the fragment (every symbol from `shared_wgsl/`). If the [temporal-shaders plan](./temporal-shaders.md) has landed by audit time, this includes `shared_wgsl/frame_globals.wgsl` (`frame_globals.time` / `delta_time` / `frame_count` / `resolution`). If it hasn't, leave a follow-up note in the contract docs to add it when that plan ships.
+   - Helpers reachable from inside the fragment (every symbol from `shared_wgsl/`). This includes `shared_wgsl/frame_globals.wgsl` (`frame_globals.time` / `delta_time` / `frame_count` / `resolution`) — see [`TEMPORAL_SHADERS.md`](../TEMPORAL_SHADERS.md) for the full surface.
    - Per-material storage-buffer convention (byte_offset table, how `shader_id` indexes in, where texture indices live).
    - Output expectations for each pass (HDR linear, alpha handling, etc.).
 6. **Write the docs.** Produce `docs/dynamic-materials/contract-opaque.md` and `docs/dynamic-materials/contract-transparent.md`. Each begins with the exact function signature an author writes, followed by sections on helpers in scope, per-material data access, and texture-pool access. Cross-reference into the relevant `shared_wgsl/` files by line range.
@@ -1038,7 +1037,7 @@ Expected outcome: a custom material defined manually in `project.json` (in `asse
    - Uniforms: `fps: f32`, `frame_count: u32`, `tint: vec3<f32>`
    - Textures: `atlas` (the sprite-sheet image)
    - Buffers: `frames` — each "frame" is 4 f32s (cell `x`, `y`, `w`, `h` in UV space)
-   - WGSL: reads `frame_globals.time` (once temporal-shaders has landed; otherwise a hard-coded ticker for testing), computes `frame_idx`, reads the cell rect from `frames` via `extras_load_f32(material.frames_offset + frame_idx * 4u + i)`, computes the cell UV, samples the atlas, multiplies by tint.
+   - WGSL: reads `frame_globals.time` (in scope on every material-shading pass — see [`TEMPORAL_SHADERS.md`](../TEMPORAL_SHADERS.md)), computes `frame_idx`, reads the cell rect from `frames` via `extras_load_f32(material.frames_offset + frame_idx * 4u + i)`, computes the cell UV, samples the atlas, multiplies by tint.
 8. **Author the test material's `.bin`**: use the Buffer Converter (or, for Phase 6 since material-editor may not yet exist, a one-off Rust helper script in `crates/renderer/examples/make_flipbook_bin.rs`) to produce `frames.bin` from a JSON array of cell rects.
 9. **Test scene**: add a quad with the irregular-flipbook material; verify cells play back correctly. Add a second instance with `buffer_overrides` pointing at a different `frames.bin` (different cell layout); verify both render independently with no aliasing.
 

@@ -330,6 +330,13 @@ impl MaterialOpaqueBindGroups {
             entries.len() as u32,
             BindGroupResource::Buffer(BufferBinding::new(&ctx.material_classify_buffers.buffer)),
         ));
+        // Renderer-wide per-frame uniform (time / delta_time /
+        // frame_count / resolution). Lifetimes match camera's, so we
+        // ride alongside it on the same group.
+        entries.push(BindGroupEntry::new(
+            entries.len() as u32,
+            BindGroupResource::Buffer(BufferBinding::new(&ctx.frame_globals.gpu_buffer)),
+        ));
 
         let descriptor = BindGroupDescriptor::new(
             ctx.bind_group_layouts
@@ -660,6 +667,15 @@ async fn create_main_bind_group_layout_key(
         BindGroupLayoutCacheKeyEntry {
             resource: BindGroupLayoutResource::Buffer(
                 BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),
+            ),
+            visibility_vertex: false,
+            visibility_fragment: false,
+            visibility_compute: true,
+        },
+        // Frame globals uniform (renderer-wide per-frame state).
+        BindGroupLayoutCacheKeyEntry {
+            resource: BindGroupLayoutResource::Buffer(
+                BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
             ),
             visibility_vertex: false,
             visibility_fragment: false,

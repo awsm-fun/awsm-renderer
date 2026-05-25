@@ -139,6 +139,7 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
 
     // Convert raw camera uniform to friendly structure
     let camera = camera_from_raw(camera_raw);
+    let frame_globals = frame_globals_from_raw(frame_globals_raw);
 
     // Handle double-sided materials: flip normal and tangent handedness for back faces
     // This must be done BEFORE material color computation so normal mapping uses the correct orientation
@@ -175,6 +176,31 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
         let unlit_color = unlit_get_material_color(unlit_material, input);
         color = compute_unlit_output(unlit_color);
         base_alpha = unlit_color.base.a;
+    } else if (shader_id == SHADER_ID_FLIPBOOK) {
+        // FlipBook (sprite-sheet) material — samples a single cell from
+        // a grid-uniform atlas based on `frame_globals.time + time_offset`.
+        let fb = flipbook_get_material(material_offset);
+        var fb_sampled: vec4<f32> = vec4<f32>(1.0);
+        if fb.atlas_tex_info.exists {
+            let fb_uv = texture_uv(fb.atlas_tex_info, input);
+            let fb_cell_uv = flipbook_compute_cell_uv(fb, fb_uv, frame_globals.time);
+            fb_sampled = texture_pool_sample(fb.atlas_tex_info, fb_cell_uv);
+        }
+        // Alpha-mask handling: transparent path uses `discard`. The
+        // shared `flipbook_finalize_color` zeros the alpha on cutoff —
+        // we discard explicitly here first so we don't shade past the
+        // cutoff threshold.
+        if (fb.alpha_mode == ALPHA_MODE_MASK) {
+            let cutoff_alpha = fb_sampled.a * fb.tint.a;
+            if (cutoff_alpha < fb.alpha_cutoff) {
+                discard;
+            }
+        }
+        let fb_result = flipbook_finalize_color(fb, fb_sampled, frame_globals.time);
+        color = fb_result.rgb;
+        // For mask materials past the cutoff, force alpha = 1 (we
+        // already passed the discard above).
+        base_alpha = select(fb_result.a, 1.0, fb.alpha_mode == ALPHA_MODE_MASK);
     } else if (shader_id == SHADER_ID_TOON) {
         // Toon material path
         let toon_material = toon_get_material(material_offset);

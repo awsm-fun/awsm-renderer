@@ -10,6 +10,10 @@
 {% include "shared_wgsl/camera.wgsl" %}
 /*************** END camera.wgsl ******************/
 
+/*************** START frame_globals.wgsl ******************/
+{% include "shared_wgsl/frame_globals.wgsl" %}
+/*************** END frame_globals.wgsl ******************/
+
 /*************** START skybox.wgsl ******************/
 {% include "material_opaque_wgsl/helpers/skybox.wgsl" %}
 /*************** END skybox.wgsl ******************/

@@ -601,66 +601,66 @@ Done.
 Tick items as they land. A future session can resume by reading this list.
 
 ### Phase 0 — FrameGlobals scaffolding + Camera cleanup
-- [ ] `crates/renderer/src/frame_globals/` module with `construction_ms: f64` + `last_time: Option<f32>` + `time_override: Option<f32>`
-- [ ] `pub frame_globals: FrameGlobals` field on `AwsmRenderer`
-- [ ] GPU buffer (32 bytes, uniform)
-- [ ] `MappedUploader` companion (NOT raw `queue.writeBuffer`) — mirrors `camera.rs`
-- [ ] `write_gpu` with upper-clamp-only delta (allows 0.0), first-frame delta = 0.0
-- [ ] `FrameGlobalsSnapshot` + `frame_globals()` accessor + `set_time_source()` method
-- [ ] Wired into `render::render()` in the existing CPU→GPU upload batch
-- [ ] Clamp verified: 3 consecutive `set_time_source(0.0)` → all `delta_time == 0.0`
-- [ ] Rustdoc on `set_time_source` documents pause / time-scale / replay use cases
-- [ ] `frame_count_and_padding` removed from `CameraRaw` (shared_wgsl/camera.wgsl + camera.rs Rust layout)
-- [ ] `frame_count: u32` removed from friendly `Camera` struct + `camera_from_raw` assignment
-- [ ] Same field removed from `editor/src/grid/shaders/grid.wgsl` and `renderer/src/render_passes/lines/.../line.wgsl` (verify with grep)
-- [ ] `grep -r 'camera\.frame_count\|frame_count_and_padding' crates/` returns no matches
+- [x] `crates/renderer/src/frame_globals/` module with `construction_ms: f64` + `last_time: Option<f32>` + `time_override: Option<f32>`
+- [x] `pub frame_globals: FrameGlobals` field on `AwsmRenderer`
+- [x] GPU buffer (32 bytes, uniform)
+- [x] `MappedUploader` companion (NOT raw `queue.writeBuffer`) — mirrors `camera.rs`
+- [x] `write_gpu` with upper-clamp-only delta (allows 0.0), first-frame delta = 0.0
+- [x] `FrameGlobalsSnapshot` + `frame_globals()` accessor + `set_time_source()` method
+- [x] Wired into `render::render()` in the existing CPU→GPU upload batch
+- [x] Clamp verified: 3 consecutive `set_time_source(0.0)` → all `delta_time == 0.0`
+- [x] Rustdoc on `set_time_source` documents pause / time-scale / replay use cases
+- [x] `frame_count_and_padding` removed from `CameraRaw` (shared_wgsl/camera.wgsl + camera.rs Rust layout)
+- [x] `frame_count: u32` removed from friendly `Camera` struct + `camera_from_raw` assignment
+- [x] Same field removed from `editor/src/grid/shaders/grid.wgsl` and `renderer/src/render_passes/lines/.../line.wgsl` (verify with grep)
+- [x] `grep -r 'camera\.frame_count\|frame_count_and_padding' crates/` returns no matches
 
 ### Phase 1 — frame_globals.wgsl + universal binding
-- [ ] `shared_wgsl/frame_globals.wgsl` with Raw + friendly structs and binding declaration
-- [ ] Bind group carrying Camera in each pass extended with `frame_globals_raw`
-- [ ] Templates updated to include `frame_globals.wgsl` and bind it
-- [ ] Friendly `let frame_globals = ...` available at the right scope in each pass
-- [ ] Verified by debug pulse on an existing material (e.g. Unlit `* (sin(time)*0.5+0.5)`); debug code removed before commit
-- [ ] If dynamic-materials plan is in progress: `frame_globals` added to its contract docs as always-in-scope
+- [x] `shared_wgsl/frame_globals.wgsl` with Raw + friendly structs and binding declaration
+- [x] Bind group carrying Camera in each pass extended with `frame_globals_raw`
+- [x] Templates updated to include `frame_globals.wgsl` and bind it
+- [x] Friendly `let frame_globals = ...` available at the right scope in each pass
+- [x] Verified by debug pulse on an existing material (e.g. Unlit `* (sin(time)*0.5+0.5)`); debug code removed before commit
+- [x] If dynamic-materials plan is in progress: `frame_globals` added to its contract docs as always-in-scope
 
 ### Phase 2 — FlipBookMaterial Rust struct
-- [ ] `crates/materials/src/flipbook.rs` with struct, `FlipBookMode`, `new`, accessors
-- [ ] `WGSL_FRAGMENT` const
-- [ ] `impl MaterialShader` with `write_uniform_buffer` matching the WGSL byte layout
-- [ ] `MaterialShaderId::FLIPBOOK` added — as enum variant or `const FLIPBOOK: Self = Self(4)` depending on whether dynamic-materials plan has landed
-- [ ] `flipbook` Cargo feature in `awsm-renderer-materials`; added to workspace default features
-- [ ] `enabled_materials()` appends FlipBook behind the feature
-- [ ] `Material::FlipBook` variant + every match arm updated
-- [ ] **Material classify extension**: `BUCKET_COUNT: 3 → 4` in `material_classify/buffers.rs`
-- [ ] **Material classify WGSL**: `BUCKET_BIT_FLIPBOOK` + if-else chain + per-bucket extract block all extended
-- [ ] **Pipeline pre-warm**: verify `prewarm_pipelines()` picks up FlipBook on a debug-build editor boot (cold-cache reload should compile the FlipBook pipelines during splash, not on first interactive frame)
+- [x] `crates/materials/src/flipbook.rs` with struct, `FlipBookMode`, `new`, accessors
+- [x] `WGSL_FRAGMENT` const
+- [x] `impl MaterialShader` with `write_uniform_buffer` matching the WGSL byte layout
+- [x] `MaterialShaderId::FLIPBOOK` added — as enum variant or `const FLIPBOOK: Self = Self(4)` depending on whether dynamic-materials plan has landed
+- [x] `flipbook` Cargo feature in `awsm-renderer-materials`; added to workspace default features
+- [x] `enabled_materials()` appends FlipBook behind the feature
+- [x] `Material::FlipBook` variant + every match arm updated
+- [x] **Material classify extension**: `BUCKET_COUNT: 3 → 4` in `material_classify/buffers.rs`
+- [x] **Material classify WGSL**: `BUCKET_BIT_FLIPBOOK` + if-else chain + per-bucket extract block all extended
+- [x] **Pipeline pre-warm**: verify `prewarm_pipelines()` picks up FlipBook on a debug-build editor boot (cold-cache reload should compile the FlipBook pipelines during splash, not on first interactive frame)
 
 ### Phase 3 — flipbook_material.wgsl
-- [ ] `flipbook_material.wgsl` with Raw + friendly structs
-- [ ] `flipbook_get_material(byte_offset)` follows Unlit's mapping pattern
-- [ ] `flipbook_compute_cell_uv` + `flipbook_apply_mode` implemented
-- [ ] Per-pass entry function dispatching from the chain
-- [ ] `mode == Once` past end → alpha = 0
+- [x] `flipbook_material.wgsl` with Raw + friendly structs
+- [x] `flipbook_get_material(byte_offset)` follows Unlit's mapping pattern
+- [x] `flipbook_compute_cell_uv` + `flipbook_apply_mode` implemented
+- [x] Per-pass entry function dispatching from the chain
+- [x] `mode == Once` past end → alpha = 0
 
 ### Phase 4 — Test scene + visual verification
-- [ ] Sprite sheet asset (or numbered debug sheet) in `awsm-renderer-assets`
-- [ ] Three quads in test scene: default loop, PingPong, offset loop
-- [ ] Cell sequence visually verified with debug sheet
-- [ ] Three alpha modes (Opaque, Mask, Blend) verified
+- [x] Sprite sheet asset (or numbered debug sheet) in `awsm-renderer-assets`
+- [x] Three quads in test scene: default loop, PingPong, offset loop
+- [x] Cell sequence visually verified with debug sheet
+- [x] Three alpha modes (Opaque, Mask, Blend) verified
 
 ### Phase 5 — Edge cases + polish
-- [ ] **Particle bridge migrated**: `particles_sync.rs` reads `delta_time` from `frame_globals()` instead of its private `last_ts_ms` math. `set_time_source` smoke target: paused gameplay freezes particle motion; bullet-time slows it.
-- [ ] `frame_count == 0` handled (assert / log)
-- [ ] `frame_count > cols * rows` rejected
-- [ ] `fps == 0` documented as valid (static cell)
-- [ ] Tab-backgrounding behavior verified (delta clamps; cell jumps to new wall-clock)
-- [ ] PingPong sequence at 4 frames verified: `0,1,2,3,2,1,...` (period = 2N − 2)
-- [ ] `cargo doc` clean for new public items
+- [x] **Particle bridge migrated**: `particles_sync.rs` reads `delta_time` from `frame_globals()` instead of its private `last_ts_ms` math. `set_time_source` smoke target: paused gameplay freezes particle motion; bullet-time slows it.
+- [x] `frame_count == 0` handled (assert / log)
+- [x] `frame_count > cols * rows` rejected
+- [x] `fps == 0` documented as valid (static cell)
+- [x] Tab-backgrounding behavior verified (delta clamps; cell jumps to new wall-clock)
+- [x] PingPong sequence at 4 frames verified: `0,1,2,3,2,1,...` (period = 2N − 2)
+- [x] `cargo doc` clean for new public items
 
 ### Phase 6 — Ship
-- [ ] `docs/ROADMAP.md` updated
-- [ ] Test scene kept as visual regression baseline
-- [ ] Dynamic-materials contract docs updated (if/when that plan lands)
-- [ ] `cargo fmt` clean
-- [ ] `cargo clippy --workspace --all-targets` clean
-- [ ] `cargo doc --workspace --no-deps` clean
+- [x] `docs/ROADMAP.md` updated
+- [x] Test scene kept as visual regression baseline
+- [x] Dynamic-materials contract docs updated (if/when that plan lands)
+- [x] `cargo fmt` clean
+- [x] `cargo clippy --workspace --all-targets` clean
+- [x] `cargo doc --workspace --no-deps` clean

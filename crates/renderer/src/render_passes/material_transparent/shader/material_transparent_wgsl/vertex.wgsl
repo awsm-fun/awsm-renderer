@@ -48,6 +48,7 @@ fn vert_main(
     var out: VertexOutput;
 
     let camera = camera_from_raw(camera_raw);
+    let frame_globals = frame_globals_from_raw(frame_globals_raw);
 
     let applied = apply_vertex(ApplyVertexInput(
         input.vertex_index,

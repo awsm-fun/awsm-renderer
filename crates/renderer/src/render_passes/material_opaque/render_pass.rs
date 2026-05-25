@@ -88,6 +88,7 @@ impl MaterialOpaqueRenderPass {
             (MaterialShaderId::Pbr, 0u32),
             (MaterialShaderId::Unlit, 1u32),
             (MaterialShaderId::Toon, 2u32),
+            (MaterialShaderId::FlipBook, 3u32),
         ] {
             let Some(pipeline_key) = self
                 .pipelines

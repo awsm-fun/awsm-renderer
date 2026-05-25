@@ -47,6 +47,7 @@ const OPAQUE_SHADER_IDS: &[MaterialShaderId] = &[
     MaterialShaderId::Pbr,
     MaterialShaderId::Unlit,
     MaterialShaderId::Toon,
+    MaterialShaderId::FlipBook,
 ];
 
 impl MaterialOpaquePipelines {

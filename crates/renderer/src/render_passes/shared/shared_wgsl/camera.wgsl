@@ -1,4 +1,10 @@
 // Raw camera uniform structure (matches GPU buffer layout with padding)
+//
+// `frame_count` used to live in this struct (as `frame_count_and_padding.x`)
+// but no shader actually read it on the GPU side. It's now exposed via
+// the dedicated `frame_globals` uniform (`shared_wgsl/frame_globals.wgsl`)
+// alongside `time` / `delta_time` / `resolution`. The 16-byte slot was
+// removed; Camera is correspondingly 16 bytes slimmer.
 struct CameraRaw {
     view: mat4x4<f32>,
     proj: mat4x4<f32>,
@@ -7,7 +13,6 @@ struct CameraRaw {
     inv_proj: mat4x4<f32>,
     inv_view: mat4x4<f32>,
     position: vec4<f32>,  // .xyz = position, .w = unused
-    frame_count_and_padding: vec4<u32>,  // .x = frame_count, .yzw = padding
     // IMPORTANT: frustum_rays are for SCREEN-SPACE RECONSTRUCTION, NOT frustum culling!
     // 4 normalized view-space ray directions at near plane corners [bottom-left, bottom-right, top-left, top-right]
     // Used for unprojecting screen pixels to world space with better precision than per-pixel unprojection
@@ -25,7 +30,6 @@ struct Camera {
     inv_proj: mat4x4<f32>,
     inv_view: mat4x4<f32>,
     position: vec3<f32>,
-    frame_count: u32,
     // Screen-space reconstruction rays (see CameraRaw for details)
     frustum_rays: array<vec4<f32>, 4>,
     viewport_pos: vec2<f32>, // x,y
@@ -44,7 +48,6 @@ fn camera_from_raw(raw: CameraRaw) -> Camera {
     camera.inv_proj = raw.inv_proj;
     camera.inv_view = raw.inv_view;
     camera.position = raw.position.xyz;
-    camera.frame_count = raw.frame_count_and_padding.x;
     camera.frustum_rays = raw.frustum_rays;
     camera.viewport_pos = vec2<f32>(raw.viewport.x, raw.viewport.y);
     camera.viewport_size = vec2<f32>(raw.viewport.z, raw.viewport.w);

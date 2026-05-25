@@ -88,6 +88,9 @@ pub enum AwsmError {
 
     #[error("{0}")]
     Shadow(#[from] AwsmShadowError),
+
+    #[error("{0}")]
+    FrameGlobals(#[from] crate::frame_globals::AwsmFrameGlobalsError),
 }
 
 /// Renderer result type.

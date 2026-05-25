@@ -1,5 +1,6 @@
 {% include "shared_wgsl/vertex/geometry_mesh_meta.wgsl" %}
 {% include "shared_wgsl/camera.wgsl" %}
+{% include "shared_wgsl/frame_globals.wgsl" %}
 {% include "shared_wgsl/vertex/transform.wgsl" %}
 {% include "shared_wgsl/vertex/morph.wgsl" %}
 {% include "shared_wgsl/vertex/skin.wgsl" %}
@@ -68,6 +69,7 @@ fn vert_main(
     {% endif %}
 
     let camera = camera_from_raw(camera_raw);
+    let frame_globals = frame_globals_from_raw(frame_globals_raw);
 
     let applied = apply_vertex(ApplyVertexInput(
         input.original_vertex_index,

@@ -18,6 +18,8 @@ pub enum MaterialShaderId {
     Unlit = 2,
     /// Toon / cel-shading. See `awsm-materials::toon`.
     Toon = 3,
+    /// Sprite-sheet flipbook. See `awsm-materials::flipbook`.
+    FlipBook = 4,
 }
 
 impl MaterialShaderId {
@@ -33,6 +35,7 @@ impl MaterialShaderId {
             Self::Pbr => "SHADER_ID_PBR",
             Self::Unlit => "SHADER_ID_UNLIT",
             Self::Toon => "SHADER_ID_TOON",
+            Self::FlipBook => "SHADER_ID_FLIPBOOK",
         }
     }
 }

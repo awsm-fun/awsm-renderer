@@ -226,6 +226,15 @@ impl MaterialTransparentBindGroups {
                 visibility_fragment: true,
                 visibility_compute: false,
             },
+            // FrameGlobals uniform (renderer-wide per-frame state).
+            BindGroupLayoutCacheKeyEntry {
+                resource: BindGroupLayoutResource::Buffer(
+                    BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
+                ),
+                visibility_vertex: true,
+                visibility_fragment: true,
+                visibility_compute: false,
+            },
         ];
 
         let main_bind_group_layout_key = ctx
@@ -488,6 +497,11 @@ impl MaterialTransparentBindGroups {
         entries.push(BindGroupEntry::new(
             entries.len() as u32,
             BindGroupResource::Buffer(BufferBinding::new(&ctx.lights.gpu_punctual_buffer)),
+        ));
+        // FrameGlobals — rides alongside camera on the same group.
+        entries.push(BindGroupEntry::new(
+            entries.len() as u32,
+            BindGroupResource::Buffer(BufferBinding::new(&ctx.frame_globals.gpu_buffer)),
         ));
 
         let descriptor = BindGroupDescriptor::new(
