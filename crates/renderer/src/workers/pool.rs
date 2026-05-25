@@ -160,12 +160,17 @@ pub struct WorkerPoolStats {
     pub jobs_dispatched: u64,
     pub jobs_completed: u64,
     pub jobs_failed: u64,
-    /// Total wall-clock time jobs spent queued before a worker
-    /// picked them up. (Tracked at dispatch site; the simple
-    /// round-robin scheduler picks a worker synchronously, so this
-    /// is the cross-thread postMessage latency rather than real
-    /// queue wait. Kept for future load-balancing instrumentation.)
-    pub queue_wait_ms: f64,
+    /// Accumulated round-trip wall-clock for completed jobs —
+    /// from `dispatch_inner` entry (just before the worker `postMessage`)
+    /// to the `oneshot::Receiver::await` resolving on the main thread.
+    /// With the current round-robin scheduler there's no per-worker
+    /// queue (workers are picked synchronously, postMessage is
+    /// fire-and-forget), so this is the end-to-end job latency
+    /// including worker execution. Renamed from the old `queue_wait_ms`
+    /// (which was never actually incremented). Only successful results
+    /// are folded in; failures + dropped channels are excluded so the
+    /// number stays comparable across runs.
+    pub job_round_trip_ms: f64,
 }
 
 /// Pending job sender — keyed by `JobId` in the pool's pending map.
@@ -309,8 +314,39 @@ impl WorkerPool {
             onmessage_closures.push(onmessage);
 
             let onerror_label = format!("awsm-worker-{i}");
+            let onerror_ready_cell = ready_cell.clone();
+            let onerror_pending = pending.clone();
+            let onerror_stats = stats.clone();
             let onerror = Closure::<dyn FnMut(JsValue)>::new(move |err: JsValue| {
-                tracing::warn!("{onerror_label}: worker onerror: {err:?}");
+                let msg = WorkerPoolError::js_message(err);
+                tracing::warn!("{onerror_label}: worker onerror: {msg}");
+                // Fail the bootstrap ready channel if init never
+                // reported either `awsm-ready` or `awsm-init-error`
+                // — otherwise `WorkerPool::new` awaits forever.
+                if let Some(tx) = onerror_ready_cell.borrow_mut().take() {
+                    let _ = tx.send(Err(format!("worker onerror during init: {msg}")));
+                }
+                // Drain any in-flight jobs on this worker — without
+                // this the matching `dispatch` futures stall
+                // indefinitely on a `oneshot` that nothing will
+                // resolve (the worker is dead / errored). All
+                // workers share the same `pending` map (job ids are
+                // unique pool-wide), so a crash on any worker
+                // forfeits whatever was queued; that's the right
+                // behaviour for a single round-robin slot since the
+                // pool has no per-worker affinity for completed
+                // ids. Telemetry counts each as a failure.
+                let mut pending = onerror_pending.borrow_mut();
+                if !pending.is_empty() {
+                    let drained = std::mem::take(&mut *pending);
+                    let count = drained.len();
+                    for (_id, sender) in drained {
+                        let _ = sender.send(Err(JsValue::from_str(&format!(
+                            "{onerror_label}: worker errored: {msg}"
+                        ))));
+                    }
+                    onerror_stats.borrow_mut().jobs_failed += count as u64;
+                }
             });
             worker.set_onerror(Some(onerror.as_ref().unchecked_ref::<Function>()));
             onerror_closures.push(onerror);
@@ -454,6 +490,13 @@ impl WorkerPool {
         post_result
             .map_err(|err| WorkerPoolError::post_message_from_js("dispatch postMessage", err))?;
 
+        // Capture the dispatch timestamp now (after the postMessage
+        // succeeded) so the telemetry isn't polluted by failed
+        // dispatches. The `await` below resolves once the worker's
+        // `awsm-result` (or `awsm-error`) routes through `onmessage`
+        // and the matching `pending` sender fires.
+        let dispatched_at_ms = perf_now_ms();
+
         match rx.await {
             // `J::from_response_message` is the trait hook for jobs
             // whose worker→main payload carries attached JS handles
@@ -461,7 +504,13 @@ impl WorkerPool {
             // default impl is a thin `serde_wasm_bindgen::from_value`
             // wrapper, identical to the prior behaviour for pure-data
             // jobs.
-            Ok(Ok(payload)) => J::from_response_message(payload).map_err(WorkerPoolError::Serde),
+            Ok(Ok(payload)) => {
+                if dispatched_at_ms > 0.0 {
+                    let delta = (perf_now_ms() - dispatched_at_ms).max(0.0);
+                    self.stats.borrow_mut().job_round_trip_ms += delta;
+                }
+                J::from_response_message(payload).map_err(WorkerPoolError::Serde)
+            }
             Ok(Err(err)) => {
                 let msg = err.as_string().unwrap_or_else(|| format!("{err:?}"));
                 Err(WorkerPoolError::JobFailed(msg))
@@ -482,6 +531,18 @@ impl Drop for WorkerPool {
             slot.worker.terminate();
         }
     }
+}
+
+/// `performance.now()` in milliseconds, routed through the renderer's
+/// web-global helper so it works in both `Window` and
+/// `DedicatedWorkerGlobalScope` contexts (the pool is constructed on
+/// the main thread but the same helper applies regardless). Returns
+/// `0.0` if `performance` isn't reachable — callers skip the
+/// telemetry write so the counter stays well-defined.
+fn perf_now_ms() -> f64 {
+    crate::web_global::performance()
+        .map(|p| p.now())
+        .unwrap_or(0.0)
 }
 
 fn default_worker_count() -> usize {

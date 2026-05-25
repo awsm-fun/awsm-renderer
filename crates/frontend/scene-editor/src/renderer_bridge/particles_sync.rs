@@ -709,7 +709,12 @@ fn resolve_particle_texture(
         .ok()?;
     // See the matching comment in `procedural_sync::resolve_material_texture`
     // — register the sampler so `sampler_index` lookup at draw time
-    // succeeds for cache-hit `TextureKey`s.
+    // succeeds for cache-hit `TextureKey`s. The flag
+    // `ensure_sampler_in_pool` sets is consumed by the same
+    // `finalize_gpu_textures` call this module makes after each
+    // particles sync (see the `particles_sync (opaque|blend)`
+    // `finalize_gpu_textures` invocations), so no extra refresh
+    // trigger is needed at this site.
     renderer.textures.ensure_sampler_in_pool(sampler_key);
     Some(awsm_renderer::materials::MaterialTexture {
         key,

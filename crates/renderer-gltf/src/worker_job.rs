@@ -191,10 +191,16 @@ pub struct ImageMeta {
 
 impl GltfParseOutput {
     /// Bridge worker output back into a `GltfLoader`. Re-parses the
-    /// doc bytes (`Gltf::from_slice`) and runs `createImageBitmap`
-    /// on each encoded image — both happen on the main thread, since
-    /// `web_sys::ImageBitmap` doesn't cross the worker postMessage
-    /// boundary cleanly.
+    /// doc bytes (`Gltf::from_slice`) — that part always happens on
+    /// the main thread because `gltf::Gltf` isn't structured-clone-able.
+    /// For images, the *fast path* is the worker-decoded `ImageBitmap`
+    /// already attached on `entry.bitmap` (transferred zero-copy from
+    /// the worker via the `bitmaps` side-channel — see
+    /// `into_response_message` / `from_response_message`): when present,
+    /// the handle is wrapped directly into an `ImageData::Bitmap`. The
+    /// main-thread `createImageBitmap` decode only runs for entries
+    /// whose worker-side `createImageBitmap` rejected the blob (KTX2 /
+    /// Basis / other browser-unsupported formats, fallback path).
     ///
     /// Consumers that opt into the worker-mode gltf-parse path
     /// (Phase 4.3b) call:
@@ -336,10 +342,12 @@ impl WorkerJob for GltfParseJob {
     }
 }
 
-/// Async worker-side execution. The pool dispatcher will be taught
-/// to await this directly once `WorkerJob` grows an async fn
-/// variant; for now, callers fan out parses via [`execute_async`]
-/// without going through the WorkerPool indirection.
+/// Worker-side execution. Wired into the pool through
+/// `GltfParseJob::execute`, which boxes the returned future for the
+/// dispatcher's `Pin<Box<dyn Future>>` shape. Exported separately so
+/// non-pool callers (legacy main-thread `GltfLoader::load` parity
+/// paths, ad-hoc benches) can reuse the exact same parse without
+/// constructing a `WorkerPool`.
 pub async fn execute_async(input: GltfParseInput) -> anyhow::Result<GltfParseOutput> {
     let url = input.url;
     let file_type: GltfFileType = match input.file_type {

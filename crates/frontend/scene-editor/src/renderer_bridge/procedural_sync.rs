@@ -833,6 +833,14 @@ fn resolve_material_texture(
     // exactly one role → all 5 seeds succeed → `add_image` never
     // runs on the editor side → default sampler never reaches the
     // pool) is the canonical reproduction.
+    //
+    // `ensure_sampler_in_pool` returns `true` on first insertion and
+    // sets the renderer-side `sampler_pool_dirty` flag, which
+    // `finalize_gpu_textures` ORs into its rebuild gate so the
+    // texture-pool bind group + dependent pipeline layouts get
+    // refreshed before the next frame. `instance_batcher` already
+    // calls `finalize_gpu_textures` at the end of each materialize
+    // batch — no extra trigger needed here.
     renderer.textures.ensure_sampler_in_pool(sampler_key);
     Some(awsm_renderer::materials::MaterialTexture {
         key,

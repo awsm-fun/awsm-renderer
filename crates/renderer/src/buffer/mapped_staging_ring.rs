@@ -1,5 +1,12 @@
-//! Mapped-staging-buffer ring used by [`DynamicStorageBuffer`] /
-//! [`DynamicUniformBuffer`] for per-frame uploads.
+//! Mapped-staging-buffer ring driven by
+//! [`crate::buffer::mapped_uploader::MappedUploader`] for per-frame
+//! uploads. Renderer subsystems (`Meshes`, `Materials`, `Transforms`,
+//! `Lights`, `Camera`, occlusion params, line segments, ...) each own a
+//! `MappedUploader` companion next to their `DynamicStorageBuffer` /
+//! `DynamicUniformBuffer` and call its `write_dirty_ranges` from
+//! their per-frame write path. The ring itself lives inside
+//! `MappedUploader`; the Dynamic buffer types just track dirty
+//! ranges + own the CPU-side bytes.
 //!
 //! ### Why a ring
 //!
@@ -66,14 +73,25 @@ static STAGING_USAGE: LazyLock<BufferUsage> =
 /// the `upload_rings` key.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct UploadStats {
-    /// Max number of slots simultaneously not-`Ready` since the last
-    /// reset. Reveals under-/over-provisioning of the ring.
+    /// Peak number of *non-acquirable* slots seen since the last reset
+    /// — only `Submitted` + `Pending` count (those are owned by the GPU
+    /// or waiting on `mapAsync`). `Mapped`/`Ready` are excluded because
+    /// either state can serve the next `acquire(..)`, so including them
+    /// would pin this metric at ring-depth in steady state regardless of
+    /// real contention. Answers "how close did we come to exhausting the
+    /// ring?" — a sustained value of `depth` means oversubscription.
     pub peak_ring_depth_used: usize,
     /// Frames where `queue.writeBuffer` fallback fired due to ring
     /// exhaustion.
     pub fallback_count: u64,
-    /// Accumulated wall-clock time spent blocked on `mapAsync`
-    /// resolution waits. ~zero in steady state.
+    /// Accumulated `Submitted → Ready` latency across all slots — the
+    /// wall-clock between recording the copy + kicking `mapAsync` and
+    /// the resolution callback firing. The renderer is *not* blocked
+    /// during this window (it continues to acquire other slots / fall
+    /// back to writeBuffer), so this is GPU/browser latency, not a CPU
+    /// stall. Steady state ≈ depth × (per-frame latency); a sustained
+    /// rise signals the GPU is taking longer to release slots than the
+    /// CPU is consuming them.
     pub map_async_wait_ms: f64,
     /// Bytes pushed through the mapped fast path.
     pub bytes_uploaded_via_ring: u64,
@@ -104,6 +122,11 @@ struct Slot {
     state: SlotState,
     /// Set to `true` by the `mapAsync` future when it resolves.
     ready_flag: ReadyFlag,
+    /// `performance.now()` timestamp captured when `mapAsync` was
+    /// kicked. Consumed by `promote_resolved` to add the
+    /// `Submitted → Ready` latency into `stats.map_async_wait_ms` on
+    /// the transition. `None` outside `Pending`.
+    map_async_started_ms: Option<f64>,
 }
 
 /// Outcome of [`MappedStagingRing::acquire`].
@@ -404,12 +427,24 @@ impl MappedStagingRing {
     }
 
     /// Promote any `Pending` slots whose `mapAsync` futures resolved
-    /// to `Ready`. Cheap (`N` `Cell` reads).
+    /// to `Ready`. Cheap (`N` `Cell` reads). On each transition, folds
+    /// the `Submitted → Ready` wall-clock into `stats.map_async_wait_ms`
+    /// so the telemetry tracks real GPU/browser latency (not a CPU
+    /// stall — the renderer doesn't await this transition).
     fn promote_resolved(&mut self) {
+        let mut accumulated_ms = 0.0_f64;
         for slot in &mut self.slots {
             if slot.state == SlotState::Pending && slot.ready_flag.get() {
                 slot.state = SlotState::Ready;
+                if let Some(started) = slot.map_async_started_ms.take() {
+                    let now = performance_now_ms();
+                    let delta = (now - started).max(0.0);
+                    accumulated_ms += delta;
+                }
             }
+        }
+        if accumulated_ms > 0.0 {
+            self.stats.map_async_wait_ms += accumulated_ms;
         }
     }
 
@@ -439,6 +474,7 @@ impl MappedStagingRing {
         let capacity = self.slot_capacity as u32;
         let label = self.label.clone();
         ready_flag.set(false);
+        self.slots[idx].map_async_started_ms = Some(performance_now_ms());
         let promise = buffer.map_async_with_u32_and_u32(MapMode::Write as u32, 0, capacity);
         spawn_local(async move {
             match JsFuture::from(promise).await {
@@ -492,8 +528,20 @@ impl MappedStagingRing {
             buffer,
             state: SlotState::Mapped,
             ready_flag: Rc::new(Cell::new(false)),
+            map_async_started_ms: None,
         })
     }
+}
+
+/// `performance.now()` in milliseconds. Routes through
+/// [`crate::web_global::performance`] so it works in both
+/// `Window` and `DedicatedWorkerGlobalScope` contexts (Phase 4.4
+/// worker-mode rendering). Returns `0.0` if `performance` isn't
+/// reachable — the metric just stays at 0 rather than panicking.
+fn performance_now_ms() -> f64 {
+    crate::web_global::performance()
+        .map(|p| p.now())
+        .unwrap_or(0.0)
 }
 
 impl Drop for MappedStagingRing {

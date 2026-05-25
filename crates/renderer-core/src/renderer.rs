@@ -63,14 +63,21 @@ impl CanvasKind {
 }
 
 /// Builder for creating an `AwsmRendererWebGpu`.
+///
+/// Fields are private — construct with [`Self::new`] /
+/// [`Self::new_with_offscreen_canvas`] and configure via the `with_*`
+/// methods. Privatising avoids a breaking change when adding new
+/// inputs (e.g. the `CanvasKind` enum that replaced the original
+/// `HtmlCanvasElement` `canvas` field), since callers that constructed
+/// the struct with `..Default::default()` or accessed `builder.canvas`
+/// directly would otherwise need to track each addition.
 pub struct AwsmRendererWebGpuBuilder {
-    pub gpu: web_sys::Gpu,
-    pub canvas: CanvasKind,
-    pub configuration: Option<CanvasConfiguration>,
-    pub adapter: Option<web_sys::GpuAdapter>,
-    pub device: Option<web_sys::GpuDevice>,
-    pub context: Option<web_sys::GpuCanvasContext>,
-    pub device_req_limits: Option<DeviceRequestLimits>,
+    gpu: web_sys::Gpu,
+    canvas: CanvasKind,
+    configuration: Option<CanvasConfiguration>,
+    adapter: Option<web_sys::GpuAdapter>,
+    device: Option<web_sys::GpuDevice>,
+    device_req_limits: Option<DeviceRequestLimits>,
 }
 
 impl AwsmRendererWebGpuBuilder {
@@ -82,7 +89,6 @@ impl AwsmRendererWebGpuBuilder {
             configuration: None,
             adapter: None,
             device: None,
-            context: None,
             device_req_limits: None,
         }
     }
@@ -99,7 +105,6 @@ impl AwsmRendererWebGpuBuilder {
             configuration: None,
             adapter: None,
             device: None,
-            context: None,
             device_req_limits: None,
         }
     }
