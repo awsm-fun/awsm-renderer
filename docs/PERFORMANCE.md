@@ -499,17 +499,16 @@ Expected steady-state on `tuning-10k-meshes`:
 after the initial scene fill-in. See §5d for the captured numbers.
 
 **Every** per-frame `queue.writeBuffer` site in the renderer crate
-now routes through `MappedUploader` — the original migration table
-is fully closed:
+routes through `MappedUploader`. Migrated sites:
 
-- already-`Dynamic` sites: `transforms`, `materials`, `instances`
-  ×2, `meshes.meta` ×2, `skins` ×2, `morphs` ×2, `textures.transforms`,
-  the three mesh pool buffers.
-- raw-writeBuffer promotions (Phase 2.1 second pass): `camera`
-  (64 B uniform), `shadows` (globals + descriptors + views),
-  `lights` (punctual + info), `mesh_light_indices`, `occlusion`
-  (params + instance pack), `lines` (per-line uniform + per-line
-  segment).
+- `DynamicStorageBuffer` / `DynamicUniformBuffer` clients:
+  `transforms`, `materials`, `instances` ×2, `meshes.meta` ×2,
+  `skins` ×2, `morphs` ×2, `textures.transforms`, the three mesh
+  pool buffers.
+- Direct `writeBuffer` clients: `camera` (64 B uniform), `shadows`
+  (globals + descriptors + views), `lights` (punctual + info),
+  `mesh_light_indices`, `occlusion` (params + instance pack),
+  `lines` (per-line uniform + per-line segment).
 
 The only `queue.writeBuffer` calls left are the explicit
 foreign-bytes ingestion path (`MappedUploader::ingest_foreign`,
@@ -527,9 +526,9 @@ ring's mapped-write win doesn't apply.
 
 ## 5c. Worker-mode gltf parse — default in the editor
 
-`GltfParseJob` (Phase 4.3b) runs the full fetch + parse pipeline on a
-pool worker **AND decodes every embedded image into an `ImageBitmap`
-inside the worker** via the `DedicatedWorkerGlobalScope::createImageBitmap`
+`GltfParseJob` runs the full fetch + parse pipeline on a pool worker
+**AND decodes every embedded image into an `ImageBitmap` inside the
+worker** via the `DedicatedWorkerGlobalScope::createImageBitmap`
 shim. Every cross-thread payload is transferred (not structured-
 cloned) across the `postMessage` boundary using the trait hooks
 [`WorkerJob::into_response_message`][wj_into] / [`WorkerJob::from_response_message`][wj_from]:
@@ -577,8 +576,8 @@ payload size). The 12.8 MB Corset is the largest asset shipped in
 this repo's stress dir, so the bigger-asset numbers stay a
 hypothesis until a real consumer drives one through.
 
-Re-measured on the Claude Preview MCP (headless Chrome) post-Phase
-1 + Phase 2, n=5: inline 74.7 ms / worker 69.9 ms = **1.07×**. The
+Re-measured on the Claude Preview MCP (headless Chrome), n=5:
+inline 74.7 ms / worker 69.9 ms = **1.07×**. The
 absolute speedup compresses because the headless environment's
 main-thread `createImageBitmap` is already much faster than M2 real
 Chrome — the bottleneck the worker path eliminates is smaller, so
@@ -596,10 +595,11 @@ overhead matches the savings. The scene-editor's pre-warmed pool
 (see below) makes the *first* small-asset load break even too —
 the on-demand spawn cost no longer falls on its critical path.
 
-### The editor flip — worker mode is now the default
+### Editor uses worker mode by default
 
-The scene-editor's `asset_cache::load_and_populate` defaults to
-the worker path. Both prior blockers are addressed:
+The scene-editor's `asset_cache::load_and_populate` dispatches
+through the worker path. Two structural pieces make the default
+viable:
 
 1. **Pre-warmed pool at editor init.** `context.rs::maybe_build_worker_pool`
    constructs `WorkerPool::new(WorkerPoolBootstrap::Auto, 2)` during
@@ -616,12 +616,12 @@ the worker path. Both prior blockers are addressed:
    the canonical inline `GltfLoader::load` path. The failure is
    surfaced once at boot via `tracing::warn!` so a CSP
    misconfiguration shows up immediately in the dev console;
-   we never retry pool construction in-session.
+   pool construction never retries in-session.
 
 Dev-only `?gltf-worker=off` URL knob forces the inline path
 (measurement harness's A/B baseline, smoke-testing the fallback
-without misconfiguring CSP). The legacy `?gltf-worker=on` spelling
-is preserved as a no-op (the default is now ON regardless).
+without misconfiguring CSP). `?gltf-worker=on` is accepted as a
+no-op for backward compatibility.
 
 Pool size defaults to 2 workers. Rationale: the editor's common
 case is one asset load at a time (drag-drop one glb at a time,
@@ -738,8 +738,8 @@ On a scene with one directional shadow caster and 10k meshes
 mostly outside its frustum, the gate cuts the shading-time
 shadow-sample work to near-zero for the unreachable cohort.
 
-Per-frame cost on tuning-10k-meshes: the new "Shadow Receiver
-Gate" span shows **0.048 ms mean / 0.1 ms p95** — well under the
+Per-frame cost on tuning-10k-meshes: the "Shadow Receiver Gate"
+span shows **0.048 ms mean / 0.1 ms p95** — well under the
 ~0.1 ms it saves the geometry pass.
 
 ### PCSS / Soft kernels — all 16-tap fixed
@@ -747,16 +747,17 @@ Gate" span shows **0.048 ms mean / 0.1 ms p95** — well under the
 The three PCSS branches (cube `sample_shadow_cube`, directional
 `sample_shadow_cascade_array`, 2D spot
 `sample_shadow_descriptor`) and the Soft (hardness < 1.5)
-branches all run at a fixed 16-tap rotated Poisson kernel. An
-earlier attempt at a variable-tap path keyed on receiver
-distance was reverted in
-[af13932](https://github.com/dakom/awsm-renderer/commit/af13932)
-and the plumbing fully removed in a follow-up — the
-directional taper key (`ndc.z`) is uncorrelated with penumbra
-width, so wide kernels got too few samples and the rotated-
-Poisson disc rendered as ribbons. No "parked" hook remains;
-re-attempting tap budgeting from here is a from-scratch design
-problem with no inherited CPU plumbing.
+branches all run at a fixed 16-tap rotated Poisson kernel.
+
+Why not vary the tap count by receiver distance? A distance-keyed
+taper looks like the obvious optimisation — far receivers get
+narrower penumbras and shouldn't need 16 taps — but the directional
+taper key available cheaply at shading time (`ndc.z`) is
+**uncorrelated with penumbra width**. Wide kernels keyed by
+distance got too few samples, and the rotated-Poisson disc
+rendered as visible ribbons rather than smooth penumbra. Any
+future tap-budgeting work has to derive its key from the blocker
+search's actual penumbra estimate, not from receiver distance.
 
 Implementation pattern (kept identical across the four call sites
 so the safety reasoning carries):
@@ -831,20 +832,26 @@ Firefox / Safari have weaker / not-yet-shipped equivalents.
 Cross-browser, the correctness model is "expect a cold first
 compile every time you can't prove the cache is warm."
 
-### The "first-visible-frame stutter" we observed
+### WGSL source changes invalidate the cache
 
-During the shadow-receiver-gate rollout the WGSL source for
-every material pipeline changed (added `shadow_receiver_gate: u32`
-to `MaterialMeshMeta`, changed the four `apply_lighting*`
-callsites). Every user's first page load post-deploy hit a cache
-miss and recompiled ~12 pipelines
-serially in the render loop. The first Insert Model was a
-multi-hundred-ms stall; the second was instant.
+Any deploy that touches the WGSL emitted for a material pipeline
+— adding a binding, changing a uniform layout, modifying a call
+site shared across material variants — changes the source hash
+and busts the cached PSO for every affected pipeline. The
+**next** user load on each profile pays the cold-compile tax
+once; subsequent loads hit the disk cache again.
 
-A production game should not ship that behaviour. The fix is to
-explicitly drive a draw of every routinely-used pipeline during
-the load screen, where the user is already looking at a
-progress bar.
+A material-pipeline source change can invalidate a dozen+
+pipelines simultaneously (opaque-compute × shader_id, MSAA
+variants, shadow caster, transparent). Without pre-warm the cost
+falls on the first interactive draw — typically the first
+visible PBR mesh — as a multi-hundred-ms stall. **A production
+game should not ship that behaviour.** Drive a draw of every
+routinely-used pipeline during the load screen, where the user
+already expects to wait.
+
+See [§8a step 5](#5-pre-warm-the-shaderpso-cache) for the
+practical recipe.
 
 ### How the renderer parallelises the cold-load compile
 
@@ -903,15 +910,9 @@ shader + pipeline compile in the whole renderer:
    Effects' and Display's typed `Pipelines` inside `RenderPasses`)
    each have a matching `from_resolved` / `install_resolved`.
 
-Pre-parallelize the same flow was **24 sequential per-pass awaits**
-(12 passes × shader + pipeline) plus 5 more for the tail (Picker,
-Lines, Shadows, set_anti_aliasing, set_post_processing). Post-
-parallelize it's **3 awaits total**, plus the EVSM validate join
-(structurally separate because EVSM shaders bypass the cache).
-
 #### Architectural guarantees
 
-`RenderPasses::new` is now a thin 3-stage wrapper that the
+`RenderPasses::new` is a thin 3-stage wrapper that the
 orchestrator bypasses; `describe_shaders` is `async` only because
 of bind-group constructor awaits, `describe_pipelines` is sync
 apart from cache-hit `get_key`s, and `from_resolved` is fully sync.
@@ -942,32 +943,40 @@ drives at startup.
   UI can show "Browser is compiling shaders…" rather than a frozen
   generic loading line.
 
-#### Trace evidence
+#### Reference numbers
 
-A fresh `--user-data-dir` Chrome profile against the model-tests
-Fox scene with the parallelize work landed:
+Reading off a fresh `--user-data-dir` Chrome trace against the
+model-tests Fox scene on an M2 MacBook (AC power; on battery the
+wall-clock degrades by ~50% as the SoC throttles to E-cores):
 
-| Metric | Pre-parallelize cold | Pre-parallelize warm | Post-parallelize fresh-profile |
-|---|---|---|---|
-| `domComplete → first 'Render [1]: span-enter'` | 42.8 s | 1.7 s | ~2.2 s |
-| GPU-process total CPU | 5.35 s | 0.81 s | ~0.77 s |
-| Renderer-main-thread total CPU | 8.74 s | 4.26 s | ~1.0 s |
+| Metric | Reference |
+|---|---|
+| `domComplete → first 'Render [1]: span-enter'` | ~600 ms |
+| `domComplete → 'Prewarm Pipelines [1]: span-enter'` | ~485 ms |
+| GPU-process total CPU | ~740 ms |
+| Renderer-main-thread total CPU | ~1000 ms |
 
-The 0.77 s GPU-process CPU number is indistinguishable from the
-warm baseline: Dawn isn't doing real compile work on a fresh
-Chrome profile, because **macOS's Metal driver also caches
-compiled pipelines** at a layer below Chrome's PSO cache, and
-`--user-data-dir` only wipes Chrome's. On any developer machine
-that has run this codebase before, the "cold Chrome" experience
-sits in the same ballpark as the historical warm path. The 42.8 s
-baseline reflects a machine where both caches were cold
-(first-ever run), which is the user-facing first-visit experience.
+Note GPU-process CPU exceeds the wall-clock window: the three
+processes (Renderer / GPU / Browser) run concurrently, so total
+cross-process CPU work of ~1.9 s lands in the ~600 ms window.
 
-The renderer-main-thread idle-gap distribution in the new trace is
-clean — user-timing marks after `Prewarm Pipelines` cascade
-~1 ms apart, no ~500 ms per-frame-tick stalls. The serial-await
-staircase the parallelize work attacked is gone whether the
-underlying compile is cold or warm.
+**The cache hierarchy matters when interpreting these numbers.**
+Below WebGPU's PSO disk cache there's the OS / GPU-driver level
+pipeline cache (macOS Metal, the equivalent on Windows / Linux).
+`--user-data-dir` only wipes Chrome's cache, not the driver's.
+On a developer machine that has run this codebase before, a
+"fresh Chrome profile" looks much like a warm load to the
+renderer because the driver still has every pipeline cached.
+The first-ever run of the app on a particular machine pays both
+layers cold; the cost of that compile work is on the order of
+tens of seconds, no JS-side parallelism eliminates it.
+
+User-timing marks after `Prewarm Pipelines` should cascade
+~1 ms apart on any healthy capture. A forest of ~500 ms gaps
+between marks indicates Dawn is serialising compile work behind
+itself, which means the pool got fragmented and someone added a
+per-pass `.await?` outside the orchestrator — start by reading
+the `describe_pipelines` / `from_resolved` call sites.
 
 #### What's not addressed here
 
@@ -988,39 +997,35 @@ different problem spaces:
 Of these, **WASM size + instantiation** has the cleanest cost /
 benefit story for a focused follow-up.
 
-### Interaction with runtime-registered dynamic materials
+### Runtime-registered materials and prewarm
 
-This warmup story gets **more important** once runtime
-registration of custom material shaders lands —
-`MaterialDefinition` data + a `shader.wgsl` fragment, both
-registered at startup (or mid-frame, with a recompile). Two new
-wrinkles to handle in the warmup:
+If the consumer registers custom material shaders at runtime
+(`MaterialDefinition` + `shader.wgsl` fragment, registered after
+`AwsmRendererBuilder::build` returns), the prewarm story extends
+naturally. Two wrinkles to handle:
 
-1. **Custom shader_ids aren't known until the consumer
-   registers them.** First-party materials are enumerable at
-   compile time (`enabled_materials()`); dynamic ones come from
-   `MaterialRegistry::register()`. The warmup pass needs to run
-   *after* every dynamic registration the consumer cares about
-   — usually right after game-init finishes loading material
-   defs, before the first gameplay frame.
-2. **Mid-frame registration forces a recompile.** Registering a
-   new material mid-frame busts the cached opaque-compute /
+1. **Custom shader_ids aren't known until registration.**
+   First-party materials are enumerable at compile time
+   (`enabled_materials()`); custom ones come from registry
+   calls. Drive
+   [`AwsmRenderer::prewarm_pipelines`](../crates/renderer/src/lib.rs)
+   *after* the consumer has finished registering, before the
+   first gameplay frame.
+2. **Mid-session registration triggers a recompile.** Registering
+   a new shader_id mid-frame busts the cached opaque-compute /
    transparent-fragment pipelines (the dispatch chain text
    changes). A game that streams in custom materials during play
-   would see exactly the same stutter pattern this section
-   describes, but mid-gameplay instead of at boot. The fix is
-   the same — pre-warm by drawing one mesh per
+   sees the same stutter pattern WGSL-source-change deploys see,
+   but mid-gameplay. Same fix: pre-warm by drawing one mesh per
    newly-registered shader_id before the next user-interactive
    frame.
 
-The dynamic-materials sprint should extend
-[`AwsmRenderer::prewarm_pipelines`](../crates/renderer/src/lib.rs) so
-it iterates over `materials.enabled_materials()` (currently it walks
-`self.meshes` to warm transparents for the live scene, which is
-correct for first-party use cases). The method already exists and
-is the canonical "I'm done registering materials, please compile
-everything" hook; the dynamic-materials change is just expanding
-the keys it adds to the batch.
+`prewarm_pipelines` is the canonical "I'm done registering
+materials, please compile everything" hook. It currently walks
+`self.meshes` to warm transparents for the live scene; consumers
+with runtime-registered shader_ids should call it after each
+registration batch, and the method's batched `ensure_keys` path
+will compile every newly-needed variant in one pool.
 
 The cost of the warmup pass *is* the compile tax — it doesn't
 make compilation faster, it just relocates it to a frame the
@@ -1070,10 +1075,12 @@ What to read off the saved trace:
   driver still does the work, the cache just remembers the
   result.
 - **Renderer-main idle gaps**: scrolling the renderer-main
-  thread row shows a forest of ~500 ms gaps in the cold case
-  whenever pipeline creation is awaited serially. Post-
-  parallelize these are gone — user-timing marks cascade
-  ~1 ms apart after `Prewarm Pipelines`.
+  thread row should show no ~500 ms idle staircases between
+  user-timing marks; on a healthy capture, marks after
+  `Prewarm Pipelines` cascade ~1 ms apart. Visible gaps mean
+  Dawn is serialising compile work behind the renderer thread,
+  which is a sign that someone added a per-pass `.await?` outside
+  the orchestrator pool.
 
 If a change claims to improve cold start, the trace numbers belong
 in its PR description.
@@ -1103,13 +1110,13 @@ numbers are the bar a renderer change should clear before it lands.
 | Material Classify | 0.01 | 0.1 | 0.1 |
 | Display RenderPass | 0.02 | 0.1 | 0.1 |
 
-Captured with every shipped optimisation engaged: coverage-driven
-skin-skip with grace + BVH override, cheap-material LOD routing,
-shadow-receiver gate, PCSS variable taps, and worker-mode gltf
-with in-worker image decode. The per-mesh `Shadow Receiver Gate`
-walk costs 0.048 ms and is offset by the PCSS-tapered shadow
-generation cost (-0.02 ms), so the mean frame budget matches the
-pre-optimisation baseline.
+Captured with every production optimisation engaged: coverage-
+driven skin-skip with grace + BVH override, cheap-material LOD
+routing, shadow-receiver gate, fixed 16-tap PCSS, and worker-mode
+gltf with in-worker image decode. The per-mesh `Shadow Receiver
+Gate` walk costs 0.048 ms and is offset by the corresponding
+~0.1 ms savings in the geometry pass when meshes that no shadow
+caster reaches skip the entire shadow-sample chain.
 
 Frame budget at 60 fps is 16.67 ms; the renderer runs at ~6× that
 headroom. p95 stays at 3.7 ms even on a 10k-mesh stress scene.
@@ -1303,10 +1310,10 @@ default to game-friendly values; the items below are the
 | Default | Value | Why it's right |
 |---|---|---|
 | `AwsmRendererLogging::render_timings` | `false` | The per-pass `tracing::span!` `performance.measure()` calls only fire when this is on. Off by default → zero overhead for shipped games. |
-| Mapped-buffer ring (Phase 2.1) | Always on | Every per-frame `writeBuffer` site is routed through `MappedUploader`. 99.9999% of bytes go through the mapped fast path on 10k meshes. |
+| Mapped-buffer staging ring | Always on | Every per-frame `writeBuffer` site is routed through `MappedUploader`. 99.9999% of bytes go through the mapped fast path on 10k meshes. |
 | Coverage-driven skin-skip (§5d) | Always on | Off-screen skins stop animating after a 2-frame grace; in-frustum skins resume that same frame via the BVH override. |
 | Shadow-receiver gate (§5f) | Always on | Meshes no caster reaches skip the entire shadow-sample chain. 0.048 ms / frame to maintain on 10k meshes. |
-| PCSS tap count | Fixed 16 (cube + directional + 2D spot + Soft) | Sized to the static Poisson-disc table. See §5f for why an earlier distance-tapered variant was reverted. |
+| PCSS tap count | Fixed 16 (cube + directional + 2D spot + Soft) | Sized to the static Poisson-disc table. See §5f for why receiver-distance-keyed tap budgeting doesn't work. |
 | Adaptive optimization policy | On with `Auto` cooldown | `RendererOptimizationPolicy` flips `indirect_first_instance`, `occlusion`, `coverage_lod` etc. based on per-frame signals. Manual override only for A/B testing. |
 | Scene-spatial BVH | `rebuild_dirty_threshold: 200`, `rebuild_period_frames: 600` | Right for 1K–5K dynamic meshes. Bump for 10K+ static-heavy scenes. |
 | `default_cheap_material_pixel_threshold` | 64 px | Below this, the cheap variant takes over on any mesh that has one authored. Per-mesh override always wins. |
@@ -1413,8 +1420,8 @@ its shader; the browser then caches the compiled binary on
 disk and subsequent page loads restore it in microseconds. See
 [§5g](#5g-shader-cache-warmup--what-the-browser-caches-what-we-dont)
 for the full mechanics — what the cache keys on, when it
-invalidates, and how this will interact with the upcoming
-dynamic-materials sprint.
+invalidates, and how it interacts with runtime-registered
+materials.
 
 The short version for game-shipping: unhide one mesh per
 `MaterialShaderId` (PBR / Unlit / Toon) — plus the MSAA-on
@@ -1499,19 +1506,23 @@ generate_tuning_scenes -p awsm-scene-schema`):
 
 ## 10. Known limits / parked optimizations
 
-Nothing in this section right now — the previously-parked items
-(coverage-driven skin-skip, cheap-material LOD routing, shadow-
-receiver gate, PCSS variable taps) all landed; their behaviour
-and tuning knobs are documented in their respective sections of
-this file (§4 / §5 / §6 / §8). What remains in "Won't do" (§11)
-below is genuinely intentional non-work, not deferred work.
+Use this section to record optimisations that are deliberately
+deferred — work the team has considered, found a hazard in, and
+decided not to ship until the hazard is addressed.
 
-If a parked item lands here in the future, document the *hazard*
-(why it's parked, not just "TODO") so the next picker has
-something concrete to design against — the prior round's
-"freezes self-occluded submeshes in their last-skinned pose"
-note is what unblocked the grace-period + BVH-override design
-when the work resumed.
+For each parked item, document the **hazard**, not just a "TODO":
+*why* it's parked, what would break if it shipped as drafted, and
+what evidence (test scene, trace, repro) the next person needs to
+re-attempt it from. The most useful entries are the ones where
+the next picker can read "this approach failed because X" and
+either fix X or pick a different approach.
+
+Items that ship out of "parked" move to their relevant section
+(§4 / §5 / §6 / §8) along with their tuning knobs. "Won't do"
+items (§11 below) are intentional permanent non-work, not
+parked work.
+
+*Nothing currently parked.*
 
 ## 11. What *not* to do (preserves correctness)
 
