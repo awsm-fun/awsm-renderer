@@ -126,6 +126,138 @@ impl MaterialTransparentPipelines {
         Ok(keys[0])
     }
 
+    /// Updates the per-pass pipeline layout key after a
+    /// texture-pool layout change. Sync; just rebuilds the
+    /// `PipelineLayouts` cache entry against the new bind-group
+    /// layouts.
+    pub fn refresh_pipeline_layout(
+        &mut self,
+        gpu: &AwsmRendererWebGpu,
+        bind_group_layouts: &mut crate::bind_group_layout::BindGroupLayouts,
+        pipeline_layouts: &mut PipelineLayouts,
+        bind_groups: &MaterialTransparentBindGroups,
+    ) -> Result<()> {
+        let pipeline_layout_cache_key = PipelineLayoutCacheKey::new(vec![
+            bind_groups.main_bind_group_layout_key,
+            bind_groups.shadows_bind_group_layout_key,
+            bind_groups.texture_pool_textures_bind_group_layout_key,
+            bind_groups.mesh_material_bind_group_layout_key,
+        ]);
+        self.pipeline_layout_key =
+            pipeline_layouts.get_key(gpu, bind_group_layouts, pipeline_layout_cache_key)?;
+        Ok(())
+    }
+
+    /// Returns the shader cache keys this batch would compile.
+    /// Sync; the pooled `finalize_gpu_textures` path uses this to
+    /// merge per-mesh transparent shader-warm into a single
+    /// cross-pass `Shaders::ensure_keys`.
+    pub fn shader_cache_keys_for_requests<'a, I>(
+        requests: I,
+        material_bind_groups: &MaterialTransparentBindGroups,
+        mesh_buffer_infos: &MeshBufferInfos,
+        anti_aliasing: &AntiAliasing,
+    ) -> Result<Vec<ShaderCacheKeyMaterialTransparent>>
+    where
+        I: IntoIterator<Item = &'a TransparentMeshPipelineRequest<'a>>,
+    {
+        let texture_pool_arrays_len = material_bind_groups.texture_pool_arrays_len;
+        let texture_pool_samplers_len = material_bind_groups.texture_pool_sampler_keys.len() as u32;
+        let mut out = Vec::new();
+        for req in requests {
+            let mesh_buffer_info = mesh_buffer_infos.get(req.buffer_info_key)?;
+            out.push(ShaderCacheKeyMaterialTransparent {
+                attributes: mesh_buffer_info.into(),
+                texture_pool_arrays_len,
+                texture_pool_samplers_len,
+                msaa_sample_count: anti_aliasing.msaa_sample_count,
+                mipmaps: anti_aliasing.mipmap,
+                instancing_transforms: req.mesh.instanced,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Builds the per-mesh render pipeline cache keys. Requires that
+    /// `shaders` has already warmed every cache key returned by
+    /// [`Self::shader_cache_keys_for_requests`]. Sync apart from the
+    /// `Shaders::get_key` hash hits.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn pipeline_cache_keys_for_requests<'a, I>(
+        &self,
+        gpu: &AwsmRendererWebGpu,
+        requests: I,
+        shaders: &mut Shaders,
+        material_bind_groups: &MaterialTransparentBindGroups,
+        mesh_buffer_infos: &MeshBufferInfos,
+        anti_aliasing: &AntiAliasing,
+        render_texture_formats: &RenderTextureFormats,
+    ) -> Result<Vec<RenderPipelineCacheKey>>
+    where
+        I: IntoIterator<Item = &'a TransparentMeshPipelineRequest<'a>>,
+    {
+        let color_targets = &[
+            ColorTargetState::new(render_texture_formats.color).with_blend(BlendState::new(
+                BlendComponent::new()
+                    .with_src_factor(BlendFactor::One)
+                    .with_dst_factor(BlendFactor::OneMinusSrcAlpha)
+                    .with_operation(BlendOperation::Add),
+                BlendComponent::new()
+                    .with_src_factor(BlendFactor::One)
+                    .with_dst_factor(BlendFactor::OneMinusSrcAlpha)
+                    .with_operation(BlendOperation::Add),
+            )),
+        ];
+
+        let texture_pool_arrays_len = material_bind_groups.texture_pool_arrays_len;
+        let texture_pool_samplers_len = material_bind_groups.texture_pool_sampler_keys.len() as u32;
+
+        let mut out = Vec::new();
+        for req in requests {
+            let mesh_buffer_info = mesh_buffer_infos.get(req.buffer_info_key)?;
+            let shader_cache_key = ShaderCacheKeyMaterialTransparent {
+                attributes: mesh_buffer_info.into(),
+                texture_pool_arrays_len,
+                texture_pool_samplers_len,
+                msaa_sample_count: anti_aliasing.msaa_sample_count,
+                mipmaps: anti_aliasing.mipmap,
+                instancing_transforms: req.mesh.instanced,
+            };
+            let shader_key = shaders.get_key(gpu, shader_cache_key).await?;
+            let vbo_layouts = vertex_buffer_layouts(req.mesh, mesh_buffer_info);
+            let cull_mode = if req.mesh.double_sided {
+                CullMode::None
+            } else {
+                CullMode::Back
+            };
+            out.push(build_transparent_pipeline_cache_key(
+                render_texture_formats.depth,
+                self.pipeline_layout_key,
+                shader_key,
+                vbo_layouts,
+                color_targets,
+                anti_aliasing.msaa_sample_count,
+                cull_mode,
+                req.has_transmission,
+            ));
+        }
+        Ok(out)
+    }
+
+    /// Installs pre-resolved render pipeline keys against the given
+    /// mesh keys. Sync; the caller is responsible for running
+    /// `RenderPipelines::ensure_keys` with the corresponding cache
+    /// keys first.
+    pub fn install_per_mesh_keys(
+        &mut self,
+        mesh_keys: impl IntoIterator<Item = MeshKey>,
+        pipeline_keys: impl IntoIterator<Item = RenderPipelineKey>,
+    ) {
+        for (mesh_key, pipeline_key) in mesh_keys.into_iter().zip(pipeline_keys) {
+            self.render_pipeline_keys.insert(mesh_key, pipeline_key);
+        }
+    }
+
     /// Batched form of [`Self::set_render_pipeline_key`] — issues one
     /// `Shaders::ensure_keys` + one `RenderPipelines::ensure_keys` for
     /// the entire request list, then folds the results into the
