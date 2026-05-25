@@ -1,17 +1,12 @@
-use std::sync::LazyLock;
-
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{Blob, BlobPropertyBag, ImageBitmap};
 
 use crate::command::color::Color;
 use crate::error::{AwsmCoreError, Result};
+use crate::web_global;
 
 use super::ImageBitmapOptions;
-
-thread_local! {
-    static WINDOW: LazyLock<web_sys::Window> = LazyLock::new(|| web_sys::window().unwrap_throw());
-}
 
 // let options = web_sys::ImageBitmapOptions::new();
 // options.set_premultiply_alpha(web_sys::PremultiplyAlpha::None);
@@ -37,14 +32,14 @@ pub async fn load_blob(
     blob: &Blob,
     options: Option<ImageBitmapOptions>,
 ) -> Result<web_sys::ImageBitmap> {
-    let promise = WINDOW
-        .with(|window| match options {
-            Some(options) => {
-                window.create_image_bitmap_with_blob_and_image_bitmap_options(blob, &options.into())
-            }
-            None => window.create_image_bitmap_with_blob(blob),
-        })
-        .map_err(AwsmCoreError::create_image_bitmap)?;
+    let promise = match options {
+        Some(options) => web_global::create_image_bitmap_with_blob_and_image_bitmap_options(
+            blob,
+            &options.into(),
+        ),
+        None => web_global::create_image_bitmap_with_blob(blob),
+    }
+    .map_err(AwsmCoreError::create_image_bitmap)?;
     let js_value = JsFuture::from(promise)
         .await
         .map_err(AwsmCoreError::create_image_bitmap)?;
@@ -209,15 +204,14 @@ pub async fn create_color(
         .map_err(AwsmCoreError::create_image_bitmap)?;
 
     // Create ImageBitmap from ImageData
-    let promise = WINDOW
-        .with(|window| match options {
-            Some(options) => window.create_image_bitmap_with_image_data_and_image_bitmap_options(
-                &image_data,
-                &options.into(),
-            ),
-            None => window.create_image_bitmap_with_image_data(&image_data),
-        })
-        .map_err(AwsmCoreError::create_image_bitmap)?;
+    let promise = match options {
+        Some(options) => web_global::create_image_bitmap_with_image_data_and_image_bitmap_options(
+            &image_data,
+            &options.into(),
+        ),
+        None => web_global::create_image_bitmap_with_image_data(&image_data),
+    }
+    .map_err(AwsmCoreError::create_image_bitmap)?;
 
     let js_value = JsFuture::from(promise)
         .await
@@ -270,15 +264,14 @@ pub async fn create_vertical_gradient(
     let image_data = web_sys::ImageData::new_with_js_u8_clamped_array(&uint8_array, width)
         .map_err(AwsmCoreError::create_image_bitmap)?;
 
-    let promise = WINDOW
-        .with(|window| match options {
-            Some(options) => window.create_image_bitmap_with_image_data_and_image_bitmap_options(
-                &image_data,
-                &options.into(),
-            ),
-            None => window.create_image_bitmap_with_image_data(&image_data),
-        })
-        .map_err(AwsmCoreError::create_image_bitmap)?;
+    let promise = match options {
+        Some(options) => web_global::create_image_bitmap_with_image_data_and_image_bitmap_options(
+            &image_data,
+            &options.into(),
+        ),
+        None => web_global::create_image_bitmap_with_image_data(&image_data),
+    }
+    .map_err(AwsmCoreError::create_image_bitmap)?;
 
     let js_value = JsFuture::from(promise)
         .await
@@ -290,9 +283,19 @@ pub async fn create_vertical_gradient(
 #[cfg(feature = "image")]
 fn _same_origin(url: &str) -> Result<bool> {
     if url.starts_with("http://") || url.starts_with("https://") {
-        let location_origin = WINDOW
-            .with(|window| window.location().origin())
-            .map_err(AwsmCoreError::location_origin)?;
+        // Worker scopes don't expose a `location.origin` directly; on
+        // main-thread we read it from `window.location`. Same-origin
+        // worker-mode check is deferred (returns true so the caller's
+        // CORS branch doesn't reject unconditionally) — the worker
+        // ships with its own origin anyway, and the consumer build
+        // controls cross-origin fetches.
+        let location_origin = match web_global::window() {
+            Some(w) => w
+                .location()
+                .origin()
+                .map_err(AwsmCoreError::location_origin)?,
+            None => return Ok(true),
+        };
         let url_origin = web_sys::Url::new(url)
             .map_err(AwsmCoreError::url_parse)?
             .origin();

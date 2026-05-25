@@ -331,6 +331,15 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
 
     if hardness < 1.5 {
         // Soft — fixed 16-tap rotated Poisson, ~15 cm world disc.
+        // Distance tapering applies ONLY to the PCSS branch below
+        // (where the variable-kernel PCF can absorb the noise floor
+        // a smaller sample count introduces). The Soft path is the
+        // user's "I want a clean smooth shadow, no contact hardening"
+        // setting; dropping its tap count introduces visible Poisson-
+        // rotation banding on large smooth receivers (the floor in
+        // the canonical "directional light + character on a plane"
+        // test). 16 fixed = visually clean; the tap-count knob exists
+        // for the PCSS branch's wide-kernel pass.
         let SOFT_WORLD_RADIUS: f32 = 0.15;
         var sum = 0.0;
         for (var i = 0u; i < 16u; i = i + 1u) {
@@ -385,6 +394,14 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
     let cube_dims = textureDimensions(shadow_cube_2d_array, 0);
     let cube_face_size = vec2<f32>(f32(cube_dims.x), f32(cube_dims.y));
 
+    // Fixed 16-tap blocker search. We previously tapered this by
+    // `dist / range` to save fragment cost on distant receivers,
+    // but the variable-kernel PCF below needs all 16 samples to
+    // resolve smoothly — undersampled wide penumbras showed
+    // visible Poisson-rotation banding (cube version less obvious
+    // than directional, but present). The unused helper
+    // `pcss_tap_count` is kept above for future re-introduction
+    // once a quality-preserving tap budget is worked out.
     var blocker_sum = 0.0;
     var blocker_count = 0u;
     for (var i = 0u; i < 16u; i = i + 1u) {
@@ -618,6 +635,11 @@ fn sample_shadow_cascade_array(
         );
     }
     if hardness < 1.5 {
+        // Soft — fixed 16-tap rotated Poisson. See the matching
+        // comment in `sample_shadow_cube`'s Soft branch — tapering
+        // here introduced visible banding on large smooth receivers
+        // (e.g. a floor plane under a directional light). The
+        // PCSS branch below still tapers; the Soft path is fixed.
         let world_per_texel = max(desc.cascade_info.y, 1e-4);
         let soft_world_radius = 0.25;
         let radius_texels = clamp(soft_world_radius / world_per_texel, 3.0, 20.0);
@@ -657,6 +679,15 @@ fn sample_shadow_cascade_array(
         4.0,
         64.0,
     );
+    // Fixed 16-tap blocker + PCF. The earlier tapered version
+    // (`pcss_tap_count(ndc.z)`) showed clear ribbon/striping
+    // artifacts on the canonical "robot on a floor under a
+    // directional light" test — `ndc.z` is uncorrelated with
+    // PCSS penumbra width, so fragments at `ndc.z ≈ 1` ended up
+    // with 4 samples on a wide kernel, undersampling enough to
+    // expose the rotated-Poisson disc as banding. Tapering is
+    // parked here (and on the cube + 2D paths) until a quality-
+    // preserving budget is worked out.
     var blocker_sum = 0.0;
     var blocker_count = 0u;
     let tile_min_px = vec2<i32>(tile_min * atlas_uv_to_texels);
@@ -814,6 +845,10 @@ fn sample_shadow_descriptor(
         );
         let sin_a = sin(angle);
         let cos_a = cos(angle);
+        // Fixed 16 taps on the Soft path — see `sample_shadow_cube`'s
+        // Soft branch for the full rationale. Tapering here banded
+        // large smooth receivers; the PCSS branch below still
+        // tapers because its variable-kernel PCF absorbs the noise.
         var sum = 0.0;
         for (var i = 0u; i < 16u; i = i + 1u) {
             let off = pcss_rotate(POISSON_DISK_16[i], sin_a, cos_a) * radius_texels;
@@ -868,6 +903,9 @@ fn sample_shadow_descriptor(
         64.0,
     );
 
+    // Fixed 16-tap blocker + PCF. Same rationale as the cascade-
+    // array PCSS path: tapering by `ndc.z` undersamples wide
+    // penumbras and shows as visible disc-rotation banding.
     var blocker_sum = 0.0;
     var blocker_count = 0u;
     let tile_min_px = vec2<i32>(tile_min * atlas_uv_to_texels);
@@ -891,20 +929,16 @@ fn sample_shadow_descriptor(
     if blocker_count == 16u {
         // Every blocker-search sample was below the receiver's
         // biased depth — the receiver is deep inside the umbra
-        // and the second 16-tap variable-kernel PCF would average
-        // to ≈ 0 anyway. Skip it. Halves the work on fully-
-        // shadowed receivers (the symmetric counterpart of the
-        // fully-lit fast path above).
+        // and the second 16-tap PCF would average to ≈ 0
+        // anyway. Skip it.
         return 0.0;
     }
     let avg_blocker = blocker_sum / f32(blocker_count);
     // Classic PCSS penumbra: `(d_receiver − d_blocker) · light_size /
     // d_blocker`, but with light_size expressed in *world units* via
     // `world_per_texel`. The clamps keep the kernel between "more
-    // than `Soft`" (4 texels, so PCSS is always visibly softer than
-    // `Soft`) and "still affordable" (40 texels — the 16-tap loop
-    // already amortises hardware bilinear so this is fine on a
-    // desktop GPU).
+    // than `Soft`" (4 texels) and "still affordable" (40 texels —
+    // the 16-tap loop amortises hardware bilinear so this is fine).
     let light_size_texels = pcss_light_world_radius / world_per_texel_pcss;
     let penumbra_texels = clamp(
         (ref_depth - avg_blocker) * light_size_texels / max(avg_blocker, 1e-4),

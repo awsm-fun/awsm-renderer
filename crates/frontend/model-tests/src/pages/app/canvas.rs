@@ -71,7 +71,7 @@ impl AppCanvas {
                             //.with_device_request_limits(DeviceRequestLimits::typical());
                             .with_device_request_limits(DeviceRequestLimits::max_all());
 
-                        let renderer = match AwsmRendererBuilder::new(gpu_builder)
+                        let mut renderer = match AwsmRendererBuilder::new(gpu_builder)
                             .with_logging(AwsmRendererLogging { render_timings: true })
                             .with_clear_color(Color::MID_GREY)
                             .build()
@@ -85,6 +85,29 @@ impl AppCanvas {
                             };
 
                         state.ctx.loading_status.lock_mut().renderer = Ok(false);
+
+                        // Force-compile the routinely-used pipelines
+                        // before the first draw. Surfaces a distinct
+                        // "Compiling shaders…" line in the loading UI
+                        // — most of the cold-compile cost actually
+                        // lives inside `AwsmRendererBuilder::build()`
+                        // above, but the prewarm hook is the
+                        // documented place that will absorb extra
+                        // work when the dynamic-materials sprint
+                        // lands (see PERFORMANCE.md §5g). The
+                        // explicit status flag also surfaces *that
+                        // the renderer is doing shader work at all*
+                        // — which used to hide inside the
+                        // "Initializing renderer" phase and made
+                        // first-load latency feel inexplicable.
+                        state.ctx.loading_status.lock_mut().shader_prewarm = Ok(true);
+                        if let Err(err) = renderer.prewarm_pipelines().await {
+                            tracing::warn!("prewarm_pipelines: {err}");
+                            state.ctx.loading_status.lock_mut().shader_prewarm =
+                                Err(err.to_string());
+                            return;
+                        }
+                        state.ctx.loading_status.lock_mut().shader_prewarm = Ok(false);
                         let scene = AppScene::new(state.ctx.clone(), renderer).await.unwrap();
 
                         state.ctx.scene.set(Some(scene));

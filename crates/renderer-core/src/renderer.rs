@@ -23,6 +23,17 @@ pub struct AwsmRendererWebGpu {
     pub adapter: web_sys::GpuAdapter,
     pub device: web_sys::GpuDevice,
     pub context: web_sys::GpuCanvasContext,
+    /// Whether the renderer is bound to a DOM canvas
+    /// (`HtmlCanvasElement`, main-thread mode) or an
+    /// `OffscreenCanvas` (Phase 4.4 worker mode). Stored so
+    /// downstream convenience methods on `AwsmRendererWebGpu` can
+    /// branch correctly without `unchecked_into()`-ing the underlying
+    /// JS handle. See [`Self::canvas_kind`] for the safe accessor;
+    /// DOM-only methods on this type (`canvas()`, `canvas_size(true)`,
+    /// `sync_canvas_buffer_with_css`, `pointer_event_to_canvas_coords_*`)
+    /// panic with a clear message if invoked in `Offscreen` mode
+    /// rather than silently mis-casting.
+    canvas_kind: CanvasKind,
 }
 
 impl AwsmRendererWebGpu {
@@ -35,29 +46,83 @@ impl AwsmRendererWebGpu {
     pub fn has_indirect_first_instance(&self) -> bool {
         self.device.features().has(INDIRECT_FIRST_INSTANCE_FEATURE)
     }
+
+    /// The canvas the renderer was built against. Use this to branch
+    /// safely between main-thread and worker-mode code paths instead
+    /// of calling `canvas()` (which panics in worker mode).
+    pub fn canvas_kind(&self) -> &CanvasKind {
+        &self.canvas_kind
+    }
+}
+
+/// Canvas kind the renderer is targeting — `HtmlCanvasElement` for
+/// main-thread mode, `OffscreenCanvas` for worker-mode (Phase 4.4).
+/// Both go through the same `GpuCanvasContext` API on the WebGPU side;
+/// `CanvasKind` only matters at builder time (acquiring the context)
+/// and on resize (the two element types have different `set_*` APIs).
+#[derive(Clone)]
+pub enum CanvasKind {
+    Html(web_sys::HtmlCanvasElement),
+    Offscreen(web_sys::OffscreenCanvas),
+}
+
+impl CanvasKind {
+    fn get_webgpu_context(&self) -> Result<web_sys::GpuCanvasContext> {
+        let ctx = match self {
+            CanvasKind::Html(c) => c.get_context("webgpu"),
+            CanvasKind::Offscreen(c) => c.get_context("webgpu"),
+        };
+        match ctx {
+            Ok(Some(ctx)) => Ok(ctx.unchecked_into()),
+            Err(err) => Err(AwsmCoreError::canvas_context(err)),
+            Ok(None) => Err(AwsmCoreError::CanvasContext("No context found".to_string())),
+        }
+    }
 }
 
 /// Builder for creating an `AwsmRendererWebGpu`.
+///
+/// Fields are private — construct with [`Self::new`] /
+/// [`Self::new_with_offscreen_canvas`] and configure via the `with_*`
+/// methods. Privatising avoids a breaking change when adding new
+/// inputs (e.g. the `CanvasKind` enum that replaced the original
+/// `HtmlCanvasElement` `canvas` field), since callers that constructed
+/// the struct with `..Default::default()` or accessed `builder.canvas`
+/// directly would otherwise need to track each addition.
 pub struct AwsmRendererWebGpuBuilder {
-    pub gpu: web_sys::Gpu,
-    pub canvas: web_sys::HtmlCanvasElement,
-    pub configuration: Option<CanvasConfiguration>,
-    pub adapter: Option<web_sys::GpuAdapter>,
-    pub device: Option<web_sys::GpuDevice>,
-    pub context: Option<web_sys::GpuCanvasContext>,
-    pub device_req_limits: Option<DeviceRequestLimits>,
+    gpu: web_sys::Gpu,
+    canvas: CanvasKind,
+    configuration: Option<CanvasConfiguration>,
+    adapter: Option<web_sys::GpuAdapter>,
+    device: Option<web_sys::GpuDevice>,
+    device_req_limits: Option<DeviceRequestLimits>,
 }
 
 impl AwsmRendererWebGpuBuilder {
-    /// Creates a builder for a given GPU and canvas.
+    /// Creates a builder for a given GPU and (main-thread) canvas.
     pub fn new(gpu: web_sys::Gpu, canvas: web_sys::HtmlCanvasElement) -> Self {
         Self {
             gpu,
-            canvas,
+            canvas: CanvasKind::Html(canvas),
             configuration: None,
             adapter: None,
             device: None,
-            context: None,
+            device_req_limits: None,
+        }
+    }
+
+    /// Creates a builder for worker-mode rendering against an
+    /// `OffscreenCanvas` (Phase 4.4). The caller is expected to have
+    /// already called `transferControlToOffscreen()` on a DOM canvas
+    /// on the main thread and posted the resulting `OffscreenCanvas`
+    /// to the worker, where this is called.
+    pub fn new_with_offscreen_canvas(gpu: web_sys::Gpu, canvas: web_sys::OffscreenCanvas) -> Self {
+        Self {
+            gpu,
+            canvas: CanvasKind::Offscreen(canvas),
+            configuration: None,
+            adapter: None,
+            device: None,
             device_req_limits: None,
         }
     }
@@ -90,11 +155,7 @@ impl AwsmRendererWebGpuBuilder {
     pub async fn build(self) -> Result<AwsmRendererWebGpu> {
         tracing::info!("Building WebGPU Context");
 
-        let context: web_sys::GpuCanvasContext = match self.canvas.get_context("webgpu") {
-            Ok(Some(ctx)) => Ok(ctx.unchecked_into()),
-            Err(err) => Err(AwsmCoreError::canvas_context(err)),
-            Ok(None) => Err(AwsmCoreError::CanvasContext("No context found".to_string())),
-        }?;
+        let context: web_sys::GpuCanvasContext = self.canvas.get_webgpu_context()?;
 
         let mut adapter: web_sys::GpuAdapter = match self.adapter {
             Some(adapter) => adapter,
@@ -180,6 +241,7 @@ impl AwsmRendererWebGpuBuilder {
             adapter,
             device,
             context,
+            canvas_kind: self.canvas,
         })
     }
 }

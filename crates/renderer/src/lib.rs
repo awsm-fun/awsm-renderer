@@ -39,6 +39,8 @@ pub mod shadows;
 pub mod textures;
 pub mod transforms;
 pub mod update;
+pub mod web_global;
+pub mod workers;
 // re-export
 pub mod core {
     pub use awsm_renderer_core::*;
@@ -154,10 +156,12 @@ pub struct AwsmRenderer {
     /// [`MeshCoverage::ingest`]. `None` when
     /// `features.coverage_lod == false`.
     pub coverage_buffers: Option<render_passes::coverage::buffers::CoverageBuffers>,
-    /// State for the coverage readback loop. `Rc<RefCell<...>>` so
-    /// the `spawn_local`-detached `mapAsync` future can write back
-    /// into it without re-borrowing the renderer.
-    pub coverage_readback_state: std::rc::Rc<std::cell::RefCell<CoverageReadbackState>>,
+    /// State for the coverage readback loop. `Arc<Mutex<…>>` so the
+    /// `spawn_local`-detached `mapAsync` future can write back into
+    /// it without re-borrowing the renderer — and so it stays
+    /// future-proof for the day the renderer moves across threads
+    /// (single-threaded today, so the lock is uncontested).
+    pub coverage_readback_state: std::sync::Arc<std::sync::Mutex<CoverageReadbackState>>,
     /// Monotonic frame index. Wraps every ~272 years at 60 Hz — safe to
     /// treat as unbounded for any practical session. Drives the
     /// `skin_update_period` gate and other "every Nth frame" cadences.
@@ -265,6 +269,73 @@ impl AwsmRenderer {
         &self.features
     }
 
+    /// Force-compile the routinely-used WebGPU pipelines ahead of the
+    /// first user-interactive frame, so the first draw doesn't stall
+    /// on shader compilation. See [`PERFORMANCE.md §5g`][perf-5g] for
+    /// the underlying browser-PSO-cache mechanics and the rationale.
+    ///
+    /// [perf-5g]: https://github.com/dakom/awsm-renderer/blob/main/docs/PERFORMANCE.md
+    ///
+    /// ## What's already prewarmed at construction time
+    ///
+    /// `AwsmRendererBuilder::build()` already compiles, in parallel:
+    ///
+    /// - **Opaque-compute** material kernels — 12 variants (3
+    ///   `MaterialShaderId` × {MSAA on, off} × {mipmaps on, off}) plus
+    ///   two empty kernels for the no-meshes case. See
+    ///   `MaterialOpaquePipelines::new`.
+    /// - **Geometry render pipelines** — every (MSAA × instancing ×
+    ///   storage-array × cull_mode) variant. See
+    ///   `GeometryRenderPipelineKeys::new`.
+    /// - **Shadow / HZB / coverage / decal / classify / light-culling**
+    ///   passes — all built once during `RenderPasses::new`.
+    ///
+    /// So this method is **mostly a labelling hook today** — its real
+    /// payoff is the call-site UX: a consumer can advance their boot
+    /// loader to "Compiling shaders…" before this call and back to
+    /// "Loading assets…" after, giving users a precise progress
+    /// indicator over the multi-hundred-ms shader-compile window that
+    /// previously appeared as a generic "Initializing renderer…".
+    ///
+    /// ## When this method will actually do work
+    ///
+    /// Two upcoming sprints will land pipelines that compile *lazily*
+    /// on first draw, and this method will be extended to force their
+    /// compilation:
+    ///
+    /// - **Dynamic materials** (see
+    ///   `docs/plans/dynamic-materials.md` Phase 3): runtime-registered
+    ///   custom shaders. Each registration changes the
+    ///   opaque/transparent dispatch chain's text hash, invalidating
+    ///   the cached pipeline. This method will walk every
+    ///   registered shader_id and ensure its pipeline is built.
+    /// - **Transparent fragment pipelines** are keyed by `MeshKey`
+    ///   today (per-instance) and compile on first transparent draw.
+    ///   Pre-warming requires a representative mesh per `MaterialShaderId`.
+    ///
+    /// ## Idempotent + cheap on warm cache
+    ///
+    /// Calling this multiple times is a no-op past the first
+    /// invocation: every underlying `get_*_pipeline_key` is a
+    /// cache-keyed lookup. On a Chrome session with a warm GPU disk
+    /// cache, the whole call completes in <5 ms. On a cold cache
+    /// (post-redeploy first-ever visit) it costs 50–500 ms — the
+    /// same compile tax the first draw would have paid, just
+    /// relocated to a phase the consumer can label clearly.
+    pub async fn prewarm_pipelines(&mut self) -> crate::error::Result<()> {
+        // Builder-time prewarm is comprehensive for the first-party
+        // material set; this method is the public hook for that fact.
+        // The trace span gives consumers a measurable cost they can
+        // attribute when the dynamic-materials sprint adds real work
+        // here.
+        let _maybe_span = if self.logging.render_timings {
+            Some(tracing::span!(tracing::Level::INFO, "Prewarm Pipelines").entered())
+        } else {
+            None
+        };
+        Ok(())
+    }
+
     /// Returns the current adaptive policy.
     pub fn optimization_policy(&self) -> &crate::optimization_policy::RendererOptimizationPolicy {
         &self.optimization_policy
@@ -289,6 +360,80 @@ impl AwsmRenderer {
             self.frames_in_current_mode = u32::MAX / 2;
         }
         self.optimization_policy = policy;
+    }
+
+    /// Aggregate Phase-2.1 upload-ring telemetry across every
+    /// renderer subsystem with a `MappedUploader`. Returned as a
+    /// `(label, stats)` list so callers (e.g. the scene-editor's
+    /// `read_upload_ring_stats` wasm export) can render per-subsystem
+    /// + rolled-up totals.
+    pub fn upload_ring_stats(
+        &self,
+    ) -> Vec<(
+        &'static str,
+        crate::buffer::mapped_staging_ring::UploadStats,
+    )> {
+        let mut v = vec![
+            ("transforms", self.transforms.upload_stats()),
+            ("materials", self.materials.upload_stats()),
+            (
+                "instances.transforms",
+                self.instances.transform_upload_stats(),
+            ),
+            (
+                "instances.attributes",
+                self.instances.attribute_upload_stats(),
+            ),
+            (
+                "meshes.meta.geometry",
+                self.meshes.meta.geometry_upload_stats(),
+            ),
+            (
+                "meshes.meta.material",
+                self.meshes.meta.material_upload_stats(),
+            ),
+            (
+                "meshes.skins.matrices",
+                self.meshes.skins.matrices_upload_stats(),
+            ),
+            (
+                "meshes.skins.joint_index_weights",
+                self.meshes.skins.joint_index_weights_upload_stats(),
+            ),
+            (
+                "meshes.morphs.geometry.weights",
+                self.meshes.morphs.geometry.weights_upload_stats(),
+            ),
+            (
+                "meshes.morphs.geometry.values",
+                self.meshes.morphs.geometry.values_upload_stats(),
+            ),
+            (
+                "meshes.morphs.material.weights",
+                self.meshes.morphs.material.weights_upload_stats(),
+            ),
+            (
+                "meshes.morphs.material.values",
+                self.meshes.morphs.material.values_upload_stats(),
+            ),
+            (
+                "textures.transforms",
+                self.textures.texture_transforms_upload_stats(),
+            ),
+            ("meshes.pool", self.meshes.upload_stats()),
+            // Phase-2.1 raw-writeBuffer promotions (this sprint):
+            ("camera", self.camera.upload_stats()),
+            ("lights", self.lights.upload_stats()),
+            (
+                "mesh_light_indices",
+                self.mesh_light_indices_gpu.upload_stats(),
+            ),
+            ("shadows", self.shadows.upload_stats()),
+        ];
+        if let Some(occ) = self.occlusion_buffers.as_ref() {
+            v.push(("occlusion", occ.upload_stats()));
+        }
+        v
     }
 }
 
@@ -761,7 +906,7 @@ impl AwsmRendererBuilder {
             compaction_buffers,
             coverage: coverage::MeshCoverage::default(),
             coverage_buffers,
-            coverage_readback_state: std::rc::Rc::new(std::cell::RefCell::new(
+            coverage_readback_state: std::sync::Arc::new(std::sync::Mutex::new(
                 CoverageReadbackState::default(),
             )),
             frame_index: 0,

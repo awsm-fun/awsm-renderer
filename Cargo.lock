@@ -165,6 +165,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "awsm-render-worker-example"
+version = "0.1.7"
+dependencies = [
+ "anyhow",
+ "awsm-materials",
+ "awsm-meshgen",
+ "awsm-renderer",
+ "awsm-renderer-core",
+ "glam 0.32.1",
+ "serde",
+ "serde-wasm-bindgen",
+ "tracing",
+ "tracing-subscriber",
+ "tracing-web",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "awsm-renderer"
 version = "0.1.7"
 dependencies = [
@@ -180,6 +200,7 @@ dependencies = [
  "ordered-float",
  "rstar",
  "serde",
+ "serde-wasm-bindgen",
  "slotmap",
  "strum",
  "thiserror 2.0.18",
@@ -243,6 +264,9 @@ dependencies = [
  "gltf",
  "indexmap",
  "ordered-float",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_bytes",
  "slotmap",
  "strum",
  "thiserror 2.0.18",
@@ -1309,6 +1333,16 @@ dependencies = [
  "js-sys",
  "serde",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "serde_bytes"
+version = "0.11.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5d440709e79d88e51ac01c4b72fc6cb7314017bb7da9eeff678aa94c10e3ea8"
+dependencies = [
+ "serde",
+ "serde_core",
 ]
 
 [[package]]

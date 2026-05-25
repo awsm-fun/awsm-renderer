@@ -18,7 +18,6 @@ use slotmap::{new_key_type, DenseSlotMap, SecondaryMap};
 use crate::bind_groups::{BindGroupCreate, BindGroups};
 use crate::bounds::Aabb;
 use crate::buffer::dynamic_storage::DynamicStorageBuffer;
-use crate::buffer::helpers::write_buffer_with_dirty_ranges;
 use crate::instances::Instances;
 use crate::materials::Materials;
 use crate::meshes::buffer_info::MeshBufferVertexInfo;
@@ -132,6 +131,75 @@ impl AwsmRenderer {
         mesh.material_key = new_material_key;
         self.meshes
             .refresh_meta_for_mesh_public(mesh_key, &self.materials, &self.transforms)?;
+        Ok(())
+    }
+
+    /// Sets (or clears) the cheap-material variant for a mesh. The
+    /// cheap variant takes over the mesh's shading whenever last-frame
+    /// coverage drops below the threshold (per-mesh
+    /// `cheap_material_pixel_threshold`, falling back to the
+    /// renderer's `default_cheap_material_pixel_threshold`).
+    ///
+    /// Constraint (validated here): the cheap material MUST share the
+    /// authored material's [`MaterialShaderId`] AND its
+    /// [`is_transparency_pass`] classification. The per-frame routing
+    /// in `Meshes::refresh_cheap_material_routing` only swaps the
+    /// GPU-side `material_offset` — it doesn't migrate the mesh
+    /// between the opaque / transparent renderable pools or rebuild
+    /// the opaque-compute pipeline key. A mismatched pair would
+    /// either silently no-op the cheap path (same-pass, different
+    /// shader_id → wrong compute kernel) or, worse, run a transparent
+    /// material through the opaque pipeline → layout mismatch /
+    /// garbage shading. Returns `IncompatibleCheapMaterial` rather
+    /// than swallowing the mistake.
+    ///
+    /// Pass `cheap_material_key = None` to clear an existing cheap
+    /// variant. The next frame's `refresh_cheap_material_routing`
+    /// re-patches the mesh's `material_offset` back to the authored
+    /// material.
+    pub fn set_mesh_cheap_material(
+        &mut self,
+        mesh_key: MeshKey,
+        cheap_material_key: Option<crate::materials::MaterialKey>,
+        cheap_material_pixel_threshold: Option<u32>,
+    ) -> crate::error::Result<()> {
+        let authored_material = {
+            let mesh = self.meshes.get(mesh_key)?;
+            mesh.material_key
+        };
+        if let Some(cheap) = cheap_material_key {
+            let authored_shader = self.materials.shader_id(authored_material);
+            let cheap_shader = self.materials.shader_id(cheap);
+            if authored_shader != cheap_shader {
+                return Err(crate::meshes::AwsmMeshError::IncompatibleCheapMaterial {
+                    authored: authored_material,
+                    cheap,
+                    reason: format!(
+                        "shader_id mismatch (authored {authored_shader:?} vs cheap {cheap_shader:?}) — \
+                         the per-frame routing only swaps material_offset; cross-shader cheap variants \
+                         need a separate pipeline + render pool migration that isn't wired."
+                    ),
+                }
+                .into());
+            }
+            let authored_blend = self.materials.is_transparency_pass(authored_material);
+            let cheap_blend = self.materials.is_transparency_pass(cheap);
+            if authored_blend != cheap_blend {
+                return Err(crate::meshes::AwsmMeshError::IncompatibleCheapMaterial {
+                    authored: authored_material,
+                    cheap,
+                    reason: format!(
+                        "transparency-pass classification mismatch (authored opaque?={} vs cheap opaque?={}) — \
+                         a cheap variant on the opposite pass would land in the wrong renderable list.",
+                        !authored_blend, !cheap_blend
+                    ),
+                }
+                .into());
+            }
+        }
+        let mesh = self.meshes.get_mut(mesh_key)?;
+        mesh.cheap_material_key = cheap_material_key;
+        mesh.cheap_material_pixel_threshold = cheap_material_pixel_threshold;
         Ok(())
     }
 
@@ -492,6 +560,9 @@ pub struct Meshes {
     transparency_geometry_data_buffers: DynamicStorageBuffer<MeshResourceKey>,
     transparency_geometry_data_gpu_buffer: web_sys::GpuBuffer,
     transparency_geometry_data_dirty: bool,
+    mesh_geometry_pool_uploader: crate::buffer::mapped_uploader::MappedUploader,
+    visibility_geometry_index_uploader: crate::buffer::mapped_uploader::MappedUploader,
+    transparency_geometry_data_uploader: crate::buffer::mapped_uploader::MappedUploader,
     // buffer infos
     pub buffer_infos: MeshBufferInfos,
     // meta
@@ -499,6 +570,37 @@ pub struct Meshes {
     // morphs and skins
     pub morphs: Morphs,
     pub skins: Skins,
+    /// Last-frame effective `MaterialKey` per mesh — the value
+    /// `Mesh::effective_material_key` resolved to. Used by
+    /// `refresh_cheap_material_routing` to detect coverage-cross-threshold
+    /// transitions and patch `MaterialMeshMeta.material_offset` only on
+    /// the meshes that actually crossed; steady-state writes are O(0)
+    /// even when every mesh has a cheap variant authored.
+    last_effective_material: SecondaryMap<MeshKey, crate::materials::MaterialKey>,
+    /// Per-skin "frames-since-last-frame-with-coverage > 0" counter,
+    /// driving the coverage-skin-skip grace period in `update_world`.
+    ///
+    /// Tracks: while ANY consumer mesh of a skin had non-zero coverage
+    /// last frame, the counter resets to 0. When every consumer hit
+    /// zero coverage, the counter increments. The skip gate only
+    /// fires once the counter clears the grace threshold AND no
+    /// consumer mesh sits inside the camera frustum (the BVH override).
+    ///
+    /// Default 0 = never-observed-skin / fresh-insertion = "still in
+    /// grace period" so the very first frame after a skin's meshes
+    /// materialise, skinning runs normally (no rest-pose pop).
+    skin_zero_coverage_grace: SecondaryMap<SkinKey, u32>,
+    /// Scratch inverted-index `skin_key → Vec<MeshKey>` reused across
+    /// `update_world` invocations. The outer HashMap is cleared (not
+    /// dropped) at the start of each frame so the bucket-storage Vec
+    /// allocations stick around — steady-state per-frame cost drops
+    /// to "rebucket meshes that have a skin", with zero heap traffic
+    /// once the map's capacity has stabilised. A persistent inverted
+    /// index maintained on mesh insert/remove would be marginally
+    /// faster still, but every mesh-mutation path would have to
+    /// remember to keep it in sync; reuse-and-clear gets us the bulk
+    /// of the win with none of the maintenance burden.
+    skin_consumers_scratch: HashMap<SkinKey, Vec<MeshKey>>,
 }
 impl Meshes {
     // Initial sizes assume ~1000 vertices per mesh
@@ -576,11 +678,117 @@ impl Meshes {
                 .into(),
             )?,
             transparency_geometry_data_dirty: true,
+            mesh_geometry_pool_uploader: crate::buffer::mapped_uploader::MappedUploader::new(
+                "MeshGeometryPool",
+            ),
+            visibility_geometry_index_uploader: crate::buffer::mapped_uploader::MappedUploader::new(
+                "MeshVisibilityIndex",
+            ),
+            transparency_geometry_data_uploader:
+                crate::buffer::mapped_uploader::MappedUploader::new("MeshTransparencyData"),
             meta: MeshMeta::new(gpu)?,
             // attribute morphs and skins
             morphs: Morphs::new(gpu)?,
             skins: Skins::new(gpu)?,
+            last_effective_material: SecondaryMap::new(),
+            skin_zero_coverage_grace: SecondaryMap::new(),
+            skin_consumers_scratch: HashMap::new(),
         })
+    }
+
+    /// Walk every mesh with a `cheap_material_key` authored and patch
+    /// its `MaterialMeshMeta.material_offset` to point at the
+    /// *effective* material for this frame (cheap when coverage is
+    /// below threshold, authored otherwise). Idempotent — the
+    /// `last_effective_material` sidecar tracks the last patched
+    /// value, so meshes whose effective key didn't change generate no
+    /// GPU writes.
+    ///
+    /// Safety: the cheap-material compatibility constraint (same
+    /// `MaterialShaderId` AND same `is_transparency_pass()`
+    /// classification) is enforced by
+    /// [`AwsmRenderer::set_mesh_cheap_material`] at authoring time —
+    /// it returns `AwsmMeshError::IncompatibleCheapMaterial` on any
+    /// pair that would violate it. This per-frame refresh therefore
+    /// only swaps `material_offset`, not pipeline keys or pass-list
+    /// membership. Without that constraint a cross-pass cheap
+    /// material would land in the wrong renderable list relative to
+    /// the meta data the shader reads and either silently no-op the
+    /// cheap path or, worse, route a transparent material through
+    /// the opaque pipeline. There is no separate validation helper —
+    /// the public setter IS the validation entrypoint.
+    ///
+    /// Called once per frame from `AwsmRenderer::render` after
+    /// `coverage.ingest` and before `meshes.meta.write_gpu`.
+    pub fn refresh_cheap_material_routing(
+        &mut self,
+        materials: &crate::materials::Materials,
+        coverage: &crate::coverage::MeshCoverage,
+        default_threshold: u32,
+    ) -> Result<()> {
+        // Two-pass to avoid the immutable-borrow-of-self vs
+        // mutable-borrow-of-self.meta conflict — gather updates first,
+        // then apply.
+        let mut updates: Vec<(MeshKey, u32, crate::materials::MaterialKey)> = Vec::new();
+        for (mesh_key, mesh) in self.list.iter() {
+            if mesh.cheap_material_key.is_none() {
+                continue;
+            }
+            let effective = mesh.effective_material_key(mesh_key, coverage, default_threshold);
+            let last = self.last_effective_material.get(mesh_key).copied();
+            if last == Some(effective) {
+                continue;
+            }
+            // Resolve to GPU offset now (still inside the immutable
+            // borrow) so the update step doesn't need `materials`
+            // access — keeps the mutation set tiny.
+            let offset = materials.buffer_offset(effective)? as u32;
+            updates.push((mesh_key, offset, effective));
+        }
+        for (mesh_key, offset, effective) in updates {
+            // Only cache the patched value when the meta-buffer write
+            // actually went through. `set_material_offset` returns
+            // `false` when the mesh has no material-meta slot (either
+            // never registered or removed between the gather and apply
+            // phase — possible if a sync action races this routine).
+            // Updating `last_effective_material` unconditionally would
+            // suppress every future patch for that mesh: the next
+            // gather pass sees `last == effective` and skips it, so the
+            // GPU `material_offset` stays at whatever it was when the
+            // slot was last alive (frequently a stale, just-recycled
+            // index).
+            if self.meta.set_material_offset(mesh_key, offset) {
+                self.last_effective_material.insert(mesh_key, effective);
+            } else {
+                tracing::debug!(
+                    "refresh_cheap_material_routing: mesh {mesh_key:?} has no material-meta slot; \
+                     skipping cache update so the next gather pass retries"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Mapped-ring upload telemetry for mesh-side per-frame buffers.
+    /// Aggregates the three internal uploaders (geometry pool,
+    /// visibility index, transparency data) into one rollup.
+    pub fn upload_stats(&self) -> crate::buffer::mapped_staging_ring::UploadStats {
+        let mut s = self.mesh_geometry_pool_uploader.stats();
+        let b = self.visibility_geometry_index_uploader.stats();
+        let c = self.transparency_geometry_data_uploader.stats();
+        s.peak_ring_depth_used = s
+            .peak_ring_depth_used
+            .max(b.peak_ring_depth_used)
+            .max(c.peak_ring_depth_used);
+        s.fallback_count += b.fallback_count + c.fallback_count;
+        s.map_async_wait_ms += b.map_async_wait_ms + c.map_async_wait_ms;
+        s.bytes_uploaded_via_ring += b.bytes_uploaded_via_ring + c.bytes_uploaded_via_ring;
+        s.bytes_uploaded_via_fallback +=
+            b.bytes_uploaded_via_fallback + c.bytes_uploaded_via_fallback;
+        s.bytes_uploaded_via_writebuffer +=
+            b.bytes_uploaded_via_writebuffer + c.bytes_uploaded_via_writebuffer;
+        s.resize_count += b.resize_count + c.resize_count;
+        s
     }
 
     /// Public wrapper around `insert` for the raw-mesh path. Same semantics —
@@ -1150,6 +1358,16 @@ impl Meshes {
         // so the parameter is harmless when the GPU coverage pass
         // isn't wired yet on the producer side.
         coverage: &crate::coverage::MeshCoverage,
+        // Current camera frustum, if any. The coverage-driven
+        // skin-skip uses this as a "BVH-visible override": a skin
+        // whose consumer meshes' world AABBs are all *out of frustum*
+        // is genuinely off-screen; if any AABB is in-frustum the
+        // skin is likely about to (or already) disocclude, so we
+        // continue animating to dodge rest-pose pop-in. `None` is
+        // treated conservatively (assume in-frustum, never skip
+        // via coverage) — used by first-frame paths that don't
+        // have a camera matrix yet.
+        frustum: Option<&crate::frustum::Frustum>,
     ) -> Vec<MeshKey> {
         let mut update_keys = std::collections::HashSet::new();
         update_keys.extend(dirty_transforms.keys().copied());
@@ -1212,33 +1430,141 @@ impl Meshes {
             }
         }
 
-        // Distance-based skin LOD gate. Precompute the set of skins
-        // we'll *skip* this frame based on the `skin_update_period`
-        // cadence. Done as a separate pass because the lookup
-        // borrows `&self` while `skins.update_transforms` borrows
-        // `&mut self.skins`.
+        // Skin-skip gate. Two layers compose:
         //
-        // Coverage-driven skin-skip is intentionally not wired here.
-        // Reason: characters built from multiple overlapping
-        // submeshes (e.g. BrainStem's 59 primitives sharing one
-        // skeleton) routinely have submeshes self-occluded by
-        // adjacent body parts for a frame or two. Skipping their
-        // skin update freezes them in their last pose — typically
-        // the bind pose, since the freeze happens before the first
-        // animation tick they would have run. When the occluding
-        // submesh moves and reveals them, they pop into view in rest
-        // pose while the rest of the character keeps animating.
-        // A grace-period + BVH-visible override would fix this; until
-        // that lands, run skinning for every visible skin every
-        // frame. `cheap_material_pixel_threshold`
-        // (the other coverage consumer) is unaffected — material
-        // LOD doesn't suffer from rest-pose persistence.
-        let _ = coverage;
+        //   1. `skin_update_period` cadence — purely period-based, no
+        //      coverage / frustum input. A `period = 4` skin only
+        //      updates on frames whose `frame_index % 4 == 0`. Drives
+        //      the distance-LOD skinning policy.
+        //
+        //   2. Coverage-driven skip with grace period + BVH override.
+        //      Layer (1) gates *cadence*; this gates *visibility*. A
+        //      skin every one of whose consumer meshes had coverage = 0
+        //      last frame AND whose AABBs all sit outside the camera
+        //      frustum is genuinely off-screen → safe to skip.
+        //
+        //      The grace period (`SKIN_COVERAGE_GRACE_FRAMES`) protects
+        //      multi-primitive characters (e.g. BrainStem's 59
+        //      primitives sharing one skeleton) where one submesh
+        //      briefly self-occludes another for a frame or two. Without
+        //      grace, that submesh freezes in its last-skinned pose;
+        //      when the occluder moves and reveals it, it pops into
+        //      view in rest pose. The grace counter lets the skin
+        //      keep animating for the first ~2 frames of zero coverage
+        //      so a brief self-occlusion doesn't propagate.
+        //
+        //      The BVH override (`frustum.intersects_aabb`) catches the
+        //      complementary case: a skin re-entering the frustum is
+        //      about to disocclude, so we resume animation immediately
+        //      regardless of last-frame coverage.
+        //
+        // `cheap_material_pixel_threshold` (the other coverage consumer)
+        // doesn't suffer from rest-pose persistence — it just picks
+        // a cheaper shader on the next frame.
+        const SKIN_COVERAGE_GRACE_FRAMES: u32 = 2;
         let mut skip_skins: std::collections::HashSet<SkinKey> = std::collections::HashSet::new();
+        // Build the inverted index skin_key → Vec<MeshKey> once so the
+        // per-skin BVH / coverage walk is O(meshes) total instead of
+        // O(skins × meshes). Empty entries are fine (a skin with no
+        // consumer meshes can't show pop-in by definition).
+        //
+        // `skin_consumers_scratch` is a persistent field on `Meshes`
+        // that's `clear()`-ed (not dropped) here so the outer HashMap
+        // and each bucket Vec keep their capacities frame-to-frame.
+        // Steady-state heap traffic drops to ~zero once the map sizes
+        // up; we still pay one rebucket walk per frame, which is the
+        // O(meshes) cost the original comment promised. The
+        // disjoint-field destructure scopes the mutable borrow to
+        // this block; downstream code then re-borrows the scratch
+        // immutably via `&self.skin_consumers_scratch`.
+        {
+            let Self {
+                list,
+                mesh_to_resource,
+                resources,
+                skin_consumers_scratch,
+                ..
+            } = self;
+            for bucket in skin_consumers_scratch.values_mut() {
+                bucket.clear();
+            }
+            for (mesh_key, _mesh) in list.iter() {
+                let Some(resource_key) = mesh_to_resource.get(mesh_key).copied() else {
+                    continue;
+                };
+                let Some(resource) = resources.get(resource_key) else {
+                    continue;
+                };
+                if let Some(skin_key) = resource.skin_key {
+                    skin_consumers_scratch
+                        .entry(skin_key)
+                        .or_default()
+                        .push(mesh_key);
+                }
+            }
+        }
+        let skin_consumers: &HashMap<SkinKey, Vec<MeshKey>> = &self.skin_consumers_scratch;
+
         if frame_index > 0 {
             let skin_keys: Vec<SkinKey> = self.skins.iter_skin_keys().collect();
             for skin_key in skin_keys {
+                // Layer 1: cadence gate.
                 if !self.skin_should_update_this_frame(skin_key, frame_index) {
+                    skip_skins.insert(skin_key);
+                    continue;
+                }
+
+                // Layer 2: coverage + BVH + grace.
+                let consumers = skin_consumers
+                    .get(&skin_key)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+
+                // A skin with no live consumers — its meshes were
+                // removed but the skin slot lingers. No pop-in
+                // possible, but no work to do either; the cadence
+                // gate already lets it run if `period` allows, and
+                // the skip below would also fire (no visible consumers,
+                // no in-frustum consumers, grace counter expired
+                // immediately since there's nothing to keep the
+                // counter at 0). The default branch handles it
+                // cleanly so we don't need a special case here.
+                let any_visible_last_frame = consumers
+                    .iter()
+                    .any(|mk| !coverage.is_below_threshold(*mk, 1));
+
+                let any_in_frustum = match frustum {
+                    None => true, // conservative: assume in-frustum
+                    Some(f) => consumers.iter().any(|mk| {
+                        self.list
+                            .get(*mk)
+                            .and_then(|m| m.world_aabb.as_ref())
+                            .map(|aabb| f.intersects_aabb(aabb))
+                            .unwrap_or(true)
+                    }),
+                };
+
+                // Grace counter: reset to 0 the moment ANY consumer
+                // showed coverage last frame; otherwise increment
+                // (saturating so it never wraps).
+                let grace = if any_visible_last_frame {
+                    0
+                } else {
+                    self.skin_zero_coverage_grace
+                        .get(skin_key)
+                        .copied()
+                        .unwrap_or(0)
+                        .saturating_add(1)
+                };
+                self.skin_zero_coverage_grace.insert(skin_key, grace);
+
+                // Skip only when (a) the BVH agrees the skin is
+                // off-screen AND (b) coverage has been zero for long
+                // enough that a brief self-occlusion is unlikely to
+                // be the cause AND (c) no consumer showed coverage
+                // last frame.
+                if !any_visible_last_frame && !any_in_frustum && grace > SKIN_COVERAGE_GRACE_FRAMES
+                {
                     skip_skins.insert(skin_key);
                 }
             }
@@ -1589,6 +1915,22 @@ impl Meshes {
         self.list.iter()
     }
 
+    /// Walk every mesh key and apply `gate_fn(mesh_key) -> u32` to
+    /// `MeshMeta::set_shadow_receiver_gate`. Exists so the caller
+    /// doesn't have to materialise a `Vec<MeshKey>` per frame just to
+    /// step around the `&self.list` vs `&mut self.meta` split borrow
+    /// — both fields are disjoint sub-borrows of `self`, so we do the
+    /// split here and walk `self.list.keys()` in place. The cached
+    /// last-frame-gate inside `MeshMeta::set_shadow_receiver_gate`
+    /// keeps the per-call cost effectively `Cell::get + compare` on
+    /// unchanged meshes; per-frame allocation drops to zero.
+    pub fn update_shadow_receiver_gates<F: FnMut(MeshKey) -> u32>(&mut self, mut gate_fn: F) {
+        for mesh_key in self.list.keys() {
+            let gate = gate_fn(mesh_key);
+            self.meta.set_shadow_receiver_gate(mesh_key, gate);
+        }
+    }
+
     /// Returns a mesh by key.
     pub fn get(&self, mesh_key: MeshKey) -> Result<&Mesh> {
         self.list
@@ -1624,6 +1966,10 @@ impl Meshes {
     pub(crate) fn remove(&mut self, mesh_key: MeshKey) -> Option<Mesh> {
         if let Some(mesh) = self.list.remove(mesh_key) {
             self.meta.remove(mesh_key);
+            // Drop the cheap-material LOD cache entry so a recycled
+            // MeshKey can't inherit a stale "effective_material was X"
+            // hit (which would suppress the first frame's patch).
+            self.last_effective_material.remove(mesh_key);
 
             if let Some(meshes) = self.transform_to_meshes.get_mut(mesh.transform_key) {
                 meshes.retain(|&key| key != mesh_key)
@@ -1668,6 +2014,10 @@ impl Meshes {
 
                         if let Some(skin_key) = resource.skin_key {
                             self.skins.remove(skin_key, None);
+                            // Drop the grace-period cache entry so a
+                            // recycled SkinKey can't inherit a stale
+                            // "out-of-frustum for N frames" counter.
+                            self.skin_zero_coverage_grace.remove(skin_key);
                         }
                     }
                 }
@@ -1686,41 +2036,9 @@ impl Meshes {
         gpu: &AwsmRendererWebGpu,
         bind_groups: &mut BindGroups,
     ) -> Result<()> {
-        let to_check_dynamic = [
-            (
-                self.mesh_geometry_pool_dirty,
-                &mut self.mesh_geometry_pool_buffers,
-                &mut self.mesh_geometry_pool_gpu_buffer,
-                BufferUsage::new()
-                    .with_copy_dst()
-                    .with_vertex()
-                    .with_storage()
-                    .with_index(),
-                "MeshGeometryPool",
-                Some(BindGroupCreate::MeshGeometryPoolResize),
-            ),
-            (
-                self.visibility_geometry_index_dirty,
-                &mut self.visibility_geometry_index_buffers,
-                &mut self.visibility_geometry_index_gpu_buffer,
-                BufferUsage::new().with_copy_dst().with_index(),
-                "MeshVisibilityIndex",
-                None,
-            ),
-            (
-                self.transparency_geometry_data_dirty,
-                &mut self.transparency_geometry_data_buffers,
-                &mut self.transparency_geometry_data_gpu_buffer,
-                BufferUsage::new()
-                    .with_copy_dst()
-                    .with_vertex()
-                    .with_storage(),
-                "MeshTransparencyGeometryData",
-                None,
-            ),
-        ];
-
-        let any_dirty = to_check_dynamic.iter().any(|(dirty, _, _, _, _, _)| *dirty);
+        let any_dirty = self.mesh_geometry_pool_dirty
+            || self.visibility_geometry_index_dirty
+            || self.transparency_geometry_data_dirty;
 
         if any_dirty {
             let _maybe_span_guard = if logging.render_timings {
@@ -1728,31 +2046,121 @@ impl Meshes {
             } else {
                 None
             };
-            for (dirty, buffer, gpu_buffer, usage, label, bind_group_create) in to_check_dynamic {
-                if dirty {
-                    let mut resized = false;
-                    if let Some(new_size) = buffer.take_gpu_needs_resize() {
-                        *gpu_buffer = gpu.create_buffer(
-                            &BufferDescriptor::new(Some(label), new_size, usage).into(),
-                        )?;
 
-                        if let Some(create) = bind_group_create {
-                            bind_groups.mark_create(create);
-                        }
-                        resized = true;
-                    }
-                    if resized {
-                        buffer.clear_dirty_ranges();
-                        gpu.write_buffer(gpu_buffer, None, buffer.raw_slice(), None, None)?;
-                    } else {
-                        let ranges = buffer.take_dirty_ranges();
-                        write_buffer_with_dirty_ranges(
+            if self.mesh_geometry_pool_dirty {
+                let mut resized = false;
+                if let Some(new_size) = self.mesh_geometry_pool_buffers.take_gpu_needs_resize() {
+                    self.mesh_geometry_pool_gpu_buffer = gpu.create_buffer(
+                        &BufferDescriptor::new(
+                            Some("MeshGeometryPool"),
+                            new_size,
+                            BufferUsage::new()
+                                .with_copy_dst()
+                                .with_vertex()
+                                .with_storage()
+                                .with_index(),
+                        )
+                        .into(),
+                    )?;
+                    bind_groups.mark_create(BindGroupCreate::MeshGeometryPoolResize);
+                    resized = true;
+                }
+                if resized {
+                    self.mesh_geometry_pool_buffers.clear_dirty_ranges();
+                    gpu.write_buffer(
+                        &self.mesh_geometry_pool_gpu_buffer,
+                        None,
+                        self.mesh_geometry_pool_buffers.raw_slice(),
+                        None,
+                        None,
+                    )?;
+                } else {
+                    let ranges = self.mesh_geometry_pool_buffers.take_dirty_ranges();
+                    self.mesh_geometry_pool_uploader.write_dirty_ranges(
+                        gpu,
+                        &self.mesh_geometry_pool_gpu_buffer,
+                        self.mesh_geometry_pool_buffers.raw_slice().len(),
+                        self.mesh_geometry_pool_buffers.raw_slice(),
+                        &ranges,
+                    )?;
+                }
+            }
+
+            if self.visibility_geometry_index_dirty {
+                let mut resized = false;
+                if let Some(new_size) = self
+                    .visibility_geometry_index_buffers
+                    .take_gpu_needs_resize()
+                {
+                    self.visibility_geometry_index_gpu_buffer = gpu.create_buffer(
+                        &BufferDescriptor::new(
+                            Some("MeshVisibilityIndex"),
+                            new_size,
+                            BufferUsage::new().with_copy_dst().with_index(),
+                        )
+                        .into(),
+                    )?;
+                    resized = true;
+                }
+                if resized {
+                    self.visibility_geometry_index_buffers.clear_dirty_ranges();
+                    gpu.write_buffer(
+                        &self.visibility_geometry_index_gpu_buffer,
+                        None,
+                        self.visibility_geometry_index_buffers.raw_slice(),
+                        None,
+                        None,
+                    )?;
+                } else {
+                    let ranges = self.visibility_geometry_index_buffers.take_dirty_ranges();
+                    self.visibility_geometry_index_uploader.write_dirty_ranges(
+                        gpu,
+                        &self.visibility_geometry_index_gpu_buffer,
+                        self.visibility_geometry_index_buffers.raw_slice().len(),
+                        self.visibility_geometry_index_buffers.raw_slice(),
+                        &ranges,
+                    )?;
+                }
+            }
+
+            if self.transparency_geometry_data_dirty {
+                let mut resized = false;
+                if let Some(new_size) = self
+                    .transparency_geometry_data_buffers
+                    .take_gpu_needs_resize()
+                {
+                    self.transparency_geometry_data_gpu_buffer = gpu.create_buffer(
+                        &BufferDescriptor::new(
+                            Some("MeshTransparencyGeometryData"),
+                            new_size,
+                            BufferUsage::new()
+                                .with_copy_dst()
+                                .with_vertex()
+                                .with_storage(),
+                        )
+                        .into(),
+                    )?;
+                    resized = true;
+                }
+                if resized {
+                    self.transparency_geometry_data_buffers.clear_dirty_ranges();
+                    gpu.write_buffer(
+                        &self.transparency_geometry_data_gpu_buffer,
+                        None,
+                        self.transparency_geometry_data_buffers.raw_slice(),
+                        None,
+                        None,
+                    )?;
+                } else {
+                    let ranges = self.transparency_geometry_data_buffers.take_dirty_ranges();
+                    self.transparency_geometry_data_uploader
+                        .write_dirty_ranges(
                             gpu,
-                            gpu_buffer,
-                            buffer.raw_slice(),
-                            ranges,
+                            &self.transparency_geometry_data_gpu_buffer,
+                            self.transparency_geometry_data_buffers.raw_slice().len(),
+                            self.transparency_geometry_data_buffers.raw_slice(),
+                            &ranges,
                         )?;
-                    }
                 }
             }
 

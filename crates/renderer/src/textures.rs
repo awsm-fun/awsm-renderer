@@ -23,7 +23,6 @@ use thiserror::Error;
 use crate::{
     bind_groups::{BindGroupCreate, BindGroups},
     buffer::dynamic_uniform::DynamicUniformBuffer,
-    buffer::helpers::write_buffer_with_dirty_ranges,
     error::AwsmError,
     render_passes::RenderPassInitContext,
     AwsmRenderer, AwsmRendererLogging,
@@ -41,10 +40,21 @@ impl AwsmRenderer {
     // this should ideally only be called after all the textures have been loaded
     /// Uploads texture pool data and refreshes dependent pipelines.
     pub async fn finalize_gpu_textures(&mut self) -> std::result::Result<(), AwsmError> {
-        let was_dirty = self
+        // Take the sampler-pool dirty bit *before* the pool write —
+        // both bits feed the same rebuild gate below. Without this OR,
+        // `ensure_sampler_in_pool` (cache-hit texture bound to a
+        // not-yet-pooled sampler) would land in the set but the
+        // texture-pool bind group + dependent pipeline layouts would
+        // still reflect the old sampler count, so `sampler_index()`
+        // would point past the end of the bound sampler array. The
+        // editor's `MaterialDef` override + the particles_sync path
+        // are the canonical callers.
+        let sampler_pool_dirty = self.textures.take_sampler_pool_dirty();
+        let pool_dirty = self
             .textures
             .write_gpu_texture_pool(&self.logging, &self.gpu)
             .await?;
+        let was_dirty = pool_dirty || sampler_pool_dirty;
 
         if was_dirty {
             // If the pool was changed on the GPU, we need to recreate any render passes
@@ -251,6 +261,16 @@ pub struct Textures {
     texture_transforms_buffer: DynamicUniformBuffer<TextureTransformKey>,
     texture_transforms_gpu_dirty: bool,
     pub(crate) texture_transforms_gpu_buffer: web_sys::GpuBuffer,
+    texture_transforms_uploader: crate::buffer::mapped_uploader::MappedUploader,
+    /// Set when `pool_sampler_set` mutates without an accompanying
+    /// pool-array `gpu_dirty` flip (i.e. `ensure_sampler_in_pool` or
+    /// `add_image` inserting a sampler that wasn't already present).
+    /// `finalize_gpu_textures` ORs this with the pool-write dirty bit
+    /// when deciding whether to rebuild material bind groups /
+    /// pipeline layouts — without it, a new sampler would land in the
+    /// set but `sampler_index()` would point past the end of the
+    /// previously-cached bind group's sampler array.
+    sampler_pool_dirty: bool,
 }
 
 /// Cache key for samplers.
@@ -404,7 +424,18 @@ impl Textures {
             samplers,
             sampler_cache,
             sampler_address_modes,
+            texture_transforms_uploader: crate::buffer::mapped_uploader::MappedUploader::new(
+                "Texture Transforms",
+            ),
+            sampler_pool_dirty: false,
         })
+    }
+
+    /// Mapped-ring upload telemetry for the texture transforms buffer.
+    pub fn texture_transforms_upload_stats(
+        &self,
+    ) -> crate::buffer::mapped_staging_ring::UploadStats {
+        self.texture_transforms_uploader.stats()
     }
 
     /// Adds an image to the texture pool and returns its key.
@@ -422,7 +453,16 @@ impl Textures {
                 .ok_or(AwsmTextureError::TextureNotFound(key))
         })?;
 
-        self.pool_sampler_set.insert(sampler_key);
+        // `add_image` always flips the pool-array `gpu_dirty` bit, so
+        // a *new* sampler insertion here will get picked up by the
+        // standard `finalize_gpu_textures` rebuild path regardless of
+        // `sampler_pool_dirty`. We still flip the flag so the
+        // bookkeeping stays consistent with `ensure_sampler_in_pool`
+        // — and so the rebuild gate is correct even if a future
+        // change to `pool.add_image` ever skips the array dirty flag.
+        if self.pool_sampler_set.insert(sampler_key) {
+            self.sampler_pool_dirty = true;
+        }
 
         Ok(key)
     }
@@ -596,11 +636,12 @@ impl Textures {
                 )?;
             } else {
                 let ranges = self.texture_transforms_buffer.take_dirty_ranges();
-                write_buffer_with_dirty_ranges(
+                self.texture_transforms_uploader.write_dirty_ranges(
                     gpu,
                     &self.texture_transforms_gpu_buffer,
+                    self.texture_transforms_buffer.raw_slice().len(),
                     self.texture_transforms_buffer.raw_slice(),
-                    ranges,
+                    &ranges,
                 )?;
             }
 
@@ -648,6 +689,45 @@ impl Textures {
             &mut self.sampler_cache,
             &mut self.sampler_address_modes,
         )
+    }
+
+    /// Register `sampler_key` in `pool_sampler_set` if it's not already
+    /// there, marking the sampler-pool dirty bit so the next
+    /// `finalize_gpu_textures` call rebuilds the texture-pool bind
+    /// group + dependent pipeline layouts. Returns `true` when the
+    /// insertion was new (and therefore a rebuild is required), `false`
+    /// when the sampler was already in the pool.
+    ///
+    /// `add_image` already inserts the sampler that was passed at upload
+    /// time, but a sampler that's only ever bound to a *cache-hit*
+    /// texture (the editor's MaterialDef override path resolving a
+    /// renderer-gltf-seeded `TextureKey`) wouldn't reach `add_image` —
+    /// it'd silently fail `sampler_index` lookup at draw time and the
+    /// shader would `SkipTexture` (rendering the material's base-color
+    /// factor alone, i.e. pure white for a [1,1,1,1] default).
+    ///
+    /// Call this from any path that binds an existing `TextureKey` to
+    /// a new sampler that wasn't previously in the pool, then ensure
+    /// `AwsmRenderer::finalize_gpu_textures()` runs at the batch end
+    /// — both the editor (`instance_batcher`, `particles_sync`) and
+    /// the glTF populate path already do so unconditionally, which is
+    /// why this returns `bool` rather than triggering a rebuild
+    /// itself: the rebuild is async + expensive and should stay
+    /// batched.
+    pub fn ensure_sampler_in_pool(&mut self, sampler_key: SamplerKey) -> bool {
+        let inserted = self.pool_sampler_set.insert(sampler_key);
+        if inserted {
+            self.sampler_pool_dirty = true;
+        }
+        inserted
+    }
+
+    /// Consume the sampler-pool dirty bit. `finalize_gpu_textures`
+    /// ORs the returned value with the pool-write dirty bit when
+    /// deciding whether to rebuild material bind groups + pipeline
+    /// layouts.
+    pub(crate) fn take_sampler_pool_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.sampler_pool_dirty)
     }
 
     /// Returns a sampler by key.

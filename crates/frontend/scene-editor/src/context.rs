@@ -8,8 +8,11 @@
 use std::sync::{Arc, OnceLock};
 
 use awsm_renderer::{
-    debug::AwsmRendererLogging, features::RendererFeatures, render::RenderHooks, AwsmRenderer,
-    AwsmRendererBuilder,
+    debug::AwsmRendererLogging,
+    features::RendererFeatures,
+    render::RenderHooks,
+    workers::{WorkerPool, WorkerPoolBootstrap},
+    AwsmRenderer, AwsmRendererBuilder,
 };
 use awsm_renderer_core::{
     command::color::Color,
@@ -27,6 +30,11 @@ use awsm_web_shared::util::free_camera::FreeCamera as Camera;
 pub type RendererHandle = Arc<xutex::AsyncMutex<AwsmRenderer>>;
 pub type CameraHandle = Arc<std::sync::Mutex<Camera>>;
 pub type RenderHooksHandle = Arc<std::sync::RwLock<Option<RenderHooks>>>;
+/// Optional Phase-4.3a worker pool used for off-main-thread glTF
+/// parsing when the dev-only `?gltf-worker=on` URL knob is set. The
+/// pool is built once at editor init; `None` keeps the inline
+/// `GltfLoader::load` path (the default).
+pub type WorkerPoolHandle = Arc<Option<WorkerPool>>;
 
 // we expose these public functions, and internally hold static locks
 pub fn with_canvas<T>(f: impl FnOnce(&web_sys::HtmlCanvasElement) -> T) -> T {
@@ -90,6 +98,27 @@ pub fn with_camera_mut<T>(f: impl FnOnce(&mut Camera) -> T) -> T {
     })
 }
 
+/// Fallible variant of [`with_camera_mut`] — returns `None` instead
+/// of panicking when `create_context` hasn't completed yet. Used by
+/// the canvas's event listeners (wheel / pointer), which are wired
+/// up at `render_canvas` mount time *before* the async
+/// `create_context` future resolves. A wheel scroll during that
+/// race window (typically <100ms but not zero on slow boots) would
+/// otherwise panic the wasm.
+///
+/// Event-handler callers should use this; explicit "I am running
+/// after init" code (action handlers, render hooks) keeps using
+/// [`with_camera_mut`] so a genuinely-uninitialized access stays
+/// a panic rather than silently disappearing.
+pub fn try_with_camera_mut<T>(f: impl FnOnce(&mut Camera) -> T) -> Option<T> {
+    APP_CONTEXT.with(|ctx| {
+        ctx.get().map(|ctx| {
+            let mut camera = ctx.camera.lock().unwrap();
+            f(&mut camera)
+        })
+    })
+}
+
 pub fn with_camera<T>(f: impl FnOnce(&Camera) -> T) -> T {
     APP_CONTEXT.with(|ctx| {
         if let Some(ctx) = ctx.get() {
@@ -150,10 +179,63 @@ pub fn set_render_hooks(hooks: RenderHooks) {
     });
 }
 
+/// Read `?gltf-worker=on` from the URL. Dev-only knob; release builds
+/// always return `false` so production never spawns the pool.
+#[cfg(debug_assertions)]
+fn gltf_worker_enabled_from_url() -> bool {
+    web_sys::window()
+        .and_then(|w| {
+            let search = w.location().search().unwrap_or_default();
+            web_sys::UrlSearchParams::new_with_str(&search).ok()
+        })
+        .and_then(|p| p.get("gltf-worker"))
+        .map(|v| v == "on")
+        .unwrap_or(false)
+}
+
+#[cfg(not(debug_assertions))]
+fn gltf_worker_enabled_from_url() -> bool {
+    false
+}
+
+/// Build a `WorkerPool` and register `GltfParseJob`. Returns `None` if
+/// pool spawn fails (we log and degrade to the inline path rather
+/// than refusing to boot the editor).
+async fn maybe_build_worker_pool() -> Option<WorkerPool> {
+    if !gltf_worker_enabled_from_url() {
+        return None;
+    }
+    match WorkerPool::new(WorkerPoolBootstrap::Auto, 2).await {
+        Ok(pool) => {
+            pool.register::<awsm_renderer_gltf::worker_job::GltfParseJob>();
+            tracing::info!(
+                "?gltf-worker=on — WorkerPool built (2 workers); GltfParseJob registered"
+            );
+            Some(pool)
+        }
+        Err(err) => {
+            tracing::warn!(
+                "?gltf-worker=on but WorkerPool construction failed; falling back to inline path: {err}"
+            );
+            None
+        }
+    }
+}
+
+pub fn worker_pool_handle() -> WorkerPoolHandle {
+    APP_CONTEXT.with(|ctx| {
+        ctx.get()
+            .expect("AppContext not initialized")
+            .worker_pool
+            .clone()
+    })
+}
+
 // Called once at init
 pub async fn create_context(canvas: web_sys::HtmlCanvasElement) -> EditorResult<()> {
     let renderer = create_renderer(canvas.clone()).await?;
     let renderer = Arc::new(xutex::AsyncMutex::new(renderer));
+    let worker_pool: WorkerPoolHandle = Arc::new(maybe_build_worker_pool().await);
 
     let camera = {
         let mut cam = Camera::new_default_cube(16.0 / 9.0);
@@ -178,6 +260,7 @@ pub async fn create_context(canvas: web_sys::HtmlCanvasElement) -> EditorResult<
         camera,
         render_hooks,
         resize_observer: Arc::new(resize_observer),
+        worker_pool,
         _drop_tracker: Arc::new(AppContextDropTracker),
     };
 
@@ -207,6 +290,10 @@ struct AppContext {
 
     // we need to hold the RAF closure here to keep it alive
     raf: Arc<std::sync::Mutex<Option<AnimationFrame>>>,
+
+    // Optional Phase-4.3b worker pool — `Some` when `?gltf-worker=on`
+    // is set, otherwise `None` and asset_cache uses the inline path.
+    worker_pool: WorkerPoolHandle,
 
     // just for debugging
     _drop_tracker: Arc<AppContextDropTracker>,

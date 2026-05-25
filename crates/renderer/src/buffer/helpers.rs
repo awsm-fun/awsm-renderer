@@ -145,46 +145,26 @@ fn write_buffer_with_dirty_ranges_config(
     gpu: &AwsmRendererWebGpu,
     gpu_buffer: &web_sys::GpuBuffer,
     raw_data: &[u8],
-    mut ranges: Vec<(usize, usize)>,
+    ranges: Vec<(usize, usize)>,
     full_write_threshold_percent: u64,
     max_ranges: usize,
 ) -> Result<(), AwsmCoreError> {
-    if raw_data.is_empty() || ranges.is_empty() {
+    let prepared = prepare_dirty_ranges_config(
+        &ranges,
+        raw_data.len(),
+        full_write_threshold_percent,
+        max_ranges,
+    );
+    if prepared.is_empty() {
         return Ok(());
     }
 
-    if ranges.len() > max_ranges {
-        gpu.write_buffer(gpu_buffer, None, raw_data, None, None)?;
-        return Ok(());
-    }
-
-    let total_bytes = raw_data.len() as u64;
-    let dirty_bytes = if ranges.len() == 1 {
-        ranges[0].1 as u64
-    } else {
-        ranges.iter().map(|(_, size)| *size as u64).sum()
-    };
-    let use_full_write =
-        dirty_bytes.saturating_mul(100) >= total_bytes.saturating_mul(full_write_threshold_percent);
-
-    if use_full_write {
-        gpu.write_buffer(gpu_buffer, None, raw_data, None, None)?;
-        return Ok(());
-    }
-
-    if ranges.len() > 1 {
-        ranges.sort_unstable_by_key(|(start, _)| *start);
-        ranges = coalesce_ranges(ranges);
-    }
-
-    for (offset, size) in ranges {
+    for (offset, size) in prepared {
         if size == 0 {
             continue;
         }
-
         let end = offset.saturating_add(size);
         debug_assert!(end <= raw_data.len());
-
         if let Some(slice) = raw_data.get(offset..end) {
             if !slice.is_empty() {
                 gpu.write_buffer(gpu_buffer, Some(offset), slice, None, None)?;
@@ -193,6 +173,63 @@ fn write_buffer_with_dirty_ranges_config(
     }
 
     Ok(())
+}
+
+/// Apply the renderer-wide dirty-range upload policy:
+/// 1. **Too many ranges** (> 32 by default): collapse to a single
+///    `(0, total_bytes)` range so the upload is one full write
+///    instead of N tiny ones.
+/// 2. **Density** (dirty bytes ≥ 60% of total by default): same —
+///    collapse to one full write. The per-range overhead exceeds
+///    the savings beyond this point.
+/// 3. **Sort + coalesce** adjacent ranges so consumers always see a
+///    minimal, monotonically-ordered range list.
+///
+/// Used by both the writeBuffer fallback path
+/// (`write_buffer_with_dirty_ranges`) and the mapped-staging-ring
+/// upload path (`MappedUploader::write_dirty_ranges`) so both honour
+/// the same worst-case-bounding policy. Without this on the mapped
+/// path, a frame that dirties many disjoint slots would queue one
+/// `copy_buffer_to_buffer` per slot — the bound matters because
+/// command-record cost is JS-side and dominates at high range count.
+pub fn prepare_dirty_ranges(ranges: &[(usize, usize)], total_bytes: usize) -> Vec<(usize, usize)> {
+    prepare_dirty_ranges_config(
+        ranges,
+        total_bytes,
+        DIRTY_RANGE_FULL_WRITE_THRESHOLD_PERCENT,
+        DIRTY_RANGE_MAX_RANGES,
+    )
+}
+
+fn prepare_dirty_ranges_config(
+    ranges: &[(usize, usize)],
+    total_bytes: usize,
+    full_write_threshold_percent: u64,
+    max_ranges: usize,
+) -> Vec<(usize, usize)> {
+    if total_bytes == 0 || ranges.is_empty() {
+        return Vec::new();
+    }
+
+    // Many ranges → collapse to a single full-buffer range.
+    if ranges.len() > max_ranges {
+        return vec![(0, total_bytes)];
+    }
+
+    // Density check → collapse to a single full-buffer range.
+    let total = total_bytes as u64;
+    let dirty: u64 = ranges.iter().map(|(_, size)| *size as u64).sum();
+    if dirty.saturating_mul(100) >= total.saturating_mul(full_write_threshold_percent) {
+        return vec![(0, total_bytes)];
+    }
+
+    if ranges.len() == 1 {
+        return ranges.to_vec();
+    }
+
+    let mut owned: Vec<(usize, usize)> = ranges.to_vec();
+    owned.sort_unstable_by_key(|(start, _)| *start);
+    coalesce_ranges(owned)
 }
 
 // Coalesces adjacent dirty ranges to minimise `writeBuffer` calls.

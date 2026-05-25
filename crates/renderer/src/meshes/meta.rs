@@ -8,7 +8,6 @@ use awsm_renderer_core::{buffers::BufferDescriptor, renderer::AwsmRendererWebGpu
 use crate::{
     bind_groups::{BindGroupCreate, BindGroups},
     buffer::dynamic_uniform::DynamicUniformBuffer,
-    buffer::helpers::write_buffer_with_dirty_ranges,
     debug::AwsmRendererLogging,
     materials::Materials,
     meshes::{
@@ -49,6 +48,15 @@ pub struct MeshMeta {
     material_buffers: DynamicUniformBuffer<MeshKey>,
     material_gpu_buffer: web_sys::GpuBuffer,
     material_dirty: bool,
+    geometry_uploader: crate::buffer::mapped_uploader::MappedUploader,
+    material_uploader: crate::buffer::mapped_uploader::MappedUploader,
+    /// Last-frame value of the per-mesh shadow-receiver gate. Lets
+    /// `set_shadow_receiver_gate` skip the GPU patch when nothing
+    /// changed — without this, a 10k-mesh stress scene would patch
+    /// every meta slot every frame and the mapped-buffer ring would
+    /// spend an unreasonable chunk of its budget on a u32 that hasn't
+    /// changed since N frames ago.
+    shadow_receiver_gate_cache: slotmap::SecondaryMap<MeshKey, u32>,
 }
 
 impl MeshMeta {
@@ -83,7 +91,24 @@ impl MeshMeta {
                 ),
             ))?,
             material_dirty: true,
+            geometry_uploader: crate::buffer::mapped_uploader::MappedUploader::new(
+                "GeometryMeshMetaData",
+            ),
+            material_uploader: crate::buffer::mapped_uploader::MappedUploader::new(
+                "MaterialMeshMetaData",
+            ),
+            shadow_receiver_gate_cache: slotmap::SecondaryMap::new(),
         })
+    }
+
+    /// Mapped-ring upload telemetry for the geometry-meta buffer.
+    pub fn geometry_upload_stats(&self) -> crate::buffer::mapped_staging_ring::UploadStats {
+        self.geometry_uploader.stats()
+    }
+
+    /// Mapped-ring upload telemetry for the material-meta buffer.
+    pub fn material_upload_stats(&self) -> crate::buffer::mapped_staging_ring::UploadStats {
+        self.material_uploader.stats()
     }
     /// Writes mesh metadata into GPU-bound buffers.
     #[allow(clippy::too_many_arguments)]
@@ -127,6 +152,24 @@ impl MeshMeta {
         .to_bytes()?;
         self.material_buffers.update(mesh_key, &meta_data);
         self.material_dirty = true;
+
+        // Seed the gate cache with the initial packed value
+        // (`MaterialMeshMeta::to_bytes` writes `1u` into the
+        // `shadow_receiver_gate` slot — the conservative
+        // "assume receiver until proven otherwise" default).
+        // Without this seed the very first frame's per-mesh
+        // `set_shadow_receiver_gate(mesh, 1)` from
+        // `LightMeshBuckets::mark_shadow_receivers` would miss the
+        // cache (no entry → `Option::None != Some(1)`) and patch
+        // every mesh's 4-byte gate slot. On the 10k-mesh stress
+        // scene that turned the first frame after a mass-insert
+        // into a 40 KB+ dirty-range upload through the mapped
+        // ring — pure waste, since the GPU buffer already
+        // contained `1` for every entry. Seeding here drops that
+        // back to "patch only the meshes whose gate actually
+        // flipped to 0 this frame", which on a typical scene is a
+        // tiny fraction.
+        self.shadow_receiver_gate_cache.insert(mesh_key, 1);
 
         let meta_data = GeometryMeshMeta {
             mesh_key,
@@ -216,6 +259,57 @@ impl MeshMeta {
         true
     }
 
+    /// Patches the `material_offset` u32 (offset
+    /// `MATERIAL_MESH_META_MATERIAL_OFFSET_OFFSET`) inside an
+    /// already-registered mesh's material metadata. Used by the
+    /// cheap-material LOD routing in `Meshes::refresh_cheap_material_routing`
+    /// to point the GPU at either the authored material or the cheap
+    /// variant based on last-frame coverage — same shader_id + same
+    /// transparency classification on both sides means swapping the
+    /// offset is enough; no pass-routing or pipeline-key changes.
+    pub fn set_material_offset(&mut self, mesh_key: MeshKey, offset: u32) -> bool {
+        if !self.material_buffers.contains_key(mesh_key) {
+            return false;
+        }
+        self.material_buffers.update_offset(
+            mesh_key,
+            material_meta::MATERIAL_MESH_META_MATERIAL_OFFSET_OFFSET,
+            &offset.to_le_bytes(),
+        );
+        self.material_dirty = true;
+        true
+    }
+
+    /// Patches the per-frame `shadow_receiver_gate` u32 (offset
+    /// `MATERIAL_MESH_META_SHADOW_RECEIVER_GATE_OFFSET`) for an
+    /// already-registered mesh. Returns whether the patch actually
+    /// happened — `false` when the cached last-frame value matched the
+    /// new gate, so the caller (per-frame walk) doesn't double-count
+    /// "transitions" in any future telemetry.
+    ///
+    /// The cache is critical for steady-state perf: on a 10k-mesh stress
+    /// scene most meshes' gate values don't change frame-to-frame
+    /// (lights stay in the same buckets), so skipping the
+    /// `update_offset` write keeps the material-meta dirty-range set
+    /// sparse — the mapped-buffer ring then uploads only the actual
+    /// transitions instead of the entire 2.56 MB buffer.
+    pub fn set_shadow_receiver_gate(&mut self, mesh_key: MeshKey, gate: u32) -> bool {
+        if !self.material_buffers.contains_key(mesh_key) {
+            return false;
+        }
+        if self.shadow_receiver_gate_cache.get(mesh_key).copied() == Some(gate) {
+            return false;
+        }
+        self.shadow_receiver_gate_cache.insert(mesh_key, gate);
+        self.material_buffers.update_offset(
+            mesh_key,
+            material_meta::MATERIAL_MESH_META_SHADOW_RECEIVER_GATE_OFFSET,
+            &gate.to_le_bytes(),
+        );
+        self.material_dirty = true;
+        true
+    }
+
     /// Zeros the per-mesh light-slice fields (`light_slice_offset` +
     /// `light_slice_count`) for every mesh that has a meta slot.
     /// Called at the top of each frame's light-slice rebuild so meshes
@@ -248,6 +342,9 @@ impl MeshMeta {
         if self.material_buffers.remove(mesh_key) {
             self.material_dirty = true;
         }
+        // Drop the cached shadow-gate value so a recycled MeshKey
+        // doesn't inherit a stale "no change since last frame" hit.
+        self.shadow_receiver_gate_cache.remove(mesh_key);
     }
 
     /// Writes dirty metadata buffers to the GPU.
@@ -283,11 +380,12 @@ impl MeshMeta {
                 )?;
             } else {
                 let ranges = self.geometry_buffers.take_dirty_ranges();
-                write_buffer_with_dirty_ranges(
+                self.geometry_uploader.write_dirty_ranges(
                     gpu,
                     &self.geometry_gpu_buffer,
+                    self.geometry_buffers.raw_slice().len(),
                     self.geometry_buffers.raw_slice(),
-                    ranges,
+                    &ranges,
                 )?;
             }
 
@@ -320,11 +418,12 @@ impl MeshMeta {
                 )?;
             } else {
                 let ranges = self.material_buffers.take_dirty_ranges();
-                write_buffer_with_dirty_ranges(
+                self.material_uploader.write_dirty_ranges(
                     gpu,
                     &self.material_gpu_buffer,
+                    self.material_buffers.raw_slice().len(),
                     self.material_buffers.raw_slice(),
-                    ranges,
+                    &ranges,
                 )?;
             }
 

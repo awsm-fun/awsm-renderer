@@ -69,6 +69,14 @@ pub struct OcclusionBuffers {
     /// to `capacity * stride` and rewritten each frame before upload.
     /// Resized in lockstep with `capacity`.
     pub staging: Vec<u8>,
+    /// Mapped-staging-ring uploaders (Phase 2.1). Interior-mutable so
+    /// `write_*` keeps its `&self` signature against `render.rs`'s
+    /// existing borrow shape. `Mutex` (not `RefCell`) for renderer-wide
+    /// consistency — `MappedUploader` transitively owns
+    /// `web_sys::GpuBuffer`, which is `!Send`, so the `Mutex` doesn't
+    /// *grant* `Sync` to `OcclusionBuffers` today.
+    pub(crate) instances_uploader: std::sync::Mutex<crate::buffer::mapped_uploader::MappedUploader>,
+    pub(crate) params_uploader: std::sync::Mutex<crate::buffer::mapped_uploader::MappedUploader>,
 }
 
 impl OcclusionBuffers {
@@ -115,7 +123,27 @@ impl OcclusionBuffers {
             params_buffer,
             capacity,
             staging: vec![0u8; instances_bytes],
+            instances_uploader: std::sync::Mutex::new(
+                crate::buffer::mapped_uploader::MappedUploader::new("OcclusionInstances"),
+            ),
+            params_uploader: std::sync::Mutex::new(
+                crate::buffer::mapped_uploader::MappedUploader::new("OcclusionParams"),
+            ),
         })
+    }
+
+    /// Mapped-ring upload telemetry (instances + params aggregated).
+    pub fn upload_stats(&self) -> crate::buffer::mapped_staging_ring::UploadStats {
+        let mut s = self.instances_uploader.lock().unwrap().stats();
+        let b = self.params_uploader.lock().unwrap().stats();
+        s.peak_ring_depth_used = s.peak_ring_depth_used.max(b.peak_ring_depth_used);
+        s.fallback_count += b.fallback_count;
+        s.map_async_wait_ms += b.map_async_wait_ms;
+        s.bytes_uploaded_via_ring += b.bytes_uploaded_via_ring;
+        s.bytes_uploaded_via_fallback += b.bytes_uploaded_via_fallback;
+        s.bytes_uploaded_via_writebuffer += b.bytes_uploaded_via_writebuffer;
+        s.resize_count += b.resize_count;
+        s
     }
 
     /// If `needed > capacity`, reallocates both buffers (and resets
@@ -143,8 +171,39 @@ impl OcclusionBuffers {
         gpu: &AwsmRendererWebGpu,
         active_count: u32,
     ) -> Result<(), AwsmCoreError> {
-        let mut bytes = vec![0u8; 16];
+        // Stack-allocated — this is a per-frame hot path, so the heap
+        // `vec![0u8; 16]` it used to do was pure churn for a
+        // fixed-size 16-byte uniform (4-byte count + 12-byte pad).
+        let mut bytes = [0u8; 16];
         bytes[0..4].copy_from_slice(&active_count.to_le_bytes());
-        gpu.write_buffer(&self.params_buffer, None, bytes.as_slice(), None, None)
+        self.params_uploader.lock().unwrap().write_dirty_ranges(
+            gpu,
+            &self.params_buffer,
+            16,
+            &bytes,
+            &[(0, 16)],
+        )
+    }
+
+    /// Upload the per-frame instances payload via the mapped ring.
+    /// `bytes` is the active prefix (`count * stride`); the dest
+    /// buffer is sized to the full capacity.
+    pub fn write_instances(
+        &self,
+        gpu: &AwsmRendererWebGpu,
+        bytes: &[u8],
+    ) -> Result<(), AwsmCoreError> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let dest_size = self.capacity as usize * OCCLUSION_INSTANCE_STRIDE;
+        let n = bytes.len();
+        self.instances_uploader.lock().unwrap().write_dirty_ranges(
+            gpu,
+            &self.instances_buffer,
+            dest_size,
+            bytes,
+            &[(0, n)],
+        )
     }
 }

@@ -67,7 +67,16 @@ impl AwsmRenderer {
         let segment_bytes = segments_byte_size(segment_count);
 
         let segment_buffer = create_segment_buffer(&self.gpu, segment_bytes)?;
-        write_segments(&self.gpu, &segment_buffer, segments)?;
+        let segments_uploader = std::sync::Mutex::new(
+            crate::buffer::mapped_uploader::MappedUploader::new("Line Segments"),
+        );
+        write_segments(
+            &self.gpu,
+            &mut segments_uploader.lock().unwrap(),
+            &segment_buffer,
+            segment_bytes,
+            segments,
+        )?;
 
         let uniform_buffer = create_uniform_buffer(&self.gpu)?;
 
@@ -89,6 +98,10 @@ impl AwsmRenderer {
             segment_capacity_bytes: segment_bytes,
             uniform_buffer,
             bind_group,
+            segments_uploader,
+            uniform_uploader: std::sync::Mutex::new(
+                crate::buffer::mapped_uploader::MappedUploader::new("Line Uniform"),
+            ),
         });
         Ok(Some(key))
     }
@@ -146,7 +159,13 @@ impl AwsmRenderer {
                 &entry.uniform_buffer,
             )?;
         }
-        write_segments(&self.gpu, &entry.segment_buffer, &self.lines.pack_buf)?;
+        write_segments(
+            &self.gpu,
+            &mut entry.segments_uploader.lock().unwrap(),
+            &entry.segment_buffer,
+            entry.segment_capacity_bytes,
+            &self.lines.pack_buf,
+        )?;
         entry.segment_count = segment_count as u32;
         Ok(())
     }

@@ -14,7 +14,6 @@ use thiserror::Error;
 use crate::{
     bind_groups::{AwsmBindGroupError, BindGroupCreate, BindGroups},
     buffer::dynamic_storage::DynamicStorageBuffer,
-    buffer::helpers::write_buffer_with_dirty_ranges,
     transforms::TransformKey,
     AwsmRendererLogging,
 };
@@ -31,6 +30,8 @@ pub struct Skins {
     joint_index_weights_gpu_dirty: bool,
     pub(crate) matrices_gpu_buffer: web_sys::GpuBuffer,
     pub(crate) joint_index_weights_gpu_buffer: web_sys::GpuBuffer,
+    matrices_uploader: crate::buffer::mapped_uploader::MappedUploader,
+    joint_index_weights_uploader: crate::buffer::mapped_uploader::MappedUploader,
 }
 
 static BUFFER_USAGE: LazyLock<BufferUsage> =
@@ -77,7 +78,23 @@ impl Skins {
             joint_index_weights_gpu_dirty: true,
             matrices_gpu_buffer,
             joint_index_weights_gpu_buffer,
+            matrices_uploader: crate::buffer::mapped_uploader::MappedUploader::new("Skin Matrices"),
+            joint_index_weights_uploader: crate::buffer::mapped_uploader::MappedUploader::new(
+                "Skin Joint Index Weights",
+            ),
         })
+    }
+
+    /// Mapped-ring upload telemetry for the skin matrices buffer.
+    pub fn matrices_upload_stats(&self) -> crate::buffer::mapped_staging_ring::UploadStats {
+        self.matrices_uploader.stats()
+    }
+
+    /// Mapped-ring upload telemetry for the joint index/weights buffer.
+    pub fn joint_index_weights_upload_stats(
+        &self,
+    ) -> crate::buffer::mapped_staging_ring::UploadStats {
+        self.joint_index_weights_uploader.stats()
     }
 
     /// Inserts a skin and returns its key.
@@ -261,11 +278,12 @@ impl Skins {
                 )?;
             } else {
                 let ranges = self.skin_matrices.take_dirty_ranges();
-                write_buffer_with_dirty_ranges(
+                self.matrices_uploader.write_dirty_ranges(
                     gpu,
                     &self.matrices_gpu_buffer,
+                    self.skin_matrices.raw_slice().len(),
                     self.skin_matrices.raw_slice(),
-                    ranges,
+                    &ranges,
                 )?;
             }
 
@@ -308,11 +326,12 @@ impl Skins {
                 )?;
             } else {
                 let ranges = self.joint_index_weights.take_dirty_ranges();
-                write_buffer_with_dirty_ranges(
+                self.joint_index_weights_uploader.write_dirty_ranges(
                     gpu,
                     &self.joint_index_weights_gpu_buffer,
+                    self.joint_index_weights.raw_slice().len(),
                     self.joint_index_weights.raw_slice(),
-                    ranges,
+                    &ranges,
                 )?;
             }
 

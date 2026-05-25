@@ -79,9 +79,13 @@ pub struct Mesh {
     /// metres — the visual difference at that distance is below the per-
     /// pixel threshold and the GPU animation budget drops linearly.
     ///
-    /// Pairs with the coverage-driven skinning skip — coverage
-    /// answers "skip this frame entirely?", `skin_update_period`
-    /// answers "what's the background cadence when not skipped?".
+    /// Pairs with the coverage-driven skinning skip (live in
+    /// `Meshes::update_world` since the grace-period + BVH-visible
+    /// override landed) — coverage answers "skip this frame
+    /// entirely?", `skin_update_period` answers "what's the
+    /// background cadence when not skipped?". The two stack: a
+    /// `period = 4` skin that's also out-of-frustum runs *never*
+    /// until either gate flips.
     pub skin_update_period: u8,
     /// Cheap material variant for low-coverage shading.
     /// When set, the renderer swaps `material_key` → this key for any
@@ -140,14 +144,16 @@ impl Mesh {
     /// `default_threshold` when `None`); otherwise the authored
     /// `material_key`.
     ///
-    /// **Currently unused at the routing site.** `MaterialMeshMeta`
-    /// still packs the authored `material_key`, so feeding the cheap
-    /// key into pass-routing / pipeline selection mismatched what the
-    /// compute shader actually read. `collect_renderables` is back on
-    /// `material_key`; this function stays available for the eventual
-    /// follow-up that also re-packs meta when coverage crosses
-    /// threshold (so the shader's `material_offset` matches the
-    /// routed pipeline).
+    /// Called once per frame per mesh by
+    /// `Meshes::refresh_cheap_material_routing`, which patches the
+    /// resolved key's GPU offset into
+    /// `MaterialMeshMeta.material_offset` so the shader sees the same
+    /// material the renderable pool routed the mesh through. Safety
+    /// constraint (validated by `AwsmRenderer::set_mesh_cheap_material`):
+    /// the cheap variant must share the authored material's shader_id
+    /// AND transparency-pass classification, so the per-frame swap
+    /// is a single 4-byte patch instead of a full pass-pool / pipeline
+    /// migration.
     pub fn effective_material_key(
         &self,
         mesh_key: MeshKey,
@@ -275,7 +281,26 @@ impl Mesh {
                 .transform_instance_count(self.transform_key)
                 .ok_or(AwsmMeshError::InstancingMissingTransforms(mesh_key))?;
             render_pass.draw_indexed_with_instance_count(index_count, instance_count as u32);
-        } else if ctx.frame_optimizations.get().indirect_geometry && self.world_aabb.is_some() {
+        } else if ctx.frame_optimizations.get().indirect_geometry
+            && self.world_aabb.is_some()
+            && !self.hud
+        {
+            // HUD meshes (gizmo, point handles, overlay primitives)
+            // ALWAYS take the CPU-recorded path. The compaction shader
+            // that populates `IndirectDrawArgs[mesh_meta_idx]` only sees
+            // `renderables.opaque` in `render.rs::opaque_snapshots` —
+            // HUD meshes are deliberately excluded so they don't
+            // participate in BVH-driven occlusion culling. That
+            // exclusion is correct for occlusion (HUD is always shown)
+            // but means the HUD slot in `args_buffer` stays zero, so
+            // the indirect draw below would dispatch `instance_count = 0`
+            // and write nothing to `visibility_data` — breaking GPU
+            // picking on HUD geometry (the gizmo handles couldn't be
+            // grabbed). Forcing HUD through the portable
+            // `set_first_instance` / dynamic-offset path bypasses the
+            // empty args slot and keeps the per-HUD-mesh
+            // `material_mesh_meta_offset` in visibility_data so the
+            // picker compute can resolve the right mesh key.
             // drawIndirect path. The compaction shader
             // populated `IndirectDrawArgs[mesh_meta_idx]` *last frame*
             // — static fields (`index_count`, `first_instance`) and

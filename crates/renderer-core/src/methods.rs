@@ -17,8 +17,22 @@ use crate::{
 
 impl AwsmRendererWebGpu {
     /// Returns the underlying canvas element.
+    ///
+    /// **Main-thread only.** Panics with a clear message when called
+    /// on a renderer built via [`crate::renderer::AwsmRendererWebGpuBuilder::new_with_offscreen_canvas`]
+    /// — `OffscreenCanvas` is not an `HtmlCanvasElement` and most
+    /// of this type's downstream accessors (`get_bounding_client_rect`,
+    /// pointer-event coord conversion, CSS sync) reach for DOM APIs
+    /// that don't exist on `OffscreenCanvas`. Use
+    /// [`AwsmRendererWebGpu::canvas_kind`] to branch safely.
     pub fn canvas(&self) -> web_sys::HtmlCanvasElement {
-        self.context.canvas().unchecked_into()
+        match self.canvas_kind() {
+            crate::renderer::CanvasKind::Html(c) => c.clone(),
+            crate::renderer::CanvasKind::Offscreen(_) => panic!(
+                "AwsmRendererWebGpu::canvas() called in worker (OffscreenCanvas) mode — \
+                 this method is HtmlCanvasElement-only. Use canvas_kind() to branch."
+            ),
+        }
     }
 
     /// Returns the canvas size.
@@ -33,34 +47,48 @@ impl AwsmRendererWebGpu {
     /// - Use `canvas_size(false)` (default) for rendering, transforms, and coordinate conversions
     ///   where you need the actual buffer dimensions
     ///
+    /// # Worker-mode caveat
+    /// `css_pixels = true` is main-thread-only (CSS pixels are a DOM
+    /// concept) and will panic in worker (`OffscreenCanvas`) mode.
+    /// `css_pixels = false` works in both modes — backing-buffer
+    /// `width()` / `height()` exist on both canvas kinds.
+    ///
     /// # Examples
     /// ```ignore
     /// // Get backing buffer size for rendering
     /// let (width, height) = renderer.canvas_size(false);
     ///
-    /// // Get CSS display size for layout
+    /// // Get CSS display size for layout (main-thread only)
     /// let (css_width, css_height) = renderer.canvas_size(true);
     /// ```
     pub fn canvas_size(&self, css_pixels: bool) -> (f64, f64) {
-        let canvas = self.canvas();
-
         if css_pixels {
-            // Return CSS display size
+            // CSS pixels — DOM only.
+            let canvas = self.canvas();
             let rect = canvas.get_bounding_client_rect();
             (rect.width(), rect.height())
         } else {
-            // Return backing buffer size (default behavior)
-            (canvas.width() as f64, canvas.height() as f64)
+            // Backing buffer — works on both HtmlCanvasElement + OffscreenCanvas.
+            match self.canvas_kind() {
+                crate::renderer::CanvasKind::Html(c) => (c.width() as f64, c.height() as f64),
+                crate::renderer::CanvasKind::Offscreen(c) => (c.width() as f64, c.height() as f64),
+            }
         }
     }
 
     /// Syncs the canvas backing buffer size with the CSS display size.
     ///
-    /// This ensures the canvas buffer dimensions match what's displayed,
-    /// preventing rendering artifacts from mismatched sizes.
+    /// **Main-thread only.** Reaches for `get_bounding_client_rect`
+    /// which doesn't exist on `OffscreenCanvas`; panics in worker mode
+    /// (`canvas()` does the panic). In worker mode the host shim is
+    /// responsible for the equivalent — see the
+    /// [`WorkerInputEvent::Resize`][rwe] convention in the
+    /// `render-worker` example.
     ///
     /// Returns true if the size was updated, false if it was already in sync
     /// or the CSS size is invalid (zero or negative).
+    ///
+    /// [rwe]: ../../../examples/render-worker/src/lib.rs
     pub fn sync_canvas_buffer_with_css(&self) -> bool {
         let canvas = self.canvas();
         let rect = canvas.get_bounding_client_rect();
@@ -511,6 +539,12 @@ impl AwsmRendererWebGpu {
     /// This method takes pointer event coordinates (which are in CSS pixels relative to the viewport)
     /// and converts them to backing buffer pixel coordinates, accounting for the canvas's position
     /// and the scaling between CSS pixels and backing buffer pixels.
+    ///
+    /// **Main-thread only** — `PointerEvent` is a DOM type and the
+    /// CSS-to-buffer math uses `get_bounding_client_rect`. Worker-mode
+    /// consumers should forward pre-converted backing-buffer coords
+    /// from the main-thread shim (see `WorkerInputEvent::PointerMove`
+    /// in the `render-worker` example).
     pub fn pointer_event_to_canvas_coords_f64(&self, evt: &web_sys::PointerEvent) -> (f64, f64) {
         let canvas = self.canvas();
         let rect = canvas.get_bounding_client_rect();

@@ -915,6 +915,25 @@ Expected outcome: `DynamicMaterial` instances can be constructed and `write_unif
 
 Expected outcome: registering and unregistering a dynamic material changes `dispatch_hash`; the cache invalidates; recompile fires on next render (but produces the same WGSL since the substitution hasn't been wired yet). Commit.
 
+#### Phase 3 cross-link: shader-cache warmup API
+
+The dispatch-hash machinery this phase lands is also what
+[`PERFORMANCE.md §5g`](../PERFORMANCE.md) needs to attach
+its `AwsmRenderer::prewarm_pipelines()` API to. The warmup API
+is *not* a Phase 3 deliverable — but it's the natural consumer
+of the registry, and shipping it alongside Phase 4 (when the
+first dynamic material actually compiles) avoids surfacing a
+per-frame "registered a material → recompile stutter mid-game"
+hazard to player-shipped consumers.
+
+Shape: walks every active `(shader_id × variant)` known to the
+registry, fakes a one-pixel draw to compile each, drops the
+fakes. Idempotent and cheap when the GPU disk cache is warm
+(<5 ms on Chrome); ~50–500 ms on a cold cache. Game-init code
+calls it after the burst of `register_material` calls
+finishes; mid-gameplay code calls it after each new burst of
+runtime registrations (e.g. streamed-in level packs).
+
 ### Phase 4 — Opaque template substitution + first dynamic render
 
 1. **Generate WGSL for dynamic entries.** In whatever module currently produces `materials_wgsl` and `shader_id_dispatch` for the opaque kernel template, extend the producer to iterate dynamic entries after static ones. Per dynamic entry, emit:

@@ -81,12 +81,28 @@ impl AwsmRenderer {
         // since no producer was scheduled.
         let pending_snapshot = self
             .coverage_readback_state
-            .borrow_mut()
+            .lock()
+            .unwrap()
             .pending_snapshot
             .take();
         if let Some(snapshot) = pending_snapshot {
             self.coverage.ingest(snapshot, self.frame_index);
         }
+
+        // Cheap-material LOD: re-route every mesh-with-a-cheap-variant
+        // to the effective material's GPU offset based on the
+        // just-ingested coverage. Idempotent — the
+        // `last_effective_material` sidecar inside `Meshes` short-
+        // circuits unchanged meshes, so steady-state writes are O(0)
+        // even when every mesh has a cheap variant authored. Must
+        // run BEFORE `meshes.meta.write_gpu` below so the patched
+        // offsets land in the same upload as other per-frame meta
+        // edits (light slice / shadow gate).
+        self.meshes.refresh_cheap_material_routing(
+            &self.materials,
+            &self.coverage,
+            self.default_cheap_material_pixel_threshold,
+        )?;
 
         self.transforms
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
@@ -478,7 +494,7 @@ impl AwsmRenderer {
                 None
             };
             coverage_pass.render(&ctx)?;
-            let prior_inflight = self.coverage_readback_state.borrow().inflight;
+            let prior_inflight = self.coverage_readback_state.lock().unwrap().inflight;
             if !prior_inflight {
                 let bytes_to_copy = coverage_buffers.capacity.saturating_mul(4);
                 ctx.command_encoder.copy_buffer_to_buffer(
@@ -748,13 +764,7 @@ impl AwsmRenderer {
                     }
                     let count = (bytes.len() / stride) as u32;
                     if count > 0 {
-                        self.gpu.write_buffer(
-                            &occlusion_buffers.instances_buffer,
-                            None,
-                            bytes.as_slice(),
-                            None,
-                            None,
-                        )?;
+                        occlusion_buffers.write_instances(&self.gpu, bytes.as_slice())?;
                     }
                     count
                 };
@@ -1021,8 +1031,8 @@ impl AwsmRenderer {
         {
             let readback_buffer = coverage_buffers.readback_buffer.clone();
             let readback_size_bytes = coverage_buffers.capacity.saturating_mul(4);
-            let state = self.coverage_readback_state.clone();
-            state.borrow_mut().inflight = true;
+            let state = std::sync::Arc::clone(&self.coverage_readback_state);
+            state.lock().unwrap().inflight = true;
             wasm_bindgen_futures::spawn_local(async move {
                 let result = crate::core::buffers::extract_buffer_vec(
                     &readback_buffer,
@@ -1046,7 +1056,7 @@ impl AwsmRenderer {
                         Vec::new()
                     }
                 };
-                let mut state = state.borrow_mut();
+                let mut state = state.lock().unwrap();
                 state.pending_snapshot = Some(snapshot);
                 state.inflight = false;
             });

@@ -5,7 +5,7 @@
 //! the right mip level, instead of running a multi-tap Gaussian blur per
 //! fragment.
 
-use std::{borrow::Cow, cell::RefCell};
+use std::{borrow::Cow, sync::Mutex};
 
 use awsm_renderer_core::{
     bind_groups::{
@@ -63,7 +63,16 @@ pub struct OpaqueMipgen {
     // so the mipgen is called while parts of `self` are already borrowed
     // — a `&mut self` here would force a lot of unrelated restructuring
     // for what is effectively a private cache.
-    cache: RefCell<Option<MipgenCache>>,
+    //
+    // `Mutex` (not `RefCell`) for renderer-wide consistency — every
+    // owned interior-mutability slot in the renderer uses `Mutex`/
+    // atomics so the convention stays uniform regardless of whether
+    // a given container actually gets `Sync`. (`MipgenCache` holds
+    // `web_sys::GpuBindGroup`, which is `!Send`, so the `Mutex` here
+    // doesn't *grant* `Sync` to `OpaqueMipgen`; the inner types
+    // would have to become Send first.) The lock is one atomic CAS
+    // and is uncontested.
+    cache: Mutex<Option<MipgenCache>>,
 }
 
 /// Cached per-(width, height, mip_count) work for the mipgen pass. The
@@ -139,7 +148,7 @@ impl OpaqueMipgen {
         Ok(Self {
             pipeline,
             bind_group_layout,
-            cache: RefCell::new(None),
+            cache: Mutex::new(None),
         })
     }
 
@@ -147,7 +156,7 @@ impl OpaqueMipgen {
     /// texture is recreated (viewport resize, AA change) — the next
     /// `record` will rebuild against the new texture.
     pub fn invalidate(&self) {
-        *self.cache.borrow_mut() = None;
+        *self.cache.lock().unwrap() = None;
     }
 
     /// Records compute passes that fill mips `1..mip_count` from mip 0 of
@@ -171,7 +180,7 @@ impl OpaqueMipgen {
         let width = opaque_texture.width();
         let height = opaque_texture.height();
 
-        let needs_rebuild = match self.cache.borrow().as_ref() {
+        let needs_rebuild = match self.cache.lock().unwrap().as_ref() {
             Some(cache) => {
                 cache.width != width || cache.height != height || cache.mip_count != mip_count
             }
@@ -179,10 +188,10 @@ impl OpaqueMipgen {
         };
         if needs_rebuild {
             let built = self.build_cache(gpu, opaque_texture, mip_count)?;
-            *self.cache.borrow_mut() = Some(built);
+            *self.cache.lock().unwrap() = Some(built);
         }
 
-        let cache_ref = self.cache.borrow();
+        let cache_ref = self.cache.lock().unwrap();
         let cache = cache_ref.as_ref().expect("mipgen cache");
 
         for entry in &cache.entries {

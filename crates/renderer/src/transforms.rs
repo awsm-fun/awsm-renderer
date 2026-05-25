@@ -19,7 +19,7 @@ use slotmap::{new_key_type, SecondaryMap, SlotMap};
 use crate::{
     bind_groups::{BindGroupCreate, BindGroups},
     buffer::dynamic_uniform::DynamicUniformBuffer,
-    buffer::helpers::write_buffer_with_dirty_ranges,
+    buffer::mapped_uploader::MappedUploader,
     meshes::skins::AwsmSkinError,
     AwsmRenderer, AwsmRendererLogging,
 };
@@ -42,6 +42,17 @@ impl AwsmRenderer {
         self.transforms.update_world();
         let dirty_transforms = self.transforms.take_dirty_meshes();
         let dirty_instances = self.instances.take_dirty_transforms();
+        // Build a frustum from the last-known camera matrices so
+        // `Meshes::update_world` can run the coverage-driven
+        // skin-skip's BVH-visible override. `None` on the very
+        // first frame before `update_camera` has run; the skin-skip
+        // logic treats `None` conservatively (assume every consumer
+        // is in-frustum, so never skip via coverage).
+        let frustum = self
+            .camera
+            .last_matrices
+            .as_ref()
+            .map(|m| crate::frustum::Frustum::from_view_projection(m.view_projection()));
         let touched = self.meshes.update_world(
             dirty_transforms,
             &dirty_instances,
@@ -49,6 +60,7 @@ impl AwsmRenderer {
             &self.instances,
             self.frame_index,
             &self.coverage,
+            frustum.as_ref(),
         );
         for mesh_key in touched {
             self.sync_spatial_for_mesh(mesh_key);
@@ -81,6 +93,33 @@ impl AwsmRenderer {
                     .map(|p| p.cast)
                     .unwrap_or(false)
             });
+
+        // Project the bucket result onto each mesh's `shadow_receiver_gate`
+        // u32 inside `MaterialMeshMeta` so `apply_lighting*` in
+        // `lights.wgsl` can skip shadow sampling for meshes no caster
+        // reaches this frame. The patch path inside
+        // `MeshMeta::set_shadow_receiver_gate` caches the last-frame
+        // value and short-circuits unchanged writes, so the dirty-range
+        // set stays sparse on a steady-state stress scene.
+        {
+            let _maybe_span_guard = if self.logging.render_timings {
+                Some(tracing::span!(tracing::Level::INFO, "Shadow Receiver Gate").entered())
+            } else {
+                None
+            };
+            // `Meshes::update_shadow_receiver_gates` walks the mesh
+            // key set in-place — no per-frame `Vec<MeshKey>` alloc.
+            // The split borrow (immutable `light_buckets` + mutable
+            // `meshes`) holds because both are disjoint fields on `self`.
+            let light_buckets = &self.light_buckets;
+            self.meshes.update_shadow_receiver_gates(|mesh_key| {
+                if light_buckets.is_shadow_receiver(mesh_key) {
+                    1
+                } else {
+                    0
+                }
+            });
+        }
 
         #[cfg(debug_assertions)]
         {
@@ -115,6 +154,9 @@ pub struct Transforms {
     pub root_node: TransformKey,
     buffer: DynamicUniformBuffer<TransformKey>,
     pub(crate) gpu_buffer: web_sys::GpuBuffer,
+    /// Mapped-ring upload companion (Phase 2.1). Lazy-initialised on
+    /// first write_gpu call; sized to mirror `gpu_buffer`.
+    uploader: MappedUploader,
 }
 
 static BUFFER_USAGE: LazyLock<BufferUsage> =
@@ -180,7 +222,13 @@ impl Transforms {
             root_node,
             buffer,
             gpu_buffer,
+            uploader: MappedUploader::new("Transforms"),
         })
+    }
+
+    /// Mapped-ring upload telemetry for this subsystem.
+    pub fn upload_stats(&self) -> crate::buffer::mapped_staging_ring::UploadStats {
+        self.uploader.stats()
     }
 
     /// Inserts a transform and returns its key.
@@ -333,15 +381,19 @@ impl Transforms {
             }
 
             if transform_resized {
+                // Post-resize: dest buffer is uninitialised; do a full
+                // overwrite via writeBuffer (the bind-group rebuild
+                // makes upload latency irrelevant here).
                 self.buffer.clear_dirty_ranges();
                 gpu.write_buffer(&self.gpu_buffer, None, self.buffer.raw_slice(), None, None)?;
             } else {
                 let transform_ranges = self.buffer.take_dirty_ranges();
-                write_buffer_with_dirty_ranges(
+                self.uploader.write_dirty_ranges(
                     gpu,
                     &self.gpu_buffer,
+                    self.buffer.raw_slice().len(),
                     self.buffer.raw_slice(),
-                    transform_ranges,
+                    &transform_ranges,
                 )?;
             }
 

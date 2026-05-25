@@ -35,6 +35,7 @@ pub struct CameraBuffer {
     pub last_matrices: Option<CameraMatrices>,
     camera_moved: bool,
     gpu_dirty: bool,
+    uploader: crate::buffer::mapped_uploader::MappedUploader,
 }
 
 /// Camera matrices and parameters.
@@ -103,7 +104,13 @@ impl CameraBuffer {
             last_matrices: None,
             camera_moved: false,
             gpu_buffer,
+            uploader: crate::buffer::mapped_uploader::MappedUploader::new("Camera"),
         })
+    }
+
+    /// Mapped-ring upload telemetry for the camera buffer.
+    pub fn upload_stats(&self) -> crate::buffer::mapped_staging_ring::UploadStats {
+        self.uploader.stats()
     }
 
     // this is fast/cheap to call, so we can call it multiple times a frame
@@ -246,7 +253,13 @@ impl CameraBuffer {
                 None
             };
 
-            gpu.write_buffer(&self.gpu_buffer, None, self.raw_data.as_slice(), None, None)?;
+            self.uploader.write_dirty_ranges(
+                gpu,
+                &self.gpu_buffer,
+                Self::BYTE_SIZE,
+                self.raw_data.as_slice(),
+                &[(0, Self::BYTE_SIZE)],
+            )?;
 
             self.gpu_dirty = false;
         }

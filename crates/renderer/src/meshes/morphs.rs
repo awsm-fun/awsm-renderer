@@ -10,7 +10,6 @@ use super::error::{AwsmMeshError, Result};
 use crate::bind_groups::BindGroupCreate;
 use crate::bind_groups::BindGroups;
 use crate::buffer::dynamic_storage::DynamicStorageBuffer;
-use crate::buffer::helpers::write_buffer_with_dirty_ranges;
 use crate::meshes::buffer_info::{MeshBufferGeometryMorphInfo, MeshBufferMaterialMorphInfo};
 use crate::AwsmRendererLogging;
 
@@ -119,7 +118,19 @@ impl<Key: slotmap::Key, Info: MorphInfo> MorphData<Key, Info> {
             infos: SlotMap::with_key(),
             gpu_buffer_weights,
             gpu_buffer_values,
+            weights_uploader: crate::buffer::mapped_uploader::MappedUploader::new("Morph Weights"),
+            values_uploader: crate::buffer::mapped_uploader::MappedUploader::new("Morph Values"),
         })
+    }
+
+    /// Mapped-ring upload telemetry for the morph weights buffer.
+    pub fn weights_upload_stats(&self) -> crate::buffer::mapped_staging_ring::UploadStats {
+        self.weights_uploader.stats()
+    }
+
+    /// Mapped-ring upload telemetry for the morph values buffer.
+    pub fn values_upload_stats(&self) -> crate::buffer::mapped_staging_ring::UploadStats {
+        self.values_uploader.stats()
     }
 
     /// Returns morph info by key.
@@ -269,11 +280,12 @@ impl<Key: slotmap::Key, Info: MorphInfo> MorphData<Key, Info> {
                 )?;
             } else {
                 let ranges = self.weights.take_dirty_ranges();
-                write_buffer_with_dirty_ranges(
+                self.weights_uploader.write_dirty_ranges(
                     gpu,
                     &self.gpu_buffer_weights,
+                    self.weights.raw_slice().len(),
                     self.weights.raw_slice(),
-                    ranges,
+                    &ranges,
                 )?;
             }
 
@@ -307,11 +319,12 @@ impl<Key: slotmap::Key, Info: MorphInfo> MorphData<Key, Info> {
                 )?;
             } else {
                 let ranges = self.values.take_dirty_ranges();
-                write_buffer_with_dirty_ranges(
+                self.values_uploader.write_dirty_ranges(
                     gpu,
                     &self.gpu_buffer_values,
+                    self.values.raw_slice().len(),
                     self.values.raw_slice(),
-                    ranges,
+                    &ranges,
                 )?;
             }
 
@@ -331,6 +344,8 @@ pub struct MorphData<Key: slotmap::Key, Info> {
     infos: SlotMap<Key, Info>,
     pub(crate) gpu_buffer_weights: web_sys::GpuBuffer,
     pub(crate) gpu_buffer_values: web_sys::GpuBuffer,
+    weights_uploader: crate::buffer::mapped_uploader::MappedUploader,
+    values_uploader: crate::buffer::mapped_uploader::MappedUploader,
 }
 
 new_key_type! {

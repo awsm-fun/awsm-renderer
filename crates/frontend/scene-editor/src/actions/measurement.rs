@@ -350,6 +350,441 @@ fn strip_tracing_span_suffix(name: &str) -> Option<&str> {
 /// (rather than a JS object) to dodge a `serde_wasm_bindgen`
 /// dependency the editor doesn't otherwise carry; the caller does
 /// `JSON.parse()`.
+/// Phase-2.1 upload-ring telemetry. Returns a JSON object keyed by
+/// renderer subsystem (`transforms`, `materials`, `instances.transforms`,
+/// …) plus a `_total` rollup. Each entry exposes
+/// `{ peak_ring_depth_used, fallback_count, map_async_wait_ms,
+///    bytes_uploaded_via_ring, bytes_uploaded_via_fallback,
+///    bytes_uploaded_via_writebuffer, resize_count }`.
+///
+/// Drive from `preview_eval` on `tuning-10k-meshes` to confirm
+/// `_total.fallback_count == 0` in steady state — a non-zero count
+/// means a buffer's ring depth is too shallow for its frame cadence
+/// and should be bumped via the (not-yet-wired) `with_ring_depth`
+/// constructor.
+#[wasm_bindgen]
+pub async fn read_upload_ring_stats() -> String {
+    use std::fmt::Write;
+    let buckets = crate::context::with_renderer(|r| r.upload_ring_stats()).await;
+
+    let fmt_stats = |s: &awsm_renderer::buffer::mapped_staging_ring::UploadStats| -> String {
+        format!(
+            "{{\"peak_ring_depth_used\":{},\"fallback_count\":{},\
+                 \"map_async_wait_ms\":{:.4},\
+                 \"bytes_uploaded_via_ring\":{},\
+                 \"bytes_uploaded_via_fallback\":{},\
+                 \"bytes_uploaded_via_writebuffer\":{},\
+                 \"resize_count\":{}}}",
+            s.peak_ring_depth_used,
+            s.fallback_count,
+            s.map_async_wait_ms,
+            s.bytes_uploaded_via_ring,
+            s.bytes_uploaded_via_fallback,
+            s.bytes_uploaded_via_writebuffer,
+            s.resize_count,
+        )
+    };
+
+    let mut total = awsm_renderer::buffer::mapped_staging_ring::UploadStats::default();
+    let mut out = String::from("{");
+    for (label, s) in &buckets {
+        if out.len() > 1 {
+            out.push(',');
+        }
+        let _ = write!(
+            out,
+            "{}:{}",
+            serde_json::to_string(label).unwrap_or_else(|_| "\"\"".to_string()),
+            fmt_stats(s)
+        );
+        // Roll up.
+        total.peak_ring_depth_used = total.peak_ring_depth_used.max(s.peak_ring_depth_used);
+        total.fallback_count += s.fallback_count;
+        total.map_async_wait_ms += s.map_async_wait_ms;
+        total.bytes_uploaded_via_ring += s.bytes_uploaded_via_ring;
+        total.bytes_uploaded_via_fallback += s.bytes_uploaded_via_fallback;
+        total.bytes_uploaded_via_writebuffer += s.bytes_uploaded_via_writebuffer;
+        total.resize_count += s.resize_count;
+    }
+    if !buckets.is_empty() {
+        out.push(',');
+    }
+    let _ = write!(out, "\"_total\":{}", fmt_stats(&total));
+    out.push('}');
+    out
+}
+
+/// Phase 4.3b A/B measurement — load `url` via both the inline
+/// `GltfLoader::load` and the worker `GltfParseJob` (re-entered N
+/// times each via the dev-only `?gltf-worker=on` URL knob's pool).
+/// Returns JSON `{ "inline_ms": [...], "worker_ms": [...],
+/// "inline_mean": f, "worker_mean": f, "speedup": f }` so the
+/// driver can decide whether to flip
+/// `asset_cache::load_and_populate`'s default.
+///
+/// Per the spec: a real measurement against `robot-001.glb`
+/// drives the flip decision. The repo ships a 12.8 MB substitute
+/// (Corset.glb, copied into `assets/stress/Corset.glb` by trunk in
+/// dev builds) reachable as `/assets/stress/Corset.glb` — large
+/// enough to amortise worker spawn cost without ballooning every
+/// dev rebuild.
+#[wasm_bindgen]
+pub async fn measure_gltf_load_ab(url: String, iterations: u32) -> String {
+    use awsm_renderer::workers::{WorkerPool, WorkerPoolBootstrap};
+    use awsm_renderer_gltf::loader::{get_type_from_filename, GltfLoader};
+    use awsm_renderer_gltf::worker_job::{FileTypeHint, GltfParseInput, GltfParseJob};
+
+    // Guard zero-iteration calls upfront — the JSON-shape contract
+    // promises means / speedup as numbers, and `0/0` would emit
+    // `NaN` (not a valid JSON number; `serde_json` would refuse,
+    // and a naive `format!("{nan}")` would emit `"NaN"` which any
+    // strict consumer parser would reject). One iteration is the
+    // minimum that makes the means well-defined.
+    if iterations == 0 {
+        return "{\"error\":\"iterations must be >= 1\"}".to_string();
+    }
+
+    let perf = match web_sys::window().and_then(|w| w.performance()) {
+        Some(p) => p,
+        None => return "{\"error\":\"no performance\"}".to_string(),
+    };
+
+    let file_type = get_type_from_filename(&url);
+
+    // JSON-safe error formatter — the `{err}` string can contain
+    // arbitrary characters (quotes, newlines, control bytes from a
+    // network error or deserialise failure) that would corrupt a
+    // naive `format!("{{\"error\":\"...{err}...\"}}")`. Route the
+    // message through `serde_json::to_string` so the documented
+    // `JSON.parse()` consumer always succeeds. Matches the pattern
+    // already used by `debug_pick` further down this file.
+    let err_json = |prefix: &str, err: &dyn std::fmt::Display| -> String {
+        let msg = format!("{prefix}: {err}");
+        let escaped =
+            serde_json::to_string(&msg).unwrap_or_else(|_| "\"<unprintable error>\"".to_string());
+        format!("{{\"error\":{escaped}}}")
+    };
+
+    // Build a dedicated pool for the measurement. Cheaper than
+    // reusing the editor's pool (which the user might or might not
+    // have enabled via `?gltf-worker=on`) — guarantees a clean
+    // measurement either way.
+    let pool = match WorkerPool::new(WorkerPoolBootstrap::Auto, 2).await {
+        Ok(p) => p,
+        Err(err) => return err_json("pool", &err),
+    };
+    pool.register::<GltfParseJob>();
+
+    let mut inline_ms: Vec<f64> = Vec::with_capacity(iterations as usize);
+    let mut worker_ms: Vec<f64> = Vec::with_capacity(iterations as usize);
+
+    for _ in 0..iterations {
+        let start = perf.now();
+        match GltfLoader::load(&url, file_type.as_ref().map(file_type_clone)).await {
+            Ok(_) => {}
+            Err(err) => return err_json("inline", &err),
+        }
+        inline_ms.push(perf.now() - start);
+    }
+
+    for _ in 0..iterations {
+        let start = perf.now();
+        let input = GltfParseInput {
+            url: url.clone(),
+            file_type: file_type.as_ref().map(FileTypeHint::from),
+        };
+        match pool.dispatch::<GltfParseJob>(input).await {
+            Ok(out) => match out.into_loader().await {
+                Ok(_) => {}
+                Err(err) => return err_json("worker into_loader", &err),
+            },
+            Err(err) => return err_json("worker dispatch", &err),
+        }
+        worker_ms.push(perf.now() - start);
+    }
+
+    let inline_mean: f64 = inline_ms.iter().sum::<f64>() / inline_ms.len() as f64;
+    let worker_mean: f64 = worker_ms.iter().sum::<f64>() / worker_ms.len() as f64;
+    let speedup = if worker_mean > 0.0 {
+        inline_mean / worker_mean
+    } else {
+        f64::NAN
+    };
+
+    let fmt_arr = |arr: &[f64]| -> String {
+        let parts: Vec<String> = arr.iter().map(|v| format!("{v:.2}")).collect();
+        format!("[{}]", parts.join(","))
+    };
+
+    format!(
+        "{{\"url\":{url_json},\"iterations\":{iterations},\
+         \"inline_ms\":{inline_arr},\"worker_ms\":{worker_arr},\
+         \"inline_mean\":{inline_mean:.2},\"worker_mean\":{worker_mean:.2},\
+         \"speedup\":{speedup:.3}}}",
+        url_json = serde_json::to_string(&url).unwrap_or_else(|_| "\"\"".to_string()),
+        inline_arr = fmt_arr(&inline_ms),
+        worker_arr = fmt_arr(&worker_ms),
+    )
+}
+
+// `GltfFileType` doesn't implement Clone, so we hand-roll one for the
+// measurement loop that needs to pass the same hint into both paths.
+fn file_type_clone(
+    t: &awsm_renderer_gltf::loader::GltfFileType,
+) -> awsm_renderer_gltf::loader::GltfFileType {
+    use awsm_renderer_gltf::loader::GltfFileType::*;
+    match t {
+        Json => Json,
+        Glb => Glb,
+        Draco => Draco,
+    }
+}
+
+/// Dev-only programmatic Insert-Model that fetches a glb from `url`,
+/// synthesises a `File` from the bytes, and drives the normal
+/// `actions::insert::model` flow. Lets the smoke harness exercise
+/// the texture-upload + populate path without a file picker.
+#[wasm_bindgen]
+pub async fn insert_model_from_url(url: String, filename: String) -> Result<(), JsValue> {
+    use js_sys::Uint8Array;
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_futures::JsFuture;
+    let resp_promise = web_sys::window()
+        .ok_or_else(|| JsValue::from_str("no window"))?
+        .fetch_with_str(&url);
+    let resp: web_sys::Response = JsFuture::from(resp_promise).await?.unchecked_into();
+    if !resp.ok() {
+        return Err(JsValue::from_str(&format!(
+            "fetch {url}: HTTP {}",
+            resp.status()
+        )));
+    }
+    let buffer = JsFuture::from(resp.array_buffer()?).await?;
+    let buffer: js_sys::ArrayBuffer = buffer.unchecked_into();
+    let bytes_array = Uint8Array::new(&buffer);
+    let parts = js_sys::Array::new();
+    parts.push(&bytes_array);
+    // `web_sys::File::new_with_buffer_source_sequence_and_options`
+    // isn't generated by web-sys 0.3.95; synthesise the File via the
+    // JS-native `new File([buf], name, { type })` constructor.
+    let global = js_sys::global();
+    let file_ctor = js_sys::Reflect::get(&global, &JsValue::from_str("File"))?;
+    let opts = js_sys::Object::new();
+    js_sys::Reflect::set(
+        &opts,
+        &JsValue::from_str("type"),
+        &JsValue::from_str("model/gltf-binary"),
+    )?;
+    let args = js_sys::Array::new();
+    args.push(&parts.into());
+    args.push(&JsValue::from_str(&filename));
+    args.push(&opts);
+    let file_ctor_fn: js_sys::Function = file_ctor.unchecked_into();
+    let file_val = js_sys::Reflect::construct(&file_ctor_fn, &args)?;
+    let file: web_sys::File = file_val.unchecked_into();
+    crate::actions::insert::model(file);
+    Ok(())
+}
+
+/// Per-mesh AABB dump (world-space). Lets the smoke harness verify
+/// where inserted models land, what their bounds look like, and
+/// whether the editor camera is even pointed at them.
+#[wasm_bindgen]
+pub async fn read_mesh_aabbs_debug() -> String {
+    crate::context::with_renderer(|r| {
+        let mut out = String::from("[");
+        let mut first = true;
+        for (mk, mesh) in r.meshes.iter() {
+            if mesh.hidden || mesh.hud {
+                continue;
+            }
+            let aabb_str = match &mesh.world_aabb {
+                Some(aabb) => format!(
+                    "{{\"min\":[{:.2},{:.2},{:.2}],\"max\":[{:.2},{:.2},{:.2}]}}",
+                    aabb.min.x, aabb.min.y, aabb.min.z, aabb.max.x, aabb.max.y, aabb.max.z
+                ),
+                None => "null".to_string(),
+            };
+            if !first {
+                out.push(',');
+            }
+            first = false;
+            out.push_str(&format!("{{\"mesh\":{mk:?},\"aabb\":{aabb_str}}}"));
+        }
+        // Also dump camera position + view direction so we can tell
+        // whether the model sits inside the frustum.
+        let cam = match r.camera.last_matrices.as_ref() {
+            Some(m) => {
+                let pos = m.view.inverse().w_axis.truncate();
+                format!(
+                    "{{\"pos\":[{:.2},{:.2},{:.2}],\"focus\":{:.2},\"aperture\":{:.2}}}",
+                    pos.x, pos.y, pos.z, m.focus_distance, m.aperture
+                )
+            }
+            None => "null".to_string(),
+        };
+        format!("{{\"meshes\":{out}],\"camera\":{cam}}}")
+    })
+    .await
+}
+
+/// Per-mesh debug dump: lists every non-HUD visible mesh with its
+/// material's PBR texture bindings (or `false` when missing). Lets
+/// the smoke harness verify "texture was hooked up to the material"
+/// after inserting a glb.
+#[wasm_bindgen]
+pub async fn read_mesh_materials_debug() -> String {
+    use awsm_renderer::materials::Material;
+    crate::context::with_renderer(|r| {
+        let mut out = String::from("[");
+        let mut first = true;
+        for (mk, mesh) in r.meshes.iter() {
+            if mesh.hidden || mesh.hud {
+                continue;
+            }
+            let material_key = mesh.material_key;
+            let mat_info = match r.materials.get(material_key) {
+                Ok(Material::Pbr(pbr)) => format!(
+                    "{{\"bcf\":[{:.2},{:.2},{:.2},{:.2}],\"bc_tex\":{},\"mr_tex\":{},\"normal_tex\":{},\"occlusion_tex\":{},\"emissive_tex\":{}}}",
+                    pbr.base_color_factor[0],
+                    pbr.base_color_factor[1],
+                    pbr.base_color_factor[2],
+                    pbr.base_color_factor[3],
+                    pbr.base_color_tex.is_some(),
+                    pbr.metallic_roughness_tex.is_some(),
+                    pbr.normal_tex.is_some(),
+                    pbr.occlusion_tex.is_some(),
+                    pbr.emissive_tex.is_some(),
+                ),
+                Ok(_) => "\"non-pbr\"".to_string(),
+                Err(_) => "\"missing\"".to_string(),
+            };
+            if !first {
+                out.push(',');
+            }
+            first = false;
+            out.push_str(&format!(
+                "{{\"mesh\":{mk:?},\"material\":{material_key:?},\"info\":{mat_info}}}"
+            ));
+        }
+        out.push(']');
+        out
+    })
+    .await
+}
+
+/// Dev-only renderer-state probe. Returns mesh / material / scene
+/// counts as JSON so a regression like "model inserted but never
+/// renders" can be triaged without a debugger session.
+#[wasm_bindgen]
+pub async fn read_mesh_debug_stats() -> String {
+    crate::context::with_renderer(|r| {
+        let mesh_count = r.meshes.len();
+        let mut visible_meshes = 0usize;
+        let mut hidden_meshes = 0usize;
+        let mut with_aabb = 0usize;
+        let mut without_aabb = 0usize;
+        let mut hud_meshes = 0usize;
+        for (_, m) in r.meshes.iter() {
+            if m.hidden {
+                hidden_meshes += 1;
+            } else {
+                visible_meshes += 1;
+            }
+            if m.world_aabb.is_some() {
+                with_aabb += 1;
+            } else {
+                without_aabb += 1;
+            }
+            if m.hud {
+                hud_meshes += 1;
+            }
+        }
+        let transforms_root = r.transforms.root_node;
+        let material_count = r.materials.keys().count();
+        let scene_spatial_count = r.scene_spatial.len();
+        format!(
+            "{{\"mesh_count\":{mesh_count},\
+             \"visible_meshes\":{visible_meshes},\
+             \"hidden_meshes\":{hidden_meshes},\
+             \"with_aabb\":{with_aabb},\
+             \"without_aabb\":{without_aabb},\
+             \"hud_meshes\":{hud_meshes},\
+             \"material_count\":{material_count},\
+             \"scene_spatial_count\":{scene_spatial_count},\
+             \"transforms_root\":{:?}}}",
+            transforms_root
+        )
+    })
+    .await
+}
+
+/// Diagnose texture binding correctness. For each visible non-HUD mesh
+/// whose material is PBR, dumps every texture binding's sampler-index
+/// resolution. A sampler that's not in `pool_sampler_set` returns
+/// `null` — that's the symptom of the "all-white" override bug.
+#[wasm_bindgen]
+pub async fn read_material_sampler_diag() -> String {
+    use awsm_renderer::materials::Material;
+    use awsm_renderer::materials::TextureContext as _;
+    crate::context::with_renderer(|r| {
+        let mut out = String::from("[");
+        let mut first = true;
+        for (mk, mesh) in r.meshes.iter() {
+            if mesh.hidden || mesh.hud {
+                continue;
+            }
+            let Ok(Material::Pbr(pbr)) = r.materials.get(mesh.material_key) else {
+                continue;
+            };
+            let probe = |label: &str,
+                         t: &Option<awsm_renderer::materials::MaterialTexture>,
+                         buf: &mut String| {
+                let Some(mt) = t.as_ref() else {
+                    buf.push_str(&format!("\"{label}\":\"none\","));
+                    return;
+                };
+                let key_idx = format!("{:?}", mt.key);
+                let sk = mt.sampler_key;
+                let sampler_index = sk.and_then(|s| r.textures.sampler_index(s));
+                let entry = r.textures.get_entry(mt.key).ok().map(|e| {
+                    format!(
+                        "{{\"array\":{},\"layer\":{},\"srgb_to_linear\":{}}}",
+                        e.array_index, e.layer_index, e.color.srgb_to_linear
+                    )
+                });
+                buf.push_str(&format!(
+                    "\"{label}\":{{\"key\":\"{key_idx}\",\"sampler_index\":{},\"uv\":{},\"entry\":{}}},",
+                    sampler_index
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "null".to_string()),
+                    mt.uv_index
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "null".to_string()),
+                    entry.unwrap_or_else(|| "null".to_string()),
+                ));
+            };
+            let mut row = String::new();
+            probe("bc", &pbr.base_color_tex, &mut row);
+            probe("mr", &pbr.metallic_roughness_tex, &mut row);
+            probe("normal", &pbr.normal_tex, &mut row);
+            probe("ao", &pbr.occlusion_tex, &mut row);
+            probe("emissive", &pbr.emissive_tex, &mut row);
+            if row.ends_with(',') {
+                row.pop();
+            }
+            if !first {
+                out.push(',');
+            }
+            first = false;
+            out.push_str(&format!("{{\"mesh\":\"{mk:?}\",{}}}", row));
+        }
+        out.push(']');
+        out
+    })
+    .await
+}
+
 #[wasm_bindgen]
 pub async fn read_oversized_mesh_stats() -> String {
     let (last_max_bucket, oversized_count) = crate::context::with_renderer_mut(|r| {
@@ -360,4 +795,80 @@ pub async fn read_oversized_mesh_stats() -> String {
     })
     .await;
     format!("{{\"last_max_bucket\":{last_max_bucket},\"oversized_count\":{oversized_count}}}")
+}
+
+/// Dev-only: drive the renderer's GPU pick at the given canvas-local
+/// pixel coordinates and return what it found. Lets a JS-side test
+/// harness check picker correctness without dispatching a synthetic
+/// pointerdown (which spawns work asynchronously and is hard to
+/// observe). Reports the picked mesh key + whether it matches one of
+/// the active gizmo handles.
+///
+/// Result shape:
+/// ```json
+/// {"result":"hit","mesh_key":"MeshKey(NvN)","is_gizmo":true}
+/// {"result":"miss"}
+/// {"result":"initializing"}
+/// {"result":"in_flight"}
+/// {"result":"error","message":"..."}
+/// ```
+///
+/// `is_gizmo` is the only gizmo-related field — the controller's
+/// `is_gizmo_mesh_key` returns a `bool`, not a `GizmoKind`. If a
+/// future caller needs the specific handle (TranslationX vs
+/// RotationY, etc.) the controller would need a
+/// `get_gizmo_mesh_kind(mesh_key) -> Option<GizmoKind>` companion;
+/// add the JSON field at the same time as that helper.
+#[wasm_bindgen]
+pub async fn debug_pick(x: i32, y: i32) -> String {
+    use awsm_renderer::picker::PickResult;
+    let handle = crate::context::renderer_handle();
+    let pick_result = {
+        let renderer = handle.lock().await;
+        renderer.pick(x, y).await
+    };
+    match pick_result {
+        Ok(PickResult::Hit(mesh_key)) => {
+            // Cross-check against the live gizmo handles so a JS caller
+            // can immediately see if a "Hit" landed on a gizmo mesh.
+            let state = app_state();
+            let controller_lock = state.transform_controller.lock().unwrap();
+            let is_gizmo = controller_lock
+                .as_ref()
+                .map(|c| c.is_gizmo_mesh_key(mesh_key))
+                .unwrap_or(false);
+            format!("{{\"result\":\"hit\",\"mesh_key\":\"{mesh_key:?}\",\"is_gizmo\":{is_gizmo}}}")
+        }
+        Ok(PickResult::Miss) => "{\"result\":\"miss\"}".to_string(),
+        Ok(PickResult::Initializing) => "{\"result\":\"initializing\"}".to_string(),
+        Ok(PickResult::InFlight) => "{\"result\":\"in_flight\"}".to_string(),
+        Err(err) => format!(
+            "{{\"result\":\"error\",\"message\":{}}}",
+            serde_json::to_string(&err.to_string()).unwrap_or_else(|_| "\"\"".to_string())
+        ),
+    }
+}
+
+/// Dev-only: dump the live `TransformController`'s gizmo mesh-key
+/// table so a JS caller can confirm the keys the controller is
+/// comparing against in `get_gizmo_mesh_kind`. Mostly useful for
+/// catching cases where the controller was built against keys that
+/// no longer exist in the renderer (e.g. a re-populate that
+/// invalidated the gltf load).
+#[wasm_bindgen]
+pub fn debug_gizmo_mesh_keys() -> String {
+    let state = app_state();
+    let controller_lock = state.transform_controller.lock().unwrap();
+    let Some(c) = controller_lock.as_ref() else {
+        return "{\"available\":false}".to_string();
+    };
+    let keys = c.gizmo_mesh_keys_debug();
+    format!(
+        "{{\"available\":true,\"selected_object\":{},\"keys\":{}}}",
+        c.selected_object
+            .map(|o| format!("{:?}", o.key))
+            .map(|s| serde_json::to_string(&s).unwrap_or_else(|_| "\"\"".to_string()))
+            .unwrap_or_else(|| "null".to_string()),
+        keys
+    )
 }

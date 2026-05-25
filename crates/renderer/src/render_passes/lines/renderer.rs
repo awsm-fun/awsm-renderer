@@ -85,8 +85,13 @@ impl LineRenderer {
             uniform_bytes[0..4].copy_from_slice(&entry.width_px.to_le_bytes());
             uniform_bytes[4..8].copy_from_slice(&viewport_w.to_le_bytes());
             uniform_bytes[8..12].copy_from_slice(&viewport_h.to_le_bytes());
-            ctx.gpu
-                .write_buffer(&entry.uniform_buffer, None, &uniform_bytes[..], None, None)?;
+            entry.uniform_uploader.lock().unwrap().write_dirty_ranges(
+                ctx.gpu,
+                &entry.uniform_buffer,
+                LINE_UNIFORM_BYTES,
+                &uniform_bytes[..],
+                &[(0, LINE_UNIFORM_BYTES)],
+            )?;
 
             let variant = LineVariantKey {
                 depth_test_always: entry.depth_test_always,

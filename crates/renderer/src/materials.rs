@@ -20,7 +20,6 @@ use thiserror::Error;
 use crate::{
     bind_groups::{AwsmBindGroupError, BindGroupCreate, BindGroups},
     buffer::dynamic_storage::DynamicStorageBuffer,
-    buffer::helpers::write_buffer_with_dirty_ranges,
     textures::{AwsmTextureError, Textures},
     AwsmRenderer, AwsmRendererLogging,
 };
@@ -163,6 +162,7 @@ pub struct Materials {
     buffer: DynamicStorageBuffer<MaterialKey>,
     gpu_dirty: bool,
     _is_transparency_pass: SecondaryMap<MaterialKey, ()>,
+    uploader: crate::buffer::mapped_uploader::MappedUploader,
 }
 
 impl Materials {
@@ -180,7 +180,13 @@ impl Materials {
             buffer,
             gpu_dirty: true,
             _is_transparency_pass: SecondaryMap::new(),
+            uploader: crate::buffer::mapped_uploader::MappedUploader::new("Materials"),
         })
+    }
+
+    /// Mapped-ring upload telemetry for this subsystem.
+    pub fn upload_stats(&self) -> crate::buffer::mapped_staging_ring::UploadStats {
+        self.uploader.stats()
     }
 
     /// Iterates over material keys.
@@ -348,11 +354,12 @@ impl Materials {
                 gpu.write_buffer(&self.gpu_buffer, None, self.buffer.raw_slice(), None, None)?;
             } else {
                 let ranges = self.buffer.take_dirty_ranges();
-                write_buffer_with_dirty_ranges(
+                self.uploader.write_dirty_ranges(
                     gpu,
                     &self.gpu_buffer,
+                    self.buffer.raw_slice().len(),
                     self.buffer.raw_slice(),
-                    ranges,
+                    &ranges,
                 )?;
             }
 
