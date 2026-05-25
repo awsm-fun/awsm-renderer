@@ -220,11 +220,49 @@ pub struct CompactionPipeline {
     pub key: ComputePipelineKey,
 }
 
+pub struct CompactionPrewarmDescriptors {
+    pub pipeline_cache_keys: Vec<ComputePipelineCacheKey>,
+}
+
 impl CompactionPipeline {
     pub async fn new(
         ctx: &mut RenderPassInitContext<'_>,
         bind_groups: &CompactionBindGroups,
     ) -> Result<Self> {
+        ctx.shaders
+            .ensure_keys(ctx.gpu, Self::shader_cache_keys(ctx.features))
+            .await?;
+        let descs = Self::build_descriptors(ctx, bind_groups).await?;
+        let pipeline_keys = ctx
+            .pipelines
+            .compute
+            .ensure_keys(
+                ctx.gpu,
+                ctx.shaders,
+                ctx.pipeline_layouts,
+                descs.pipeline_cache_keys.clone(),
+            )
+            .await?;
+        Ok(Self::from_resolved(pipeline_keys))
+    }
+
+    pub fn shader_cache_keys(
+        features: &crate::features::RendererFeatures,
+    ) -> Vec<crate::shaders::ShaderCacheKey> {
+        // Compaction has only one shader variant per device — the
+        // `write_first_instance` flag is chosen by feature detection,
+        // not by runtime branching.
+        vec![crate::shaders::ShaderCacheKey::from(
+            ShaderCacheKeyOcclusionCompaction {
+                write_first_instance: features.indirect_first_instance_enabled(),
+            },
+        )]
+    }
+
+    pub async fn build_descriptors(
+        ctx: &mut RenderPassInitContext<'_>,
+        bind_groups: &CompactionBindGroups,
+    ) -> Result<CompactionPrewarmDescriptors> {
         let pipeline_layout_key = ctx.pipeline_layouts.get_key(
             ctx.gpu,
             ctx.bind_group_layouts,
@@ -248,17 +286,18 @@ impl CompactionPipeline {
                 },
             )
             .await?;
-        let key = ctx
-            .pipelines
-            .compute
-            .get_key(
-                ctx.gpu,
-                ctx.shaders,
-                ctx.pipeline_layouts,
-                ComputePipelineCacheKey::new(shader_key, pipeline_layout_key),
-            )
-            .await?;
-        Ok(Self { key })
+        Ok(CompactionPrewarmDescriptors {
+            pipeline_cache_keys: vec![ComputePipelineCacheKey::new(
+                shader_key,
+                pipeline_layout_key,
+            )],
+        })
+    }
+
+    pub fn from_resolved(pipeline_keys: Vec<ComputePipelineKey>) -> Self {
+        Self {
+            key: pipeline_keys[0],
+        }
     }
 }
 
