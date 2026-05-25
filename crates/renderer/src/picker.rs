@@ -138,8 +138,25 @@ pub struct Picker {
     state: Arc<Mutex<PickerState>>,
 }
 
+/// Picker layouts and pre-resolved descriptors. Returned by
+/// [`Picker::build_descriptors`] and consumed by
+/// [`Picker::from_resolved`]. The orchestrator in
+/// `AwsmRendererBuilder::build` uses these to pool Picker's 2
+/// compute pipeline compiles with every other pass's pipeline
+/// compile into one cross-system `ComputePipelines::ensure_keys`.
+pub struct PickerDescriptors {
+    pub singlesampled_bind_group_layout_key: BindGroupLayoutKey,
+    pub multisampled_bind_group_layout_key: BindGroupLayoutKey,
+    pub pipeline_cache_keys: Vec<ComputePipelineCacheKey>,
+}
+
 impl Picker {
     /// Creates a picker with the required bind groups and pipelines.
+    /// Thin wrapper over [`Self::build_descriptors`] +
+    /// [`Self::from_resolved`]. The pooled startup path bypasses
+    /// this and calls the two halves directly so Picker's compute
+    /// pipeline compiles share a global `ComputePipelines::ensure_keys`
+    /// with every other pass.
     pub async fn new(
         gpu: &AwsmRendererWebGpu,
         bind_group_layouts: &mut BindGroupLayouts,
@@ -147,6 +164,42 @@ impl Picker {
         shaders: &mut Shaders,
         pipelines: &mut Pipelines,
     ) -> Result<Self> {
+        let descs =
+            Self::build_descriptors(gpu, bind_group_layouts, pipeline_layouts, shaders).await?;
+        let pipeline_keys = pipelines
+            .compute
+            .ensure_keys(
+                gpu,
+                shaders,
+                pipeline_layouts,
+                descs.pipeline_cache_keys.clone(),
+            )
+            .await?;
+        Self::from_resolved(gpu, descs, pipeline_keys)
+    }
+
+    /// Static set of shader cache keys this subsystem will need —
+    /// folded into the cross-system shader pre-warm in
+    /// `RenderPasses::new`.
+    pub fn shader_cache_keys() -> Vec<ShaderCacheKey> {
+        vec![
+            ShaderCacheKey::from(ShaderCacheKeyPicker {
+                multisampled_geometry: false,
+            }),
+            ShaderCacheKey::from(ShaderCacheKeyPicker {
+                multisampled_geometry: true,
+            }),
+        ]
+    }
+
+    /// Builds layouts + pipeline cache keys. Requires that
+    /// [`Self::shader_cache_keys`] have already been `ensure_keys`'d.
+    pub async fn build_descriptors(
+        gpu: &AwsmRendererWebGpu,
+        bind_group_layouts: &mut BindGroupLayouts,
+        pipeline_layouts: &mut PipelineLayouts,
+        shaders: &mut Shaders,
+    ) -> Result<PickerDescriptors> {
         let singlesampled_bind_group_layout_key =
             create_bind_group_layout(gpu, bind_group_layouts, false)?;
         let multisampled_bind_group_layout_key =
@@ -157,30 +210,12 @@ impl Picker {
             bind_group_layouts,
             PipelineLayoutCacheKey::new(vec![singlesampled_bind_group_layout_key]),
         )?;
-
         let multisampled_pipeline_layout_key = pipeline_layouts.get_key(
             gpu,
             bind_group_layouts,
             PipelineLayoutCacheKey::new(vec![multisampled_bind_group_layout_key]),
         )?;
 
-        // Both shader variants and both pipelines batched in two
-        // ensure_keys calls so Dawn parallelises the compiles
-        // instead of serialising the singlesampled compile against
-        // the multisampled one.
-        shaders
-            .ensure_keys(
-                gpu,
-                [
-                    ShaderCacheKey::from(ShaderCacheKeyPicker {
-                        multisampled_geometry: false,
-                    }),
-                    ShaderCacheKey::from(ShaderCacheKeyPicker {
-                        multisampled_geometry: true,
-                    }),
-                ],
-            )
-            .await?;
         let singlesampled_shader = shaders
             .get_key(
                 gpu,
@@ -197,32 +232,36 @@ impl Picker {
                 },
             )
             .await?;
-        let pipeline_keys = pipelines
-            .compute
-            .ensure_keys(
-                gpu,
-                shaders,
-                pipeline_layouts,
-                [
-                    ComputePipelineCacheKey::new(
-                        singlesampled_shader,
-                        singlesampled_pipeline_layout_key,
-                    ),
-                    ComputePipelineCacheKey::new(
-                        multisampled_shader,
-                        multisampled_pipeline_layout_key,
-                    ),
-                ],
-            )
-            .await?;
-        let singlesampled_compute_pipeline_key = pipeline_keys[0];
-        let multisampled_compute_pipeline_key = pipeline_keys[1];
 
-        Ok(Self {
-            singlesampled_compute_pipeline_key,
-            multisampled_compute_pipeline_key,
+        Ok(PickerDescriptors {
             singlesampled_bind_group_layout_key,
             multisampled_bind_group_layout_key,
+            pipeline_cache_keys: vec![
+                ComputePipelineCacheKey::new(
+                    singlesampled_shader,
+                    singlesampled_pipeline_layout_key,
+                ),
+                ComputePipelineCacheKey::new(
+                    multisampled_shader,
+                    multisampled_pipeline_layout_key,
+                ),
+            ],
+        })
+    }
+
+    /// Folds resolved pipeline keys back into the typed `Picker`.
+    /// Sync; the caller has already run the batched
+    /// `ComputePipelines::ensure_keys`.
+    pub fn from_resolved(
+        gpu: &AwsmRendererWebGpu,
+        descs: PickerDescriptors,
+        pipeline_keys: Vec<ComputePipelineKey>,
+    ) -> Result<Self> {
+        Ok(Self {
+            singlesampled_compute_pipeline_key: pipeline_keys[0],
+            multisampled_compute_pipeline_key: pipeline_keys[1],
+            singlesampled_bind_group_layout_key: descs.singlesampled_bind_group_layout_key,
+            multisampled_bind_group_layout_key: descs.multisampled_bind_group_layout_key,
             state: Arc::new(Mutex::new(PickerState::new(gpu)?)),
             _bind_group: None,
         })
