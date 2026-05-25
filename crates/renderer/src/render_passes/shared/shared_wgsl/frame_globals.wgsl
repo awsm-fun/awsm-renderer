@@ -29,7 +29,8 @@ struct FrameGlobalsRaw {
     _pad2: vec2<u32>,
 };
 
-// Friendly view — same fields, no trailing padding word.
+// Friendly view — same fields, omits `_pad` and `_pad2` (the
+// alignment-only words that exist in `FrameGlobalsRaw`).
 struct FrameGlobals {
     /// Seconds since renderer construction (or whatever value
     /// `AwsmRenderer::set_time_source` injected). Monotonic in the

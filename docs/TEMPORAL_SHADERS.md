@@ -27,7 +27,7 @@ struct FrameGlobalsRaw {
     _pad2: vec2<u32>,
 };
 
-// Friendly view (drop the trailing padding word)
+// Friendly view (drops `_pad` and `_pad2` — the alignment-only words)
 struct FrameGlobals {
     time: f32,
     delta_time: f32,

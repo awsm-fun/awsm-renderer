@@ -173,7 +173,7 @@ fn flipbook_compute_cell_uv(material: FlipBookMaterial, in_uv: vec2<f32>, curren
 struct FlipBookColor {
     rgb: vec3<f32>,
     a: f32,
-}
+};
 
 fn flipbook_finalize_color(
     material: FlipBookMaterial,
