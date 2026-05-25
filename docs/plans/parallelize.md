@@ -674,36 +674,63 @@ total straggler delay drops from `straggler(cross-pass) +
 straggler(tail)` to `straggler(combined)` — usually ~one full
 `t_compile` (≈0.8–1.5 s on cold Dawn for this codebase).
 
-#### Path choice
+#### Path choice — Path A (invert the orchestration)
 
-Three approaches considered. **Pick Path A** for this session —
-the cold-cache yield only materialises if the merged pool actually
-saturates Dawn's worker pool past where the cross-pass pool
-already does, which Path A delivers and B/C don't reliably.
+Three approaches considered. **Path A is the choice.** The cold-cache
+straggler win is one reason — but Path A also buys three
+architectural guarantees the other two paths don't:
 
-- **Path A (the one we're landing): invert the orchestration.**
-  `RenderPasses::new` stops owning its own `ensure_keys` calls. It
-  becomes "describe phase" + "fold-up phase", and the orchestrator
-  in `AwsmRendererBuilder::build` drives the pools across passes
-  *and* tail subsystems. Three awaits total for the entire renderer
-  (one shader, one try_join'd compute + render). RenderPasses::new
-  exposes:
+1. **No way to accidentally bypass the cross-renderer pool.** The
+   orchestrator *owns* the `ensure_keys` calls. `RenderPasses::describe`
+   can't compile anything — it can only return descriptors. Adding a
+   new render pass (or modifying an existing one) can't introduce a
+   new sequential `.await?` because the function it would live in
+   isn't `async` anymore.
+2. **Single source of truth for renderer-wide compile timing.** All
+   three pool awaits (shader, compute, render) live at one site in
+   `AwsmRendererBuilder::build`. One place to instrument with
+   tracing spans, one place to read for per-pool wall-clock, one
+   place to reason about ordering invariants. The "happens to do
+   the same thing" relationship between startup and dynamic setters
+   becomes an *explicit* shared code path:
+   `set_anti_aliasing` and the orchestrator both call
+   `EffectsPipelines::install_resolved` against the same descriptor
+   shape.
+3. **Cleaner story for future `RendererFeatures` flags.** A new
+   feature gating a new pass becomes "skip a sub-range of cache
+   keys in `describe`'s output" — no chance of an
+   `if features.foo { foo.ensure_keys().await? }` sequential await
+   sneaking in past a future code reviewer.
+
+#### What Path A actually changes
+
+`RenderPasses::new` is the function that does the work today. It
+becomes a thin wrapper for the rare caller that wants the old
+"all-in-one" entry point (effectively only tests). The orchestrator
+in `AwsmRendererBuilder::build` calls the two halves directly:
+
   - `RenderPasses::describe(ctx, features) -> RenderPassesDescriptors`
     — sync apart from cache-hit shader resolution. Returns a struct
     carrying per-pass bind groups + `Vec<RenderPipelineCacheKey>` +
-    `Vec<ComputePipelineCacheKey>` + sub-range maps.
+    `Vec<ComputePipelineCacheKey>` + sub-range maps the orchestrator
+    uses to slice resolved keys back out per pass.
   - `RenderPasses::from_resolved(descriptors, compute_keys,
-    render_keys) -> RenderPasses` — sync; the orchestrator
-    hands back the resolved key slices.
-- **Path B (rejected):** Add `extra_compute_keys` /
-  `extra_render_keys` parameters to `RenderPasses::new` so the
-  orchestrator can stuff Picker + Lines cache keys in. Mechanically
-  smaller but `RenderPasses::new` would know about non-render-pass
-  subsystems — layering wart.
-- **Path C (rejected):** Pre-warm Picker + Lines pipelines via
-  their own `ensure_keys` running in parallel with
-  `RenderPasses::new`. Doesn't merge pools, only overlaps two
-  same-size waves — half a win.
+    render_keys) -> RenderPasses` — sync; the orchestrator hands
+    back the resolved key slices, each pass's `from_resolved` is
+    invoked internally to assemble the typed `RenderPass`.
+
+#### Paths rejected (and why)
+
+- **Path B:** Add `extra_compute_keys` / `extra_render_keys`
+  parameters to `RenderPasses::new` so the orchestrator can stuff
+  Picker + Lines cache keys in. Mechanically smaller but
+  `RenderPasses::new` would now know about non-render-pass
+  subsystems — and the type system can't catch a future caller
+  that forgets to pass the extras. Loses guarantees (1) and (3).
+- **Path C:** Pre-warm Picker + Lines pipelines via their own
+  `ensure_keys` running in parallel with `RenderPasses::new`.
+  Doesn't merge pools, only overlaps two same-size waves —
+  half a win on perf, no architectural improvement at all.
 
 #### What changes
 
@@ -743,15 +770,32 @@ let (compute_keys, render_keys) = futures::future::try_join(
 - [render_passes.rs](../../crates/renderer/src/render_passes.rs) — split `RenderPasses::new` into `describe` + `from_resolved`.
 - [lib.rs](../../crates/renderer/src/lib.rs) — orchestrator pulls the pool management up.
 
-#### Risk
+#### Risk + sizing
 
-The orchestration contract change is the real cost. Every render
-pass already has `build_descriptors` + `from_resolved`, so the
-per-pass refactor is minimal — it's the surrounding code in
-`RenderPasses::new` (the per-feature `if let Some(bg)` branching
-when assembling the pools) that has to move out. Aim for ~150–250
-line delta in render_passes.rs and a comparable expansion in
-lib.rs.
+The architectural-contract change is where the work is — the
+per-pass mechanical refactor is already done. Every existing
+render pass exposes `build_descriptors` + `from_resolved`, so the
+delta is concentrated in `RenderPasses::new`'s outer shell (the
+per-feature `if let Some(bg)` branching that today assembles the
+pools and runs the two `ensure_keys` awaits). That shell becomes
+two functions: `describe` carries the assembly + the `Vec<…>` +
+sub-range maps; `from_resolved` carries the per-pass fold-up.
+
+Expect ~150–250 line shuffle inside `render_passes.rs` (net mostly
+zero, since the orchestration moves but doesn't grow) and ~50–80
+new lines in `lib.rs`'s `build()` (the new pool-driving block that
+folds RenderPasses + Picker + Lines + Shadows + Effects + Display
+into one shader pool + one try_join'd compute+render pool).
+
+The dynamic-setter path needs careful preservation. The current
+contract: `set_anti_aliasing` / `set_post_processing` own their own
+batched `ensure_keys`. After Path A: the orchestrator at startup
+gets first crack at the cache (so the setters' subsequent calls
+all hit warm cache); the setter code path itself stays untouched
+for mid-session config flips. Verify by flipping MSAA off + Bloom
+on mid-session and confirming the pipelines recompile via the
+setter's own `ensure_keys` (now a cache miss the first time per
+new config) and the render output is correct.
 
 #### Checklist
 
