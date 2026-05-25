@@ -144,6 +144,19 @@ impl AwsmRenderer {
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
         self.camera
             .write_gpu(&self.logging, &self.gpu, &self.bind_groups)?;
+        // FrameGlobals — renderer-wide per-frame uniform. Written after
+        // Camera so it shares the same upload batch and lands before any
+        // pass that reads it. Resolution comes from the live context
+        // texture (matches what render_textures wants to be sized to).
+        {
+            let (res_w, res_h) = self.gpu.current_context_texture_size()?;
+            self.frame_globals.write_gpu(
+                &self.logging,
+                &self.gpu,
+                self.render_textures.frame_count(),
+                [res_w, res_h],
+            )?;
+        }
         // Shadows must fit cascades + populate the descriptor buffer
         // *before* the lights buffer is packed — `Lights::write_gpu`
         // queries `shadow_index_for` per-light and bakes the result

@@ -16,6 +16,7 @@ pub mod decals;
 pub mod environment;
 pub mod error;
 pub mod features;
+pub mod frame_globals;
 pub mod frustum;
 pub mod instances;
 pub mod light_buckets;
@@ -107,6 +108,11 @@ pub struct AwsmRenderer {
     pub bind_groups: BindGroups,
     pub meshes: Meshes,
     pub camera: CameraBuffer,
+    /// Renderer-wide per-frame uniform — `time`, `delta_time`,
+    /// `frame_count`, `resolution`. Updated once per `render()` call and
+    /// bound alongside the camera uniform in every shader pass. See
+    /// [`crate::frame_globals`] and [`AwsmRenderer::frame_globals`].
+    pub frame_globals: crate::frame_globals::FrameGlobals,
     pub transforms: Transforms,
     pub instances: Instances,
     /// Renderer-owned spatial index over every mesh's world-space AABB.
@@ -423,6 +429,7 @@ impl AwsmRenderer {
             ("meshes.pool", self.meshes.upload_stats()),
             // Phase-2.1 raw-writeBuffer promotions (this sprint):
             ("camera", self.camera.upload_stats()),
+            ("frame_globals", self.frame_globals.upload_stats()),
             ("lights", self.lights.upload_stats()),
             (
                 "mesh_light_indices",
@@ -696,6 +703,7 @@ impl AwsmRendererBuilder {
 
         let mut textures = Textures::new(&gpu)?;
         let camera = camera::CameraBuffer::new(&gpu)?;
+        let frame_globals = crate::frame_globals::FrameGlobals::new(&gpu)?;
 
         // Three default-cubemap creations (prefiltered IBL / irradiance
         // IBL / skybox), the BRDF LUT generation, and the opaque
@@ -894,6 +902,7 @@ impl AwsmRendererBuilder {
             gpu,
             meshes,
             camera,
+            frame_globals,
             transforms,
             instances,
             scene_spatial: SceneSpatial::default(),
