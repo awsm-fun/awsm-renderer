@@ -2,14 +2,16 @@
 
 ## Status (2026-05-25) — landed on the `parallel` branch
 
-All seven phases below have been implemented in a sequence of
-commits on the `parallel` branch. Phase 3 deviates from the
-"describe / compile across all passes" pattern originally
-proposed — see [Implementation notes for Phase 3](#phase-3--parallelize-renderpassesnew)
-below — but every other phase landed as written, and every per-pass
-batched `ensure_keys` call site exists.
+All seven phases below have landed, plus a follow-up sweep that
+took the cross-pass pooling all the way to its limit. Every shader
+and every pipeline that compiles during `AwsmRendererBuilder::build`
+on the cold-cache first load now goes through batched
+`ensure_keys` calls; the per-pass / per-subsystem `new()`
+constructors are thin wrappers over `build_descriptors` +
+`from_resolved` splits so the `RenderPasses::new` orchestrator can
+fold every variant into one global pool.
 
-| Phase | Status | Commit |
+| Phase | Status | Headline commit |
 |---|---|---|
 | 0 — Baseline + plan | ✅ | `docs: add parallelize plan + cold-load measurement procedure` |
 | 1 — `ensure_keys` on render+compute caches | ✅ | `renderer: add RenderPipelines/ComputePipelines::ensure_keys` |
@@ -18,40 +20,78 @@ batched `ensure_keys` call site exists.
 | 4 — Batch transparent pipelines during gltf populate | ✅ | `renderer: batch transparent-mesh pipeline compiles across meshes` |
 | 5 — Real `prewarm_pipelines` for transparents | ✅ | `renderer: prewarm_pipelines now warms live-scene transparents` |
 | 6 — Frontend sub-phase visibility | ✅ | `frontend: surface RendererLoadingPhase in both apps` |
-| 7 — Doc + test hygiene | ✅ | (this commit) |
+| 7 — Doc + test hygiene | ✅ | (Phase 7 commit) |
+| 8 — Pool finalize_gpu_textures across passes | ✅ | `renderer: pool finalize_gpu_textures pipeline recompiles across passes` |
+| 9 — PR #95 review fixes (OR-dedup, phase emission) | ✅ | `review(PR95): fix transparent-pipeline dedup + phase emission` |
+| 10 — Cross-pass shader prewarm | ✅ | `renderer: cross-pass shader pre-warm at RenderPasses::new` |
+| 11 — Full cross-pass pipeline pool in RenderPasses::new | ✅ | `renderer: full cross-pass pipeline pool at RenderPasses::new` |
+| 12 — Batch Picker + LineRenderer | ✅ | `renderer: batch picker's two pipeline compiles` / `renderer: batch LineRenderer's 4 variants` |
+| 13 — anti_aliasing dedup-fix + Picker descriptor split | ✅ | `renderer: fix anti_alias set_anti_aliasing OR-dedup bug` / `renderer: expose Picker descriptor split` |
 
-The complete sequence of pipeline-creation sites that have been
-converted from one-await-per-pipeline to batched `ensure_keys`:
+### What pools at startup now
 
-- **Opaque material pass** — 14 compute pipelines (`material_opaque/pipeline.rs`).
-- **Geometry pass** — 18 render pipelines (`geometry/pipeline.rs`).
-- **HZB** — 3 compute pipelines.
-- **Material classify** — 2 compute pipelines.
-- **Material decal** — 2 compute pipelines.
-- **Material decal composite** — 2 render pipelines (uses
-  `create_render_pipeline_promise` directly because it owns its own
-  layout cache).
-- **Effects** — 5 compute pipelines (bloom-phase fan-out).
-- **Shadow casters** — 4 render pipelines (instancing × cube).
-- **Shadow EVSM** — 3 compute pipelines + their inline shader
-  compiles in one `join_all`.
-- **Transparent material pass** — batched per-mesh via
-  `set_render_pipeline_keys_batched`, used by `finalize_gpu_textures`
-  and by `prewarm_pipelines`.
+`RenderPasses::new` runs through five phases in order:
 
-The opaque + transparent + shadow + effects passes are now the four
-hottest pieces of cold-load work and all of them parallelise their
-own pipeline batch internally. Cross-pass pooling — i.e. having
-`RenderPasses::new` pool *every pass's* shader+pipeline keys into
-one mega-batch — was the original Phase 3 design but turns out to
-require a deep refactor of `RenderPassInitContext` (every pass's
-`new` holds `&mut` on the shared init context, so a literal
-`try_join_all(passes)` won't compile). The within-pass batching
-already captures the dominant cost; the remaining inter-pass
-serialisation is bounded by `max(t_compile)` per pass × number of
-passes, not by `sum(t_compile)` per pipeline. If measurement after
-this lands shows it's still the bottleneck, the deeper refactor is a
-follow-up.
+1. **Sync bind-group setup** — every pass's bind-group +
+   pipeline-layout cache keys registered (no Dawn compile work).
+2. **One `Shaders::ensure_keys`** — pools every shader cache key
+   across all 12 render passes *plus* the shadow caster + picker +
+   line shaders that other subsystems compile later in `build()`,
+   so their `shaders.get_key` calls hit the cache.
+3. **Pipeline descriptor build** — sync; each pass's
+   `build_descriptors` returns `(pipeline_cache_keys, slots)`
+   resolving shader keys via the now-warm cache.
+4. **Two `ensure_keys` batches** — one
+   `ComputePipelines::ensure_keys` pooling every compute pipeline
+   across opaque (14) + decal (2) + decal_classify (1) + classify
+   (2) + hzb (3) + occlusion (1) + compaction (1) + coverage (1–2)
+   = **~26 compute pipelines**. One `RenderPipelines::ensure_keys`
+   pooling geometry's **18 render pipelines**. Dawn parallelises
+   each pool internally through its compile pool (~`num_cpus`).
+5. **Sync fold-up** — each pass's `from_resolved` rebuilds the
+   typed `Pipelines` struct from its slice of the resolved keys;
+   the typed `RenderPass` struct is constructed from
+   `(bind_groups, pipelines, …)`.
+
+In the original code this was **24 sequential per-pass awaits** (12
+passes × shader-batch + pipeline-batch); now it's **3 awaits total**
+(one shader, one compute, one render), each running its own
+batch in parallel.
+
+### What still compiles outside RenderPasses::new
+
+The following compile *after* `RenderPasses::new` returns and stay
+sequential per-subsystem, but each one is internally batched:
+
+- **Picker** — 1 batched `ComputePipelines::ensure_keys` for 2
+  pipelines. Shader cache hits (pre-warmed by `RenderPasses::new`).
+- **LineRenderer** — 1 batched `RenderPipelines::ensure_keys` for
+  4 variants (depth-test × MSAA). Shader cache hit.
+- **Shadows** — 2 awaits: 1 `RenderPipelines::ensure_keys` for 4
+  caster variants, plus an EVSM block that runs 3 inline shader
+  validations through `join_all` and 3 EVSM compute pipelines
+  through `ComputePipelines::ensure_keys` together. Caster shader
+  cache hit; EVSM uses an inline-source path that bypasses the
+  shared shader cache.
+- **`set_anti_aliasing` / `set_post_processing`** — 1 batched
+  `ComputePipelines::ensure_keys` for the 5 effects variants
+  (bloom-phase fan-out), and 1 batched render call for the 1
+  display pipeline. The first time these are called the cold
+  compile happens; subsequent calls hit the cache.
+
+Pooling these into the same `RenderPasses::new` batches would
+require splitting Shadows / Effects / Display into the same
+`build_descriptors` + `from_resolved` shape and threading the
+orchestration through `AwsmRendererBuilder::build`. The
+`Picker::build_descriptors` split is already in place as
+infrastructure for that follow-up; Shadows is the heavier piece —
+~250 lines of intricate texture/buffer/EVSM setup that would have
+to be re-shaped around the descriptor split. Given the diminishing
+returns (Dawn's compile pool already runs all of `RenderPasses`'s
+combined ~44 pipelines in roughly `ceil(44/num_cpus)` waves; the
+~10 tail pipelines add maybe one more wave) and the size of the
+refactor, that's parked as a follow-up rather than landed in this
+sweep.
 
 ## Instructions for the implementor
 
