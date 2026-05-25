@@ -3,9 +3,7 @@
 This document is the durable guide to `awsm-renderer`'s
 performance model: what costs what, how the per-frame pipeline
 is structured, which knobs to turn, and where to look when a
-profile shows regression. It supersedes the now-archived
-`docs/plans/optimizations.md`, which tracked one-off work items
-during a series of optimization sessions.
+profile shows regression.
 
 If you're new here, start with §1 and §2; for in-flight tuning,
 jump to §5 (tuning knobs) or §7 (diagnostic recipes).
@@ -541,8 +539,8 @@ cloned) across the `postMessage` boundary using the trait hooks
   `post_message_with_transfer` transfer list. Main thread
   receives them in O(1) and [`GltfParseOutput::into_loader`][gp_il]
   skips its decode step entirely.
-- **`doc_bytes` + `buffer_bytes`** (zero-copy byte transfer,
-  `optimizations-next.md §1`) — re-emitted glTF JSON and the
+- **`doc_bytes` + `buffer_bytes`** (zero-copy byte transfer) —
+  re-emitted glTF JSON and the
   per-buffer-view binary payloads are moved into freshly-allocated
   JS-heap `Uint8Array`s on the worker side and their underlying
   `ArrayBuffer`s are added to the same transfer list. The previous
@@ -601,8 +599,7 @@ the on-demand spawn cost no longer falls on its critical path.
 ### The editor flip — worker mode is now the default
 
 The scene-editor's `asset_cache::load_and_populate` defaults to
-the worker path (`optimizations-next.md §2`). Both prior blockers
-are addressed:
+the worker path. Both prior blockers are addressed:
 
 1. **Pre-warmed pool at editor init.** `context.rs::maybe_build_worker_pool`
    constructs `WorkerPool::new(WorkerPoolBootstrap::Auto, 2)` during
@@ -633,8 +630,7 @@ project-open serialises assets), so 1 would technically be enough;
 import, the measurement harness) without burning RAM on workers
 that never see load. `WorkerPool::with_workers(None)` would clamp
 to `min(hardware_concurrency, 4)`, which on a 16-core dev box
-parks 4 workers permanently. See [`optimizations-next.md §2`](plans/optimizations-next.md)
-for the design notes.
+parks 4 workers permanently.
 
 ### Shipping a game — still build your own pool
 
@@ -751,9 +747,9 @@ Gate" span shows **0.048 ms mean / 0.1 ms p95** — well under the
 The three PCSS branches (cube `sample_shadow_cube`, directional
 `sample_shadow_cascade_array`, 2D spot
 `sample_shadow_descriptor`) and the Soft (hardness < 1.5)
-branches all run at a fixed 16-tap rotated Poisson kernel. The
-"finish-every-optimisation" sprint briefly tried a variable-tap
-path keyed on receiver distance; that was reverted in
+branches all run at a fixed 16-tap rotated Poisson kernel. An
+earlier attempt at a variable-tap path keyed on receiver
+distance was reverted in
 [af13932](https://github.com/dakom/awsm-renderer/commit/af13932)
 and the plumbing fully removed in a follow-up — the
 directional taper key (`ndc.z`) is uncorrelated with penumbra
@@ -837,11 +833,11 @@ compile every time you can't prove the cache is warm."
 
 ### The "first-visible-frame stutter" we observed
 
-After the "finish-every-optimisation" commit, the WGSL source
-for every material pipeline changed (added
-`shadow_receiver_gate: u32` to `MaterialMeshMeta`, changed the
-four `apply_lighting*` callsites). Every user's first page load
-post-deploy hit a cache miss and recompiled ~12 pipelines
+During the shadow-receiver-gate rollout the WGSL source for
+every material pipeline changed (added `shadow_receiver_gate: u32`
+to `MaterialMeshMeta`, changed the four `apply_lighting*`
+callsites). Every user's first page load post-deploy hit a cache
+miss and recompiled ~12 pipelines
 serially in the render loop. The first Insert Model was a
 multi-hundred-ms stall; the second was instant.
 
@@ -867,14 +863,13 @@ gizmo through every active pipeline, the geometry / opaque /
 transparent / shadow passes to draw something, and WebGPU to
 compile.
 
-### Interaction with the planned dynamic-materials sprint
+### Interaction with runtime-registered dynamic materials
 
-This warmup story gets **more important** once the
-[`docs/plans/dynamic-materials.md`](plans/dynamic-materials.md)
-work lands. That plan adds runtime registration of custom
-material shaders — `MaterialDefinition` data + a `shader.wgsl`
-fragment, both registered at startup (or mid-frame, with a
-recompile). Two new wrinkles to handle in the warmup:
+This warmup story gets **more important** once runtime
+registration of custom material shaders lands —
+`MaterialDefinition` data + a `shader.wgsl` fragment, both
+registered at startup (or mid-frame, with a recompile). Two new
+wrinkles to handle in the warmup:
 
 1. **Custom shader_ids aren't known until the consumer
    registers them.** First-party materials are enumerable at
@@ -883,9 +878,8 @@ recompile). Two new wrinkles to handle in the warmup:
    *after* every dynamic registration the consumer cares about
    — usually right after game-init finishes loading material
    defs, before the first gameplay frame.
-2. **Mid-frame registration forces a recompile.** The dynamic-
-   materials plan calls this out explicitly: registering a new
-   material mid-frame busts the cached opaque-compute /
+2. **Mid-frame registration forces a recompile.** Registering a
+   new material mid-frame busts the cached opaque-compute /
    transparent-fragment pipelines (the dispatch chain text
    changes). A game that streams in custom materials during play
    would see exactly the same stutter pattern this section
@@ -894,7 +888,7 @@ recompile). Two new wrinkles to handle in the warmup:
    newly-registered shader_id before the next user-interactive
    frame.
 
-So whoever picks up the dynamic-materials sprint should land a
+Whoever lands the runtime-materials work should pair it with a
 **`AwsmRenderer::prewarm_pipelines()` API** alongside the
 registry work: walks every active (shader_id × variant) combo
 the renderer knows about, fakes a one-pixel draw to compile,
@@ -939,13 +933,13 @@ numbers are the bar a renderer change should clear before it lands.
 | Material Classify | 0.01 | 0.1 | 0.1 |
 | Display RenderPass | 0.02 | 0.1 | 0.1 |
 
-Re-captured after the "finish-every-optimisation" sprint
-(coverage-driven skin-skip with grace + BVH override, cheap-material
-LOD routing live, shadow-receiver gate, PCSS variable taps,
-worker-mode gltf with in-worker image decode). The mean frame
-budget is identical to the pre-sprint baseline — the new
-per-mesh `Shadow Receiver Gate` walk costs 0.048 ms and is offset
-by the PCSS-tapered shadow generation cost (-0.02 ms).
+Captured with every shipped optimisation engaged: coverage-driven
+skin-skip with grace + BVH override, cheap-material LOD routing,
+shadow-receiver gate, PCSS variable taps, and worker-mode gltf
+with in-worker image decode. The per-mesh `Shadow Receiver Gate`
+walk costs 0.048 ms and is offset by the PCSS-tapered shadow
+generation cost (-0.02 ms), so the mean frame budget matches the
+pre-optimisation baseline.
 
 Frame budget at 60 fps is 16.67 ms; the renderer runs at ~6× that
 headroom. p95 stays at 3.7 ms even on a 10k-mesh stress scene.
@@ -1304,7 +1298,7 @@ scene-editor exposes four `#[cfg(debug_assertions)]`
 | `read_oversized_mesh_stats()` | JSON string | `{ last_max_bucket, oversized_count }` from `LightMeshBuckets`. |
 | `read_render_pass_timings(min_count)` | JSON string | Per-pass `count / mean / p50 / p95 / max / total` (ms). Strips the `[id]: span-measure` suffix `tracing-web` appends so call sites collapse into one bucket. Clears measures after sampling. Pass `min_count=0` to include rare init spans (GLTF parse, etc.). |
 | `read_upload_ring_stats()` | JSON string | Phase-2.1 mapped-upload-ring telemetry, keyed by subsystem (`transforms`, `materials`, `instances.transforms`, `meshes.meta.*`, …) plus a `_total` rollup. Each entry includes `peak_ring_depth_used / fallback_count / map_async_wait_ms / bytes_uploaded_via_{ring,fallback,writebuffer} / resize_count`. Steady state on `tuning-10k-meshes` should see `_total.fallback_count == 0`; non-zero means a buffer's ring depth (default 3) is too shallow for its frame cadence. |
-| `measure_gltf_load_ab(url, iterations)` | JSON string | Phase-4.3b A/B: `{ inline_ms[], worker_ms[], inline_mean, worker_mean, speedup }`. Drove the flip-to-default decision on `asset_cache::load_and_populate`. M2 Chrome baseline on Corset.glb (12.8 MB), post the `serde_bytes` encoding fix + in-worker `ImageBitmap` decode + handle-transfer side-channel: inline **196 ms** / worker **91 ms** → **2.15×**. Zero-copy byte transfer + pre-warmed pool + sticky inline fallback landed in the `optimizations-next.md` sprint; **worker mode is now the editor default**, with `?gltf-worker=off` as the dev-only opt-out for the inline-baseline A/B. See [§5c](#5c-worker-mode-gltf-parse--default-in-the-editor). |
+| `measure_gltf_load_ab(url, iterations)` | JSON string | A/B harness for `GltfParseJob`: returns `{ inline_ms[], worker_ms[], inline_mean, worker_mean, speedup }` so the inline `GltfLoader::load` path can be compared against the worker `pool.dispatch::<GltfParseJob>(..)` path. Canonical reference on M2 Chrome / Corset.glb (12.8 MB): inline **196 ms** / worker **91 ms** → **2.15×**. The editor defaults to worker mode (pre-warmed pool + sticky inline fallback); `?gltf-worker=off` is the dev-only opt-out for re-running the inline baseline. See [§5c](#5c-worker-mode-gltf-parse--default-in-the-editor). |
 
 Per-frame render-pass timings come from
 `performance.getEntriesByType('measure')` — `tracing-web`'s
@@ -1337,11 +1331,10 @@ generate_tuning_scenes -p awsm-scene-schema`):
 
 Nothing in this section right now — the previously-parked items
 (coverage-driven skin-skip, cheap-material LOD routing, shadow-
-receiver gate, PCSS variable taps) all landed in the
-"finish-every-optimisation" sprint commit; their behaviour and
-tuning knobs are documented in their respective sections of this
-file (§4 / §5 / §6 / §8). What remains in "Won't do" (§11) below
-is genuinely intentional non-work, not deferred work.
+receiver gate, PCSS variable taps) all landed; their behaviour
+and tuning knobs are documented in their respective sections of
+this file (§4 / §5 / §6 / §8). What remains in "Won't do" (§11)
+below is genuinely intentional non-work, not deferred work.
 
 If a parked item lands here in the future, document the *hazard*
 (why it's parked, not just "TODO") so the next picker has

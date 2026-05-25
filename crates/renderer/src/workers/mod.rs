@@ -1,8 +1,6 @@
-//! Phase 4.3a — library-wide worker-job infrastructure.
-//!
-//! See `docs/plans/more-optimizations.md` §Phase 4.3 for the design
-//! and `docs/PERFORMANCE.md` §5c (added when telemetry lands) for
-//! the operational summary.
+//! Library-wide worker-job infrastructure. `docs/PERFORMANCE.md` §5c
+//! covers operational behaviour; `docs/DEPLOYMENT_MODES.md` covers
+//! how this pool relates to the OffscreenCanvas renderer-worker.
 //!
 //! Public surface:
 //!
@@ -17,11 +15,11 @@
 //!   listener.
 //!
 //! **Scope**: CPU-only work that produces `Vec<u8>` / parsed
-//! structures, ingested by the main thread via Phase 2.1's
+//! structures, ingested by the main thread via
 //! [`crate::buffer::mapped_uploader::MappedUploader::ingest_foreign`].
-//! The WebGPU device cannot be shared across workers; see Phase 4.4
-//! for the `OffscreenCanvas` deployment mode that runs the entire
-//! renderer in a worker.
+//! The WebGPU device cannot be shared across workers; see
+//! `docs/DEPLOYMENT_MODES.md` for the `OffscreenCanvas` mode that
+//! runs the entire renderer in a worker.
 
 mod blob;
 mod entry;

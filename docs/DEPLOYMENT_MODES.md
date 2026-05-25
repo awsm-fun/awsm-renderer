@@ -19,20 +19,31 @@ thread is shared with game logic, physics, audio scheduling,
 network code, etc. — isolating the renderer in a worker means it
 cannot be starved by main-thread CPU contention.
 
-> **Phase 4.4 status**: complete. Runtime-global helpers in both
-> [`crates/renderer/src/web_global.rs`](../crates/renderer/src/web_global.rs)
-> and [`crates/renderer-core/src/web_global.rs`](../crates/renderer-core/src/web_global.rs).
-> Audit-and-replace pass closed both functional non-worker-safe
-> sites (`compatibility::check`, `image/bitmap.rs::WINDOW`).
-> `AwsmRendererWebGpuBuilder::new_with_offscreen_canvas(gpu, canvas)`
-> is the worker-mode constructor; internally the builder stores a
-> `CanvasKind { Html, Offscreen }` enum and dispatches the context
-> acquisition + resize handling accordingly. A reference consumer
-> is [`crates/examples/render-worker/`](../crates/examples/render-worker/)
-> — single wasm-bindgen target that boots into either
-> `main_thread_boot()` or `worker_thread_boot()` based on the
-> active global, transfers an `OffscreenCanvas` to the worker, and
-> drives the renderer's rAF loop from inside the worker.
+## Worker-mode infrastructure
+
+Runtime-global helpers in
+[`crates/renderer/src/web_global.rs`](../crates/renderer/src/web_global.rs)
+and
+[`crates/renderer-core/src/web_global.rs`](../crates/renderer-core/src/web_global.rs)
+pick the right global (`Window` vs `DedicatedWorkerGlobalScope`)
+on every call site that needs `navigator`, `performance`, or
+`requestAnimationFrame`. The renderer + renderer-core crates
+route every such site through these helpers, so the same code
+compiles unchanged for both deployment modes.
+[`AwsmRendererWebGpuBuilder::new_with_offscreen_canvas(gpu, canvas)`](../crates/renderer-core/src/renderer.rs)
+is the worker-mode constructor; internally the builder stores a
+`CanvasKind { Html, Offscreen }` enum and dispatches GPU-context
+acquisition + resize handling accordingly.
+
+A reference consumer lives at
+[`crates/examples/render-worker/`](../crates/examples/render-worker/)
+— a single wasm-bindgen target that boots into either
+`main_thread_boot()` or `worker_thread_boot()` based on the
+active global, transfers an `OffscreenCanvas` to the worker, and
+drives the renderer's rAF loop from inside the worker. The
+`WorkerInputEvent` enum it exposes is the documented postMessage
+shape; consumers DIY the actual event forwarding (different games
+want different latency / coalescing / filtering trade-offs).
 
 ## Worker-mode wiring
 
@@ -80,10 +91,10 @@ conflate, important to keep separate:
    scene-editor pre-warms a 2-worker pool at `create_context`
    time and routes `asset_cache::load_and_populate` through it
    by default ([PERFORMANCE.md §5c](PERFORMANCE.md)).
-2. **The OffscreenCanvas renderer worker** (Phase 4.4, the
-   subject of the rest of this doc). A *single* worker hosts
-   the entire renderer + game loop, with the `OffscreenCanvas`
-   transferred from the main thread.
+2. **The OffscreenCanvas renderer worker** (the subject of the
+   rest of this doc). A *single* worker hosts the entire
+   renderer + game loop, with the `OffscreenCanvas` transferred
+   from the main thread.
 
 The two are independent: a worker-mode (OffscreenCanvas)
 consumer still benefits from a `WorkerPool` for glTF parse —
@@ -116,5 +127,5 @@ Pre-warm guidance:
 - **`DedicatedWorkerGlobalScope::requestAnimationFrame`**:
   universally supported as of 2023, so no polyfill needed.
 
-Chrome via the Claude Preview MCP is the required smoke target for
-this sprint; Safari is nice-to-have.
+Chrome (e.g. via the Claude Preview MCP harness) is the primary
+smoke target; Safari is nice-to-have.

@@ -423,11 +423,12 @@ pub async fn read_upload_ring_stats() -> String {
 /// `asset_cache::load_and_populate`'s default.
 ///
 /// Per the spec: a real measurement against `robot-001.glb`
-/// drives the flip decision. The repo ships a 12.8 MB substitute
-/// (Corset.glb, copied into `assets/stress/Corset.glb` by trunk in
-/// dev builds) reachable as `/assets/stress/Corset.glb` — large
-/// enough to amortise worker spawn cost without ballooning every
-/// dev rebuild.
+/// drives the flip decision. A reasonable 12.8 MB substitute is
+/// Corset.glb from the Khronos sample-assets repo —
+/// `https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/Corset/glTF-Binary/Corset.glb`
+/// — large enough to amortise worker spawn cost. Pass any URL
+/// the browser can fetch; the harness doesn't care where the glb
+/// lives, only that both load paths see the same bytes.
 #[wasm_bindgen]
 pub async fn measure_gltf_load_ab(url: String, iterations: u32) -> String {
     use awsm_renderer::workers::{WorkerPool, WorkerPoolBootstrap};

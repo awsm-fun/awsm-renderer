@@ -224,8 +224,7 @@ fn gltf_worker_enabled_from_url() -> bool {
 /// pools just burn boot RAM on workers that never see load —
 /// `WorkerPool::with_workers(None)` would clamp to
 /// `min(hardware_concurrency, 4)` but on a 16-core dev box that's
-/// 4 workers permanently parked. See `optimizations-next.md §2 →
-/// "Pool size for default-on?"` for the rationale.
+/// 4 workers permanently parked.
 const GLTF_WORKER_POOL_SIZE: usize = 2;
 
 /// Build a `WorkerPool` and register `GltfParseJob`. Returns `None` if

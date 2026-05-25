@@ -50,6 +50,22 @@ When testing, focus on:
 
 After Phase 1, every shader the renderer compiles (PBR, Unlit, Toon, transmissive pass, transparent pass, particles, debug visualizers) has `frame_globals` in scope and can read `frame_globals.time` if it wants. No shader is required to use it — but if any first-party shader wants to add a time-driven effect later (animated dissolve, scrolling UV, etc.), the binding is already there.
 
+### Acceptance: CPU-side time visibility
+
+CPU-side subsystems also benefit. The editor's particle bridge
+([`crates/frontend/scene-editor/src/renderer_bridge/particles_sync.rs`](../../crates/frontend/scene-editor/src/renderer_bridge/particles_sync.rs))
+currently maintains its own `last_ts_ms` per emitter runtime and
+clamps a per-frame `dt: f32` to `[0.0, 0.1]` before feeding
+`Simulator::tick`. Once `FrameGlobalsSnapshot` is the canonical
+source of `delta_time`, the bridge can read it via
+`AwsmRenderer::frame_globals().delta_time` instead of computing
+its own — and pause / time-scale / replay automatically flow into
+particle simulation via `set_time_source`. Phase 5 ("Edge cases +
+polish") includes migrating that bridge as a smoke target for the
+public-API surface; any consumer that today rolls its own
+`performance.now()` delta should do the same after `FrameGlobals`
+lands.
+
 ---
 
 ## High-Level Direction
@@ -277,7 +293,9 @@ crates/renderer/src/frame_globals/
 ```
 
 `FrameGlobals` owns:
-- A `web_sys::GpuBuffer` of 32 bytes (uniform-mode).
+- A `web_sys::GpuBuffer` of 32 bytes (uniform-mode, `MAP_WRITE | COPY_DST | UNIFORM`).
+- A `MappedUploader` companion — required by [`PERFORMANCE.md §5b`](../PERFORMANCE.md): every per-frame `queue.writeBuffer` site in the renderer crate routes through `MappedUploader` (the camera uniform, also 64 bytes, is the precedent — see [`crates/renderer/src/camera.rs::write_gpu`](../../crates/renderer/src/camera.rs)). Default ring depth (3) is right for a 32-byte uniform.
+- A `Vec<u8>` shadow buffer for the dirty-range pack (mirrors the `raw_data` slice the camera write uses).
 - `construction_ms: f64` — the `Performance.now()` reading captured at `AwsmRenderer::new()`. Kept in `f64` to preserve millisecond precision over long sessions.
 - `last_time: Option<f32>` for delta computation (after conversion to `f32` seconds).
 - `time_override: Option<f32>` set via `set_time_source`.
@@ -288,8 +306,8 @@ crates/renderer/src/frame_globals/
    - If `last_time.is_none()` (first frame): `0.0`.
    - Else: `(time - last_time.unwrap()).min(0.25)`. Upper-clamp only.
 3. Update `last_time = Some(time)`.
-4. Pack into the 32-byte uniform layout (struct above).
-5. Write to GPU.
+4. Pack into the 32-byte uniform layout (struct above) inside the shadow `Vec<u8>`.
+5. Call `MappedUploader::write_dirty_ranges(gpu, &gpu_buffer, BYTE_SIZE, &raw_data, &[(0, BYTE_SIZE)])` — the entire payload is "dirty" every frame since `time` always advances.
 
 Called from `render.rs::render()`, sequenced **before** anything that might read it. Anywhere in the existing CPU→GPU upload batch is fine; the existing block between `self.transforms.write_gpu(...)` and `self.materials.write_gpu(...)` is a reasonable home.
 
@@ -349,6 +367,73 @@ Same path every existing first-party material follows:
 3. `enabled_materials()` appends a `MaterialEntry { shader_id: FLIPBOOK, wgsl_fragment: include_str!("wgsl/flipbook_material.wgsl"), name: "flipbook" }` behind `#[cfg(feature = "flipbook")]`.
 4. The opaque + transparent dispatch chains gain a `FLIPBOOK` branch (the existing template machinery handles this automatically once the registry entry is added).
 
+### Material classify — bucket extension
+
+Adding a new first-party shader_id is **not** purely a registry
+change since the material classify + indirect dispatch landed (see
+[`PERFORMANCE.md §1`](../PERFORMANCE.md) frame diagram and
+[`crates/renderer/src/render_passes/material_classify/`](../../crates/renderer/src/render_passes/material_classify/)).
+The classify shader scans the visibility buffer per-tile and routes
+each pixel into a per-shader_id bucket using a hard-coded bitmask;
+the buckets feed `dispatchWorkgroupsIndirect` so each opaque
+compute pipeline runs only over tiles its shader_id touches.
+
+Today's wiring (PBR / Unlit / Toon) is hard-coded:
+
+- [`material_classify/buffers.rs`](../../crates/renderer/src/render_passes/material_classify/buffers.rs):
+  `pub const BUCKET_COUNT: u32 = 3;`.
+- [`material_classify/shader/material_classify_wgsl/compute.wgsl`](../../crates/renderer/src/render_passes/material_classify/shader/material_classify_wgsl/compute.wgsl):
+  hard-coded `BUCKET_BIT_PBR/UNLIT/TOON` consts, an if-else chain
+  mapping each `shader_id` to its bit, and a per-bucket extract
+  block that emits `dispatchWorkgroupsIndirect` args.
+
+Adding FlipBook requires:
+
+1. Bump `BUCKET_COUNT: 3 → 4` in `buffers.rs`.
+2. Add `BUCKET_BIT_FLIPBOOK: u32 = 8u;` to `compute.wgsl`. Extend
+   the `if shader_id == SHADER_ID_PBR { … } else if …` chain to
+   route flipbook pixels into the new bit.
+3. Extend the per-bucket extract block (around lines 89-103 of
+   `compute.wgsl`) so the `(mask & BUCKET_BIT_FLIPBOOK) != 0u`
+   case writes its dispatch-args slot.
+4. The pipeline-launch loop in
+   [`material_opaque/render_pass.rs`](../../crates/renderer/src/render_passes/material_opaque/render_pass.rs)
+   iterates per shader_id today — verify it picks up the new
+   pipeline from `enabled_materials()` without additional wiring
+   (the `{% match shader_id %}` askama choice in the opaque
+   compute template already handles per-pipeline emission once
+   `MaterialShaderId::FLIPBOOK` is in the registry).
+
+Same shape for the transparent path's per-shader_id dispatch chain
+in `material_transparent` if FlipBook is registered as a Blend
+material.
+
+This intersects with the [dynamic-materials plan](./dynamic-materials.md)'s
+"Storage budget watch" note (the opaque main bind group is near
+its 10/10 storage-binding cap). FlipBook itself adds no new
+storage bindings — it uses the existing per-material storage
+pool — so the budget is unaffected by this plan; only
+dynamic-materials' `extras_pool` does.
+
+### Pipeline pre-warm — first-visible-frame stutter
+
+Adding FlipBook to `enabled_materials()` changes the opaque +
+transparent compute kernels' WGSL source, which busts the
+browser's compiled-PSO cache for those pipelines (see
+[`PERFORMANCE.md §5g`](../PERFORMANCE.md)). The editor's
+`prewarm_pipelines()` call (already wired in
+[`crates/frontend/scene-editor/src/main.rs`](../../crates/frontend/scene-editor/src/main.rs))
+walks every active `(shader_id × variant)` combination to compile
+each pipeline before first frame — but **only if FlipBook is in
+`enabled_materials()` at warmup time**. Phase 2 (which adds
+FlipBook to `enabled_materials()` behind `#[cfg(feature = "flipbook")]`)
+must run with the feature enabled for `prewarm_pipelines()` to
+include it; the default-feature wiring (Phase 2 step 5) ensures
+this on the editor's default build. A consumer who opts out via
+`default-features = false, features = []` won't see FlipBook in
+their warmup walk — that's correct (they're also not paying for
+its pipeline compile).
+
 The flipbook WGSL fragment calls `frame_globals.time` to compute the current cell, then samples the atlas at the cell's UV. Sketch:
 
 ```wgsl
@@ -391,9 +476,9 @@ Each phase is a runnable checkpoint — commit after each.
 
 **FrameGlobals (CPU-side only — no shader binding yet):**
 
-1. Create `crates/renderer/src/frame_globals/mod.rs` with `pub struct FrameGlobals` carrying the GPU buffer, `construction_ms: f64`, `last_time: Option<f32>`, and `time_override: Option<f32>`. Capture `construction_ms` from `Performance.now()` at `AwsmRenderer::new()`.
+1. Create `crates/renderer/src/frame_globals/mod.rs` with `pub struct FrameGlobals` carrying the GPU buffer, a `MappedUploader` companion (default ring depth 3), a `Vec<u8>` shadow buffer, `construction_ms: f64`, `last_time: Option<f32>`, and `time_override: Option<f32>`. Capture `construction_ms` from `Performance.now()` at `AwsmRenderer::new()`. Mirror the camera's pattern in [`crates/renderer/src/camera.rs`](../../crates/renderer/src/camera.rs) — it's the canonical "small per-frame uniform via MappedUploader" precedent.
 2. Add `pub frame_globals: FrameGlobals` to `AwsmRenderer`.
-3. Implement `write_gpu` per the spec in **Renderer Changes**: `time` is f32 seconds derived from the f64 ms tracker; `delta_time` is upper-clamped at 0.25, allowing 0.0; first frame returns 0.0 delta.
+3. Implement `write_gpu` per the spec in **Renderer Changes**: `time` is f32 seconds derived from the f64 ms tracker; `delta_time` is upper-clamped at 0.25, allowing 0.0; first frame returns 0.0 delta. Routes through `MappedUploader::write_dirty_ranges`, not `queue.writeBuffer` — `PERFORMANCE.md §5b` is load-bearing here.
 4. Implement `FrameGlobalsSnapshot` + `AwsmRenderer::frame_globals()` + `set_time_source()`.
 5. Wire `write_gpu` into `render::render()` in the existing CPU→GPU upload batch.
 6. **Verify clamping behavior**: hand-test `set_time_source(0.0)` for 3 consecutive frames; first delta is 0.0 (no prior frame), second and third deltas are 0.0 (time didn't advance). Confirm in a unit test or a printf-style probe; remove the probe before commit.
@@ -466,6 +551,16 @@ Expected outcome: visible, correct flipbook animation in the scene editor. Commi
 
 ### Phase 5 — Edge cases + polish
 
+0. **Migrate the editor's particle bridge to `FrameGlobalsSnapshot`.**
+   [`crates/frontend/scene-editor/src/renderer_bridge/particles_sync.rs`](../../crates/frontend/scene-editor/src/renderer_bridge/particles_sync.rs)
+   currently keeps its own `last_ts_ms` per runtime and computes a
+   clamped `dt: f32` before calling `Simulator::tick`. Replace
+   that math with `renderer.frame_globals().delta_time`. Pause /
+   time-scale / replay (the use cases `set_time_source` exists
+   for) automatically flow to particles after this change — that
+   is the load-bearing first non-shader consumer of the new
+   public surface, and the smoke target for `set_time_source`
+   actually controlling something visible.
 1. **Zero-frame or single-frame materials**: `frame_count == 0` is invalid (assert in `new` / log a warning); `frame_count == 1` should display only cell 0 regardless of time / mode.
 2. **frame_count > cols * rows**: invalid (cell index would overflow the atlas). Validate in CPU code; surface an error.
 3. **`fps == 0`**: collapses `frame_f = (t + time_offset) * 0 = 0` regardless of `t` or `time_offset`, so the material freezes on cell 0. This is a useful "static cell-cropper" mode worth documenting in the `fps` field's rustdoc rather than rejecting.
@@ -509,6 +604,7 @@ Tick items as they land. A future session can resume by reading this list.
 - [ ] `crates/renderer/src/frame_globals/` module with `construction_ms: f64` + `last_time: Option<f32>` + `time_override: Option<f32>`
 - [ ] `pub frame_globals: FrameGlobals` field on `AwsmRenderer`
 - [ ] GPU buffer (32 bytes, uniform)
+- [ ] `MappedUploader` companion (NOT raw `queue.writeBuffer`) — mirrors `camera.rs`
 - [ ] `write_gpu` with upper-clamp-only delta (allows 0.0), first-frame delta = 0.0
 - [ ] `FrameGlobalsSnapshot` + `frame_globals()` accessor + `set_time_source()` method
 - [ ] Wired into `render::render()` in the existing CPU→GPU upload batch
@@ -535,6 +631,9 @@ Tick items as they land. A future session can resume by reading this list.
 - [ ] `flipbook` Cargo feature in `awsm-renderer-materials`; added to workspace default features
 - [ ] `enabled_materials()` appends FlipBook behind the feature
 - [ ] `Material::FlipBook` variant + every match arm updated
+- [ ] **Material classify extension**: `BUCKET_COUNT: 3 → 4` in `material_classify/buffers.rs`
+- [ ] **Material classify WGSL**: `BUCKET_BIT_FLIPBOOK` + if-else chain + per-bucket extract block all extended
+- [ ] **Pipeline pre-warm**: verify `prewarm_pipelines()` picks up FlipBook on a debug-build editor boot (cold-cache reload should compile the FlipBook pipelines during splash, not on first interactive frame)
 
 ### Phase 3 — flipbook_material.wgsl
 - [ ] `flipbook_material.wgsl` with Raw + friendly structs
@@ -550,6 +649,7 @@ Tick items as they land. A future session can resume by reading this list.
 - [ ] Three alpha modes (Opaque, Mask, Blend) verified
 
 ### Phase 5 — Edge cases + polish
+- [ ] **Particle bridge migrated**: `particles_sync.rs` reads `delta_time` from `frame_globals()` instead of its private `last_ts_ms` math. `set_time_source` smoke target: paused gameplay freezes particle motion; bullet-time slows it.
 - [ ] `frame_count == 0` handled (assert / log)
 - [ ] `frame_count > cols * rows` rejected
 - [ ] `fps == 0` documented as valid (static cell)
