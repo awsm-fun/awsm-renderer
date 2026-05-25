@@ -1,7 +1,7 @@
 //! Phase 4.3a — library-wide worker-job infrastructure.
 //!
 //! See `docs/plans/more-optimizations.md` §Phase 4.3 for the design
-//! and [`docs/PERFORMANCE.md`] §5c (added when telemetry lands) for
+//! and `docs/PERFORMANCE.md` §5c (added when telemetry lands) for
 //! the operational summary.
 //!
 //! Public surface:
