@@ -1,5 +1,6 @@
 use awsm_renderer::{
     anti_alias::AntiAliasing, materials::pbr::PbrMaterialDebug, post_process::PostProcessing,
+    RendererLoadingPhase,
 };
 
 use crate::prelude::*;
@@ -28,6 +29,14 @@ pub struct AppContext {
 #[derive(Clone, Debug)]
 pub struct LoadingStatus {
     pub renderer: std::result::Result<bool, String>,
+    /// Active phase of `AwsmRendererBuilder::build()`, fed by the
+    /// builder's `with_phase_handler` callback. `None` means the
+    /// builder hasn't started or has reached `Ready`. Surfacing the
+    /// active phase lets the UI render distinct messages over the
+    /// long cold-cache window (~tens of seconds on a fresh Chrome
+    /// profile) — "Browser is compiling shaders…" rather than a
+    /// frozen "Initializing renderer…".
+    pub renderer_phase: Option<RendererLoadingPhase>,
     /// Set true while `AwsmRenderer::prewarm_pipelines()` runs — the
     /// trailing edge of the cold-start shader-compile window that
     /// otherwise hides inside the (already slow) `renderer` phase.
@@ -66,6 +75,7 @@ impl Default for LoadingStatus {
     fn default() -> Self {
         Self {
             renderer: Ok(false),
+            renderer_phase: None,
             shader_prewarm: Ok(false),
             ibl: Ok(false),
             skybox: Ok(false),
@@ -92,12 +102,41 @@ impl LoadingStatus {
     pub fn ok_strings(&self) -> Vec<String> {
         let mut statuses = Vec::new();
 
-        if let Ok(true) = &self.renderer {
-            statuses.push("Initializing Renderer...".to_string());
+        // Renderer-init phase, fed by `AwsmRendererBuilder::with_phase_handler`.
+        // When the builder is active and has reported a phase, that
+        // phase's user-facing label takes priority over the generic
+        // boolean `renderer` flag.
+        if let Some(phase) = self.renderer_phase {
+            match phase {
+                RendererLoadingPhase::Init => {
+                    statuses.push("Initializing renderer...".to_string());
+                }
+                RendererLoadingPhase::CompilingShaders => {
+                    statuses.push(
+                        "Browser is compiling shaders... (first load may take a while)".to_string(),
+                    );
+                }
+                RendererLoadingPhase::BuildingPipelines => {
+                    statuses.push("Building render pipelines...".to_string());
+                }
+                RendererLoadingPhase::FinalizingScene => {
+                    statuses.push("Finalising renderer setup...".to_string());
+                }
+                RendererLoadingPhase::Ready => {
+                    // Builder reported Ready — no banner needed for
+                    // this row; the `renderer` flag (set false by
+                    // the caller) drives the rest.
+                }
+            }
+        } else if let Ok(true) = &self.renderer {
+            // Fallback when the phase handler hasn't fired yet (very
+            // start of init) — keep showing a generic banner so the
+            // UI isn't blank.
+            statuses.push("Initializing renderer...".to_string());
         }
 
         if let Ok(true) = &self.shader_prewarm {
-            statuses.push("Compiling shaders...".to_string());
+            statuses.push("Compiling scene shaders...".to_string());
         }
 
         if let Ok(true) = &self.ibl {

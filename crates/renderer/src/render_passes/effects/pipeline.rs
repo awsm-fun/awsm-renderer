@@ -95,7 +95,11 @@ impl EffectsPipelines {
         }
     }
 
-    /// Updates pipelines for the current anti-aliasing and post-processing settings.
+    /// Updates pipelines for the current anti-aliasing and
+    /// post-processing settings. Builds all five bloom-phase variants
+    /// concurrently via two batched `ensure_keys` calls (shaders then
+    /// compute pipelines).
+    #[allow(clippy::too_many_arguments)]
     pub async fn set_render_pipeline_keys(
         &mut self,
         anti_aliasing: &AntiAliasing,
@@ -104,135 +108,68 @@ impl EffectsPipelines {
         shaders: &mut Shaders,
         pipelines: &mut Pipelines,
         pipeline_layouts: &PipelineLayouts,
-        render_texture_formats: &RenderTextureFormats,
+        _render_texture_formats: &RenderTextureFormats,
     ) -> Result<()> {
         let multisampled_geometry = anti_aliasing.has_msaa_checked()?;
+        let layout_key = if multisampled_geometry {
+            self.multisampled_pipeline_layout_key
+        } else {
+            self.singlesampled_pipeline_layout_key
+        };
 
-        // Always create no-bloom pipeline for when bloom is disabled
-        self.no_bloom_pipeline = Some(
-            self.create_pipeline(
-                anti_aliasing,
-                post_processing,
-                gpu,
-                shaders,
-                pipelines,
-                pipeline_layouts,
-                render_texture_formats,
-                BloomPhase::None,
-                false,
-                multisampled_geometry,
-            )
-            .await?,
-        );
-
-        // Create bloom pipelines if bloom might be used
-        // Extract: always ping_pong=false (first pass writes to effects_tex)
-        self.bloom_extract_pipeline = Some(
-            self.create_pipeline(
-                anti_aliasing,
-                post_processing,
-                gpu,
-                shaders,
-                pipelines,
-                pipeline_layouts,
-                render_texture_formats,
-                BloomPhase::Extract,
-                false,
-                multisampled_geometry,
-            )
-            .await?,
-        );
-
-        // Blur: need both ping_pong variants for middle passes
-        self.bloom_blur_pipeline_a = Some(
-            self.create_pipeline(
-                anti_aliasing,
-                post_processing,
-                gpu,
-                shaders,
-                pipelines,
-                pipeline_layouts,
-                render_texture_formats,
-                BloomPhase::Blur,
-                false,
-                multisampled_geometry,
-            )
-            .await?,
-        );
-
-        self.bloom_blur_pipeline_b = Some(
-            self.create_pipeline(
-                anti_aliasing,
-                post_processing,
-                gpu,
-                shaders,
-                pipelines,
-                pipeline_layouts,
-                render_texture_formats,
-                BloomPhase::Blur,
-                true,
-                multisampled_geometry,
-            )
-            .await?,
-        );
-
-        // Blend pass ping_pong is determined by total pass count to ensure final output goes to effects_tex
+        // Blend pass ping_pong is determined by total pass count to
+        // ensure final output goes to effects_tex.
         let blend_ping_pong = (1 + BLOOM_BLUR_PASSES) % 2 == 1;
 
-        self.bloom_blend_pipeline = Some(
-            self.create_pipeline(
-                anti_aliasing,
-                post_processing,
-                gpu,
-                shaders,
-                pipelines,
-                pipeline_layouts,
-                render_texture_formats,
-                BloomPhase::Blend,
-                blend_ping_pong,
+        // Build all 5 shader cache keys.
+        let slot_inputs: [(BloomPhase, bool); 5] = [
+            (BloomPhase::None, false),
+            (BloomPhase::Extract, false),
+            (BloomPhase::Blur, false),
+            (BloomPhase::Blur, true),
+            (BloomPhase::Blend, blend_ping_pong),
+        ];
+        let shader_cache_keys: Vec<ShaderCacheKeyEffects> = slot_inputs
+            .iter()
+            .map(|&(bloom_phase, ping_pong)| ShaderCacheKeyEffects {
+                smaa_anti_alias: anti_aliasing.smaa,
+                bloom_phase,
+                dof: post_processing.dof,
+                ping_pong,
                 multisampled_geometry,
+            })
+            .collect();
+
+        // Batch 1: 5 shader compiles in parallel.
+        shaders
+            .ensure_keys(
+                gpu,
+                shader_cache_keys
+                    .iter()
+                    .cloned()
+                    .map(crate::shaders::ShaderCacheKey::from),
             )
-            .await?,
-        );
+            .await?;
 
-        Ok(())
-    }
+        // Resolve shader keys (cache hits) + build compute pipeline
+        // cache keys.
+        let mut pipeline_cache_keys: Vec<ComputePipelineCacheKey> = Vec::with_capacity(5);
+        for cache_key in &shader_cache_keys {
+            let shader_key = shaders.get_key(gpu, cache_key.clone()).await?;
+            pipeline_cache_keys.push(ComputePipelineCacheKey::new(shader_key, layout_key));
+        }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn create_pipeline(
-        &self,
-        anti_aliasing: &AntiAliasing,
-        _post_processing: &PostProcessing,
-        gpu: &AwsmRendererWebGpu,
-        shaders: &mut Shaders,
-        pipelines: &mut Pipelines,
-        pipeline_layouts: &PipelineLayouts,
-        _render_texture_formats: &RenderTextureFormats,
-        bloom_phase: BloomPhase,
-        ping_pong: bool,
-        multisampled_geometry: bool,
-    ) -> Result<ComputePipelineKey> {
-        let shader_cache_key = ShaderCacheKeyEffects {
-            smaa_anti_alias: anti_aliasing.smaa,
-            bloom_phase,
-            dof: _post_processing.dof,
-            ping_pong,
-            multisampled_geometry,
-        };
-        let shader_key = shaders.get_key(gpu, shader_cache_key).await?;
-
-        let compute_pipeline_cache_key = ComputePipelineCacheKey::new(
-            shader_key,
-            if multisampled_geometry {
-                self.multisampled_pipeline_layout_key
-            } else {
-                self.singlesampled_pipeline_layout_key
-            },
-        );
-
-        Ok(pipelines
+        // Batch 2: 5 compute pipelines in parallel.
+        let keys = pipelines
             .compute
-            .get_key(gpu, shaders, pipeline_layouts, compute_pipeline_cache_key)
-            .await?)
+            .ensure_keys(gpu, shaders, pipeline_layouts, pipeline_cache_keys)
+            .await?;
+
+        self.no_bloom_pipeline = Some(keys[0]);
+        self.bloom_extract_pipeline = Some(keys[1]);
+        self.bloom_blur_pipeline_a = Some(keys[2]);
+        self.bloom_blur_pipeline_b = Some(keys[3]);
+        self.bloom_blend_pipeline = Some(keys[4]);
+        Ok(())
     }
 }

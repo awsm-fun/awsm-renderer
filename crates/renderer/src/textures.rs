@@ -39,6 +39,24 @@ pub const TEXTURE_TRANSFORMS_BYTE_SIZE: usize = 32; // 32 bytes per texture tran
 impl AwsmRenderer {
     // this should ideally only be called after all the textures have been loaded
     /// Uploads texture pool data and refreshes dependent pipelines.
+    ///
+    /// On a cold PSO disk cache this is the biggest single phase of
+    /// boot-time wall-clock by a wide margin: every render-pass that
+    /// indexes into the texture pool (opaque + decal + transparent)
+    /// has its shader text templated against the pool's
+    /// `(arrays_len, samplers_len)`, so when the pool grows from 0
+    /// to the real count, every existing PSO is invalidated and the
+    /// driver has to compile every variant from scratch.
+    ///
+    /// Architecture: bind-group rebuilds run synchronously up front
+    /// (no Dawn work), then a single `Shaders::ensure_keys` pools the
+    /// opaque + decal + per-mesh-transparent shader cache keys, then
+    /// a single `ComputePipelines::ensure_keys` pools opaque + decal
+    /// pipeline cache keys, then a single
+    /// `RenderPipelines::ensure_keys` pools the per-mesh transparent
+    /// keys. Three awaits total instead of the previous six (per
+    /// pass: one shader-batch + one pipeline-batch × three passes),
+    /// each running its compiles in parallel through Dawn's pool.
     pub async fn finalize_gpu_textures(&mut self) -> std::result::Result<(), AwsmError> {
         // Take the sampler-pool dirty bit *before* the pool write —
         // both bits feed the same rebuild gate below. Without this OR,
@@ -56,9 +74,20 @@ impl AwsmRenderer {
             .await?;
         let was_dirty = pool_dirty || sampler_pool_dirty;
 
-        if was_dirty {
-            // If the pool was changed on the GPU, we need to recreate any render passes
-            // that depend on it, as well as any pipelines that depend on those render passes
+        if !was_dirty {
+            return Ok(());
+        }
+
+        self.bind_groups.mark_create(BindGroupCreate::TexturePool);
+
+        // -----------------------------------------------------------
+        // Phase A — sync bind-group + pipeline-layout rebuild
+        // -----------------------------------------------------------
+        // Every pass that indexes into the texture pool needs its
+        // bind-group + pipeline-layout cache entry rebuilt against
+        // the new pool dimensions. These are pure hash registrations
+        // — no Dawn compile work.
+        let opaque_bind_groups = {
             let mut render_pass_ctx = RenderPassInitContext {
                 gpu: &mut self.gpu,
                 pipelines: &mut self.pipelines,
@@ -69,123 +98,239 @@ impl AwsmRenderer {
                 pipeline_layouts: &mut self.pipeline_layouts,
                 features: &self.features,
             };
-
-            self.bind_groups.mark_create(BindGroupCreate::TexturePool);
-
-            // Update render passes that depend on texture pool size (affects bind group layouts
-            // and pipeline layouts due to dynamically generated texture array/sampler bindings).
-            //
-            // OPAQUE: Pipelines are based only on global parameters (MSAA, mipmaps, texture pool size),
-            // so texture_pool_changed() fully recreates all pipeline variants. No per-mesh iteration needed.
-            //
-            // TRANSPARENT: Pipelines depend on per-mesh attributes, so texture_pool_changed() only
-            // updates bind groups and creates a new pipeline layout. The actual per-mesh pipelines
-            // must be recreated separately below using the new layout.
             self.render_passes
                 .material_opaque
-                .texture_pool_changed(&mut render_pass_ctx)
-                .await?;
-
+                .bind_groups
+                .clone_because_texture_pool_changed(&mut render_pass_ctx)?
+        };
+        let transparent_bind_groups = {
+            let mut render_pass_ctx = RenderPassInitContext {
+                gpu: &mut self.gpu,
+                pipelines: &mut self.pipelines,
+                shaders: &mut self.shaders,
+                textures: &mut self.textures,
+                render_texture_formats: &mut self.render_textures.formats,
+                bind_group_layouts: &mut self.bind_group_layouts,
+                pipeline_layouts: &mut self.pipeline_layouts,
+                features: &self.features,
+            };
             self.render_passes
                 .material_transparent
-                .texture_pool_changed(&mut render_pass_ctx)
-                .await?;
+                .bind_groups
+                .clone_because_texture_pool_changed(&mut render_pass_ctx)?
+        };
+        let decal_bind_groups = if let Some(decal) = self.render_passes.material_decal.as_ref() {
+            let mut render_pass_ctx = RenderPassInitContext {
+                gpu: &mut self.gpu,
+                pipelines: &mut self.pipelines,
+                shaders: &mut self.shaders,
+                textures: &mut self.textures,
+                render_texture_formats: &mut self.render_textures.formats,
+                bind_group_layouts: &mut self.bind_group_layouts,
+                pipeline_layouts: &mut self.pipeline_layouts,
+                features: &self.features,
+            };
+            Some(
+                decal
+                    .bind_groups
+                    .clone_because_texture_pool_changed(&mut render_pass_ctx)?,
+            )
+        } else {
+            None
+        };
 
-            // Decal compute pass also binds the texture pool. Mirror
-            // the opaque/transparent treatment so the cached pool
-            // layout doesn't lag behind the populated bind group.
+        self.render_passes.material_opaque.bind_groups = opaque_bind_groups;
+        self.render_passes.material_transparent.bind_groups = transparent_bind_groups;
+        if let Some(new_bg) = decal_bind_groups {
             if let Some(decal) = self.render_passes.material_decal.as_mut() {
-                decal.texture_pool_changed(&mut render_pass_ctx).await?;
+                decal.bind_groups = new_bg;
             }
         }
+        // Transparent has no global pipeline set, just a layout key
+        // that gets used by the per-mesh batch below — refresh it.
+        self.render_passes
+            .material_transparent
+            .pipelines
+            .refresh_pipeline_layout(
+                &self.gpu,
+                &mut self.bind_group_layouts,
+                &mut self.pipeline_layouts,
+                &self.render_passes.material_transparent.bind_groups,
+            )?;
 
-        // The transparent pass owns a per-mesh `render_pipeline_keys`
-        // map. When the texture pool changed above, the layouts under
-        // those pipelines were rebuilt, so the cached pipelines are
-        // stale and every transparent mesh needs a fresh pipeline.
-        //
-        // When the pool was clean — i.e. nothing new uploaded — the
-        // existing per-mesh pipelines are still valid. New meshes that
-        // arrived since the last finalize already register their own
-        // pipeline at insert time (see `raw_mesh.rs::add_mesh`,
-        // `Meshes::enable_mesh_instancing`); duplicates inherit via
-        // `clone_render_pipeline_key`. So there is *no* per-mesh work
-        // to do here in the clean case — the prior code iterated
-        // `self.meshes` 38× during a glb-instance fan-out (one finalize
-        // per Model node), each redoing the same dedup-and-cache-hit
-        // walk for hundreds of milliseconds of pure overhead.
-        if was_dirty {
-            // Pre-pass: compile every transparent shader we'll need
-            // concurrently. The per-mesh loop below would otherwise serialize
-            // shader compilation (each `set_render_pipeline_key` awaits a
-            // shader compile + pipeline creation), so on first load we'd pay
-            // N × compile-time wall-clock. `Shaders::ensure_keys` dedupes the
-            // batch and fires every `compile_shader` synchronously before
-            // awaiting any validation, letting the browser compile them in
-            // parallel.
-            let transparent_bind_groups = &self.render_passes.material_transparent.bind_groups;
-            let mut shader_cache_keys: Vec<crate::shaders::ShaderCacheKey> = Vec::new();
-            let mut has_seen_buffer_info = SecondaryMap::new();
-            let mut has_seen_material = SecondaryMap::new();
-            for (key, mesh) in self.meshes.iter() {
-                let buffer_info_key = self.meshes.buffer_info_key(key)?;
-                if has_seen_buffer_info.insert(buffer_info_key, ()).is_none()
-                    || has_seen_material.insert(mesh.material_key, ()).is_none()
-                {
-                    let mesh_buffer_info = self.meshes.buffer_infos.get(buffer_info_key)?;
-                    let cache_key = crate::render_passes::material_transparent::shader::cache_key::ShaderCacheKeyMaterialTransparent {
-                        attributes: mesh_buffer_info.into(),
-                        texture_pool_arrays_len: transparent_bind_groups.texture_pool_arrays_len,
-                        texture_pool_samplers_len: transparent_bind_groups
-                            .texture_pool_sampler_keys
-                            .len() as u32,
-                        msaa_sample_count: self.anti_aliasing.msaa_sample_count,
-                        mipmaps: self.anti_aliasing.mipmap,
-                        instancing_transforms: mesh.instanced,
-                    };
-                    shader_cache_keys.push(cache_key.into());
-                }
-            }
-            self.shaders
-                .ensure_keys(&self.gpu, shader_cache_keys)
-                .await?;
+        // -----------------------------------------------------------
+        // Phase B — collect every shader cache key across every pass
+        // -----------------------------------------------------------
+        use crate::render_passes::material_transparent::pipeline::TransparentMeshPipelineRequest;
 
-            // Recreate transparent pass pipelines for each mesh (and _only_ transparent!)
-            // These depend on per-mesh attributes (unlike opaque which uses only global parameters),
-            // so we must iterate through meshes to create pipelines with the (potentially new) layout.
-            // Shader compilation is now warm thanks to `ensure_keys`, so the
-            // per-mesh `get_key` calls here only do (cheaper) pipeline
-            // creation; the cache eliminates real duplicates regardless.
-            let mut has_seen_buffer_info = SecondaryMap::new();
-            let mut has_seen_material = SecondaryMap::new();
-            for (key, mesh) in self.meshes.iter() {
-                let buffer_info_key = self.meshes.buffer_info_key(key)?;
-                if has_seen_buffer_info.insert(buffer_info_key, ()).is_none()
-                    || has_seen_material.insert(mesh.material_key, ()).is_none()
-                {
-                    let has_transmission = self.materials.has_transmission(mesh.material_key);
-                    self.render_passes
-                        .material_transparent
-                        .pipelines
-                        .set_render_pipeline_key(
-                            &self.gpu,
-                            mesh,
-                            key,
-                            buffer_info_key,
-                            &mut self.shaders,
-                            &mut self.pipelines,
-                            &self.render_passes.material_transparent.bind_groups,
-                            &self.pipeline_layouts,
-                            &self.meshes.buffer_infos,
-                            &self.anti_aliasing,
-                            &self.textures,
-                            &self.render_textures.formats,
-                            has_transmission,
-                        )
-                        .await?;
-                }
+        // Build one request per mesh. The previous OR-style dedup
+        // ("skip if buffer_info OR material was already seen") was a
+        // pre-existing bug — for mesh sets like (A,M1), (B,M2),
+        // (A,M2), (B,M1) it skips the third / fourth pair even
+        // though they produce different pipeline cache keys (e.g.
+        // when M1 and M2 differ in `has_transmission`), leaving
+        // those meshes with stale pipeline-key map entries after
+        // the layout change. `Shaders::ensure_keys` and
+        // `RenderPipelines::ensure_keys` both dedupe internally by
+        // their cache keys, so the cost of sending all meshes is
+        // just a couple of extra hash probes per mesh.
+        let mut transparent_requests: Vec<TransparentMeshPipelineRequest> = Vec::new();
+        for (mesh_key, mesh) in self.meshes.iter() {
+            let buffer_info_key = self.meshes.buffer_info_key(mesh_key)?;
+            let has_transmission = self.materials.has_transmission(mesh.material_key);
+            transparent_requests.push(TransparentMeshPipelineRequest {
+                mesh,
+                mesh_key,
+                buffer_info_key,
+                has_transmission,
+            });
+        }
+
+        let mut all_shader_keys: Vec<crate::shaders::ShaderCacheKey> = Vec::new();
+        {
+            let mut render_pass_ctx = RenderPassInitContext {
+                gpu: &mut self.gpu,
+                pipelines: &mut self.pipelines,
+                shaders: &mut self.shaders,
+                textures: &mut self.textures,
+                render_texture_formats: &mut self.render_textures.formats,
+                bind_group_layouts: &mut self.bind_group_layouts,
+                pipeline_layouts: &mut self.pipeline_layouts,
+                features: &self.features,
+            };
+            all_shader_keys.extend(
+                crate::render_passes::material_opaque::pipeline::MaterialOpaquePipelines::build_shader_cache_keys(
+                    &mut render_pass_ctx,
+                    &self.render_passes.material_opaque.bind_groups,
+                )?,
+            );
+            if let Some(decal) = self.render_passes.material_decal.as_ref() {
+                all_shader_keys.extend(
+                    crate::render_passes::material_decal::pipeline::MaterialDecalPipelines::build_shader_cache_keys(
+                        &mut render_pass_ctx,
+                        &decal.bind_groups,
+                    )?,
+                );
             }
         }
+        all_shader_keys.extend(
+            crate::render_passes::material_transparent::pipeline::MaterialTransparentPipelines::shader_cache_keys_for_requests(
+                transparent_requests.iter(),
+                &self.render_passes.material_transparent.bind_groups,
+                &self.meshes.buffer_infos,
+                &self.anti_aliasing,
+            )?
+            .into_iter()
+            .map(crate::shaders::ShaderCacheKey::from),
+        );
+
+        // Single cross-pass shader compile batch.
+        self.shaders.ensure_keys(&self.gpu, all_shader_keys).await?;
+
+        // -----------------------------------------------------------
+        // Phase C — build pipeline cache keys (shaders are warm)
+        // -----------------------------------------------------------
+        let (opaque_descs, decal_descs) = {
+            let mut render_pass_ctx = RenderPassInitContext {
+                gpu: &mut self.gpu,
+                pipelines: &mut self.pipelines,
+                shaders: &mut self.shaders,
+                textures: &mut self.textures,
+                render_texture_formats: &mut self.render_textures.formats,
+                bind_group_layouts: &mut self.bind_group_layouts,
+                pipeline_layouts: &mut self.pipeline_layouts,
+                features: &self.features,
+            };
+            let opaque_descs = crate::render_passes::material_opaque::pipeline::MaterialOpaquePipelines::build_descriptors(
+                &mut render_pass_ctx,
+                &self.render_passes.material_opaque.bind_groups,
+            )
+            .await?;
+            let decal_descs = if let Some(decal) = self.render_passes.material_decal.as_ref() {
+                Some(
+                    crate::render_passes::material_decal::pipeline::MaterialDecalPipelines::build_descriptors(
+                        &mut render_pass_ctx,
+                        &decal.bind_groups,
+                    )
+                    .await?,
+                )
+            } else {
+                None
+            };
+            (opaque_descs, decal_descs)
+        };
+
+        let transparent_pipeline_cache_keys = self
+            .render_passes
+            .material_transparent
+            .pipelines
+            .pipeline_cache_keys_for_requests(
+                &self.gpu,
+                transparent_requests.iter(),
+                &mut self.shaders,
+                &self.render_passes.material_transparent.bind_groups,
+                &self.meshes.buffer_infos,
+                &self.anti_aliasing,
+                &self.render_textures.formats,
+            )
+            .await?;
+
+        // -----------------------------------------------------------
+        // Phase D — one batched compute + one batched render compile
+        // -----------------------------------------------------------
+        let opaque_pipeline_count = opaque_descs.pipeline_cache_keys.len();
+        let mut compute_cache_keys = opaque_descs.pipeline_cache_keys.clone();
+        if let Some(ref decal_descs) = decal_descs {
+            compute_cache_keys.extend(decal_descs.pipeline_cache_keys.iter().cloned());
+        }
+
+        let compute_pipeline_keys = self
+            .pipelines
+            .compute
+            .ensure_keys(
+                &self.gpu,
+                &self.shaders,
+                &self.pipeline_layouts,
+                compute_cache_keys,
+            )
+            .await?;
+
+        let transparent_pipeline_keys = self
+            .pipelines
+            .render
+            .ensure_keys(
+                &self.gpu,
+                &self.shaders,
+                &self.pipeline_layouts,
+                transparent_pipeline_cache_keys,
+            )
+            .await?;
+
+        // -----------------------------------------------------------
+        // Phase E — sync fold-up of resolved keys
+        // -----------------------------------------------------------
+        let (opaque_keys_slice, decal_keys_slice) =
+            compute_pipeline_keys.split_at(opaque_pipeline_count);
+        self.render_passes.material_opaque.pipelines =
+            crate::render_passes::material_opaque::pipeline::MaterialOpaquePipelines::from_resolved(
+                opaque_descs.slots,
+                opaque_keys_slice.to_vec(),
+            );
+        if let (Some(decal_descs), Some(decal)) =
+            (decal_descs, self.render_passes.material_decal.as_mut())
+        {
+            decal.pipelines =
+                crate::render_passes::material_decal::pipeline::MaterialDecalPipelines::from_resolved(
+                    decal_descs.is_msaa,
+                    decal_keys_slice.to_vec(),
+                );
+        }
+        let mesh_keys: Vec<_> = transparent_requests.iter().map(|r| r.mesh_key).collect();
+        self.render_passes
+            .material_transparent
+            .pipelines
+            .install_per_mesh_keys(mesh_keys, transparent_pipeline_keys);
+
         Ok(())
     }
 

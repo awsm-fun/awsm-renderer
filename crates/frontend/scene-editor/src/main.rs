@@ -99,24 +99,22 @@ pub fn main() {
                 spawn_local(async move {
                     match create_context(canvas).await {
                         Ok(_) => {
-                            // Renderer is built; surface the discrete
-                            // phases that actually run before the
-                            // editor's first interactive frame so a
-                            // multi-hundred-ms wait isn't an opaque
-                            // "Loading". The boot-loader label gets
-                            // updated each step; `remove_boot_loader`
-                            // fires once `ctx_ready` flips.
+                            // create_context's `with_phase_handler`
+                            // wired into AwsmRendererBuilder pumped
+                            // "Browser is compiling shaders…" / etc.
+                            // through the boot-loader caption while
+                            // Dawn ran the cold compile; by the time
+                            // we reach this branch every render-pass
+                            // pipeline is built.
+                            //
+                            // prewarm_pipelines() is a no-op for the
+                            // empty initial scene (no meshes yet); we
+                            // still call it so the trace span fires
+                            // and the dynamic-materials sprint has a
+                            // hook to extend.
                             awsm_web_shared::util::window::set_boot_loader_message(
-                                "Compiling shaders",
+                                "Warming pipelines",
                             );
-                            // The renderer's pipelines are already
-                            // built at `AwsmRendererBuilder::build()`
-                            // time (see `AwsmRenderer::prewarm_pipelines`
-                            // doc for the catalogue); calling this is
-                            // a no-op today but holds the phase label
-                            // through the cold compile window and
-                            // gives the dynamic-materials sprint a
-                            // clean hook to extend.
                             {
                                 let handle = renderer_handle();
                                 let mut r = handle.lock().await;

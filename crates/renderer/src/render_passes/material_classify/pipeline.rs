@@ -7,14 +7,16 @@ use crate::render_passes::material_classify::{
     bind_group::MaterialClassifyBindGroups, shader::cache_key::ShaderCacheKeyMaterialClassify,
 };
 use crate::render_passes::RenderPassInitContext;
+use crate::shaders::ShaderCacheKey;
 
-/// One compute pipeline per MSAA mode. The classify shader only
-/// touches sample 0 of the visibility texture, but WGSL still has
-/// distinct `texture_multisampled_2d<u32>` / `texture_2d<u32>` types
-/// so the pipeline layout has to match.
 pub struct MaterialClassifyPipelines {
     pub multisampled_pipeline_key: ComputePipelineKey,
     pub singlesampled_pipeline_key: ComputePipelineKey,
+}
+
+/// Slot order: [0] multisampled, [1] singlesampled.
+pub struct MaterialClassifyPrewarmDescriptors {
+    pub pipeline_cache_keys: Vec<ComputePipelineCacheKey>,
 }
 
 impl MaterialClassifyPipelines {
@@ -22,68 +24,86 @@ impl MaterialClassifyPipelines {
         ctx: &mut RenderPassInitContext<'_>,
         bind_groups: &MaterialClassifyBindGroups,
     ) -> Result<Self> {
-        // Pre-warm both MSAA variants concurrently. Same pattern as
-        // material_opaque/decal: compile in parallel, build pipelines
-        // serially (since `ctx` is `&mut`).
         ctx.shaders
+            .ensure_keys(ctx.gpu, Self::shader_cache_keys())
+            .await?;
+        let descs = Self::build_descriptors(ctx, bind_groups).await?;
+        let pipeline_keys = ctx
+            .pipelines
+            .compute
             .ensure_keys(
                 ctx.gpu,
-                [
-                    ShaderCacheKeyMaterialClassify {
-                        msaa_sample_count: Some(4),
-                    }
-                    .into(),
-                    ShaderCacheKeyMaterialClassify {
-                        msaa_sample_count: None,
-                    }
-                    .into(),
-                ],
+                ctx.shaders,
+                ctx.pipeline_layouts,
+                descs.pipeline_cache_keys.clone(),
             )
             .await?;
-        let multisampled = build(ctx, bind_groups, true).await?;
-        let singlesampled = build(ctx, bind_groups, false).await?;
-        Ok(Self {
-            multisampled_pipeline_key: multisampled,
-            singlesampled_pipeline_key: singlesampled,
+        Ok(Self::from_resolved(pipeline_keys))
+    }
+
+    pub fn shader_cache_keys() -> Vec<ShaderCacheKey> {
+        vec![
+            ShaderCacheKey::from(ShaderCacheKeyMaterialClassify {
+                msaa_sample_count: Some(4),
+            }),
+            ShaderCacheKey::from(ShaderCacheKeyMaterialClassify {
+                msaa_sample_count: None,
+            }),
+        ]
+    }
+
+    pub async fn build_descriptors(
+        ctx: &mut RenderPassInitContext<'_>,
+        bind_groups: &MaterialClassifyBindGroups,
+    ) -> Result<MaterialClassifyPrewarmDescriptors> {
+        let multisampled_pipeline_layout_key = ctx.pipeline_layouts.get_key(
+            ctx.gpu,
+            ctx.bind_group_layouts,
+            PipelineLayoutCacheKey::new(vec![bind_groups.multisampled_bind_group_layout_key]),
+        )?;
+        let singlesampled_pipeline_layout_key = ctx.pipeline_layouts.get_key(
+            ctx.gpu,
+            ctx.bind_group_layouts,
+            PipelineLayoutCacheKey::new(vec![bind_groups.singlesampled_bind_group_layout_key]),
+        )?;
+
+        let multisampled_shader_key = ctx
+            .shaders
+            .get_key(
+                ctx.gpu,
+                ShaderCacheKeyMaterialClassify {
+                    msaa_sample_count: Some(4),
+                },
+            )
+            .await?;
+        let singlesampled_shader_key = ctx
+            .shaders
+            .get_key(
+                ctx.gpu,
+                ShaderCacheKeyMaterialClassify {
+                    msaa_sample_count: None,
+                },
+            )
+            .await?;
+
+        Ok(MaterialClassifyPrewarmDescriptors {
+            pipeline_cache_keys: vec![
+                ComputePipelineCacheKey::new(
+                    multisampled_shader_key,
+                    multisampled_pipeline_layout_key,
+                ),
+                ComputePipelineCacheKey::new(
+                    singlesampled_shader_key,
+                    singlesampled_pipeline_layout_key,
+                ),
+            ],
         })
     }
-}
 
-async fn build(
-    ctx: &mut RenderPassInitContext<'_>,
-    bind_groups: &MaterialClassifyBindGroups,
-    multisampled_geometry: bool,
-) -> Result<ComputePipelineKey> {
-    let layout_key = if multisampled_geometry {
-        bind_groups.multisampled_bind_group_layout_key
-    } else {
-        bind_groups.singlesampled_bind_group_layout_key
-    };
-
-    let pipeline_layout_key = ctx.pipeline_layouts.get_key(
-        ctx.gpu,
-        ctx.bind_group_layouts,
-        PipelineLayoutCacheKey::new(vec![layout_key]),
-    )?;
-
-    let shader_key = ctx
-        .shaders
-        .get_key(
-            ctx.gpu,
-            ShaderCacheKeyMaterialClassify {
-                msaa_sample_count: if multisampled_geometry { Some(4) } else { None },
-            },
-        )
-        .await?;
-
-    Ok(ctx
-        .pipelines
-        .compute
-        .get_key(
-            ctx.gpu,
-            ctx.shaders,
-            ctx.pipeline_layouts,
-            ComputePipelineCacheKey::new(shader_key, pipeline_layout_key),
-        )
-        .await?)
+    pub fn from_resolved(pipeline_keys: Vec<ComputePipelineKey>) -> Self {
+        Self {
+            multisampled_pipeline_key: pipeline_keys[0],
+            singlesampled_pipeline_key: pipeline_keys[1],
+        }
+    }
 }

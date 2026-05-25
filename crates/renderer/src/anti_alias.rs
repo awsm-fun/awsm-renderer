@@ -1,7 +1,5 @@
 //! Anti-aliasing configuration.
 
-use slotmap::SecondaryMap;
-
 use crate::{bind_groups::BindGroupCreate, error::Result, AwsmRenderer};
 
 /// Anti-aliasing configuration for the renderer.
@@ -50,38 +48,43 @@ impl AwsmRenderer {
         // and the correct one is selected at render time via get_compute_pipeline_key(&anti_aliasing).
         //
         // TRANSPARENT: Pipelines depend on per-mesh attributes AND anti-aliasing settings,
-        // so we must recreate them when anti-aliasing changes.
-        //
-        // DISPLAY: Pipelines depend on anti-aliasing settings, so we must recreate them when anti-aliasing changes.
-        let mut has_seen_buffer_info = SecondaryMap::new();
-        let mut has_seen_material = SecondaryMap::new();
-        for (key, mesh) in self.meshes.iter() {
-            let buffer_info_key = self.meshes.buffer_info_key(key)?;
-            if has_seen_buffer_info.insert(buffer_info_key, ()).is_none()
-                || has_seen_material.insert(mesh.material_key, ()).is_none()
-            {
-                let has_transmission = self.materials.has_transmission(mesh.material_key);
-                self.render_passes
-                    .material_transparent
-                    .pipelines
-                    .set_render_pipeline_key(
-                        &self.gpu,
-                        mesh,
-                        key,
-                        buffer_info_key,
-                        &mut self.shaders,
-                        &mut self.pipelines,
-                        &self.render_passes.material_transparent.bind_groups,
-                        &self.pipeline_layouts,
-                        &self.meshes.buffer_infos,
-                        &self.anti_aliasing,
-                        &self.textures,
-                        &self.render_textures.formats,
-                        has_transmission,
-                    )
-                    .await?;
-            }
+        // so we must recreate them when anti-aliasing changes. Build one request per mesh and
+        // route through set_render_pipeline_keys_batched — Shaders::ensure_keys +
+        // RenderPipelines::ensure_keys dedupe by cache key internally, so the OR-style
+        // (buffer_info OR material) dedup we used to do here misses pairs like
+        // (A,M1)(B,M2)(A,M2) when M1 and M2 differ in has_transmission and leaves some
+        // meshes with stale pipeline-key map entries. See the matching fix in textures.rs.
+        let mut requests: Vec<
+            crate::render_passes::material_transparent::pipeline::TransparentMeshPipelineRequest,
+        > = Vec::new();
+        for (mesh_key, mesh) in self.meshes.iter() {
+            let buffer_info_key = self.meshes.buffer_info_key(mesh_key)?;
+            let has_transmission = self.materials.has_transmission(mesh.material_key);
+            requests.push(
+                crate::render_passes::material_transparent::pipeline::TransparentMeshPipelineRequest {
+                    mesh,
+                    mesh_key,
+                    buffer_info_key,
+                    has_transmission,
+                },
+            );
         }
+        self.render_passes
+            .material_transparent
+            .pipelines
+            .set_render_pipeline_keys_batched(
+                &self.gpu,
+                requests,
+                &mut self.shaders,
+                &mut self.pipelines,
+                &self.render_passes.material_transparent.bind_groups,
+                &self.pipeline_layouts,
+                &self.meshes.buffer_infos,
+                &self.anti_aliasing,
+                &self.textures,
+                &self.render_textures.formats,
+            )
+            .await?;
 
         self.render_passes
             .effects

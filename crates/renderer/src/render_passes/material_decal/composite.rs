@@ -109,8 +109,15 @@ impl MaterialDecalComposite {
             .into(),
         );
 
+        // Build both descriptors first, then issue both Promises
+        // back-to-back via `create_render_pipeline_promise` so Dawn's
+        // compile pool parallelises the two compiles. We bypass
+        // `RenderPipelines::ensure_keys` here because this composite
+        // owns its own bind-group layout + pipeline layout (not in
+        // any of the cache crates) — wiring it through the cache
+        // would be more work than the parallelisation it gains.
         let format = ctx.render_texture_formats.color;
-        let pipeline_singlesampled = {
+        let descriptor_singlesampled = {
             let vertex = VertexState::new(&shader_module, None);
             let fragment =
                 FragmentState::new(&shader_module, None, vec![ColorTargetState::new(format)]);
@@ -118,9 +125,9 @@ impl MaterialDecalComposite {
                 .with_primitive(PrimitiveState::new())
                 .with_layout(PipelineLayoutKind::Custom(&pipeline_layout))
                 .with_fragment(fragment);
-            gpu.create_render_pipeline(&descriptor.into()).await?
+            web_sys::GpuRenderPipelineDescriptor::from(descriptor)
         };
-        let pipeline_multisampled = {
+        let descriptor_multisampled = {
             let vertex = VertexState::new(&shader_module, None);
             let fragment =
                 FragmentState::new(&shader_module, None, vec![ColorTargetState::new(format)]);
@@ -129,8 +136,22 @@ impl MaterialDecalComposite {
                 .with_layout(PipelineLayoutKind::Custom(&pipeline_layout))
                 .with_fragment(fragment)
                 .with_multisample(MultisampleState::new().with_count(4));
-            gpu.create_render_pipeline(&descriptor.into()).await?
+            web_sys::GpuRenderPipelineDescriptor::from(descriptor)
         };
+        let promise_singlesampled = wasm_bindgen_futures::JsFuture::from(
+            gpu.create_render_pipeline_promise(&descriptor_singlesampled),
+        );
+        let promise_multisampled = wasm_bindgen_futures::JsFuture::from(
+            gpu.create_render_pipeline_promise(&descriptor_multisampled),
+        );
+        let (pipeline_singlesampled, pipeline_multisampled) =
+            futures::future::try_join(promise_singlesampled, promise_multisampled)
+                .await
+                .map_err(awsm_renderer_core::error::AwsmCoreError::pipeline_creation)?;
+        let pipeline_singlesampled: web_sys::GpuRenderPipeline =
+            wasm_bindgen::JsCast::unchecked_into(pipeline_singlesampled);
+        let pipeline_multisampled: web_sys::GpuRenderPipeline =
+            wasm_bindgen::JsCast::unchecked_into(pipeline_multisampled);
 
         Ok(Self {
             bind_group_layout,

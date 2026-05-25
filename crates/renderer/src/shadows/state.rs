@@ -46,10 +46,11 @@ use crate::{
         evsm::EvsmPass,
         helpers::{
             build_cascade_layer_views, build_cube_face_views, build_evsm_blur_bind_group,
-            build_evsm_moment_write_bind_group, build_shadow_pipeline, create_cascade_array_view,
+            build_evsm_moment_write_bind_group, create_cascade_array_view,
             create_cube_2d_array_view, create_cube_array_view, extract_near_far,
-            view_projection_drift, write_shadow_cascade_array_descriptor, write_shadow_descriptor,
-            write_shadow_view_slot, SHADOW_DESCRIPTOR_UNIFORM_BYTES,
+            shadow_pipeline_cache_key, view_projection_drift,
+            write_shadow_cascade_array_descriptor, write_shadow_descriptor, write_shadow_view_slot,
+            SHADOW_DESCRIPTOR_UNIFORM_BYTES,
         },
         light_shadow::{EvsmCutoff, LightShadowParams},
         record::{
@@ -553,46 +554,77 @@ impl Shadows {
             ]),
         )?;
 
-        let shadow_pipeline_no_instancing = build_shadow_pipeline(
-            gpu,
-            shaders,
-            pipelines,
-            pipeline_layouts,
-            shadow_pipeline_layout_key_storage,
-            false,
-            false,
-        )
-        .await?;
-        let shadow_pipeline_instancing = build_shadow_pipeline(
-            gpu,
-            shaders,
-            pipelines,
-            pipeline_layouts,
-            shadow_pipeline_layout_key_uniform,
-            true,
-            false,
-        )
-        .await?;
-        let shadow_pipeline_cube_no_instancing = build_shadow_pipeline(
-            gpu,
-            shaders,
-            pipelines,
-            pipeline_layouts,
-            shadow_pipeline_layout_key_storage,
-            false,
-            true,
-        )
-        .await?;
-        let shadow_pipeline_cube_instancing = build_shadow_pipeline(
-            gpu,
-            shaders,
-            pipelines,
-            pipeline_layouts,
-            shadow_pipeline_layout_key_uniform,
-            true,
-            true,
-        )
-        .await?;
+        // Batch the four shadow caster pipeline compiles. Two shader
+        // variants (instancing on/off) × 2 pipeline variants (planar
+        // vs cube). Same descriptor-then-ensure_keys shape as the
+        // opaque + geometry passes.
+        shaders
+            .ensure_keys(
+                gpu,
+                [
+                    crate::shaders::ShaderCacheKey::from(
+                        crate::shadows::shader::cache_key::ShaderCacheKeyShadow {
+                            instancing_transforms: false,
+                        },
+                    ),
+                    crate::shaders::ShaderCacheKey::from(
+                        crate::shadows::shader::cache_key::ShaderCacheKeyShadow {
+                            instancing_transforms: true,
+                        },
+                    ),
+                ],
+            )
+            .await?;
+        let shader_no_instancing = shaders
+            .get_key(
+                gpu,
+                crate::shadows::shader::cache_key::ShaderCacheKeyShadow {
+                    instancing_transforms: false,
+                },
+            )
+            .await?;
+        let shader_instancing = shaders
+            .get_key(
+                gpu,
+                crate::shadows::shader::cache_key::ShaderCacheKeyShadow {
+                    instancing_transforms: true,
+                },
+            )
+            .await?;
+        let shadow_cache_keys = vec![
+            shadow_pipeline_cache_key(
+                shader_no_instancing,
+                shadow_pipeline_layout_key_storage,
+                false,
+                false,
+            ),
+            shadow_pipeline_cache_key(
+                shader_instancing,
+                shadow_pipeline_layout_key_uniform,
+                true,
+                false,
+            ),
+            shadow_pipeline_cache_key(
+                shader_no_instancing,
+                shadow_pipeline_layout_key_storage,
+                false,
+                true,
+            ),
+            shadow_pipeline_cache_key(
+                shader_instancing,
+                shadow_pipeline_layout_key_uniform,
+                true,
+                true,
+            ),
+        ];
+        let shadow_pipeline_keys = pipelines
+            .render
+            .ensure_keys(gpu, shaders, pipeline_layouts, shadow_cache_keys)
+            .await?;
+        let shadow_pipeline_no_instancing = shadow_pipeline_keys[0];
+        let shadow_pipeline_instancing = shadow_pipeline_keys[1];
+        let shadow_pipeline_cube_no_instancing = shadow_pipeline_keys[2];
+        let shadow_pipeline_cube_instancing = shadow_pipeline_keys[3];
 
         let evsm_pass = EvsmPass::new(
             gpu,

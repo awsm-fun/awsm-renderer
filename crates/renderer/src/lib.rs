@@ -303,42 +303,119 @@ impl AwsmRenderer {
     /// indicator over the multi-hundred-ms shader-compile window that
     /// previously appeared as a generic "Initializing renderer…".
     ///
-    /// ## When this method will actually do work
+    /// ## What this method does today
     ///
-    /// Two upcoming sprints will land pipelines that compile *lazily*
-    /// on first draw, and this method will be extended to force their
-    /// compilation:
+    /// - **Builder-time prewarm** has already compiled the first-party
+    ///   opaque material pipelines, the geometry passes, hzb,
+    ///   material_classify, effects, decal, shadows, and the picker /
+    ///   line variants. Calling this at the end of `build()` finds all
+    ///   those keys already cached and returns immediately (single
+    ///   tracing span; no GPU work).
     ///
-    /// - **Dynamic materials** (see
-    ///   `docs/plans/dynamic-materials.md` Phase 3): runtime-registered
-    ///   custom shaders. Each registration changes the
-    ///   opaque/transparent dispatch chain's text hash, invalidating
-    ///   the cached pipeline. This method will walk every
-    ///   registered shader_id and ensure its pipeline is built.
-    /// - **Transparent fragment pipelines** are keyed by `MeshKey`
-    ///   today (per-instance) and compile on first transparent draw.
-    ///   Pre-warming requires a representative mesh per `MaterialShaderId`.
+    /// - **Per-scene transparent prewarm** runs whenever the caller
+    ///   invokes this method after meshes have been populated. It
+    ///   walks `self.meshes`, deduplicates by
+    ///   `(buffer_info, material)` (the granularity the transparent
+    ///   pipeline cache keys against), and issues one batched
+    ///   `ensure_keys` covering every unique transparent shader +
+    ///   pipeline variant the live scene needs. The first transparent
+    ///   draw then hits warm cache instead of stalling on N
+    ///   `createRenderPipelineAsync` awaits. Mirrors what
+    ///   `finalize_gpu_textures` does on a texture-pool-dirty cycle;
+    ///   safe to call any number of times (subsequent calls are
+    ///   cache-hit no-ops).
+    ///
+    /// ## When the warm prewarm helps vs not
+    ///
+    /// The transparent shader/pipeline cache key includes
+    /// `texture_pool_arrays_len` + `texture_pool_samplers_len`. Those
+    /// values change every time a *new texture array shape* enters the
+    /// pool — which on a fresh load happens once when the first model's
+    /// textures finalize, and then never again for the same scene.
+    /// So:
+    ///
+    /// - If the caller invokes `prewarm_pipelines()` **before any
+    ///   models are loaded** (the historical pattern), the texture
+    ///   pool is empty (`arrays_len = 0`), and any pipelines warmed
+    ///   here are invalidated the moment the first model finishes
+    ///   loading and the pool grows. The call is a no-op for that
+    ///   case — only its tracing span fires.
+    /// - If the caller invokes it **after a model has loaded** (or
+    ///   the texture-pool capacity is otherwise pinned at the value
+    ///   the scene will actually use), the warmed pipelines are the
+    ///   real ones the renderer will draw with. This is the case
+    ///   that absorbs the per-mesh first-draw stall when *switching*
+    ///   between models that share the texture-pool shape but
+    ///   introduce new geometry attribute combinations.
     ///
     /// ## Idempotent + cheap on warm cache
     ///
     /// Calling this multiple times is a no-op past the first
-    /// invocation: every underlying `get_*_pipeline_key` is a
-    /// cache-keyed lookup. On a Chrome session with a warm GPU disk
-    /// cache, the whole call completes in <5 ms. On a cold cache
-    /// (post-redeploy first-ever visit) it costs 50–500 ms — the
-    /// same compile tax the first draw would have paid, just
-    /// relocated to a phase the consumer can label clearly.
+    /// invocation: every underlying `ensure_keys` is a cache-keyed
+    /// lookup. On a Chrome session with a warm GPU disk cache, the
+    /// whole call completes in <5 ms. On a cold cache (post-redeploy
+    /// first-ever visit) it costs 50–500 ms per N transparent
+    /// variants — the same compile tax the first draw would have
+    /// paid, just relocated to a phase the consumer can label
+    /// clearly.
+    ///
+    /// ## Future work
+    ///
+    /// - **Dynamic materials** (see `docs/plans/dynamic-materials.md`
+    ///   Phase 3): runtime-registered custom shaders. After
+    ///   registration, this method should walk `enabled_materials()`
+    ///   and warm every (shader_id × attribute-set) combo it returns.
     pub async fn prewarm_pipelines(&mut self) -> crate::error::Result<()> {
-        // Builder-time prewarm is comprehensive for the first-party
-        // material set; this method is the public hook for that fact.
-        // The trace span gives consumers a measurable cost they can
-        // attribute when the dynamic-materials sprint adds real work
-        // here.
         let _maybe_span = if self.logging.render_timings {
             Some(tracing::span!(tracing::Level::INFO, "Prewarm Pipelines").entered())
         } else {
             None
         };
+
+        // Build one request per mesh. `ensure_keys` on both caches
+        // dedupes internally by cache key, so we don't need to
+        // dedupe at the request level — and dedup'ing here by
+        // `(buffer_info, material)` OR-style (the previous
+        // pre-existing pattern) misses pairs like (A,M1)(B,M2)(A,M2)
+        // when M1 and M2 differ in `has_transmission`, which would
+        // leave some meshes with stale pipeline-key map entries.
+        let mut requests: Vec<
+            crate::render_passes::material_transparent::pipeline::TransparentMeshPipelineRequest,
+        > = Vec::new();
+        for (mesh_key, mesh) in self.meshes.iter() {
+            let buffer_info_key = self.meshes.buffer_info_key(mesh_key)?;
+            let has_transmission = self.materials.has_transmission(mesh.material_key);
+            requests.push(
+                crate::render_passes::material_transparent::pipeline::TransparentMeshPipelineRequest {
+                    mesh,
+                    mesh_key,
+                    buffer_info_key,
+                    has_transmission,
+                },
+            );
+        }
+
+        if requests.is_empty() {
+            return Ok(());
+        }
+
+        self.render_passes
+            .material_transparent
+            .pipelines
+            .set_render_pipeline_keys_batched(
+                &self.gpu,
+                requests,
+                &mut self.shaders,
+                &mut self.pipelines,
+                &self.render_passes.material_transparent.bind_groups,
+                &self.pipeline_layouts,
+                &self.meshes.buffer_infos,
+                &self.anti_aliasing,
+                &self.textures,
+                &self.render_textures.formats,
+            )
+            .await?;
+
         Ok(())
     }
 
@@ -444,6 +521,57 @@ impl AwsmRenderer {
     }
 }
 
+/// Coarse-grained stages the renderer passes through during
+/// [`AwsmRendererBuilder::build`]. Subscribers passed via
+/// [`AwsmRendererBuilder::with_phase_handler`] get a callback at each
+/// transition; consumer UIs can map these to whatever progress
+/// message they want to show.
+///
+/// The most useful UX win these surface is the **cold WebGPU cache**
+/// case: a fresh Chrome profile can sit on `CompilingShaders` for
+/// tens of seconds while Dawn + the GPU driver lower every shader to
+/// MSL on the first visit. Showing "Browser is compiling shaders…
+/// (first load may take a while)" rather than a frozen "Initializing
+/// renderer…" is the difference between a user assuming the app is
+/// broken and a user knowing the browser is doing real work that
+/// will be cached next time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RendererLoadingPhase {
+    /// Adapter / device acquisition + initial bookkeeping +
+    /// supporting resource generation (IBL default cubemaps, BRDF
+    /// LUT compute, opaque-mipgen pipeline). Quick on every load.
+    Init,
+    /// The main render-pass pipeline build — `RenderPasses::new`
+    /// concurrently with `RenderTextures::new`. On a cold PSO disk
+    /// cache this is the dominant cost (Dawn lowers every WGSL
+    /// variant to MSL and then compiles every pipeline against the
+    /// new module); on a warm cache it's effectively instant.
+    /// Shader compilation and pipeline assembly happen interleaved
+    /// inside this phase — they're not cleanly separable into two
+    /// distinct stages, which is why there's only one phase variant
+    /// for both. Includes shadow shaders, geometry, material,
+    /// classify, HZB, effects, etc.
+    CompilingShaders,
+    /// Remaining renderer-side pipeline construction *after* the
+    /// main `RenderPasses::new` batch: picker / line-renderer /
+    /// material-classify buffers / occlusion / coverage / decal
+    /// allocation. Each is light by itself, but they happen serially
+    /// so the cumulative wall-clock is visible to the user on cold
+    /// loads.
+    BuildingPipelines,
+    /// Shadow subsystem build (shadow caster + EVSM pipelines) +
+    /// anti-aliasing / post-processing setter pipelines. Roughly the
+    /// last shader-compile work before the renderer is interactive.
+    FinalizingScene,
+    /// All renderer-init work done; ready to render.
+    Ready,
+}
+
+/// Boxed phase-transition callback handed to the builder via
+/// [`AwsmRendererBuilder::with_phase_handler`]. wasm is
+/// single-threaded so we don't need `Send + Sync`.
+pub type RendererLoadingPhaseHandler = Box<dyn FnMut(RendererLoadingPhase)>;
+
 /// Builder for `AwsmRenderer`.
 pub struct AwsmRendererBuilder {
     gpu: AwsmRendererGpuBuilderKind,
@@ -473,6 +601,12 @@ pub struct AwsmRendererBuilder {
     /// (or via `AwsmRenderer::set_optimization_policy` later) to force
     /// the path on/off or to retune the Auto thresholds.
     optimization_policy: crate::optimization_policy::RendererOptimizationPolicy,
+    /// Optional consumer-supplied callback fired at each
+    /// [`RendererLoadingPhase`] transition during `build()`. UI
+    /// consumers wire this to update a loading overlay; tracing /
+    /// telemetry consumers can use it to record per-phase elapsed
+    /// time.
+    phase_handler: Option<RendererLoadingPhaseHandler>,
 }
 
 /// WebGPU builder input for `AwsmRendererBuilder`.
@@ -541,7 +675,22 @@ impl AwsmRendererBuilder {
             shadows_config: None,
             features: RendererFeatures::default(),
             optimization_policy: crate::optimization_policy::RendererOptimizationPolicy::default(),
+            phase_handler: None,
         }
+    }
+
+    /// Subscribes to renderer-init phase transitions. The callback
+    /// fires once per [`RendererLoadingPhase`] entry — see the enum
+    /// docs for what each phase covers. Frontends use this to render
+    /// a phase-specific loading message instead of one generic
+    /// "Initializing renderer…" line that covers the entire (cold
+    /// load: tens of seconds; warm load: ~1s) window.
+    pub fn with_phase_handler<F>(mut self, handler: F) -> Self
+    where
+        F: FnMut(RendererLoadingPhase) + 'static,
+    {
+        self.phase_handler = Some(Box::new(handler));
+        self
     }
 
     /// Opts into renderer features. Both flags default to `false` so
@@ -641,7 +790,16 @@ impl AwsmRendererBuilder {
             shadows_config,
             mut features,
             optimization_policy,
+            phase_handler,
         } = self;
+
+        let mut phase_handler = phase_handler;
+        let mut emit_phase = |phase: RendererLoadingPhase| {
+            if let Some(handler) = phase_handler.as_mut() {
+                handler(phase);
+            }
+        };
+        emit_phase(RendererLoadingPhase::Init);
 
         let gpu = match gpu {
             AwsmRendererGpuBuilderKind::WebGpuBuilder(builder) => builder.build().await?,
@@ -777,6 +935,18 @@ impl AwsmRendererBuilder {
             textures: &mut textures,
             features: &features,
         };
+
+        // Bulk shader + pipeline compilation begins here. On a cold
+        // PSO disk cache (fresh Chrome profile, post-redeploy first
+        // load) this is the window where the user actually waits —
+        // tens of seconds while Dawn lowers every WGSL variant to
+        // MSL and assembles every pipeline. Shader compilation and
+        // pipeline assembly are interleaved (each pass batches its
+        // own shaders then its own pipelines) so there's no clean
+        // boundary between "shaders done" and "pipelines start";
+        // the `CompilingShaders` phase covers the whole block.
+        emit_phase(RendererLoadingPhase::CompilingShaders);
+
         let (render_passes, render_textures) =
             futures::future::try_join(RenderPasses::new(&mut render_pass_init, &features), async {
                 RenderTextures::new(&gpu, formats_for_textures, &features)
@@ -784,6 +954,13 @@ impl AwsmRendererBuilder {
                     .map_err(crate::error::AwsmError::from)
             })
             .await?;
+
+        // Main render-pass compile done. Picker / line-renderer /
+        // material-classify / occlusion / coverage / decal still
+        // need their pipelines built before the first frame;
+        // signal the transition so the UI message stops claiming
+        // shader compile is in progress.
+        emit_phase(RendererLoadingPhase::BuildingPipelines);
 
         // Pre-warm the shader cache with everything Picker + LineRenderer
         // need before constructing either. Picker has two compute shader
@@ -883,6 +1060,14 @@ impl AwsmRendererBuilder {
             None
         };
 
+        // Shadows + the final anti-aliasing / post-processing
+        // pipeline configuration below are the renderer-init tail:
+        // pipelines created here are needed for the first frame but
+        // they don't dominate the cold-load cost the way the
+        // RenderPasses block does. Signal the transition so frontends
+        // can swap to a less alarming "Finalising scene…" message.
+        emit_phase(RendererLoadingPhase::FinalizingScene);
+
         let shadows = shadows::Shadows::new(
             &gpu,
             &mut bind_group_layouts,
@@ -966,6 +1151,8 @@ impl AwsmRendererBuilder {
         _self
             .set_post_processing(_self.post_processing.clone())
             .await?;
+
+        emit_phase(RendererLoadingPhase::Ready);
 
         Ok(_self)
     }

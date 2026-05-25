@@ -71,9 +71,17 @@ impl AppCanvas {
                             //.with_device_request_limits(DeviceRequestLimits::typical());
                             .with_device_request_limits(DeviceRequestLimits::max_all());
 
+                        let loading_status = state.ctx.loading_status.clone();
                         let mut renderer = match AwsmRendererBuilder::new(gpu_builder)
                             .with_logging(AwsmRendererLogging { render_timings: true })
                             .with_clear_color(Color::MID_GREY)
+                            .with_phase_handler(clone!(loading_status => move |phase| {
+                                // Pump every builder phase transition
+                                // into the loading overlay. The phase
+                                // enum maps to user-facing copy in
+                                // `LoadingStatus::ok_strings`.
+                                loading_status.lock_mut().renderer_phase = Some(phase);
+                            }))
                             .build()
                             .await {
                                 Ok(renderer) => renderer,
@@ -84,7 +92,14 @@ impl AppCanvas {
                                 }
                             };
 
-                        state.ctx.loading_status.lock_mut().renderer = Ok(false);
+                        {
+                            let mut status = state.ctx.loading_status.lock_mut();
+                            status.renderer = Ok(false);
+                            // Builder reached Ready → clear the
+                            // phase row; further rows (prewarm,
+                            // ibl, gltf...) drive their own status.
+                            status.renderer_phase = None;
+                        }
 
                         // Force-compile the routinely-used pipelines
                         // before the first draw. Surfaces a distinct

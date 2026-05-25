@@ -100,28 +100,38 @@ impl LinePipelines {
             PipelineLayoutCacheKey::new(vec![bind_group_layout_key]),
         )?;
 
+        // Build all 4 variant cache keys, then a single batched
+        // ensure_keys. Dawn parallelises the 4 compiles instead of
+        // serialising them.
+        let variant_keys = [
+            LineVariantKey {
+                depth_test_always: false,
+                msaa: false,
+            },
+            LineVariantKey {
+                depth_test_always: false,
+                msaa: true,
+            },
+            LineVariantKey {
+                depth_test_always: true,
+                msaa: false,
+            },
+            LineVariantKey {
+                depth_test_always: true,
+                msaa: true,
+            },
+        ];
+        let pipeline_cache_keys: Vec<RenderPipelineCacheKey> = variant_keys
+            .iter()
+            .map(|v| build_pipeline_cache_key(shader_key, pipeline_layout_key, formats, *v))
+            .collect();
+        let resolved = pipelines
+            .render
+            .ensure_keys(gpu, shaders, pipeline_layouts, pipeline_cache_keys)
+            .await?;
         let mut variants = [RenderPipelineKey::default(); 4];
-        for depth_test_always in [false, true] {
-            for msaa in [false, true] {
-                let idx = variant_index(LineVariantKey {
-                    depth_test_always,
-                    msaa,
-                });
-                variants[idx] = build_pipeline(
-                    gpu,
-                    pipelines,
-                    shaders,
-                    pipeline_layouts,
-                    shader_key,
-                    pipeline_layout_key,
-                    formats,
-                    LineVariantKey {
-                        depth_test_always,
-                        msaa,
-                    },
-                )
-                .await?;
-            }
+        for (v, key) in variant_keys.iter().zip(resolved) {
+            variants[variant_index(*v)] = key;
         }
 
         Ok(Self {
@@ -139,17 +149,12 @@ pub(super) fn variant_index(variant: LineVariantKey) -> usize {
     (variant.depth_test_always as usize) << 1 | (variant.msaa as usize)
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn build_pipeline(
-    gpu: &AwsmRendererWebGpu,
-    pipelines: &mut Pipelines,
-    shaders: &Shaders,
-    pipeline_layouts: &PipelineLayouts,
+fn build_pipeline_cache_key(
     shader_key: crate::shaders::ShaderKey,
     pipeline_layout_key: crate::pipeline_layouts::PipelineLayoutKey,
     formats: &RenderTextureFormats,
     variant: LineVariantKey,
-) -> Result<RenderPipelineKey> {
+) -> RenderPipelineCacheKey {
     let compare = if variant.depth_test_always {
         CompareFunction::Always
     } else {
@@ -184,10 +189,5 @@ async fn build_pipeline(
             pipeline_cache_key.with_multisample(MultisampleState::new().with_count(4));
     }
 
-    let key = pipelines
-        .render
-        .get_key(gpu, shaders, pipeline_layouts, pipeline_cache_key)
-        .await?;
-
-    Ok(key)
+    pipeline_cache_key
 }

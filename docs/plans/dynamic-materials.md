@@ -980,20 +980,24 @@ Expected outcome: registering and unregistering a dynamic material changes `disp
 
 #### Phase 3 cross-link: shader-cache warmup API
 
-The dispatch-hash machinery this phase lands is also what
-[`PERFORMANCE.md §5g`](../PERFORMANCE.md) needs to attach
-its `AwsmRenderer::prewarm_pipelines()` API to. The warmup API
-is *not* a Phase 3 deliverable — but it's the natural consumer
-of the registry, and shipping it alongside Phase 4 (when the
-first dynamic material actually compiles) avoids surfacing a
-per-frame "registered a material → recompile stutter mid-game"
-hazard to player-shipped consumers.
+The dispatch-hash machinery this phase lands plugs into the
+already-extant
+[`AwsmRenderer::prewarm_pipelines`](../../crates/renderer/src/lib.rs)
+API (see also [`docs/plans/parallelize.md`](parallelize.md) for the
+batched `ensure_keys` plumbing the warmup rides on). That method
+already walks the live mesh set and warms every transparent
+pipeline variant the scene needs; the dynamic-materials extension
+is to additionally iterate the registry's enabled set so newly
+registered materials' opaque + transparent pipelines compile
+through the same batched `ensure_keys` path. Shipping that
+extension alongside Phase 4 (when the first dynamic material
+actually compiles) avoids surfacing a per-frame "registered a
+material → recompile stutter mid-game" hazard to player-shipped
+consumers.
 
-Shape: walks every active `(shader_id × variant)` known to the
-registry, fakes a one-pixel draw to compile each, drops the
-fakes. Idempotent and cheap when the GPU disk cache is warm
-(<5 ms on Chrome); ~50–500 ms on a cold cache. Game-init code
-calls it after the burst of `register_material` calls
+Idempotent and cheap when the GPU disk cache is warm (<5 ms on
+Chrome); ~50–500 ms per N variants on a cold cache. Game-init
+code calls it after the burst of `register_material` calls
 finishes; mid-gameplay code calls it after each new burst of
 runtime registrations (e.g. streamed-in level packs).
 
