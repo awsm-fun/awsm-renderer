@@ -23,8 +23,9 @@ use awsm_renderer_core::{
 };
 
 /// Bytes per indirect-args entry: `(x: u32, y: u32, z: u32, _pad: u32)`.
-/// Three of these laid out back-to-back form the buffer prefix that
-/// `dispatchWorkgroupsIndirect` reads from at offsets 0, 16, 32.
+/// [`BUCKET_COUNT`] of these laid out back-to-back form the buffer
+/// prefix that `dispatchWorkgroupsIndirect` reads from at offsets
+/// 0, 16, 32, 48 (one per opaque shader_id).
 pub const INDIRECT_ARGS_STRIDE: u32 = 16;
 
 /// Header byte count: 4 × indirect args (64 B) + 4 bucket offsets +

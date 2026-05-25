@@ -44,8 +44,10 @@ pub mod toon {
 }
 
 /// FlipBook (sprite-sheet) material parameters — re-exported from
-/// `awsm-materials`. Gated by the `flipbook` feature on
-/// `awsm-renderer-materials` (default-on).
+/// `awsm-materials`. The upstream module is itself gated by the
+/// `flipbook` Cargo feature on `awsm-materials` (default-on); since
+/// this crate depends on `awsm-materials` with default features, the
+/// re-export is always available here.
 pub mod flipbook {
     pub use awsm_materials::flipbook::*;
 }
@@ -80,10 +82,8 @@ pub enum Material {
     Pbr(Box<PbrMaterial>),
     Unlit(UnlitMaterial),
     Toon(Box<ToonMaterial>),
-    /// Sprite-sheet flipbook. Gated by the `awsm-renderer-materials`
-    /// `flipbook` feature (default-on); a consumer who opts out of
-    /// the feature can still build the renderer crate but never
-    /// produces a `Material::FlipBook` to put in it.
+    /// Sprite-sheet flipbook. See [`awsm_materials::flipbook`] for
+    /// authoring + WGSL semantics.
     FlipBook(Box<FlipBookMaterial>),
 }
 
