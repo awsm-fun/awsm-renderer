@@ -140,6 +140,116 @@ pub async fn load_scene_by_path(scene_name: String) -> Result<(), JsValue> {
     Ok(())
 }
 
+/// Sibling of [`load_scene_by_path`] that fetches from the
+/// `awsm-renderer-assets` repo (port 9083 in dev,
+/// `dakom.github.io/awsm-renderer-assets/` in prod) instead of the
+/// editor's own dist. Used for test scenes that ship alongside the
+/// canonical asset bundle rather than being baked into the editor.
+///
+/// The URL layout is `<MEDIA_BASE_URL_ADDITIONAL_ASSETS>/<scene_name>/project.json`
+/// plus `<scene_name>/<disk_subpath>` for each raster texture entry.
+/// `scene_name` is the top-level directory under the assets repo
+/// (e.g. `"flipbook-test"`).
+///
+/// `#[cfg(debug_assertions)]` matches [`load_scene_by_path`] — the
+/// helper is dev-only; production builds use the standard file-picker
+/// `load_project` flow.
+#[cfg(debug_assertions)]
+#[wasm_bindgen]
+pub async fn load_external_test_scene(scene_name: String) -> Result<(), JsValue> {
+    let base = crate::config::CONFIG.media_base_url_additional_assets();
+    let project_url = format!("{base}/{scene_name}/project.json");
+    tracing::info!("measurement: loading external scene from {project_url}");
+
+    let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
+    let response_value = JsFuture::from(window.fetch_with_str(&project_url)).await?;
+    let response: web_sys::Response = response_value.dyn_into()?;
+    if !response.ok() {
+        return Err(JsValue::from_str(&format!(
+            "fetch {project_url} failed: status {}",
+            response.status()
+        )));
+    }
+    let text_value = JsFuture::from(response.text()?).await?;
+    let text = text_value
+        .as_string()
+        .ok_or_else(|| JsValue::from_str("response.text() not a string"))?;
+
+    let snapshot: SceneSnapshot = serde_json::from_str(&text)
+        .map_err(|e| JsValue::from_str(&format!("parse project.json: {e}")))?;
+
+    let state = app_state();
+    crate::renderer_bridge::mesh_cache::clear();
+    super::project::drop_renderer_caches().await;
+    state.pending_assets.lock().unwrap().clear();
+
+    crate::scene::snapshot::apply_to(&snapshot, &state.scene);
+    state.scene.bump_revision();
+    state.clear_selection();
+    state.history.lock().unwrap().clear();
+    state.refresh_history_signals();
+    {
+        let mut project = state.project.lock().unwrap();
+        project.directory = None;
+        project.dirty = false;
+    }
+    state.project_name.set(Some(scene_name.clone()));
+    state.mark_clean();
+
+    // Pre-hydrate `pending_assets` for raster textures by fetching them
+    // off the same media base URL. Mirrors the local-dist path in
+    // `load_scene_by_path` but resolves against the external server.
+    let raster_targets: Vec<(awsm_scene_schema::AssetId, String, String)> = {
+        let table = state.scene.assets.lock().unwrap();
+        table
+            .entries
+            .iter()
+            .filter_map(|(id, entry)| match &entry.source {
+                awsm_scene_schema::AssetSource::Texture(
+                    awsm_scene_schema::TextureDef::Raster { display_name },
+                ) => awsm_scene_schema::asset_disk_path(*id, entry)
+                    .map(|p| (*id, display_name.clone(), p)),
+                _ => None,
+            })
+            .collect()
+    };
+    for (texture_id, display_name, disk_subpath) in raster_targets {
+        let asset_url = format!("{base}/{scene_name}/{disk_subpath}");
+        let resp_val = JsFuture::from(window.fetch_with_str(&asset_url)).await?;
+        let resp: web_sys::Response = resp_val.dyn_into()?;
+        if !resp.ok() {
+            tracing::warn!(
+                "load_external_test_scene: raster asset {texture_id} ({display_name}) — \
+                 fetch {asset_url} returned status {}",
+                resp.status()
+            );
+            continue;
+        }
+        let buf_val = JsFuture::from(resp.array_buffer()?).await?;
+        let buf: js_sys::ArrayBuffer = buf_val.dyn_into()?;
+        let bytes = js_sys::Uint8Array::new(&buf).to_vec();
+        state
+            .pending_assets
+            .lock()
+            .unwrap()
+            .insert(texture_id, bytes);
+    }
+
+    let roots: Vec<Arc<crate::scene::Node>> =
+        state.scene.nodes.lock_ref().iter().cloned().collect();
+    let outcome = crate::loading_modal::wait_for_models_ready(&roots).await;
+    if !outcome.is_clean() {
+        return Err(JsValue::from_str(&format!(
+            "materialise incomplete: {} failure(s), timed_out={}",
+            outcome.failures.len(),
+            outcome.timed_out
+        )));
+    }
+
+    tracing::info!("measurement: external scene {scene_name} loaded + materialised");
+    Ok(())
+}
+
 /// Importance-score histogram across all shadow-casting lights —
 /// importance-tier cutoff tuning aid. Mirrors
 /// `shadows::importance::light_importance_decision`'s scoring
