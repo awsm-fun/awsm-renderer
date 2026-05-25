@@ -45,8 +45,8 @@
 //! doesn't whine; in-flight slots' underlying `GpuBuffer`s outlive our
 //! handle via the device's internal liveness tracking.
 
-use std::cell::Cell;
-use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use awsm_renderer_core::{
     buffers::{BufferDescriptor, BufferUsage, MapMode},
@@ -120,7 +120,15 @@ enum SlotState {
 /// A flag shared with the `mapAsync` resolution closure. The future
 /// flips it to `true` once the promise resolves; the ring polls the
 /// flag on each acquire to promote `Pending` slots to `Ready`.
-type ReadyFlag = Rc<Cell<bool>>;
+///
+/// `Arc<AtomicBool>` (not `Rc<Cell<bool>>`) — the renderer codebase
+/// standardises on `Arc` + atomic / `Mutex` for shared interior
+/// mutability so the same types compile unchanged the day a
+/// subsystem moves to a real worker. Today everything runs on a
+/// single-threaded JS event loop (`spawn_local` doesn't preempt), so
+/// the atomic ops are functionally free; tomorrow they're already
+/// correct.
+type ReadyFlag = Arc<AtomicBool>;
 
 struct Slot {
     buffer: web_sys::GpuBuffer,
@@ -134,7 +142,7 @@ struct Slot {
     /// `make_slot(..)` so a single failure doesn't permanently
     /// retire one ring entry (which would degrade capacity until
     /// process exit / ring resize).
-    recover_needed: Rc<Cell<bool>>,
+    recover_needed: Arc<AtomicBool>,
     /// `performance.now()` timestamp captured when `mapAsync` was
     /// kicked. Consumed by `promote_resolved` to add the
     /// `Submitted → Ready` latency into `stats.map_async_wait_ms` on
@@ -230,7 +238,9 @@ impl<'a> MappedSlotWrite<'a> {
                 // replaced wholesale, no in-place state transition
                 // matters. Also marking `finalized = true` so the
                 // Drop impl doesn't re-touch the now-doomed slot.
-                self.ring.slots[self.slot_index].recover_needed.set(true);
+                self.ring.slots[self.slot_index]
+                    .recover_needed
+                    .store(true, Ordering::Release);
                 self.finalized = true;
                 return Err(err);
             }
@@ -477,7 +487,7 @@ impl MappedStagingRing {
     fn promote_resolved(&mut self) {
         let mut accumulated_ms = 0.0_f64;
         for slot in &mut self.slots {
-            if slot.state == SlotState::Pending && slot.ready_flag.get() {
+            if slot.state == SlotState::Pending && slot.ready_flag.load(Ordering::Acquire) {
                 slot.state = SlotState::Ready;
                 if let Some(started) = slot.map_async_started_ms.take() {
                     let now = performance_now_ms();
@@ -512,18 +522,18 @@ impl MappedStagingRing {
     }
 
     fn start_map_async(&mut self, idx: usize) {
-        let ready_flag = self.slots[idx].ready_flag.clone();
-        let recover_needed = self.slots[idx].recover_needed.clone();
+        let ready_flag = Arc::clone(&self.slots[idx].ready_flag);
+        let recover_needed = Arc::clone(&self.slots[idx].recover_needed);
         let buffer = self.slots[idx].buffer.clone();
         let capacity = self.slot_capacity as u32;
         let label = self.label.clone();
-        ready_flag.set(false);
+        ready_flag.store(false, Ordering::Release);
         self.slots[idx].map_async_started_ms = Some(performance_now_ms());
         let promise = buffer.map_async_with_u32_and_u32(MapMode::Write as u32, 0, capacity);
         spawn_local(async move {
             match JsFuture::from(promise).await {
                 Ok(_) => {
-                    ready_flag.set(true);
+                    ready_flag.store(true, Ordering::Release);
                 }
                 Err(err) => {
                     // Two reasons we land here:
@@ -540,7 +550,7 @@ impl MappedStagingRing {
                     //      next `acquire(..)` rebuild this slot via
                     //      `make_slot(..)` and bring it back into
                     //      rotation.
-                    recover_needed.set(true);
+                    recover_needed.store(true, Ordering::Release);
                     tracing::debug!(
                         "mapped-ring {}: mapAsync did not resolve cleanly: {:?} (slot {} flagged for recovery)",
                         label,
@@ -569,7 +579,7 @@ impl MappedStagingRing {
     fn recover_failed_slots(&mut self) {
         let depth = self.slots.len();
         for idx in 0..depth {
-            if !self.slots[idx].recover_needed.get() {
+            if !self.slots[idx].recover_needed.load(Ordering::Acquire) {
                 continue;
             }
             match Self::make_slot(&self.gpu, self.slot_capacity, &self.label) {
@@ -629,8 +639,8 @@ impl MappedStagingRing {
         Ok(Slot {
             buffer,
             state: SlotState::Mapped,
-            ready_flag: Rc::new(Cell::new(false)),
-            recover_needed: Rc::new(Cell::new(false)),
+            ready_flag: Arc::new(AtomicBool::new(false)),
+            recover_needed: Arc::new(AtomicBool::new(false)),
             map_async_started_ms: None,
         })
     }

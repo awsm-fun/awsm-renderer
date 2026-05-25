@@ -67,12 +67,12 @@ impl AwsmRenderer {
         let segment_bytes = segments_byte_size(segment_count);
 
         let segment_buffer = create_segment_buffer(&self.gpu, segment_bytes)?;
-        let segments_uploader = std::cell::RefCell::new(
+        let segments_uploader = std::sync::Mutex::new(
             crate::buffer::mapped_uploader::MappedUploader::new("Line Segments"),
         );
         write_segments(
             &self.gpu,
-            &mut segments_uploader.borrow_mut(),
+            &mut segments_uploader.lock().unwrap(),
             &segment_buffer,
             segment_bytes,
             segments,
@@ -99,7 +99,7 @@ impl AwsmRenderer {
             uniform_buffer,
             bind_group,
             segments_uploader,
-            uniform_uploader: std::cell::RefCell::new(
+            uniform_uploader: std::sync::Mutex::new(
                 crate::buffer::mapped_uploader::MappedUploader::new("Line Uniform"),
             ),
         });
@@ -161,7 +161,7 @@ impl AwsmRenderer {
         }
         write_segments(
             &self.gpu,
-            &mut entry.segments_uploader.borrow_mut(),
+            &mut entry.segments_uploader.lock().unwrap(),
             &entry.segment_buffer,
             entry.segment_capacity_bytes,
             &self.lines.pack_buf,

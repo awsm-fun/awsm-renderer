@@ -11,10 +11,9 @@
 //! impl at init time. The dispatch path then routes by `J::NAME` via
 //! the pool's internal `HashMap`.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use futures::channel::oneshot;
 use serde::{de::DeserializeOwned, Serialize};
@@ -201,10 +200,17 @@ struct PendingEntry {
 /// `WebAssembly.Module`.
 pub struct WorkerPool {
     workers: Vec<WorkerSlot>,
-    next_worker: RefCell<usize>,
+    /// Monotonic round-robin cursor — `fetch_add(1) % workers.len()`
+    /// picks the next worker. Wraps cleanly on `usize` overflow
+    /// (modulo handles the wrap).
+    next_worker: AtomicUsize,
     next_job_id: AtomicU64,
-    pending: Rc<RefCell<HashMap<u64, PendingEntry>>>,
-    stats: Rc<RefCell<WorkerPoolStats>>,
+    /// `Arc<Mutex<…>>` rather than `Rc<RefCell<…>>` so the pool stays
+    /// future-proof for the day a renderer subsystem moves to a real
+    /// worker. Single-threaded today (`spawn_local` doesn't preempt),
+    /// so the lock is uncontested and ~free.
+    pending: Arc<Mutex<HashMap<u64, PendingEntry>>>,
+    stats: Arc<Mutex<WorkerPoolStats>>,
     /// Closures that own the `Worker.onmessage` handlers; kept alive
     /// for the lifetime of the pool so the JS callbacks don't free
     /// underneath us.
@@ -239,9 +245,8 @@ impl WorkerPool {
         let wasm_module = current_wasm_module()
             .map_err(|err| WorkerPoolError::bootstrap_from_js("current_wasm_module", err))?;
 
-        let pending: Rc<RefCell<HashMap<u64, PendingEntry>>> =
-            Rc::new(RefCell::new(HashMap::new()));
-        let stats = Rc::new(RefCell::new(WorkerPoolStats::default()));
+        let pending: Arc<Mutex<HashMap<u64, PendingEntry>>> = Arc::new(Mutex::new(HashMap::new()));
+        let stats = Arc::new(Mutex::new(WorkerPoolStats::default()));
 
         let mut workers = Vec::with_capacity(worker_count);
         let mut onmessage_closures = Vec::with_capacity(worker_count);
@@ -263,14 +268,14 @@ impl WorkerPool {
 
             // Ready future — resolved by the first `awsm-ready` event.
             let (ready_tx, ready_rx) = oneshot::channel::<Result<(), String>>();
-            let ready_cell: Rc<RefCell<Option<oneshot::Sender<Result<(), String>>>>> =
-                Rc::new(RefCell::new(Some(ready_tx)));
+            let ready_cell: Arc<Mutex<Option<oneshot::Sender<Result<(), String>>>>> =
+                Arc::new(Mutex::new(Some(ready_tx)));
 
             // Job-result router — when a regular dispatch comes back,
             // pop the JobId out of `pending` and resolve its sender.
-            let pending_clone = pending.clone();
-            let stats_clone = stats.clone();
-            let ready_cell_clone = ready_cell.clone();
+            let pending_clone = Arc::clone(&pending);
+            let stats_clone = Arc::clone(&stats);
+            let ready_cell_clone = Arc::clone(&ready_cell);
             let label = format!("awsm-worker-{i}");
 
             let onmessage = Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
@@ -281,7 +286,7 @@ impl WorkerPool {
                     .unwrap_or_default();
                 match kind.as_str() {
                     "awsm-ready" => {
-                        if let Some(tx) = ready_cell_clone.borrow_mut().take() {
+                        if let Some(tx) = ready_cell_clone.lock().unwrap().take() {
                             let _ = tx.send(Ok(()));
                         }
                     }
@@ -290,7 +295,7 @@ impl WorkerPool {
                             .ok()
                             .and_then(|v| v.as_string())
                             .unwrap_or_else(|| "unknown init error".to_string());
-                        if let Some(tx) = ready_cell_clone.borrow_mut().take() {
+                        if let Some(tx) = ready_cell_clone.lock().unwrap().take() {
                             let _ = tx.send(Err(msg));
                         }
                     }
@@ -299,9 +304,9 @@ impl WorkerPool {
                         let payload = Reflect::get(&data, &JsValue::from_str("payload"))
                             .unwrap_or(JsValue::UNDEFINED);
                         if let Some(id) = id {
-                            if let Some(entry) = pending_clone.borrow_mut().remove(&id) {
+                            if let Some(entry) = pending_clone.lock().unwrap().remove(&id) {
                                 let _ = entry.sender.send(Ok(payload));
-                                stats_clone.borrow_mut().jobs_completed += 1;
+                                stats_clone.lock().unwrap().jobs_completed += 1;
                             }
                         }
                     }
@@ -312,9 +317,9 @@ impl WorkerPool {
                             .and_then(|v| v.as_string())
                             .unwrap_or_else(|| "unknown job error".to_string());
                         if let Some(id) = id {
-                            if let Some(entry) = pending_clone.borrow_mut().remove(&id) {
+                            if let Some(entry) = pending_clone.lock().unwrap().remove(&id) {
                                 let _ = entry.sender.send(Err(JsValue::from_str(&msg)));
-                                stats_clone.borrow_mut().jobs_failed += 1;
+                                stats_clone.lock().unwrap().jobs_failed += 1;
                             }
                         } else {
                             tracing::warn!("{label}: worker error without id: {msg}");
@@ -330,16 +335,16 @@ impl WorkerPool {
 
             let onerror_label = format!("awsm-worker-{i}");
             let onerror_worker_idx = i;
-            let onerror_ready_cell = ready_cell.clone();
-            let onerror_pending = pending.clone();
-            let onerror_stats = stats.clone();
+            let onerror_ready_cell = Arc::clone(&ready_cell);
+            let onerror_pending = Arc::clone(&pending);
+            let onerror_stats = Arc::clone(&stats);
             let onerror = Closure::<dyn FnMut(JsValue)>::new(move |err: JsValue| {
                 let msg = WorkerPoolError::js_message(err);
                 tracing::warn!("{onerror_label}: worker onerror: {msg}");
                 // Fail the bootstrap ready channel if init never
                 // reported either `awsm-ready` or `awsm-init-error`
                 // — otherwise `WorkerPool::new` awaits forever.
-                if let Some(tx) = onerror_ready_cell.borrow_mut().take() {
+                if let Some(tx) = onerror_ready_cell.lock().unwrap().take() {
                     let _ = tx.send(Err(format!("worker onerror during init: {msg}")));
                 }
                 // Drain only the in-flight jobs that were dispatched
@@ -347,7 +352,7 @@ impl WorkerPool {
                 // results still route through `onmessage` normally.
                 // `PendingEntry.worker_idx` is set at `dispatch_inner`
                 // time so we can filter by ownership here.
-                let mut pending = onerror_pending.borrow_mut();
+                let mut pending = onerror_pending.lock().unwrap();
                 let mut drained_count: u64 = 0;
                 pending.retain(|_id, entry| {
                     if entry.worker_idx == onerror_worker_idx {
@@ -370,7 +375,7 @@ impl WorkerPool {
                     }
                 });
                 if drained_count > 0 {
-                    onerror_stats.borrow_mut().jobs_failed += drained_count;
+                    onerror_stats.lock().unwrap().jobs_failed += drained_count;
                 }
             });
             worker.set_onerror(Some(onerror.as_ref().unchecked_ref::<Function>()));
@@ -417,11 +422,11 @@ impl WorkerPool {
             }
         }
 
-        stats.borrow_mut().workers_alive = workers.len();
+        stats.lock().unwrap().workers_alive = workers.len();
 
         Ok(Self {
             workers,
-            next_worker: RefCell::new(0),
+            next_worker: AtomicUsize::new(0),
             next_job_id: AtomicU64::new(1),
             pending,
             stats,
@@ -486,12 +491,13 @@ impl WorkerPool {
         // still drain it eventually, but with a misleading "worker
         // errored" message rather than the actual postMessage
         // failure the caller is about to get back).
-        let worker_idx = {
-            let mut cursor = self.next_worker.borrow_mut();
-            let idx = *cursor;
-            *cursor = (*cursor + 1) % self.workers.len();
-            idx
-        };
+        //
+        // `fetch_add` wraps on `usize` overflow; modulo handles the
+        // wrap correctly so a wrapped cursor still picks a valid
+        // index. `Relaxed` is fine — no other state is synchronised
+        // by this counter, and even a torn read just lands on a
+        // different (still-valid) worker.
+        let worker_idx = self.next_worker.fetch_add(1, Ordering::Relaxed) % self.workers.len();
         let worker = &self.workers[worker_idx].worker;
 
         let input_js = serde_wasm_bindgen::to_value(&input)
@@ -539,14 +545,14 @@ impl WorkerPool {
         // point the worker has the job and will send back either an
         // `awsm-result` / `awsm-error` (consumed by `onmessage`) or
         // its `onerror` filter will drain this entry.
-        self.pending.borrow_mut().insert(
+        self.pending.lock().unwrap().insert(
             id,
             PendingEntry {
                 sender: tx,
                 worker_idx,
             },
         );
-        self.stats.borrow_mut().jobs_dispatched += 1;
+        self.stats.lock().unwrap().jobs_dispatched += 1;
 
         // Capture the dispatch timestamp now (after the postMessage
         // succeeded) so the telemetry isn't polluted by failed
@@ -565,7 +571,7 @@ impl WorkerPool {
             Ok(Ok(payload)) => {
                 if dispatched_at_ms > 0.0 {
                     let delta = (perf_now_ms() - dispatched_at_ms).max(0.0);
-                    self.stats.borrow_mut().job_round_trip_ms += delta;
+                    self.stats.lock().unwrap().job_round_trip_ms += delta;
                 }
                 J::from_response_message(payload).map_err(WorkerPoolError::Serde)
             }
@@ -579,7 +585,7 @@ impl WorkerPool {
 
     /// Snapshot the pool telemetry.
     pub fn stats(&self) -> WorkerPoolStats {
-        *self.stats.borrow()
+        *self.stats.lock().unwrap()
     }
 }
 

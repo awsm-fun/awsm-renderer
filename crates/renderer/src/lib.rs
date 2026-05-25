@@ -156,10 +156,12 @@ pub struct AwsmRenderer {
     /// [`MeshCoverage::ingest`]. `None` when
     /// `features.coverage_lod == false`.
     pub coverage_buffers: Option<render_passes::coverage::buffers::CoverageBuffers>,
-    /// State for the coverage readback loop. `Rc<RefCell<...>>` so
-    /// the `spawn_local`-detached `mapAsync` future can write back
-    /// into it without re-borrowing the renderer.
-    pub coverage_readback_state: std::rc::Rc<std::cell::RefCell<CoverageReadbackState>>,
+    /// State for the coverage readback loop. `Arc<Mutex<…>>` so the
+    /// `spawn_local`-detached `mapAsync` future can write back into
+    /// it without re-borrowing the renderer — and so it stays
+    /// future-proof for the day the renderer moves across threads
+    /// (single-threaded today, so the lock is uncontested).
+    pub coverage_readback_state: std::sync::Arc<std::sync::Mutex<CoverageReadbackState>>,
     /// Monotonic frame index. Wraps every ~272 years at 60 Hz — safe to
     /// treat as unbounded for any practical session. Drives the
     /// `skin_update_period` gate and other "every Nth frame" cadences.
@@ -904,7 +906,7 @@ impl AwsmRendererBuilder {
             compaction_buffers,
             coverage: coverage::MeshCoverage::default(),
             coverage_buffers,
-            coverage_readback_state: std::rc::Rc::new(std::cell::RefCell::new(
+            coverage_readback_state: std::sync::Arc::new(std::sync::Mutex::new(
                 CoverageReadbackState::default(),
             )),
             frame_index: 0,

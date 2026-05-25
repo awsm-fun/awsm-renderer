@@ -71,10 +71,11 @@ pub struct OcclusionBuffers {
     pub staging: Vec<u8>,
     /// Mapped-staging-ring uploaders (Phase 2.1). Interior-mutable so
     /// `write_*` keeps its `&self` signature against `render.rs`'s
-    /// existing borrow shape.
-    pub(crate) instances_uploader:
-        std::cell::RefCell<crate::buffer::mapped_uploader::MappedUploader>,
-    pub(crate) params_uploader: std::cell::RefCell<crate::buffer::mapped_uploader::MappedUploader>,
+    /// existing borrow shape. `Mutex` (not `RefCell`) keeps the
+    /// containing struct from being `!Sync` once the renderer moves
+    /// across threads.
+    pub(crate) instances_uploader: std::sync::Mutex<crate::buffer::mapped_uploader::MappedUploader>,
+    pub(crate) params_uploader: std::sync::Mutex<crate::buffer::mapped_uploader::MappedUploader>,
 }
 
 impl OcclusionBuffers {
@@ -121,10 +122,10 @@ impl OcclusionBuffers {
             params_buffer,
             capacity,
             staging: vec![0u8; instances_bytes],
-            instances_uploader: std::cell::RefCell::new(
+            instances_uploader: std::sync::Mutex::new(
                 crate::buffer::mapped_uploader::MappedUploader::new("OcclusionInstances"),
             ),
-            params_uploader: std::cell::RefCell::new(
+            params_uploader: std::sync::Mutex::new(
                 crate::buffer::mapped_uploader::MappedUploader::new("OcclusionParams"),
             ),
         })
@@ -132,8 +133,8 @@ impl OcclusionBuffers {
 
     /// Mapped-ring upload telemetry (instances + params aggregated).
     pub fn upload_stats(&self) -> crate::buffer::mapped_staging_ring::UploadStats {
-        let mut s = self.instances_uploader.borrow().stats();
-        let b = self.params_uploader.borrow().stats();
+        let mut s = self.instances_uploader.lock().unwrap().stats();
+        let b = self.params_uploader.lock().unwrap().stats();
         s.peak_ring_depth_used = s.peak_ring_depth_used.max(b.peak_ring_depth_used);
         s.fallback_count += b.fallback_count;
         s.map_async_wait_ms += b.map_async_wait_ms;
@@ -174,7 +175,7 @@ impl OcclusionBuffers {
         // fixed-size 16-byte uniform (4-byte count + 12-byte pad).
         let mut bytes = [0u8; 16];
         bytes[0..4].copy_from_slice(&active_count.to_le_bytes());
-        self.params_uploader.borrow_mut().write_dirty_ranges(
+        self.params_uploader.lock().unwrap().write_dirty_ranges(
             gpu,
             &self.params_buffer,
             16,
@@ -196,7 +197,7 @@ impl OcclusionBuffers {
         }
         let dest_size = self.capacity as usize * OCCLUSION_INSTANCE_STRIDE;
         let n = bytes.len();
-        self.instances_uploader.borrow_mut().write_dirty_ranges(
+        self.instances_uploader.lock().unwrap().write_dirty_ranges(
             gpu,
             &self.instances_buffer,
             dest_size,

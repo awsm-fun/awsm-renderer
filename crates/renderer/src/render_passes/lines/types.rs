@@ -33,11 +33,11 @@ pub(super) struct LineEntry {
     /// ring is sized to *this* line's segment/uniform buffer; on
     /// segment_buffer regrow (`segment_capacity_bytes` change), the
     /// uploader's `last_dest_size` mismatch triggers a ring resize
-    /// in lockstep. `RefCell` so the per-frame `render(&self, ..)`
-    /// keeps its existing borrow shape (`self.lines.render` runs
-    /// alongside `self.renderables` in `render.rs`).
-    pub segments_uploader: std::cell::RefCell<crate::buffer::mapped_uploader::MappedUploader>,
-    pub uniform_uploader: std::cell::RefCell<crate::buffer::mapped_uploader::MappedUploader>,
+    /// in lockstep. `Mutex` (not `RefCell`) so the entry doesn't
+    /// block `Lines` from being `Sync` when the renderer moves
+    /// across threads.
+    pub segments_uploader: std::sync::Mutex<crate::buffer::mapped_uploader::MappedUploader>,
+    pub uniform_uploader: std::sync::Mutex<crate::buffer::mapped_uploader::MappedUploader>,
 }
 
 /// Packing topology for `positions`/`colors` into `GpuLineSegment` records.

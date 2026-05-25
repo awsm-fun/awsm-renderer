@@ -343,23 +343,43 @@ fn start_worker_renderer(canvas: web_sys::OffscreenCanvas) -> Result<(), JsValue
         }
 
         // rAF loop via the worker-safe global helper.
-        let renderer_cell = std::rc::Rc::new(std::cell::RefCell::new(renderer));
-        let rotation_cell = std::rc::Rc::new(std::cell::Cell::new(0.0f32));
-        let raf_closure: std::rc::Rc<std::cell::RefCell<Option<Closure<dyn FnMut()>>>> =
-            std::rc::Rc::new(std::cell::RefCell::new(None));
-        let raf_closure_for_init = raf_closure.clone();
-        let raf_closure_for_run = raf_closure.clone();
-        let renderer_for_loop = renderer_cell.clone();
-        let rotation_for_loop = rotation_cell.clone();
+        //
+        // `Arc<Mutex<…>>` / `Arc<AtomicU32>` rather than
+        // `Rc<RefCell<…>>` / `Rc<Cell<…>>` to keep the example aligned
+        // with the renderer's "future-proof for multithreading"
+        // convention. f32 has no atomic primitive; we bit-cast through
+        // `AtomicU32` via `to_bits` / `from_bits` so the rotation
+        // counter stays lock-free. Single-threaded today (the
+        // `requestAnimationFrame` closure and the boot future share
+        // the worker scope), so the atomic / lock cost is zero.
+        let renderer_cell = std::sync::Arc::new(std::sync::Mutex::new(renderer));
+        let rotation_bits =
+            std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0.0f32.to_bits()));
+        // `Closure<dyn FnMut()>` from `wasm-bindgen` is `!Send + !Sync`
+        // because it owns a JS function reference, so the
+        // `Arc<Mutex<…>>` here can't actually move across threads
+        // today. Kept Arc/Mutex anyway for consistency with the
+        // renderer-wide convention ("future-proof for multithreading"
+        // — see CLAUDE.md / the matching containers in
+        // `workers/pool.rs`, `picker.rs`, `lib.rs`). The lint that
+        // would flag this is suppressed.
+        #[allow(clippy::arc_with_non_send_sync)]
+        let raf_closure: std::sync::Arc<std::sync::Mutex<Option<Closure<dyn FnMut()>>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(None));
+        let raf_closure_for_init = std::sync::Arc::clone(&raf_closure);
+        let raf_closure_for_run = std::sync::Arc::clone(&raf_closure);
+        let renderer_for_loop = std::sync::Arc::clone(&renderer_cell);
+        let rotation_for_loop = std::sync::Arc::clone(&rotation_bits);
         let transform_key_for_loop = transform_key;
 
-        *raf_closure_for_init.borrow_mut() = Some(Closure::new(move || {
+        *raf_closure_for_init.lock().unwrap() = Some(Closure::new(move || {
             // Spin the box gently so the smoke test confirms the
             // render loop is alive (frame-to-frame mutation visible).
-            let t = rotation_for_loop.get() + 0.01;
-            rotation_for_loop.set(t);
+            use std::sync::atomic::Ordering;
+            let t = f32::from_bits(rotation_for_loop.load(Ordering::Relaxed)) + 0.01;
+            rotation_for_loop.store(t.to_bits(), Ordering::Relaxed);
             {
-                let mut r = renderer_for_loop.borrow_mut();
+                let mut r = renderer_for_loop.lock().unwrap();
                 if let Ok(current) = r.transforms.get_local(transform_key_for_loop).cloned() {
                     let _ = r.transforms.set_local(
                         transform_key_for_loop,
@@ -392,23 +412,23 @@ fn start_worker_renderer(canvas: web_sys::OffscreenCanvas) -> Result<(), JsValue
                 }
             }
             // Re-arm.
-            if let Some(closure) = raf_closure_for_run.borrow().as_ref() {
+            if let Some(closure) = raf_closure_for_run.lock().unwrap().as_ref() {
                 let _ = awsm_renderer::web_global::request_animation_frame(
                     closure.as_ref().unchecked_ref(),
                 );
             }
         }));
-        if let Some(closure) = raf_closure_for_init.borrow().as_ref() {
+        if let Some(closure) = raf_closure_for_init.lock().unwrap().as_ref() {
             let _ = awsm_renderer::web_global::request_animation_frame(
                 closure.as_ref().unchecked_ref(),
             );
         }
-        // Closure lives in the Rc; intentionally leaked alongside
-        // `renderer_cell` / `rotation_cell` for the lifetime of the
+        // Closure lives in the Arc; intentionally leaked alongside
+        // `renderer_cell` / `rotation_bits` for the lifetime of the
         // worker. The worker scope owns them via the `move` capture.
         std::mem::forget(raf_closure);
         std::mem::forget(renderer_cell);
-        std::mem::forget(rotation_cell);
+        std::mem::forget(rotation_bits);
     });
     Ok(())
 }

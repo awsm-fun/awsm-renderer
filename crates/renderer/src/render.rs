@@ -81,7 +81,8 @@ impl AwsmRenderer {
         // since no producer was scheduled.
         let pending_snapshot = self
             .coverage_readback_state
-            .borrow_mut()
+            .lock()
+            .unwrap()
             .pending_snapshot
             .take();
         if let Some(snapshot) = pending_snapshot {
@@ -493,7 +494,7 @@ impl AwsmRenderer {
                 None
             };
             coverage_pass.render(&ctx)?;
-            let prior_inflight = self.coverage_readback_state.borrow().inflight;
+            let prior_inflight = self.coverage_readback_state.lock().unwrap().inflight;
             if !prior_inflight {
                 let bytes_to_copy = coverage_buffers.capacity.saturating_mul(4);
                 ctx.command_encoder.copy_buffer_to_buffer(
@@ -1030,8 +1031,8 @@ impl AwsmRenderer {
         {
             let readback_buffer = coverage_buffers.readback_buffer.clone();
             let readback_size_bytes = coverage_buffers.capacity.saturating_mul(4);
-            let state = self.coverage_readback_state.clone();
-            state.borrow_mut().inflight = true;
+            let state = std::sync::Arc::clone(&self.coverage_readback_state);
+            state.lock().unwrap().inflight = true;
             wasm_bindgen_futures::spawn_local(async move {
                 let result = crate::core::buffers::extract_buffer_vec(
                     &readback_buffer,
@@ -1055,7 +1056,7 @@ impl AwsmRenderer {
                         Vec::new()
                     }
                 };
-                let mut state = state.borrow_mut();
+                let mut state = state.lock().unwrap();
                 state.pending_snapshot = Some(snapshot);
                 state.inflight = false;
             });

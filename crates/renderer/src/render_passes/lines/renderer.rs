@@ -85,7 +85,7 @@ impl LineRenderer {
             uniform_bytes[0..4].copy_from_slice(&entry.width_px.to_le_bytes());
             uniform_bytes[4..8].copy_from_slice(&viewport_w.to_le_bytes());
             uniform_bytes[8..12].copy_from_slice(&viewport_h.to_le_bytes());
-            entry.uniform_uploader.borrow_mut().write_dirty_ranges(
+            entry.uniform_uploader.lock().unwrap().write_dirty_ranges(
                 ctx.gpu,
                 &entry.uniform_buffer,
                 LINE_UNIFORM_BYTES,

@@ -1,6 +1,9 @@
 //! GPU picking support for mesh selection.
 
-use std::{borrow::Cow, cell::RefCell, rc::Rc};
+use std::{
+    borrow::Cow,
+    sync::{Arc, Mutex},
+};
 
 use crate::{
     bind_group_layout::{
@@ -72,7 +75,8 @@ impl AwsmRenderer {
 
         // keep the lock scope before the await point
         let read_buffer = {
-            let state = &mut *self.picker.state.borrow_mut();
+            let mut guard = self.picker.state.lock().unwrap();
+            let state = &mut *guard;
 
             if state.in_flight {
                 return Ok(PickResult::InFlight);
@@ -93,7 +97,7 @@ impl AwsmRenderer {
         let res = extract_buffer_array(&read_buffer, &mut bytes).await;
 
         {
-            self.picker.state.borrow_mut().in_flight = false;
+            self.picker.state.lock().unwrap().in_flight = false;
         }
 
         // now we can error out if needed
@@ -123,7 +127,10 @@ pub struct Picker {
     multisampled_bind_group_layout_key: BindGroupLayoutKey,
     _bind_group: Option<web_sys::GpuBindGroup>,
 
-    state: Rc<RefCell<PickerState>>,
+    /// `Arc<Mutex<…>>` rather than `Rc<RefCell<…>>` so the pick
+    /// state can move across threads the day picking dispatches off
+    /// the main thread. Single-threaded today; the lock is uncontested.
+    state: Arc<Mutex<PickerState>>,
 }
 
 impl Picker {
@@ -177,14 +184,14 @@ impl Picker {
             multisampled_compute_pipeline_key,
             singlesampled_bind_group_layout_key,
             multisampled_bind_group_layout_key,
-            state: Rc::new(RefCell::new(PickerState::new(gpu)?)),
+            state: Arc::new(Mutex::new(PickerState::new(gpu)?)),
             _bind_group: None,
         })
     }
 
     /// Rebuilds the bind group for the current render textures.
     pub fn recreate_bind_group(&mut self, ctx: &BindGroupRecreateContext<'_>) -> Result<()> {
-        let state = self.state.borrow();
+        let state = self.state.lock().unwrap();
 
         let mut entries = Vec::new();
 
