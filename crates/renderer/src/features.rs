@@ -95,6 +95,20 @@ pub struct RendererFeatures {
     /// [`MeshCoverage::is_below_threshold`]: crate::coverage::MeshCoverage::is_below_threshold
     pub coverage_lod: bool,
 
+    /// Enable GPU mesh-picking ([`AwsmRenderer::pick`]). When `false`
+    /// (the default), `AwsmRenderer.picker` is `None`, the two
+    /// picker compute pipelines never compile, the picker bind-group
+    /// layouts aren't registered, and [`AwsmRenderer::pick`] returns
+    /// [`PickResult::Disabled`]. Editor builds set this to `true`;
+    /// game / library builds that don't need click-to-select pay
+    /// zero cost.
+    ///
+    /// Picker has 2 compute shader variants (multisampled true/false) + 2 compute pipelines + 2 bind-group layouts. On warm-Metal that's a few task-ticks worth of work skipped at startup; on cold-Dawn it's one compile wave saved.
+    ///
+    /// [`AwsmRenderer::pick`]: crate::AwsmRenderer::pick
+    /// [`PickResult::Disabled`]: crate::picker::PickResult::Disabled
+    pub picking: bool,
+
     /// Whether to use the WebGPU `indirect-first-instance` feature for
     /// the non-instanced geometry pass's drawIndirect path.
     ///
@@ -153,6 +167,10 @@ mod tests {
         assert!(
             !features.coverage_lod,
             "coverage_lod must default to false so library consumers pay no cost"
+        );
+        assert!(
+            !features.picking,
+            "picking must default to false so library consumers pay no cost"
         );
         assert_eq!(
             features.indirect_first_instance,

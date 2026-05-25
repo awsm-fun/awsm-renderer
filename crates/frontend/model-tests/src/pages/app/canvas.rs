@@ -75,6 +75,14 @@ impl AppCanvas {
                         let mut renderer = match AwsmRendererBuilder::new(gpu_builder)
                             .with_logging(AwsmRendererLogging { render_timings: true })
                             .with_clear_color(Color::MID_GREY)
+                            // model-tests wires .pick() to mouse-down
+                            // for editor-mode click-to-select; opt in
+                            // explicitly so PickResult::Disabled isn't
+                            // returned on every click.
+                            .with_features(awsm_renderer::features::RendererFeatures {
+                                picking: true,
+                                ..Default::default()
+                            })
                             .with_phase_handler(clone!(loading_status => move |phase| {
                                 // Pump every builder phase transition
                                 // into the loading overlay. The phase

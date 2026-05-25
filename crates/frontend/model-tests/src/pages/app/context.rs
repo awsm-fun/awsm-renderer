@@ -119,9 +119,6 @@ impl LoadingStatus {
                 RendererLoadingPhase::BuildingPipelines => {
                     statuses.push("Building render pipelines...".to_string());
                 }
-                RendererLoadingPhase::FinalizingScene => {
-                    statuses.push("Finalising renderer setup...".to_string());
-                }
                 RendererLoadingPhase::Ready => {
                     // Builder reported Ready — no banner needed for
                     // this row; the `renderer` flag (set false by

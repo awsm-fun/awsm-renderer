@@ -180,7 +180,7 @@ impl BindGroups {
         &mut self,
         ctx: BindGroupRecreateContext<'_>,
         render_passes: &mut RenderPasses,
-        picker: &mut Picker,
+        picker: Option<&mut Picker>,
     ) -> crate::error::Result<()> {
         if self.create_list.is_empty() {
             return Ok(());
@@ -371,6 +371,8 @@ impl BindGroups {
         // recreators would try to bind buffers / texture views that
         // were never allocated.
         let features = ctx.features;
+        let mut picker = picker;
+        let picker_present = picker.is_some();
         let allow_function = |f: FunctionToCall| match f {
             FunctionToCall::Hzb
             | FunctionToCall::Occlusion
@@ -379,6 +381,7 @@ impl BindGroups {
             | FunctionToCall::MaterialDecalComposite
             | FunctionToCall::MaterialDecalClassify
             | FunctionToCall::MaterialDecalTextures => features.decals,
+            FunctionToCall::Picker => picker_present,
             _ => true,
         };
 
@@ -550,7 +553,12 @@ impl BindGroups {
                     render_passes.display.bind_groups.recreate(&ctx)?;
                 }
                 FunctionToCall::Picker => {
-                    picker.recreate_bind_group(&ctx)?;
+                    // Guarded above by `allow_function`'s
+                    // `picker_present` check, but we still need to
+                    // dereference the Option for the call site.
+                    if let Some(p) = picker.as_mut() {
+                        p.recreate_bind_group(&ctx)?;
+                    }
                 }
             }
         }
