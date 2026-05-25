@@ -184,7 +184,11 @@ pub struct AwsmRenderer {
     pub environment: Environment,
     pub anti_aliasing: AntiAliasing,
     pub post_processing: PostProcessing,
-    pub picker: Picker,
+    /// GPU mesh-picking subsystem. `None` when
+    /// `features.picking == false` (the default for library /
+    /// game builds). When `None`, [`Self::pick`] returns
+    /// [`crate::picker::PickResult::Disabled`].
+    pub picker: Option<Picker>,
     pub lines: LineRenderer,
     /// Per-frame mipmap generator for the opaque RT — only dispatched
     /// when the visible material set contains a transmissive material.
@@ -1041,13 +1045,27 @@ impl AwsmRendererBuilder {
         //       from cache-hit shader `get_key`s + the EVSM
         //       `compile_shader` calls (which return modules immediately
         //       and surface their validate futures separately).
-        let picker_descs = Picker::build_descriptors(
-            &gpu,
-            &mut bind_group_layouts,
-            &mut pipeline_layouts,
-            &mut shaders,
-        )
-        .await?;
+        //
+        //       Picker is gated by `features.picking`: when off, no
+        //       picker shaders pre-warm (the cross-pass shader batch
+        //       in `RenderPasses::new` already skips them — see
+        //       `RenderPasses::new`'s phase-2 block), no bind-group
+        //       layouts register, no pipeline cache keys land in the
+        //       cross-tail pool, and the typed Picker handle stays
+        //       `None`.
+        let picker_descs = if features.picking {
+            Some(
+                Picker::build_descriptors(
+                    &gpu,
+                    &mut bind_group_layouts,
+                    &mut pipeline_layouts,
+                    &mut shaders,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
         let line_descs = LineRenderer::build_descriptors(
             &gpu,
             &mut bind_group_layouts,
@@ -1135,11 +1153,11 @@ impl AwsmRendererBuilder {
         //       and record each subsystem's slice range.
         let mut compute_pool: Vec<pipelines::compute_pipeline::ComputePipelineCacheKey> =
             Vec::new();
-        let picker_compute_range = {
+        let picker_compute_range = picker_descs.as_ref().map(|d| {
             let s = compute_pool.len();
-            compute_pool.extend(picker_descs.pipeline_cache_keys.iter().cloned());
+            compute_pool.extend(d.pipeline_cache_keys.iter().cloned());
             s..compute_pool.len()
-        };
+        });
         let evsm_compute_range = {
             let s = compute_pool.len();
             compute_pool.extend(evsm_pipeline_cache_keys.iter().cloned());
@@ -1198,11 +1216,14 @@ impl AwsmRendererBuilder {
         // ── 6. Sync fold-up — each subsystem's from_resolved /
         //       install_resolved consumes its slice of the resolved
         //       keys.
-        let picker = Picker::from_resolved(
-            &gpu,
-            picker_descs,
-            compute_keys[picker_compute_range].to_vec(),
-        )?;
+        let picker = match (picker_descs, picker_compute_range) {
+            (Some(descs), Some(range)) => Some(Picker::from_resolved(
+                &gpu,
+                descs,
+                compute_keys[range].to_vec(),
+            )?),
+            _ => None,
+        };
         let lines =
             LineRenderer::from_resolved(line_descs, render_keys[line_render_range].to_vec());
         let shadows = shadows::Shadows::from_resolved(

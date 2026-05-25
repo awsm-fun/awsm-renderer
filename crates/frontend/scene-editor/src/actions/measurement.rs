@@ -1018,6 +1018,7 @@ pub async fn debug_pick(x: i32, y: i32) -> String {
         Ok(PickResult::Miss) => "{\"result\":\"miss\"}".to_string(),
         Ok(PickResult::Initializing) => "{\"result\":\"initializing\"}".to_string(),
         Ok(PickResult::InFlight) => "{\"result\":\"in_flight\"}".to_string(),
+        Ok(PickResult::Disabled) => "{\"result\":\"disabled\"}".to_string(),
         Err(err) => format!(
             "{{\"result\":\"error\",\"message\":{}}}",
             serde_json::to_string(&err.to_string()).unwrap_or_else(|_| "\"\"".to_string())

@@ -38,10 +38,23 @@ mod state;
 /// Result of a GPU pick request.
 #[derive(Debug, Clone)]
 pub enum PickResult {
+    /// Picker pipelines / bind groups are still being constructed.
+    /// Callers can retry on a later frame.
     Initializing,
+    /// The picked pixel resolved to a registered mesh.
     Hit(MeshKey),
+    /// The picked pixel did not resolve to any registered mesh.
     Miss,
+    /// A previous pick request hasn't completed yet. Callers should
+    /// either await the previous result or skip this frame's pick.
     InFlight,
+    /// The renderer was constructed without the
+    /// [`crate::features::RendererFeatures::picking`] flag enabled.
+    /// No picker subsystem exists; every call to
+    /// [`crate::AwsmRenderer::pick`] returns this variant. Treat it
+    /// as a permanent no-op for the session — picking can't be
+    /// turned on without rebuilding the renderer.
+    Disabled,
 }
 
 impl PickResult {
@@ -56,15 +69,23 @@ impl PickResult {
 
 impl AwsmRenderer {
     /// Performs a GPU pick at the given pixel coordinates.
+    ///
+    /// Returns [`PickResult::Disabled`] when the renderer was built
+    /// without [`crate::features::RendererFeatures::picking`] — the
+    /// picker subsystem doesn't exist in that case and there's no
+    /// runtime cost to call this method.
     pub async fn pick(&self, x: i32, y: i32) -> Result<PickResult> {
+        let Some(picker) = self.picker.as_ref() else {
+            return Ok(PickResult::Disabled);
+        };
         let pipeline_key = if self.anti_aliasing.msaa_sample_count.is_some() {
-            self.picker.multisampled_compute_pipeline_key
+            picker.multisampled_compute_pipeline_key
         } else {
-            self.picker.singlesampled_compute_pipeline_key
+            picker.singlesampled_compute_pipeline_key
         };
 
         let (bind_group, pipeline) = match (
-            self.picker._bind_group.as_ref(),
+            picker._bind_group.as_ref(),
             self.pipelines.compute.get(pipeline_key),
         ) {
             (Some(bg), Ok(p)) => (bg, p),
@@ -75,7 +96,7 @@ impl AwsmRenderer {
 
         // keep the lock scope before the await point
         let read_buffer = {
-            let mut guard = self.picker.state.lock().unwrap();
+            let mut guard = picker.state.lock().unwrap();
             let state = &mut *guard;
 
             if state.in_flight {
@@ -97,7 +118,7 @@ impl AwsmRenderer {
         let res = extract_buffer_array(&read_buffer, &mut bytes).await;
 
         {
-            self.picker.state.lock().unwrap().in_flight = false;
+            picker.state.lock().unwrap().in_flight = false;
         }
 
         // now we can error out if needed

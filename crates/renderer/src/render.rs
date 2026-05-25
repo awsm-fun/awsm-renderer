@@ -310,7 +310,7 @@ impl AwsmRenderer {
                 features: &self.features,
             },
             &mut self.render_passes,
-            &mut self.picker,
+            self.picker.as_mut(),
         )?;
 
         // Populate the pooled renderable lists BEFORE building the

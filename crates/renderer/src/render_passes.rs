@@ -221,18 +221,20 @@ impl RenderPasses {
                 }
                 .into(),
             );
-            shader_keys.push(
-                ShaderCacheKeyPicker {
-                    multisampled_geometry: false,
-                }
-                .into(),
-            );
-            shader_keys.push(
-                ShaderCacheKeyPicker {
-                    multisampled_geometry: true,
-                }
-                .into(),
-            );
+            if features.picking {
+                shader_keys.push(
+                    ShaderCacheKeyPicker {
+                        multisampled_geometry: false,
+                    }
+                    .into(),
+                );
+                shader_keys.push(
+                    ShaderCacheKeyPicker {
+                        multisampled_geometry: true,
+                    }
+                    .into(),
+                );
+            }
             shader_keys.push(ShaderCacheKeyLine.into());
         }
         // Transparent has no per-mesh shader keys at startup (no

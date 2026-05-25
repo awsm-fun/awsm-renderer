@@ -384,6 +384,10 @@ fn parse_features_from_url() -> RendererFeatures {
         gpu_culling: true,
         decals: true,
         coverage_lod: false,
+        // The scene-editor's canvas wires .pick() to mouse-down for
+        // node selection; without this flag every click would
+        // resolve to PickResult::Disabled.
+        picking: true,
         indirect_first_instance: FeatureToggle::Auto,
     };
     let Some(window) = web_sys::window() else {
@@ -414,6 +418,7 @@ fn parse_features_from_url() -> RendererFeatures {
         gpu_culling: true,
         decals: true,
         coverage_lod: false,
+        picking: true,
         indirect_first_instance: awsm_renderer::features::FeatureToggle::Auto,
     }
 }
