@@ -1144,12 +1144,9 @@ impl Shadows {
             data[28..32].copy_from_slice(&(self.config.sscs_enabled as u32 as f32).to_ne_bytes());
             data[32..36].copy_from_slice(&(self.config.debug_cascade_colors as u32).to_ne_bytes());
             data[36..40].copy_from_slice(&self.config.max_point_shadows.to_ne_bytes());
-            // `flags.z` / `flags.w` carry the PCSS distance-tapered tap
-            // counts (see `pcss_tap_count` in `bind_groups.wgsl`).
-            // Clamped to the static Poisson-table size so the WGSL
-            // dynamic-break loop never undershoots its early-exit.
-            data[40..44].copy_from_slice(&self.config.pcss_max_taps.min(16).to_ne_bytes());
-            data[44..48].copy_from_slice(&self.config.pcss_min_taps.min(16).to_ne_bytes());
+            // `flags.z` / `flags.w` are reserved padding (see the
+            // `vec4<u32>` layout in `bind_groups.wgsl::ShadowGlobals`).
+            // Left zeroed for std140 alignment; no live consumer.
             // cascade-array vec4: (layer.w, layer.h, max_layers, _).
             let cascade_size = self.cascade_resolution as f32;
             data[48..52].copy_from_slice(&cascade_size.to_ne_bytes());

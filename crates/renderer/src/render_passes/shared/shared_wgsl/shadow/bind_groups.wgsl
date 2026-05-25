@@ -30,11 +30,7 @@ struct ShadowGlobals {
     atlas_sizes: vec4<f32>,
     // (evsm_exponent, evsm_blur_radius, sscs_step_count, sscs_enabled)
     evsm_sscs: vec4<f32>,
-    // (debug_cascade_colors, max_point_shadows, pcss_max_taps, pcss_min_taps)
-    // — `pcss_*_taps` drive `pcss_tap_count` below; static `for` loop
-    // limit stays 16 (Poisson-table size), with a dynamic `break` at
-    // `tap_count` keeping the runtime cost proportional to the
-    // distance-tapered count.
+    // (debug_cascade_colors, max_point_shadows, pad, pad)
     flags: vec4<u32>,
     // (cascade_array.w, cascade_array.h, max_layers, _) — per-layer
     // dimensions of the directional cascade texture array.
@@ -93,28 +89,6 @@ fn pcss_disk_angle(coords: vec2<f32>) -> f32 {
 
 fn pcss_rotate(v: vec2<f32>, sin_a: f32, cos_a: f32) -> vec2<f32> {
     return vec2<f32>(v.x * cos_a - v.y * sin_a, v.x * sin_a + v.y * cos_a);
-}
-
-// Distance-tapered PCSS tap count helper. Currently *unused* —
-// every PCSS branch reverted to a fixed 16-tap kernel after the
-// tapered version showed visible disc-rotation banding on
-// directional shadows (the `ndc.z` distance ratio is uncorrelated
-// with penumbra width, so wide kernels with 4 samples ribbon
-// visibly on a smooth floor). Kept compiled so the
-// `shadow_globals.flags.{z,w}` (max/min taps) packing doesn't
-// dangle, and so a future quality-preserving budget can re-enable
-// it without redoing the CPU plumbing.
-//
-// If you re-introduce this, do NOT key the directional branch on
-// `ndc.z` — use the blocker-distance ratio inside the PCSS kernel
-// instead, so taps shrink with penumbra width (the property that
-// the Poisson disc can actually tolerate fewer samples on).
-fn pcss_tap_count(dist_ratio: f32) -> u32 {
-    let max_t = f32(shadow_globals.flags.z);
-    let min_t = f32(shadow_globals.flags.w);
-    let t = clamp(dist_ratio, 0.0, 1.0);
-    let count = mix(max_t, min_t, t);
-    return clamp(u32(round(count)), 1u, 16u);
 }
 
 // Screen-space contact shadows (SSCS). Short ray-march in view space

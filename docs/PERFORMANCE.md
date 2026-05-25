@@ -679,32 +679,21 @@ Per-frame cost on tuning-10k-meshes: the new "Shadow Receiver
 Gate" span shows **0.048 ms mean / 0.1 ms p95** — well under the
 ~0.1 ms it saves the geometry pass.
 
-### PCSS variable tap count by distance — **parked**
+### PCSS / Soft kernels — all 16-tap fixed
 
 The three PCSS branches (cube `sample_shadow_cube`, directional
-`sample_shadow_cascade_array`, 2D spot `sample_shadow_descriptor`)
-all run at a **fixed 16-tap kernel** today. The earlier variable-
-tap implementation tapered tap count from
-`shadow_globals.flags.z` (default 16) to `flags.w` (default 4)
-by receiver distance and showed visible disc-rotation banding
-across directional shadows in the canonical "character on a
-floor" test — `ndc.z` (the directional distance ratio used) is
-uncorrelated with penumbra width, so a fragment at `ndc.z ≈ 1`
-ended up with 4 samples spread across a wide PCSS kernel: too
-few to hide the rotated-Poisson pattern.
-
-The helper `pcss_tap_count` and the `ShadowsConfig::pcss_*_taps`
-config knobs are kept compiled so the
-`shadow_globals.flags.{z,w}` packing doesn't dangle and so a
-quality-preserving future budget can re-enable the path without
-redoing the CPU plumbing. The correct re-introduction would key
-tap count on **penumbra width** (already computed inside the
-PCSS branch as `penumbra_texels` / `penumbra_world_radius`), not
-on receiver distance — small penumbras can tolerate fewer
-samples; wide ones cannot.
-
-The **Soft** (hardness < 1.5) branch was also previously
-tapered with the same banding hazard; now also fixed 16-tap.
+`sample_shadow_cascade_array`, 2D spot
+`sample_shadow_descriptor`) and the Soft (hardness < 1.5)
+branches all run at a fixed 16-tap rotated Poisson kernel. The
+"finish-every-optimisation" sprint briefly tried a variable-tap
+path keyed on receiver distance; that was reverted in
+[af13932](https://github.com/dakom/awsm-renderer/commit/af13932)
+and the plumbing fully removed in a follow-up — the
+directional taper key (`ndc.z`) is uncorrelated with penumbra
+width, so wide kernels got too few samples and the rotated-
+Poisson disc rendered as ribbons. No "parked" hook remains;
+re-attempting tap budgeting from here is a from-scratch design
+problem with no inherited CPU plumbing.
 
 Implementation pattern (kept identical across the four call sites
 so the safety reasoning carries):
@@ -1086,7 +1075,7 @@ default to game-friendly values; the items below are the
 | Mapped-buffer ring (Phase 2.1) | Always on | Every per-frame `writeBuffer` site is routed through `MappedUploader`. 99.9999% of bytes go through the mapped fast path on 10k meshes. |
 | Coverage-driven skin-skip (§5d) | Always on | Off-screen skins stop animating after a 2-frame grace; in-frustum skins resume that same frame via the BVH override. |
 | Shadow-receiver gate (§5f) | Always on | Meshes no caster reaches skip the entire shadow-sample chain. 0.048 ms / frame to maintain on 10k meshes. |
-| PCSS tap count | Fixed 16 (cube + directional + 2D spot) | Variable-tap path is parked (§5f) — the disc-rotation banding hazard on directional shadows isn't worth the 1–2× saving on far receivers. |
+| PCSS tap count | Fixed 16 (cube + directional + 2D spot + Soft) | Sized to the static Poisson-disc table. See §5f for why an earlier distance-tapered variant was reverted. |
 | Adaptive optimization policy | On with `Auto` cooldown | `RendererOptimizationPolicy` flips `indirect_first_instance`, `occlusion`, `coverage_lod` etc. based on per-frame signals. Manual override only for A/B testing. |
 | Scene-spatial BVH | `rebuild_dirty_threshold: 200`, `rebuild_period_frames: 600` | Right for 1K–5K dynamic meshes. Bump for 10K+ static-heavy scenes. |
 | `default_cheap_material_pixel_threshold` | 64 px | Below this, the cheap variant takes over on any mesh that has one authored. Per-mesh override always wins. |
@@ -1207,9 +1196,6 @@ viewport on first gameplay frame.
 | **Mobile / low-end desktop** | `ShadowsConfig::point_shadow_resolution: 512`, `Hardness::Soft` everywhere | Cut VRAM (4× drop) + use 16-tap Soft instead of 32-tap PCSS. |
 | **Cinematic / promo** | All defaults, `?features=on` | Quality wins; the editor's debug knobs are off. |
 
-The previous `pcss_min_taps` / `pcss_max_taps` knobs are still
-on `ShadowsConfig` but currently unused — see §5f "PCSS variable
-tap count by distance — parked" for why.
 
 ### What to monitor in production
 
