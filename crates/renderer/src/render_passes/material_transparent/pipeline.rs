@@ -74,13 +74,20 @@ impl MaterialTransparentPipelines {
         })
     }
 
-    /// Creates and caches a render pipeline for a mesh.
+    /// Creates and caches a render pipeline for a single mesh.
     ///
     /// `material_has_transmission` is supplied by the caller (computed
     /// from `Materials::has_transmission(mesh.material_key)`) because
     /// this function lives in a sub-module that doesn't carry a
     /// `&Materials` of its own. It drives the depth-write state — see
-    /// [`render_pipeline_key`] for the rationale.
+    /// [`build_transparent_pipeline_cache_key`] for the rationale.
+    ///
+    /// Thin wrapper over [`Self::set_render_pipeline_keys_batched`].
+    /// Hot-path one-mesh callers (procedural meshes inserted live,
+    /// instancing-promotion) keep their existing single-await API;
+    /// bulk callers (gltf populate, texture-pool finalize) should use
+    /// the batched form so Dawn parallelises the compiles.
+    #[allow(clippy::too_many_arguments)]
     pub async fn set_render_pipeline_key(
         &mut self,
         gpu: &AwsmRendererWebGpu,
@@ -93,23 +100,95 @@ impl MaterialTransparentPipelines {
         pipeline_layouts: &PipelineLayouts,
         mesh_buffer_infos: &MeshBufferInfos,
         anti_aliasing: &AntiAliasing,
-        _textures: &Textures,
+        textures: &Textures,
         render_texture_formats: &RenderTextureFormats,
         material_has_transmission: bool,
     ) -> Result<RenderPipelineKey> {
-        let mesh_buffer_info = mesh_buffer_infos.get(buffer_info_key)?;
+        let keys = self
+            .set_render_pipeline_keys_batched(
+                gpu,
+                std::iter::once(TransparentMeshPipelineRequest {
+                    mesh,
+                    mesh_key,
+                    buffer_info_key,
+                    has_transmission: material_has_transmission,
+                }),
+                shaders,
+                pipelines,
+                material_bind_groups,
+                pipeline_layouts,
+                mesh_buffer_infos,
+                anti_aliasing,
+                textures,
+                render_texture_formats,
+            )
+            .await?;
+        Ok(keys[0])
+    }
 
-        let shader_cache_key = ShaderCacheKeyMaterialTransparent {
-            attributes: mesh_buffer_info.into(),
-            texture_pool_arrays_len: material_bind_groups.texture_pool_arrays_len,
-            texture_pool_samplers_len: material_bind_groups.texture_pool_sampler_keys.len() as u32,
-            msaa_sample_count: anti_aliasing.msaa_sample_count,
-            mipmaps: anti_aliasing.mipmap,
-            instancing_transforms: mesh.instanced,
-        };
+    /// Batched form of [`Self::set_render_pipeline_key`] — issues one
+    /// `Shaders::ensure_keys` + one `RenderPipelines::ensure_keys` for
+    /// the entire request list, then folds the results into the
+    /// per-mesh `render_pipeline_keys` map.
+    ///
+    /// On a cold PSO disk cache this turns "N meshes × per-mesh wall
+    /// clock for shader + pipeline compile" into max(shader_compile) +
+    /// max(pipeline_compile) bounded by Dawn's compile pool. Returns
+    /// the resolved keys in request order so the caller can pair them
+    /// with their inputs (e.g. for follow-up bookkeeping).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn set_render_pipeline_keys_batched<'a, I>(
+        &mut self,
+        gpu: &AwsmRendererWebGpu,
+        requests: I,
+        shaders: &mut Shaders,
+        pipelines: &mut Pipelines,
+        material_bind_groups: &MaterialTransparentBindGroups,
+        pipeline_layouts: &PipelineLayouts,
+        mesh_buffer_infos: &MeshBufferInfos,
+        anti_aliasing: &AntiAliasing,
+        _textures: &Textures,
+        render_texture_formats: &RenderTextureFormats,
+    ) -> Result<Vec<RenderPipelineKey>>
+    where
+        I: IntoIterator<Item = TransparentMeshPipelineRequest<'a>>,
+    {
+        // Collect inputs into a vec so we can iterate twice.
+        let requests: Vec<TransparentMeshPipelineRequest<'a>> = requests.into_iter().collect();
+        if requests.is_empty() {
+            return Ok(Vec::new());
+        }
 
-        let shader_key = shaders.get_key(gpu, shader_cache_key).await?;
+        let texture_pool_arrays_len = material_bind_groups.texture_pool_arrays_len;
+        let texture_pool_samplers_len = material_bind_groups.texture_pool_sampler_keys.len() as u32;
 
+        // Build all shader cache keys first.
+        let mut shader_cache_keys: Vec<ShaderCacheKeyMaterialTransparent> =
+            Vec::with_capacity(requests.len());
+        for req in &requests {
+            let mesh_buffer_info = mesh_buffer_infos.get(req.buffer_info_key)?;
+            shader_cache_keys.push(ShaderCacheKeyMaterialTransparent {
+                attributes: mesh_buffer_info.into(),
+                texture_pool_arrays_len,
+                texture_pool_samplers_len,
+                msaa_sample_count: anti_aliasing.msaa_sample_count,
+                mipmaps: anti_aliasing.mipmap,
+                instancing_transforms: req.mesh.instanced,
+            });
+        }
+
+        // Batch 1: shader compiles in parallel.
+        shaders
+            .ensure_keys(
+                gpu,
+                shader_cache_keys
+                    .iter()
+                    .cloned()
+                    .map(crate::shaders::ShaderCacheKey::from),
+            )
+            .await?;
+
+        // Build per-mesh pipeline cache keys (shaders now warm).
         let color_targets = &[
             ColorTargetState::new(render_texture_formats.color).with_blend(BlendState::new(
                 BlendComponent::new()
@@ -122,32 +201,41 @@ impl MaterialTransparentPipelines {
                     .with_operation(BlendOperation::Add),
             )),
         ];
-
-        let render_pipeline_key = render_pipeline_key(
-            gpu,
-            shaders,
-            pipelines,
-            pipeline_layouts,
-            render_texture_formats.depth,
-            self.pipeline_layout_key,
-            shader_key,
-            vertex_buffer_layouts(mesh, mesh_buffer_info),
-            color_targets,
-            anti_aliasing.msaa_sample_count,
-            if mesh.double_sided {
+        let mut pipeline_cache_keys: Vec<RenderPipelineCacheKey> =
+            Vec::with_capacity(requests.len());
+        for (req, shader_cache_key) in requests.iter().zip(shader_cache_keys.iter()) {
+            let mesh_buffer_info = mesh_buffer_infos.get(req.buffer_info_key)?;
+            let shader_key = shaders.get_key(gpu, shader_cache_key.clone()).await?;
+            let vbo_layouts = vertex_buffer_layouts(req.mesh, mesh_buffer_info);
+            let cull_mode = if req.mesh.double_sided {
                 CullMode::None
             } else {
                 CullMode::Back
-            },
-            mesh.hud,
-            material_has_transmission,
-        )
-        .await?;
+            };
+            pipeline_cache_keys.push(build_transparent_pipeline_cache_key(
+                render_texture_formats.depth,
+                self.pipeline_layout_key,
+                shader_key,
+                vbo_layouts,
+                color_targets,
+                anti_aliasing.msaa_sample_count,
+                cull_mode,
+                req.has_transmission,
+            ));
+        }
 
-        self.render_pipeline_keys
-            .insert(mesh_key, render_pipeline_key);
+        // Batch 2: render pipeline creates in parallel.
+        let pipeline_keys = pipelines
+            .render
+            .ensure_keys(gpu, shaders, pipeline_layouts, pipeline_cache_keys)
+            .await?;
 
-        Ok(render_pipeline_key)
+        // Fold per-mesh map.
+        for (req, &pipeline_key) in requests.iter().zip(pipeline_keys.iter()) {
+            self.render_pipeline_keys.insert(req.mesh_key, pipeline_key);
+        }
+
+        Ok(pipeline_keys)
     }
 
     /// Returns the cached render pipeline key for a mesh, if present.
@@ -168,11 +256,14 @@ impl MaterialTransparentPipelines {
     }
 }
 
-async fn render_pipeline_key(
-    gpu: &AwsmRendererWebGpu,
-    shaders: &mut Shaders,
-    pipelines: &mut Pipelines,
-    pipeline_layouts: &PipelineLayouts,
+/// Build (do not create) a transparent-pipeline cache key. The
+/// per-mesh depth-write flag is documented inline below — that flag
+/// is part of the cache key so transmissive and non-transmissive
+/// transparents get distinct pipelines.
+///
+/// Pure-sync; the batched caller hands the resulting keys to
+/// `RenderPipelines::ensure_keys` to compile them in parallel.
+fn build_transparent_pipeline_cache_key(
     depth_texture_format: TextureFormat,
     pipeline_layout_key: PipelineLayoutKey,
     shader_key: ShaderKey,
@@ -180,9 +271,8 @@ async fn render_pipeline_key(
     color_targets: &[ColorTargetState],
     msaa_sample_count: Option<u32>,
     cull_mode: CullMode,
-    _is_hud: bool,
     has_transmission: bool,
-) -> Result<RenderPipelineKey> {
+) -> RenderPipelineCacheKey {
     let primitive_state = PrimitiveState::new()
         .with_topology(PrimitiveTopology::TriangleList)
         .with_front_face(FrontFace::Ccw)
@@ -206,17 +296,13 @@ async fn render_pipeline_key(
     //     passes the LessEqual test fine — but two transparents at
     //     overlapping depths in the SAME emitter or an emitter +
     //     dome combo end up culled instead of composited.
-    //
-    // The flag is part of the pipeline cache key (via
-    // `with_depth_stencil`) so transmissive and non-transmissive
-    // transparents get distinct pipelines.
     let depth_stencil = DepthStencilState::new(depth_texture_format)
         .with_depth_write_enabled(has_transmission)
         .with_depth_compare(CompareFunction::LessEqual);
 
     let mut pipeline_cache_key = RenderPipelineCacheKey::new(shader_key, pipeline_layout_key)
-        .with_primitive(primitive_state.clone())
-        .with_depth_stencil(depth_stencil.clone());
+        .with_primitive(primitive_state)
+        .with_depth_stencil(depth_stencil);
 
     for layout in vertex_buffer_layouts {
         pipeline_cache_key = pipeline_cache_key.with_push_vertex_buffer_layout(layout);
@@ -231,10 +317,16 @@ async fn render_pipeline_key(
         pipeline_cache_key = pipeline_cache_key.with_push_fragment_targets(vec![target.clone()]);
     }
 
-    Ok(pipelines
-        .render
-        .get_key(gpu, shaders, pipeline_layouts, pipeline_cache_key)
-        .await?)
+    pipeline_cache_key
+}
+
+/// One mesh's worth of transparent-pipeline build input, used by
+/// [`MaterialTransparentPipelines::set_render_pipeline_keys_batched`].
+pub struct TransparentMeshPipelineRequest<'a> {
+    pub mesh: &'a Mesh,
+    pub mesh_key: MeshKey,
+    pub buffer_info_key: MeshBufferInfoKey,
+    pub has_transmission: bool,
 }
 
 fn vertex_buffer_layouts(mesh: &Mesh, buffer_info: &MeshBufferInfo) -> Vec<VertexBufferLayout> {
