@@ -246,7 +246,11 @@ pub fn generate_wgsl_struct(struct_name: &str, layout: &MaterialLayout) -> Strin
     let mut offset: usize = 0;
     let mut pad_counter: usize = 0;
 
-    let mut emit_field = |out: &mut String, offset: &mut usize, pad_counter: &mut usize, name: &str, ty: FieldType| {
+    let mut emit_field = |out: &mut String,
+                          offset: &mut usize,
+                          pad_counter: &mut usize,
+                          name: &str,
+                          ty: FieldType| {
         let needs_pad = align_up(*offset, ty.align()) - *offset;
         if needs_pad > 0 {
             // Emit one `u32` padding field per 4 bytes of gap so naga
@@ -278,14 +282,38 @@ pub fn generate_wgsl_struct(struct_name: &str, layout: &MaterialLayout) -> Strin
     };
 
     for field in &layout.uniforms {
-        emit_field(&mut out, &mut offset, &mut pad_counter, &field.name, field.ty);
+        emit_field(
+            &mut out,
+            &mut offset,
+            &mut pad_counter,
+            &field.name,
+            field.ty,
+        );
     }
     for tex in &layout.textures {
-        emit_field(&mut out, &mut offset, &mut pad_counter, &format!("{}_index", tex.name), FieldType::U32);
+        emit_field(
+            &mut out,
+            &mut offset,
+            &mut pad_counter,
+            &format!("{}_index", tex.name),
+            FieldType::U32,
+        );
     }
     for buf in &layout.buffers {
-        emit_field(&mut out, &mut offset, &mut pad_counter, &format!("{}_offset", buf.name), FieldType::U32);
-        emit_field(&mut out, &mut offset, &mut pad_counter, &format!("{}_length", buf.name), FieldType::U32);
+        emit_field(
+            &mut out,
+            &mut offset,
+            &mut pad_counter,
+            &format!("{}_offset", buf.name),
+            FieldType::U32,
+        );
+        emit_field(
+            &mut out,
+            &mut offset,
+            &mut pad_counter,
+            &format!("{}_length", buf.name),
+            FieldType::U32,
+        );
     }
 
     out.push_str("}\n");
@@ -389,11 +417,7 @@ pub fn pack_texture_indices(layout: &MaterialLayout, indices: &[u32], out: &mut 
 ///
 /// `offsets.len()` must equal `layout.buffers.len()`. Each tuple is
 /// `(offset_in_extras_pool, length_in_u32_words)`.
-pub fn pack_buffer_offsets(
-    layout: &MaterialLayout,
-    offsets: &[(u32, u32)],
-    out: &mut Vec<u8>,
-) {
+pub fn pack_buffer_offsets(layout: &MaterialLayout, offsets: &[(u32, u32)], out: &mut Vec<u8>) {
     assert_eq!(
         offsets.len(),
         layout.buffers.len(),
@@ -412,7 +436,11 @@ pub fn pack_buffer_offsets(
 
 /// Pad `out` so its current length minus `struct_start_offset` equals
 /// [`layout_size`] — i.e. the slot's trailing WGSL padding is in place.
-pub fn pad_tail_to_struct_size(layout: &MaterialLayout, out: &mut Vec<u8>, struct_start_offset: usize) {
+pub fn pad_tail_to_struct_size(
+    layout: &MaterialLayout,
+    out: &mut Vec<u8>,
+    struct_start_offset: usize,
+) {
     let expected = struct_start_offset + layout_size(layout);
     while out.len() < expected {
         out.push(0);
@@ -644,10 +672,7 @@ mod tests {
         let mut out = Vec::new();
         pack_uniform_values(
             &layout,
-            &[
-                UniformValue::Vec3([1.0; 3]),
-                UniformValue::Vec3([2.0; 3]),
-            ],
+            &[UniformValue::Vec3([1.0; 3]), UniformValue::Vec3([2.0; 3])],
             &mut out,
         );
         // Packer emits 12 + 4 + 12 = 28 bytes (no trailing pad — that's
@@ -681,7 +706,7 @@ mod tests {
         assert_eq!(&out[4..8], &2.0_f32.to_le_bytes());
         assert_eq!(&out[8..12], &3.0_f32.to_le_bytes());
         assert_eq!(&out[12..16], &[0; 4]); // column-stride padding
-        // Column 1 = [4,5,6] then padding
+                                           // Column 1 = [4,5,6] then padding
         assert_eq!(&out[16..20], &4.0_f32.to_le_bytes());
         assert_eq!(&out[28..32], &[0; 4]);
         // Column 2 = [7,8,9] then padding

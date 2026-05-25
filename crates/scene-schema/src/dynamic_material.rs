@@ -447,17 +447,19 @@ pub fn load_material_folder(
 
     // 1. Read + parse material.json.
     let material_json_path = root.join("material.json");
-    let material_json =
-        fs::read_to_string(&material_json_path).map_err(|source| MaterialFolderError::MaterialJsonMissing {
+    let material_json = fs::read_to_string(&material_json_path).map_err(|source| {
+        MaterialFolderError::MaterialJsonMissing {
             path: material_json_path.clone(),
             source,
-        })?;
-    let definition: MaterialDefinition = serde_json::from_str(&material_json).map_err(|source| {
-        MaterialFolderError::MaterialJsonParse {
-            path: material_json_path,
-            message: source.to_string(),
         }
     })?;
+    let definition: MaterialDefinition =
+        serde_json::from_str(&material_json).map_err(|source| {
+            MaterialFolderError::MaterialJsonParse {
+                path: material_json_path,
+                message: source.to_string(),
+            }
+        })?;
 
     // 2. Cross-check folder name matches the material name. We only
     //    enforce this when the parent path actually has a file name —
@@ -478,19 +480,22 @@ pub fn load_material_folder(
 
     // 4. Read shader.wgsl.
     let shader_path = root.join("shader.wgsl");
-    let wgsl_source = fs::read_to_string(&shader_path).map_err(|source| MaterialFolderError::ShaderMissing {
-        path: shader_path,
-        source,
-    })?;
+    let wgsl_source =
+        fs::read_to_string(&shader_path).map_err(|source| MaterialFolderError::ShaderMissing {
+            path: shader_path,
+            source,
+        })?;
 
     // 5. Resolve every texture default.
     let mut texture_data = HashMap::new();
     for slot in &definition.textures {
         if let Some(default) = &slot.default {
             let full_path = root.join(default);
-            let bytes = fs::read(&full_path).map_err(|source| MaterialFolderError::TextureAssetMissing {
-                path: full_path,
-                source,
+            let bytes = fs::read(&full_path).map_err(|source| {
+                MaterialFolderError::TextureAssetMissing {
+                    path: full_path,
+                    source,
+                }
             })?;
             texture_data.insert(default.clone(), bytes);
         }
@@ -502,10 +507,11 @@ pub fn load_material_folder(
     for slot in &definition.buffers {
         if let Some(default) = &slot.default {
             let full_path = root.join(default);
-            let bytes = fs::read(&full_path).map_err(|source| MaterialFolderError::BufferAssetMissing {
-                path: full_path.clone(),
-                source,
-            })?;
+            let bytes =
+                fs::read(&full_path).map_err(|source| MaterialFolderError::BufferAssetMissing {
+                    path: full_path.clone(),
+                    source,
+                })?;
             if bytes.len() % 4 != 0 {
                 return Err(MaterialFolderError::BinSizeNotMultipleOfFour {
                     path: full_path,
@@ -675,10 +681,7 @@ mod tests {
     #[test]
     fn loader_round_trip() {
         use std::fs;
-        let tmp = std::env::temp_dir().join(format!(
-            "awsm-scanline-test-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let tmp = std::env::temp_dir().join(format!("awsm-scanline-test-{}", uuid::Uuid::new_v4()));
         // The folder name must match the material name in our sample.
         let folder = tmp.join("scanline");
         fs::create_dir_all(folder.join("assets")).unwrap();
@@ -693,8 +696,7 @@ mod tests {
         // base.png — any bytes work; the loader stores them raw.
         fs::write(folder.join("assets/base.png"), b"PNG-BYTES").unwrap();
         // frames.bin — 8 bytes = two u32 words.
-        fs::write(folder.join("assets/frames.bin"), [1u8, 0, 0, 0, 2, 0, 0, 0])
-            .unwrap();
+        fs::write(folder.join("assets/frames.bin"), [1u8, 0, 0, 0, 2, 0, 0, 0]).unwrap();
 
         let loaded = load_material_folder(&folder).unwrap();
         assert_eq!(loaded.definition, def);
@@ -715,10 +717,8 @@ mod tests {
     #[test]
     fn loader_bin_size_not_multiple_of_four_rejected() {
         use std::fs;
-        let tmp = std::env::temp_dir().join(format!(
-            "awsm-scanline-bin-test-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let tmp =
+            std::env::temp_dir().join(format!("awsm-scanline-bin-test-{}", uuid::Uuid::new_v4()));
         let folder = tmp.join("scanline");
         fs::create_dir_all(folder.join("assets")).unwrap();
 

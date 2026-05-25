@@ -276,10 +276,8 @@ fn align_up(value: usize, align: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dynamic_layout::{
-        BufferSlotRuntime, TextureSlotRuntime, UniformFieldRuntime,
-    };
     use crate::dynamic_layout::FieldType;
+    use crate::dynamic_layout::{BufferSlotRuntime, TextureSlotRuntime, UniformFieldRuntime};
 
     struct StubCtx {
         layout: MaterialLayout,
@@ -336,8 +334,7 @@ mod tests {
             ..Default::default()
         };
         let id = MaterialShaderId::from_dynamic_raw(MaterialShaderId::DYNAMIC_START);
-        let material =
-            DynamicMaterial::new(id, &layout, vec![UniformValue::Vec3([1.0, 2.0, 3.0])]);
+        let material = DynamicMaterial::new(id, &layout, vec![UniformValue::Vec3([1.0, 2.0, 3.0])]);
         let ctx = StubCtx { layout };
         let mut out = Vec::new();
         material.write_uniform_buffer_with_layout(&ctx, &mut out);
