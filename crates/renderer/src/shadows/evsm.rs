@@ -33,7 +33,7 @@ use awsm_renderer_core::{
     },
     buffers::{BufferDescriptor, BufferUsage},
     renderer::AwsmRendererWebGpu,
-    shaders::{ShaderModuleDescriptor, ShaderModuleExt},
+    shaders::ShaderModuleDescriptor,
     texture::{TextureFormat, TextureSampleType, TextureViewDimension},
 };
 
@@ -46,7 +46,7 @@ use crate::{
         compute_pipeline::{ComputePipelineCacheKey, ComputePipelineKey},
         Pipelines,
     },
-    shaders::{ShaderKey, Shaders},
+    shaders::Shaders,
     shadows::AwsmShadowError,
 };
 
@@ -154,19 +154,6 @@ impl EvsmPass {
             PipelineLayoutCacheKey::new(vec![moment_write_layout_key]),
         )?;
 
-        let moment_write_shader =
-            compile_inline_shader(gpu, "Shadow EVSM Moment Write", MOMENT_WRITE_WGSL, shaders)
-                .await?;
-        let moment_write_pipeline_key = pipelines
-            .compute
-            .get_key(
-                gpu,
-                shaders,
-                pipeline_layouts,
-                ComputePipelineCacheKey::new(moment_write_shader, moment_write_pipeline_layout_key),
-            )
-            .await?;
-
         // ── blur layout / pipelines ────────────────────────────────────
         let blur_layout_key = bind_group_layouts.get_key(
             gpu,
@@ -210,29 +197,53 @@ impl EvsmPass {
             PipelineLayoutCacheKey::new(vec![blur_layout_key]),
         )?;
 
-        let blur_h_shader =
-            compile_inline_shader(gpu, "Shadow EVSM Blur H", blur_h_wgsl(), shaders).await?;
-        let blur_v_shader =
-            compile_inline_shader(gpu, "Shadow EVSM Blur V", blur_v_wgsl(), shaders).await?;
+        // Compile all 3 inline shaders concurrently — issue every
+        // `compile_shader` synchronously, then `join_all` the
+        // validations. Same shape as `Shaders::ensure_keys`.
+        let inline_specs: [(&str, &str); 3] = [
+            ("Shadow EVSM Moment Write", MOMENT_WRITE_WGSL),
+            ("Shadow EVSM Blur H", blur_h_wgsl()),
+            ("Shadow EVSM Blur V", blur_v_wgsl()),
+        ];
+        let descriptors: Vec<web_sys::GpuShaderModuleDescriptor> = inline_specs
+            .iter()
+            .map(|(label, code)| ShaderModuleDescriptor::new(code, Some(label)).into())
+            .collect();
+        let modules: Vec<web_sys::GpuShaderModule> =
+            descriptors.iter().map(|d| gpu.compile_shader(d)).collect();
+        let validation_results = futures::future::join_all(
+            modules
+                .iter()
+                .map(awsm_renderer_core::shaders::ShaderModuleExt::validate_shader),
+        )
+        .await;
+        for result in validation_results {
+            result.map_err(AwsmShadowError::Core)?;
+        }
+        let moment_write_shader = shaders.insert_uncached(modules[0].clone());
+        let blur_h_shader = shaders.insert_uncached(modules[1].clone());
+        let blur_v_shader = shaders.insert_uncached(modules[2].clone());
 
-        let blur_h_pipeline_key = pipelines
+        // Three compute pipelines in parallel.
+        let pipeline_keys = pipelines
             .compute
-            .get_key(
+            .ensure_keys(
                 gpu,
                 shaders,
                 pipeline_layouts,
-                ComputePipelineCacheKey::new(blur_h_shader, blur_pipeline_layout_key),
+                [
+                    ComputePipelineCacheKey::new(
+                        moment_write_shader,
+                        moment_write_pipeline_layout_key,
+                    ),
+                    ComputePipelineCacheKey::new(blur_h_shader, blur_pipeline_layout_key),
+                    ComputePipelineCacheKey::new(blur_v_shader, blur_pipeline_layout_key),
+                ],
             )
             .await?;
-        let blur_v_pipeline_key = pipelines
-            .compute
-            .get_key(
-                gpu,
-                shaders,
-                pipeline_layouts,
-                ComputePipelineCacheKey::new(blur_v_shader, blur_pipeline_layout_key),
-            )
-            .await?;
+        let moment_write_pipeline_key = pipeline_keys[0];
+        let blur_h_pipeline_key = pipeline_keys[1];
+        let blur_v_pipeline_key = pipeline_keys[2];
 
         // ── params buffer ──────────────────────────────────────────────
         let params_buffer_size = EVSM_PARAMS_STRIDE * MAX_EVSM_CASCADES_PER_FRAME;
@@ -322,22 +333,6 @@ impl EvsmPass {
         )?;
         Ok(())
     }
-}
-
-async fn compile_inline_shader(
-    gpu: &AwsmRendererWebGpu,
-    label: &str,
-    code: &str,
-    shaders: &mut Shaders,
-) -> Result<ShaderKey, AwsmShadowError> {
-    let descriptor: web_sys::GpuShaderModuleDescriptor =
-        ShaderModuleDescriptor::new(code, Some(label)).into();
-    let module = gpu.compile_shader(&descriptor);
-    module
-        .validate_shader()
-        .await
-        .map_err(AwsmShadowError::Core)?;
-    Ok(shaders.insert_uncached(module))
 }
 
 // ─────────────────────────────────────────────────────────────────────

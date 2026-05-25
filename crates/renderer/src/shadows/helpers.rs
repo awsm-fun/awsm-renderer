@@ -27,13 +27,9 @@ use std::borrow::Cow;
 
 use crate::{
     bind_group_layout::{BindGroupLayoutKey, BindGroupLayouts},
-    pipeline_layouts::{PipelineLayoutKey, PipelineLayouts},
-    pipelines::{
-        render_pipeline::{RenderPipelineCacheKey, RenderPipelineKey},
-        Pipelines,
-    },
+    pipeline_layouts::PipelineLayoutKey,
+    pipelines::render_pipeline::RenderPipelineCacheKey,
     render_passes::geometry::pipeline::{VERTEX_BUFFER_LAYOUT, VERTEX_BUFFER_LAYOUT_INSTANCING},
-    shaders::Shaders,
     shadows::{
         consts::{
             MAX_SHADOW_DESCRIPTORS, SHADOW_DESCRIPTOR_BYTES, SHADOW_VIEW_BYTES, SHADOW_VIEW_STRIDE,
@@ -41,7 +37,6 @@ use crate::{
         error::AwsmShadowError,
         evsm,
         light_shadow::LightShadowHardness,
-        shader::cache_key::ShaderCacheKeyShadow,
     },
 };
 
@@ -224,24 +219,18 @@ pub(super) fn build_evsm_blur_bind_group(
     Ok(gpu.create_bind_group(&descriptor.into()))
 }
 
-pub(super) async fn build_shadow_pipeline(
-    gpu: &AwsmRendererWebGpu,
-    shaders: &mut Shaders,
-    pipelines: &mut Pipelines,
-    pipeline_layouts: &PipelineLayouts,
+/// Builds a `RenderPipelineCacheKey` for one shadow-caster pipeline
+/// variant. Pure-sync — caller is responsible for ensuring
+/// `shader_key` is already in the `Shaders` cache before passing it
+/// in. Lifted out of the async per-pipeline builder so the four
+/// shadow variants can be issued through one batched
+/// `RenderPipelines::ensure_keys` call.
+pub(super) fn shadow_pipeline_cache_key(
+    shader_key: crate::shaders::ShaderKey,
     pipeline_layout_key: PipelineLayoutKey,
     instancing: bool,
     cube_face: bool,
-) -> Result<RenderPipelineKey, AwsmShadowError> {
-    let shader_key = shaders
-        .get_key(
-            gpu,
-            ShaderCacheKeyShadow {
-                instancing_transforms: instancing,
-            },
-        )
-        .await?;
-
+) -> RenderPipelineCacheKey {
     let mut vertex_buffer_layouts = vec![VERTEX_BUFFER_LAYOUT.clone()];
     if instancing {
         vertex_buffer_layouts.push(VERTEX_BUFFER_LAYOUT_INSTANCING.clone());
@@ -292,12 +281,7 @@ pub(super) async fn build_shadow_pipeline(
     for layout in vertex_buffer_layouts {
         pipeline_cache_key = pipeline_cache_key.with_push_vertex_buffer_layout(layout);
     }
-
-    pipelines
-        .render
-        .get_key(gpu, shaders, pipeline_layouts, pipeline_cache_key)
-        .await
-        .map_err(Into::into)
+    pipeline_cache_key
 }
 
 /// Writes one entry into the per-view shadow uniform buffer at slot
