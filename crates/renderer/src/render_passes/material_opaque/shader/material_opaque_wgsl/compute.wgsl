@@ -10,6 +10,10 @@
 {% include "shared_wgsl/camera.wgsl" %}
 /*************** END camera.wgsl ******************/
 
+/*************** START frame_globals.wgsl ******************/
+{% include "shared_wgsl/frame_globals.wgsl" %}
+/*************** END frame_globals.wgsl ******************/
+
 /*************** START math.wgsl ******************/
 {% include "shared_wgsl/math.wgsl" %}
 /*************** END math.wgsl ******************/
@@ -140,6 +144,7 @@ fn main(
 
 
     let camera = camera_from_raw(camera_raw);
+    let frame_globals = frame_globals_from_raw(frame_globals_raw);
 
 
     // early return if we only hit skybox / no geometry (for all samples if MSAA).

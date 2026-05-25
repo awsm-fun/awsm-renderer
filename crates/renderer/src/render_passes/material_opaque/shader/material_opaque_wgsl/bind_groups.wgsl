@@ -63,6 +63,10 @@ struct ClassifyBuckets {
 };
 @group(0) @binding(21) var<storage, read> classify_buckets: ClassifyBuckets;
 
+// Renderer-wide per-frame uniform — see `shared_wgsl/frame_globals.wgsl`
+// for layout. Rides alongside the camera uniform; one upload per frame.
+@group(0) @binding(22) var<uniform> frame_globals_raw: FrameGlobalsRaw;
+
 @group(1) @binding(0) var<uniform> lights_info: LightsInfoPacked;
 // `lights` is a uniform array.
 // Uniform memory is constant-cached for the lockstep per-pixel walk;

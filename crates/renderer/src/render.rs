@@ -288,6 +288,7 @@ impl AwsmRenderer {
                 bind_group_layouts: &mut self.bind_group_layouts,
                 meshes: &self.meshes,
                 camera: &self.camera,
+                frame_globals: &self.frame_globals,
                 environment: &self.environment,
                 lights: &self.lights,
                 transforms: &self.transforms,

@@ -139,6 +139,7 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
 
     // Convert raw camera uniform to friendly structure
     let camera = camera_from_raw(camera_raw);
+    let frame_globals = frame_globals_from_raw(frame_globals_raw);
 
     // Handle double-sided materials: flip normal and tangent handedness for back faces
     // This must be done BEFORE material color computation so normal mapping uses the correct orientation

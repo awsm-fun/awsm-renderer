@@ -33,6 +33,11 @@ pub struct BindGroupRecreateContext<'a> {
     pub bind_group_layouts: &'a BindGroupLayouts,
     pub meshes: &'a Meshes,
     pub camera: &'a CameraBuffer,
+    /// Frame-globals uniform — bound alongside camera in every pass
+    /// that needs renderer-wide per-frame state (`time`, `delta_time`,
+    /// `frame_count`, `resolution`). Lifetimes are identical to
+    /// camera's so the binding rides on the same group.
+    pub frame_globals: &'a crate::frame_globals::FrameGlobals,
     pub environment: &'a Environment,
     pub lights: &'a Lights,
     pub transforms: &'a Transforms,

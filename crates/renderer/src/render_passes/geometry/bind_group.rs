@@ -54,16 +54,31 @@ pub struct GeometryBindGroupCamera {
 
 impl GeometryBindGroupCamera {
     /// Creates the camera bind group layout.
+    ///
+    /// The "camera" group also carries `frame_globals_raw` (renderer-wide
+    /// per-frame state) at binding 1 — their lifetimes are identical,
+    /// so co-locating them saves a bind-group switch per pass.
     pub async fn new(ctx: &mut RenderPassInitContext<'_>) -> Result<Self> {
         let bind_group_layout_cache_key = BindGroupLayoutCacheKey {
-            entries: vec![BindGroupLayoutCacheKeyEntry {
-                resource: BindGroupLayoutResource::Buffer(
-                    BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
-                ),
-                visibility_vertex: true,
-                visibility_fragment: true,
-                visibility_compute: false,
-            }],
+            entries: vec![
+                BindGroupLayoutCacheKeyEntry {
+                    resource: BindGroupLayoutResource::Buffer(
+                        BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
+                    ),
+                    visibility_vertex: true,
+                    visibility_fragment: true,
+                    visibility_compute: false,
+                },
+                // FrameGlobals uniform.
+                BindGroupLayoutCacheKeyEntry {
+                    resource: BindGroupLayoutResource::Buffer(
+                        BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
+                    ),
+                    visibility_vertex: true,
+                    visibility_fragment: true,
+                    visibility_compute: false,
+                },
+            ],
         };
 
         let bind_group_layout_key = ctx
@@ -81,10 +96,16 @@ impl GeometryBindGroupCamera {
         let descriptor = BindGroupDescriptor::new(
             ctx.bind_group_layouts.get(self.bind_group_layout_key)?,
             Some("Geometry Camera"),
-            vec![BindGroupEntry::new(
-                0,
-                BindGroupResource::Buffer(BufferBinding::new(&ctx.camera.gpu_buffer)),
-            )],
+            vec![
+                BindGroupEntry::new(
+                    0,
+                    BindGroupResource::Buffer(BufferBinding::new(&ctx.camera.gpu_buffer)),
+                ),
+                BindGroupEntry::new(
+                    1,
+                    BindGroupResource::Buffer(BufferBinding::new(&ctx.frame_globals.gpu_buffer)),
+                ),
+            ],
         );
 
         let bind_group = ctx.gpu.create_bind_group(&descriptor.into());
