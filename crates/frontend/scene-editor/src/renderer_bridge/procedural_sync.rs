@@ -547,13 +547,11 @@ async fn spawn_flipbook_sprite(
     } else {
         with_renderer_mut(move |r| {
             fb.atlas_tex = texture_ref.and_then(|t| {
-                resolve_material_texture(
-                    r,
-                    Some(t),
-                    super::texture_cache::TextureColorRole::Srgb,
-                )
+                resolve_material_texture(r, Some(t), super::texture_cache::TextureColorRole::Srgb)
             });
-            let material_key = r.materials.insert(Material::FlipBook(Box::new(fb)), &r.textures);
+            let material_key = r
+                .materials
+                .insert(Material::FlipBook(Box::new(fb)), &r.textures);
             let tk = r.transforms.insert(Transform::IDENTITY, Some(parent_tk));
             match r.add_raw_mesh(raw, tk, material_key) {
                 Ok(mk) => {

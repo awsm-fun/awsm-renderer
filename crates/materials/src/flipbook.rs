@@ -169,62 +169,6 @@ pub fn apply_mode_for_test(frame_f: f32, count: u32, mode: FlipBookMode) -> u32 
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn loop_wraps_on_count() {
-        // 4-frame loop: 0, 1, 2, 3, 0, 1, 2, 3, 0, ...
-        let seq: Vec<u32> = (0..10)
-            .map(|i| apply_mode_for_test(i as f32, 4, FlipBookMode::Loop))
-            .collect();
-        assert_eq!(seq, vec![0, 1, 2, 3, 0, 1, 2, 3, 0, 1]);
-    }
-
-    #[test]
-    fn ping_pong_4_frames_period_is_2n_minus_2() {
-        // Reference sequence from the plan: `0,1,2,3,2,1,0,1,2,3,...`
-        // — period = 2 * 4 - 2 = 6.
-        let seq: Vec<u32> = (0..13)
-            .map(|i| apply_mode_for_test(i as f32, 4, FlipBookMode::PingPong))
-            .collect();
-        assert_eq!(seq, vec![0, 1, 2, 3, 2, 1, 0, 1, 2, 3, 2, 1, 0]);
-    }
-
-    #[test]
-    fn ping_pong_single_frame_is_safe() {
-        // count=1 has no real period; should always land on cell 0.
-        for i in 0..8 {
-            assert_eq!(
-                apply_mode_for_test(i as f32, 1, FlipBookMode::PingPong),
-                0
-            );
-        }
-    }
-
-    #[test]
-    fn clamp_stops_on_last_cell() {
-        let count = 4;
-        let seq: Vec<u32> = (0..7)
-            .map(|i| apply_mode_for_test(i as f32, count, FlipBookMode::Clamp))
-            .collect();
-        assert_eq!(seq, vec![0, 1, 2, 3, 3, 3, 3]);
-    }
-
-    #[test]
-    fn once_stops_on_last_cell_too() {
-        // `Once` past the end uses the same clamp-on-frame logic.
-        // The alpha-zero behaviour past the end is enforced in the
-        // shader, not in the index calculation.
-        let count = 4;
-        let seq: Vec<u32> = (0..7)
-            .map(|i| apply_mode_for_test(i as f32, count, FlipBookMode::Once))
-            .collect();
-        assert_eq!(seq, vec![0, 1, 2, 3, 3, 3, 3]);
-    }
-}
-
 impl MaterialShader for FlipBookMaterial {
     fn shader_id(&self) -> MaterialShaderId {
         MaterialShaderId::FlipBook
@@ -287,5 +231,58 @@ impl MaterialShader for FlipBookMaterial {
         write(data, self.time_offset.into());
         write(data, self.mode.as_u32().into());
         write(data, u32::from(self.flip_y).into());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loop_wraps_on_count() {
+        // 4-frame loop: 0, 1, 2, 3, 0, 1, 2, 3, 0, ...
+        let seq: Vec<u32> = (0..10)
+            .map(|i| apply_mode_for_test(i as f32, 4, FlipBookMode::Loop))
+            .collect();
+        assert_eq!(seq, vec![0, 1, 2, 3, 0, 1, 2, 3, 0, 1]);
+    }
+
+    #[test]
+    fn ping_pong_4_frames_period_is_2n_minus_2() {
+        // Reference sequence from the plan: `0,1,2,3,2,1,0,1,2,3,...`
+        // — period = 2 * 4 - 2 = 6.
+        let seq: Vec<u32> = (0..13)
+            .map(|i| apply_mode_for_test(i as f32, 4, FlipBookMode::PingPong))
+            .collect();
+        assert_eq!(seq, vec![0, 1, 2, 3, 2, 1, 0, 1, 2, 3, 2, 1, 0]);
+    }
+
+    #[test]
+    fn ping_pong_single_frame_is_safe() {
+        // count=1 has no real period; should always land on cell 0.
+        for i in 0..8 {
+            assert_eq!(apply_mode_for_test(i as f32, 1, FlipBookMode::PingPong), 0);
+        }
+    }
+
+    #[test]
+    fn clamp_stops_on_last_cell() {
+        let count = 4;
+        let seq: Vec<u32> = (0..7)
+            .map(|i| apply_mode_for_test(i as f32, count, FlipBookMode::Clamp))
+            .collect();
+        assert_eq!(seq, vec![0, 1, 2, 3, 3, 3, 3]);
+    }
+
+    #[test]
+    fn once_stops_on_last_cell_too() {
+        // `Once` past the end uses the same clamp-on-frame logic.
+        // The alpha-zero behaviour past the end is enforced in the
+        // shader, not in the index calculation.
+        let count = 4;
+        let seq: Vec<u32> = (0..7)
+            .map(|i| apply_mode_for_test(i as f32, count, FlipBookMode::Once))
+            .collect();
+        assert_eq!(seq, vec![0, 1, 2, 3, 3, 3, 3]);
     }
 }

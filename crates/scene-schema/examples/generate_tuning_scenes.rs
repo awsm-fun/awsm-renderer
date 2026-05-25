@@ -245,6 +245,7 @@ fn point_light(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spot_light(
     name: &str,
     position: [f32; 3],
@@ -430,7 +431,12 @@ fn scene_64_lights() -> EditorProject {
             light_children.push(spot_light(
                 &format!("spot_{i}"),
                 [x, h + 2.0, z],
-                [0.7071, 0.0, 0.0, 0.7071], // 90° X rotation — points downward
+                [
+                    std::f32::consts::FRAC_1_SQRT_2,
+                    0.0,
+                    0.0,
+                    std::f32::consts::FRAC_1_SQRT_2,
+                ], // 90° X rotation — points downward
                 color,
                 40.0,
                 12.0,
@@ -551,7 +557,7 @@ fn scene_open_world() -> EditorProject {
     // grid. Deterministic positions so the scene round-trips.
     let mut props = Vec::with_capacity(50);
     for i in 0..50 {
-        let h = i as f32 * 1.6180339887;
+        let h = i as f32 * 1.618_034;
         let x = ((h * 12.9898).sin() * 43758.547).fract() * 800.0 - 400.0;
         let z = ((h * 78.233).sin() * 43758.547).fract() * 800.0 - 400.0;
         let size = 1.5 + ((h * 0.3).fract() * 3.0);

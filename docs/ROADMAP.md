@@ -1,4 +1,10 @@
 # Next up
+- Temporal shaders ✅ — renderer-wide `FrameGlobals` uniform (`time`,
+  `delta_time`, `frame_count`, `resolution`) bound alongside the camera
+  in every shading pass + a first-party `FlipBook` sprite-sheet
+  material as its load-bearing consumer. Particle bridge migrated to
+  read `delta_time` from `frame_globals()` so pause / time-scale /
+  replay flow through automatically.
 - Make transparent meshes pickable
   - Maybe global "editor_mode" on renderer that toggles some less-efficient behavior
     - All meshes get both transparent and opaque geometry 

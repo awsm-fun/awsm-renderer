@@ -143,7 +143,7 @@ impl FrameGlobals {
         // `DELTA_TIME_CLAMP_SECS` (no lower clamp; `0.0` is valid for
         // paused-clock scenarios).
         let delta_time = match self.last_time {
-            Some(prev) => (time - prev).max(0.0).min(DELTA_TIME_CLAMP_SECS),
+            Some(prev) => (time - prev).clamp(0.0, DELTA_TIME_CLAMP_SECS),
             None => 0.0,
         };
         self.last_time = Some(time);

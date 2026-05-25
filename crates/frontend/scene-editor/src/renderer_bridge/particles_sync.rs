@@ -476,7 +476,6 @@ pub fn tick_all(renderer: &mut AwsmRenderer) {
     };
     with_runtimes(|map| {
         for (_, runtime) in map.iter_mut() {
-
             // In `World` space new spawns need to come out of the
             // emitter's CURRENT world position so a moving emitter
             // leaves a trail; in `Local` space we keep using the

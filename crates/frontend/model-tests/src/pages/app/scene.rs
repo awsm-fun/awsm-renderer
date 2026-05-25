@@ -795,7 +795,7 @@ impl AppScene {
                 Material::Pbr(pbr_material) => {
                     pbr_material.debug = material_debug;
                 }
-                Material::Unlit(_) | Material::Toon(_) => {
+                Material::Unlit(_) | Material::Toon(_) | Material::FlipBook(_) => {
                     // Non-PBR materials don't carry the per-shading debug
                     // bitmask; ignore the per-frame override on those.
                 }
