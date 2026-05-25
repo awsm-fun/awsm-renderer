@@ -2,12 +2,16 @@ use awsm_renderer_core::renderer::AwsmRendererWebGpu;
 use slotmap::SlotMap;
 
 use crate::{
-    bind_group_layout::BindGroupLayouts, error::Result, pipeline_layouts::PipelineLayouts,
-    pipelines::Pipelines, render::RenderContext, render_textures::RenderTextureFormats,
+    bind_group_layout::BindGroupLayouts,
+    error::Result,
+    pipeline_layouts::PipelineLayouts,
+    pipelines::{render_pipeline::RenderPipelineKey, Pipelines},
+    render::RenderContext,
+    render_textures::RenderTextureFormats,
     shaders::Shaders,
 };
 
-use super::pipelines::{LinePipelines, LineVariantKey};
+use super::pipelines::{LinePipelines, LinePipelinesDescriptors, LineVariantKey};
 use super::types::{GpuLineSegment, LineEntry, LineKey, LINE_UNIFORM_BYTES};
 
 /// Renderer-side state owning the four line pipelines and every registered line strip.
@@ -24,8 +28,30 @@ pub struct LineRenderer {
     pub(super) pack_buf: Vec<GpuLineSegment>,
 }
 
+/// Pre-resolved layouts + 4 pipeline cache keys for the line renderer.
+/// Returned by [`LineRenderer::build_descriptors`] and consumed by
+/// [`LineRenderer::from_resolved`] after the cross-system tail pool
+/// resolves the keys via one batched `RenderPipelines::ensure_keys`.
+pub struct LineRendererDescriptors {
+    pub(super) inner: LinePipelinesDescriptors,
+}
+
+impl LineRendererDescriptors {
+    /// Slice of cache keys to fold into the cross-system render-pipeline
+    /// pool. 4 entries, in `LinePipelines::VARIANT_KEYS` order.
+    pub fn pipeline_cache_keys(
+        &self,
+    ) -> &[crate::pipelines::render_pipeline::RenderPipelineCacheKey] {
+        &self.inner.pipeline_cache_keys
+    }
+}
+
 impl LineRenderer {
-    /// Loads the four pipeline variants and creates an empty line registry.
+    /// Loads the four pipeline variants and creates an empty line
+    /// registry. Thin wrapper over [`Self::build_descriptors`] +
+    /// [`Self::from_resolved`]. The pooled startup path bypasses this
+    /// and calls the two halves directly so LineRenderer's 4 pipeline
+    /// compiles share the cross-system tail `RenderPipelines::ensure_keys`.
     pub async fn load(
         gpu: &AwsmRendererWebGpu,
         bind_group_layouts: &mut BindGroupLayouts,
@@ -34,20 +60,48 @@ impl LineRenderer {
         shaders: &mut Shaders,
         formats: &RenderTextureFormats,
     ) -> Result<Self> {
-        let pipelines = LinePipelines::load(
+        let descs =
+            Self::build_descriptors(gpu, bind_group_layouts, pipeline_layouts, shaders, formats)
+                .await?;
+        let resolved = pipelines
+            .render
+            .ensure_keys(
+                gpu,
+                shaders,
+                pipeline_layouts,
+                descs.inner.pipeline_cache_keys.clone(),
+            )
+            .await?;
+        Ok(Self::from_resolved(descs, resolved))
+    }
+
+    /// Builds layouts + 4 pipeline cache keys. Cache-hit on the line
+    /// shader (pre-warmed by `RenderPasses::new`); otherwise sync.
+    pub async fn build_descriptors(
+        gpu: &AwsmRendererWebGpu,
+        bind_group_layouts: &mut BindGroupLayouts,
+        pipeline_layouts: &mut PipelineLayouts,
+        shaders: &mut Shaders,
+        formats: &RenderTextureFormats,
+    ) -> Result<LineRendererDescriptors> {
+        let inner = LinePipelines::build_descriptors(
             gpu,
             bind_group_layouts,
             pipeline_layouts,
-            pipelines,
             shaders,
             formats,
         )
         .await?;
-        Ok(Self {
-            pipelines,
+        Ok(LineRendererDescriptors { inner })
+    }
+
+    /// Folds resolved pipeline keys back into the typed `LineRenderer`.
+    pub fn from_resolved(descs: LineRendererDescriptors, resolved: Vec<RenderPipelineKey>) -> Self {
+        Self {
+            pipelines: LinePipelines::from_resolved(descs.inner, resolved),
             entries: SlotMap::with_key(),
             pack_buf: Vec::new(),
-        })
+        }
     }
 
     /// Returns the number of registered lines.

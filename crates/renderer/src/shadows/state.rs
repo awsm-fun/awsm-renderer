@@ -29,10 +29,14 @@ use crate::{
     debug::AwsmRendererLogging,
     lights::LightKey,
     pipeline_layouts::{PipelineLayoutCacheKey, PipelineLayoutKey, PipelineLayouts},
-    pipelines::{render_pipeline::RenderPipelineKey, Pipelines},
+    pipelines::{
+        compute_pipeline::ComputePipelineKey,
+        render_pipeline::{RenderPipelineCacheKey, RenderPipelineKey},
+        Pipelines,
+    },
     render_passes::geometry::bind_group::GeometryBindGroups,
     render_textures::RenderTextureFormats,
-    shaders::Shaders,
+    shaders::{ShaderCacheKey, Shaders},
     shadows::{
         cascade,
         config::ShadowsConfig,
@@ -43,7 +47,7 @@ use crate::{
         },
         error::AwsmShadowError,
         evsm,
-        evsm::EvsmPass,
+        evsm::{EvsmDescriptors, EvsmPass},
         helpers::{
             build_cascade_layer_views, build_cube_face_views, build_evsm_blur_bind_group,
             build_evsm_moment_write_bind_group, create_cascade_array_view,
@@ -291,12 +295,90 @@ impl PendingResourceRecreate {
     }
 }
 
+/// Pre-resolved layouts, GPU resource handles, and pipeline cache
+/// keys for the shadow subsystem. Returned by
+/// [`Shadows::build_descriptors`] and consumed by
+/// [`Shadows::from_resolved`]. The 4 caster render-pipeline cache keys
+/// fold into the cross-tail `RenderPipelines::ensure_keys` batch; the
+/// EVSM block's 3 inline shaders + 3 compute pipelines fold into the
+/// cross-tail compute pool. See [`EvsmDescriptors`] for the EVSM hand-
+/// off shape.
+pub struct ShadowsDescriptors {
+    pub config: ShadowsConfig,
+    // ── GPU resources ────────────────────────────────────────────────
+    pub atlas_texture: web_sys::GpuTexture,
+    pub atlas_view: web_sys::GpuTextureView,
+    pub atlas_size: u32,
+    pub evsm_atlas_texture: web_sys::GpuTexture,
+    pub evsm_atlas_view: web_sys::GpuTextureView,
+    pub evsm_atlas_size: u32,
+    pub evsm_blur_pingpong_texture: web_sys::GpuTexture,
+    pub evsm_blur_pingpong_view: web_sys::GpuTextureView,
+    pub cascade_array_texture: web_sys::GpuTexture,
+    pub cascade_array_view: web_sys::GpuTextureView,
+    pub cascade_layer_views: Vec<web_sys::GpuTextureView>,
+    pub cascade_resolution: u32,
+    pub cascade_max_layers: u32,
+    pub cube_array_texture: web_sys::GpuTexture,
+    pub cube_array_view: web_sys::GpuTextureView,
+    pub cube_2d_array_view: web_sys::GpuTextureView,
+    pub cube_face_views: Vec<web_sys::GpuTextureView>,
+    pub cube_resolution: u32,
+    pub cube_slot_count: u32,
+    pub descriptors_buffer: web_sys::GpuBuffer,
+    pub descriptors_uniform: web_sys::GpuBuffer,
+    pub globals_buffer: web_sys::GpuBuffer,
+    pub shadow_view_buffer: web_sys::GpuBuffer,
+    pub sampler_comparison: web_sys::GpuSampler,
+    pub sampler_filterable: web_sys::GpuSampler,
+    // ── caster layouts + bind group + cache keys ─────────────────────
+    pub shadow_view_bind_group_layout_key: BindGroupLayoutKey,
+    pub shadow_view_bind_group: web_sys::GpuBindGroup,
+    pub shadow_pipeline_layout_key_storage: PipelineLayoutKey,
+    pub shadow_pipeline_layout_key_uniform: PipelineLayoutKey,
+    /// 4 caster pipeline cache keys, in order:
+    /// `(no_inst, planar)`, `(inst, planar)`, `(no_inst, cube)`, `(inst, cube)`.
+    pub caster_pipeline_cache_keys: Vec<RenderPipelineCacheKey>,
+    // ── EVSM ─────────────────────────────────────────────────────────
+    pub evsm: EvsmDescriptors,
+}
+
+impl ShadowsDescriptors {
+    /// Two shader cache keys the caster pipelines depend on. Both
+    /// are pre-warmed by `RenderPasses::new`'s cross-pass shader
+    /// `ensure_keys` (the shadow caster shaders are added to that
+    /// batch alongside the picker + line shader keys, see
+    /// `render_passes.rs`'s phase-2 block). The orchestrator does
+    /// NOT re-include them in the cross-tail shader batch — by the
+    /// time tail descriptors run, the caster shaders are cache hits.
+    /// This helper exists only as the standalone-`Shadows::new` path's
+    /// own pre-warm and as a discoverable list for callers that want
+    /// to know which shaders Shadows depends on.
+    pub fn caster_shader_cache_keys() -> Vec<ShaderCacheKey> {
+        vec![
+            ShaderCacheKey::from(crate::shadows::shader::cache_key::ShaderCacheKeyShadow {
+                instancing_transforms: false,
+            }),
+            ShaderCacheKey::from(crate::shadows::shader::cache_key::ShaderCacheKeyShadow {
+                instancing_transforms: true,
+            }),
+        ]
+    }
+}
+
 impl Shadows {
     /// Creates the shadow subsystem.
     ///
     /// Must be called after the geometry render pass has been built so
     /// the shadow pipeline can reuse the geometry pass's transform /
     /// meta / animation bind group layouts at slots 1..=3.
+    ///
+    /// Thin wrapper over [`Self::build_descriptors`] +
+    /// [`Self::from_resolved`]. The cross-tail pooled startup path
+    /// bypasses this and calls the two halves directly so the caster
+    /// render pipelines + EVSM compute pipelines share one batched
+    /// `RenderPipelines::ensure_keys` / `ComputePipelines::ensure_keys`
+    /// with every other tail subsystem.
     #[allow(clippy::too_many_arguments)]
     pub async fn new(
         gpu: &AwsmRendererWebGpu,
@@ -305,9 +387,79 @@ impl Shadows {
         pipelines: &mut Pipelines,
         shaders: &mut Shaders,
         geometry_bind_groups: &GeometryBindGroups,
-        _render_texture_formats: &RenderTextureFormats,
+        render_texture_formats: &RenderTextureFormats,
         config: ShadowsConfig,
     ) -> Result<Self, AwsmShadowError> {
+        let descs = Self::build_descriptors(
+            gpu,
+            bind_group_layouts,
+            pipeline_layouts,
+            shaders,
+            geometry_bind_groups,
+            render_texture_formats,
+            config,
+        )
+        .await?;
+
+        // Caster shader pre-warm (pooled in the orchestrator path, but
+        // we still need to ensure here for the standalone case).
+        shaders
+            .ensure_keys(gpu, ShadowsDescriptors::caster_shader_cache_keys())
+            .await?;
+
+        // Caster render pipelines.
+        let caster_resolved = pipelines
+            .render
+            .ensure_keys(
+                gpu,
+                shaders,
+                pipeline_layouts,
+                descs.caster_pipeline_cache_keys.clone(),
+            )
+            .await?;
+
+        // EVSM: validate 3 inline shaders + ensure_keys 3 compute pipelines.
+        let validation_results =
+            futures::future::join_all(descs.evsm.validate_shader_futures()).await;
+        for result in validation_results {
+            result.map_err(AwsmShadowError::Core)?;
+        }
+        let evsm_shader_keys = [
+            shaders.insert_uncached(descs.evsm.modules[0].clone()),
+            shaders.insert_uncached(descs.evsm.modules[1].clone()),
+            shaders.insert_uncached(descs.evsm.modules[2].clone()),
+        ];
+        let evsm_pipeline_cache_keys = descs.evsm.pipeline_cache_keys(evsm_shader_keys);
+        let evsm_resolved = pipelines
+            .compute
+            .ensure_keys(gpu, shaders, pipeline_layouts, evsm_pipeline_cache_keys)
+            .await?;
+
+        Self::from_resolved(
+            gpu,
+            bind_group_layouts,
+            descs,
+            caster_resolved,
+            evsm_resolved,
+        )
+    }
+
+    /// Sync apart from a few `shaders.get_key` cache-hit lookups for
+    /// the caster pipeline cache keys. Allocates every GPU resource
+    /// the shadow subsystem owns, registers every bind-group + pipeline
+    /// layout, and issues the 3 EVSM inline `compile_shader` calls.
+    /// Returns [`ShadowsDescriptors`] for the orchestrator to fold into
+    /// the cross-tail batches.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn build_descriptors(
+        gpu: &AwsmRendererWebGpu,
+        bind_group_layouts: &mut BindGroupLayouts,
+        pipeline_layouts: &mut PipelineLayouts,
+        shaders: &mut Shaders,
+        geometry_bind_groups: &GeometryBindGroups,
+        _render_texture_formats: &RenderTextureFormats,
+        config: ShadowsConfig,
+    ) -> Result<ShadowsDescriptors, AwsmShadowError> {
         warn_view_budget(&config);
         let atlas_size = config.atlas_size.max(1);
         let atlas_texture = gpu.create_texture(
@@ -554,27 +706,11 @@ impl Shadows {
             ]),
         )?;
 
-        // Batch the four shadow caster pipeline compiles. Two shader
-        // variants (instancing on/off) × 2 pipeline variants (planar
-        // vs cube). Same descriptor-then-ensure_keys shape as the
-        // opaque + geometry passes.
-        shaders
-            .ensure_keys(
-                gpu,
-                [
-                    crate::shaders::ShaderCacheKey::from(
-                        crate::shadows::shader::cache_key::ShaderCacheKeyShadow {
-                            instancing_transforms: false,
-                        },
-                    ),
-                    crate::shaders::ShaderCacheKey::from(
-                        crate::shadows::shader::cache_key::ShaderCacheKeyShadow {
-                            instancing_transforms: true,
-                        },
-                    ),
-                ],
-            )
-            .await?;
+        // Resolve the two caster shader keys against the pre-warmed
+        // cache. RenderPasses::new emits both as part of its cross-pass
+        // ensure_keys; in the standalone `Shadows::new` path the
+        // wrapper above issues its own ensure_keys first. Either way
+        // these are sync cache hits.
         let shader_no_instancing = shaders
             .get_key(
                 gpu,
@@ -591,7 +727,7 @@ impl Shadows {
                 },
             )
             .await?;
-        let shadow_cache_keys = vec![
+        let caster_pipeline_cache_keys = vec![
             shadow_pipeline_cache_key(
                 shader_no_instancing,
                 shadow_pipeline_layout_key_storage,
@@ -617,24 +753,103 @@ impl Shadows {
                 true,
             ),
         ];
-        let shadow_pipeline_keys = pipelines
-            .render
-            .ensure_keys(gpu, shaders, pipeline_layouts, shadow_cache_keys)
-            .await?;
-        let shadow_pipeline_no_instancing = shadow_pipeline_keys[0];
-        let shadow_pipeline_instancing = shadow_pipeline_keys[1];
-        let shadow_pipeline_cube_no_instancing = shadow_pipeline_keys[2];
-        let shadow_pipeline_cube_instancing = shadow_pipeline_keys[3];
 
-        let evsm_pass = EvsmPass::new(
-            gpu,
-            bind_group_layouts,
-            pipeline_layouts,
-            pipelines,
-            shaders,
-        )
-        .await?;
+        let evsm = EvsmPass::build_descriptors(gpu, bind_group_layouts, pipeline_layouts)?;
 
+        Ok(ShadowsDescriptors {
+            config,
+            atlas_texture,
+            atlas_view,
+            atlas_size,
+            evsm_atlas_texture,
+            evsm_atlas_view,
+            evsm_atlas_size,
+            evsm_blur_pingpong_texture,
+            evsm_blur_pingpong_view,
+            cascade_array_texture,
+            cascade_array_view,
+            cascade_layer_views,
+            cascade_resolution,
+            cascade_max_layers,
+            cube_array_texture,
+            cube_array_view,
+            cube_2d_array_view,
+            cube_face_views,
+            cube_resolution,
+            cube_slot_count,
+            descriptors_buffer,
+            descriptors_uniform,
+            globals_buffer,
+            shadow_view_buffer,
+            sampler_comparison,
+            sampler_filterable,
+            shadow_view_bind_group_layout_key,
+            shadow_view_bind_group,
+            shadow_pipeline_layout_key_storage,
+            shadow_pipeline_layout_key_uniform,
+            caster_pipeline_cache_keys,
+            evsm,
+        })
+    }
+
+    /// Folds the resolved caster + EVSM pipeline keys back into the
+    /// typed [`Shadows`] handle. Sync; the orchestrator has already
+    /// run the cross-tail batched `RenderPipelines::ensure_keys` +
+    /// `ComputePipelines::ensure_keys` and the EVSM validate join.
+    ///
+    /// `caster_resolved` is in `caster_pipeline_cache_keys` order:
+    /// `(no_inst, planar)`, `(inst, planar)`, `(no_inst, cube)`,
+    /// `(inst, cube)`.
+    pub fn from_resolved(
+        gpu: &AwsmRendererWebGpu,
+        bind_group_layouts: &BindGroupLayouts,
+        descs: ShadowsDescriptors,
+        caster_resolved: Vec<RenderPipelineKey>,
+        evsm_resolved: Vec<ComputePipelineKey>,
+    ) -> Result<Self, AwsmShadowError> {
+        debug_assert_eq!(caster_resolved.len(), 4);
+        debug_assert_eq!(evsm_resolved.len(), 3);
+        let ShadowsDescriptors {
+            config,
+            atlas_texture,
+            atlas_view,
+            atlas_size,
+            evsm_atlas_texture,
+            evsm_atlas_view,
+            evsm_atlas_size,
+            evsm_blur_pingpong_texture,
+            evsm_blur_pingpong_view,
+            cascade_array_texture,
+            cascade_array_view,
+            cascade_layer_views,
+            cascade_resolution,
+            cascade_max_layers,
+            cube_array_texture,
+            cube_array_view,
+            cube_2d_array_view,
+            cube_face_views,
+            cube_resolution,
+            cube_slot_count,
+            descriptors_buffer,
+            descriptors_uniform,
+            globals_buffer,
+            shadow_view_buffer,
+            sampler_comparison,
+            sampler_filterable,
+            shadow_view_bind_group_layout_key,
+            shadow_view_bind_group,
+            shadow_pipeline_layout_key_storage,
+            shadow_pipeline_layout_key_uniform,
+            caster_pipeline_cache_keys: _,
+            evsm,
+        } = descs;
+
+        let evsm_pass = EvsmPass::from_resolved(evsm, evsm_resolved);
+
+        // EVSM moment-write + blur bind groups depend on the layouts +
+        // params buffer that EvsmPass now owns. Built here (sync, no
+        // pipeline compile) so the typed `Shadows` can sample the
+        // bind group at render time without re-resolving layouts.
         let evsm_moment_write_bind_group = build_evsm_moment_write_bind_group(
             gpu,
             bind_group_layouts,
@@ -704,10 +919,10 @@ impl Shadows {
             shadow_view_bind_group,
             shadow_pipeline_layout_key_storage,
             shadow_pipeline_layout_key_uniform,
-            shadow_pipeline_no_instancing,
-            shadow_pipeline_instancing,
-            shadow_pipeline_cube_no_instancing,
-            shadow_pipeline_cube_instancing,
+            shadow_pipeline_no_instancing: caster_resolved[0],
+            shadow_pipeline_instancing: caster_resolved[1],
+            shadow_pipeline_cube_no_instancing: caster_resolved[2],
+            shadow_pipeline_cube_instancing: caster_resolved[3],
             frame_count: 0,
             dirty: true,
             pending_atlas_grow: false,

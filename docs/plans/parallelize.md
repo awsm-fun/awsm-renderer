@@ -1,15 +1,54 @@
 # Parallelize WebGPU pipeline creation — full plan
 
-## Status (2026-05-25) — landed on the `parallel` branch
+## End state (what this doc finishes)
 
-All seven phases below have landed, plus a follow-up sweep that
-took the cross-pass pooling all the way to its limit. Every shader
-and every pipeline that compiles during `AwsmRendererBuilder::build`
-on the cold-cache first load now goes through batched
-`ensure_keys` calls; the per-pass / per-subsystem `new()`
-constructors are thin wrappers over `build_descriptors` +
-`from_resolved` splits so the `RenderPasses::new` orchestrator can
-fold every variant into one global pool.
+After [follow-up 2](#follow-up-2-startup-tail-trim) lands, the
+**WebGPU pipeline-compile parallelization problem is closed**.
+Every shader + pipeline compile in `AwsmRendererBuilder::build`
+will ride one of two pools (one shader, one `try_join`'d compute +
+render), bounded by Dawn's worker-pool size × `max(t_compile)` per
+wave — the theoretical limit of what JS-side parallelization can
+achieve. The orchestration is structured so a future contributor
+*can't accidentally* re-introduce a sequential `.await?` (Path A's
+architectural guarantee).
+
+### What this doc explicitly does NOT address
+
+The trace evidence in [Status](#status-2026-05-25--tail-pool-landed-on-parallel-continued)
+shows the post-PR#96 fresh-profile number is 2.2 s — and most of
+that is **not pipeline compile time** anymore. The remaining axes
+of "page-load → first useful frame" belong to other (future) docs:
+
+| Axis | Approx magnitude | Where the lever lives |
+|---|---|---|
+| WASM module instantiation + glue | 200–500 ms | bundle size, code splitting, LTO, cargo-bloat audit |
+| Browser-process startup | ~450 ms | minimal lever — Chrome's machinery |
+| JS ↔ Rust marshalling per `gpu.create_*` | dispersed | descriptor-build overhead reduction |
+| Texture decode (ImageBitmap × 3 + BRDF) | 300–500 ms (already parallelised) | smaller default cubemaps, shipped BRDF LUT |
+| First-model-load (gltf + textures + finalize) | 150–400 ms / model | separate path with its own pool (Phase 4) |
+| First-frame bind-group recreate | 10–30 ms | pre-create some bind groups in `build()` |
+| Driver-level MSL lowering (Metal/Vulkan/D3D) | 5+ s truly cold | no JS hook — browser team |
+
+Of these, **WASM size + instantiation** is the only axis with a
+clean cost/benefit story for a focused follow-up. A `cargo-bloat`
+audit + dependency once-over is probably worth ~100–300 ms on
+every cold load. It's a different problem with different tools and
+should get its own doc, not extend this one.
+
+Everything else is diminishing returns or genuinely out of our
+control.
+
+## Status (2026-05-25) — tail pool landed on `parallel-continued`
+
+All seven original phases plus the cross-pass pool sweep plus the
+**tail pool follow-up** (PR #96) have landed. Every shader and every
+pipeline that compiles during `AwsmRendererBuilder::build` on the
+cold-cache first load goes through batched `ensure_keys` calls; the
+per-pass / per-subsystem `new()` constructors are thin wrappers
+over `build_descriptors` + `from_resolved` splits so the
+orchestrator can fold every variant into one of two cross-system
+pools (one inside `RenderPasses::new`, one across the tail after
+`RenderPasses::new` returns).
 
 | Phase | Status | Headline commit |
 |---|---|---|
@@ -27,6 +66,37 @@ fold every variant into one global pool.
 | 11 — Full cross-pass pipeline pool in RenderPasses::new | ✅ | `renderer: full cross-pass pipeline pool at RenderPasses::new` |
 | 12 — Batch Picker + LineRenderer | ✅ | `renderer: batch picker's two pipeline compiles` / `renderer: batch LineRenderer's 4 variants` |
 | 13 — anti_aliasing dedup-fix + Picker descriptor split | ✅ | `renderer: fix anti_alias set_anti_aliasing OR-dedup bug` / `renderer: expose Picker descriptor split` |
+| 14 — Tail pool (Shadows + Lines + Effects + Display) | ✅ | PR #96: `renderer: orchestrate tail-pool in AwsmRendererBuilder::build (2-await tail)` |
+| 14a — PR#96 review fixes (try_join compute+render, doc) | ✅ | `renderer: address PR#96 review — try_join compute+render ensure_keys, doc fixes` |
+
+### Trace evidence (warm Metal + cold Chrome PSO, 2026-05-25)
+
+A fresh `--user-data-dir` Chrome profile against the model-tests Fox
+scene captured `Trace-Three.json`, with the renderer built at PR#96's
+HEAD:
+
+| Metric | Pre-parallelize cold | Pre-parallelize warm | Post-PR#96 fresh-profile |
+|---|---|---|---|
+| `domComplete → first 'Render [1]: span-enter'` | 42.8 s | 1.7 s | **2.2 s** |
+| GPU-process total CPU | 5.35 s | 0.81 s | **0.77 s** |
+| Renderer-main-thread total CPU | 8.74 s | 4.26 s | **1.0 s** |
+
+The 0.77 s GPU-process CPU number tells the real story: it's
+indistinguishable from the pre-parallelize warm baseline, which
+means Dawn isn't doing real compile work — it's serving from the
+**driver-level Metal pipeline cache** that survives across Chrome
+profiles. `--user-data-dir` clears Chrome's PSO cache but cannot
+clear macOS's MSL → native cache. So on any developer machine that
+has run this codebase before, the cold-Chrome experience now sits
+in the same ballpark as the historical warm path. The 42.8 s
+baseline reflected a machine where both layers were cold (first
+ever run of the app), which is the user-facing first-visit experience.
+
+The renderer-main-thread idle-gap distribution in the new trace is
+also clean — user-timing marks after `Prewarm Pipelines` cascade in
+~1 ms apart, no ~500 ms per-frame-tick stalls. The serial-await
+staircase the original plan was attacking is gone whether the
+underlying compile is cold or warm.
 
 ### What pools at startup now
 
@@ -60,37 +130,62 @@ batch in parallel.
 
 ### What still compiles outside RenderPasses::new
 
-The following compile *after* `RenderPasses::new` returns and stay
-sequential per-subsystem, but each one is internally batched:
+After PR #96 the tail subsystems share a single cross-tail pool
+running right after `RenderPasses::new` returns. The structure of
+the tail today:
 
-- **Picker** — 1 batched `ComputePipelines::ensure_keys` for 2
-  pipelines. Shader cache hits (pre-warmed by `RenderPasses::new`).
-- **LineRenderer** — 1 batched `RenderPipelines::ensure_keys` for
-  4 variants (depth-test × MSAA). Shader cache hit.
-- **Shadows** — 2 awaits: 1 `RenderPipelines::ensure_keys` for 4
-  caster variants, plus an EVSM block that runs 3 inline shader
-  validations through `join_all` and 3 EVSM compute pipelines
-  through `ComputePipelines::ensure_keys` together. Caster shader
-  cache hit; EVSM uses an inline-source path that bypasses the
-  shared shader cache.
-- **`set_anti_aliasing` / `set_post_processing`** — 1 batched
-  `ComputePipelines::ensure_keys` for the 5 effects variants
-  (bloom-phase fan-out), and 1 batched render call for the 1
-  display pipeline. The first time these are called the cold
-  compile happens; subsequent calls hit the cache.
+1. **Sync** — each tail subsystem's `build_descriptors` runs:
+   - `Picker::build_descriptors` (registers bind-group layouts +
+     2 compute pipeline cache keys).
+   - `LineRenderer::build_descriptors` (registers bind-group +
+     pipeline layout, 4 render pipeline cache keys).
+   - `Shadows::build_descriptors` (allocates every shadow GPU
+     resource — atlas, EVSM atlas, cascade-array, cube-array,
+     descriptors / globals / view buffers, samplers, bind-group
+     layouts, pipeline layouts; resolves 4 caster pipeline cache
+     keys; issues 3 EVSM inline `compile_shader` calls returning
+     modules + unawaited `validate_shader` futures).
+2. **One `Shaders::ensure_keys`** joined via `futures::join` with
+   the 3 EVSM inline-shader validate futures — effects + display
+   shader keys + EVSM module validations all in flight together.
+3. **Sync** — register the 3 EVSM modules via
+   `Shaders::insert_uncached`, derive their 3 compute pipeline
+   cache keys, run `EffectsPipelines::build_descriptors` +
+   `DisplayPipelines::build_descriptors` (sync cache-hit shader
+   resolves), build the cross-tail compute + render pools.
+4. **`try_join`'d compute + render `ensure_keys`** — split-borrow
+   `Pipelines.compute` / `Pipelines.render` so Dawn overlaps both
+   classes against its worker pool. Compute pool = picker(2) +
+   EVSM(3) + effects(5) = **10 pipelines**. Render pool =
+   lines(4) + caster(4) + display(1) = **9 pipelines**.
+5. **Sync fold-up** — each subsystem's `from_resolved` /
+   `install_resolved` consumes its slice of the resolved keys.
 
-Pooling these into the same `RenderPasses::new` batches would
-require splitting Shadows / Effects / Display into the same
-`build_descriptors` + `from_resolved` shape and threading the
-orchestration through `AwsmRendererBuilder::build`. See
-[Follow-up: tail pool](#follow-up-tail-pool-shadows--picker--linerenderer--effects--display)
-below for the full implementation plan a fresh session can pick up
-and execute.
+Pre-PR#96 this was 5 sequential per-subsystem awaits; post-PR#96
+it's 3 awaits inside the tail (shader-join, then try_join'd
+compute + render). The dynamic `set_anti_aliasing` /
+`set_post_processing` setter path is preserved — those setters
+wrap the same `build_descriptors` + per-subsystem `ensure_keys` +
+`install_resolved` shape for mid-session config flips.
 
-The `Picker::build_descriptors` split is already in place as
-infrastructure for that follow-up. The remaining subsystems —
-Shadows, EffectsPipelines, DisplayPipelines, LineRenderer's inner
-`LinePipelines` — are the work.
+### What still serialises across the whole build()
+
+After PR #96 the remaining serial points in `AwsmRendererBuilder::build`
+are:
+
+- `try_join5(IBL × 3, BRDF LUT, opaque_mipgen)` finishes **before**
+  `RenderPasses::new` + `RenderTextures::new` even start. The
+  texture-prep futures only touch `&gpu`, not the shader / pipeline
+  caches — they could ride the same `try_join` as `RenderPasses::new`.
+- `Picker` compiles unconditionally even when the consuming
+  frontend has no use for pick (most library builds).
+- Picker + LineRenderer descriptors build *after* `RenderPasses::new`
+  returns, so their pipelines join only the cross-tail pool, not
+  the larger cross-pass pool. Their bind-group layouts are
+  statically known and could be registered up-front.
+
+These are addressed in [Follow-up 2](#follow-up-2-startup-tail-trim)
+below.
 
 ---
 
@@ -515,6 +610,364 @@ For every step above, the fresh session should:
 - `finalize_gpu_textures` — already pooled (Phase 8).
 - `RenderPasses::new` itself — already pooled (Phase 11).
 - `prewarm_pipelines` — already pooled (Phase 5).
+
+---
+
+## Follow-up 2: startup-tail trim
+
+### Status
+
+Three follow-up items identified after the PR #96 trace review.
+**Land all three in one session** — they're independent at the
+borrow-checker level, the verification cost is shared (one fresh
+trace capture covers all three), and the doc / PR overhead per item
+isn't worth amortising across sessions.
+
+| Item | Win (warm-Metal) | Win (cold-Dawn) | Risk |
+|---|---|---|---|
+| (1) Move `RenderPasses::new` into the `try_join5` block | 300–600 ms | same | low |
+| (2) Fold Picker + LineRenderer pipelines into the cross-pass pool | 25–80 ms | ~1–1.5 s | medium |
+| (3) `RendererFeatures::picking` flag | 25–50 ms | ~200–500 ms | low |
+
+Total cold-cache budget: **~2–2.5 s** off `domComplete → first Render`
+on a machine with cold Metal driver cache. Total warm-Metal budget:
+**~400–700 ms** — small absolute but lops a chunk off the largest
+remaining idle gap before `Prewarm Pipelines` fires.
+
+### Item (1) — parallelise `RenderPasses::new` with the texture-prep block
+
+#### Why this matters
+
+[lib.rs:879-900](../../crates/renderer/src/lib.rs) currently does:
+
+```rust
+let (ibl_filtered_resources, ibl_irradiance_resources, skybox_resources, brdf_lut, opaque_mipgen) =
+    futures::future::try_join5(/* … */).await?;
+// … register textures …
+let (mut render_passes, render_textures) =
+    futures::future::try_join(RenderPasses::new(/* … */), RenderTextures::new(/* … */)).await?;
+```
+
+The five texture-prep futures only touch `&gpu` (the `prepare_resources`
+half of the prepare/register split is intentional infrastructure for
+exactly this kind of parallelisation). `RenderPasses::new` wants `&mut`
+on the caches — but those caches are disjoint from anything the
+texture prep touches. The borrow checker will confirm the disjointness
+in seconds.
+
+#### What changes
+
+Collapse the two `await` points into one bigger `try_join`. Texture
+**registration** (the `IblTexture::register` etc. calls that consume
+the prepared resources + mutate `textures`) happens in the sync
+fold-up after the join. `RenderPasses::new`'s compile work overlaps
+with the ImageBitmap decode and BRDF-LUT generation work happening
+on the GPU process.
+
+#### Audit before refactor
+
+Confirm `RenderPasses::new` reads nothing from `&textures` whose
+state is finalized by `IblTexture::register` / `Skybox::register`
+inside its compile sequence. The texture-pool *shape* (array
+lengths) is determined by `Materials::load` / gltf loads, not by
+IBL handles, so RenderPasses::new should be independent. Spot-check
+via grep for `textures.` reads inside `RenderPasses::new` →
+`build_descriptors` chains.
+
+If the audit comes back wrong (RenderPasses::new actually reads
+e.g. the cubemap array binding count): minimal-impact fallback is to
+delay only the `IblTexture::register` calls until after the join.
+The renderer's compile work doesn't care about the IBL texture
+handle itself, only that a binding-shape-compatible texture exists
+later when bind groups are created — which is after first frame.
+
+#### Files
+
+- [lib.rs](../../crates/renderer/src/lib.rs) — `AwsmRendererBuilder::build`
+  body, the `try_join5` + downstream `try_join` block.
+
+#### Checklist
+
+- [ ] Audit: every `textures.` access inside `RenderPasses::new`'s
+      call chain. List in the commit body.
+- [ ] Single `try_join` of (IBL × 3, BRDF, opaque_mipgen,
+      `RenderPasses::new`, `RenderTextures::new`).
+- [ ] Texture registrations move to the post-await sync block.
+- [ ] `cargo build --workspace` + `cargo clippy --workspace
+      --all-targets -- -D warnings` clean.
+- [ ] Fresh-profile Chrome trace; `domComplete → first 'Render [1]:
+      span-enter'` drop matches the 300–600 ms warm-Metal estimate.
+
+### Item (2) — fold Picker + LineRenderer into the cross-pass pool
+
+#### Why this matters
+
+Today `RenderPasses::new` runs 3 awaits (one shader, one
+try_join'd compute + render). The tail pool runs 3 more awaits
+(one shader-join, one try_join'd compute + render). On cold-Dawn
+the wave-tail-straggler delay for the second batch is real: the
+slowest pipeline in the tail can hold up nothing else, but if the
+*total* compile work could be merged into one giant pool, the
+total straggler delay drops from `straggler(cross-pass) +
+straggler(tail)` to `straggler(combined)` — usually ~one full
+`t_compile` (≈0.8–1.5 s on cold Dawn for this codebase).
+
+#### Path choice — Path A (invert the orchestration)
+
+Three approaches considered. **Path A is the choice.** The cold-cache
+straggler win is one reason — but Path A also buys three
+architectural guarantees the other two paths don't:
+
+1. **No way to accidentally bypass the cross-renderer pool.** The
+   orchestrator *owns* the `ensure_keys` calls. `RenderPasses::describe`
+   can't compile anything — it can only return descriptors. Adding a
+   new render pass (or modifying an existing one) can't introduce a
+   new sequential `.await?` because the function it would live in
+   isn't `async` anymore.
+2. **Single source of truth for renderer-wide compile timing.** All
+   three pool awaits (shader, compute, render) live at one site in
+   `AwsmRendererBuilder::build`. One place to instrument with
+   tracing spans, one place to read for per-pool wall-clock, one
+   place to reason about ordering invariants. The "happens to do
+   the same thing" relationship between startup and dynamic setters
+   becomes an *explicit* shared code path:
+   `set_anti_aliasing` and the orchestrator both call
+   `EffectsPipelines::install_resolved` against the same descriptor
+   shape.
+3. **Cleaner story for future `RendererFeatures` flags.** A new
+   feature gating a new pass becomes "skip a sub-range of cache
+   keys in `describe`'s output" — no chance of an
+   `if features.foo { foo.ensure_keys().await? }` sequential await
+   sneaking in past a future code reviewer.
+
+#### What Path A actually changes
+
+`RenderPasses::new` is the function that does the work today. It
+becomes a thin wrapper for the rare caller that wants the old
+"all-in-one" entry point (effectively only tests). The orchestrator
+in `AwsmRendererBuilder::build` calls the two halves directly:
+
+  - `RenderPasses::describe(ctx, features) -> RenderPassesDescriptors`
+    — sync apart from cache-hit shader resolution. Returns a struct
+    carrying per-pass bind groups + `Vec<RenderPipelineCacheKey>` +
+    `Vec<ComputePipelineCacheKey>` + sub-range maps the orchestrator
+    uses to slice resolved keys back out per pass.
+  - `RenderPasses::from_resolved(descriptors, compute_keys,
+    render_keys) -> RenderPasses` — sync; the orchestrator hands
+    back the resolved key slices, each pass's `from_resolved` is
+    invoked internally to assemble the typed `RenderPass`.
+
+#### Paths rejected (and why)
+
+- **Path B:** Add `extra_compute_keys` / `extra_render_keys`
+  parameters to `RenderPasses::new` so the orchestrator can stuff
+  Picker + Lines cache keys in. Mechanically smaller but
+  `RenderPasses::new` would now know about non-render-pass
+  subsystems — and the type system can't catch a future caller
+  that forgets to pass the extras. Loses guarantees (1) and (3).
+- **Path C:** Pre-warm Picker + Lines pipelines via their own
+  `ensure_keys` running in parallel with `RenderPasses::new`.
+  Doesn't merge pools, only overlaps two same-size waves —
+  half a win on perf, no architectural improvement at all.
+
+#### What changes
+
+Inside `RenderPasses::new` today, phase 2 (cross-pass shader
+`ensure_keys`) and phase 4 (the two `ensure_keys` calls) move out
+to the orchestrator. The orchestrator becomes:
+
+```rust
+// Sync — describe every pass, pre-build Picker + LineRenderer
+// descriptors (their bind-group layouts are static).
+let rp_descs = RenderPasses::describe(&mut ctx, &features)?;
+let picker_descs = Picker::build_descriptors(/* … */).await?;
+let line_descs = LineRenderer::build_descriptors(/* … */).await?;
+
+// One pooled shader ensure_keys covering RenderPasses + Picker +
+// Lines + (later, after this batch) effects + display + shadow
+// caster shader keys. EVSM inline validates join in parallel.
+shaders.ensure_keys(&gpu, every_shader_key).await?;
+
+// Sync — Effects + Display descriptors (their shaders are now warm).
+let effects_descs = effects.build_descriptors(/* … */).await?;
+let display_descs = display.build_descriptors(/* … */).await?;
+let shadows_descs = Shadows::build_descriptors(/* … */).await?;
+
+// One try_join'd compute + render ensure_keys covering EVERYTHING.
+// Compute pool ≈ ~36 pipelines. Render pool ≈ ~27 pipelines.
+let (compute_keys, render_keys) = futures::future::try_join(
+    pipelines.compute.ensure_keys(/* compute_pool */),
+    pipelines.render.ensure_keys(/* render_pool */),
+).await?;
+
+// Sync fold-up everywhere.
+```
+
+#### Files
+
+- [render_passes.rs](../../crates/renderer/src/render_passes.rs) — split `RenderPasses::new` into `describe` + `from_resolved`.
+- [lib.rs](../../crates/renderer/src/lib.rs) — orchestrator pulls the pool management up.
+
+#### Risk + sizing
+
+The architectural-contract change is where the work is — the
+per-pass mechanical refactor is already done. Every existing
+render pass exposes `build_descriptors` + `from_resolved`, so the
+delta is concentrated in `RenderPasses::new`'s outer shell (the
+per-feature `if let Some(bg)` branching that today assembles the
+pools and runs the two `ensure_keys` awaits). That shell becomes
+two functions: `describe` carries the assembly + the `Vec<…>` +
+sub-range maps; `from_resolved` carries the per-pass fold-up.
+
+Expect ~150–250 line shuffle inside `render_passes.rs` (net mostly
+zero, since the orchestration moves but doesn't grow) and ~50–80
+new lines in `lib.rs`'s `build()` (the new pool-driving block that
+folds RenderPasses + Picker + Lines + Shadows + Effects + Display
+into one shader pool + one try_join'd compute+render pool).
+
+The dynamic-setter path needs careful preservation. The current
+contract: `set_anti_aliasing` / `set_post_processing` own their own
+batched `ensure_keys`. After Path A: the orchestrator at startup
+gets first crack at the cache (so the setters' subsequent calls
+all hit warm cache); the setter code path itself stays untouched
+for mid-session config flips. Verify by flipping MSAA off + Bloom
+on mid-session and confirming the pipelines recompile via the
+setter's own `ensure_keys` (now a cache miss the first time per
+new config) and the render output is correct.
+
+#### Checklist
+
+- [ ] `RenderPasses::describe` extracted; `RenderPasses::new` becomes
+      a thin wrapper for callers that don't pool externally (none
+      today; keep the entry point for symmetry).
+- [ ] Orchestrator drives the single cross-renderer shader pool +
+      try_join'd compute + render pool.
+- [ ] All 12 render passes still construct under every
+      `RendererFeatures` combination — try with and without
+      `coverage_lod`, `gpu_culling`, `decals`.
+- [ ] EVSM validate-future hand-off still joins in parallel with
+      the (now larger) shader pool.
+- [ ] `set_anti_aliasing` / `set_post_processing` dynamic-setter
+      path unaffected — these still wrap per-subsystem
+      `build_descriptors` + `ensure_keys` + `install_resolved`.
+- [ ] Both frontends render correctly; dynamic AA + PP flips work
+      mid-session.
+- [ ] Fresh-profile Chrome trace — `domComplete → first 'Render
+      [1]: span-enter'` drop matches the cold-Dawn estimate.
+
+### Item (3) — `RendererFeatures::picking` flag
+
+#### Why this matters
+
+Picker compiles 2 compute pipelines + registers 2 bind-group
+layouts unconditionally, even in library / game builds that never
+call `.pick()`. The shaders are also pre-warmed by
+`RenderPasses::new`'s cross-pass shader batch. Gating the entire
+subsystem on a feature flag means the editor opts in and everyone
+else pays nothing.
+
+This fits cleanly into the existing `RendererFeatures` pattern
+alongside `gpu_culling`, `decals`, `coverage_lod`.
+
+#### What changes
+
+- `RendererFeatures::picking: bool` — defaults to `false` (library
+  / game default). Editor + model-tests opt in explicitly via
+  `.with_features(RendererFeatures { picking: true, … })`.
+- `AwsmRenderer.picker: Option<Picker>` — `None` when feature is off.
+- `AwsmRenderer::pick(...)` returns `PickResult::Disabled` (new
+  variant) or similar when `picker` is `None`. Callers that don't
+  pre-check the feature flag still get a graceful no-op.
+- `Picker::build_descriptors` only runs when `features.picking`.
+- The two `ShaderCacheKey::Picker` entries in
+  `render_passes.rs:198-237`'s cross-pass shader pre-warm are
+  gated by `features.picking`. Same for the cross-pool compute
+  cache keys + bind-group-layout registrations.
+- The frontend's `canvas.rs` / scene-editor explicitly set
+  `picking: true` in their `with_features(...)` call.
+
+#### Files
+
+- [features.rs](../../crates/renderer/src/features.rs) — add the flag.
+- [picker.rs](../../crates/renderer/src/picker.rs) — `Option`-ify the
+  `.pick()` API, add `PickResult::Disabled`.
+- [lib.rs](../../crates/renderer/src/lib.rs) — gate the Picker block in `build()`.
+- [render_passes.rs](../../crates/renderer/src/render_passes.rs) — gate
+  the Picker shader pre-warm.
+- [crates/frontend/model-tests/src/pages/app/canvas.rs](../../crates/frontend/model-tests/src/pages/app/canvas.rs)
+  and [crates/frontend/scene-editor/](../../crates/frontend/scene-editor/) —
+  explicitly opt in.
+
+#### Risk
+
+Low. The only subtlety is the `Option<Picker>` ripple through every
+call site that previously dereferenced `self.picker` directly. ~20
+call sites tops, all mechanical. The `bind_groups`'
+`BindGroupRecreateContext` consumer in `recreate_bind_group` is
+the one place to be careful — make sure the recreate sweep skips
+the Picker recreate when the field is `None`.
+
+#### Checklist
+
+- [ ] `RendererFeatures::picking` flag added, defaults `false`.
+- [ ] `AwsmRenderer.picker: Option<Picker>`; `.pick()` graceful no-op.
+- [ ] `PickResult::Disabled` (or `Option<PickResult>` — pick one).
+- [ ] Picker shader pre-warm + bind-group layouts + pipeline
+      compiles all gated.
+- [ ] Both frontends opt in explicitly.
+- [ ] Library-default build (no `picking: true`) — Picker code
+      paths cold-skipped, `.pick()` returns Disabled.
+
+### Verification (shared across all three items)
+
+Single trace capture covering all three at once. Steps:
+
+1. `cargo build --workspace` clean.
+2. `cargo clippy --workspace --all-targets -- -D warnings` clean.
+3. `cargo fmt --all` clean.
+4. **model-tests**: Fox loads, IBL + shadows + bloom toggle all work
+   mid-session.
+5. **scene-editor**: empty scene + Box primitive + Directional +
+   Point + Spot lights all renderable without GPU validation errors.
+6. **Dynamic AA + PP**: flip MSAA off mid-session, change
+   post-processing config. Both must recompile correctly via the
+   preserved setter path.
+7. **Picker-off library smoke**: build a quick test target with
+   `RendererFeatures { picking: false, .. }` and confirm Picker
+   shaders + pipelines don't show up in the compile span trace.
+8. **Fresh-profile Chrome trace** with `--user-data-dir=/tmp/chrome-cold-$(date +%s)`.
+   Headline metric: `domComplete → first 'Render [1]: span-enter'`.
+   Expected drop from PR#96's ~2.2 s baseline: **300–700 ms**
+   warm-Metal. On a machine with cold Metal driver cache (different
+   machine, or CI runner), expect ~2–2.5 s drop.
+9. Record the new headline number in the `## Measurements` table
+   at the bottom of this doc as the "Final" row.
+
+### Commits expected for this session
+
+One commit per item is the right granularity:
+
+1. `renderer: parallelise RenderPasses::new with try_join5 texture prep`
+2. `renderer: invert RenderPasses orchestration — single cross-renderer pool`
+3. `renderer: gate Picker behind RendererFeatures::picking`
+
+All three should pass build + clippy + fmt independently. The
+session ends with a single PR covering all three commits.
+
+### Out of scope for follow-up 2
+
+- Lazy-compile Picker on first `.pick()` call. Superseded by item (3)
+  — if picking is off, nothing compiles; if on, it joins the cross-renderer
+  pool. No third state.
+- Shader variant dedup (e.g., merging the MSAA × mipmaps × shader_id
+  matrix in opaque). Trades startup latency for steady-state ALU; out
+  of scope for the parallelize doc.
+- WGSL byte-stability + golden hash CI test. Hygiene only — protects
+  future deploys' PSO cache, doesn't move any individual session's
+  numbers.
+- Dawn / Metal driver work. Not addressable from JS.
+
+---
 
 ## Instructions for the implementor
 

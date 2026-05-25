@@ -33,7 +33,7 @@ use awsm_renderer_core::{
     },
     buffers::{BufferDescriptor, BufferUsage},
     renderer::AwsmRendererWebGpu,
-    shaders::ShaderModuleDescriptor,
+    shaders::{ShaderModuleDescriptor, ShaderModuleExt},
     texture::{TextureFormat, TextureSampleType, TextureViewDimension},
 };
 
@@ -46,7 +46,7 @@ use crate::{
         compute_pipeline::{ComputePipelineCacheKey, ComputePipelineKey},
         Pipelines,
     },
-    shaders::Shaders,
+    shaders::{ShaderKey, Shaders},
     shadows::AwsmShadowError,
 };
 
@@ -98,9 +98,62 @@ pub struct EvsmPass {
     pub active_cascade_count: u32,
 }
 
+/// Pre-resolved layouts + module handles for the EVSM compute pass.
+/// Returned by [`EvsmPass::build_descriptors`] and consumed by
+/// [`EvsmPass::from_resolved`]. The 3 inline WGSL shaders are issued
+/// synchronously via `compile_shader`; their validate futures are
+/// surfaced separately so the orchestrator can `try_join_all` them in
+/// parallel with the cross-tail `Shaders::ensure_keys` batch.
+pub struct EvsmDescriptors {
+    pub moment_write_layout_key: BindGroupLayoutKey,
+    pub blur_layout_key: BindGroupLayoutKey,
+    pub moment_write_pipeline_layout_key: PipelineLayoutKey,
+    pub blur_pipeline_layout_key: PipelineLayoutKey,
+    /// 3 module handles in moment_write → blur_h → blur_v order. The
+    /// orchestrator registers them into the shader cache via
+    /// `Shaders::insert_uncached` after the validate join completes,
+    /// and feeds the resulting `ShaderKey`s into
+    /// [`EvsmPass::pipeline_cache_keys`] to build the 3 compute
+    /// pipeline cache keys it pools into the cross-tail batch.
+    pub modules: [web_sys::GpuShaderModule; 3],
+    pub params_buffer: web_sys::GpuBuffer,
+    pub params_bytes: Vec<u8>,
+}
+
+impl EvsmDescriptors {
+    /// Returns the 3 unawaited `validate_shader` futures for the inline
+    /// EVSM shaders. The orchestrator joins them in parallel with the
+    /// cross-tail `Shaders::ensure_keys` batch.
+    pub fn validate_shader_futures(
+        &self,
+    ) -> [impl std::future::Future<Output = Result<(), awsm_renderer_core::error::AwsmCoreError>> + '_;
+           3] {
+        [
+            self.modules[0].validate_shader(),
+            self.modules[1].validate_shader(),
+            self.modules[2].validate_shader(),
+        ]
+    }
+
+    /// Once the orchestrator has registered the 3 modules into the
+    /// shader cache via `Shaders::insert_uncached`, derive the 3
+    /// compute pipeline cache keys to fold into the cross-tail batch.
+    /// `shader_keys` is in the same order as `modules`.
+    pub fn pipeline_cache_keys(&self, shader_keys: [ShaderKey; 3]) -> Vec<ComputePipelineCacheKey> {
+        vec![
+            ComputePipelineCacheKey::new(shader_keys[0], self.moment_write_pipeline_layout_key),
+            ComputePipelineCacheKey::new(shader_keys[1], self.blur_pipeline_layout_key),
+            ComputePipelineCacheKey::new(shader_keys[2], self.blur_pipeline_layout_key),
+        ]
+    }
+}
+
 impl EvsmPass {
     /// Builds layouts, compiles shaders, creates pipelines, and
-    /// allocates the params uniform buffer. Called from `Shadows::new`.
+    /// allocates the params uniform buffer. Thin wrapper over the
+    /// split that runs the validate + ensure_keys awaits internally;
+    /// the cross-tail pool path bypasses this and feeds the descriptor
+    /// pieces into shared batches.
     pub async fn new(
         gpu: &AwsmRendererWebGpu,
         bind_group_layouts: &mut BindGroupLayouts,
@@ -108,7 +161,39 @@ impl EvsmPass {
         pipelines: &mut Pipelines,
         shaders: &mut Shaders,
     ) -> Result<Self, AwsmShadowError> {
-        // ── moment-write layout / pipeline ────────────────────────────
+        let descs = Self::build_descriptors(gpu, bind_group_layouts, pipeline_layouts)?;
+
+        // Join the 3 inline-shader validations in parallel.
+        let validation_results = futures::future::join_all(descs.validate_shader_futures()).await;
+        for result in validation_results {
+            result.map_err(AwsmShadowError::Core)?;
+        }
+        let shader_keys: [ShaderKey; 3] = [
+            shaders.insert_uncached(descs.modules[0].clone()),
+            shaders.insert_uncached(descs.modules[1].clone()),
+            shaders.insert_uncached(descs.modules[2].clone()),
+        ];
+        let pipeline_cache_keys = descs.pipeline_cache_keys(shader_keys);
+
+        let resolved = pipelines
+            .compute
+            .ensure_keys(gpu, shaders, pipeline_layouts, pipeline_cache_keys)
+            .await?;
+
+        Ok(Self::from_resolved(descs, resolved))
+    }
+
+    /// Sync. Builds the 2 bind-group layouts, the 2 pipeline layouts,
+    /// the params uniform buffer, and issues `compile_shader` for the
+    /// 3 inline WGSL shaders. Returns the modules + the params buffer
+    /// in [`EvsmDescriptors`] for the orchestrator to interleave with
+    /// the cross-tail shader / pipeline batches.
+    pub fn build_descriptors(
+        gpu: &AwsmRendererWebGpu,
+        bind_group_layouts: &mut BindGroupLayouts,
+        pipeline_layouts: &mut PipelineLayouts,
+    ) -> Result<EvsmDescriptors, AwsmShadowError> {
+        // ── moment-write layout ───────────────────────────────────────
         let moment_write_layout_key = bind_group_layouts.get_key(
             gpu,
             BindGroupLayoutCacheKey::new(vec![
@@ -154,7 +239,7 @@ impl EvsmPass {
             PipelineLayoutCacheKey::new(vec![moment_write_layout_key]),
         )?;
 
-        // ── blur layout / pipelines ────────────────────────────────────
+        // ── blur layout ────────────────────────────────────────────────
         let blur_layout_key = bind_group_layouts.get_key(
             gpu,
             BindGroupLayoutCacheKey::new(vec![
@@ -197,53 +282,26 @@ impl EvsmPass {
             PipelineLayoutCacheKey::new(vec![blur_layout_key]),
         )?;
 
-        // Compile all 3 inline shaders concurrently — issue every
-        // `compile_shader` synchronously, then `join_all` the
-        // validations. Same shape as `Shaders::ensure_keys`.
+        // Issue all 3 inline `compile_shader` calls synchronously. The
+        // validate futures are exposed via
+        // `EvsmDescriptors::validate_shader_futures` so the
+        // orchestrator can interleave them with the cross-tail shader
+        // ensure_keys.
         let inline_specs: [(&str, &str); 3] = [
             ("Shadow EVSM Moment Write", MOMENT_WRITE_WGSL),
             ("Shadow EVSM Blur H", blur_h_wgsl()),
             ("Shadow EVSM Blur V", blur_v_wgsl()),
         ];
-        let descriptors: Vec<web_sys::GpuShaderModuleDescriptor> = inline_specs
+        let mods: Vec<web_sys::GpuShaderModule> = inline_specs
             .iter()
-            .map(|(label, code)| ShaderModuleDescriptor::new(code, Some(label)).into())
+            .map(|(label, code)| {
+                let desc: web_sys::GpuShaderModuleDescriptor =
+                    ShaderModuleDescriptor::new(code, Some(label)).into();
+                gpu.compile_shader(&desc)
+            })
             .collect();
-        let modules: Vec<web_sys::GpuShaderModule> =
-            descriptors.iter().map(|d| gpu.compile_shader(d)).collect();
-        let validation_results = futures::future::join_all(
-            modules
-                .iter()
-                .map(awsm_renderer_core::shaders::ShaderModuleExt::validate_shader),
-        )
-        .await;
-        for result in validation_results {
-            result.map_err(AwsmShadowError::Core)?;
-        }
-        let moment_write_shader = shaders.insert_uncached(modules[0].clone());
-        let blur_h_shader = shaders.insert_uncached(modules[1].clone());
-        let blur_v_shader = shaders.insert_uncached(modules[2].clone());
-
-        // Three compute pipelines in parallel.
-        let pipeline_keys = pipelines
-            .compute
-            .ensure_keys(
-                gpu,
-                shaders,
-                pipeline_layouts,
-                [
-                    ComputePipelineCacheKey::new(
-                        moment_write_shader,
-                        moment_write_pipeline_layout_key,
-                    ),
-                    ComputePipelineCacheKey::new(blur_h_shader, blur_pipeline_layout_key),
-                    ComputePipelineCacheKey::new(blur_v_shader, blur_pipeline_layout_key),
-                ],
-            )
-            .await?;
-        let moment_write_pipeline_key = pipeline_keys[0];
-        let blur_h_pipeline_key = pipeline_keys[1];
-        let blur_v_pipeline_key = pipeline_keys[2];
+        let modules: [web_sys::GpuShaderModule; 3] =
+            [mods[0].clone(), mods[1].clone(), mods[2].clone()];
 
         // ── params buffer ──────────────────────────────────────────────
         let params_buffer_size = EVSM_PARAMS_STRIDE * MAX_EVSM_CASCADES_PER_FRAME;
@@ -256,18 +314,34 @@ impl EvsmPass {
             .into(),
         )?;
 
-        Ok(Self {
+        Ok(EvsmDescriptors {
             moment_write_layout_key,
             blur_layout_key,
             moment_write_pipeline_layout_key,
             blur_pipeline_layout_key,
-            moment_write_pipeline_key,
-            blur_h_pipeline_key,
-            blur_v_pipeline_key,
+            modules,
             params_buffer,
             params_bytes: vec![0u8; params_buffer_size],
-            active_cascade_count: 0,
         })
+    }
+
+    /// Folds resolved compute pipeline keys back into the typed
+    /// `EvsmPass`. Sync; the orchestrator has already run the
+    /// validate join + the cross-tail `ComputePipelines::ensure_keys`.
+    pub fn from_resolved(descs: EvsmDescriptors, resolved: Vec<ComputePipelineKey>) -> Self {
+        debug_assert_eq!(resolved.len(), 3);
+        Self {
+            moment_write_layout_key: descs.moment_write_layout_key,
+            blur_layout_key: descs.blur_layout_key,
+            moment_write_pipeline_layout_key: descs.moment_write_pipeline_layout_key,
+            blur_pipeline_layout_key: descs.blur_pipeline_layout_key,
+            moment_write_pipeline_key: resolved[0],
+            blur_h_pipeline_key: resolved[1],
+            blur_v_pipeline_key: resolved[2],
+            params_buffer: descs.params_buffer,
+            params_bytes: descs.params_bytes,
+            active_cascade_count: 0,
+        }
     }
 
     /// Returns the dynamic-offset for cascade slot `index`.

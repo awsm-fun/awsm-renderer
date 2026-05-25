@@ -19,7 +19,7 @@ use crate::{
         RenderPassInitContext,
     },
     render_textures::RenderTextureFormats,
-    shaders::Shaders,
+    shaders::{ShaderCacheKey, Shaders},
 };
 
 /// Number of bloom blur passes (more = smoother but slower).
@@ -39,6 +39,20 @@ pub struct EffectsPipelines {
     bloom_blur_pipeline_a: Option<ComputePipelineKey>,  // ping_pong=false
     bloom_blur_pipeline_b: Option<ComputePipelineKey>,  // ping_pong=true
     bloom_blend_pipeline: Option<ComputePipelineKey>, // Always ping_pong=false (to write to effects_tex)
+}
+
+/// Pre-resolved shader + compute-pipeline cache keys for the effects
+/// pass. Returned by [`EffectsPipelines::build_descriptors`] and
+/// consumed by [`EffectsPipelines::install_resolved`] after the
+/// orchestrator pools the 5 entries into the cross-system tail batch.
+pub struct EffectsPipelinesDescriptors {
+    /// 5 shader cache keys to fold into the cross-tail
+    /// `Shaders::ensure_keys` batch.
+    pub shader_cache_keys: Vec<ShaderCacheKey>,
+    /// 5 compute pipeline cache keys — resolved against the pre-warmed
+    /// shader cache. To fold into the cross-tail
+    /// `ComputePipelines::ensure_keys` batch.
+    pub pipeline_cache_keys: Vec<ComputePipelineCacheKey>,
 }
 
 impl EffectsPipelines {
@@ -95,10 +109,93 @@ impl EffectsPipelines {
         }
     }
 
+    /// Picks the pipeline layout matching the current MSAA mode.
+    fn layout_key_for(&self, multisampled_geometry: bool) -> PipelineLayoutKey {
+        if multisampled_geometry {
+            self.multisampled_pipeline_layout_key
+        } else {
+            self.singlesampled_pipeline_layout_key
+        }
+    }
+
+    /// Returns the 5 shader cache keys for the current AA + PP config.
+    /// These are appended to the cross-tail `Shaders::ensure_keys`
+    /// batch by the orchestrator, then resolved sync via cache hits
+    /// inside [`Self::build_descriptors`].
+    pub fn shader_cache_keys_for(
+        anti_aliasing: &AntiAliasing,
+        post_processing: &PostProcessing,
+    ) -> Result<Vec<ShaderCacheKey>> {
+        let multisampled_geometry = anti_aliasing.has_msaa_checked()?;
+        let blend_ping_pong = (1 + BLOOM_BLUR_PASSES) % 2 == 1;
+        let slot_inputs: [(BloomPhase, bool); 5] = [
+            (BloomPhase::None, false),
+            (BloomPhase::Extract, false),
+            (BloomPhase::Blur, false),
+            (BloomPhase::Blur, true),
+            (BloomPhase::Blend, blend_ping_pong),
+        ];
+        Ok(slot_inputs
+            .iter()
+            .map(|&(bloom_phase, ping_pong)| {
+                ShaderCacheKey::from(ShaderCacheKeyEffects {
+                    smaa_anti_alias: anti_aliasing.smaa,
+                    bloom_phase,
+                    dof: post_processing.dof,
+                    ping_pong,
+                    multisampled_geometry,
+                })
+            })
+            .collect())
+    }
+
+    /// Builds the 5 (shader, compute-pipeline) cache key pairs for the
+    /// current AA + post-processing config. The 5 shader cache keys
+    /// must already be in the `shaders` cache (cross-tail
+    /// `Shaders::ensure_keys` runs ahead of this call); each
+    /// `shaders.get_key` is a cache-hit lookup.
+    pub async fn build_descriptors(
+        &self,
+        anti_aliasing: &AntiAliasing,
+        post_processing: &PostProcessing,
+        gpu: &AwsmRendererWebGpu,
+        shaders: &mut Shaders,
+    ) -> Result<EffectsPipelinesDescriptors> {
+        let shader_cache_keys = Self::shader_cache_keys_for(anti_aliasing, post_processing)?;
+        let multisampled_geometry = anti_aliasing.has_msaa_checked()?;
+        let layout_key = self.layout_key_for(multisampled_geometry);
+
+        let mut pipeline_cache_keys: Vec<ComputePipelineCacheKey> =
+            Vec::with_capacity(shader_cache_keys.len());
+        for cache_key in &shader_cache_keys {
+            let shader_key = shaders.get_key(gpu, cache_key.clone()).await?;
+            pipeline_cache_keys.push(ComputePipelineCacheKey::new(shader_key, layout_key));
+        }
+
+        Ok(EffectsPipelinesDescriptors {
+            shader_cache_keys,
+            pipeline_cache_keys,
+        })
+    }
+
+    /// Writes the resolved 5 keys into the per-phase slots. Pure sync.
+    pub fn install_resolved(&mut self, resolved: Vec<ComputePipelineKey>) {
+        debug_assert_eq!(resolved.len(), 5);
+        self.no_bloom_pipeline = Some(resolved[0]);
+        self.bloom_extract_pipeline = Some(resolved[1]);
+        self.bloom_blur_pipeline_a = Some(resolved[2]);
+        self.bloom_blur_pipeline_b = Some(resolved[3]);
+        self.bloom_blend_pipeline = Some(resolved[4]);
+    }
+
     /// Updates pipelines for the current anti-aliasing and
-    /// post-processing settings. Builds all five bloom-phase variants
-    /// concurrently via two batched `ensure_keys` calls (shaders then
-    /// compute pipelines).
+    /// post-processing settings. Used by the dynamic setters
+    /// ([`crate::AwsmRenderer::set_anti_aliasing`] /
+    /// [`crate::AwsmRenderer::set_post_processing`]) — at startup the
+    /// orchestrator goes through [`Self::build_descriptors`] +
+    /// [`Self::install_resolved`] directly via the cross-tail pool.
+    /// Builds all five bloom-phase variants concurrently via two
+    /// batched `ensure_keys` calls (shaders then compute pipelines).
     #[allow(clippy::too_many_arguments)]
     pub async fn set_render_pipeline_keys(
         &mut self,
@@ -110,66 +207,20 @@ impl EffectsPipelines {
         pipeline_layouts: &PipelineLayouts,
         _render_texture_formats: &RenderTextureFormats,
     ) -> Result<()> {
-        let multisampled_geometry = anti_aliasing.has_msaa_checked()?;
-        let layout_key = if multisampled_geometry {
-            self.multisampled_pipeline_layout_key
-        } else {
-            self.singlesampled_pipeline_layout_key
-        };
-
-        // Blend pass ping_pong is determined by total pass count to
-        // ensure final output goes to effects_tex.
-        let blend_ping_pong = (1 + BLOOM_BLUR_PASSES) % 2 == 1;
-
-        // Build all 5 shader cache keys.
-        let slot_inputs: [(BloomPhase, bool); 5] = [
-            (BloomPhase::None, false),
-            (BloomPhase::Extract, false),
-            (BloomPhase::Blur, false),
-            (BloomPhase::Blur, true),
-            (BloomPhase::Blend, blend_ping_pong),
-        ];
-        let shader_cache_keys: Vec<ShaderCacheKeyEffects> = slot_inputs
-            .iter()
-            .map(|&(bloom_phase, ping_pong)| ShaderCacheKeyEffects {
-                smaa_anti_alias: anti_aliasing.smaa,
-                bloom_phase,
-                dof: post_processing.dof,
-                ping_pong,
-                multisampled_geometry,
-            })
-            .collect();
-
+        let shader_cache_keys = Self::shader_cache_keys_for(anti_aliasing, post_processing)?;
         // Batch 1: 5 shader compiles in parallel.
         shaders
-            .ensure_keys(
-                gpu,
-                shader_cache_keys
-                    .iter()
-                    .cloned()
-                    .map(crate::shaders::ShaderCacheKey::from),
-            )
+            .ensure_keys(gpu, shader_cache_keys.iter().cloned())
             .await?;
-
-        // Resolve shader keys (cache hits) + build compute pipeline
-        // cache keys.
-        let mut pipeline_cache_keys: Vec<ComputePipelineCacheKey> = Vec::with_capacity(5);
-        for cache_key in &shader_cache_keys {
-            let shader_key = shaders.get_key(gpu, cache_key.clone()).await?;
-            pipeline_cache_keys.push(ComputePipelineCacheKey::new(shader_key, layout_key));
-        }
-
-        // Batch 2: 5 compute pipelines in parallel.
-        let keys = pipelines
+        // Resolve descriptors (sync cache hits) + batch the pipelines.
+        let descs = self
+            .build_descriptors(anti_aliasing, post_processing, gpu, shaders)
+            .await?;
+        let resolved = pipelines
             .compute
-            .ensure_keys(gpu, shaders, pipeline_layouts, pipeline_cache_keys)
+            .ensure_keys(gpu, shaders, pipeline_layouts, descs.pipeline_cache_keys)
             .await?;
-
-        self.no_bloom_pipeline = Some(keys[0]);
-        self.bloom_extract_pipeline = Some(keys[1]);
-        self.bloom_blur_pipeline_a = Some(keys[2]);
-        self.bloom_blur_pipeline_b = Some(keys[3]);
-        self.bloom_blend_pipeline = Some(keys[4]);
+        self.install_resolved(resolved);
         Ok(())
     }
 }

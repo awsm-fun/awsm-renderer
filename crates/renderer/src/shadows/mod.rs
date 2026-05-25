@@ -32,7 +32,7 @@ mod state;
 pub use cascade::Cascade;
 pub use config::ShadowsConfig;
 pub use error::AwsmShadowError;
-pub use evsm::EvsmPass;
+pub use evsm::{EvsmDescriptors, EvsmPass};
 pub use light_shadow::{
     CubeFaceUpdateRate, EvsmCutoff, FarCascadeUpdateRate, LightShadowHardness, LightShadowParams,
     MeshShadowFlags,
@@ -47,4 +47,4 @@ pub use consts::{
     SHADOW_VIEW_STRIDE,
 };
 pub use record::{EvsmDispatchEntry, LightShadowRecord, LightShadowView, ShadowViewThrottle};
-pub use state::Shadows;
+pub use state::{Shadows, ShadowsDescriptors};
