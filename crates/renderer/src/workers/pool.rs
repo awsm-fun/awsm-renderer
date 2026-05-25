@@ -205,11 +205,19 @@ pub struct WorkerPool {
     /// (modulo handles the wrap).
     next_worker: AtomicUsize,
     next_job_id: AtomicU64,
-    /// `Arc<Mutex<…>>` rather than `Rc<RefCell<…>>` so the pool stays
-    /// future-proof for the day a renderer subsystem moves to a real
-    /// worker. Single-threaded today (`spawn_local` doesn't preempt),
-    /// so the lock is uncontested and ~free.
+    /// `Arc<Mutex<…>>` rather than `Rc<RefCell<…>>` for renderer-wide
+    /// consistency. `PendingEntry::sender` is
+    /// `oneshot::Sender<Result<JsValue, JsValue>>` and `JsValue` is
+    /// `!Send`, so the `Arc<Mutex<…>>` here doesn't *grant* `Sync` to
+    /// `WorkerPool` today; the wrappers serve the convention +
+    /// interior mutability + the `onmessage` closure clone path.
+    /// Single-threaded for now (`spawn_local` doesn't preempt) so
+    /// the lock is uncontested and ~free.
     pending: Arc<Mutex<HashMap<u64, PendingEntry>>>,
+    /// `stats` is a plain `Copy` struct of counters — fully `Send`,
+    /// so this Mutex genuinely would carry across threads on its own
+    /// (it's the rest of `WorkerPool` that pins us to the main
+    /// thread). Kept consistent with `pending` either way.
     stats: Arc<Mutex<WorkerPoolStats>>,
     /// Closures that own the `Worker.onmessage` handlers; kept alive
     /// for the lifetime of the pool so the JS callbacks don't free

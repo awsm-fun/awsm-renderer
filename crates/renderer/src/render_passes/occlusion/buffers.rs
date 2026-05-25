@@ -71,9 +71,10 @@ pub struct OcclusionBuffers {
     pub staging: Vec<u8>,
     /// Mapped-staging-ring uploaders (Phase 2.1). Interior-mutable so
     /// `write_*` keeps its `&self` signature against `render.rs`'s
-    /// existing borrow shape. `Mutex` (not `RefCell`) keeps the
-    /// containing struct from being `!Sync` once the renderer moves
-    /// across threads.
+    /// existing borrow shape. `Mutex` (not `RefCell`) for renderer-wide
+    /// consistency — `MappedUploader` transitively owns
+    /// `web_sys::GpuBuffer`, which is `!Send`, so the `Mutex` doesn't
+    /// *grant* `Sync` to `OcclusionBuffers` today.
     pub(crate) instances_uploader: std::sync::Mutex<crate::buffer::mapped_uploader::MappedUploader>,
     pub(crate) params_uploader: std::sync::Mutex<crate::buffer::mapped_uploader::MappedUploader>,
 }

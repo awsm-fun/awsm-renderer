@@ -329,19 +329,28 @@ impl WorkerJob for GltfParseJob {
                 // Worker contract: the bitmaps array is dense (one
                 // `ImageBitmap` per meta in index order — see the
                 // `DECODED_IMAGE_HANDLES` doc + `into_response_message`).
-                // A null/undefined entry would indicate a protocol
-                // violation, not a "legitimate fallback to encoded
-                // bytes" case (that path is gone — decode failure is
-                // fatal on the worker side). We still tolerate a
-                // failed `dyn_into` defensively rather than panicking
-                // — a malformed payload from a non-matching worker
-                // bundle is better surfaced as "meta.bitmap stayed
-                // None → into_loader tries to decode empty bytes →
-                // typed error" than as a panic on a bad cast.
+                // Anything else (null/undefined slot, non-ImageBitmap
+                // JsValue) is a protocol violation — surface it as a
+                // typed error here at the actual boundary instead of
+                // letting `into_loader` decode the empty `bytes`
+                // field and produce a misleading "image decode
+                // failed" error several layers up.
                 for (idx, meta) in output.image_metas.iter_mut().enumerate() {
                     let handle = bitmaps_arr.get(idx as u32);
-                    if let Ok(bitmap) = handle.dyn_into::<web_sys::ImageBitmap>() {
-                        meta.bitmap = Some(bitmap);
+                    if handle.is_undefined() || handle.is_null() {
+                        return Err(format!(
+                            "bitmaps[{idx}] is null/undefined — worker contract requires a dense \
+                             ImageBitmap array"
+                        ));
+                    }
+                    match handle.dyn_into::<web_sys::ImageBitmap>() {
+                        Ok(bitmap) => meta.bitmap = Some(bitmap),
+                        Err(_) => {
+                            return Err(format!(
+                                "bitmaps[{idx}] is not an ImageBitmap — likely a worker/main \
+                                 bundle mismatch"
+                            ));
+                        }
                     }
                 }
             }

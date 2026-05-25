@@ -127,9 +127,14 @@ pub struct Picker {
     multisampled_bind_group_layout_key: BindGroupLayoutKey,
     _bind_group: Option<web_sys::GpuBindGroup>,
 
-    /// `Arc<Mutex<…>>` rather than `Rc<RefCell<…>>` so the pick
-    /// state can move across threads the day picking dispatches off
-    /// the main thread. Single-threaded today; the lock is uncontested.
+    /// `Arc<Mutex<…>>` rather than `Rc<RefCell<…>>` for renderer-wide
+    /// consistency — every shared interior-mutability slot in the
+    /// renderer uses `Arc`/atomics/`Mutex` so the convention stays
+    /// uniform regardless of whether a given container actually gets
+    /// `Sync`. (`PickerState` owns `web_sys::GpuBuffer` handles, which
+    /// are `!Send`, so the `Arc<Mutex<…>>` here doesn't *grant*
+    /// thread mobility today; the inner types would have to become
+    /// `Send` first.) Single-threaded for now; the lock is uncontested.
     state: Arc<Mutex<PickerState>>,
 }
 

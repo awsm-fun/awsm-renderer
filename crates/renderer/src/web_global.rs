@@ -1,21 +1,23 @@
 //! Runtime-global picking helpers — bridges the main-thread
 //! [`web_sys::Window`] and worker [`web_sys::DedicatedWorkerGlobalScope`]
-//! APIs behind a single call surface.
+//! APIs behind a single call surface so the same renderer source
+//! works in both contexts (the [`OffscreenCanvas`] worker-mode
+//! deployment shipped in Phase 4.4 needs the worker side of every
+//! `navigator` / `performance` / `requestAnimationFrame` call).
 //!
-//! Phase 4.4 scaffolding: the [`OffscreenCanvas`] deployment mode runs
-//! the entire renderer inside a worker, where `web_sys::window()`
-//! returns `None`. Code paths that need a `Window` for navigator /
-//! performance / requestAnimationFrame go through these helpers
-//! instead so the same renderer source works in both contexts.
+//! ### Current migration state
 //!
-//! ### Scope (this commit — scaffolding only)
-//!
-//! This module ships the *call surface*. The renderer codebase still
-//! reaches for `web_sys::window()` directly in many places; the
-//! mechanical audit-and-replace pass is a follow-up. The helpers are
-//! published now so new code (the upcoming Phase 4.4 worker
-//! example, future Phase 4.3 jobs) can use them from day one without
-//! waiting on the codebase-wide migration.
+//! The renderer-side audit is effectively complete — internal
+//! subsystems route through [`navigator_gpu`] / [`performance`] /
+//! [`request_animation_frame`] rather than touching `web_sys::window()`
+//! directly. The only remaining direct call inside this crate is
+//! [`crate::workers::pool::default_worker_count`] (intentional — it's
+//! the main-thread bootstrap path; spawning a `WorkerPool` from
+//! within a worker takes the explicit-count constructor anyway, so
+//! the direct `window()` there is harmless). The lower-level
+//! `renderer-core` has its own mirror in
+//! [`awsm_renderer_core::web_global`] for the same reason; it's also
+//! migrated.
 //!
 //! ### Why pick at runtime, not at compile time
 //!

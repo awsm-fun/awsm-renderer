@@ -64,9 +64,14 @@ pub struct OpaqueMipgen {
     // — a `&mut self` here would force a lot of unrelated restructuring
     // for what is effectively a private cache.
     //
-    // `Mutex` (not `RefCell`) so the field doesn't block `OpaqueMipgen`
-    // from being `Sync` the day the renderer becomes thread-shared.
-    // Uncontested today; the lock is one atomic CAS.
+    // `Mutex` (not `RefCell`) for renderer-wide consistency — every
+    // owned interior-mutability slot in the renderer uses `Mutex`/
+    // atomics so the convention stays uniform regardless of whether
+    // a given container actually gets `Sync`. (`MipgenCache` holds
+    // `web_sys::GpuBindGroup`, which is `!Send`, so the `Mutex` here
+    // doesn't *grant* `Sync` to `OpaqueMipgen`; the inner types
+    // would have to become Send first.) The lock is one atomic CAS
+    // and is uncontested.
     cache: Mutex<Option<MipgenCache>>,
 }
 
