@@ -303,42 +303,124 @@ impl AwsmRenderer {
     /// indicator over the multi-hundred-ms shader-compile window that
     /// previously appeared as a generic "Initializing renderer…".
     ///
-    /// ## When this method will actually do work
+    /// ## What this method does today
     ///
-    /// Two upcoming sprints will land pipelines that compile *lazily*
-    /// on first draw, and this method will be extended to force their
-    /// compilation:
+    /// - **Builder-time prewarm** has already compiled the first-party
+    ///   opaque material pipelines, the geometry passes, hzb,
+    ///   material_classify, effects, decal, shadows, and the picker /
+    ///   line variants. Calling this at the end of `build()` finds all
+    ///   those keys already cached and returns immediately (single
+    ///   tracing span; no GPU work).
     ///
-    /// - **Dynamic materials** (see
-    ///   `docs/plans/dynamic-materials.md` Phase 3): runtime-registered
-    ///   custom shaders. Each registration changes the
-    ///   opaque/transparent dispatch chain's text hash, invalidating
-    ///   the cached pipeline. This method will walk every
-    ///   registered shader_id and ensure its pipeline is built.
-    /// - **Transparent fragment pipelines** are keyed by `MeshKey`
-    ///   today (per-instance) and compile on first transparent draw.
-    ///   Pre-warming requires a representative mesh per `MaterialShaderId`.
+    /// - **Per-scene transparent prewarm** runs whenever the caller
+    ///   invokes this method after meshes have been populated. It
+    ///   walks `self.meshes`, deduplicates by
+    ///   `(buffer_info, material)` (the granularity the transparent
+    ///   pipeline cache keys against), and issues one batched
+    ///   `ensure_keys` covering every unique transparent shader +
+    ///   pipeline variant the live scene needs. The first transparent
+    ///   draw then hits warm cache instead of stalling on N
+    ///   `createRenderPipelineAsync` awaits. Mirrors what
+    ///   `finalize_gpu_textures` does on a texture-pool-dirty cycle;
+    ///   safe to call any number of times (subsequent calls are
+    ///   cache-hit no-ops).
+    ///
+    /// ## When the warm prewarm helps vs not
+    ///
+    /// The transparent shader/pipeline cache key includes
+    /// `texture_pool_arrays_len` + `texture_pool_samplers_len`. Those
+    /// values change every time a *new texture array shape* enters the
+    /// pool — which on a fresh load happens once when the first model's
+    /// textures finalize, and then never again for the same scene.
+    /// So:
+    ///
+    /// - If the caller invokes `prewarm_pipelines()` **before any
+    ///   models are loaded** (the historical pattern), the texture
+    ///   pool is empty (`arrays_len = 0`), and any pipelines warmed
+    ///   here are invalidated the moment the first model finishes
+    ///   loading and the pool grows. The call is a no-op for that
+    ///   case — only its tracing span fires.
+    /// - If the caller invokes it **after a model has loaded** (or
+    ///   the texture-pool capacity is otherwise pinned at the value
+    ///   the scene will actually use), the warmed pipelines are the
+    ///   real ones the renderer will draw with. This is the case
+    ///   that absorbs the per-mesh first-draw stall when *switching*
+    ///   between models that share the texture-pool shape but
+    ///   introduce new geometry attribute combinations.
     ///
     /// ## Idempotent + cheap on warm cache
     ///
     /// Calling this multiple times is a no-op past the first
-    /// invocation: every underlying `get_*_pipeline_key` is a
-    /// cache-keyed lookup. On a Chrome session with a warm GPU disk
-    /// cache, the whole call completes in <5 ms. On a cold cache
-    /// (post-redeploy first-ever visit) it costs 50–500 ms — the
-    /// same compile tax the first draw would have paid, just
-    /// relocated to a phase the consumer can label clearly.
+    /// invocation: every underlying `ensure_keys` is a cache-keyed
+    /// lookup. On a Chrome session with a warm GPU disk cache, the
+    /// whole call completes in <5 ms. On a cold cache (post-redeploy
+    /// first-ever visit) it costs 50–500 ms per N transparent
+    /// variants — the same compile tax the first draw would have
+    /// paid, just relocated to a phase the consumer can label
+    /// clearly.
+    ///
+    /// ## Future work
+    ///
+    /// - **Dynamic materials** (see `docs/plans/dynamic-materials.md`
+    ///   Phase 3): runtime-registered custom shaders. After
+    ///   registration, this method should walk `enabled_materials()`
+    ///   and warm every (shader_id × attribute-set) combo it returns.
     pub async fn prewarm_pipelines(&mut self) -> crate::error::Result<()> {
-        // Builder-time prewarm is comprehensive for the first-party
-        // material set; this method is the public hook for that fact.
-        // The trace span gives consumers a measurable cost they can
-        // attribute when the dynamic-materials sprint adds real work
-        // here.
         let _maybe_span = if self.logging.render_timings {
             Some(tracing::span!(tracing::Level::INFO, "Prewarm Pipelines").entered())
         } else {
             None
         };
+
+        // Walk the live mesh set and dedup by (buffer_info, material).
+        // Empty `meshes` short-circuits to a no-op below.
+        let mut has_seen_buffer_info: slotmap::SecondaryMap<
+            crate::meshes::buffer_info::MeshBufferInfoKey,
+            (),
+        > = slotmap::SecondaryMap::new();
+        let mut has_seen_material: slotmap::SecondaryMap<crate::materials::MaterialKey, ()> =
+            slotmap::SecondaryMap::new();
+        let mut requests: Vec<
+            crate::render_passes::material_transparent::pipeline::TransparentMeshPipelineRequest,
+        > = Vec::new();
+        for (mesh_key, mesh) in self.meshes.iter() {
+            let buffer_info_key = self.meshes.buffer_info_key(mesh_key)?;
+            if has_seen_buffer_info.insert(buffer_info_key, ()).is_none()
+                || has_seen_material.insert(mesh.material_key, ()).is_none()
+            {
+                let has_transmission = self.materials.has_transmission(mesh.material_key);
+                requests.push(
+                    crate::render_passes::material_transparent::pipeline::TransparentMeshPipelineRequest {
+                        mesh,
+                        mesh_key,
+                        buffer_info_key,
+                        has_transmission,
+                    },
+                );
+            }
+        }
+
+        if requests.is_empty() {
+            return Ok(());
+        }
+
+        self.render_passes
+            .material_transparent
+            .pipelines
+            .set_render_pipeline_keys_batched(
+                &self.gpu,
+                requests,
+                &mut self.shaders,
+                &mut self.pipelines,
+                &self.render_passes.material_transparent.bind_groups,
+                &self.pipeline_layouts,
+                &self.meshes.buffer_infos,
+                &self.anti_aliasing,
+                &self.textures,
+                &self.render_textures.formats,
+            )
+            .await?;
+
         Ok(())
     }
 
