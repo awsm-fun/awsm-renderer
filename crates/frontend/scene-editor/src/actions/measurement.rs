@@ -505,25 +505,43 @@ pub async fn measure_gltf_load_ab(url: String, iterations: u32) -> String {
 
     let inline_mean: f64 = inline_ms.iter().sum::<f64>() / inline_ms.len() as f64;
     let worker_mean: f64 = worker_ms.iter().sum::<f64>() / worker_ms.len() as f64;
+    // `speedup` can become non-finite when `worker_mean` is 0.0
+    // (possible if `performance.now()` returns 0 ms deltas on a
+    // cached / sub-millisecond run) — `NaN`/`Inf` aren't valid JSON
+    // numbers and would corrupt the `JSON.parse()` consumer. Same
+    // guard applied defensively to the means so any future edge case
+    // (empty arrays, etc.) can't break the output shape either; the
+    // `num_or_null` helper emits the JSON literal `null` for any
+    // non-finite value.
     let speedup = if worker_mean > 0.0 {
         inline_mean / worker_mean
     } else {
         f64::NAN
     };
 
+    let num_or_null = |v: f64, decimals: usize| -> String {
+        if v.is_finite() {
+            format!("{v:.*}", decimals)
+        } else {
+            "null".to_string()
+        }
+    };
     let fmt_arr = |arr: &[f64]| -> String {
-        let parts: Vec<String> = arr.iter().map(|v| format!("{v:.2}")).collect();
+        let parts: Vec<String> = arr.iter().map(|v| num_or_null(*v, 2)).collect();
         format!("[{}]", parts.join(","))
     };
 
     format!(
         "{{\"url\":{url_json},\"iterations\":{iterations},\
          \"inline_ms\":{inline_arr},\"worker_ms\":{worker_arr},\
-         \"inline_mean\":{inline_mean:.2},\"worker_mean\":{worker_mean:.2},\
-         \"speedup\":{speedup:.3}}}",
+         \"inline_mean\":{inline_mean},\"worker_mean\":{worker_mean},\
+         \"speedup\":{speedup}}}",
         url_json = serde_json::to_string(&url).unwrap_or_else(|_| "\"\"".to_string()),
         inline_arr = fmt_arr(&inline_ms),
         worker_arr = fmt_arr(&worker_ms),
+        inline_mean = num_or_null(inline_mean, 2),
+        worker_mean = num_or_null(worker_mean, 2),
+        speedup = num_or_null(speedup, 3),
     )
 }
 
