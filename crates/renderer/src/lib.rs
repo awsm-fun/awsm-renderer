@@ -67,7 +67,7 @@ use materials::Materials;
 use meshes::Meshes;
 use pipelines::Pipelines;
 use scene_spatial::SceneSpatial;
-use shaders::{ShaderCacheKey, Shaders};
+use shaders::Shaders;
 use textures::Textures;
 use transforms::Transforms;
 
@@ -947,7 +947,7 @@ impl AwsmRendererBuilder {
         // the `CompilingShaders` phase covers the whole block.
         emit_phase(RendererLoadingPhase::CompilingShaders);
 
-        let (render_passes, render_textures) =
+        let (mut render_passes, render_textures) =
             futures::future::try_join(RenderPasses::new(&mut render_pass_init, &features), async {
                 RenderTextures::new(&gpu, formats_for_textures, &features)
                     .await
@@ -955,55 +955,15 @@ impl AwsmRendererBuilder {
             })
             .await?;
 
-        // Main render-pass compile done. Picker / line-renderer /
-        // material-classify / occlusion / coverage / decal still
-        // need their pipelines built before the first frame;
-        // signal the transition so the UI message stops claiming
-        // shader compile is in progress.
+        // Main render-pass compile done. The tail subsystems —
+        // Picker / LineRenderer / Shadows + EVSM / Effects / Display
+        // — still need their pipelines built. Each was historically
+        // its own per-subsystem `new().await?` (5 sequential awaits
+        // ending with set_anti_aliasing + set_post_processing).
+        // We pool every shader + pipeline compile across all five
+        // into the cross-tail batch below: 2 awaits total (one shader,
+        // one each of compute + render pipelines).
         emit_phase(RendererLoadingPhase::BuildingPipelines);
-
-        // Pre-warm the shader cache with everything Picker + LineRenderer
-        // need before constructing either. Picker has two compute shader
-        // variants (multisampled true/false); LineRenderer has one
-        // (parameter-free). Issuing all three through `ensure_keys` lets
-        // the browser kick off all `compile_shader` calls together and
-        // await every `validate_shader` in parallel — see the doc on
-        // `Shaders::ensure_keys`. The per-pass constructors then proceed
-        // sequentially through `&mut pipelines / &mut shaders`, but the
-        // slow part (shader compile) is already done.
-        shaders
-            .ensure_keys(
-                &gpu,
-                [
-                    ShaderCacheKey::Picker(picker::ShaderCacheKeyPicker {
-                        multisampled_geometry: false,
-                    }),
-                    ShaderCacheKey::Picker(picker::ShaderCacheKeyPicker {
-                        multisampled_geometry: true,
-                    }),
-                    ShaderCacheKey::Line(render_passes::lines::ShaderCacheKeyLine),
-                ],
-            )
-            .await?;
-
-        let picker = Picker::new(
-            &gpu,
-            &mut bind_group_layouts,
-            &mut pipeline_layouts,
-            &mut shaders,
-            &mut pipelines,
-        )
-        .await?;
-
-        let lines = LineRenderer::load(
-            &gpu,
-            &mut bind_group_layouts,
-            &mut pipeline_layouts,
-            &mut pipelines,
-            &mut shaders,
-            &render_textures.formats,
-        )
-        .await?;
 
         let mesh_light_indices_gpu = MeshLightIndicesGpu::new(&gpu)?;
 
@@ -1060,25 +1020,180 @@ impl AwsmRendererBuilder {
             None
         };
 
-        // Shadows + the final anti-aliasing / post-processing
-        // pipeline configuration below are the renderer-init tail:
+        // Tail-pool start. Shadows + Effects + Display + the final
+        // anti-aliasing / post-processing pipeline configuration are
         // pipelines created here are needed for the first frame but
         // they don't dominate the cold-load cost the way the
         // RenderPasses block does. Signal the transition so frontends
         // can swap to a less alarming "Finalising scene…" message.
         emit_phase(RendererLoadingPhase::FinalizingScene);
 
-        let shadows = shadows::Shadows::new(
+        // ── 1. Build every tail subsystem's descriptors. Sync apart
+        //       from cache-hit shader `get_key`s + the EVSM
+        //       `compile_shader` calls (which return modules immediately
+        //       and surface their validate futures separately).
+        let picker_descs = Picker::build_descriptors(
             &gpu,
             &mut bind_group_layouts,
             &mut pipeline_layouts,
-            &mut pipelines,
+            &mut shaders,
+        )
+        .await?;
+        let line_descs = LineRenderer::build_descriptors(
+            &gpu,
+            &mut bind_group_layouts,
+            &mut pipeline_layouts,
+            &mut shaders,
+            &render_textures.formats,
+        )
+        .await?;
+        let mut shadows_descs = shadows::Shadows::build_descriptors(
+            &gpu,
+            &mut bind_group_layouts,
+            &mut pipeline_layouts,
             &mut shaders,
             &render_passes.geometry.bind_groups,
             &render_textures.formats,
             shadows_config.unwrap_or_default(),
         )
         .await?;
+
+        // ── 2. Pool every cross-tail shader cache key that wasn't
+        //       already warmed by `RenderPasses::new`. Effects + display
+        //       depend on AA + PP config, so their shader keys can't
+        //       be known earlier. Run that ensure_keys in parallel with
+        //       the EVSM inline-shader validation futures (option 2
+        //       from the plan: hand the futures to the orchestrator so
+        //       they join_all alongside the cross-tail shader batch).
+        let effects_shader_keys =
+            render_passes::effects::pipeline::EffectsPipelines::shader_cache_keys_for(
+                &anti_aliasing,
+                &post_processing,
+            )?;
+        let display_shader_keys =
+            render_passes::display::pipeline::DisplayPipelines::shader_cache_keys_for(
+                &post_processing,
+            );
+        let mut tail_shader_keys: Vec<shaders::ShaderCacheKey> = Vec::new();
+        tail_shader_keys.extend(effects_shader_keys);
+        tail_shader_keys.extend(display_shader_keys);
+
+        // EVSM validate futures borrow `&shadows_descs.evsm.modules`;
+        // shaders.ensure_keys borrows `&mut shaders`. Disjoint borrows,
+        // so they can join cleanly.
+        let evsm_validate_join =
+            futures::future::join_all(shadows_descs.evsm.validate_shader_futures());
+        let shader_ensure = shaders.ensure_keys(&gpu, tail_shader_keys);
+        let (shader_result, evsm_results) =
+            futures::future::join(shader_ensure, evsm_validate_join).await;
+        shader_result?;
+        for result in evsm_results {
+            result.map_err(crate::shadows::AwsmShadowError::Core)?;
+        }
+
+        // ── 2b. Register the 3 EVSM modules into the shader cache via
+        //        `insert_uncached`; the resulting `ShaderKey`s let us
+        //        build the 3 EVSM compute pipeline cache keys for the
+        //        cross-tail compute pool.
+        let evsm_shader_keys: [shaders::ShaderKey; 3] = [
+            shaders.insert_uncached(shadows_descs.evsm.modules[0].clone()),
+            shaders.insert_uncached(shadows_descs.evsm.modules[1].clone()),
+            shaders.insert_uncached(shadows_descs.evsm.modules[2].clone()),
+        ];
+        let evsm_pipeline_cache_keys = shadows_descs.evsm.pipeline_cache_keys(evsm_shader_keys);
+
+        // ── 3. Now that every cross-tail shader is warm, resolve
+        //       Effects + Display descriptors (sync — each
+        //       `shaders.get_key` is a cache hit).
+        let effects_descs = render_passes
+            .effects
+            .pipelines
+            .build_descriptors(&anti_aliasing, &post_processing, &gpu, &mut shaders)
+            .await?;
+        let display_descs = render_passes
+            .display
+            .pipelines
+            .build_descriptors(&post_processing, &gpu, &mut shaders)
+            .await?;
+
+        // Move the descriptor's caster pipeline cache keys out so the
+        // ShadowsDescriptors struct still owns the rest. We need
+        // shadows_descs intact for Shadows::from_resolved below.
+        let caster_pipeline_cache_keys =
+            std::mem::take(&mut shadows_descs.caster_pipeline_cache_keys);
+
+        // ── 4. Build the compute + render cross-tail cache key pools
+        //       and record each subsystem's slice range.
+        let mut compute_pool: Vec<pipelines::compute_pipeline::ComputePipelineCacheKey> =
+            Vec::new();
+        let picker_compute_range = {
+            let s = compute_pool.len();
+            compute_pool.extend(picker_descs.pipeline_cache_keys.iter().cloned());
+            s..compute_pool.len()
+        };
+        let evsm_compute_range = {
+            let s = compute_pool.len();
+            compute_pool.extend(evsm_pipeline_cache_keys.iter().cloned());
+            s..compute_pool.len()
+        };
+        let effects_compute_range = {
+            let s = compute_pool.len();
+            compute_pool.extend(effects_descs.pipeline_cache_keys.iter().cloned());
+            s..compute_pool.len()
+        };
+
+        let mut render_pool: Vec<pipelines::render_pipeline::RenderPipelineCacheKey> = Vec::new();
+        let line_render_range = {
+            let s = render_pool.len();
+            render_pool.extend(line_descs.pipeline_cache_keys().iter().cloned());
+            s..render_pool.len()
+        };
+        let caster_render_range = {
+            let s = render_pool.len();
+            render_pool.extend(caster_pipeline_cache_keys.iter().cloned());
+            s..render_pool.len()
+        };
+        let display_render_range = {
+            let s = render_pool.len();
+            render_pool.extend(display_descs.pipeline_cache_keys.iter().cloned());
+            s..render_pool.len()
+        };
+
+        // ── 5. Two batched ensure_keys — the entire tail in 2 awaits.
+        let compute_keys = pipelines
+            .compute
+            .ensure_keys(&gpu, &shaders, &pipeline_layouts, compute_pool)
+            .await?;
+        let render_keys = pipelines
+            .render
+            .ensure_keys(&gpu, &shaders, &pipeline_layouts, render_pool)
+            .await?;
+
+        // ── 6. Sync fold-up — each subsystem's from_resolved /
+        //       install_resolved consumes its slice of the resolved
+        //       keys.
+        let picker = Picker::from_resolved(
+            &gpu,
+            picker_descs,
+            compute_keys[picker_compute_range].to_vec(),
+        )?;
+        let lines =
+            LineRenderer::from_resolved(line_descs, render_keys[line_render_range].to_vec());
+        let shadows = shadows::Shadows::from_resolved(
+            &gpu,
+            &bind_group_layouts,
+            shadows_descs,
+            render_keys[caster_render_range].to_vec(),
+            compute_keys[evsm_compute_range].to_vec(),
+        )?;
+        render_passes
+            .effects
+            .pipelines
+            .install_resolved(compute_keys[effects_compute_range].to_vec());
+        render_passes
+            .display
+            .pipelines
+            .install_resolved(render_keys[display_render_range].to_vec());
 
         #[cfg(feature = "animation")]
         let animations = animation::Animations::default();
@@ -1146,11 +1261,23 @@ impl AwsmRendererBuilder {
             animations,
         };
 
-        // need to call these to create pipelines
-        _self.set_anti_aliasing(_self.anti_aliasing.clone()).await?;
+        // Initial AA + PP state — the effects + display pipelines we
+        // installed in the cross-tail pool above already match the
+        // configured `anti_aliasing` + `post_processing`, so the
+        // pipeline-rebuild path inside set_anti_aliasing /
+        // set_post_processing would just no-op through cache hits.
+        // We still need the state-side bookkeeping (bind-group recreate
+        // marks). `BindGroups::new` already marks every variant for
+        // create on first frame, so the AA / PP marks are redundant —
+        // but adding them explicitly mirrors the dynamic-setter
+        // contract and keeps the surface honest if `BindGroups::new`
+        // ever stops marking everything.
         _self
-            .set_post_processing(_self.post_processing.clone())
-            .await?;
+            .bind_groups
+            .mark_create(crate::bind_groups::BindGroupCreate::AntiAliasingChange);
+        _self
+            .bind_groups
+            .mark_create(crate::bind_groups::BindGroupCreate::TextureViewRecreate);
 
         emit_phase(RendererLoadingPhase::Ready);
 
