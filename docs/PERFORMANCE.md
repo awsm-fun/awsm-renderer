@@ -908,6 +908,53 @@ cold cache (first-ever visit, post-redeploy reload), it takes
 shader. That cost is unavoidable — what changes is *when* the
 user pays it.
 
+### 5g-i. Cold-load measurement procedure
+
+When changing anything that touches pipeline creation, capture
+before/after traces on a **fresh** Chrome profile so the disk
+PSO cache is empty. The recipe:
+
+```sh
+# Always use a unique --user-data-dir for cold capture; reuse
+# the same one (without rm) for the warm follow-up.
+PROFILE=/tmp/chrome-webgpu-cold-$(date +%s)
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
+    --user-data-dir=$PROFILE \
+    http://localhost:9080/  # or 9081 for scene-editor
+```
+
+In the resulting browser:
+1. Open DevTools → Performance.
+2. Click record, hit Reload, wait until the first frame draws
+   (or until `Render [1]` user-timing marks start appearing in
+   the timeline), then stop.
+3. Right-click the timeline → "Save profile". Save with an
+   informative name (`cold-baseline.json`, `cold-phase-3.json`).
+4. For the warm follow-up: with the same profile dir still
+   live, reload once more (DevTools open, recording again).
+
+What to read off the saved trace:
+
+- **`domComplete → first 'Render [1]: span-enter'`**: the
+  headline metric — total wall-clock the user waits between
+  the wasm bundle finishing and the first frame.
+- **`domComplete → 'Prewarm Pipelines [1]: span-enter'`**: the
+  cost of `AwsmRendererBuilder::build` (everything before the
+  first prewarm call). Drops to milliseconds on warm.
+- **GPU-process total CPU** (Bottom-Up by activity): same on
+  cold and warm if the only difference is the PSO cache — the
+  driver still does the work, the cache just remembers the
+  result.
+- **Renderer-main idle gaps**: scrolling the renderer-main
+  thread row shows a forest of ~500 ms gaps in the cold case
+  whenever pipeline creation is awaited serially. These should
+  shrink dramatically once the parallelize work in
+  [`docs/plans/parallelize.md`](plans/parallelize.md) lands.
+
+A 4× cold-load speedup is the bar `parallelize.md` sets; if a
+change claims to improve cold start, the trace numbers belong in
+its PR description.
+
 ---
 
 ## 5d. Steady-state perf — `tuning-10k-meshes` reference numbers
