@@ -295,10 +295,7 @@ impl WorkerPool {
                         }
                     }
                     "awsm-result" => {
-                        let id = Reflect::get(&data, &JsValue::from_str("id"))
-                            .ok()
-                            .and_then(|v| v.as_f64())
-                            .map(|f| f as u64);
+                        let id = parse_job_id(&data);
                         let payload = Reflect::get(&data, &JsValue::from_str("payload"))
                             .unwrap_or(JsValue::UNDEFINED);
                         if let Some(id) = id {
@@ -309,10 +306,7 @@ impl WorkerPool {
                         }
                     }
                     "awsm-error" => {
-                        let id = Reflect::get(&data, &JsValue::from_str("id"))
-                            .ok()
-                            .and_then(|v| v.as_f64())
-                            .map(|f| f as u64);
+                        let id = parse_job_id(&data);
                         let msg = Reflect::get(&data, &JsValue::from_str("message"))
                             .ok()
                             .and_then(|v| v.as_string())
@@ -509,10 +503,17 @@ impl WorkerPool {
             &JsValue::from_str("kind"),
             &JsValue::from_str("awsm-job"),
         );
+        // Encode the job id as a string rather than a JS Number so
+        // the routing key keeps full u64 precision. JS Numbers can
+        // only exactly represent integers up to 2^53, so a long-running
+        // session would eventually start misrouting results once
+        // `next_job_id` clears that threshold. String encoding adds
+        // a few bytes per message and is the same shape both sides
+        // (main + worker) parse via `.as_string() → u64::from_str`.
         let _ = Reflect::set(
             &msg,
             &JsValue::from_str("id"),
-            &JsValue::from_f64(id as f64),
+            &JsValue::from_str(&id.to_string()),
         );
         let _ = Reflect::set(
             &msg,
@@ -600,6 +601,18 @@ fn perf_now_ms() -> f64 {
     crate::web_global::performance()
         .map(|p| p.now())
         .unwrap_or(0.0)
+}
+
+/// Decode the `"id"` field of an `awsm-result` / `awsm-error`
+/// message. The wire format is the string repr of a `u64` (see
+/// the dispatch site for why string instead of `Number`). Returns
+/// `None` for missing / non-string / non-parseable ids — the caller
+/// logs and moves on; a malformed id is never routable.
+pub(crate) fn parse_job_id(data: &JsValue) -> Option<u64> {
+    Reflect::get(data, &JsValue::from_str("id"))
+        .ok()
+        .and_then(|v| v.as_string())
+        .and_then(|s| s.parse::<u64>().ok())
 }
 
 fn default_worker_count() -> usize {

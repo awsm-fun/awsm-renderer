@@ -130,11 +130,13 @@ pub fn awsm_worker_entry() {
         if kind != "awsm-job" {
             return;
         }
-        let id = Reflect::get(&data, &JsValue::from_str("id"))
-            .ok()
-            .and_then(|v| v.as_f64())
-            .map(|f| f as u64)
-            .unwrap_or(0);
+        // String-encoded job id (full u64 precision; see the
+        // matching dispatch site in `pool.rs::dispatch_inner` for
+        // the rationale — JS Number tops out at 2^53). A malformed
+        // / missing id falls back to 0 so the worker still emits a
+        // response with *some* id — the main side's `parse_job_id`
+        // will just fail to find the entry and log instead.
+        let id = crate::workers::pool::parse_job_id(&data).unwrap_or(0);
         let name = Reflect::get(&data, &JsValue::from_str("name"))
             .ok()
             .and_then(|v| v.as_string())
@@ -158,7 +160,7 @@ pub fn awsm_worker_entry() {
                     let _ = Reflect::set(
                         &response,
                         &JsValue::from_str("id"),
-                        &JsValue::from_f64(id as f64),
+                        &JsValue::from_str(&id.to_string()),
                     );
                     let mut transfer_list: Option<web_sys::js_sys::Array> = None;
                     match outcome {
@@ -206,7 +208,7 @@ pub fn awsm_worker_entry() {
                 let _ = Reflect::set(
                     &response,
                     &JsValue::from_str("id"),
-                    &JsValue::from_f64(id as f64),
+                    &JsValue::from_str(&id.to_string()),
                 );
                 let _ = Reflect::set(
                     &response,

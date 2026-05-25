@@ -45,9 +45,10 @@ use crate::loader::{get_type_from_filename, GltfFileType, GltfLoader};
 
 // Worker-side thread-local: per-image-index slot for the
 // `ImageBitmap` handle that the most recent `execute_async` run
-// decoded. `None` slots correspond to images whose worker-side
-// decode failed (unsupported format → falls back to encoded bytes
-// on the main thread).
+// decoded. The vec is always exactly `image_metas.len()` entries on
+// pull — `import_image_data` treats worker-side `createImageBitmap`
+// rejection as fatal (no fallback; see its function doc), so every
+// emitted meta carries a corresponding bitmap by construction.
 //
 // Pulled out by `into_response_message` (called from the worker
 // dispatcher immediately after `execute` resolves): the handle
@@ -62,7 +63,7 @@ use crate::loader::{get_type_from_filename, GltfFileType, GltfLoader};
 // Each `execute_async` clears + repopulates, so a stale run can't
 // leak into the next job.
 thread_local! {
-    static DECODED_IMAGE_HANDLES: RefCell<Vec<Option<web_sys::ImageBitmap>>> =
+    static DECODED_IMAGE_HANDLES: RefCell<Vec<web_sys::ImageBitmap>> =
         const { RefCell::new(Vec::new()) };
 }
 
@@ -290,25 +291,17 @@ impl WorkerJob for GltfParseJob {
             None => return Err("expected output to serialise to an Object".to_string()),
         };
         // Drain the per-job thread-local that `execute_async` filled.
-        // The vec is in image-index order; entries whose worker-side
-        // decode failed appear as `None` and serialize to JS `null`
-        // in the bitmaps array (so the main-side index lookup stays
-        // aligned with `output.image_metas`). Only the successful
-        // decodes go into the transfer list.
+        // Every entry is a successfully-decoded `ImageBitmap` (decode
+        // failure is fatal upstream in `import_image_data`), so the
+        // bitmaps array is dense and the transfer list always matches
+        // it 1:1.
         let handles = DECODED_IMAGE_HANDLES.with(|cell| cell.replace(Vec::new()));
         let bitmaps_arr = Array::new();
         let transfer = Array::new();
-        for handle in handles {
-            match handle {
-                Some(bitmap) => {
-                    let js: JsValue = bitmap.into();
-                    bitmaps_arr.push(&js);
-                    transfer.push(&js);
-                }
-                None => {
-                    bitmaps_arr.push(&JsValue::NULL);
-                }
-            }
+        for bitmap in handles {
+            let js: JsValue = bitmap.into();
+            bitmaps_arr.push(&js);
+            transfer.push(&js);
         }
         Reflect::set(&response, &JsValue::from_str("bitmaps"), &bitmaps_arr)
             .map_err(|err| format!("attach bitmaps: {err:?}"))?;
@@ -333,11 +326,20 @@ impl WorkerJob for GltfParseJob {
                         "bitmaps array length mismatch: got {count}, expected {expected}"
                     ));
                 }
+                // Worker contract: the bitmaps array is dense (one
+                // `ImageBitmap` per meta in index order — see the
+                // `DECODED_IMAGE_HANDLES` doc + `into_response_message`).
+                // A null/undefined entry would indicate a protocol
+                // violation, not a "legitimate fallback to encoded
+                // bytes" case (that path is gone — decode failure is
+                // fatal on the worker side). We still tolerate a
+                // failed `dyn_into` defensively rather than panicking
+                // — a malformed payload from a non-matching worker
+                // bundle is better surfaced as "meta.bitmap stayed
+                // None → into_loader tries to decode empty bytes →
+                // typed error" than as a panic on a bad cast.
                 for (idx, meta) in output.image_metas.iter_mut().enumerate() {
                     let handle = bitmaps_arr.get(idx as u32);
-                    if handle.is_undefined() || handle.is_null() {
-                        continue;
-                    }
                     if let Ok(bitmap) = handle.dyn_into::<web_sys::ImageBitmap>() {
                         meta.bitmap = Some(bitmap);
                     }
@@ -571,15 +573,23 @@ async fn import_image_data(
         .collect();
     let mut metas: Vec<ImageMeta> = try_join_all(futures).await?;
     // Move bitmap handles into the thread_local in image-index order
-    // — `into_response_message` walks both side-by-side. None slots
-    // are the worker-decode fallback path (encoded bytes carried
-    // through on the meta's `bytes` field; main thread decodes).
+    // — `into_response_message` walks both side-by-side. Every meta
+    // emitted above carries `bitmap: Some(_)` (decode failure is
+    // fatal in the `try_join_all` above), so the `expect` matches
+    // the worker-contract invariant. The bitmaps are transferred
+    // (not cloned) by `into_response_message`, so `meta.bitmap.take()`
+    // is the right way to hand off ownership; the meta's bitmap slot
+    // is None from here onward.
     DECODED_IMAGE_HANDLES.with(|cell| {
         let mut cell = cell.borrow_mut();
         cell.clear();
         cell.reserve(metas.len());
         for meta in metas.iter_mut() {
-            cell.push(meta.bitmap.take());
+            let bitmap = meta
+                .bitmap
+                .take()
+                .expect("import_image_data emits Some(bitmap) for every meta or errors fatally");
+            cell.push(bitmap);
         }
     });
     Ok(metas)
