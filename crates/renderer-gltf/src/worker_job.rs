@@ -38,7 +38,7 @@ use futures::future::try_join_all;
 use gltf::{buffer, image, Document, Error as GltfError, Gltf};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::{JsCast, JsValue};
-use web_sys::js_sys::{Array, Object, Reflect};
+use web_sys::js_sys::{Array, Object, Reflect, Uint8Array};
 
 use crate::error::AwsmGltfError;
 use crate::loader::{get_type_from_filename, GltfFileType, GltfLoader};
@@ -110,14 +110,17 @@ impl From<FileTypeHint> for GltfFileType {
     }
 }
 
-/// Newtype wrapper for `Vec<u8>` that opts into `serde_bytes` —
-/// without this, a bare `Vec<u8>` inside another `Vec` would be
-/// serialised as a sequence of JS Numbers (one per byte), which is
-/// the slow path that made the worker A/B 130× slower than inline
-/// (see PERFORMANCE.md §5c). The `#[serde(transparent)]` keeps the
-/// wire-format equivalent to a raw `Vec<u8>` (just a `Uint8Array`)
-/// so callers can `output.buffer_bytes[i].0` to get at the inner
-/// vec.
+/// Newtype wrapper for `Vec<u8>` — kept on the struct for legacy
+/// direct-construction callers (non-pool consumers that build a
+/// `GltfParseOutput` themselves). The pool path now ships the bytes
+/// across the postMessage boundary via the transfer-list side channel
+/// (`GltfParseJob::into_response_message` / `from_response_message`),
+/// not through serde; see the per-field doc on `buffer_bytes`. The
+/// `#[serde(transparent)]` + `serde_bytes` annotations are vestigial
+/// — they only matter if someone deserialises this newtype off the
+/// wire, which the pool path no longer does. Left in place so a
+/// direct-construction caller that *does* hand a `GltfParseOutput`
+/// to `serde_wasm_bindgen` still gets the fast Uint8Array shape.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ByteBlob(#[serde(with = "serde_bytes")] pub Vec<u8>);
@@ -128,28 +131,48 @@ impl ByteBlob {
     }
 }
 
-/// `WorkerJob::Output` — large `Vec<u8>` fields go through
-/// `serde_bytes` so `serde_wasm_bindgen` produces `Uint8Array`s
-/// (one `memcpy` per payload) instead of `Array<Number>`s (one JS
-/// Number allocation per byte). See PERFORMANCE.md §5c for the
-/// measured impact.
+/// `WorkerJob::Output` — bytes + bitmap handles travel through a
+/// *side-channel* (the worker→main response object's named properties
+/// plus the `post_message_with_transfer` transfer list); the serde
+/// payload only carries the small `image_metas` metadata. Two reasons
+/// for the split:
 ///
-/// Per-image `ImageBitmap` handles travel through a *side-channel*
-/// — they're attached to the worker→main response object and
-/// transferred (not structured-cloned) via `post_message_with_transfer`,
-/// then stitched back into `image_metas` by
-/// `GltfParseJob::from_response_message`. See the `bitmap` field on
-/// `ImageMeta`.
+/// 1. **Zero-copy bytes.** `doc_bytes` and `buffer_bytes` get attached
+///    as JS-heap `Uint8Array`s by [`GltfParseJob::into_response_message`]
+///    and pushed onto the transfer list — `post_message_with_transfer`
+///    detaches the `ArrayBuffer`s on the worker side and re-attaches
+///    them on the main side without structured-cloning the bytes.
+///    Previously the same fields rode `serde_wasm_bindgen` through
+///    `#[serde(with = "serde_bytes")]`, which cost two heap-to-heap
+///    memcpys (worker → structured clone → main). Now it's one memcpy
+///    on the worker side (Rust `Vec<u8>` → JS `Uint8Array`) and one on
+///    the main side (`Uint8Array::to_vec` back into wasm linear
+///    memory) — the cross-thread hop itself is free.
+///
+/// 2. **`ImageBitmap` handles.** As before — bitmaps can't survive
+///    structured clone, so they're transferred via the side channel
+///    and stitched back into `image_metas[i].bitmap`. See the
+///    `bitmap` field on `ImageMeta`.
+///
+/// Direct-construction callers (non-pool consumers that build a
+/// `GltfParseOutput` themselves and call `into_loader` on the same
+/// thread) populate `doc_bytes` / `buffer_bytes` normally; the
+/// `#[serde(skip)]` only affects the postMessage round-trip.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct GltfParseOutput {
     /// Re-serialised glTF JSON document — the worker's `gltf::Gltf`
     /// can't survive structured-clone (uses `serde_json::Value`
     /// internally), so we re-emit the bytes here and the main
-    /// thread re-parses with `Gltf::from_slice`.
-    #[serde(with = "serde_bytes")]
+    /// thread re-parses with `Gltf::from_slice`. Crosses the
+    /// postMessage boundary via the transferred-`Uint8Array`
+    /// side-channel (see struct doc), not serde.
+    #[serde(skip)]
     pub doc_bytes: Vec<u8>,
     /// Raw buffer-bin contents, one entry per `Document::buffers()`
-    /// in index order. 4-byte padded.
+    /// in index order. 4-byte padded. Crosses the postMessage
+    /// boundary via the transferred-`Uint8Array` side-channel (see
+    /// struct doc), not serde.
+    #[serde(skip)]
     pub buffer_bytes: Vec<ByteBlob>,
     /// One entry per `Document::images()` in index order. On the
     /// worker side `bitmap` is `None` (the handle lives in the
@@ -277,27 +300,80 @@ impl WorkerJob for GltfParseJob {
         Box::pin(execute_async(input))
     }
 
-    /// Override the default `serde_wasm_bindgen::to_value`: also
-    /// attach the worker-decoded `ImageBitmap` handles to the
-    /// response object's `bitmaps` array AND push them into the
-    /// transfer list so `post_message_with_transfer` lifts them
-    /// across the worker boundary in O(1) instead of structured-
-    /// cloning the image pixels.
+    /// Override the default `serde_wasm_bindgen::to_value`. Three
+    /// classes of payload travel through the response message:
+    ///
+    /// 1. **Pure-data metadata** — `image_metas` (small;
+    ///    `bytes`/`mime_type`/`uri`/`bitmap=None`) goes through serde
+    ///    as before. `doc_bytes` and `buffer_bytes` are
+    ///    `#[serde(skip)]` so serde emits no JS copy for them.
+    /// 2. **Byte payloads** — `doc_bytes` and `buffer_bytes` are
+    ///    moved into freshly-allocated JS-heap `Uint8Array`s (one
+    ///    `Vec<u8>`-to-JS memcpy each) and attached as named
+    ///    properties on the response. Each `Uint8Array.buffer`
+    ///    (the underlying `ArrayBuffer`) is pushed onto the transfer
+    ///    list so `post_message_with_transfer` detaches it on the
+    ///    worker side and re-attaches it on the main side without
+    ///    structured-cloning the bytes. On Corset-class glbs
+    ///    (12.8 MB) this saves one ~12 MB heap-to-heap clone hop;
+    ///    on 50+ MB assets the win scales linearly.
+    /// 3. **`ImageBitmap` handles** — same as before: collected from
+    ///    the per-worker thread-local, attached to the response
+    ///    object's `bitmaps` array, transferred via the same list.
+    ///
+    /// After the transfer the worker-side `Vec<u8>` storage has been
+    /// dropped (we `mem::take`'d it into the JS allocation; the
+    /// transfer then detaches that JS buffer). The function returns
+    /// the response immediately afterwards so no worker-side read of
+    /// the bytes happens past this point.
     fn into_response_message(output: Self::Output) -> Result<(JsValue, Array), String> {
+        let mut output = output; // mut so we can `mem::take` the byte fields
+        let doc_bytes = std::mem::take(&mut output.doc_bytes);
+        let buffer_blobs = std::mem::take(&mut output.buffer_bytes);
+
+        // Serialise the lightweight remainder (just `image_metas` once
+        // `doc_bytes`/`buffer_bytes` are `#[serde(skip)]`). This still
+        // shapes the response as the Object that `from_response_message`
+        // expects to walk.
         let payload = serde_wasm_bindgen::to_value(&output)
             .map_err(|err| format!("serialize output: {err}"))?;
         let response = match payload.dyn_ref::<Object>() {
             Some(_) => payload.clone(),
             None => return Err("expected output to serialise to an Object".to_string()),
         };
-        // Drain the per-job thread-local that `execute_async` filled.
-        // Every entry is a successfully-decoded `ImageBitmap` (decode
-        // failure is fatal upstream in `import_image_data`), so the
-        // bitmaps array is dense and the transfer list always matches
-        // it 1:1.
+
+        let transfer = Array::new();
+
+        // Bytes side-channel. `Uint8Array::new_with_length(n)` allocates
+        // a JS-heap `ArrayBuffer` of exactly `n` bytes; `copy_from`
+        // does the wasm-linear-memory → JS-heap memcpy. The resulting
+        // `Uint8Array` is transferable (unlike `Uint8Array::view`,
+        // which borrows wasm memory and is *not* transferable).
+        let doc_u8 = make_transferable_u8(&doc_bytes);
+        transfer.push(&doc_u8.buffer());
+        Reflect::set(&response, &JsValue::from_str("doc_bytes"), &doc_u8)
+            .map_err(|err| format!("attach doc_bytes: {err:?}"))?;
+        // Drop the worker-side Vec immediately — its bytes now live in
+        // the JS-heap `Uint8Array` (which is about to be transferred).
+        drop(doc_bytes);
+
+        let buffers_arr = Array::new();
+        for blob in &buffer_blobs {
+            let u8 = make_transferable_u8(&blob.0);
+            transfer.push(&u8.buffer());
+            buffers_arr.push(&u8);
+        }
+        Reflect::set(&response, &JsValue::from_str("buffer_bytes"), &buffers_arr)
+            .map_err(|err| format!("attach buffer_bytes: {err:?}"))?;
+        drop(buffer_blobs);
+
+        // Bitmap side-channel. Drain the per-job thread-local that
+        // `execute_async` filled. Every entry is a successfully-
+        // decoded `ImageBitmap` (decode failure is fatal upstream in
+        // `import_image_data`), so the bitmaps array is dense and the
+        // transfer list always matches it 1:1.
         let handles = DECODED_IMAGE_HANDLES.with(|cell| cell.replace(Vec::new()));
         let bitmaps_arr = Array::new();
-        let transfer = Array::new();
         for bitmap in handles {
             let js: JsValue = bitmap.into();
             bitmaps_arr.push(&js);
@@ -305,52 +381,110 @@ impl WorkerJob for GltfParseJob {
         }
         Reflect::set(&response, &JsValue::from_str("bitmaps"), &bitmaps_arr)
             .map_err(|err| format!("attach bitmaps: {err:?}"))?;
+
         Ok((response, transfer))
     }
 
-    /// Main-thread inverse: deserialize the `GltfParseOutput`
-    /// metadata via the default serde path, then walk the response
-    /// object's `bitmaps` array (populated by the worker's
-    /// `into_response_message`) and stitch each handle back into
-    /// the matching `ImageMeta.bitmap` slot. `into_loader` then
+    /// Main-thread inverse: deserialize the lightweight serde payload
+    /// (just `image_metas`), then walk the side-channel properties
+    /// (`doc_bytes`, `buffer_bytes`, `bitmaps`) populated by the
+    /// worker's `into_response_message` and re-attach them to the
+    /// typed Output. `into_loader` then re-parses the glTF JSON and
     /// skips its own `createImageBitmap` decode entirely.
     fn from_response_message(payload: JsValue) -> Result<Self::Output, String> {
         let mut output: GltfParseOutput = serde_wasm_bindgen::from_value(payload.clone())
             .map_err(|err| format!("deserialize output: {err}"))?;
-        if let Ok(bitmaps_val) = Reflect::get(&payload, &JsValue::from_str("bitmaps")) {
-            if let Ok(bitmaps_arr) = bitmaps_val.dyn_into::<Array>() {
-                let count = bitmaps_arr.length() as usize;
-                let expected = output.image_metas.len();
-                if count != expected {
+
+        // doc_bytes — single Uint8Array, transferred. `to_vec` does the
+        // JS-heap → wasm-linear-memory memcpy (one direction only;
+        // the cross-thread hop itself was free).
+        let doc_val = Reflect::get(&payload, &JsValue::from_str("doc_bytes"))
+            .map_err(|err| format!("read doc_bytes: {err:?}"))?;
+        if doc_val.is_undefined() || doc_val.is_null() {
+            return Err("doc_bytes missing from worker response — protocol violation".to_string());
+        }
+        let doc_u8 = doc_val
+            .dyn_into::<Uint8Array>()
+            .map_err(|_| "doc_bytes is not a Uint8Array".to_string())?;
+        output.doc_bytes = doc_u8.to_vec();
+
+        // buffer_bytes — array of Uint8Arrays, one per glTF buffer.
+        let bufs_val = Reflect::get(&payload, &JsValue::from_str("buffer_bytes"))
+            .map_err(|err| format!("read buffer_bytes: {err:?}"))?;
+        if bufs_val.is_undefined() || bufs_val.is_null() {
+            return Err(
+                "buffer_bytes missing from worker response — protocol violation".to_string(),
+            );
+        }
+        let bufs_arr = bufs_val
+            .dyn_into::<Array>()
+            .map_err(|_| "buffer_bytes is not an Array".to_string())?;
+        let mut buffer_bytes: Vec<ByteBlob> = Vec::with_capacity(bufs_arr.length() as usize);
+        for i in 0..bufs_arr.length() {
+            let entry = bufs_arr.get(i);
+            let u8 = entry
+                .dyn_into::<Uint8Array>()
+                .map_err(|_| format!("buffer_bytes[{i}] is not a Uint8Array"))?;
+            buffer_bytes.push(ByteBlob(u8.to_vec()));
+        }
+        output.buffer_bytes = buffer_bytes;
+
+        // Bitmaps side-channel. Strict: when there are images to
+        // decode (`image_metas.len() > 0`), the worker MUST send a
+        // dense `bitmaps` array of matching length. Anything weaker
+        // (missing property, null/undefined, non-Array, length
+        // mismatch, sparse slot, non-ImageBitmap entry) is a protocol
+        // violation — surface it as a typed error here, where the
+        // actual contract lives, instead of letting `into_loader` try
+        // to decode the empty `ImageMeta.bytes` field and produce a
+        // misleading "image decode failed" error several layers up.
+        //
+        // For a job with zero images the worker still emits an empty
+        // bitmaps array (the side-channel is unconditional), but to
+        // stay forgiving against e.g. an older worker bundle we
+        // tolerate the property being absent / null when there is
+        // nothing to decode — there's no information to mismatch in
+        // that case.
+        let bitmaps_val = Reflect::get(&payload, &JsValue::from_str("bitmaps"))
+            .map_err(|err| format!("read bitmaps: {err:?}"))?;
+        let expected = output.image_metas.len();
+        if bitmaps_val.is_undefined() || bitmaps_val.is_null() {
+            if expected > 0 {
+                return Err(format!(
+                    "bitmaps side-channel missing/null but image_metas has {expected} \
+                     entries — protocol violation (likely a worker/main bundle mismatch)"
+                ));
+            }
+        } else {
+            let bitmaps_arr = bitmaps_val.dyn_into::<Array>().map_err(|_| {
+                "bitmaps is not an Array — protocol violation (likely a worker/main bundle \
+                 mismatch)"
+                    .to_string()
+            })?;
+            let count = bitmaps_arr.length() as usize;
+            if count != expected {
+                return Err(format!(
+                    "bitmaps array length mismatch: got {count}, expected {expected}"
+                ));
+            }
+            // Worker contract: the bitmaps array is dense (one
+            // `ImageBitmap` per meta in index order — see the
+            // `DECODED_IMAGE_HANDLES` doc + `into_response_message`).
+            for (idx, meta) in output.image_metas.iter_mut().enumerate() {
+                let handle = bitmaps_arr.get(idx as u32);
+                if handle.is_undefined() || handle.is_null() {
                     return Err(format!(
-                        "bitmaps array length mismatch: got {count}, expected {expected}"
+                        "bitmaps[{idx}] is null/undefined — worker contract requires a dense \
+                         ImageBitmap array"
                     ));
                 }
-                // Worker contract: the bitmaps array is dense (one
-                // `ImageBitmap` per meta in index order — see the
-                // `DECODED_IMAGE_HANDLES` doc + `into_response_message`).
-                // Anything else (null/undefined slot, non-ImageBitmap
-                // JsValue) is a protocol violation — surface it as a
-                // typed error here at the actual boundary instead of
-                // letting `into_loader` decode the empty `bytes`
-                // field and produce a misleading "image decode
-                // failed" error several layers up.
-                for (idx, meta) in output.image_metas.iter_mut().enumerate() {
-                    let handle = bitmaps_arr.get(idx as u32);
-                    if handle.is_undefined() || handle.is_null() {
+                match handle.dyn_into::<web_sys::ImageBitmap>() {
+                    Ok(bitmap) => meta.bitmap = Some(bitmap),
+                    Err(_) => {
                         return Err(format!(
-                            "bitmaps[{idx}] is null/undefined — worker contract requires a dense \
-                             ImageBitmap array"
+                            "bitmaps[{idx}] is not an ImageBitmap — likely a worker/main \
+                             bundle mismatch"
                         ));
-                    }
-                    match handle.dyn_into::<web_sys::ImageBitmap>() {
-                        Ok(bitmap) => meta.bitmap = Some(bitmap),
-                        Err(_) => {
-                            return Err(format!(
-                                "bitmaps[{idx}] is not an ImageBitmap — likely a worker/main \
-                                 bundle mismatch"
-                            ));
-                        }
                     }
                 }
             }
@@ -414,6 +548,34 @@ pub async fn execute_async(input: GltfParseInput) -> anyhow::Result<GltfParseOut
         buffer_bytes,
         image_metas,
     })
+}
+
+/// Allocate a JS-heap `Uint8Array` and memcpy `src` into it. The
+/// resulting array's underlying `ArrayBuffer` is transferable —
+/// unlike `Uint8Array::view(src)`, which is a borrow over wasm
+/// linear memory and cannot be transferred (its backing store
+/// belongs to the wasm instance, not JS).
+///
+/// `src.len()` is checked against `u32::MAX` with `try_from`. A
+/// `Uint8Array.length` is u32 in the WebGPU/JS heap; a payload
+/// larger than 4 GiB can't be expressed in a single `Uint8Array`
+/// regardless of wasm32's own 4 GiB linear-memory ceiling, so the
+/// panic surfaces the real protocol limit instead of letting an
+/// `as u32` truncation silently allocate a too-small buffer and
+/// copy garbage. A panic here is the right shape — the caller is
+/// the renderer's worker dispatcher, which has no recovery path
+/// for a payload that already overran the JS heap limit, and
+/// wasm32 cannot reach this branch in practice today.
+fn make_transferable_u8(src: &[u8]) -> Uint8Array {
+    let len = u32::try_from(src.len()).expect(
+        "make_transferable_u8: payload exceeds u32::MAX bytes — Uint8Array.length cannot \
+         represent it",
+    );
+    let u8 = Uint8Array::new_with_length(len);
+    // `copy_from` writes wasm-linear-memory bytes into the JS-heap
+    // `ArrayBuffer`. Single memcpy per call.
+    u8.copy_from(src);
+    u8
 }
 
 fn get_base_path(url: &str) -> &str {

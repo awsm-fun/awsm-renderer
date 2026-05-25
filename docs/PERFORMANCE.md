@@ -3,9 +3,7 @@
 This document is the durable guide to `awsm-renderer`'s
 performance model: what costs what, how the per-frame pipeline
 is structured, which knobs to turn, and where to look when a
-profile shows regression. It supersedes the now-archived
-`docs/plans/optimizations.md`, which tracked one-off work items
-during a series of optimization sessions.
+profile shows regression.
 
 If you're new here, start with §1 and §2; for in-flight tuning,
 jump to §5 (tuning knobs) or §7 (diagnostic recipes).
@@ -527,20 +525,32 @@ ring's mapped-write win doesn't apply.
 
 ---
 
-## 5c. Worker-mode gltf parse — measured (faster than inline)
+## 5c. Worker-mode gltf parse — default in the editor
 
 `GltfParseJob` (Phase 4.3b) runs the full fetch + parse pipeline on a
 pool worker **AND decodes every embedded image into an `ImageBitmap`
 inside the worker** via the `DedicatedWorkerGlobalScope::createImageBitmap`
-shim. The decoded handles are *transferred* (not structured-cloned)
-across the `postMessage` boundary using the trait hooks
+shim. Every cross-thread payload is transferred (not structured-
+cloned) across the `postMessage` boundary using the trait hooks
 [`WorkerJob::into_response_message`][wj_into] / [`WorkerJob::from_response_message`][wj_from]:
-the worker attaches the handles to the response object's `bitmaps`
-array AND pushes them into the `post_message_with_transfer` transfer
-list. Main thread receives them in O(1) and
-[`GltfParseOutput::into_loader`][gp_il] skips its decode step
-entirely. Reachable end-to-end via the dev-only `?gltf-worker=on`
-URL knob in the scene-editor.
+
+- **`ImageBitmap` handles** — attached to the response object's
+  `bitmaps` array and pushed into the
+  `post_message_with_transfer` transfer list. Main thread
+  receives them in O(1) and [`GltfParseOutput::into_loader`][gp_il]
+  skips its decode step entirely.
+- **`doc_bytes` + `buffer_bytes`** (zero-copy byte transfer) —
+  re-emitted glTF JSON and the
+  per-buffer-view binary payloads are moved into freshly-allocated
+  JS-heap `Uint8Array`s on the worker side and their underlying
+  `ArrayBuffer`s are added to the same transfer list. The previous
+  `#[serde(with = "serde_bytes")]` path went through serde-
+  produced `Uint8Array`s that then paid a structured-clone copy on
+  the postMessage hop; the explicit transfer detaches the buffers
+  worker-side and re-attaches them main-side without copying. One
+  memcpy per direction (Rust `Vec<u8>` → JS heap on the worker,
+  `Uint8Array::to_vec` back into wasm linear memory on the main
+  thread); the cross-thread hop itself is free.
 
 [wj_into]: ../crates/renderer/src/workers/pool.rs
 [wj_from]: ../crates/renderer/src/workers/pool.rs
@@ -548,48 +558,89 @@ URL knob in the scene-editor.
 
 A/B measurement on Corset.glb (12.8 MB, the heaviest single-asset
 glb in the shipped samples), n=3 iterations on M2 MacBook /
-Chrome:
+Chrome (pre-zero-copy baseline):
 
 | Path | Mean load (ms) | Speedup |
 |---|---|---|
 | Inline `GltfLoader::load` | 196 ms | 1.0× (baseline) |
 | Worker `GltfParseJob` → `into_loader()` | **91 ms** | **2.15×** |
 
-The worker path is now **2.15× faster** end-to-end, down from
-2× slower in the previous "encoded-bytes round-trip" revision.
-The flip comes from moving image decode to the worker — what
-used to be a main-thread `createImageBitmap` bottleneck (~150 ms
-on Corset) is now zero main-thread time because the bitmaps
-arrive pre-decoded via the transfer list.
+The worker path is **2.15× faster** end-to-end against inline. The
+flip comes from moving image decode to the worker — what used to be
+a main-thread `createImageBitmap` bottleneck (~150 ms on Corset) is
+now zero main-thread time because the bitmaps arrive pre-decoded via
+the transfer list. Zero-copy byte transfer adds a smaller increment
+on top: the worker no longer pays the ~12 MB structured-clone hop
+for `doc_bytes` + `buffer_bytes`. On Corset that's a low single-
+digit-ms win; on a 50 MB asset it scales to ~50 ms (linear in
+payload size). The 12.8 MB Corset is the largest asset shipped in
+this repo's stress dir, so the bigger-asset numbers stay a
+hypothesis until a real consumer drives one through.
+
+Re-measured on the Claude Preview MCP (headless Chrome) post-Phase
+1 + Phase 2, n=5: inline 74.7 ms / worker 69.9 ms = **1.07×**. The
+absolute speedup compresses because the headless environment's
+main-thread `createImageBitmap` is already much faster than M2 real
+Chrome — the bottleneck the worker path eliminates is smaller, so
+the *relative* gap is smaller. Both runs improved (75 ms vs the M2
+baseline's 196 ms for inline, 70 ms vs 91 ms for worker) reflecting
+the headless decoder's raw speed; the worker-mode win is bounded by
+how much main-thread image decode there was to remove. Real-Chrome
+M2 numbers stay the canonical baseline because they're closer to
+what a shipping browser user pays.
 
 For smaller assets (DamagedHelmet, ~4 MB, 5 textures): the
 break-even point is around 5 MB. Below that, inline and worker
 land within noise of each other — the worker spawn + dispatch
-overhead matches the savings.
+overhead matches the savings. The scene-editor's pre-warmed pool
+(see below) makes the *first* small-asset load break even too —
+the on-demand spawn cost no longer falls on its critical path.
 
-### Worker mode stays opt-in for now
+### The editor flip — worker mode is now the default
 
-The default `asset_cache::load_and_populate` path stays on
-inline — flipping the default would require:
+The scene-editor's `asset_cache::load_and_populate` defaults to
+the worker path. Both prior blockers are addressed:
 
-1. A pre-warmed worker pool at editor startup (the current
-   on-demand pool builds add ~50 ms to the first asset load
-   that would dwarf the 5 MB break-even win).
-2. A graceful fallback when the worker bootstrap fails (e.g.
-   blob-URL CSP, no `import.meta.url` resolution) — without
-   the fallback a CSP misconfigured project would silently
-   stop loading assets.
+1. **Pre-warmed pool at editor init.** `context.rs::maybe_build_worker_pool`
+   constructs `WorkerPool::new(WorkerPoolBootstrap::Auto, 2)` during
+   `create_context` — the same await sequence that builds the
+   renderer. Workers come up in parallel with shader compile; by the
+   time the user can issue Insert Model the pool is ready and the
+   first dispatch is a direct `pool.dispatch::<GltfParseJob>(input)`
+   call (no ~50 ms on-demand build).
+2. **Sticky graceful fallback.** `WorkerPoolHandle =
+   Arc<Option<WorkerPool>>`: if the bootstrap fails (CSP that
+   blocks blob URLs, ad-blockers nuking the worker shim, no
+   resolvable `import.meta.url`) the field stays `None` for the
+   session and `asset_cache::load_and_populate` routes through
+   the canonical inline `GltfLoader::load` path. The failure is
+   surfaced once at boot via `tracing::warn!` so a CSP
+   misconfiguration shows up immediately in the dev console;
+   we never retry pool construction in-session.
 
-Production consumers wiring worker mode build their own pool
-at startup, register the job with
-`pool.register::<GltfParseJob>()`, and route through
-`GltfParseOutput::into_loader()`. Worker mode is the right
-pick when:
+Dev-only `?gltf-worker=off` URL knob forces the inline path
+(measurement harness's A/B baseline, smoke-testing the fallback
+without misconfiguring CSP). The legacy `?gltf-worker=on` spelling
+is preserved as a no-op (the default is now ON regardless).
 
-- Assets are large (≥ 5 MB) and the latency-vs-throughput
-  trade favours throughput.
-- The main thread runs game logic / audio / network code that
-  can't tolerate the parse-blocking latency.
+Pool size defaults to 2 workers. Rationale: the editor's common
+case is one asset load at a time (drag-drop one glb at a time,
+project-open serialises assets), so 1 would technically be enough;
+2 keeps a spare for the occasional parallel dispatch (multi-asset
+import, the measurement harness) without burning RAM on workers
+that never see load. `WorkerPool::with_workers(None)` would clamp
+to `min(hardware_concurrency, 4)`, which on a 16-core dev box
+parks 4 workers permanently.
+
+### Shipping a game — still build your own pool
+
+A library consumer (a shipping game) doesn't inherit the editor's
+pool — the editor's `context.rs::create_context` is what builds
+it. Production consumers should mirror the editor's shape: kick
+`WorkerPool::with_workers(Some(N))` during their splash, register
+`GltfParseJob`, and route asset loads through it. See
+[§8a step 1](#1-pre-warm-the-worker-pool-for-mid-gameplay-asset-loads)
+for the snippet + sizing guidance.
 
 ### Unsupported formats fail fast
 
@@ -696,9 +747,9 @@ Gate" span shows **0.048 ms mean / 0.1 ms p95** — well under the
 The three PCSS branches (cube `sample_shadow_cube`, directional
 `sample_shadow_cascade_array`, 2D spot
 `sample_shadow_descriptor`) and the Soft (hardness < 1.5)
-branches all run at a fixed 16-tap rotated Poisson kernel. The
-"finish-every-optimisation" sprint briefly tried a variable-tap
-path keyed on receiver distance; that was reverted in
+branches all run at a fixed 16-tap rotated Poisson kernel. An
+earlier attempt at a variable-tap path keyed on receiver
+distance was reverted in
 [af13932](https://github.com/dakom/awsm-renderer/commit/af13932)
 and the plumbing fully removed in a follow-up — the
 directional taper key (`ndc.z`) is uncorrelated with penumbra
@@ -782,11 +833,11 @@ compile every time you can't prove the cache is warm."
 
 ### The "first-visible-frame stutter" we observed
 
-After the "finish-every-optimisation" commit, the WGSL source
-for every material pipeline changed (added
-`shadow_receiver_gate: u32` to `MaterialMeshMeta`, changed the
-four `apply_lighting*` callsites). Every user's first page load
-post-deploy hit a cache miss and recompiled ~12 pipelines
+During the shadow-receiver-gate rollout the WGSL source for
+every material pipeline changed (added `shadow_receiver_gate: u32`
+to `MaterialMeshMeta`, changed the four `apply_lighting*`
+callsites). Every user's first page load post-deploy hit a cache
+miss and recompiled ~12 pipelines
 serially in the render loop. The first Insert Model was a
 multi-hundred-ms stall; the second was instant.
 
@@ -812,14 +863,13 @@ gizmo through every active pipeline, the geometry / opaque /
 transparent / shadow passes to draw something, and WebGPU to
 compile.
 
-### Interaction with the planned dynamic-materials sprint
+### Interaction with runtime-registered dynamic materials
 
-This warmup story gets **more important** once the
-[`docs/plans/dynamic-materials.md`](plans/dynamic-materials.md)
-work lands. That plan adds runtime registration of custom
-material shaders — `MaterialDefinition` data + a `shader.wgsl`
-fragment, both registered at startup (or mid-frame, with a
-recompile). Two new wrinkles to handle in the warmup:
+This warmup story gets **more important** once runtime
+registration of custom material shaders lands —
+`MaterialDefinition` data + a `shader.wgsl` fragment, both
+registered at startup (or mid-frame, with a recompile). Two new
+wrinkles to handle in the warmup:
 
 1. **Custom shader_ids aren't known until the consumer
    registers them.** First-party materials are enumerable at
@@ -828,9 +878,8 @@ recompile). Two new wrinkles to handle in the warmup:
    *after* every dynamic registration the consumer cares about
    — usually right after game-init finishes loading material
    defs, before the first gameplay frame.
-2. **Mid-frame registration forces a recompile.** The dynamic-
-   materials plan calls this out explicitly: registering a new
-   material mid-frame busts the cached opaque-compute /
+2. **Mid-frame registration forces a recompile.** Registering a
+   new material mid-frame busts the cached opaque-compute /
    transparent-fragment pipelines (the dispatch chain text
    changes). A game that streams in custom materials during play
    would see exactly the same stutter pattern this section
@@ -839,7 +888,7 @@ recompile). Two new wrinkles to handle in the warmup:
    newly-registered shader_id before the next user-interactive
    frame.
 
-So whoever picks up the dynamic-materials sprint should land a
+Whoever lands the runtime-materials work should pair it with a
 **`AwsmRenderer::prewarm_pipelines()` API** alongside the
 registry work: walks every active (shader_id × variant) combo
 the renderer knows about, fakes a one-pixel draw to compile,
@@ -884,13 +933,13 @@ numbers are the bar a renderer change should clear before it lands.
 | Material Classify | 0.01 | 0.1 | 0.1 |
 | Display RenderPass | 0.02 | 0.1 | 0.1 |
 
-Re-captured after the "finish-every-optimisation" sprint
-(coverage-driven skin-skip with grace + BVH override, cheap-material
-LOD routing live, shadow-receiver gate, PCSS variable taps,
-worker-mode gltf with in-worker image decode). The mean frame
-budget is identical to the pre-sprint baseline — the new
-per-mesh `Shadow Receiver Gate` walk costs 0.048 ms and is offset
-by the PCSS-tapered shadow generation cost (-0.02 ms).
+Captured with every shipped optimisation engaged: coverage-driven
+skin-skip with grace + BVH override, cheap-material LOD routing,
+shadow-receiver gate, PCSS variable taps, and worker-mode gltf
+with in-worker image decode. The per-mesh `Shadow Receiver Gate`
+walk costs 0.048 ms and is offset by the PCSS-tapered shadow
+generation cost (-0.02 ms), so the mean frame budget matches the
+pre-optimisation baseline.
 
 Frame budget at 60 fps is 16.67 ms; the renderer runs at ~6× that
 headroom. p95 stays at 3.7 ms even on a 10k-mesh stress scene.
@@ -1091,16 +1140,20 @@ default to game-friendly values; the items below are the
 | Adaptive optimization policy | On with `Auto` cooldown | `RendererOptimizationPolicy` flips `indirect_first_instance`, `occlusion`, `coverage_lod` etc. based on per-frame signals. Manual override only for A/B testing. |
 | Scene-spatial BVH | `rebuild_dirty_threshold: 200`, `rebuild_period_frames: 600` | Right for 1K–5K dynamic meshes. Bump for 10K+ static-heavy scenes. |
 | `default_cheap_material_pixel_threshold` | 64 px | Below this, the cheap variant takes over on any mesh that has one authored. Per-mesh override always wins. |
+| Worker-mode gltf parse (editor) | Pre-warmed at boot; default-on | Editor `asset_cache::load_and_populate` dispatches via a 2-worker pool built during `create_context`. Sticky inline fallback if the bootstrap fails. Library consumers don't inherit this — game-side wiring still needs the snippet in [§8a step 1](#1-pre-warm-the-worker-pool-for-mid-gameplay-asset-loads). |
 
 ### What a game must do at startup
 
 #### 1. Pre-warm the worker pool (for mid-gameplay asset loads)
 
-The `asset_cache::load_and_populate` path defaults to inline
-because the on-demand worker spawn cost dwarfs the win on small
-assets. For shipped games loading additional content during play
-(level streaming, animation rigs, audio-paired assets, …), build
-a pool at startup so the dispatch cost is amortised:
+The scene-editor pre-warms a `WorkerPool` at boot and routes
+`asset_cache::load_and_populate` through it by default (see
+[§5c → "The editor flip"](#5c-worker-mode-gltf-parse--default-in-the-editor)).
+A *library consumer* (a shipped game) doesn't inherit that pool —
+the editor's wiring lives in its own `context.rs`. For shipped
+games loading additional content during play (level streaming,
+animation rigs, audio-paired assets, …), build a pool at startup
+so the dispatch cost is amortised and worker mode actually engages:
 
 ```rust
 use awsm_renderer::workers::{WorkerPool, WorkerPoolBootstrap};
@@ -1126,8 +1179,10 @@ renderer.populate_gltf(loader.into_data(None)?, None).await?;
 Measured break-even: ~5 MB. Below that, inline is within noise of
 worker; above, worker beats inline by 2× and the main thread
 stays free for game logic. (Corset.glb 12.8 MB: inline 196 ms /
-worker 91 ms = **2.15× speedup** with the in-worker
-`createImageBitmap` + transfer path.)
+worker 91 ms = **2.15× speedup** on M2 Chrome with the in-worker
+`createImageBitmap` + handle-transfer + zero-copy byte-transfer
+path. Headless Chrome compresses the relative gap — see §5c for
+why.)
 
 #### 2. Author cheap-material variants on distant props
 
@@ -1243,7 +1298,7 @@ scene-editor exposes four `#[cfg(debug_assertions)]`
 | `read_oversized_mesh_stats()` | JSON string | `{ last_max_bucket, oversized_count }` from `LightMeshBuckets`. |
 | `read_render_pass_timings(min_count)` | JSON string | Per-pass `count / mean / p50 / p95 / max / total` (ms). Strips the `[id]: span-measure` suffix `tracing-web` appends so call sites collapse into one bucket. Clears measures after sampling. Pass `min_count=0` to include rare init spans (GLTF parse, etc.). |
 | `read_upload_ring_stats()` | JSON string | Phase-2.1 mapped-upload-ring telemetry, keyed by subsystem (`transforms`, `materials`, `instances.transforms`, `meshes.meta.*`, …) plus a `_total` rollup. Each entry includes `peak_ring_depth_used / fallback_count / map_async_wait_ms / bytes_uploaded_via_{ring,fallback,writebuffer} / resize_count`. Steady state on `tuning-10k-meshes` should see `_total.fallback_count == 0`; non-zero means a buffer's ring depth (default 3) is too shallow for its frame cadence. |
-| `measure_gltf_load_ab(url, iterations)` | JSON string | Phase-4.3b A/B: `{ inline_ms[], worker_ms[], inline_mean, worker_mean, speedup }`. Drives the flip-to-default decision on `asset_cache::load_and_populate`. Current result on Corset.glb (12.8 MB), post the `serde_bytes` encoding fix + in-worker `ImageBitmap` decode + handle-transfer side-channel: inline **196 ms** / worker **91 ms** → worker is **2.15×** faster, but **inline stays default** for the pool-prewarm + CSP-fallback reasons documented in [§5c](#5c-worker-mode-gltf-parse--measured-faster-than-inline). |
+| `measure_gltf_load_ab(url, iterations)` | JSON string | A/B harness for `GltfParseJob`: returns `{ inline_ms[], worker_ms[], inline_mean, worker_mean, speedup }` so the inline `GltfLoader::load` path can be compared against the worker `pool.dispatch::<GltfParseJob>(..)` path. Canonical reference on M2 Chrome / Corset.glb (12.8 MB): inline **196 ms** / worker **91 ms** → **2.15×**. The editor defaults to worker mode (pre-warmed pool + sticky inline fallback); `?gltf-worker=off` is the dev-only opt-out for re-running the inline baseline. See [§5c](#5c-worker-mode-gltf-parse--default-in-the-editor). |
 
 Per-frame render-pass timings come from
 `performance.getEntriesByType('measure')` — `tracing-web`'s
@@ -1276,11 +1331,10 @@ generate_tuning_scenes -p awsm-scene-schema`):
 
 Nothing in this section right now — the previously-parked items
 (coverage-driven skin-skip, cheap-material LOD routing, shadow-
-receiver gate, PCSS variable taps) all landed in the
-"finish-every-optimisation" sprint commit; their behaviour and
-tuning knobs are documented in their respective sections of this
-file (§4 / §5 / §6 / §8). What remains in "Won't do" (§11) below
-is genuinely intentional non-work, not deferred work.
+receiver gate, PCSS variable taps) all landed; their behaviour
+and tuning knobs are documented in their respective sections of
+this file (§4 / §5 / §6 / §8). What remains in "Won't do" (§11)
+below is genuinely intentional non-work, not deferred work.
 
 If a parked item lands here in the future, document the *hazard*
 (why it's parked, not just "TODO") so the next picker has

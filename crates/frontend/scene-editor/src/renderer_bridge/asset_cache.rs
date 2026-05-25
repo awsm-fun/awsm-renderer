@@ -168,9 +168,15 @@ async fn load_and_populate(asset_id: AssetId) -> Result<AssetTemplate, String> {
     let blob = make_blob(&resolved.bytes, mime).map_err(|e| format!("blob: {e:?}"))?;
     let url = Url::create_object_url_with_blob(&blob).map_err(|e| format!("url: {e:?}"))?;
 
-    // Phase-4.3b worker-mode opt-in: dispatch GltfParseJob when the
-    // `?gltf-worker=on` URL knob populated the worker pool at editor
-    // init. Otherwise fall back to the canonical inline path.
+    // Worker-mode is the editor default — `maybe_build_worker_pool`
+    // pre-warms the pool at `create_context` time, so by the time any
+    // asset load reaches here the dispatch is a direct `pool.dispatch`
+    // call (no on-demand pool-build tax on the first load). When the
+    // bootstrap failed (CSP, blob-URL restriction, `?gltf-worker=off`
+    // opt-out) `pool_handle.is_none()` and we transparently route
+    // through the canonical inline `GltfLoader::load` path. The
+    // decision is sticky for the session — see `WorkerPoolHandle`
+    // doc in `context.rs`.
     let pool_handle = worker_pool_handle();
     let loader_result = if let Some(pool) = pool_handle.as_ref() {
         use awsm_renderer_gltf::worker_job::{FileTypeHint, GltfParseInput, GltfParseJob};

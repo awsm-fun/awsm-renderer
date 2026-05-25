@@ -81,6 +81,18 @@ together with the rest of the doc:
   not a new branch in a shared dispatch chain. The classify-bucket
   count grows with the registered dynamic-material count; the
   classify shader gains a new bucket per `Custom` shader_id.
+  Today's [`material_classify/buffers.rs`](../../crates/renderer/src/render_passes/material_classify/buffers.rs)
+  uses a hard-coded `pub const BUCKET_COUNT: u32 = 3;` and the
+  [`compute.wgsl`](../../crates/renderer/src/render_passes/material_classify/shader/material_classify_wgsl/compute.wgsl)
+  routes via a fixed `BUCKET_BIT_PBR/UNLIT/TOON` if-else chain.
+  Dynamic-materials registration must promote both of these into
+  registry-driven values: `BUCKET_COUNT` becomes
+  `enabled_materials().len() + registry.dynamic_entries.len()` and
+  the WGSL bit chain is emitted from a template that walks the
+  same source as `materials_wgsl`. This **must land alongside the
+  registry plumbing in Phase 3** — without it the new dynamic
+  shader_ids reach the opaque kernel but never get classified into
+  the tiles they should shade.
 - **`{{ shader_id_dispatch }}` is gone.** The template substitution
   site that hosted the dispatch chain is now `{% match shader_id %}`
   emitting exactly one material's shading body per pipeline. There
@@ -93,20 +105,40 @@ together with the rest of the doc:
 - **Storage budget watch.** The opaque main bind group is at 9 of
   10 storage bindings after classify. Adding `extras_pool` (this
   plan's "Storage strategy") pushes it to 10/10 — the absolute cap.
-  No headroom for further additions without an earlier pack.
+  No headroom for further additions without an earlier pack. The
+  cap is also enshrined in
+  [`PERFORMANCE.md §11`](../PERFORMANCE.md) ("Don't bump
+  `with_max_storage_buffers_per_shader_stage` past 10") — devices
+  that exactly meet the declared limit fail pipeline validation if
+  we exceed it.
 - **Skybox ownership.** PBR pipeline retains the skybox-fallback
   block; non-PBR pipelines early-return on skybox without writing.
   A `Custom` opaque shader inherits the non-PBR rule by default —
   it must not write skybox tiles unless the material is explicitly
   registered as a skybox-owner (a future "skybox bucket"
   extension).
+- **Per-frame upload path.** Every renderer-owned per-frame
+  `queue.writeBuffer` site routes through `MappedUploader` now
+  ([`PERFORMANCE.md §5b`](../PERFORMANCE.md)). The `extras_pool` is
+  *renderer-owned per-frame writable* data (each `register_material`
+  / instance change updates a slice), so it falls under that rule.
+  See §"Extras pool" below for the corrected wiring.
+- **Always-in-scope helpers.** The `temporal-shaders` plan adds a
+  `frame_globals` uniform (`time` / `delta_time` / `frame_count` /
+  `resolution`) bound alongside `camera` in every pass that does
+  material shading. If that plan has landed at audit time
+  (Phase 1), its `shared_wgsl/frame_globals.wgsl` is part of the
+  always-in-scope helper set for both `contract-opaque.md` and
+  `contract-transparent.md`. If it hasn't, write the contract docs
+  against the current `shared_wgsl/` set and add `frame_globals`
+  as a follow-up edit once it lands.
 
 The rest of this plan still applies as the implementation brief
-for everything else; the §"Storage strategy" and §"Render-graph
-slot" sections are the only ones whose details substantively
-shift. Treat the per-section text below as **mostly correct, with
-the dispatch-chain references swapped for per-pipeline match
-choices** at implementation time.
+for everything else; the §"Storage strategy", §"Render-graph
+slot", and §"Extras pool" sections are the only ones whose
+details substantively shift. Treat the per-section text below as
+**mostly correct, with the dispatch-chain references swapped for
+per-pipeline match choices** at implementation time.
 
 ---
 
@@ -771,8 +803,34 @@ Apart from `extras_pool`, no new bind groups. Custom materials read uniform data
 A new module `crates/renderer/src/dynamic_materials/extras_pool.rs` owns:
 
 - A `web_sys::GpuBuffer` of `extras_pool_capacity` u32 words (storage-mode, read-only from shaders). Capacity is configurable via `AwsmRenderer::new` options; default 1 MiB (262 144 u32s). Resizable on overflow with a `BindGroupRecreate` event (mirrors how the texture pool / shadow atlas handle resizes).
-- A **free-list allocator** keyed by `(MaterialShaderId, slot_name)` → contiguous slice. On insert/update of a `DynamicMaterial` instance, the allocator finds (or coalesces) a slice that fits the slot's u32 words, copies the data in via `gpu.write_buffer`, and records the offset. On removal of an instance, the slice is returned to the free list.
+- A **free-list allocator** keyed by `(MaterialShaderId, slot_name)` → contiguous slice. On insert/update of a `DynamicMaterial` instance, the allocator finds (or coalesces) a slice that fits the slot's u32 words, records the offset, and **uploads the bytes via the renderer's mapped-buffer ring** — not raw `gpu.write_buffer`. See "Upload path" below. On removal of an instance, the slice is returned to the free list.
 - Compaction: when fragmentation exceeds a threshold (e.g. free space > 25% of capacity but the largest free run is < 50% of total free space), the allocator runs a compaction pass that re-packs all live slices and updates every affected `DynamicMaterial`'s `(offset, length)` pairs. Compaction is a per-frame cap-limited operation (e.g. move at most 64 KiB of data per frame) to avoid hitching. Most scenes won't trigger compaction at all.
+
+**Upload path.** Per
+[`PERFORMANCE.md §5b`](../PERFORMANCE.md), every renderer-owned
+per-frame upload goes through a
+[`MappedUploader`](../../crates/renderer/src/buffer/mapped_uploader.rs)
+companion. The extras pool fits both halves of that split:
+
+- **Per-frame dirty-range writes** (the common path — author
+  edited a uniform-override in the editor, a slice's bytes need
+  re-uploading): use `MappedUploader::write_dirty_ranges`. One
+  slot per material × buffer-slot pair acquires a dirty range; the
+  per-frame upload batches them.
+- **Foreign-bytes ingestion** (initial registration of a buffer
+  slot from a `.bin` file loaded via `scene-schema`'s
+  `load_material_folder`, or the first-time copy of an
+  instance-override `BufferRef`): use
+  `MappedUploader::ingest_foreign` — the bytes arrive as a
+  `Vec<u32>` from outside the renderer's CPU-authoritative state,
+  matching the same convention as glTF buffer + texture
+  ingestion. Counted under `bytes_uploaded_via_writebuffer` in the
+  upload-ring telemetry.
+
+The allocator's `write_slice(material, slot, &[u32])` method is
+the single entrypoint that picks the right one of the two based
+on whether the slice was already in the allocator's tracked-Vec
+shadow or is being freshly inserted.
 
 The corresponding WGSL helper module `crates/renderer/src/render_passes/shared/shared_wgsl/extras.wgsl` mirrors `material.wgsl`'s pattern exactly:
 
@@ -881,7 +939,7 @@ Expected outcome: scene-editor + model-tests still build and render identically 
 4. **Round-trip test**: write a hand-built `MaterialDefinition` (including a `BufferSlot` with a default `.bin` reference) to a temp folder, load it back, assert deep equality on both the layout and the resolved buffer bytes.
 5. **Audit the first-party shading contract.** Read every first-party material WGSL (`materials/src/wgsl/pbr/*`, `unlit_material.wgsl`, `toon_material.wgsl`) and the compute-kernel template (`shared_wgsl/material.wgsl` + the opaque-compute pass shaders) and the transparent fragment shader. Document precisely:
    - Function signature each first-party fragment exposes (input struct, output struct, name pattern).
-   - Helpers reachable from inside the fragment (every symbol from `shared_wgsl/`).
+   - Helpers reachable from inside the fragment (every symbol from `shared_wgsl/`). If the [temporal-shaders plan](./temporal-shaders.md) has landed by audit time, this includes `shared_wgsl/frame_globals.wgsl` (`frame_globals.time` / `delta_time` / `frame_count` / `resolution`). If it hasn't, leave a follow-up note in the contract docs to add it when that plan ships.
    - Per-material storage-buffer convention (byte_offset table, how `shader_id` indexes in, where texture indices live).
    - Output expectations for each pass (HDR linear, alpha handling, etc.).
 6. **Write the docs.** Produce `docs/dynamic-materials/contract-opaque.md` and `docs/dynamic-materials/contract-transparent.md`. Each begins with the exact function signature an author writes, followed by sections on helpers in scope, per-material data access, and texture-pool access. Cross-reference into the relevant `shared_wgsl/` files by line range.
@@ -912,6 +970,12 @@ Expected outcome: `DynamicMaterial` instances can be constructed and `write_unif
 3. **Extend the opaque compute kernel's cache key** with `dispatch_hash`. Verify (via a test or a debug print) that the hash is constant when no dynamic materials are registered.
 4. **Extend the transparent fragment shader's cache key** the same way.
 5. **Idempotency**: `register_material` checks `(name, layout_hash, wgsl_hash)` against existing entries; if all three match, return the existing id without changing the dispatch hash.
+6. **Promote `material_classify::BUCKET_COUNT` and the WGSL bit-table to registry-driven.** Today both are hard-coded for PBR/UNLIT/TOON (see [`material_classify/buffers.rs`](../../crates/renderer/src/render_passes/material_classify/buffers.rs) `pub const BUCKET_COUNT: u32 = 3;` and the `BUCKET_BIT_*` consts + if-else chain in [`compute.wgsl`](../../crates/renderer/src/render_passes/material_classify/shader/material_classify_wgsl/compute.wgsl)). Both become functions of `registry.all_entries().len()`. The classify WGSL is now an askama template that walks the registry to emit:
+   - `const BUCKET_BIT_<name>: u32 = (1u << index);` for each entry.
+   - `const SHADER_ID_<name>: u32 = N;` for each entry (already exists as `shader_id_consts`).
+   - The shader_id → bit if-else chain.
+   - The per-bucket extract block (around lines 89-103 of the current `compute.wgsl`).
+   Without this, dynamic shader_ids reach the opaque kernel but never get classified, so they fail to dispatch over any tile. **Verify**: register a dynamic material against a one-quad scene; confirm the classify pass writes its bucket non-zero (via `read_render_pass_timings` showing the per-shader_id pipeline runs).
 
 Expected outcome: registering and unregistering a dynamic material changes `dispatch_hash`; the cache invalidates; recompile fires on next render (but produces the same WGSL since the substitution hasn't been wired yet). Commit.
 
@@ -961,7 +1025,7 @@ Expected outcome: a custom material defined manually in `project.json` (in `asse
 
 ### Phase 6 — Extras pool + buffer slots
 
-1. **Stand up `crates/renderer/src/dynamic_materials/extras_pool.rs`**: 1 MiB `array<u32>` storage buffer (configurable via `AwsmRendererOptions::extras_pool_capacity`), free-list allocator keyed by `(MaterialShaderId, slot_name)` → contiguous slice. Methods: `allocate(material, slot, words)`, `free(material, slot)`, `write_slice(material, slot, &[u32])`.
+1. **Stand up `crates/renderer/src/dynamic_materials/extras_pool.rs`**: 1 MiB `array<u32>` storage buffer (configurable via `AwsmRendererOptions::extras_pool_capacity`), free-list allocator keyed by `(MaterialShaderId, slot_name)` → contiguous slice. The pool owns a `MappedUploader` companion (see [`crates/renderer/src/buffer/mapped_uploader.rs`](../../crates/renderer/src/buffer/mapped_uploader.rs) — `instances.transforms` is a good precedent for a "single big mutable slice" upload pattern). Methods: `allocate(material, slot, words)`, `free(material, slot)`, `write_slice(material, slot, &[u32])` (routes through `write_dirty_ranges` for tracked slices or `ingest_foreign` for first-time inserts; see §"Upload path" in **Renderer / Materials Changes**).
 2. **Add `shared_wgsl/extras.wgsl`** with `extras_pool` binding declaration and `extras_load_u32` / `extras_load_f32` / `extras_load_vec4_f32` helpers. Include in every pass that includes `material.wgsl` — they're peer modules.
 3. **Bind group plumbing**: add `extras_pool` to the same bind group that already carries `materials: array<u32>` (both in opaque-compute and transparent-fragment passes — see `material_transparent_wgsl/bind_groups.wgsl` for the existing binding). Pipeline layouts grow by one binding entry each. Verify the layout doesn't push past `maxStorageBuffersPerShaderStage`.
 4. **Per-frame upload**: when packing a `Material::Custom` instance into the materials pool, for each declared buffer slot:
@@ -1132,6 +1196,9 @@ Tick items as they land. A future session can resume by reading this list.
 - [ ] Transparent fragment shader cache key includes `dispatch_hash`
 - [ ] Idempotent registration on `(name, layout_hash, wgsl_hash)`
 - [ ] Verified: empty registry → `dispatch_hash` matches today's compiled WGSL
+- [ ] **`material_classify::BUCKET_COUNT` is registry-driven**, not a hard-coded `3`
+- [ ] **Classify `compute.wgsl` is an askama template** emitting `BUCKET_BIT_<name>` / shader_id → bit mapping / per-bucket extract — walked from the same registry as `materials_wgsl`
+- [ ] Verified: registering a dynamic material against a one-quad scene shows its bucket bit set + its pipeline dispatched (via `read_render_pass_timings`)
 
 ### Phase 4 — Opaque template substitution
 - [ ] Substitution emits `struct CustomMaterialData_<id>` per dynamic entry
@@ -1150,11 +1217,13 @@ Tick items as they land. A future session can resume by reading this list.
 
 ### Phase 6 — Extras pool + buffer slots
 - [ ] `crates/renderer/src/dynamic_materials/extras_pool.rs` — 1 MiB default `array<u32>` storage buffer with free-list allocator
+- [ ] **Pool owns a `MappedUploader` companion**; per-frame edits go through `write_dirty_ranges`, first-time inserts go through `ingest_foreign` (NOT raw `gpu.write_buffer`)
+- [ ] **`bytes_uploaded_via_writebuffer` telemetry counts initial buffer-slot loads**; `bytes_uploaded_via_ring` counts edits — verify via `read_upload_ring_stats()` after a material registration + edit cycle
 - [ ] `shared_wgsl/extras.wgsl` with `extras_load_u32` / `extras_load_f32` / `extras_load_vec4_f32` helpers
 - [ ] `extras_pool` bound alongside `materials` in opaque-compute and transparent-fragment passes
 - [ ] Per-frame upload resolves each `Material::Custom`'s buffer slots and writes `(offset, length)` u32 pairs after the texture-index tail
 - [ ] Auto-generated WGSL struct fields `<slot>_offset` / `<slot>_length` line up byte-for-byte with the packer
-- [ ] Pool resize on overflow (double capacity + `BindGroupRecreate::ExtrasPoolResize`)
+- [ ] Pool resize on overflow (double capacity + `BindGroupRecreate::ExtrasPoolResize`) — confirm the `MappedUploader` rebuilds at the new size cleanly (same path the `Dynamic*Buffer` resize uses today)
 - [ ] Fragmentation-triggered compaction (per-frame cap; moves ≤ 64 KiB per frame)
 - [ ] Second test material: irregular-flipbook reading `frames` from extras pool, with hand-authored `frames.bin`
 - [ ] Two instances with different `buffer_overrides` render independently
