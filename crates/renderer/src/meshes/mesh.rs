@@ -281,7 +281,26 @@ impl Mesh {
                 .transform_instance_count(self.transform_key)
                 .ok_or(AwsmMeshError::InstancingMissingTransforms(mesh_key))?;
             render_pass.draw_indexed_with_instance_count(index_count, instance_count as u32);
-        } else if ctx.frame_optimizations.get().indirect_geometry && self.world_aabb.is_some() {
+        } else if ctx.frame_optimizations.get().indirect_geometry
+            && self.world_aabb.is_some()
+            && !self.hud
+        {
+            // HUD meshes (gizmo, point handles, overlay primitives)
+            // ALWAYS take the CPU-recorded path. The compaction shader
+            // that populates `IndirectDrawArgs[mesh_meta_idx]` only sees
+            // `renderables.opaque` in `render.rs::opaque_snapshots` —
+            // HUD meshes are deliberately excluded so they don't
+            // participate in BVH-driven occlusion culling. That
+            // exclusion is correct for occlusion (HUD is always shown)
+            // but means the HUD slot in `args_buffer` stays zero, so
+            // the indirect draw below would dispatch `instance_count = 0`
+            // and write nothing to `visibility_data` — breaking GPU
+            // picking on HUD geometry (the gizmo handles couldn't be
+            // grabbed). Forcing HUD through the portable
+            // `set_first_instance` / dynamic-offset path bypasses the
+            // empty args slot and keeps the per-HUD-mesh
+            // `material_mesh_meta_offset` in visibility_data so the
+            // picker compute can resolve the right mesh key.
             // drawIndirect path. The compaction shader
             // populated `IndirectDrawArgs[mesh_meta_idx]` *last frame*
             // — static fields (`index_count`, `first_instance`) and

@@ -772,3 +772,74 @@ pub async fn read_oversized_mesh_stats() -> String {
     .await;
     format!("{{\"last_max_bucket\":{last_max_bucket},\"oversized_count\":{oversized_count}}}")
 }
+
+/// Dev-only: drive the renderer's GPU pick at the given canvas-local
+/// pixel coordinates and return what it found. Lets a JS-side test
+/// harness check picker correctness without dispatching a synthetic
+/// pointerdown (which spawns work asynchronously and is hard to
+/// observe). Reports the picked mesh key + whether it matches one of
+/// the active gizmo handles.
+///
+/// Result shape:
+/// ```json
+/// {"result":"hit","mesh_key":"MeshKey(NvN)","is_gizmo":true,"gizmo_kind":"TranslationX"}
+/// {"result":"miss"}
+/// {"result":"initializing"}
+/// {"result":"in_flight"}
+/// {"result":"error","message":"..."}
+/// ```
+#[wasm_bindgen]
+pub async fn debug_pick(x: i32, y: i32) -> String {
+    use awsm_renderer::picker::PickResult;
+    let handle = crate::context::renderer_handle();
+    let pick_result = {
+        let renderer = handle.lock().await;
+        renderer.pick(x, y).await
+    };
+    match pick_result {
+        Ok(PickResult::Hit(mesh_key)) => {
+            // Cross-check against the live gizmo handles so a JS caller
+            // can immediately see if a "Hit" landed on a gizmo mesh.
+            let state = app_state();
+            let controller_lock = state.transform_controller.lock().unwrap();
+            let is_gizmo = controller_lock
+                .as_ref()
+                .map(|c| c.is_gizmo_mesh_key(mesh_key))
+                .unwrap_or(false);
+            format!(
+                "{{\"result\":\"hit\",\"mesh_key\":\"{mesh_key:?}\",\"is_gizmo\":{is_gizmo}}}"
+            )
+        }
+        Ok(PickResult::Miss) => "{\"result\":\"miss\"}".to_string(),
+        Ok(PickResult::Initializing) => "{\"result\":\"initializing\"}".to_string(),
+        Ok(PickResult::InFlight) => "{\"result\":\"in_flight\"}".to_string(),
+        Err(err) => format!(
+            "{{\"result\":\"error\",\"message\":{}}}",
+            serde_json::to_string(&err.to_string()).unwrap_or_else(|_| "\"\"".to_string())
+        ),
+    }
+}
+
+/// Dev-only: dump the live `TransformController`'s gizmo mesh-key
+/// table so a JS caller can confirm the keys the controller is
+/// comparing against in `get_gizmo_mesh_kind`. Mostly useful for
+/// catching cases where the controller was built against keys that
+/// no longer exist in the renderer (e.g. a re-populate that
+/// invalidated the gltf load).
+#[wasm_bindgen]
+pub fn debug_gizmo_mesh_keys() -> String {
+    let state = app_state();
+    let controller_lock = state.transform_controller.lock().unwrap();
+    let Some(c) = controller_lock.as_ref() else {
+        return "{\"available\":false}".to_string();
+    };
+    let keys = c.gizmo_mesh_keys_debug();
+    format!(
+        "{{\"available\":true,\"selected_object\":{},\"keys\":{}}}",
+        c.selected_object
+            .map(|o| format!("{:?}", o.key))
+            .map(|s| serde_json::to_string(&s).unwrap_or_else(|_| "\"\"".to_string()))
+            .unwrap_or_else(|| "null".to_string()),
+        keys
+    )
+}

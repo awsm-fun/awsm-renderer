@@ -129,6 +129,28 @@ impl TransformController {
         self.get_gizmo_mesh_kind(mesh_key).is_some()
     }
 
+    /// Debug accessor for the gizmo mesh-key table. Returns a JSON
+    /// object string keyed by gizmo kind. Used by the
+    /// `measurement::debug_gizmo_mesh_keys` dev wasm-bindgen export
+    /// so a JS-side test harness can verify the keys the controller
+    /// is comparing against vs the keys the picker is returning.
+    pub fn gizmo_mesh_keys_debug(&self) -> String {
+        format!(
+            "{{\"arrow_x\":\"{:?}\",\"arrow_y\":\"{:?}\",\"arrow_z\":\"{:?}\",\
+             \"ring_x\":\"{:?}\",\"ring_y\":\"{:?}\",\"ring_z\":\"{:?}\",\
+             \"cube_x\":\"{:?}\",\"cube_y\":\"{:?}\",\"cube_z\":\"{:?}\"}}",
+            self.mesh_keys.arrow_x,
+            self.mesh_keys.arrow_y,
+            self.mesh_keys.arrow_z,
+            self.mesh_keys.ring_x,
+            self.mesh_keys.ring_y,
+            self.mesh_keys.ring_z,
+            self.mesh_keys.cube_x,
+            self.mesh_keys.cube_y,
+            self.mesh_keys.cube_z,
+        )
+    }
+
     pub fn zoom_gizmo_transforms(
         &self,
         renderer: &mut AwsmRenderer,
