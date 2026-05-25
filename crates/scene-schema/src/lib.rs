@@ -20,6 +20,7 @@ pub mod camera;
 pub mod collider;
 pub mod curve;
 pub mod decal;
+pub mod dynamic_material;
 pub mod environment;
 pub mod instances;
 pub mod light;
@@ -39,6 +40,7 @@ pub use camera::*;
 pub use collider::*;
 pub use curve::*;
 pub use decal::*;
+pub use dynamic_material::*;
 pub use environment::*;
 pub use instances::*;
 pub use light::*;
@@ -78,6 +80,7 @@ mod tests {
             environment: EnvironmentConfig::default(),
             shadows: Default::default(),
             assets,
+            custom_materials: Vec::new(),
             nodes: vec![EditorNode {
                 id: NodeId::new(),
                 name: "root".to_string(),

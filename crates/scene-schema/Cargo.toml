@@ -10,8 +10,17 @@ rust-version.workspace = true
 [dependencies]
 glam = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, optional = true }
 uuid = { version = "1.11.0", features = ["v4", "serde", "js"] }
 thiserror = { workspace = true }
+
+[features]
+# Native filesystem `load_material_folder`. Off by default so the wasm
+# build (which has no std::fs) doesn't pay a code-size cost. The
+# `scene-editor` / `material-editor` frontends use their own browser-
+# side folder readers; native consumers (tests, CLI tools) enable this.
+default = []
+fs-loader = ["dep:serde_json"]
 
 [dev-dependencies]
 serde_json = { workspace = true }

@@ -1,5 +1,6 @@
 use super::{
-    assets::AssetTable, environment::EnvironmentConfig, shadows::ShadowsConfig, tree::EditorNode,
+    assets::AssetTable, dynamic_material::CustomMaterialRef, environment::EnvironmentConfig,
+    shadows::ShadowsConfig, tree::EditorNode,
 };
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -24,6 +25,17 @@ pub struct EditorProject {
     pub shadows: ShadowsConfig,
     #[serde(default)]
     pub assets: AssetTable,
+    /// Custom (runtime-registered) materials imported into the project.
+    /// Each entry points at a material folder under
+    /// `<project>/assets/materials/<name>/`. The renderer-bridge walks
+    /// this list on project load, calls
+    /// `load_material_folder` for each, and registers the result via
+    /// `AwsmRenderer::register_material`.
+    ///
+    /// Old `project.json` files without this field round-trip via
+    /// `#[serde(default)]`.
+    #[serde(default)]
+    pub custom_materials: Vec<CustomMaterialRef>,
     #[serde(default)]
     pub nodes: Vec<EditorNode>,
 }

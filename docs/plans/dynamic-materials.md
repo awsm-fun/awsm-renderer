@@ -1944,22 +1944,32 @@ list.
 - [x] `AwsmDynamicMaterialError` added to top-level `AwsmError`
 
 ### Phase 1 — Schema + contract audit
-- [ ] `MaterialDefinition`, `UniformField`, `FieldType`,
+- [x] `MaterialDefinition`, `UniformField`, `FieldType`,
       `UniformValue`, `TextureSlot`, `BufferSlot` in scene-schema
-- [ ] `CustomMaterialRef` on project root; `MaterialRef::Custom` variant;
+- [x] `CustomMaterialRef` on project root; `MaterialRef::Custom` variant;
       `CustomMaterialInstance.buffer_overrides` + `BufferRef`
-- [ ] `load_material_folder` with full error variants (including
+- [x] `load_material_folder` with full error variants (including
       `.bin` size-not-multiple-of-4 and reserved-name `extras_pool` +
       `frame_globals` + `camera`)
-- [ ] `LoadedMaterialFolder.buffer_data` populated from `.bin` files
-- [ ] Round-trip test for a hand-built material (including a
+- [x] `LoadedMaterialFolder.buffer_data` populated from `.bin` files
+- [x] Round-trip test for a hand-built material (including a
       `BufferSlot` with a `.bin` default)
-- [ ] All four first-party WGSL audited (PBR / Unlit / Toon /
+- [x] All four first-party WGSL audited (PBR / Unlit / Toon /
       FlipBook); function signatures + helpers-in-scope documented
-- [ ] `docs/dynamic-materials/contract-opaque.md` written
-- [ ] `docs/dynamic-materials/contract-transparent.md` written
-- [ ] First-party materials refactored to conform if needed
-- [ ] This plan updated with any contract details that emerged
+- [x] `docs/dynamic-materials/contract-opaque.md` written
+- [x] `docs/dynamic-materials/contract-transparent.md` written
+- [~] First-party materials refactored to conform if needed — deferred
+      to Phase 4. The contract docs describe the wrapper shape
+      (`custom_shade_<ID>(input) -> output`) the substitution emits;
+      first-party fragments don't need refactoring because they're
+      called directly from the kernel's `{% if shader_id == ... %}`
+      arms, not through the wrapper. Phase 4's substitution lands the
+      `OpaqueShadingInput`/`Output` structs the contract describes.
+- [x] This plan updated with any contract details that emerged
+      (per-mesh routing lives in `MaterialShading::Custom`-equivalent
+      `NodeKind::Primitive.custom_material: Option<CustomMaterialInstance>`
+      because this codebase's `MaterialRef` is a typed AssetId wrapper,
+      not a tagged enum — see `dynamic_material.rs` doc comment)
 
 ### Phase 2 — Layout helpers + DynamicMaterial impl
 - [ ] `crates/materials/src/dynamic_layout.rs` with

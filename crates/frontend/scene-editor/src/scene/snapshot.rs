@@ -18,6 +18,11 @@ pub fn capture(scene: &Scene) -> EditorProject {
     let environment = scene.environment.get_cloned();
     let shadows = scene.shadows.get_cloned();
     let assets = scene.assets.lock().unwrap().clone();
+    // Phase 5 of the dynamic-materials plan will populate this from the
+    // editor's reactive `Scene::custom_materials` mutable; Phase 1's
+    // snapshot keeps it empty so the schema field round-trips cleanly
+    // without yet wiring an editor-side store.
+    let custom_materials: Vec<awsm_scene_schema::CustomMaterialRef> = Vec::new();
     let nodes = scene
         .nodes
         .lock_ref()
@@ -33,6 +38,7 @@ pub fn capture(scene: &Scene) -> EditorProject {
         environment,
         shadows,
         assets,
+        custom_materials,
         nodes,
     }
 }
