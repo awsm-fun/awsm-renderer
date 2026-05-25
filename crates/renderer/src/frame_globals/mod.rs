@@ -217,8 +217,8 @@ impl AwsmRenderer {
     /// reports `delta_time == 0.0`, which is the correct answer for a
     /// paused simulation.
     ///
-    /// Pass `f32::NEG_INFINITY` (or call [`AwsmRenderer::clear_time_source`])
-    /// to return to wall-clock time.
+    /// Call [`AwsmRenderer::clear_time_source`] to return to the
+    /// wall-clock source.
     pub fn set_time_source(&mut self, time: f32) {
         self.frame_globals.set_time_source(time);
     }
