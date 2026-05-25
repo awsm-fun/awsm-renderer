@@ -74,35 +74,46 @@ impl ComputePipelines {
     where
         I: IntoIterator<Item = ComputePipelineCacheKey>,
     {
+        // Each cache key is allocated/cloned exactly once — when it
+        // crosses the IntoIterator boundary into `inputs`. Cache misses
+        // keep the key alive in `inputs` until install time, then move
+        // it into `self.cache` via `Option::take`. See
+        // `RenderPipelines::ensure_keys` for the longer rationale.
         let inputs: Vec<ComputePipelineCacheKey> = cache_keys.into_iter().collect();
         let mut slot: Vec<Option<ComputePipelineKey>> = vec![None; inputs.len()];
 
-        let mut pending_keys: Vec<ComputePipelineCacheKey> = Vec::new();
-        let mut pending_indices: Vec<Vec<usize>> = Vec::new();
-        let mut seen: HashMap<ComputePipelineCacheKey, usize> = HashMap::new();
+        let mut pending_input_indices: Vec<usize> = Vec::new();
+        let mut pending_targets: Vec<Vec<usize>> = Vec::new();
 
-        for (i, cache_key) in inputs.iter().enumerate() {
-            if let Some(key) = self.cache.get(cache_key) {
-                slot[i] = Some(*key);
-                continue;
+        {
+            let mut seen: HashMap<&ComputePipelineCacheKey, usize> = HashMap::new();
+            for (i, cache_key) in inputs.iter().enumerate() {
+                if let Some(key) = self.cache.get(cache_key) {
+                    slot[i] = Some(*key);
+                    continue;
+                }
+                if let Some(&pending_idx) = seen.get(cache_key) {
+                    pending_targets[pending_idx].push(i);
+                    continue;
+                }
+                seen.insert(cache_key, pending_input_indices.len());
+                pending_targets.push(vec![i]);
+                pending_input_indices.push(i);
             }
-            if let Some(&pending_idx) = seen.get(cache_key) {
-                pending_indices[pending_idx].push(i);
-                continue;
-            }
-            seen.insert(cache_key.clone(), pending_keys.len());
-            pending_indices.push(vec![i]);
-            pending_keys.push(cache_key.clone());
         }
 
-        if pending_keys.is_empty() {
+        if pending_input_indices.is_empty() {
             return Ok(slot.into_iter().map(Option::unwrap).collect());
         }
 
         let mut descriptors: Vec<web_sys::GpuComputePipelineDescriptor> =
-            Vec::with_capacity(pending_keys.len());
-        for cache_key in &pending_keys {
-            descriptors.push(build_descriptor(cache_key, shaders, pipeline_layouts)?);
+            Vec::with_capacity(pending_input_indices.len());
+        for &input_idx in &pending_input_indices {
+            descriptors.push(build_descriptor(
+                &inputs[input_idx],
+                shaders,
+                pipeline_layouts,
+            )?);
         }
 
         let promises: Vec<JsFuture<web_sys::GpuComputePipeline>> = descriptors
@@ -112,15 +123,23 @@ impl ComputePipelines {
 
         let results = futures::future::join_all(promises).await;
 
-        for ((cache_key, result), input_indices) in
-            pending_keys.into_iter().zip(results).zip(pending_indices)
+        let mut inputs_owned: Vec<Option<ComputePipelineCacheKey>> =
+            inputs.into_iter().map(Some).collect();
+
+        for ((input_idx, result), input_targets) in pending_input_indices
+            .into_iter()
+            .zip(results)
+            .zip(pending_targets)
         {
             let pipeline: web_sys::GpuComputePipeline = result
                 .map_err(|e| AwsmComputePipelineError::Core(AwsmCoreError::pipeline_creation(e)))?
                 .unchecked_into();
             let key = self.lookup.insert(pipeline);
+            let cache_key = inputs_owned[input_idx]
+                .take()
+                .expect("pending input slot must own its key");
             self.cache.insert(cache_key, key);
-            for i in input_indices {
+            for i in input_targets {
                 slot[i] = Some(key);
             }
         }

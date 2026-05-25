@@ -90,32 +90,47 @@ impl RenderPipelines {
     where
         I: IntoIterator<Item = RenderPipelineCacheKey>,
     {
-        // Collect input order; resolve cache hits and dedup the misses
-        // in a single pass. `slot[i]` is `Some(key)` once we know which
-        // RenderPipelineKey to return for input index `i`.
+        // Collect input order. Each cache key is allocated/cloned
+        // exactly *once* — when it crosses the IntoIterator boundary
+        // into `inputs`. Cache hits never touch the owned key after
+        // that; cache misses keep the key in `inputs` until install
+        // time, when it's moved into `self.cache` by `Option::take`.
+        // `RenderPipelineCacheKey` carries heap vectors (vertex
+        // layouts, fragment targets, constants) so the double-clone
+        // the previous version did (once into the dedup `seen` map,
+        // once into a separate `pending_keys` vec) showed up on the
+        // per-mesh transparent batch path.
         let inputs: Vec<RenderPipelineCacheKey> = cache_keys.into_iter().collect();
         let mut slot: Vec<Option<RenderPipelineKey>> = vec![None; inputs.len()];
 
-        // Misses (dedup'd) and the input indices that want each one.
-        let mut pending_keys: Vec<RenderPipelineCacheKey> = Vec::new();
-        let mut pending_indices: Vec<Vec<usize>> = Vec::new();
-        let mut seen: HashMap<RenderPipelineCacheKey, usize> = HashMap::new();
+        // Misses, dedup'd. `pending_input_indices[pending_idx]` is
+        // the index into `inputs` whose cache key represents the
+        // pending compile; `pending_targets[pending_idx]` is every
+        // input slot that wants the resulting RenderPipelineKey.
+        let mut pending_input_indices: Vec<usize> = Vec::new();
+        let mut pending_targets: Vec<Vec<usize>> = Vec::new();
 
-        for (i, cache_key) in inputs.iter().enumerate() {
-            if let Some(key) = self.cache.get(cache_key) {
-                slot[i] = Some(*key);
-                continue;
+        // Dedup pass — `seen` borrows into `inputs` so it never
+        // clones a cache key. Scoped block so the borrow on `inputs`
+        // is released before we move keys out of it below.
+        {
+            let mut seen: HashMap<&RenderPipelineCacheKey, usize> = HashMap::new();
+            for (i, cache_key) in inputs.iter().enumerate() {
+                if let Some(key) = self.cache.get(cache_key) {
+                    slot[i] = Some(*key);
+                    continue;
+                }
+                if let Some(&pending_idx) = seen.get(cache_key) {
+                    pending_targets[pending_idx].push(i);
+                    continue;
+                }
+                seen.insert(cache_key, pending_input_indices.len());
+                pending_targets.push(vec![i]);
+                pending_input_indices.push(i);
             }
-            if let Some(&pending_idx) = seen.get(cache_key) {
-                pending_indices[pending_idx].push(i);
-                continue;
-            }
-            seen.insert(cache_key.clone(), pending_keys.len());
-            pending_indices.push(vec![i]);
-            pending_keys.push(cache_key.clone());
         }
 
-        if pending_keys.is_empty() {
+        if pending_input_indices.is_empty() {
             return Ok(slot.into_iter().map(Option::unwrap).collect());
         }
 
@@ -124,9 +139,13 @@ impl RenderPipelines {
         // them alive for the duration of the parallel await — Dawn
         // reads from the JS object the descriptor wraps.
         let mut descriptors: Vec<web_sys::GpuRenderPipelineDescriptor> =
-            Vec::with_capacity(pending_keys.len());
-        for cache_key in &pending_keys {
-            descriptors.push(build_descriptor(cache_key, shaders, pipeline_layouts)?);
+            Vec::with_capacity(pending_input_indices.len());
+        for &input_idx in &pending_input_indices {
+            descriptors.push(build_descriptor(
+                &inputs[input_idx],
+                shaders,
+                pipeline_layouts,
+            )?);
         }
 
         // Sync-issue every Promise. Dawn has started compiling all N
@@ -139,17 +158,27 @@ impl RenderPipelines {
         // Await all in parallel.
         let results = futures::future::join_all(promises).await;
 
-        // Install in the order we issued; copy keys back into every
-        // input slot that requested each cache key.
-        for ((cache_key, result), input_indices) in
-            pending_keys.into_iter().zip(results).zip(pending_indices)
+        // Move owned cache keys out of `inputs` exactly once each, in
+        // input order, so `self.cache.insert(cache_key, key)` takes
+        // ownership without an extra clone. Unconsumed `None` slots
+        // (cache hits) drop with `inputs_owned` at end of function.
+        let mut inputs_owned: Vec<Option<RenderPipelineCacheKey>> =
+            inputs.into_iter().map(Some).collect();
+
+        for ((input_idx, result), input_targets) in pending_input_indices
+            .into_iter()
+            .zip(results)
+            .zip(pending_targets)
         {
             let pipeline: web_sys::GpuRenderPipeline = result
                 .map_err(|e| AwsmRenderPipelineError::Core(AwsmCoreError::pipeline_creation(e)))?
                 .unchecked_into();
             let key = self.lookup.insert(pipeline);
+            let cache_key = inputs_owned[input_idx]
+                .take()
+                .expect("pending input slot must own its key");
             self.cache.insert(cache_key, key);
-            for i in input_indices {
+            for i in input_targets {
                 slot[i] = Some(key);
             }
         }
