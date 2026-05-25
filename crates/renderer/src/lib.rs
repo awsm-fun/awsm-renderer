@@ -372,32 +372,27 @@ impl AwsmRenderer {
             None
         };
 
-        // Walk the live mesh set and dedup by (buffer_info, material).
-        // Empty `meshes` short-circuits to a no-op below.
-        let mut has_seen_buffer_info: slotmap::SecondaryMap<
-            crate::meshes::buffer_info::MeshBufferInfoKey,
-            (),
-        > = slotmap::SecondaryMap::new();
-        let mut has_seen_material: slotmap::SecondaryMap<crate::materials::MaterialKey, ()> =
-            slotmap::SecondaryMap::new();
+        // Build one request per mesh. `ensure_keys` on both caches
+        // dedupes internally by cache key, so we don't need to
+        // dedupe at the request level — and dedup'ing here by
+        // `(buffer_info, material)` OR-style (the previous
+        // pre-existing pattern) misses pairs like (A,M1)(B,M2)(A,M2)
+        // when M1 and M2 differ in `has_transmission`, which would
+        // leave some meshes with stale pipeline-key map entries.
         let mut requests: Vec<
             crate::render_passes::material_transparent::pipeline::TransparentMeshPipelineRequest,
         > = Vec::new();
         for (mesh_key, mesh) in self.meshes.iter() {
             let buffer_info_key = self.meshes.buffer_info_key(mesh_key)?;
-            if has_seen_buffer_info.insert(buffer_info_key, ()).is_none()
-                || has_seen_material.insert(mesh.material_key, ()).is_none()
-            {
-                let has_transmission = self.materials.has_transmission(mesh.material_key);
-                requests.push(
-                    crate::render_passes::material_transparent::pipeline::TransparentMeshPipelineRequest {
-                        mesh,
-                        mesh_key,
-                        buffer_info_key,
-                        has_transmission,
-                    },
-                );
-            }
+            let has_transmission = self.materials.has_transmission(mesh.material_key);
+            requests.push(
+                crate::render_passes::material_transparent::pipeline::TransparentMeshPipelineRequest {
+                    mesh,
+                    mesh_key,
+                    buffer_info_key,
+                    has_transmission,
+                },
+            );
         }
 
         if requests.is_empty() {
@@ -542,21 +537,31 @@ impl AwsmRenderer {
 /// will be cached next time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RendererLoadingPhase {
-    /// Adapter / device acquisition + initial bookkeeping. Quick
-    /// (single-digit ms) on every load.
+    /// Adapter / device acquisition + initial bookkeeping +
+    /// supporting resource generation (IBL default cubemaps, BRDF
+    /// LUT compute, opaque-mipgen pipeline). Quick on every load.
     Init,
-    /// WGSL templates being compiled into GPU shader modules. On a
-    /// cold PSO disk cache this is the dominant cost (Dawn lowers
-    /// every variant to MSL); on a warm cache it's effectively
-    /// instant. Includes shadow shaders, geometry, material, classify,
-    /// HZB, effects, etc.
+    /// The main render-pass pipeline build — `RenderPasses::new`
+    /// concurrently with `RenderTextures::new`. On a cold PSO disk
+    /// cache this is the dominant cost (Dawn lowers every WGSL
+    /// variant to MSL and then compiles every pipeline against the
+    /// new module); on a warm cache it's effectively instant.
+    /// Shader compilation and pipeline assembly happen interleaved
+    /// inside this phase — they're not cleanly separable into two
+    /// distinct stages, which is why there's only one phase variant
+    /// for both. Includes shadow shaders, geometry, material,
+    /// classify, HZB, effects, etc.
     CompilingShaders,
-    /// Render + compute pipeline objects being constructed from the
-    /// compiled shaders. Smaller than `CompilingShaders` on cold, also
-    /// effectively instant on warm.
+    /// Remaining renderer-side pipeline construction *after* the
+    /// main `RenderPasses::new` batch: picker / line-renderer /
+    /// material-classify buffers / occlusion / coverage / decal
+    /// allocation. Each is light by itself, but they happen serially
+    /// so the cumulative wall-clock is visible to the user on cold
+    /// loads.
     BuildingPipelines,
-    /// Textures (IBL / BRDF LUT / skybox / opaque mipgen), picker,
-    /// line renderer, and any remaining renderer-init bookkeeping.
+    /// Shadow subsystem build (shadow caster + EVSM pipelines) +
+    /// anti-aliasing / post-processing setter pipelines. Roughly the
+    /// last shader-compile work before the renderer is interactive.
     FinalizingScene,
     /// All renderer-init work done; ready to render.
     Ready,
@@ -858,15 +863,6 @@ impl AwsmRendererBuilder {
         let camera = camera::CameraBuffer::new(&gpu)?;
         let frame_globals = crate::frame_globals::FrameGlobals::new(&gpu)?;
 
-        // Bulk shader + pipeline compilation begins here. On a cold
-        // PSO disk cache (fresh Chrome profile, post-redeploy first
-        // load) this is the window where the user actually waits —
-        // tens of seconds while Dawn lowers every WGSL variant to
-        // MSL. Surface the phase so the UI can show "Browser is
-        // compiling shaders…" instead of a frozen "Initializing
-        // renderer…".
-        emit_phase(RendererLoadingPhase::CompilingShaders);
-
         // Three default-cubemap creations (prefiltered IBL / irradiance
         // IBL / skybox), the BRDF LUT generation, and the opaque
         // mipgen pipeline are independent `&gpu`-only GPU operations.
@@ -939,6 +935,18 @@ impl AwsmRendererBuilder {
             textures: &mut textures,
             features: &features,
         };
+
+        // Bulk shader + pipeline compilation begins here. On a cold
+        // PSO disk cache (fresh Chrome profile, post-redeploy first
+        // load) this is the window where the user actually waits —
+        // tens of seconds while Dawn lowers every WGSL variant to
+        // MSL and assembles every pipeline. Shader compilation and
+        // pipeline assembly are interleaved (each pass batches its
+        // own shaders then its own pipelines) so there's no clean
+        // boundary between "shaders done" and "pipelines start";
+        // the `CompilingShaders` phase covers the whole block.
+        emit_phase(RendererLoadingPhase::CompilingShaders);
+
         let (render_passes, render_textures) =
             futures::future::try_join(RenderPasses::new(&mut render_pass_init, &features), async {
                 RenderTextures::new(&gpu, formats_for_textures, &features)
@@ -947,12 +955,11 @@ impl AwsmRendererBuilder {
             })
             .await?;
 
-        // RenderPasses + RenderTextures done — the heavy shader +
-        // pipeline compile is behind us. The remaining work
-        // (picker / line / shadow / decal / occlusion buffer
-        // allocation, lights, etc.) is faster and a different
-        // shape of work entirely; signal the transition so
-        // frontends can update their loading message.
+        // Main render-pass compile done. Picker / line-renderer /
+        // material-classify / occlusion / coverage / decal still
+        // need their pipelines built before the first frame;
+        // signal the transition so the UI message stops claiming
+        // shader compile is in progress.
         emit_phase(RendererLoadingPhase::BuildingPipelines);
 
         // Pre-warm the shader cache with everything Picker + LineRenderer

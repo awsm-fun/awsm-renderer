@@ -163,26 +163,27 @@ impl AwsmRenderer {
         // -----------------------------------------------------------
         use crate::render_passes::material_transparent::pipeline::TransparentMeshPipelineRequest;
 
+        // Build one request per mesh. The previous OR-style dedup
+        // ("skip if buffer_info OR material was already seen") was a
+        // pre-existing bug — for mesh sets like (A,M1), (B,M2),
+        // (A,M2), (B,M1) it skips the third / fourth pair even
+        // though they produce different pipeline cache keys (e.g.
+        // when M1 and M2 differ in `has_transmission`), leaving
+        // those meshes with stale pipeline-key map entries after
+        // the layout change. `Shaders::ensure_keys` and
+        // `RenderPipelines::ensure_keys` both dedupe internally by
+        // their cache keys, so the cost of sending all meshes is
+        // just a couple of extra hash probes per mesh.
         let mut transparent_requests: Vec<TransparentMeshPipelineRequest> = Vec::new();
-        let mut has_seen_buffer_info: SecondaryMap<
-            crate::meshes::buffer_info::MeshBufferInfoKey,
-            (),
-        > = SecondaryMap::new();
-        let mut has_seen_material: SecondaryMap<crate::materials::MaterialKey, ()> =
-            SecondaryMap::new();
         for (mesh_key, mesh) in self.meshes.iter() {
             let buffer_info_key = self.meshes.buffer_info_key(mesh_key)?;
-            if has_seen_buffer_info.insert(buffer_info_key, ()).is_none()
-                || has_seen_material.insert(mesh.material_key, ()).is_none()
-            {
-                let has_transmission = self.materials.has_transmission(mesh.material_key);
-                transparent_requests.push(TransparentMeshPipelineRequest {
-                    mesh,
-                    mesh_key,
-                    buffer_info_key,
-                    has_transmission,
-                });
-            }
+            let has_transmission = self.materials.has_transmission(mesh.material_key);
+            transparent_requests.push(TransparentMeshPipelineRequest {
+                mesh,
+                mesh_key,
+                buffer_info_key,
+                has_transmission,
+            });
         }
 
         let mut all_shader_keys: Vec<crate::shaders::ShaderCacheKey> = Vec::new();
