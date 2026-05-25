@@ -468,8 +468,11 @@ buffers) flow through a **mapped staging ring** instead of
   per-upload command encoder, and submits.
 - Once a slot has been submitted the uploader auto-kicks `mapAsync`
   on the oldest still-`Submitted` slot so its bytes are ready by the
-  time the cursor wraps back. `spawn_local` + a shared `Cell<bool>`
-  flag in the slot promotes `Pending → Ready` on the main thread.
+  time the cursor wraps back. `spawn_local` + a shared
+  `Arc<AtomicBool>` flag in the slot promotes `Pending → Ready` on
+  the main thread (renderer-wide convention: shared interior
+  mutability uses `Arc` + atomics / `Mutex` so the same types
+  compile unchanged the day a subsystem moves across threads).
 - On dest-buffer growth: the ring rebuilds at the new size in one
   shot (live `Mapped` slots are explicitly `unmap`ped to keep
   validation quiet; in-flight slots ride their `GpuBuffer`
@@ -588,14 +591,23 @@ pick when:
 - The main thread runs game logic / audio / network code that
   can't tolerate the parse-blocking latency.
 
-### Unsupported formats fall back
+### Unsupported formats fail fast
 
 `createImageBitmap` rejects unsupported formats (KTX2, Basis,
-etc.). The worker tags those entries with `bitmap: None` and
-keeps the encoded bytes — `into_loader` re-decodes them on the
-main thread via the pure-Rust `image` crate path. Same
-behaviour as the inline loader, no observable difference at
-the populate step.
+etc.). The worker treats rejection as fatal and propagates the
+error up out of the dispatch (`anyhow::Context` annotates the
+mime type + URI so the caller knows which entry broke). The
+earlier "carry encoded bytes, main thread re-decodes" fallback
+was theatre: `GltfParseOutput::into_loader`'s main-thread
+fallback used the exact same `createImageBitmap` shim, so a
+format the worker browser rejected would fail identically on
+the main thread after a bytes round-trip — pure overhead.
+Decision rationale and the design note for a future Rust-side
+decoder (e.g. `image` crate basis support behind a feature
+flag) live in [`crates/renderer-gltf/src/worker_job.rs`][gp]'s
+`import_image_data` doc.
+
+[gp]: ../crates/renderer-gltf/src/worker_job.rs
 
 [mu]: ../crates/renderer/src/buffer/mapped_uploader.rs
 
@@ -1231,7 +1243,7 @@ scene-editor exposes four `#[cfg(debug_assertions)]`
 | `read_oversized_mesh_stats()` | JSON string | `{ last_max_bucket, oversized_count }` from `LightMeshBuckets`. |
 | `read_render_pass_timings(min_count)` | JSON string | Per-pass `count / mean / p50 / p95 / max / total` (ms). Strips the `[id]: span-measure` suffix `tracing-web` appends so call sites collapse into one bucket. Clears measures after sampling. Pass `min_count=0` to include rare init spans (GLTF parse, etc.). |
 | `read_upload_ring_stats()` | JSON string | Phase-2.1 mapped-upload-ring telemetry, keyed by subsystem (`transforms`, `materials`, `instances.transforms`, `meshes.meta.*`, …) plus a `_total` rollup. Each entry includes `peak_ring_depth_used / fallback_count / map_async_wait_ms / bytes_uploaded_via_{ring,fallback,writebuffer} / resize_count`. Steady state on `tuning-10k-meshes` should see `_total.fallback_count == 0`; non-zero means a buffer's ring depth (default 3) is too shallow for its frame cadence. |
-| `measure_gltf_load_ab(url, iterations)` | JSON string | Phase-4.3b A/B: `{ inline_ms[], worker_ms[], inline_mean, worker_mean, speedup }`. Drives the flip-to-default decision on `asset_cache::load_and_populate`. Result on Corset.glb (12.8 MB): inline 184 ms / worker 24209 ms → **inline stays default**. The bottleneck is `serde_wasm_bindgen` encoding the multi-MB `Vec<u8>` payloads (buffers + image bytes) into JS-native nested Objects before structured-clone across postMessage. See [§Worker-mode gltf parse](#worker-mode-gltf-parse) below for what's needed to make worker mode viable. |
+| `measure_gltf_load_ab(url, iterations)` | JSON string | Phase-4.3b A/B: `{ inline_ms[], worker_ms[], inline_mean, worker_mean, speedup }`. Drives the flip-to-default decision on `asset_cache::load_and_populate`. Current result on Corset.glb (12.8 MB), post the `serde_bytes` encoding fix + in-worker `ImageBitmap` decode + handle-transfer side-channel: inline **196 ms** / worker **91 ms** → worker is **2.15×** faster, but **inline stays default** for the pool-prewarm + CSP-fallback reasons documented in [§5c](#5c-worker-mode-gltf-parse--measured-faster-than-inline). |
 
 Per-frame render-pass timings come from
 `performance.getEntriesByType('measure')` — `tracing-web`'s

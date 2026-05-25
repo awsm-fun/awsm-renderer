@@ -536,9 +536,12 @@ pub struct WorkerPoolStats {
     pub jobs_dispatched: u64,
     pub jobs_completed: u64,
     pub jobs_failed: u64,
-    /// Total wall-clock time jobs spent queued before a worker
-    /// picked them up.
-    pub queue_wait_ms: f64,
+    /// Accumulated dispatch→result round-trip for completed jobs.
+    /// Renamed from the original `queue_wait_ms` spec name when the
+    /// round-robin scheduler shipped — there's no real queue, so
+    /// "queue wait" was a misnomer. See `crates/renderer/src/workers/pool.rs`
+    /// for the live impl.
+    pub job_round_trip_ms: f64,
 }
 
 // Auto-bundle-URL discovery. Inline JS gets embedded into the
@@ -1273,13 +1276,19 @@ Sprint-original gates:
   in `PERFORMANCE.md §5d`.
 - Phase 4.3a worker infrastructure — async-`WorkerJob` dispatch
   works end-to-end (exercised by the 4.3b A/B harness).
-- Phase 4.3b measurement gate — ran on Corset.glb, applied the
-  `serde_bytes` optimisation (137× speedup, 24209ms → 206ms),
-  documented the flip-to-default decision: **inline stays default**
-  per `PERFORMANCE.md §5c` because end-to-end the inline path is
-  still ~2× faster on a single asset; the worker path is the right
-  pick when consumers care about *main-thread responsiveness during
-  load* (shipped games loading mid-gameplay).
+- Phase 4.3b measurement gate — ran on Corset.glb, applied two
+  follow-on optimisations after the initial A/B made the decision:
+  (a) the `serde_bytes` encoding fix (137× speedup, 24209 ms →
+  206 ms), and (b) the in-worker `createImageBitmap` decode + handle-
+  transfer side-channel that eliminated the ~150 ms main-thread
+  decode hop (206 ms → 91 ms). Net: worker is now **2.15× faster**
+  than inline on Corset, not 2× slower. The flip-to-default
+  decision still holds — **inline stays default** in
+  `asset_cache::load_and_populate` — but for *different* reasons
+  per `PERFORMANCE.md §5c`: a pre-warmed pool at editor startup and
+  a graceful bootstrap-failure fallback are needed first. See
+  [`optimizations-next.md §2`](optimizations-next.md) for the
+  follow-on sprint that lands those.
 - Phase 4.4 OffscreenCanvas — audit, builder API, `CanvasKind`
   enum, `WorkerInputEvent` enum, and the `crates/examples/render-worker/`
   reference consumer all landed; the example boots end-to-end and
@@ -1297,8 +1306,14 @@ Items explicitly considered and rejected; the reasoning is
 preserved so the next picker doesn't re-propose them.
 
 - **`Arc<Mutex<...>>` → `Rc<RefCell<...>>`**. The `Send`/`Sync`
-  shape is intentional multi-threading future-proofing. On wasm32
-  the lock-acquire is essentially free.
+  shape is intentional multi-threading future-proofing — applied
+  uniformly so the convention stays consistent across the renderer
+  even where the inner type is `!Send` (most containers wrap
+  `web_sys::GpuBuffer` / `GpuBindGroup` / `JsValue` / `Closure`,
+  none of which are `Send` today). The `Arc<Mutex<…>>` doesn't
+  *grant* `Sync` on those containers right now, but the day a
+  `web_sys` upgrade makes the inner types `Send`, the wrappers
+  drop in unchanged. On wasm32 the lock-acquire is essentially free.
 - **URL switches for runtime-togglable behaviour**. Project
   convention: editor header tabs. MSAA migrated in Phase 0.1;
   `?ifi` / `?features` deferred — `RendererFeatures` is read at
