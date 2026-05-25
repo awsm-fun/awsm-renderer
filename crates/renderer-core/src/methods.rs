@@ -164,12 +164,26 @@ impl AwsmRendererWebGpu {
         descriptor: &web_sys::GpuRenderPipelineDescriptor,
     ) -> Result<web_sys::GpuRenderPipeline> {
         let pipeline: web_sys::GpuRenderPipeline =
-            JsFuture::from(self.device.create_render_pipeline_async(descriptor))
+            JsFuture::from(self.create_render_pipeline_promise(descriptor))
                 .await
                 .map_err(AwsmCoreError::pipeline_creation)?
                 .unchecked_into();
 
         Ok(pipeline)
+    }
+
+    /// Sync-issue variant of [`Self::create_render_pipeline`]. Returns
+    /// the raw `js_sys::Promise` that `createRenderPipelineAsync`
+    /// returned — Dawn has *already begun* compiling by the time this
+    /// returns. Used by batched-prewarm paths that want to fire N
+    /// `createRenderPipelineAsync` calls back-to-back (so Dawn's
+    /// compile pool parallelises them) before awaiting any of them.
+    /// See `RenderPipelines::ensure_keys`.
+    pub fn create_render_pipeline_promise(
+        &self,
+        descriptor: &web_sys::GpuRenderPipelineDescriptor,
+    ) -> js_sys::Promise<web_sys::GpuRenderPipeline> {
+        self.device.create_render_pipeline_async(descriptor)
     }
 
     /// Example usage:
@@ -180,12 +194,21 @@ impl AwsmRendererWebGpu {
         descriptor: &web_sys::GpuComputePipelineDescriptor,
     ) -> Result<web_sys::GpuComputePipeline> {
         let pipeline: web_sys::GpuComputePipeline =
-            JsFuture::from(self.device.create_compute_pipeline_async(descriptor))
+            JsFuture::from(self.create_compute_pipeline_promise(descriptor))
                 .await
                 .map_err(AwsmCoreError::pipeline_creation)?
                 .unchecked_into();
 
         Ok(pipeline)
+    }
+
+    /// Sync-issue variant of [`Self::create_compute_pipeline`]. See
+    /// `create_render_pipeline_promise` for the rationale.
+    pub fn create_compute_pipeline_promise(
+        &self,
+        descriptor: &web_sys::GpuComputePipelineDescriptor,
+    ) -> js_sys::Promise<web_sys::GpuComputePipeline> {
+        self.device.create_compute_pipeline_async(descriptor)
     }
 
     /// Example usage:
