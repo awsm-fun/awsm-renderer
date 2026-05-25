@@ -211,13 +211,19 @@ impl RenderPasses {
         ctx: &mut RenderPassInitContext<'a>,
         features: &RendererFeatures,
     ) -> Result<Self> {
-        let plan = Self::describe_shaders(ctx, features).await?;
-        ctx.shaders
-            .ensure_keys(ctx.gpu, plan.shader_cache_keys.clone())
-            .await?;
-        let descs = Self::describe_pipelines(plan, ctx, features).await?;
-        let compute_pool = descs.compute_pipeline_cache_keys.clone();
-        let render_pool = descs.render_pipeline_cache_keys.clone();
+        let mut plan = Self::describe_shaders(ctx, features).await?;
+        // `mem::take` rather than `clone`: `describe_pipelines`
+        // reads `plan.bindings` only, never `plan.shader_cache_keys`,
+        // so we can move the Vec out and leave the field empty.
+        let shader_keys = std::mem::take(&mut plan.shader_cache_keys);
+        ctx.shaders.ensure_keys(ctx.gpu, shader_keys).await?;
+        let mut descs = Self::describe_pipelines(plan, ctx, features).await?;
+        // Same trick for the pipeline pools: `from_resolved` consumes
+        // `descs` but doesn't read either pipeline_cache_keys Vec
+        // (it slices the resolved-keys Vecs the orchestrator passes
+        // back), so move the pools out instead of cloning.
+        let compute_pool = std::mem::take(&mut descs.compute_pipeline_cache_keys);
+        let render_pool = std::mem::take(&mut descs.render_pipeline_cache_keys);
         let compute_keys = ctx
             .pipelines
             .compute

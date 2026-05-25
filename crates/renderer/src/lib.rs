@@ -862,36 +862,33 @@ impl AwsmRendererBuilder {
         let frame_globals = crate::frame_globals::FrameGlobals::new(&gpu)?;
 
         // One mega-join covering every independent &gpu-only async
-        // task at build time:
+        // task in the build's setup stage:
         //
         //   - 3 default-cubemap creations (prefiltered IBL / irradiance
         //     IBL / skybox)
         //   - BRDF LUT generation
         //   - opaque-mipgen pipeline construction
-        //   - `RenderPasses::new` (the bulk of shader / pipeline
-        //     compilation — internally already 3 awaits worth of
-        //     pooled work)
+        //   - `RenderPasses::describe_shaders` (bind-group setup +
+        //     per-pass shader cache key collection — no Dawn
+        //     shader/pipeline compile yet; that's stages 2 and 3
+        //     below)
         //   - `RenderTextures::new`
         //
         // The five texture-prep futures only touch `&gpu` (the
         // `prepare_resources` half of the prepare/register split is
-        // intentional infrastructure for exactly this kind of merge);
-        // RenderPasses::new holds `&mut` on the shader / pipeline /
-        // bind-group-layout caches and reads from `&mut textures` via
-        // `RenderPassInitContext`, but those reads (pool.arrays_len,
-        // pool_sampler_set, pool.texture_views, get_sampler over
-        // pool_sampler_set, texture_transforms_gpu_buffer) are
-        // disjoint from anything `IblTexture::register` /
-        // `Skybox::register` later mutate — register inserts into
-        // `cubemaps` (separate from `pool`) and pulls a sampler key
-        // out of `sampler_cache` without ever touching
-        // `pool_sampler_set`. So we can safely defer the registers
-        // (and the dependent Lights / Environment construction) to
-        // the post-await sync block.
-        //
-        // Phase emit happens before the join because the dominant
-        // wall-clock cost inside it is the bulk shader + pipeline
-        // compilation, which is the phase frontends should label.
+        // intentional infrastructure for exactly this kind of merge).
+        // `RenderPasses::describe_shaders` holds `&mut` on the
+        // shader / pipeline / bind-group-layout caches and reads
+        // from `&mut textures` via `RenderPassInitContext`, but
+        // those reads (pool.arrays_len, pool_sampler_set,
+        // pool.texture_views, get_sampler over pool_sampler_set,
+        // texture_transforms_gpu_buffer) are disjoint from anything
+        // `IblTexture::register` / `Skybox::register` later mutate —
+        // register inserts into `cubemaps` (separate from `pool`)
+        // and pulls a sampler key out of `sampler_cache` without
+        // ever touching `pool_sampler_set`. So we can safely defer
+        // the registers (and the dependent Lights / Environment
+        // construction) to the post-await sync block.
         let formats_for_textures = render_texture_formats.clone();
         let bind_groups = BindGroups::new(&features);
         let mut render_pass_init = RenderPassInitContext {
@@ -926,7 +923,7 @@ impl AwsmRendererBuilder {
             skybox_resources,
             brdf_lut,
             opaque_mipgen,
-            render_passes_plan,
+            mut render_passes_plan,
             render_textures,
         ) = futures::try_join!(
             IblTexture::prepare_resources(&gpu, ibl_filtered_env_colors),
@@ -949,9 +946,14 @@ impl AwsmRendererBuilder {
                     .map_err(crate::error::AwsmError::from)
             },
         )?;
-        // `render_pass_init` is dropped here — its `&mut textures`
-        // borrow is released, freeing the post-await registers below
-        // to touch `textures` again.
+        // Move `render_pass_init` into a discard binding so its
+        // `&mut`-borrows of bind_group_layouts / pipeline_layouts /
+        // pipelines / shaders / render_texture_formats / textures /
+        // features end here unambiguously, freeing the post-await
+        // registers below (which mutate `textures`) to compile
+        // regardless of any future code that might otherwise extend
+        // the borrow's NLL lifetime.
+        let _ = render_pass_init;
 
         let lights = Lights::new(
             &gpu,
@@ -1049,8 +1051,14 @@ impl AwsmRendererBuilder {
         //       cache key — RenderPasses-owned (from the describe
         //       phase) + tail subsystems' statically-known keys. ONE
         //       Shaders::ensure_keys.
+        //
+        // `mem::take` the keys out of the plan rather than cloning:
+        // `describe_pipelines` (which consumes the plan below) only
+        // reads `plan.bindings`, never `plan.shader_cache_keys`, so
+        // leaving the field empty is fine and avoids a per-build
+        // allocation of a ~40-entry Vec on the cold path.
         let mut all_shader_keys: Vec<shaders::ShaderCacheKey> =
-            render_passes_plan.shader_cache_keys.clone();
+            std::mem::take(&mut render_passes_plan.shader_cache_keys);
         all_shader_keys.extend(shadows::ShadowsDescriptors::caster_shader_cache_keys());
         if features.picking {
             all_shader_keys.extend(Picker::shader_cache_keys());
