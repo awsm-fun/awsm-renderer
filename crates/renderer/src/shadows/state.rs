@@ -344,10 +344,16 @@ pub struct ShadowsDescriptors {
 }
 
 impl ShadowsDescriptors {
-    /// Two shader cache keys the caster pipelines depend on. Both are
-    /// already pre-warmed by `RenderPasses::new`'s cross-pass shader
-    /// ensure_keys; the orchestrator includes them in the cross-tail
-    /// batch for completeness / robustness.
+    /// Two shader cache keys the caster pipelines depend on. Both
+    /// are pre-warmed by `RenderPasses::new`'s cross-pass shader
+    /// `ensure_keys` (the shadow caster shaders are added to that
+    /// batch alongside the picker + line shader keys, see
+    /// `render_passes.rs`'s phase-2 block). The orchestrator does
+    /// NOT re-include them in the cross-tail shader batch — by the
+    /// time tail descriptors run, the caster shaders are cache hits.
+    /// This helper exists only as the standalone-`Shadows::new` path's
+    /// own pre-warm and as a discoverable list for callers that want
+    /// to know which shaders Shadows depends on.
     pub fn caster_shader_cache_keys() -> Vec<ShaderCacheKey> {
         vec![
             ShaderCacheKey::from(crate::shadows::shader::cache_key::ShaderCacheKeyShadow {

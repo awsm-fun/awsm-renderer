@@ -961,8 +961,15 @@ impl AwsmRendererBuilder {
         // its own per-subsystem `new().await?` (5 sequential awaits
         // ending with set_anti_aliasing + set_post_processing).
         // We pool every shader + pipeline compile across all five
-        // into the cross-tail batch below: 2 awaits total (one shader,
-        // one each of compute + render pipelines).
+        // into the cross-tail batch below. Three `.await` points
+        // remain in the tail itself:
+        //
+        // 1. one shader `ensure_keys` joined with the 3 EVSM
+        //    inline-shader validate futures (via `futures::join`),
+        // 2. one batched compute + render `ensure_keys` driven via
+        //    `try_join` (so compute + render pipelines compile in
+        //    parallel against Dawn's worker pool instead of one
+        //    class at a time).
         emit_phase(RendererLoadingPhase::BuildingPipelines);
 
         let mesh_light_indices_gpu = MeshLightIndicesGpu::new(&gpu)?;
@@ -1159,15 +1166,32 @@ impl AwsmRendererBuilder {
             s..render_pool.len()
         };
 
-        // ── 5. Two batched ensure_keys — the entire tail in 2 awaits.
-        let compute_keys = pipelines
-            .compute
-            .ensure_keys(&gpu, &shaders, &pipeline_layouts, compute_pool)
-            .await?;
-        let render_keys = pipelines
-            .render
-            .ensure_keys(&gpu, &shaders, &pipeline_layouts, render_pool)
-            .await?;
+        // ── 5. One batched compute + render ensure_keys joined via
+        //       `try_join`. The two halves operate on disjoint `&mut`
+        //       fields of `pipelines` (a split-borrow), so they can
+        //       issue their `create_*_pipeline_async` calls
+        //       back-to-back before either await. Dawn then overlaps
+        //       compute + render pipeline compilation against its
+        //       worker pool instead of serialising one class behind
+        //       the other.
+        let pipelines::Pipelines {
+            render: render_pipelines,
+            compute: compute_pipelines,
+        } = &mut pipelines;
+        let compute_fut = async {
+            compute_pipelines
+                .ensure_keys(&gpu, &shaders, &pipeline_layouts, compute_pool)
+                .await
+                .map_err(crate::error::AwsmError::from)
+        };
+        let render_fut = async {
+            render_pipelines
+                .ensure_keys(&gpu, &shaders, &pipeline_layouts, render_pool)
+                .await
+                .map_err(crate::error::AwsmError::from)
+        };
+        let (compute_keys, render_keys) =
+            futures::future::try_join(compute_fut, render_fut).await?;
 
         // ── 6. Sync fold-up — each subsystem's from_resolved /
         //       install_resolved consumes its slice of the resolved
