@@ -983,7 +983,7 @@ Expected outcome: registering and unregistering a dynamic material changes `disp
 The dispatch-hash machinery this phase lands plugs into the
 already-extant
 [`AwsmRenderer::prewarm_pipelines`](../../crates/renderer/src/lib.rs)
-API (see also [`docs/plans/parallelize.md`](parallelize.md) for the
+API (see also [`docs/PERFORMANCE.md` §5g](../PERFORMANCE.md) for the
 batched `ensure_keys` plumbing the warmup rides on). That method
 already walks the live mesh set and warms every transparent
 pipeline variant the scene needs; the dynamic-materials extension

@@ -985,9 +985,11 @@ impl AwsmRendererBuilder {
         //      covering every compute / render pipeline across the
         //      entire renderer.
         //
-        // Path A from `docs/plans/parallelize.md`'s Follow-up 2:
-        // the orchestrator owns the pool, RenderPasses can't smuggle
-        // in a sequential `.await?`.
+        // The orchestrator owns the pool — `RenderPasses` can't
+        // smuggle in a sequential `.await?` because its public API
+        // is `describe_shaders → describe_pipelines → from_resolved`,
+        // none of which compile pipelines themselves. See
+        // `docs/PERFORMANCE.md` §5g for the architectural rationale.
         emit_phase(RendererLoadingPhase::BuildingPipelines);
 
         let mesh_light_indices_gpu = MeshLightIndicesGpu::new(&gpu)?;

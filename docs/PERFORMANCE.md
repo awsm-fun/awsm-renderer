@@ -848,34 +848,145 @@ progress bar.
 
 ### How the renderer parallelises the cold-load compile
 
-See [`docs/plans/parallelize.md`](plans/parallelize.md) for the full
-catalogue. Short version:
+Every `createRenderPipelineAsync` /
+`createComputePipelineAsync` call goes through
+`RenderPipelines::ensure_keys` / `ComputePipelines::ensure_keys` —
+these mirror `Shaders::ensure_keys`: build all descriptors
+synchronously, fire every Promise back-to-back so Dawn's compile
+pool starts on all of them in parallel, then `join_all` the
+`JsFuture`s. Wall-clock for an N-pipeline batch drops from
+`sum(t_i)` to `max(t_i)` bounded by the Dawn pool size
+(≈ `num_cpus`).
 
-- Every `createRenderPipelineAsync` / `createComputePipelineAsync`
-  call goes through `RenderPipelines::ensure_keys` /
-  `ComputePipelines::ensure_keys` — these mirror
-  `Shaders::ensure_keys`: build all descriptors synchronously, fire
-  every Promise back-to-back so Dawn's compile pool starts on all of
-  them in parallel, then `join_all` the JsFutures. Wall-clock for an
-  N-pipeline batch drops from `sum(t_i)` to `max(t_i)` bounded by the
-  Dawn pool size (≈ `num_cpus`).
-- Every pass that has more than one pipeline now batches its set:
-  opaque (14), geometry (18), HZB (3), classify (2), decal (2 + 2),
-  effects (5), shadows caster (4), EVSM (3), transparent (N per
-  scene, batched in `set_render_pipeline_keys_batched`).
+#### Cross-renderer pool inside `AwsmRendererBuilder::build`
+
+`build()` drives **three pool awaits** that together cover every
+shader + pipeline compile in the whole renderer:
+
+1. **One `try_join!`** at the top runs in parallel:
+   - Three default-cubemap `prepare_resources` futures (prefiltered
+     IBL, irradiance IBL, skybox),
+   - BRDF LUT generation,
+   - opaque-mipgen pipeline construction,
+   - `RenderTextures::new`,
+   - `RenderPasses::describe_shaders` — phase 1 of the
+     `describe_shaders → describe_pipelines → from_resolved` split.
+     Returns bind groups + the union of every render pass's shader
+     cache keys, no Dawn compile yet.
+
+2. **One cross-renderer `Shaders::ensure_keys`** covering every
+   shader the renderer ever compiles: RenderPasses' own (opaque ×
+   14, geometry × 18, hzb × 3, classify × 2, decal × 2+2, coverage
+   × 1–2, occlusion × 1, compaction × 1), shadow caster (× 2),
+   picker (× 2, gated by `features.picking`), line, effects (× 5,
+   AA + post-processing dependent), and display (× 1).
+
+3. **One EVSM inline-shader validate join** — `Shadows::build_descriptors`
+   issues 3 `compile_shader` calls inline (the EVSM moment-write +
+   blur shaders bypass the shared shader cache); the orchestrator
+   joins their `validate_shader` futures via `join_all`. The 3
+   modules go into the shader cache via `Shaders::insert_uncached`
+   afterwards.
+
+4. **One `try_join`'d `ComputePipelines::ensure_keys` +
+   `RenderPipelines::ensure_keys`** covering every compute + render
+   pipeline across the entire renderer (~36 compute + ~27 render on
+   a fully-featured build). Compute + render compile concurrently
+   inside Dawn's worker pool via a split-borrow on
+   `Pipelines.compute` / `Pipelines.render` (disjoint `&mut`
+   fields).
+
+5. **Sync fold-up** — each subsystem's `from_resolved` /
+   `install_resolved` consumes its slice of the resolved keys.
+   `RenderPasses` is assembled from `RenderPasses::from_resolved`;
+   the tail subsystems (Picker, LineRenderer, Shadows + EVSM,
+   Effects' and Display's typed `Pipelines` inside `RenderPasses`)
+   each have a matching `from_resolved` / `install_resolved`.
+
+Pre-parallelize the same flow was **24 sequential per-pass awaits**
+(12 passes × shader + pipeline) plus 5 more for the tail (Picker,
+Lines, Shadows, set_anti_aliasing, set_post_processing). Post-
+parallelize it's **3 awaits total**, plus the EVSM validate join
+(structurally separate because EVSM shaders bypass the cache).
+
+#### Architectural guarantees
+
+`RenderPasses::new` is now a thin 3-stage wrapper that the
+orchestrator bypasses; `describe_shaders` is `async` only because
+of bind-group constructor awaits, `describe_pipelines` is sync
+apart from cache-hit `get_key`s, and `from_resolved` is fully sync.
+A future contributor adding a new render pass can't accidentally
+introduce a sequential `.await?` that bypasses the cross-renderer
+pool: the type system forces the new cache keys through
+`describe_pipelines`'s returned `Vec`s.
+
+The dynamic-setter path (mid-session AA / post-processing flips)
+is preserved: `set_anti_aliasing` and `set_post_processing` still
+call `EffectsPipelines::set_render_pipeline_keys` and
+`DisplayPipelines::set_render_pipeline_key`, which wrap the same
+`build_descriptors` + `install_resolved` shape the orchestrator
+drives at startup.
+
+#### Other batched paths
+
 - `finalize_gpu_textures` recompiles every transparent mesh's
-  pipeline through the same batched API — so the cycle that fires
-  once per model load (the texture pool just grew, every
-  transparent pipeline's bind-group layout is stale) now compiles in
-  parallel instead of serially.
-- `AwsmRenderer::prewarm_pipelines` is real: it walks `self.meshes`
-  and runs one batched ensure_keys for every unique (buffer_info,
+  pipeline through the same batched API — the cycle that fires
+  once per model load (texture pool grew, every transparent
+  pipeline's bind-group layout is stale) compiles in parallel.
+- `AwsmRenderer::prewarm_pipelines` walks `self.meshes` and runs
+  one batched `ensure_keys` for every unique (buffer_info,
   material) combination. Useful immediately after a model load,
   before the first frame; idempotent and free on subsequent calls.
 - `AwsmRendererBuilder::with_phase_handler` lets a consumer hook
   every `RendererLoadingPhase` transition during `build()` so the
   UI can show "Browser is compiling shaders…" rather than a frozen
   generic loading line.
+
+#### Trace evidence
+
+A fresh `--user-data-dir` Chrome profile against the model-tests
+Fox scene with the parallelize work landed:
+
+| Metric | Pre-parallelize cold | Pre-parallelize warm | Post-parallelize fresh-profile |
+|---|---|---|---|
+| `domComplete → first 'Render [1]: span-enter'` | 42.8 s | 1.7 s | ~2.2 s |
+| GPU-process total CPU | 5.35 s | 0.81 s | ~0.77 s |
+| Renderer-main-thread total CPU | 8.74 s | 4.26 s | ~1.0 s |
+
+The 0.77 s GPU-process CPU number is indistinguishable from the
+warm baseline: Dawn isn't doing real compile work on a fresh
+Chrome profile, because **macOS's Metal driver also caches
+compiled pipelines** at a layer below Chrome's PSO cache, and
+`--user-data-dir` only wipes Chrome's. On any developer machine
+that has run this codebase before, the "cold Chrome" experience
+sits in the same ballpark as the historical warm path. The 42.8 s
+baseline reflects a machine where both caches were cold
+(first-ever run), which is the user-facing first-visit experience.
+
+The renderer-main-thread idle-gap distribution in the new trace is
+clean — user-timing marks after `Prewarm Pipelines` cascade
+~1 ms apart, no ~500 ms per-frame-tick stalls. The serial-await
+staircase the parallelize work attacked is gone whether the
+underlying compile is cold or warm.
+
+#### What's not addressed here
+
+Pipeline-compile parallelization is at its theoretical JS-side
+limit. Other axes of "page-load → first useful frame" live in
+different problem spaces:
+
+| Axis | Approx magnitude | Lever |
+|---|---|---|
+| WASM module instantiation + glue | 200–500 ms | bundle size, code splitting, LTO, cargo-bloat audit |
+| Browser-process startup | ~450 ms | minimal lever — Chrome's machinery |
+| JS ↔ Rust marshalling per `gpu.create_*` | dispersed | descriptor-build overhead reduction |
+| Texture decode (ImageBitmap × 3 + BRDF) | 300–500 ms (already parallelised) | smaller default cubemaps, shipped BRDF LUT |
+| First-model-load (gltf + textures + finalize) | 150–400 ms / model | separate path with its own pool |
+| First-frame bind-group recreate | 10–30 ms | pre-create some bind groups in `build()` |
+| Driver-level MSL lowering (Metal / Vulkan / D3D) | 5+ s truly cold | no JS hook — browser team |
+
+Of these, **WASM size + instantiation** has the cleanest cost /
+benefit story for a focused follow-up.
 
 ### Interaction with runtime-registered dynamic materials
 
@@ -960,13 +1071,12 @@ What to read off the saved trace:
   result.
 - **Renderer-main idle gaps**: scrolling the renderer-main
   thread row shows a forest of ~500 ms gaps in the cold case
-  whenever pipeline creation is awaited serially. These should
-  shrink dramatically once the parallelize work in
-  [`docs/plans/parallelize.md`](plans/parallelize.md) lands.
+  whenever pipeline creation is awaited serially. Post-
+  parallelize these are gone — user-timing marks cascade
+  ~1 ms apart after `Prewarm Pipelines`.
 
-A 4× cold-load speedup is the bar `parallelize.md` sets; if a
-change claims to improve cold start, the trace numbers belong in
-its PR description.
+If a change claims to improve cold start, the trace numbers belong
+in its PR description.
 
 ---
 

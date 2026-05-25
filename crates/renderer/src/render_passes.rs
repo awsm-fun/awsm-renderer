@@ -299,10 +299,11 @@ impl RenderPasses {
 
         // Pre-build the static-pipeline subsystems whose pipelines
         // aren't part of the cross-renderer pool: transparent (no
-        // per-mesh pipelines at startup; transparents compile during
-        // gltf populate, see Phase 4 of parallelize.md), effects (5
-        // pipelines compile only after AA + PP config is known, via
-        // the cross-tail pool in `AwsmRendererBuilder::build`), and
+        // per-mesh pipelines at startup; transparents compile
+        // during gltf populate via
+        // `set_render_pipeline_keys_batched`), effects (5 pipelines
+        // compile only after AA + PP config is known, through the
+        // orchestrator pool in `AwsmRendererBuilder::build`), and
         // display (1 pipeline, ditto). These constructors only
         // register bind-group + pipeline layouts; no Dawn compile.
         let transparent_pipelines =
