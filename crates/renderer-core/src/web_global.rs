@@ -21,13 +21,28 @@ pub fn worker_scope() -> Option<web_sys::DedicatedWorkerGlobalScope> {
         .ok()
 }
 
-/// `navigator.gpu` from whichever global is active.
+/// `navigator.gpu` from whichever global is active. Returns `None`
+/// when WebGPU isn't exposed in the current context — the underlying
+/// `web_sys::Navigator::gpu()` binding returns a `Gpu` even when the
+/// JS value is `null`/`undefined`, so the explicit filter below is
+/// what makes the `Option` actually meaningful for availability
+/// detection. Mirrors `awsm_renderer::web_global::navigator_gpu`
+/// (this is the lower-level twin so `renderer-core` consumers don't
+/// have to depend on the higher-level crate to detect availability).
 pub fn navigator_gpu() -> Option<web_sys::Gpu> {
     if let Some(w) = window() {
-        return Some(w.navigator().gpu());
+        let gpu = w.navigator().gpu();
+        if gpu.is_null() || gpu.is_undefined() {
+            return None;
+        }
+        return Some(gpu);
     }
     if let Some(ws) = worker_scope() {
-        return Some(ws.navigator().gpu());
+        let gpu = ws.navigator().gpu();
+        if gpu.is_null() || gpu.is_undefined() {
+            return None;
+        }
+        return Some(gpu);
     }
     None
 }

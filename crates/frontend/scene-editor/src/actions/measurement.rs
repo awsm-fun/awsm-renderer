@@ -434,6 +434,16 @@ pub async fn measure_gltf_load_ab(url: String, iterations: u32) -> String {
     use awsm_renderer_gltf::loader::{get_type_from_filename, GltfLoader};
     use awsm_renderer_gltf::worker_job::{FileTypeHint, GltfParseInput, GltfParseJob};
 
+    // Guard zero-iteration calls upfront — the JSON-shape contract
+    // promises means / speedup as numbers, and `0/0` would emit
+    // `NaN` (not a valid JSON number; `serde_json` would refuse,
+    // and a naive `format!("{nan}")` would emit `"NaN"` which any
+    // strict consumer parser would reject). One iteration is the
+    // minimum that makes the means well-defined.
+    if iterations == 0 {
+        return "{\"error\":\"iterations must be >= 1\"}".to_string();
+    }
+
     let perf = match web_sys::window().and_then(|w| w.performance()) {
         Some(p) => p,
         None => return "{\"error\":\"no performance\"}".to_string(),

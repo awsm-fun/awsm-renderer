@@ -15,8 +15,9 @@
 //!   `OffscreenCanvas`, builds an [`AwsmRendererWebGpuBuilder`] via
 //!   the [`new_with_offscreen_canvas`] constructor added in
 //!   Phase 4.4, and drives a `requestAnimationFrame`-paced render
-//!   loop. Input events from the main thread feed a simple free
-//!   camera.
+//!   loop. Today the worker only `tracing::trace!`s any
+//!   [`WorkerInputEvent`] it receives — wiring those into a free
+//!   camera is intentionally left to the consumer.
 //!
 //! Both entry points live in the same crate, dispatched at runtime
 //! by [`crate::is_worker_scope`] so a single wasm bundle serves both
@@ -27,7 +28,14 @@
 //! - The `transferControlToOffscreen()` + shared `WebAssembly.Module`
 //!   handshake.
 //! - The `new_with_offscreen_canvas(..)` builder path.
-//! - Input forwarding via the [`WorkerInputEvent`] enum.
+//! - Wire shape for input forwarding: [`WorkerInputEvent`] defines
+//!   the full protocol (pointer move/down/up, wheel, key down/up,
+//!   resize) but the main-thread shim only installs a `pointermove`
+//!   listener today — `PointerDown`/`PointerUp`/`Wheel`/`KeyDown`/
+//!   `KeyUp` and the `ResizeObserver`-driven `Resize` forwarder are
+//!   left as consumer-side work (they tie into the framework that
+//!   owns the DOM layout / focus). The enum is published as the
+//!   contract a consumer slots into.
 //! - `requestAnimationFrame` driven from the worker side via
 //!   [`awsm_renderer::web_global::request_animation_frame`].
 //!

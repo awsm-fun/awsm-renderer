@@ -51,12 +51,28 @@ pub fn worker_scope() -> Option<web_sys::DedicatedWorkerGlobalScope> {
 /// `navigator.gpu` from whichever global is active. Returns `None`
 /// if WebGPU isn't exposed in the current context (locked behind a
 /// flag, browser doesn't support, etc.).
+///
+/// `web_sys::Navigator::gpu()` is infallible at the binding level —
+/// it returns a `Gpu` even when the underlying JS value is
+/// `null`/`undefined` (Firefox without WebGPU enabled, Safari without
+/// the relevant about:flags toggle, headless environments, etc.).
+/// Without the `is_null() / is_undefined()` filter below, callers
+/// would get a `Some(gpu)` that explodes on first use; the filter
+/// makes the `Option` actually meaningful.
 pub fn navigator_gpu() -> Option<web_sys::Gpu> {
     if let Some(w) = window() {
-        return Some(w.navigator().gpu());
+        let gpu = w.navigator().gpu();
+        if gpu.is_null() || gpu.is_undefined() {
+            return None;
+        }
+        return Some(gpu);
     }
     if let Some(ws) = worker_scope() {
-        return Some(ws.navigator().gpu());
+        let gpu = ws.navigator().gpu();
+        if gpu.is_null() || gpu.is_undefined() {
+            return None;
+        }
+        return Some(gpu);
     }
     None
 }

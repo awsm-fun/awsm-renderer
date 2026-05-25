@@ -69,8 +69,13 @@ pub const MIN_RING_DEPTH: usize = 1;
 static STAGING_USAGE: LazyLock<BufferUsage> =
     LazyLock::new(|| BufferUsage::new().with_map_write().with_copy_src());
 
-/// Telemetry exposed through `read_render_pass_timings()` JSON under
-/// the `upload_rings` key.
+/// Telemetry surfaced via
+/// [`crate::AwsmRenderer::upload_ring_stats`] — each renderer
+/// subsystem (Meshes, Materials, Transforms, …) exposes its
+/// `MappedUploader::stats()` through that method, and the editor's
+/// `read_upload_ring_stats()` wasm export serialises the collected
+/// map to JSON. `read_render_pass_timings()` is a separate API for
+/// `performance.measure` spans — these counters don't appear there.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct UploadStats {
     /// Peak number of *non-acquirable* slots seen since the last reset
