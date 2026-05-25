@@ -153,6 +153,24 @@ impl MeshMeta {
         self.material_buffers.update(mesh_key, &meta_data);
         self.material_dirty = true;
 
+        // Seed the gate cache with the initial packed value
+        // (`MaterialMeshMeta::to_bytes` writes `1u` into the
+        // `shadow_receiver_gate` slot — the conservative
+        // "assume receiver until proven otherwise" default).
+        // Without this seed the very first frame's per-mesh
+        // `set_shadow_receiver_gate(mesh, 1)` from
+        // `LightMeshBuckets::mark_shadow_receivers` would miss the
+        // cache (no entry → `Option::None != Some(1)`) and patch
+        // every mesh's 4-byte gate slot. On the 10k-mesh stress
+        // scene that turned the first frame after a mass-insert
+        // into a 40 KB+ dirty-range upload through the mapped
+        // ring — pure waste, since the GPU buffer already
+        // contained `1` for every entry. Seeding here drops that
+        // back to "patch only the meshes whose gate actually
+        // flipped to 0 this frame", which on a typical scene is a
+        // tiny fraction.
+        self.shadow_receiver_gate_cache.insert(mesh_key, 1);
+
         let meta_data = GeometryMeshMeta {
             mesh_key,
             material_key,

@@ -482,23 +482,22 @@ impl WorkerPool {
         let id = self.next_job_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel::<Result<JsValue, JsValue>>();
 
-        // Pick a worker round-robin *before* inserting into `pending`
-        // so the `PendingEntry` carries the correct ownership tag.
-        // `onerror` reads this to fail only the dead worker's jobs.
+        // Pick a worker round-robin. Deliberately *don't* insert into
+        // `pending` or bump `jobs_dispatched` yet — both happen after
+        // `post_message*` succeeds below. A failed postMessage means
+        // the worker never saw the job, so leaving a stale
+        // `PendingEntry` in the map would (a) inflate the dispatched
+        // counter and (b) leave a sender that nothing can ever
+        // resolve (the matching `onerror`'s `worker_idx` filter would
+        // still drain it eventually, but with a misleading "worker
+        // errored" message rather than the actual postMessage
+        // failure the caller is about to get back).
         let worker_idx = {
             let mut cursor = self.next_worker.borrow_mut();
             let idx = *cursor;
             *cursor = (*cursor + 1) % self.workers.len();
             idx
         };
-        self.pending.borrow_mut().insert(
-            id,
-            PendingEntry {
-                sender: tx,
-                worker_idx,
-            },
-        );
-        self.stats.borrow_mut().jobs_dispatched += 1;
         let worker = &self.workers[worker_idx].worker;
 
         let input_js = serde_wasm_bindgen::to_value(&input)
@@ -526,8 +525,27 @@ impl WorkerPool {
             Some(arr) => worker.post_message_with_transfer(&msg, &arr),
             None => worker.post_message(&msg),
         };
-        post_result
-            .map_err(|err| WorkerPoolError::post_message_from_js("dispatch postMessage", err))?;
+        post_result.map_err(|err| {
+            // `tx` / `rx` were created locally and never registered —
+            // both drop on the early return, no cleanup needed beyond
+            // returning the typed error. `jobs_dispatched` was not
+            // incremented yet either, so the counter stays honest.
+            WorkerPoolError::post_message_from_js("dispatch postMessage", err)
+        })?;
+
+        // postMessage succeeded — now (and only now) commit to the
+        // pending map and bump the dispatched counter. After this
+        // point the worker has the job and will send back either an
+        // `awsm-result` / `awsm-error` (consumed by `onmessage`) or
+        // its `onerror` filter will drain this entry.
+        self.pending.borrow_mut().insert(
+            id,
+            PendingEntry {
+                sender: tx,
+                worker_idx,
+            },
+        );
+        self.stats.borrow_mut().jobs_dispatched += 1;
 
         // Capture the dispatch timestamp now (after the postMessage
         // succeeded) so the telemetry isn't polluted by failed

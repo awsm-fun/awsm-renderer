@@ -169,13 +169,16 @@ impl OcclusionBuffers {
         gpu: &AwsmRendererWebGpu,
         active_count: u32,
     ) -> Result<(), AwsmCoreError> {
-        let mut bytes = vec![0u8; 16];
+        // Stack-allocated — this is a per-frame hot path, so the heap
+        // `vec![0u8; 16]` it used to do was pure churn for a
+        // fixed-size 16-byte uniform (4-byte count + 12-byte pad).
+        let mut bytes = [0u8; 16];
         bytes[0..4].copy_from_slice(&active_count.to_le_bytes());
         self.params_uploader.borrow_mut().write_dirty_ranges(
             gpu,
             &self.params_buffer,
             16,
-            bytes.as_slice(),
+            &bytes,
             &[(0, 16)],
         )
     }
