@@ -158,7 +158,11 @@ pub async fn load_scene_by_path(scene_name: String) -> Result<(), JsValue> {
 #[wasm_bindgen]
 pub async fn load_external_test_scene(scene_name: String) -> Result<(), JsValue> {
     let base = crate::config::CONFIG.media_base_url_additional_assets();
-    let project_url = format!("{base}/{scene_name}/project.json");
+    // Cache-bust on every load: edits to the external project.json are
+    // frequent during development and the browser HTTP cache otherwise
+    // pins the editor to a stale fixture. Cheap for a dev-only helper.
+    let cache_bust = web_sys::js_sys::Date::now() as u64;
+    let project_url = format!("{base}/{scene_name}/project.json?_={cache_bust}");
     tracing::info!("measurement: loading external scene from {project_url}");
 
     let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
@@ -214,7 +218,7 @@ pub async fn load_external_test_scene(scene_name: String) -> Result<(), JsValue>
             .collect()
     };
     for (texture_id, display_name, disk_subpath) in raster_targets {
-        let asset_url = format!("{base}/{scene_name}/{disk_subpath}");
+        let asset_url = format!("{base}/{scene_name}/{disk_subpath}?_={cache_bust}");
         let resp_val = JsFuture::from(window.fetch_with_str(&asset_url)).await?;
         let resp: web_sys::Response = resp_val.dyn_into()?;
         if !resp.ok() {
