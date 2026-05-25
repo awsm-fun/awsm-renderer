@@ -913,13 +913,20 @@ impl AwsmRendererBuilder {
 
         emit_phase(RendererLoadingPhase::CompilingShaders);
 
+        // Phase A of RenderPasses (bind groups + shader cache key
+        // collection) joins the texture-prep block. RenderPasses is
+        // NOT a full `new()` here anymore — item (2) split it into 3
+        // stages so the orchestrator below can pool RenderPasses'
+        // shader + pipeline cache keys with every tail subsystem
+        // into one cross-renderer shader ensure_keys and one
+        // try_join'd compute + render ensure_keys.
         let (
             ibl_filtered_resources,
             ibl_irradiance_resources,
             skybox_resources,
             brdf_lut,
             opaque_mipgen,
-            mut render_passes,
+            render_passes_plan,
             render_textures,
         ) = futures::try_join!(
             IblTexture::prepare_resources(&gpu, ibl_filtered_env_colors),
@@ -935,7 +942,7 @@ impl AwsmRendererBuilder {
                     .await
                     .map_err(crate::error::AwsmError::from)
             },
-            RenderPasses::new(&mut render_pass_init, &features),
+            RenderPasses::describe_shaders(&mut render_pass_init, &features),
             async {
                 RenderTextures::new(&gpu, formats_for_textures, &features)
                     .await
@@ -961,21 +968,26 @@ impl AwsmRendererBuilder {
         let environment =
             Environment::new(Skybox::register(&gpu, &mut textures, skybox_resources)?);
 
-        // Main render-pass compile done. The tail subsystems —
-        // Picker / LineRenderer / Shadows + EVSM / Effects / Display
-        // — still need their pipelines built. Each was historically
-        // its own per-subsystem `new().await?` (5 sequential awaits
-        // ending with set_anti_aliasing + set_post_processing).
-        // We pool every shader + pipeline compile across all five
-        // into the cross-tail batch below. Three `.await` points
-        // remain in the tail itself:
+        // Item (2): cross-renderer orchestration. After
+        // describe_shaders + the texture-prep block finished above,
+        // we now drive the full renderer-wide compile pool from one
+        // place. Three awaits cover EVERYTHING (RenderPasses + tail
+        // subsystems):
         //
-        // 1. one shader `ensure_keys` joined with the 3 EVSM
-        //    inline-shader validate futures (via `futures::join`),
-        // 2. one batched compute + render `ensure_keys` driven via
-        //    `try_join` (so compute + render pipelines compile in
-        //    parallel against Dawn's worker pool instead of one
-        //    class at a time).
+        //   1. ONE `Shaders::ensure_keys` covering RenderPasses-owned
+        //      shaders + Picker + LineRenderer + Shadows caster +
+        //      Effects + Display.
+        //   2. ONE EVSM validate join (3 inline-shader validates —
+        //      kicked off via `compile_shader` inside
+        //      `Shadows::build_descriptors` immediately after the
+        //      shader ensure_keys returns).
+        //   3. ONE `try_join`'d compute + render `ensure_keys`
+        //      covering every compute / render pipeline across the
+        //      entire renderer.
+        //
+        // Path A from `docs/plans/parallelize.md`'s Follow-up 2:
+        // the orchestrator owns the pool, RenderPasses can't smuggle
+        // in a sequential `.await?`.
         emit_phase(RendererLoadingPhase::BuildingPipelines);
 
         let mesh_light_indices_gpu = MeshLightIndicesGpu::new(&gpu)?;
@@ -1041,18 +1053,37 @@ impl AwsmRendererBuilder {
         // can swap to a less alarming "Finalising scene…" message.
         emit_phase(RendererLoadingPhase::FinalizingScene);
 
-        // ── 1. Build every tail subsystem's descriptors. Sync apart
-        //       from cache-hit shader `get_key`s + the EVSM
-        //       `compile_shader` calls (which return modules immediately
-        //       and surface their validate futures separately).
-        //
-        //       Picker is gated by `features.picking`: when off, no
-        //       picker shaders pre-warm (the cross-pass shader batch
-        //       in `RenderPasses::new` already skips them — see
-        //       `RenderPasses::new`'s phase-2 block), no bind-group
-        //       layouts register, no pipeline cache keys land in the
-        //       cross-tail pool, and the typed Picker handle stays
-        //       `None`.
+        // ── 1. Cross-renderer shader pool. Assemble every shader
+        //       cache key — RenderPasses-owned (from the describe
+        //       phase) + tail subsystems' statically-known keys. ONE
+        //       Shaders::ensure_keys.
+        let mut all_shader_keys: Vec<shaders::ShaderCacheKey> =
+            render_passes_plan.shader_cache_keys.clone();
+        all_shader_keys.extend(shadows::ShadowsDescriptors::caster_shader_cache_keys());
+        if features.picking {
+            all_shader_keys.extend(Picker::shader_cache_keys());
+        }
+        all_shader_keys.push(shaders::ShaderCacheKey::from(
+            render_passes::lines::ShaderCacheKeyLine,
+        ));
+        all_shader_keys.extend(
+            render_passes::effects::pipeline::EffectsPipelines::shader_cache_keys_for(
+                &anti_aliasing,
+                &post_processing,
+            )?,
+        );
+        all_shader_keys.extend(
+            render_passes::display::pipeline::DisplayPipelines::shader_cache_keys_for(
+                &post_processing,
+            ),
+        );
+        shaders.ensure_keys(&gpu, all_shader_keys).await?;
+
+        // ── 2. Tail descriptors (cache-hit shader resolutions for
+        //       Picker / Lines / Shadows caster; Shadows internally
+        //       issues 3 EVSM `compile_shader` calls that return
+        //       modules immediately + surface their validate futures
+        //       via `ShadowsDescriptors::evsm`).
         let picker_descs = if features.picking {
             Some(
                 Picker::build_descriptors(
@@ -1074,54 +1105,39 @@ impl AwsmRendererBuilder {
             &render_textures.formats,
         )
         .await?;
+        // Shadows::build_descriptors needs the geometry bind groups,
+        // which now live inside render_passes_plan.bindings. We don't
+        // have render_passes_plan.bindings as a public field — drill
+        // through describe_pipelines first to get bind groups via the
+        // typed RenderPasses handle... actually no, we need them
+        // BEFORE describe_pipelines to construct shadows here.
+        //
+        // The bindings struct stores GeometryBindGroups; we need that
+        // for Shadows::build_descriptors. Expose a borrow via a
+        // helper on the shader plan.
         let mut shadows_descs = shadows::Shadows::build_descriptors(
             &gpu,
             &mut bind_group_layouts,
             &mut pipeline_layouts,
             &mut shaders,
-            &render_passes.geometry.bind_groups,
+            render_passes_plan.geometry_bind_groups(),
             &render_textures.formats,
             shadows_config.unwrap_or_default(),
         )
         .await?;
 
-        // ── 2. Pool every cross-tail shader cache key that wasn't
-        //       already warmed by `RenderPasses::new`. Effects + display
-        //       depend on AA + PP config, so their shader keys can't
-        //       be known earlier. Run that ensure_keys in parallel with
-        //       the EVSM inline-shader validation futures (option 2
-        //       from the plan: hand the futures to the orchestrator so
-        //       they join_all alongside the cross-tail shader batch).
-        let effects_shader_keys =
-            render_passes::effects::pipeline::EffectsPipelines::shader_cache_keys_for(
-                &anti_aliasing,
-                &post_processing,
-            )?;
-        let display_shader_keys =
-            render_passes::display::pipeline::DisplayPipelines::shader_cache_keys_for(
-                &post_processing,
-            );
-        let mut tail_shader_keys: Vec<shaders::ShaderCacheKey> = Vec::new();
-        tail_shader_keys.extend(effects_shader_keys);
-        tail_shader_keys.extend(display_shader_keys);
-
-        // EVSM validate futures borrow `&shadows_descs.evsm.modules`;
-        // shaders.ensure_keys borrows `&mut shaders`. Disjoint borrows,
-        // so they can join cleanly.
-        let evsm_validate_join =
-            futures::future::join_all(shadows_descs.evsm.validate_shader_futures());
-        let shader_ensure = shaders.ensure_keys(&gpu, tail_shader_keys);
-        let (shader_result, evsm_results) =
-            futures::future::join(shader_ensure, evsm_validate_join).await;
-        shader_result?;
+        // ── 3. EVSM validate join. Single await covering all 3
+        //       inline-shader validations in parallel.
+        let evsm_results =
+            futures::future::join_all(shadows_descs.evsm.validate_shader_futures()).await;
         for result in evsm_results {
             result.map_err(crate::shadows::AwsmShadowError::Core)?;
         }
 
-        // ── 2b. Register the 3 EVSM modules into the shader cache via
-        //        `insert_uncached`; the resulting `ShaderKey`s let us
-        //        build the 3 EVSM compute pipeline cache keys for the
-        //        cross-tail compute pool.
+        // Register the 3 EVSM modules into the shader cache via
+        // `insert_uncached`; the resulting `ShaderKey`s let us build
+        // the 3 EVSM compute pipeline cache keys for the
+        // cross-renderer compute pool.
         let evsm_shader_keys: [shaders::ShaderKey; 3] = [
             shaders.insert_uncached(shadows_descs.evsm.modules[0].clone()),
             shaders.insert_uncached(shadows_descs.evsm.modules[1].clone()),
@@ -1129,30 +1145,46 @@ impl AwsmRendererBuilder {
         ];
         let evsm_pipeline_cache_keys = shadows_descs.evsm.pipeline_cache_keys(evsm_shader_keys);
 
-        // ── 3. Now that every cross-tail shader is warm, resolve
-        //       Effects + Display descriptors (sync — each
-        //       `shaders.get_key` is a cache hit).
-        let effects_descs = render_passes
-            .effects
-            .pipelines
-            .build_descriptors(&anti_aliasing, &post_processing, &gpu, &mut shaders)
-            .await?;
-        let display_descs = render_passes
-            .display
-            .pipelines
-            .build_descriptors(&post_processing, &gpu, &mut shaders)
-            .await?;
+        // ── 4. Now that all shaders are warm, drive RenderPasses
+        //       phase 2 (build pipeline cache keys per pass) and the
+        //       Effects + Display descriptors. All sync apart from
+        //       cache-hit `get_key`s.
+        let mut render_pass_init = RenderPassInitContext {
+            gpu: &gpu,
+            bind_group_layouts: &mut bind_group_layouts,
+            pipeline_layouts: &mut pipeline_layouts,
+            pipelines: &mut pipelines,
+            shaders: &mut shaders,
+            render_texture_formats: &mut render_texture_formats,
+            textures: &mut textures,
+            features: &features,
+        };
+        let render_passes_descs =
+            RenderPasses::describe_pipelines(render_passes_plan, &mut render_pass_init, &features)
+                .await?;
+        // `render_pass_init`'s `&mut`-borrows of bind_group_layouts /
+        // pipeline_layouts / pipelines / shaders / etc. expire at
+        // the next statement boundary; the subsequent code below
+        // re-borrows them through the same names.
+        let _ = render_pass_init;
 
-        // Move the descriptor's caster pipeline cache keys out so the
-        // ShadowsDescriptors struct still owns the rest. We need
-        // shadows_descs intact for Shadows::from_resolved below.
         let caster_pipeline_cache_keys =
             std::mem::take(&mut shadows_descs.caster_pipeline_cache_keys);
 
-        // ── 4. Build the compute + render cross-tail cache key pools
-        //       and record each subsystem's slice range.
+        let effects_descs = render_passes_descs
+            .effects_pipelines()
+            .build_descriptors(&anti_aliasing, &post_processing, &gpu, &mut shaders)
+            .await?;
+        let display_descs = render_passes_descs
+            .display_pipelines()
+            .build_descriptors(&post_processing, &gpu, &mut shaders)
+            .await?;
+
+        // ── 5. Assemble the cross-renderer compute + render cache
+        //       key pools and record each subsystem's slice range.
         let mut compute_pool: Vec<pipelines::compute_pipeline::ComputePipelineCacheKey> =
-            Vec::new();
+            render_passes_descs.compute_pipeline_cache_keys.clone();
+        let render_passes_compute_len = compute_pool.len();
         let picker_compute_range = picker_descs.as_ref().map(|d| {
             let s = compute_pool.len();
             compute_pool.extend(d.pipeline_cache_keys.iter().cloned());
@@ -1169,7 +1201,9 @@ impl AwsmRendererBuilder {
             s..compute_pool.len()
         };
 
-        let mut render_pool: Vec<pipelines::render_pipeline::RenderPipelineCacheKey> = Vec::new();
+        let mut render_pool: Vec<pipelines::render_pipeline::RenderPipelineCacheKey> =
+            render_passes_descs.render_pipeline_cache_keys.clone();
+        let render_passes_render_len = render_pool.len();
         let line_render_range = {
             let s = render_pool.len();
             render_pool.extend(line_descs.pipeline_cache_keys().iter().cloned());
@@ -1186,14 +1220,12 @@ impl AwsmRendererBuilder {
             s..render_pool.len()
         };
 
-        // ── 5. One batched compute + render ensure_keys joined via
-        //       `try_join`. The two halves operate on disjoint `&mut`
-        //       fields of `pipelines` (a split-borrow), so they can
-        //       issue their `create_*_pipeline_async` calls
-        //       back-to-back before either await. Dawn then overlaps
-        //       compute + render pipeline compilation against its
-        //       worker pool instead of serialising one class behind
-        //       the other.
+        // ── 6. ONE try_join'd compute + render ensure_keys covering
+        //       every compute + render pipeline across the entire
+        //       renderer (~36 compute + ~27 render on a fully-
+        //       featured build). Split-borrow Pipelines.compute /
+        //       Pipelines.render so Dawn overlaps both classes inside
+        //       its worker pool.
         let pipelines::Pipelines {
             render: render_pipelines,
             compute: compute_pipelines,
@@ -1213,9 +1245,16 @@ impl AwsmRendererBuilder {
         let (compute_keys, render_keys) =
             futures::future::try_join(compute_fut, render_fut).await?;
 
-        // ── 6. Sync fold-up — each subsystem's from_resolved /
-        //       install_resolved consumes its slice of the resolved
-        //       keys.
+        // ── 7. Sync fold-up — slice resolved keys back to each
+        //       subsystem.
+        let render_passes_compute_keys = compute_keys[..render_passes_compute_len].to_vec();
+        let render_passes_render_keys = render_keys[..render_passes_render_len].to_vec();
+        let mut render_passes = RenderPasses::from_resolved(
+            render_passes_descs,
+            render_passes_compute_keys,
+            render_passes_render_keys,
+        )?;
+
         let picker = match (picker_descs, picker_compute_range) {
             (Some(descs), Some(range)) => Some(Picker::from_resolved(
                 &gpu,
