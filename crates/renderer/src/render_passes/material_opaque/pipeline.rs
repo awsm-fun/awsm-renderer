@@ -55,10 +55,10 @@ pub struct MaterialOpaquePipelines {
 /// `awsm_materials::shader_id`. Used at construction time to enumerate
 /// the pipelines we need to build.
 const OPAQUE_SHADER_IDS: &[MaterialShaderId] = &[
-    MaterialShaderId::Pbr,
-    MaterialShaderId::Unlit,
-    MaterialShaderId::Toon,
-    MaterialShaderId::FlipBook,
+    MaterialShaderId::PBR,
+    MaterialShaderId::UNLIT,
+    MaterialShaderId::TOON,
+    MaterialShaderId::FLIPBOOK,
 ];
 
 /// Slot identifier used by the batched-build path to fold a flat

@@ -13,6 +13,7 @@ pub mod camera;
 pub mod coverage;
 pub mod debug;
 pub mod decals;
+pub mod dynamic_materials;
 pub mod environment;
 pub mod error;
 pub mod features;
@@ -174,6 +175,9 @@ pub struct AwsmRenderer {
     pub frame_index: u64,
     pub shaders: Shaders,
     pub materials: Materials,
+    /// Runtime-registered dynamic materials. See
+    /// [`crate::dynamic_materials`].
+    pub dynamic_materials: crate::dynamic_materials::DynamicMaterials,
     pub pipeline_layouts: PipelineLayouts,
     pub pipelines: Pipelines,
     pub lights: Lights,
@@ -1318,6 +1322,7 @@ impl AwsmRendererBuilder {
             bind_group_layouts,
             bind_groups,
             materials,
+            dynamic_materials: crate::dynamic_materials::DynamicMaterials::new(),
             pipeline_layouts,
             pipelines,
             lights,

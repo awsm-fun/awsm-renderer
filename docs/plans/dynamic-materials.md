@@ -1932,16 +1932,16 @@ Tick items as they land. A future session can resume by reading this
 list.
 
 ### Phase 0 — Scaffolding
-- [ ] `MaterialShaderId` rewritten as `#[repr(transparent)] struct(u32)`
+- [x] `MaterialShaderId` rewritten as `#[repr(transparent)] struct(u32)`
       with `PBR` / `UNLIT` / `TOON` / `FLIPBOOK` consts + `DYNAMIC_START`
-- [ ] All `MaterialShaderId::X` pattern-match sites updated
-- [ ] `Material::Custom(Box<DynamicMaterial>)` variant added; all match
+- [x] All `MaterialShaderId::X` pattern-match sites updated
+- [x] `Material::Custom(Box<DynamicMaterial>)` variant added; all match
       sites updated
-- [ ] `crates/renderer/src/dynamic_materials/` module skeleton
-- [ ] `dynamic_materials` field on `AwsmRenderer`
-- [ ] Stub `register_material` / `unregister_material` /
+- [x] `crates/renderer/src/dynamic_materials/` module skeleton
+- [x] `dynamic_materials` field on `AwsmRenderer`
+- [x] Stub `register_material` / `unregister_material` /
       `dynamic_materials()` methods (return placeholder errors)
-- [ ] `AwsmDynamicMaterialError` added to top-level `AwsmError`
+- [x] `AwsmDynamicMaterialError` added to top-level `AwsmError`
 
 ### Phase 1 — Schema + contract audit
 - [ ] `MaterialDefinition`, `UniformField`, `FieldType`,

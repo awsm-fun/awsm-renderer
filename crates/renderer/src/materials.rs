@@ -58,7 +58,8 @@ pub mod writer {
 }
 
 use awsm_materials::{
-    flipbook::FlipBookMaterial, pbr::PbrMaterial, toon::ToonMaterial, unlit::UnlitMaterial,
+    dynamic::DynamicMaterial, flipbook::FlipBookMaterial, pbr::PbrMaterial, toon::ToonMaterial,
+    unlit::UnlitMaterial,
 };
 
 impl AwsmRenderer {
@@ -85,6 +86,11 @@ pub enum Material {
     /// Sprite-sheet flipbook. See [`awsm_materials::flipbook`] for
     /// authoring + WGSL semantics.
     FlipBook(Box<FlipBookMaterial>),
+    /// Runtime-registered custom material. Backed by the generic
+    /// [`DynamicMaterial`] interpreter — see
+    /// [`crate::dynamic_materials`] for the registration API and
+    /// `docs/plans/dynamic-materials.md` for the contract docs.
+    Custom(Box<DynamicMaterial>),
 }
 
 impl Material {
@@ -95,10 +101,11 @@ impl Material {
     /// pipelines instead of one fat shader with a runtime branch.
     pub fn shader_id(&self) -> MaterialShaderId {
         match self {
-            Material::Pbr(_) => MaterialShaderId::Pbr,
-            Material::Unlit(_) => MaterialShaderId::Unlit,
-            Material::Toon(_) => MaterialShaderId::Toon,
-            Material::FlipBook(_) => MaterialShaderId::FlipBook,
+            Material::Pbr(_) => MaterialShaderId::PBR,
+            Material::Unlit(_) => MaterialShaderId::UNLIT,
+            Material::Toon(_) => MaterialShaderId::TOON,
+            Material::FlipBook(_) => MaterialShaderId::FLIPBOOK,
+            Material::Custom(m) => m.shader_id,
         }
     }
 
@@ -109,6 +116,11 @@ impl Material {
             Material::Unlit(m) => MaterialShader::is_transparency_pass(m),
             Material::Toon(m) => MaterialShader::is_transparency_pass(m.as_ref()),
             Material::FlipBook(m) => MaterialShader::is_transparency_pass(m.as_ref()),
+            // Phase 2 wires `DynamicMaterial::is_transparency_pass` to
+            // derive from the registry's `alpha_mode`. Phase 0 has
+            // nothing to dispatch against; treat all dynamic instances
+            // as opaque until then.
+            Material::Custom(_) => false,
         }
     }
 
@@ -119,6 +131,8 @@ impl Material {
             Material::Unlit(m) => m.alpha_cutoff(),
             Material::Toon(m) => m.alpha_cutoff(),
             Material::FlipBook(m) => m.alpha_cutoff(),
+            // Phase 2 wires the registry's `alpha_mode` through here.
+            Material::Custom(_) => None,
         }
     }
 
@@ -132,6 +146,8 @@ impl Material {
             Material::Unlit(m) => m.double_sided(),
             Material::Toon(m) => m.double_sided(),
             Material::FlipBook(m) => m.double_sided(),
+            // Phase 2 wires the registry's `double_sided` flag through here.
+            Material::Custom(_) => false,
         }
     }
 
@@ -149,6 +165,9 @@ impl Material {
             Material::Pbr(m) => m.has_transmission(),
             Material::Unlit(_) | Material::Toon(_) => false,
             Material::FlipBook(_) => false,
+            // Dynamic materials cannot opt into transmission — see
+            // "Skybox ownership" in `docs/plans/dynamic-materials.md`.
+            Material::Custom(_) => false,
         }
     }
 
@@ -167,6 +186,16 @@ impl Material {
             }
             Material::FlipBook(m) => {
                 MaterialShader::write_uniform_buffer(m.as_ref(), ctx, &mut data);
+            }
+            // Phase 2 wires `DynamicMaterial::write_uniform_buffer` to
+            // walk the registry's layout. Phase 0 has no registered
+            // material that could produce a `Custom` instance, so this
+            // arm is structurally unreachable until the schema-side
+            // bridge starts producing `Material::Custom` (Phase 5).
+            Material::Custom(_) => {
+                unreachable!(
+                    "Material::Custom uniform buffer packing is wired in Phase 2 / Phase 5"
+                );
             }
         }
         data
@@ -334,7 +363,7 @@ impl Materials {
         self.lookup
             .get(key)
             .map(|m| m.shader_id())
-            .unwrap_or(MaterialShaderId::Pbr)
+            .unwrap_or(MaterialShaderId::PBR)
     }
 
     /// Returns true if the material implements

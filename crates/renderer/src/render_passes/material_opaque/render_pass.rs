@@ -85,10 +85,10 @@ impl MaterialOpaqueRenderPass {
         // Bucket index 0 == PBR; classify wrote its tiles starting at
         // `pbr_offset` and its workgroup count to `args_pbr.x`.
         for (shader_id, bucket_index) in [
-            (MaterialShaderId::Pbr, 0u32),
-            (MaterialShaderId::Unlit, 1u32),
-            (MaterialShaderId::Toon, 2u32),
-            (MaterialShaderId::FlipBook, 3u32),
+            (MaterialShaderId::PBR, 0u32),
+            (MaterialShaderId::UNLIT, 1u32),
+            (MaterialShaderId::TOON, 2u32),
+            (MaterialShaderId::FLIPBOOK, 3u32),
         ] {
             let Some(pipeline_key) = self
                 .pipelines
