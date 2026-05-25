@@ -11,7 +11,19 @@ gltf parsing. They're independent — either can land without the
 other — but both move the same lever (when does worker mode beat
 inline, and when should it be the default).
 
-Status: not started.
+Status: **shipped**. Both items landed in this sprint. Zero-copy
+byte transfer wired through `GltfParseJob::into_response_message`
+/ `from_response_message` (the `doc_bytes` + `buffer_bytes`
+`ArrayBuffer`s ride the same transfer list the `ImageBitmap`
+handles do); pre-warmed pool + sticky inline fallback wired
+through `scene-editor/src/context.rs::maybe_build_worker_pool` and
+`asset_cache::load_and_populate`. The editor flip from
+"`?gltf-worker=on` opt-in" to "default-on, `?gltf-worker=off` opt-
+out" is live. Canonical perf-doc rewrite lives in
+[`PERFORMANCE.md §5c`](../PERFORMANCE.md). See "Measurement
+findings" at the bottom of this doc for the headless-Chrome A/B
+numbers (which differ from the original M2-Chrome baseline in
+ways worth understanding).
 
 ---
 
@@ -291,3 +303,63 @@ shows the projected win. Negative result → document the
 investigation in `PERFORMANCE.md §10` (currently empty) as a
 parked optimisation with the hazard, so the next picker doesn't
 re-propose without new context.
+
+---
+
+## Measurement findings (post-ship)
+
+### Phase 1 — zero-copy byte transfer
+
+Re-ran `measure_gltf_load_ab("Corset.glb", 5)` against the headless
+Chrome the Claude Preview MCP drives, post-ship:
+
+| Path | Mean load (ms) | Speedup |
+|---|---|---|
+| Inline `GltfLoader::load` | 74.7 | 1.0× |
+| Worker (handle-transfer **+ byte-transfer**) | **69.9** | **1.07×** |
+
+This *looks* like a worse result than the M2-Chrome baseline
+documented in §5c (2.15× there) but it's a hardware-difference
+artefact, not a regression. The headless Chrome decoder is roughly
+2-3× faster on Corset than the M2 / real Chrome baseline (inline
+drops from 196 ms → 75 ms; worker drops from 91 ms → 70 ms), so the
+absolute amount of main-thread work the worker path eliminates is
+much smaller, and the *relative* gap compresses. The byte-transfer
+itself saves the structured-clone of ~13 MB on the postMessage
+hop; on Corset that's low-single-digit-ms (consistent with the 70 ms
+vs the prior 91 ms M2 worker baseline, modulo hardware) — too small
+to A/B reliably on this asset size. The plan's hypothesis ("for 50
+MB it should be ≈ 50 ms gained") holds in shape (the byte-transfer
+win scales linearly with payload size, the structured-clone hop is
+the dominant overhead at that size), but stays a hypothesis on
+this repo — the largest shipped stress asset is 12.8 MB.
+
+No regression on smaller assets: gizmo.glb (the editor's default-on
+asset, ~80 KB) loads cleanly through the new path during
+`create_context`; visual smoke + no errors.
+
+### Phase 2 — pre-warmed pool + graceful fallback
+
+Functional gates (not throughput) — verified:
+
+1. **Pool comes up at boot.** Editor logs `WorkerPool built (2
+   workers); GltfParseJob registered — asset loads will run in
+   worker mode` during `create_context`. First Insert Model (or
+   the gizmo's `load_and_populate` on init) is a direct
+   `pool.dispatch` — no on-demand build window.
+2. **Sticky inline fallback under `?gltf-worker=off`.** Reload
+   with the opt-out: editor logs `?gltf-worker=off — skipping
+   WorkerPool bootstrap; asset loads will run inline`, gizmo
+   loads via the inline path, no errors.
+3. **Bootstrap-failure fallback path.** Not exercised in this
+   sprint's smoke (we'd need a CSP-misconfigured fixture); the
+   `tracing::warn!` branch is in place
+   ([`context.rs::maybe_build_worker_pool`](../../crates/frontend/scene-editor/src/context.rs))
+   with the "log once, fall back for the rest of the session"
+   semantics the plan called for.
+
+Pool size landed at **2** (rationale captured in §5c). 4 burns RAM
+on workers that never see load past the first frame in editor's
+common case (drag one glb at a time); 1 leaves no headroom for the
+occasional parallel dispatch (measurement harness, multi-asset
+import).

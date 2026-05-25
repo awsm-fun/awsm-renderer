@@ -30,10 +30,20 @@ use awsm_web_shared::util::free_camera::FreeCamera as Camera;
 pub type RendererHandle = Arc<xutex::AsyncMutex<AwsmRenderer>>;
 pub type CameraHandle = Arc<std::sync::Mutex<Camera>>;
 pub type RenderHooksHandle = Arc<std::sync::RwLock<Option<RenderHooks>>>;
-/// Optional Phase-4.3a worker pool used for off-main-thread glTF
-/// parsing when the dev-only `?gltf-worker=on` URL knob is set. The
-/// pool is built once at editor init; `None` keeps the inline
-/// `GltfLoader::load` path (the default).
+/// Pre-warmed Phase-4.3a worker pool for off-main-thread glTF parsing.
+/// Built once at editor init (before APP_CONTEXT is populated) so the
+/// first asset load issues `pool.dispatch::<GltfParseJob>(..)` directly
+/// without paying the ~50 ms on-demand pool-build cost on top of the
+/// load itself.
+///
+/// `None` here means the bootstrap failed (CSP that blocks blob URLs,
+/// no `import.meta.url` resolution, ad-blockers nuking the worker
+/// shim, the dev-only `?gltf-worker=off` opt-out, …) and
+/// `asset_cache::load_and_populate` automatically routes through the
+/// inline `GltfLoader::load` for the rest of the session. The
+/// fallback is logged once at boot (`tracing::warn!` from
+/// `maybe_build_worker_pool`); we never retry pool construction
+/// in-session.
 pub type WorkerPoolHandle = Arc<Option<WorkerPool>>;
 
 // we expose these public functions, and internally hold static locks
@@ -179,43 +189,78 @@ pub fn set_render_hooks(hooks: RenderHooks) {
     });
 }
 
-/// Read `?gltf-worker=on` from the URL. Dev-only knob; release builds
-/// always return `false` so production never spawns the pool.
+/// Default-on (worker-mode gltf parsing is the editor default).
+/// `?gltf-worker=off` opts out at startup — dev-only escape hatch for
+/// the measurement harness's inline-baseline A/B and for testing the
+/// graceful-fallback path without a CSP misconfiguration. Release
+/// builds skip the URL parse entirely and always try to build the
+/// pool.
 #[cfg(debug_assertions)]
 fn gltf_worker_enabled_from_url() -> bool {
-    web_sys::window()
-        .and_then(|w| {
-            let search = w.location().search().unwrap_or_default();
-            web_sys::UrlSearchParams::new_with_str(&search).ok()
-        })
-        .and_then(|p| p.get("gltf-worker"))
-        .map(|v| v == "on")
-        .unwrap_or(false)
+    let Some(window) = web_sys::window() else {
+        return true;
+    };
+    let search = window.location().search().unwrap_or_default();
+    let Ok(params) = web_sys::UrlSearchParams::new_with_str(&search) else {
+        return true;
+    };
+    match params.get("gltf-worker").as_deref() {
+        // Explicit opt-out for measurement / fallback testing.
+        Some("off") => false,
+        // Explicit `=on` is the legacy spelling; still honoured.
+        Some(_) | None => true,
+    }
 }
 
 #[cfg(not(debug_assertions))]
 fn gltf_worker_enabled_from_url() -> bool {
-    false
+    true
 }
 
+/// Editor default pool size. The common case is one asset load at a
+/// time (user drags one glb at a time, project-open serialises the
+/// asset list); 2 keeps a spare slot for the occasional parallel
+/// dispatch (multi-asset import, the measurement harness). Larger
+/// pools just burn boot RAM on workers that never see load —
+/// `WorkerPool::with_workers(None)` would clamp to
+/// `min(hardware_concurrency, 4)` but on a 16-core dev box that's
+/// 4 workers permanently parked. See `optimizations-next.md §2 →
+/// "Pool size for default-on?"` for the rationale.
+const GLTF_WORKER_POOL_SIZE: usize = 2;
+
 /// Build a `WorkerPool` and register `GltfParseJob`. Returns `None` if
-/// pool spawn fails (we log and degrade to the inline path rather
-/// than refusing to boot the editor).
+/// pool spawn fails — we log and degrade to the inline
+/// `asset_cache::load_and_populate` path rather than refusing to boot
+/// the editor. The fallback decision is sticky for the session;
+/// `asset_cache` sees `worker_pool_handle().is_none()` and routes
+/// every subsequent load through `GltfLoader::load`.
 async fn maybe_build_worker_pool() -> Option<WorkerPool> {
     if !gltf_worker_enabled_from_url() {
+        tracing::info!(
+            "?gltf-worker=off — skipping WorkerPool bootstrap; asset loads will run inline"
+        );
         return None;
     }
-    match WorkerPool::new(WorkerPoolBootstrap::Auto, 2).await {
+    match WorkerPool::new(WorkerPoolBootstrap::Auto, GLTF_WORKER_POOL_SIZE).await {
         Ok(pool) => {
             pool.register::<awsm_renderer_gltf::worker_job::GltfParseJob>();
             tracing::info!(
-                "?gltf-worker=on — WorkerPool built (2 workers); GltfParseJob registered"
+                "WorkerPool built ({GLTF_WORKER_POOL_SIZE} workers); GltfParseJob registered — \
+                 asset loads will run in worker mode"
             );
             Some(pool)
         }
         Err(err) => {
+            // Sticky fallback: log loudly (warn in release too — a
+            // production deploy with a CSP that nukes worker bootstrap
+            // wants to see this in the dev console), and proceed with
+            // `None`. `asset_cache::load_and_populate` will route
+            // through the inline `GltfLoader::load` path for the rest
+            // of the session; we never retry construction.
             tracing::warn!(
-                "?gltf-worker=on but WorkerPool construction failed; falling back to inline path: {err}"
+                "WorkerPool bootstrap failed (likely CSP / blob-URL restriction / \
+                 `import.meta.url` unresolved); falling back to inline glTF parse for the \
+                 rest of the session: {err}"
             );
             None
         }
@@ -291,8 +336,9 @@ struct AppContext {
     // we need to hold the RAF closure here to keep it alive
     raf: Arc<std::sync::Mutex<Option<AnimationFrame>>>,
 
-    // Optional Phase-4.3b worker pool — `Some` when `?gltf-worker=on`
-    // is set, otherwise `None` and asset_cache uses the inline path.
+    // Pre-warmed Phase-4.3b worker pool — `Some` after a successful
+    // bootstrap (the default), `None` when bootstrap failed or
+    // `?gltf-worker=off` opted out. See `WorkerPoolHandle` doc.
     worker_pool: WorkerPoolHandle,
 
     // just for debugging
