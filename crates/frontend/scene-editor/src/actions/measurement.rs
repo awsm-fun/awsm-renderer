@@ -806,9 +806,7 @@ pub async fn debug_pick(x: i32, y: i32) -> String {
                 .as_ref()
                 .map(|c| c.is_gizmo_mesh_key(mesh_key))
                 .unwrap_or(false);
-            format!(
-                "{{\"result\":\"hit\",\"mesh_key\":\"{mesh_key:?}\",\"is_gizmo\":{is_gizmo}}}"
-            )
+            format!("{{\"result\":\"hit\",\"mesh_key\":\"{mesh_key:?}\",\"is_gizmo\":{is_gizmo}}}")
         }
         Ok(PickResult::Miss) => "{\"result\":\"miss\"}".to_string(),
         Ok(PickResult::Initializing) => "{\"result\":\"initializing\"}".to_string(),
