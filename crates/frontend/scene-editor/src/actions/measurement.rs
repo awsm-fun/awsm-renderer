@@ -451,13 +451,27 @@ pub async fn measure_gltf_load_ab(url: String, iterations: u32) -> String {
 
     let file_type = get_type_from_filename(&url);
 
+    // JSON-safe error formatter — the `{err}` string can contain
+    // arbitrary characters (quotes, newlines, control bytes from a
+    // network error or deserialise failure) that would corrupt a
+    // naive `format!("{{\"error\":\"...{err}...\"}}")`. Route the
+    // message through `serde_json::to_string` so the documented
+    // `JSON.parse()` consumer always succeeds. Matches the pattern
+    // already used by `debug_pick` further down this file.
+    let err_json = |prefix: &str, err: &dyn std::fmt::Display| -> String {
+        let msg = format!("{prefix}: {err}");
+        let escaped =
+            serde_json::to_string(&msg).unwrap_or_else(|_| "\"<unprintable error>\"".to_string());
+        format!("{{\"error\":{escaped}}}")
+    };
+
     // Build a dedicated pool for the measurement. Cheaper than
     // reusing the editor's pool (which the user might or might not
     // have enabled via `?gltf-worker=on`) — guarantees a clean
     // measurement either way.
     let pool = match WorkerPool::new(WorkerPoolBootstrap::Auto, 2).await {
         Ok(p) => p,
-        Err(err) => return format!("{{\"error\":\"pool: {err}\"}}"),
+        Err(err) => return err_json("pool", &err),
     };
     pool.register::<GltfParseJob>();
 
@@ -468,7 +482,7 @@ pub async fn measure_gltf_load_ab(url: String, iterations: u32) -> String {
         let start = perf.now();
         match GltfLoader::load(&url, file_type.as_ref().map(file_type_clone)).await {
             Ok(_) => {}
-            Err(err) => return format!("{{\"error\":\"inline: {err}\"}}"),
+            Err(err) => return err_json("inline", &err),
         }
         inline_ms.push(perf.now() - start);
     }
@@ -482,9 +496,9 @@ pub async fn measure_gltf_load_ab(url: String, iterations: u32) -> String {
         match pool.dispatch::<GltfParseJob>(input).await {
             Ok(out) => match out.into_loader().await {
                 Ok(_) => {}
-                Err(err) => return format!("{{\"error\":\"worker into_loader: {err}\"}}"),
+                Err(err) => return err_json("worker into_loader", &err),
             },
-            Err(err) => return format!("{{\"error\":\"worker dispatch: {err}\"}}"),
+            Err(err) => return err_json("worker dispatch", &err),
         }
         worker_ms.push(perf.now() - start);
     }
