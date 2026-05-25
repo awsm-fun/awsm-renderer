@@ -110,6 +110,19 @@ impl MappedUploader {
         if ranges.is_empty() || raw_data.is_empty() {
             return Ok(());
         }
+        // `dest_size == 0` means "no destination capacity to write
+        // into" — `ensure_ring` deliberately skips ring creation in
+        // that case, and continuing past it would `expect` on an
+        // absent ring and panic. There's nothing meaningful to copy
+        // either way (a zero-byte dest can't receive any of the
+        // requested ranges), so treat it as a no-op.
+        if dest_size == 0 {
+            tracing::debug!(
+                "MappedUploader {}: write_dirty_ranges called with dest_size=0; skipping",
+                self.label
+            );
+            return Ok(());
+        }
 
         // Sync ring with dest size (lazy-create or resize).
         self.ensure_ring(gpu, dest_size)?;
@@ -117,7 +130,7 @@ impl MappedUploader {
         let ring = self
             .ring
             .as_mut()
-            .expect("ring is created by ensure_ring above");
+            .expect("ring is created by ensure_ring above (dest_size > 0)");
 
         // The MappedUploader owns a single ephemeral CommandEncoder per
         // call so the copy_buffer_to_buffer command can be submitted

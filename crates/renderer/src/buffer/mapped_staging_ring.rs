@@ -127,6 +127,14 @@ struct Slot {
     state: SlotState,
     /// Set to `true` by the `mapAsync` future when it resolves.
     ready_flag: ReadyFlag,
+    /// Set to `true` either by the `mapAsync` future on rejection
+    /// (out-of-band, via the closure clone) or synchronously by
+    /// `finalize`'s `copy_buffer_to_buffer` error path. The next
+    /// `acquire(..)` polls this and rebuilds the slot via
+    /// `make_slot(..)` so a single failure doesn't permanently
+    /// retire one ring entry (which would degrade capacity until
+    /// process exit / ring resize).
+    recover_needed: Rc<Cell<bool>>,
     /// `performance.now()` timestamp captured when `mapAsync` was
     /// kicked. Consumed by `promote_resolved` to add the
     /// `Submitted → Ready` latency into `stats.map_async_wait_ms` on
@@ -194,7 +202,12 @@ impl<'a> MappedSlotWrite<'a> {
         copy_ranges: &[(usize, usize)],
     ) -> Result<(), AwsmCoreError> {
         // unmap before copy — WebGPU forbids mapped buffers as copy
-        // sources.
+        // sources. After this point the buffer is no longer mapped,
+        // so a copy-record failure below must mark the slot for
+        // recovery: leaving state at `Mapped` would have
+        // `acquire(..)` hand back a buffer whose `getMappedRange()`
+        // can never succeed again, retiring one ring entry until
+        // process exit.
         self.ring.slots[self.slot_index].buffer.unmap();
 
         // Record copy(es).
@@ -202,13 +215,25 @@ impl<'a> MappedSlotWrite<'a> {
             if *size == 0 {
                 continue;
             }
-            encoder.copy_buffer_to_buffer(
+            if let Err(err) = encoder.copy_buffer_to_buffer(
                 &self.ring.slots[self.slot_index].buffer,
                 *offset as u32,
                 dest,
                 *offset as u32,
                 *size as u32,
-            )?;
+            ) {
+                // Flag the slot for `make_slot(..)` rebuild on the
+                // next `acquire(..)`. We leave `state == Mapped` (it
+                // was already Mapped at entry) because
+                // `recover_failed_slots` reads `recover_needed`
+                // before it consults state — the broken slot is
+                // replaced wholesale, no in-place state transition
+                // matters. Also marking `finalized = true` so the
+                // Drop impl doesn't re-touch the now-doomed slot.
+                self.ring.slots[self.slot_index].recover_needed.set(true);
+                self.finalized = true;
+                return Err(err);
+            }
         }
 
         let total: usize = copy_ranges.iter().map(|(_, s)| *s).sum();
@@ -260,6 +285,13 @@ pub struct MappedStagingRing {
     label: String,
     /// Telemetry counters.
     stats: UploadStats,
+    /// Kept around so a recoverable slot failure (copy error during
+    /// `finalize`, `mapAsync` rejection during the in-flight window)
+    /// can re-call `make_slot(..)` without threading `gpu` through
+    /// every callsite. `AwsmRendererWebGpu` is `Clone`-cheap (per its
+    /// own doc) — the value here is the shared handle, not a fresh
+    /// device.
+    gpu: AwsmRendererWebGpu,
 }
 
 impl MappedStagingRing {
@@ -283,6 +315,7 @@ impl MappedStagingRing {
             slot_capacity: capacity,
             label,
             stats: UploadStats::default(),
+            gpu: gpu.clone(),
         })
     }
 
@@ -343,6 +376,11 @@ impl MappedStagingRing {
     /// caller should fall back to `queue.writeBuffer` and the ring
     /// auto-bumps `fallback_count`.
     pub fn acquire(&mut self) -> AcquireOutcome<'_> {
+        // Heal any slot that flipped `recover_needed` since the last
+        // call — either a `mapAsync` rejection in flight or a
+        // `finalize` copy-record failure on the previous frame. Cheap
+        // (one Cell read per slot in steady state).
+        self.recover_failed_slots();
         self.promote_resolved();
 
         let depth = self.slots.len();
@@ -475,6 +513,7 @@ impl MappedStagingRing {
 
     fn start_map_async(&mut self, idx: usize) {
         let ready_flag = self.slots[idx].ready_flag.clone();
+        let recover_needed = self.slots[idx].recover_needed.clone();
         let buffer = self.slots[idx].buffer.clone();
         let capacity = self.slot_capacity as u32;
         let label = self.label.clone();
@@ -487,17 +526,75 @@ impl MappedStagingRing {
                     ready_flag.set(true);
                 }
                 Err(err) => {
-                    // The buffer might have been destroyed (ring
-                    // resize / drop); treat as a no-op.
+                    // Two reasons we land here:
+                    //   1. Benign: the buffer was destroyed under us
+                    //      (ring resize / drop). The slot itself is
+                    //      already gone, so nobody reads
+                    //      `recover_needed` — the set is harmless.
+                    //   2. Genuine `mapAsync` rejection while the
+                    //      ring is alive. Without recovery the slot
+                    //      stays `Pending` forever, never promoted to
+                    //      `Ready`, never acquirable — capacity drops
+                    //      by one until process exit / ring resize.
+                    //      Flipping `recover_needed` here lets the
+                    //      next `acquire(..)` rebuild this slot via
+                    //      `make_slot(..)` and bring it back into
+                    //      rotation.
+                    recover_needed.set(true);
                     tracing::debug!(
-                        "mapped-ring {}: mapAsync did not resolve cleanly: {:?}",
+                        "mapped-ring {}: mapAsync did not resolve cleanly: {:?} (slot {} flagged for recovery)",
                         label,
-                        err
+                        err,
+                        idx
                     );
                 }
             }
         });
         self.slots[idx].state = SlotState::Pending;
+    }
+
+    /// Walk every slot whose `recover_needed` flag was tripped (by
+    /// `mapAsync` rejection in the closure, or by a copy-record
+    /// failure in `MappedSlotWrite::finalize`) and rebuild it
+    /// in-place via `make_slot(..)`. The replacement slot is created
+    /// with `mappedAtCreation: true` so it lands directly in `Mapped`
+    /// state and is immediately re-acquirable.
+    ///
+    /// On `make_slot` failure (out-of-memory pressure, device lost)
+    /// the broken slot is left as-is and the recovery flag stays set
+    /// — the next acquire will retry. We deliberately swallow the
+    /// inner error here rather than propagate: the ring as a whole
+    /// is still usable (other slots may be fine), and acquire's
+    /// caller will see `Exhausted` and take the writeBuffer fallback.
+    fn recover_failed_slots(&mut self) {
+        let depth = self.slots.len();
+        for idx in 0..depth {
+            if !self.slots[idx].recover_needed.get() {
+                continue;
+            }
+            match Self::make_slot(&self.gpu, self.slot_capacity, &self.label) {
+                Ok(new_slot) => {
+                    // Best-effort unmap on the dead buffer in case
+                    // it's still in a valid-to-unmap state — keeps
+                    // WebGPU validation quiet during the next submit
+                    // that might still reference it via stale command
+                    // buffers (none should exist at this point, but
+                    // defensive cheap).
+                    if matches!(self.slots[idx].state, SlotState::Mapped | SlotState::Ready) {
+                        self.slots[idx].buffer.unmap();
+                    }
+                    self.slots[idx] = new_slot;
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "mapped-ring {}: slot {} recovery failed: {:?} — will retry on next acquire",
+                        self.label,
+                        idx,
+                        err
+                    );
+                }
+            }
+        }
     }
 
     fn update_peak(&mut self) {
@@ -533,6 +630,7 @@ impl MappedStagingRing {
             buffer,
             state: SlotState::Mapped,
             ready_flag: Rc::new(Cell::new(false)),
+            recover_needed: Rc::new(Cell::new(false)),
             map_async_started_ms: None,
         })
     }
