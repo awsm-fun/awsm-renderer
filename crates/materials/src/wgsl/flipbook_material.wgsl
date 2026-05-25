@@ -145,16 +145,22 @@ fn flipbook_is_past_end(frame_f: f32, count: u32, mode: u32) -> bool {
 
 // Map an in-cell UV (the quad's authored UV0) into the atlas-space UV
 // that samples the current cell.
+//
+// `flip_y` controls the row-indexing direction of the atlas (cell 0 at
+// the top row vs the bottom row). It does NOT flip the in-cell V — the
+// caller's sprite-quad UVs already track the texture's V axis, so each
+// cell renders right-side-up either way; only the *row selection*
+// flips.
 fn flipbook_compute_cell_uv(material: FlipBookMaterial, in_uv: vec2<f32>, current_time: f32) -> vec2<f32> {
     let t = current_time + material.time_offset;
     let frame_f = t * material.fps;
     let frame = flipbook_apply_mode(frame_f, material.frame_count, material.mode);
     let col = frame % material.cols;
-    let row = frame / material.cols;
+    let row_raw = frame / material.cols;
+    let row = select(row_raw, material.rows - 1u - row_raw, material.flip_y != 0u);
     let cell_size = vec2<f32>(1.0 / f32(material.cols), 1.0 / f32(material.rows));
     let cell_origin = vec2<f32>(f32(col), f32(row)) * cell_size;
-    let v_in = select(in_uv.y, 1.0 - in_uv.y, material.flip_y != 0u);
-    return cell_origin + vec2<f32>(in_uv.x, v_in) * cell_size;
+    return cell_origin + in_uv * cell_size;
 }
 
 // Convenience: combine sampled-atlas color with tint + alpha-mode
