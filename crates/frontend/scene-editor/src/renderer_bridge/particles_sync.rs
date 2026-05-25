@@ -460,20 +460,17 @@ async fn build_runtime_blend(
 /// [`AwsmRenderer::set_time_source`][awsm_renderer::AwsmRenderer::set_time_source]
 /// automatically reach the particle simulator.
 pub fn tick_all(renderer: &mut AwsmRenderer) {
-    // Smallest delta_time the simulator sees on a frame that did
-    // advance — keeps the first-render case (frame_globals reports 0.0
-    // before the second render() call) from freezing every emitter at
-    // birth. 0.016 ≈ one 60 Hz frame, the same fallback the old
-    // last_ts_ms-based path used.
-    const FIRST_FRAME_FALLBACK_DT: f32 = 0.016;
-    let dt = {
-        let raw = renderer.frame_globals().delta_time;
-        if raw > 0.0 {
-            raw
-        } else {
-            FIRST_FRAME_FALLBACK_DT
-        }
-    };
+    // Pass `delta_time` through verbatim, including the legitimate
+    // `0.0` cases:
+    //   * paused gameplay (`set_time_source` pumped the same `time`
+    //     twice) — simulations correctly stop advancing.
+    //   * the very first render() before any prior frame.
+    // The previous code path here substituted `0.016` whenever
+    // `delta_time == 0.0`, which broke pause semantics by ticking
+    // particles at 60 Hz against the paused clock. The first-frame
+    // case takes a single "lost" emit tick instead, which is a
+    // ~16 ms cosmetic delay nobody notices.
+    let dt = renderer.frame_globals().delta_time;
     with_runtimes(|map| {
         for (_, runtime) in map.iter_mut() {
             // In `World` space new spawns need to come out of the
