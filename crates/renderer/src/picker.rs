@@ -13,7 +13,7 @@ use crate::{
     error::Result,
     meshes::MeshKey,
     picker::state::{PickerState, OUTPUT_BYTE_SIZE},
-    pipeline_layouts::{PipelineLayoutCacheKey, PipelineLayoutKey, PipelineLayouts},
+    pipeline_layouts::{PipelineLayoutCacheKey, PipelineLayouts},
     pipelines::{
         compute_pipeline::{ComputePipelineCacheKey, ComputePipelineKey},
         Pipelines,
@@ -164,25 +164,59 @@ impl Picker {
             PipelineLayoutCacheKey::new(vec![multisampled_bind_group_layout_key]),
         )?;
 
-        let singlesampled_compute_pipeline_key = create_pipeline(
-            gpu,
-            pipeline_layouts,
-            shaders,
-            pipelines,
-            singlesampled_pipeline_layout_key,
-            false,
-        )
-        .await?;
-
-        let multisampled_compute_pipeline_key = create_pipeline(
-            gpu,
-            pipeline_layouts,
-            shaders,
-            pipelines,
-            multisampled_pipeline_layout_key,
-            true,
-        )
-        .await?;
+        // Both shader variants and both pipelines batched in two
+        // ensure_keys calls so Dawn parallelises the compiles
+        // instead of serialising the singlesampled compile against
+        // the multisampled one.
+        shaders
+            .ensure_keys(
+                gpu,
+                [
+                    ShaderCacheKey::from(ShaderCacheKeyPicker {
+                        multisampled_geometry: false,
+                    }),
+                    ShaderCacheKey::from(ShaderCacheKeyPicker {
+                        multisampled_geometry: true,
+                    }),
+                ],
+            )
+            .await?;
+        let singlesampled_shader = shaders
+            .get_key(
+                gpu,
+                ShaderCacheKeyPicker {
+                    multisampled_geometry: false,
+                },
+            )
+            .await?;
+        let multisampled_shader = shaders
+            .get_key(
+                gpu,
+                ShaderCacheKeyPicker {
+                    multisampled_geometry: true,
+                },
+            )
+            .await?;
+        let pipeline_keys = pipelines
+            .compute
+            .ensure_keys(
+                gpu,
+                shaders,
+                pipeline_layouts,
+                [
+                    ComputePipelineCacheKey::new(
+                        singlesampled_shader,
+                        singlesampled_pipeline_layout_key,
+                    ),
+                    ComputePipelineCacheKey::new(
+                        multisampled_shader,
+                        multisampled_pipeline_layout_key,
+                    ),
+                ],
+            )
+            .await?;
+        let singlesampled_compute_pipeline_key = pipeline_keys[0];
+        let multisampled_compute_pipeline_key = pipeline_keys[1];
 
         Ok(Self {
             singlesampled_compute_pipeline_key,
@@ -291,36 +325,6 @@ fn create_bind_group_layout(
     ];
 
     Ok(bind_group_layouts.get_key(gpu, BindGroupLayoutCacheKey { entries })?)
-}
-
-async fn create_pipeline(
-    gpu: &AwsmRendererWebGpu,
-    pipeline_layouts: &mut PipelineLayouts,
-    shaders: &mut Shaders,
-    pipelines: &mut Pipelines,
-    pipeline_layout_key: PipelineLayoutKey,
-    multisampled_geometry: bool,
-) -> Result<ComputePipelineKey> {
-    let shader_key = shaders
-        .get_key(
-            gpu,
-            ShaderCacheKeyPicker {
-                multisampled_geometry,
-            },
-        )
-        .await?;
-
-    let compute_pipeline_cache_key = ComputePipelineCacheKey::new(shader_key, pipeline_layout_key);
-
-    Ok(pipelines
-        .compute
-        .get_key(
-            gpu,
-            shaders,
-            pipeline_layouts,
-            compute_pipeline_cache_key.clone(),
-        )
-        .await?)
 }
 
 /// Shader cache key for the picker compute shader.
