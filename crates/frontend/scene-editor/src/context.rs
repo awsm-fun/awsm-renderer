@@ -277,9 +277,24 @@ pub fn worker_pool_handle() -> WorkerPoolHandle {
 
 // Called once at init
 pub async fn create_context(canvas: web_sys::HtmlCanvasElement) -> EditorResult<()> {
-    let renderer = create_renderer(canvas.clone()).await?;
+    // Renderer construction (device-request, shader compile, pipeline
+    // build) is the long pole — the worker pool bootstrap only needs
+    // the already-loaded `WebAssembly.Module` and a few `postMessage`
+    // round-trips for the `awsm-ready` handshake. Drive both
+    // concurrently with `futures::future::join` so the editor's boot
+    // critical path is `max(renderer, pool)` instead of
+    // `renderer + pool` — matches the "in parallel with shader
+    // compile" claim in `PERFORMANCE.md §5c`.
+    //
+    // `join` (not `try_join`) is intentional: `maybe_build_worker_pool`
+    // already absorbs every failure mode into a `None` return value
+    // (sticky inline fallback), so it can't error out the editor.
+    // The renderer side is the only fallible path.
+    let (renderer_result, worker_pool) =
+        futures::future::join(create_renderer(canvas.clone()), maybe_build_worker_pool()).await;
+    let renderer = renderer_result?;
     let renderer = Arc::new(xutex::AsyncMutex::new(renderer));
-    let worker_pool: WorkerPoolHandle = Arc::new(maybe_build_worker_pool().await);
+    let worker_pool: WorkerPoolHandle = Arc::new(worker_pool);
 
     let camera = {
         let mut cam = Camera::new_default_cube(16.0 / 9.0);
