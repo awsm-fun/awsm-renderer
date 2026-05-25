@@ -1,5 +1,43 @@
 # Parallelize WebGPU pipeline creation — full plan
 
+## End state (what this doc finishes)
+
+After [follow-up 2](#follow-up-2-startup-tail-trim) lands, the
+**WebGPU pipeline-compile parallelization problem is closed**.
+Every shader + pipeline compile in `AwsmRendererBuilder::build`
+will ride one of two pools (one shader, one `try_join`'d compute +
+render), bounded by Dawn's worker-pool size × `max(t_compile)` per
+wave — the theoretical limit of what JS-side parallelization can
+achieve. The orchestration is structured so a future contributor
+*can't accidentally* re-introduce a sequential `.await?` (Path A's
+architectural guarantee).
+
+### What this doc explicitly does NOT address
+
+The trace evidence in [Status](#status-2026-05-25--tail-pool-landed-on-parallel-continued)
+shows the post-PR#96 fresh-profile number is 2.2 s — and most of
+that is **not pipeline compile time** anymore. The remaining axes
+of "page-load → first useful frame" belong to other (future) docs:
+
+| Axis | Approx magnitude | Where the lever lives |
+|---|---|---|
+| WASM module instantiation + glue | 200–500 ms | bundle size, code splitting, LTO, cargo-bloat audit |
+| Browser-process startup | ~450 ms | minimal lever — Chrome's machinery |
+| JS ↔ Rust marshalling per `gpu.create_*` | dispersed | descriptor-build overhead reduction |
+| Texture decode (ImageBitmap × 3 + BRDF) | 300–500 ms (already parallelised) | smaller default cubemaps, shipped BRDF LUT |
+| First-model-load (gltf + textures + finalize) | 150–400 ms / model | separate path with its own pool (Phase 4) |
+| First-frame bind-group recreate | 10–30 ms | pre-create some bind groups in `build()` |
+| Driver-level MSL lowering (Metal/Vulkan/D3D) | 5+ s truly cold | no JS hook — browser team |
+
+Of these, **WASM size + instantiation** is the only axis with a
+clean cost/benefit story for a focused follow-up. A `cargo-bloat`
+audit + dependency once-over is probably worth ~100–300 ms on
+every cold load. It's a different problem with different tools and
+should get its own doc, not extend this one.
+
+Everything else is diminishing returns or genuinely out of our
+control.
+
 ## Status (2026-05-25) — tail pool landed on `parallel-continued`
 
 All seven original phases plus the cross-pass pool sweep plus the
