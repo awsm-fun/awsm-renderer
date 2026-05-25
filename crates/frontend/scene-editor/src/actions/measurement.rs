@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
+use web_sys::js_sys;
 
 use crate::scene::SceneSnapshot;
 use crate::state::app_state;
@@ -77,6 +78,48 @@ pub async fn load_scene_by_path(scene_name: String) -> Result<(), JsValue> {
     }
     state.project_name.set(Some(scene_name.clone()));
     state.mark_clean();
+
+    // Pre-hydrate `pending_assets` with the bytes for every
+    // `TextureDef::Raster` entry — mirrors `load_inner`'s same step
+    // but pulls bytes via `fetch` from the dev server (no
+    // `ProjectDir`). Tuning scenes have zero assets so this loop is
+    // typically empty; the flipbook test scene relies on this path
+    // to surface its sprite-sheet PNG to the texture cache.
+    let raster_targets: Vec<(awsm_scene_schema::AssetId, String, String)> = {
+        let table = state.scene.assets.lock().unwrap();
+        table
+            .entries
+            .iter()
+            .filter_map(|(id, entry)| match &entry.source {
+                awsm_scene_schema::AssetSource::Texture(
+                    awsm_scene_schema::TextureDef::Raster { display_name },
+                ) => awsm_scene_schema::asset_disk_path(*id, entry)
+                    .map(|p| (*id, display_name.clone(), p)),
+                _ => None,
+            })
+            .collect()
+    };
+    for (texture_id, display_name, disk_subpath) in raster_targets {
+        let asset_url = format!("assets/world/{scene_name}/{disk_subpath}");
+        let resp_val = JsFuture::from(window.fetch_with_str(&asset_url)).await?;
+        let resp: web_sys::Response = resp_val.dyn_into()?;
+        if !resp.ok() {
+            tracing::warn!(
+                "load_scene_by_path: raster asset {texture_id} ({display_name}) — \
+                 fetch {asset_url} returned status {}",
+                resp.status()
+            );
+            continue;
+        }
+        let buf_val = JsFuture::from(resp.array_buffer()?).await?;
+        let buf: js_sys::ArrayBuffer = buf_val.dyn_into()?;
+        let bytes = js_sys::Uint8Array::new(&buf).to_vec();
+        state
+            .pending_assets
+            .lock()
+            .unwrap()
+            .insert(texture_id, bytes);
+    }
 
     // Wait for every Model node to reach Ready. Tuning scenes use
     // only primitive nodes (no glTF) so this should resolve fast,
