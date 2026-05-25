@@ -17,6 +17,21 @@ pub struct ShaderCacheKeyMaterialOpaque {
     pub msaa_sample_count: Option<u32>,
     pub mipmaps: bool,
     pub shader_id: MaterialShaderId,
+    /// Stable hash over the currently-registered dynamic-material set
+    /// (sorted by shader_id, then `(name, layout_hash, wgsl_hash)` per
+    /// entry).
+    ///
+    /// **Returns `0` when no dynamic materials are registered**, which
+    /// is the stable empty-state sentinel — the cache key's hash is
+    /// bit-identical to the pre-dynamic-material build, so first-party
+    /// pipelines compile to the same WGSL they did before this feature
+    /// shipped. Registering / unregistering a dynamic material changes
+    /// `dispatch_hash`, invalidates affected pipelines on next render,
+    /// and triggers a recompile.
+    ///
+    /// See `awsm_renderer::dynamic_materials::DynamicMaterials::dispatch_hash`
+    /// for the hashing details.
+    pub dispatch_hash: u64,
 }
 
 impl From<ShaderCacheKeyMaterialOpaque> for ShaderCacheKey {

@@ -177,6 +177,14 @@ impl MaterialOpaquePipelines {
                             msaa_sample_count: msaa,
                             mipmaps,
                             shader_id,
+                            // Builder-time prewarm — no dynamic materials
+                            // can be registered before `build()` returns,
+                            // so the stable empty-state sentinel applies.
+                            // Phase 4+ wires this from
+                            // `dynamic_materials.dispatch_hash()` at
+                            // ensure_keys time so a registration triggers
+                            // the right pipeline recompile.
+                            dispatch_hash: 0,
                         }
                         .into(),
                         layout_key,

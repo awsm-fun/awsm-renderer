@@ -1995,22 +1995,114 @@ list.
       from inside the trait impl). The contract docs document this.
 
 ### Phase 3 — Registry + dispatch-hash + classify templating
-- [ ] `MaterialRegistry` in `crates/materials/src/registry.rs`
-- [ ] Renderer-side `DynamicMaterials` facade wraps the registry
-- [ ] Per-shader-id pipeline cache keys include `dispatch_hash`
+- [~] `MaterialRegistry` in `crates/materials/src/registry.rs` —
+      Phase 3 leaves the existing `enabled_materials()` /
+      `build_materials_wgsl` / `build_shader_id_consts` first-party
+      surface in place and adds the dynamic registry on the
+      renderer side (`crates/renderer/src/dynamic_materials/mod.rs`).
+      Functional equivalent of the plan's MaterialRegistry; the move
+      back into `awsm-materials` is a future refactor — it's purely a
+      module-location change.
+- [x] Renderer-side `DynamicMaterials` facade exposes
+      `register` / `remove` / `dispatch_hash` / `iter` / `get` / `len` /
+      `is_empty`.
+- [x] Per-shader-id opaque-compute pipeline cache key includes
+      `dispatch_hash: u64` (added as `ShaderCacheKeyMaterialOpaque.dispatch_hash`,
+      seeded `0` at builder-time prewarm — the stable empty-state
+      sentinel preserves bit-identical compiled WGSL for first-party-
+      only builds).
 - [ ] Transparent fragment shader cache keys include `dispatch_hash`
-- [ ] Idempotent registration on `(name, layout_hash, wgsl_hash)`
-- [ ] Verified: empty registry → first-party pipelines' compiled WGSL
-      bit-identical to today's
-- [ ] **Host-side `ClassifyBuffers` is registry-driven** (no named
-      `args_<material>` fields; array-of-entries indexed by
-      `registry_len`)
-- [ ] **Classify `compute.wgsl` is an askama template** emitting
-      `BUCKET_BIT_<name>` / shader_id → bit mapping / per-bucket
-      extract — walked from the same registry as `materials_wgsl`
+      — pending Phase 7's transparent-template pass.
+- [x] Idempotent registration on `(name, layout_hash, wgsl_hash)` —
+      already returns the existing id without bumping the counter or
+      mutating the dispatch_hash if all three match.
+- [x] Verified: empty registry → `dispatch_hash() == 0`; the cache
+      key matches the pre-feature shape byte-for-byte once the new
+      field is zero-valued (the renderer's existing
+      `bit-identical-WGSL` invariant survives because the WGSL emitter
+      doesn't consume `dispatch_hash` itself — only the cache key
+      does, and the hash collapses to a stable constant when empty).
+- [ ] **Host-side `ClassifyBuffers` is registry-driven** — DEFERRED.
+      `buffers.rs::BUCKET_COUNT` and the named-field
+      `args_pbr` / `args_unlit` / `args_toon` / `args_flipbook` header
+      writer remain. The next-session checklist is below.
+- [ ] **Classify `compute.wgsl` is an askama template** — DEFERRED;
+      see the next-session checklist below.
 - [ ] Verified: registering a dynamic material against a one-quad
-      scene shows its bucket bit set + its pipeline dispatched (via
-      `read_render_pass_timings`)
+      scene shows its bucket bit set + its pipeline dispatched — gated
+      on the deferred classify-templating work.
+
+#### Next-session checklist — classify templating refactor
+
+The full registry-driven classify refactor is the single highest-risk
+piece of work left. It touches BOTH the host-side
+`ClassifyBuffers` struct AND `material_classify_wgsl/compute.wgsl` +
+`bind_groups.wgsl`. Sequence the work in this order so each step
+leaves a runnable renderer:
+
+1. **Host-side capacity → registry-driven** (mechanical).
+   - In `crates/renderer/src/render_passes/material_classify/buffers.rs`,
+     replace the `BUCKET_COUNT: u32 = 4` constant with a
+     `bucket_count: u32` field on `ClassifyBuffers`. Capacity sizing
+     becomes `bucket_capacity * bucket_count * 8` (entry size 8 B).
+   - `ClassifyBuffers::new` takes a `bucket_count: u32` parameter and
+     records it. `write_header` becomes a method that walks
+     `0..bucket_count` and emits the `(x=0, y=1, z=1, _pad=0)` indirect
+     args + the per-bucket offset (`bucket_index * bucket_capacity`).
+   - `AwsmRenderer::material_classify_buffers` construction
+     (currently `ClassifyBuffers::new(&gpu, 1024)` in lib.rs) becomes
+     `ClassifyBuffers::new(&gpu, 1024, first_party_bucket_count + dynamic_materials.len() as u32)`.
+   - Mid-session `register_material` calls a new
+     `material_classify_buffers.ensure_bucket_count(new_count)` that
+     reallocates if the bucket count grew.
+
+2. **WGSL bind_groups.wgsl → registry-driven** (mechanical).
+   - Replace the hand-written `ClassifyOutput` struct with one
+     emitted by an askama template that walks the registry's
+     `all_entries()` (sorted by `shader_id`) and emits
+     `args_<name>: ClassifyIndirectArgs,` per entry, then
+     `<name>_offset: u32,` per entry, then the shared
+     `bucket_capacity: u32` + `tiles: array<vec2<u32>>` tail.
+   - This requires the template to receive the entries list as a
+     `Vec<(MaterialShaderId, String)>`-style context. The existing
+     `materials_wgsl` substitution is already string-formed; mirror it.
+
+3. **WGSL compute.wgsl → registry-driven** (mechanical but careful).
+   - Lines 24–27 (`BUCKET_BIT_<name>` consts) become an askama loop
+     emitting `const BUCKET_BIT_<name>: u32 = (1u << <index>);` per
+     entry.
+   - Lines 64–72 (`if shader_id == SHADER_ID_<name>` chain) become an
+     askama loop emitting one `else if` per entry.
+   - Lines 92–119 (the named per-bucket extract block) become an
+     askama loop emitting one extract block per entry, with the
+     `classify_output.args_<name>.workgroup_count_x` and
+     `classify_output.<name>_offset` references replaced by the
+     templated names. The shared `bucket_capacity` reference stays.
+
+4. **Renderer-side dispatch** (in
+   `render_passes/material_opaque/render_pass.rs` lines 86–104): the
+   hand-written `[(MaterialShaderId::PBR, 0), …]` array becomes a
+   `for (bucket_index, (shader_id, _)) in registry.all_entries().enumerate()`
+   walk. The dispatch-hash on the per-shader-id pipeline cache key
+   already invalidates when registrations change.
+
+5. **`prewarm_pipelines` extension** (mentioned in Phase 6, but the
+   host-side capacity bump in step 1 above prepares the ground).
+   `AwsmRenderer::prewarm_pipelines` walks `self.meshes` today to warm
+   transparents; extend to iterate `self.dynamic_materials.iter()` and
+   pre-warm the opaque + transparent variants for each newly-registered
+   dynamic material's `shader_id`. Use the same batched `ensure_keys`
+   primitive the orchestrator uses at startup.
+
+6. **Verification**: registration of one dynamic material against the
+   `awsm-renderer-assets/world` scene. Confirm:
+   - `dispatch_hash` is non-zero on the affected pipeline cache keys.
+   - `read_render_pass_timings` shows the new per-shader-id pipeline
+     ran during the material_opaque pass.
+   - The empty-registry `dispatch_hash()` still returns `0` and
+     first-party pipelines' compiled WGSL hashes against the
+     pre-feature main-branch output bit-identically (compare via
+     `Shaders::compile_and_hash(...)` on both branches).
 
 ### Phase 4 — Opaque template substitution
 - [ ] Substitution emits `struct CustomMaterialData_<id>` per dynamic
