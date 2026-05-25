@@ -555,8 +555,23 @@ pub async fn execute_async(input: GltfParseInput) -> anyhow::Result<GltfParseOut
 /// unlike `Uint8Array::view(src)`, which is a borrow over wasm
 /// linear memory and cannot be transferred (its backing store
 /// belongs to the wasm instance, not JS).
+///
+/// `src.len()` is checked against `u32::MAX` with `try_from`. A
+/// `Uint8Array.length` is u32 in the WebGPU/JS heap; a payload
+/// larger than 4 GiB can't be expressed in a single `Uint8Array`
+/// regardless of wasm32's own 4 GiB linear-memory ceiling, so the
+/// panic surfaces the real protocol limit instead of letting an
+/// `as u32` truncation silently allocate a too-small buffer and
+/// copy garbage. A panic here is the right shape — the caller is
+/// the renderer's worker dispatcher, which has no recovery path
+/// for a payload that already overran the JS heap limit, and
+/// wasm32 cannot reach this branch in practice today.
 fn make_transferable_u8(src: &[u8]) -> Uint8Array {
-    let u8 = Uint8Array::new_with_length(src.len() as u32);
+    let len = u32::try_from(src.len()).expect(
+        "make_transferable_u8: payload exceeds u32::MAX bytes — Uint8Array.length cannot \
+         represent it",
+    );
+    let u8 = Uint8Array::new_with_length(len);
     // `copy_from` writes wasm-linear-memory bytes into the JS-heap
     // `ArrayBuffer`. Single memcpy per call.
     u8.copy_from(src);
