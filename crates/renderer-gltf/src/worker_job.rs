@@ -429,41 +429,62 @@ impl WorkerJob for GltfParseJob {
         }
         output.buffer_bytes = buffer_bytes;
 
-        // Bitmaps — same shape as before.
-        if let Ok(bitmaps_val) = Reflect::get(&payload, &JsValue::from_str("bitmaps")) {
-            if let Ok(bitmaps_arr) = bitmaps_val.dyn_into::<Array>() {
-                let count = bitmaps_arr.length() as usize;
-                let expected = output.image_metas.len();
-                if count != expected {
+        // Bitmaps side-channel. Strict: when there are images to
+        // decode (`image_metas.len() > 0`), the worker MUST send a
+        // dense `bitmaps` array of matching length. Anything weaker
+        // (missing property, null/undefined, non-Array, length
+        // mismatch, sparse slot, non-ImageBitmap entry) is a protocol
+        // violation — surface it as a typed error here, where the
+        // actual contract lives, instead of letting `into_loader` try
+        // to decode the empty `ImageMeta.bytes` field and produce a
+        // misleading "image decode failed" error several layers up.
+        //
+        // For a job with zero images the worker still emits an empty
+        // bitmaps array (the side-channel is unconditional), but to
+        // stay forgiving against e.g. an older worker bundle we
+        // tolerate the property being absent / null when there is
+        // nothing to decode — there's no information to mismatch in
+        // that case.
+        let bitmaps_val = Reflect::get(&payload, &JsValue::from_str("bitmaps"))
+            .map_err(|err| format!("read bitmaps: {err:?}"))?;
+        let expected = output.image_metas.len();
+        if bitmaps_val.is_undefined() || bitmaps_val.is_null() {
+            if expected > 0 {
+                return Err(format!(
+                    "bitmaps side-channel missing/null but image_metas has {expected} \
+                     entries — protocol violation (likely a worker/main bundle mismatch)"
+                ));
+            }
+        } else {
+            let bitmaps_arr = bitmaps_val.dyn_into::<Array>().map_err(|_| {
+                "bitmaps is not an Array — protocol violation (likely a worker/main bundle \
+                 mismatch)"
+                    .to_string()
+            })?;
+            let count = bitmaps_arr.length() as usize;
+            if count != expected {
+                return Err(format!(
+                    "bitmaps array length mismatch: got {count}, expected {expected}"
+                ));
+            }
+            // Worker contract: the bitmaps array is dense (one
+            // `ImageBitmap` per meta in index order — see the
+            // `DECODED_IMAGE_HANDLES` doc + `into_response_message`).
+            for (idx, meta) in output.image_metas.iter_mut().enumerate() {
+                let handle = bitmaps_arr.get(idx as u32);
+                if handle.is_undefined() || handle.is_null() {
                     return Err(format!(
-                        "bitmaps array length mismatch: got {count}, expected {expected}"
+                        "bitmaps[{idx}] is null/undefined — worker contract requires a dense \
+                         ImageBitmap array"
                     ));
                 }
-                // Worker contract: the bitmaps array is dense (one
-                // `ImageBitmap` per meta in index order — see the
-                // `DECODED_IMAGE_HANDLES` doc + `into_response_message`).
-                // Anything else (null/undefined slot, non-ImageBitmap
-                // JsValue) is a protocol violation — surface it as a
-                // typed error here at the actual boundary instead of
-                // letting `into_loader` decode the empty `bytes`
-                // field and produce a misleading "image decode
-                // failed" error several layers up.
-                for (idx, meta) in output.image_metas.iter_mut().enumerate() {
-                    let handle = bitmaps_arr.get(idx as u32);
-                    if handle.is_undefined() || handle.is_null() {
+                match handle.dyn_into::<web_sys::ImageBitmap>() {
+                    Ok(bitmap) => meta.bitmap = Some(bitmap),
+                    Err(_) => {
                         return Err(format!(
-                            "bitmaps[{idx}] is null/undefined — worker contract requires a dense \
-                             ImageBitmap array"
+                            "bitmaps[{idx}] is not an ImageBitmap — likely a worker/main \
+                             bundle mismatch"
                         ));
-                    }
-                    match handle.dyn_into::<web_sys::ImageBitmap>() {
-                        Ok(bitmap) => meta.bitmap = Some(bitmap),
-                        Err(_) => {
-                            return Err(format!(
-                                "bitmaps[{idx}] is not an ImageBitmap — likely a worker/main \
-                                 bundle mismatch"
-                            ));
-                        }
                     }
                 }
             }
