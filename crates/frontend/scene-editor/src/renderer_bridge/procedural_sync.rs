@@ -462,10 +462,12 @@ async fn materialize_sprite(entry: Arc<RendererNode>, parent_tk: TransformKey, d
     }
 }
 
-/// Builds a FlipBookMaterial-backed sprite. Uploaded via the
-/// transparent path when `alpha_mode == Blend` so blending composes
-/// against the opaque scene; opaque / mask paths use the sync
-/// `add_raw_mesh`.
+/// Builds a FlipBookMaterial-backed sprite. Any non-Opaque alpha mode
+/// (Blend or Mask) routes through `add_raw_mesh_transparent` — the
+/// renderer's sync `add_raw_mesh` errors on transparency-pass
+/// materials, and `FlipBookMaterial::is_transparency_pass()` is true
+/// for both Blend and Mask (the latter discards in the transparent
+/// fragment shader). Only Opaque uses the sync path.
 async fn spawn_flipbook_sprite(
     entry: Arc<RendererNode>,
     parent_tk: TransformKey,
@@ -487,7 +489,12 @@ async fn spawn_flipbook_sprite(
         awsm_scene_schema::FlipBookModeDef::Clamp => FlipBookMode::Clamp,
         awsm_scene_schema::FlipBookModeDef::Once => FlipBookMode::Once,
     };
-    let is_blend = matches!(alpha_mode, MaterialAlphaMode::Blend);
+    // Anything other than Opaque must go through the transparent
+    // path — Mask materials are transparency-pass too (the WGSL
+    // `discard`s on cutoff in the transparent fragment shader), and
+    // the sync `add_raw_mesh` rejects every transparency-pass
+    // material with an error.
+    let is_transparent_pass = !matches!(alpha_mode, MaterialAlphaMode::Opaque);
     let texture_ref = sprite.texture;
     let tint = sprite.tint;
     let entry_for_track = entry.clone();
@@ -501,7 +508,7 @@ async fn spawn_flipbook_sprite(
     fb.mode = mode;
     fb.flip_y = flipbook.flip_y;
 
-    if is_blend {
+    if is_transparent_pass {
         // Transparent path is async because `add_raw_mesh_transparent`
         // builds + caches a transparent pipeline for the mesh.
         let handle = renderer_handle();
