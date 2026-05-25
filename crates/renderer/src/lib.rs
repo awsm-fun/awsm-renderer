@@ -863,26 +863,61 @@ impl AwsmRendererBuilder {
         let camera = camera::CameraBuffer::new(&gpu)?;
         let frame_globals = crate::frame_globals::FrameGlobals::new(&gpu)?;
 
-        // Three default-cubemap creations (prefiltered IBL / irradiance
-        // IBL / skybox), the BRDF LUT generation, and the opaque
-        // mipgen pipeline are independent `&gpu`-only GPU operations.
-        // Run their async halves concurrently; the browser interleaves
-        // the underlying ImageBitmap decodes + GPU shader/pipeline
-        // compiles, knocking several creations worth of wall-clock off
-        // `AwsmRendererBuilder::build`. The post-await registration
-        // touches the shared `textures` table and must stay sync, so
-        // the helpers are split into `prepare_resources` (async,
-        // standalone) + `register` (sync, takes `&mut Textures`).
-        // OpaqueMipgen joins this block because it's needed later in
-        // the builder but has no shared mutable state — keeping it in
-        // its prior sequential slot served no purpose.
+        // One mega-join covering every independent &gpu-only async
+        // task at build time:
+        //
+        //   - 3 default-cubemap creations (prefiltered IBL / irradiance
+        //     IBL / skybox)
+        //   - BRDF LUT generation
+        //   - opaque-mipgen pipeline construction
+        //   - `RenderPasses::new` (the bulk of shader / pipeline
+        //     compilation — internally already 3 awaits worth of
+        //     pooled work)
+        //   - `RenderTextures::new`
+        //
+        // The five texture-prep futures only touch `&gpu` (the
+        // `prepare_resources` half of the prepare/register split is
+        // intentional infrastructure for exactly this kind of merge);
+        // RenderPasses::new holds `&mut` on the shader / pipeline /
+        // bind-group-layout caches and reads from `&mut textures` via
+        // `RenderPassInitContext`, but those reads (pool.arrays_len,
+        // pool_sampler_set, pool.texture_views, get_sampler over
+        // pool_sampler_set, texture_transforms_gpu_buffer) are
+        // disjoint from anything `IblTexture::register` /
+        // `Skybox::register` later mutate — register inserts into
+        // `cubemaps` (separate from `pool`) and pulls a sampler key
+        // out of `sampler_cache` without ever touching
+        // `pool_sampler_set`. So we can safely defer the registers
+        // (and the dependent Lights / Environment construction) to
+        // the post-await sync block.
+        //
+        // Phase emit happens before the join because the dominant
+        // wall-clock cost inside it is the bulk shader + pipeline
+        // compilation, which is the phase frontends should label.
+        let formats_for_textures = render_texture_formats.clone();
+        let bind_groups = BindGroups::new(&features);
+        let mut render_pass_init = RenderPassInitContext {
+            gpu: &gpu,
+            bind_group_layouts: &mut bind_group_layouts,
+            pipeline_layouts: &mut pipeline_layouts,
+            pipelines: &mut pipelines,
+            shaders: &mut shaders,
+            render_texture_formats: &mut render_texture_formats,
+            textures: &mut textures,
+            features: &features,
+        };
+
+        emit_phase(RendererLoadingPhase::CompilingShaders);
+
         let (
             ibl_filtered_resources,
             ibl_irradiance_resources,
             skybox_resources,
             brdf_lut,
             opaque_mipgen,
-        ) = futures::future::try_join5(
+            mut render_passes,
+            render_textures,
+        ) = futures::try_join!(
             IblTexture::prepare_resources(&gpu, ibl_filtered_env_colors),
             IblTexture::prepare_resources(&gpu, ibl_irradiance_colors),
             Skybox::prepare_resources(&gpu, skybox_colors),
@@ -896,8 +931,16 @@ impl AwsmRendererBuilder {
                     .await
                     .map_err(crate::error::AwsmError::from)
             },
-        )
-        .await?;
+            RenderPasses::new(&mut render_pass_init, &features),
+            async {
+                RenderTextures::new(&gpu, formats_for_textures, &features)
+                    .await
+                    .map_err(crate::error::AwsmError::from)
+            },
+        )?;
+        // `render_pass_init` is dropped here — its `&mut textures`
+        // borrow is released, freeing the post-await registers below
+        // to touch `textures` again.
 
         let lights = Lights::new(
             &gpu,
@@ -913,47 +956,6 @@ impl AwsmRendererBuilder {
         let materials = Materials::new(&gpu)?;
         let environment =
             Environment::new(Skybox::register(&gpu, &mut textures, skybox_resources)?);
-
-        // Parallelise `RenderPasses::new` with `RenderTextures::new`.
-        // Both subsystems compile pipelines + shaders against the same
-        // shared `&gpu` handle (no contention; WebGPU's device queue
-        // serialises internally) but touch disjoint owned state —
-        // RenderPasses mutates the shader / pipeline / bind-group-layout
-        // caches; RenderTextures::new is self-contained. The
-        // `RenderPassInitContext.gpu: &AwsmRendererWebGpu` shape (was
-        // `&mut`) is what unblocks the join — see the doc on
-        // `RenderPassInitContext`.
-        let formats_for_textures = render_texture_formats.clone();
-        let bind_groups = BindGroups::new(&features);
-        let mut render_pass_init = RenderPassInitContext {
-            gpu: &gpu,
-            bind_group_layouts: &mut bind_group_layouts,
-            pipeline_layouts: &mut pipeline_layouts,
-            pipelines: &mut pipelines,
-            shaders: &mut shaders,
-            render_texture_formats: &mut render_texture_formats,
-            textures: &mut textures,
-            features: &features,
-        };
-
-        // Bulk shader + pipeline compilation begins here. On a cold
-        // PSO disk cache (fresh Chrome profile, post-redeploy first
-        // load) this is the window where the user actually waits —
-        // tens of seconds while Dawn lowers every WGSL variant to
-        // MSL and assembles every pipeline. Shader compilation and
-        // pipeline assembly are interleaved (each pass batches its
-        // own shaders then its own pipelines) so there's no clean
-        // boundary between "shaders done" and "pipelines start";
-        // the `CompilingShaders` phase covers the whole block.
-        emit_phase(RendererLoadingPhase::CompilingShaders);
-
-        let (mut render_passes, render_textures) =
-            futures::future::try_join(RenderPasses::new(&mut render_pass_init, &features), async {
-                RenderTextures::new(&gpu, formats_for_textures, &features)
-                    .await
-                    .map_err(crate::error::AwsmError::from)
-            })
-            .await?;
 
         // Main render-pass compile done. The tail subsystems —
         // Picker / LineRenderer / Shadows + EVSM / Effects / Display
