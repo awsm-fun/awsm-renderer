@@ -10,6 +10,7 @@
 
 pub mod alpha_mode;
 pub mod dynamic;
+pub mod dynamic_layout;
 pub mod registry;
 pub mod shader;
 pub mod shader_id;

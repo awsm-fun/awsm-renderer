@@ -1972,16 +1972,27 @@ list.
       not a tagged enum — see `dynamic_material.rs` doc comment)
 
 ### Phase 2 — Layout helpers + DynamicMaterial impl
-- [ ] `crates/materials/src/dynamic_layout.rs` with
+- [x] `crates/materials/src/dynamic_layout.rs` with
       `generate_wgsl_struct`, `pack_uniform_values`,
-      `pack_texture_indices`, `pack_buffer_offsets`, `layout_size`
-- [ ] `generate_wgsl_struct` emits fields in the documented order
+      `pack_texture_indices`, `pack_buffer_offsets`, `layout_size`,
+      plus `pad_tail_to_struct_size` for slot rounding
+- [x] `generate_wgsl_struct` emits fields in the documented order
       (uniforms → `<tex>_index` → `<buf>_offset` / `<buf>_length`)
-- [ ] Unit tests covering every `FieldType` + mixed-alignment cases
-- [ ] `impl MaterialShader for DynamicMaterial` complete (with stub
-      `(0, 0)` buffer-offset writes; Phase 6 wires the allocator)
-- [ ] `is_transparency_pass()` derives from `alpha_mode` (Opaque →
-      false; Mask | Blend → true)
+- [x] Unit tests covering every `FieldType` + mixed-alignment cases
+      (vec3 padding before/after, two vec3s, mat3 stride, bool→u32,
+      mixed uniform-texture-buffer slot tail, empty layout, struct
+      alignment rounding, pad-tail rounding) — 13 tests, all passing
+- [x] `impl MaterialShader for DynamicMaterial` + a richer
+      `write_uniform_buffer_with_layout(ctx, out)` entrypoint that
+      writes the shader_id prefix, the alignment pad, the uniform tail,
+      the texture-index tail, and the buffer (offset, length) tail.
+      Phase 6 wires the extras-pool allocator into `ctx.buffer_slice`;
+      Phase 2 stubs return `(0, 0)`.
+- [~] `is_transparency_pass()` derives from `alpha_mode` — Phase 2
+      defaults to `false` on the bare `MaterialShader` trait method
+      (the renderer-side dispatch routes through the registry's
+      alpha_mode instead, since the instance can't reach the registry
+      from inside the trait impl). The contract docs document this.
 
 ### Phase 3 — Registry + dispatch-hash + classify templating
 - [ ] `MaterialRegistry` in `crates/materials/src/registry.rs`
