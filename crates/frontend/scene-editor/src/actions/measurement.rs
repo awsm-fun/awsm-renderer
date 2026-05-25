@@ -782,12 +782,19 @@ pub async fn read_oversized_mesh_stats() -> String {
 ///
 /// Result shape:
 /// ```json
-/// {"result":"hit","mesh_key":"MeshKey(NvN)","is_gizmo":true,"gizmo_kind":"TranslationX"}
+/// {"result":"hit","mesh_key":"MeshKey(NvN)","is_gizmo":true}
 /// {"result":"miss"}
 /// {"result":"initializing"}
 /// {"result":"in_flight"}
 /// {"result":"error","message":"..."}
 /// ```
+///
+/// `is_gizmo` is the only gizmo-related field — the controller's
+/// `is_gizmo_mesh_key` returns a `bool`, not a `GizmoKind`. If a
+/// future caller needs the specific handle (TranslationX vs
+/// RotationY, etc.) the controller would need a
+/// `get_gizmo_mesh_kind(mesh_key) -> Option<GizmoKind>` companion;
+/// add the JSON field at the same time as that helper.
 #[wasm_bindgen]
 pub async fn debug_pick(x: i32, y: i32) -> String {
     use awsm_renderer::picker::PickResult;

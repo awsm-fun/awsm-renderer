@@ -29,6 +29,7 @@
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 
+use anyhow::Context;
 use awsm_renderer::workers::WorkerJob;
 use awsm_renderer_core::image::{
     bitmap::load_u8, ColorSpaceConversion, ImageBitmapOptions, ImageData, PremultiplyAlpha,
@@ -161,16 +162,20 @@ pub struct GltfParseOutput {
 }
 
 /// One image entry in `GltfParseOutput`. Either `bitmap` carries the
-/// worker-decoded `ImageBitmap` (the fast path) or `bytes` carries
-/// the raw encoded payload (legacy path for jobs that opt out of
-/// worker-side decode by clearing `DECODED_IMAGE_HANDLES`).
+/// worker-decoded `ImageBitmap` (the fast path the pool always
+/// produces) or `bytes` carries the raw encoded payload (only ever
+/// populated by direct-construction callers — non-pool consumers that
+/// build `GltfParseOutput` themselves and let `into_loader` decode on
+/// the main thread).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ImageMeta {
-    /// Raw encoded bytes (PNG / JPEG / KTX2 / …). Empty after
-    /// worker-side decode — the bitmap field carries the result
-    /// instead. Non-empty only for the legacy fallback when the
-    /// worker's `createImageBitmap` rejected the blob (e.g.
-    /// KTX2 / Basis / unsupported format).
+    /// Raw encoded bytes (PNG / JPEG / …). Always empty when emitted
+    /// by `GltfParseJob` — the worker either decodes successfully
+    /// (handle goes via `bitmap` + the transferred side-channel) or
+    /// fails fatally (no fallback; see `import_image_data`'s doc).
+    /// Kept on the struct so direct-construction callers
+    /// (`GltfParseOutput { … }` with bytes only) can still route
+    /// through `into_loader` for the main-thread decode.
     #[serde(with = "serde_bytes")]
     pub bytes: Vec<u8>,
     /// Declared MIME type when sourced from a buffer view; `None`
@@ -197,10 +202,11 @@ impl GltfParseOutput {
     /// already attached on `entry.bitmap` (transferred zero-copy from
     /// the worker via the `bitmaps` side-channel — see
     /// `into_response_message` / `from_response_message`): when present,
-    /// the handle is wrapped directly into an `ImageData::Bitmap`. The
-    /// main-thread `createImageBitmap` decode only runs for entries
-    /// whose worker-side `createImageBitmap` rejected the blob (KTX2 /
-    /// Basis / other browser-unsupported formats, fallback path).
+    /// the handle is wrapped directly into an `ImageData::Bitmap`.
+    /// The main-thread `createImageBitmap` branch only fires for
+    /// direct-construction callers that built `ImageMeta` with
+    /// encoded `bytes` and no `bitmap` (i.e. not via `GltfParseJob`,
+    /// which always emits the bitmap path or fails fatally).
     ///
     /// Consumers that opt into the worker-mode gltf-parse path
     /// (Phase 4.3b) call:
@@ -223,10 +229,10 @@ impl GltfParseOutput {
             .into_iter()
             .map(ByteBlob::into_vec)
             .collect();
-        // Worker-decoded bitmap is the fast path. Legacy fallback
-        // for entries whose `createImageBitmap` rejected in the
-        // worker (KTX2 / Basis, etc.): main thread decodes the
-        // encoded bytes via the standard `load_u8` shim.
+        // Worker-decoded bitmap is the fast path. The encoded-bytes
+        // branch below only fires for direct-construction callers —
+        // `GltfParseJob` always produces a bitmap or fails fatally
+        // upstream in `import_image_data`.
         let options = Some(
             ImageBitmapOptions::new()
                 .with_premultiply_alpha(PremultiplyAlpha::None)
@@ -482,10 +488,19 @@ async fn import_buffer_data(
 ///      discarded after decode), `bitmap` `None` (the handle lives
 ///      in the thread_local, not on the serialised metadata).
 ///
-/// Falls back to encoded bytes when `createImageBitmap` rejects (e.g.
-/// KTX2 / Basis / other browser-unsupported formats) — the main
-/// thread's `into_loader` then re-decodes those entries via the
-/// pure-Rust `image` crate path.
+/// A worker-side `createImageBitmap` rejection is propagated as a
+/// fatal error rather than wrapped in a "fall back to encoded bytes"
+/// retry. Both the worker path and the main-thread parity path
+/// (`GltfParseOutput::into_loader`) route through the same
+/// `awsm_renderer_core::image::bitmap::load_u8` shim — which itself
+/// just wraps `createImageBitmap` against a `Blob` — so a format the
+/// worker browser rejects (e.g. KTX2 / Basis without a separate
+/// transcoder) will fail identically on the main thread. Carrying the
+/// encoded bytes across the postMessage boundary just to lose them
+/// again on the main side was pure overhead; failing fast keeps the
+/// telemetry honest. A real KTX2 / Basis path would need a Rust-side
+/// decoder (e.g. the `image` crate's basis support behind a feature
+/// flag) — out of scope here.
 async fn import_image_data(
     document: &Document,
     base: &str,
@@ -525,38 +540,32 @@ async fn import_image_data(
                             (parent[begin..end].to_vec(), Some(mime_type.to_string()), None)
                         }
                     };
-                // Try worker-side decode. The `load_u8` shim's
+                // Worker-side decode via the `load_u8` shim — its
                 // `web_global::create_image_bitmap_with_blob` already
                 // routes to `DedicatedWorkerGlobalScope::createImageBitmap`
-                // when called from the worker thread.
+                // when called from the worker thread. Decode failure
+                // is fatal here (see the function-level doc): the
+                // main-thread parity path uses the same shim, so a
+                // retry there would fail identically and the
+                // intermediate bytes-round-trip would just be
+                // bandwidth wasted. Drop the encoded bytes
+                // unconditionally on success so the worker→main
+                // payload stays as small as the transferred handle.
                 let decode_mime = mime_type.as_deref().unwrap_or("application/octet-stream");
-                match load_u8(&bytes, decode_mime, Some((*options).clone())).await {
-                    Ok(bitmap) => {
-                        // Decoded successfully — drop the encoded
-                        // bytes and route the handle through the
-                        // thread_local for the response transfer.
-                        Ok::<ImageMeta, anyhow::Error>(ImageMeta {
-                            bytes: Vec::new(),
-                            mime_type,
-                            uri,
-                            bitmap: Some(bitmap),
-                        })
-                    }
-                    Err(err) => {
-                        // Unsupported format — fall back to encoded
-                        // bytes. Main thread's `into_loader` will
-                        // re-decode via the slow `image` crate path.
-                        tracing::warn!(
-                            "GltfParseJob: worker-side decode failed for {decode_mime} ({err}); falling back to encoded bytes"
-                        );
-                        Ok(ImageMeta {
-                            bytes,
-                            mime_type,
-                            uri,
-                            bitmap: None,
-                        })
-                    }
-                }
+                let bitmap = load_u8(&bytes, decode_mime, Some((*options).clone()))
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "GltfParseJob: createImageBitmap failed for {decode_mime} (uri={uri:?}) — \
+                             the main-thread fallback uses the same shim, so this is fatal"
+                        )
+                    })?;
+                Ok::<ImageMeta, anyhow::Error>(ImageMeta {
+                    bytes: Vec::new(),
+                    mime_type,
+                    uri,
+                    bitmap: Some(bitmap),
+                })
             }
         })
         .collect();

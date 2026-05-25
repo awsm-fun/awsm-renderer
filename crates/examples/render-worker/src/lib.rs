@@ -31,12 +31,26 @@
 //! - `requestAnimationFrame` driven from the worker side via
 //!   [`awsm_renderer::web_global::request_animation_frame`].
 //!
+//! ### What the worker actually renders
+//!
+//! - A single procedural box mesh ([`awsm_meshgen::primitives::box_mesh`])
+//!   with a bright opaque [`awsm_materials::pbr::PbrMaterial`]
+//!   (emissive factor cranked so the box self-illuminates against an
+//!   empty scene — the example deliberately skips light + environment
+//!   setup to keep the smoke test focused on the OffscreenCanvas +
+//!   render-loop path). The box rotates around Y each frame so the
+//!   browser smoke test can confirm the render loop is alive.
+//!
 //! ### What it does *not* cover
 //!
-//! - A real glTF scene — the example renders a clear color so the
-//!   transport / lifecycle is exercised without dragging in
-//!   asset-loading boilerplate. Plug a real scene in by calling
-//!   `renderer.populate_gltf(..)` after init.
+//! - A real glTF scene — the procedural box keeps the asset-loading
+//!   surface area off the example. Plug a real scene in by calling
+//!   `renderer.populate_gltf(..)` after init in
+//!   [`start_worker_renderer`].
+//! - Punctual lights, an environment map, or shadows — the emissive
+//!   PBR factor stands in. Add real lighting through `renderer.lights`
+//!   / `renderer.environment` once those need exercising on the
+//!   worker path.
 //! - DOM-overlay UI — that's a consumer choice (HTML element
 //!   absolutely-positioned over the canvas; see
 //!   `docs/DEPLOYMENT_MODES.md`).
