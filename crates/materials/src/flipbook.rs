@@ -199,7 +199,15 @@ impl MaterialShader for FlipBookMaterial {
                 self.rows
             );
         }
-        let max_frames = self.cols.saturating_mul(self.rows).max(1);
+        // Clamp the grid dims first so `max_frames` reflects what the
+        // shader will actually see. Without this, an authored
+        // `cols=0, rows=4` would shrink `max_frames` to 1 (0 *
+        // anything = 0, max(1) = 1) and clamp `frame_count` to 1 even
+        // though the shader uses the clamped 1×4 grid → 4 effective
+        // cells.
+        let cols_clamped = self.cols.max(1);
+        let rows_clamped = self.rows.max(1);
+        let max_frames = cols_clamped.saturating_mul(rows_clamped);
         if self.frame_count > max_frames {
             tracing::warn!(
                 "[flipbook] frame_count={} exceeds cols*rows={}; clamping. \
@@ -209,8 +217,6 @@ impl MaterialShader for FlipBookMaterial {
             );
         }
         let frame_count_clamped = self.frame_count.max(1).min(max_frames);
-        let cols_clamped = self.cols.max(1);
-        let rows_clamped = self.rows.max(1);
 
         write(data, self.shader_id().as_u32().into());
 
