@@ -132,36 +132,51 @@ impl MappedUploader {
             .as_mut()
             .expect("ring is created by ensure_ring above (dest_size > 0)");
 
-        // The MappedUploader owns a single ephemeral CommandEncoder per
-        // call so the copy_buffer_to_buffer command can be submitted
-        // immediately — this avoids threading a shared encoder through
-        // every renderer subsystem's `write_gpu(..)` signature (14 call
-        // sites). Submit cost is small (a few µs); we trade a handful
-        // of per-frame submits for keeping the existing
-        // `(logging, gpu, bind_groups)` signature stable everywhere.
-        let encoder = gpu.create_command_encoder(Some(&self.label));
+        // Mirror the writeBuffer-path policy from
+        // `helpers::write_buffer_with_dirty_ranges`: sort + coalesce
+        // adjacent ranges and collapse to a single full-buffer range
+        // when ranges are too many or dirty bytes cross the density
+        // threshold. Without this, a workload that dirties many
+        // disjoint slots (e.g. a frame that touches every transform)
+        // would queue one `copy_buffer_to_buffer` per slot — thousands
+        // of commands in pathological cases. The collapse-to-full
+        // path still goes through the ring (single big memcpy +
+        // single copy command) so the mapped fast path keeps its
+        // bandwidth win.
+        let prepared = crate::buffer::helpers::prepare_dirty_ranges(ranges, raw_data.len());
+        if prepared.is_empty() {
+            return Ok(());
+        }
 
         let acquired = match ring.acquire() {
             AcquireOutcome::Acquired(slot) => {
                 // Memcpy each dirty range into the matching slot offset.
-                for (off, sz) in ranges {
+                for (off, sz) in &prepared {
                     let end = off.saturating_add(*sz).min(raw_data.len());
                     if *off < end {
                         slot.write(*off, &raw_data[*off..end]);
                     }
                 }
+                // `MappedUploader` owns a single ephemeral
+                // `CommandEncoder` per Acquired call so
+                // `copy_buffer_to_buffer` lands in a submittable
+                // command buffer immediately. Created only on the
+                // success branch — exhaustion-heavy frames (already
+                // the worst case) shouldn't pay the JS-side allocation
+                // for an encoder we never use.
+                let encoder = gpu.create_command_encoder(Some(&self.label));
                 // Record the copy command and mark the slot
                 // Submitted. `finalize` deliberately does NOT call
                 // `mapAsync` here — the slot is still referenced by
                 // the encoder we're about to submit, and queuing a
                 // map on it before submit fails WebGPU validation.
-                slot.finalize(&encoder, dest, ranges)?;
+                slot.finalize(&encoder, dest, &prepared)?;
+                gpu.submit_commands(&encoder.finish());
                 true
             }
             AcquireOutcome::Exhausted => false,
         };
         if acquired {
-            gpu.submit_commands(&encoder.finish());
             // *After* submit, the buffer is in the queue's in-flight
             // set and `mapAsync` can safely queue behind it.
             ring.kick_submitted_slots();
@@ -169,11 +184,14 @@ impl MappedUploader {
         let exhausted = !acquired;
 
         if exhausted {
-            // Fallback: writeBuffer the dirty ranges. The ring's
-            // `acquire()` already bumped `fallback_count`; we just
-            // tally bytes here.
+            // Fallback: writeBuffer the (already-prepared) dirty
+            // ranges. The ring's `acquire()` already bumped
+            // `fallback_count`; we just tally bytes here. Uses the
+            // same coalesced/density-collapsed `prepared` list so the
+            // exhaustion path doesn't degrade into one writeBuffer
+            // per original disjoint slot.
             let mut total = 0u64;
-            for (off, sz) in ranges {
+            for (off, sz) in &prepared {
                 if *sz == 0 {
                     continue;
                 }

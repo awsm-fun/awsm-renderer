@@ -23,6 +23,17 @@ pub struct AwsmRendererWebGpu {
     pub adapter: web_sys::GpuAdapter,
     pub device: web_sys::GpuDevice,
     pub context: web_sys::GpuCanvasContext,
+    /// Whether the renderer is bound to a DOM canvas
+    /// (`HtmlCanvasElement`, main-thread mode) or an
+    /// `OffscreenCanvas` (Phase 4.4 worker mode). Stored so
+    /// downstream convenience methods on `AwsmRendererWebGpu` can
+    /// branch correctly without `unchecked_into()`-ing the underlying
+    /// JS handle. See [`Self::canvas_kind`] for the safe accessor;
+    /// DOM-only methods on this type (`canvas()`, `canvas_size(true)`,
+    /// `sync_canvas_buffer_with_css`, `pointer_event_to_canvas_coords_*`)
+    /// panic with a clear message if invoked in `Offscreen` mode
+    /// rather than silently mis-casting.
+    canvas_kind: CanvasKind,
 }
 
 impl AwsmRendererWebGpu {
@@ -34,6 +45,13 @@ impl AwsmRendererWebGpu {
     /// WebGPU silently drops the call.
     pub fn has_indirect_first_instance(&self) -> bool {
         self.device.features().has(INDIRECT_FIRST_INSTANCE_FEATURE)
+    }
+
+    /// The canvas the renderer was built against. Use this to branch
+    /// safely between main-thread and worker-mode code paths instead
+    /// of calling `canvas()` (which panics in worker mode).
+    pub fn canvas_kind(&self) -> &CanvasKind {
+        &self.canvas_kind
     }
 }
 
@@ -223,6 +241,7 @@ impl AwsmRendererWebGpuBuilder {
             adapter,
             device,
             context,
+            canvas_kind: self.canvas,
         })
     }
 }
