@@ -137,16 +137,30 @@ pub trait WorkerJob: 'static {
     }
 }
 
-/// Bundle-URL discovery strategy. Default is `Auto` (read
-/// `import.meta.url` from the wasm-bindgen JS glue at runtime).
+/// Bundle-URL discovery strategy. Default is `Auto` (sniff the glue
+/// URL out of the host page's `<script type=module>` tags at runtime).
 #[derive(Default)]
 pub enum WorkerPoolBootstrap {
-    /// Auto-discover via `import.meta.url`. Works for any
-    /// wasm-bindgen `--target web` consumer regardless of bundler.
+    /// Auto-discover the wasm-bindgen `--target web` glue URL.
+    ///
+    /// **Requires a main-thread / DOM context.** The implementation in
+    /// [`crate::workers::blob::awsm_bundle_url`] walks
+    /// `document.querySelectorAll("script[type=module]")` to find the
+    /// glue `import` statement; if `document` is undefined (i.e. the
+    /// pool is being constructed *from inside another worker*), it
+    /// falls back to `import.meta.url`, which on a worker resolves to
+    /// the inline-snippet module URL rather than the wasm-bindgen
+    /// glue — and that won't have the `default` export the worker
+    /// bootstrap expects. Spawning a pool from within a worker
+    /// therefore needs [`Self::ModuleUrl`] (pass the glue URL
+    /// explicitly) or [`Self::Custom`] (construct the `Worker`
+    /// yourself).
     #[default]
     Auto,
-    /// Explicit bundle URL — for the rare consumer whose build setup
-    /// doesn't expose `import.meta.url`.
+    /// Explicit bundle URL — for consumers whose build setup doesn't
+    /// expose a discoverable script tag, OR for pools being
+    /// constructed from a worker context (where `Auto` cannot reach
+    /// the DOM).
     ModuleUrl { bundle_url: String },
     /// Escape hatch — consumer constructs the `Worker` themselves;
     /// the pool drives the postMessage protocol on the handle.
@@ -173,8 +187,15 @@ pub struct WorkerPoolStats {
     pub job_round_trip_ms: f64,
 }
 
-/// Pending job sender — keyed by `JobId` in the pool's pending map.
-type PendingSender = oneshot::Sender<Result<JsValue, JsValue>>;
+/// Pending job entry — the result-delivery channel paired with the
+/// worker index the job was dispatched to. The worker index lets
+/// `onerror` fail *only* the jobs that were sent to the dead worker,
+/// instead of spuriously failing in-flight jobs on still-healthy
+/// peers when one worker crashes.
+struct PendingEntry {
+    sender: oneshot::Sender<Result<JsValue, JsValue>>,
+    worker_idx: usize,
+}
 
 /// Pool of N workers sharing the consumer's compiled
 /// `WebAssembly.Module`.
@@ -182,7 +203,7 @@ pub struct WorkerPool {
     workers: Vec<WorkerSlot>,
     next_worker: RefCell<usize>,
     next_job_id: AtomicU64,
-    pending: Rc<RefCell<HashMap<u64, PendingSender>>>,
+    pending: Rc<RefCell<HashMap<u64, PendingEntry>>>,
     stats: Rc<RefCell<WorkerPoolStats>>,
     /// Closures that own the `Worker.onmessage` handlers; kept alive
     /// for the lifetime of the pool so the JS callbacks don't free
@@ -218,7 +239,7 @@ impl WorkerPool {
         let wasm_module = current_wasm_module()
             .map_err(|err| WorkerPoolError::bootstrap_from_js("current_wasm_module", err))?;
 
-        let pending: Rc<RefCell<HashMap<u64, PendingSender>>> =
+        let pending: Rc<RefCell<HashMap<u64, PendingEntry>>> =
             Rc::new(RefCell::new(HashMap::new()));
         let stats = Rc::new(RefCell::new(WorkerPoolStats::default()));
 
@@ -281,8 +302,8 @@ impl WorkerPool {
                         let payload = Reflect::get(&data, &JsValue::from_str("payload"))
                             .unwrap_or(JsValue::UNDEFINED);
                         if let Some(id) = id {
-                            if let Some(sender) = pending_clone.borrow_mut().remove(&id) {
-                                let _ = sender.send(Ok(payload));
+                            if let Some(entry) = pending_clone.borrow_mut().remove(&id) {
+                                let _ = entry.sender.send(Ok(payload));
                                 stats_clone.borrow_mut().jobs_completed += 1;
                             }
                         }
@@ -297,8 +318,8 @@ impl WorkerPool {
                             .and_then(|v| v.as_string())
                             .unwrap_or_else(|| "unknown job error".to_string());
                         if let Some(id) = id {
-                            if let Some(sender) = pending_clone.borrow_mut().remove(&id) {
-                                let _ = sender.send(Err(JsValue::from_str(&msg)));
+                            if let Some(entry) = pending_clone.borrow_mut().remove(&id) {
+                                let _ = entry.sender.send(Err(JsValue::from_str(&msg)));
                                 stats_clone.borrow_mut().jobs_failed += 1;
                             }
                         } else {
@@ -314,6 +335,7 @@ impl WorkerPool {
             onmessage_closures.push(onmessage);
 
             let onerror_label = format!("awsm-worker-{i}");
+            let onerror_worker_idx = i;
             let onerror_ready_cell = ready_cell.clone();
             let onerror_pending = pending.clone();
             let onerror_stats = stats.clone();
@@ -326,26 +348,35 @@ impl WorkerPool {
                 if let Some(tx) = onerror_ready_cell.borrow_mut().take() {
                     let _ = tx.send(Err(format!("worker onerror during init: {msg}")));
                 }
-                // Drain any in-flight jobs on this worker — without
-                // this the matching `dispatch` futures stall
-                // indefinitely on a `oneshot` that nothing will
-                // resolve (the worker is dead / errored). All
-                // workers share the same `pending` map (job ids are
-                // unique pool-wide), so a crash on any worker
-                // forfeits whatever was queued; that's the right
-                // behaviour for a single round-robin slot since the
-                // pool has no per-worker affinity for completed
-                // ids. Telemetry counts each as a failure.
+                // Drain only the in-flight jobs that were dispatched
+                // to *this* worker — peers stay healthy and their
+                // results still route through `onmessage` normally.
+                // `PendingEntry.worker_idx` is set at `dispatch_inner`
+                // time so we can filter by ownership here.
                 let mut pending = onerror_pending.borrow_mut();
-                if !pending.is_empty() {
-                    let drained = std::mem::take(&mut *pending);
-                    let count = drained.len();
-                    for (_id, sender) in drained {
+                let mut drained_count: u64 = 0;
+                pending.retain(|_id, entry| {
+                    if entry.worker_idx == onerror_worker_idx {
+                        // `take` the sender out by swapping in a dummy
+                        // (`oneshot::channel` discard side) — the
+                        // entry is being removed so the worker_idx
+                        // becomes irrelevant. `retain`'s closure has
+                        // `&mut entry`, so we drain by moving the
+                        // sender via a placeholder swap before
+                        // returning `false`.
+                        let (placeholder_tx, _) = oneshot::channel::<Result<JsValue, JsValue>>();
+                        let sender = std::mem::replace(&mut entry.sender, placeholder_tx);
                         let _ = sender.send(Err(JsValue::from_str(&format!(
                             "{onerror_label}: worker errored: {msg}"
                         ))));
+                        drained_count += 1;
+                        false
+                    } else {
+                        true
                     }
-                    onerror_stats.borrow_mut().jobs_failed += count as u64;
+                });
+                if drained_count > 0 {
+                    onerror_stats.borrow_mut().jobs_failed += drained_count;
                 }
             });
             worker.set_onerror(Some(onerror.as_ref().unchecked_ref::<Function>()));
@@ -450,16 +481,24 @@ impl WorkerPool {
 
         let id = self.next_job_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel::<Result<JsValue, JsValue>>();
-        self.pending.borrow_mut().insert(id, tx);
-        self.stats.borrow_mut().jobs_dispatched += 1;
 
-        // Pick a worker round-robin.
+        // Pick a worker round-robin *before* inserting into `pending`
+        // so the `PendingEntry` carries the correct ownership tag.
+        // `onerror` reads this to fail only the dead worker's jobs.
         let worker_idx = {
             let mut cursor = self.next_worker.borrow_mut();
             let idx = *cursor;
             *cursor = (*cursor + 1) % self.workers.len();
             idx
         };
+        self.pending.borrow_mut().insert(
+            id,
+            PendingEntry {
+                sender: tx,
+                worker_idx,
+            },
+        );
+        self.stats.borrow_mut().jobs_dispatched += 1;
         let worker = &self.workers[worker_idx].worker;
 
         let input_js = serde_wasm_bindgen::to_value(&input)

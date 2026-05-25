@@ -590,6 +590,17 @@ pub struct Meshes {
     /// grace period" so the very first frame after a skin's meshes
     /// materialise, skinning runs normally (no rest-pose pop).
     skin_zero_coverage_grace: SecondaryMap<SkinKey, u32>,
+    /// Scratch inverted-index `skin_key → Vec<MeshKey>` reused across
+    /// `update_world` invocations. The outer HashMap is cleared (not
+    /// dropped) at the start of each frame so the bucket-storage Vec
+    /// allocations stick around — steady-state per-frame cost drops
+    /// to "rebucket meshes that have a skin", with zero heap traffic
+    /// once the map's capacity has stabilised. A persistent inverted
+    /// index maintained on mesh insert/remove would be marginally
+    /// faster still, but every mesh-mutation path would have to
+    /// remember to keep it in sync; reuse-and-clear gets us the bulk
+    /// of the win with none of the maintenance burden.
+    skin_consumers_scratch: HashMap<SkinKey, Vec<MeshKey>>,
 }
 impl Meshes {
     // Initial sizes assume ~1000 vertices per mesh
@@ -681,6 +692,7 @@ impl Meshes {
             skins: Skins::new(gpu)?,
             last_effective_material: SecondaryMap::new(),
             skin_zero_coverage_grace: SecondaryMap::new(),
+            skin_consumers_scratch: HashMap::new(),
         })
     }
 
@@ -734,8 +746,25 @@ impl Meshes {
             updates.push((mesh_key, offset, effective));
         }
         for (mesh_key, offset, effective) in updates {
-            self.meta.set_material_offset(mesh_key, offset);
-            self.last_effective_material.insert(mesh_key, effective);
+            // Only cache the patched value when the meta-buffer write
+            // actually went through. `set_material_offset` returns
+            // `false` when the mesh has no material-meta slot (either
+            // never registered or removed between the gather and apply
+            // phase — possible if a sync action races this routine).
+            // Updating `last_effective_material` unconditionally would
+            // suppress every future patch for that mesh: the next
+            // gather pass sees `last == effective` and skips it, so the
+            // GPU `material_offset` stays at whatever it was when the
+            // slot was last alive (frequently a stale, just-recycled
+            // index).
+            if self.meta.set_material_offset(mesh_key, offset) {
+                self.last_effective_material.insert(mesh_key, effective);
+            } else {
+                tracing::debug!(
+                    "refresh_cheap_material_routing: mesh {mesh_key:?} has no material-meta slot; \
+                     skipping cache update so the next gather pass retries"
+                );
+            }
         }
         Ok(())
     }
@@ -1438,18 +1467,43 @@ impl Meshes {
         // per-skin BVH / coverage walk is O(meshes) total instead of
         // O(skins × meshes). Empty entries are fine (a skin with no
         // consumer meshes can't show pop-in by definition).
-        let mut skin_consumers: HashMap<SkinKey, Vec<MeshKey>> = HashMap::new();
-        for (mesh_key, _mesh) in self.list.iter() {
-            let Some(resource_key) = self.mesh_to_resource.get(mesh_key).copied() else {
-                continue;
-            };
-            let Some(resource) = self.resources.get(resource_key) else {
-                continue;
-            };
-            if let Some(skin_key) = resource.skin_key {
-                skin_consumers.entry(skin_key).or_default().push(mesh_key);
+        //
+        // `skin_consumers_scratch` is a persistent field on `Meshes`
+        // that's `clear()`-ed (not dropped) here so the outer HashMap
+        // and each bucket Vec keep their capacities frame-to-frame.
+        // Steady-state heap traffic drops to ~zero once the map sizes
+        // up; we still pay one rebucket walk per frame, which is the
+        // O(meshes) cost the original comment promised. The
+        // disjoint-field destructure scopes the mutable borrow to
+        // this block; downstream code then re-borrows the scratch
+        // immutably via `&self.skin_consumers_scratch`.
+        {
+            let Self {
+                list,
+                mesh_to_resource,
+                resources,
+                skin_consumers_scratch,
+                ..
+            } = self;
+            for bucket in skin_consumers_scratch.values_mut() {
+                bucket.clear();
+            }
+            for (mesh_key, _mesh) in list.iter() {
+                let Some(resource_key) = mesh_to_resource.get(mesh_key).copied() else {
+                    continue;
+                };
+                let Some(resource) = resources.get(resource_key) else {
+                    continue;
+                };
+                if let Some(skin_key) = resource.skin_key {
+                    skin_consumers_scratch
+                        .entry(skin_key)
+                        .or_default()
+                        .push(mesh_key);
+                }
             }
         }
+        let skin_consumers: &HashMap<SkinKey, Vec<MeshKey>> = &self.skin_consumers_scratch;
 
         if frame_index > 0 {
             let skin_keys: Vec<SkinKey> = self.skins.iter_skin_keys().collect();
@@ -1859,6 +1913,22 @@ impl Meshes {
     /// Iterates over meshes and their keys.
     pub fn iter(&self) -> impl Iterator<Item = (MeshKey, &Mesh)> {
         self.list.iter()
+    }
+
+    /// Walk every mesh key and apply `gate_fn(mesh_key) -> u32` to
+    /// `MeshMeta::set_shadow_receiver_gate`. Exists so the caller
+    /// doesn't have to materialise a `Vec<MeshKey>` per frame just to
+    /// step around the `&self.list` vs `&mut self.meta` split borrow
+    /// — both fields are disjoint sub-borrows of `self`, so we do the
+    /// split here and walk `self.list.keys()` in place. The cached
+    /// last-frame-gate inside `MeshMeta::set_shadow_receiver_gate`
+    /// keeps the per-call cost effectively `Cell::get + compare` on
+    /// unchanged meshes; per-frame allocation drops to zero.
+    pub fn update_shadow_receiver_gates<F: FnMut(MeshKey) -> u32>(&mut self, mut gate_fn: F) {
+        for mesh_key in self.list.keys() {
+            let gate = gate_fn(mesh_key);
+            self.meta.set_shadow_receiver_gate(mesh_key, gate);
+        }
     }
 
     /// Returns a mesh by key.

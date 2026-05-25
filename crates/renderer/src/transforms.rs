@@ -107,16 +107,18 @@ impl AwsmRenderer {
             } else {
                 None
             };
-            let mesh_keys: Vec<crate::meshes::MeshKey> =
-                self.meshes.iter().map(|(k, _)| k).collect();
-            for mesh_key in mesh_keys {
-                let gate: u32 = if self.light_buckets.is_shadow_receiver(mesh_key) {
+            // `Meshes::update_shadow_receiver_gates` walks the mesh
+            // key set in-place — no per-frame `Vec<MeshKey>` alloc.
+            // The split borrow (immutable `light_buckets` + mutable
+            // `meshes`) holds because both are disjoint fields on `self`.
+            let light_buckets = &self.light_buckets;
+            self.meshes.update_shadow_receiver_gates(|mesh_key| {
+                if light_buckets.is_shadow_receiver(mesh_key) {
                     1
                 } else {
                     0
-                };
-                self.meshes.meta.set_shadow_receiver_gate(mesh_key, gate);
-            }
+                }
+            });
         }
 
         #[cfg(debug_assertions)]
