@@ -27,15 +27,16 @@ use awsm_renderer_core::{
 /// `dispatchWorkgroupsIndirect` reads from at offsets 0, 16, 32.
 pub const INDIRECT_ARGS_STRIDE: u32 = 16;
 
-/// Header byte count: 3 × indirect args (48 B) + bucket offsets +
-/// capacity (16 B). The tile array starts at this offset.
-pub const HEADER_BYTES: u32 = 64;
+/// Header byte count: 4 × indirect args (64 B) + 4 bucket offsets +
+/// capacity = 84 B, rounded up to 96 B for vec2<u32> alignment on the
+/// trailing tile array. The tile array starts at this offset.
+pub const HEADER_BYTES: u32 = 96;
 
 /// Number of opaque-classify buckets — one per opaque
-/// [`MaterialShaderId`] variant: PBR (0), Unlit (1), Toon (2). Must
-/// stay in lockstep with the askama template's `shader_id_bucket`
-/// emit in `material_classify_wgsl/compute.wgsl`.
-pub const BUCKET_COUNT: u32 = 3;
+/// [`MaterialShaderId`] variant: PBR (0), Unlit (1), Toon (2),
+/// FlipBook (3). Must stay in lockstep with the askama template's
+/// `shader_id_bucket` emit in `material_classify_wgsl/compute.wgsl`.
+pub const BUCKET_COUNT: u32 = 4;
 
 /// Single storage buffer holding indirect args + tile buckets for the
 /// opaque classify pass. Sized to the current viewport's tile count;
@@ -140,16 +141,20 @@ fn write_header(dst: &mut [u8; HEADER_BYTES as usize], bucket_capacity: u32) {
     }
     // Per-bucket starting offset into the `tiles` array, in
     // entry-count units (each entry is `vec2<u32>` = 8 bytes). PBR=0,
-    // Unlit=cap, Toon=2*cap.
+    // Unlit=cap, Toon=2*cap, FlipBook=3*cap.
     let base = (BUCKET_COUNT * INDIRECT_ARGS_STRIDE) as usize;
     dst[base..base + 4].copy_from_slice(&0u32.to_ne_bytes());
     dst[base + 4..base + 8].copy_from_slice(&bucket_capacity.to_ne_bytes());
     dst[base + 8..base + 12].copy_from_slice(&bucket_capacity.saturating_mul(2).to_ne_bytes());
-    dst[base + 12..base + 16].copy_from_slice(&bucket_capacity.to_ne_bytes());
+    dst[base + 12..base + 16].copy_from_slice(&bucket_capacity.saturating_mul(3).to_ne_bytes());
+    // bucket_capacity (shared across all buckets) follows the four offsets.
+    dst[base + 16..base + 20].copy_from_slice(&bucket_capacity.to_ne_bytes());
+    // The remaining bytes up to HEADER_BYTES are alignment padding —
+    // unused by the shader, left at zero.
 }
 
 /// Indirect-args byte offset for a given bucket index (0=PBR,
-/// 1=Unlit, 2=Toon). Passed as the second arg to
+/// 1=Unlit, 2=Toon, 3=FlipBook). Passed as the second arg to
 /// `dispatch_workgroups_indirect` on the material-opaque pipeline
 /// matching that shader_id.
 pub fn indirect_args_offset(bucket_index: u32) -> u32 {

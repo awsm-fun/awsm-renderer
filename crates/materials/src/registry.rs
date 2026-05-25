@@ -43,6 +43,12 @@ pub fn enabled_materials() -> Vec<MaterialEntry> {
             wgsl_fragment: crate::toon::WGSL_FRAGMENT,
             name: "toon",
         },
+        #[cfg(feature = "flipbook")]
+        MaterialEntry {
+            shader_id: MaterialShaderId::FlipBook,
+            wgsl_fragment: crate::flipbook::WGSL_FRAGMENT,
+            name: "flipbook",
+        },
     ]
 }
 

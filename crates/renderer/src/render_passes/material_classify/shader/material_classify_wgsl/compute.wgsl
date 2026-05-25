@@ -18,12 +18,13 @@
 {% include "shared_wgsl/math.wgsl" %}
 
 // Bits in the workgroup-shared mask. Match the
-// `classify_output.{pbr,unlit,toon}_offset` ordering on the host side
-// and the `bucket_index` used by the material-opaque template's
-// `dispatch_workgroups_indirect(args_buffer, bucket_index * 16)`.
+// `classify_output.{pbr,unlit,toon,flipbook}_offset` ordering on the
+// host side and the `bucket_index` used by the material-opaque
+// template's `dispatch_workgroups_indirect(args_buffer, bucket_index * 16)`.
 const BUCKET_BIT_PBR: u32 = 1u;
 const BUCKET_BIT_UNLIT: u32 = 2u;
 const BUCKET_BIT_TOON: u32 = 4u;
+const BUCKET_BIT_FLIPBOOK: u32 = 8u;
 
 var<workgroup> tile_mask: atomic<u32>;
 
@@ -66,6 +67,8 @@ fn cs_main(
                     local_bit = BUCKET_BIT_UNLIT;
                 } else if shader_id == SHADER_ID_TOON {
                     local_bit = BUCKET_BIT_TOON;
+                } else if shader_id == SHADER_ID_FLIPBOOK {
+                    local_bit = BUCKET_BIT_FLIPBOOK;
                 }
             }
             // HUD pixels are redrawn by the transparency pass — skip
@@ -104,6 +107,13 @@ fn cs_main(
             let idx = atomicAdd(&classify_output.args_toon.workgroup_count_x, 1u);
             let slot = classify_output.toon_offset + idx;
             if slot < classify_output.toon_offset + classify_output.bucket_capacity {
+                classify_output.tiles[slot] = tile;
+            }
+        }
+        if (mask & BUCKET_BIT_FLIPBOOK) != 0u {
+            let idx = atomicAdd(&classify_output.args_flipbook.workgroup_count_x, 1u);
+            let slot = classify_output.flipbook_offset + idx;
+            if slot < classify_output.flipbook_offset + classify_output.bucket_capacity {
                 classify_output.tiles[slot] = tile;
             }
         }

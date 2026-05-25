@@ -55,10 +55,13 @@ struct ClassifyBuckets {
     args_pbr: vec4<u32>,
     args_unlit: vec4<u32>,
     args_toon: vec4<u32>,
+    args_flipbook: vec4<u32>,
     pbr_offset: u32,
     unlit_offset: u32,
     toon_offset: u32,
+    flipbook_offset: u32,
     bucket_capacity: u32,
+    _pad_align: vec3<u32>,
     tiles: array<vec2<u32>>,
 };
 @group(0) @binding(21) var<storage, read> classify_buckets: ClassifyBuckets;

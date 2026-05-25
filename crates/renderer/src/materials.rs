@@ -43,12 +43,21 @@ pub mod toon {
     pub use awsm_materials::toon::*;
 }
 
+/// FlipBook (sprite-sheet) material parameters — re-exported from
+/// `awsm-materials`. Gated by the `flipbook` feature on
+/// `awsm-renderer-materials` (default-on).
+pub mod flipbook {
+    pub use awsm_materials::flipbook::*;
+}
+
 /// Storage-buffer writer helpers — re-exported from `awsm-materials`.
 pub mod writer {
     pub use awsm_materials::writer::*;
 }
 
-use awsm_materials::{pbr::PbrMaterial, toon::ToonMaterial, unlit::UnlitMaterial};
+use awsm_materials::{
+    flipbook::FlipBookMaterial, pbr::PbrMaterial, toon::ToonMaterial, unlit::UnlitMaterial,
+};
 
 impl AwsmRenderer {
     /// Updates a material in place.
@@ -71,6 +80,11 @@ pub enum Material {
     Pbr(Box<PbrMaterial>),
     Unlit(UnlitMaterial),
     Toon(Box<ToonMaterial>),
+    /// Sprite-sheet flipbook. Gated by the `awsm-renderer-materials`
+    /// `flipbook` feature (default-on); a consumer who opts out of
+    /// the feature can still build the renderer crate but never
+    /// produces a `Material::FlipBook` to put in it.
+    FlipBook(Box<FlipBookMaterial>),
 }
 
 impl Material {
@@ -84,6 +98,7 @@ impl Material {
             Material::Pbr(_) => MaterialShaderId::Pbr,
             Material::Unlit(_) => MaterialShaderId::Unlit,
             Material::Toon(_) => MaterialShaderId::Toon,
+            Material::FlipBook(_) => MaterialShaderId::FlipBook,
         }
     }
 
@@ -93,6 +108,7 @@ impl Material {
             Material::Pbr(m) => MaterialShader::is_transparency_pass(m.as_ref()),
             Material::Unlit(m) => MaterialShader::is_transparency_pass(m),
             Material::Toon(m) => MaterialShader::is_transparency_pass(m.as_ref()),
+            Material::FlipBook(m) => MaterialShader::is_transparency_pass(m.as_ref()),
         }
     }
 
@@ -102,6 +118,7 @@ impl Material {
             Material::Pbr(m) => m.alpha_cutoff(),
             Material::Unlit(m) => m.alpha_cutoff(),
             Material::Toon(m) => m.alpha_cutoff(),
+            Material::FlipBook(m) => m.alpha_cutoff(),
         }
     }
 
@@ -114,6 +131,7 @@ impl Material {
             Material::Pbr(m) => m.double_sided(),
             Material::Unlit(m) => m.double_sided(),
             Material::Toon(m) => m.double_sided(),
+            Material::FlipBook(m) => m.double_sided(),
         }
     }
 
@@ -130,6 +148,7 @@ impl Material {
         match self {
             Material::Pbr(m) => m.has_transmission(),
             Material::Unlit(_) | Material::Toon(_) => false,
+            Material::FlipBook(_) => false,
         }
     }
 
@@ -144,6 +163,9 @@ impl Material {
                 MaterialShader::write_uniform_buffer(m, ctx, &mut data);
             }
             Material::Toon(m) => {
+                MaterialShader::write_uniform_buffer(m.as_ref(), ctx, &mut data);
+            }
+            Material::FlipBook(m) => {
                 MaterialShader::write_uniform_buffer(m.as_ref(), ctx, &mut data);
             }
         }
