@@ -846,22 +846,36 @@ explicitly drive a draw of every routinely-used pipeline during
 the load screen, where the user is already looking at a
 progress bar.
 
-### The recipe (not yet wired as a renderer API)
+### How the renderer parallelises the cold-load compile
 
-The minimum-viable shader-warmup pass walks the
-`Materials::enabled_materials()` table, picks one mesh per
-`MaterialShaderId` × `is_transparency_pass` × MSAA mode, and
-ensures it draws at least once during init. For first-party
-materials that's PBR / Unlit / Toon × {opaque, transparent} ×
-{MSAA off, MSAA on} × {mipmaps off, mipmaps on} = up to **24
-pipelines** to warm before the user can touch the viewport.
+See [`docs/plans/parallelize.md`](plans/parallelize.md) for the full
+catalogue. Short version:
 
-In the editor's case, the simplest concrete step is to unhide a
-gizmo mesh from each material shader for one rAF tick, then
-re-hide. That forces `collect_renderables` to route the
-gizmo through every active pipeline, the geometry / opaque /
-transparent / shadow passes to draw something, and WebGPU to
-compile.
+- Every `createRenderPipelineAsync` / `createComputePipelineAsync`
+  call goes through `RenderPipelines::ensure_keys` /
+  `ComputePipelines::ensure_keys` — these mirror
+  `Shaders::ensure_keys`: build all descriptors synchronously, fire
+  every Promise back-to-back so Dawn's compile pool starts on all of
+  them in parallel, then `join_all` the JsFutures. Wall-clock for an
+  N-pipeline batch drops from `sum(t_i)` to `max(t_i)` bounded by the
+  Dawn pool size (≈ `num_cpus`).
+- Every pass that has more than one pipeline now batches its set:
+  opaque (14), geometry (18), HZB (3), classify (2), decal (2 + 2),
+  effects (5), shadows caster (4), EVSM (3), transparent (N per
+  scene, batched in `set_render_pipeline_keys_batched`).
+- `finalize_gpu_textures` recompiles every transparent mesh's
+  pipeline through the same batched API — so the cycle that fires
+  once per model load (the texture pool just grew, every
+  transparent pipeline's bind-group layout is stale) now compiles in
+  parallel instead of serially.
+- `AwsmRenderer::prewarm_pipelines` is real: it walks `self.meshes`
+  and runs one batched ensure_keys for every unique (buffer_info,
+  material) combination. Useful immediately after a model load,
+  before the first frame; idempotent and free on subsequent calls.
+- `AwsmRendererBuilder::with_phase_handler` lets a consumer hook
+  every `RendererLoadingPhase` transition during `build()` so the
+  UI can show "Browser is compiling shaders…" rather than a frozen
+  generic loading line.
 
 ### Interaction with runtime-registered dynamic materials
 
@@ -888,15 +902,14 @@ wrinkles to handle in the warmup:
    newly-registered shader_id before the next user-interactive
    frame.
 
-Whoever lands the runtime-materials work should pair it with a
-**`AwsmRenderer::prewarm_pipelines()` API** alongside the
-registry work: walks every active (shader_id × variant) combo
-the renderer knows about, fakes a one-pixel draw to compile,
-then drops the fake renderables. Callers invoke it at end of
-game-init AND after every burst of dynamic registrations
-they're about to surface to the player. Until that API exists,
-shipping consumers should follow the load-screen trick in §8a
-step 5.
+The dynamic-materials sprint should extend
+[`AwsmRenderer::prewarm_pipelines`](../crates/renderer/src/lib.rs) so
+it iterates over `materials.enabled_materials()` (currently it walks
+`self.meshes` to warm transparents for the live scene, which is
+correct for first-party use cases). The method already exists and
+is the canonical "I'm done registering materials, please compile
+everything" hook; the dynamic-materials change is just expanding
+the keys it adds to the batch.
 
 The cost of the warmup pass *is* the compile tax — it doesn't
 make compilation faster, it just relocates it to a frame the

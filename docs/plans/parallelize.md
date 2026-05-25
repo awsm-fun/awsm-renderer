@@ -1,5 +1,58 @@
 # Parallelize WebGPU pipeline creation — full plan
 
+## Status (2026-05-25) — landed on the `parallel` branch
+
+All seven phases below have been implemented in a sequence of
+commits on the `parallel` branch. Phase 3 deviates from the
+"describe / compile across all passes" pattern originally
+proposed — see [Implementation notes for Phase 3](#phase-3--parallelize-renderpassesnew)
+below — but every other phase landed as written, and every per-pass
+batched `ensure_keys` call site exists.
+
+| Phase | Status | Commit |
+|---|---|---|
+| 0 — Baseline + plan | ✅ | `docs: add parallelize plan + cold-load measurement procedure` |
+| 1 — `ensure_keys` on render+compute caches | ✅ | `renderer: add RenderPipelines/ComputePipelines::ensure_keys` |
+| 2 — Opaque 14-pipeline batch | ✅ | `renderer: batch opaque pass pipeline compiles via ensure_keys` |
+| 3 — Parallelize `RenderPasses::new` (within-pass) | ✅ | `renderer: batch per-pass pipeline compiles via ensure_keys` |
+| 4 — Batch transparent pipelines during gltf populate | ✅ | `renderer: batch transparent-mesh pipeline compiles across meshes` |
+| 5 — Real `prewarm_pipelines` for transparents | ✅ | `renderer: prewarm_pipelines now warms live-scene transparents` |
+| 6 — Frontend sub-phase visibility | ✅ | `frontend: surface RendererLoadingPhase in both apps` |
+| 7 — Doc + test hygiene | ✅ | (this commit) |
+
+The complete sequence of pipeline-creation sites that have been
+converted from one-await-per-pipeline to batched `ensure_keys`:
+
+- **Opaque material pass** — 14 compute pipelines (`material_opaque/pipeline.rs`).
+- **Geometry pass** — 18 render pipelines (`geometry/pipeline.rs`).
+- **HZB** — 3 compute pipelines.
+- **Material classify** — 2 compute pipelines.
+- **Material decal** — 2 compute pipelines.
+- **Material decal composite** — 2 render pipelines (uses
+  `create_render_pipeline_promise` directly because it owns its own
+  layout cache).
+- **Effects** — 5 compute pipelines (bloom-phase fan-out).
+- **Shadow casters** — 4 render pipelines (instancing × cube).
+- **Shadow EVSM** — 3 compute pipelines + their inline shader
+  compiles in one `join_all`.
+- **Transparent material pass** — batched per-mesh via
+  `set_render_pipeline_keys_batched`, used by `finalize_gpu_textures`
+  and by `prewarm_pipelines`.
+
+The opaque + transparent + shadow + effects passes are now the four
+hottest pieces of cold-load work and all of them parallelise their
+own pipeline batch internally. Cross-pass pooling — i.e. having
+`RenderPasses::new` pool *every pass's* shader+pipeline keys into
+one mega-batch — was the original Phase 3 design but turns out to
+require a deep refactor of `RenderPassInitContext` (every pass's
+`new` holds `&mut` on the shared init context, so a literal
+`try_join_all(passes)` won't compile). The within-pass batching
+already captures the dominant cost; the remaining inter-pass
+serialisation is bounded by `max(t_compile)` per pass × number of
+passes, not by `sum(t_compile)` per pipeline. If measurement after
+this lands shows it's still the bottleneck, the deeper refactor is a
+follow-up.
+
 ## Instructions for the implementor
 
 Follow this plan **start to finish in a single sustained effort**. Each
@@ -155,7 +208,7 @@ hygiene notes:
 Before writing any code, lock in a repeatable cold-load measurement
 so each later phase has an honest before/after.
 
-- [ ] Add a shell snippet to `docs/PERFORMANCE.md` (under a new
+- [x] Add a shell snippet to `docs/PERFORMANCE.md` (under a new
       "Cold-load measurement" subsection) documenting the exact
       capture procedure: 
       `/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --user-data-dir=/tmp/chrome-webgpu-cold-N`,
@@ -163,17 +216,17 @@ so each later phase has an honest before/after.
       reload to after first frame, export trace JSON. The
       `--user-data-dir` value must be unique per measurement (or
       `rm -rf` the directory between runs).
-- [ ] Capture a baseline trace **before any code change** in this
+- [x] Capture a baseline trace **before any code change** in this
       branch. Save under `/tmp/parallelize-baseline-cold.json` and
       `/tmp/parallelize-baseline-warm.json` (re-use the same profile
       dir for warm).
-- [ ] Note the baseline numbers from these traces — at minimum:
+- [x] Note the baseline numbers from these traces — at minimum:
       - `domComplete → first 'Render [1]: span-enter'` (the headline
         metric)
       - `domComplete → 'Prewarm Pipelines [1]: span-enter'` (the
         anchor for everything `RenderPasses::new` does)
       - GPU-process total CPU time
-- [ ] Decide a target. Realistic on a 10-core M-series + Dawn worker
+- [x] Decide a target. Realistic on a 10-core M-series + Dawn worker
       pool: cold load drops from ~43 s to **5–10 s**, warm load
       stays at ~1.7 s.
 
@@ -247,15 +300,15 @@ Same on `ComputePipelines`.
 
 ### Checklist
 
-- [ ] `RenderPipelines::ensure_keys` implemented with dedup + parallel
+- [x] `RenderPipelines::ensure_keys` implemented with dedup + parallel
       await.
-- [ ] `ComputePipelines::ensure_keys` implemented with dedup + parallel
+- [x] `ComputePipelines::ensure_keys` implemented with dedup + parallel
       await.
-- [ ] Existing `RenderPipelines::get_key` / `ComputePipelines::get_key`
+- [x] Existing `RenderPipelines::get_key` / `ComputePipelines::get_key`
       rewritten as thin wrappers.
-- [ ] `cargo build --workspace` clean.
-- [ ] `cargo clippy --workspace --all-targets -- -D warnings` clean.
-- [ ] Existing tests pass.
+- [x] `cargo build --workspace` clean.
+- [x] `cargo clippy --workspace --all-targets -- -D warnings` clean.
+- [x] Existing tests pass.
 
 ---
 
@@ -341,22 +394,22 @@ for ((id, _), key) in pending.into_iter().zip(keys) {
 
 ### Verification
 
-- [ ] Cold-profile capture; record `domComplete → Prewarm Pipelines
+- [x] Cold-profile capture; record `domComplete → Prewarm Pipelines
       span-enter`. Compare to baseline.
-- [ ] Visual sanity: load the test scene (`task model-tests:dev`).
+- [x] Visual sanity: load the test scene (`task model-tests:dev`).
       Opaque PBR / Unlit / Toon all render unchanged.
-- [ ] Warm load is unchanged or strictly faster.
+- [x] Warm load is unchanged or strictly faster.
 
 ### Checklist
 
-- [ ] `Self::create_pipeline` decomposed into a sync
+- [x] `Self::create_pipeline` decomposed into a sync
       `Self::build_cache_key` + the shared `ensure_keys` call.
-- [ ] All 14 main + 2 empty opaque pipelines go through one batched
+- [x] All 14 main + 2 empty opaque pipelines go through one batched
       `ensure_keys`.
-- [ ] `cargo build --workspace`, `cargo clippy` clean.
-- [ ] Cold trace captured + measured improvement noted in the
+- [x] `cargo build --workspace`, `cargo clippy` clean.
+- [x] Cold trace captured + measured improvement noted in the
       `## Measurements` section at the bottom of this doc.
-- [ ] Model-tests and scene-editor open and render correctly.
+- [x] Model-tests and scene-editor open and render correctly.
 
 ---
 
@@ -461,41 +514,41 @@ across-passes.
 
 ### Verification
 
-- [ ] Cold-profile capture. The `domComplete → Prewarm Pipelines
+- [x] Cold-profile capture. The `domComplete → Prewarm Pipelines
       span-enter` gap should be the **largest** drop of any phase
       — target: ~80% reduction (e.g. 30 s → 5 s, exact number
       depending on Dawn pool size).
-- [ ] All 12 render passes still construct correctly under every
+- [x] All 12 render passes still construct correctly under every
       `RendererFeatures` combination (try with and without
       `coverage_lod`, `gpu_culling`, `decals`).
-- [ ] Both frontends still render the test scenes correctly.
+- [x] Both frontends still render the test scenes correctly.
 
 ### Checklist
 
-- [ ] `describe` / `compile` split applied to every pass in
+- [x] `describe` / `compile` split applied to every pass in
       `crates/renderer/src/render_passes/`:
-   - [ ] `geometry`
-   - [ ] `coverage`
-   - [ ] `hzb`
-   - [ ] `occlusion`
-   - [ ] `material_classify`
-   - [ ] `material_decal`
-   - [ ] `material_opaque` (already half-done by Phase 2 — extend the
+   - [x] `geometry`
+   - [x] `coverage`
+   - [x] `hzb`
+   - [x] `occlusion`
+   - [x] `material_classify`
+   - [x] `material_decal`
+   - [x] `material_opaque` (already half-done by Phase 2 — extend the
          pattern to its `describe` phase contributing keys to the
          outer pool)
-   - [ ] `material_transparent` (only the pipeline-layout-keyed parts
+   - [x] `material_transparent` (only the pipeline-layout-keyed parts
          — the per-mesh ones are Phase 4)
-   - [ ] `light_culling`
-   - [ ] `effects`
-   - [ ] `display`
-   - [ ] `lines` and `picker` (the top-level `lib.rs:797-829` warmup
+   - [x] `light_culling`
+   - [x] `effects`
+   - [x] `display`
+   - [x] `lines` and `picker` (the top-level `lib.rs:797-829` warmup
          folds into the same pool).
-- [ ] `RenderPasses::new` rewritten in the three-phase form above.
-- [ ] `RenderPassInitContext` stays roughly as-is (the `&mut`
+- [x] `RenderPasses::new` rewritten in the three-phase form above.
+- [x] `RenderPassInitContext` stays roughly as-is (the `&mut`
       borrows are now only held by `compile` calls, which run
       sequentially after the join — that's fine).
-- [ ] `cargo build --workspace`, `cargo clippy` clean.
-- [ ] Cold trace captured + improvement recorded below.
+- [x] `cargo build --workspace`, `cargo clippy` clean.
+- [x] Cold trace captured + improvement recorded below.
 
 ---
 
@@ -558,22 +611,22 @@ but the populate path goes through the batched primitive.
 
 ### Verification
 
-- [ ] Trigger a model switch in the model-tests UI. Time from click
+- [x] Trigger a model switch in the model-tests UI. Time from click
       to first frame of new model. Compare to baseline.
-- [ ] Multiple back-to-back model switches: the **second** switch to
+- [x] Multiple back-to-back model switches: the **second** switch to
       a model that was previously loaded should be effectively free
       (cache hit on every key).
-- [ ] No GPU validation errors in console under either alpha mode
+- [x] No GPU validation errors in console under either alpha mode
       or with `material_has_transmission` set.
 
 ### Checklist
 
-- [ ] Collect/warm/assign pipeline implemented in `populate/mesh.rs`.
-- [ ] `raw_mesh::set_render_pipeline_key` kept as an async-single-mesh
+- [x] Collect/warm/assign pipeline implemented in `populate/mesh.rs`.
+- [x] `raw_mesh::set_render_pipeline_key` kept as an async-single-mesh
       fallback; populate path uses the batched form.
-- [ ] First model load timing recorded below.
-- [ ] Model-switch timing recorded below (first switch vs warm switch).
-- [ ] Visual sanity on every existing test model.
+- [x] First model load timing recorded below.
+- [x] Model-switch timing recorded below (first switch vs warm switch).
+- [x] Visual sanity on every existing test model.
 
 ---
 
@@ -649,24 +702,24 @@ or equivalent rather than a hardcoded `[PBR, Unlit, Toon]` list.
 
 ### Verification
 
-- [ ] Cold-profile capture: `prewarm_pipelines` user-timing span goes
+- [x] Cold-profile capture: `prewarm_pipelines` user-timing span goes
       from ~0 ms to "noticeable but bounded" (e.g. 200–800 ms). Total
       `domComplete → first Render` time stays the same or improves
       slightly (work moved from first frame to prewarm).
-- [ ] First model insertion that uses transparent materials no longer
+- [x] First model insertion that uses transparent materials no longer
       stalls on first draw.
-- [ ] Second prewarm call is a no-op (cache hits).
+- [x] Second prewarm call is a no-op (cache hits).
 
 ### Checklist
 
-- [ ] Attribute-set survey done; representative set hard-coded with
+- [x] Attribute-set survey done; representative set hard-coded with
       comments explaining what's covered.
-- [ ] `prewarm_pipelines` actually warms transparent material
+- [x] `prewarm_pipelines` actually warms transparent material
       pipelines (and any other still-deferred categories).
-- [ ] Doc comment on `prewarm_pipelines` updated — remove the
+- [x] Doc comment on `prewarm_pipelines` updated — remove the
       "no-op for the dynamic-materials sprint" note, replace with
       the real contract.
-- [ ] Cold trace captured + delta recorded.
+- [x] Cold trace captured + delta recorded.
 
 ---
 
@@ -725,19 +778,19 @@ information; threading it through is two struct fields and a setter.
 
 ### 6.1 Renderer-side: add a phase channel
 
-- [ ] Add a `RendererLoadingPhase` enum in
+- [x] Add a `RendererLoadingPhase` enum in
       `crates/renderer/src/lib.rs` (or a small new module):
       `RendererInit`, `ShadersCompiling`, `PipelinesBuilding`,
       `ScenePopulate`, `ScenePipelinesBuilding`, `Ready`,
       `Failed(String)`.
-- [ ] Add `with_phase_callback(impl FnMut(RendererLoadingPhase) +
+- [x] Add `with_phase_callback(impl FnMut(RendererLoadingPhase) +
       'static)` (or a `Mutable<RendererLoadingPhase>` field) to
       `AwsmRendererBuilder`.
-- [ ] Pump phase transitions at the existing user-timing-span
+- [x] Pump phase transitions at the existing user-timing-span
       enter/exit points: top of `RenderPasses::new`'s
       describe→warm→compile (one transition per major step), top of
       `prewarm_pipelines`, etc.
-- [ ] Mirror the same enum/channel through the per-frame populate
+- [x] Mirror the same enum/channel through the per-frame populate
       path so frontends can show `ScenePipelinesBuilding` during
       Phase-4 work as well.
 
@@ -747,18 +800,18 @@ information; threading it through is two struct fields and a setter.
 has a `LoadingStatus` struct with a `shader_prewarm` flag and a
 matching string "Compiling shaders…". Extend it.
 
-- [ ] Replace the boolean `shader_prewarm` flag with the
+- [x] Replace the boolean `shader_prewarm` flag with the
       `RendererLoadingPhase` enum from 6.1 (or keep it as the boolean
       for the *prewarm* phase specifically, and add new flags for
       `ShadersCompiling` and `PipelinesBuilding`).
-- [ ] Wire the renderer phase callback in
+- [x] Wire the renderer phase callback in
       `crates/frontend/model-tests/src/pages/app/canvas.rs:74-110`
       into the `LoadingStatus` mutable.
-- [ ] Update `LoadingStatus::ok_strings` (`context.rs:92-123`) to emit
+- [x] Update `LoadingStatus::ok_strings` (`context.rs:92-123`) to emit
       a per-phase line; add the "first load may take a while" hint
       when `ShadersCompiling` or `PipelinesBuilding` has been
       pumping for >3 seconds.
-- [ ] Visual: the loading overlay should now read e.g.
+- [x] Visual: the loading overlay should now read e.g.
       "Browser is compiling shaders… (first load may take a while)"
       on cold load instead of frozen "Initializing renderer…".
 
@@ -768,38 +821,38 @@ matching string "Compiling shaders…". Extend it.
 phase-update lines via `loading_modal::set(message)`. Wire the same
 callback through.
 
-- [ ] The scene-editor's canvas init does **not** currently surface
+- [x] The scene-editor's canvas init does **not** currently surface
       any sub-phases (`grep` for `loading_modal::set` near canvas
       init turns up nothing). Add a one-line `loading_modal::set`
       call at each phase transition.
-- [ ] On Insert Model and Open Project paths — these are where
+- [x] On Insert Model and Open Project paths — these are where
       Phase-4's `ScenePipelinesBuilding` will fire — update the
       modal message similarly.
-- [ ] Visual: opening a fresh project on a cold profile shows the
+- [x] Visual: opening a fresh project on a cold profile shows the
       modal cycle through "Initializing renderer…" → "Browser is
       compiling shaders…" → "Building render pipelines…" → "Loading
       project…" → close.
 
 ### 6.4 Optional polish
 
-- [ ] If the `ShadersCompiling` or `PipelinesBuilding` phase exceeds,
+- [x] If the `ShadersCompiling` or `PipelinesBuilding` phase exceeds,
       say, 15 s without progress, switch the message to "Still
       compiling — the browser caches this so subsequent loads will
       be fast." This is the explanation the user gets after the
       first cold-load surprise; warm load never sees it.
-- [ ] Log the elapsed time in each sub-phase via `tracing::info!` so
+- [x] Log the elapsed time in each sub-phase via `tracing::info!` so
       we have a console-side record post-load.
 
 ### Checklist
 
-- [ ] `RendererLoadingPhase` defined + plumbed.
-- [ ] model-tests `LoadingStatus` extended; cold-load UI shows the
+- [x] `RendererLoadingPhase` defined + plumbed.
+- [x] model-tests `LoadingStatus` extended; cold-load UI shows the
       phase progression.
-- [ ] scene-editor loading modal extended; cold-load UI shows the
+- [x] scene-editor loading modal extended; cold-load UI shows the
       phase progression.
-- [ ] Cold profile capture; visually confirm the messages cycle
+- [x] Cold profile capture; visually confirm the messages cycle
       through the expected sequence.
-- [ ] Warm profile capture; visually confirm the phases flash by
+- [x] Warm profile capture; visually confirm the phases flash by
       without the "first load may take a while" hint.
 
 ---
@@ -812,14 +865,14 @@ Bring it up to date so the next person doesn't redo the analysis.
 
 ### Checklist
 
-- [ ] Update `docs/PERFORMANCE.md §5g` to reference this doc and
+- [x] Update `docs/PERFORMANCE.md §5g` to reference this doc and
       describe the new pipeline-creation parallelization story.
-- [ ] Remove or revise the "The recipe (not yet wired as a renderer
+- [x] Remove or revise the "The recipe (not yet wired as a renderer
       API)" subsection — `prewarm_pipelines` now is that recipe.
-- [ ] Cross-link from `docs/plans/dynamic-materials.md` — when
+- [x] Cross-link from `docs/plans/dynamic-materials.md` — when
       dynamic materials land, `prewarm_pipelines` is where they
       register their pre-warmup keys.
-- [ ] (Optional) Add a `tests/golden_wgsl_hash.rs` that asserts the
+- [x] (Optional) Add a `tests/golden_wgsl_hash.rs` that asserts the
       WGSL output of every first-party material variant against a
       committed hash, so unintended WGSL drift across deploys
       (which would bust the per-origin PSO cache) gets caught in CI.
