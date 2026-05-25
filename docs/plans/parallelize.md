@@ -82,16 +82,439 @@ sequential per-subsystem, but each one is internally batched:
 Pooling these into the same `RenderPasses::new` batches would
 require splitting Shadows / Effects / Display into the same
 `build_descriptors` + `from_resolved` shape and threading the
-orchestration through `AwsmRendererBuilder::build`. The
-`Picker::build_descriptors` split is already in place as
-infrastructure for that follow-up; Shadows is the heavier piece —
-~250 lines of intricate texture/buffer/EVSM setup that would have
-to be re-shaped around the descriptor split. Given the diminishing
-returns (Dawn's compile pool already runs all of `RenderPasses`'s
-combined ~44 pipelines in roughly `ceil(44/num_cpus)` waves; the
-~10 tail pipelines add maybe one more wave) and the size of the
-refactor, that's parked as a follow-up rather than landed in this
-sweep.
+orchestration through `AwsmRendererBuilder::build`. See
+[Follow-up: tail pool](#follow-up-tail-pool-shadows--picker--linerenderer--effects--display)
+below for the full implementation plan a fresh session can pick up
+and execute.
+
+The `Picker::build_descriptors` split is already in place as
+infrastructure for that follow-up. The remaining subsystems —
+Shadows, EffectsPipelines, DisplayPipelines, LineRenderer's inner
+`LinePipelines` — are the work.
+
+---
+
+## Follow-up: tail pool (Shadows + Picker + LineRenderer + Effects + Display)
+
+### Why this matters
+
+After all the work on the `parallel` branch through commit `7ae70ba`,
+`RenderPasses::new` itself is fully pooled (3 awaits — one shader,
+one compute, one render — covering ~44 pipelines). What's still
+sequential is the **tail** that runs after `RenderPasses::new`
+returns and through end-of-`build()`:
+
+1. `Picker::new` — 1 batched `ComputePipelines::ensure_keys` (2 pipelines).
+2. `LineRenderer::load` — 1 batched `RenderPipelines::ensure_keys` (4 variants).
+3. `Shadows::new` — ~3 awaits internally:
+   - 1 caster shader `ensure_keys` (cache hit because pre-warmed by `RenderPasses::new`).
+   - 1 caster pipeline `RenderPipelines::ensure_keys` (4 variants).
+   - EVSM block: `join_all` of 3 inline shader validations + 1 `ComputePipelines::ensure_keys` (3 pipelines).
+4. `_self.set_anti_aliasing(...).await?` — 1 effects `ComputePipelines::ensure_keys` (5 variants), plus the per-mesh transparent loop (empty at startup).
+5. `_self.set_post_processing(...).await?` — effects rebuild (cache hit because same config) + 1 display `RenderPipelines::ensure_keys` (1 pipeline).
+
+That's **5 sequential pipeline-compile awaits** in the tail.
+Pooled, they become **2** (one big `ComputePipelines::ensure_keys`,
+one big `RenderPipelines::ensure_keys`):
+
+- Compute pool: 2 (picker) + 3 (EVSM) + 5 (effects) = **10 pipelines**.
+- Render pool: 4 (lines) + 4 (shadow caster) + 1 (display) = **9 pipelines**.
+
+On a Dawn pool of ~`num_cpus` workers (typically 8–12 on a modern
+laptop), each pool is one compile wave. Sequential vs pooled
+wall-clock:
+
+| | Sequential tail | Pooled tail | Saving |
+|---|---|---|---|
+| Cold cache | 5 × (~1 t_compile + 1 task-tick) ≈ 5–6 s | 2 × (~1 t_compile + 1 task-tick) ≈ 2 s | **~3–4 s** |
+| Warm cache | 5 × ~25 ms (task-tick overhead) ≈ 125 ms | 2 × ~25 ms ≈ 50 ms | **~75 ms** |
+
+(`t_compile` ≈ 0.8–1.5 s per pipeline on cold Metal-via-Dawn for
+this codebase, observed from earlier traces. The "task-tick" is
+the minimum time the renderer-main thread spends parked at each
+`.await` point before the next batch even starts; under load the
+browser may delay it to a full rAF tick.)
+
+**Conclusion (answering the explicit question from the previous
+sweep): yes, this is a definite cold-cache win when it lands. The
+implementation risk is in the size of the refactor, not in the
+optimization model.**
+
+### Where the risk lives
+
+Three places need careful handling:
+
+1. **Shadows::new** is ~250 lines of intricate setup —
+   `crates/renderer/src/shadows/state.rs:430-820`-ish. It owns:
+   atlas allocator, atlas texture + views, cascade-array texture +
+   views, EVSM atlas + blur ping-pong texture + views, shadow
+   descriptor / view buffers, PCF + filterable samplers, shadow
+   view bind-group layout + bind group, pipeline layouts (storage
+   + uniform variants), caster shader cache keys + pipelines (4
+   variants), and `EvsmPass::new` (its own bind-group layouts,
+   pipeline layouts, 3 inline-source shaders compiled via
+   `gpu.compile_shader` + `module.validate_shader().await` +
+   `shaders.insert_uncached`, 3 compute pipelines, params buffer).
+   Most of this is sync resource allocation interleaved with
+   async-but-non-awaiting-anything `BindGroupLayouts::get_key`
+   calls. The async work that needs to move into the cross-system
+   pool is just the shader validations + pipeline compiles.
+
+2. **EVSM uses inline-source shaders** that bypass the shared
+   `Shaders` cache (`compile_shader` returns a module immediately
+   and the work is in `validate_shader().await`; the resulting
+   module is fed into the cache via `Shaders::insert_uncached`).
+   The pool has to be able to swallow these:
+   - Issue the 3 `compile_shader` calls + register the modules
+     synchronously (gives ShaderKeys via `insert_uncached`).
+   - Add the 3 `validate_shader` futures to a `validation_pool`
+     that runs in parallel with the other ensure_keys batches.
+   - Then build the EVSM compute pipeline cache keys against the
+     `ShaderKey`s and feed them into the cross-system compute
+     ensure_keys.
+
+3. **`set_anti_aliasing` / `set_post_processing` are dynamic
+   setters**, not just startup-time hooks. The user can call
+   `renderer.set_anti_aliasing(...)` mid-session to flip MSAA on/off,
+   and the same goes for post-processing. Today both compile
+   effects + display pipelines from inside the setter via
+   `EffectsPipelines::set_render_pipeline_keys` /
+   `DisplayPipelines::set_render_pipeline_key`. The descriptor
+   split has to leave those setters working for the dynamic path —
+   the startup-time pool is a *short-circuit* that lets the
+   builder skip the setter's recompile when it's about to apply
+   the same config the pool was built against.
+
+### Architecture for the fresh session
+
+The orchestrator goes in `lib.rs`'s
+`AwsmRendererBuilder::build`. After `RenderPasses::new` +
+`RenderTextures::new` return, do this in order:
+
+```rust
+// 1. Build every tail subsystem's bind groups + descriptors
+//    SYNCHRONOUSLY (no Dawn compile, just hash registration +
+//    resource allocation). Returns typed *Descriptors structs that
+//    carry (a) a Vec of cache keys to pool and (b) every other
+//    piece of state needed to assemble the subsystem later.
+let picker_descs = Picker::build_descriptors(
+    &gpu, &mut bind_group_layouts, &mut pipeline_layouts, &mut shaders,
+).await?;
+let line_descs = LineRenderer::build_descriptors(
+    &gpu, &mut bind_group_layouts, &mut pipeline_layouts, &mut shaders,
+    &render_textures.formats,
+).await?;
+let shadows_descs = shadows::Shadows::build_descriptors(
+    &gpu, &mut bind_group_layouts, &mut pipeline_layouts,
+    &mut shaders, &render_passes.geometry.bind_groups,
+    &render_textures.formats, shadows_config.unwrap_or_default(),
+).await?;
+let effects_descs = render_passes::effects::pipeline::EffectsPipelines::build_descriptors(
+    &anti_aliasing, &post_processing, &gpu, &mut shaders,
+    &mut pipeline_layouts, &mut bind_group_layouts,
+    &render_passes.effects.bind_groups,
+    &render_textures.formats,
+).await?;
+let display_descs = render_passes::display::pipeline::DisplayPipelines::build_descriptors(
+    &post_processing, &gpu, &mut shaders,
+    &mut pipeline_layouts, &render_passes.display.bind_groups,
+).await?;
+
+// 2. Cross-tail shader ensure_keys.
+//    (Most of the keys are already cache hits because
+//    RenderPasses::new pre-warmed picker+line+shadow caster + the
+//    static opaque/decal/transparent variants. EVSM inline shaders
+//    + effects-config-dependent shaders + display-tonemapping
+//    shader are the new ones.)
+let tail_shader_keys = [
+    effects_descs.shader_cache_keys.as_slice(),
+    display_descs.shader_cache_keys.as_slice(),
+    // Shadows caster is already in the main pool.
+    // Picker / Lines: already in the main pool too.
+].concat();
+shaders.ensure_keys(&gpu, tail_shader_keys).await?;
+
+// 2b. EVSM inline shaders compile in parallel with the above.
+//     join_all the 3 validate_shader futures.
+let evsm_modules = futures::future::try_join_all(
+    shadows_descs.evsm_inline_module_futures(&gpu),
+).await?;
+let evsm_shader_keys: Vec<ShaderKey> = evsm_modules
+    .into_iter()
+    .map(|m| shaders.insert_uncached(m))
+    .collect();
+shadows_descs.finalize_evsm_shader_keys(evsm_shader_keys);
+
+// 3. Build the cross-tail pipeline cache key pools.
+let mut compute_pool = Vec::new();
+let mut render_pool = Vec::new();
+let picker_compute_range = push_compute!(picker_descs);
+let line_render_range = push_render!(line_descs);
+let shadows_caster_render_range = push_render!(shadows_descs.caster);
+let shadows_evsm_compute_range = push_compute!(shadows_descs.evsm);
+let effects_compute_range = push_compute!(effects_descs);
+let display_render_range = push_render!(display_descs);
+
+// 4. Two batched ensure_keys — the entire tail in two awaits.
+let compute_keys = pipelines.compute.ensure_keys(
+    &gpu, &shaders, &pipeline_layouts, compute_pool,
+).await?;
+let render_keys = pipelines.render.ensure_keys(
+    &gpu, &shaders, &pipeline_layouts, render_pool,
+).await?;
+
+// 5. Sync fold-up: each subsystem's from_resolved consumes its
+//    slice of the resolved keys + its descriptors blob and
+//    returns the typed handle.
+let picker = Picker::from_resolved(&gpu, picker_descs, compute_keys[picker_compute_range].to_vec())?;
+let lines = LineRenderer::from_resolved(line_descs, render_keys[line_render_range].to_vec())?;
+let shadows = shadows::Shadows::from_resolved(
+    shadows_descs,
+    render_keys[shadows_caster_render_range].to_vec(),
+    compute_keys[shadows_evsm_compute_range].to_vec(),
+)?;
+
+// 6. Install resolved effects + display keys into the typed
+//    Pipelines structs already inside RenderPasses.
+render_passes.effects.pipelines.install_resolved(
+    effects_descs,
+    compute_keys[effects_compute_range].to_vec(),
+);
+render_passes.display.pipelines.install_resolved(
+    display_descs,
+    render_keys[display_render_range].to_vec(),
+);
+
+// 7. Construct AwsmRenderer.
+let mut _self = AwsmRenderer { ..., picker, lines, shadows, ... };
+
+// 8. Apply the initial AA + PP state WITHOUT recompiling — the
+//    pipelines we just installed already match anti_aliasing
+//    + post_processing. The setters still need to run for the
+//    state-only side effects (marking bind groups dirty, etc.).
+_self.anti_aliasing = anti_aliasing.clone();
+_self.post_processing = post_processing.clone();
+_self.bind_groups.mark_create(BindGroupCreate::AntiAliasingChange);
+_self.bind_groups.mark_create(BindGroupCreate::TextureViewRecreate);
+// (no more .await? calls — set_anti_aliasing's pipeline-rebuild
+// path is bypassed for the initial config)
+```
+
+### Per-subsystem checklist for the fresh session
+
+For each subsystem below, the pattern is:
+
+- Keep the existing `new()` / `load()` / `set_*` entry points as
+  thin wrappers over the new `build_descriptors` +
+  `from_resolved` split, so callers outside the orchestrator
+  (dynamic AA changes, runtime gltf loads, etc.) keep working.
+- Expose three pieces:
+  - `pub fn (or async fn) build_descriptors(...) -> Result<XxxDescriptors>` — does sync setup + shader resolution. Returns a struct carrying every cache key + slot identifier downstream code needs.
+  - `XxxDescriptors` struct — public, exposes `shader_cache_keys`, `compute_pipeline_cache_keys`, `render_pipeline_cache_keys` (whichever applies) as named fields the orchestrator can read.
+  - `pub fn from_resolved(descs, resolved_keys, ...) -> Result<Self>` — sync; consumes the descriptors + the slice of resolved keys the orchestrator hands back.
+
+#### 1. `Picker::build_descriptors` — already done in `b46c365`. ✅
+
+Reference for the pattern. Look at
+`crates/renderer/src/picker.rs:141-260` to see the working shape.
+
+#### 2. `LineRenderer::build_descriptors`
+
+- File: `crates/renderer/src/render_passes/lines/renderer.rs` +
+  `crates/renderer/src/render_passes/lines/pipelines.rs`.
+- `LinePipelines::load` already batches its 4 variants in one
+  `ensure_keys` (commit `6220d85`). Lift the cache-key list out
+  via `LinePipelines::pipeline_cache_keys(bind_group_layout_key,
+  pipeline_layout_key, shader_key, formats) -> Vec<RenderPipelineCacheKey>`
+  + `LinePipelines::from_resolved(bind_group_layout_key,
+  keys) -> Self`.
+- `LineRenderer::build_descriptors` wraps both: registers
+  bind-group layout, registers pipeline layout, fetches shader
+  key (cache hit), builds 4 pipeline cache keys, returns
+  `LineRendererDescriptors { bind_group_layout_key,
+  pipeline_cache_keys }`.
+- `LineRenderer::from_resolved(descs, keys) -> Self`: assembles
+  `LinePipelines::from_resolved` + the empty `SlotMap<LineKey,
+  LineEntry>` + the empty `pack_buf`.
+
+#### 3. `Shadows::build_descriptors` — the heavy piece
+
+- File: `crates/renderer/src/shadows/state.rs` +
+  `crates/renderer/src/shadows/evsm.rs`.
+- `Shadows::new` currently does (a) resource allocation +
+  bind-group + pipeline-layout setup (sync; lines ~430–555),
+  (b) the caster ensure_keys block (lines ~557–627), then (c)
+  `EvsmPass::new(...).await?` which itself does sync layout
+  setup + the 3 inline shader compiles + 3 compute pipeline
+  compile.
+- Refactor target:
+  - **`Shadows::build_descriptors(...)` async**: runs (a),
+    runs the caster shader cache keys → `ensure_keys` (or
+    treat as pre-warmed if the caller already did so), builds
+    the 4 caster pipeline cache keys (sync, against the
+    pipeline layouts from (a)), runs EVSM's sync layout
+    setup, kicks off the 3 inline `compile_shader` calls
+    (returns the modules synchronously), wraps their
+    `validate_shader` futures into a Vec, then `join_all`s them
+    (or returns the futures for the orchestrator to interleave
+    with other shader ensure_keys — see option 2 below).
+    Builds the 3 EVSM compute pipeline cache keys. Returns
+    `ShadowsDescriptors`:
+    ```rust
+    pub struct ShadowsDescriptors {
+        // (a) all the resource handles + layout keys + buffers
+        //     + textures + the cascade array view + etc.
+        atlas_allocator: AtlasAllocator,
+        atlas_texture: web_sys::GpuTexture,
+        atlas_view: web_sys::GpuTextureView,
+        // ... ~15 more fields, all currently locals in
+        //     Shadows::new ...
+        // (b) caster
+        caster_pipeline_cache_keys: Vec<RenderPipelineCacheKey>,
+        // (c) evsm — kept as a sub-struct so EvsmPass::from_resolved
+        //     can take the inner slice cleanly.
+        evsm: EvsmDescriptors,
+    }
+
+    pub struct EvsmDescriptors {
+        moment_write_layout_key: BindGroupLayoutKey,
+        blur_layout_key: BindGroupLayoutKey,
+        moment_write_pipeline_layout_key: PipelineLayoutKey,
+        blur_pipeline_layout_key: PipelineLayoutKey,
+        // Shader keys are resolved before from_resolved is called.
+        // The orchestrator builds them via insert_uncached on the
+        // modules returned by build_descriptors.
+        moment_write_shader_key: ShaderKey,
+        blur_h_shader_key: ShaderKey,
+        blur_v_shader_key: ShaderKey,
+        pipeline_cache_keys: Vec<ComputePipelineCacheKey>,
+        // (3 entries: moment_write, blur_h, blur_v.)
+        params_buffer: web_sys::GpuBuffer,
+        params_bytes: Vec<u8>,
+    }
+    ```
+  - **`Shadows::from_resolved(descs, caster_keys, evsm_compute_keys) -> Result<Self>`**:
+    sync. Re-binds the resolved keys + every resource field
+    out of `ShadowsDescriptors` into the final `Shadows` struct
+    and the `EvsmPass`. Builds the EVSM moment-write + blur
+    bind groups (they need the resolved EVSM pipeline keys'
+    layouts, which are already in `ShadowsDescriptors`).
+
+- Decision: how does the orchestrator handle EVSM's inline
+  shaders? Two options:
+  - (Option 1, simpler) `Shadows::build_descriptors` runs the 3
+    `validate_shader().await`s internally via `join_all`. The
+    inline shaders compile in parallel with each other but
+    serially with the cross-system shader ensure_keys. Costs one
+    extra await sequenced against the main shader pool.
+  - (Option 2, optimal) `Shadows::build_descriptors` returns the
+    3 module handles + the 3 unawaited validate futures. The
+    orchestrator awaits them in `join_all` alongside the
+    cross-system shader ensure_keys via `try_join`. Saves one
+    await; the orchestrator owns the EVSM shader_keys after
+    join completes and passes them to `from_resolved`.
+  - **Recommendation**: option 2. It's a small extra hand-off
+    but lands the EVSM inline-shader compile in the same wave
+    as everything else.
+
+- Big invariants to preserve:
+  - Pipeline layouts for the caster fork by `instancing`
+    (storage vs uniform meta binding) — verify both layouts
+    survive the descriptor round-trip.
+  - The EVSM moment-write + blur bind groups bind specific
+    layout keys (lines ~609–664 in current `state.rs`) — those
+    layouts are built inside what would become
+    `Shadows::build_descriptors`, so make sure the bind-group
+    construction in `from_resolved` reads them out of the
+    descriptors struct correctly.
+
+#### 4. `EffectsPipelines::build_descriptors`
+
+- File: `crates/renderer/src/render_passes/effects/pipeline.rs`.
+- `EffectsPipelines::set_render_pipeline_keys` is the current
+  entry point. It builds 5 shader cache keys (one per bloom
+  phase + ping-pong variant) and runs a batched ensure_keys for
+  shaders + a batched ensure_keys for the 5 compute pipelines.
+- Refactor target:
+  - **`EffectsPipelines::build_descriptors(anti_aliasing,
+    post_processing, gpu, shaders, pipeline_layouts, bind_groups,
+    render_texture_formats) -> Result<EffectsDescriptors>`**:
+    sync apart from shader resolution. Returns
+    `EffectsDescriptors { shader_cache_keys: Vec<ShaderCacheKey>,
+    pipeline_cache_keys: Vec<ComputePipelineCacheKey> }` with
+    5 entries each.
+  - **`EffectsPipelines::install_resolved(&mut self, descs, keys)
+    -> ()`**: sync. Writes the 5 resolved keys into the existing
+    fields (`no_bloom_pipeline`, `bloom_extract_pipeline`,
+    `bloom_blur_pipeline_a/b`, `bloom_blend_pipeline`).
+- `set_render_pipeline_keys` stays — it becomes
+  `build_descriptors` followed by its own batched ensure_keys +
+  `install_resolved`. The dynamic-AA path keeps that single-entry
+  API; the orchestrator uses the split.
+
+#### 5. `DisplayPipelines::build_descriptors`
+
+- File: `crates/renderer/src/render_passes/display/pipeline.rs`.
+- Same shape as Effects but smaller — 1 shader cache key + 1
+  render pipeline cache key. Existing
+  `DisplayPipelines::set_render_pipeline_key` becomes a thin
+  wrapper.
+
+#### 6. `AwsmRendererBuilder::build` — the orchestrator
+
+- File: `crates/renderer/src/lib.rs:711+`.
+- Replace the current
+  `Picker::new → LineRenderer::load → … → Shadows::new →
+   set_anti_aliasing → set_post_processing` chain at the end of
+  `build()` with the 8-step pseudocode in the architecture
+  section above.
+- Delete the redundant `shaders.ensure_keys` block at
+  lines ~959–974 that pre-warms picker + line shaders — that
+  pre-warm now lives in `RenderPasses::new` itself.
+- Keep the initial `set_anti_aliasing` / `set_post_processing`
+  *calls* removed only for their pipeline-recompile path; the
+  state-side-effect parts (marking bind groups for recreate)
+  still need to happen — either inline that bookkeeping or
+  expose a `_self.apply_initial_aa_pp_state()` shortcut method
+  on `AwsmRenderer` that does the state work without compiling.
+
+### Verification
+
+For every step above, the fresh session should:
+
+1. `cargo build --workspace` clean.
+2. `cargo clippy --workspace --all-targets -- -D warnings` clean.
+3. `cargo fmt --all`.
+4. Capture a fresh-profile Chrome trace
+   (`docs/PERFORMANCE.md §5g-i` for the recipe). Compare
+   `domComplete → first 'Render [1]: span-enter'` against the
+   number at commit `7ae70ba`. Expected reduction: ~3 s on cold,
+   ~75 ms on warm.
+5. Verify both frontends render correctly:
+   - `task model-tests:dev` → Fox loads, IBL scene rendered,
+     no GPU validation errors in console.
+   - `task scene-editor:dev` → editor UI loads, drop a glb,
+     mesh renders correctly.
+6. Verify the **dynamic** AA / PP paths still work — change
+   MSAA mode mid-session, change post-processing config; both
+   must trigger the existing
+   `EffectsPipelines::set_render_pipeline_keys` /
+   `DisplayPipelines::set_render_pipeline_key` paths and
+   recompile correctly.
+7. Verify shadows still render correctly — directional,
+   point, and spot all need a smoke test scene because the
+   Shadows refactor is the highest-risk piece. The
+   `awsm-renderer-assets/world/project.json` scene under the
+   scene-editor exercises all three.
+
+### Out of scope for the tail-pool follow-up
+
+- `try_join5` at the top of `build()` (IBL / BRDF / skybox /
+  opaque_mipgen prep). Already parallel; no improvement to
+  chase there.
+- `finalize_gpu_textures` — already pooled (Phase 8).
+- `RenderPasses::new` itself — already pooled (Phase 11).
+- `prewarm_pipelines` — already pooled (Phase 5).
 
 ## Instructions for the implementor
 
