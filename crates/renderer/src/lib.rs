@@ -526,6 +526,47 @@ impl AwsmRenderer {
     }
 }
 
+/// Coarse-grained stages the renderer passes through during
+/// [`AwsmRendererBuilder::build`]. Subscribers passed via
+/// [`AwsmRendererBuilder::with_phase_handler`] get a callback at each
+/// transition; consumer UIs can map these to whatever progress
+/// message they want to show.
+///
+/// The most useful UX win these surface is the **cold WebGPU cache**
+/// case: a fresh Chrome profile can sit on `CompilingShaders` for
+/// tens of seconds while Dawn + the GPU driver lower every shader to
+/// MSL on the first visit. Showing "Browser is compiling shaders…
+/// (first load may take a while)" rather than a frozen "Initializing
+/// renderer…" is the difference between a user assuming the app is
+/// broken and a user knowing the browser is doing real work that
+/// will be cached next time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RendererLoadingPhase {
+    /// Adapter / device acquisition + initial bookkeeping. Quick
+    /// (single-digit ms) on every load.
+    Init,
+    /// WGSL templates being compiled into GPU shader modules. On a
+    /// cold PSO disk cache this is the dominant cost (Dawn lowers
+    /// every variant to MSL); on a warm cache it's effectively
+    /// instant. Includes shadow shaders, geometry, material, classify,
+    /// HZB, effects, etc.
+    CompilingShaders,
+    /// Render + compute pipeline objects being constructed from the
+    /// compiled shaders. Smaller than `CompilingShaders` on cold, also
+    /// effectively instant on warm.
+    BuildingPipelines,
+    /// Textures (IBL / BRDF LUT / skybox / opaque mipgen), picker,
+    /// line renderer, and any remaining renderer-init bookkeeping.
+    FinalizingScene,
+    /// All renderer-init work done; ready to render.
+    Ready,
+}
+
+/// Boxed phase-transition callback handed to the builder via
+/// [`AwsmRendererBuilder::with_phase_handler`]. wasm is
+/// single-threaded so we don't need `Send + Sync`.
+pub type RendererLoadingPhaseHandler = Box<dyn FnMut(RendererLoadingPhase)>;
+
 /// Builder for `AwsmRenderer`.
 pub struct AwsmRendererBuilder {
     gpu: AwsmRendererGpuBuilderKind,
@@ -555,6 +596,12 @@ pub struct AwsmRendererBuilder {
     /// (or via `AwsmRenderer::set_optimization_policy` later) to force
     /// the path on/off or to retune the Auto thresholds.
     optimization_policy: crate::optimization_policy::RendererOptimizationPolicy,
+    /// Optional consumer-supplied callback fired at each
+    /// [`RendererLoadingPhase`] transition during `build()`. UI
+    /// consumers wire this to update a loading overlay; tracing /
+    /// telemetry consumers can use it to record per-phase elapsed
+    /// time.
+    phase_handler: Option<RendererLoadingPhaseHandler>,
 }
 
 /// WebGPU builder input for `AwsmRendererBuilder`.
@@ -623,7 +670,22 @@ impl AwsmRendererBuilder {
             shadows_config: None,
             features: RendererFeatures::default(),
             optimization_policy: crate::optimization_policy::RendererOptimizationPolicy::default(),
+            phase_handler: None,
         }
+    }
+
+    /// Subscribes to renderer-init phase transitions. The callback
+    /// fires once per [`RendererLoadingPhase`] entry — see the enum
+    /// docs for what each phase covers. Frontends use this to render
+    /// a phase-specific loading message instead of one generic
+    /// "Initializing renderer…" line that covers the entire (cold
+    /// load: tens of seconds; warm load: ~1s) window.
+    pub fn with_phase_handler<F>(mut self, handler: F) -> Self
+    where
+        F: FnMut(RendererLoadingPhase) + 'static,
+    {
+        self.phase_handler = Some(Box::new(handler));
+        self
     }
 
     /// Opts into renderer features. Both flags default to `false` so
@@ -723,7 +785,16 @@ impl AwsmRendererBuilder {
             shadows_config,
             mut features,
             optimization_policy,
+            phase_handler,
         } = self;
+
+        let mut phase_handler = phase_handler;
+        let mut emit_phase = |phase: RendererLoadingPhase| {
+            if let Some(handler) = phase_handler.as_mut() {
+                handler(phase);
+            }
+        };
+        emit_phase(RendererLoadingPhase::Init);
 
         let gpu = match gpu {
             AwsmRendererGpuBuilderKind::WebGpuBuilder(builder) => builder.build().await?,
@@ -786,6 +857,15 @@ impl AwsmRendererBuilder {
         let mut textures = Textures::new(&gpu)?;
         let camera = camera::CameraBuffer::new(&gpu)?;
         let frame_globals = crate::frame_globals::FrameGlobals::new(&gpu)?;
+
+        // Bulk shader + pipeline compilation begins here. On a cold
+        // PSO disk cache (fresh Chrome profile, post-redeploy first
+        // load) this is the window where the user actually waits —
+        // tens of seconds while Dawn lowers every WGSL variant to
+        // MSL. Surface the phase so the UI can show "Browser is
+        // compiling shaders…" instead of a frozen "Initializing
+        // renderer…".
+        emit_phase(RendererLoadingPhase::CompilingShaders);
 
         // Three default-cubemap creations (prefiltered IBL / irradiance
         // IBL / skybox), the BRDF LUT generation, and the opaque
@@ -866,6 +946,14 @@ impl AwsmRendererBuilder {
                     .map_err(crate::error::AwsmError::from)
             })
             .await?;
+
+        // RenderPasses + RenderTextures done — the heavy shader +
+        // pipeline compile is behind us. The remaining work
+        // (picker / line / shadow / decal / occlusion buffer
+        // allocation, lights, etc.) is faster and a different
+        // shape of work entirely; signal the transition so
+        // frontends can update their loading message.
+        emit_phase(RendererLoadingPhase::BuildingPipelines);
 
         // Pre-warm the shader cache with everything Picker + LineRenderer
         // need before constructing either. Picker has two compute shader
@@ -965,6 +1053,14 @@ impl AwsmRendererBuilder {
             None
         };
 
+        // Shadows + the final anti-aliasing / post-processing
+        // pipeline configuration below are the renderer-init tail:
+        // pipelines created here are needed for the first frame but
+        // they don't dominate the cold-load cost the way the
+        // RenderPasses block does. Signal the transition so frontends
+        // can swap to a less alarming "Finalising scene…" message.
+        emit_phase(RendererLoadingPhase::FinalizingScene);
+
         let shadows = shadows::Shadows::new(
             &gpu,
             &mut bind_group_layouts,
@@ -1048,6 +1144,8 @@ impl AwsmRendererBuilder {
         _self
             .set_post_processing(_self.post_processing.clone())
             .await?;
+
+        emit_phase(RendererLoadingPhase::Ready);
 
         Ok(_self)
     }

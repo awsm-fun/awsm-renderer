@@ -458,6 +458,31 @@ async fn create_renderer(canvas: web_sys::HtmlCanvasElement) -> EditorResult<Aws
         .with_clear_color(Color::MID_GREY)
         .with_features(features)
         .with_optimization_policy(policy)
+        .with_phase_handler(|phase| {
+            // Drive the HTML boot-loader caption (the splash shown
+            // before the canvas / loading modal exist) as the
+            // renderer progresses through its construction phases.
+            // On a fresh Chrome profile the CompilingShaders phase
+            // can last tens of seconds — Dawn lowers every WGSL
+            // variant to MSL, see PERFORMANCE.md §5g — so showing a
+            // phase-specific caption rather than a frozen
+            // "Initializing renderer" makes the difference between
+            // the user assuming the app is broken and knowing the
+            // browser is doing real work that will be cached on the
+            // next load.
+            let msg = match phase {
+                awsm_renderer::RendererLoadingPhase::Init => "Initializing renderer",
+                awsm_renderer::RendererLoadingPhase::CompilingShaders => {
+                    "Browser is compiling shaders (first load may take a while)"
+                }
+                awsm_renderer::RendererLoadingPhase::BuildingPipelines => {
+                    "Building render pipelines"
+                }
+                awsm_renderer::RendererLoadingPhase::FinalizingScene => "Finalising renderer setup",
+                awsm_renderer::RendererLoadingPhase::Ready => return,
+            };
+            awsm_web_shared::util::window::set_boot_loader_message(msg);
+        })
         .build()
         .await?;
 
