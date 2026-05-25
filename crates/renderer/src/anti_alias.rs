@@ -1,6 +1,5 @@
 //! Anti-aliasing configuration.
 
-
 use crate::{bind_groups::BindGroupCreate, error::Result, AwsmRenderer};
 
 /// Anti-aliasing configuration for the renderer.

@@ -241,10 +241,7 @@ impl Picker {
                     singlesampled_shader,
                     singlesampled_pipeline_layout_key,
                 ),
-                ComputePipelineCacheKey::new(
-                    multisampled_shader,
-                    multisampled_pipeline_layout_key,
-                ),
+                ComputePipelineCacheKey::new(multisampled_shader, multisampled_pipeline_layout_key),
             ],
         })
     }

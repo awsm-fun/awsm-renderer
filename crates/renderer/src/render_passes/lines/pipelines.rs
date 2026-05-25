@@ -123,9 +123,7 @@ impl LinePipelines {
         ];
         let pipeline_cache_keys: Vec<RenderPipelineCacheKey> = variant_keys
             .iter()
-            .map(|v| {
-                build_pipeline_cache_key(shader_key, pipeline_layout_key, formats, *v)
-            })
+            .map(|v| build_pipeline_cache_key(shader_key, pipeline_layout_key, formats, *v))
             .collect();
         let resolved = pipelines
             .render
