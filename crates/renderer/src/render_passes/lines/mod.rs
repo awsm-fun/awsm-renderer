@@ -21,6 +21,6 @@ mod renderer;
 pub mod shader;
 mod types;
 
-pub use renderer::LineRenderer;
+pub use renderer::{LineRenderer, LineRendererDescriptors};
 pub use shader::cache_key::ShaderCacheKeyLine;
 pub use types::{LineKey, LineTopology};

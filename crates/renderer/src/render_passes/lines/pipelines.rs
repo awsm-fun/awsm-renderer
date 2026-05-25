@@ -17,11 +17,8 @@ use crate::{
         BindGroupLayoutCacheKey, BindGroupLayoutCacheKeyEntry, BindGroupLayoutKey, BindGroupLayouts,
     },
     error::Result,
-    pipeline_layouts::{PipelineLayoutCacheKey, PipelineLayouts},
-    pipelines::{
-        render_pipeline::{RenderPipelineCacheKey, RenderPipelineKey},
-        Pipelines,
-    },
+    pipeline_layouts::{PipelineLayoutCacheKey, PipelineLayoutKey, PipelineLayouts},
+    pipelines::render_pipeline::{RenderPipelineCacheKey, RenderPipelineKey},
     render_passes::lines::shader::cache_key::ShaderCacheKeyLine,
     render_textures::RenderTextureFormats,
     shaders::Shaders,
@@ -34,6 +31,27 @@ pub(super) struct LineVariantKey {
     pub msaa: bool,
 }
 
+/// All 4 line-pipeline variants (`(depth_test_always, msaa)` cross
+/// product), in `variant_index` order.
+pub(super) const VARIANT_KEYS: [LineVariantKey; 4] = [
+    LineVariantKey {
+        depth_test_always: false,
+        msaa: false,
+    },
+    LineVariantKey {
+        depth_test_always: false,
+        msaa: true,
+    },
+    LineVariantKey {
+        depth_test_always: true,
+        msaa: false,
+    },
+    LineVariantKey {
+        depth_test_always: true,
+        msaa: true,
+    },
+];
+
 /// The four registered render pipelines for the line renderer, indexed
 /// by [`LineVariantKey`].
 pub(super) struct LinePipelines {
@@ -41,15 +59,28 @@ pub(super) struct LinePipelines {
     pub variants: [RenderPipelineKey; 4],
 }
 
+/// Pre-resolved layouts + descriptors for the line renderer's 4
+/// pipeline variants. Returned by
+/// [`LinePipelines::build_descriptors`] and consumed by
+/// [`LinePipelines::from_resolved`] after the orchestrator pools the
+/// `pipeline_cache_keys` into the cross-system render-pipeline batch.
+pub(super) struct LinePipelinesDescriptors {
+    pub bind_group_layout_key: BindGroupLayoutKey,
+    pub pipeline_cache_keys: Vec<RenderPipelineCacheKey>,
+}
+
 impl LinePipelines {
-    pub(super) async fn load(
+    /// Sync-apart-from-shader-resolve descriptor build. Registers the
+    /// bind-group + pipeline layouts, fetches the (cache-hit pre-warmed
+    /// by `RenderPasses::new`) line shader key, and produces the 4
+    /// variant `RenderPipelineCacheKey`s the orchestrator pools.
+    pub(super) async fn build_descriptors(
         gpu: &AwsmRendererWebGpu,
         bind_group_layouts: &mut BindGroupLayouts,
         pipeline_layouts: &mut PipelineLayouts,
-        pipelines: &mut Pipelines,
         shaders: &mut Shaders,
         formats: &RenderTextureFormats,
-    ) -> Result<Self> {
+    ) -> Result<LinePipelinesDescriptors> {
         let bind_group_layout_cache_key = BindGroupLayoutCacheKey {
             entries: vec![
                 BindGroupLayoutCacheKeyEntry {
@@ -85,13 +116,9 @@ impl LinePipelines {
 
         let bind_group_layout_key = bind_group_layouts.get_key(gpu, bind_group_layout_cache_key)?;
 
-        // Route through the shared `Shaders` cache. The shader has no
-        // per-variant parameters but going through the cache means
-        // `Shaders::ensure_keys` can pre-warm it alongside e.g. the
-        // picker's compute shaders, letting the browser do the
-        // parallel compile. The prior `insert_uncached` shape bypassed
-        // the cache entirely so the line compile always serialised
-        // behind whatever other shader work was in flight.
+        // Route through the shared `Shaders` cache. The line shader is
+        // pre-warmed by `RenderPasses::new`'s cross-pass shader
+        // ensure_keys, so this is a sync cache hit.
         let shader_key = shaders.get_key(gpu, ShaderCacheKeyLine).await?;
 
         let pipeline_layout_key = pipeline_layouts.get_key(
@@ -100,44 +127,31 @@ impl LinePipelines {
             PipelineLayoutCacheKey::new(vec![bind_group_layout_key]),
         )?;
 
-        // Build all 4 variant cache keys, then a single batched
-        // ensure_keys. Dawn parallelises the 4 compiles instead of
-        // serialising them.
-        let variant_keys = [
-            LineVariantKey {
-                depth_test_always: false,
-                msaa: false,
-            },
-            LineVariantKey {
-                depth_test_always: false,
-                msaa: true,
-            },
-            LineVariantKey {
-                depth_test_always: true,
-                msaa: false,
-            },
-            LineVariantKey {
-                depth_test_always: true,
-                msaa: true,
-            },
-        ];
-        let pipeline_cache_keys: Vec<RenderPipelineCacheKey> = variant_keys
+        let pipeline_cache_keys: Vec<RenderPipelineCacheKey> = VARIANT_KEYS
             .iter()
             .map(|v| build_pipeline_cache_key(shader_key, pipeline_layout_key, formats, *v))
             .collect();
-        let resolved = pipelines
-            .render
-            .ensure_keys(gpu, shaders, pipeline_layouts, pipeline_cache_keys)
-            .await?;
+
+        Ok(LinePipelinesDescriptors {
+            bind_group_layout_key,
+            pipeline_cache_keys,
+        })
+    }
+
+    /// Folds resolved pipeline keys back into the typed `LinePipelines`.
+    pub(super) fn from_resolved(
+        descs: LinePipelinesDescriptors,
+        resolved: Vec<RenderPipelineKey>,
+    ) -> Self {
+        debug_assert_eq!(resolved.len(), 4);
         let mut variants = [RenderPipelineKey::default(); 4];
-        for (v, key) in variant_keys.iter().zip(resolved) {
+        for (v, key) in VARIANT_KEYS.iter().zip(resolved) {
             variants[variant_index(*v)] = key;
         }
-
-        Ok(Self {
-            bind_group_layout_key,
+        Self {
+            bind_group_layout_key: descs.bind_group_layout_key,
             variants,
-        })
+        }
     }
 
     pub(super) fn get(&self, variant: LineVariantKey) -> RenderPipelineKey {
@@ -151,7 +165,7 @@ pub(super) fn variant_index(variant: LineVariantKey) -> usize {
 
 fn build_pipeline_cache_key(
     shader_key: crate::shaders::ShaderKey,
-    pipeline_layout_key: crate::pipeline_layouts::PipelineLayoutKey,
+    pipeline_layout_key: PipelineLayoutKey,
     formats: &RenderTextureFormats,
     variant: LineVariantKey,
 ) -> RenderPipelineCacheKey {
