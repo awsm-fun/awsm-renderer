@@ -147,8 +147,15 @@ fn render_row(custom: CustomMaterialRef) -> Dom {
             .text(&folder)
         }))
         .child(html!("a", {
+            // Material-editor base URL is config-driven so dev /
+            // prod / forked PR previews all resolve correctly. Dev:
+            // http://localhost:9084. Prod:
+            // https://dakom.github.io/awsm-renderer/material-editor/.
+            // Set via the URL_MATERIAL_EDITOR env var in
+            // taskfiles/frontend/scene-editor.yml.
             .attr("href", &format!(
-                "http://localhost:9084/?folder={}",
+                "{}/?folder={}",
+                crate::config::CONFIG.url_material_editor().trim_end_matches('/'),
                 urlencode(&folder)
             ))
             .attr("target", "_blank")
