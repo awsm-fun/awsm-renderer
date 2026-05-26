@@ -132,6 +132,20 @@ pub struct AwsmRenderer {
     /// buckets + indirect-dispatch args the opaque material pipelines
     /// consume.
     pub material_classify_buffers: render_passes::material_classify::buffers::ClassifyBuffers,
+    /// MSAA-edge-resolve buffers (Stage 3 / Priority 3 dispatch wiring).
+    /// `None` when MSAA is off — there are no edges to resolve. When
+    /// MSAA is on, holds the GPU buffer carrying the compact
+    /// `edge_pixel_id` allocator + per-shader sample lists + the
+    /// vec4×4 accumulator slots. Reset per-frame via
+    /// `MaterialEdgeBuffers::reset_header`. Resized when bucket count
+    /// grows past current capacity.
+    pub material_edge_buffers:
+        Option<render_passes::material_opaque::edge_buffers::MaterialEdgeBuffers>,
+    /// `EdgeBufferLayout` uniform companion to `material_edge_buffers`.
+    /// Carries the byte-offset constants the shaders use to slice into
+    /// the single edge buffer. Same lifecycle: `None` until first MSAA
+    /// boot; resized on bucket-count growth.
+    pub material_edge_layout_uniform: Option<web_sys::GpuBuffer>,
     /// Projection-decal subsystem. Owns the per-decal GPU storage
     /// buffer the `material_decal` compute pass reads at shading time.
     /// `None` when `features.decals == false`.
@@ -1359,6 +1373,24 @@ impl AwsmRendererBuilder {
                 first_party_bucket_count,
             )?;
 
+        // MSAA-edge-resolve buffers (Stage 3 dispatch wiring). Allocated only
+        // when MSAA is on; resized on bucket-count growth via
+        // `ensure_bucket_count`. The companion `edge_layout_uniform` carries
+        // byte offsets for shader slicing.
+        let multisampled_geometry = anti_aliasing.has_msaa_checked()?;
+        let (material_edge_buffers, material_edge_layout_uniform) = if multisampled_geometry {
+            use render_passes::material_opaque::edge_buffers::{
+                build_edge_layout_uniform, MaterialEdgeBuffers,
+            };
+            let edge_buffers = MaterialEdgeBuffers::new(&gpu, first_party_bucket_count)?;
+            let max_edge_budget = edge_buffers.max_edge_budget;
+            let (uniform, _bytes) =
+                build_edge_layout_uniform(&gpu, first_party_bucket_count, max_edge_budget)?;
+            (Some(edge_buffers), Some(uniform))
+        } else {
+            (None, None)
+        };
+
         // Decals subsystem — fixed-capacity GPU storage buffer
         // allocated up front; per-frame upload only touches the
         // bytes for currently-active decals. Gated by `features.decals`.
@@ -1671,6 +1703,8 @@ impl AwsmRendererBuilder {
             light_buckets: LightMeshBuckets::default(),
             mesh_light_indices_gpu,
             material_classify_buffers,
+            material_edge_buffers,
+            material_edge_layout_uniform,
             decals,
             occlusion_buffers,
             decal_classify_buffers,

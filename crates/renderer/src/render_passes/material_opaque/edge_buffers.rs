@@ -282,6 +282,68 @@ impl MaterialEdgeBuffers {
     }
 }
 
+/// Build the `EdgeBufferLayout` uniform-data payload for the
+/// classify + edge_resolve shaders. The shader-side struct is
+/// templated per bucket count (one `<name>_sample_list_base: u32`
+/// field per bucket entry), so the payload size grows with bucket
+/// count. Padded to 16-byte alignment for WebGPU uniform-buffer
+/// requirements.
+///
+/// Layout (all u32, in declaration order):
+///   max_edge_budget
+///   edge_to_xy_base
+///   edge_slot_map_base
+///   accumulator_base
+///   <first_party_0>_sample_list_base
+///   <first_party_1>_sample_list_base
+///   ... (bucket_count entries total)
+///   sample_entries_per_bucket
+pub fn build_edge_layout_uniform_bytes(bucket_count: u32, max_edge_budget: u32) -> Vec<u8> {
+    let mut words: Vec<u32> = Vec::with_capacity(5 + bucket_count as usize);
+    words.push(max_edge_budget);
+    words.push(edge_to_xy_offset(bucket_count));
+    words.push(edge_slot_map_offset(bucket_count, max_edge_budget));
+    words.push(accumulator_offset(bucket_count, max_edge_budget));
+    let per_bucket = sample_entries_per_bucket(max_edge_budget);
+    let base = sample_entries_offset(bucket_count, max_edge_budget);
+    for i in 0..bucket_count {
+        words.push(base + i * per_bucket * 4); // 4 bytes per sample entry (packed u32)
+    }
+    words.push(per_bucket);
+
+    // Pad to 16-byte alignment (WebGPU uniform-buffer requirement).
+    while (words.len() * 4) % 16 != 0 {
+        words.push(0);
+    }
+
+    let mut bytes = Vec::with_capacity(words.len() * 4);
+    for w in words {
+        bytes.extend_from_slice(&w.to_ne_bytes());
+    }
+    bytes
+}
+
+/// Creates the EdgeBufferLayout uniform buffer and writes its
+/// payload. Returns the GpuBuffer + the byte size (for bind-group
+/// construction).
+pub fn build_edge_layout_uniform(
+    gpu: &AwsmRendererWebGpu,
+    bucket_count: u32,
+    max_edge_budget: u32,
+) -> Result<(web_sys::GpuBuffer, u32), AwsmCoreError> {
+    let bytes = build_edge_layout_uniform_bytes(bucket_count, max_edge_budget);
+    let buffer = gpu.create_buffer(
+        &BufferDescriptor::new(
+            Some("EdgeBufferLayout uniform"),
+            bytes.len(),
+            BufferUsage::new().with_uniform().with_copy_dst(),
+        )
+        .into(),
+    )?;
+    gpu.write_buffer(&buffer, None, bytes.as_slice(), None, None)?;
+    Ok((buffer, bytes.len() as u32))
+}
+
 /// Writes the initial header into `dst`. Layout per the module-level
 /// docs: 2 atomic counters + 1 final_blend args slot + 1 skybox_edge
 /// args slot + bucket_count per-shader-id args slots.
