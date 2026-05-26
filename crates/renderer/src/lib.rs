@@ -1374,17 +1374,10 @@ impl AwsmRendererBuilder {
 
         // MSAA-edge-resolve buffers (Stage 3 dispatch wiring). Allocated only
         // when MSAA is on AND the device supports the required limits
-        // (maxBindGroups >= 5 and maxStorageBuffersPerShaderStage >= 11).
-        // The per-shader edge_resolve pipeline layout uses 5 bind groups —
-        // primary opaque's 4 groups (main / lights / texture-pool / shadows)
-        // plus a 5th edge-resolve group(4) carrying the edge buffer +
-        // layout uniform. Devices like macOS Metal that cap at
-        // maxBindGroups=4 can't allocate the layout; we fall back to the
-        // primary opaque pipeline's inline `msaa_resolve_samples` path
-        // (kept temporarily in compute.wgsl / helpers/material_shading.wgsl
-        // for exactly this reason). See `docs/plans/more-optimizations.md`
-        // § Priority 3 — full bind-group restructure to fit 4 groups on
-        // desktop Metal is a follow-up.
+        // (maxStorageBuffersPerShaderStage >= 10 — the WebGPU baseline).
+        // The per-shader edge_resolve pipeline layout fits in 4 bind groups
+        // since the group(4) → extended-shadows(3) fold; the only remaining
+        // device-cap constraint is the storage-buffer count.
         let multisampled_geometry = anti_aliasing.has_msaa_checked()?;
         let edge_resolve_enabled = multisampled_geometry && edge_resolve_supported(&gpu);
         let (material_edge_buffers, material_edge_layout_uniform) = if edge_resolve_enabled {
@@ -1933,43 +1926,43 @@ impl AwsmRenderer {
 /// Returns true if the device can host the Stage 3 / Priority 3
 /// per-shader-id MSAA edge-resolve pipelines.
 ///
-/// The per-shader-id edge_resolve pipeline layout uses 5 bind groups
-/// (primary opaque's 4 + a 5th carrying the edge buffer + layout
-/// uniform), and its compute stage takes one extra storage buffer
-/// slot above primary opaque's 10. Devices below those limits fall
-/// back to the inline `msaa_resolve_samples` path in the primary
-/// opaque shader.
+/// After the group(4) → extended-shadows fold (see
+/// `MaterialEdgeBindGroupLayouts`), the per-shader-id edge_resolve
+/// pipeline layout fits in 4 bind groups — universally supported, so
+/// the bind-group constraint no longer matters. The only remaining
+/// constraint is the storage-buffer count: edge_resolve's compute
+/// stage takes one extra storage buffer slot above primary opaque's
+/// (the read-write `edge_buffers` binding). Primary opaque uses 9
+/// storage buffers in its compute stage; edge_resolve uses 10. Both
+/// fit under the WebGPU baseline `maxStorageBuffersPerShaderStage`
+/// (≥ 10 on every platform we target — Android Vulkan, macOS Metal,
+/// Windows Vulkan/D3D12, iOS Metal).
 ///
-/// macOS Metal currently caps at `maxBindGroups=4`, so the new
-/// dispatch wiring is gated off there. Android Vulkan and Linux
-/// Vulkan typically expose `maxBindGroups=8`, which is the target
-/// platform for the SPIR-V-shrinking benefits of Priority 3 anyway.
-///
-/// TODO: restructure the edge_resolve bind-group layout to fit in
-/// 4 groups (likely by folding the edge buffer + layout uniform
-/// into an extended primary opaque group(0) — needs a careful
-/// storage-buffer-count audit since group(0) is at 8/10 already).
+/// Devices below the storage-buffer limit fall back to the inline
+/// `msaa_resolve_samples` path in the primary opaque shader. This
+/// almost never triggers in practice, but the safety net stays.
 pub fn edge_resolve_supported(gpu: &awsm_renderer_core::renderer::AwsmRendererWebGpu) -> bool {
     let limits = gpu.device.limits();
     if limits.is_null() || limits.is_undefined() {
         return false;
     }
-    let max_bind_groups = web_sys::js_sys::Reflect::get(&limits, &"maxBindGroups".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .map(|f| f as u32)
-        .unwrap_or(4);
     let max_storage =
         web_sys::js_sys::Reflect::get(&limits, &"maxStorageBuffersPerShaderStage".into())
             .ok()
             .and_then(|v| v.as_f64())
             .map(|f| f as u32)
             .unwrap_or(10);
-    let supported = max_bind_groups >= 5 && max_storage >= 11;
+    // edge_resolve compute stage uses 10 storage buffers:
+    //   group(0): 8 (visibility / mesh metas / materials / transforms
+    //               / texture-transforms / instance-attrs /
+    //               classify-buckets / extras-pool)
+    //   group(1): 1 (mesh_light_indices)
+    //   group(3): 1 (edge_buffers — read-write, the fold's addition)
+    let supported = max_storage >= 10;
     if !supported {
         tracing::info!(
             target: "awsm_renderer::boot_timing",
-            "edge_resolve dispatch wiring disabled — device caps (maxBindGroups={max_bind_groups}, maxStorageBuffersPerShaderStage={max_storage}) insufficient; falling back to inline msaa_resolve_samples in primary opaque shader."
+            "edge_resolve dispatch wiring disabled — device caps (maxStorageBuffersPerShaderStage={max_storage}) insufficient; falling back to inline msaa_resolve_samples in primary opaque shader."
         );
     }
     supported
