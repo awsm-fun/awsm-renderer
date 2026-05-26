@@ -239,14 +239,9 @@ impl PipelineScheduler {
         // poll loop terminates when no further futures are ready without
         // re-blocking (the underlying GpuCreatePipelineAsync promises
         // make their own progress on the JS event loop).
-        loop {
-            match Pin::new(&mut self.inflight).poll_next(&mut cx) {
-                Poll::Ready(Some(resolution)) => {
-                    self.apply_resolution(resolution);
-                    applied += 1;
-                }
-                Poll::Ready(None) | Poll::Pending => break,
-            }
+        while let Poll::Ready(Some(resolution)) = Pin::new(&mut self.inflight).poll_next(&mut cx) {
+            self.apply_resolution(resolution);
+            applied += 1;
         }
 
         applied

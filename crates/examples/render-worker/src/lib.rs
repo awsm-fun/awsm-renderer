@@ -355,6 +355,13 @@ fn start_worker_renderer(canvas: web_sys::OffscreenCanvas) -> Result<(), JsValue
         // counter stays lock-free. Single-threaded today (the
         // `requestAnimationFrame` closure and the boot future share
         // the worker scope), so the atomic / lock cost is zero.
+        //
+        // `AwsmRenderer` became `!Send + !Sync` once the
+        // `pipeline_scheduler`'s `FuturesUnordered` was added (its trait
+        // objects don't carry an explicit `Send` bound — see
+        // `crates/renderer/src/pipeline_scheduler/mod.rs`). Wasm32 is
+        // single-threaded, so the lint is theoretical here.
+        #[allow(clippy::arc_with_non_send_sync)]
         let renderer_cell = std::sync::Arc::new(std::sync::Mutex::new(renderer));
         let rotation_bits =
             std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0.0f32.to_bits()));
