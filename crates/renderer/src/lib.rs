@@ -178,6 +178,9 @@ pub struct AwsmRenderer {
     /// Runtime-registered dynamic materials. See
     /// [`crate::dynamic_materials`].
     pub dynamic_materials: crate::dynamic_materials::DynamicMaterials,
+    /// Renderer-wide variable-length per-material data pool. Backs
+    /// `BufferSlot` declarations on registered dynamic materials.
+    pub extras_pool: crate::dynamic_materials::extras_pool::ExtrasPool,
     pub pipeline_layouts: PipelineLayouts,
     pub pipelines: Pipelines,
     pub lights: Lights,
@@ -1470,6 +1473,11 @@ impl AwsmRendererBuilder {
         #[cfg(feature = "animation")]
         let animations = animation::Animations::default();
 
+        let extras_pool_built = crate::dynamic_materials::extras_pool::ExtrasPool::new(
+            &gpu,
+            crate::dynamic_materials::extras_pool::DEFAULT_CAPACITY_WORDS,
+        )?;
+
         let mut _self = AwsmRenderer {
             gpu,
             meshes,
@@ -1496,6 +1504,7 @@ impl AwsmRendererBuilder {
             bind_groups,
             materials,
             dynamic_materials: crate::dynamic_materials::DynamicMaterials::new(),
+            extras_pool: extras_pool_built,
             pipeline_layouts,
             pipelines,
             lights,

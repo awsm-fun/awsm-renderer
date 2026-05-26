@@ -12,6 +12,7 @@
 //! registry, the template substitutions, and the extras pool.
 
 pub mod error;
+pub mod extras_pool;
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
@@ -36,6 +37,7 @@ use awsm_materials::dynamic_layout::MaterialLayout;
 /// — Phase 6 wires the extras-pool allocator.
 pub struct DynamicMaterialPackContext<'a> {
     materials: &'a DynamicMaterials,
+    extras: Option<&'a extras_pool::ExtrasPool>,
     layouts: HashMap<MaterialShaderId, MaterialLayout>,
 }
 
@@ -49,7 +51,20 @@ impl<'a> DynamicMaterialPackContext<'a> {
         for (id, reg) in materials.iter() {
             layouts.insert(id, reg.layout.clone());
         }
-        Self { materials, layouts }
+        Self {
+            materials,
+            extras: None,
+            layouts,
+        }
+    }
+
+    /// Returns a context that also resolves `buffer_slice` lookups
+    /// through the renderer's extras pool. Used by the per-frame
+    /// material packer so author-side `<slot>_offset` /
+    /// `<slot>_length` fields land on the right pool indices.
+    pub fn with_extras(mut self, extras: &'a extras_pool::ExtrasPool) -> Self {
+        self.extras = Some(extras);
+        self
     }
 }
 
@@ -71,10 +86,11 @@ impl<'a> DynamicMaterialContext for DynamicMaterialPackContext<'a> {
 
     fn buffer_slice(
         &self,
-        _shader_id: MaterialShaderId,
-        _buffer_slot_index: usize,
+        shader_id: MaterialShaderId,
+        buffer_slot_index: usize,
     ) -> Option<(u32, u32)> {
-        None
+        self.extras
+            .and_then(|pool| pool.slice_for(shader_id, buffer_slot_index))
     }
 }
 
@@ -336,6 +352,12 @@ pub struct MaterialRegistration {
     /// The WGSL fragment the renderer injects into the per-shader-id
     /// pipeline template at the `{% match shader_id %}` site.
     pub wgsl_fragment: String,
+    /// Default buffer-slot data, one `Vec<u32>` per `BufferSlot` in
+    /// declaration order. Passed at registration time to the extras
+    /// pool's bump allocator; per-instance overrides (Phase 5's
+    /// `CustomMaterialInstance::buffer_overrides`) can also override.
+    /// Empty Vec for slots without a registration default.
+    pub buffer_defaults: Vec<Vec<u32>>,
 }
 
 impl crate::AwsmRenderer {
@@ -358,7 +380,26 @@ impl crate::AwsmRenderer {
         &mut self,
         registration: MaterialRegistration,
     ) -> Result<MaterialShaderId, AwsmDynamicMaterialError> {
+        let buffer_defaults = registration.buffer_defaults.clone();
         let id = self.dynamic_materials.insert(registration)?;
+        // Assign extras-pool slices for any buffer-slot defaults
+        // declared on the registration. Per-instance overrides
+        // (Phase 5's CustomMaterialInstance.buffer_overrides) can
+        // overwrite these per instance — the bridge calls
+        // `extras_pool.assign_or_update` directly for those.
+        for (slot_index, data) in buffer_defaults.iter().enumerate() {
+            if data.is_empty() {
+                continue;
+            }
+            if let Err(e) = self.extras_pool.assign_or_update(id, slot_index, data) {
+                tracing::warn!(
+                    "extras_pool: failed to assign default for ({:?}, {}): {:?}",
+                    id,
+                    slot_index,
+                    e
+                );
+            }
+        }
         // Ensure the classify buffer has capacity for the (possibly
         // larger) bucket count. The mid-session header writer
         // re-emits the per-bucket offsets at the new layout.

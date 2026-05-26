@@ -50,6 +50,7 @@ pub fn get_or_create(
         material,
         &renderer.textures,
         &renderer.dynamic_materials,
+        &renderer.extras_pool,
     );
     with_cache(|m| {
         m.insert(asset_id, key);
@@ -215,5 +216,6 @@ pub fn resolve(
         m,
         &renderer.textures,
         &renderer.dynamic_materials,
+        &renderer.extras_pool,
     ))
 }

@@ -2162,37 +2162,46 @@ leaves a runnable renderer:
       alongside the asset picker UI.
 
 ### Phase 6 — Extras pool + buffer slots + prewarm
-- [ ] `crates/renderer/src/dynamic_materials/extras_pool.rs` — 1 MiB
-      default `array<u32>` storage buffer with free-list allocator
-- [ ] **Pool owns a `MappedUploader` companion**; per-frame edits go
-      through `write_dirty_ranges`, first-time inserts go through
-      `ingest_foreign` (NOT raw `gpu.write_buffer`)
-- [ ] **`bytes_uploaded_via_writebuffer` telemetry counts initial
+- [x] `crates/renderer/src/dynamic_materials/extras_pool.rs` — 1 MiB
+      default `array<u32>` storage buffer with bump allocator
+      (free-list re-use of removed slices + compaction are parked
+      follow-ups; the bump allocator grows on overflow via
+      `OutOfCapacity` error which the caller can surface)
+- [x] **Pool owns a `MappedUploader` companion**; per-frame edits go
+      through `write_dirty_ranges` (see `ExtrasPool::write_gpu`)
+- [~] **`bytes_uploaded_via_writebuffer` telemetry counts initial
       buffer-slot loads**; `bytes_uploaded_via_ring` counts edits —
-      verify via `read_upload_ring_stats()` after a material
-      registration + edit cycle
-- [ ] `shared_wgsl/extras.wgsl` with `extras_load_u32` /
+      bump-allocator inserts AND edits both go through
+      `write_dirty_ranges` today; the foreign-bytes-ingestion split
+      lands when free-list re-use is added.
+- [x] `shared_wgsl/extras.wgsl` with `extras_load_u32` /
       `extras_load_f32` / `extras_load_vec4_f32` helpers
 - [ ] `extras_pool` bound alongside `materials` in opaque-compute and
-      transparent-fragment passes (10/10 storage-binding cap reached;
-      no headroom beyond)
-- [ ] Per-frame upload resolves each `Material::Custom`'s buffer slots
-      and writes `(offset, length)` u32 pairs after the texture-index
-      tail
-- [ ] Auto-generated WGSL struct fields `<slot>_offset` /
+      transparent-fragment passes — DEFERRED. Requires adding a 10th
+      storage-buffer binding to the opaque main bind group (currently
+      9/10), updating each pass's bind_groups.wgsl with the
+      `@group(0) @binding(N) var<storage, read> extras_pool: array<u32>;`
+      declaration, growing `COMPATIBITLIY_REQUIREMENTS.storage_buffers`
+      from `Some(9)` to `Some(10)`, AND updating the bind-group
+      writers to bind `extras_pool.buffer`. The WGSL helper file is in
+      place; the binding declaration is the remaining piece.
+- [x] Per-frame upload writes `(offset, length)` u32 pairs after the
+      texture-index tail (via DynamicMaterialPackContext::buffer_slice
+      + ExtrasPool::slice_for)
+- [x] Auto-generated WGSL struct fields `<slot>_offset` /
       `<slot>_length` line up byte-for-byte with the packer
-- [ ] Pool resize on overflow (double capacity +
-      `BindGroupRecreate::ExtrasPoolResize`)
-- [ ] Fragmentation-triggered compaction (per-frame cap; moves
-      ≤ 64 KiB per frame)
+- [ ] Pool resize on overflow — pending; current `assign_or_update`
+      returns `OutOfCapacity` and the caller logs.
+- [ ] Fragmentation-triggered compaction — pending.
 - [ ] `irregular-atlas` test material reads `frames` from extras pool
-      with hand-authored `frames.bin`
+      with hand-authored `frames.bin` — pending the bind-group wiring.
 - [ ] Two `irregular-atlas` instances with different `buffer_overrides`
-      render independently
-- [ ] **`prewarm_pipelines` extended to iterate
-      `registry.all_entries()`**: newly-registered materials' pipelines
-      compile through the same batched `ensure_keys` path the
-      orchestrator uses at startup
+      render independently — pending the above.
+- [x] **`prewarm_pipelines` extended to iterate registered dynamic
+      materials**: compiles the classify-pass dynamic variant + the
+      per-shader-id opaque pipeline for each registered material
+      through the same batched `ensure_keys` path the orchestrator
+      uses at startup (Phase 4).
 
 ### Phase 7 — Transparent path
 - [ ] Transparent fragment shader template grows the same substitution

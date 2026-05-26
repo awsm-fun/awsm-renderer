@@ -65,8 +65,13 @@ use awsm_materials::{
 impl AwsmRenderer {
     /// Updates a material in place.
     pub fn update_material(&mut self, key: MaterialKey, f: impl FnMut(&mut Material)) {
-        self.materials
-            .update(key, &self.textures, &self.dynamic_materials, f);
+        self.materials.update(
+            key,
+            &self.textures,
+            &self.dynamic_materials,
+            &self.extras_pool,
+            f,
+        );
     }
 
     /// Removes a material and frees its slot in the materials storage
@@ -266,6 +271,7 @@ impl Materials {
         material: Material,
         textures: &Textures,
         dynamic_materials: &crate::dynamic_materials::DynamicMaterials,
+        extras_pool: &crate::dynamic_materials::extras_pool::ExtrasPool,
     ) -> MaterialKey {
         let is_transparency_pass = material.is_transparency_pass();
 
@@ -274,7 +280,7 @@ impl Materials {
             self._is_transparency_pass.insert(key, ());
         }
 
-        self.update(key, textures, dynamic_materials, |_| {});
+        self.update(key, textures, dynamic_materials, extras_pool, |_| {});
 
         key
     }
@@ -325,6 +331,7 @@ impl Materials {
         key: MaterialKey,
         textures: &Textures,
         dynamic_materials: &crate::dynamic_materials::DynamicMaterials,
+        extras_pool: &crate::dynamic_materials::extras_pool::ExtrasPool,
         mut f: impl FnMut(&mut Material),
     ) {
         if let Some(material) = self.lookup.get_mut(key) {
@@ -340,7 +347,8 @@ impl Materials {
             }
 
             let dynamic_ctx =
-                crate::dynamic_materials::DynamicMaterialPackContext::new(dynamic_materials);
+                crate::dynamic_materials::DynamicMaterialPackContext::new(dynamic_materials)
+                    .with_extras(extras_pool);
             let data = material.uniform_buffer_data(textures, &dynamic_ctx);
             match self.buffer.update(key, &data) {
                 Ok(_) => {

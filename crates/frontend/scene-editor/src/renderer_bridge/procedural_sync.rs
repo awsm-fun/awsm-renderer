@@ -527,7 +527,7 @@ async fn spawn_flipbook_sprite(
         let renderer_ref: &mut AwsmRenderer = &mut r;
         let material_key = renderer_ref
             .materials
-            .insert(Material::FlipBook(Box::new(fb)), &renderer_ref.textures, &renderer_ref.dynamic_materials);
+            .insert(Material::FlipBook(Box::new(fb)), &renderer_ref.textures, &renderer_ref.dynamic_materials, &renderer_ref.extras_pool);
         let tk = r.transforms.insert(Transform::IDENTITY, Some(parent_tk));
         let mesh_key = match r.add_raw_mesh_transparent(raw, tk, material_key).await {
             Ok(mk) => mk,
@@ -558,7 +558,7 @@ async fn spawn_flipbook_sprite(
             });
             let material_key = r
                 .materials
-                .insert(Material::FlipBook(Box::new(fb)), &r.textures, &r.dynamic_materials);
+                .insert(Material::FlipBook(Box::new(fb)), &r.textures, &r.dynamic_materials, &r.extras_pool);
             let tk = r.transforms.insert(Transform::IDENTITY, Some(parent_tk));
             match r.add_raw_mesh(raw, tk, material_key) {
                 Ok(mk) => {

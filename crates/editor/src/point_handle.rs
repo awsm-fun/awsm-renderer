@@ -85,6 +85,7 @@ impl PointHandleSet {
                 Material::Pbr(Box::new(mat)),
                 &renderer.textures,
                 &renderer.dynamic_materials,
+                &renderer.extras_pool,
             );
             self.material_key = Some(key);
         }

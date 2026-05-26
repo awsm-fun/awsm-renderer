@@ -79,6 +79,19 @@ pub fn register_loaded_folder(
     let layout_hash = layout_hash_of(definition);
     let wgsl_hash = wgsl_hash_of(&folder.wgsl_source);
     let alpha_mode = convert_alpha_mode(definition.alpha_mode.clone());
+    // Build buffer-slot defaults from the LoadedMaterialFolder's
+    // resolved buffer_data, in declaration order. Slots without a
+    // default (`BufferSlot::default == None`) get an empty Vec.
+    let buffer_defaults: Vec<Vec<u32>> = definition
+        .buffers
+        .iter()
+        .map(|slot| {
+            slot.default
+                .as_ref()
+                .and_then(|path| folder.buffer_data.get(path).cloned())
+                .unwrap_or_default()
+        })
+        .collect();
     let reg = MaterialRegistration {
         name: definition.name.clone(),
         alpha_mode,
@@ -87,6 +100,7 @@ pub fn register_loaded_folder(
         layout_hash,
         wgsl_hash,
         wgsl_fragment: folder.wgsl_source.clone(),
+        buffer_defaults,
     };
     let id = renderer.register_material(reg)?;
     map.register(&definition.name, id);

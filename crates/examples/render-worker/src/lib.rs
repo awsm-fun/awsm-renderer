@@ -331,6 +331,7 @@ fn start_worker_renderer(canvas: web_sys::OffscreenCanvas) -> Result<(), JsValue
             Material::Pbr(Box::new(mat)),
             &renderer.textures,
             &renderer.dynamic_materials,
+            &renderer.extras_pool,
         );
         let transform_key = renderer.transforms.insert(
             Transform {
