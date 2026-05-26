@@ -15,6 +15,7 @@ members = [
     "crates/frontend/model-tests",
     "crates/frontend/scene-editor",
     "crates/examples/render-worker",
+    "crates/debugging",
 ]
 resolver = "2"
 
@@ -105,6 +106,14 @@ askama = {version = "0.15.6", default-features = false, features = ["config", "d
 glam = {version = "0.32.1"}
 half = "2.4.1"
 bevy_mikktspace = "0.15.3"
+
+# Debugging - only needed for `android_chrome_check`
+tokio = {version = "1.52.3", features = ["full"]}
+tokio-tungstenite = "0.29.0"
+regex = "1.12.3"
+futures-util = "0.3.32"
+reqwest = {version = "0.13.4", features = ["json"]}
+
 
 # Media
 # https://github.com/gltf-rs/gltf/issues/465

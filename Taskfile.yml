@@ -16,6 +16,8 @@ includes:
     taskfile: ./taskfiles/frontend/scene-editor.yml
   site-index:
     taskfile: ./taskfiles/frontend/site-index.yml
+  debug-mobile:
+    taskfile: ./taskfiles/debugging/mobile.yml
 
 tasks:
   default:
