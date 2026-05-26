@@ -4,6 +4,7 @@
 //! - 2+ selected → summary + note to narrow
 
 pub mod asset_editor;
+pub mod custom_materials_pane;
 pub mod history_input;
 pub mod kind_editor;
 pub mod prefab;
