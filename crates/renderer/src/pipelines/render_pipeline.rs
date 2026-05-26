@@ -148,6 +148,8 @@ impl RenderPipelines {
             )?);
         }
 
+        let n = descriptors.len();
+        let t_start = web_sys::js_sys::Date::now();
         // Sync-issue every Promise. Dawn has started compiling all N
         // by the time this loop returns.
         let promises: Vec<JsFuture<web_sys::GpuRenderPipeline>> = descriptors
@@ -157,6 +159,11 @@ impl RenderPipelines {
 
         // Await all in parallel.
         let results = futures::future::join_all(promises).await;
+        let dt_ms = web_sys::js_sys::Date::now() - t_start;
+        tracing::info!(
+            target: "awsm_renderer::boot_timing",
+            "RenderPipelines::ensure_keys: {n} pipelines compiled in {dt_ms:.0}ms",
+        );
 
         // Move owned cache keys out of `inputs` exactly once each, in
         // input order, so `self.cache.insert(cache_key, key)` takes

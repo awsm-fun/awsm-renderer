@@ -129,6 +129,8 @@ impl Shaders {
         }
 
         if !pending.is_empty() {
+            let n = pending.len();
+            let t_start = web_sys::js_sys::Date::now();
             // Issue every compile_shader synchronously so the browser
             // kicks off all compiles before we await anything.
             let modules: Vec<(
@@ -146,6 +148,15 @@ impl Shaders {
             // Await every validation in parallel.
             let validate_futures = modules.iter().map(|(_, m, _)| m.validate_shader());
             let results = futures::future::join_all(validate_futures).await;
+            let dt_ms = web_sys::js_sys::Date::now() - t_start;
+            // One log line per batched ensure_keys call. Filter via
+            // the `awsm_renderer::boot_timing` target. Counts only the
+            // cache misses (cache hits + dedup'd duplicates don't
+            // contribute to the compile wall-clock).
+            tracing::info!(
+                target: "awsm_renderer::boot_timing",
+                "Shaders::ensure_keys: {n} shaders compiled in {dt_ms:.0}ms",
+            );
             for (i, result) in results.into_iter().enumerate() {
                 if let Err(err) = result.map_err(AwsmShaderError::Compilation) {
                     // Match the diagnostic behavior of `get_key`:

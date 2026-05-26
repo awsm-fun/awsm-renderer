@@ -1094,7 +1094,25 @@ impl AwsmRendererBuilder {
         } = self;
 
         let mut phase_handler = phase_handler;
+        let build_start_ms = web_sys::js_sys::Date::now();
+        let mut phase_start_ms = build_start_ms;
         let mut emit_phase = |phase: RendererLoadingPhase| {
+            // Log wall-clock between phases so the user can see where
+            // cold-boot time actually goes (the boot-loader caption
+            // shows the phase NAME but not how long the previous one
+            // took). Tracing target is `awsm_renderer::boot_timing`
+            // so consumers can filter for it explicitly.
+            let now = web_sys::js_sys::Date::now();
+            let dt_phase = now - phase_start_ms;
+            let dt_total = now - build_start_ms;
+            tracing::info!(
+                target: "awsm_renderer::boot_timing",
+                "phase = {:?}  (+{:.0}ms phase, {:.0}ms total)",
+                phase,
+                dt_phase,
+                dt_total,
+            );
+            phase_start_ms = now;
             if let Some(handler) = phase_handler.as_mut() {
                 handler(phase);
             }

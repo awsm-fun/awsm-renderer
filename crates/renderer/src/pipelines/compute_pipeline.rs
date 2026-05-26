@@ -116,12 +116,24 @@ impl ComputePipelines {
             )?);
         }
 
+        let n = descriptors.len();
+        let t_start = web_sys::js_sys::Date::now();
         let promises: Vec<JsFuture<web_sys::GpuComputePipeline>> = descriptors
             .iter()
             .map(|d| JsFuture::from(gpu.create_compute_pipeline_promise(d)))
             .collect();
 
         let results = futures::future::join_all(promises).await;
+        let dt_ms = web_sys::js_sys::Date::now() - t_start;
+        // One log line per batched ensure_keys call. Each line shows
+        // batch size + wall-clock so the user can attribute cold-boot
+        // time to a specific subsystem (prewarm vs lazy-pool recompile
+        // vs per-mesh transparent etc). Filter via the
+        // `awsm_renderer::boot_timing` target.
+        tracing::info!(
+            target: "awsm_renderer::boot_timing",
+            "ComputePipelines::ensure_keys: {n} pipelines compiled in {dt_ms:.0}ms",
+        );
 
         let mut inputs_owned: Vec<Option<ComputePipelineCacheKey>> =
             inputs.into_iter().map(Some).collect();
