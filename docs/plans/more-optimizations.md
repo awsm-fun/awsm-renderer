@@ -1,281 +1,606 @@
-# Renderer cold-boot optimizations & Android Chrome compatibility
+# Renderer pipeline-readiness architecture & cold-boot optimizations
 
-## Status when this plan was written
+## How to use this document
 
-The user reported a renderer init failure on Android Chrome that didn't reproduce on OSX Chrome. After an extensive investigation (full diagnosis below), Android Chrome was made to initialize successfully but with an **R&D workaround in place** that needs to be replaced. A first wave of supporting changes were prototyped on a local branch; most were reverted on review as too R&D-y to commit (see [§ Lessons captured from reverted WIP](#lessons-captured-from-reverted-wip)). What did land cleanly is the boot-timing instrumentation, which makes the rest of this plan directly measurable. The lazy-pool optimizations are queued.
+**This plan is meant to be implemented start-to-finish in a single fresh session, by an agent with no prior context.** Every architectural decision is captured here; the [§ Implementation checklist](#implementation-checklist) at the end is the canonical work list.
 
-## Progress since this plan was written (2026-05-26)
+Operating rules for the implementing agent:
 
-The dynamic-materials PR (#98, branch `dynamic-shaders`) landed work that overlaps with parts of this plan. Snapshot of what's now done **and on the committed branch**:
+1. **Work through the [§ Implementation checklist](#implementation-checklist) in order.** Each item points back to the relevant body section for design rationale.
+2. **Commits are for organization, not gating.** Commit logically (one commit per checklist item, or per small group of related items) to assist future `git bisect`. Commits do **not** need to be in a working state — partial-but-coherent changes are fine. Do not run tests between commits.
+3. **Update the checklist in this document as each item is completed.** Mark items with `[x]`. Commit the checklist update with each item or batch.
+4. **Do not stop at commits or at the end of a priority.** Keep going through every checklist item. Only stop when the entire list (including testing + PR) is done.
+5. **After all implementation checklist items are complete**, use a preview browser (e.g. `mcp__Claude_Preview__*` tooling) to load each frontend (`material-editor`, `scene-editor`, `model-tests`) and exercise features you think are worth verifying — at minimum: cold-boot to `phase = Ready`, gltf load with incremental paint, MSAA on/off toggle, shadow toggle on a directional light, dynamic-material registration flow, material-editor recompile cycle. Capture the boot-timing logs to confirm pipeline counts match the [§ The eager set](#the-eager-set-cold-boot) table.
+6. **Once testing passes**, run `cargo fmt --all` and `task lint`. Resolve any warnings/errors. Then commit the formatting fixes.
+7. **Open a PR for the branch on GitHub** using `gh pr create`. PR body should summarize the architectural change, link this doc, and call out the migration / breaking-change list from [§ Migration of the dynamic-materials API](#migration-of-the-dynamic-materials-api).
 
-### Lazy-pool refactors landed
+If you hit a genuine blocker (e.g. a WebGPU primitive doesn't behave as the doc assumes), record the surprise in this doc inline near the relevant section and continue with the best alternative — don't stop to ask. The user trusts the agent to make reasonable adaptations; they want forward progress over consultative perfection.
 
-The per-pass `*_for_config` + `merge_resolved` pattern that this plan called out as "the right shape" is now used by **five passes**:
+---
 
-| Pass | Cold-boot variants stripped | Lazy recompile entry point |
+## TL;DR
+
+The renderer today compiles every shader/pipeline it could possibly need at cold-boot, serially gated through `AwsmRendererBuilder::build`. That works on desktop Chrome (~1–2 s init) but fails on Android Chrome (Vulkan-via-Dawn) with a `VK_ERROR_INITIALIZATION_FAILED` rejecting the PBR compute pipeline as too complex. Even where it doesn't fail outright, the architecture pays full cold-boot cost (~14 s for PBR compile alone on the test Android device) for pipelines a zero-mesh scene will never dispatch.
+
+This plan replaces the eager-everything model with a **pipeline-readiness state machine** that:
+
+1. Exposes a public `submit_pipeline_group_batch` API that takes a list of materials/passes and returns handles immediately (Pending).
+2. Resolves compiles asynchronously through a main-thread `FuturesUnordered` scheduler. Each pipeline group transitions Pending → Ready (or Failed{error}) when its compile resolves.
+3. Lets the render frame trivially skip Pending/Failed groups via the existing bucket-entries cache (no per-mesh state lookups on the hot path).
+4. Surfaces transitions through a status stream so frontends can drive "compiling N of M" UI without polling.
+
+At cold-boot, only the **zero-scene render minimums** (empty opaque compute, classify variant, scene-pass clear, display render) compile eagerly. Everything else — first-party PBR/UNLIT/TOON/FLIPBOOK, dynamic-material pipelines, EVSM, lines, shadow-gen, bloom/SMAA/DoF — flows through the scheduler. The gltf loader kicks off its material batch the moment the gltf JSON's `materials` array is parsed, in parallel with buffer download / image decode / GPU upload. Scenes paint incrementally as materials become Ready.
+
+A separate but architecturally aligned change replaces the PBR shader's `msaa_resolve_samples` (the actual SPIR-V bloat) with a per-shader-id edge-resolve pass — see [§ Priority 3](#priority-3--replace-msaa_resolve_samples). After both land, Android Chrome should initialize in <1 s with no compiles in flight, scenes complete first-paint within 100–300 ms of the gltf JSON parse finishing, and cross-material MSAA edges shade correctly for every shader_id including dynamic materials.
+
+---
+
+## Status today (2026-05-26)
+
+What's actually on the `dynamic-shaders` branch (the commit point this plan is written against):
+
+- **Lazy-pool pattern in 5 passes**: Material Opaque, Material Classify, Effects, HZB, Picker each have `*_for_config` + `merge_resolved` shaped to populate only the active config at cold-boot, with `set_anti_aliasing` / `set_post_processing` as recompile entry points. This is the seed pattern this plan generalizes into a single scheduler.
+- **Boot-timing instrumentation** under `target = "awsm_renderer::boot_timing"`: per-phase wall-clock in `AwsmRendererBuilder::build`, per-batch wall-clock in `Shaders::ensure_keys` / `RenderPipelines::ensure_keys` / `ComputePipelines::ensure_keys`.
+- **Dynamic-materials Public API** (PR #98): `register_material`, `prewarm_pipelines(...).await`, `Material::Custom`, `bucket_entries_cached()`, `dispatch_hash_cached()`. The architecture in this plan **replaces** the `prewarm_pipelines(...).await` surface; see [§ Migration of the dynamic-materials API](#migration-of-the-dynamic-materials-api).
+- **Geometry pass**: still has both MSAA branches populated at cold-boot. A reverted prototype implemented the strip; it's the seed for [Priority 2](#priority-2--migrate-scene-content-driven-passes-into-the-scheduler).
+- **`msaa_resolve_samples`**: the unrolled 4× `msaa_process_sample` call sequence is still in [helpers/material_shading.wgsl:234–266](../../crates/renderer/src/render_passes/material_opaque/shader/material_opaque_wgsl/helpers/material_shading.wgsl#L234). The reverted loop-conversion is **not** in HEAD; Android boot currently fails on PBR compile. Priority 3 replaces this architecturally.
+
+The architecture below is the next phase. None of it has landed yet.
+
+---
+
+## Guiding principles
+
+These shaped every design decision below; quoting verbatim so a fresh session can match the same calls:
+
+1. **The renderer API exposes batches of shaders/pipelines that resolve as FuturesUnordered.** Frontends compose them intelligently; no internal eager-everything assumption.
+2. **The default frontends only batch what's needed for the active defaults up-front.** Everything else is on-demand.
+3. **Built-in shader code must be as efficient as possible.** No sacrificing per-frame performance to make compile lazy.
+4. **SPIR-V pressure is real, but performance > laziness.** If a more advanced solution buys better performance or faster time-to-first-pixel, take it — needless technical debt is the enemy.
+
+Two consequences worth pulling out:
+
+- **No backward compatibility for surfaces that conflict.** PR #98's `prewarm_pipelines(...).await` is the standout — it cannot coexist with batch-and-await-later. It dies.
+- **Editor/authoring perf can absorb small costs that gameplay can't.** "Material recompile produces a new MaterialId and swaps on ready" is fine because it's editor-only; per-frame atomics are not fine because they hit gameplay.
+
+---
+
+## Architecture: Pipeline Readiness
+
+### Three-state machine
+
+```rust
+pub enum PipelineGroupStatus {
+    Pending,
+    Ready,
+    Failed { error: AwsmRendererError },
+}
+```
+
+Transitions:
+
+- **submit → Pending**: a `PipelineGroupId` is allocated and returned immediately. The compile future is queued in the scheduler.
+- **Pending → Ready**: the scheduler resolves the compile future successfully. Bucket-entries cache rebuild is triggered. Status stream emits.
+- **Pending → Failed{error}**: the compile future returns an error (WGSL parse failure, layout incompatibility, validation reject, etc.). Status stream emits. **No auto-retry.**
+- **Ready → terminal**: no transition back out. If a recompile is wanted (e.g. material-editor hot-reload, MSAA flip), the existing PipelineGroupId is dropped and a fresh submit produces a new id. UI swaps the reference on Ready.
+
+The "new id on recompile" rule means every pipeline group's state is **immutable after Ready**. No atomic-swap logic anywhere; no read-modify-write of in-flight GPU state. Cost: an orphan id per recompile cycle, freed via generation-marker cleanup (next section).
+
+### Three-layer naming
+
+Three distinct things were collapsed under "material id" in earlier discussion. They're separated cleanly here:
+
+| Layer | Owner | Stability | Form |
+|---|---|---|---|
+| **ExternalRef** | scene-editor / project format | Stable across sessions | `"gltf://path/to/file.glb#material/3"` or `MaterialDefinition { name, folder, ... }` |
+| **MaterialDef** | renderer input | Per-batch | Fully resolved: params + WGSL + slot bindings + alpha_mode |
+| **MaterialId** | renderer runtime | Session-only | `SlotMap` key |
+
+The renderer never sees ExternalRef. Scene-editor's job is to maintain a `HashMap<ExternalRef, MaterialId>` and resubmit not-yet-loaded materials on scene load. The renderer's batch API takes `Vec<MaterialDef>` and returns `Vec<MaterialId>`.
+
+For **passes** (not materials), the equivalent of MaterialId is `PassKind` — an enum naming the pass:
+
+```rust
+pub enum PassKind {
+    Bloom,
+    Smaa,
+    Dof,
+    Evsm,
+    Line,
+    ShadowGen,
+    GeometryMsaa { samples: u8 },   // 1 or 4
+    ClassifyMsaa { samples: u8 },
+    // ... etc
+}
+```
+
+Passes have one instance per renderer; PassKind is the natural key. Materials have N instances; SlotMap is the natural key.
+
+### Unified PipelineGroup over materials and passes
+
+```rust
+pub enum PipelineGroupId {
+    Material(MaterialId),
+    Pass(PassKind),
+}
+
+pub enum PipelineGroupDef {
+    Material(MaterialDef),
+    Pass(PassDef),
+}
+```
+
+One scheduler, one status stream, one "compiling" UI surface for both kinds of pipelines. `AwsmRendererBuilder::build`'s "eager set" is just the renderer's first internal call to `submit_pipeline_group_batch`, awaited synchronously inside `build` — there is no special eager-compile code path. Every other compile happens post-build, async, scheduler-resolved.
+
+### `MaterialDef` and `PassDef` concrete shapes
+
+`MaterialDef` carries everything the renderer needs to compile a material's two pipelines (primary + edge_resolve, per [Priority 3](#priority-3--replace-msaa_resolve_samples)). For first-party materials it's derived from gltf parsing; for dynamic materials it's the existing `MaterialRegistration` shape from PR #98 plus the config snapshot:
+
+```rust
+pub struct MaterialDef {
+    /// First-party variant (PBR/UNLIT/TOON/FLIPBOOK) OR dynamic shader_id allocated at registration.
+    pub shader_id: MaterialShaderId,
+
+    /// Alpha mode — routes between opaque and transparent passes.
+    pub alpha_mode: MaterialAlphaMode,
+
+    /// Double-sided culling override.
+    pub double_sided: bool,
+
+    /// Per-shader_id config snapshot. For first-party: empty (params live in the
+    /// `material_meta` buffer, looked up at dispatch time). For dynamic: the
+    /// registered WGSL fragment + slot bindings + layout descriptor.
+    pub kind: MaterialDefKind,
+
+    /// Snapshot of renderer config at submission time. Used as the cache key
+    /// for `(shader_id, msaa, mipmap, ...)`-keyed pipelines. The scheduler's
+    /// state machine refuses to mark a group Ready if the config has since
+    /// drifted (see [§ Config-flip semantics](#config-flip-semantics-msaa-post-processing)).
+    pub config_snapshot: PipelineConfigSnapshot,
+}
+
+pub enum MaterialDefKind {
+    FirstParty,
+    Dynamic {
+        wgsl_fragment: String,
+        slot_layout: DynamicSlotLayout,
+        struct_decl: String,   // generated by the layout pass
+        loader_decl: String,
+    },
+}
+
+pub struct PipelineConfigSnapshot {
+    pub msaa: AntiAliasing,
+    pub mipmap: MipmapMode,
+    pub use_mesh_light_slices: bool,
+    pub gpu_culling: bool,
+    pub debug_bitmask: u32,
+    // ... whatever else the askama template branches on.
+}
+```
+
+`PassDef` is a sum type covering the scheduler-managed passes. Each variant carries only the data its build path needs:
+
+```rust
+pub enum PassDef {
+    OpaqueEmpty,                                       // no payload — always the same shader
+    ClassifyMsaa  { samples: u8 },
+    GeometryMsaa  { samples: u8 },
+    Display,                                            // ditto
+    ScenePassClear,
+    HzbSeed       { samples: u8 },
+    Evsm,
+    Line,
+    ShadowGen,
+    Picker,
+    Bloom         { resolution: (u32, u32) },
+    Smaa          { resolution: (u32, u32) },
+    Dof,
+    EdgeResolveSkybox,                                  // Priority 3
+    EdgeResolveBlend,                                   // Priority 3
+}
+```
+
+Note that `Pass(GeometryMsaa { samples: 1 })` and `Pass(GeometryMsaa { samples: 4 })` are distinct `PipelineGroupId`s with independent lifecycle — the inactive MSAA's pipelines stay Pending until `set_anti_aliasing` flips, at which point its def is submitted as a batch and that group transitions to Ready.
+
+`MaterialDef`'s `config_snapshot` field is what makes config-flip semantics clean: when MSAA flips, the renderer iterates Ready materials, sees their snapshots no longer match the active config, transitions them back to Pending, and re-submits with the new snapshot. No data structure mutation in place; the materials' MaterialIds stay valid (their definitions just recompile to new pipelines).
+
+### Orphan cleanup (generation marker per slot)
+
+Material-editor hot-reload pattern: each keystroke (after debounce + idempotent-recompile filter) submits a new MaterialDef and gets a new MaterialId. The old MaterialId is orphaned. Cleanup is by **generation marker per project-level slot**:
+
+- The material-editor tracks a single "current MaterialId for this editor slot." When a new submit lands a fresh MaterialId, the previous one is dropped via `AwsmRenderer::drop_material_group(MaterialId)`.
+- For first-party materials there's no recompile-replace flow (the gltf's material params don't mutate at runtime) so no orphans.
+- For scene-editor's "Import Material" replacing an existing slot's binding: the editor's swap-on-ready logic owns the cleanup; renderer just frees on drop.
+
+Bounded orphan count: zero in steady-state gameplay; at most one in-flight orphan per material-editor instance during a recompile.
+
+### Push + Pull API surface
+
+```rust
+impl AwsmRenderer {
+    /// Submit a batch of pipeline groups for compile.
+    /// Returns ids immediately in Pending state. Compile is queued in
+    /// the scheduler; status transitions appear on the status stream.
+    pub fn submit_pipeline_group_batch(
+        &mut self,
+        defs: Vec<PipelineGroupDef>,
+    ) -> Vec<PipelineGroupId>;
+
+    /// Per-group status query — O(1) lookup.
+    pub fn pipeline_group_status(&self, id: PipelineGroupId) -> PipelineGroupStatus;
+
+    /// Stream of status transitions. Subscribed-to by frontends for
+    /// "compiling N of M" modals, error reporting, bucket-entries
+    /// cache rebuild, etc.
+    pub fn subscribe_pipeline_status(&self) -> impl Stream<Item = (PipelineGroupId, PipelineGroupStatus)>;
+
+    /// Drop a material group. Used by the editor's hot-reload cleanup.
+    pub fn drop_material_group(&mut self, id: MaterialId);
+}
+```
+
+The hot path (per-frame render) **never** calls `pipeline_group_status`. Instead:
+
+- **Materials**: the existing `bucket_entries_cached() -> &[BucketEntry]` cache rebuilds whenever any material transitions to/from Ready. The cache contains only Ready materials. The per-frame render iterates the cache; readiness is implicit.
+- **Passes**: each pass's dispatch site queries the renderer for the pass's pipeline keys via existing per-pass typed accessors (e.g. `bloom_pipeline_keys()`). The accessor returns `Option` — None means the pass is Pending/Failed, the dispatch site skips that pass. The query is O(1) and lives on a typed handle; no enum match.
+
+Zero per-mesh status lookups on the hot path. Pull API is for one-off queries and diagnostics; push API drives UI.
+
+### Pending material lifecycle (load-bearing invariant)
+
+Worth stating explicitly because it's what makes the "incremental paint" UX trivially correct:
+
+1. Frontend calls `submit_pipeline_group_batch(vec![Material(def)])` → MaterialId is allocated in Pending state.
+2. Frontend inserts a mesh referencing that MaterialId (sync, immediate).
+3. **First render frame after step 2**: classify-pass scans buckets, sees the MaterialId is not in `bucket_entries_cached()` (because the cache only contains Ready materials), the mesh is **silently skipped** — no bucket assignment, no opaque dispatch, no error. Scene-graph is fine (transforms, AABB, picking-test, etc. all see the mesh as present).
+4. Compile resolves → scheduler emits Pending → Ready on the status stream → renderer's internal subscriber marks `bucket_entries_cached()` dirty.
+5. **Next render frame**: bucket-entries cache rebuilds, now includes this MaterialId. Classify-pass assigns the mesh's bucket; opaque-pass dispatches; mesh appears.
+
+The mesh "pops in" on the frame after Ready, with no special-casing in the dispatch path. Symmetrically, transitioning back to Pending (e.g. MSAA flip) invalidates the cache and the mesh disappears for the duration of the recompile. The bucket-entries cache is the single point that mediates this — and it already exists and is already rebuilt on register/unregister in PR #98's surface. The new architecture just adds "Pending → Ready" as another trigger for the cache rebuild.
+
+### Scheduler driving and transition timing
+
+The `FuturesUnordered` scheduler runs on the main thread, polled from the **render loop's pre-frame phase** (the same place that consumes `WindowEvent::RedrawRequested` or equivalent in our wasm setup). Polling order each frame:
+
+1. Drain any resolved compile futures (poll the `FuturesUnordered` until pending).
+2. For each resolved future: transition its group (Pending → Ready or Failed), emit status-stream events.
+3. Renderer's internal subscriber processes events synchronously: marks bucket-entries cache dirty, marks per-pass typed-key accessor caches dirty.
+4. Frontend subscribers process events synchronously (modal updates, error reporting).
+5. Classify pass runs; rebuilds caches if dirty.
+6. Render frame proceeds.
+
+This means transitions happen **between frames**, not mid-frame — there's no risk of a half-Ready material being dispatched. It also means the "pop in" delay is bounded by one frame after compile resolves.
+
+The scheduler does not yield voluntarily; it greedily polls until the underlying futures stop making progress. Dawn's pipeline-creation promises drive the work; we just poll them. If the operator wants to limit per-frame compile-processing time (e.g. to avoid a frame hitch when 10 materials all finish at once), the drain loop in step 1 takes an optional `max_transitions_per_frame` cap and defers the overflow to the next frame.
+
+### Render-frame preamble safety net
+
+If a render frame finds itself trying to dispatch through a path that's not Ready (e.g. a mesh whose MaterialId is in Pending state but somehow got into a bucket — a bug in the cache invalidation), the dispatch site:
+
+- Skips the work silently.
+- Emits `tracing::warn!` once per session per (id, location) pair so it surfaces without spamming.
+
+**No auto-trigger compile** from the render frame. Self-healing in production sounds nice but masks bugs in the trigger paths. A warn surfaced from a real consumer is always a one-line fix at the responsible call site (gltf loader, editor "Import Material," etc.).
+
+### Config-flip semantics (MSAA, post-processing)
+
+When `set_anti_aliasing` or `set_post_processing` is called:
+
+1. Every currently-Ready material whose compiled pipelines depend on the changed config transitions back to Pending.
+2. The renderer re-submits those materials' definitions (with the new active config) as a single batch.
+3. Pass-level groups (GeometryMsaa, ClassifyMsaa, post-processing passes) for the new config are submitted in the same batch.
+4. The frontend's "compiling pipelines" modal pops while the batch resolves (rendering continues — meshes whose materials are Pending are skipped, scene is visibly recompiling, modal explains why).
+
+No atomic-swap logic; no keep-old-while-new-compiles overlap. The flicker is acceptable per principle 4 — the user explicitly toggled, the modal explains the wait, and the eliminated complexity is large.
+
+**Race policy**: `set_anti_aliasing` / `set_post_processing` called **before** `build` returns (i.e. before the eager-set batch finishes) is a programming error and returns `Err(AwsmRendererError::NotReady)`. The first valid call site is anywhere after `build().await` resolves. The frontends already structure their renderer-lifecycle this way; this just makes the contract explicit.
+
+---
+
+## The eager set (cold-boot)
+
+`AwsmRendererBuilder::build`'s first internal batch — the only pipelines that exist before `build` returns. **Hard-errors if any of these fail**; the renderer can't function without them.
+
+The list below is parameterized on the `AwsmRendererBuilder`'s active config (MSAA setting, `gpu_culling` feature flag, etc.) — the builder is the single source of truth for "active defaults" and the eager-set construction reads from it. `samples: active` in the rows below means "whatever the builder was configured with." Inactive MSAA variants, opted-out features, and disabled post-processing effects are **not** in the eager set.
+
+| Group | Purpose |
+|---|---|
+| `Pass(OpaqueEmpty)` (compute) | Skybox-only frames + bucket-skip path; ~40 ms to compile, always needed |
+| `Pass(ClassifyMsaa { samples: active })` (compute) | Per-frame classify dispatch; needs the active MSAA's variant |
+| `Pass(GeometryMsaa { samples: active })` (3 render pipelines for active branch) | First-frame geometry; the inactive MSAA branch is scheduler-managed |
+| `Pass(Display)` (render) | Renders the opaque target to the swap chain |
+| `Pass(ScenePassClear)` (render) | Per-frame clear |
+| `Pass(HzbSeed)` (compute, if `gpu_culling` feature on) | Per-frame HZB construction; pre-warming the seed only |
+
+Total: ~4 compute + 4 render at typical config. Cold-boot batch should compile in <500 ms on Android, <100 ms on desktop. **No first-party material pipelines, no dynamic-material pipelines, no MSAA-inactive variants, no post-processing variants, no shadow infrastructure.**
+
+Everything else — listed in the [scheduler-managed set](#the-scheduler-managed-set) — flows through `submit_pipeline_group_batch` from `build`'s **return** onward, including the renderer's own internal triggers (e.g. first material insertion fires an internal batch).
+
+## The scheduler-managed set
+
+Compiled on-demand via `submit_pipeline_group_batch`. Triggers listed.
+
+| Group | Trigger | Notes |
 |---|---|---|
-| Material Opaque | 14 → 5 (1 active msaa/mipmap × 4 shader_ids + 1 empty) | `AwsmRenderer::set_anti_aliasing` |
-| Material Classify | 2 → 1 (active msaa only) | `AwsmRenderer::set_anti_aliasing` |
-| Effects | 5 → 1 (bloom-off → only `BloomPhase::None`) | `AwsmRenderer::set_post_processing` |
-| HZB | 3 → 2 (single seed variant + reduce) | `AwsmRenderer::set_anti_aliasing` |
-| Picker | 2 → 1 (active msaa only) | `AwsmRenderer::set_anti_aliasing` |
+| First-party material (PBR primary + edge_resolve) | gltf load parses material; or scene-editor add-mesh | 2 pipelines per shader_id under Priority 3 |
+| First-party material (UNLIT / TOON / FLIPBOOK) | Same | 2 pipelines each under Priority 3 |
+| Dynamic material (per registered) | `submit_pipeline_group_batch` from `register_material` flow | 2 pipelines per material under Priority 3 |
+| `Pass(GeometryMsaa { other })` | `set_anti_aliasing` flips to the inactive MSAA | Re-submitted on flip |
+| `Pass(Evsm)` | First shadow-casting light enters scene | Currently triggered via existing shadows::evsm setup |
+| `Pass(Line)` | First line primitive added | Currently triggered via line pass init |
+| `Pass(ShadowGen)` | First shadow caster added | Similar |
+| `Pass(Bloom)` / `Pass(Smaa)` / `Pass(Dof)` | `set_post_processing` enables the effect | Each effect is independently triggered |
+| `Pass(Picker)` | First mouse-pick query (if `picking` feature on) | Today this is eager; deferred under Priority 2 |
+| `Pass(EdgeResolveOpaque)` | First MSAA opaque material registered (under Priority 3) | Shared across all materials; one compile per first-party + per dynamic |
 
-The Geometry pass is **not** in this list — a prototype existed locally and was reverted (see Priority 1 below; the WIP is the seed for re-landing).
-
-`Shaders::ensure_keys` now returns `Vec<ShaderKey>` directly (matching the shape of `RenderPipelines::ensure_keys` / `ComputePipelines::ensure_keys`), so the per-pass `*_for_config` builders can pipeline through one shader-compile batch + one pipeline-compile batch with no follow-up `get_key` round-trips.
-
-### Boot-timing instrumentation
-
-Three log surfaces under `target = "awsm_renderer::boot_timing"` (filter via `RUST_LOG=awsm_renderer::boot_timing=info`):
-
-- `AwsmRendererBuilder::build` emits per-phase wall-clock: `phase = CompilingShaders (+42ms phase, 42ms total)` etc. so the operator can attribute cold-boot time to a specific phase without ad-hoc instrumentation.
-- `Shaders::ensure_keys` emits `Shaders::ensure_keys: 32 shaders compiled in 845ms` per batched call.
-- `{Render,Compute}Pipelines::ensure_keys` emit `N pipelines compiled in Tms` per batched call.
-
-The per-pipeline labels (`compute:ShaderKey(_):PipelineLayoutKey(_)`, `render:Geometry(ShaderKey(1)):PipelineLayoutKey(12)` etc.) referenced repeatedly below as "already in place" are **not yet committed** — they were part of the reverted WIP. See [§ Lessons captured from reverted WIP](#lessons-captured-from-reverted-wip) for the correct shape to re-land. The aggregate per-batch wall-clock that *is* committed is enough to scope the work below; the per-pipeline labels remain a high-leverage diagnostic add.
-
-### Dynamic-materials surface
-
-Every dynamic-material registration triggers a `prewarm_pipelines` call that now goes through **one** batched `Shaders::ensure_keys` + **one** batched `ComputePipelines::ensure_keys` covering the full union of (classify variant + per-shader-id opaque variants + per-Blend transparent stub). This used to be a doubly-nested for-loop with serial awaits — fixed before this plan was reviewed.
-
-The dynamic-materials work also added two registry-side caches consumed by the render hot path:
-- `DynamicMaterials::bucket_entries_cached() -> &[BucketEntry]` — refreshed on register/unregister; replaces a per-frame `bucket_entries(materials)` allocation + sort on the opaque pass.
-- `DynamicMaterials::dispatch_hash_cached() -> u64` — same lifecycle; the classify pass's dynamic-pipeline cache is now keyed on `(dispatch_hash, msaa)` instead of `(Vec<BucketEntry>, Option<u32>)`, so the per-frame probe is alloc-free.
-
-### What that means for the priorities below
-
-- **Priority 1** ("Defer first-party opaque pipeline pre-warm") is now the highest-value un-landed item. The plumbing (`shader_descriptors_for_config` + `merge_resolved`) is already in place — the remaining step is wiring a trigger when a material of a new shader_id is first registered/inserted instead of compiling all 4 first-party variants at cold-boot. See updated approach below.
-- **Priority 2** ("Defer EVSM / Line / Shadow render pre-warm") is unchanged.
-- **Priority 3** ("Replace the `msaa_resolve_samples` workaround") is unchanged.
-- **Priority 4** ("Audit the rest of the eager pre-warm set") has been narrowed — effects bloom-on, classify non-active-MSAA, opaque non-active-MSAA × non-active-mipmap, HZB non-active-seed, picker non-active-MSAA are all already lazy. Audit what's left.
-- Two **new priorities** were added from the dynamic-materials work — see Priorities 5 + 6 below.
+The exact list is enumerable from the codebase; this table is the architecture, not the contract.
 
 ---
 
-## Context
+## Migration of the dynamic-materials API
 
-The original error on Android Chrome:
+PR #98's surface needs updating. Concretely:
 
-```
-Error initializing Renderer: [compute pipeline]:
-  PipelineCreation("Pipeline creation [Internal] error:
-    CreateComputePipelines failed with VK_ERROR_INITIALIZATION_FAILED
-    - While initializing [ComputePipeline (unlabeled)]
-    at CheckVkSuccessImpl (../../third_party/dawn/src/dawn/native/vulkan/VulkanError.cpp:106)")
-```
-
-Same renderer, same scene loaded fine on OSX Chrome (Metal-via-Dawn). Failure was exclusive to Android Chrome (Vulkan-via-Dawn) and only at startup.
-
-The user described the desired architecture clearly during investigation:
-
-> We should NOT eagerly precompile what we're not using. We should have an architecture which is more like: 1) declare a batch of shaders/pipelines that need to be compiled/created, 2) kick them all off (FuturesUnordered / Promise.all), 3) wait for the batch to finish. And we should be able to do it at any time — so up-front, we ONLY do it for what's NECESSARY for the defaults (msaa on, bloom off, etc.). Then, when anything is changed, kick off the batch that needs to be done at that point in time.
-
-This plan implements progress toward that architecture; the geometry pass is done, the rest is queued.
-
----
-
-## Root cause (the actual one — after several wrong guesses)
-
-**The PBR opaque compute shader was emitting SPIR-V large enough to exceed the Android Vulkan driver's pipeline-compile complexity ceiling.**
-
-The path that triggers it: `msaa_resolve_samples` in [helpers/material_shading.wgsl:234-266](../../crates/renderer/src/render_passes/material_opaque/shader/material_opaque_wgsl/helpers/material_shading.wgsl#L234) was unrolled into 4 explicit calls to `msaa_process_sample` — one per MSAA sample. `msaa_process_sample` is a ~150-line function with the per-shader-id branch (UNLIT/TOON/PBR), `compute_material_color` (texture pool sampling + mipmapping), and `apply_lighting` / `apply_lighting_per_mesh` (the full lighting loop with IBL/BRDF/shadows). Tint inlined each of the 4 call sites, producing SPIR-V with **the entire shading pipeline duplicated 4 times** for the edge-resolve path, plus once more for the main non-edge path.
-
-Only PBR fails because `msaa_resolve_samples` is called exclusively from the PBR-only template branch in [compute.wgsl:256-270](../../crates/renderer/src/render_passes/material_opaque/shader/material_opaque_wgsl/compute.wgsl#L256) (PBR owns skybox-edge resolution per the comment at compute.wgsl:241-247). UNLIT/TOON/FLIPBOOK don't touch the resolve path. The empty pipeline doesn't touch any shading.
-
-### Things that LOOK related but aren't
-
-The investigation ruled these out via direct testing (see [§ Investigation log](#investigation-log)). Don't waste time on them next session:
-
-- **Multisampled `textureLoad` in compute**: works fine on this device. Verified by forcing MSAA off — same 4 opaque shaders still failed.
-- **`maxUniformBufferBindingSize` (lights array at exactly 64 KB)**: device reports 65,536 max; binding is exactly 65,536. Reducing the array to 32 KB didn't change anything.
-- **`maxStorageBuffersPerShaderStage`**: device reports 16, shader uses 9. Not close.
-- **`maxBindGroups`** / `maxBindingsPerBindGroup`: we're under both.
-- **rgba16float storage texture write**: the empty shader uses `textureStore(opaque_tex, ...)` on the same `texture_storage_2d<rgba16float, write>` binding and succeeds.
-- **Cube texture sampling, dynamic indexing into uniforms / storage buffers, integer texture loads**: all proven to work via bisect step 2 (in [§ Investigation log](#investigation-log)).
-
-### How the diagnosis was reached
-
-Bisected by stubbing the body of `compute.wgsl`'s `main()` and progressively re-enabling chunks. Confirmed via two experiments:
-
-1. Stub everything → all 5 pipelines compile in 40 ms.
-2. Stub only the 4 unrolled `msaa_process_sample` calls down to 1 → all 5 pipelines compile in 2.8 s, full body intact.
-
----
-
-## What's currently in the codebase
-
-The only items from the original investigation that are committed on `dynamic-shaders` today are the boot-timing wall-clock logs (per-phase in `AwsmRendererBuilder::build`, per-batch in `Shaders::ensure_keys`, `RenderPipelines::ensure_keys`, `ComputePipelines::ensure_keys`). Everything else from the prototype branch — Geometry MSAA pre-warm cut, per-pipeline labels, device-limits log, `onuncapturederror` hook, `PipelineVariantNotCompiled` error variant, msaa_resolve_samples loop conversion — was reverted on review. See [§ Lessons captured from reverted WIP](#lessons-captured-from-reverted-wip) for what they looked like and how to re-land each cleanly.
-
-The Android failure is therefore **not currently masked** — the original `VK_ERROR_INITIALIZATION_FAILED` on PBR is back. Priority 3 below replaces the workaround with the right architecture; Priority 1 cuts the eager compile count so even a weak driver can keep up.
-
----
-
-## What's queued (the real work)
-
-Ordered by impact. Each item is independent — they can land in any order.
-
-### Priority 1 — Defer first-party opaque pipeline pre-warm per shader_id
-
-**Why**: today, 4 first-party opaque compute pipelines (PBR + UNLIT + TOON + FLIPBOOK) compile at init for the active MSAA × mipmap combo, even though an empty scene dispatches zero of them. The PBR one alone takes ~14 s on Android. Lazy-compiling per-shader-id at first-use:
-- Drops cold-boot compute batch from 5 → 1 (just the empty pipeline) for a zero-mesh scene.
-- For a scene that only uses PBR (the common case), drops it from 5 → 2.
-- Spreads the per-shader compile cost over the load-the-scene flow instead of stacking it at init.
-- Aligns with the user's stated architecture (compile what's needed when it's needed, in a batch).
-
-**Plumbing**: already half-done. `MaterialOpaquePipelines::shader_descriptors_for_config` takes `&AntiAliasing` and emits descriptors for all 4 first-party shader_ids × the active MSAA/mipmap. `merge_resolved` already supports filling in a subset (it iterates the slot vec; missing slots stay as their previous Option value). The eager path today is `shader_descriptors_and_layouts` in [pipeline.rs:142](../../crates/renderer/src/render_passes/material_opaque/pipeline.rs#L142) which always emits all 4 shader_ids unconditionally.
-
-**Concrete approach**:
-- Add a `shader_ids: &[MaterialShaderId]` parameter (or a separate "for_shader_id" variant) to `shader_descriptors_for_config` so callers can request a subset.
-- At cold-boot, emit only `[]` (or `[]` + the empty pipeline) — every first-party shader_id is deferred. The empty pipeline stays eager (it's tiny and runs for skybox-only frames).
-- Add `AwsmRenderer::ensure_opaque_shader_compiled(shader_id) -> impl Future<Output = Result<()>>` that:
-  1. Returns immediately if the pipeline for the current `(shader_id, msaa, mipmap)` is already cached on `MaterialOpaquePipelines::main`.
-  2. Otherwise builds descriptors for that single shader_id via the new variant of `shader_descriptors_for_config`, runs them through one batched `Shaders::ensure_keys` + one batched `ComputePipelines::ensure_keys`, and folds via `merge_resolved`.
-- Wire the trigger: in `Materials::insert` (and the gltf-loading path's equivalent), call `ensure_opaque_shader_compiled(material.shader_id()).await` for any first-party variant. Batch multiple insertions in one frame by collecting the set of shader_ids and running one async batch — the gltf loader and the scene-editor's `materialize_*` paths already operate on sets of meshes, so threading a `HashSet<MaterialShaderId>` through is natural.
-- Dynamic materials already follow this pattern (the `prewarm_pipelines` call after `register_material`). Just generalize it to first-party.
-
-**Caveat**: `Materials::insert` is sync today. The async trigger needs either a) propagating async through that path (call site in scene-editor's bridge is already async; gltf loader is async), or b) marking the material "pending-pipeline" and dispatching `ensure_opaque_shader_compiled` from the next render frame's pre-amble. (b) is simpler and avoids API churn — render frames skip materials whose pipeline isn't ready yet (the dispatch path already has `get_compute_pipeline_key(...) -> Option` for the lazy-pool path; a `None` return safely skips the bucket).
-
-**Acceptance**: on Android, init's compute batch should compile in <1 s (down from 14 s — empty + classify only) and the PBR compile fires lazily on first PBR-mesh load with no watchdog pressure. The new `awsm_renderer::boot_timing` logs make this directly measurable.
-
-### Priority 2 — Strip Geometry MSAA pre-warm + defer EVSM / Line / Shadow render pre-warm
-
-**Why**: secondary contributors to cold-boot pipeline count. Geometry first, because it's by far the biggest of the four and the WIP for it already exists ([§ Lessons captured, D](#d-geometry-pass-msaa-aware-build_descriptors--has_branch_for--merge_resolved)) — it just needs a careful re-land without the parallel-await regression.
-
-- **Geometry** (9 render pipelines per MSAA branch): re-land [§ Lessons captured, D](#d-geometry-pass-msaa-aware-build_descriptors--has_branch_for--merge_resolved). Render-pipeline batch at init goes from 27 pipelines / 5 s + watchdog kill → 18 pipelines / ~700 ms on Android.
-- **EVSM** (3 compute pipelines): only useful when at least one shadow-casting light exists. [crates/renderer/src/shadows/evsm.rs:144-146](../../crates/renderer/src/shadows/evsm.rs#L144) currently registers them at init.
-- **Line render** (2 render pipelines): only useful when the user adds a line primitive. The line pass cache key registration is in `crates/renderer/src/render_passes/lines/`.
-- **Shadow Generation VS** (2 render pipelines): only useful with shadow casters. `crates/renderer/src/shadows/helpers.rs` references the pipeline layout.
-
-**Concrete approach**: same lazy-pool pattern as the five passes that already use it. Gate each on a "first use" trigger; for Geometry, on `set_anti_aliasing`. Promote `PipelineVariantNotCompiled` ([§ Lessons captured, C](#c-pipelinevariantnotcompiled-error-variant)) at the lookup site.
-
-**Acceptance**: cold-boot render batch drops from 27 → 9 pipelines on this Android device (Geometry strip from 18→9, lines/shadow-gen become lazy).
-
-### Priority 3 — Replace the `msaa_resolve_samples` workaround
-
-**Why**: the PBR-only resolve path produces SPIR-V the Android Vulkan driver rejects ([§ Lessons captured, E](#e-msaa_resolve_samples-loop-conversion-rd-workaround)). The reverted loop conversion made it boot at 14 s — right at the watchdog edge, not a shipping shape. Need the architecturally clean replacement.
-
-**Approach** — pick one or both:
-
-- **(a) Per-sample intermediate buffer + separate resolve pass.** Main material pass writes per-sample shaded colors to a 4-layer storage texture. A tiny resolve pass (~30 lines, dynamic indexing into the layers) blends them. The main pass shader no longer needs `msaa_resolve_samples` at all. This is the architecturally clean answer.
-- **(b) Specialize for the common edge case.** Most MSAA edges are same-material-vs-same-material or material-vs-skybox. Cross-material edges are rare. Fast path: shade once at sample 0, blend with skybox for the missing samples. Slow path (cross-material): the current loop. Probably halves average-case SPIR-V size.
-
-**Acceptance**: PBR compute pipeline compile drops to <2 s on the Android test device. Visual output for the cross-material-edge case still looks right.
-
-### Priority 4 — Audit the rest of the eager pre-warm set
-
-**Why**: complete the user's "only what's necessary for defaults" architecture.
-
-Today's eager batch (after Priority 1+2 above): probably 6 compute + 9 render pipelines. Walk the set and verify each is truly necessary for a zero-scene render. Things to scrutinize:
-
-- `material_classify` (1 compute) — runs every frame; needs default first-party bucket entries pre-compiled. Probably keep eager.
-- `HZB` (2 compute, `features.gpu_culling`) — runs every frame when on. Keep eager when feature on.
-- `occlusion cull + compaction` (2 compute, `features.gpu_culling`) — same.
-- `coverage` (1 compute, `features.coverage_lod`) — same.
-- `picker` (1 compute, `features.picking`) — runs only on mouse events. Could be lazy.
-- `decal_classify` (1 compute, present-when-decals) — currently gated by decal_bg presence. OK.
-- `display` (1 render) — needed for first frame. Keep eager.
-- `effects` (render) — bloom/SMAA/DoF off by default per `PostProcessing::default()`. The variants for effects-off should be eager; effects-on variants should be lazy (compiled when toggled). Audit whether this is already true.
-
-Each "make lazy" change is a 20-50 line patch following the [`MaterialClassifyPipelines::merge_resolved`](../../crates/renderer/src/render_passes/material_classify/pipeline.rs#L158) pattern.
-
-### Priority 5 — Defer dynamic-material pipeline pre-warm per shader_id
-
-**Why**: after a dynamic material is registered via `AwsmRenderer::register_material`, the renderer calls `prewarm_pipelines` which compiles every per-shader-id opaque variant (4 variants per registered material: MSAA × mipmap) + the classify variant + (for Blend) a transparent stub. That's correct for the common case where the user is about to render the material, but it's eager-against-might-use-later for the material-editor's authoring path — every keystroke that changes the WGSL fires a full recompile, even though only the active (msaa, mipmap) is dispatched on the preview canvas.
-
-For the **single-config** authoring use case, this overpays by 4×. For the **multi-config** runtime case (a real scene with multiple materials each potentially exercised at multiple MSAA states), the existing behavior is right.
-
-**Concrete approach**:
-- Split `prewarm_pipelines` into two flavours:
-  - `prewarm_dynamic_pipelines_for_config(shader_id, &anti_aliasing)` — compiles only the active config for the registered material. The material-editor's recompile sink uses this.
-  - `prewarm_dynamic_pipelines_full(shader_id)` — the current behaviour, all 4 variants. The scene-editor's import-material path uses this (because the scene the user is editing may have meshes at multiple MSAA states).
-- `AwsmRenderer::set_anti_aliasing` already calls `prewarm_dynamic_pipelines` post-flip; that stays.
-
-Less impact than Priority 1 (dynamic materials are a smaller class than first-party) but the material-editor's per-keystroke recompile latency is the user-facing surface that benefits most.
-
-**Acceptance**: material-editor's debounced recompile cycle drops from 4-variant to 1-variant per dynamic material, observable via `awsm_renderer::boot_timing` logs after each edit.
-
-### Priority 6 — Build-time bundle: warmed pipeline cache
-
-**Why**: every cold-boot today re-does WGSL→MSL/SPIR-V lowering from scratch because Dawn's pipeline cache is cleared on browser session start. On Chrome, the disk-backed shader-cache persists across reloads of the same origin in the same session — but a fresh-tab / new-origin / new-profile boot pays the full cost. The Geometry MSAA cut + the lazy-pool work cap the worst case at "~6 pipelines / a few seconds on Android"; below that, the dominant cost is intrinsic to Dawn's per-shader compile.
-
-Two cache-leverage paths:
-
-- **(a) `requestAdapter` device options.** The WebGPU spec exposes pipeline-cache helpers via the `GPUDevice` extension surface (chrome flag-gated today). When promoted, threading a stable cache identifier through `AwsmRendererWebGpuBuilder` would let return-visit cold-boots skip the compile entirely. Track the spec status; wire when it ships.
-- **(b) Ship a pre-warmed cache for prod builds.** At `trunk build --release` time, run a build script that boots the renderer in a headless WebGPU context, drives every default-config compile, and serializes the resulting cache to disk alongside the wasm bundle. The runtime loads it via `requestDevice({pipelineCache: ...})`. Requires (a) to be available; the build-time tooling is a separate concern.
-
-This is a "do later when the platform catches up" item, but worth tracking — the lazy-pool work is the maximum we can do on the JS side. Beyond it, the disk-cache surface is where time goes.
-
-### Priority 7 — Going-forward rule
-
-Once Priority 1-6 are done, add a one-line comment at the eager-batch site in [render_passes.rs:333-365](../../crates/renderer/src/render_passes.rs#L333) saying something like: *"Every entry here must be required for a zero-scene render. If it's scene-content-driven, route it through the per-pass `*_for_config` lazy path instead."*
-
----
-
-## Diagnostic tooling (in place, ready to use)
-
-### `task debug-mobile:chrome-check`
-
-User-provided task that reloads the renderer on the connected Android phone via Chrome and captures the JS console output back to the terminal. This is the primary feedback loop — every change can be validated within ~30 seconds.
-
-Run it from the project root.
-
-### What to grep for in the output
-
-| Pattern | What it tells you |
+| Today (PR #98) | After this plan |
 |---|---|
-| `phase = CompilingShaders \| BuildingPipelines \| Ready (+Tms phase, Tms total)` | Per-phase wall-clock during `AwsmRendererBuilder::build`. Decomposes cold-boot into the canonical phases. |
-| `Shaders::ensure_keys: N shaders compiled in Tms` | Total wall-clock for a shader-compile batch. |
-| `{Render,Compute}Pipelines::ensure_keys: N pipelines compiled in Tms` | Total wall-clock for a pipeline batch. |
-| `[asset_cache] model loaded: asset_id=AssetId(_) (Tms)` | Scene-editor gltf asset reaching `AssetStatus::Ready` (full load + populate wall-clock). |
-| `[scene] model loaded: <GltfId> (Tms)` | Model-tests gltf finishing load. |
-| `VK_ERROR_` | Vulkan-layer pipeline rejection. Catch-all for driver-side issues. |
-| `External Instance reference no longer exists` | Watchdog killed the GPU instance — typically follows a long compile. |
-| `phase = Ready` | Init succeeded end-to-end. |
+| `register_material(def: MaterialRegistration) -> MaterialShaderId` | `submit_pipeline_group_batch(vec![PipelineGroupDef::Material(def)]) -> Vec<PipelineGroupId>` |
+| `prewarm_pipelines(...).await` | **Removed.** Caller uses `pipeline_group_status` (pull) or `subscribe_pipeline_status` (push). |
+| `Material::Custom { shader_id, ... }` | Unchanged — Material::Custom is the *input data*; the shader_id field becomes the `MaterialDef::shader_id` after submit. |
+| Material::insert (sync, expects pre-compiled pipelines) | Unchanged — still sync, still takes a MaterialId. The caller awaits Ready before inserting (or accepts the warn-skip path). |
 
-Once the reverted diagnostics are re-landed per [§ Lessons captured, A+B](#lessons-captured-from-reverted-wip), these lines also appear:
+The `crates/renderer/examples/dynamic_material.rs` example and the two contract docs (`docs/dynamic-materials/contract-opaque.md`, `contract-transparent.md`) get updated to reflect the new flow:
 
-| Pattern | What it tells you |
-|---|---|
-| `device limits:` | Adapter/device caps (max storage buffers, uniform binding size, workgroup storage size, etc.). |
-| `pipeline N/M render:... cum=Tms ok\|ERR` | Per-pipeline finish time + outcome. The label has the shader name embedded. |
-| `pipeline N/M compute:ShaderKey(_):PipelineLayoutKey(_)` | Compute pipeline label. |
-| `GPU uncaptured` | Anything Dawn fires through `onuncapturederror`. |
+```rust
+// Before
+let shader_id = renderer.register_material(def)?;
+renderer.prewarm_pipelines(shader_id).await?;
+let material_id = renderer.materials.insert(Material::Custom { shader_id, ... });
 
-All boot-timing logs use the `awsm_renderer::boot_timing` target. Filter to just these lines with `RUST_LOG=awsm_renderer::boot_timing=info` (or the equivalent in the browser's `tracing-subscriber` filter — `tracing-web` exposes the standard `EnvFilter` syntax).
+// After
+let ids = renderer.submit_pipeline_group_batch(vec![PipelineGroupDef::Material(def)]);
+let group_id = ids[0];
 
-### When stuck
+// Either: await Ready before insert (recommended for interactive editor paths)
+loop {
+    match renderer.pipeline_group_status(group_id) {
+        PipelineGroupStatus::Ready => break,
+        PipelineGroupStatus::Failed { error } => return Err(error.into()),
+        PipelineGroupStatus::Pending => yield_to_scheduler().await,
+    }
+}
+let material_id = match group_id { PipelineGroupId::Material(id) => id, _ => unreachable!() };
+let mesh_material_id = renderer.materials.insert(Material::Custom { material_id, ... });
 
-Bisect the kernel by progressively moving an early `return;` through the shader body. The investigation log below shows this technique — 4 iterations got from "no idea" to "exact failing construct."
+// Or: insert eagerly and let the render-frame preamble warn-and-skip until Ready (recommended for gltf load,
+// where the parent flow has already submitted the whole batch and is awaiting the join)
+```
+
+**Recommended path per call site**:
+
+- **gltf load**: always use the "or" branch (insert eagerly, render skips). This is what makes incremental-paint possible — the scene-graph populates the instant gltf parse finishes, the renderer returns to the frontend, the user sees the skybox + camera + any already-Ready materials immediately, and PBR/UNLIT/etc. mesh content lights up as compiles resolve. **Never await** in the gltf load critical path.
+
+- **Editor interactive "Import Material" / "Add Mesh"**: use the "Either" branch (await Ready before insert). The UX expectation is that clicking "Import Material" leads to the material appearing in the picker; the modal handles the wait. Same for "Add Mesh" — the user clicked the button, they accept the wait, the modal explains it.
+
+- **Material-editor recompile (per-keystroke debounced)**: use the "or" branch with the swap-on-ready pattern (drop the previous MaterialId once the new one is Ready, swap the editor's preview mesh's reference). The editor stays responsive; the preview canvas just keeps showing the previous-compile's output until the new one is ready.
+
+- **Renderer-internal triggers** (e.g. EVSM pipeline submitted when first shadow-casting light is added): "or" branch — the render-frame preamble handles the skip naturally; no need to await from inside renderer code.
+
+The pattern: **prefer non-blocking insert + render-skip everywhere except where the next user action specifically needs the pipeline live.**
+
+---
+
+## Priority 1 — Land the readiness machinery + migrate first-party + dynamic
+
+The largest change. Roughly:
+
+1. **State machine + scheduler infrastructure.** `PipelineGroupId`, `PipelineGroupStatus`, `PipelineGroupDef`, the `FuturesUnordered`-driven scheduler, the `subscribe_pipeline_status` stream. Lives in `crates/renderer/src/pipeline_scheduler/` (new module). The scheduler holds the `Shaders::ensure_keys` + `*Pipelines::ensure_keys` invocations as building blocks, but exposes only the batch surface — call sites don't reach past it.
+
+2. **`AwsmRenderer::submit_pipeline_group_batch` public API.** Takes `Vec<PipelineGroupDef>`, returns `Vec<PipelineGroupId>` synchronously. Internally: queues the compile future, returns ids in Pending state.
+
+3. **Migrate `AwsmRendererBuilder::build` to use the scheduler.** `build` constructs the eager-set list, submits it as the first batch, awaits all groups, returns Renderer. No special eager-compile code path remains.
+
+4. **First-party material flow.** When gltf load parses materials, it builds a `Vec<MaterialDef>` (one per gltf material), calls `submit_pipeline_group_batch`, gets a `Vec<PipelineGroupId>`. The gltf load itself doesn't await — meshes get assigned their MaterialIds and inserted immediately. Materials light up as their compiles resolve.
+
+5. **Dynamic material flow.** `register_material` becomes a thin wrapper around `submit_pipeline_group_batch` for a single-entry batch. The `prewarm_pipelines(...).await` surface is deleted; callers in `material-editor` and `scene-editor` update to use status subscription / poll.
+
+6. **Bucket-entries cache rebuild on status transitions.** The renderer subscribes to its own status stream internally; when a material transitions to/from Ready, the bucket-entries cache is marked dirty. The next-frame classify rebuilds it.
+
+7. **Render-frame preamble warn-and-skip.** Each pass dispatch site checks its `Option<PipelineKey>` accessor; None → skip + warn (once-per-session). No panic in any mode — production safety net.
+
+8. **`tracing` annotations**: each batch logs `submit_pipeline_group_batch: N groups submitted` and each transition logs `Pending → Ready: <label> in Tms` under `target = "awsm_renderer::pipeline_readiness"`.
+
+**Acceptance:**
+- Android cold-boot init reaches `phase = Ready` in <500 ms (down from "fails"; the failing PBR compile is now Priority 3's responsibility, but post-Priority 1 it just sits Pending and doesn't break init).
+- An empty scene renders skybox-only at first frame.
+- Loading a gltf with one PBR mesh: scene-graph + skybox visible immediately; PBR mesh appears when its compile resolves (~3 s on Android post-Priority 3, ~200 ms on desktop).
+- `RUST_LOG=awsm_renderer::pipeline_readiness=info` shows the full submission + transition waterfall.
+
+**Test surface migration (in-scope for Priority 1)**: renderer integration tests today rely on `Materials::insert` followed by immediate dispatch in the same test setup. Under the new architecture, these tests need a small helper:
+
+```rust
+/// Synchronously wait for all currently-Pending pipeline groups to resolve.
+/// For tests only — production code uses the status stream.
+pub async fn wait_for_pipelines_ready(&mut self) -> Result<()>;
+```
+
+Implementation: drain the scheduler in a tight loop until no Pending groups remain (or a timeout fires). Test setup becomes "submit batches → `wait_for_pipelines_ready().await` → dispatch → assert." Roughly 5–10 test files in `crates/renderer/tests/` and `crates/renderer/examples/` need this update — sweep via grep for `Materials::insert` after Priority 1's first pass is in place.
+
+---
+
+## Priority 2 — Migrate scene-content-driven passes into the scheduler
+
+After Priority 1's machinery exists, all the passes that were scheduled in [§ The scheduler-managed set](#the-scheduler-managed-set) need their trigger logic wired.
+
+- **`Pass(GeometryMsaa { other })`**: triggered from `set_anti_aliasing`. The reverted prototype implemented the shader_cache_keys / build_descriptors / merge_resolved / has_branch_for machinery — re-land the structural changes from `crates/renderer/src/render_passes/geometry/pipeline.rs` (per [§ Lessons captured](#lessons-captured-from-reverted-wip)), but route the compile through the scheduler rather than ad-hoc `try_join` in `set_anti_aliasing`.
+
+- **`Pass(Evsm)`**: triggered when the first shadow-casting light is added. Hook is `LightsManager::on_light_added` (or equivalent) detecting `shadow_caster == true` for the first time per session.
+
+- **`Pass(Line)`**: triggered when the first line primitive is inserted. Hook is the line-pass entry point in the meshes/primitives module.
+
+- **`Pass(ShadowGen)`**: triggered when the first shadow caster is added. Hook is alongside Evsm.
+
+- **`Pass(Bloom)` / `Pass(Smaa)` / `Pass(Dof)`**: triggered from `set_post_processing` when the respective effect transitions off → on. Each is an independent batch entry.
+
+- **`Pass(Picker)`**: triggered on first mouse-pick query if the feature is on. Picking is rare enough to be lazy-by-default.
+
+Per pass, the migration is:
+1. Strip eager creation from the cold-boot eager set.
+2. Add the trigger site (1–5 line addition; calls `submit_pipeline_group_batch`).
+3. Update the pass's dispatch site to skip if its `Option<PipelineKey>` accessor returns None.
+
+**Acceptance**: cold-boot eager set is the list in [§ The eager set](#the-eager-set-cold-boot) — nothing else. On Android with `gpu_culling` on, cold-boot compile batch is 4–6 pipelines in <500 ms total.
+
+---
+
+## Priority 3 — Replace `msaa_resolve_samples`
+
+The actual SPIR-V bloat. Today's PBR compute pipeline:
+
+1. Compiles a primary-path branch (PBR shading) per pipeline.
+2. **Inlines `msaa_resolve_samples` once per pipeline**, which **unrolls 4× calls to `msaa_process_sample`**, each of which contains UNLIT/TOON/PBR branches. Net: ~12× shading-code copies in one PBR pipeline's SPIR-V (4 unrolled × 3 internal branches). Android's Vulkan driver rejects it.
+
+The replacement: **per-shader-id edge-resolve via a slot-buffer pattern**. No shared resolve shader; no atomics on the per-frame hot path; cross-material MSAA edges shade correctly for every shader_id including dynamic materials.
+
+### Pass structure
+
+1. **Geometry pass** — unchanged from today. Writes multisampled vis textures.
+
+2. **Classify pass** (lightly extended) — today emits per-shader-id tile lists by primary-sample shader_id. Now also emits, per edge pixel:
+   - One **compact edge_pixel_id** allocated via atomic counter (`edge_count` total at frame end).
+   - The pixel's `(x, y)` coords stored in `edge_to_xy[edge_pixel_id]`.
+   - A 4-byte **slot_map** stored in `edge_slot_map[edge_pixel_id]`, listing up to 4 distinct shader_ids that have samples at this pixel.
+   - For each shader_id present: append `(edge_pixel_id, sample_mask_byte)` to that shader_id's edge sample list. `sample_mask` has bits set for each of the 4 samples that are this shader_id.
+
+3. **Material primary pass per shader_id** (existing pipeline per shader_id, simplified) — `msaa_resolve_samples` is **deleted from this shader entirely**:
+   - For each pixel in this shader_id's tiles: if all 4 samples are this shader_id → shade primary sample, write `opaque_tex`. Fast path.
+   - If only some samples are this shader_id → skip; edge resolve handles it.
+   - **Net SPIR-V change**: PBR primary pipeline drops ~80% of its code (no unrolled resolve, no cross-material branching, no `msaa_process_sample`). Estimated compile drops from ~14 s → ~2 s on Android.
+
+4. **Material edge-resolve pass per shader_id** (NEW pipeline per shader_id):
+   - Indirect-dispatched over this shader_id's edge sample list (`dispatchWorkgroupsIndirect` driven by the counter in the list).
+   - One thread per `(edge_pixel_id, sample_mask)` entry.
+   - Reads slot_map to find this shader_id's slot index (0–3) for this edge pixel.
+   - For each bit set in sample_mask: loads sample's vis_data, shades using this shader_id's specific shading code.
+   - Sums local: `(color_sum, count)` for the samples this shader_id contributed.
+   - Writes one `vec4<f32>` to `accumulator[edge_pixel_id × 4 + slot_index]` = `vec4(color_sum, count_as_float)`. **No atomic** — each slot is owned by exactly one shader_id pipeline.
+   - **Each pipeline contains only its own shading code.** Smaller than today's primary path (single-sample, no primary-pixel boilerplate). Estimated ~1–2 s compile on Android per shader_id.
+
+5. **Skybox edge resolve** — same pattern for skybox samples on edge pixels. One pipeline; writes to skybox's reserved slot.
+
+6. **Final blend pass** — indirect-dispatched over edge pixels:
+   - One thread per edge_pixel_id.
+   - Reads up to 4 slots from `accumulator[edge_pixel_id × 4 .. +4]`, sums color components weighted by their slot counts, divides by total count, writes `opaque_tex[edge_to_xy[edge_pixel_id]]`.
+
+### Pipeline count and packaging
+
+Two pipelines per shader_id:
+- `material_primary_{shader_id}` (the fast-path opaque pipeline; what exists today minus the resolve)
+- `material_edge_resolve_{shader_id}` (NEW; single-sample shading with mask)
+
+Plus:
+- `skybox_edge_resolve` (NEW; one global)
+- `final_blend` (NEW; one global)
+
+Total: `2N + 2` pipelines, where N is shader_ids in active scene (typically 1–5 = 4–12 pipelines). Each is **smaller than today's per-shader-id pipeline**. Compile parallelizes through Dawn's pool.
+
+Two pipelines per shader_id rather than one with two entry points: distinct futures in the scheduler (cleaner status reporting, distinct `boot_timing` labels, possibly more compile-pool concurrency depending on Dawn implementation).
+
+### Slot assignment
+
+The slot_map (4 bytes per edge pixel) tells each shader_id pipeline where to write. Built in classify:
+
+```wgsl
+// Inside classify, per edge pixel:
+var slot_map = vec4<u32>(SHADER_ID_NONE, SHADER_ID_NONE, SHADER_ID_NONE, SHADER_ID_NONE);
+var seen_mask = 0u;  // up to 32 distinct shader_ids supported (4 first-party + dynamic)
+var next_slot = 0u;
+for (var s = 0u; s < 4u; s++) {
+    let sid = read_sample_shader_id(pixel, s);
+    let bit = 1u << sid;
+    if ((seen_mask & bit) == 0u) {
+        slot_map[next_slot] = sid;
+        seen_mask |= bit;
+        next_slot += 1u;
+    }
+}
+// Store slot_map at edge_slot_map[edge_pixel_id]
+```
+
+Each shader_id's edge_resolve thread does a 4-entry scan over slot_map to find its index (`for i in 0..4 { if slot_map[i] == my_sid { my_slot = i; break; } }`). At most 4 compares — costless.
+
+### Memory budget
+
+| Buffer | Per-edge cost | Typical 1080p (7% edges, ~145k) | Worst case (50%, ~1M) |
+|---|---|---|---|
+| `edge_to_xy` (u32 each) | 4 bytes | 580 KB | 4 MB |
+| `edge_slot_map` (u8×4 each) | 4 bytes | 580 KB | 4 MB |
+| `accumulator` (vec4×4 each) | 64 bytes | 9.3 MB | 64 MB |
+| Per-shader-id sample lists | ~8 bytes × N_shader_id_entries | <500 KB total | ~8 MB |
+| Indirect args + counters | trivial | <1 KB | <1 KB |
+| **Total** | | **~11 MB** | **~80 MB** |
+
+Scaled by resolution at typical edge densities (~7% for normal scenes, ~25% for pathological foliage):
+
+| Resolution | Typical edges (~7%) | Pathological edges (~25%) |
+|---|---|---|
+| 1080p | ~11 MB | ~40 MB |
+| 1440p | ~20 MB | ~70 MB |
+| 4K | ~45 MB | ~160 MB |
+
+**Mitigation**: a runtime `MAX_EDGE_BUDGET` (e.g. 512k edge pixels = ~37 MB) caps the buffer size. Classify's atomic counter saturates at the budget; excess edges fall back to an atomic-add tail of the accumulator (a small reserved region that uses fixed-point atomic-add — the slow path we designed away for the common case becomes the safety net for the pathological case). The fallback adds a few hundred μs of per-frame atomic work in the rare overflow scenario, but never blows memory. Default budget tuned per-target: 512k for desktop, 256k for mobile.
+
+### Runtime cost vs today
+
+| Pixel class | Today | After Priority 3 |
+|---|---|---|
+| Non-edge | Inline msaa_sample_count_for_pixel + branch (fast) | Inline check + branch (same fast path) |
+| Edge | Inline 4× `msaa_process_sample`, 1 write | Detect → append to sample list (cheap atomic-inc in classify); later, per-shader edge_resolve dispatch + 1 slot write per shader_id; final blend reads 4 slots + 1 write |
+
+Per-frame totals are roughly equivalent for edges — the same shading work happens, just split across more dispatches. Edge work moves out of the material-pass thread budget into a small set of indirect dispatches. Non-edge pixels are **faster** (no inline resolve check overhead, no 4× sample texture loads on the off-chance).
+
+### Cross-material MSAA correctness
+
+For every shader_id (first-party AND dynamic): each sample at an edge pixel is shaded by its own shader_id's pipeline using that shader_id's exact shading code. No fallbacks, no PBR-substitution.
+
+The PR #98 dynamic-materials surface gets one new contract guarantee: **a registered dynamic material's WGSL is responsible for both its primary-path AND its edge-resolve shading.** In practice both come from the same `custom_shade_dynamic` fragment — the wrapper just invokes it in two slightly different contexts (full vs single-sample). Contract docs need a short update.
+
+### Acceptance
+
+- Android PBR compile drops from ~14 s → ~2–3 s on the test device. Edge resolve pipelines compile in ~1–2 s each.
+- No SPIR-V rejection on PBR; init can complete.
+- Visual diff between today's MSAA edges and the post-Priority-3 MSAA edges is empty for first-party materials (the math is identical). For dynamic materials, the post-Priority-3 result is *correct*; today's result was buggy (PBR-fallback shading).
+- Per-frame budget on Android at 1080p MSAA 4×: comparable to today on simple scenes; better on scenes dominated by non-edge pixels.
+
+---
+
+## Priority 4 — Build-time pipeline cache (parked)
+
+When Dawn's pipeline-cache surface ships in stable WebGPU (chrome flag-gated today), a build-time tool can pre-warm and bundle the cache for ship builds. Out of scope until the spec lands. Tracked here so we don't lose the idea.
 
 ---
 
 ## Lessons captured from reverted WIP
 
-A local prototype branch implemented eight files of follow-up work that were reverted on review (parts were too R&D-y to commit, one piece was a correctness regression). Each is recorded here with the correct shape for a re-land, ordered by leverage. **None of these are blocking** — Priority 1+3 above remain the actual cold-boot wins; the items below either re-land alongside those or stand alone as diagnostics.
+A local prototype branch implemented some adjacent work that was reverted on review. Documented here so re-land happens cleanly inside the new architecture:
 
 ### A. Per-pipeline labels + finish-order log in `ensure_keys`
 
-The committed `{Render,Compute}Pipelines::ensure_keys` log a single aggregate `N pipelines compiled in Tms` line. The reverted prototype added per-pipeline `pipeline N/M render:Geometry(ShaderKey(1)):PipelineLayoutKey(12) ok` lines so the operator can see *which* pipeline finished in what order, plus a cumulative timing — invaluable for diagnosing watchdog kills (the original Android error said `[ComputePipeline (unlabeled)]`, which is what motivated this).
+The committed `{Render,Compute}Pipelines::ensure_keys` log only an aggregate `N pipelines compiled in Tms` line. The prototype added per-pipeline `pipeline N/M render:Geometry(ShaderKey(1)):PipelineLayoutKey(12) ok` lines with cumulative timing.
 
-**Re-land shape**: build the per-pipeline label string before kicking off `device.create_*_pipeline_async`, then attach a side-effect combinator (`.inspect` / `.map`) to each individual future that logs on resolve. **Do NOT replace `futures::future::join_all(promises).await` with a serial `for promise in promises { promise.await }` loop** — the prototype did this to get per-pipeline cumulative timing and the result was a serialization of all pipeline creation, defeating Dawn's parallel compile pool. That regression is the reason this whole batch was reverted. Cumulative wall-clock is achievable inside the combinator without sequencing.
+**Re-land shape** (now folds into Priority 1's scheduler infrastructure): build the per-pipeline label string before kicking off `device.create_*_pipeline_async`, then attach a side-effect `.inspect` combinator to each individual future that logs on resolve. **Critically: do NOT replace `futures::future::join_all(promises).await` with a serial `for promise in promises { promise.await }` loop** — the prototype did this to compute cumulative timing and the result was a serialization of all pipeline creation, defeating Dawn's parallel compile pool. That regression is the reason the prototype was reverted.
 
-For the compute path, also thread `Shaders::get_label(ShaderKey) -> Option<String>` so labels read `compute:MaterialOpaque(...)` instead of `compute:ShaderKey(5):PipelineLayoutKey(_)`. The render path already has this via the shader's `debug_label()`.
+Cumulative wall-clock per pipeline is achievable inside the `.inspect` combinator without sequencing the futures.
+
+For the compute path, thread `Shaders::get_label(ShaderKey) -> Option<String>` so labels read `compute:MaterialOpaque(...)` instead of `compute:ShaderKey(5):PipelineLayoutKey(_)`. The render path already has this via the shader's `debug_label()`.
+
+Under Priority 1, the scheduler is the natural home for this — each submitted group's compile future is wrapped with `.inspect` for transition logging; the `boot_timing` log surface absorbs the per-pipeline output as a natural extension.
 
 ### B. Adapter + device limits log + `onuncapturederror` hook
 
-One-shot log at device creation under `target = "awsm_renderer_core::limits"`:
+One-shot log at device creation under `target = "awsm_renderer_core::limits"`, plus a `device.onuncapturederror` hook under `target = "awsm_renderer_core::uncaptured_error"`. Purely additive diagnostics.
 
-```
-device limits: maxStorageBuffersPerShaderStage=16 maxStorageBufferBindingSize=2147483644
-  maxUniformBufferBindingSize=65536 maxBufferSize=4294967292 maxBindGroups=4
-  maxBindingsPerBindGroup=1000 maxSampledTexturesPerShaderStage=48
-  maxComputeWorkgroupStorageSize=16384 maxComputeInvocationsPerWorkgroup=256
-  maxComputeWorkgroupSizeX=256 maxComputeWorkgroupSizeY=256
-```
-
-Plus `device.onuncapturederror` under `target = "awsm_renderer_core::uncaptured_error"` — surfaces runtime validation / OOM / internal errors that Dawn fires outside the create-pipeline Promise.
-
-**Re-land shape**: 60-line addition to `crates/renderer-core/src/renderer.rs`. The prototype used `js_sys::Reflect` because the web-sys typed bindings for `GpuValidationError` / `GpuOutOfMemoryError` / `GpuInternalError` / `GpuUncapturedErrorEvent` aren't enabled — cleaner re-land would add those features to the workspace `web-sys` declaration and use the typed bindings. Pure-diagnostic; safe to land standalone.
+**Re-land shape**: ~60 lines in `crates/renderer-core/src/renderer.rs`. The prototype used `js_sys::Reflect` because web-sys feature flags for `GpuValidationError` / `GpuInternalError` / `GpuOutOfMemoryError` / `GpuUncapturedErrorEvent` aren't enabled — cleaner re-land would add those features to the workspace web-sys declaration and use the typed bindings. Safe to land standalone, before Priority 1.
 
 ### C. `PipelineVariantNotCompiled` error variant
 
@@ -284,56 +609,212 @@ Plus `device.onuncapturederror` under `target = "awsm_renderer_core::uncaptured_
 PipelineVariantNotCompiled(&'static str),
 ```
 
-In `crates/renderer/src/error.rs`. Used by every lazy-pool lookup tree when a branch is `None`. The pattern works today by returning `Option` from `get_*_key`; promoting to a typed error gives dispatchers a cleaner "skip-this-bucket" signal than ad-hoc `None`-handling.
+Used by lazy-pool lookup trees when a branch is `None`. Under the new architecture, this is generalized into `PipelineGroupStatus::Pending` / `Failed` — but the error variant is still useful for the render-frame preamble's warn-skip path. Land it alongside Priority 1.
 
-**Re-land shape**: land alongside whichever Priority 1+2 pass first needs it. Adding it speculatively makes the surface dead code.
+### D. Geometry pass MSAA-aware build_descriptors + merge_resolved
 
-### D. Geometry pass MSAA-aware build_descriptors + has_branch_for + merge_resolved
+The reverted prototype refactored `crates/renderer/src/render_passes/geometry/pipeline.rs` to match the lazy-pool pattern that opaque/classify/HZB/picker already use: `shader_cache_keys(multisampled_geometry: bool)`, `Option<Level1>` branches, `merge_resolved`, `has_branch_for`.
 
-The lazy-pool refactor of `crates/renderer/src/render_passes/geometry/pipeline.rs` — the work that the (incorrect) "18 → 9" row in the progress table claimed was already landed. Concretely:
-
-- `shader_cache_keys(multisampled_geometry: bool)` and `build_descriptors(..., multisampled_geometry: bool)` take the active MSAA explicitly.
-- `GeometryRenderPipelineKeys.{no_anti_alias, msaa_4_anti_alias}` become `Option<Level1>`; only the active branch is populated at cold-boot.
-- New `merge_resolved(...)` mirrors `MaterialClassifyPipelines::merge_resolved` so toggling MSAA back and forth pays compile cost only on the first transition each direction.
-- New `has_branch_for(anti_aliasing)` lets `set_anti_aliasing` skip the recompile when the now-active branch is already cached.
-- `crates/renderer/src/anti_alias.rs` `set_anti_aliasing` extends to build geometry descriptors when the new branch is empty and runs the geometry render-pipeline batch via `try_join` alongside the existing compute batch.
-- `crates/renderer/src/render_passes.rs` plumbs the MSAA config into geometry's `build_descriptors`.
-
-**Re-land shape**: this is Priority 1 below — just lift the prototype carefully, keeping the `try_join` shape between compute + render at the `set_anti_aliasing` entry point. Measured Android impact when this was active: render-pipeline batch at init went from 27 pipelines / 5 s + watchdog kill → 18 pipelines / ~700 ms.
+**Re-land shape**: this is Priority 2's `Pass(GeometryMsaa { samples })` migration. The structural code lifts cleanly from the WIP; the trigger plumbing (set_anti_aliasing → submit batch) is rewired to go through the scheduler instead of the ad-hoc `try_join` the prototype used.
 
 ### E. `msaa_resolve_samples` loop conversion (R&D workaround)
 
-The PBR-only MSAA resolve path in `helpers/material_shading.wgsl:234-266` unrolls 4 `msaa_process_sample` calls — Tint inlines each, producing SPIR-V that the Android Vulkan driver rejects on compile (`VK_ERROR_INITIALIZATION_FAILED`). The prototype replaced the unroll with a `for s in 0..msaa_sample_count` loop, which Tint sees as a single call site. Init goes from "fails" → "succeeds" but PBR compile still takes ~14 s on the test device (right at the watchdog edge).
+The prototype replaced the 4× unrolled `msaa_process_sample` call sequence with a `for s in 0..msaa_sample_count` loop. Took Android from "fails" → "succeeds, ~14 s PBR compile" — at the watchdog edge but functional. Reverted because it's not a shipping shape.
 
-This was reverted because it's an R&D-quality workaround, not the long-term shape. The architecturally clean replacements are (a) per-sample intermediate buffer + dedicated resolve pass and (b) specialize the common-case (same-material / material-vs-skybox edges). See [Priority 3](#priority-3--replace-the-msaa_resolve_samples-workaround) below — the re-land is the replacement, not the loop conversion.
-
-If Android needs to boot for testing before Priority 3 lands, the loop conversion is the minimal patch to apply locally; just don't ship it.
+**Re-land shape**: do not re-land. Priority 3 obsoletes this entirely. If Android needs to boot for testing before Priority 3 lands, the loop conversion is the minimal local patch — ~5 lines — but don't ship it.
 
 ---
 
-## Files left modified
+## Diagnostic tooling
 
-The working tree is clean. All committed work referenced in this plan is on `dynamic-shaders` HEAD. `task debug-mobile:chrome-check` does **not** currently reach `phase = Ready` on the Android test device — Priority 3 is what fixes that.
+### Committed today
 
-The stale plan file at `~/.claude/plans/any-idea-why-i-quirky-unicorn.md` (created during the investigation) is superseded by this one and can be deleted.
+All under `target = "awsm_renderer::boot_timing"`; filter via `RUST_LOG=awsm_renderer::boot_timing=info`.
+
+| Pattern | What it tells you |
+|---|---|
+| `phase = CompilingShaders \| BuildingPipelines \| Ready (+Tms phase, Tms total)` | Per-phase wall-clock in `AwsmRendererBuilder::build` |
+| `Shaders::ensure_keys: N shaders compiled in Tms` | Per-batch shader-compile wall-clock |
+| `{Render,Compute}Pipelines::ensure_keys: N pipelines compiled in Tms` | Per-batch pipeline-compile wall-clock |
+| `[asset_cache] model loaded: asset_id=AssetId(_) (Tms)` | Scene-editor gltf reaching Ready |
+| `[scene] model loaded: <GltfId> (Tms)` | Model-tests gltf finishing |
+| `VK_ERROR_` | Vulkan-layer rejection (mostly: SPIR-V too complex) |
+| `External Instance reference no longer exists` | Watchdog killed the GPU — typically after a long compile |
+| `phase = Ready` | Init succeeded |
+
+### After Priority 1 + Lessons A+B re-land
+
+Add under `target = "awsm_renderer::pipeline_readiness"` and `target = "awsm_renderer_core::*"`:
+
+| Pattern | What it tells you |
+|---|---|
+| `submit_pipeline_group_batch: N groups submitted (labels=...)` | Each batch submission |
+| `Pending → Ready: <label> in Tms (id=PipelineGroupId(...))` | Each transition |
+| `Pending → Failed: <label> error=<...>` | Failures |
+| `device limits: max...=...` (Lessons B) | One-shot capability dump at device creation |
+| `pipeline N/M render:Geometry(ShaderKey(1)):PipelineLayoutKey(12) cum=Tms ok\|ERR` (Lessons A) | Per-pipeline finish-order |
+| `GPU uncaptured: <error>` (Lessons B) | Runtime validation / OOM / internal errors |
+
+### `task debug-mobile:chrome-check`
+
+User-provided task — reloads the renderer on the connected Android phone via Chrome and captures console output back to the terminal. Primary feedback loop; ~30 s round-trip.
+
+### Bisection technique
+
+When stuck on a shader compile failure: progressively move an early `return;` through the shader body. The investigation log below shows the technique — 4 iterations got from "no idea" to "exact failing construct." Still the right tool for shader-driver issues that the pipeline-readiness machinery can't diagnose.
 
 ---
 
-## Investigation log (for the historical record)
+## Landing cadence (recommended)
 
-In rough order, the things I tried and what each told me:
+Items in **bold** can land independently and bring immediate value; non-bold items depend on prior pieces.
+
+1. **Lessons B (device-limits log + onuncapturederror).** Pure diagnostic. ~60 lines. Standalone.
+2. **Lessons C (PipelineVariantNotCompiled error variant).** Trivial. Standalone.
+3. **Priority 1: state machine + scheduler + first-party + dynamic migration.** The spine. ~800–1500 lines across `pipeline_scheduler` module + 3 frontend updates. Single PR.
+4. **Lessons A (per-pipeline labels + finish-order log)** folded into Priority 1 — natural home is inside the scheduler's `.inspect` combinators.
+5. **Priority 2: pass migrations.** Each pass is an independent commit (Geometry, EVSM, Line, ShadowGen, Bloom, SMAA, DoF, Picker). Can ship as a single PR with one commit per pass, or as separate PRs.
+6. **Priority 3: msaa_resolve_samples replacement.** Single PR; ~1000 lines (new shaders + new pipelines + classify extension + render-pass orchestration). Verifies on Android end-to-end.
+7. **Priority 4: build-time pipeline cache.** Parked.
+
+Each priority is verifiable on Android via `task debug-mobile:chrome-check` reaching `phase = Ready` with the expected pipeline counts in the boot-timing logs.
+
+---
+
+## Root cause (preserved for historical record)
+
+**The PBR opaque compute shader emits SPIR-V large enough to exceed the Android Vulkan driver's pipeline-compile complexity ceiling.**
+
+The path: `msaa_resolve_samples` in [helpers/material_shading.wgsl:234–266](../../crates/renderer/src/render_passes/material_opaque/shader/material_opaque_wgsl/helpers/material_shading.wgsl#L234) calls `msaa_process_sample` 4× (unrolled). `msaa_process_sample` contains the UNLIT/TOON/PBR branch tree plus the full shading kernel (texture pool sampling + mipmap + lighting + IBL + shadows). Tint inlines each unrolled call, producing SPIR-V with **the entire shading pipeline duplicated 4 times** for the edge-resolve path, plus once more for the main non-edge path. Only PBR fails because PBR's primary path is itself heavy; UNLIT/TOON share the resolve bloat but their primary paths are small enough to keep the total under the driver's ceiling.
+
+### Things that look related but aren't
+
+The investigation ruled these out via direct testing (see [§ Investigation log](#investigation-log)):
+
+- Multisampled `textureLoad` in compute: works fine; verified by forcing MSAA off.
+- `maxUniformBufferBindingSize` at exactly 64 KB: shrunk to 32 KB, no change.
+- `maxStorageBuffersPerShaderStage`: device reports 16, shader uses 9. Not close.
+- `maxBindGroups` / `maxBindingsPerBindGroup`: under both.
+- `rgba16float` storage texture write: empty shader uses it and succeeds.
+- Cube texture sampling, dynamic indexing into uniforms / storage, integer texture loads: all proven to work.
+
+### Bisect technique that found it
+
+1. Stub `main()` body → all 5 pipelines compile in 40 ms.
+2. Re-enable up to `material_load_shader_id` → UNLIT/TOON/FLIPBOOK compile; only PBR fails.
+3. Replace PBR's `msaa_resolve_samples` call with constant write → all 5 pipelines compile in 105 ms.
+4. Reduce unroll from 4× to 1× → all 5 pipelines compile in 2.8 s with full body intact.
+
+Confirmed mechanism: the 4× inlining is the bloat.
+
+---
+
+## Investigation log (chronological, for the historical record)
 
 | Hypothesis | Test | Result |
 |---|---|---|
 | Too many storage buffers per stage on Android | Logged `device.limits()` | Device reports 16; we use 9. Ruled out. |
-| Render-pipeline batch overflowing watchdog | Cut geometry MSAA pre-warm (18 → 9 pipelines) | Render batch went from 5 s + kill to 660 ms. Real win; landed permanently. Did not fix compute side. |
-| Wave-based pipeline issuance | Issued compute promises in chunks of 6 | Total wall-clock went from 8 s to 12 s — Dawn was already absorbing parallelism. Reverted. |
-| Multisampled textureLoad in compute is the issue | Forced MSAA off | Same 4 opaque pipelines still failed. Hypothesis was wrong. |
+| Render-pipeline batch overflowing watchdog | Cut geometry MSAA pre-warm (18 → 9 pipelines) | Render batch went from 5 s + kill to 660 ms. Reverted (folded into Priority 2). |
+| Wave-based pipeline issuance | Issued compute promises in chunks of 6 | Total wall-clock went 8 s → 12 s — Dawn was already absorbing parallelism. Reverted. |
+| Multisampled textureLoad in compute is the issue | Forced MSAA off | Same 4 opaque pipelines still failed. Hypothesis wrong. |
 | `lights: array<LightPacked, 1024>` at exactly 64 KB | Shrunk to 512 | Same failure. Ruled out. |
-| Body of `main()` is the issue | Stubbed body to `return;` | All 5 PipelineLayoutKey(5) pipelines compiled in 40 ms. Body confirmed as culprit. |
-| Body up to `material_load_shader_id` | Early-return at that point | UNLIT/TOON/FLIPBOOK compiled; only PBR still failed. Narrowed to PBR-unique code. |
-| PBR-unique `msaa_resolve_samples` is the issue | Replaced its call with a constant write | All 5 pipelines compiled in 105 ms. Confirmed. |
-| 4× unrolled `msaa_process_sample` inlining is the SPIR-V bloat | Reduced to 1 call | All 5 pipelines compiled in 2.8 s with full body intact. Confirmed mechanism. |
-| Loop instead of unroll | Converted to `for s in 0..N` | All 5 pipelines compile (14.2 s for PBR). Works but slow — current state. |
+| Body of `main()` is the issue | Stubbed body to `return;` | All 5 pipelines compiled in 40 ms. Body confirmed as culprit. |
+| Body up to `material_load_shader_id` | Early-return at that point | UNLIT/TOON/FLIPBOOK compiled; only PBR still failed. Narrowed. |
+| PBR-unique `msaa_resolve_samples` is the issue | Replaced its call with constant write | All 5 pipelines compiled in 105 ms. Confirmed. |
+| 4× unrolled `msaa_process_sample` is the bloat | Reduced to 1 call | All 5 pipelines compile in 2.8 s with full body intact. Confirmed mechanism. |
+| Loop instead of unroll | Converted to `for s in 0..N` | All 5 compile (14.2 s for PBR). Works but slow — reverted. |
 
-The two wrong hypotheses early on (multisampled-textureLoad-in-compute, uniform-binding-at-limit) cost two iterations each. Net cost was a few hours; net benefit was a thoroughly confirmed diagnosis.
+The wrong hypotheses (multisampled-textureLoad, uniform-binding-at-limit) cost two iterations each. Net debugging cost: a few hours. Net benefit: thoroughly confirmed diagnosis that the cleanup in this plan can target precisely.
+
+---
+
+## Implementation checklist
+
+Mark items `[x]` as completed. Commit the checklist update along with each item or coherent batch. **Do not stop between items** — work through to the end. Each item points to the body section that has the design rationale.
+
+### Stage 0 — Pre-flight diagnostics (standalone re-lands, no architectural dependency)
+
+- [ ] **0.1** Land Lessons B: adapter + device limits log + `onuncapturederror` hook in `crates/renderer-core/src/renderer.rs`. Use typed web-sys bindings if you also enable the right features in workspace `Cargo.toml` (`GpuValidationError`, `GpuInternalError`, `GpuOutOfMemoryError`, `GpuUncapturedErrorEvent`); fall back to `js_sys::Reflect` if the feature flags don't resolve cleanly. Logs under `target = "awsm_renderer_core::limits"` and `target = "awsm_renderer_core::uncaptured_error"`. (Body: [§ Lessons B](#b-adapter--device-limits-log--onuncapturederror-hook).)
+- [ ] **0.2** Land Lessons C: `PipelineVariantNotCompiled(&'static str)` variant on `AwsmRendererError` in `crates/renderer/src/error.rs`. Don't wire any call sites yet — Priority 1 introduces them. (Body: [§ Lessons C](#c-pipelinevariantnotcompiled-error-variant).)
+- [ ] **0.3** Commit Stage 0.
+
+### Stage 1 — Pipeline-readiness machinery (Priority 1)
+
+- [ ] **1.1** Create `crates/renderer/src/pipeline_scheduler/` module. Define `PipelineGroupId`, `PipelineGroupStatus`, `PipelineGroupDef`, `MaterialDef`, `MaterialDefKind`, `PipelineConfigSnapshot`, `PassDef`, `PassKind` per [§ Architecture: Pipeline Readiness](#architecture-pipeline-readiness). No call sites yet; just the type surface.
+- [ ] **1.2** Implement `PipelineScheduler` struct holding the `FuturesUnordered`, the `SlotMap<MaterialId, MaterialState>`, the `HashMap<PassKind, PassState>`, the status stream sender, and the orphan-cleanup generation marker.
+- [ ] **1.3** Implement `submit_pipeline_group_batch(defs: Vec<PipelineGroupDef>) -> Vec<PipelineGroupId>`. Internally: for each def, allocate id, build the compile future (wraps `Shaders::ensure_keys` + `{Render,Compute}Pipelines::ensure_keys` for that def's pipeline set), push into FuturesUnordered. Return ids sync.
+- [ ] **1.4** Implement `pipeline_group_status(id) -> PipelineGroupStatus` (O(1) SlotMap / HashMap lookup) and `subscribe_pipeline_status() -> impl Stream<...>` (broadcast channel wrapping the sender).
+- [ ] **1.5** Implement `drop_material_group(MaterialId)` — removes from SlotMap, optionally drops underlying pipeline-cache entries if no other ref.
+- [ ] **1.6** Implement the per-frame `poll_scheduler` entry point (drains resolved futures, dispatches status events, applies cache-dirty markers). Called from the render loop's pre-frame phase. (Body: [§ Scheduler driving and transition timing](#scheduler-driving-and-transition-timing).)
+- [ ] **1.7** Wire Lessons A: per-pipeline label + finish-order log via `.inspect` combinator on each individual `device.create_*_pipeline_async` future. Critical: **do NOT serialize via `for promise in promises { promise.await }`** — must remain `futures::future::join_all(promises).await` with side-effects in `.inspect`. (Body: [§ Lessons A](#a-per-pipeline-labels--finish-order-log-in-ensure_keys).)
+- [ ] **1.8** Migrate `AwsmRendererBuilder::build` to construct the eager-set list from the builder's config, submit it as the first scheduler batch, await the join, return Renderer. Hard-error if any eager group lands in `Failed` state. Remove the existing eager-compile codepath. (Body: [§ The eager set](#the-eager-set-cold-boot).)
+- [ ] **1.9** Implement bucket-entries cache dirty-on-transition wiring. Renderer subscribes to its own status stream; Pending↔Ready transitions for `PipelineGroupId::Material` mark the cache dirty. Classify rebuilds on next frame. (Body: [§ Pending material lifecycle](#pending-material-lifecycle-load-bearing-invariant).)
+- [ ] **1.10** Implement render-frame preamble warn-and-skip: each per-pass dispatch site checks its `Option<PipelineKey>` accessor; None → `tracing::warn!` (once per (id, location) per session via a `Mutex<HashSet>` guard) + skip. No panic in any mode. (Body: [§ Render-frame preamble safety net](#render-frame-preamble-safety-net).)
+- [ ] **1.11** Add `wait_for_pipelines_ready()` test helper to `AwsmRenderer`. Sweep `crates/renderer/tests/` and `crates/renderer/examples/` for sites that need it; update each. (Body: [§ Test surface migration](#priority-1--land-the-readiness-machinery--migrate-first-party--dynamic).)
+- [ ] **1.12** Implement `set_anti_aliasing` race policy: returns `Err(AwsmRendererError::NotReady)` if called before `build` returns. Same for `set_post_processing`. (Body: [§ Config-flip semantics](#config-flip-semantics-msaa-post-processing).)
+- [ ] **1.13** Migrate first-party material flow: gltf loader builds `Vec<MaterialDef>` from gltf JSON's `materials` array, calls `submit_pipeline_group_batch`, gets MaterialIds. Meshes insert immediately referencing the MaterialIds. No await on the gltf load critical path. (Body: [§ The "or" branch + recommended path](#migration-of-the-dynamic-materials-api).)
+- [ ] **1.14** Migrate dynamic-material flow: `register_material` becomes a thin wrapper around `submit_pipeline_group_batch`. **Delete** the `prewarm_pipelines(...).await` surface entirely. Update `material-editor` and `scene-editor` call sites to use the new flow per the [§ Migration table](#migration-of-the-dynamic-materials-api).
+- [ ] **1.15** Update `crates/renderer/examples/dynamic_material.rs` to use the new flow. (Body: [§ Migration code example](#migration-of-the-dynamic-materials-api).)
+- [ ] **1.16** Update `docs/dynamic-materials/contract-opaque.md` and `contract-transparent.md`: registration is non-blocking, status checked via `pipeline_group_status` or `subscribe_pipeline_status`, no `.await` on prewarm.
+- [ ] **1.17** Add `tracing` annotations under `target = "awsm_renderer::pipeline_readiness"`: submit-batch logs, per-transition logs. (Body: [§ Diagnostic tooling](#after-priority-1--lessons-ab-re-land).)
+- [ ] **1.18** Hand-test on desktop: `task material-editor:dev` + `task scene-editor:dev` + `task model-tests:dev`. Verify `phase = Ready` in <100 ms via boot-timing logs. Verify gltf load + incremental paint works (skybox visible immediately, mesh appears later).
+- [ ] **1.19** Commit Stage 1 (may be multiple commits per principle "logical commits, not working states").
+
+### Stage 2 — Pass migrations (Priority 2)
+
+- [ ] **2.1** `Pass(GeometryMsaa { samples })`: lift the reverted prototype's MSAA-aware `shader_cache_keys` / `build_descriptors` / `Option<Level1>` / `merge_resolved` / `has_branch_for` from the WIP description (body [§ Lessons D](#d-geometry-pass-msaa-aware-build_descriptors--merge_resolved)). Route through the scheduler — `set_anti_aliasing` submits the new MSAA's `Pass(GeometryMsaa)` def. Update geometry dispatch site to skip when its accessor returns None.
+- [ ] **2.2** `Pass(Evsm)`: hook trigger in `LightsManager::on_light_added` (or equivalent) when shadow_caster transitions 0 → ≥1. Strip eager EVSM init from cold-boot. Update EVSM dispatch sites to skip when not Ready.
+- [ ] **2.3** `Pass(Line)`: hook trigger when first line primitive is inserted. Strip eager init. Skip on not-Ready.
+- [ ] **2.4** `Pass(ShadowGen)`: hook alongside Evsm — same first-shadow-caster trigger. Strip eager init. Skip on not-Ready.
+- [ ] **2.5** `Pass(Bloom)` / `Pass(Smaa)` / `Pass(Dof)`: hook each independently from `set_post_processing`. Strip eager init. Skip on not-Ready. Each effect is a separate batch entry, so they compile in parallel.
+- [ ] **2.6** `Pass(Picker)`: trigger on first mouse-pick query. Strip eager init.
+- [ ] **2.7** Audit the cold-boot eager set against [§ The eager set](#the-eager-set-cold-boot) — must be exactly that list, nothing else. Verify via boot-timing logs counting submitted pipelines in the first batch.
+- [ ] **2.8** Hand-test on desktop: toggle MSAA, toggle bloom, toggle SMAA, add a shadow-casting light, add a line primitive. Verify the modal pops, compile finishes, content appears correctly.
+- [ ] **2.9** Update tasks #38 ("Lazy pool: strip Shadows caster pass") and #39 ("Lazy pool: strip Geometry pass") to completed once corresponding migrations land.
+- [ ] **2.10** Commit Stage 2.
+
+### Stage 3 — `msaa_resolve_samples` replacement (Priority 3)
+
+- [ ] **3.1** Extend classify pass: emit compact `edge_pixel_id` via atomic counter, `edge_to_xy[edge_pixel_id]` buffer, `edge_slot_map[edge_pixel_id]` (4-byte per-edge shader_id slot assignment), per-shader-id edge sample lists (`(edge_pixel_id, sample_mask_byte)` entries). (Body: [§ Pass structure](#pass-structure) step 2 + [§ Slot assignment](#slot-assignment).)
+- [ ] **3.2** Refactor each first-party opaque shader: **delete** `msaa_resolve_samples`, `msaa_process_sample`, the inline MSAA edge-detection branch from `compute.wgsl:504-518`. Primary path: fast-path non-edge pixels only; skip edge pixels. (Body: [§ Pass structure](#pass-structure) step 3.)
+- [ ] **3.3** Add new shader entry point per first-party shader_id: `material_edge_resolve_{shader_id}`. Indirect-dispatched over this shader_id's edge sample list. One thread per `(edge_pixel_id, sample_mask)`; loads slot index; shades the sample-mask's set bits; writes `vec4<f32>` to `accumulator[edge_pixel_id × 4 + slot_index]`. **No atomics.** (Body: [§ Pass structure](#pass-structure) step 4.)
+- [ ] **3.4** Add `skybox_edge_resolve` shader: indirect-dispatched over skybox-sample edge list; shades sample-mask's skybox samples; writes to its accumulator slot. (Body: step 5.)
+- [ ] **3.5** Add `final_blend` shader: indirect-dispatched over edge pixels. Reads 4 slots, sums weighted by per-slot count, divides by total count, writes `opaque_tex`. (Body: step 6.)
+- [ ] **3.6** Update `MaterialDef` and the askama template substitution to handle dynamic materials' edge_resolve entry — the `custom_shade_dynamic` fragment is invoked from both the primary entry point and the edge_resolve entry point, with the same `OpaqueShadingInput` shape. (Body: [§ Cross-material MSAA correctness](#cross-material-msaa-correctness).)
+- [ ] **3.7** Wire the new pipelines through `PipelineGroupDef`: `Material(def)` now compiles 2 pipelines (`primary_{shader_id}` + `edge_resolve_{shader_id}`); add `PassDef::EdgeResolveSkybox` and `PassDef::EdgeResolveBlend` to the scheduler-managed set, triggered when first opaque material is registered. (Body: [§ Pipeline count and packaging](#pipeline-count-and-packaging).)
+- [ ] **3.8** Implement runtime `MAX_EDGE_BUDGET` cap with atomic-add fallback for overflow. Tunable per-target default (512k desktop, 256k mobile). (Body: [§ Memory budget](#memory-budget).)
+- [ ] **3.9** Update `docs/dynamic-materials/contract-opaque.md` to document the new "WGSL fragment runs in both primary and edge_resolve contexts" guarantee, and that cross-material MSAA edges now work for dynamic materials too.
+- [ ] **3.10** Hand-test on desktop: MSAA-on scenes with PBR + UNLIT + a dynamic material in close proximity. Verify cross-material edges render correctly (no PBR-fallback substitution).
+- [ ] **3.11** Hand-test on Android via `task debug-mobile:chrome-check`: confirm PBR primary pipeline compile drops from ~14 s → ~2-3 s. Confirm init reaches `phase = Ready` with no `VK_ERROR_INITIALIZATION_FAILED`.
+- [ ] **3.12** Commit Stage 3.
+
+### Stage 4 — End-to-end testing
+
+- [ ] **4.1** Run `task material-editor:dev` in a preview browser. Verify: cold-boot reaches Ready quickly; editing WGSL recompiles in background; modal shows progress; preview canvas stays interactive during compile; error in WGSL surfaces in the Errors pane with line numbers.
+- [ ] **4.2** Run `task scene-editor:dev`. Verify: cold-boot is fast; loading a gltf shows skybox immediately and meshes paint incrementally; Import Material flow works; MSAA toggle shows the modal + recompile flicker.
+- [ ] **4.3** Run `task model-tests:dev`. Walk through several gltf models (at least one with PBR + UNLIT, one with shadows, one with transmission). Verify each loads with incremental paint, all materials end up Ready.
+- [ ] **4.4** Toggle features: MSAA off→on→off, bloom off→on→off, SMAA off→on. Verify modal appears each time, content recompiles, scene renders correctly post-recompile.
+- [ ] **4.5** Add a shadow-casting directional light to a scene that didn't have one. Verify EVSM + ShadowGen pipelines submit when light is added, modal shows, shadows appear when ready.
+- [ ] **4.6** Optional: run `task debug-mobile:chrome-check` if Android device is available. Verify init succeeds, gltf-load TTFP is fast, no SPIR-V rejections.
+- [ ] **4.7** Boot-timing log audit: collect logs from a cold-boot + gltf load. Verify pipeline counts match the [§ The eager set](#the-eager-set-cold-boot) table for the eager batch. Verify subsequent batches are sized as expected (e.g. 2 pipelines per first-party shader_id for PBR/UNLIT/TOON/FLIPBOOK).
+
+### Stage 5 — CI prep + PR
+
+- [ ] **5.1** Run `cargo fmt --all`. Commit any formatting fixes.
+- [ ] **5.2** Run `task lint`. Resolve all warnings/errors. Re-run until clean. Commit.
+- [ ] **5.3** Run `cargo doc --workspace --no-deps`. Verify no new warnings (the existing pre-Priority-1 baseline is 47 warnings; we shouldn't add to it).
+- [ ] **5.4** Push the branch.
+- [ ] **5.5** Open a PR via `gh pr create`. Title: "Renderer pipeline-readiness architecture (closes Android boot failure, enables incremental paint)". Body: summarize the architectural change in 2-3 paragraphs, link to this doc, explicitly list the breaking changes from [§ Migration of the dynamic-materials API](#migration-of-the-dynamic-materials-api). End with the Claude Code footer.
+
+### Stage 6 — Parked
+
+- [ ] **6.1** Priority 4 (build-time pipeline cache): parked, waiting on Dawn pipeline-cache spec stabilization. Leave the section in this doc for future reference.
+
+---
+
+## Cross-references
+
+- Per-priority code touchpoints: each priority section lists the files in scope.
+- Dynamic-materials Public API contract docs (updated under [§ Migration of the dynamic-materials API](#migration-of-the-dynamic-materials-api)): [`../dynamic-materials/contract-opaque.md`](../dynamic-materials/contract-opaque.md), [`../dynamic-materials/contract-transparent.md`](../dynamic-materials/contract-transparent.md).
+- Asset authoring / UI polish / non-optimization remaining work: [`remainder.md`](remainder.md).
+- Integration example (to be updated post-Priority 1): [`../../crates/renderer/examples/dynamic_material.rs`](../../crates/renderer/examples/dynamic_material.rs).
