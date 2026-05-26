@@ -41,7 +41,10 @@ impl MaterialClassifyPipelines {
         bucket_entries: &[BucketEntry],
     ) -> Result<Self> {
         ctx.shaders
-            .ensure_keys(ctx.gpu, Self::shader_cache_keys(bucket_entries, ctx.anti_aliasing))
+            .ensure_keys(
+                ctx.gpu,
+                Self::shader_cache_keys(bucket_entries, ctx.anti_aliasing),
+            )
             .await?;
         let descs = Self::build_descriptors(ctx, bind_groups, bucket_entries).await?;
         let pipeline_keys = ctx

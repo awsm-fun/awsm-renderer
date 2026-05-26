@@ -482,7 +482,10 @@ mod empty_registry_tests {
             (MaterialShaderId::PBR, "classify_buckets.pbr_offset"),
             (MaterialShaderId::UNLIT, "classify_buckets.unlit_offset"),
             (MaterialShaderId::TOON, "classify_buckets.toon_offset"),
-            (MaterialShaderId::FLIPBOOK, "classify_buckets.flipbook_offset"),
+            (
+                MaterialShaderId::FLIPBOOK,
+                "classify_buckets.flipbook_offset",
+            ),
         ] {
             let wgsl = render_first_party_wgsl(shader_id, None);
             assert!(
@@ -516,7 +519,6 @@ mod empty_registry_tests {
 
 #[cfg(test)]
 mod transparent_dynamic_tests {
-    use super::*;
     use crate::render_passes::material_opaque::shader::cache_key::DynamicShaderInfo;
     use crate::render_passes::material_transparent::shader::cache_key::ShaderCacheKeyMaterialTransparent;
     use crate::render_passes::material_transparent::shader::template::ShaderTemplateMaterialTransparent;
@@ -544,15 +546,11 @@ mod transparent_dynamic_tests {
                     ty: FieldType::F32,
                 },
             ],
-            textures: vec![TextureSlotRuntime {
-                name: "bg".into(),
-            }],
+            textures: vec![TextureSlotRuntime { name: "bg".into() }],
             buffers: Vec::new(),
         };
-        let struct_decl = awsm_materials::dynamic_layout::generate_wgsl_struct(
-            "MaterialData",
-            &layout,
-        );
+        let struct_decl =
+            awsm_materials::dynamic_layout::generate_wgsl_struct("MaterialData", &layout);
         let loader_decl = awsm_materials::dynamic_layout::generate_wgsl_loader(
             "MaterialData",
             "material_data_load",

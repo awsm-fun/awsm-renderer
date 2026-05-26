@@ -141,10 +141,7 @@ pub trait RecompileSink: 'static {
 /// Cancelable by dropping the spawned future (today the editor
 /// keeps it alive for the lifetime of the page; if multi-document
 /// support lands later, each per-document state owns its own).
-pub fn spawn(
-    state: EditState,
-    sink: Rc<futures_signals::signal::Mutable<Box<dyn RecompileSink>>>,
-) {
+pub fn spawn(state: EditState, sink: Rc<futures_signals::signal::Mutable<Box<dyn RecompileSink>>>) {
     // Treat any change to either signal as the trigger. The
     // `for_each` + `Timeout` combination gives us a "last-write wins
     // within DEBOUNCE_MS" semantic with no extra state.

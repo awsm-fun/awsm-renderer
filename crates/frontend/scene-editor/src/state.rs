@@ -122,9 +122,7 @@ pub struct AppState {
     /// Status of the in-flight Import Material flow. Drives the inline
     /// status line under the Import button.
     pub custom_materials_import_status: std::sync::Arc<
-        futures_signals::signal::Mutable<
-            crate::properties::custom_materials_pane::ImportStatus,
-        >,
+        futures_signals::signal::Mutable<crate::properties::custom_materials_pane::ImportStatus>,
     >,
 
     /// Tree-view drag state. Non-empty `tree_drag_ids` means a drag is in
@@ -197,9 +195,7 @@ impl AppState {
             projection_mode: Mutable::new(ProjectionMode::Perspective),
             editor_camera_target: Mutable::new(None),
             selected_assets: Mutable::new(indexmap::IndexSet::new()),
-            custom_materials: std::rc::Rc::new(
-                futures_signals::signal_vec::MutableVec::new(),
-            ),
+            custom_materials: std::rc::Rc::new(futures_signals::signal_vec::MutableVec::new()),
             custom_materials_import_status: std::sync::Arc::new(
                 futures_signals::signal::Mutable::new(
                     crate::properties::custom_materials_pane::ImportStatus::Idle,

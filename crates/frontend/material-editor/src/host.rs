@@ -149,10 +149,10 @@ impl RendererHost {
                     )
                 };
 
-                let mesh_key =
-                    self.renderer
-                        .add_raw_mesh(raw, transform_key, material_key)
-                        .map_err(|e| anyhow::anyhow!("add_raw_mesh failed: {e:?}"))?;
+                let mesh_key = self
+                    .renderer
+                    .add_raw_mesh(raw, transform_key, material_key)
+                    .map_err(|e| anyhow::anyhow!("add_raw_mesh failed: {e:?}"))?;
 
                 self.quad_mesh = Some(mesh_key);
                 self.quad_transform = Some(transform_key);

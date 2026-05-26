@@ -151,7 +151,10 @@ impl HzbPipelines {
         })
     }
 
-    pub fn from_resolved(slot: Vec<HzbPipelineSlot>, pipeline_keys: Vec<ComputePipelineKey>) -> Self {
+    pub fn from_resolved(
+        slot: Vec<HzbPipelineSlot>,
+        pipeline_keys: Vec<ComputePipelineKey>,
+    ) -> Self {
         let mut seed_msaa = None;
         let mut seed_single = None;
         // Reduce is always present in any well-formed descriptor.

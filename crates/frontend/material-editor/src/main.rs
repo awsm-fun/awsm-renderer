@@ -127,13 +127,9 @@ fn start_render_loop(handle: RendererHandle) {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    let raf_holder: Rc<RefCell<Option<gloo_render::AnimationFrame>>> =
-        Rc::new(RefCell::new(None));
+    let raf_holder: Rc<RefCell<Option<gloo_render::AnimationFrame>>> = Rc::new(RefCell::new(None));
 
-    fn tick(
-        handle: RendererHandle,
-        raf_holder: Rc<RefCell<Option<gloo_render::AnimationFrame>>>,
-    ) {
+    fn tick(handle: RendererHandle, raf_holder: Rc<RefCell<Option<gloo_render::AnimationFrame>>>) {
         if let Ok(mut guard) = handle.try_borrow_mut() {
             if let Some(host) = guard.as_mut() {
                 // Camera: looking at the quad at (0, 0, -3) from

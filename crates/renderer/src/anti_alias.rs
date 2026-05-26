@@ -77,8 +77,7 @@ impl AwsmRenderer {
                 &self.render_passes.material_opaque.bind_groups,
                 &self.anti_aliasing,
             )?;
-        let classify_first_party_entries =
-            crate::dynamic_materials::first_party_bucket_entries();
+        let classify_first_party_entries = crate::dynamic_materials::first_party_bucket_entries();
         let classify_descs =
             crate::render_passes::material_classify::pipeline::MaterialClassifyPipelines::build_descriptors_for_config(
                 &self.gpu,
@@ -133,8 +132,10 @@ impl AwsmRenderer {
         // ── Phase 2: batch shader compile for opaque (classify
         //    already resolved its shader inside `build_descriptors_for_config`'s
         //    `get_key` call). One ensure_keys for everything else.
-        let opaque_shader_jobs: Vec<crate::shaders::ShaderCacheKey> =
-            opaque_descs.iter().map(|d| d.shader_cache.clone()).collect();
+        let opaque_shader_jobs: Vec<crate::shaders::ShaderCacheKey> = opaque_descs
+            .iter()
+            .map(|d| d.shader_cache.clone())
+            .collect();
         let opaque_shader_keys = self
             .shaders
             .ensure_keys(&self.gpu, opaque_shader_jobs)
@@ -144,9 +145,8 @@ impl AwsmRenderer {
         //    + concatenate classify's already-resolved keys. One
         //    batched ensure_keys for the union.
         use crate::pipelines::compute_pipeline::ComputePipelineCacheKey;
-        let mut compute_jobs: Vec<ComputePipelineCacheKey> = Vec::with_capacity(
-            opaque_descs.len() + classify_descs.pipeline_cache_keys.len(),
-        );
+        let mut compute_jobs: Vec<ComputePipelineCacheKey> =
+            Vec::with_capacity(opaque_descs.len() + classify_descs.pipeline_cache_keys.len());
         let opaque_pool_start = 0;
         for (desc, shader_key) in opaque_descs.iter().zip(&opaque_shader_keys) {
             compute_jobs.push(ComputePipelineCacheKey::new(*shader_key, desc.layout_key));
@@ -173,17 +173,22 @@ impl AwsmRenderer {
         let resolved = self
             .pipelines
             .compute
-            .ensure_keys(&self.gpu, &self.shaders, &self.pipeline_layouts, compute_jobs)
+            .ensure_keys(
+                &self.gpu,
+                &self.shaders,
+                &self.pipeline_layouts,
+                compute_jobs,
+            )
             .await?;
 
         // ── Phase 4: merge resolved pipelines into the per-pass
         //    caches. Sync slotmap inserts; previously-compiled
         //    variants are preserved.
         let opaque_slots: Vec<_> = opaque_descs.into_iter().map(|d| d.slot).collect();
-        self.render_passes
-            .material_opaque
-            .pipelines
-            .merge_resolved(opaque_slots, resolved[opaque_pool_start..opaque_pool_end].to_vec());
+        self.render_passes.material_opaque.pipelines.merge_resolved(
+            opaque_slots,
+            resolved[opaque_pool_start..opaque_pool_end].to_vec(),
+        );
         self.render_passes
             .material_classify
             .pipelines

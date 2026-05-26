@@ -537,7 +537,7 @@ impl AwsmRenderer {
         //    place the resolved pipeline back into per-pass caches.
         let mut shader_jobs: Vec<crate::shaders::ShaderCacheKey> = Vec::new();
         enum Slot {
-            Classify(Option<u32>), // msaa
+            Classify(Option<u32>),                                       // msaa
             Opaque(awsm_materials::MaterialShaderId, Option<u32>, bool), // (shader_id, msaa, mipmaps)
             /// Transparent prewarm exercises the template only — we
             /// don't capture a per-mesh pipeline here; the actual
@@ -624,11 +624,7 @@ impl AwsmRenderer {
         //    awaits. `ensure_keys` returns the resolved keys in input
         //    order so Phase 3 below can build pipeline cache keys
         //    directly without a follow-up `get_key` loop.
-        let resolved_shader_keys = match self
-            .shaders
-            .ensure_keys(&self.gpu, shader_jobs)
-            .await
-        {
+        let resolved_shader_keys = match self.shaders.ensure_keys(&self.gpu, shader_jobs).await {
             Ok(keys) => keys,
             Err(e) => {
                 tracing::warn!("[dynamic-materials] prewarm shader batch failed: {e:?}");
@@ -1593,10 +1589,10 @@ impl AwsmRendererBuilder {
             render_keys[caster_render_range].to_vec(),
             compute_keys[evsm_compute_range].to_vec(),
         )?;
-        render_passes
-            .effects
-            .pipelines
-            .install_resolved(&post_processing, compute_keys[effects_compute_range].to_vec());
+        render_passes.effects.pipelines.install_resolved(
+            &post_processing,
+            compute_keys[effects_compute_range].to_vec(),
+        );
         render_passes
             .display
             .pipelines

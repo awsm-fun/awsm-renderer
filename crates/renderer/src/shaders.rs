@@ -204,8 +204,17 @@ pub enum ShaderCacheKey {
 }
 
 /// Shader template variants for renderer-managed shaders.
+///
+/// `RenderPass` is `Box`'d because its inner
+/// [`ShaderTemplateRenderPass`] is ~256 bytes (it carries every
+/// per-pass template's askama state inline) while the other
+/// variants are tens of bytes. Without the indirection the enum
+/// would pay the worst-case size on every variant — `clippy::large_enum_variant`
+/// catches this. The `Box` cost is one heap allocation per shader
+/// template creation, which is amortized away by the actual WGSL
+/// compile that follows.
 pub enum ShaderTemplate {
-    RenderPass(ShaderTemplateRenderPass),
+    RenderPass(Box<ShaderTemplateRenderPass>),
     Picker(ShaderTemplatePicker),
     Shadow(ShaderTemplateShadow),
     Line(ShaderTemplateLine),
@@ -217,7 +226,7 @@ impl TryFrom<&ShaderCacheKey> for ShaderTemplate {
     fn try_from(value: &ShaderCacheKey) -> Result<Self> {
         match value {
             ShaderCacheKey::RenderPass(cache_key) => {
-                Ok(ShaderTemplate::RenderPass(cache_key.try_into()?))
+                Ok(ShaderTemplate::RenderPass(Box::new(cache_key.try_into()?)))
             }
             ShaderCacheKey::Picker(cache_key) => Ok(ShaderTemplate::Picker(cache_key.into())),
             ShaderCacheKey::Shadow(cache_key) => Ok(ShaderTemplate::Shadow(cache_key.try_into()?)),

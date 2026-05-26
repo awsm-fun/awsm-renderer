@@ -369,10 +369,16 @@ pub fn generate_wgsl_loader(struct_name: &str, fn_name: &str, layout: &MaterialL
         let word = *byte_offset / 4;
         match ty {
             FieldType::F32 => {
-                out.push_str(&format!("        material_load_f32(base + {}u), // {name}\n", word));
+                out.push_str(&format!(
+                    "        material_load_f32(base + {}u), // {name}\n",
+                    word
+                ));
             }
             FieldType::U32 | FieldType::Bool => {
-                out.push_str(&format!("        material_load_u32(base + {}u), // {name}\n", word));
+                out.push_str(&format!(
+                    "        material_load_u32(base + {}u), // {name}\n",
+                    word
+                ));
             }
             FieldType::Vec2 => {
                 out.push_str(&format!(

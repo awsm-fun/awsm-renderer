@@ -424,9 +424,8 @@ impl crate::AwsmRenderer {
             .material_classify_buffers
             .ensure_bucket_count(&self.gpu, new_count)?;
         if resized {
-            self.bind_groups.mark_create(
-                crate::bind_groups::BindGroupCreate::MaterialClassifyBuffersResize,
-            );
+            self.bind_groups
+                .mark_create(crate::bind_groups::BindGroupCreate::MaterialClassifyBuffersResize);
         }
         Ok(id)
     }

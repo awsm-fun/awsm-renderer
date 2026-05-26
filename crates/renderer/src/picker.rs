@@ -227,7 +227,9 @@ impl Picker {
     /// matching variant. Both BGLs are always created (they're
     /// cheap and needed for the lazy recompile path) but the shader
     /// compile is scoped to the active MSAA.
-    pub fn shader_cache_keys(anti_aliasing: &crate::anti_alias::AntiAliasing) -> Vec<ShaderCacheKey> {
+    pub fn shader_cache_keys(
+        anti_aliasing: &crate::anti_alias::AntiAliasing,
+    ) -> Vec<ShaderCacheKey> {
         let multisampled = anti_aliasing.msaa_sample_count.is_some();
         vec![ShaderCacheKey::from(ShaderCacheKeyPicker {
             multisampled_geometry: multisampled,
@@ -253,9 +255,15 @@ impl Picker {
 
         let multisampled = anti_aliasing.msaa_sample_count.is_some();
         let (bgl_key, slot) = if multisampled {
-            (multisampled_bind_group_layout_key, PickerPipelineSlot::Multisampled)
+            (
+                multisampled_bind_group_layout_key,
+                PickerPipelineSlot::Multisampled,
+            )
         } else {
-            (singlesampled_bind_group_layout_key, PickerPipelineSlot::Singlesampled)
+            (
+                singlesampled_bind_group_layout_key,
+                PickerPipelineSlot::Singlesampled,
+            )
         };
 
         let pipeline_layout_key = pipeline_layouts.get_key(
