@@ -194,6 +194,23 @@ impl Shaders {
     pub fn get(&self, shader_key: ShaderKey) -> Option<&web_sys::GpuShaderModule> {
         self.lookup.get(shader_key)
     }
+
+    /// Reverse-lookup: returns the template debug label for a given
+    /// `ShaderKey`, or `None` if the key isn't in the cache.
+    ///
+    /// Used by the per-pipeline boot-timing log to attach a
+    /// human-readable shader-template name to each pipeline. Linear
+    /// scan of the cache (O(N) in shader-count) — only called during
+    /// pipeline-compile logging, not on the hot path.
+    pub fn get_label(&self, shader_key: ShaderKey) -> Option<String> {
+        for (cache_key, &key) in &self.cache {
+            if key == shader_key {
+                let template = ShaderTemplate::try_from(cache_key).ok()?;
+                return template.debug_label().map(|s| s.to_string());
+            }
+        }
+        None
+    }
 }
 
 impl Default for Shaders {

@@ -118,10 +118,47 @@ impl ComputePipelines {
 
         let n = descriptors.len();
         let t_start = web_sys::js_sys::Date::now();
-        let promises: Vec<JsFuture<web_sys::GpuComputePipeline>> = descriptors
+
+        // Per-pipeline label + cumulative-timing wrapper (Lessons A from
+        // docs/plans/more-optimizations.md). Each individual future is
+        // wrapped to log on resolve with its finish-order index and
+        // cumulative wall-clock since batch start. **Critically:** the
+        // wrapping uses an `async move { ... promise.await ... }` block
+        // per promise — the `join_all` below still drives every future
+        // concurrently. Do NOT replace `join_all(promises).await` with
+        // a serial `for promise in promises { promise.await }` loop:
+        // that defeats Dawn's parallel compile pool.
+        let labels: Vec<String> = pending_input_indices
             .iter()
-            .map(|d| JsFuture::from(gpu.create_compute_pipeline_promise(d)))
+            .map(|&input_idx| {
+                let ck = &inputs[input_idx];
+                format!("{:?}:{:?}", ck.shader_key, ck.layout_key)
+            })
             .collect();
+        let promises = descriptors
+            .iter()
+            .enumerate()
+            .map(|(i, d)| {
+                let label = labels[i].clone();
+                let total = n;
+                let promise = JsFuture::from(gpu.create_compute_pipeline_promise(d));
+                async move {
+                    let r = promise.await;
+                    let cum_ms = web_sys::js_sys::Date::now() - t_start;
+                    let outcome = if r.is_ok() { "ok" } else { "ERR" };
+                    tracing::info!(
+                        target: "awsm_renderer::boot_timing",
+                        "pipeline {}/{} compute:{} cum={:.0}ms {}",
+                        i + 1,
+                        total,
+                        label,
+                        cum_ms,
+                        outcome,
+                    );
+                    r
+                }
+            })
+            .collect::<Vec<_>>();
 
         let results = futures::future::join_all(promises).await;
         let dt_ms = web_sys::js_sys::Date::now() - t_start;
