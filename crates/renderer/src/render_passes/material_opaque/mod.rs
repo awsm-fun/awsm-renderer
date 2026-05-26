@@ -1,4 +1,5 @@
 pub mod bind_group;
+pub mod edge_bind_group;
 pub mod edge_buffers;
 pub mod edge_pipeline;
 pub mod pipeline;

@@ -609,6 +609,15 @@ impl AwsmRenderer {
             self.render_passes
                 .material_opaque
                 .render(&ctx, renderables.opaque)?;
+
+            // Per-shader-id MSAA edge-resolve + final blend (Priority
+            // 3 in docs/plans/more-optimizations.md). No-op when MSAA
+            // is off or the edge_resolve pipelines haven't been
+            // submitted-and-resolved yet (warn-and-skip per
+            // pipeline_scheduler::warn_pipeline_not_compiled).
+            self.render_passes
+                .material_opaque
+                .render_edge_resolve(&ctx)?;
         }
 
         // Build the opaque RT mip chain when any visible transparent
