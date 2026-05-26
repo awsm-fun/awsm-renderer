@@ -5,6 +5,7 @@ use super::{
     collider::ColliderShape,
     curve::CurveDef,
     decal::DecalConfig,
+    dynamic_material::CustomMaterialInstance,
     instances::{InstancesAlongCurveDef, SweepAlongCurveDef},
     light::LightConfig,
     line::LineDef,
@@ -118,6 +119,14 @@ pub enum NodeKind {
         /// quick authoring without going through the asset table.
         #[serde(default)]
         inline_material: MaterialDef,
+        /// Optional runtime-registered custom material. When `Some`,
+        /// wins over both `material` and `inline_material` — the
+        /// renderer-bridge resolves the name against the
+        /// `MaterialRegistry` and constructs a `Material::Custom`.
+        /// Old `project.json` files without this field round-trip via
+        /// `#[serde(default)]`.
+        #[serde(default)]
+        custom_material: Option<CustomMaterialInstance>,
         #[serde(default)]
         shadow: MeshShadowConfig,
     },
@@ -127,6 +136,10 @@ pub enum NodeKind {
         material: Option<MaterialRef>,
         #[serde(default)]
         inline_material: MaterialDef,
+        /// Optional runtime-registered custom material. See
+        /// [`NodeKind::Primitive::custom_material`].
+        #[serde(default)]
+        custom_material: Option<CustomMaterialInstance>,
         #[serde(default)]
         shadow: MeshShadowConfig,
     },
@@ -139,6 +152,10 @@ pub enum NodeKind {
         material: Option<MaterialRef>,
         #[serde(default)]
         inline_material: MaterialDef,
+        /// Optional runtime-registered custom material. See
+        /// [`NodeKind::Primitive::custom_material`].
+        #[serde(default)]
+        custom_material: Option<CustomMaterialInstance>,
         #[serde(default)]
         shadow: MeshShadowConfig,
     },

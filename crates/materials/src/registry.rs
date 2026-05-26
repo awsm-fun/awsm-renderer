@@ -27,27 +27,33 @@ pub fn enabled_materials() -> Vec<MaterialEntry> {
     vec![
         #[cfg(feature = "pbr-standard")]
         MaterialEntry {
-            shader_id: MaterialShaderId::Pbr,
+            shader_id: MaterialShaderId::PBR,
             wgsl_fragment: crate::pbr::WGSL_FRAGMENT,
             name: "pbr",
         },
         #[cfg(feature = "unlit")]
         MaterialEntry {
-            shader_id: MaterialShaderId::Unlit,
+            shader_id: MaterialShaderId::UNLIT,
             wgsl_fragment: crate::unlit::WGSL_FRAGMENT,
             name: "unlit",
         },
         #[cfg(feature = "toon")]
         MaterialEntry {
-            shader_id: MaterialShaderId::Toon,
+            shader_id: MaterialShaderId::TOON,
             wgsl_fragment: crate::toon::WGSL_FRAGMENT,
             name: "toon",
         },
         #[cfg(feature = "flipbook")]
         MaterialEntry {
-            shader_id: MaterialShaderId::FlipBook,
+            shader_id: MaterialShaderId::FLIPBOOK,
             wgsl_fragment: crate::flipbook::WGSL_FRAGMENT,
             name: "flipbook",
+        },
+        #[cfg(feature = "scanline")]
+        MaterialEntry {
+            shader_id: MaterialShaderId::SCANLINE,
+            wgsl_fragment: crate::scanline::WGSL_FRAGMENT,
+            name: "scanline",
         },
     ]
 }
@@ -81,9 +87,20 @@ pub fn build_shader_id_consts() -> String {
     let entries = enabled_materials();
     let mut out = String::new();
     for entry in &entries {
+        // `enabled_materials()` returns only first-party entries, all of
+        // which have a canonical WGSL const name. The dynamic-material
+        // registry emits its own consts via a separate code path (see
+        // `MaterialRegistry::build_shader_id_consts` in Phase 3).
+        let const_name = entry.shader_id.wgsl_const_name().unwrap_or_else(|| {
+            panic!(
+                "[awsm-materials] first-party material {} (id {}) is missing a canonical WGSL const name",
+                entry.name,
+                entry.shader_id.as_u32(),
+            )
+        });
         out.push_str(&format!(
             "const {name}: u32 = {value}u;\n",
-            name = entry.shader_id.wgsl_const_name(),
+            name = const_name,
             value = entry.shader_id.as_u32(),
         ));
     }

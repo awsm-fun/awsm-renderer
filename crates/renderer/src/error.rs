@@ -91,6 +91,9 @@ pub enum AwsmError {
 
     #[error("{0}")]
     FrameGlobals(#[from] crate::frame_globals::AwsmFrameGlobalsError),
+
+    #[error("{0}")]
+    DynamicMaterial(#[from] crate::dynamic_materials::AwsmDynamicMaterialError),
 }
 
 /// Renderer result type.

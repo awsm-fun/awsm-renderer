@@ -1,0 +1,35 @@
+version: "3"
+
+includes:
+  config:
+    taskfile: ../config.yml
+    flatten: true
+
+tasks:
+  setup:
+    desc: "setup the mobile debugger"
+    cmds:
+      - adb reverse tcp:{{.PORT_MATERIAL_EDITOR_DEV}} tcp:{{.PORT_MATERIAL_EDITOR_DEV}}
+      - adb reverse tcp:{{.PORT_MODEL_TESTS_DEV}} tcp:{{.PORT_MODEL_TESTS_DEV}}
+      - adb reverse tcp:{{.PORT_SCENE_EDITOR_DEV}} tcp:{{.PORT_SCENE_EDITOR_DEV}}
+      - adb reverse tcp:{{.PORT_SITE_INDEX_DEV}} tcp:{{.PORT_SITE_INDEX_DEV}}
+      - adb forward tcp:9222 localabstract:chrome_devtools_remote
+
+  show-setup:
+    desc: "show the current adb reverse and forward rules"
+    cmds:
+      - adb reverse --list
+      - adb forward --list
+
+  show-json:
+    desc: "show the json output of the devtools remote"
+    cmds:
+      - curl http://127.0.0.1:9222/json/list
+
+  chrome-check:
+    desc: "check if chrome can connect to the devtools remote"
+    env:
+      PORT: "{{.PORT_MODEL_TESTS_DEV}}"
+      WAIT_MS: "60000"
+    cmds:
+      - crates/debugging/src/bin/android_chrome_check.sh

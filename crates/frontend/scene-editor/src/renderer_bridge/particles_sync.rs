@@ -239,9 +239,12 @@ fn build_runtime(
         base_color[1] * 1.6,
         base_color[2] * 1.6,
     ];
-    let material_key = renderer
-        .materials
-        .insert(Material::Pbr(Box::new(pbr_opaque)), &renderer.textures);
+    let material_key = renderer.materials.insert(
+        Material::Pbr(Box::new(pbr_opaque)),
+        &renderer.textures,
+        &renderer.dynamic_materials,
+        &renderer.extras_pool,
+    );
 
     let m = sprite_quad(PARTICLE_QUAD_SIZE, PARTICLE_QUAD_SIZE);
     let raw = RawMeshData {
@@ -360,9 +363,12 @@ async fn build_runtime_blend(
     pbr_blend.metallic_factor = 0.0;
     pbr_blend.roughness_factor = 1.0;
     pbr_blend.emissive_factor = [0.0, 0.0, 0.0];
-    let material_key = renderer
-        .materials
-        .insert(Material::Pbr(Box::new(pbr_blend)), &renderer.textures);
+    let material_key = renderer.materials.insert(
+        Material::Pbr(Box::new(pbr_blend)),
+        &renderer.textures,
+        &renderer.dynamic_materials,
+        &renderer.extras_pool,
+    );
 
     let m = sprite_quad(PARTICLE_QUAD_SIZE, PARTICLE_QUAD_SIZE);
     let raw = RawMeshData {

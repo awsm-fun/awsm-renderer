@@ -78,7 +78,7 @@ impl AwsmRenderer {
         let Some(picker) = self.picker.as_ref() else {
             return Ok(PickResult::Disabled);
         };
-        let pipeline_key = if self.anti_aliasing.msaa_sample_count.is_some() {
+        let pipeline_key_opt = if self.anti_aliasing.msaa_sample_count.is_some() {
             picker.multisampled_compute_pipeline_key
         } else {
             picker.singlesampled_compute_pipeline_key
@@ -86,9 +86,9 @@ impl AwsmRenderer {
 
         let (bind_group, pipeline) = match (
             picker._bind_group.as_ref(),
-            self.pipelines.compute.get(pipeline_key),
+            pipeline_key_opt.and_then(|k| self.pipelines.compute.get(k).ok()),
         ) {
-            (Some(bg), Ok(p)) => (bg, p),
+            (Some(bg), Some(p)) => (bg, p),
             _ => {
                 return Ok(PickResult::Initializing);
             }
@@ -141,9 +141,17 @@ impl AwsmRenderer {
 }
 
 /// Picker state and GPU resources.
+///
+/// **Lazy-pool semantics:** cold-boot only compiles the pipeline
+/// matching the live `AntiAliasing` config. The other variant is
+/// compiled on demand when the user calls
+/// [`crate::AwsmRenderer::set_anti_aliasing`]. Both fields are `Option`;
+/// `pick()` returns `PickResult::Initializing` when the requested
+/// MSAA's pipeline isn't compiled yet (same behavior as before
+/// when bind groups weren't ready).
 pub struct Picker {
-    singlesampled_compute_pipeline_key: ComputePipelineKey,
-    multisampled_compute_pipeline_key: ComputePipelineKey,
+    singlesampled_compute_pipeline_key: Option<ComputePipelineKey>,
+    multisampled_compute_pipeline_key: Option<ComputePipelineKey>,
     singlesampled_bind_group_layout_key: BindGroupLayoutKey,
     multisampled_bind_group_layout_key: BindGroupLayoutKey,
     _bind_group: Option<web_sys::GpuBindGroup>,
@@ -169,6 +177,15 @@ pub struct PickerDescriptors {
     pub singlesampled_bind_group_layout_key: BindGroupLayoutKey,
     pub multisampled_bind_group_layout_key: BindGroupLayoutKey,
     pub pipeline_cache_keys: Vec<ComputePipelineCacheKey>,
+    pub slot: Vec<PickerPipelineSlot>,
+}
+
+/// Slot identity carried alongside each compiled pipeline so
+/// `merge_resolved` knows which MSAA slot to update.
+#[derive(Clone, Copy, Debug)]
+pub enum PickerPipelineSlot {
+    Singlesampled,
+    Multisampled,
 }
 
 impl Picker {
@@ -184,9 +201,16 @@ impl Picker {
         pipeline_layouts: &mut PipelineLayouts,
         shaders: &mut Shaders,
         pipelines: &mut Pipelines,
+        anti_aliasing: &crate::anti_alias::AntiAliasing,
     ) -> Result<Self> {
-        let descs =
-            Self::build_descriptors(gpu, bind_group_layouts, pipeline_layouts, shaders).await?;
+        let descs = Self::build_descriptors(
+            gpu,
+            bind_group_layouts,
+            pipeline_layouts,
+            shaders,
+            anti_aliasing,
+        )
+        .await?;
         let pipeline_keys = pipelines
             .compute
             .ensure_keys(
@@ -199,57 +223,60 @@ impl Picker {
         Self::from_resolved(gpu, descs, pipeline_keys)
     }
 
-    /// Static set of shader cache keys this subsystem will need —
-    /// folded into the cross-system shader pre-warm in
-    /// `RenderPasses::new`.
-    pub fn shader_cache_keys() -> Vec<ShaderCacheKey> {
-        vec![
-            ShaderCacheKey::from(ShaderCacheKeyPicker {
-                multisampled_geometry: false,
-            }),
-            ShaderCacheKey::from(ShaderCacheKeyPicker {
-                multisampled_geometry: true,
-            }),
-        ]
+    /// Shader cache keys for the *live* AA config — emits only the
+    /// matching variant. Both BGLs are always created (they're
+    /// cheap and needed for the lazy recompile path) but the shader
+    /// compile is scoped to the active MSAA.
+    pub fn shader_cache_keys(
+        anti_aliasing: &crate::anti_alias::AntiAliasing,
+    ) -> Vec<ShaderCacheKey> {
+        let multisampled = anti_aliasing.msaa_sample_count.is_some();
+        vec![ShaderCacheKey::from(ShaderCacheKeyPicker {
+            multisampled_geometry: multisampled,
+        })]
     }
 
-    /// Builds layouts + pipeline cache keys. Requires that
-    /// [`Self::shader_cache_keys`] have already been `ensure_keys`'d.
+    /// Builds layouts + pipeline cache key for the live config.
+    /// Requires that [`Self::shader_cache_keys`] has been
+    /// `ensure_keys`'d. Both BGLs are created (the recompile path
+    /// reuses them); only the matching pipeline cache key is
+    /// emitted.
     pub async fn build_descriptors(
         gpu: &AwsmRendererWebGpu,
         bind_group_layouts: &mut BindGroupLayouts,
         pipeline_layouts: &mut PipelineLayouts,
         shaders: &mut Shaders,
+        anti_aliasing: &crate::anti_alias::AntiAliasing,
     ) -> Result<PickerDescriptors> {
         let singlesampled_bind_group_layout_key =
             create_bind_group_layout(gpu, bind_group_layouts, false)?;
         let multisampled_bind_group_layout_key =
             create_bind_group_layout(gpu, bind_group_layouts, true)?;
 
-        let singlesampled_pipeline_layout_key = pipeline_layouts.get_key(
+        let multisampled = anti_aliasing.msaa_sample_count.is_some();
+        let (bgl_key, slot) = if multisampled {
+            (
+                multisampled_bind_group_layout_key,
+                PickerPipelineSlot::Multisampled,
+            )
+        } else {
+            (
+                singlesampled_bind_group_layout_key,
+                PickerPipelineSlot::Singlesampled,
+            )
+        };
+
+        let pipeline_layout_key = pipeline_layouts.get_key(
             gpu,
             bind_group_layouts,
-            PipelineLayoutCacheKey::new(vec![singlesampled_bind_group_layout_key]),
-        )?;
-        let multisampled_pipeline_layout_key = pipeline_layouts.get_key(
-            gpu,
-            bind_group_layouts,
-            PipelineLayoutCacheKey::new(vec![multisampled_bind_group_layout_key]),
+            PipelineLayoutCacheKey::new(vec![bgl_key]),
         )?;
 
-        let singlesampled_shader = shaders
+        let shader = shaders
             .get_key(
                 gpu,
                 ShaderCacheKeyPicker {
-                    multisampled_geometry: false,
-                },
-            )
-            .await?;
-        let multisampled_shader = shaders
-            .get_key(
-                gpu,
-                ShaderCacheKeyPicker {
-                    multisampled_geometry: true,
+                    multisampled_geometry: multisampled,
                 },
             )
             .await?;
@@ -257,32 +284,51 @@ impl Picker {
         Ok(PickerDescriptors {
             singlesampled_bind_group_layout_key,
             multisampled_bind_group_layout_key,
-            pipeline_cache_keys: vec![
-                ComputePipelineCacheKey::new(
-                    singlesampled_shader,
-                    singlesampled_pipeline_layout_key,
-                ),
-                ComputePipelineCacheKey::new(multisampled_shader, multisampled_pipeline_layout_key),
-            ],
+            pipeline_cache_keys: vec![ComputePipelineCacheKey::new(shader, pipeline_layout_key)],
+            slot: vec![slot],
         })
     }
 
     /// Folds resolved pipeline keys back into the typed `Picker`.
     /// Sync; the caller has already run the batched
-    /// `ComputePipelines::ensure_keys`.
+    /// `ComputePipelines::ensure_keys`. The non-active MSAA's
+    /// pipeline stays `None` until [`crate::AwsmRenderer::set_anti_aliasing`]
+    /// triggers its compile.
     pub fn from_resolved(
         gpu: &AwsmRendererWebGpu,
         descs: PickerDescriptors,
         pipeline_keys: Vec<ComputePipelineKey>,
     ) -> Result<Self> {
-        Ok(Self {
-            singlesampled_compute_pipeline_key: pipeline_keys[0],
-            multisampled_compute_pipeline_key: pipeline_keys[1],
+        let mut me = Self {
+            singlesampled_compute_pipeline_key: None,
+            multisampled_compute_pipeline_key: None,
             singlesampled_bind_group_layout_key: descs.singlesampled_bind_group_layout_key,
             multisampled_bind_group_layout_key: descs.multisampled_bind_group_layout_key,
             state: Arc::new(Mutex::new(PickerState::new(gpu)?)),
             _bind_group: None,
-        })
+        };
+        me.merge_resolved(descs.slot, pipeline_keys);
+        Ok(me)
+    }
+
+    /// Merge a fresh batch of resolved pipelines into `self` without
+    /// dropping the previously-compiled variant. Used by
+    /// [`crate::AwsmRenderer::set_anti_aliasing`].
+    pub fn merge_resolved(
+        &mut self,
+        slot: Vec<PickerPipelineSlot>,
+        pipeline_keys: Vec<ComputePipelineKey>,
+    ) {
+        for (s, key) in slot.into_iter().zip(pipeline_keys) {
+            match s {
+                PickerPipelineSlot::Singlesampled => {
+                    self.singlesampled_compute_pipeline_key = Some(key);
+                }
+                PickerPipelineSlot::Multisampled => {
+                    self.multisampled_compute_pipeline_key = Some(key);
+                }
+            }
+        }
     }
 
     /// Rebuilds the bind group for the current render textures.
@@ -404,8 +450,9 @@ pub struct ShaderTemplatePicker {
 }
 
 impl ShaderTemplatePicker {
-    #[cfg(debug_assertions)]
     /// Returns an optional debug label for shader compilation.
+    /// Kept in release builds (see `ShaderTemplate::into_descriptor`
+    /// for the cost rationale).
     pub fn debug_label(&self) -> Option<&str> {
         Some("Picker")
     }

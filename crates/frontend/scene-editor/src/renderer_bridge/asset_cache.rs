@@ -129,9 +129,21 @@ impl AssetCache {
 
         let fut: Pin<Box<dyn std::future::Future<Output = Result<AssetTemplate, String>>>> =
             Box::pin(async move {
+                let t_start = web_sys::js_sys::Date::now();
                 let result = load_and_populate(asset_id).await;
+                let dt_ms = web_sys::js_sys::Date::now() - t_start;
                 match &result {
-                    Ok(_) => status_for_fut.set(AssetStatus::Ready),
+                    Ok(_) => {
+                        // Single, easily-greppable line so cold-boot
+                        // success is visible at a glance — distinct
+                        // from per-mesh tracing inside the load
+                        // pipeline. Includes wall-clock so repeated
+                        // loads can be eyeballed against baseline.
+                        tracing::info!(
+                            "[asset_cache] model loaded: asset_id={asset_id:?} ({dt_ms:.0}ms)"
+                        );
+                        status_for_fut.set(AssetStatus::Ready);
+                    }
                     Err(err) => status_for_fut.set(AssetStatus::Failed(err.clone())),
                 }
                 loading_count.set(loading_count.get().saturating_sub(1));

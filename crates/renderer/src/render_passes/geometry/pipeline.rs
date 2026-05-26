@@ -172,6 +172,16 @@ impl GeometryPipelines {
 
     /// 8 unique shader cache keys: `(msaa × instancing × meta_storage)`
     /// collapsed across cull mode (cull has no shader effect).
+    ///
+    /// **Lazy-pool note:** Geometry's nested Level1/2/3 lookup tree
+    /// assumes both MSAA branches are populated, and the shape
+    /// (instancing × meta_storage) + cull axes are per-mesh
+    /// (scene-content driven). Restructuring `from_resolved` to
+    /// support partial fills would touch the dispatch hot path —
+    /// not a clean win since the eager 18-pipeline batch compiles in
+    /// parallel anyway. We keep this eager and accept the cold-boot
+    /// cost. The other passes (Material Opaque, Classify, Effects,
+    /// HZB, Picker) are the ones that benefit cleanly from lazy.
     pub fn shader_cache_keys() -> Vec<crate::shaders::ShaderCacheKey> {
         let mut keys = Vec::with_capacity(8);
         for msaa_samples in [None, Some(4u32)] {

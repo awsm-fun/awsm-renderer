@@ -15,7 +15,7 @@ pub fn undo() {
         Some(snap) => snap,
         None => return,
     };
-    crate::scene::snapshot::apply_to(&previous, &state.scene);
+    crate::scene::snapshot::apply_to(&previous, &state.scene, &state.custom_materials);
     state.scene.bump_revision();
     state.clear_selection();
     state.refresh_history_signals();
@@ -30,7 +30,7 @@ pub fn redo() {
         Some(snap) => snap,
         None => return,
     };
-    crate::scene::snapshot::apply_to(&next, &state.scene);
+    crate::scene::snapshot::apply_to(&next, &state.scene, &state.custom_materials);
     state.scene.bump_revision();
     state.clear_selection();
     state.refresh_history_signals();

@@ -27,7 +27,8 @@ impl ShaderTemplateLine {
         self.render().map_err(AwsmShaderError::from)
     }
 
-    #[cfg(debug_assertions)]
+    /// Debug label kept in release builds (negligible cost — see
+    /// `ShaderTemplate::into_descriptor`).
     pub fn debug_label(&self) -> Option<&str> {
         Some("Line")
     }

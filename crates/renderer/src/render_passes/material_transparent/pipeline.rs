@@ -172,6 +172,9 @@ impl MaterialTransparentPipelines {
                 texture_pool_samplers_len,
                 msaa_sample_count: anti_aliasing.msaa_sample_count,
                 mipmaps: anti_aliasing.mipmap,
+                dispatch_hash: 0,
+                dynamic_shader_id: None,
+                dynamic_shader: None,
                 instancing_transforms: req.mesh.instanced,
             });
         }
@@ -221,6 +224,9 @@ impl MaterialTransparentPipelines {
                 texture_pool_samplers_len,
                 msaa_sample_count: anti_aliasing.msaa_sample_count,
                 mipmaps: anti_aliasing.mipmap,
+                dispatch_hash: 0,
+                dynamic_shader_id: None,
+                dynamic_shader: None,
                 instancing_transforms: req.mesh.instanced,
             };
             let shader_key = shaders.get_key(gpu, shader_cache_key).await?;
@@ -305,6 +311,9 @@ impl MaterialTransparentPipelines {
                 texture_pool_samplers_len,
                 msaa_sample_count: anti_aliasing.msaa_sample_count,
                 mipmaps: anti_aliasing.mipmap,
+                dispatch_hash: 0,
+                dynamic_shader_id: None,
+                dynamic_shader: None,
                 instancing_transforms: req.mesh.instanced,
             });
         }

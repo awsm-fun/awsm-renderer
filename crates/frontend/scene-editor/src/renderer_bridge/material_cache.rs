@@ -46,7 +46,12 @@ pub fn get_or_create(
         }
     };
     let material = material_def_to_renderer(renderer, &def);
-    let key = renderer.materials.insert(material, &renderer.textures);
+    let key = renderer.materials.insert(
+        material,
+        &renderer.textures,
+        &renderer.dynamic_materials,
+        &renderer.extras_pool,
+    );
     with_cache(|m| {
         m.insert(asset_id, key);
     });
@@ -207,5 +212,10 @@ pub fn resolve(
         );
     }
     let m = material_def_to_renderer(renderer, inline);
-    ResolvedMaterial::Owned(renderer.materials.insert(m, &renderer.textures))
+    ResolvedMaterial::Owned(renderer.materials.insert(
+        m,
+        &renderer.textures,
+        &renderer.dynamic_materials,
+        &renderer.extras_pool,
+    ))
 }

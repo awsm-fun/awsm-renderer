@@ -171,7 +171,7 @@ pub fn apply_mode_for_test(frame_f: f32, count: u32, mode: FlipBookMode) -> u32 
 
 impl MaterialShader for FlipBookMaterial {
     fn shader_id(&self) -> MaterialShaderId {
-        MaterialShaderId::FlipBook
+        MaterialShaderId::FLIPBOOK
     }
 
     fn wgsl_fragment(&self) -> &'static str {

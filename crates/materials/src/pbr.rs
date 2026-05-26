@@ -250,7 +250,7 @@ impl PbrMaterial {
 
 impl MaterialShader for PbrMaterial {
     fn shader_id(&self) -> MaterialShaderId {
-        MaterialShaderId::Pbr
+        MaterialShaderId::PBR
     }
 
     fn wgsl_fragment(&self) -> &'static str {

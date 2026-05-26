@@ -80,7 +80,7 @@ impl ToonMaterial {
 
 impl MaterialShader for ToonMaterial {
     fn shader_id(&self) -> MaterialShaderId {
-        MaterialShaderId::Toon
+        MaterialShaderId::TOON
     }
 
     fn wgsl_fragment(&self) -> &'static str {

@@ -1,4 +1,24 @@
 # Next up
+- Dynamic materials ✅ — runtime-registered custom WGSL fragments.
+  Landed across PR #98 on `dynamic-shaders`: `MaterialShaderId`
+  rewrite + dynamic range, scene-schema `MaterialDefinition` +
+  folder loader, layout helpers with alignment tests, registry-driven
+  classify-pass templating, opaque + transparent template
+  substitution + prewarm wiring, extras-pool storage subsystem, a
+  scene-editor Import Material flow + per-mesh Custom picker, a
+  standalone `material-editor` frontend with live preview +
+  debounced recompile + contract/errors panes, scanline first-party
+  promotion (byte-identical smoke test), and a Public API
+  contract surface documented at
+  [`docs/dynamic-materials/contract-opaque.md`](dynamic-materials/contract-opaque.md)
+  + [`docs/dynamic-materials/contract-transparent.md`](dynamic-materials/contract-transparent.md)
+  + [`docs/dynamic-materials/promotion.md`](dynamic-materials/promotion.md).
+  Remaining follow-ups split between
+  [`docs/plans/more-optimizations.md`](plans/more-optimizations.md)
+  (cold-boot / lazy-pool work) and
+  [`docs/plans/remainder.md`](plans/remainder.md) (asset authoring,
+  UI polish, headless screenshot harness).
+
 - Temporal shaders ✅ — renderer-wide `FrameGlobals` uniform (`time`,
   `delta_time`, `frame_count`, `resolution`) bound alongside the camera
   in every shading pass + a first-party `FlipBook` sprite-sheet

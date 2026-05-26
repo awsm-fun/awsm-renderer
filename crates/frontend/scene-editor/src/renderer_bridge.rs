@@ -10,6 +10,7 @@
 
 pub mod asset_cache;
 pub mod camera_driver;
+pub mod dynamic_material_bridge;
 pub mod env_sync;
 pub mod gizmo;
 pub mod instance_batcher;

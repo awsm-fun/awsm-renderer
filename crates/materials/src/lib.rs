@@ -9,6 +9,8 @@
 //! the dispatch table and concatenate WGSL fragments at shader-template time.
 
 pub mod alpha_mode;
+pub mod dynamic;
+pub mod dynamic_layout;
 pub mod registry;
 pub mod shader;
 pub mod shader_id;
@@ -27,6 +29,9 @@ pub mod toon;
 
 #[cfg(feature = "flipbook")]
 pub mod flipbook;
+
+#[cfg(feature = "scanline")]
+pub mod scanline;
 
 pub use alpha_mode::MaterialAlphaMode;
 pub use shader::MaterialShader;

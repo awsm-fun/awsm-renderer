@@ -340,8 +340,15 @@ impl AppScene {
         }
 
         self.ctx.loading_status.lock_mut().gltf_net = Ok(true);
+        let t_start = web_sys::js_sys::Date::now();
         match inner(self, gltf_id).await {
             Ok(loader) => {
+                let dt_ms = web_sys::js_sys::Date::now() - t_start;
+                // Single, easily-greppable line so cold-boot
+                // success is visible at a glance. Cache-hit loads
+                // typically log <1ms; first-load times surface the
+                // network + parse + upload wall-clock.
+                tracing::info!("[scene] model loaded: {:?} ({:.0}ms)", gltf_id, dt_ms);
                 self.ctx.loading_status.lock_mut().gltf_net = Ok(false);
                 Some(loader)
             }
@@ -795,7 +802,10 @@ impl AppScene {
                 Material::Pbr(pbr_material) => {
                     pbr_material.debug = material_debug;
                 }
-                Material::Unlit(_) | Material::Toon(_) | Material::FlipBook(_) => {
+                Material::Unlit(_)
+                | Material::Toon(_)
+                | Material::FlipBook(_)
+                | Material::Custom(_) => {
                     // Non-PBR materials don't carry the per-shading debug
                     // bitmask; ignore the per-frame override on those.
                 }

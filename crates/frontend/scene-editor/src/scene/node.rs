@@ -139,6 +139,7 @@ impl Node {
                 shape,
                 material: None,
                 inline_material: awsm_scene_schema::MaterialDef::default(),
+                custom_material: None,
                 shadow: Default::default(),
             },
         )
@@ -187,6 +188,7 @@ impl Node {
                 def: awsm_scene_schema::SweepAlongCurveDef::default(),
                 material: None,
                 inline_material: awsm_scene_schema::MaterialDef::default(),
+                custom_material: None,
                 shadow: Default::default(),
             },
         )
@@ -211,6 +213,7 @@ impl Node {
                 mesh: awsm_scene_schema::MeshRef(awsm_scene_schema::AssetId::new()),
                 material: None,
                 inline_material: awsm_scene_schema::MaterialDef::default(),
+                custom_material: None,
                 shadow: Default::default(),
             },
         )

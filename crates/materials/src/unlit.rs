@@ -63,7 +63,7 @@ impl UnlitMaterial {
 
 impl MaterialShader for UnlitMaterial {
     fn shader_id(&self) -> MaterialShaderId {
-        MaterialShaderId::Unlit
+        MaterialShaderId::UNLIT
     }
 
     fn wgsl_fragment(&self) -> &'static str {

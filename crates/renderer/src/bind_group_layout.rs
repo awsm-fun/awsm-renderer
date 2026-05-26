@@ -56,9 +56,18 @@ impl BindGroupLayouts {
             })
             .collect();
 
+        // Debug label — terse summary of the layout's shape so
+        // pipeline-creation errors and Spector.js captures show
+        // *what kind* of layout this is rather than a numeric handle.
+        // Format: `bgl:<n>e[b<buffers>s<storage>t<textures>...]` —
+        // entry count + resource-type histogram. Cheap to compute
+        // (one pass over entries) and the string lifetime ends at
+        // `.into()` below.
+        let label = format_bgl_label(&cache_key);
+
         let bind_group_layout = gpu
             .create_bind_group_layout(
-                &BindGroupLayoutDescriptor::new(None)
+                &BindGroupLayoutDescriptor::new(Some(&label))
                     .with_entries(entries)
                     .into(),
             )
@@ -159,7 +168,6 @@ pub struct BindGroupLayoutCounter {
     pub external_textures: u32,
 }
 
-#[cfg(debug_assertions)]
 impl Default for BindGroupLayouts {
     fn default() -> Self {
         Self::new()
@@ -190,6 +198,59 @@ pub struct BindGroupLayoutCacheKeyEntry {
 new_key_type! {
     /// Opaque key for cached bind group layouts.
     pub struct BindGroupLayoutKey;
+}
+
+/// Build a terse debug label for a bind-group layout. Output looks
+/// like `bgl:5e[b2 s1 t2]` — entry count + a one-letter histogram
+/// over the resource kinds. Cheap (single pass over entries) and
+/// surfaces in WebGPU validation errors / Spector.js captures.
+fn format_bgl_label(cache_key: &BindGroupLayoutCacheKey) -> String {
+    use awsm_renderer_core::bind_groups::BufferBindingType;
+    let mut n_buffer = 0u32;
+    let mut n_storage = 0u32;
+    let mut n_sampler = 0u32;
+    let mut n_texture = 0u32;
+    let mut n_storage_texture = 0u32;
+    let mut n_external = 0u32;
+    for entry in &cache_key.entries {
+        match &entry.resource {
+            BindGroupLayoutResource::Buffer(layout) => {
+                let is_storage = matches!(
+                    layout.binding_type,
+                    Some(BufferBindingType::Storage) | Some(BufferBindingType::ReadOnlyStorage)
+                );
+                if is_storage {
+                    n_storage += 1;
+                } else {
+                    n_buffer += 1;
+                }
+            }
+            BindGroupLayoutResource::Sampler { .. } => n_sampler += 1,
+            BindGroupLayoutResource::Texture { .. } => n_texture += 1,
+            BindGroupLayoutResource::StorageTexture { .. } => n_storage_texture += 1,
+            BindGroupLayoutResource::ExternalTexture => n_external += 1,
+        }
+    }
+    let mut parts: Vec<String> = Vec::new();
+    if n_buffer > 0 {
+        parts.push(format!("b{n_buffer}"));
+    }
+    if n_storage > 0 {
+        parts.push(format!("s{n_storage}"));
+    }
+    if n_sampler > 0 {
+        parts.push(format!("sm{n_sampler}"));
+    }
+    if n_texture > 0 {
+        parts.push(format!("t{n_texture}"));
+    }
+    if n_storage_texture > 0 {
+        parts.push(format!("st{n_storage_texture}"));
+    }
+    if n_external > 0 {
+        parts.push(format!("ex{n_external}"));
+    }
+    format!("bgl:{}e[{}]", cache_key.entries.len(), parts.join(" "))
 }
 
 /// Result type for bind group layout operations.

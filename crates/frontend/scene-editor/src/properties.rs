@@ -4,6 +4,7 @@
 //! - 2+ selected → summary + note to narrow
 
 pub mod asset_editor;
+pub mod custom_materials_pane;
 pub mod history_input;
 pub mod kind_editor;
 pub mod prefab;
@@ -40,6 +41,16 @@ pub fn render() -> Dom {
                 _ => asset_editor::render_batch(&set),
             })
         }))
+        // Always-visible Custom Materials pane — Import button, list
+        // of imported materials, per-row "Open in material-editor"
+        // link. Sits at the bottom of the right sidebar regardless of
+        // selection. The reactive list is owned here as a
+        // process-static so the pane survives selection changes
+        // without losing import state.
+        .child(custom_materials_pane::render(
+            crate::state::app_state().custom_materials.clone(),
+            crate::state::app_state().custom_materials_import_status.clone(),
+        ))
     })
 }
 

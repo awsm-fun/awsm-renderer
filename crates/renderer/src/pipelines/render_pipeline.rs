@@ -148,6 +148,8 @@ impl RenderPipelines {
             )?);
         }
 
+        let n = descriptors.len();
+        let t_start = web_sys::js_sys::Date::now();
         // Sync-issue every Promise. Dawn has started compiling all N
         // by the time this loop returns.
         let promises: Vec<JsFuture<web_sys::GpuRenderPipeline>> = descriptors
@@ -157,6 +159,11 @@ impl RenderPipelines {
 
         // Await all in parallel.
         let results = futures::future::join_all(promises).await;
+        let dt_ms = web_sys::js_sys::Date::now() - t_start;
+        tracing::info!(
+            target: "awsm_renderer::boot_timing",
+            "RenderPipelines::ensure_keys: {n} pipelines compiled in {dt_ms:.0}ms",
+        );
 
         // Move owned cache keys out of `inputs` exactly once each, in
         // input order, so `self.cache.insert(cache_key, key)` takes
@@ -214,7 +221,16 @@ fn build_descriptor(
     vertex.buffer_layouts = cache_key.vertex_buffer_layouts.clone();
     vertex.constants = cache_key.vertex_constants.clone();
 
-    let mut descriptor = RenderPipelineDescriptor::new(vertex, None)
+    // Debug label: shows up in Chrome's WebGPU dev tools, Spector.js,
+    // and `GPUDevice.popErrorScope` messages. The format `render:<shader>:<layout>`
+    // makes it cheap to spot which pipeline a validation error or
+    // shader compile warning came from. The label string lives only
+    // until `descriptor.into()` copies it into the JS-side descriptor.
+    let label = format!(
+        "render:{:?}:{:?}",
+        cache_key.shader_key, cache_key.layout_key
+    );
+    let mut descriptor = RenderPipelineDescriptor::new(vertex, Some(&label))
         .with_primitive(cache_key.primitive.clone())
         .with_layout(PipelineLayoutKind::Custom(layout));
 

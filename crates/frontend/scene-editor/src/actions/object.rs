@@ -258,6 +258,7 @@ pub fn capture_as_mesh_asset(node_id: NodeId) -> Option<awsm_scene_schema::Asset
         mesh: MeshRef(asset_id),
         material: material_ref,
         inline_material,
+        custom_material: None,
         shadow: Default::default(),
     });
 
@@ -404,12 +405,14 @@ pub fn recapture_from_source_def(
             shape,
             material: None,
             inline_material: Default::default(),
+            custom_material: None,
             shadow: Default::default(),
         },
         CapturedSource::Sweep(def) => NodeKind::SweepAlongCurve {
             def,
             material: None,
             inline_material: Default::default(),
+            custom_material: None,
             shadow: Default::default(),
         },
     };

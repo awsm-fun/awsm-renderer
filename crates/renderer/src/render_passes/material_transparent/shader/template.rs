@@ -178,6 +178,23 @@ pub struct ShaderTemplateTransparentMaterialFragment {
     pub texture_pool_arrays_len: u32,
     pub texture_pool_samplers_len: u32,
     pub debug: ShaderTemplateMaterialTransparentDebug,
+    /// Per-mesh dynamic-material shader_id (`u32`). `0` when no
+    /// dynamic transparent material is in play; the fragment template
+    /// emits the wrapper + dispatch arm only when non-zero. The
+    /// `is_dynamic` guard in the template checks `shader_id_dynamic
+    /// != 0u`.
+    pub shader_id_dynamic: u32,
+    /// For dynamic transparent shaders: the auto-generated
+    /// `struct MaterialData { ... }` declaration. Empty when not in use.
+    pub dynamic_struct_decl: String,
+    /// For dynamic transparent shaders: the auto-generated
+    /// `fn material_data_load(byte_offset: u32) -> MaterialData`
+    /// accessor. Empty when not in use.
+    pub dynamic_loader_decl: String,
+    /// For dynamic transparent shaders: the author's WGSL fragment
+    /// (wrapped at template render time into
+    /// `fn custom_shade_transparent_dynamic(input) -> TransparentShadingOutput`).
+    pub dynamic_wgsl_fragment: String,
 }
 
 impl ShaderTemplateTransparentMaterialFragment {
@@ -197,6 +214,25 @@ impl ShaderTemplateTransparentMaterialFragment {
             texture_pool_arrays_len: cache_key.texture_pool_arrays_len,
             texture_pool_samplers_len: cache_key.texture_pool_samplers_len,
             debug: ShaderTemplateMaterialTransparentDebug::new(),
+            shader_id_dynamic: cache_key
+                .dynamic_shader_id
+                .map(|id| id.as_u32())
+                .unwrap_or(0),
+            dynamic_struct_decl: cache_key
+                .dynamic_shader
+                .as_ref()
+                .map(|d| d.struct_decl.clone())
+                .unwrap_or_default(),
+            dynamic_loader_decl: cache_key
+                .dynamic_shader
+                .as_ref()
+                .map(|d| d.loader_decl.clone())
+                .unwrap_or_default(),
+            dynamic_wgsl_fragment: cache_key
+                .dynamic_shader
+                .as_ref()
+                .map(|d| d.wgsl_fragment.clone())
+                .unwrap_or_default(),
         }
     }
 
@@ -283,7 +319,6 @@ impl ShaderTemplateMaterialTransparent {
         ))
     }
 
-    #[cfg(debug_assertions)]
     /// Returns an optional debug label for shader compilation.
     pub fn debug_label(&self) -> Option<&str> {
         Some("Material Transparent")

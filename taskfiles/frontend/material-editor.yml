@@ -1,0 +1,43 @@
+version: "3"
+
+includes:
+  config:
+    taskfile: ../config.yml
+    flatten: true
+
+vars:
+  PATH_CRATE: '{{joinPath .PATH_FRONTENDS "material-editor"}}'
+  PATH_DIST: '{{joinPath .PATH_BUILD_ARTIFACTS "material-editor"}}'
+
+tasks:
+  dev:
+    desc: "material-editor: trunk serve"
+    env:
+      ROOT_BASE_URI_PATH: "{{.DEV_ROOT_BASE_URI_PATH}}"
+    cmds:
+      - >
+        cd {{.PATH_CRATE}} &&
+        trunk serve --port {{.PORT_MATERIAL_EDITOR_DEV}}
+        --watch "{{.PATH_CRATE}}"
+        --watch "{{.PATH_CRATE_RENDERER}}"
+        --watch "{{.PATH_CRATE_RENDERER_CORE}}"
+        --watch "{{.PATH_CRATE_SCENE_SCHEMA}}"
+        --watch "{{.PATH_CRATE_WEB_SHARED}}"
+
+  build:
+    desc: "material-editor: production build"
+    env:
+      ROOT_BASE_URI_PATH: "{{.PROD_ROOT_BASE_URI_PATH}}/material-editor"
+    cmds:
+      - rm -rf {{joinPath .PATH_CRATE "dist"}}
+      - rm -rf {{.PATH_DIST}}
+      - cd {{.PATH_CRATE}} && trunk build --release
+      - mkdir -p {{.PATH_DIST}}
+      - cp -r {{joinPath .PATH_CRATE "dist"}}/* {{.PATH_DIST}}/
+      - cp {{.PATH_DIST}}/index.html {{.PATH_DIST}}/404.html
+
+  clean:
+    desc: "material-editor: remove dist + .build-artifacts output"
+    cmds:
+      - rm -rf {{joinPath .PATH_CRATE "dist"}}
+      - rm -rf {{.PATH_DIST}}

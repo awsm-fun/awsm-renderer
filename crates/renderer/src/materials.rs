@@ -58,13 +58,20 @@ pub mod writer {
 }
 
 use awsm_materials::{
-    flipbook::FlipBookMaterial, pbr::PbrMaterial, toon::ToonMaterial, unlit::UnlitMaterial,
+    dynamic::DynamicMaterial, flipbook::FlipBookMaterial, pbr::PbrMaterial, toon::ToonMaterial,
+    unlit::UnlitMaterial,
 };
 
 impl AwsmRenderer {
     /// Updates a material in place.
     pub fn update_material(&mut self, key: MaterialKey, f: impl FnMut(&mut Material)) {
-        self.materials.update(key, &self.textures, f);
+        self.materials.update(
+            key,
+            &self.textures,
+            &self.dynamic_materials,
+            &self.extras_pool,
+            f,
+        );
     }
 
     /// Removes a material and frees its slot in the materials storage
@@ -85,6 +92,12 @@ pub enum Material {
     /// Sprite-sheet flipbook. See [`awsm_materials::flipbook`] for
     /// authoring + WGSL semantics.
     FlipBook(Box<FlipBookMaterial>),
+    /// Runtime-registered custom material. Backed by the generic
+    /// [`DynamicMaterial`] interpreter — see
+    /// [`crate::dynamic_materials`] for the registration API and
+    /// `docs/dynamic-materials/contract-{opaque,transparent}.md` for
+    /// the WGSL author contract.
+    Custom(Box<DynamicMaterial>),
 }
 
 impl Material {
@@ -95,10 +108,11 @@ impl Material {
     /// pipelines instead of one fat shader with a runtime branch.
     pub fn shader_id(&self) -> MaterialShaderId {
         match self {
-            Material::Pbr(_) => MaterialShaderId::Pbr,
-            Material::Unlit(_) => MaterialShaderId::Unlit,
-            Material::Toon(_) => MaterialShaderId::Toon,
-            Material::FlipBook(_) => MaterialShaderId::FlipBook,
+            Material::Pbr(_) => MaterialShaderId::PBR,
+            Material::Unlit(_) => MaterialShaderId::UNLIT,
+            Material::Toon(_) => MaterialShaderId::TOON,
+            Material::FlipBook(_) => MaterialShaderId::FLIPBOOK,
+            Material::Custom(m) => m.shader_id,
         }
     }
 
@@ -109,6 +123,19 @@ impl Material {
             Material::Unlit(m) => MaterialShader::is_transparency_pass(m),
             Material::Toon(m) => MaterialShader::is_transparency_pass(m.as_ref()),
             Material::FlipBook(m) => MaterialShader::is_transparency_pass(m.as_ref()),
+            // Dynamic instances snapshot the registration's
+            // `alpha_mode` at construction time
+            // (`DynamicMaterial::alpha_mode`), so reading it here
+            // doesn't require a registry handle. Blend AND Mask
+            // both route through the transparent pass — Mask uses
+            // the cutoff via `alpha_mask` below.
+            Material::Custom(m) => {
+                matches!(
+                    m.alpha_mode,
+                    awsm_materials::MaterialAlphaMode::Blend
+                        | awsm_materials::MaterialAlphaMode::Mask { .. }
+                )
+            }
         }
     }
 
@@ -119,6 +146,10 @@ impl Material {
             Material::Unlit(m) => m.alpha_cutoff(),
             Material::Toon(m) => m.alpha_cutoff(),
             Material::FlipBook(m) => m.alpha_cutoff(),
+            Material::Custom(m) => match m.alpha_mode {
+                awsm_materials::MaterialAlphaMode::Mask { cutoff } => Some(cutoff),
+                _ => None,
+            },
         }
     }
 
@@ -132,6 +163,7 @@ impl Material {
             Material::Unlit(m) => m.double_sided(),
             Material::Toon(m) => m.double_sided(),
             Material::FlipBook(m) => m.double_sided(),
+            Material::Custom(m) => m.double_sided,
         }
     }
 
@@ -149,11 +181,29 @@ impl Material {
             Material::Pbr(m) => m.has_transmission(),
             Material::Unlit(_) | Material::Toon(_) => false,
             Material::FlipBook(_) => false,
+            // Dynamic materials cannot opt into KHR_materials_transmission.
+            // Reasoning: transmission samples the pre-blit opaque
+            // target, which the dynamic-material wrapper intentionally
+            // doesn't expose (the `frag_pos: vec4<f32>` + `Camera` args
+            // that `sample_transmission_background(...)` needs aren't on
+            // `TransparentShadingInput`). Materials that need refractive
+            // sampling promote to first-party PBR. See
+            // `docs/dynamic-materials/contract-transparent.md` § "Helpers
+            // in scope" for the trade-off rationale.
+            Material::Custom(_) => false,
         }
     }
 
     /// Returns the packed uniform buffer data for the material.
-    pub fn uniform_buffer_data(&self, ctx: &dyn TextureContext) -> Vec<u8> {
+    ///
+    /// `dynamic_ctx` is only consulted for [`Material::Custom`]
+    /// instances; first-party variants take the simpler
+    /// [`TextureContext`]-only path.
+    pub fn uniform_buffer_data(
+        &self,
+        ctx: &dyn TextureContext,
+        dynamic_ctx: &dyn awsm_materials::dynamic::DynamicMaterialContext,
+    ) -> Vec<u8> {
         let mut data = Vec::with_capacity(256);
         match self {
             Material::Pbr(m) => {
@@ -167,6 +217,12 @@ impl Material {
             }
             Material::FlipBook(m) => {
                 MaterialShader::write_uniform_buffer(m.as_ref(), ctx, &mut data);
+            }
+            Material::Custom(m) => {
+                // Dynamic materials walk the registry's layout via the
+                // context (DynamicMaterialContext). See
+                // crates/materials/src/dynamic.rs.
+                m.write_uniform_buffer_with_layout(dynamic_ctx, &mut data);
             }
         }
         data
@@ -227,7 +283,13 @@ impl Materials {
     }
 
     /// Inserts a material and returns its key.
-    pub fn insert(&mut self, material: Material, textures: &Textures) -> MaterialKey {
+    pub fn insert(
+        &mut self,
+        material: Material,
+        textures: &Textures,
+        dynamic_materials: &crate::dynamic_materials::DynamicMaterials,
+        extras_pool: &crate::dynamic_materials::extras_pool::ExtrasPool,
+    ) -> MaterialKey {
         let is_transparency_pass = material.is_transparency_pass();
 
         let key = self.lookup.insert(material);
@@ -235,7 +297,7 @@ impl Materials {
             self._is_transparency_pass.insert(key, ());
         }
 
-        self.update(key, textures, |_| {});
+        self.update(key, textures, dynamic_materials, extras_pool, |_| {});
 
         key
     }
@@ -285,6 +347,8 @@ impl Materials {
         &mut self,
         key: MaterialKey,
         textures: &Textures,
+        dynamic_materials: &crate::dynamic_materials::DynamicMaterials,
+        extras_pool: &crate::dynamic_materials::extras_pool::ExtrasPool,
         mut f: impl FnMut(&mut Material),
     ) {
         if let Some(material) = self.lookup.get_mut(key) {
@@ -299,7 +363,11 @@ impl Materials {
                 }
             }
 
-            let data = material.uniform_buffer_data(textures);
+            let dynamic_ctx =
+                crate::dynamic_materials::DynamicMaterialPackContext::new(dynamic_materials)
+                    .with_textures(textures)
+                    .with_extras(extras_pool);
+            let data = material.uniform_buffer_data(textures, &dynamic_ctx);
             match self.buffer.update(key, &data) {
                 Ok(_) => {
                     self.gpu_dirty = true;
@@ -334,7 +402,7 @@ impl Materials {
         self.lookup
             .get(key)
             .map(|m| m.shader_id())
-            .unwrap_or(MaterialShaderId::Pbr)
+            .unwrap_or(MaterialShaderId::PBR)
     }
 
     /// Returns true if the material implements

@@ -10,6 +10,7 @@ rust-version.workspace = true
 [dependencies]
 awsm-curves = { path = "../../curves", features = ["serde"] }
 awsm-meshgen = { path = "../../meshgen", features = ["serde"] }
+awsm-materials = { path = "../../materials" }
 awsm-particles = { path = "../../particles", features = ["serde"] }
 awsm-renderer = { path = "../../renderer", features = ["ktx", "serde"] }
 awsm-renderer-core = { path = "../../renderer-core" }

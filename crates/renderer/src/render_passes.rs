@@ -195,6 +195,15 @@ struct RenderPassesRanges {
 struct RenderPassesPerPassDescs {
     geometry: crate::render_passes::geometry::pipeline::GeometryPrewarmDescriptors,
     opaque_slots: Vec<crate::render_passes::material_opaque::pipeline::OpaquePipelineSlot>,
+    /// One slot per entry in the classify pass's pipeline pool —
+    /// records the `msaa_sample_count` so `from_resolved` can route
+    /// each compiled pipeline into the matching `Option` field on
+    /// `MaterialClassifyPipelines`. Lazy-pool: the pool typically
+    /// has just 1 entry (the live MSAA's variant).
+    classify_slot_msaa: Vec<Option<u32>>,
+    /// Slot identity per HZB pipeline pool entry. Lazy-pool: the
+    /// pool has 2 entries (1 seed + 1 reduce) for the live config.
+    hzb_slot: Vec<crate::render_passes::hzb::pipeline::HzbPipelineSlot>,
     decal_is_msaa: Option<Vec<bool>>,
 }
 
@@ -324,11 +333,21 @@ impl RenderPasses {
         let mut shader_cache_keys: Vec<ShaderCacheKey> = Vec::new();
         shader_cache_keys.extend(GeometryPipelines::shader_cache_keys());
         if features.gpu_culling {
-            shader_cache_keys.extend(HzbPipelines::shader_cache_keys());
+            shader_cache_keys.extend(HzbPipelines::shader_cache_keys(ctx.anti_aliasing));
             shader_cache_keys.extend(OcclusionPipelines::shader_cache_keys());
             shader_cache_keys.extend(CompactionPipeline::shader_cache_keys(features));
         }
-        shader_cache_keys.extend(MaterialClassifyPipelines::shader_cache_keys());
+        // Builder-time prewarm — no dynamic materials can be registered
+        // before `AwsmRendererBuilder::build` returns, so the bucket
+        // list is the first-party-only baseline. Mid-session
+        // `register_material` changes the bucket list, which changes the
+        // classify shader's cache key and triggers a recompile via the
+        // same `ensure_keys` plumbing the orchestrator uses.
+        let first_party_entries = crate::dynamic_materials::first_party_bucket_entries();
+        shader_cache_keys.extend(MaterialClassifyPipelines::shader_cache_keys(
+            &first_party_entries,
+            ctx.anti_aliasing,
+        ));
         if let Some(bg) = coverage_bg_single.as_ref() {
             shader_cache_keys.extend(CoveragePipelines::shader_cache_keys(bg));
         }
@@ -403,14 +422,14 @@ impl RenderPasses {
             render_pool.len()..render_pool.len() + geometry_descs.pipeline_cache_keys.len();
         render_pool.extend(geometry_descs.pipeline_cache_keys.iter().cloned());
 
-        let hzb_range = if let Some(bg) = bindings.hzb_bg.as_ref() {
+        let (hzb_range, hzb_slot) = if let Some(bg) = bindings.hzb_bg.as_ref() {
             let descs = HzbPipelines::build_descriptors(ctx, bg).await?;
             let start = compute_pool.len();
             let end = start + descs.pipeline_cache_keys.len();
             compute_pool.extend(descs.pipeline_cache_keys.iter().cloned());
-            Some(start..end)
+            (Some(start..end), descs.slot)
         } else {
-            None
+            (None, Vec::new())
         };
         let occlusion_range = if let Some(bg) = bindings.occlusion_bg.as_ref() {
             let descs = OcclusionPipelines::build_descriptors(ctx, bg).await?;
@@ -431,8 +450,13 @@ impl RenderPasses {
             None
         };
 
-        let classify_descs =
-            MaterialClassifyPipelines::build_descriptors(ctx, &bindings.classify_bg).await?;
+        let classify_first_party_entries = crate::dynamic_materials::first_party_bucket_entries();
+        let classify_descs = MaterialClassifyPipelines::build_descriptors(
+            ctx,
+            &bindings.classify_bg,
+            &classify_first_party_entries,
+        )
+        .await?;
         let classify_range =
             compute_pool.len()..compute_pool.len() + classify_descs.pipeline_cache_keys.len();
         compute_pool.extend(classify_descs.pipeline_cache_keys.iter().cloned());
@@ -525,6 +549,8 @@ impl RenderPasses {
             per_pass_descs: RenderPassesPerPassDescs {
                 geometry: geometry_descs,
                 opaque_slots: opaque_descs.slots,
+                classify_slot_msaa: classify_descs.slot_msaa,
+                hzb_slot,
                 decal_is_msaa,
             },
             material_decal_composite,
@@ -614,7 +640,10 @@ impl RenderPasses {
         let hzb = match (hzb_bg, ranges.hzb, hzb_texture) {
             (Some(bg), Some(range), Some(texture)) => Some(HzbRenderPass {
                 bind_groups: bg,
-                pipelines: HzbPipelines::from_resolved(compute_keys[range].to_vec()),
+                pipelines: HzbPipelines::from_resolved(
+                    per_pass_descs.hzb_slot,
+                    compute_keys[range].to_vec(),
+                ),
                 texture,
             }),
             _ => None,
@@ -639,8 +668,10 @@ impl RenderPasses {
         let material_classify = MaterialClassifyRenderPass {
             bind_groups: classify_bg,
             pipelines: MaterialClassifyPipelines::from_resolved(
+                per_pass_descs.classify_slot_msaa,
                 compute_keys[ranges.classify].to_vec(),
             ),
+            dynamic_pipeline_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
         };
 
         let material_decal = match (
@@ -736,4 +767,13 @@ pub struct RenderPassInitContext<'a> {
     /// decal classify pass's HZB binding switch) pick the variant
     /// that matches the live feature set.
     pub features: &'a RendererFeatures,
+    /// Active MSAA + mipmap state. Lazy-pool passes use this to
+    /// compile only the variant matching the live config; the
+    /// other (msaa, mipmap) combinations get compiled on demand
+    /// when the caller invokes `AwsmRenderer::set_anti_aliasing`.
+    pub anti_aliasing: &'a crate::anti_alias::AntiAliasing,
+    /// Active post-processing state (bloom, tonemapping, DoF, ...).
+    /// Same role as `anti_aliasing`: lazy-pool passes only compile
+    /// the live-config variant up-front.
+    pub post_processing: &'a crate::post_process::PostProcessing,
 }

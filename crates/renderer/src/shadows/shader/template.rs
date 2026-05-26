@@ -39,8 +39,11 @@ impl ShaderTemplateShadow {
         Ok(self.render()?)
     }
 
-    #[cfg(debug_assertions)]
     /// Optional debug label for shader compilation diagnostics.
+    /// Kept in release builds too — labels are negligibly cheap and
+    /// the WebGPU dev-tool / Spector.js surface they enable is worth
+    /// it for the rare cases where someone's debugging a packaged
+    /// build.
     pub fn debug_label(&self) -> Option<&str> {
         Some("Shadow Generation VS")
     }

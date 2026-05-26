@@ -51,17 +51,20 @@ struct TransformPacked {
 // indirect-args header is consumed by `dispatchWorkgroupsIndirect`
 // host-side. The shader only reads `*_offset` + `tiles[…]` to map
 // `workgroup_id.x` back to a tile's `(x, y)` coords.
+// Read-only view of the classify-pass output. Layout MUST match the
+// classify-pass writer's `ClassifyOutput` struct byte-for-byte —
+// both are templated from the same `bucket_entries`.
 struct ClassifyBuckets {
-    args_pbr: vec4<u32>,
-    args_unlit: vec4<u32>,
-    args_toon: vec4<u32>,
-    args_flipbook: vec4<u32>,
-    pbr_offset: u32,
-    unlit_offset: u32,
-    toon_offset: u32,
-    flipbook_offset: u32,
+{% for entry in bucket_entries %}
+    {{ entry.args_field() }}: vec4<u32>,
+{% endfor %}
+{% for entry in bucket_entries %}
+    {{ entry.offset_field() }}: u32,
+{% endfor %}
     bucket_capacity: u32,
-    _pad_align: vec3<u32>,
+{% for pad in pad_words_iter %}
+    _pad_align_{{ pad }}: u32,
+{% endfor %}
     tiles: array<vec2<u32>>,
 };
 @group(0) @binding(21) var<storage, read> classify_buckets: ClassifyBuckets;
@@ -69,6 +72,13 @@ struct ClassifyBuckets {
 // Renderer-wide per-frame uniform — see `shared_wgsl/frame_globals.wgsl`
 // for layout. Rides alongside the camera uniform; one upload per frame.
 @group(0) @binding(22) var<uniform> frame_globals_raw: FrameGlobalsRaw;
+
+// Renderer-wide variable-length per-material data pool. Backs
+// `BufferSlot` declarations on registered dynamic materials. See
+// `shared_wgsl/extras.wgsl` for the load helpers and
+// `crates/renderer/src/dynamic_materials/extras_pool.rs` for the
+// host-side allocator.
+@group(0) @binding(23) var<storage, read> extras_pool: array<u32>;
 
 @group(1) @binding(0) var<uniform> lights_info: LightsInfoPacked;
 // `lights` is a uniform array.

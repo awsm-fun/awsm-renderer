@@ -34,20 +34,38 @@ pub struct PipelineKeyId {
 /// `shader_cache` field, the full descriptor adds the pipeline
 /// layout + slot identity needed to fold the result back into the
 /// typed struct.
-struct OpaqueShaderDesc {
-    shader_cache: crate::shaders::ShaderCacheKey,
-    layout_key: PipelineLayoutKey,
-    slot: OpaquePipelineSlot,
+///
+/// Re-exposed at `pub(crate)` so the lazy-pool recompile path
+/// ([`crate::AwsmRenderer::set_anti_aliasing`]) can build descriptors
+/// for the *next* config and feed them back into `merge_resolved`.
+pub(crate) struct OpaqueShaderDesc {
+    pub(crate) shader_cache: crate::shaders::ShaderCacheKey,
+    pub(crate) layout_key: PipelineLayoutKey,
+    pub(crate) slot: OpaquePipelineSlot,
 }
 
 /// Compute pipelines for the opaque material pass.
 ///
 /// `main` is keyed by `(msaa, mipmaps, shader_id)`; `empty_*` are the
 /// "no geometry — just skybox" fallbacks (one per MSAA mode).
+///
+/// **Lazy-pool semantics:** at construction time we only compile
+/// the variants matching the live `AntiAliasing` config — typically
+/// 4 entries in `main` (one per first-party shader_id at the active
+/// msaa+mipmap state) plus 1 empty pipeline for the active MSAA.
+/// The other axes' variants are compiled on demand via
+/// [`crate::AwsmRenderer::set_anti_aliasing`] (msaa/mipmap change) or
+/// [`crate::AwsmRenderer::prewarm_pipelines`] (dynamic-material register).
+/// Both lookups (`get_compute_pipeline_key`,
+/// `get_empty_compute_pipeline_key`) already return `Option`, so the
+/// dispatch path's "skip if missing" branch is the right behavior
+/// before the recompile lands.
 pub struct MaterialOpaquePipelines {
     main: HashMap<PipelineKeyId, ComputePipelineKey>,
-    msaa_4_empty_compute_pipeline_key: ComputePipelineKey,
-    singlesampled_empty_compute_pipeline_key: ComputePipelineKey,
+    /// `None` until the user-facing config selects MSAA=Some(4) AT
+    /// LEAST once. Same for the singlesampled twin.
+    msaa_4_empty_compute_pipeline_key: Option<ComputePipelineKey>,
+    singlesampled_empty_compute_pipeline_key: Option<ComputePipelineKey>,
 }
 
 /// Every opaque-rendering material shader the renderer supports.
@@ -55,10 +73,10 @@ pub struct MaterialOpaquePipelines {
 /// `awsm_materials::shader_id`. Used at construction time to enumerate
 /// the pipelines we need to build.
 const OPAQUE_SHADER_IDS: &[MaterialShaderId] = &[
-    MaterialShaderId::Pbr,
-    MaterialShaderId::Unlit,
-    MaterialShaderId::Toon,
-    MaterialShaderId::FlipBook,
+    MaterialShaderId::PBR,
+    MaterialShaderId::UNLIT,
+    MaterialShaderId::TOON,
+    MaterialShaderId::FLIPBOOK,
 ];
 
 /// Slot identifier used by the batched-build path to fold a flat
@@ -128,92 +146,119 @@ impl MaterialOpaquePipelines {
     }
 
     /// Resolves the bind-group-derived pipeline layout keys + the
-    /// per-variant shader descriptors. Sync, no `ensure_keys`. Pure
-    /// cache-key construction.
+    /// per-variant shader descriptors for the *live* anti-aliasing
+    /// config. Sync, no `ensure_keys`. Pure cache-key construction.
+    ///
+    /// **Lazy-pool reduction:** the previous build compiled all
+    /// `[Some(4), None] × [true, false] × 4 shader_ids = 16` main
+    /// variants + 2 empty variants = 18 entries. Now we emit
+    /// `4 main + 1 empty = 5` for the configured MSAA + mipmap state.
+    /// The other variants get compiled on demand by
+    /// [`Self::recompile_for_anti_aliasing`] when the user changes
+    /// MSAA / mipmap mode.
     fn shader_descriptors_and_layouts(
         ctx: &mut RenderPassInitContext<'_>,
         bind_groups: &MaterialOpaqueBindGroups,
     ) -> Result<Vec<OpaqueShaderDesc>> {
-        let multisampled_pipeline_layout_cache_key = PipelineLayoutCacheKey::new(vec![
-            bind_groups.multisampled_main_bind_group_layout_key,
-            bind_groups.lights_bind_group_layout_key,
-            bind_groups.texture_pool_textures_bind_group_layout_key,
-            bind_groups.shadows_bind_group_layout_key,
-        ]);
-        let multisampled_pipeline_layout_key = ctx.pipeline_layouts.get_key(
+        Self::shader_descriptors_for_config(
             ctx.gpu,
             ctx.bind_group_layouts,
-            multisampled_pipeline_layout_cache_key,
-        )?;
+            ctx.pipeline_layouts,
+            bind_groups,
+            ctx.anti_aliasing,
+        )
+    }
 
-        let singlesampled_pipeline_layout_cache_key = PipelineLayoutCacheKey::new(vec![
-            bind_groups.singlesampled_main_bind_group_layout_key,
-            bind_groups.lights_bind_group_layout_key,
-            bind_groups.texture_pool_textures_bind_group_layout_key,
-            bind_groups.shadows_bind_group_layout_key,
-        ]);
-        let singlesampled_pipeline_layout_key = ctx.pipeline_layouts.get_key(
-            ctx.gpu,
-            ctx.bind_group_layouts,
-            singlesampled_pipeline_layout_cache_key,
+    /// Live-config descriptor builder used by both the initial build
+    /// (via `shader_descriptors_and_layouts`) and the
+    /// `recompile_for_anti_aliasing` mid-session path. Takes the AA
+    /// config explicitly so the recompile flow can compile the
+    /// *next* MSAA/mipmap state without rewriting the renderer's
+    /// fields first.
+    pub(crate) fn shader_descriptors_for_config(
+        gpu: &awsm_renderer_core::renderer::AwsmRendererWebGpu,
+        bind_group_layouts: &mut crate::bind_group_layout::BindGroupLayouts,
+        pipeline_layouts: &mut crate::pipeline_layouts::PipelineLayouts,
+        bind_groups: &MaterialOpaqueBindGroups,
+        anti_aliasing: &AntiAliasing,
+    ) -> Result<Vec<OpaqueShaderDesc>> {
+        // Which (main_bgl, slot) is active? Only emit the descriptors
+        // for the live MSAA branch — the other half stays uncompiled
+        // until the next `recompile_for_anti_aliasing` lands.
+        let (active_msaa, main_bgl, empty_slot) = match anti_aliasing.msaa_sample_count {
+            Some(4) => (
+                Some(4_u32),
+                bind_groups.multisampled_main_bind_group_layout_key,
+                OpaquePipelineSlot::EmptyMsaa4,
+            ),
+            // Treat any other request (None or unsupported sample count)
+            // as singlesampled. The dispatch path's `get_compute_pipeline_key`
+            // already returns `None` for unsupported sample counts, so the
+            // worst case is a skipped opaque dispatch (renderer falls back
+            // to clear color), not a panic.
+            _ => (
+                None,
+                bind_groups.singlesampled_main_bind_group_layout_key,
+                OpaquePipelineSlot::EmptySingle,
+            ),
+        };
+        let active_mipmaps = anti_aliasing.mipmap;
+
+        let layout_key = pipeline_layouts.get_key(
+            gpu,
+            bind_group_layouts,
+            PipelineLayoutCacheKey::new(vec![
+                main_bgl,
+                bind_groups.lights_bind_group_layout_key,
+                bind_groups.texture_pool_textures_bind_group_layout_key,
+                bind_groups.shadows_bind_group_layout_key,
+            ]),
         )?;
 
         let texture_pool_arrays_len = bind_groups.texture_pool_arrays_len;
         let texture_pool_samplers_len = bind_groups.texture_pool_sampler_keys.len() as u32;
 
         let mut shader_descs: Vec<OpaqueShaderDesc> =
-            Vec::with_capacity(OPAQUE_SHADER_IDS.len() * 4 + 2);
+            Vec::with_capacity(OPAQUE_SHADER_IDS.len() + 1);
 
         for &shader_id in OPAQUE_SHADER_IDS {
-            for &(msaa, layout_key) in &[
-                (Some(4_u32), multisampled_pipeline_layout_key),
-                (None, singlesampled_pipeline_layout_key),
-            ] {
-                for &mipmaps in &[true, false] {
-                    shader_descs.push(OpaqueShaderDesc {
-                        shader_cache: ShaderCacheKeyMaterialOpaque {
-                            texture_pool_arrays_len,
-                            texture_pool_samplers_len,
-                            msaa_sample_count: msaa,
-                            mipmaps,
-                            shader_id,
-                        }
-                        .into(),
-                        layout_key,
-                        slot: OpaquePipelineSlot::Main(PipelineKeyId {
-                            msaa_sample_count: msaa,
-                            mipmaps,
-                            shader_id,
-                        }),
-                    });
+            shader_descs.push(OpaqueShaderDesc {
+                shader_cache: ShaderCacheKeyMaterialOpaque {
+                    texture_pool_arrays_len,
+                    texture_pool_samplers_len,
+                    msaa_sample_count: active_msaa,
+                    mipmaps: active_mipmaps,
+                    shader_id,
+                    // Builder-time prewarm — no dynamic materials
+                    // can be registered before `build()` returns,
+                    // so the stable empty-state sentinel applies.
+                    // Mid-session dynamic registrations go through
+                    // `prewarm_pipelines` which builds its own cache
+                    // keys with the live `dispatch_hash`.
+                    dispatch_hash: 0,
+                    dynamic_shader: None,
+                    bucket_entries: crate::dynamic_materials::first_party_bucket_entries(),
                 }
-            }
+                .into(),
+                layout_key,
+                slot: OpaquePipelineSlot::Main(PipelineKeyId {
+                    msaa_sample_count: active_msaa,
+                    mipmaps: active_mipmaps,
+                    shader_id,
+                }),
+            });
         }
         shader_descs.push(OpaqueShaderDesc {
             shader_cache: ShaderCacheKeyMaterialOpaqueEmpty {
                 texture_pool_arrays_len,
                 texture_pool_samplers_len,
-                msaa_sample_count: Some(4),
+                msaa_sample_count: active_msaa,
             }
             .into(),
-            layout_key: multisampled_pipeline_layout_key,
-            slot: OpaquePipelineSlot::EmptyMsaa4,
-        });
-        shader_descs.push(OpaqueShaderDesc {
-            shader_cache: ShaderCacheKeyMaterialOpaqueEmpty {
-                texture_pool_arrays_len,
-                texture_pool_samplers_len,
-                msaa_sample_count: None,
-            }
-            .into(),
-            layout_key: singlesampled_pipeline_layout_key,
-            slot: OpaquePipelineSlot::EmptySingle,
+            layout_key,
+            slot: empty_slot,
         });
 
-        let _ = (
-            multisampled_pipeline_layout_key,
-            singlesampled_pipeline_layout_key,
-        );
         Ok(shader_descs)
     }
 
@@ -269,6 +314,13 @@ impl MaterialOpaquePipelines {
     /// matching resolved pipeline keys (output of one
     /// `ComputePipelines::ensure_keys` call). Sync; the caller is
     /// responsible for running the actual pipeline compile.
+    ///
+    /// Both empty-pipeline fields default to `None`. The initial
+    /// build fills the one matching the live MSAA state; the other
+    /// stays `None` until the user calls `set_anti_aliasing`. The
+    /// dispatch path's `get_empty_compute_pipeline_key` already
+    /// returns `Option`, so a `None` there safely skips the empty
+    /// dispatch (which is a no-op render-target clear anyway).
     pub fn from_resolved(
         slots: Vec<OpaquePipelineSlot>,
         pipeline_keys: Vec<ComputePipelineKey>,
@@ -293,21 +345,50 @@ impl MaterialOpaquePipelines {
 
         Self {
             main,
-            msaa_4_empty_compute_pipeline_key: msaa_4_empty_compute_pipeline_key
-                .expect("empty MSAA-4 pipeline slot must be filled"),
-            singlesampled_empty_compute_pipeline_key: singlesampled_empty_compute_pipeline_key
-                .expect("empty singlesampled pipeline slot must be filled"),
+            msaa_4_empty_compute_pipeline_key,
+            singlesampled_empty_compute_pipeline_key,
+        }
+    }
+
+    /// Merge a fresh batch of resolved pipelines into `self` without
+    /// dropping any previously-compiled variants. Used by
+    /// [`crate::AwsmRenderer::set_anti_aliasing`] so toggling MSAA mid-session
+    /// preserves the old MSAA's pipelines (which the recompile-on-
+    /// every-toggle pattern would otherwise re-compile every cycle).
+    pub fn merge_resolved(
+        &mut self,
+        slots: Vec<OpaquePipelineSlot>,
+        pipeline_keys: Vec<ComputePipelineKey>,
+    ) {
+        for (slot, key) in slots.into_iter().zip(pipeline_keys) {
+            match slot {
+                OpaquePipelineSlot::Main(id) => {
+                    self.main.insert(id, key);
+                }
+                OpaquePipelineSlot::EmptyMsaa4 => {
+                    self.msaa_4_empty_compute_pipeline_key = Some(key);
+                }
+                OpaquePipelineSlot::EmptySingle => {
+                    self.singlesampled_empty_compute_pipeline_key = Some(key);
+                }
+            }
         }
     }
 
     /// Returns the empty pipeline key for the current MSAA state.
+    /// Returns `None` if the variant hasn't been compiled yet — the
+    /// dispatch path treats that as "skip the empty pass", which is
+    /// a no-op render-target clear so the renderer continues drawing.
+    /// The caller is expected to have invoked
+    /// [`crate::AwsmRenderer::set_anti_aliasing`] before changing MSAA mode,
+    /// which ensures the variant is compiled before the next render.
     pub fn get_empty_compute_pipeline_key(
         &self,
         anti_aliasing: &AntiAliasing,
     ) -> Option<ComputePipelineKey> {
         match anti_aliasing.msaa_sample_count {
-            Some(4) => Some(self.msaa_4_empty_compute_pipeline_key),
-            None => Some(self.singlesampled_empty_compute_pipeline_key),
+            Some(4) => self.msaa_4_empty_compute_pipeline_key,
+            None => self.singlesampled_empty_compute_pipeline_key,
             _ => None,
         }
     }
@@ -337,5 +418,16 @@ impl MaterialOpaquePipelines {
                 shader_id,
             })
             .copied()
+    }
+
+    /// Inserts a compiled opaque-compute pipeline for a dynamic
+    /// shader_id. Called from `AwsmRenderer::prewarm_pipelines` after
+    /// compiling a registered material's per-shader-id pipeline.
+    pub fn insert_dynamic_pipeline(
+        &mut self,
+        key_id: PipelineKeyId,
+        pipeline_key: ComputePipelineKey,
+    ) {
+        self.main.insert(key_id, pipeline_key);
     }
 }

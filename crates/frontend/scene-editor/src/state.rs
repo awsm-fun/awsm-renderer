@@ -109,6 +109,22 @@ pub struct AppState {
     /// indistinguishable for ~tens of entries.
     pub selected_assets: Mutable<indexmap::IndexSet<AssetId>>,
 
+    /// Reactive list of imported custom materials (each one a folder
+    /// pointer under `<project>/assets/materials/<name>/`). The
+    /// Materials pane (`properties::custom_materials_pane`) appends
+    /// to this on successful Import; the bridge consumes it on
+    /// renderer registration.
+    pub custom_materials: std::rc::Rc<
+        futures_signals::signal_vec::MutableVec<
+            awsm_scene_schema::dynamic_material::CustomMaterialRef,
+        >,
+    >,
+    /// Status of the in-flight Import Material flow. Drives the inline
+    /// status line under the Import button.
+    pub custom_materials_import_status: std::sync::Arc<
+        futures_signals::signal::Mutable<crate::properties::custom_materials_pane::ImportStatus>,
+    >,
+
     /// Tree-view drag state. Non-empty `tree_drag_ids` means a drag is in
     /// progress; `tree_drag_target` tracks what the pointer is hovering.
     pub tree_drag_ids: Arc<Mutex<Vec<NodeId>>>,
@@ -179,6 +195,12 @@ impl AppState {
             projection_mode: Mutable::new(ProjectionMode::Perspective),
             editor_camera_target: Mutable::new(None),
             selected_assets: Mutable::new(indexmap::IndexSet::new()),
+            custom_materials: std::rc::Rc::new(futures_signals::signal_vec::MutableVec::new()),
+            custom_materials_import_status: std::sync::Arc::new(
+                futures_signals::signal::Mutable::new(
+                    crate::properties::custom_materials_pane::ImportStatus::Idle,
+                ),
+            ),
             tree_drag_ids: Arc::new(Mutex::new(Vec::new())),
             tree_drag_target: Mutable::new(None),
             tree_is_dragging: Mutable::new(false),
@@ -232,9 +254,10 @@ impl AppState {
     }
 
     /// Capture the current scene into a snapshot. Used by history commit
-    /// and Save.
+    /// and Save. Includes the imported custom-material list so undo /
+    /// redo / save / reload all preserve it.
     pub fn snapshot_scene(&self) -> SceneSnapshot {
-        crate::scene::snapshot::capture(&self.scene)
+        crate::scene::snapshot::capture(&self.scene, &self.custom_materials)
     }
 
     /// Push the pre-mutation snapshot onto the undo stack. Call *before*

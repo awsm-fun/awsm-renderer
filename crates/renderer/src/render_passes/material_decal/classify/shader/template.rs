@@ -26,7 +26,6 @@ impl ShaderTemplateDecalClassify {
         self.render().map_err(AwsmShaderError::from)
     }
 
-    #[cfg(debug_assertions)]
     pub fn debug_label(&self) -> Option<&str> {
         Some("Decal Classify")
     }

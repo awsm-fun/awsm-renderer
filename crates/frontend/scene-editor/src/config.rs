@@ -14,7 +14,21 @@ use std::sync::LazyLock;
 pub struct Config {
     pub camera_focus_distance: f32,
     pub camera_aperture: f32,
+    /// Only read in debug builds via `load_external_test_scene`
+    /// (which is itself `#[cfg(debug_assertions)]`). Kept on the
+    /// struct unconditionally so the `LazyLock` initializer below
+    /// stays a single literal regardless of build profile —
+    /// `dead_code` is silenced for the release case.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     pub media_base_url_additional_assets: String,
+    /// Base URL of the sibling `material-editor` frontend. Wired by
+    /// the same env-var pattern as the additional-assets media base —
+    /// `URL_MATERIAL_EDITOR` from `taskfiles/frontend/scene-editor.yml`.
+    /// In dev it's `http://localhost:9084`; in prod it's
+    /// `https://dakom.github.io/awsm-renderer/material-editor/`. The
+    /// "Open in material-editor" link in the Custom Materials pane
+    /// builds against this base.
+    pub url_material_editor: String,
 }
 
 impl Config {
@@ -33,8 +47,14 @@ impl Config {
     /// in `taskfiles/frontend/scene-editor.yml`. Dev points at
     /// `http://localhost:9083` (the media-additional-assets server);
     /// prod points at `https://dakom.github.io/awsm-renderer-assets`.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     pub fn media_base_url_additional_assets(&self) -> &str {
         &self.media_base_url_additional_assets
+    }
+
+    /// Returns the material-editor frontend base URL.
+    pub fn url_material_editor(&self) -> &str {
+        &self.url_material_editor
     }
 }
 
@@ -45,6 +65,12 @@ pub static CONFIG: LazyLock<Config> = LazyLock::new(|| Config {
     media_base_url_additional_assets: option_env!("MEDIA_BASE_URL_ADDITIONAL_ASSETS")
         .expect(
             "MEDIA_BASE_URL_ADDITIONAL_ASSETS must be set — see \
+             `taskfiles/frontend/scene-editor.yml`",
+        )
+        .to_string(),
+    url_material_editor: option_env!("URL_MATERIAL_EDITOR")
+        .expect(
+            "URL_MATERIAL_EDITOR must be set — see \
              `taskfiles/frontend/scene-editor.yml`",
         )
         .to_string(),

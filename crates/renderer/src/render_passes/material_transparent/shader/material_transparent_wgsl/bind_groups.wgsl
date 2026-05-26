@@ -36,6 +36,9 @@ struct TransformPacked {
 // resolution). Rides alongside camera; see
 // `shared_wgsl/frame_globals.wgsl`.
 @group(0) @binding(18) var<uniform> frame_globals_raw: FrameGlobalsRaw;
+// Renderer-wide variable-length per-material data pool — backs
+// custom-material `BufferSlot` declarations on transparents.
+@group(0) @binding(19) var<storage, read> extras_pool: array<u32>;
 
 // ─── Shadow bind group (group 1) ───────────────────────────────────
 // Includes the shared shadow bindings (atlas + cube + EVSM + globals

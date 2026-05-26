@@ -2,29 +2,33 @@
 //
 // Per 8×8 tile, scan the visibility buffer and discover which opaque
 // `shader_id`s its pixels belong to. Aggregate via a workgroup-shared
-// 4-bit mask (one bit per shader_id), then thread 0 atomically
-// appends the tile's coords to each bucket bit is set in. The total
-// atomic traffic is ~1 per workgroup-bit, regardless of the 64 threads
-// inside.
+// bitmask (one bit per registered bucket, including dynamic
+// materials), then thread 0 atomically appends the tile's coords to
+// each bucket bit is set in. The total atomic traffic is ~1 per
+// workgroup-bit, regardless of the 64 threads inside.
 //
 // Skybox pixels (`triangle_index == U32_MAX`) are routed to the PBR
 // bucket — the PBR pipeline retains the skybox-fallback `textureStore`
 // in `material_opaque/.../compute.wgsl` so the existing skybox rendering
-// path keeps working with zero extra plumbing. Unlit / Toon pipelines
+// path keeps working with zero extra plumbing. Non-PBR pipelines
+// (Unlit / Toon / FlipBook / any registered dynamic material)
 // early-return on skybox without writing.
+//
+// The bit constants + the shader_id → bit dispatch chain + the
+// per-bucket extract block are all walked from the same
+// `bucket_entries` list the templated `ClassifyOutput` struct uses.
 
 {{ shader_id_consts|safe }}
 
 {% include "shared_wgsl/math.wgsl" %}
 
-// Bits in the workgroup-shared mask. Match the
-// `classify_output.{pbr,unlit,toon,flipbook}_offset` ordering on the
-// host side and the `bucket_index` used by the material-opaque
-// template's `dispatch_workgroups_indirect(args_buffer, bucket_index * 16)`.
-const BUCKET_BIT_PBR: u32 = 1u;
-const BUCKET_BIT_UNLIT: u32 = 2u;
-const BUCKET_BIT_TOON: u32 = 4u;
-const BUCKET_BIT_FLIPBOOK: u32 = 8u;
+// Bits in the workgroup-shared mask. One per registered bucket; the
+// PBR bit is at index 0 by convention so the skybox-fallback routing
+// (which assigns the PBR bit unconditionally for skybox pixels) maps
+// cleanly. `1u << index` for each entry.
+{% for entry in bucket_entries %}
+const {{ entry.bucket_bit_const() }}: u32 = (1u << {{ loop.index0 }}u);
+{% endfor %}
 
 var<workgroup> tile_mask: atomic<u32>;
 
@@ -61,15 +65,11 @@ fn cs_main(
                 // shader_id is stored as the first u32 of each
                 // material payload; `material_offset` is in bytes.
                 let shader_id = materials_data[mesh_meta.material_offset / 4u];
-                if shader_id == SHADER_ID_PBR {
-                    local_bit = BUCKET_BIT_PBR;
-                } else if shader_id == SHADER_ID_UNLIT {
-                    local_bit = BUCKET_BIT_UNLIT;
-                } else if shader_id == SHADER_ID_TOON {
-                    local_bit = BUCKET_BIT_TOON;
-                } else if shader_id == SHADER_ID_FLIPBOOK {
-                    local_bit = BUCKET_BIT_FLIPBOOK;
+                {% for entry in bucket_entries %}
+                {% if loop.first %}if{% else %}else if{% endif %} shader_id == {{ entry.shader_id_const() }} {
+                    local_bit = {{ entry.bucket_bit_const() }};
                 }
+                {% endfor %}
             }
             // HUD pixels are redrawn by the transparency pass — skip
             // them in classify so the opaque pipelines don't process
@@ -86,36 +86,18 @@ fn cs_main(
         let mask = atomicLoad(&tile_mask);
         let tile = vec2<u32>(wg.xy);
 
-        // PBR bucket. The atomic returns the previous count, which
-        // also doubles as the next free index into the tile array
-        // at `classify_output.pbr_offset + index`.
-        if (mask & BUCKET_BIT_PBR) != 0u {
-            let idx = atomicAdd(&classify_output.args_pbr.workgroup_count_x, 1u);
-            let slot = classify_output.pbr_offset + idx;
-            if slot < classify_output.pbr_offset + classify_output.bucket_capacity {
-                classify_output.tiles[slot] = tile;
+        // One extract block per registered bucket. The atomic returns
+        // the previous count, which also doubles as the next free
+        // index into the tile array at
+        // `classify_output.<name>_offset + index`.
+        {% for entry in bucket_entries %}
+        if (mask & {{ entry.bucket_bit_const() }}) != 0u {
+            let idx_{{ loop.index0 }} = atomicAdd(&classify_output.{{ entry.args_field() }}.workgroup_count_x, 1u);
+            let slot_{{ loop.index0 }} = classify_output.{{ entry.offset_field() }} + idx_{{ loop.index0 }};
+            if slot_{{ loop.index0 }} < classify_output.{{ entry.offset_field() }} + classify_output.bucket_capacity {
+                classify_output.tiles[slot_{{ loop.index0 }}] = tile;
             }
         }
-        if (mask & BUCKET_BIT_UNLIT) != 0u {
-            let idx = atomicAdd(&classify_output.args_unlit.workgroup_count_x, 1u);
-            let slot = classify_output.unlit_offset + idx;
-            if slot < classify_output.unlit_offset + classify_output.bucket_capacity {
-                classify_output.tiles[slot] = tile;
-            }
-        }
-        if (mask & BUCKET_BIT_TOON) != 0u {
-            let idx = atomicAdd(&classify_output.args_toon.workgroup_count_x, 1u);
-            let slot = classify_output.toon_offset + idx;
-            if slot < classify_output.toon_offset + classify_output.bucket_capacity {
-                classify_output.tiles[slot] = tile;
-            }
-        }
-        if (mask & BUCKET_BIT_FLIPBOOK) != 0u {
-            let idx = atomicAdd(&classify_output.args_flipbook.workgroup_count_x, 1u);
-            let slot = classify_output.flipbook_offset + idx;
-            if slot < classify_output.flipbook_offset + classify_output.bucket_capacity {
-                classify_output.tiles[slot] = tile;
-            }
-        }
+        {% endfor %}
     }
 }

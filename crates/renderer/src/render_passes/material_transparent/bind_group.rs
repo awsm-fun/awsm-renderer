@@ -235,6 +235,17 @@ impl MaterialTransparentBindGroups {
                 visibility_fragment: true,
                 visibility_compute: false,
             },
+            // Extras pool — variable-length per-material data backing
+            // custom-material `BufferSlot` declarations on transparents.
+            BindGroupLayoutCacheKeyEntry {
+                resource: BindGroupLayoutResource::Buffer(
+                    BufferBindingLayout::new()
+                        .with_binding_type(BufferBindingType::ReadOnlyStorage),
+                ),
+                visibility_vertex: false,
+                visibility_fragment: true,
+                visibility_compute: false,
+            },
         ];
 
         let main_bind_group_layout_key = ctx
@@ -502,6 +513,12 @@ impl MaterialTransparentBindGroups {
         entries.push(BindGroupEntry::new(
             entries.len() as u32,
             BindGroupResource::Buffer(BufferBinding::new(&ctx.frame_globals.gpu_buffer)),
+        ));
+        // Extras pool — variable-length per-material data for custom
+        // transparent materials.
+        entries.push(BindGroupEntry::new(
+            entries.len() as u32,
+            BindGroupResource::Buffer(BufferBinding::new(&ctx.extras_pool.buffer)),
         ));
 
         let descriptor = BindGroupDescriptor::new(

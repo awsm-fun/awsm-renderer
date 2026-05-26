@@ -26,7 +26,6 @@ impl ShaderTemplateOcclusionCull {
         self.render().map_err(AwsmShaderError::from)
     }
 
-    #[cfg(debug_assertions)]
     pub fn debug_label(&self) -> Option<&str> {
         Some("Occlusion Cull")
     }
@@ -57,7 +56,6 @@ impl ShaderTemplateOcclusionCompaction {
         self.render().map_err(AwsmShaderError::from)
     }
 
-    #[cfg(debug_assertions)]
     pub fn debug_label(&self) -> Option<&str> {
         Some("Occlusion Compaction")
     }

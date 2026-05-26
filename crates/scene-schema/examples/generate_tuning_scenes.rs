@@ -73,6 +73,7 @@ fn empty_project(name: &str) -> EditorProject {
         environment: EnvironmentConfig::default(),
         shadows: ShadowsConfig::default(),
         assets: AssetTable::default(),
+        custom_materials: Vec::new(),
         nodes: Vec::new(),
     }
 }
@@ -109,6 +110,7 @@ fn box_node(name: &str, position: [f32; 3], dims: [f32; 3], color: [f32; 4]) -> 
                 shading: MaterialShading::Pbr,
                 ..MaterialDef::default()
             },
+            custom_material: None,
             shadow: MeshShadowConfig::default(),
         },
         locked: false,
@@ -148,6 +150,7 @@ fn plane_node(
                 shading: MaterialShading::Pbr,
                 ..MaterialDef::default()
             },
+            custom_material: None,
             shadow: MeshShadowConfig::default(),
         },
         locked: false,
@@ -180,6 +183,7 @@ fn sphere_node(name: &str, position: [f32; 3], radius: f32, color: [f32; 4]) -> 
                 shading: MaterialShading::Pbr,
                 ..MaterialDef::default()
             },
+            custom_material: None,
             shadow: MeshShadowConfig::default(),
         },
         locked: false,
@@ -536,6 +540,7 @@ fn scene_open_world() -> EditorProject {
                 shading: MaterialShading::Pbr,
                 ..MaterialDef::default()
             },
+            custom_material: None,
             shadow: MeshShadowConfig::default(),
         },
         locked: false,

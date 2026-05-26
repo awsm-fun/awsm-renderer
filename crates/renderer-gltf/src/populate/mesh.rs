@@ -206,7 +206,12 @@ impl GltfMeshExt for AwsmRenderer {
                     let material =
                         pbr_material_mapper(self, ctx, primitive_buffer_info, gltf_material)
                             .await?;
-                    let key = self.materials.insert(material, &self.textures);
+                    let key = self.materials.insert(
+                        material,
+                        &self.textures,
+                        &self.dynamic_materials,
+                        &self.extras_pool,
+                    );
                     ctx.material_keys
                         .lock()
                         .unwrap()
