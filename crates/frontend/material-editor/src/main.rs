@@ -27,7 +27,6 @@ mod state;
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::Arc;
 
 use futures_signals::signal::Mutable;
 use wasm_bindgen_futures::spawn_local;
@@ -62,20 +61,41 @@ async fn run() -> anyhow::Result<()> {
     // Spawn the debounced-recompile loop driven by edits to
     // `state.definition` / `state.wgsl_source`. Its sink is the
     // renderer host — registrations land via
-    // `AwsmRenderer::register_material`.
-    let sink: Arc<Mutable<Box<dyn RecompileSink>>> = Arc::new(Mutable::new(Box::new(
+    // `AwsmRenderer::register_material`. Single-threaded wasm runtime
+    // means Rc + Mutable's interior mutability are sufficient
+    // (clippy flags Arc<!Send> otherwise).
+    let sink: Rc<Mutable<Box<dyn RecompileSink>>> = Rc::new(Mutable::new(Box::new(
         RendererRecompileSink::new(renderer_handle.clone()),
     )));
     recompile::spawn(state.clone(), sink);
 
     // Boot the renderer asynchronously. On success the handle's
     // RefCell flips to Some; the recompile sink starts producing
-    // real registrations.
+    // real registrations, AND the RAF loop starts driving the GPU
+    // each frame.
+    //
+    // The recompile loop's very first trigger fired *before* the
+    // renderer was ready (the sink saw `None` and silently returned
+    // Ok). Without an explicit kick here the editor would sit with
+    // no registered material until the user typed something. We push
+    // a bump to `wgsl_source` (rewriting it to itself) so the
+    // signal re-fires and the debounced loop registers the initial
+    // scanline material.
+    let renderer_handle_for_boot = renderer_handle.clone();
+    let state_for_boot = state.clone();
     spawn_local(async move {
         match boot_renderer().await {
             Ok(host) => {
-                *renderer_handle.borrow_mut() = Some(host);
+                *renderer_handle_for_boot.borrow_mut() = Some(host);
                 tracing::info!("[material-editor] renderer ready");
+                start_render_loop(renderer_handle_for_boot.clone());
+                // Re-fire the WGSL signal so the debounced recompile
+                // loop registers the initial material now that the
+                // renderer exists. `Mutable::set` triggers the
+                // signal even when the value is structurally equal,
+                // so this is sufficient.
+                let current = state_for_boot.wgsl_source.lock_ref().clone();
+                state_for_boot.wgsl_source.set(current);
             }
             Err(e) => {
                 tracing::error!("[material-editor] renderer boot failed: {e:?}");
@@ -84,6 +104,75 @@ async fn run() -> anyhow::Result<()> {
     });
 
     Ok(())
+}
+
+/// Per-frame render-loop driver. Kicks off `requestAnimationFrame` and
+/// re-schedules itself each tick. Reads the live renderer through the
+/// shared handle; if a registration is in flight (the handle's
+/// RefCell is borrowed mutably by the recompile sink) we skip a
+/// frame and try again next tick.
+///
+/// Each frame:
+///   1. Refresh the camera matrices (fixed view looking at the quad).
+///   2. Flush dirty transforms to the GPU.
+///   3. Issue the render.
+///
+/// The camera is recomputed every frame so the renderer's
+/// `last_matrices`-based dirty tracking marks the camera buffer dirty
+/// during the initial frames — without this the very first frame
+/// renders against zero matrices and the quad never appears.
+fn start_render_loop(handle: RendererHandle) {
+    use awsm_renderer::camera::CameraMatrices;
+    use glam::{Mat4, Vec3};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let raf_holder: Rc<RefCell<Option<gloo_render::AnimationFrame>>> =
+        Rc::new(RefCell::new(None));
+
+    fn tick(
+        handle: RendererHandle,
+        raf_holder: Rc<RefCell<Option<gloo_render::AnimationFrame>>>,
+    ) {
+        if let Ok(mut guard) = handle.try_borrow_mut() {
+            if let Some(host) = guard.as_mut() {
+                // Camera: looking at the quad at (0, 0, -3) from
+                // slightly above + back so the preview shows the
+                // material in a 3/4 view. Aspect is left at 1:1
+                // since the preview canvas is square; if the canvas
+                // gets resized later, plumb the actual canvas
+                // dimensions through here.
+                let eye = Vec3::new(0.0, 0.5, 1.5);
+                let target = Vec3::new(0.0, 0.0, -3.0);
+                let view = Mat4::look_at_rh(eye, target, Vec3::Y);
+                // Aspect matches the fixed 800×600 preview canvas.
+                let projection =
+                    Mat4::perspective_rh(60.0_f32.to_radians(), 800.0 / 600.0, 0.1, 100.0);
+                if let Err(e) = host.renderer.update_camera(CameraMatrices {
+                    view,
+                    projection,
+                    position_world: eye,
+                    focus_distance: (target - eye).length(),
+                    aperture: 5.6,
+                }) {
+                    tracing::warn!("[material-editor] update_camera failed: {e:?}");
+                }
+                host.renderer.update_transforms();
+
+                if let Err(e) = host.renderer.render(None) {
+                    tracing::warn!("[material-editor] render failed: {e:?}");
+                }
+            }
+        }
+        let next_handle = handle.clone();
+        let next_holder = raf_holder.clone();
+        let new_raf = gloo_render::request_animation_frame(move |_ts| {
+            tick(next_handle.clone(), next_holder.clone());
+        });
+        *raf_holder.borrow_mut() = Some(new_raf);
+    }
+
+    tick(handle, raf_holder);
 }
 
 /// Build an `AwsmRenderer` against the preview canvas.
@@ -129,7 +218,12 @@ async fn boot_renderer() -> anyhow::Result<RendererHost> {
         )
         .with_device_request_limits(DeviceRequestLimits::max_all());
 
+    // Mid-grey clear so an empty preview (no registered material yet,
+    // or quad not rasterizing for whatever reason) is visibly
+    // distinct from "render never ran" — matches the scene-editor's
+    // convention.
     let renderer = AwsmRendererBuilder::new(gpu_builder)
+        .with_clear_color(awsm_renderer_core::command::color::Color::MID_GREY)
         .build()
         .await
         .map_err(|e| anyhow::anyhow!("AwsmRendererBuilder::build failed: {e:?}"))?;

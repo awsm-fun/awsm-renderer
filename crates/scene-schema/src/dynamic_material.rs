@@ -43,7 +43,7 @@ fn default_version() -> u32 {
 ///
 /// Lives in `material.json` at the root of a material folder. Companion
 /// `shader.wgsl` and any referenced texture / buffer assets are loaded
-/// separately by [`load_material_folder`] into a [`LoadedMaterialFolder`].
+/// separately by `load_material_folder` (behind the `fs-loader` feature) into a [`LoadedMaterialFolder`].
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct MaterialDefinition {
@@ -255,7 +255,7 @@ pub struct CustomMaterialRef {
 /// Per-mesh instance reference to a registered custom material.
 ///
 /// Carries the material's `name` (resolved against the renderer's
-/// [`MaterialRegistry`] at bridge time to produce a `MaterialShaderId`) plus
+/// `MaterialRegistry` (renderer side) at bridge time to produce a `MaterialShaderId`) plus
 /// any per-instance overrides of the layout's defaults.
 #[derive(Clone, Debug, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -290,7 +290,7 @@ pub struct BufferRef {
 
 /// Resolved, in-memory representation of a custom-material folder.
 ///
-/// The output of [`load_material_folder`]. Consumers (`scene-editor`,
+/// The output of `load_material_folder` (behind the `fs-loader` feature). Consumers (`scene-editor`,
 /// `material-editor`, any third-party scene player) convert this to a
 /// renderer-side `MaterialRegistration` before calling
 /// `AwsmRenderer::register_material`.
@@ -311,7 +311,7 @@ pub struct LoadedMaterialFolder {
     pub buffer_data: HashMap<PathBuf, Vec<u32>>,
 }
 
-/// Errors produced by [`load_material_folder`].
+/// Errors produced by `load_material_folder` (behind the `fs-loader` feature).
 #[derive(Error, Debug)]
 pub enum MaterialFolderError {
     /// The folder did not contain a `material.json`, or it could not be
@@ -534,7 +534,7 @@ pub fn load_material_folder(
 /// Validates that no two layout entries share a name and that no entry
 /// uses one of the [`RESERVED_LAYOUT_NAMES`].
 ///
-/// Exposed alongside [`load_material_folder`] so non-native consumers
+/// Exposed alongside `load_material_folder` (behind the `fs-loader` feature) so non-native consumers
 /// (the browser-side `material-editor`) can validate a
 /// [`MaterialDefinition`] that was assembled in memory rather than read
 /// from disk.

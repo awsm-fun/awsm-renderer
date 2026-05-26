@@ -1,6 +1,16 @@
 //! Bridge between `awsm-scene-schema`'s dynamic-material types and the
 //! renderer's runtime registration API.
 //!
+//! `register_loaded_folder` is wired to the Materials pane's Import
+//! button. `build_custom_instance` + the related per-mesh converters
+//! (`convert_uniform_value`, `default_value_for`, `lookup`) are the
+//! public surface the per-mesh property panel will consume once it
+//! grows a "Custom" submenu in the material-type chooser. Allow the
+//! dead-code lint on those — the methods exist intentionally and
+//! removing them would lose the surface.
+#![allow(dead_code)]
+
+//!
 //! On project load the bridge:
 //! 1. Walks `EditorProject.custom_materials`.
 //! 2. For each entry, loads the folder via
@@ -147,7 +157,7 @@ where
         let resolved = instance
             .texture_overrides
             .get(&tex_slot.name)
-            .and_then(|tref| instance_textures_resolver(tref))
+            .and_then(&mut instance_textures_resolver)
             .map(DynamicTextureBinding::Pooled);
         textures.push(resolved);
     }

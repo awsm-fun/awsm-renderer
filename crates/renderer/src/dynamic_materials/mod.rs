@@ -28,31 +28,30 @@ use awsm_materials::dynamic_layout::MaterialLayout;
 /// Adapter that implements [`DynamicMaterialContext`] over the
 /// renderer's [`DynamicMaterials`] registry.
 ///
-/// Per-material `layout` + `alpha_mode` are looked up from
-/// [`MaterialRegistration`]. `resolve_texture_index` returns
-/// `u32::MAX` for unbound slots (the WGSL `texture_pool_sample_*`
-/// helpers treat that as "no texture"). `buffer_slice` returns `None`
-/// — Phase 6 wires the extras-pool allocator.
+/// `layout()` + `alpha_mode()` both look up the registry entry on
+/// demand — no per-call HashMap clone. Used on the hot
+/// `Materials::update` path, so this matters: every material write
+/// constructs one of these and the eager-clone version we ran
+/// previously copied every registered material's layout
+/// (uniforms + textures + buffers Vecs) on every write.
+///
+/// `resolve_texture_index` returns `u32::MAX` for unbound slots
+/// (the WGSL `texture_pool_sample_*` helpers treat that as "no
+/// texture"). `buffer_slice` resolves through the extras pool
+/// when one was attached via [`with_extras`](Self::with_extras).
 pub struct DynamicMaterialPackContext<'a> {
     materials: &'a DynamicMaterials,
     extras: Option<&'a extras_pool::ExtrasPool>,
-    layouts: HashMap<MaterialShaderId, MaterialLayout>,
 }
 
 impl<'a> DynamicMaterialPackContext<'a> {
     /// Wraps a `&DynamicMaterials` for use as a
-    /// [`DynamicMaterialContext`]. The layouts referenced from inside
-    /// the context are derived eagerly from the registry's
-    /// [`MaterialRegistration::layout_hash`]-keyed entries.
+    /// [`DynamicMaterialContext`]. Layouts are looked up lazily from
+    /// the registry — no allocation at construction time.
     pub fn new(materials: &'a DynamicMaterials) -> Self {
-        let mut layouts = HashMap::new();
-        for (id, reg) in materials.iter() {
-            layouts.insert(id, reg.layout.clone());
-        }
         Self {
             materials,
             extras: None,
-            layouts,
         }
     }
 
@@ -68,7 +67,7 @@ impl<'a> DynamicMaterialPackContext<'a> {
 
 impl<'a> DynamicMaterialContext for DynamicMaterialPackContext<'a> {
     fn layout(&self, shader_id: MaterialShaderId) -> Option<&MaterialLayout> {
-        self.layouts.get(&shader_id)
+        self.materials.get(shader_id).map(|r| &r.layout)
     }
 
     fn alpha_mode(&self, shader_id: MaterialShaderId) -> Option<awsm_materials::MaterialAlphaMode> {
@@ -93,8 +92,7 @@ impl<'a> DynamicMaterialContext for DynamicMaterialPackContext<'a> {
 }
 
 /// One bucket entry — the template-rendering view of a single registered
-/// material (first-party OR dynamic). Returned by
-/// [`DynamicMaterials::bucket_entries`].
+/// material (first-party OR dynamic). Returned by [`bucket_entries`].
 ///
 /// The classify pass + the opaque substitution template walk this list
 /// to emit:

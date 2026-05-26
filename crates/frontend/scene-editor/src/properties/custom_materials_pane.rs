@@ -11,7 +11,6 @@
 //! the per-mesh property panel surfaces it as a "Custom" submenu in
 //! the material-type dropdown.
 
-use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -70,17 +69,46 @@ fn render_import_button(
             let status = status.clone();
             spawn_local(async move {
                 status.set(ImportStatus::Picking);
-                match import_material_via_picker().await {
-                    Ok(rec) => {
-                        let name = rec.name.clone();
-                        custom_materials.lock_mut().push_cloned(rec);
-                        status.set(ImportStatus::Done(name));
-                    }
+                let loaded = match import_material_via_picker().await {
+                    Ok(l) => l,
                     Err(ImportError::Cancelled) => {
                         status.set(ImportStatus::Idle);
+                        return;
                     }
                     Err(e) => {
                         status.set(ImportStatus::Failed(e.to_string()));
+                        return;
+                    }
+                };
+                status.set(ImportStatus::Reading);
+
+                // Register against the live renderer via the
+                // dynamic_material_bridge converter. Holds the
+                // renderer lock briefly — the registration is
+                // synchronous; pipeline compile fires async via
+                // prewarm_pipelines below.
+                let renderer = crate::context::renderer_handle();
+                let mut renderer = renderer.lock().await;
+                let mut map = crate::renderer_bridge::dynamic_material_bridge::CustomMaterialRegistryMap::new();
+                match crate::renderer_bridge::dynamic_material_bridge::register_loaded_folder(
+                    &mut renderer,
+                    &mut map,
+                    &loaded,
+                ) {
+                    Ok(_id) => {
+                        let name = loaded.definition.name.clone();
+                        let folder = std::path::PathBuf::from(format!(
+                            "assets/materials/{}",
+                            name
+                        ));
+                        custom_materials.lock_mut().push_cloned(CustomMaterialRef {
+                            name: name.clone(),
+                            folder,
+                        });
+                        status.set(ImportStatus::Done(name));
+                    }
+                    Err(e) => {
+                        status.set(ImportStatus::Failed(format!("{e}")));
                     }
                 }
             });
@@ -144,6 +172,7 @@ pub enum ImportStatus {
     /// User is in the directory-picker modal.
     Picking,
     /// Reading + parsing the folder's files.
+    #[allow(dead_code)]
     Reading,
     /// Most recent import succeeded for the given name.
     Done(String),
@@ -167,9 +196,14 @@ enum ImportError {
     Js(String),
 }
 
-/// Open the directory picker, read the folder, build a
-/// [`CustomMaterialRef`].
-async fn import_material_via_picker() -> Result<CustomMaterialRef, ImportError> {
+/// Open the directory picker, read material.json + shader.wgsl,
+/// validate the layout, and return a [`LoadedMaterialFolder`] the
+/// caller can hand to the renderer-bridge. Texture / buffer
+/// default-asset reads are a thin extension of the same handle
+/// walk; for now they're empty maps (Phase 19 polish lands the asset
+/// reads alongside the actual texture-pool / extras-pool plumbing
+/// for those slots).
+async fn import_material_via_picker() -> Result<LoadedMaterialFolder, ImportError> {
     use awsm_scene_schema::dynamic_material::validate_layout_names;
     use web_sys::{FileSystemDirectoryHandle, FileSystemPermissionMode};
 
@@ -208,22 +242,15 @@ async fn import_material_via_picker() -> Result<CustomMaterialRef, ImportError> 
         serde_json::from_str(&material_json).map_err(|e| ImportError::Parse(e.to_string()))?;
     validate_layout_names(&definition).map_err(|e| ImportError::Parse(e.to_string()))?;
 
-    let _shader = read_text_file(&dir, "shader.wgsl")
+    let shader = read_text_file(&dir, "shader.wgsl")
         .await
         .map_err(|_| ImportError::MissingShaderWgsl)?;
 
-    let folder = PathBuf::from(format!("assets/materials/{}", definition.name));
-
-    let _loaded = LoadedMaterialFolder {
-        definition: definition.clone(),
-        wgsl_source: _shader,
+    Ok(LoadedMaterialFolder {
+        definition,
+        wgsl_source: shader,
         texture_data: std::collections::HashMap::new(),
         buffer_data: std::collections::HashMap::new(),
-    };
-
-    Ok(CustomMaterialRef {
-        name: definition.name,
-        folder,
     })
 }
 
@@ -278,6 +305,9 @@ fn urlencode(s: &str) -> String {
 /// Selecting a name from that menu sets the mesh's
 /// `NodeKind::Primitive::custom_material` to
 /// `Some(CustomMaterialInstance { material: name, … })`.
+///
+/// Exposed for the per-mesh property panel to consume.
+#[allow(dead_code)]
 pub fn list_custom_material_names(custom_materials: &MutableVec<CustomMaterialRef>) -> Vec<String> {
     custom_materials
         .lock_ref()

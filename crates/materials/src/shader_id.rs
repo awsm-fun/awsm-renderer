@@ -5,10 +5,11 @@
 //! fragment shader.
 //!
 //! First-party materials hold associated-constant ids in the low range
-//! ([`MaterialShaderId::PBR`] / [`UNLIT`](Self::UNLIT) / [`TOON`](Self::TOON) /
-//! [`FLIPBOOK`](Self::FLIPBOOK)). Runtime-registered dynamic materials get ids
-//! at or above [`MaterialShaderId::DYNAMIC_START`] assigned by the registry —
-//! see [`is_dynamic`](Self::is_dynamic).
+//! ([`MaterialShaderId::PBR`] / [`MaterialShaderId::UNLIT`] /
+//! [`MaterialShaderId::TOON`] / [`MaterialShaderId::FLIPBOOK`]).
+//! Runtime-registered dynamic materials get ids at or above
+//! [`MaterialShaderId::DYNAMIC_START`] assigned by the registry — see
+//! [`MaterialShaderId::is_dynamic`].
 //!
 //! The on-disk numeric representation is unchanged from the pre-1.0 enum form
 //! — a `u32`. The shape is a `repr(transparent)` newtype so the dynamic range

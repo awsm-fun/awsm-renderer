@@ -109,6 +109,7 @@ version = "0.1.7"
 dependencies = [
  "anyhow",
  "awsm-materials",
+ "awsm-meshgen",
  "awsm-renderer",
  "awsm-renderer-core",
  "awsm-scene-schema",
@@ -116,6 +117,8 @@ dependencies = [
  "dominator",
  "futures",
  "futures-signals",
+ "glam 0.32.1",
+ "gloo-render",
  "gloo-timers",
  "js-sys",
  "serde",

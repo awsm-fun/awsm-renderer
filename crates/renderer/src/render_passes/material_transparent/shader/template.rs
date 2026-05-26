@@ -185,9 +185,12 @@ pub struct ShaderTemplateTransparentMaterialFragment {
     /// != 0u`.
     pub shader_id_dynamic: u32,
     /// For dynamic transparent shaders: the auto-generated
-    /// `struct CustomMaterialData_<id> { ... }` declaration. Empty
-    /// when not in use.
+    /// `struct MaterialData { ... }` declaration. Empty when not in use.
     pub dynamic_struct_decl: String,
+    /// For dynamic transparent shaders: the auto-generated
+    /// `fn material_data_load(byte_offset: u32) -> MaterialData`
+    /// accessor. Empty when not in use.
+    pub dynamic_loader_decl: String,
     /// For dynamic transparent shaders: the author's WGSL fragment
     /// (wrapped at template render time into
     /// `fn custom_shade_transparent_dynamic(input) -> TransparentShadingOutput`).
@@ -219,6 +222,11 @@ impl ShaderTemplateTransparentMaterialFragment {
                 .dynamic_shader
                 .as_ref()
                 .map(|d| d.struct_decl.clone())
+                .unwrap_or_default(),
+            dynamic_loader_decl: cache_key
+                .dynamic_shader
+                .as_ref()
+                .map(|d| d.loader_decl.clone())
                 .unwrap_or_default(),
             dynamic_wgsl_fragment: cache_key
                 .dynamic_shader

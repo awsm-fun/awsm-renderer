@@ -9,10 +9,13 @@ rust-version.workspace = true
 
 [dependencies]
 awsm-materials = { path = "../../materials" }
+awsm-meshgen = { path = "../../meshgen" }
 awsm-renderer = { path = "../../renderer", features = ["ktx", "serde"] }
 awsm-renderer-core = { path = "../../renderer-core" }
 awsm-scene-schema = { path = "../../scene-schema" }
 awsm-web-shared = { path = "../../web-shared" }
+
+glam = { workspace = true }
 
 anyhow = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -26,6 +29,7 @@ futures = { workspace = true }
 
 dominator = "0.5.38"
 futures-signals = "0.3.34"
+gloo-render = "0.2.0"
 gloo-timers = { version = "0.3.0", features = ["futures"] }
 xutex = "0.2.1"
 

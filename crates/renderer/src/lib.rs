@@ -477,7 +477,7 @@ impl AwsmRenderer {
             };
             let pipeline_layout_key = self.pipeline_layouts.get_key(
                 &self.gpu,
-                &mut self.bind_group_layouts,
+                &self.bind_group_layouts,
                 crate::pipeline_layouts::PipelineLayoutCacheKey::new(vec![layout_key]),
             )?;
             let pipeline_cache_key =
@@ -510,12 +510,21 @@ impl AwsmRenderer {
         //    own specialized pipeline.
         let dispatch_hash = self.dynamic_materials.dispatch_hash();
         for (shader_id, reg) in self.dynamic_materials.iter() {
-            // Build the auto-generated struct decl from the layout.
+            // Build the auto-generated struct decl + loader from the
+            // layout. Both walk the same byte offsets the dynamic
+            // packer (`pack_uniform_values`) wrote, so the loader
+            // reads back exactly the values the packer stored.
             let struct_decl =
                 awsm_materials::dynamic_layout::generate_wgsl_struct("MaterialData", &reg.layout);
+            let loader_decl = awsm_materials::dynamic_layout::generate_wgsl_loader(
+                "MaterialData",
+                "material_data_load",
+                &reg.layout,
+            );
             let dynamic_shader = Some(
                 crate::render_passes::material_opaque::shader::cache_key::DynamicShaderInfo {
                     struct_decl,
+                    loader_decl,
                     wgsl_fragment: reg.wgsl_fragment.clone(),
                 },
             );
@@ -525,7 +534,7 @@ impl AwsmRenderer {
             let texture_pool_samplers_len = opaque_bg.texture_pool_sampler_keys.len() as u32;
             let multisampled_layout_key = self.pipeline_layouts.get_key(
                 &self.gpu,
-                &mut self.bind_group_layouts,
+                &self.bind_group_layouts,
                 crate::pipeline_layouts::PipelineLayoutCacheKey::new(vec![
                     opaque_bg.multisampled_main_bind_group_layout_key,
                     opaque_bg.lights_bind_group_layout_key,
@@ -535,7 +544,7 @@ impl AwsmRenderer {
             )?;
             let singlesampled_layout_key = self.pipeline_layouts.get_key(
                 &self.gpu,
-                &mut self.bind_group_layouts,
+                &self.bind_group_layouts,
                 crate::pipeline_layouts::PipelineLayoutCacheKey::new(vec![
                     opaque_bg.singlesampled_main_bind_group_layout_key,
                     opaque_bg.lights_bind_group_layout_key,
@@ -592,6 +601,51 @@ impl AwsmRenderer {
                         },
                         keys[0],
                     );
+            }
+            // 3. For Blend-mode registrations: also pre-compile a
+            //    stub transparent shader variant with default vertex
+            //    attributes so the template machinery is exercised
+            //    (the actual per-mesh transparent pipelines build on
+            //    first draw against real mesh attributes). Verifies
+            //    the transparent template's `{% if shader_id_dynamic
+            //    != 0 %}` wrapper + dispatch-arm wiring compile
+            //    cleanly without waiting for a mesh.
+            if reg.alpha_mode == awsm_materials::MaterialAlphaMode::Blend {
+                let transparent_dyn_info = crate::render_passes::material_opaque::shader::cache_key::DynamicShaderInfo {
+                    struct_decl: awsm_materials::dynamic_layout::generate_wgsl_struct(
+                        "MaterialData",
+                        &reg.layout,
+                    ),
+                    loader_decl: awsm_materials::dynamic_layout::generate_wgsl_loader(
+                        "MaterialData",
+                        "material_data_load",
+                        &reg.layout,
+                    ),
+                    wgsl_fragment: reg.wgsl_fragment.clone(),
+                };
+                let opaque_bg = &self.render_passes.material_opaque.bind_groups;
+                let texture_pool_arrays_len = opaque_bg.texture_pool_arrays_len;
+                let texture_pool_samplers_len =
+                    opaque_bg.texture_pool_sampler_keys.len() as u32;
+                for &(msaa, mipmaps) in &[(Some(4u32), true), (None, true)] {
+                    let cache_key = crate::render_passes::material_transparent::shader::cache_key::ShaderCacheKeyMaterialTransparent {
+                        instancing_transforms: false,
+                        attributes: crate::render_passes::shared::material::cache_key::ShaderMaterialVertexAttributes::default(),
+                        texture_pool_arrays_len,
+                        texture_pool_samplers_len,
+                        msaa_sample_count: msaa,
+                        mipmaps,
+                        dispatch_hash,
+                        dynamic_shader_id: Some(shader_id),
+                        dynamic_shader: Some(transparent_dyn_info.clone()),
+                    };
+                    if let Err(e) = self.shaders.get_key(&self.gpu, cache_key).await {
+                        tracing::warn!(
+                            "[dynamic-materials] transparent prewarm compile failed for {:?}: {e:?}",
+                            shader_id
+                        );
+                    }
+                }
             }
             let _ = reg;
         }

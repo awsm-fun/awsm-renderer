@@ -15,8 +15,7 @@
 //!      last-good shader.
 
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
-use std::time::Duration;
+use std::rc::Rc;
 
 use awsm_materials::dynamic_layout::{
     BufferSlotRuntime, FieldType as RuntimeFieldType, MaterialLayout, TextureSlotRuntime,
@@ -49,6 +48,18 @@ pub fn build_registration(state: &EditState) -> MaterialRegistration {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     def.name.hash(&mut h);
     def.version.hash(&mut h);
+    // alpha_mode + double_sided are part of the registration's
+    // identity — toggling them changes which pipeline (opaque vs
+    // transparent) the renderer routes the material through, so
+    // they must contribute to layout_hash. The recompile sink's
+    // idempotency check uses (layout_hash, wgsl_hash) to decide
+    // whether to skip re-registration; without alpha_mode in the
+    // hash, switching Opaque → Blend would silently no-op.
+    std::mem::discriminant(&def.alpha_mode).hash(&mut h);
+    if let awsm_scene_schema::material::MaterialAlphaMode::Mask { cutoff } = def.alpha_mode {
+        cutoff.to_bits().hash(&mut h);
+    }
+    def.double_sided.hash(&mut h);
     for u in &def.uniforms {
         u.name.hash(&mut h);
         std::mem::discriminant(&u.ty).hash(&mut h);
@@ -98,12 +109,12 @@ pub trait RecompileSink: 'static {
 /// support lands later, each per-document state owns its own).
 pub fn spawn(
     state: EditState,
-    sink: Arc<futures_signals::signal::Mutable<Box<dyn RecompileSink>>>,
+    sink: Rc<futures_signals::signal::Mutable<Box<dyn RecompileSink>>>,
 ) {
     // Treat any change to either signal as the trigger. The
     // `for_each` + `Timeout` combination gives us a "last-write wins
     // within DEBOUNCE_MS" semantic with no extra state.
-    let trigger = Arc::new(futures_signals::signal::Mutable::new(0u64));
+    let trigger = Rc::new(futures_signals::signal::Mutable::new(0u64));
     {
         let trigger = trigger.clone();
         let def = state.definition.clone();
@@ -138,7 +149,7 @@ pub fn spawn(
     let state_for_loop = state.clone();
     let trigger_for_loop = trigger.clone();
     spawn_local(async move {
-        let last_seen = Arc::new(std::cell::Cell::new(0u64));
+        let last_seen = std::rc::Rc::new(std::cell::Cell::new(0u64));
         trigger_for_loop
             .signal()
             .for_each(move |seen| {
@@ -270,20 +281,6 @@ fn convert_alpha_mode(a: MaterialAlphaModeSchema) -> MaterialAlphaModeRuntime {
         MaterialAlphaModeSchema::Opaque => MaterialAlphaModeRuntime::Opaque,
         MaterialAlphaModeSchema::Mask { cutoff } => MaterialAlphaModeRuntime::Mask { cutoff },
         MaterialAlphaModeSchema::Blend => MaterialAlphaModeRuntime::Blend,
-    }
-}
-
-// Tests live in a separate module so they don't require a wasm host.
-#[cfg(test)]
-#[cfg(target_arch = "wasm32")]
-mod tests {
-    use super::*;
-
-    // These are basic smoke tests — the full coverage lives at the
-    // recompile-sink integration level which needs a real
-    // AwsmRenderer. Wasm-test-only to avoid std::time dep on native.
-    fn _unused() {
-        let _ = Duration::from_millis(DEBOUNCE_MS as u64);
     }
 }
 

@@ -17,8 +17,8 @@ use crate::{
 /// (one fragment shader handles every transparent mesh with a runtime
 /// branch on `shader_id`). When a dynamic material is registered,
 /// `dynamic_shader` carries the auto-generated `MaterialData` struct
-/// + the author's WGSL fragment so the transparent fragment template
-/// can emit a wrapped `custom_shade_transparent_dynamic(...)`
+/// and the author's WGSL fragment, so the transparent fragment
+/// template emits a wrapped `custom_shade_transparent_dynamic(...)`
 /// function + dispatch arm — same model as the opaque cache key.
 ///
 /// `dispatch_hash` mirrors the opaque variant's — `0` is the stable

@@ -320,6 +320,163 @@ pub fn generate_wgsl_struct(struct_name: &str, layout: &MaterialLayout) -> Strin
     out
 }
 
+/// Generate the WGSL function that loads a `MaterialData`
+/// (`struct_name`) struct from the renderer-wide `materials: array<u32>`
+/// storage buffer, given the byte offset of the material's slot.
+///
+/// Walks the same field offsets [`generate_wgsl_struct`] +
+/// [`pack_uniform_values`] use so the loader reads back exactly what
+/// the packer wrote. The function signature is:
+///
+/// ```wgsl
+/// fn <fn_name>(byte_offset: u32) -> <struct_name> { ... }
+/// ```
+///
+/// Requires `material_load_u32(idx)` / `material_load_f32(idx)` to be
+/// in scope (they are — `shared_wgsl/material.wgsl` declares them
+/// alongside the `materials` binding).
+///
+/// The slot's byte 0 is the `shader_id` u32. The struct begins at
+/// the first byte aligned to the struct's natural alignment, which
+/// is the max of all field alignments (≥ 4). The loader emits the
+/// `base` index = `byte_offset / 4u + pre_struct_pad_words + 1u`
+/// (the `+ 1u` skips the shader_id word; `pre_struct_pad_words` is
+/// the alignment pad written by
+/// [`crate::dynamic::DynamicMaterial::write_uniform_buffer_with_layout`]).
+pub fn generate_wgsl_loader(struct_name: &str, fn_name: &str, layout: &MaterialLayout) -> String {
+    let struct_align = struct_alignment(layout);
+    // The shader_id is one u32 at the slot's start. The struct
+    // begins at the next struct_align-aligned byte. Words from the
+    // start of the slot: 1 (shader_id) + pre_pad_words.
+    let pre_pad_words = (align_up(4, struct_align) - 4) / 4;
+    let leading_skip = 1 + pre_pad_words; // u32 words to skip from slot start
+
+    let mut out = String::new();
+    out.push_str(&format!(
+        "fn {}(byte_offset: u32) -> {} {{\n",
+        fn_name, struct_name
+    ));
+    out.push_str(&format!(
+        "    let base = byte_offset / 4u + {}u;\n",
+        leading_skip
+    ));
+    out.push_str(&format!("    return {}(\n", struct_name));
+
+    let mut field_byte_offset: usize = 0;
+
+    let emit = |out: &mut String, name: &str, ty: FieldType, byte_offset: &mut usize| {
+        *byte_offset = align_up(*byte_offset, ty.align());
+        let word = *byte_offset / 4;
+        match ty {
+            FieldType::F32 => {
+                out.push_str(&format!("        material_load_f32(base + {}u), // {name}\n", word));
+            }
+            FieldType::U32 | FieldType::Bool => {
+                out.push_str(&format!("        material_load_u32(base + {}u), // {name}\n", word));
+            }
+            FieldType::Vec2 => {
+                out.push_str(&format!(
+                    "        vec2<f32>(material_load_f32(base + {}u), material_load_f32(base + {}u)), // {name}\n",
+                    word, word + 1
+                ));
+            }
+            FieldType::Vec3 | FieldType::Color3 => {
+                out.push_str(&format!(
+                    "        vec3<f32>(material_load_f32(base + {}u), material_load_f32(base + {}u), material_load_f32(base + {}u)), // {name}\n",
+                    word, word + 1, word + 2
+                ));
+            }
+            FieldType::Vec4 | FieldType::Color4 => {
+                out.push_str(&format!(
+                    "        vec4<f32>(material_load_f32(base + {}u), material_load_f32(base + {}u), material_load_f32(base + {}u), material_load_f32(base + {}u)), // {name}\n",
+                    word, word + 1, word + 2, word + 3
+                ));
+            }
+            FieldType::IVec2 => {
+                out.push_str(&format!(
+                    "        vec2<i32>(i32(material_load_u32(base + {}u)), i32(material_load_u32(base + {}u))), // {name}\n",
+                    word, word + 1
+                ));
+            }
+            FieldType::IVec3 => {
+                out.push_str(&format!(
+                    "        vec3<i32>(i32(material_load_u32(base + {}u)), i32(material_load_u32(base + {}u)), i32(material_load_u32(base + {}u))), // {name}\n",
+                    word, word + 1, word + 2
+                ));
+            }
+            FieldType::IVec4 => {
+                out.push_str(&format!(
+                    "        vec4<i32>(i32(material_load_u32(base + {}u)), i32(material_load_u32(base + {}u)), i32(material_load_u32(base + {}u)), i32(material_load_u32(base + {}u))), // {name}\n",
+                    word, word + 1, word + 2, word + 3
+                ));
+            }
+            FieldType::Mat3 => {
+                // 3 columns × vec3 with 16-byte stride per column
+                // (4 u32 words per column including the trailing pad).
+                out.push_str(&format!(
+                    "        mat3x3<f32>(\n            vec3<f32>(material_load_f32(base + {0}u), material_load_f32(base + {1}u), material_load_f32(base + {2}u)),\n            vec3<f32>(material_load_f32(base + {3}u), material_load_f32(base + {4}u), material_load_f32(base + {5}u)),\n            vec3<f32>(material_load_f32(base + {6}u), material_load_f32(base + {7}u), material_load_f32(base + {8}u)),\n        ), // {name}\n",
+                    word, word + 1, word + 2, word + 4, word + 5, word + 6, word + 8, word + 9, word + 10
+                ));
+            }
+            FieldType::Mat4 => {
+                // 4 columns × vec4, 16 u32 words contiguous.
+                out.push_str(&format!(
+                    "        mat4x4<f32>(\n            vec4<f32>(material_load_f32(base + {0}u), material_load_f32(base + {1}u), material_load_f32(base + {2}u), material_load_f32(base + {3}u)),\n            vec4<f32>(material_load_f32(base + {4}u), material_load_f32(base + {5}u), material_load_f32(base + {6}u), material_load_f32(base + {7}u)),\n            vec4<f32>(material_load_f32(base + {8}u), material_load_f32(base + {9}u), material_load_f32(base + {10}u), material_load_f32(base + {11}u)),\n            vec4<f32>(material_load_f32(base + {12}u), material_load_f32(base + {13}u), material_load_f32(base + {14}u), material_load_f32(base + {15}u)),\n        ), // {name}\n",
+                    word, word + 1, word + 2, word + 3,
+                    word + 4, word + 5, word + 6, word + 7,
+                    word + 8, word + 9, word + 10, word + 11,
+                    word + 12, word + 13, word + 14, word + 15
+                ));
+            }
+        }
+        *byte_offset += ty.size();
+    };
+
+    for field in &layout.uniforms {
+        emit(&mut out, &field.name, field.ty, &mut field_byte_offset);
+    }
+    for tex in &layout.textures {
+        emit(
+            &mut out,
+            &format!("{}_index", tex.name),
+            FieldType::U32,
+            &mut field_byte_offset,
+        );
+    }
+    for buf in &layout.buffers {
+        emit(
+            &mut out,
+            &format!("{}_offset", buf.name),
+            FieldType::U32,
+            &mut field_byte_offset,
+        );
+        emit(
+            &mut out,
+            &format!("{}_length", buf.name),
+            FieldType::U32,
+            &mut field_byte_offset,
+        );
+    }
+
+    out.push_str("    );\n}\n");
+    out
+}
+
+/// The struct alignment derived from a layout — `max(align(field_i))`,
+/// floored at 4. Used by [`generate_wgsl_loader`] to compute the
+/// pre-struct padding count.
+pub fn struct_alignment(layout: &MaterialLayout) -> usize {
+    let mut align: usize = 4;
+    for f in &layout.uniforms {
+        if f.ty.align() > align {
+            align = f.ty.align();
+        }
+    }
+    // Texture / buffer slot fields are u32 (align 4) — they don't
+    // bump the struct alignment.
+    align
+}
+
 /// Total layout size in bytes — including trailing padding required by
 /// WGSL's struct-size rounding (struct size is rounded up to its
 /// alignment). Used as the size of one material's slice in the

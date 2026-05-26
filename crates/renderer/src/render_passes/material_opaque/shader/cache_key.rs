@@ -57,17 +57,26 @@ pub struct ShaderCacheKeyMaterialOpaque {
 /// `fn custom_shade_<id>(...)` and dispatch to it from the kernel.
 ///
 /// Hashed by `(shader_id, layout_hash, wgsl_hash)` — the field names
-/// + bodies are recomputed from the layout / WGSL at template-render
-/// time. Two distinct registrations with byte-identical hashes
-/// produce the same compiled WGSL.
+/// and bodies are recomputed from the layout / WGSL at
+/// template-render time, so two distinct registrations with
+/// byte-identical hashes produce the same compiled WGSL.
 #[derive(Hash, Debug, Clone, PartialEq, Eq)]
 pub struct DynamicShaderInfo {
-    /// The auto-generated `struct CustomMaterialData_<id>` declaration
-    /// (output of `dynamic_layout::generate_wgsl_struct`).
+    /// The auto-generated `struct MaterialData` declaration (output
+    /// of `dynamic_layout::generate_wgsl_struct`).
     pub struct_decl: String,
+    /// The auto-generated `fn material_data_load(byte_offset: u32) ->
+    /// MaterialData` accessor (output of
+    /// `dynamic_layout::generate_wgsl_loader`). Reads the per-instance
+    /// uniform / texture-index / buffer-offset values back out of the
+    /// `materials: array<u32>` storage buffer at exactly the byte
+    /// offsets `pack_uniform_values` wrote.
+    pub loader_decl: String,
     /// The author's WGSL fragment, verbatim. Wrapped at template-
-    /// render time into `fn custom_shade_<id>(input: OpaqueShadingInput)
-    /// -> OpaqueShadingOutput { <fragment> }`.
+    /// render time into `fn custom_shade_dynamic(input: OpaqueShadingInput)
+    /// -> OpaqueShadingOutput { <fragment> }`. The wrapper populates
+    /// `input.material` by calling `material_data_load(input.material_offset)`
+    /// before invoking the author's body.
     pub wgsl_fragment: String,
 }
 

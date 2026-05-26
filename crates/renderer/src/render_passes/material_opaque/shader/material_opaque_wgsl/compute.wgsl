@@ -103,14 +103,24 @@
 
 {% if shader_id.is_dynamic() %}
 /*************** START dynamic-material wrapper ******************/
-// Auto-generated per the registered material's layout. Phase 4 wraps
-// the author's WGSL fragment in a function the dispatch arm below
-// calls; see docs/dynamic-materials/contract-opaque.md for the
-// `OpaqueShadingInput` / `OpaqueShadingOutput` contract.
+// Auto-generated per the registered material's layout. See
+// docs/dynamic-materials/contract-opaque.md for the
+// `OpaqueShadingInput` / `OpaqueShadingOutput` / `MaterialData`
+// contract.
 //
 // The contract types are declared here (inline rather than in
 // shared_wgsl/) because they exist exclusively for the wrapper —
 // first-party materials read their inputs from the kernel directly.
+
+// MaterialData struct — auto-generated from the registered layout.
+{{ dynamic_struct_decl|safe }}
+
+// MaterialData accessor — auto-generated to walk the layout's byte
+// offsets, reading values out of `materials: array<u32>` (from
+// shared_wgsl/material.wgsl). The wrapper calls this once per pixel
+// using `input.material_offset` and stuffs the result into
+// `input.material`.
+{{ dynamic_loader_decl|safe }}
 
 struct OpaqueShadingInput {
     coords: vec2<i32>,
@@ -122,13 +132,12 @@ struct OpaqueShadingInput {
     world_position: vec3<f32>,
     surface_to_camera: vec3<f32>,
     material_offset: u32,
+    material: MaterialData,
 };
 struct OpaqueShadingOutput {
     color: vec3<f32>,
     alpha: f32,
 };
-
-{{ dynamic_struct_decl|safe }}
 
 fn custom_shade_dynamic(input: OpaqueShadingInput) -> OpaqueShadingOutput {
 {{ dynamic_wgsl_fragment|safe }}
@@ -472,6 +481,7 @@ fn main(
         base_alpha = flipbook_result.a;
     {% else if shader_id.is_dynamic() %}
         // Dynamic custom material — wrapped fragment lives above.
+        let dyn_material = material_data_load(material_offset);
         let dyn_input = OpaqueShadingInput(
             coords,
             screen_dims,
@@ -482,6 +492,7 @@ fn main(
             standard_coordinates.world_position,
             standard_coordinates.surface_to_camera,
             material_offset,
+            dyn_material,
         );
         let dyn_out = custom_shade_dynamic(dyn_input);
         color = dyn_out.color;

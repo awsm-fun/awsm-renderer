@@ -6,7 +6,7 @@
 //! the interpreter looks the registration up at write-time rather than
 //! carrying a `Box<dyn MaterialShader>` per instance.
 //!
-//! Phase 2 wires the trait methods up to the [`dynamic_layout`] packer for
+//! Phase 2 wires the trait methods up to the [`crate::dynamic_layout`] packer for
 //! the uniform-tail + texture-tail + buffer-tail writes. The
 //! buffer-tail's `(offset, length)` pairs are stub-zeros for now — Phase 6
 //! stands up the extras-pool allocator that assigns them per instance.

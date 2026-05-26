@@ -137,7 +137,16 @@ fn sample_transmission_background_for_ior(
 /*************** START dynamic-material wrapper ******************/
 // Auto-generated per the registered transparent material's layout.
 // See docs/dynamic-materials/contract-transparent.md for the
-// TransparentShadingInput / TransparentShadingOutput contract.
+// TransparentShadingInput / TransparentShadingOutput / MaterialData
+// contract.
+
+// MaterialData struct — auto-generated from the registered layout.
+{{ dynamic_struct_decl|safe }}
+
+// MaterialData accessor — auto-generated to walk the layout's byte
+// offsets. The wrapper calls this once per pixel using
+// `input.material_offset` and populates `input.material`.
+{{ dynamic_loader_decl|safe }}
 
 struct TransparentShadingInput {
     world_position: vec3<f32>,
@@ -146,12 +155,11 @@ struct TransparentShadingInput {
     surface_to_camera: vec3<f32>,
     front_facing: bool,
     material_offset: u32,
+    material: MaterialData,
 };
 struct TransparentShadingOutput {
     color: vec4<f32>,
 };
-
-{{ dynamic_struct_decl|safe }}
 
 fn custom_shade_transparent_dynamic(input: TransparentShadingInput) -> TransparentShadingOutput {
 {{ dynamic_wgsl_fragment|safe }}
@@ -242,6 +250,7 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
 {% if shader_id_dynamic != 0 %}
     } else if (shader_id == {{ shader_id_dynamic }}u) {
         // Dynamic custom transparent material — wrapped fragment lives above.
+        let dyn_material = material_data_load(material_offset);
         let dyn_input = TransparentShadingInput(
             input.world_position,
             world_normal,
@@ -249,6 +258,7 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
             surface_to_camera,
             input.front_facing,
             material_offset,
+            dyn_material,
         );
         let dyn_out = custom_shade_transparent_dynamic(dyn_input);
         out.color = dyn_out.color;
