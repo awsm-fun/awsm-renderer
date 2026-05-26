@@ -130,12 +130,14 @@ impl PipelineScheduler {
     /// `PassKind` (resubmission overwrites the existing entry's state and
     /// bumps the generation marker).
     ///
-    /// **Stub-future warning**: the compile futures pushed onto `inflight`
-    /// at this commit are placeholder `async { Ok(()) }`. They will be
-    /// replaced with real shader+pipeline compile invocations in follow-up
-    /// commits per the body of
-    /// [`docs/plans/more-optimizations.md`](../../../../docs/plans/more-optimizations.md)
-    /// § Priority 1.
+    /// **Compile-binding model**: submitted groups start in `Pending`.
+    /// They transition to `Ready` / `Failed` via explicit
+    /// [`Self::mark_ready`] / [`Self::mark_failed`] calls from the
+    /// caller that actually drives compile (today: the existing
+    /// `prewarm_pipelines` path; Stage 1.8 fully: a scheduler-internal
+    /// driver). The scheduler does **not** auto-resolve groups — that
+    /// would lie about readiness state. Pending groups stay Pending
+    /// indefinitely until explicitly marked.
     pub fn submit_pipeline_group_batch(
         &mut self,
         defs: Vec<PipelineGroupDef>,
@@ -155,8 +157,6 @@ impl PipelineScheduler {
                         id,
                         status: PipelineGroupStatus::Pending,
                     });
-                    // Stub compile future — replaced in follow-up commits.
-                    self.inflight.push(stub_compile_future(id, 0));
                     id
                 }
                 PipelineGroupDef::Pass(pdef) => {
@@ -179,7 +179,6 @@ impl PipelineScheduler {
                         id,
                         status: PipelineGroupStatus::Pending,
                     });
-                    self.inflight.push(stub_compile_future(id, generation));
                     id
                 }
             };
@@ -193,6 +192,80 @@ impl PipelineScheduler {
         );
 
         ids
+    }
+
+    /// Mark a pipeline group as `Ready`. Called by the path that
+    /// actually drives compile (today: legacy `prewarm_pipelines`;
+    /// Stage 1.8 fully: scheduler-internal driver). No-op if the id
+    /// doesn't exist or is already `Ready`. Emits a status event.
+    pub fn mark_ready(&mut self, id: PipelineGroupId) {
+        let label;
+        match id {
+            PipelineGroupId::Material(mid) => {
+                let Some(state) = self.materials.get_mut(mid) else {
+                    return;
+                };
+                if state.status.is_ready() {
+                    return;
+                }
+                state.status = PipelineGroupStatus::Ready;
+                label = format!("material:{:?}", mid);
+            }
+            PipelineGroupId::Pass(kind) => {
+                let Some(state) = self.passes.get_mut(&kind) else {
+                    return;
+                };
+                if state.status.is_ready() {
+                    return;
+                }
+                state.status = PipelineGroupStatus::Ready;
+                label = format!("pass:{:?}", kind);
+            }
+        }
+        self.events.push(StatusEvent {
+            id,
+            status: PipelineGroupStatus::Ready,
+        });
+        tracing::info!(
+            target: "awsm_renderer::pipeline_readiness",
+            "mark_ready: {} -> Ready",
+            label
+        );
+    }
+
+    /// Mark a pipeline group as `Failed`. Same contract as
+    /// [`Self::mark_ready`]. Emits a status event with the
+    /// `PipelineVariantNotCompiled` placeholder error — consumers
+    /// query [`Self::pipeline_group_status`] for the full error.
+    pub fn mark_failed(&mut self, id: PipelineGroupId, error: AwsmError) {
+        let label;
+        match id {
+            PipelineGroupId::Material(mid) => {
+                let Some(state) = self.materials.get_mut(mid) else {
+                    return;
+                };
+                state.status = PipelineGroupStatus::Failed { error };
+                label = format!("material:{:?}", mid);
+            }
+            PipelineGroupId::Pass(kind) => {
+                let Some(state) = self.passes.get_mut(&kind) else {
+                    return;
+                };
+                state.status = PipelineGroupStatus::Failed { error };
+                label = format!("pass:{:?}", kind);
+            }
+        }
+        self.events.push(StatusEvent {
+            id,
+            status: PipelineGroupStatus::Failed {
+                error: AwsmError::PipelineVariantNotCompiled("see scheduler state"),
+            },
+        });
+        tracing::warn!(
+            target: "awsm_renderer::pipeline_readiness",
+            "mark_failed: {} -> Failed",
+            label
+        );
     }
 
     /// Per-group status query — O(1) lookup. Returns `None` if the id
@@ -230,15 +303,18 @@ impl PipelineScheduler {
     ///
     /// Returns the number of transitions applied this poll (useful for
     /// the boot-timing logs).
+    ///
+    /// **Today**: the scheduler doesn't currently push futures on
+    /// submit — readiness is signalled via explicit
+    /// [`Self::mark_ready`] / [`Self::mark_failed`] from the path that
+    /// drives compile. This method drains any futures that **are**
+    /// pushed (Stage 1.8 fully will start pushing real compile futures
+    /// here); for now it's almost always a no-op.
     pub fn poll_resolved(&mut self) -> usize {
         let mut applied = 0;
         let waker = futures::task::noop_waker();
         let mut cx = Context::from_waker(&waker);
 
-        // Drain everything that's ready right now. The `FuturesUnordered`
-        // poll loop terminates when no further futures are ready without
-        // re-blocking (the underlying GpuCreatePipelineAsync promises
-        // make their own progress on the JS event loop).
         while let Poll::Ready(Some(resolution)) = Pin::new(&mut self.inflight).poll_next(&mut cx) {
             self.apply_resolution(resolution);
             applied += 1;
@@ -388,10 +464,14 @@ pub fn warn_pipeline_not_compiled(location: &'static str, id: &str) {
     }
 }
 
-/// Placeholder compile future. Resolves immediately with Ok(()).
-/// Follow-up commits replace this with real
-/// `Shaders::ensure_keys` + `{Render,Compute}Pipelines::ensure_keys`
-/// invocations driven from the def's variant.
+/// Placeholder helper kept for future Stage 1.8-fully integration:
+/// the scheduler will eventually push real compile futures via
+/// `submit_pipeline_group_batch`'s internal driver, at which point
+/// `poll_resolved` does the actual transition work. Today the driver
+/// is external (callers explicitly invoke `mark_ready` /
+/// `mark_failed`) and this builder is unused — kept here as a
+/// reference for the future shape.
+#[allow(dead_code)]
 fn stub_compile_future(id: PipelineGroupId, generation: u32) -> PendingFuture {
     Box::pin(async move {
         CompileResolution {
