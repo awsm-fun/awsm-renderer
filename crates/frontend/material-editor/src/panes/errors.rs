@@ -46,4 +46,3 @@ pub fn render(state: &EditState) -> Dom {
         }))
     })
 }
-

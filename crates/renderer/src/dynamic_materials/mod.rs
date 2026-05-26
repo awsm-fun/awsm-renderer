@@ -22,9 +22,7 @@ use awsm_materials::{MaterialAlphaMode, MaterialShaderId};
 
 pub use error::AwsmDynamicMaterialError;
 
-use awsm_materials::dynamic::{
-    DynamicMaterialContext, DynamicTextureBinding,
-};
+use awsm_materials::dynamic::{DynamicMaterialContext, DynamicTextureBinding};
 use awsm_materials::dynamic_layout::MaterialLayout;
 
 /// Adapter that implements [`DynamicMaterialContext`] over the

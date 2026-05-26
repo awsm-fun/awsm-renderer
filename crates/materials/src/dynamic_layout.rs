@@ -247,10 +247,10 @@ pub fn generate_wgsl_struct(struct_name: &str, layout: &MaterialLayout) -> Strin
     let mut pad_counter: usize = 0;
 
     let emit_field = |out: &mut String,
-                          offset: &mut usize,
-                          pad_counter: &mut usize,
-                          name: &str,
-                          ty: FieldType| {
+                      offset: &mut usize,
+                      pad_counter: &mut usize,
+                      name: &str,
+                      ty: FieldType| {
         let needs_pad = align_up(*offset, ty.align()) - *offset;
         if needs_pad > 0 {
             // Emit one `u32` padding field per 4 bytes of gap so naga

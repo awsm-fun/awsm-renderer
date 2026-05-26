@@ -12,8 +12,7 @@ use askama::Template;
 use crate::{
     dynamic_materials::BucketEntry,
     render_passes::material_classify::{
-        buffers::header_bytes,
-        shader::cache_key::ShaderCacheKeyMaterialClassify,
+        buffers::header_bytes, shader::cache_key::ShaderCacheKeyMaterialClassify,
     },
     shaders::{AwsmShaderError, Result},
 };

@@ -1,4 +1,17 @@
 # Next up
+- Dynamic materials 🚧 — runtime-registered custom WGSL fragments
+  ([`docs/plans/dynamic-materials.md`](plans/dynamic-materials.md)).
+  Phase-0 through Phase-8 + Phase-13 docs landed on `dynamic-shaders`:
+  MaterialShaderId rewrite, scene-schema MaterialDefinition + folder
+  loader + contract docs, layout helpers with thorough alignment tests,
+  registry-driven classify pass templating, opaque template
+  substitution + prewarm wiring, extras-pool storage subsystem +
+  shared_wgsl helper, transparent fragment template hooks,
+  scene-editor bridge converter, material-editor crate skeleton, and
+  promotion walkthrough. Visual verification + the material-editor
+  interactive UI (Phases 9-12) are the remaining gates before
+  crates.io major-version bump.
+
 - Temporal shaders ✅ — renderer-wide `FrameGlobals` uniform (`time`,
   `delta_time`, `frame_count`, `resolution`) bound alongside the camera
   in every shading pass + a first-party `FlipBook` sprite-sheet

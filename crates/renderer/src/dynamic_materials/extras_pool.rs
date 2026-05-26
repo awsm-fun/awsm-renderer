@@ -70,10 +70,7 @@ impl ExtrasPool {
     /// Create an empty extras pool sized to `capacity_words`. The GPU
     /// buffer is allocated up front; bump allocations consume
     /// contiguous regions of it.
-    pub fn new(
-        gpu: &AwsmRendererWebGpu,
-        capacity_words: u32,
-    ) -> Result<Self, AwsmCoreError> {
+    pub fn new(gpu: &AwsmRendererWebGpu, capacity_words: u32) -> Result<Self, AwsmCoreError> {
         let capacity_words = capacity_words.max(1);
         let buffer = gpu.create_buffer(
             &BufferDescriptor::new(
@@ -103,11 +100,7 @@ impl ExtrasPool {
     /// `(shader_id, slot_index)`, if assigned. `None` means the slot
     /// is unassigned — the packer writes `(0, 0)` in that case and
     /// the author's WGSL fragment sees `<slot>_length == 0`.
-    pub fn slice_for(
-        &self,
-        shader_id: MaterialShaderId,
-        slot_index: usize,
-    ) -> Option<(u32, u32)> {
+    pub fn slice_for(&self, shader_id: MaterialShaderId, slot_index: usize) -> Option<(u32, u32)> {
         self.slices.get(&(shader_id, slot_index)).copied()
     }
 

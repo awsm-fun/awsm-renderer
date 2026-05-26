@@ -454,10 +454,7 @@ impl AwsmRenderer {
                 msaa_sample_count: msaa,
                 bucket_entries: entries.clone(),
             };
-            let shader_key = self
-                .shaders
-                .get_key(&self.gpu, classify_key)
-                .await?;
+            let shader_key = self.shaders.get_key(&self.gpu, classify_key).await?;
             // Reuse the existing pipeline layout key from the
             // already-compiled classify pipeline (the layout doesn't
             // change with bucket count, only the shader source does).
@@ -503,10 +500,8 @@ impl AwsmRenderer {
         let dispatch_hash = self.dynamic_materials.dispatch_hash();
         for (shader_id, reg) in self.dynamic_materials.iter() {
             // Build the auto-generated struct decl from the layout.
-            let struct_decl = awsm_materials::dynamic_layout::generate_wgsl_struct(
-                "MaterialData",
-                &reg.layout,
-            );
+            let struct_decl =
+                awsm_materials::dynamic_layout::generate_wgsl_struct("MaterialData", &reg.layout);
             let dynamic_shader = Some(
                 crate::render_passes::material_opaque::shader::cache_key::DynamicShaderInfo {
                     struct_decl,
@@ -562,8 +557,7 @@ impl AwsmRenderer {
                 };
                 let pipeline_cache_key =
                     crate::pipelines::compute_pipeline::ComputePipelineCacheKey::new(
-                        shader_key,
-                        layout_key,
+                        shader_key, layout_key,
                     );
                 let keys = self
                     .pipelines

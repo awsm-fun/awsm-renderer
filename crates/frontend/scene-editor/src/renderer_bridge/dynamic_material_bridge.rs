@@ -18,10 +18,6 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
-use awsm_renderer::dynamic_materials::MaterialRegistration;
-use awsm_renderer::materials::Material;
-use awsm_renderer::AwsmRenderer;
-use awsm_renderer_core::keys::TextureKey;
 use awsm_materials::dynamic::{DynamicMaterial, DynamicTextureBinding};
 use awsm_materials::dynamic_layout::{
     BufferSlotRuntime, FieldType as RuntimeFieldType, MaterialLayout, TextureSlotRuntime,
@@ -29,6 +25,10 @@ use awsm_materials::dynamic_layout::{
 };
 use awsm_materials::MaterialAlphaMode as MaterialAlphaModeRuntime;
 use awsm_materials::MaterialShaderId;
+use awsm_renderer::dynamic_materials::MaterialRegistration;
+use awsm_renderer::materials::Material;
+use awsm_renderer::AwsmRenderer;
+use awsm_renderer_core::keys::TextureKey;
 use awsm_scene_schema::dynamic_material::{
     CustomMaterialInstance, FieldType as SchemaFieldType, LoadedMaterialFolder, MaterialDefinition,
     UniformValue as SchemaUniformValue,
