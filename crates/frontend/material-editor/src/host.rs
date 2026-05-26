@@ -194,7 +194,13 @@ fn build_default_dynamic_material(
                 .unwrap_or_else(|| default_uniform_value(f.ty))
         })
         .collect();
-    DynamicMaterial::new(shader_id, &reg.layout, defaults)
+    DynamicMaterial::new(
+        shader_id,
+        reg.alpha_mode,
+        reg.double_sided,
+        &reg.layout,
+        defaults,
+    )
 }
 
 fn default_uniform_value(ty: FieldType) -> UniformValue {

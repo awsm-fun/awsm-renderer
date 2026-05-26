@@ -186,8 +186,14 @@ where
     // Phase 5 we record None (the packer writes (0, 0)).
     let buffers: Vec<Option<Vec<u32>>> = vec![None; reg.layout.buffers.len()];
 
+    // Snapshot the registration's alpha_mode + double_sided onto
+    // the per-instance DynamicMaterial. `Material::is_transparency_pass`
+    // / `alpha_mask` / `double_sided` read these mirrored fields
+    // (the methods take `&self` and have no registry handle).
     Some(Material::Custom(Box::new(DynamicMaterial {
         shader_id,
+        alpha_mode: reg.alpha_mode,
+        double_sided: reg.double_sided,
         values,
         textures,
         buffers,

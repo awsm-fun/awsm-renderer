@@ -122,11 +122,19 @@ impl Material {
             Material::Unlit(m) => MaterialShader::is_transparency_pass(m),
             Material::Toon(m) => MaterialShader::is_transparency_pass(m.as_ref()),
             Material::FlipBook(m) => MaterialShader::is_transparency_pass(m.as_ref()),
-            // Phase 2 wires `DynamicMaterial::is_transparency_pass` to
-            // derive from the registry's `alpha_mode`. Phase 0 has
-            // nothing to dispatch against; treat all dynamic instances
-            // as opaque until then.
-            Material::Custom(_) => false,
+            // Dynamic instances snapshot the registration's
+            // `alpha_mode` at construction time
+            // (`DynamicMaterial::alpha_mode`), so reading it here
+            // doesn't require a registry handle. Blend AND Mask
+            // both route through the transparent pass — Mask uses
+            // the cutoff via `alpha_mask` below.
+            Material::Custom(m) => {
+                matches!(
+                    m.alpha_mode,
+                    awsm_materials::MaterialAlphaMode::Blend
+                        | awsm_materials::MaterialAlphaMode::Mask { .. }
+                )
+            }
         }
     }
 
@@ -137,8 +145,10 @@ impl Material {
             Material::Unlit(m) => m.alpha_cutoff(),
             Material::Toon(m) => m.alpha_cutoff(),
             Material::FlipBook(m) => m.alpha_cutoff(),
-            // Phase 2 wires the registry's `alpha_mode` through here.
-            Material::Custom(_) => None,
+            Material::Custom(m) => match m.alpha_mode {
+                awsm_materials::MaterialAlphaMode::Mask { cutoff } => Some(cutoff),
+                _ => None,
+            },
         }
     }
 
@@ -152,8 +162,7 @@ impl Material {
             Material::Unlit(m) => m.double_sided(),
             Material::Toon(m) => m.double_sided(),
             Material::FlipBook(m) => m.double_sided(),
-            // Phase 2 wires the registry's `double_sided` flag through here.
-            Material::Custom(_) => false,
+            Material::Custom(m) => m.double_sided,
         }
     }
 

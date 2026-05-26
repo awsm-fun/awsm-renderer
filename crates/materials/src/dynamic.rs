@@ -35,6 +35,20 @@ use crate::{
 pub struct DynamicMaterial {
     /// Shader id assigned by the renderer's dynamic-material registry.
     pub shader_id: MaterialShaderId,
+    /// Snapshot of the registration's `alpha_mode` at instance-build
+    /// time. Used by `Material::is_transparency_pass` / `alpha_mask`
+    /// without an additional registry lookup — those methods take
+    /// `&self` and don't have a `DynamicMaterials` reference, so the
+    /// registration value is mirrored here at the point a
+    /// `Material::Custom` is built. Re-registering the same shader_id
+    /// with a different alpha_mode does NOT auto-update existing
+    /// instances; rebuild the affected `Material::Custom` via
+    /// `Materials::update` to pick up the new value.
+    pub alpha_mode: MaterialAlphaMode,
+    /// Snapshot of the registration's `double_sided`. Same caveat as
+    /// `alpha_mode` — mirrored at construction; rebuild the instance
+    /// to refresh.
+    pub double_sided: bool,
     /// Per-instance uniform values, indexed in the layout's declared order.
     /// Each value's [`UniformValue::field_type`] must match the layout
     /// entry's [`FieldType`](crate::dynamic_layout::FieldType).
@@ -66,11 +80,16 @@ pub enum DynamicTextureBinding {
 impl DynamicMaterial {
     /// Constructs a [`DynamicMaterial`] with default values pulled from
     /// the layout. `shader_id` is the id returned by
-    /// `AwsmRenderer::register_material`.
+    /// `AwsmRenderer::register_material`. `alpha_mode` and
+    /// `double_sided` must mirror the registration's values so the
+    /// surrounding `Material::Custom`'s transparency-pass routing /
+    /// cull-mode flag pick the right path.
     ///
     /// `defaults` must match `layout.uniforms` in order + type.
     pub fn new(
         shader_id: MaterialShaderId,
+        alpha_mode: MaterialAlphaMode,
+        double_sided: bool,
         layout: &MaterialLayout,
         defaults: Vec<UniformValue>,
     ) -> Self {
@@ -83,6 +102,8 @@ impl DynamicMaterial {
         );
         Self {
             shader_id,
+            alpha_mode,
+            double_sided,
             values: defaults,
             textures: vec![None; layout.textures.len()],
             buffers: vec![None; layout.buffers.len()],
@@ -308,7 +329,13 @@ mod tests {
             buffers: vec![BufferSlotRuntime { name: "buf".into() }],
         };
         let id = MaterialShaderId::from_dynamic_raw(MaterialShaderId::DYNAMIC_START);
-        let material = DynamicMaterial::new(id, &layout, vec![UniformValue::F32(3.5)]);
+        let material = DynamicMaterial::new(
+            id,
+            MaterialAlphaMode::Opaque,
+            false,
+            &layout,
+            vec![UniformValue::F32(3.5)],
+        );
 
         let ctx = StubCtx { layout };
         let mut out = Vec::new();
@@ -334,7 +361,13 @@ mod tests {
             ..Default::default()
         };
         let id = MaterialShaderId::from_dynamic_raw(MaterialShaderId::DYNAMIC_START);
-        let material = DynamicMaterial::new(id, &layout, vec![UniformValue::Vec3([1.0, 2.0, 3.0])]);
+        let material = DynamicMaterial::new(
+            id,
+            MaterialAlphaMode::Opaque,
+            false,
+            &layout,
+            vec![UniformValue::Vec3([1.0, 2.0, 3.0])],
+        );
         let ctx = StubCtx { layout };
         let mut out = Vec::new();
         material.write_uniform_buffer_with_layout(&ctx, &mut out);
