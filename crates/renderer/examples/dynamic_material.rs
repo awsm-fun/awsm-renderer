@@ -101,18 +101,33 @@ return OpaqueShadingOutput(overlay + vec3<f32>(0.5), 1.0);
     }
 }
 
-// In a real consumer:
+// In a real consumer (post-pipeline-readiness architecture per
+// docs/plans/more-optimizations.md):
 //
 // ```no_run
 // async fn boot() -> awsm_renderer::error::Result<()> {
 //     let mut renderer = awsm_renderer::AwsmRendererBuilder::new(gpu).build().await?;
 //
-//     // Register.
+//     // Register. The renderer-internal scheduler kicks off compile
+//     // asynchronously; the call returns immediately with the
+//     // shader_id (and a PipelineGroupId tracking readiness).
 //     let shader_id = renderer.register_material(build_scanline_registration())?;
 //
-//     // Compile the new per-shader-id pipelines in one batched pool.
-//     renderer.prewarm_pipelines().await?;
-//
+//     // Two options for waiting on compile:
+//     //
+//     //   1. Recommended for game-runtime / gltf-load: don't wait.
+//     //      Insert your `Material::Custom` instance now; the render
+//     //      frame's pre-amble drains the scheduler each frame, so
+//     //      meshes referencing this material are invisible until the
+//     //      first render frame after the compile resolves. (The
+//     //      bucket-entries cache filters Pending materials out of
+//     //      classify automatically.)
+//     //
+//     //   2. Recommended for editor "Import Material" flows: poll
+//     //      `renderer.pipeline_group_status(...)` until Ready, then
+//     //      insert the material. UX expectation = "I clicked Import,
+//     //      the material is now usable."
+//     //
 //     // ... insert a Material::Custom instance pointing at `shader_id`
 //     //     and render normally.
 //     Ok(())
