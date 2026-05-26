@@ -354,6 +354,15 @@ pub struct MaterialRegistration {
     /// `CustomMaterialInstance::buffer_overrides`) can also override.
     /// Empty Vec for slots without a registration default.
     pub buffer_defaults: Vec<Vec<u32>>,
+    /// Default values for each uniform in `layout.uniforms`, in the
+    /// same declaration order. Consumers (`material-editor`,
+    /// scene-editor's per-mesh instance picker, game-runtime loaders)
+    /// use these to seed a fresh `DynamicMaterial`'s `values` array
+    /// — empty `Vec` means "fall back to a zero of each field's
+    /// type". When `len()` doesn't match `layout.uniforms.len()`,
+    /// the consumer falls back to the zero default for any
+    /// missing entry.
+    pub uniform_defaults: Vec<awsm_materials::dynamic_layout::UniformValue>,
 }
 
 impl crate::AwsmRenderer {
@@ -399,10 +408,26 @@ impl crate::AwsmRenderer {
         // Ensure the classify buffer has capacity for the (possibly
         // larger) bucket count. The mid-session header writer
         // re-emits the per-bucket offsets at the new layout.
+        //
+        // When this returns `true`, the underlying GPU buffer was
+        // reallocated, which means every bind group that referenced
+        // the old buffer is now stale. WITHOUT this mark, the
+        // classify-output binding on the opaque + transparent compute
+        // bind groups silently keeps pointing at the deallocated
+        // buffer and the dispatch produces no observable output —
+        // exactly the symptom of "preview canvas stays black after
+        // registering the first dynamic material". The next render
+        // frame's `BindGroups::flush_create` path picks up this mark
+        // and rebuilds the affected groups.
         let new_count = bucket_entries(&self.dynamic_materials).len() as u32;
-        let _ = self
+        let resized = self
             .material_classify_buffers
-            .ensure_bucket_count(&self.gpu, new_count);
+            .ensure_bucket_count(&self.gpu, new_count)?;
+        if resized {
+            self.bind_groups.mark_create(
+                crate::bind_groups::BindGroupCreate::MaterialClassifyBuffersResize,
+            );
+        }
         Ok(id)
     }
 

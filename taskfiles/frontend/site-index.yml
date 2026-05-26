@@ -21,6 +21,7 @@ tasks:
     env:
       URL_MODEL_TESTS: "model-tests"
       URL_SCENE_EDITOR: "scene-editor"
+      URL_MATERIAL_EDITOR: "material-editor"
     cmds:
       - mkdir -p {{.PATH_DIST}}
       - envsubst < {{joinPath .PATH_CRATE "index.template.html"}} > {{.PATH_DIST}}/index.html
@@ -33,6 +34,7 @@ tasks:
     env:
       URL_MODEL_TESTS: "{{.URL_DEV_MODEL_TESTS}}"
       URL_SCENE_EDITOR: "{{.URL_DEV_SCENE_EDITOR}}"
+      URL_MATERIAL_EDITOR: "{{.URL_DEV_MATERIAL_EDITOR}}"
     cmds:
       - mkdir -p {{.PATH_DIST_LOCAL}}
       - envsubst < {{joinPath .PATH_CRATE "index.template.html"}} > {{.PATH_DIST_LOCAL}}/index.html

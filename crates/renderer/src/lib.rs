@@ -453,105 +453,128 @@ impl AwsmRenderer {
     /// compute pipelines for every currently-registered dynamic
     /// material. Called from [`Self::prewarm_pipelines`] when the
     /// dynamic registry is non-empty. Idempotent on cache hits.
+    ///
+    /// **Concurrency model** — this used to be a doubly-nested
+    /// for-loop that `await`'d each shader compile + each pipeline
+    /// creation in series. With N registered materials and 4 opaque
+    /// variants each plus 2 classify variants and 2 transparent
+    /// variants per Blend material, that produced `~8N + 4`
+    /// sequential round-trips through the WebGPU driver. Now the
+    /// flow is three batched phases:
+    ///
+    ///   1. **Collect** every shader cache key (classify × MSAA,
+    ///      opaque × shader_id × MSAA × mipmaps, transparent per
+    ///      Blend) into one flat `Vec`.
+    ///   2. **Batch shader compile** — one `shaders.ensure_keys`
+    ///      call. Inside, the cache fires every `compile_shader`
+    ///      synchronously so Dawn parallelises the WGSL→MSL
+    ///      lowering across all N modules before any
+    ///      `validate_shader().await` blocks.
+    ///   3. **Batch pipeline compile** — one
+    ///      `compute.ensure_keys` call that issues every
+    ///      `createComputePipelineAsync` Promise before awaiting,
+    ///      same parallelism pattern.
+    ///
+    /// Per-shader-id insertion into the render-pass pipeline cache
+    /// is sync and runs after both batches resolve.
     async fn prewarm_dynamic_pipelines(&mut self) -> crate::error::Result<()> {
+        use crate::pipelines::compute_pipeline::ComputePipelineCacheKey;
         use crate::render_passes::material_classify::shader::cache_key::ShaderCacheKeyMaterialClassify;
+        use crate::render_passes::material_opaque::pipeline::PipelineKeyId;
+        use crate::render_passes::material_opaque::shader::cache_key::{
+            DynamicShaderInfo, ShaderCacheKeyMaterialOpaque,
+        };
+        use crate::render_passes::material_transparent::shader::cache_key::ShaderCacheKeyMaterialTransparent;
+        use crate::render_passes::shared::material::cache_key::ShaderMaterialVertexAttributes;
 
         let entries = crate::dynamic_materials::bucket_entries(&self.dynamic_materials);
+        let dispatch_hash = self.dynamic_materials.dispatch_hash();
 
-        // 1. Classify variant — one per MSAA mode. Compile the
-        //    shader, build the pipeline cache key, ensure it.
+        // Layout keys — resolved once and reused across every
+        // pipeline variant. Cheap sync inserts into the layout cache.
+        let classify_bg = &self.render_passes.material_classify.bind_groups;
+        let classify_layout_msaa = self.pipeline_layouts.get_key(
+            &self.gpu,
+            &self.bind_group_layouts,
+            crate::pipeline_layouts::PipelineLayoutCacheKey::new(vec![
+                classify_bg.multisampled_bind_group_layout_key,
+            ]),
+        )?;
+        let classify_layout_no_msaa = self.pipeline_layouts.get_key(
+            &self.gpu,
+            &self.bind_group_layouts,
+            crate::pipeline_layouts::PipelineLayoutCacheKey::new(vec![
+                classify_bg.singlesampled_bind_group_layout_key,
+            ]),
+        )?;
+
+        let opaque_bg = &self.render_passes.material_opaque.bind_groups;
+        let texture_pool_arrays_len = opaque_bg.texture_pool_arrays_len;
+        let texture_pool_samplers_len = opaque_bg.texture_pool_sampler_keys.len() as u32;
+        let opaque_layout_msaa = self.pipeline_layouts.get_key(
+            &self.gpu,
+            &self.bind_group_layouts,
+            crate::pipeline_layouts::PipelineLayoutCacheKey::new(vec![
+                opaque_bg.multisampled_main_bind_group_layout_key,
+                opaque_bg.lights_bind_group_layout_key,
+                opaque_bg.texture_pool_textures_bind_group_layout_key,
+                opaque_bg.shadows_bind_group_layout_key,
+            ]),
+        )?;
+        let opaque_layout_no_msaa = self.pipeline_layouts.get_key(
+            &self.gpu,
+            &self.bind_group_layouts,
+            crate::pipeline_layouts::PipelineLayoutCacheKey::new(vec![
+                opaque_bg.singlesampled_main_bind_group_layout_key,
+                opaque_bg.lights_bind_group_layout_key,
+                opaque_bg.texture_pool_textures_bind_group_layout_key,
+                opaque_bg.shadows_bind_group_layout_key,
+            ]),
+        )?;
+
+        // ── Phase 1: collect every shader cache key into one flat
+        //    Vec, alongside a parallel sidecar Vec recording how to
+        //    place the resolved pipeline back into per-pass caches.
+        let mut shader_jobs: Vec<crate::shaders::ShaderCacheKey> = Vec::new();
+        enum Slot {
+            Classify(Option<u32>), // msaa
+            Opaque(awsm_materials::MaterialShaderId, Option<u32>, bool), // (shader_id, msaa, mipmaps)
+            /// Transparent prewarm exercises the template only — we
+            /// don't capture a per-mesh pipeline here; the actual
+            /// `(mesh × material)` transparent pipelines build on
+            /// first draw. The marker is kept so the per-pass cache
+            /// holds the resolved shader key, future per-mesh builds
+            /// reuse it without recompile.
+            TransparentSkip,
+        }
+        let mut slots: Vec<Slot> = Vec::new();
+
+        // Classify variants.
         for msaa in [Some(4u32), None] {
-            let classify_key = ShaderCacheKeyMaterialClassify {
-                msaa_sample_count: msaa,
-                bucket_entries: entries.clone(),
-            };
-            let shader_key = self.shaders.get_key(&self.gpu, classify_key).await?;
-            // Reuse the existing pipeline layout key from the
-            // already-compiled classify pipeline (the layout doesn't
-            // change with bucket count, only the shader source does).
-            let bind_groups = &self.render_passes.material_classify.bind_groups;
-            let layout_key = if msaa.is_some() {
-                bind_groups.multisampled_bind_group_layout_key
-            } else {
-                bind_groups.singlesampled_bind_group_layout_key
-            };
-            let pipeline_layout_key = self.pipeline_layouts.get_key(
-                &self.gpu,
-                &self.bind_group_layouts,
-                crate::pipeline_layouts::PipelineLayoutCacheKey::new(vec![layout_key]),
-            )?;
-            let pipeline_cache_key =
-                crate::pipelines::compute_pipeline::ComputePipelineCacheKey::new(
-                    shader_key,
-                    pipeline_layout_key,
-                );
-            let keys = self
-                .pipelines
-                .compute
-                .ensure_keys(
-                    &self.gpu,
-                    &self.shaders,
-                    &self.pipeline_layouts,
-                    vec![pipeline_cache_key],
-                )
-                .await?;
-            // Store the resolved key in the render pass's per-bucket-
-            // entries cache so dispatch can find it.
-            self.render_passes
-                .material_classify
-                .dynamic_pipeline_cache
-                .borrow_mut()
-                .insert((entries.clone(), msaa), keys[0]);
+            shader_jobs.push(
+                ShaderCacheKeyMaterialClassify {
+                    msaa_sample_count: msaa,
+                    bucket_entries: entries.clone(),
+                }
+                .into(),
+            );
+            slots.push(Slot::Classify(msaa));
         }
 
-        // 2. Per-dynamic-id opaque pipelines — one per shader_id, per
-        //    (MSAA, mipmap) variant. The opaque cache key carries
-        //    `dynamic_shader` so each registered material gets its
-        //    own specialized pipeline.
-        let dispatch_hash = self.dynamic_materials.dispatch_hash();
+        // Opaque variants + transparent stubs.
         for (shader_id, reg) in self.dynamic_materials.iter() {
-            // Build the auto-generated struct decl + loader from the
-            // layout. Both walk the same byte offsets the dynamic
-            // packer (`pack_uniform_values`) wrote, so the loader
-            // reads back exactly the values the packer stored.
-            let struct_decl =
-                awsm_materials::dynamic_layout::generate_wgsl_struct("MaterialData", &reg.layout);
-            let loader_decl = awsm_materials::dynamic_layout::generate_wgsl_loader(
-                "MaterialData",
-                "material_data_load",
-                &reg.layout,
-            );
-            let dynamic_shader = Some(
-                crate::render_passes::material_opaque::shader::cache_key::DynamicShaderInfo {
-                    struct_decl,
-                    loader_decl,
-                    wgsl_fragment: reg.wgsl_fragment.clone(),
-                },
-            );
-
-            let opaque_bg = &self.render_passes.material_opaque.bind_groups;
-            let texture_pool_arrays_len = opaque_bg.texture_pool_arrays_len;
-            let texture_pool_samplers_len = opaque_bg.texture_pool_sampler_keys.len() as u32;
-            let multisampled_layout_key = self.pipeline_layouts.get_key(
-                &self.gpu,
-                &self.bind_group_layouts,
-                crate::pipeline_layouts::PipelineLayoutCacheKey::new(vec![
-                    opaque_bg.multisampled_main_bind_group_layout_key,
-                    opaque_bg.lights_bind_group_layout_key,
-                    opaque_bg.texture_pool_textures_bind_group_layout_key,
-                    opaque_bg.shadows_bind_group_layout_key,
-                ]),
-            )?;
-            let singlesampled_layout_key = self.pipeline_layouts.get_key(
-                &self.gpu,
-                &self.bind_group_layouts,
-                crate::pipeline_layouts::PipelineLayoutCacheKey::new(vec![
-                    opaque_bg.singlesampled_main_bind_group_layout_key,
-                    opaque_bg.lights_bind_group_layout_key,
-                    opaque_bg.texture_pool_textures_bind_group_layout_key,
-                    opaque_bg.shadows_bind_group_layout_key,
-                ]),
-            )?;
+            let dynamic_shader = Some(DynamicShaderInfo {
+                struct_decl: awsm_materials::dynamic_layout::generate_wgsl_struct(
+                    "MaterialData",
+                    &reg.layout,
+                ),
+                loader_decl: awsm_materials::dynamic_layout::generate_wgsl_loader(
+                    "MaterialData",
+                    "material_data_load",
+                    &reg.layout,
+                ),
+                wgsl_fragment: reg.wgsl_fragment.clone(),
+            });
 
             for &(msaa, mipmaps) in &[
                 (Some(4u32), true),
@@ -559,8 +582,8 @@ impl AwsmRenderer {
                 (None, true),
                 (None, false),
             ] {
-                let cache_key =
-                    crate::render_passes::material_opaque::shader::cache_key::ShaderCacheKeyMaterialOpaque {
+                shader_jobs.push(
+                    ShaderCacheKeyMaterialOpaque {
                         texture_pool_arrays_len,
                         texture_pool_samplers_len,
                         msaa_sample_count: msaa,
@@ -569,85 +592,127 @@ impl AwsmRenderer {
                         dispatch_hash,
                         dynamic_shader: dynamic_shader.clone(),
                         bucket_entries: entries.clone(),
-                    };
-                let shader_key = self.shaders.get_key(&self.gpu, cache_key).await?;
-                let layout_key = if msaa.is_some() {
-                    multisampled_layout_key
-                } else {
-                    singlesampled_layout_key
-                };
-                let pipeline_cache_key =
-                    crate::pipelines::compute_pipeline::ComputePipelineCacheKey::new(
-                        shader_key, layout_key,
-                    );
-                let keys = self
-                    .pipelines
-                    .compute
-                    .ensure_keys(
-                        &self.gpu,
-                        &self.shaders,
-                        &self.pipeline_layouts,
-                        vec![pipeline_cache_key],
-                    )
-                    .await?;
-                self.render_passes
-                    .material_opaque
-                    .pipelines
-                    .insert_dynamic_pipeline(
-                        crate::render_passes::material_opaque::pipeline::PipelineKeyId {
+                    }
+                    .into(),
+                );
+                slots.push(Slot::Opaque(shader_id, msaa, mipmaps));
+            }
+
+            if reg.alpha_mode == awsm_materials::MaterialAlphaMode::Blend {
+                for &(msaa, mipmaps) in &[(Some(4u32), true), (None, true)] {
+                    shader_jobs.push(
+                        ShaderCacheKeyMaterialTransparent {
+                            instancing_transforms: false,
+                            attributes: ShaderMaterialVertexAttributes::default(),
+                            texture_pool_arrays_len,
+                            texture_pool_samplers_len,
                             msaa_sample_count: msaa,
                             mipmaps,
-                            shader_id,
-                        },
-                        keys[0],
+                            dispatch_hash,
+                            dynamic_shader_id: Some(shader_id),
+                            dynamic_shader: dynamic_shader.clone(),
+                        }
+                        .into(),
                     );
-            }
-            // 3. For Blend-mode registrations: also pre-compile a
-            //    stub transparent shader variant with default vertex
-            //    attributes so the template machinery is exercised
-            //    (the actual per-mesh transparent pipelines build on
-            //    first draw against real mesh attributes). Verifies
-            //    the transparent template's `{% if shader_id_dynamic
-            //    != 0 %}` wrapper + dispatch-arm wiring compile
-            //    cleanly without waiting for a mesh.
-            if reg.alpha_mode == awsm_materials::MaterialAlphaMode::Blend {
-                let transparent_dyn_info = crate::render_passes::material_opaque::shader::cache_key::DynamicShaderInfo {
-                    struct_decl: awsm_materials::dynamic_layout::generate_wgsl_struct(
-                        "MaterialData",
-                        &reg.layout,
-                    ),
-                    loader_decl: awsm_materials::dynamic_layout::generate_wgsl_loader(
-                        "MaterialData",
-                        "material_data_load",
-                        &reg.layout,
-                    ),
-                    wgsl_fragment: reg.wgsl_fragment.clone(),
-                };
-                let opaque_bg = &self.render_passes.material_opaque.bind_groups;
-                let texture_pool_arrays_len = opaque_bg.texture_pool_arrays_len;
-                let texture_pool_samplers_len =
-                    opaque_bg.texture_pool_sampler_keys.len() as u32;
-                for &(msaa, mipmaps) in &[(Some(4u32), true), (None, true)] {
-                    let cache_key = crate::render_passes::material_transparent::shader::cache_key::ShaderCacheKeyMaterialTransparent {
-                        instancing_transforms: false,
-                        attributes: crate::render_passes::shared::material::cache_key::ShaderMaterialVertexAttributes::default(),
-                        texture_pool_arrays_len,
-                        texture_pool_samplers_len,
-                        msaa_sample_count: msaa,
-                        mipmaps,
-                        dispatch_hash,
-                        dynamic_shader_id: Some(shader_id),
-                        dynamic_shader: Some(transparent_dyn_info.clone()),
-                    };
-                    if let Err(e) = self.shaders.get_key(&self.gpu, cache_key).await {
-                        tracing::warn!(
-                            "[dynamic-materials] transparent prewarm compile failed for {:?}: {e:?}",
-                            shader_id
-                        );
-                    }
+                    slots.push(Slot::TransparentSkip);
                 }
             }
-            let _ = reg;
+        }
+
+        // ── Phase 2: batch-compile every shader in parallel. This is
+        //    one round-trip for N×8+ compiles instead of N×8+ serial
+        //    awaits.
+        if let Err(e) = self.shaders.ensure_keys(&self.gpu, shader_jobs.clone()).await {
+            // Transparent prewarm failures used to be non-fatal — preserve
+            // that semantic by demoting the entire batch to a warn when any
+            // failed. Opaque registrations DO want to propagate, but the
+            // common case (cold-boot prewarm against a freshly-built renderer
+            // with healthy WGSL) succeeds entirely. Log + bail so the caller
+            // (recompile sink) surfaces the failure.
+            tracing::warn!("[dynamic-materials] prewarm shader batch failed: {e:?}");
+            return Err(e.into());
+        }
+
+        // ── Phase 3: resolve shader keys (sync cache hits) and assemble
+        //    pipeline cache keys for the compute variants only. The
+        //    TransparentSkip slots stop here — they reserved their
+        //    shader cache slot without needing a pipeline.
+        let mut compute_jobs: Vec<(Slot, ComputePipelineCacheKey)> = Vec::new();
+        for (cache_key, slot) in shader_jobs.into_iter().zip(slots) {
+            let shader_key = self.shaders.get_key(&self.gpu, cache_key).await?;
+            match slot {
+                Slot::Classify(msaa) => {
+                    let layout = if msaa.is_some() {
+                        classify_layout_msaa
+                    } else {
+                        classify_layout_no_msaa
+                    };
+                    compute_jobs.push((
+                        Slot::Classify(msaa),
+                        ComputePipelineCacheKey::new(shader_key, layout),
+                    ));
+                }
+                Slot::Opaque(shader_id, msaa, mipmaps) => {
+                    let layout = if msaa.is_some() {
+                        opaque_layout_msaa
+                    } else {
+                        opaque_layout_no_msaa
+                    };
+                    compute_jobs.push((
+                        Slot::Opaque(shader_id, msaa, mipmaps),
+                        ComputePipelineCacheKey::new(shader_key, layout),
+                    ));
+                }
+                Slot::TransparentSkip => {
+                    // Transparent shader cache entry is now warm; the
+                    // per-mesh pipeline lands on first draw.
+                }
+            }
+        }
+
+        // ── Phase 4: batch-compile every compute pipeline in parallel.
+        //    `compute.ensure_keys` issues every Promise sync before
+        //    awaiting, so Dawn parallelises the link step the same
+        //    way it parallelised the shader compiles above.
+        let pipeline_cache_keys: Vec<ComputePipelineCacheKey> =
+            compute_jobs.iter().map(|(_, k)| k.clone()).collect();
+        let resolved = self
+            .pipelines
+            .compute
+            .ensure_keys(
+                &self.gpu,
+                &self.shaders,
+                &self.pipeline_layouts,
+                pipeline_cache_keys,
+            )
+            .await?;
+
+        // ── Phase 5: install resolved pipelines into the per-pass
+        //    caches. Sync; just slotmap inserts.
+        for ((slot, _), pipeline_key) in compute_jobs.into_iter().zip(resolved) {
+            match slot {
+                Slot::Classify(msaa) => {
+                    self.render_passes
+                        .material_classify
+                        .dynamic_pipeline_cache
+                        .borrow_mut()
+                        .insert((entries.clone(), msaa), pipeline_key);
+                }
+                Slot::Opaque(shader_id, msaa, mipmaps) => {
+                    self.render_passes
+                        .material_opaque
+                        .pipelines
+                        .insert_dynamic_pipeline(
+                            PipelineKeyId {
+                                msaa_sample_count: msaa,
+                                mipmaps,
+                                shader_id,
+                            },
+                            pipeline_key,
+                        );
+                }
+                Slot::TransparentSkip => unreachable!("filtered out above"),
+            }
         }
 
         Ok(())

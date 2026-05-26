@@ -102,6 +102,15 @@ pub fn register_loaded_folder(
                 .unwrap_or_default()
         })
         .collect();
+    // Forward the authored uniform defaults so per-mesh
+    // `Material::Custom` instances that don't override a slot still
+    // pick up the registration-time value (e.g. `tint` defaults to
+    // a brand colour) instead of falling back to type-zero.
+    let uniform_defaults: Vec<RuntimeUniformValue> = definition
+        .uniforms
+        .iter()
+        .map(|u| convert_uniform_value(&u.default))
+        .collect();
     let reg = MaterialRegistration {
         name: definition.name.clone(),
         alpha_mode,
@@ -111,6 +120,7 @@ pub fn register_loaded_folder(
         wgsl_hash,
         wgsl_fragment: folder.wgsl_source.clone(),
         buffer_defaults,
+        uniform_defaults,
     };
     let id = renderer.register_material(reg)?;
     map.register(&definition.name, id);
@@ -138,14 +148,24 @@ where
     let shader_id = map.lookup(&instance.material)?;
     let reg = renderer.dynamic_material_registration(shader_id)?;
 
-    // Build uniform values: start from the registry's defaults, then
-    // overlay any per-instance overrides keyed by uniform name.
+    // Build uniform values: prefer per-instance override; fall back
+    // to the registration's authored default (when present and type-
+    // matching); fall back further to a type-zero default if neither
+    // exists. Without the middle tier, a CustomMaterialInstance that
+    // doesn't override `tint` would render with the type-zero black
+    // instead of the authored brand colour.
     let mut values: Vec<RuntimeUniformValue> = Vec::with_capacity(reg.layout.uniforms.len());
-    for uniform in &reg.layout.uniforms {
+    for (i, uniform) in reg.layout.uniforms.iter().enumerate() {
         let value = instance
             .uniform_overrides
             .get(&uniform.name)
             .map(convert_uniform_value)
+            .or_else(|| {
+                reg.uniform_defaults
+                    .get(i)
+                    .cloned()
+                    .filter(|v| v.field_type() == uniform.ty)
+            })
             .unwrap_or_else(|| default_value_for(uniform.ty));
         values.push(value);
     }

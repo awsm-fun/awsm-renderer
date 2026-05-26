@@ -26,9 +26,17 @@ tasks:
   dev:
     desc: "Run every frontend dev server in parallel plus the media servers"
     deps:
+      - material-editor:dev
       - model-tests:dev
       - scene-editor:dev
       - site-index:dev
+      - media-local
+      - media-additional-assets
+
+  material-editor-dev:
+    desc: "Run material-editor dev server in parallel plus the media servers"
+    deps:
+      - material-editor:dev
       - media-local
       - media-additional-assets
 
@@ -49,6 +57,7 @@ tasks:
   build:
     desc: "Build every frontend for production into .build-artifacts/"
     cmds:
+      - task: material-editor:build
       - task: model-tests:build
       - task: scene-editor:build
       - task: site-index:build
@@ -56,6 +65,7 @@ tasks:
   clean:
     desc: "Remove every frontend's dist + .build-artifacts output"
     cmds:
+      - task: material-editor:clean
       - task: model-tests:clean
       - task: scene-editor:clean
       - task: site-index:clean

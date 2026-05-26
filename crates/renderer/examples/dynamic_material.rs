@@ -85,7 +85,9 @@ return OpaqueShadingOutput(overlay + vec3<f32>(0.5), 1.0);
     wgsl_fragment.hash(&mut h2);
     let wgsl_hash = h2.finish();
 
-    // 4. Build the registration.
+    // 4. Build the registration. `uniform_defaults` is empty here;
+    //    callers that want authored defaults (vs zero-of-each-type)
+    //    populate it in the same order as `layout.uniforms`.
     awsm_renderer::dynamic_materials::MaterialRegistration {
         name: "scanline".into(),
         alpha_mode: MaterialAlphaMode::Opaque,
@@ -95,6 +97,7 @@ return OpaqueShadingOutput(overlay + vec3<f32>(0.5), 1.0);
         wgsl_hash,
         wgsl_fragment,
         buffer_defaults: Vec::new(),
+        uniform_defaults: Vec::new(),
     }
 }
 

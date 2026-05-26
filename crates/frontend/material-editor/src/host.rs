@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use awsm_materials::dynamic::DynamicMaterial;
-use awsm_materials::dynamic_layout::{FieldType, MaterialLayout, UniformValue};
+use awsm_materials::dynamic_layout::{FieldType, UniformValue};
 use awsm_materials::MaterialShaderId;
 use awsm_meshgen::primitives::plane_mesh;
 use awsm_renderer::dynamic_materials::MaterialRegistration;
@@ -91,7 +91,7 @@ impl RendererHost {
         shader_id: MaterialShaderId,
         reg: &MaterialRegistration,
     ) -> anyhow::Result<()> {
-        let dynamic_material = build_default_dynamic_material(shader_id, &reg.layout);
+        let dynamic_material = build_default_dynamic_material(shader_id, reg);
 
         match self.quad_material {
             Some(key) => {
@@ -121,10 +121,19 @@ impl RendererHost {
                     indices: mesh.indices,
                 };
 
+                // The plane primitive ships its vertices in the XZ
+                // plane with normals pointing +Y. We rotate by +90°
+                // around X so the normal lands at +Z, pointing back
+                // toward the camera at z=+1.5. (Rotating by -90° —
+                // the obvious "tilt it forward" direction — pushes
+                // the normal to -Z and backface-culls the plane,
+                // producing a fully black preview canvas with no
+                // pipeline errors. This was the root cause of the
+                // earlier "preview never paints" bug.)
                 let transform_key = self.renderer.transforms.insert(
                     Transform {
                         translation: Vec3::new(0.0, 0.0, -3.0),
-                        rotation: glam::Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
+                        rotation: glam::Quat::from_rotation_x(std::f32::consts::FRAC_PI_2),
                         ..Default::default()
                     },
                     None,
@@ -156,20 +165,36 @@ impl RendererHost {
     }
 }
 
-/// Build a `DynamicMaterial` whose uniform values are zero-defaults
-/// for each field in the layout. Texture / buffer slots are left
-/// unbound — the WGSL fallback paths (texture index `u32::MAX`,
-/// buffer length 0) handle that gracefully.
+/// Build a `DynamicMaterial` whose uniform values come from the
+/// registration's authored defaults when present, falling back to
+/// type-zero for any uniform the registration didn't supply a
+/// default for. Texture / buffer slots are left unbound — the WGSL
+/// fallback paths (texture index `u32::MAX`, buffer length 0)
+/// handle that gracefully.
+///
+/// The `uniform_defaults` indirection matters: without it, every
+/// preview-quad uniform reads zero, which for a material like
+/// `scanline` (where `scan_freq=80`, `tint=(0.6, 0.9, 0.6)` are
+/// declared on the schema side) flattens the visible output to the
+/// uniform base colour with no scanline pattern visible.
 fn build_default_dynamic_material(
     shader_id: MaterialShaderId,
-    layout: &MaterialLayout,
+    reg: &MaterialRegistration,
 ) -> DynamicMaterial {
-    let defaults: Vec<UniformValue> = layout
+    let defaults: Vec<UniformValue> = reg
+        .layout
         .uniforms
         .iter()
-        .map(|f| default_uniform_value(f.ty))
+        .enumerate()
+        .map(|(i, f)| {
+            reg.uniform_defaults
+                .get(i)
+                .cloned()
+                .filter(|v| v.field_type() == f.ty)
+                .unwrap_or_else(|| default_uniform_value(f.ty))
+        })
         .collect();
-    DynamicMaterial::new(shader_id, layout, defaults)
+    DynamicMaterial::new(shader_id, &reg.layout, defaults)
 }
 
 fn default_uniform_value(ty: FieldType) -> UniformValue {

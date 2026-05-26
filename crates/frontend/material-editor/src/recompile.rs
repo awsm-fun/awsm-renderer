@@ -19,11 +19,13 @@ use std::rc::Rc;
 
 use awsm_materials::dynamic_layout::{
     BufferSlotRuntime, FieldType as RuntimeFieldType, MaterialLayout, TextureSlotRuntime,
-    UniformFieldRuntime,
+    UniformFieldRuntime, UniformValue as RuntimeUniformValue,
 };
 use awsm_materials::MaterialAlphaMode as MaterialAlphaModeRuntime;
 use awsm_renderer::dynamic_materials::MaterialRegistration;
-use awsm_scene_schema::dynamic_material::{FieldType as SchemaFieldType, MaterialDefinition};
+use awsm_scene_schema::dynamic_material::{
+    FieldType as SchemaFieldType, MaterialDefinition, UniformValue as SchemaUniformValue,
+};
 use awsm_scene_schema::material::MaterialAlphaMode as MaterialAlphaModeSchema;
 use futures_signals::signal::SignalExt;
 use gloo_timers::future::TimeoutFuture;
@@ -75,6 +77,19 @@ pub fn build_registration(state: &EditState) -> MaterialRegistration {
     wgsl.hash(&mut h2);
     let wgsl_hash = h2.finish();
 
+    // Per-uniform schema-declared defaults. The editor's
+    // `MaterialDefinition` carries an authored default (`scan_freq=80`,
+    // `tint=(0.6, 0.9, 0.6)`, etc.) for every uniform; without
+    // forwarding them through, the host's `apply_quad` would seed a
+    // fresh `DynamicMaterial` with zero values for everything, which
+    // for the scanline material means `sin(uv.y * 0) == 0` → no
+    // visible animation. Same order as `layout.uniforms`.
+    let uniform_defaults: Vec<RuntimeUniformValue> = def
+        .uniforms
+        .iter()
+        .map(|u| convert_uniform_value(&u.default))
+        .collect();
+
     MaterialRegistration {
         name: def.name.clone(),
         alpha_mode,
@@ -84,6 +99,25 @@ pub fn build_registration(state: &EditState) -> MaterialRegistration {
         wgsl_hash,
         wgsl_fragment: wgsl,
         buffer_defaults: Vec::new(),
+        uniform_defaults,
+    }
+}
+
+fn convert_uniform_value(v: &SchemaUniformValue) -> RuntimeUniformValue {
+    match v {
+        SchemaUniformValue::F32(x) => RuntimeUniformValue::F32(*x),
+        SchemaUniformValue::Vec2(x) => RuntimeUniformValue::Vec2(*x),
+        SchemaUniformValue::Vec3(x) => RuntimeUniformValue::Vec3(*x),
+        SchemaUniformValue::Vec4(x) => RuntimeUniformValue::Vec4(*x),
+        SchemaUniformValue::U32(x) => RuntimeUniformValue::U32(*x),
+        SchemaUniformValue::IVec2(x) => RuntimeUniformValue::IVec2(*x),
+        SchemaUniformValue::IVec3(x) => RuntimeUniformValue::IVec3(*x),
+        SchemaUniformValue::IVec4(x) => RuntimeUniformValue::IVec4(*x),
+        SchemaUniformValue::Mat3(x) => RuntimeUniformValue::Mat3(*x),
+        SchemaUniformValue::Mat4(x) => RuntimeUniformValue::Mat4(*x),
+        SchemaUniformValue::Color3(x) => RuntimeUniformValue::Color3(*x),
+        SchemaUniformValue::Color4(x) => RuntimeUniformValue::Color4(*x),
+        SchemaUniformValue::Bool(x) => RuntimeUniformValue::Bool(*x),
     }
 }
 
