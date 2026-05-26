@@ -217,6 +217,70 @@ impl AwsmRenderer {
             picker.merge_resolved(picker_descs.slot, resolved[picker_range].to_vec());
         }
 
+        // ── Phase 4b: geometry MSAA branch recompile (lazy-pool).
+        //    Skip when the new MSAA's branch is already populated
+        //    (the user previously toggled this way and back). When
+        //    new, build 9 render pipelines + 3 shaders for just the
+        //    new branch and fold into the existing nested struct.
+        let multisampled_geometry = self.anti_aliasing.has_msaa_checked()?;
+        if !self
+            .render_passes
+            .geometry
+            .pipelines
+            .has_branch_for(&self.anti_aliasing)
+        {
+            // Phase 4b.i: shader compile batch for the new branch's 3 keys.
+            let geometry_shader_keys_needed =
+                crate::render_passes::geometry::pipeline::GeometryPipelines::shader_cache_keys(
+                    multisampled_geometry,
+                );
+            self.shaders
+                .ensure_keys(&self.gpu, geometry_shader_keys_needed)
+                .await?;
+
+            // Phase 4b.ii: build the new branch's 9 render pipeline
+            // descriptors. Reuses the same RenderPassInitContext
+            // shape the cold-boot path uses.
+            let mut ctx = crate::render_passes::RenderPassInitContext {
+                gpu: &self.gpu,
+                bind_group_layouts: &mut self.bind_group_layouts,
+                pipeline_layouts: &mut self.pipeline_layouts,
+                pipelines: &mut self.pipelines,
+                shaders: &mut self.shaders,
+                render_texture_formats: &mut self.render_textures.formats,
+                textures: &mut self.textures,
+                features: &self.features,
+                anti_aliasing: &self.anti_aliasing,
+                post_processing: &self.post_processing,
+            };
+            let geometry_descs =
+                crate::render_passes::geometry::pipeline::GeometryPipelines::build_descriptors(
+                    &mut ctx,
+                    &self.render_passes.geometry.bind_groups,
+                    multisampled_geometry,
+                )
+                .await?;
+
+            // Phase 4b.iii: batch render pipeline compile.
+            let geometry_pipeline_keys = self
+                .pipelines
+                .render
+                .ensure_keys(
+                    &self.gpu,
+                    &self.shaders,
+                    &self.pipeline_layouts,
+                    geometry_descs.pipeline_cache_keys.clone(),
+                )
+                .await?;
+
+            // Phase 4b.iv: merge into the existing struct (preserves
+            // any previously-populated MSAA branch).
+            self.render_passes
+                .geometry
+                .pipelines
+                .merge_resolved(&geometry_descs, geometry_pipeline_keys)?;
+        }
+
         // ── Phase 5: transparent pipelines depend on per-mesh
         //    attributes AND AA settings — recompile every live
         //    mesh's variant. Batched inside `set_render_pipeline_keys_batched`.

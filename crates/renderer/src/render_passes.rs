@@ -331,7 +331,11 @@ impl RenderPasses {
         // will need. The orchestrator concatenates this onto the
         // cross-renderer shader pool — see `AwsmRendererBuilder::build`.
         let mut shader_cache_keys: Vec<ShaderCacheKey> = Vec::new();
-        shader_cache_keys.extend(GeometryPipelines::shader_cache_keys());
+        // Geometry MSAA-lazy: only the active branch's 3 shader keys
+        // at cold-boot. Inactive branch fills on first
+        // set_anti_aliasing flip.
+        let multisampled_geometry = ctx.anti_aliasing.has_msaa_checked()?;
+        shader_cache_keys.extend(GeometryPipelines::shader_cache_keys(multisampled_geometry));
         if features.gpu_culling {
             shader_cache_keys.extend(HzbPipelines::shader_cache_keys(ctx.anti_aliasing));
             shader_cache_keys.extend(OcclusionPipelines::shader_cache_keys());
@@ -416,8 +420,10 @@ impl RenderPasses {
         let mut compute_pool: Vec<ComputePipelineCacheKey> = Vec::new();
         let mut render_pool: Vec<RenderPipelineCacheKey> = Vec::new();
 
+        // Geometry MSAA-lazy: only the active branch's 9 descriptors.
+        let multisampled_geometry = ctx.anti_aliasing.has_msaa_checked()?;
         let geometry_descs =
-            GeometryPipelines::build_descriptors(ctx, &bindings.geometry_bg).await?;
+            GeometryPipelines::build_descriptors(ctx, &bindings.geometry_bg, multisampled_geometry).await?;
         let geometry_range =
             render_pool.len()..render_pool.len() + geometry_descs.pipeline_cache_keys.len();
         render_pool.extend(geometry_descs.pipeline_cache_keys.iter().cloned());
