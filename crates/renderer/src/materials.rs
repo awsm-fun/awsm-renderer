@@ -357,6 +357,7 @@ impl Materials {
 
             let dynamic_ctx =
                 crate::dynamic_materials::DynamicMaterialPackContext::new(dynamic_materials)
+                    .with_textures(textures)
                     .with_extras(extras_pool);
             let data = material.uniform_buffer_data(textures, &dynamic_ctx);
             match self.buffer.update(key, &data) {

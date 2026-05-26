@@ -160,14 +160,27 @@ let camera = camera_from_raw(camera_raw);
 
 ### `shared_wgsl/textures.wgsl`
 
+The auto-generated `<name>_index: u32` field on `MaterialData` is the
+renderer's [`array_and_layer`](../../crates/renderer/src/render_passes/shared/shared_wgsl/textures.wgsl)
+encoding — `array_index` in the low 12 bits, `layer_index` in the
+upper 20 bits, exactly matching what
+`shared_wgsl/textures.wgsl::TextureInfoRaw.array_and_layer`
+decodes:
+
 ```wgsl
-// Sample a pooled texture by index (the auto-generated
-// `<name>_index: u32` field on MaterialData):
-let info = TextureInfo(/* via material_load_texture_info if you want full
-                         glTF-style sampler / transform support */);
-// Direct path for the common "I just want to sample at UV":
-texture_pool_sample_no_mips(info, uv);
-texture_pool_sample_grad(info, uv, derivs);
+let raw_idx = input.material.base_index;       // <name>_index
+if (raw_idx == 0xFFFFFFFFu) {
+    // Unbound — fall back to a uniform colour, skip sampling, etc.
+} else {
+    let array_index = raw_idx & 0xFFFu;
+    let layer_index = raw_idx >> 12u;
+    // Direct texture_pool_arrays[array_index] sample at layer_index.
+    // For full glTF-style sampler / UV-transform / mipmap support,
+    // declare the texture as part of a typed first-party material
+    // (e.g. via `MaterialTexture`) instead — the dynamic schema's
+    // single-u32 slot intentionally trades that surface for
+    // simplicity.
+}
 ```
 
 For convenience, the kernel exposes the per-pixel barycentric UV via

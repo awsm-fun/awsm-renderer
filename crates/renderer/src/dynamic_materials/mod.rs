@@ -24,6 +24,7 @@ pub use error::AwsmDynamicMaterialError;
 
 use awsm_materials::dynamic::{DynamicMaterialContext, DynamicTextureBinding};
 use awsm_materials::dynamic_layout::MaterialLayout;
+use awsm_materials::TextureContext;
 
 /// Adapter that implements [`DynamicMaterialContext`] over the
 /// renderer's [`DynamicMaterials`] registry.
@@ -35,12 +36,17 @@ use awsm_materials::dynamic_layout::MaterialLayout;
 /// previously copied every registered material's layout
 /// (uniforms + textures + buffers Vecs) on every write.
 ///
-/// `resolve_texture_index` returns `u32::MAX` for unbound slots
-/// (the WGSL `texture_pool_sample_*` helpers treat that as "no
-/// texture"). `buffer_slice` resolves through the extras pool
+/// `resolve_texture_index` resolves a bound texture key against the
+/// renderer's [`TextureContext`] (when attached via
+/// [`with_textures`](Self::with_textures)) to the packed
+/// `array_and_layer` encoding documented on
+/// [`shared_wgsl::TextureInfoRaw`]. Unbound slots and lookups that
+/// can't resolve return `u32::MAX` (the WGSL helpers treat that as
+/// "no texture"). `buffer_slice` resolves through the extras pool
 /// when one was attached via [`with_extras`](Self::with_extras).
 pub struct DynamicMaterialPackContext<'a> {
     materials: &'a DynamicMaterials,
+    textures: Option<&'a dyn TextureContext>,
     extras: Option<&'a extras_pool::ExtrasPool>,
 }
 
@@ -51,8 +57,20 @@ impl<'a> DynamicMaterialPackContext<'a> {
     pub fn new(materials: &'a DynamicMaterials) -> Self {
         Self {
             materials,
+            textures: None,
             extras: None,
         }
+    }
+
+    /// Attaches a [`TextureContext`] (typically `&Textures`) so
+    /// `resolve_texture_index` can look up a real `array_and_layer`
+    /// encoding for each bound `DynamicTextureBinding::Pooled`.
+    /// Without it, every texture slot resolves to `u32::MAX`
+    /// regardless of whether the per-instance `DynamicMaterial`
+    /// carries a key.
+    pub fn with_textures(mut self, textures: &'a dyn TextureContext) -> Self {
+        self.textures = Some(textures);
+        self
     }
 
     /// Returns a context that also resolves `buffer_slice` lookups
@@ -74,11 +92,41 @@ impl<'a> DynamicMaterialContext for DynamicMaterialPackContext<'a> {
         self.materials.get(shader_id).map(|r| r.alpha_mode)
     }
 
-    fn resolve_texture_index(&self, _binding: Option<&DynamicTextureBinding>) -> u32 {
-        // Phase 5 wires real texture-pool lookups through the
-        // renderer's TextureContext. For Phase 4, unbound = u32::MAX
-        // (the WGSL helpers treat that as "no texture").
-        u32::MAX
+    fn resolve_texture_index(&self, binding: Option<&DynamicTextureBinding>) -> u32 {
+        // Unbound slot → "no texture" sentinel. Same convention
+        // first-party materials use when an Optional<MaterialTexture>
+        // is None.
+        let Some(binding) = binding else {
+            return u32::MAX;
+        };
+        // No `TextureContext` attached → can't resolve. Stay at the
+        // sentinel rather than guessing. Callers that route through
+        // `Materials::update` always plumb `Textures` in.
+        let Some(textures) = self.textures else {
+            return u32::MAX;
+        };
+        match binding {
+            DynamicTextureBinding::Pooled(key) => {
+                // Encode `array_index | (layer_index << 12)` to
+                // match the bit-layout the rest of the renderer's
+                // `TextureInfoRaw.array_and_layer` field uses (see
+                // `shared_wgsl/textures.wgsl::convert_texture_info`).
+                // Authors decode via:
+                //   let array_index = idx & 0xFFFu;
+                //   let layer_index = idx >> 12u;
+                // for use with the texture-pool array bindings.
+                // Missing entries → `u32::MAX` (the WGSL helpers
+                // treat that as "no texture").
+                let Some(entry) = textures.texture_entry(*key) else {
+                    return u32::MAX;
+                };
+                let array_index = entry.array_index as u32;
+                let layer_index = entry.layer_index as u32;
+                debug_assert!(array_index <= 0xFFF, "array_index exceeds 12-bit field");
+                debug_assert!(layer_index <= 0xFFFFF, "layer_index exceeds 20-bit field");
+                (layer_index << 12) | (array_index & 0xFFF)
+            }
+        }
     }
 
     fn buffer_slice(
