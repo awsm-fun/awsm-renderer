@@ -11,7 +11,8 @@
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let edge_pixel_id = gid.x;
-    let total_edges = edge_args.edge_count;
+    // edge_count is mirrored into edge_data's header.
+    let total_edges = edge_data[edge_layout.edge_count_index];
     if (edge_pixel_id >= total_edges) {
         return;
     }

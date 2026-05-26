@@ -254,10 +254,12 @@ impl MaterialOpaqueRenderPass {
 
         // extended_shadows_group: the standard 10 shadow bindings
         // followed by edge_data (binding 10, storage RW) + edge_layout
-        // (binding 11, uniform) + edge_args (binding 12, storage RO).
-        // Bound at slot 3 of the edge_resolve pipeline layout in place
-        // of the primary opaque shadow bind group — the fold that lets
-        // the layout fit in 4 bind groups.
+        // (binding 11, uniform). Bound at slot 3 of the edge_resolve
+        // pipeline layout in place of the primary opaque shadow bind
+        // group — the fold that lets the layout fit in 4 bind groups.
+        // args_buffer is NOT bound — entry counters are mirrored into
+        // `edge_data`'s header so the compute stage stays under the
+        // 10-storage-buffer cap.
         let mut entries_shadows = build_shadow_bind_group_entries(ctx.shadows);
         entries_shadows.push(BindGroupEntry::new(
             10,
@@ -267,10 +269,6 @@ impl MaterialOpaqueRenderPass {
             11,
             BindGroupResource::Buffer(BufferBinding::new(edge_layout_uniform)),
         ));
-        entries_shadows.push(BindGroupEntry::new(
-            12,
-            BindGroupResource::Buffer(BufferBinding::new(&edge_buffers.args_buffer)),
-        ));
         let descriptor_shadows = BindGroupDescriptor::new(
             ctx.bind_group_layouts
                 .get(layouts.edge_resolve_extended_shadows_layout_key)?,
@@ -279,8 +277,8 @@ impl MaterialOpaqueRenderPass {
         );
         let extended_shadows_group = ctx.gpu.create_bind_group(&descriptor_shadows.into());
 
-        // Skybox-edge bind group: data + layout + camera + skybox tex +
-        // sampler + args.
+        // Skybox-edge bind group: data + layout + camera + skybox tex
+        // + sampler.
         let entries_sky = vec![
             BindGroupEntry::new(
                 0,
@@ -302,10 +300,6 @@ impl MaterialOpaqueRenderPass {
                 4,
                 BindGroupResource::Sampler(&ctx.environment.skybox.sampler),
             ),
-            BindGroupEntry::new(
-                5,
-                BindGroupResource::Buffer(BufferBinding::new(&edge_buffers.args_buffer)),
-            ),
         ];
         let descriptor_sky = BindGroupDescriptor::new(
             ctx.bind_group_layouts
@@ -316,7 +310,7 @@ impl MaterialOpaqueRenderPass {
         let skybox_edge_group = ctx.gpu.create_bind_group(&descriptor_sky.into());
 
         // Final-blend bind group: data (RO) + layout + opaque storage
-        // texture + args (RO).
+        // texture. Reads edge_count from `edge_data`'s header.
         let entries_final = vec![
             BindGroupEntry::new(
                 0,
@@ -329,10 +323,6 @@ impl MaterialOpaqueRenderPass {
             BindGroupEntry::new(
                 2,
                 BindGroupResource::TextureView(Cow::Borrowed(&ctx.render_texture_views.opaque)),
-            ),
-            BindGroupEntry::new(
-                3,
-                BindGroupResource::Buffer(BufferBinding::new(&edge_buffers.args_buffer)),
             ),
         ];
         let descriptor_final = BindGroupDescriptor::new(

@@ -26,7 +26,8 @@
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let thread_index = gid.x;
-    let entry_count = edge_args.skybox_edge_args.workgroup_count_x;
+    // Skybox entry count is mirrored into edge_data's header.
+    let entry_count = edge_data[edge_layout.skybox_count_index];
     if (thread_index >= entry_count) {
         return;
     }

@@ -94,19 +94,24 @@ impl MaterialEdgeBindGroupLayouts {
 ///
 /// Bindings 0..=9 are the standard shadow entries (must stay
 /// byte-for-byte compatible with the opaque shadow layout — same shadow
-/// resources are bound here). Bindings 10..=12 carry the edge resources
+/// resources are bound here). Bindings 10..=11 carry the edge resources
 /// that were previously living in a separate group(4); folding them in
 /// here lets the edge_resolve pipeline layout fit in 4 bind groups so
 /// it activates on macOS Metal (`maxBindGroups = 4`).
 ///
-/// Split-buffer layout (post-args/data split):
-/// - 10: `edge_data` — storage RW (writes accumulator slots).
-/// - 11: `edge_layout` — uniform.
-/// - 12: `edge_args` — storage RO (reads per-shader workgroup_count_x
-///   for the entry-count bail). The args buffer is *also* the
-///   indirect-dispatch source for this pass, but Indirect +
-///   Storage(read) on the same buffer is allowed by WebGPU (no
-///   writable usage in the same sync scope).
+/// Storage-buffer budget. The args_buffer is *not* bound to
+/// edge_resolve as Storage — adding a third extra binding would push
+/// the compute stage from 10 to 11 storage buffers, exceeding the
+/// WebGPU baseline `maxStorageBuffersPerShaderStage` of 10 (macOS
+/// Metal in particular). Instead, classify mirrors the entry counts
+/// and the `edge_count` value into a small header at the start of
+/// `edge_data`, which edge_resolve reads through the existing
+/// binding.
+///
+/// Bindings:
+/// - 10: `edge_data` — storage RW (writes accumulator slots; reads
+///   entry-count mirrors from its header).
+/// - 11: `edge_layout` — uniform (offsets into `edge_data`).
 fn build_extended_shadows_layout(
     ctx: &mut RenderPassInitContext<'_>,
 ) -> Result<BindGroupLayoutKey> {
@@ -130,15 +135,6 @@ fn build_extended_shadows_layout(
         visibility_fragment: false,
         visibility_compute: true,
     });
-    // 12: edge_args — storage RO (entry-count reads).
-    entries.push(BindGroupLayoutCacheKeyEntry {
-        resource: BindGroupLayoutResource::Buffer(
-            BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),
-        ),
-        visibility_vertex: false,
-        visibility_fragment: false,
-        visibility_compute: true,
-    });
 
     Ok(ctx
         .bind_group_layouts
@@ -146,14 +142,12 @@ fn build_extended_shadows_layout(
 }
 
 fn build_skybox_edge_layout(ctx: &mut RenderPassInitContext<'_>) -> Result<BindGroupLayoutKey> {
-    // 0: edge_data    — storage RW (accumulator + sample list writes)
-    // 1: edge_layout  — uniform
-    // 2: camera_raw   — uniform (vec4 array)
-    // 3: skybox_tex   — texture_cube
-    // 4: skybox_smp   — sampler
-    // 5: edge_args    — storage RO (entry-count read; also the
-    //                   indirect-dispatch source — Storage(read) +
-    //                   Indirect on the same buffer is allowed).
+    // 0: edge_data    — storage RW (accumulator + sample list writes;
+    //                   reads entry-count mirrors from its header).
+    // 1: edge_layout  — uniform.
+    // 2: camera_raw   — uniform (vec4 array).
+    // 3: skybox_tex   — texture_cube.
+    // 4: skybox_smp   — sampler.
     let entries = vec![
         BindGroupLayoutCacheKeyEntry {
             resource: BindGroupLayoutResource::Buffer(
@@ -195,14 +189,6 @@ fn build_skybox_edge_layout(ctx: &mut RenderPassInitContext<'_>) -> Result<BindG
             visibility_fragment: false,
             visibility_compute: true,
         },
-        BindGroupLayoutCacheKeyEntry {
-            resource: BindGroupLayoutResource::Buffer(
-                BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),
-            ),
-            visibility_vertex: false,
-            visibility_fragment: false,
-            visibility_compute: true,
-        },
     ];
     Ok(ctx
         .bind_group_layouts
@@ -210,13 +196,10 @@ fn build_skybox_edge_layout(ctx: &mut RenderPassInitContext<'_>) -> Result<BindG
 }
 
 fn build_final_blend_layout(ctx: &mut RenderPassInitContext<'_>) -> Result<BindGroupLayoutKey> {
-    // 0: edge_data    — storage RO (reads accumulator + edge_to_xy)
-    // 1: edge_layout  — uniform
-    // 2: opaque_tex   — storage texture (write)
-    // 3: edge_args    — storage RO (reads edge_count). The args buffer
-    //                   is also this pass's indirect-dispatch source —
-    //                   Indirect + Storage(read) on the same buffer is
-    //                   allowed (no writable usage in the same scope).
+    // 0: edge_data    — storage RO (reads accumulator + edge_to_xy +
+    //                   edge_count from its header).
+    // 1: edge_layout  — uniform.
+    // 2: opaque_tex   — storage texture (write).
     let entries = vec![
         BindGroupLayoutCacheKeyEntry {
             resource: BindGroupLayoutResource::Buffer(
@@ -239,14 +222,6 @@ fn build_final_blend_layout(ctx: &mut RenderPassInitContext<'_>) -> Result<BindG
                 StorageTextureBindingLayout::new(ctx.render_texture_formats.color)
                     .with_view_dimension(TextureViewDimension::N2d)
                     .with_access(StorageTextureAccess::WriteOnly),
-            ),
-            visibility_vertex: false,
-            visibility_fragment: false,
-            visibility_compute: true,
-        },
-        BindGroupLayoutCacheKeyEntry {
-            resource: BindGroupLayoutResource::Buffer(
-                BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),
             ),
             visibility_vertex: false,
             visibility_fragment: false,

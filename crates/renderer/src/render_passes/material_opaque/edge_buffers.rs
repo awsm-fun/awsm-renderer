@@ -137,22 +137,64 @@ pub fn args_buffer_bytes(bucket_count: u32) -> u32 {
 // ─────────────────────────────────────────────────────────────────
 // data_buffer layout (Storage | CopyDst).
 //
-// Layout (no header — offsets start at 0):
+// Layout (small header for atomic-counter mirrors that the resolve
+// shaders read; everything else follows):
+//   - bytes [0, 4)              : edge_count_mirror (atomic<u32>)
+//   - bytes [4, 8)              : edge_overflow_count_mirror (atomic<u32>)
+//   - bytes [8, 16)             : pad to 16-byte alignment
+//   - bytes [16, 16 + B*4)      : per-bucket sample entry counts (atomic<u32>×B)
+//   - bytes [16 + B*4, 20 + B*4): skybox sample entry count (atomic<u32>)
+//   - padded to 16-byte align
 //   - edge_to_xy:       array<u32, max_edge_budget>            — packed (x:16, y:16)
 //   - edge_slot_map:    array<u32, max_edge_budget>            — 4 shader_ids × 8 bits
 //   - accumulator:      array<vec4<f32>, max_edge_budget × 4>
 //   - per-shader-id sample lists: array<array<u32, sample_entries_per_bucket>, bucket_count>
 //   - skybox sample list: array<u32, sample_entries_per_bucket>
+//
+// The atomic-counter mirrors duplicate values from `args_buffer` (which
+// drives indirect dispatch). The resolve shaders need to read entry
+// counts and edge_count for bounds-checking, but binding `args_buffer`
+// as a Storage(read) buffer alongside the existing 9 storage bindings
+// would push the compute stage past `maxStorageBuffersPerShaderStage`
+// (= 10 on baseline WebGPU; macOS Metal in particular). Mirroring the
+// counters into `data_buffer` keeps the resolve-side storage-buffer
+// count at 10 (the existing 9 + just `edge_data`).
 
-/// Byte offset of `edge_to_xy` inside `data_buffer`. The data buffer
-/// has no header, so this is 0.
-pub fn edge_to_xy_offset(_bucket_count: u32) -> u32 {
+/// Bytes for the data_buffer's counter-mirror header.
+pub fn data_header_bytes(bucket_count: u32) -> u32 {
+    // counters (16 B) + B*4 per-bucket + 4 skybox; padded to 16.
+    let counters = 16u32;
+    let per_bucket = bucket_count.saturating_mul(4);
+    let skybox = 4u32;
+    let unpadded = counters + per_bucket + skybox;
+    (unpadded + 15) & !15
+}
+
+/// Byte offset of `edge_count_mirror` (atomic<u32>) inside `data_buffer`.
+pub fn data_edge_count_offset() -> u32 {
     0
 }
 
+/// Byte offset of the per-bucket entry count for `bucket_index` inside
+/// `data_buffer`.
+pub fn data_per_shader_count_offset(bucket_index: u32) -> u32 {
+    16 + bucket_index.saturating_mul(4)
+}
+
+/// Byte offset of the skybox entry count inside `data_buffer`.
+pub fn data_skybox_count_offset(bucket_count: u32) -> u32 {
+    16 + bucket_count.saturating_mul(4)
+}
+
+/// Byte offset of `edge_to_xy` inside `data_buffer`. Follows the
+/// counter-mirror header.
+pub fn edge_to_xy_offset(bucket_count: u32) -> u32 {
+    data_header_bytes(bucket_count)
+}
+
 /// Byte offset of `edge_slot_map` inside `data_buffer`.
-pub fn edge_slot_map_offset(_bucket_count: u32, max_edge_budget: u32) -> u32 {
-    edge_to_xy_offset(_bucket_count) + max_edge_budget.saturating_mul(4)
+pub fn edge_slot_map_offset(bucket_count: u32, max_edge_budget: u32) -> u32 {
+    edge_to_xy_offset(bucket_count) + max_edge_budget.saturating_mul(4)
 }
 
 /// Byte offset of `accumulator` inside `data_buffer`.
@@ -221,9 +263,15 @@ pub struct MaterialEdgeBuffers {
     /// CPU staging vec sized to `args_buffer_bytes(bucket_count)`.
     /// Written once per frame at the top of classify to clear the
     /// atomic counters + reset the indirect-arg `(x=0, y=1, z=1, pad=0)`
-    /// slots. The data buffer's regions are overwritten in place by
-    /// the shader.
+    /// slots.
     args_scratch: Vec<u8>,
+    /// CPU staging vec sized to `data_header_bytes(bucket_count)`.
+    /// Written once per frame at the top of classify to zero the
+    /// counter-mirror header in `data_buffer` (edge_count +
+    /// per-shader entry counts + skybox count). The tile arrays /
+    /// accumulator / sample lists are overwritten in place by the
+    /// shader.
+    data_header_scratch: Vec<u8>,
 }
 
 impl MaterialEdgeBuffers {
@@ -278,6 +326,10 @@ impl MaterialEdgeBuffers {
 
         let mut args_scratch = vec![0u8; args_size_bytes as usize];
         write_args_header(&mut args_scratch, bucket_count);
+        // data_header_scratch starts zero — every counter mirror is 0
+        // at frame start. The shader atomicAdds against it as edges
+        // are allocated.
+        let data_header_scratch = vec![0u8; data_header_bytes(bucket_count) as usize];
 
         Ok(Self {
             args_buffer,
@@ -287,6 +339,7 @@ impl MaterialEdgeBuffers {
             args_size_bytes,
             data_size_bytes,
             args_scratch,
+            data_header_scratch,
         })
     }
 
@@ -305,15 +358,24 @@ impl MaterialEdgeBuffers {
         Ok(true)
     }
 
-    /// Writes the per-frame `args_buffer` reset: zeroes both atomic
-    /// counters (`edge_count`, `edge_overflow_count`) and re-asserts
-    /// `(y=1, z=1)` on every indirect-arg slot. The data buffer's
-    /// regions remain untouched (the shader overwrites them in place).
+    /// Writes the per-frame `args_buffer` + `data_buffer` header
+    /// resets. Zeroes the args_buffer atomic counters and re-asserts
+    /// `(y=1, z=1)` on every indirect-arg slot; zeroes the data buffer's
+    /// counter-mirror header (edge_count + per-bucket counts + skybox
+    /// count). Tile arrays / accumulator / sample lists are
+    /// overwritten in place by the shader.
     pub fn reset_header(&self, gpu: &AwsmRendererWebGpu) -> Result<(), AwsmCoreError> {
         gpu.write_buffer(
             &self.args_buffer,
             None,
             self.args_scratch.as_slice(),
+            None,
+            None,
+        )?;
+        gpu.write_buffer(
+            &self.data_buffer,
+            None,
+            self.data_header_scratch.as_slice(),
             None,
             None,
         )
@@ -348,6 +410,9 @@ impl MaterialEdgeBuffers {
 ///
 /// Layout (all u32, in declaration order):
 ///   max_edge_budget
+///   edge_count_index               (u32-stride into edge_data; 0)
+///   per_shader_count_base          (first per-bucket counter; bucket counts follow as a contiguous array)
+///   skybox_count_index             (skybox entry counter)
 ///   edge_to_xy_base
 ///   edge_slot_map_base
 ///   accumulator_base
@@ -358,13 +423,15 @@ impl MaterialEdgeBuffers {
 ///   sample_entries_per_bucket
 ///
 /// All `*_base` values are u32-stride indices from the start of the
-/// `edge_data` storage buffer (no header to skip — the data buffer
-/// starts at offset 0 with `edge_to_xy`).
+/// `edge_data` storage buffer.
 pub fn build_edge_layout_uniform_bytes(bucket_count: u32, max_edge_budget: u32) -> Vec<u8> {
     let to_stride = |byte_off: u32| -> u32 { byte_off / 4 };
 
-    let mut words: Vec<u32> = Vec::with_capacity(6 + bucket_count as usize);
+    let mut words: Vec<u32> = Vec::with_capacity(8 + bucket_count as usize);
     words.push(max_edge_budget);
+    words.push(to_stride(data_edge_count_offset())); // edge_count index
+    words.push(to_stride(data_per_shader_count_offset(0))); // per_shader_count_base
+    words.push(to_stride(data_skybox_count_offset(bucket_count))); // skybox_count_index
     words.push(to_stride(edge_to_xy_offset(bucket_count)));
     words.push(to_stride(edge_slot_map_offset(
         bucket_count,

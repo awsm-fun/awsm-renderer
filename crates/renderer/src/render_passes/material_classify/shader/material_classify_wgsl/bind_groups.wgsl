@@ -114,11 +114,15 @@ struct EdgeArgsBuffer {
 
 // Host-uploaded constants for offsetting into `edge_data`. All values
 // in u32-stride units (storage-buffer arrays index by element size, so
-// 4-byte u32s naturally line up). Offsets are relative to the start
-// of `edge_data` (the data buffer has no header — `edge_to_xy_base`
-// is always 0).
+// 4-byte u32s naturally line up). The first few entries of `edge_data`
+// are atomic counter mirrors (so the post-classify resolve shaders can
+// read them through their `edge_data` binding alone — args_buffer is
+// not bound there, to stay under the 10-storage-buffer cap).
 struct EdgeBufferLayout {
     max_edge_budget: u32,
+    edge_count_index: u32,
+    per_shader_count_base: u32,
+    skybox_count_index: u32,
     edge_to_xy_base: u32,
     edge_slot_map_base: u32,
     accumulator_base: u32,
@@ -131,7 +135,16 @@ struct EdgeBufferLayout {
 
 @group(0) @binding(5) var<uniform> edge_layout: EdgeBufferLayout;
 
-// data_buffer: edge_to_xy + edge_slot_map + accumulator + sample lists.
-// Flat u32 storage; the layout uniform supplies all the offsets.
-@group(0) @binding(6) var<storage, read_write> edge_data: array<u32>;
+// data_buffer: counter-mirror header (atomics) + edge_to_xy +
+// edge_slot_map + accumulator + sample lists. Declared as a flat
+// `array<atomic<u32>>` here so classify can atomicAdd into the header
+// counters; the edge_resolve / skybox / final_blend shaders bind the
+// same buffer as a plain `array<u32>` for read-only access (same
+// memory, different view — WebGPU's allowed since the two layouts
+// live on different pipelines).
+//
+// The non-atomic regions (edge_to_xy, accumulator, sample lists) are
+// written via `atomicStore` to satisfy the storage type — equivalent
+// to a plain store for our purposes.
+@group(0) @binding(6) var<storage, read_write> edge_data: array<atomic<u32>>;
 {% endif %}

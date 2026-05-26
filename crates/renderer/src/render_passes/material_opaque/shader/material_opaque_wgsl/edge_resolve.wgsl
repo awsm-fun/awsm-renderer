@@ -374,12 +374,11 @@ fn main(
     // entry from this shader_id's sample list. The list lives at the
     // host-supplied `sample_list_base` offset in the storage buffer.
     let thread_index = gid.x;
-    // workgroup_count_x is the per-shader entry count atomically
-    // incremented by classify (now living on args_buffer / `edge_args`).
-    let entry_count = edge_args.{{ bucket_args_field }}_edge.workgroup_count_x;
-    // workgroup_count_x in indirect args was atomicAdded-per-entry by
-    // classify; the dispatch sized to ceil(count / 64) workgroups means
-    // some threads overshoot. Bail.
+    // Per-shader entry count is mirrored into the data_buffer's header
+    // (classify atomicAdds it alongside the args_buffer counter). Read
+    // through the existing `edge_data` binding — no separate args
+    // binding needed.
+    let entry_count = edge_data[edge_layout.per_shader_count_base + {{ bucket_index }}u];
     if (thread_index >= entry_count) {
         return;
     }

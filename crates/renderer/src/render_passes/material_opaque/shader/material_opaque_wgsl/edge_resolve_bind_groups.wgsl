@@ -23,48 +23,30 @@
 {% include "material_opaque_wgsl/bind_groups.wgsl" %}
 
 // ─────────────────────────────────────────────────────────────────
-// Group(3) extension: edge-resolve data buffer + layout uniform +
-// args buffer (read-only).
+// Group(3) extension: edge-resolve data buffer + layout uniform.
 //
 // `shared_wgsl/shadow/bind_groups.wgsl` (included above by way of
 // bind_groups.wgsl) declares bindings 0..=9 at this group; we append
-// bindings 10/11/12 here to carry the data buffer (read-write
-// storage), the edge-layout uniform, and the args buffer (read-only
-// storage — also the indirect-dispatch source, but Indirect +
-// Storage(read) on the same buffer is allowed by WebGPU since neither
-// usage is writable).
+// bindings 10/11 here to carry the data buffer (read-write storage)
+// and the edge-layout uniform.
 //
-// The args/data buffer split is what unblocks Stage 3 — a single
-// buffer that's simultaneously bound as Storage(read-write) AND used
-// as Indirect inside one compute pass is rejected; splitting the
-// indirect args + counters into a separate buffer from the
-// storage-writable accumulator sidesteps it entirely.
+// The args_buffer is NOT bound here — its atomic counters are
+// mirrored into `edge_data`'s header (offsets supplied via
+// `edge_layout`). This keeps the compute stage's storage-buffer count
+// at 10 (the WebGPU baseline) instead of bumping it to 11.
 
-struct EdgeIndirectArgsRO {
-    workgroup_count_x: u32,
-    workgroup_count_y: u32,
-    workgroup_count_z: u32,
-    _pad: u32,
-};
-
-// args_buffer-shaped struct (read-only — counters + indirect-args only).
-struct EdgeArgsBufferRO {
-    edge_count: u32,
-    edge_overflow_count: u32,
-    _pad_counters: vec2<u32>,
-    final_blend_args: EdgeIndirectArgsRO,
-    skybox_edge_args: EdgeIndirectArgsRO,
-    {% for entry in bucket_entries %}
-    {{ entry.args_field() }}_edge: EdgeIndirectArgsRO,
-    {% endfor %}
-};
-
-// data_buffer: edge_to_xy + edge_slot_map + accumulator + sample lists,
-// indexed via the EdgeBufferLayout uniform's u32-stride offsets.
+// data_buffer: small counter-mirror header + edge_to_xy + edge_slot_map
+// + accumulator + sample lists, indexed via the EdgeBufferLayout
+// uniform's u32-stride offsets.
 @group({{ shadow_group_index }}) @binding(10) var<storage, read_write> edge_data: array<u32>;
 
 struct EdgeBufferLayout {
     max_edge_budget: u32,
+    // u32-stride indices into `edge_data` of the atomic-counter
+    // mirrors classify writes during edge emission.
+    edge_count_index: u32,
+    per_shader_count_base: u32,
+    skybox_count_index: u32,
     edge_to_xy_base: u32,
     edge_slot_map_base: u32,
     accumulator_base: u32,
@@ -76,5 +58,3 @@ struct EdgeBufferLayout {
 };
 
 @group({{ shadow_group_index }}) @binding(11) var<uniform> edge_layout: EdgeBufferLayout;
-
-@group({{ shadow_group_index }}) @binding(12) var<storage, read> edge_args: EdgeArgsBufferRO;
