@@ -1370,7 +1370,7 @@ impl AwsmRendererBuilder {
             std::mem::take(&mut render_passes_plan.shader_cache_keys);
         all_shader_keys.extend(shadows::ShadowsDescriptors::caster_shader_cache_keys());
         if features.picking {
-            all_shader_keys.extend(Picker::shader_cache_keys());
+            all_shader_keys.extend(Picker::shader_cache_keys(&anti_aliasing));
         }
         all_shader_keys.push(shaders::ShaderCacheKey::from(
             render_passes::lines::ShaderCacheKeyLine,
@@ -1404,6 +1404,7 @@ impl AwsmRendererBuilder {
                     &mut bind_group_layouts,
                     &mut pipeline_layouts,
                     &mut shaders,
+                    &anti_aliasing,
                 )
                 .await?,
             )

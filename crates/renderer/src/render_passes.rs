@@ -201,6 +201,9 @@ struct RenderPassesPerPassDescs {
     /// `MaterialClassifyPipelines`. Lazy-pool: the pool typically
     /// has just 1 entry (the live MSAA's variant).
     classify_slot_msaa: Vec<Option<u32>>,
+    /// Slot identity per HZB pipeline pool entry. Lazy-pool: the
+    /// pool has 2 entries (1 seed + 1 reduce) for the live config.
+    hzb_slot: Vec<crate::render_passes::hzb::pipeline::HzbPipelineSlot>,
     decal_is_msaa: Option<Vec<bool>>,
 }
 
@@ -330,7 +333,7 @@ impl RenderPasses {
         let mut shader_cache_keys: Vec<ShaderCacheKey> = Vec::new();
         shader_cache_keys.extend(GeometryPipelines::shader_cache_keys());
         if features.gpu_culling {
-            shader_cache_keys.extend(HzbPipelines::shader_cache_keys());
+            shader_cache_keys.extend(HzbPipelines::shader_cache_keys(ctx.anti_aliasing));
             shader_cache_keys.extend(OcclusionPipelines::shader_cache_keys());
             shader_cache_keys.extend(CompactionPipeline::shader_cache_keys(features));
         }
@@ -419,14 +422,14 @@ impl RenderPasses {
             render_pool.len()..render_pool.len() + geometry_descs.pipeline_cache_keys.len();
         render_pool.extend(geometry_descs.pipeline_cache_keys.iter().cloned());
 
-        let hzb_range = if let Some(bg) = bindings.hzb_bg.as_ref() {
+        let (hzb_range, hzb_slot) = if let Some(bg) = bindings.hzb_bg.as_ref() {
             let descs = HzbPipelines::build_descriptors(ctx, bg).await?;
             let start = compute_pool.len();
             let end = start + descs.pipeline_cache_keys.len();
             compute_pool.extend(descs.pipeline_cache_keys.iter().cloned());
-            Some(start..end)
+            (Some(start..end), descs.slot)
         } else {
-            None
+            (None, Vec::new())
         };
         let occlusion_range = if let Some(bg) = bindings.occlusion_bg.as_ref() {
             let descs = OcclusionPipelines::build_descriptors(ctx, bg).await?;
@@ -547,6 +550,7 @@ impl RenderPasses {
                 geometry: geometry_descs,
                 opaque_slots: opaque_descs.slots,
                 classify_slot_msaa: classify_descs.slot_msaa,
+                hzb_slot,
                 decal_is_msaa,
             },
             material_decal_composite,
@@ -636,7 +640,10 @@ impl RenderPasses {
         let hzb = match (hzb_bg, ranges.hzb, hzb_texture) {
             (Some(bg), Some(range), Some(texture)) => Some(HzbRenderPass {
                 bind_groups: bg,
-                pipelines: HzbPipelines::from_resolved(compute_keys[range].to_vec()),
+                pipelines: HzbPipelines::from_resolved(
+                    per_pass_descs.hzb_slot,
+                    compute_keys[range].to_vec(),
+                ),
                 texture,
             }),
             _ => None,

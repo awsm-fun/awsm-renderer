@@ -91,6 +91,45 @@ impl AwsmRenderer {
             )
             .await?;
 
+        // HZB descriptors — only present when `features.gpu_culling`
+        // is on. The unwrap-or-default path keeps the rest of the
+        // pool size invariant when HZB isn't allocated.
+        let hzb_descs = if let Some(hzb) = self.render_passes.hzb.as_ref() {
+            Some(
+                crate::render_passes::hzb::pipeline::HzbPipelines::build_descriptors_for_config(
+                    &self.gpu,
+                    &mut self.bind_group_layouts,
+                    &mut self.pipeline_layouts,
+                    &mut self.shaders,
+                    &hzb.bind_groups,
+                    &self.anti_aliasing,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+
+        // Picker descriptors — only present when `features.picking`
+        // is on. Returns the picker's BGLs + the (single) pipeline
+        // cache key for the new MSAA. The previously-compiled
+        // variant on `self.picker` is preserved via `merge_resolved`.
+        let picker_descs = if let Some(picker) = self.picker.as_ref() {
+            let _ = picker; // bind for clarity; we only need to know it's Some
+            Some(
+                crate::picker::Picker::build_descriptors(
+                    &self.gpu,
+                    &mut self.bind_group_layouts,
+                    &mut self.pipeline_layouts,
+                    &mut self.shaders,
+                    &self.anti_aliasing,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+
         // ── Phase 2: batch shader compile for opaque (classify
         //    already resolved its shader inside `build_descriptors_for_config`'s
         //    `get_key` call). One ensure_keys for everything else.
@@ -117,6 +156,20 @@ impl AwsmRenderer {
         compute_jobs.extend(classify_descs.pipeline_cache_keys.iter().cloned());
         let classify_pool_end = compute_jobs.len();
 
+        // HZB pool slice (when present).
+        let hzb_range = hzb_descs.as_ref().map(|d| {
+            let start = compute_jobs.len();
+            compute_jobs.extend(d.pipeline_cache_keys.iter().cloned());
+            start..compute_jobs.len()
+        });
+
+        // Picker pool slice (when present).
+        let picker_range = picker_descs.as_ref().map(|d| {
+            let start = compute_jobs.len();
+            compute_jobs.extend(d.pipeline_cache_keys.iter().cloned());
+            start..compute_jobs.len()
+        });
+
         let resolved = self
             .pipelines
             .compute
@@ -138,6 +191,18 @@ impl AwsmRenderer {
                 classify_descs.slot_msaa,
                 resolved[classify_pool_start..classify_pool_end].to_vec(),
             );
+        if let (Some(hzb_descs), Some(hzb_range), Some(hzb_pass)) =
+            (hzb_descs, hzb_range, self.render_passes.hzb.as_mut())
+        {
+            hzb_pass
+                .pipelines
+                .merge_resolved(hzb_descs.slot, resolved[hzb_range].to_vec());
+        }
+        if let (Some(picker_descs), Some(picker_range), Some(picker)) =
+            (picker_descs, picker_range, self.picker.as_mut())
+        {
+            picker.merge_resolved(picker_descs.slot, resolved[picker_range].to_vec());
+        }
 
         // ── Phase 5: transparent pipelines depend on per-mesh
         //    attributes AND AA settings — recompile every live

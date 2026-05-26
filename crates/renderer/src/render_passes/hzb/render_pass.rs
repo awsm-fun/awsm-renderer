@@ -69,10 +69,21 @@ impl HzbRenderPass {
             let compute_pass = ctx
                 .command_encoder
                 .begin_compute_pass(Some(&ComputePassDescriptor::new(Some("HZB Seed")).into()));
-            let pipeline_key = if ctx.anti_aliasing.msaa_sample_count.is_some() {
+            // Lazy-pool: the seed variant for the *other* MSAA mode
+            // may not be compiled yet if the user just switched
+            // without calling `set_anti_aliasing.await`. Skip the
+            // seed dispatch in that case — downstream reduce passes
+            // sample whatever HZB texture state existed before
+            // (worst case: a slightly stale HZB feeds occlusion
+            // culling for one frame).
+            let pipeline_key_opt = if ctx.anti_aliasing.msaa_sample_count.is_some() {
                 self.pipelines.seed_msaa
             } else {
                 self.pipelines.seed_single
+            };
+            let Some(pipeline_key) = pipeline_key_opt else {
+                compute_pass.end();
+                return Ok(());
             };
             compute_pass.set_pipeline(ctx.pipelines.compute.get(pipeline_key)?);
             compute_pass.set_bind_group(0, self.bind_groups.seed()?, None)?;
