@@ -100,4 +100,162 @@ fn cs_main(
         }
         {% endfor %}
     }
+
+    {% if emit_edge_data && multisampled_geometry %}
+    // ─────────────────────────────────────────────────────────────
+    // MSAA edge emission (Priority 3).
+    //
+    // For each pixel: scan all 4 samples; collect the distinct
+    // shader_ids; if there are at least 2 distinct shader_ids
+    // (counting "skybox" as its own shader_id), the pixel is an edge
+    // pixel. Allocate a compact edge_pixel_id via the global atomic,
+    // write its (x, y) into edge_to_xy, build the slot_map (4 bytes
+    // packed: up to 4 distinct shader_ids), and append a per-shader
+    // (edge_pixel_id, sample_mask) entry to each contributing bucket's
+    // sample list.
+    //
+    // Saturation: if edge_count saturates at MAX_EDGE_BUDGET, the
+    // overflow counter increments and we fall through without writing
+    // (the per-shader-id slow-path accumulator slot is not yet
+    // implemented — this stub keeps the buffer consistent, follow-up
+    // commits add the atomic-add fallback).
+    if (in_bounds) {
+        // Scan 4 samples. Each entry holds (shader_id, sample_index).
+        var sample_shader_ids: vec4<u32> = vec4<u32>(0xFFFFu, 0xFFFFu, 0xFFFFu, 0xFFFFu);
+        var distinct_count: u32 = 0u;
+        // 4 slots, each u8 packed into a u32. SHADER_ID_NONE = 0xFF.
+        var slot_map: u32 = 0xFFFFFFFFu;
+
+        for (var s = 0u; s < 4u; s++) {
+            // Load this sample's shader_id via the multisampled
+            // visibility-data texture. For sample 0 the loaded value
+            // is the same as the primary sample above; the per-sample
+            // textureLoad with explicit sample index needs the texture
+            // to be bound as multisampled.
+            var sample_vis: vec4<u32>;
+            switch (s) {
+                case 0u: { sample_vis = textureLoad(visibility_data_tex, coords, 0); }
+                case 1u: { sample_vis = textureLoad(visibility_data_tex, coords, 1); }
+                case 2u: { sample_vis = textureLoad(visibility_data_tex, coords, 2); }
+                case 3u, default: { sample_vis = textureLoad(visibility_data_tex, coords, 3); }
+            }
+            let sample_tri = join32(sample_vis.x, sample_vis.y);
+            var sample_sid: u32;
+            if (sample_tri == U32_MAX) {
+                // Skybox bucket: arbitrary marker we'll route to the
+                // skybox-edge slot. Use 0xFE so it can't collide with
+                // a real shader_id (kept under 8 bits to fit in the
+                // packed slot_map byte).
+                sample_sid = 0xFEu;
+            } else {
+                let sample_meta_off = join32(sample_vis.z, sample_vis.w);
+                let sample_mesh_meta = material_mesh_metas[sample_meta_off / 256u];
+                if (sample_mesh_meta.is_hud == 1u) {
+                    // HUD — same as skybox-effective for edge purposes.
+                    sample_sid = 0xFEu;
+                } else {
+                    let sample_raw_sid = materials_data[sample_mesh_meta.material_offset / 4u];
+                    // Clip to 8 bits — first-party ids are 1..5;
+                    // dynamic ids are >= 10_000 so they DO collide on
+                    // truncation. For the slot_map slot id we instead
+                    // store the bucket index (0..bucket_count-1)
+                    // which always fits.
+                    var bucket_index: u32 = 0xFFu;
+                    {% for entry in bucket_entries %}
+                    if (sample_raw_sid == {{ entry.shader_id_const() }}) {
+                        bucket_index = {{ loop.index0 }}u;
+                    }
+                    {% endfor %}
+                    sample_sid = bucket_index;
+                }
+            }
+            sample_shader_ids[s] = sample_sid;
+        }
+
+        // Find distinct shader_ids and pack into slot_map.
+        var seen_count: u32 = 0u;
+        var seen: array<u32, 4> = array<u32, 4>(0xFFu, 0xFFu, 0xFFu, 0xFFu);
+        for (var s = 0u; s < 4u; s++) {
+            let sid = sample_shader_ids[s];
+            var already_seen = false;
+            for (var i = 0u; i < seen_count; i++) {
+                if (seen[i] == sid) {
+                    already_seen = true;
+                    break;
+                }
+            }
+            if (!already_seen && seen_count < 4u) {
+                seen[seen_count] = sid;
+                seen_count += 1u;
+            }
+        }
+
+        // Edge pixel: 2+ distinct shader_ids (counts skybox as one).
+        if (seen_count >= 2u) {
+            // Allocate compact edge_pixel_id.
+            let edge_id = atomicAdd(&edge_buffers.edge_count, 1u);
+            if (edge_id < edge_layout.max_edge_budget) {
+                // Write edge_to_xy at index edge_id (offset in u32
+                // strides from the buffer start).
+                let packed_xy = (u32(coords.x) & 0xFFFFu) | ((u32(coords.y) & 0xFFFFu) << 16u);
+                edge_buffers.data[edge_layout.edge_to_xy_base + edge_id] = packed_xy;
+
+                // Pack slot_map: 4 bytes, each byte is a bucket index
+                // (or 0xFE for skybox, 0xFF for empty slot).
+                slot_map = (seen[0] & 0xFFu)
+                    | ((seen[1] & 0xFFu) << 8u)
+                    | ((seen[2] & 0xFFu) << 16u)
+                    | ((seen[3] & 0xFFu) << 24u);
+                edge_buffers.data[edge_layout.edge_slot_map_base + edge_id] = slot_map;
+
+                // For each per-shader sample mask: append (edge_id,
+                // sample_mask) to that bucket's sample list. Skybox
+                // samples route to skybox_edge_args (separate from
+                // the per-bucket lists).
+                var skybox_mask: u32 = 0u;
+                {% for entry in bucket_entries %}
+                var mask_{{ loop.index0 }}: u32 = 0u;
+                {% endfor %}
+                for (var s = 0u; s < 4u; s++) {
+                    let sid = sample_shader_ids[s];
+                    if (sid == 0xFEu) {
+                        skybox_mask |= 1u << s;
+                    }
+                    {% for entry in bucket_entries %}
+                    else if (sid == {{ loop.index0 }}u) {
+                        mask_{{ loop.index0 }} |= 1u << s;
+                    }
+                    {% endfor %}
+                }
+                // Append per-bucket entries.
+                {% for entry in bucket_entries %}
+                if (mask_{{ loop.index0 }} != 0u) {
+                    let slot_idx = atomicAdd(&edge_buffers.{{ entry.args_field() }}_edge.workgroup_count_x, 1u);
+                    if (slot_idx < edge_layout.sample_entries_per_bucket) {
+                        let entry_packed = (edge_id & 0x00FFFFFFu) | ((mask_{{ loop.index0 }} & 0xFFu) << 24u);
+                        edge_buffers.data[edge_layout.{{ entry.args_field() }}_sample_list_base + slot_idx] = entry_packed;
+                    }
+                }
+                {% endfor %}
+                // Skybox sample list lives in the skybox_edge_args slot;
+                // host knows its offset same as per-bucket lists (see
+                // skybox_edge_resolve template).
+                if (skybox_mask != 0u) {
+                    atomicAdd(&edge_buffers.skybox_edge_args.workgroup_count_x, 1u);
+                    // The skybox sample-entry buffer is reserved as
+                    // its own region; left unimplemented in this
+                    // commit — follow-up commit adds skybox sample
+                    // entries + skybox edge resolve dispatch.
+                }
+                // Final blend args: one workgroup per edge pixel
+                // (workgroup_size = 64, so divide by 64).
+                if ((edge_id & 63u) == 0u) {
+                    atomicAdd(&edge_buffers.final_blend_args.workgroup_count_x, 1u);
+                }
+            } else {
+                atomicAdd(&edge_buffers.edge_overflow_count, 1u);
+            }
+        }
+    }
+    {% endif %}
 }

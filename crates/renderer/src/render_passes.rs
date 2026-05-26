@@ -114,6 +114,11 @@ struct RenderPassesBindings {
     decal_bg: Option<material_decal::bind_group::MaterialDecalBindGroups>,
     decal_classify_bg: Option<material_decal::classify::bind_group::DecalClassifyBindGroups>,
     opaque_bg: material_opaque::bind_group::MaterialOpaqueBindGroups,
+    /// Bind-group layouts for the per-shader-id MSAA edge-resolve
+    /// pipelines (Priority 3 in docs/plans/more-optimizations.md).
+    /// Allocated up-front — cheap; the actual edge_resolve pipelines
+    /// compile lazily via the scheduler.
+    opaque_edge_bind_group_layouts: material_opaque::edge_bind_group::MaterialEdgeBindGroupLayouts,
     transparent_bg: material_transparent::bind_group::MaterialTransparentBindGroups,
     transparent_pipelines: material_transparent::pipeline::MaterialTransparentPipelines,
     effects_bg: effects::bind_group::EffectsBindGroups,
@@ -307,6 +312,8 @@ impl RenderPasses {
             (None, None)
         };
         let opaque_bg = material_opaque::bind_group::MaterialOpaqueBindGroups::new(ctx).await?;
+        let opaque_edge_bind_group_layouts =
+            material_opaque::edge_bind_group::MaterialEdgeBindGroupLayouts::new(ctx)?;
         let transparent_bg =
             material_transparent::bind_group::MaterialTransparentBindGroups::new(ctx).await?;
         let effects_bg = effects::bind_group::EffectsBindGroups::new(ctx).await?;
@@ -381,6 +388,7 @@ impl RenderPasses {
                 decal_bg,
                 decal_classify_bg,
                 opaque_bg,
+                opaque_edge_bind_group_layouts,
                 transparent_bg,
                 transparent_pipelines,
                 effects_bg,
@@ -609,6 +617,7 @@ impl RenderPasses {
             decal_bg,
             decal_classify_bg,
             opaque_bg,
+            opaque_edge_bind_group_layouts,
             transparent_bg,
             transparent_pipelines,
             effects_bg,
@@ -719,6 +728,12 @@ impl RenderPasses {
                 per_pass_descs.opaque_slots,
                 compute_keys[ranges.opaque].to_vec(),
             ),
+            // Edge-resolve pipelines are scheduler-managed — empty
+            // at cold-boot, populate lazily as edge_resolve compile
+            // futures resolve.
+            edge_pipelines:
+                crate::render_passes::material_opaque::edge_pipeline::MaterialEdgePipelines::new(),
+            edge_bind_group_layouts: opaque_edge_bind_group_layouts,
         };
 
         let material_transparent = MaterialTransparentRenderPass {
