@@ -2204,10 +2204,19 @@ leaves a runnable renderer:
       uses at startup (Phase 4).
 
 ### Phase 7 — Transparent path
-- [ ] Transparent fragment shader template grows the same substitution
-      mechanism
-- [ ] `soft-glass` test material renders correctly
-- [ ] Test scene confirms sort order with first-party transparents
+- [x] Transparent fragment shader template grows the same substitution
+      mechanism — `dispatch_hash` + `dynamic_shader_id` + `dynamic_shader`
+      on `ShaderCacheKeyMaterialTransparent`; the fragment template
+      emits a `{% if shader_id_dynamic != 0 %}` wrapper block
+      (TransparentShadingInput/Output structs + auto-generated
+      MaterialData + `fn custom_shade_transparent_dynamic`) and a
+      matching `else if (shader_id == <id>u)` dispatch arm before the
+      PBR fallback.
+- [ ] `soft-glass` test material renders correctly — requires
+      browser-side GPU verification + the bridge-to-pipeline wiring
+      for per-mesh transparent registrations.
+- [ ] Test scene confirms sort order with first-party transparents —
+      same gating.
 
 ### Phase 8 — material-editor scaffolding
 - [ ] `crates/frontend/material-editor/` crate exists, builds
