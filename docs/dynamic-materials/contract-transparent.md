@@ -40,26 +40,40 @@ items must be declared above the function body; the function ends with
 struct TransparentShadingInput {
     world_position: vec3<f32>,
     world_normal: vec3<f32>,
-    tangent: vec3<f32>,
-    bitangent: vec3<f32>,
-    uv0: vec2<f32>,
-    uv1: vec2<f32>,
-    color: vec4<f32>,                // COLOR_0 vertex attribute (or 1,1,1,1)
-    surface_to_camera: vec3<f32>,    // normalized
-    // The pre-blit opaque RT, sampleable for refraction / glass-like
-    // effects. This is the same texture PBR transmission samples.
-    opaque_background: texture_2d<f32>,
-    opaque_sampler: sampler,
-    // Per-material data
-    material: MaterialData,          // your auto-generated struct (see opaque docs)
-    material_offset: u32,
+    world_tangent: vec4<f32>,         // (xyz: tangent, w: bitangent sign ±1)
+    surface_to_camera: vec3<f32>,     // normalized
+    front_facing: bool,
+    material_offset: u32,             // byte offset for material_load_* calls
+    material: MaterialData,           // your auto-generated struct (see opaque docs)
 }
 ```
+
+Field order mirrors the emitted struct exactly (see
+`material_transparent_wgsl/fragment.wgsl::TransparentShadingInput`).
+
+`world_tangent` is a `vec4`: xyz is the tangent direction in world
+space, w is the bitangent sign (`±1`); reconstruct the bitangent via
+`cross(world_normal, world_tangent.xyz) * world_tangent.w`.
 
 `MaterialData` is auto-generated from your `material.json` layout — see
 [contract-opaque.md § Per-material data](contract-opaque.md#per-material-data--materialdata)
 for the field order + alignment rules. The shape is identical across both
 alpha modes.
+
+**What the wrapper does NOT pre-materialize** (vs. an earlier
+draft of this contract):
+
+- `uv0` / `uv1` — the wrapper has no UV gradients pre-computed.
+  Authors that need UVs reconstruct from the vertex-attribute
+  fetch via the per-mesh attribute helpers (see `vertex_attribute`
+  in `material_transparent_wgsl/includes.wgsl`).
+- `COLOR_0` vertex attribute — same: fetch it explicitly if the
+  mesh has one; the wrapper trades the cost-per-pixel of always
+  loading optional attributes for keeping the common case cheap.
+- `opaque_background` texture + sampler — bound on the transparent
+  pass globally (not on the wrapper struct). Authors sample it via
+  `sample_transmission_background(uv, ...)` (see Helpers in
+  scope below) — PBR's transmission code is the prior art.
 
 ---
 
