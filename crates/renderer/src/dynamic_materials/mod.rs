@@ -619,10 +619,8 @@ impl crate::AwsmRenderer {
     pub fn submit_dynamic_material(
         &mut self,
         registration: MaterialRegistration,
-    ) -> Result<
-        (MaterialShaderId, crate::pipeline_scheduler::MaterialId),
-        crate::error::AwsmError,
-    > {
+    ) -> Result<(MaterialShaderId, crate::pipeline_scheduler::MaterialId), crate::error::AwsmError>
+    {
         use crate::pipeline_scheduler::{
             MaterialDef, MaterialDefKind, PipelineConfigSnapshot, PipelineGroupDef, PipelineGroupId,
         };
