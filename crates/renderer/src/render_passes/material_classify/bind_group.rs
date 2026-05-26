@@ -125,27 +125,14 @@ impl MaterialClassifyBindGroups {
 }
 
 /// Returns true when the device + features support the Priority-3
-/// edge-emission bindings. Mirrors the same check used in
-/// `AwsmRenderer::build()` for the edge buffer allocation; the two
-/// must stay in lockstep so the classify layout doesn't reference
-/// edge bindings the renderer never allocates.
+/// edge-emission bindings. **Must match** the same check used in
+/// `AwsmRenderer::build()` for the edge buffer allocation (i.e.
+/// `crate::edge_resolve_supported`) so the classify layout includes
+/// edge bindings iff the renderer allocates the edge buffers. Post
+/// the macOS-compatible 4-group layout fold (`6ca750a`), the
+/// bind-group cap dropped; only the storage-buffer cap remains.
 fn edge_emit_supported(ctx: &RenderPassInitContext<'_>) -> bool {
-    let limits = ctx.gpu.device.limits();
-    if limits.is_null() || limits.is_undefined() {
-        return false;
-    }
-    let max_bind_groups = web_sys::js_sys::Reflect::get(&limits, &"maxBindGroups".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .map(|f| f as u32)
-        .unwrap_or(4);
-    let max_storage =
-        web_sys::js_sys::Reflect::get(&limits, &"maxStorageBuffersPerShaderStage".into())
-            .ok()
-            .and_then(|v| v.as_f64())
-            .map(|f| f as u32)
-            .unwrap_or(10);
-    max_bind_groups >= 5 && max_storage >= 11
+    crate::edge_resolve_supported(ctx.gpu)
 }
 
 async fn create_bind_group_layout_key(

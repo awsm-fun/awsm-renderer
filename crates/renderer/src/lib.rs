@@ -1941,29 +1941,40 @@ impl AwsmRenderer {
 /// Devices below the storage-buffer limit fall back to the inline
 /// `msaa_resolve_samples` path in the primary opaque shader. This
 /// almost never triggers in practice, but the safety net stays.
-pub fn edge_resolve_supported(gpu: &awsm_renderer_core::renderer::AwsmRendererWebGpu) -> bool {
-    let limits = gpu.device.limits();
-    if limits.is_null() || limits.is_undefined() {
-        return false;
-    }
-    let max_storage =
-        web_sys::js_sys::Reflect::get(&limits, &"maxStorageBuffersPerShaderStage".into())
-            .ok()
-            .and_then(|v| v.as_f64())
-            .map(|f| f as u32)
-            .unwrap_or(10);
-    // edge_resolve compute stage uses 10 storage buffers:
-    //   group(0): 8 (visibility / mesh metas / materials / transforms
-    //               / texture-transforms / instance-attrs /
-    //               classify-buckets / extras-pool)
-    //   group(1): 1 (mesh_light_indices)
-    //   group(3): 1 (edge_buffers — read-write, the fold's addition)
-    let supported = max_storage >= 10;
-    if !supported {
-        tracing::info!(
-            target: "awsm_renderer::boot_timing",
-            "edge_resolve dispatch wiring disabled — device caps (maxStorageBuffersPerShaderStage={max_storage}) insufficient; falling back to inline msaa_resolve_samples in primary opaque shader."
-        );
-    }
-    supported
+pub fn edge_resolve_supported(_gpu: &awsm_renderer_core::renderer::AwsmRendererWebGpu) -> bool {
+    // KNOWN ISSUE: the current `MaterialEdgeBuffers` design uses a
+    // single GpuBuffer for both the dispatch-indirect args AND the
+    // storage-writable accumulator + sample lists. WebGPU rejects
+    // this combination within a single compute pass — a buffer
+    // can't be Indirect-readable and Storage(read-write) in the
+    // same sync scope. Splitting each dispatch into its own
+    // compute pass doesn't help because the validation is
+    // per-pass-buffer-usage.
+    //
+    // The fix is to split `MaterialEdgeBuffers` into two
+    // GpuBuffers: a small `args_buffer` (indirect-args + counters
+    // only) and a separate `data_buffer` (accumulator + sample
+    // lists + edge_to_xy + slot_map). Edge resolve binds
+    // `data_buffer` as storage and reads dispatch args from
+    // `args_buffer`. Classify writes to both.
+    //
+    // Until that split lands, force-disable the new path so the
+    // renderer falls back to the inline `msaa_resolve_samples`
+    // primary-shader resolve. All the architectural infrastructure
+    // (pipelines / bind groups / classify emit_edge_data flag /
+    // render_edge_resolve dispatch) is in place but dormant.
+    //
+    // Re-enable by:
+    //   1. Splitting MaterialEdgeBuffers into args + data buffers.
+    //   2. Updating classify bind-group bindings to bind both.
+    //   3. Updating edge_resolve bind-group bindings.
+    //   4. Returning true here.
+    //
+    // This is the bounded follow-up that unlocks the Android
+    // SPIR-V-bloat fix per Priority 3.
+    tracing::info!(
+        target: "awsm_renderer::boot_timing",
+        "edge_resolve dispatch wiring disabled (force-off pending args/data buffer split — see edge_resolve_supported docs)"
+    );
+    false
 }

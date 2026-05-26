@@ -1,18 +1,13 @@
-// Helper functions for material shading.
-//
-// Pre-Priority-3 this file hosted msaa_resolve_samples + msaa_process_sample
-// (the 4x-unrolled MSAA edge-resolve that produced the SPIR-V bloat which
-// Android's Vulkan driver rejected). Both were deleted; edge resolution
-// now happens in per-shader-id `material_edge_resolve_{shader_id}` compute
-// pipelines + a final_blend compositor, all driven off classify's per-edge
-// sample lists. See docs/plans/more-optimizations.md § Priority 3.
-//
-// The legacy `MsaaSampleResult` / `MsaaSampleTextures` types + the helpers
-// that *don't* duplicate the full shading kernel (`msaa_load_sample_textures`,
-// `msaa_apply_instance_tint`) remain — the new edge_resolve shaders reuse
-// them as the canonical MSAA sample-loader / instance-tint passthrough.
+// Helper functions for material shading to reduce repetition in compute.wgsl
 
-// Result from shading a single MSAA sample.
+// Result from MSAA per-sample processing
+struct MsaaResolveResult {
+    color: vec3<f32>,
+    alpha: f32,
+    valid_samples: u32,
+}
+
+// Result from processing a single MSAA sample
 struct MsaaSampleResult {
     color: vec3<f32>,
     alpha: f32,
@@ -80,30 +75,196 @@ fn msaa_load_sample_textures(coords: vec2<i32>, sample_index: u32) -> MsaaSample
     return result;
 }
 
-// ----------------------------------------------------------
-// LEGACY (pre-Priority-3) FUNCTIONS BELOW — DELETED.
-// ----------------------------------------------------------
-// `msaa_process_sample` (the ~150-line shading kernel that branched per
-// shader_id and inlined the full PBR path) and `msaa_resolve_samples`
-// (the 4x-unrolled caller) used to live here. The 4x inline copies of
-// the entire shading pipeline are what blew Android Vulkan's SPIR-V
-// complexity ceiling. Edge shading is now per-shader-id +
-// indirect-dispatched off the classify pass's sample lists, so each
-// edge_resolve_{shader_id} pipeline only contains its own shading code
-// once.
-//
-// The original signature for reference (deleted body):
-//
-// fn msaa_process_sample(camera, coords, screen_dims_f32, lights_info,
-//                        standard_coordinates, textures) -> MsaaSampleResult;
-//
-// fn msaa_resolve_samples(camera, coords, screen_dims, screen_dims_f32,
-//                         lights_info) -> MsaaResolveResult;
+// Process a single MSAA sample - matches main branch logic closely
+fn msaa_process_sample(
+    camera: Camera,
+    coords: vec2<i32>,
+    screen_dims_f32: vec2<f32>,
+    lights_info: LightsInfo,
+    standard_coordinates: StandardCoordinates,
+    textures: MsaaSampleTextures,
+) -> MsaaSampleResult {
+    let tri_id = join32(textures.vis_data.x, textures.vis_data.y);
+    let mat_meta_off = join32(textures.vis_data.z, textures.vis_data.w);
 
-// (Placeholder so the closing askama-endif below still has a body.)
-fn _msaa_helpers_present() -> u32 { return 0u; }
+    // Sample hit background - use skybox
+    if (tri_id == U32_MAX) {
+        let skybox_col = sample_skybox(coords, screen_dims_f32, camera, skybox_tex, skybox_sampler);
+        return MsaaSampleResult(skybox_col.rgb, skybox_col.a, true);
+    }
+
+    let sample_mesh_meta = material_mesh_metas[mat_meta_off / META_SIZE_IN_BYTES];
+
+    // Unpack barycentric from u16 fixed-point (no clamping - matches main)
+    let bary_xy = vec2<f32>(f32(textures.bary.x), f32(textures.bary.y)) / 65535.0;
+    let sample_bary = vec3<f32>(bary_xy.x, bary_xy.y, 1.0 - bary_xy.x - bary_xy.y);
+    let sample_instance_id = join32(textures.bary.z, textures.bary.w);
+
+    let sample_tbn = unpack_normal_tangent(textures.normal_tangent);
+    let sample_normal = sample_tbn.N;
+
+    // Extract mesh metadata
+    let sample_mat_offset = sample_mesh_meta.material_offset;
+    let sample_stride = sample_mesh_meta.vertex_attribute_stride / 4;
+    let sample_indices_off = sample_mesh_meta.vertex_attribute_indices_offset / 4;
+    let sample_data_off = sample_mesh_meta.vertex_attribute_data_offset / 4;
+    let sample_vis_geom_off = sample_mesh_meta.visibility_geometry_data_offset / 4;
+    let sample_uv_sets_idx = sample_mesh_meta.uv_sets_index;
+
+    let base_tri = sample_indices_off + (tri_id * 3u);
+    let sample_tri_indices = vec3<u32>(
+        bitcast<u32>(visibility_data[base_tri]),
+        bitcast<u32>(visibility_data[base_tri + 1u]),
+        bitcast<u32>(visibility_data[base_tri + 2u])
+    );
+
+    // Check shader type and compute color accordingly
+    let sample_shader_id = material_load_shader_id(sample_mat_offset);
+
+    if (sample_shader_id == SHADER_ID_UNLIT) {
+        let unlit_mat = unlit_get_material(sample_mat_offset);
+        {% match mipmap %}
+            {% when MipmapMode::Gradient %}
+                let unlit_color = compute_unlit_material_color(
+                    sample_tri_indices,
+                    sample_data_off,
+                    unlit_mat,
+                    sample_bary,
+                    sample_stride,
+                    sample_uv_sets_idx,
+                    textures.bary_derivs,
+                    sample_normal,
+                    camera.view,
+                );
+            {% when MipmapMode::None %}
+                let unlit_color = compute_unlit_material_color(
+                    sample_tri_indices,
+                    sample_data_off,
+                    unlit_mat,
+                    sample_bary,
+                    sample_stride,
+                    sample_uv_sets_idx,
+                );
+        {% endmatch %}
+        return msaa_apply_instance_tint(
+            compute_unlit_output(unlit_color),
+            unlit_color.base.a,
+            sample_instance_id,
+        );
+    } else if (sample_shader_id == SHADER_ID_TOON) {
+        let toon_mat = toon_get_material(sample_mat_offset);
+        let toon_color = compute_toon_lit_color(
+            toon_mat,
+            sample_normal,
+            standard_coordinates.surface_to_camera,
+            standard_coordinates.world_position,
+            lights_info,
+        );
+        return msaa_apply_instance_tint(
+            toon_color,
+            toon_mat.base_color_factor.a,
+            sample_instance_id,
+        );
+    } else {
+        // PBR path
+        let pbr_mat = pbr_get_material(sample_mat_offset);
+
+        {% match mipmap %}
+            {% when MipmapMode::Gradient %}
+                let mat_color = compute_material_color(
+                    camera,
+                    sample_tri_indices,
+                    sample_data_off,
+                    tri_id,
+                    pbr_mat,
+                    sample_bary,
+                    sample_stride,
+                    sample_uv_sets_idx,
+                    sample_tbn,
+                    textures.bary_derivs,
+                );
+            {% when MipmapMode::None %}
+                let mat_color = compute_material_color(
+                    camera,
+                    sample_tri_indices,
+                    sample_data_off,
+                    tri_id,
+                    pbr_mat,
+                    sample_bary,
+                    sample_stride,
+                    sample_uv_sets_idx,
+                    sample_tbn,
+                );
+        {% endmatch %}
+
+        if(pbr_mat.debug_bitmask != 0u) {
+            let color = pbr_debug_material_color(pbr_mat, mat_color);
+            // Debug viz bypasses tint so the raw debug color isn't masked.
+            return MsaaSampleResult(color, mat_color.base.a, true);
+        }
+
+        // Use shared standard_coordinates like main branch does. The
+        // per-sample meta is named `sample_mesh_meta` here (line 96
+        // above) rather than `material_mesh_meta` — every MSAA edge
+        // sample resolves its own mesh independently.
+        {% if use_mesh_light_slices %}
+            let color = apply_lighting_per_mesh(
+                mat_color,
+                standard_coordinates.surface_to_camera,
+                standard_coordinates.world_position,
+                lights_info,
+                (sample_mesh_meta.receive_shadows & sample_mesh_meta.shadow_receiver_gate),
+                sample_mesh_meta.light_slice_offset,
+                sample_mesh_meta.light_slice_count,
+            );
+        {% else %}
+            let color = apply_lighting(
+                mat_color,
+                standard_coordinates.surface_to_camera,
+                standard_coordinates.world_position,
+                lights_info,
+                (sample_mesh_meta.receive_shadows & sample_mesh_meta.shadow_receiver_gate),
+            );
+        {% endif %}
+        return msaa_apply_instance_tint(color, mat_color.base.a, sample_instance_id);
+    }
+}
+
+// Process all MSAA samples and blend their colors
+fn msaa_resolve_samples(
+    camera: Camera,
+    coords: vec2<i32>,
+    screen_dims: vec2<u32>,
+    screen_dims_f32: vec2<f32>,
+    lights_info: LightsInfo,
+) -> MsaaResolveResult {
+    // Use shared standard_coordinates for all samples (matches main branch)
+    let standard_coordinates = get_standard_coordinates(coords, screen_dims);
+
+    // Load and process each sample
+    let textures_0 = msaa_load_sample_textures(coords, 0u);
+    let textures_1 = msaa_load_sample_textures(coords, 1u);
+    let textures_2 = msaa_load_sample_textures(coords, 2u);
+    let textures_3 = msaa_load_sample_textures(coords, 3u);
+
+    let result_0 = msaa_process_sample(camera, coords, screen_dims_f32, lights_info, standard_coordinates, textures_0);
+    let result_1 = msaa_process_sample(camera, coords, screen_dims_f32, lights_info, standard_coordinates, textures_1);
+    let result_2 = msaa_process_sample(camera, coords, screen_dims_f32, lights_info, standard_coordinates, textures_2);
+    let result_3 = msaa_process_sample(camera, coords, screen_dims_f32, lights_info, standard_coordinates, textures_3);
+
+    // Accumulate results
+    var color_sum = vec3<f32>(0.0);
+    var alpha_sum = 0.0;
+    var valid_samples = 0u;
+
+    if (result_0.is_valid) { color_sum += result_0.color; alpha_sum += result_0.alpha; valid_samples++; }
+    if (result_1.is_valid) { color_sum += result_1.color; alpha_sum += result_1.alpha; valid_samples++; }
+    if (result_2.is_valid) { color_sum += result_2.color; alpha_sum += result_2.alpha; valid_samples++; }
+    if (result_3.is_valid) { color_sum += result_3.color; alpha_sum += result_3.alpha; valid_samples++; }
+
+    return MsaaResolveResult(color_sum, alpha_sum, valid_samples);
+}
 {% endif %}
-
 
 {% match mipmap %}
     {% when MipmapMode::Gradient %}

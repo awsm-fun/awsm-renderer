@@ -159,16 +159,21 @@ impl MaterialOpaqueRenderPass {
         let (extended_shadows_group, skybox_edge_group, final_blend_group) =
             self.build_edge_bind_groups(ctx, edge_buffers, edge_layout_uniform)?;
 
-        let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
-            &ComputePassDescriptor::new(Some("Material Opaque - Edge Resolve")).into(),
-        ));
+        // WebGPU validation rule: within a single compute pass, a
+        // buffer used as `Indirect` (dispatch_workgroups_indirect's
+        // args source) cannot also be bound as writable `Storage`.
+        // The `edge_buffer` is both — its header carries the
+        // indirect args; its body is the accumulator that
+        // edge_resolve writes to. So each edge dispatch gets its
+        // own compute pass, isolating the usage to a fresh sync
+        // scope each time. The overhead is small — encoder-level
+        // pass begin/end is cheap; the actual GPU work is unchanged.
 
-        // ── Per-shader-id edge_resolve dispatches ────────────────────
         let (main_bind_group, lights_bind_group, texture_bind_group, _shadows_bind_group) =
             self.bind_groups.get_bind_groups()?;
 
+        // ── Per-shader-id edge_resolve dispatches ────────────────────
         let bucket_entries = ctx.dynamic_materials.bucket_entries_cached();
-        let mut any_per_shader = false;
         for (bucket_index, entry) in bucket_entries.iter().enumerate() {
             let Some(pipeline_key) = self
                 .edge_pipelines
@@ -181,48 +186,51 @@ impl MaterialOpaqueRenderPass {
                 );
                 continue;
             };
-            if !any_per_shader {
-                // Set the four edge_resolve bind groups once — main(0),
-                // lights(1), texture-pool(2) reuse the primary opaque
-                // bind groups; extended-shadows(3) is the per-frame
-                // shadow + edge composite (replacing the primary
-                // opaque shadow bind group at this slot).
-                compute_pass.set_bind_group(0u32, main_bind_group, None)?;
-                compute_pass.set_bind_group(1u32, lights_bind_group, None)?;
-                compute_pass.set_bind_group(2u32, texture_bind_group, None)?;
-                compute_pass.set_bind_group(3u32, &extended_shadows_group, None)?;
-                any_per_shader = true;
-            }
+            let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
+                &ComputePassDescriptor::new(Some("Material Opaque - Edge Resolve (per-shader)"))
+                    .into(),
+            ));
+            compute_pass.set_bind_group(0u32, main_bind_group, None)?;
+            compute_pass.set_bind_group(1u32, lights_bind_group, None)?;
+            compute_pass.set_bind_group(2u32, texture_bind_group, None)?;
+            compute_pass.set_bind_group(3u32, &extended_shadows_group, None)?;
             compute_pass.set_pipeline(ctx.pipelines.compute.get(pipeline_key)?);
             compute_pass.dispatch_workgroups_indirect_with_u32(
                 &edge_buffers.buffer,
                 MaterialEdgeBuffers::per_shader_args_offset(bucket_index as u32),
             );
+            compute_pass.end();
         }
 
         // ── Skybox edge resolve ─────────────────────────────────────
         if let Some(pipeline_key) = self.edge_pipelines.skybox_edge_resolve_pipeline_key {
+            let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
+                &ComputePassDescriptor::new(Some("Material Opaque - Skybox Edge Resolve")).into(),
+            ));
             compute_pass.set_pipeline(ctx.pipelines.compute.get(pipeline_key)?);
             compute_pass.set_bind_group(0u32, &skybox_edge_group, None)?;
             compute_pass.dispatch_workgroups_indirect_with_u32(
                 &edge_buffers.buffer,
                 MaterialEdgeBuffers::skybox_edge_args_offset(),
             );
+            compute_pass.end();
         } else {
             warn_pipeline_not_compiled("material_opaque::edge_resolve", "skybox");
         }
 
         // ── Final blend ─────────────────────────────────────────────
         if let Some(pipeline_key) = self.edge_pipelines.final_blend_pipeline_key {
+            let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
+                &ComputePassDescriptor::new(Some("Material Opaque - Final Blend")).into(),
+            ));
             compute_pass.set_pipeline(ctx.pipelines.compute.get(pipeline_key)?);
             compute_pass.set_bind_group(0u32, &final_blend_group, None)?;
             compute_pass.dispatch_workgroups_indirect_with_u32(
                 &edge_buffers.buffer,
                 MaterialEdgeBuffers::final_blend_args_offset(),
             );
+            compute_pass.end();
         }
-
-        compute_pass.end();
 
         Ok(())
     }
