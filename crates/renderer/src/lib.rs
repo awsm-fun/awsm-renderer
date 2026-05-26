@@ -234,6 +234,27 @@ pub struct AwsmRenderer {
     /// Held here (not constructed per-frame) so the Vec allocations
     /// survive across frames; `collect_renderables` clears-in-place.
     pub(crate) renderable_pool: crate::renderable::RenderablePool,
+    /// Pipeline-readiness scheduler. Owns the `FuturesUnordered` that
+    /// drives async compile, the SlotMap of material groups, and the
+    /// per-pass-kind map. Per the architecture in
+    /// `docs/plans/more-optimizations.md`, frontends submit
+    /// [`PipelineGroupDef`]s, get [`PipelineGroupId`]s back
+    /// immediately, and watch for status transitions via
+    /// `drain_pipeline_status_events` or `pipeline_group_status`.
+    ///
+    /// **Stage 1 status**: the scheduler is attached; the public API
+    /// surface (`submit_pipeline_group_batch`, `pipeline_group_status`,
+    /// `drain_pipeline_status_events`, `drop_material_group`,
+    /// `poll_pipeline_scheduler`) is wired below this struct. Compile
+    /// futures are currently stubs — Stage 1 follow-up wires each
+    /// `PipelineGroupDef` variant to the real compile path.
+    pub pipeline_scheduler: crate::pipeline_scheduler::PipelineScheduler,
+    /// True once `AwsmRendererBuilder::build` has finished its eager
+    /// batch. Config-change APIs (`set_anti_aliasing`,
+    /// `set_post_processing`) gate on this and return
+    /// [`crate::error::AwsmError::NotReady`] when called before. Per
+    /// the architecture doc's race policy.
+    pub(crate) build_complete: bool,
     // we pick between these on the fly
     _clear_color_perceptual_to_linear: Color,
     _clear_color: Color,
@@ -1695,6 +1716,10 @@ impl AwsmRendererBuilder {
             frames_in_current_mode: u32::MAX / 2,
             default_cheap_material_pixel_threshold: 64,
             renderable_pool: crate::renderable::RenderablePool::default(),
+            pipeline_scheduler: crate::pipeline_scheduler::PipelineScheduler::new(),
+            // Flipped to true at end of build(). Used by config-change
+            // APIs to enforce the race policy from the architecture doc.
+            build_complete: false,
             #[cfg(feature = "animation")]
             animations,
         };
@@ -1717,8 +1742,111 @@ impl AwsmRendererBuilder {
             .bind_groups
             .mark_create(crate::bind_groups::BindGroupCreate::TextureViewRecreate);
 
+        // Race-policy: config-change APIs become available now that
+        // the eager batch is done. The pipeline_scheduler is empty
+        // at this point — all the existing eager compile-paths still
+        // populate the per-pass key caches directly. Stage 1 follow-up
+        // wires the scheduler into those eager paths.
+        _self.build_complete = true;
+
         emit_phase(RendererLoadingPhase::Ready);
 
         Ok(_self)
+    }
+}
+
+// =============================================================================
+// Pipeline-readiness scheduler — public API on AwsmRenderer
+// =============================================================================
+//
+// Wraps the scheduler with renderer-side ergonomics (a single import
+// surface, race-policy enforcement on the config-change APIs, a test
+// helper for awaiting Pending → Ready).
+//
+// Per the architecture in `docs/plans/more-optimizations.md`:
+//
+// - `submit_pipeline_group_batch` is the public submission API.
+// - `pipeline_group_status` is the pull-side status query.
+// - `drain_pipeline_status_events` is the push-side event drain.
+// - `drop_material_group` cleans up orphans from the editor's
+//   recompile flow.
+// - `poll_pipeline_scheduler` drives the FuturesUnordered from the
+//   render loop's pre-frame phase.
+// - `wait_for_pipelines_ready` is the test-only helper.
+
+impl AwsmRenderer {
+    /// Submit a batch of pipeline groups for compile. Returns ids
+    /// immediately in `Pending` state; transitions to `Ready` /
+    /// `Failed` surface via [`Self::drain_pipeline_status_events`] or
+    /// [`Self::pipeline_group_status`].
+    ///
+    /// Per the architecture doc, this is the unified API over both
+    /// materials and passes. Stage 1 follow-up will wire each
+    /// `PipelineGroupDef` variant to its real compile path; today the
+    /// scheduler queues stub futures that resolve immediately with
+    /// `Ok(())`.
+    pub fn submit_pipeline_group_batch(
+        &mut self,
+        defs: Vec<crate::pipeline_scheduler::PipelineGroupDef>,
+    ) -> Vec<crate::pipeline_scheduler::PipelineGroupId> {
+        self.pipeline_scheduler.submit_pipeline_group_batch(defs)
+    }
+
+    /// Per-group status query — O(1) lookup. Returns `None` if the id
+    /// doesn't exist in the scheduler (dropped or never submitted).
+    pub fn pipeline_group_status(
+        &self,
+        id: crate::pipeline_scheduler::PipelineGroupId,
+    ) -> Option<&crate::pipeline_scheduler::PipelineGroupStatus> {
+        self.pipeline_scheduler.pipeline_group_status(id)
+    }
+
+    /// Drain status events accumulated since the last call. Frontends
+    /// use this to drive "compiling N of M" UI without per-frame
+    /// polling.
+    pub fn drain_pipeline_status_events(
+        &mut self,
+    ) -> Vec<crate::pipeline_scheduler::StatusEvent> {
+        self.pipeline_scheduler.drain_status_events()
+    }
+
+    /// Drop a material group. No-op if the id isn't in the scheduler.
+    pub fn drop_material_group(&mut self, id: crate::pipeline_scheduler::MaterialId) {
+        self.pipeline_scheduler.drop_material_group(id);
+    }
+
+    /// Poll the scheduler's `FuturesUnordered` for resolved compiles.
+    /// Called from the render loop's pre-frame phase.
+    ///
+    /// Returns the number of transitions applied this poll.
+    pub fn poll_pipeline_scheduler(&mut self) -> usize {
+        self.pipeline_scheduler.poll_resolved()
+    }
+
+    /// Test-only helper. Synchronously drains the scheduler until all
+    /// currently-submitted groups have resolved (or the limit is hit).
+    /// Production code uses the status stream / `pipeline_group_status`
+    /// instead.
+    ///
+    /// Returns the total number of transitions applied.
+    pub async fn wait_for_pipelines_ready(&mut self) -> crate::error::Result<usize> {
+        // Stub futures resolve in one poll; real compile futures may
+        // need multiple rounds as the JS event loop pumps Dawn's
+        // promise resolutions. We iterate up to `MAX_ROUNDS` times,
+        // yielding to the runtime between polls so JS-side work can
+        // make progress. (The wasm32 microtask queue handles this via
+        // `wasm-bindgen-futures::yield_now` — but we can also just
+        // poll-drain in a tight loop because the stub futures complete
+        // synchronously.)
+        const MAX_ROUNDS: usize = 1024;
+        let mut total = 0usize;
+        for _ in 0..MAX_ROUNDS {
+            let applied = self.poll_pipeline_scheduler();
+            total += applied;
+            if applied == 0 {
+                break;
+            }
+        }
+        Ok(total)
     }
 }

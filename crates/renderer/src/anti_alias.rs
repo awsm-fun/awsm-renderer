@@ -51,6 +51,14 @@ impl AwsmRenderer {
     /// cached, so toggling back-and-forth pays the compile cost
     /// only on the first transition in each direction.
     pub async fn set_anti_aliasing(&mut self, aa: AntiAliasing) -> Result<()> {
+        // Race policy per docs/plans/more-optimizations.md: config-change
+        // APIs return NotReady when called before build() finishes its
+        // eager batch. The frontends already structure their renderer
+        // lifecycle to call this post-`build().await`; this just makes
+        // the contract explicit.
+        if !self.build_complete {
+            return Err(crate::error::AwsmError::NotReady);
+        }
         // No-op fast path — caller asked for the state we're
         // already in. The bind-group recreate marks are skipped too;
         // there's nothing for them to invalidate.

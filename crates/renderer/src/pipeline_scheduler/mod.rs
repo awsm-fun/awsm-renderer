@@ -355,6 +355,44 @@ fn status_label(s: &PipelineGroupStatus) -> &'static str {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────
+// Render-frame warn-and-skip safety net
+// ─────────────────────────────────────────────────────────────────
+
+use std::sync::Mutex;
+
+/// Once-per-session warn-skip log helper.
+///
+/// Render-frame dispatch sites that find a pipeline variant not yet
+/// compiled (None from their typed `Option<PipelineKey>` accessor)
+/// call this helper to surface a `tracing::warn!` exactly once per
+/// `(location, identifier)` pair per session, then `return` from the
+/// dispatch. Per [§ Render-frame preamble safety net] in
+/// `docs/plans/more-optimizations.md`.
+///
+/// `location` is a stable string like `"opaque_pass"` or
+/// `"shadow_gen"`; `id` is whichever identifier disambiguates the
+/// missing variant within that location (e.g. a shader_id formatted
+/// as `"{:?}"`).
+pub fn warn_pipeline_not_compiled(location: &'static str, id: &str) {
+    static SEEN: Mutex<Option<std::collections::HashSet<(&'static str, String)>>> =
+        Mutex::new(None);
+
+    let mut guard = SEEN.lock().unwrap_or_else(|p| p.into_inner());
+    let set = guard.get_or_insert_with(std::collections::HashSet::new);
+    let key = (location, id.to_string());
+    if set.insert(key.clone()) {
+        tracing::warn!(
+            target: "awsm_renderer::pipeline_readiness",
+            "render-frame preamble: pipeline not compiled at {} (id={}) — skipping. \
+             First occurrence — subsequent occurrences for this (location, id) are \
+             suppressed for the rest of the session.",
+            location,
+            id,
+        );
+    }
+}
+
 /// Placeholder compile future. Resolves immediately with Ok(()).
 /// Follow-up commits replace this with real
 /// `Shaders::ensure_keys` + `{Render,Compute}Pipelines::ensure_keys`
