@@ -184,20 +184,20 @@ impl TryFrom<&ShaderCacheKey> for ShaderTemplate {
 }
 
 impl ShaderTemplate {
-    #[cfg(debug_assertions)]
     /// Builds a GPU shader module descriptor with a debug label.
+    ///
+    /// Labels are kept in release builds too — they're just a string
+    /// crossing the WASM/JS boundary into the GPU shader module's
+    /// `label` field, which Chrome's WebGPU dev tools, Spector.js,
+    /// and `popErrorScope` messages all surface. The runtime cost is
+    /// a single `to_string` allocation per shader-module *creation*
+    /// (not per dispatch), which is unmeasurable next to the actual
+    /// WGSL compile.
     pub fn into_descriptor(self) -> Result<web_sys::GpuShaderModuleDescriptor> {
         let label = self.debug_label().map(|l| l.to_string());
         Ok(ShaderModuleDescriptor::new(&self.into_source()?, label.as_deref()).into())
     }
 
-    #[cfg(not(debug_assertions))]
-    /// Builds a GPU shader module descriptor without debug metadata.
-    pub fn into_descriptor(self) -> Result<web_sys::GpuShaderModuleDescriptor> {
-        Ok(ShaderModuleDescriptor::new(&self.into_source()?, None).into())
-    }
-
-    #[cfg(debug_assertions)]
     /// Returns an optional debug label for this shader template.
     pub fn debug_label(&self) -> Option<&str> {
         match self {

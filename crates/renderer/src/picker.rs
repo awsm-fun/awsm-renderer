@@ -404,8 +404,9 @@ pub struct ShaderTemplatePicker {
 }
 
 impl ShaderTemplatePicker {
-    #[cfg(debug_assertions)]
     /// Returns an optional debug label for shader compilation.
+    /// Kept in release builds (see `ShaderTemplate::into_descriptor`
+    /// for the cost rationale).
     pub fn debug_label(&self) -> Option<&str> {
         Some("Picker")
     }

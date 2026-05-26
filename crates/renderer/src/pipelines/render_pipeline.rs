@@ -214,7 +214,16 @@ fn build_descriptor(
     vertex.buffer_layouts = cache_key.vertex_buffer_layouts.clone();
     vertex.constants = cache_key.vertex_constants.clone();
 
-    let mut descriptor = RenderPipelineDescriptor::new(vertex, None)
+    // Debug label: shows up in Chrome's WebGPU dev tools, Spector.js,
+    // and `GPUDevice.popErrorScope` messages. The format `render:<shader>:<layout>`
+    // makes it cheap to spot which pipeline a validation error or
+    // shader compile warning came from. The label string lives only
+    // until `descriptor.into()` copies it into the JS-side descriptor.
+    let label = format!(
+        "render:{:?}:{:?}",
+        cache_key.shader_key, cache_key.layout_key
+    );
+    let mut descriptor = RenderPipelineDescriptor::new(vertex, Some(&label))
         .with_primitive(cache_key.primitive.clone())
         .with_layout(PipelineLayoutKind::Custom(layout));
 

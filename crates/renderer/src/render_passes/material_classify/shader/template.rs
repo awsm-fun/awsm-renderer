@@ -119,7 +119,6 @@ impl ShaderTemplateMaterialClassify {
         Ok(format!("{}\n{}", bind_groups_source, compute_source))
     }
 
-    #[cfg(debug_assertions)]
     /// Returns an optional debug label for shader compilation.
     pub fn debug_label(&self) -> Option<&str> {
         Some("Material Classify")

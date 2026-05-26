@@ -173,10 +173,18 @@ fn build_descriptor(
     let mut programmable_stage = ProgrammableStage::new(shader_module, None);
     programmable_stage.constant_overrides = cache_key.constant_overrides.clone();
 
+    // Debug label — same rationale as the render pipeline cache:
+    // `compute:<shader>:<layout>` makes WebGPU dev-tool / validation
+    // errors trivially attributable. The label string lives only
+    // until `descriptor.into()` copies it into the JS-side descriptor.
+    let label = format!(
+        "compute:{:?}:{:?}",
+        cache_key.shader_key, cache_key.layout_key
+    );
     let descriptor = ComputePipelineDescriptor::new(
         programmable_stage,
         PipelineLayoutKind::Custom(layout),
-        None,
+        Some(&label),
     );
 
     Ok(descriptor.into())

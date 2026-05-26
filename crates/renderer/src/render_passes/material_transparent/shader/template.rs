@@ -319,7 +319,6 @@ impl ShaderTemplateMaterialTransparent {
         ))
     }
 
-    #[cfg(debug_assertions)]
     /// Returns an optional debug label for shader compilation.
     pub fn debug_label(&self) -> Option<&str> {
         Some("Material Transparent")

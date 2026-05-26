@@ -56,7 +56,6 @@ impl ShaderTemplateMaterialDecal {
         Ok(format!("{}\n{}", bg, cs))
     }
 
-    #[cfg(debug_assertions)]
     pub fn debug_label(&self) -> Option<&str> {
         Some("Material Decal")
     }
