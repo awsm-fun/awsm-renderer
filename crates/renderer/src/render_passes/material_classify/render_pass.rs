@@ -68,26 +68,34 @@ impl MaterialClassifyRenderPass {
         ));
 
         let msaa = ctx.anti_aliasing.msaa_sample_count;
-        let pipeline_key = if !ctx.dynamic_materials.is_empty() {
+        // First-party fallback for the active MSAA. Lazy-pool: this
+        // is `None` if the user changed MSAA mid-session without
+        // calling `set_anti_aliasing` first. The match below skips
+        // dispatch in that case (a no-op classify produces an empty
+        // bucket — the opaque/transparent passes' "skip if no work"
+        // paths handle the empty result correctly).
+        let first_party_key = if msaa.is_some() {
+            self.pipelines.multisampled_pipeline_key
+        } else {
+            self.pipelines.singlesampled_pipeline_key
+        };
+        let pipeline_key_opt = if !ctx.dynamic_materials.is_empty() {
             let entries = crate::dynamic_materials::bucket_entries(ctx.dynamic_materials);
             self.dynamic_pipeline_cache
                 .borrow()
                 .get(&(entries, msaa))
                 .copied()
-                .unwrap_or_else(|| {
-                    // Cache miss — fall back to the first-party pipeline.
-                    // Caller should have invoked `prewarm_pipelines` after
-                    // the registration to populate this cache.
-                    if msaa.is_some() {
-                        self.pipelines.multisampled_pipeline_key
-                    } else {
-                        self.pipelines.singlesampled_pipeline_key
-                    }
-                })
-        } else if msaa.is_some() {
-            self.pipelines.multisampled_pipeline_key
+                .or(first_party_key)
         } else {
-            self.pipelines.singlesampled_pipeline_key
+            first_party_key
+        };
+        let Some(pipeline_key) = pipeline_key_opt else {
+            // No compiled variant for the current MSAA — skip
+            // dispatch. Caller should have awaited
+            // `AwsmRenderer::set_anti_aliasing` before changing the
+            // mode if they wanted classify to run this frame.
+            compute_pass.end();
+            return Ok(());
         };
 
         compute_pass.set_pipeline(ctx.pipelines.compute.get(pipeline_key)?);

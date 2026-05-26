@@ -97,6 +97,8 @@ impl AwsmRenderer {
                 bind_group_layouts: &mut self.bind_group_layouts,
                 pipeline_layouts: &mut self.pipeline_layouts,
                 features: &self.features,
+                anti_aliasing: &self.anti_aliasing,
+                post_processing: &self.post_processing,
             };
             self.render_passes
                 .material_opaque
@@ -113,6 +115,8 @@ impl AwsmRenderer {
                 bind_group_layouts: &mut self.bind_group_layouts,
                 pipeline_layouts: &mut self.pipeline_layouts,
                 features: &self.features,
+                anti_aliasing: &self.anti_aliasing,
+                post_processing: &self.post_processing,
             };
             self.render_passes
                 .material_transparent
@@ -129,6 +133,8 @@ impl AwsmRenderer {
                 bind_group_layouts: &mut self.bind_group_layouts,
                 pipeline_layouts: &mut self.pipeline_layouts,
                 features: &self.features,
+                anti_aliasing: &self.anti_aliasing,
+                post_processing: &self.post_processing,
             };
             Some(
                 decal
@@ -197,6 +203,8 @@ impl AwsmRenderer {
                 bind_group_layouts: &mut self.bind_group_layouts,
                 pipeline_layouts: &mut self.pipeline_layouts,
                 features: &self.features,
+                anti_aliasing: &self.anti_aliasing,
+                post_processing: &self.post_processing,
             };
             all_shader_keys.extend(
                 crate::render_passes::material_opaque::pipeline::MaterialOpaquePipelines::build_shader_cache_keys(
@@ -240,6 +248,8 @@ impl AwsmRenderer {
                 bind_group_layouts: &mut self.bind_group_layouts,
                 pipeline_layouts: &mut self.pipeline_layouts,
                 features: &self.features,
+                anti_aliasing: &self.anti_aliasing,
+                post_processing: &self.post_processing,
             };
             let opaque_descs = crate::render_passes::material_opaque::pipeline::MaterialOpaquePipelines::build_descriptors(
                 &mut render_pass_ctx,

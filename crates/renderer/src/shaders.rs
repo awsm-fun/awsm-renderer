@@ -72,68 +72,111 @@ impl Shaders {
     }
 
     /// Pre-warms the cache for a batch of shader keys, issuing all
-    /// browser compiles concurrently.
+    /// browser compiles concurrently. **Returns the resolved
+    /// `ShaderKey`s in input order**, so callers can build pipeline
+    /// cache keys from the batch without a follow-up `get_key`
+    /// round-trip (matches the shape of
+    /// [`crate::pipelines::RenderPipelines::ensure_keys`] and
+    /// [`crate::pipelines::ComputePipelines::ensure_keys`] — both
+    /// return their respective key vectors).
     ///
-    /// `compile_shader` is synchronous — it returns a module handle
-    /// immediately and the browser begins compilation in the background.
-    /// The slow part is `validate_shader().await`, which blocks until
-    /// the compile finishes. By firing all `compile_shader` calls before
-    /// `await`ing any validation, we let the driver compile N shaders in
-    /// parallel instead of N times serially.
+    /// **Concurrency model:** `compile_shader` is synchronous — it
+    /// returns a module handle immediately and the browser begins
+    /// compilation in the background. The slow part is
+    /// `validate_shader().await`, which blocks until the compile
+    /// finishes. By firing all `compile_shader` calls before
+    /// `await`ing any validation, we let the driver compile N
+    /// shaders in parallel instead of N times serially.
     ///
-    /// Subsequent `get_key` calls for the same cache keys then hit the
-    /// cache and complete without any further async work.
-    pub async fn ensure_keys<I>(&mut self, gpu: &AwsmRendererWebGpu, cache_keys: I) -> Result<()>
+    /// **Transaction shape:** call this with a `Vec` of every shader
+    /// cache key you need; the resulting `Vec<ShaderKey>` lines up
+    /// 1:1 (including for duplicate inputs and pre-cached entries —
+    /// duplicates resolve to the same key, pre-cached entries
+    /// resolve from the existing cache). No follow-up `get_key`
+    /// needed.
+    pub async fn ensure_keys<I>(
+        &mut self,
+        gpu: &AwsmRendererWebGpu,
+        cache_keys: I,
+    ) -> Result<Vec<ShaderKey>>
     where
         I: IntoIterator<Item = ShaderCacheKey>,
     {
-        // De-dupe in one pass while skipping anything already cached.
-        let mut seen: HashMap<ShaderCacheKey, ()> = HashMap::new();
+        let inputs: Vec<ShaderCacheKey> = cache_keys.into_iter().collect();
+        // Output slot per input (cache hits + duplicates fill in
+        // immediately; misses point at `pending` indices below).
+        let mut slots: Vec<Option<ShaderKey>> = Vec::with_capacity(inputs.len());
+        // Per-cache-key dedup table for the misses in this batch —
+        // inputs `[A, B, A]` only compile A once but all three slots
+        // resolve to the same key.
+        let mut pending_for: HashMap<ShaderCacheKey, usize> = HashMap::new();
         let mut pending: Vec<(ShaderCacheKey, web_sys::GpuShaderModuleDescriptor)> = Vec::new();
-        for cache_key in cache_keys {
-            if self.cache.contains_key(&cache_key) || seen.contains_key(&cache_key) {
+        for cache_key in &inputs {
+            if let Some(&shader_key) = self.cache.get(cache_key) {
+                slots.push(Some(shader_key));
                 continue;
             }
-            seen.insert(cache_key.clone(), ());
-            let descriptor = ShaderTemplate::try_from(&cache_key)?.into_descriptor()?;
-            pending.push((cache_key, descriptor));
-        }
-        if pending.is_empty() {
-            return Ok(());
+            if pending_for.contains_key(cache_key) {
+                // Duplicate within this batch — fill the slot once
+                // the compile finishes via the pending-index path.
+                slots.push(None);
+                continue;
+            }
+            let descriptor = ShaderTemplate::try_from(cache_key)?.into_descriptor()?;
+            pending_for.insert(cache_key.clone(), pending.len());
+            pending.push((cache_key.clone(), descriptor));
+            slots.push(None);
         }
 
-        // Issue every compile_shader synchronously so the browser kicks
-        // off all compiles before we await anything.
-        let modules: Vec<(
-            ShaderCacheKey,
-            web_sys::GpuShaderModule,
-            web_sys::GpuShaderModuleDescriptor,
-        )> = pending
-            .into_iter()
-            .map(|(k, desc)| {
-                let module = gpu.compile_shader(&desc);
-                (k, module, desc)
-            })
-            .collect();
+        if !pending.is_empty() {
+            // Issue every compile_shader synchronously so the browser
+            // kicks off all compiles before we await anything.
+            let modules: Vec<(
+                ShaderCacheKey,
+                web_sys::GpuShaderModule,
+                web_sys::GpuShaderModuleDescriptor,
+            )> = pending
+                .into_iter()
+                .map(|(k, desc)| {
+                    let module = gpu.compile_shader(&desc);
+                    (k, module, desc)
+                })
+                .collect();
 
-        // Await every validation in parallel.
-        let validate_futures = modules.iter().map(|(_, m, _)| m.validate_shader());
-        let results = futures::future::join_all(validate_futures).await;
-        for (i, result) in results.into_iter().enumerate() {
-            if let Err(err) = result.map_err(AwsmShaderError::Compilation) {
-                // Match the diagnostic behavior of `get_key`: print the
-                // offending source on a failed compile.
-                print_shader_source(&modules[i].2.get_code(), true);
-                return Err(err);
+            // Await every validation in parallel.
+            let validate_futures = modules.iter().map(|(_, m, _)| m.validate_shader());
+            let results = futures::future::join_all(validate_futures).await;
+            for (i, result) in results.into_iter().enumerate() {
+                if let Err(err) = result.map_err(AwsmShaderError::Compilation) {
+                    // Match the diagnostic behavior of `get_key`:
+                    // print the offending source on a failed compile.
+                    print_shader_source(&modules[i].2.get_code(), true);
+                    return Err(err);
+                }
+            }
+
+            // Install everything into the cache in one go, then
+            // back-fill any unresolved slots.
+            let mut pending_keys: Vec<ShaderKey> = Vec::with_capacity(modules.len());
+            for (cache_key, module, _) in modules {
+                let shader_key = self.lookup.insert(module);
+                self.cache.insert(cache_key, shader_key);
+                pending_keys.push(shader_key);
+            }
+            for (slot, cache_key) in slots.iter_mut().zip(&inputs) {
+                if slot.is_some() {
+                    continue;
+                }
+                if let Some(&pending_idx) = pending_for.get(cache_key) {
+                    *slot = Some(pending_keys[pending_idx]);
+                }
             }
         }
 
-        // Install everything into the cache in one go.
-        for (cache_key, module, _) in modules {
-            let shader_key = self.lookup.insert(module);
-            self.cache.insert(cache_key, shader_key);
-        }
-        Ok(())
+        Ok(slots
+            .into_iter()
+            .map(|s| s.expect("every input slot is filled by cache + pending"))
+            .collect())
     }
 
     /// Returns a shader module by key.

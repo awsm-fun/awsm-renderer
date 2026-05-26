@@ -39,8 +39,28 @@ impl Default for PostProcessing {
 }
 
 impl AwsmRenderer {
-    /// Applies post-processing configuration and rebuilds pipelines as needed.
+    /// Applies post-processing configuration and recompiles the
+    /// dependent pipelines for the new config.
+    ///
+    /// **Lazy-pool model:** cold-boot only compiled the effects
+    /// pass's `BloomPhase::None` shader (the default-disabled bloom
+    /// case). Toggling `bloom: true` here triggers a transactional
+    /// recompile that compiles the 4 missing bloom phases inside
+    /// one batched `Shaders::ensure_keys` + one batched
+    /// `ComputePipelines::ensure_keys`. The display pipeline (which
+    /// depends on the live tonemapper) is recompiled the same way.
+    ///
+    /// Returns only after every newly-required variant is GPU-
+    /// resident, so the next render frame can dispatch without
+    /// further awaits.
     pub async fn set_post_processing(&mut self, pp: PostProcessing) -> Result<()> {
+        // No-op fast path — caller asked for the state we're
+        // already in. Saves a redundant batched ensure on UI
+        // double-fire (common when sliders re-emit on every focus
+        // event).
+        if self.post_processing == pp {
+            return Ok(());
+        }
         self.post_processing = pp;
 
         self.render_passes

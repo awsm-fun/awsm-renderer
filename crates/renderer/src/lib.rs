@@ -621,25 +621,27 @@ impl AwsmRenderer {
 
         // ── Phase 2: batch-compile every shader in parallel. This is
         //    one round-trip for N×8+ compiles instead of N×8+ serial
-        //    awaits.
-        if let Err(e) = self.shaders.ensure_keys(&self.gpu, shader_jobs.clone()).await {
-            // Transparent prewarm failures used to be non-fatal — preserve
-            // that semantic by demoting the entire batch to a warn when any
-            // failed. Opaque registrations DO want to propagate, but the
-            // common case (cold-boot prewarm against a freshly-built renderer
-            // with healthy WGSL) succeeds entirely. Log + bail so the caller
-            // (recompile sink) surfaces the failure.
-            tracing::warn!("[dynamic-materials] prewarm shader batch failed: {e:?}");
-            return Err(e.into());
-        }
+        //    awaits. `ensure_keys` returns the resolved keys in input
+        //    order so Phase 3 below can build pipeline cache keys
+        //    directly without a follow-up `get_key` loop.
+        let resolved_shader_keys = match self
+            .shaders
+            .ensure_keys(&self.gpu, shader_jobs)
+            .await
+        {
+            Ok(keys) => keys,
+            Err(e) => {
+                tracing::warn!("[dynamic-materials] prewarm shader batch failed: {e:?}");
+                return Err(e.into());
+            }
+        };
 
-        // ── Phase 3: resolve shader keys (sync cache hits) and assemble
-        //    pipeline cache keys for the compute variants only. The
-        //    TransparentSkip slots stop here — they reserved their
-        //    shader cache slot without needing a pipeline.
+        // ── Phase 3: assemble pipeline cache keys for the compute
+        //    variants only. The TransparentSkip slots stop here —
+        //    they reserved their shader cache slot without needing a
+        //    pipeline.
         let mut compute_jobs: Vec<(Slot, ComputePipelineCacheKey)> = Vec::new();
-        for (cache_key, slot) in shader_jobs.into_iter().zip(slots) {
-            let shader_key = self.shaders.get_key(&self.gpu, cache_key).await?;
+        for (shader_key, slot) in resolved_shader_keys.into_iter().zip(slots) {
             match slot {
                 Slot::Classify(msaa) => {
                     let layout = if msaa.is_some() {
@@ -1195,6 +1197,8 @@ impl AwsmRendererBuilder {
             render_texture_formats: &mut render_texture_formats,
             textures: &mut textures,
             features: &features,
+            anti_aliasing: &anti_aliasing,
+            post_processing: &post_processing,
         };
 
         // Phase A of RenderPasses (bind groups + shader cache key
@@ -1467,6 +1471,8 @@ impl AwsmRendererBuilder {
             render_texture_formats: &mut render_texture_formats,
             textures: &mut textures,
             features: &features,
+            anti_aliasing: &anti_aliasing,
+            post_processing: &post_processing,
         };
         let render_passes_descs =
             RenderPasses::describe_pipelines(render_passes_plan, &mut render_pass_init, &features)
@@ -1589,7 +1595,7 @@ impl AwsmRendererBuilder {
         render_passes
             .effects
             .pipelines
-            .install_resolved(compute_keys[effects_compute_range].to_vec());
+            .install_resolved(&post_processing, compute_keys[effects_compute_range].to_vec());
         render_passes
             .display
             .pipelines

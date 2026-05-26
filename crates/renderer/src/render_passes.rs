@@ -195,6 +195,12 @@ struct RenderPassesRanges {
 struct RenderPassesPerPassDescs {
     geometry: crate::render_passes::geometry::pipeline::GeometryPrewarmDescriptors,
     opaque_slots: Vec<crate::render_passes::material_opaque::pipeline::OpaquePipelineSlot>,
+    /// One slot per entry in the classify pass's pipeline pool —
+    /// records the `msaa_sample_count` so `from_resolved` can route
+    /// each compiled pipeline into the matching `Option` field on
+    /// `MaterialClassifyPipelines`. Lazy-pool: the pool typically
+    /// has just 1 entry (the live MSAA's variant).
+    classify_slot_msaa: Vec<Option<u32>>,
     decal_is_msaa: Option<Vec<bool>>,
 }
 
@@ -337,6 +343,7 @@ impl RenderPasses {
         let first_party_entries = crate::dynamic_materials::first_party_bucket_entries();
         shader_cache_keys.extend(MaterialClassifyPipelines::shader_cache_keys(
             &first_party_entries,
+            ctx.anti_aliasing,
         ));
         if let Some(bg) = coverage_bg_single.as_ref() {
             shader_cache_keys.extend(CoveragePipelines::shader_cache_keys(bg));
@@ -539,6 +546,7 @@ impl RenderPasses {
             per_pass_descs: RenderPassesPerPassDescs {
                 geometry: geometry_descs,
                 opaque_slots: opaque_descs.slots,
+                classify_slot_msaa: classify_descs.slot_msaa,
                 decal_is_msaa,
             },
             material_decal_composite,
@@ -653,6 +661,7 @@ impl RenderPasses {
         let material_classify = MaterialClassifyRenderPass {
             bind_groups: classify_bg,
             pipelines: MaterialClassifyPipelines::from_resolved(
+                per_pass_descs.classify_slot_msaa,
                 compute_keys[ranges.classify].to_vec(),
             ),
             dynamic_pipeline_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
@@ -751,4 +760,13 @@ pub struct RenderPassInitContext<'a> {
     /// decal classify pass's HZB binding switch) pick the variant
     /// that matches the live feature set.
     pub features: &'a RendererFeatures,
+    /// Active MSAA + mipmap state. Lazy-pool passes use this to
+    /// compile only the variant matching the live config; the
+    /// other (msaa, mipmap) combinations get compiled on demand
+    /// when the caller invokes `AwsmRenderer::set_anti_aliasing`.
+    pub anti_aliasing: &'a crate::anti_alias::AntiAliasing,
+    /// Active post-processing state (bloom, tonemapping, DoF, ...).
+    /// Same role as `anti_aliasing`: lazy-pool passes only compile
+    /// the live-config variant up-front.
+    pub post_processing: &'a crate::post_process::PostProcessing,
 }
