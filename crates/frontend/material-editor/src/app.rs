@@ -19,9 +19,10 @@ use dominator::{html, Dom};
 
 use crate::{panes, state::EditState};
 
-/// Construct the root DOM element for the material-editor.
-pub fn root() -> Dom {
-    let state = EditState::new_scanline();
+/// Construct the root DOM element for the material-editor with a
+/// pre-built [`EditState`]. The caller (`main.rs`) keeps a clone
+/// of the state so the recompile loop can listen for edits.
+pub fn root_with_state(state: EditState) -> Dom {
     html!("div", {
         .style("display", "grid")
         .style("grid-template-rows", "40px 1fr 240px")
