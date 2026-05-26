@@ -593,4 +593,75 @@ impl crate::AwsmRenderer {
     ) -> impl Iterator<Item = (MaterialShaderId, &MaterialRegistration)> {
         self.dynamic_materials.iter()
     }
+
+    /// Submit a dynamic material via the new pipeline-readiness API.
+    ///
+    /// Per the architecture in `docs/plans/more-optimizations.md`,
+    /// this is the non-blocking submission entry point that registers
+    /// the material AND submits a `PipelineGroupDef::Material(Dynamic)`
+    /// to the renderer's scheduler. Returns:
+    ///
+    /// - `MaterialShaderId` — same as `register_material`, for the
+    ///   bucket-routing path and `Material::Custom { shader_id }` field.
+    /// - `MaterialId` — new scheduler-side handle to a
+    ///   `PipelineGroupId::Material(_)`. Frontends watch this id via
+    ///   [`Self::pipeline_group_status`] /
+    ///   [`Self::drain_pipeline_status_events`] for the Ready transition.
+    ///
+    /// **Stage 1 status**: today the scheduler's compile future is a
+    /// stub (resolves immediately to Ready); the actual compile work
+    /// still requires a follow-up `.await` of either
+    /// [`Self::prewarm_pipelines`] (the legacy surface) or a Stage 1.8-fully
+    /// completion that wires real compile through the scheduler.
+    /// Frontends migrating from `register_material + prewarm.await`
+    /// to this new API gain the readiness-state contract surface
+    /// now and the real-async compile when Stage 1.8 lands.
+    pub fn submit_dynamic_material(
+        &mut self,
+        registration: MaterialRegistration,
+    ) -> Result<
+        (MaterialShaderId, crate::pipeline_scheduler::MaterialId),
+        crate::error::AwsmError,
+    > {
+        use crate::pipeline_scheduler::{
+            MaterialDef, MaterialDefKind, PipelineConfigSnapshot, PipelineGroupDef, PipelineGroupId,
+        };
+
+        // 1. Existing sync registration (returns the bucket-routing id).
+        let shader_id = self.register_material(registration.clone())?;
+
+        // 2. Snapshot the current config so the scheduler can detect
+        //    config-drift later (Stage 1.8 / 1.14 fully).
+        let snapshot = PipelineConfigSnapshot {
+            msaa: self.anti_aliasing.clone(),
+            mipmap: if self.anti_aliasing.mipmap {
+                crate::render_passes::material_opaque::shader::template::MipmapMode::Gradient
+            } else {
+                crate::render_passes::material_opaque::shader::template::MipmapMode::None
+            },
+            use_mesh_light_slices: false,
+            gpu_culling: self.features.gpu_culling,
+            coverage_lod: self.features.coverage_lod,
+            debug_bitmask: 0,
+            default_cull_mode: awsm_renderer_core::pipeline::primitive::CullMode::Back,
+        };
+
+        // 3. Submit to the scheduler.
+        let def = MaterialDef {
+            shader_id,
+            alpha_mode: registration.alpha_mode,
+            double_sided: registration.double_sided,
+            kind: MaterialDefKind::Dynamic(Box::new(registration)),
+            config_snapshot: snapshot,
+        };
+        let ids = self
+            .pipeline_scheduler
+            .submit_pipeline_group_batch(vec![PipelineGroupDef::Material(def)]);
+        let material_id = match ids[0] {
+            PipelineGroupId::Material(mid) => mid,
+            PipelineGroupId::Pass(_) => unreachable!("submit returned Pass for Material def"),
+        };
+
+        Ok((shader_id, material_id))
+    }
 }
