@@ -54,8 +54,8 @@ pub(crate) struct OpaqueShaderDesc {
 /// 4 entries in `main` (one per first-party shader_id at the active
 /// msaa+mipmap state) plus 1 empty pipeline for the active MSAA.
 /// The other axes' variants are compiled on demand via
-/// [`AwsmRenderer::set_anti_aliasing`] (msaa/mipmap change) or
-/// [`AwsmRenderer::prewarm_pipelines`] (dynamic-material register).
+/// [`crate::AwsmRenderer::set_anti_aliasing`] (msaa/mipmap change) or
+/// [`crate::AwsmRenderer::prewarm_pipelines`] (dynamic-material register).
 /// Both lookups (`get_compute_pipeline_key`,
 /// `get_empty_compute_pipeline_key`) already return `Option`, so the
 /// dispatch path's "skip if missing" branch is the right behavior
@@ -352,7 +352,7 @@ impl MaterialOpaquePipelines {
 
     /// Merge a fresh batch of resolved pipelines into `self` without
     /// dropping any previously-compiled variants. Used by
-    /// [`AwsmRenderer::set_anti_aliasing`] so toggling MSAA mid-session
+    /// [`crate::AwsmRenderer::set_anti_aliasing`] so toggling MSAA mid-session
     /// preserves the old MSAA's pipelines (which the recompile-on-
     /// every-toggle pattern would otherwise re-compile every cycle).
     pub fn merge_resolved(
@@ -380,7 +380,7 @@ impl MaterialOpaquePipelines {
     /// dispatch path treats that as "skip the empty pass", which is
     /// a no-op render-target clear so the renderer continues drawing.
     /// The caller is expected to have invoked
-    /// [`AwsmRenderer::set_anti_aliasing`] before changing MSAA mode,
+    /// [`crate::AwsmRenderer::set_anti_aliasing`] before changing MSAA mode,
     /// which ensures the variant is compiled before the next render.
     pub fn get_empty_compute_pipeline_key(
         &self,

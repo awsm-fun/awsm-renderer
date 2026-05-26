@@ -2,7 +2,7 @@
 //!
 //! Provides the renderer-side facade over `awsm_materials::registry::MaterialRegistry`,
 //! the cache-key extension that invalidates per-shader-id pipelines when the
-//! registry's [`MaterialShaderId`](awsm_materials::MaterialShaderId) set
+//! registry's [`awsm_materials::MaterialShaderId`] set
 //! changes, and (Phase 6+) the extras-pool storage buffer + allocator that
 //! backs `BufferSlot` data.
 //!

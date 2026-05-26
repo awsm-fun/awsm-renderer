@@ -168,7 +168,6 @@ pub struct BindGroupLayoutCounter {
     pub external_textures: u32,
 }
 
-#[cfg(debug_assertions)]
 impl Default for BindGroupLayouts {
     fn default() -> Self {
         Self::new()

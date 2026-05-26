@@ -76,9 +76,9 @@ impl Shaders {
     /// `ShaderKey`s in input order**, so callers can build pipeline
     /// cache keys from the batch without a follow-up `get_key`
     /// round-trip (matches the shape of
-    /// [`crate::pipelines::RenderPipelines::ensure_keys`] and
-    /// [`crate::pipelines::ComputePipelines::ensure_keys`] — both
-    /// return their respective key vectors).
+    /// [`crate::pipelines::render_pipeline::RenderPipelines::ensure_keys`] and
+    /// [`crate::pipelines::compute_pipeline::ComputePipelines::ensure_keys`] —
+    /// both return their respective key vectors).
     ///
     /// **Concurrency model:** `compile_shader` is synchronous — it
     /// returns a module handle immediately and the browser begins

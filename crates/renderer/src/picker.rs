@@ -145,7 +145,7 @@ impl AwsmRenderer {
 /// **Lazy-pool semantics:** cold-boot only compiles the pipeline
 /// matching the live `AntiAliasing` config. The other variant is
 /// compiled on demand when the user calls
-/// [`AwsmRenderer::set_anti_aliasing`]. Both fields are `Option`;
+/// [`crate::AwsmRenderer::set_anti_aliasing`]. Both fields are `Option`;
 /// `pick()` returns `PickResult::Initializing` when the requested
 /// MSAA's pipeline isn't compiled yet (same behavior as before
 /// when bind groups weren't ready).
@@ -284,7 +284,7 @@ impl Picker {
     /// Folds resolved pipeline keys back into the typed `Picker`.
     /// Sync; the caller has already run the batched
     /// `ComputePipelines::ensure_keys`. The non-active MSAA's
-    /// pipeline stays `None` until [`AwsmRenderer::set_anti_aliasing`]
+    /// pipeline stays `None` until [`crate::AwsmRenderer::set_anti_aliasing`]
     /// triggers its compile.
     pub fn from_resolved(
         gpu: &AwsmRendererWebGpu,
@@ -305,7 +305,7 @@ impl Picker {
 
     /// Merge a fresh batch of resolved pipelines into `self` without
     /// dropping the previously-compiled variant. Used by
-    /// [`AwsmRenderer::set_anti_aliasing`].
+    /// [`crate::AwsmRenderer::set_anti_aliasing`].
     pub fn merge_resolved(
         &mut self,
         slot: Vec<PickerPipelineSlot>,

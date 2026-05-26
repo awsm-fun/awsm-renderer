@@ -14,6 +14,12 @@ use std::sync::LazyLock;
 pub struct Config {
     pub camera_focus_distance: f32,
     pub camera_aperture: f32,
+    /// Only read in debug builds via `load_external_test_scene`
+    /// (which is itself `#[cfg(debug_assertions)]`). Kept on the
+    /// struct unconditionally so the `LazyLock` initializer below
+    /// stays a single literal regardless of build profile —
+    /// `dead_code` is silenced for the release case.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     pub media_base_url_additional_assets: String,
 }
 
@@ -33,6 +39,7 @@ impl Config {
     /// in `taskfiles/frontend/scene-editor.yml`. Dev points at
     /// `http://localhost:9083` (the media-additional-assets server);
     /// prod points at `https://dakom.github.io/awsm-renderer-assets`.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     pub fn media_base_url_additional_assets(&self) -> &str {
         &self.media_base_url_additional_assets
     }

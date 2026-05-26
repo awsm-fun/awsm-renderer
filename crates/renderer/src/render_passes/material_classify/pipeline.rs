@@ -3,7 +3,7 @@
 //! **Lazy-pool semantics:** the initial build compiles only the
 //! variant matching the live `AntiAliasing` config — one of the
 //! two `Option` fields below is populated, the other is `None`.
-//! [`AwsmRenderer::set_anti_aliasing`] compiles the missing variant
+//! [`crate::AwsmRenderer::set_anti_aliasing`] compiles the missing variant
 //! on demand. Once compiled, a variant stays cached even after the
 //! user toggles back — so MSAA-flipping back and forth pays the
 //! compile cost only on the first transition in each direction.
@@ -94,7 +94,7 @@ impl MaterialClassifyPipelines {
 
     /// Live-config descriptor builder used by both the initial
     /// `new()` path and the mid-session
-    /// [`AwsmRenderer::set_anti_aliasing`] recompile. Takes the AA
+    /// [`crate::AwsmRenderer::set_anti_aliasing`] recompile. Takes the AA
     /// config explicitly so the recompile flow can target the
     /// *incoming* state without rewriting renderer fields first.
     pub async fn build_descriptors_for_config(
