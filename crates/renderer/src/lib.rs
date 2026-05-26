@@ -28,6 +28,7 @@ pub mod opaque_mipgen;
 pub mod optimization_policy;
 pub mod picker;
 pub mod pipeline_layouts;
+pub mod pipeline_scheduler;
 pub mod pipelines;
 pub mod post_process;
 pub mod raw_mesh;
