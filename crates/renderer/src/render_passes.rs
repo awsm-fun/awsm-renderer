@@ -356,6 +356,7 @@ impl RenderPasses {
         // same `ensure_keys` plumbing the orchestrator uses.
         let first_party_entries = crate::dynamic_materials::first_party_bucket_entries();
         shader_cache_keys.extend(MaterialClassifyPipelines::shader_cache_keys(
+            ctx.gpu,
             &first_party_entries,
             ctx.anti_aliasing,
         ));

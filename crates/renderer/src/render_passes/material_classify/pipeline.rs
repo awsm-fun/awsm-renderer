@@ -43,7 +43,7 @@ impl MaterialClassifyPipelines {
         ctx.shaders
             .ensure_keys(
                 ctx.gpu,
-                Self::shader_cache_keys(bucket_entries, ctx.anti_aliasing),
+                Self::shader_cache_keys(ctx.gpu, bucket_entries, ctx.anti_aliasing),
             )
             .await?;
         let descs = Self::build_descriptors(ctx, bind_groups, bucket_entries).await?;
@@ -65,6 +65,7 @@ impl MaterialClassifyPipelines {
     /// drops the unused one. Reduces classify-pass shader+pipeline
     /// compiles 2× at cold-boot.
     pub fn shader_cache_keys(
+        gpu: &awsm_renderer_core::renderer::AwsmRendererWebGpu,
         bucket_entries: &[BucketEntry],
         anti_aliasing: &AntiAliasing,
     ) -> Vec<ShaderCacheKey> {
@@ -75,13 +76,12 @@ impl MaterialClassifyPipelines {
         vec![ShaderCacheKey::from(ShaderCacheKeyMaterialClassify {
             msaa_sample_count: active_msaa,
             bucket_entries: bucket_entries.to_vec(),
-            // Priority-3 edge data emission is gated to the
-            // multisampled path only — under single-sample there are
-            // no MSAA edges to emit. Stage 3.7 dispatch wiring flips
-            // this on for the multisampled variant; the singlesampled
-            // variant keeps it false (it would compile to a zero-cost
-            // no-op anyway since the {% if %} block is `&& multisampled`).
-            emit_edge_data: active_msaa.is_some(),
+            // Priority-3 edge data emission requires MSAA + device
+            // support for the full Stage 3 dispatch wiring (5 bind
+            // groups, 11 storage buffers). When the device caps out
+            // below those limits, we fall back to the inline
+            // `msaa_resolve_samples` path in the primary opaque shader.
+            emit_edge_data: active_msaa.is_some() && crate::edge_resolve_supported(gpu),
         })]
     }
 
@@ -133,7 +133,7 @@ impl MaterialClassifyPipelines {
                 ShaderCacheKeyMaterialClassify {
                     msaa_sample_count: active_msaa,
                     bucket_entries: bucket_entries.to_vec(),
-                    emit_edge_data: active_msaa.is_some(),
+                    emit_edge_data: active_msaa.is_some() && crate::edge_resolve_supported(gpu),
                 },
             )
             .await?;

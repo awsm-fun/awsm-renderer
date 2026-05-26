@@ -11,9 +11,9 @@
 {% include "shared_wgsl/color_space.wgsl" %}
 /*************** END color_space.wgsl ******************/
 
-/*************** START camera.wgsl ******************/
-{% include "shared_wgsl/camera.wgsl" %}
-/*************** END camera.wgsl ******************/
+// camera.wgsl is already included by skybox_edge_bind_groups.wgsl
+// (concatenated before this file). Re-including here would redefine
+// the CameraRaw struct.
 
 /*************** START math.wgsl ******************/
 {% include "shared_wgsl/math.wgsl" %}

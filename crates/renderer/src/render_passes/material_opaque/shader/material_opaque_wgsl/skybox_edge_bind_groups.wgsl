@@ -3,6 +3,16 @@
 // Needs: skybox texture + sampler, camera uniform, edge buffer
 // (read-write — writes accumulator slots; read-only counters).
 
+// Include the shared CameraRaw + Camera + camera_from_raw helpers
+// here so the uniform binding below can reference `CameraRaw` and the
+// compute shader's body can call `camera_from_raw(camera_raw)`. The
+// compute file (skybox_edge_resolve.wgsl) intentionally does NOT
+// re-include camera.wgsl — including it twice would redefine the
+// CameraRaw struct.
+/*************** START camera.wgsl ******************/
+{% include "shared_wgsl/camera.wgsl" %}
+/*************** END camera.wgsl ******************/
+
 struct EdgeIndirectArgsSky {
     workgroup_count_x: u32,
     workgroup_count_y: u32,
@@ -38,8 +48,11 @@ struct EdgeBufferLayoutSky {
 
 @group(0) @binding(1) var<uniform> edge_layout: EdgeBufferLayoutSky;
 
-// Camera uniform (sample_skybox needs camera.view_proj_inverse).
-@group(0) @binding(2) var<uniform> camera_raw: array<vec4<f32>, 16>;
+// Camera uniform (sample_skybox needs camera.inv_view_proj). Declared
+// via the canonical `CameraRaw` struct from shared_wgsl/camera.wgsl —
+// that file is included by skybox_edge_resolve.wgsl above so the
+// struct is in scope here.
+@group(0) @binding(2) var<uniform> camera_raw: CameraRaw;
 
 @group(0) @binding(3) var skybox_tex: texture_cube<f32>;
 @group(0) @binding(4) var skybox_sampler: sampler;

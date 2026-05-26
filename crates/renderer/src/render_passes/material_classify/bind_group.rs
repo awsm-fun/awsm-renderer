@@ -91,8 +91,11 @@ impl MaterialClassifyBindGroups {
         ];
 
         // Priority 3 — bind the edge buffer + edge-layout uniform when
-        // MSAA is on so the classify shader's `emit_edge_data` block has
-        // its storage targets.
+        // MSAA is on AND the device supports the full edge_resolve
+        // dispatch wiring (5 bind groups, 11 storage buffers). On
+        // unsupported devices (e.g. macOS Metal at maxBindGroups=4),
+        // `material_edge_buffers` is None and the classify pass's
+        // bind-group layout was built without slots 4+5 to match.
         if msaa {
             if let (Some(edge_buffers), Some(edge_layout_uniform)) =
                 (ctx.material_edge_buffers, ctx.material_edge_layout_uniform)
@@ -105,17 +108,10 @@ impl MaterialClassifyBindGroups {
                     5,
                     BindGroupResource::Buffer(BufferBinding::new(edge_layout_uniform)),
                 ));
-            } else {
-                // MSAA on but edge buffers missing — should not happen
-                // (build() allocates them in lockstep). Bail with a
-                // descriptive error rather than producing a malformed
-                // bind group.
-                return Err(AwsmBindGroupError::NotFound(
-                    "Material Classify - edge buffer / layout uniform required for MSAA"
-                        .to_string(),
-                )
-                .into());
             }
+            // else: edge bindings absent — layout was built without
+            // them too, so the bind group is valid with just the 4
+            // base entries.
         }
 
         let descriptor = BindGroupDescriptor::new(
@@ -126,6 +122,30 @@ impl MaterialClassifyBindGroups {
         self.bind_group = Some(ctx.gpu.create_bind_group(&descriptor.into()));
         Ok(())
     }
+}
+
+/// Returns true when the device + features support the Priority-3
+/// edge-emission bindings. Mirrors the same check used in
+/// `AwsmRenderer::build()` for the edge buffer allocation; the two
+/// must stay in lockstep so the classify layout doesn't reference
+/// edge bindings the renderer never allocates.
+fn edge_emit_supported(ctx: &RenderPassInitContext<'_>) -> bool {
+    let limits = ctx.gpu.device.limits();
+    if limits.is_null() || limits.is_undefined() {
+        return false;
+    }
+    let max_bind_groups = web_sys::js_sys::Reflect::get(&limits, &"maxBindGroups".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .map(|f| f as u32)
+        .unwrap_or(4);
+    let max_storage =
+        web_sys::js_sys::Reflect::get(&limits, &"maxStorageBuffersPerShaderStage".into())
+            .ok()
+            .and_then(|v| v.as_f64())
+            .map(|f| f as u32)
+            .unwrap_or(10);
+    max_bind_groups >= 5 && max_storage >= 11
 }
 
 async fn create_bind_group_layout_key(
@@ -175,8 +195,9 @@ async fn create_bind_group_layout_key(
     ];
 
     // Priority 3 — MSAA edge emission. Adds two bindings (storage RW
-    // edge buffer + uniform edge-layout) to the multisampled variant.
-    if multisampled_geometry {
+    // edge buffer + uniform edge-layout) to the multisampled variant
+    // when the device supports the full Stage 3 dispatch wiring.
+    if multisampled_geometry && edge_emit_supported(ctx) {
         entries.push(BindGroupLayoutCacheKeyEntry {
             resource: BindGroupLayoutResource::Buffer(
                 BufferBindingLayout::new().with_binding_type(BufferBindingType::Storage),

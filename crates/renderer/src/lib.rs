@@ -595,9 +595,9 @@ impl AwsmRenderer {
                     msaa_sample_count: msaa,
                     bucket_entries: entries.clone(),
                     // Priority 3: edge emission on for multisampled
-                    // variants (matches the live edge-buffer binding
-                    // shape allocated by build()).
-                    emit_edge_data: msaa.is_some(),
+                    // variants AND device support (matches the live
+                    // edge-buffer binding shape allocated by build()).
+                    emit_edge_data: msaa.is_some() && edge_resolve_supported(&self.gpu),
                 }
                 .into(),
             );
@@ -1373,11 +1373,21 @@ impl AwsmRendererBuilder {
             )?;
 
         // MSAA-edge-resolve buffers (Stage 3 dispatch wiring). Allocated only
-        // when MSAA is on; resized on bucket-count growth via
-        // `ensure_bucket_count`. The companion `edge_layout_uniform` carries
-        // byte offsets for shader slicing.
+        // when MSAA is on AND the device supports the required limits
+        // (maxBindGroups >= 5 and maxStorageBuffersPerShaderStage >= 11).
+        // The per-shader edge_resolve pipeline layout uses 5 bind groups —
+        // primary opaque's 4 groups (main / lights / texture-pool / shadows)
+        // plus a 5th edge-resolve group(4) carrying the edge buffer +
+        // layout uniform. Devices like macOS Metal that cap at
+        // maxBindGroups=4 can't allocate the layout; we fall back to the
+        // primary opaque pipeline's inline `msaa_resolve_samples` path
+        // (kept temporarily in compute.wgsl / helpers/material_shading.wgsl
+        // for exactly this reason). See `docs/plans/more-optimizations.md`
+        // § Priority 3 — full bind-group restructure to fit 4 groups on
+        // desktop Metal is a follow-up.
         let multisampled_geometry = anti_aliasing.has_msaa_checked()?;
-        let (material_edge_buffers, material_edge_layout_uniform) = if multisampled_geometry {
+        let edge_resolve_enabled = multisampled_geometry && edge_resolve_supported(&gpu);
+        let (material_edge_buffers, material_edge_layout_uniform) = if edge_resolve_enabled {
             use render_passes::material_opaque::edge_buffers::{
                 build_edge_layout_uniform, MaterialEdgeBuffers,
             };
@@ -1692,11 +1702,12 @@ impl AwsmRendererBuilder {
         )?;
 
         // Edge-resolve pipeline compile (Priority 3 dispatch wiring). Only
-        // when MSAA is on. We pass first_party-only bucket entries — the
-        // edge pipelines recompile through the same path when dynamic
-        // materials register (Stage 1.14 follow-up will route through
-        // the scheduler).
-        if multisampled_geometry {
+        // when MSAA is on AND device supports the required limits. We
+        // pass first_party-only bucket entries — the edge pipelines
+        // recompile through the same path when dynamic materials
+        // register (Stage 1.14 follow-up will route through the
+        // scheduler).
+        if edge_resolve_enabled {
             let color_wgsl = awsm_renderer_core::texture::texture_format_to_wgsl_storage(
                 render_textures.formats.color,
             )?;
@@ -1917,4 +1928,49 @@ impl AwsmRenderer {
         }
         Ok(total)
     }
+}
+
+/// Returns true if the device can host the Stage 3 / Priority 3
+/// per-shader-id MSAA edge-resolve pipelines.
+///
+/// The per-shader-id edge_resolve pipeline layout uses 5 bind groups
+/// (primary opaque's 4 + a 5th carrying the edge buffer + layout
+/// uniform), and its compute stage takes one extra storage buffer
+/// slot above primary opaque's 10. Devices below those limits fall
+/// back to the inline `msaa_resolve_samples` path in the primary
+/// opaque shader.
+///
+/// macOS Metal currently caps at `maxBindGroups=4`, so the new
+/// dispatch wiring is gated off there. Android Vulkan and Linux
+/// Vulkan typically expose `maxBindGroups=8`, which is the target
+/// platform for the SPIR-V-shrinking benefits of Priority 3 anyway.
+///
+/// TODO: restructure the edge_resolve bind-group layout to fit in
+/// 4 groups (likely by folding the edge buffer + layout uniform
+/// into an extended primary opaque group(0) — needs a careful
+/// storage-buffer-count audit since group(0) is at 8/10 already).
+pub fn edge_resolve_supported(gpu: &awsm_renderer_core::renderer::AwsmRendererWebGpu) -> bool {
+    let limits = gpu.device.limits();
+    if limits.is_null() || limits.is_undefined() {
+        return false;
+    }
+    let max_bind_groups = web_sys::js_sys::Reflect::get(&limits, &"maxBindGroups".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .map(|f| f as u32)
+        .unwrap_or(4);
+    let max_storage =
+        web_sys::js_sys::Reflect::get(&limits, &"maxStorageBuffersPerShaderStage".into())
+            .ok()
+            .and_then(|v| v.as_f64())
+            .map(|f| f as u32)
+            .unwrap_or(10);
+    let supported = max_bind_groups >= 5 && max_storage >= 11;
+    if !supported {
+        tracing::info!(
+            target: "awsm_renderer::boot_timing",
+            "edge_resolve dispatch wiring disabled — device caps (maxBindGroups={max_bind_groups}, maxStorageBuffersPerShaderStage={max_storage}) insufficient; falling back to inline msaa_resolve_samples in primary opaque shader."
+        );
+    }
+    supported
 }
