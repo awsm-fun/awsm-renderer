@@ -65,7 +65,7 @@ pub struct MaterialEdgePipelineDescriptors {
 /// **Lazy-pool semantics:** populated lazily — first-party shader_ids
 /// land on first mesh insertion; dynamic shader_ids land on
 /// `register_material`. Empty at cold-boot. The `skybox_edge_resolve`
-/// + `final_blend` pipelines are tiny enough to live in the cold-boot
+/// and `final_blend` pipelines are tiny enough to live in the cold-boot
 /// eager set, but for cleanliness they're scheduler-managed and submit
 /// on first opaque material registration (see Stage 3.7 wiring TODO).
 pub struct MaterialEdgePipelines {

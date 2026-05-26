@@ -34,7 +34,8 @@ pub struct ShaderTemplateMaterialEdgeResolveBindGroups {
     /// edge_resolve shares its group(0) shape.
     pub texture_pool_arrays_len: u32,
     pub texture_pool_samplers_len: u32,
-    pub debug: crate::render_passes::material_opaque::shader::template::ShaderTemplateMaterialOpaqueDebug,
+    pub debug:
+        crate::render_passes::material_opaque::shader::template::ShaderTemplateMaterialOpaqueDebug,
     pub mipmap: MipmapMode,
     pub multisampled_geometry: bool,
     pub msaa_sample_count: u32,
@@ -73,7 +74,8 @@ pub struct ShaderTemplateMaterialEdgeResolveCompute {
     /// `edge_layout` for this shader_id's sample-entry list.
     pub bucket_sample_list_base: String,
     /// Used by the templated `apply_lighting` include for IBL gating.
-    pub debug: crate::render_passes::material_opaque::shader::template::ShaderTemplateMaterialOpaqueDebug,
+    pub debug:
+        crate::render_passes::material_opaque::shader::template::ShaderTemplateMaterialOpaqueDebug,
     pub bucket_entries: Vec<BucketEntry>,
 }
 
@@ -102,13 +104,15 @@ impl TryFrom<&ShaderCacheKeyMaterialEdgeResolve> for ShaderTemplateMaterialEdgeR
                 bucket_entries.len() as u32,
             ))
             .collect();
-        let entry = bucket_entries.get(value.bucket_index as usize).ok_or_else(|| {
-            AwsmShaderError::DuplicateAttribute(format!(
-                "edge_resolve: bucket_index {} out of range for {} entries",
-                value.bucket_index,
-                bucket_entries.len()
-            ))
-        })?;
+        let entry = bucket_entries
+            .get(value.bucket_index as usize)
+            .ok_or_else(|| {
+                AwsmShaderError::DuplicateAttribute(format!(
+                    "edge_resolve: bucket_index {} out of range for {} entries",
+                    value.bucket_index,
+                    bucket_entries.len()
+                ))
+            })?;
         let bucket_args_field = entry.args_field();
         let bucket_sample_list_base = format!("{}_sample_list_base", entry.args_field());
 

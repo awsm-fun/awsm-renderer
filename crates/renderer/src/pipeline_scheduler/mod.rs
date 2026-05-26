@@ -296,6 +296,29 @@ impl PipelineScheduler {
         // discards stale resolutions silently.
     }
 
+    /// Find the [`MaterialId`] in the scheduler whose `MaterialDef`
+    /// matches the given `MaterialShaderId`. Returns `None` if no
+    /// submitted material has this shader_id.
+    ///
+    /// Used by the bridge between the legacy `prewarm_pipelines`
+    /// compile path and the new scheduler state: after
+    /// `prewarm_dynamic_pipelines` finishes compiling pipelines for a
+    /// registered material, the renderer calls this to find the
+    /// matching scheduler entry and then calls
+    /// [`Self::mark_ready`]. O(N) scan over registered materials —
+    /// N is small (typically <16 dynamic materials at runtime).
+    pub fn find_material_by_shader_id(
+        &self,
+        shader_id: awsm_materials::MaterialShaderId,
+    ) -> Option<MaterialId> {
+        for (mid, state) in &self.materials {
+            if state.def.shader_id == shader_id {
+                return Some(mid);
+            }
+        }
+        None
+    }
+
     /// Poll the in-flight `FuturesUnordered` for resolved compiles,
     /// applying their transitions to the material/pass state and
     /// emitting status events. Called from the render loop's pre-frame

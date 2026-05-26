@@ -254,7 +254,13 @@ impl MaterialEdgeBuffers {
     /// `(y=1, z=1)` on every indirect-arg slot. Tile arrays remain
     /// untouched (overwritten by the shader).
     pub fn reset_header(&self, gpu: &AwsmRendererWebGpu) -> Result<(), AwsmCoreError> {
-        gpu.write_buffer(&self.buffer, None, self.header_scratch.as_slice(), None, None)
+        gpu.write_buffer(
+            &self.buffer,
+            None,
+            self.header_scratch.as_slice(),
+            None,
+            None,
+        )
     }
 
     /// Byte offset of the final_blend indirect-arg slot. Passed to

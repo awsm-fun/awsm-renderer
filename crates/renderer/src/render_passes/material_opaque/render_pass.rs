@@ -25,10 +25,8 @@ use crate::{
     render_passes::{
         material_classify::buffers::indirect_args_offset,
         material_opaque::{
-            bind_group::MaterialOpaqueBindGroups,
-            edge_bind_group::MaterialEdgeBindGroupLayouts,
-            edge_pipeline::MaterialEdgePipelines,
-            pipeline::MaterialOpaquePipelines,
+            bind_group::MaterialOpaqueBindGroups, edge_bind_group::MaterialEdgeBindGroupLayouts,
+            edge_pipeline::MaterialEdgePipelines, pipeline::MaterialOpaquePipelines,
         },
         RenderPassInitContext,
     },
@@ -91,9 +89,11 @@ impl MaterialOpaqueRenderPass {
     }
 
     /// Dispatches the per-shader-id edge_resolve + skybox_edge_resolve
-    /// + final_blend pipelines for the MSAA edge-resolve flow
+    /// and final_blend pipelines for the MSAA edge-resolve flow
     /// (Priority 3). Called from the renderer's frame orchestration
     /// after the primary opaque dispatch.
+    ///
+    /// (Stage 3 — see `docs/plans/more-optimizations.md` § Priority 3.)
     ///
     /// **Lazy-pool semantics:** any pipeline whose typed-key accessor
     /// returns `None` is silently skipped via

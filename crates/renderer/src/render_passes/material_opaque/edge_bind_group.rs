@@ -24,8 +24,8 @@ use awsm_renderer_core::bind_groups::{
 };
 use awsm_renderer_core::texture::{TextureSampleType, TextureViewDimension};
 
-use crate::bind_group_layout::{BindGroupLayoutCacheKey, BindGroupLayoutCacheKeyEntry};
 use crate::bind_group_layout::BindGroupLayoutKey;
+use crate::bind_group_layout::{BindGroupLayoutCacheKey, BindGroupLayoutCacheKeyEntry};
 use crate::error::Result;
 use crate::render_passes::RenderPassInitContext;
 
@@ -72,7 +72,9 @@ impl MaterialEdgeBindGroupLayouts {
     }
 }
 
-fn build_edge_resolve_group4_layout(ctx: &mut RenderPassInitContext<'_>) -> Result<BindGroupLayoutKey> {
+fn build_edge_resolve_group4_layout(
+    ctx: &mut RenderPassInitContext<'_>,
+) -> Result<BindGroupLayoutKey> {
     // 0: edge_buffer — storage RW (atomics owned by classify;
     //                  this side writes accumulator slots).
     // 1: edge_layout — uniform.
