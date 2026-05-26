@@ -2,17 +2,15 @@
 
 ## Status when this plan was written
 
-The user reported a renderer init failure on Android Chrome that didn't reproduce on OSX Chrome. After an extensive investigation (full diagnosis below), Android Chrome now initializes successfully but with an **R&D workaround in place** that needs to be replaced. Several supporting improvements landed along the way and should stay. A bigger set of lazy-pool optimizations is queued and should be picked up after the dynamic-materials work lands.
-
-Everything in this plan is reachable from a clean working tree. The 8 currently-modified files are listed in [§ Files left modified](#files-left-modified).
+The user reported a renderer init failure on Android Chrome that didn't reproduce on OSX Chrome. After an extensive investigation (full diagnosis below), Android Chrome was made to initialize successfully but with an **R&D workaround in place** that needs to be replaced. A first wave of supporting changes were prototyped on a local branch; most were reverted on review as too R&D-y to commit (see [§ Lessons captured from reverted WIP](#lessons-captured-from-reverted-wip)). What did land cleanly is the boot-timing instrumentation, which makes the rest of this plan directly measurable. The lazy-pool optimizations are queued.
 
 ## Progress since this plan was written (2026-05-26)
 
-The dynamic-materials PR (#98, branch `dynamic-shaders`) landed work that overlaps with parts of this plan. Snapshot of what's now done:
+The dynamic-materials PR (#98, branch `dynamic-shaders`) landed work that overlaps with parts of this plan. Snapshot of what's now done **and on the committed branch**:
 
 ### Lazy-pool refactors landed
 
-The per-pass `*_for_config` + `merge_resolved` pattern that this plan called out as "the right shape" is now used by **five passes**, not just geometry:
+The per-pass `*_for_config` + `merge_resolved` pattern that this plan called out as "the right shape" is now used by **five passes**:
 
 | Pass | Cold-boot variants stripped | Lazy recompile entry point |
 |---|---|---|
@@ -21,19 +19,20 @@ The per-pass `*_for_config` + `merge_resolved` pattern that this plan called out
 | Effects | 5 → 1 (bloom-off → only `BloomPhase::None`) | `AwsmRenderer::set_post_processing` |
 | HZB | 3 → 2 (single seed variant + reduce) | `AwsmRenderer::set_anti_aliasing` |
 | Picker | 2 → 1 (active msaa only) | `AwsmRenderer::set_anti_aliasing` |
-| Geometry | 18 → 9 (the existing item #1 in this plan) | `AwsmRenderer::set_anti_aliasing` |
+
+The Geometry pass is **not** in this list — a prototype existed locally and was reverted (see Priority 1 below; the WIP is the seed for re-landing).
 
 `Shaders::ensure_keys` now returns `Vec<ShaderKey>` directly (matching the shape of `RenderPipelines::ensure_keys` / `ComputePipelines::ensure_keys`), so the per-pass `*_for_config` builders can pipeline through one shader-compile batch + one pipeline-compile batch with no follow-up `get_key` round-trips.
 
 ### Boot-timing instrumentation
 
-Three new log surfaces under `target = "awsm_renderer::boot_timing"` (filter via `RUST_LOG=awsm_renderer::boot_timing=info`):
+Three log surfaces under `target = "awsm_renderer::boot_timing"` (filter via `RUST_LOG=awsm_renderer::boot_timing=info`):
 
 - `AwsmRendererBuilder::build` emits per-phase wall-clock: `phase = CompilingShaders (+42ms phase, 42ms total)` etc. so the operator can attribute cold-boot time to a specific phase without ad-hoc instrumentation.
 - `Shaders::ensure_keys` emits `Shaders::ensure_keys: 32 shaders compiled in 845ms` per batched call.
-- `{Render,Compute}Pipelines::ensure_keys` emit the same shape plus the per-pipeline finish-order labels already documented in this plan (compute now also logs per-pipeline cumulative timing — see item #2 below).
+- `{Render,Compute}Pipelines::ensure_keys` emit `N pipelines compiled in Tms` per batched call.
 
-Combined with the per-pipeline labels (item #2 below), the cold-boot waterfall is now diagnosable end-to-end without modifying the binary.
+The per-pipeline labels (`compute:ShaderKey(_):PipelineLayoutKey(_)`, `render:Geometry(ShaderKey(1)):PipelineLayoutKey(12)` etc.) referenced repeatedly below as "already in place" are **not yet committed** — they were part of the reverted WIP. See [§ Lessons captured from reverted WIP](#lessons-captured-from-reverted-wip) for the correct shape to re-land. The aggregate per-batch wall-clock that *is* committed is enough to scope the work below; the per-pipeline labels remain a high-leverage diagnostic add.
 
 ### Dynamic-materials surface
 
@@ -105,73 +104,9 @@ Bisected by stubbing the body of `compute.wgsl`'s `main()` and progressively re-
 
 ## What's currently in the codebase
 
-### Permanent improvements (keep)
+The only items from the original investigation that are committed on `dynamic-shaders` today are the boot-timing wall-clock logs (per-phase in `AwsmRendererBuilder::build`, per-batch in `Shaders::ensure_keys`, `RenderPipelines::ensure_keys`, `ComputePipelines::ensure_keys`). Everything else from the prototype branch — Geometry MSAA pre-warm cut, per-pipeline labels, device-limits log, `onuncapturederror` hook, `PipelineVariantNotCompiled` error variant, msaa_resolve_samples loop conversion — was reverted on review. See [§ Lessons captured from reverted WIP](#lessons-captured-from-reverted-wip) for what they looked like and how to re-land each cleanly.
 
-These are real wins regardless of how the rest of the plan proceeds. Roughly ranked by leverage.
-
-#### 1. Geometry MSAA pre-warm cut
-
-[crates/renderer/src/render_passes/geometry/pipeline.rs](../../crates/renderer/src/render_passes/geometry/pipeline.rs) was rewritten to match the lazy-pool pattern that opaque/classify/HZB/picker already use:
-
-- `shader_cache_keys(multisampled_geometry: bool)` and `build_descriptors(..., multisampled_geometry: bool)` now take the active MSAA explicitly and emit 3 shaders + 9 pipelines for just that branch (was: 6 shaders + 18 pipelines for both branches).
-- `GeometryRenderPipelineKeys.{no_anti_alias, msaa_4_anti_alias}` are `Option<Level1>`; only the active branch is populated at cold-boot.
-- New `merge_resolved(...)` mirrors `MaterialClassifyPipelines::merge_resolved` so toggling MSAA back and forth pays the compile cost only on the first transition in each direction.
-- New `has_branch_for(anti_aliasing)` lets `set_anti_aliasing` skip the recompile if the now-active branch is already cached.
-
-[crates/renderer/src/anti_alias.rs](../../crates/renderer/src/anti_alias.rs) `set_anti_aliasing` was extended to:
-- Build geometry descriptors when the new MSAA branch isn't yet populated.
-- Run the geometry render-pipeline batch in a `try_join`'d pair alongside the existing compute batch (matches the cold-boot pattern in `AwsmRendererBuilder::build` at lib.rs:1568-1583).
-
-Result on Android: render-pipeline batch at init went from 27 pipelines / 5 s + watchdog kill → 18 pipelines / ~700 ms.
-
-#### 2. Per-pipeline labels + cumulative timings in `ensure_keys`
-
-- [crates/renderer/src/pipelines/compute_pipeline.rs](../../crates/renderer/src/pipelines/compute_pipeline.rs): label format `compute:ShaderKey(_):PipelineLayoutKey(_)`; logs per-pipeline finish-order and total wall-clock under `target = "awsm_renderer::boot_timing"`.
-- [crates/renderer/src/pipelines/render_pipeline.rs](../../crates/renderer/src/pipelines/render_pipeline.rs): label embeds the shader's `debug_label()` so the log reads e.g. `render:Geometry(ShaderKey(1)):PipelineLayoutKey(12)` directly. Same per-pipeline + total format.
-
-Before this, the Android error said `[ComputePipeline (unlabeled)]` and we had no way to know which pipeline failed. The labels also surface in any `popErrorScope` / `onuncapturederror` paths.
-
-#### 3. Adapter + device limits log + `onuncapturederror` hook
-
-[crates/renderer-core/src/renderer.rs](../../crates/renderer-core/src/renderer.rs) now logs (one-shot at device creation, filter `target = "awsm_renderer_core::limits"`):
-
-```
-device limits: maxStorageBuffersPerShaderStage=16 maxStorageBufferBindingSize=2147483644
-  maxUniformBufferBindingSize=65536 maxBufferSize=4294967292 maxBindGroups=4
-  maxBindingsPerBindGroup=1000 maxSampledTexturesPerShaderStage=48
-  maxComputeWorkgroupStorageSize=16384 maxComputeInvocationsPerWorkgroup=256
-  maxComputeWorkgroupSizeX=256 maxComputeWorkgroupSizeY=256
-```
-
-Saved hours of guessing — confirmed Android isn't actually capping us at 8 storage buffers, etc.
-
-Also: a `device.onuncapturederror` hook (using `js_sys::Reflect` because the web-sys typed bindings for `GpuValidationError` / `GpuOutOfMemoryError` / `GpuInternalError` / `GpuUncapturedErrorEvent` aren't in our enabled feature set). Logs under `target = "awsm_renderer_core::uncaptured_error"`. Didn't surface anything new for the specific failure we hit (Dawn passes async pipeline failures through the Promise rejection, not this channel), but earns its keep for runtime errors.
-
-#### 4. `PipelineVariantNotCompiled` error variant
-
-[crates/renderer/src/error.rs](../../crates/renderer/src/error.rs):
-
-```rust
-#[error("Pipeline variant not yet compiled: {0}")]
-PipelineVariantNotCompiled(&'static str),
-```
-
-Used by the geometry lookup tree when a branch is `None`. Should be reused as more passes go lazy-pool.
-
-### R&D workaround (replace before shipping)
-
-#### 5. `msaa_resolve_samples` loop conversion
-
-[helpers/material_shading.wgsl:241-281](../../crates/renderer/src/render_passes/material_opaque/shader/material_opaque_wgsl/helpers/material_shading.wgsl#L241) — replaced the 4 unrolled `msaa_process_sample` calls with a single call inside a `for s in 0..msaa_sample_count` loop. Same behavior (still processes every sample, same blend), but Tint sees one call site and the SPIR-V is small enough for the Android driver to compile.
-
-This is the change that takes Android from "init fails" → "init succeeds." It is **NOT** the right long-term shape:
-
-- PBR compute pipeline compile is still 14.2 s on the test device — *right* at the watchdog edge. A slightly weaker device or memory pressure would push it over.
-- The TODO(quality) comment at the workaround site lists two cleaner shapes:
-  - **(a)** Per-sample intermediate buffer + dedicated resolve pass. Main pass writes per-sample shaded colors to a 4-layer storage texture (or equivalent); a tiny resolve pass blends them. Decouples shader complexity from sample count.
-  - **(b)** Specialize the resolve for the common case. Most MSAA edges are same-material or material-vs-skybox. Cross-material edges are rare. A fast path for the common case + a slow path for cross-material would dramatically reduce the average-case SPIR-V cost.
-
-When you come back to this: pick (a) for correctness/quality and tie it into the broader lazy-pool refactor; (b) is a smaller win that doesn't change architecture.
+The Android failure is therefore **not currently masked** — the original `VK_ERROR_INITIALIZATION_FAILED` on PBR is back. Priority 3 below replaces the workaround with the right architecture; Priority 1 cuts the eager compile count so even a weak driver can keep up.
 
 ---
 
@@ -202,21 +137,22 @@ Ordered by impact. Each item is independent — they can land in any order.
 
 **Acceptance**: on Android, init's compute batch should compile in <1 s (down from 14 s — empty + classify only) and the PBR compile fires lazily on first PBR-mesh load with no watchdog pressure. The new `awsm_renderer::boot_timing` logs make this directly measurable.
 
-### Priority 2 — Defer EVSM / Line / Shadow render pre-warm
+### Priority 2 — Strip Geometry MSAA pre-warm + defer EVSM / Line / Shadow render pre-warm
 
-**Why**: secondary contributors to cold-boot pipeline count.
+**Why**: secondary contributors to cold-boot pipeline count. Geometry first, because it's by far the biggest of the four and the WIP for it already exists ([§ Lessons captured, D](#d-geometry-pass-msaa-aware-build_descriptors--has_branch_for--merge_resolved)) — it just needs a careful re-land without the parallel-await regression.
 
+- **Geometry** (9 render pipelines per MSAA branch): re-land [§ Lessons captured, D](#d-geometry-pass-msaa-aware-build_descriptors--has_branch_for--merge_resolved). Render-pipeline batch at init goes from 27 pipelines / 5 s + watchdog kill → 18 pipelines / ~700 ms on Android.
 - **EVSM** (3 compute pipelines): only useful when at least one shadow-casting light exists. [crates/renderer/src/shadows/evsm.rs:144-146](../../crates/renderer/src/shadows/evsm.rs#L144) currently registers them at init.
 - **Line render** (2 render pipelines): only useful when the user adds a line primitive. The line pass cache key registration is in `crates/renderer/src/render_passes/lines/`.
 - **Shadow Generation VS** (2 render pipelines): only useful with shadow casters. `crates/renderer/src/shadows/helpers.rs` references the pipeline layout.
 
-**Concrete approach**: same lazy-pool pattern. Gate each on a "first use" trigger.
+**Concrete approach**: same lazy-pool pattern as the five passes that already use it. Gate each on a "first use" trigger; for Geometry, on `set_anti_aliasing`. Promote `PipelineVariantNotCompiled` ([§ Lessons captured, C](#c-pipelinevariantnotcompiled-error-variant)) at the lookup site.
 
-**Acceptance**: cold-boot render batch drops from 18 → 9 pipelines on this Android device. (Geometry stays at 9; lines/shadow-gen become lazy.)
+**Acceptance**: cold-boot render batch drops from 27 → 9 pipelines on this Android device (Geometry strip from 18→9, lines/shadow-gen become lazy).
 
 ### Priority 3 — Replace the `msaa_resolve_samples` workaround
 
-**Why**: the loop conversion (#5 above) works but is fragile; the compute pipeline compile still takes 14 s on this device. The R&D NOTE in the shader file calls this out.
+**Why**: the PBR-only resolve path produces SPIR-V the Android Vulkan driver rejects ([§ Lessons captured, E](#e-msaa_resolve_samples-loop-conversion-rd-workaround)). The reverted loop conversion made it boot at 14 s — right at the watchdog edge, not a shipping shape. Need the architecturally clean replacement.
 
 **Approach** — pick one or both:
 
@@ -287,18 +223,23 @@ Run it from the project root.
 
 | Pattern | What it tells you |
 |---|---|
-| `device limits:` | Adapter/device caps (max storage buffers, uniform binding size, workgroup storage size, etc.). |
 | `phase = CompilingShaders \| BuildingPipelines \| Ready (+Tms phase, Tms total)` | Per-phase wall-clock during `AwsmRendererBuilder::build`. Decomposes cold-boot into the canonical phases. |
 | `Shaders::ensure_keys: N shaders compiled in Tms` | Total wall-clock for a shader-compile batch. |
 | `{Render,Compute}Pipelines::ensure_keys: N pipelines compiled in Tms` | Total wall-clock for a pipeline batch. |
-| `pipeline N/M render:... cum=Tms ok\|ERR` | Per-pipeline finish time + outcome. The label has the shader name embedded. |
-| `pipeline N/M compute:ShaderKey(_):PipelineLayoutKey(_)` | Compute pipeline label (less informative than render — Tint shader-label not threaded through here yet, see [§ Followups](#small-followups)). |
 | `[asset_cache] model loaded: asset_id=AssetId(_) (Tms)` | Scene-editor gltf asset reaching `AssetStatus::Ready` (full load + populate wall-clock). |
 | `[scene] model loaded: <GltfId> (Tms)` | Model-tests gltf finishing load. |
 | `VK_ERROR_` | Vulkan-layer pipeline rejection. Catch-all for driver-side issues. |
 | `External Instance reference no longer exists` | Watchdog killed the GPU instance — typically follows a long compile. |
-| `GPU uncaptured` | Anything Dawn fires through `onuncapturederror`. |
 | `phase = Ready` | Init succeeded end-to-end. |
+
+Once the reverted diagnostics are re-landed per [§ Lessons captured, A+B](#lessons-captured-from-reverted-wip), these lines also appear:
+
+| Pattern | What it tells you |
+|---|---|
+| `device limits:` | Adapter/device caps (max storage buffers, uniform binding size, workgroup storage size, etc.). |
+| `pipeline N/M render:... cum=Tms ok\|ERR` | Per-pipeline finish time + outcome. The label has the shader name embedded. |
+| `pipeline N/M compute:ShaderKey(_):PipelineLayoutKey(_)` | Compute pipeline label. |
+| `GPU uncaptured` | Anything Dawn fires through `onuncapturederror`. |
 
 All boot-timing logs use the `awsm_renderer::boot_timing` target. Filter to just these lines with `RUST_LOG=awsm_renderer::boot_timing=info` (or the equivalent in the browser's `tracing-subscriber` filter — `tracing-web` exposes the standard `EnvFilter` syntax).
 
@@ -308,29 +249,73 @@ Bisect the kernel by progressively moving an early `return;` through the shader 
 
 ---
 
-## Files left modified
+## Lessons captured from reverted WIP
 
-8 files are in the working tree, all clean. Listed in dependency order:
+A local prototype branch implemented eight files of follow-up work that were reverted on review (parts were too R&D-y to commit, one piece was a correctness regression). Each is recorded here with the correct shape for a re-land, ordered by leverage. **None of these are blocking** — Priority 1+3 above remain the actual cold-boot wins; the items below either re-land alongside those or stand alone as diagnostics.
 
-1. **[crates/renderer-core/src/renderer.rs](../../crates/renderer-core/src/renderer.rs)** — limits log + onuncapturederror hook. Permanent.
-2. **[crates/renderer/src/error.rs](../../crates/renderer/src/error.rs)** — `PipelineVariantNotCompiled` variant. Permanent.
-3. **[crates/renderer/src/pipelines/compute_pipeline.rs](../../crates/renderer/src/pipelines/compute_pipeline.rs)** — per-pipeline labels + timings in `ensure_keys`. Permanent.
-4. **[crates/renderer/src/pipelines/render_pipeline.rs](../../crates/renderer/src/pipelines/render_pipeline.rs)** — same, with shader debug_label embedded. Permanent.
-5. **[crates/renderer/src/render_passes/geometry/pipeline.rs](../../crates/renderer/src/render_passes/geometry/pipeline.rs)** — MSAA-aware shader_cache_keys/build_descriptors, Option<Level1> branches, merge_resolved, has_branch_for. Permanent.
-6. **[crates/renderer/src/render_passes.rs](../../crates/renderer/src/render_passes.rs)** — plumbed MSAA config to geometry. Permanent (minor).
-7. **[crates/renderer/src/anti_alias.rs](../../crates/renderer/src/anti_alias.rs)** — extended set_anti_aliasing for geometry's new branch, try_join compute + render batches. Permanent.
-8. **[crates/renderer/src/render_passes/material_opaque/shader/material_opaque_wgsl/helpers/material_shading.wgsl](../../crates/renderer/src/render_passes/material_opaque/shader/material_opaque_wgsl/helpers/material_shading.wgsl)** — **R&D workaround**: msaa_resolve_samples loop conversion. Has an inline R&D NOTE and TODO(quality) comment. Replace per Priority 3 above.
+### A. Per-pipeline labels + finish-order log in `ensure_keys`
 
-Everything compiles; full workspace `cargo check --target wasm32-unknown-unknown` is clean. `task debug-mobile:chrome-check` reaches `phase = Ready` on the Android test device.
+The committed `{Render,Compute}Pipelines::ensure_keys` log a single aggregate `N pipelines compiled in Tms` line. The reverted prototype added per-pipeline `pipeline N/M render:Geometry(ShaderKey(1)):PipelineLayoutKey(12) ok` lines so the operator can see *which* pipeline finished in what order, plus a cumulative timing — invaluable for diagnosing watchdog kills (the original Android error said `[ComputePipeline (unlabeled)]`, which is what motivated this).
 
-The stale plan file at `~/.claude/plans/any-idea-why-i-quirky-unicorn.md` (created during the investigation) is superseded by this one and can be deleted.
+**Re-land shape**: build the per-pipeline label string before kicking off `device.create_*_pipeline_async`, then attach a side-effect combinator (`.inspect` / `.map`) to each individual future that logs on resolve. **Do NOT replace `futures::future::join_all(promises).await` with a serial `for promise in promises { promise.await }` loop** — the prototype did this to get per-pipeline cumulative timing and the result was a serialization of all pipeline creation, defeating Dawn's parallel compile pool. That regression is the reason this whole batch was reverted. Cumulative wall-clock is achievable inside the combinator without sequencing.
+
+For the compute path, also thread `Shaders::get_label(ShaderKey) -> Option<String>` so labels read `compute:MaterialOpaque(...)` instead of `compute:ShaderKey(5):PipelineLayoutKey(_)`. The render path already has this via the shader's `debug_label()`.
+
+### B. Adapter + device limits log + `onuncapturederror` hook
+
+One-shot log at device creation under `target = "awsm_renderer_core::limits"`:
+
+```
+device limits: maxStorageBuffersPerShaderStage=16 maxStorageBufferBindingSize=2147483644
+  maxUniformBufferBindingSize=65536 maxBufferSize=4294967292 maxBindGroups=4
+  maxBindingsPerBindGroup=1000 maxSampledTexturesPerShaderStage=48
+  maxComputeWorkgroupStorageSize=16384 maxComputeInvocationsPerWorkgroup=256
+  maxComputeWorkgroupSizeX=256 maxComputeWorkgroupSizeY=256
+```
+
+Plus `device.onuncapturederror` under `target = "awsm_renderer_core::uncaptured_error"` — surfaces runtime validation / OOM / internal errors that Dawn fires outside the create-pipeline Promise.
+
+**Re-land shape**: 60-line addition to `crates/renderer-core/src/renderer.rs`. The prototype used `js_sys::Reflect` because the web-sys typed bindings for `GpuValidationError` / `GpuOutOfMemoryError` / `GpuInternalError` / `GpuUncapturedErrorEvent` aren't enabled — cleaner re-land would add those features to the workspace `web-sys` declaration and use the typed bindings. Pure-diagnostic; safe to land standalone.
+
+### C. `PipelineVariantNotCompiled` error variant
+
+```rust
+#[error("Pipeline variant not yet compiled: {0}")]
+PipelineVariantNotCompiled(&'static str),
+```
+
+In `crates/renderer/src/error.rs`. Used by every lazy-pool lookup tree when a branch is `None`. The pattern works today by returning `Option` from `get_*_key`; promoting to a typed error gives dispatchers a cleaner "skip-this-bucket" signal than ad-hoc `None`-handling.
+
+**Re-land shape**: land alongside whichever Priority 1+2 pass first needs it. Adding it speculatively makes the surface dead code.
+
+### D. Geometry pass MSAA-aware build_descriptors + has_branch_for + merge_resolved
+
+The lazy-pool refactor of `crates/renderer/src/render_passes/geometry/pipeline.rs` — the work that the (incorrect) "18 → 9" row in the progress table claimed was already landed. Concretely:
+
+- `shader_cache_keys(multisampled_geometry: bool)` and `build_descriptors(..., multisampled_geometry: bool)` take the active MSAA explicitly.
+- `GeometryRenderPipelineKeys.{no_anti_alias, msaa_4_anti_alias}` become `Option<Level1>`; only the active branch is populated at cold-boot.
+- New `merge_resolved(...)` mirrors `MaterialClassifyPipelines::merge_resolved` so toggling MSAA back and forth pays compile cost only on the first transition each direction.
+- New `has_branch_for(anti_aliasing)` lets `set_anti_aliasing` skip the recompile when the now-active branch is already cached.
+- `crates/renderer/src/anti_alias.rs` `set_anti_aliasing` extends to build geometry descriptors when the new branch is empty and runs the geometry render-pipeline batch via `try_join` alongside the existing compute batch.
+- `crates/renderer/src/render_passes.rs` plumbs the MSAA config into geometry's `build_descriptors`.
+
+**Re-land shape**: this is Priority 1 below — just lift the prototype carefully, keeping the `try_join` shape between compute + render at the `set_anti_aliasing` entry point. Measured Android impact when this was active: render-pipeline batch at init went from 27 pipelines / 5 s + watchdog kill → 18 pipelines / ~700 ms.
+
+### E. `msaa_resolve_samples` loop conversion (R&D workaround)
+
+The PBR-only MSAA resolve path in `helpers/material_shading.wgsl:234-266` unrolls 4 `msaa_process_sample` calls — Tint inlines each, producing SPIR-V that the Android Vulkan driver rejects on compile (`VK_ERROR_INITIALIZATION_FAILED`). The prototype replaced the unroll with a `for s in 0..msaa_sample_count` loop, which Tint sees as a single call site. Init goes from "fails" → "succeeds" but PBR compile still takes ~14 s on the test device (right at the watchdog edge).
+
+This was reverted because it's an R&D-quality workaround, not the long-term shape. The architecturally clean replacements are (a) per-sample intermediate buffer + dedicated resolve pass and (b) specialize the common-case (same-material / material-vs-skybox edges). See [Priority 3](#priority-3--replace-the-msaa_resolve_samples-workaround) below — the re-land is the replacement, not the loop conversion.
+
+If Android needs to boot for testing before Priority 3 lands, the loop conversion is the minimal patch to apply locally; just don't ship it.
 
 ---
 
-## Small followups (nice-to-have, not blocking)
+## Files left modified
 
-- **Compute-pipeline labels could include the shader debug_label too** (like render_pipeline.rs does today). The render-pipeline path threads it through via `descriptor.label`; the compute path uses the raw `compute:ShaderKey(_):PipelineLayoutKey(_)` form. A `Shaders::get_label(ShaderKey) -> Option<String>` helper would let compute pipeline labels read `compute:MaterialOpaque(...)` instead of just `ShaderKey(5)`. ~20 lines.
-- **The `onuncapturederror` hook uses `js_sys::Reflect`** because the web-sys feature flags for `GpuValidationError` etc. aren't enabled. Adding `"GpuValidationError", "GpuInternalError", "GpuOutOfMemoryError", "GpuUncapturedErrorEvent"` to the workspace web-sys feature list would let us use typed bindings. Cleanup, not functional.
+The working tree is clean. All committed work referenced in this plan is on `dynamic-shaders` HEAD. `task debug-mobile:chrome-check` does **not** currently reach `phase = Ready` on the Android test device — Priority 3 is what fixes that.
+
+The stale plan file at `~/.claude/plans/any-idea-why-i-quirky-unicorn.md` (created during the investigation) is superseded by this one and can be deleted.
 
 ---
 
