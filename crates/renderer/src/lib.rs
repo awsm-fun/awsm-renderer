@@ -259,6 +259,17 @@ pub struct AwsmRenderer {
 /// the binding count will pass adapter compatibility on a device that
 /// exactly meets the declared limit, then fail pipeline validation
 /// when the shader is compiled.
+///
+/// ## Dynamic-materials `extras_pool` slot
+///
+/// The dynamic-materials plan (Phase 6) earmarks the 10th and final
+/// slot for the `extras_pool` storage buffer that backs `BufferSlot`
+/// declarations on registered custom materials. When that binding
+/// lands across the opaque + transparent passes, bump this cap to
+/// `Some(10)`. See `docs/plans/dynamic-materials.md` under "Storage
+/// strategy" / "Storage-buffer budget watch" for the rationale and
+/// `crates/renderer/src/dynamic_materials/extras_pool.rs` for the
+/// pool itself.
 pub static COMPATIBITLIY_REQUIREMENTS: LazyLock<CompatibilityRequirements> =
     LazyLock::new(|| CompatibilityRequirements {
         storage_buffers: Some(9),
