@@ -54,6 +54,15 @@ pub struct BindGroupRecreateContext<'a> {
     /// the opaque dispatch.
     pub material_classify_buffers:
         &'a crate::render_passes::material_classify::buffers::ClassifyBuffers,
+    /// Priority-3 MSAA edge-resolve composite buffer. `Some` only when
+    /// MSAA is on (no edges to resolve under single-sample). Bound
+    /// read-write to the classify pass (binding 4) and the per-shader
+    /// edge_resolve / skybox_edge_resolve / final_blend pipelines.
+    pub material_edge_buffers:
+        Option<&'a crate::render_passes::material_opaque::edge_buffers::MaterialEdgeBuffers>,
+    /// `EdgeBufferLayout` uniform companion. Same `Some` discipline as
+    /// `material_edge_buffers`.
+    pub material_edge_layout_uniform: Option<&'a web_sys::GpuBuffer>,
     /// Renderer-wide variable-length per-material data pool. Bound on
     /// the opaque + transparent main bind groups so custom-material
     /// WGSL fragments can resolve `<slot>_offset` /

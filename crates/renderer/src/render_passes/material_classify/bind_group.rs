@@ -65,7 +65,7 @@ impl MaterialClassifyBindGroups {
         } else {
             self.singlesampled_bind_group_layout_key
         };
-        let entries = vec![
+        let mut entries = vec![
             BindGroupEntry::new(
                 0,
                 BindGroupResource::TextureView(Cow::Borrowed(
@@ -90,6 +90,34 @@ impl MaterialClassifyBindGroups {
             ),
         ];
 
+        // Priority 3 — bind the edge buffer + edge-layout uniform when
+        // MSAA is on so the classify shader's `emit_edge_data` block has
+        // its storage targets.
+        if msaa {
+            if let (Some(edge_buffers), Some(edge_layout_uniform)) =
+                (ctx.material_edge_buffers, ctx.material_edge_layout_uniform)
+            {
+                entries.push(BindGroupEntry::new(
+                    4,
+                    BindGroupResource::Buffer(BufferBinding::new(&edge_buffers.buffer)),
+                ));
+                entries.push(BindGroupEntry::new(
+                    5,
+                    BindGroupResource::Buffer(BufferBinding::new(edge_layout_uniform)),
+                ));
+            } else {
+                // MSAA on but edge buffers missing — should not happen
+                // (build() allocates them in lockstep). Bail with a
+                // descriptive error rather than producing a malformed
+                // bind group.
+                return Err(AwsmBindGroupError::NotFound(
+                    "Material Classify - edge buffer / layout uniform required for MSAA"
+                        .to_string(),
+                )
+                .into());
+            }
+        }
+
         let descriptor = BindGroupDescriptor::new(
             ctx.bind_group_layouts.get(layout_key)?,
             Some("Material Classify"),
@@ -104,7 +132,7 @@ async fn create_bind_group_layout_key(
     ctx: &mut RenderPassInitContext<'_>,
     multisampled_geometry: bool,
 ) -> Result<BindGroupLayoutKey> {
-    let entries = vec![
+    let mut entries = vec![
         // visibility_data — uint texture; MSAA variant is multisampled.
         BindGroupLayoutCacheKeyEntry {
             resource: BindGroupLayoutResource::Texture(
@@ -145,6 +173,27 @@ async fn create_bind_group_layout_key(
             visibility_compute: true,
         },
     ];
+
+    // Priority 3 — MSAA edge emission. Adds two bindings (storage RW
+    // edge buffer + uniform edge-layout) to the multisampled variant.
+    if multisampled_geometry {
+        entries.push(BindGroupLayoutCacheKeyEntry {
+            resource: BindGroupLayoutResource::Buffer(
+                BufferBindingLayout::new().with_binding_type(BufferBindingType::Storage),
+            ),
+            visibility_vertex: false,
+            visibility_fragment: false,
+            visibility_compute: true,
+        });
+        entries.push(BindGroupLayoutCacheKeyEntry {
+            resource: BindGroupLayoutResource::Buffer(
+                BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
+            ),
+            visibility_vertex: false,
+            visibility_fragment: false,
+            visibility_compute: true,
+        });
+    }
 
     Ok(ctx
         .bind_group_layouts

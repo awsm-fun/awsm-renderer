@@ -77,10 +77,11 @@ impl MaterialClassifyPipelines {
             bucket_entries: bucket_entries.to_vec(),
             // Priority-3 edge data emission is gated to the
             // multisampled path only — under single-sample there are
-            // no MSAA edges to emit. Stage 3.7 wires the
-            // edge-buffer + matching binding shape; until then the
-            // template's `{% if emit_edge_data %}` block stays elided.
-            emit_edge_data: false,
+            // no MSAA edges to emit. Stage 3.7 dispatch wiring flips
+            // this on for the multisampled variant; the singlesampled
+            // variant keeps it false (it would compile to a zero-cost
+            // no-op anyway since the {% if %} block is `&& multisampled`).
+            emit_edge_data: active_msaa.is_some(),
         })]
     }
 
@@ -132,7 +133,7 @@ impl MaterialClassifyPipelines {
                 ShaderCacheKeyMaterialClassify {
                     msaa_sample_count: active_msaa,
                     bucket_entries: bucket_entries.to_vec(),
-                    emit_edge_data: false,
+                    emit_edge_data: active_msaa.is_some(),
                 },
             )
             .await?;

@@ -16,6 +16,10 @@
 
 // MaterialShaderId no longer needed in this file — the dispatch loop now
 // iterates registry bucket entries instead of hard-coded ids.
+use std::borrow::Cow;
+
+use awsm_renderer_core::bind_groups::{BindGroupDescriptor, BindGroupEntry, BindGroupResource};
+use awsm_renderer_core::buffers::BufferBinding;
 use awsm_renderer_core::command::compute_pass::ComputePassDescriptor;
 
 use crate::{
@@ -26,7 +30,8 @@ use crate::{
         material_classify::buffers::indirect_args_offset,
         material_opaque::{
             bind_group::MaterialOpaqueBindGroups, edge_bind_group::MaterialEdgeBindGroupLayouts,
-            edge_pipeline::MaterialEdgePipelines, pipeline::MaterialOpaquePipelines,
+            edge_buffers::MaterialEdgeBuffers, edge_pipeline::MaterialEdgePipelines,
+            pipeline::MaterialOpaquePipelines,
         },
         RenderPassInitContext,
     },
@@ -124,10 +129,41 @@ impl MaterialOpaqueRenderPass {
             return Ok(());
         }
 
-        // Per-shader-id edge_resolve dispatches.
+        // Edge buffer + layout uniform must exist for the dispatch
+        // to bind anything. Allocated in lockstep with MSAA-on at
+        // build(), so this is a defense-in-depth bail.
+        let (edge_buffers, edge_layout_uniform) =
+            match (ctx.material_edge_buffers, ctx.material_edge_layout_uniform) {
+                (Some(b), Some(u)) => (b, u),
+                _ => {
+                    warn_pipeline_not_compiled(
+                        "material_opaque::edge_resolve",
+                        "edge buffers / layout uniform missing",
+                    );
+                    return Ok(());
+                }
+            };
+
+        // Build the three edge bind groups for this frame. Built on
+        // every frame (not cached) — bind-group construction is cheap
+        // (~few µs per group) and the cache-invalidation discipline
+        // (edge buffer recreate, texture-view recreate, MSAA flip)
+        // would be intricate to get right across the whole pipeline.
+        let (edge_resolve_group4, skybox_edge_group, final_blend_group) =
+            self.build_edge_bind_groups(ctx, edge_buffers, edge_layout_uniform)?;
+
+        let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
+            &ComputePassDescriptor::new(Some("Material Opaque - Edge Resolve")).into(),
+        ));
+
+        // ── Per-shader-id edge_resolve dispatches ────────────────────
+        let (main_bind_group, lights_bind_group, texture_bind_group, shadows_bind_group) =
+            self.bind_groups.get_bind_groups()?;
+
         let bucket_entries = ctx.dynamic_materials.bucket_entries_cached();
-        for entry in bucket_entries.iter() {
-            let Some(_pipeline_key) = self
+        let mut any_per_shader = false;
+        for (bucket_index, entry) in bucket_entries.iter().enumerate() {
+            let Some(pipeline_key) = self
                 .edge_pipelines
                 .get_per_shader_pipeline_key(ctx.anti_aliasing, entry.shader_id)
             else {
@@ -138,21 +174,140 @@ impl MaterialOpaqueRenderPass {
                 );
                 continue;
             };
-            // Bind group + dispatch wiring lands with Stage 3.7's
-            // edge-buffer allocator. At this commit we have the
-            // pipeline cache populated but no edge buffer to bind, so
-            // the dispatch is a no-op placeholder. Visual output
-            // identical to the previous commit (edges render as
-            // transparent black) until 3.7 lands the buffer + bind
-            // group + dispatch call.
-            let _ = _pipeline_key;
+            if !any_per_shader {
+                // Set the four primary opaque bind groups once for the
+                // edge_resolve dispatches — they all share groups 0..3
+                // with the primary opaque pipeline.
+                compute_pass.set_bind_group(0u32, main_bind_group, None)?;
+                compute_pass.set_bind_group(1u32, lights_bind_group, None)?;
+                compute_pass.set_bind_group(2u32, texture_bind_group, None)?;
+                compute_pass.set_bind_group(3u32, shadows_bind_group, None)?;
+                compute_pass.set_bind_group(4u32, &edge_resolve_group4, None)?;
+                any_per_shader = true;
+            }
+            compute_pass.set_pipeline(ctx.pipelines.compute.get(pipeline_key)?);
+            compute_pass.dispatch_workgroups_indirect_with_u32(
+                &edge_buffers.buffer,
+                MaterialEdgeBuffers::per_shader_args_offset(bucket_index as u32),
+            );
         }
 
-        // Skybox edge resolve + final blend dispatches — same shape;
-        // gated by the same all-or-nothing scheduler batch. Wired
-        // alongside the edge-buffer allocator in Stage 3.7.
+        // ── Skybox edge resolve ─────────────────────────────────────
+        if let Some(pipeline_key) = self.edge_pipelines.skybox_edge_resolve_pipeline_key {
+            compute_pass.set_pipeline(ctx.pipelines.compute.get(pipeline_key)?);
+            compute_pass.set_bind_group(0u32, &skybox_edge_group, None)?;
+            compute_pass.dispatch_workgroups_indirect_with_u32(
+                &edge_buffers.buffer,
+                MaterialEdgeBuffers::skybox_edge_args_offset(),
+            );
+        } else {
+            warn_pipeline_not_compiled("material_opaque::edge_resolve", "skybox");
+        }
+
+        // ── Final blend ─────────────────────────────────────────────
+        if let Some(pipeline_key) = self.edge_pipelines.final_blend_pipeline_key {
+            compute_pass.set_pipeline(ctx.pipelines.compute.get(pipeline_key)?);
+            compute_pass.set_bind_group(0u32, &final_blend_group, None)?;
+            compute_pass.dispatch_workgroups_indirect_with_u32(
+                &edge_buffers.buffer,
+                MaterialEdgeBuffers::final_blend_args_offset(),
+            );
+        }
+
+        compute_pass.end();
 
         Ok(())
+    }
+
+    /// Builds the three edge bind groups for this frame. Called from
+    /// `render_edge_resolve`; bind-group construction is cheap so we
+    /// rebuild every frame instead of caching with invalidation logic.
+    fn build_edge_bind_groups(
+        &self,
+        ctx: &RenderContext,
+        edge_buffers: &MaterialEdgeBuffers,
+        edge_layout_uniform: &web_sys::GpuBuffer,
+    ) -> Result<(
+        web_sys::GpuBindGroup,
+        web_sys::GpuBindGroup,
+        web_sys::GpuBindGroup,
+    )> {
+        let layouts = &self.edge_bind_group_layouts;
+
+        // edge_resolve_group4: edge buffer (storage RW) + layout uniform.
+        let entries_g4 = vec![
+            BindGroupEntry::new(
+                0,
+                BindGroupResource::Buffer(BufferBinding::new(&edge_buffers.buffer)),
+            ),
+            BindGroupEntry::new(
+                1,
+                BindGroupResource::Buffer(BufferBinding::new(edge_layout_uniform)),
+            ),
+        ];
+        let descriptor_g4 = BindGroupDescriptor::new(
+            ctx.bind_group_layouts
+                .get(layouts.edge_resolve_group4_layout_key)?,
+            Some("Material Edge Resolve - Group 4"),
+            entries_g4,
+        );
+        let edge_resolve_group4 = ctx.gpu.create_bind_group(&descriptor_g4.into());
+
+        // Skybox-edge bind group: edge buffer + layout + camera + skybox tex + sampler.
+        let entries_sky = vec![
+            BindGroupEntry::new(
+                0,
+                BindGroupResource::Buffer(BufferBinding::new(&edge_buffers.buffer)),
+            ),
+            BindGroupEntry::new(
+                1,
+                BindGroupResource::Buffer(BufferBinding::new(edge_layout_uniform)),
+            ),
+            BindGroupEntry::new(
+                2,
+                BindGroupResource::Buffer(BufferBinding::new(&ctx.camera.gpu_buffer)),
+            ),
+            BindGroupEntry::new(
+                3,
+                BindGroupResource::TextureView(Cow::Borrowed(&ctx.environment.skybox.texture_view)),
+            ),
+            BindGroupEntry::new(
+                4,
+                BindGroupResource::Sampler(&ctx.environment.skybox.sampler),
+            ),
+        ];
+        let descriptor_sky = BindGroupDescriptor::new(
+            ctx.bind_group_layouts
+                .get(layouts.skybox_edge_group0_layout_key)?,
+            Some("Material Skybox Edge Resolve - Group 0"),
+            entries_sky,
+        );
+        let skybox_edge_group = ctx.gpu.create_bind_group(&descriptor_sky.into());
+
+        // Final-blend bind group: edge buffer (RO) + layout + opaque storage texture.
+        let entries_final = vec![
+            BindGroupEntry::new(
+                0,
+                BindGroupResource::Buffer(BufferBinding::new(&edge_buffers.buffer)),
+            ),
+            BindGroupEntry::new(
+                1,
+                BindGroupResource::Buffer(BufferBinding::new(edge_layout_uniform)),
+            ),
+            BindGroupEntry::new(
+                2,
+                BindGroupResource::TextureView(Cow::Borrowed(&ctx.render_texture_views.opaque)),
+            ),
+        ];
+        let descriptor_final = BindGroupDescriptor::new(
+            ctx.bind_group_layouts
+                .get(layouts.final_blend_group0_layout_key)?,
+            Some("Material Final Blend - Group 0"),
+            entries_final,
+        );
+        let final_blend_group = ctx.gpu.create_bind_group(&descriptor_final.into());
+
+        Ok((edge_resolve_group4, skybox_edge_group, final_blend_group))
     }
 
     /// Executes the opaque material pass.

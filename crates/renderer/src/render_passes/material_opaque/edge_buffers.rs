@@ -155,13 +155,19 @@ pub fn sample_entries_per_bucket(max_edge_budget: u32) -> u32 {
     max_edge_budget.saturating_mul(SAMPLE_ENTRIES_PER_BUCKET_MULTIPLIER)
 }
 
-/// Total bytes for the entire composite edge buffer (header + per-edge
-/// arrays + per-shader-id sample lists).
-pub fn total_buffer_bytes(bucket_count: u32, max_edge_budget: u32) -> u32 {
-    let sample_entries_base = sample_entries_offset(bucket_count, max_edge_budget);
+/// Offset of the skybox sample-list region. Allocated as an extra
+/// bucket-shaped slot tacked on after the per-shader-id sample lists.
+pub fn skybox_sample_list_offset(bucket_count: u32, max_edge_budget: u32) -> u32 {
     let per_bucket_bytes = sample_entries_per_bucket(max_edge_budget).saturating_mul(4);
-    let all_buckets_bytes = bucket_count.saturating_mul(per_bucket_bytes);
-    sample_entries_base + all_buckets_bytes
+    sample_entries_offset(bucket_count, max_edge_budget)
+        + bucket_count.saturating_mul(per_bucket_bytes)
+}
+
+/// Total bytes for the entire composite edge buffer (header + per-edge
+/// arrays + per-shader-id sample lists + skybox sample list).
+pub fn total_buffer_bytes(bucket_count: u32, max_edge_budget: u32) -> u32 {
+    let per_bucket_bytes = sample_entries_per_bucket(max_edge_budget).saturating_mul(4);
+    skybox_sample_list_offset(bucket_count, max_edge_budget) + per_bucket_bytes
 }
 
 /// Composite GPU buffer for the MSAA edge-resolve flow.
@@ -299,16 +305,32 @@ impl MaterialEdgeBuffers {
 ///   ... (bucket_count entries total)
 ///   sample_entries_per_bucket
 pub fn build_edge_layout_uniform_bytes(bucket_count: u32, max_edge_budget: u32) -> Vec<u8> {
-    let mut words: Vec<u32> = Vec::with_capacity(5 + bucket_count as usize);
+    // All `*_base` values are **u32-stride indices** from the start of
+    // the WGSL `EdgeBuffers.data: array<u32>` runtime array — i.e. they
+    // count u32 words past the struct header. The struct header in WGSL
+    // has the same byte size as our [`header_bytes`], so we subtract
+    // it from each byte offset and divide by 4 to get u32 strides.
+    let header = header_bytes(bucket_count);
+    let to_stride = |byte_off: u32| -> u32 { (byte_off.saturating_sub(header)) / 4 };
+
+    let mut words: Vec<u32> = Vec::with_capacity(6 + bucket_count as usize);
     words.push(max_edge_budget);
-    words.push(edge_to_xy_offset(bucket_count));
-    words.push(edge_slot_map_offset(bucket_count, max_edge_budget));
-    words.push(accumulator_offset(bucket_count, max_edge_budget));
+    words.push(to_stride(edge_to_xy_offset(bucket_count)));
+    words.push(to_stride(edge_slot_map_offset(
+        bucket_count,
+        max_edge_budget,
+    )));
+    words.push(to_stride(accumulator_offset(bucket_count, max_edge_budget)));
     let per_bucket = sample_entries_per_bucket(max_edge_budget);
     let base = sample_entries_offset(bucket_count, max_edge_budget);
     for i in 0..bucket_count {
-        words.push(base + i * per_bucket * 4); // 4 bytes per sample entry (packed u32)
+        words.push(to_stride(base + i * per_bucket * 4)); // 4 bytes per sample entry (packed u32)
     }
+    // skybox_sample_list_base — extra slot after the per-bucket lists.
+    words.push(to_stride(skybox_sample_list_offset(
+        bucket_count,
+        max_edge_budget,
+    )));
     words.push(per_bucket);
 
     // Pad to 16-byte alignment (WebGPU uniform-buffer requirement).

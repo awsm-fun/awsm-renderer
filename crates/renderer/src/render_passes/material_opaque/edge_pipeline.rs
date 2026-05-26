@@ -26,8 +26,17 @@ use std::collections::HashMap;
 use awsm_materials::MaterialShaderId;
 
 use crate::anti_alias::AntiAliasing;
-use crate::pipeline_layouts::PipelineLayoutKey;
+use crate::dynamic_materials::BucketEntry;
+use crate::error::Result;
+use crate::pipeline_layouts::{PipelineLayoutCacheKey, PipelineLayoutKey};
 use crate::pipelines::compute_pipeline::{ComputePipelineCacheKey, ComputePipelineKey};
+use crate::render_passes::material_opaque::bind_group::MaterialOpaqueBindGroups;
+use crate::render_passes::material_opaque::edge_bind_group::MaterialEdgeBindGroupLayouts;
+use crate::render_passes::material_opaque::shader::edge_cache_key::{
+    ShaderCacheKeyMaterialEdgeResolve, ShaderCacheKeyMaterialFinalBlend,
+    ShaderCacheKeyMaterialSkyboxEdgeResolve,
+};
+use crate::shaders::ShaderCacheKey;
 
 /// Lookup key for the per-shader-id edge_resolve pipeline cache.
 ///
@@ -138,6 +147,135 @@ impl MaterialEdgePipelines {
         pipeline_key: ComputePipelineKey,
     ) {
         self.per_shader.insert(key_id, pipeline_key);
+    }
+
+    /// Compiles the edge-resolve pipelines for the given bucket list,
+    /// anti-aliasing config, color format, and texture pool shape.
+    ///
+    /// Walks the bucket entries to build per-shader-id edge-resolve
+    /// shader/pipeline cache keys, plus the global skybox-edge and
+    /// final-blend keys; runs them through `Shaders::ensure_keys` +
+    /// `ComputePipelines::ensure_keys`; folds the resolved keys back
+    /// into the typed cache via `merge_resolved`.
+    ///
+    /// No-op when MSAA is off (there are no edges to resolve).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn ensure_compiled(
+        &mut self,
+        gpu: &awsm_renderer_core::renderer::AwsmRendererWebGpu,
+        shaders: &mut crate::shaders::Shaders,
+        compute_pipelines: &mut crate::pipelines::compute_pipeline::ComputePipelines,
+        pipeline_layouts: &mut crate::pipeline_layouts::PipelineLayouts,
+        bind_group_layouts: &mut crate::bind_group_layout::BindGroupLayouts,
+        opaque_bind_groups: &MaterialOpaqueBindGroups,
+        edge_layouts: &MaterialEdgeBindGroupLayouts,
+        bucket_entries: &[BucketEntry],
+        anti_aliasing: &AntiAliasing,
+        color_wgsl_format: &str,
+    ) -> Result<()> {
+        // No MSAA → no edges → no compile.
+        if anti_aliasing.msaa_sample_count.is_none() {
+            return Ok(());
+        }
+
+        let texture_pool_arrays_len = opaque_bind_groups.texture_pool_arrays_len;
+        let texture_pool_samplers_len = opaque_bind_groups.texture_pool_sampler_keys.len() as u32;
+        let mipmaps = anti_aliasing.mipmap;
+
+        // Build per-shader-id edge-resolve pipeline layout (reused
+        // across every shader_id since their bind-group shape is
+        // identical — group(0..3) from the primary opaque pipeline +
+        // group(4) edge-resolve).
+        let main_bgl = opaque_bind_groups.multisampled_main_bind_group_layout_key;
+        let edge_resolve_layout_key = pipeline_layouts.get_key(
+            gpu,
+            bind_group_layouts,
+            PipelineLayoutCacheKey::new(vec![
+                main_bgl,
+                opaque_bind_groups.lights_bind_group_layout_key,
+                opaque_bind_groups.texture_pool_textures_bind_group_layout_key,
+                opaque_bind_groups.shadows_bind_group_layout_key,
+                edge_layouts.edge_resolve_group4_layout_key,
+            ]),
+        )?;
+        let skybox_edge_layout_key = pipeline_layouts.get_key(
+            gpu,
+            bind_group_layouts,
+            PipelineLayoutCacheKey::new(vec![edge_layouts.skybox_edge_group0_layout_key]),
+        )?;
+        let final_blend_layout_key = pipeline_layouts.get_key(
+            gpu,
+            bind_group_layouts,
+            PipelineLayoutCacheKey::new(vec![edge_layouts.final_blend_group0_layout_key]),
+        )?;
+
+        self.edge_resolve_layout_key = Some(edge_resolve_layout_key);
+        self.skybox_edge_resolve_layout_key = Some(skybox_edge_layout_key);
+        self.final_blend_layout_key = Some(final_blend_layout_key);
+
+        // Per-shader-id edge_resolve shader keys + slots.
+        let mut shader_cache_keys: Vec<ShaderCacheKey> = Vec::new();
+        let mut slots: Vec<EdgePipelineSlot> = Vec::new();
+        let mut pipeline_layout_keys: Vec<PipelineLayoutKey> = Vec::new();
+
+        for (bucket_index, entry) in bucket_entries.iter().enumerate() {
+            // Skip dynamic shader_ids for now — they need DynamicShaderInfo,
+            // which lives on the dynamic registration. First-party only at
+            // this commit; dynamic wiring lands when the dynamic-material
+            // scheduler integration does (Stage 1.14).
+            if entry.shader_id.is_dynamic() {
+                continue;
+            }
+            let key = ShaderCacheKeyMaterialEdgeResolve {
+                texture_pool_arrays_len,
+                texture_pool_samplers_len,
+                mipmaps,
+                shader_id: entry.shader_id,
+                dispatch_hash: 0,
+                dynamic_shader: None,
+                bucket_entries: bucket_entries.to_vec(),
+                bucket_index: bucket_index as u32,
+            };
+            shader_cache_keys.push(ShaderCacheKey::from(key));
+            slots.push(EdgePipelineSlot::PerShader(EdgeResolvePipelineKeyId {
+                mipmaps,
+                shader_id: entry.shader_id,
+            }));
+            pipeline_layout_keys.push(edge_resolve_layout_key);
+        }
+
+        // Global skybox-edge shader.
+        shader_cache_keys.push(ShaderCacheKey::from(
+            ShaderCacheKeyMaterialSkyboxEdgeResolve {
+                bucket_entries: bucket_entries.to_vec(),
+            },
+        ));
+        slots.push(EdgePipelineSlot::Skybox);
+        pipeline_layout_keys.push(skybox_edge_layout_key);
+
+        // Global final-blend shader.
+        shader_cache_keys.push(ShaderCacheKey::from(ShaderCacheKeyMaterialFinalBlend {
+            bucket_entries: bucket_entries.to_vec(),
+            color_format: color_wgsl_format.to_string(),
+        }));
+        slots.push(EdgePipelineSlot::FinalBlend);
+        pipeline_layout_keys.push(final_blend_layout_key);
+
+        // Compile shaders + pipelines.
+        let shader_keys = shaders
+            .ensure_keys(gpu, shader_cache_keys.iter().cloned())
+            .await?;
+        let pipeline_cache_keys: Vec<ComputePipelineCacheKey> = shader_keys
+            .iter()
+            .zip(pipeline_layout_keys.iter())
+            .map(|(sk, lk)| ComputePipelineCacheKey::new(*sk, *lk))
+            .collect();
+        let pipeline_keys = compute_pipelines
+            .ensure_keys(gpu, shaders, pipeline_layouts, pipeline_cache_keys)
+            .await?;
+
+        self.merge_resolved(slots, pipeline_keys);
+        Ok(())
     }
 
     /// Folds a flat resolved-keys vec back into the typed cache via

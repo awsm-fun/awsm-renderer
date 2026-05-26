@@ -594,11 +594,10 @@ impl AwsmRenderer {
                 ShaderCacheKeyMaterialClassify {
                     msaa_sample_count: msaa,
                     bucket_entries: entries.clone(),
-                    // Stage 3 edge-data emission stays off here — the
-                    // dynamic-material prewarm path doesn't yet thread
-                    // through the edge-buffer binding shape; Stage 3.7
-                    // wires up the matching pipeline-layout variant.
-                    emit_edge_data: false,
+                    // Priority 3: edge emission on for multisampled
+                    // variants (matches the live edge-buffer binding
+                    // shape allocated by build()).
+                    emit_edge_data: msaa.is_some(),
                 }
                 .into(),
             );
@@ -1691,6 +1690,38 @@ impl AwsmRendererBuilder {
             &gpu,
             crate::dynamic_materials::extras_pool::DEFAULT_CAPACITY_WORDS,
         )?;
+
+        // Edge-resolve pipeline compile (Priority 3 dispatch wiring). Only
+        // when MSAA is on. We pass first_party-only bucket entries — the
+        // edge pipelines recompile through the same path when dynamic
+        // materials register (Stage 1.14 follow-up will route through
+        // the scheduler).
+        if multisampled_geometry {
+            let color_wgsl = awsm_renderer_core::texture::texture_format_to_wgsl_storage(
+                render_textures.formats.color,
+            )?;
+            let bucket_entries = crate::dynamic_materials::first_party_bucket_entries();
+            let pipelines::Pipelines {
+                render: _render_pipelines,
+                compute: compute_pipelines,
+            } = &mut pipelines;
+            render_passes
+                .material_opaque
+                .edge_pipelines
+                .ensure_compiled(
+                    &gpu,
+                    &mut shaders,
+                    compute_pipelines,
+                    &mut pipeline_layouts,
+                    &mut bind_group_layouts,
+                    &render_passes.material_opaque.bind_groups,
+                    &render_passes.material_opaque.edge_bind_group_layouts,
+                    &bucket_entries,
+                    &anti_aliasing,
+                    color_wgsl,
+                )
+                .await?;
+        }
 
         let mut _self = AwsmRenderer {
             gpu,

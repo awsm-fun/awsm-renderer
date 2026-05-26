@@ -322,6 +322,8 @@ impl AwsmRenderer {
                 shadows: &self.shadows,
                 mesh_light_indices_gpu: &self.mesh_light_indices_gpu,
                 material_classify_buffers: &self.material_classify_buffers,
+                material_edge_buffers: self.material_edge_buffers.as_ref(),
+                material_edge_layout_uniform: self.material_edge_layout_uniform.as_ref(),
                 extras_pool: &self.extras_pool,
                 decals: self.decals.as_ref(),
                 occlusion_buffers: self.occlusion_buffers.as_ref(),
@@ -365,6 +367,11 @@ impl AwsmRenderer {
             clear_color: &self._clear_color,
             scene_spatial: &self.scene_spatial,
             material_classify_buffers: &self.material_classify_buffers,
+            material_edge_buffers: self.material_edge_buffers.as_ref(),
+            material_edge_layout_uniform: self.material_edge_layout_uniform.as_ref(),
+            bind_group_layouts: &self.bind_group_layouts,
+            camera: &self.camera,
+            environment: &self.environment,
             features: &self.features,
             compaction_buffers: self.compaction_buffers.as_ref(),
             coverage_buffers: self.coverage_buffers.as_ref(),
@@ -596,6 +603,13 @@ impl AwsmRenderer {
             } else {
                 None
             };
+            // Priority 3 — reset the edge-buffer header (counters +
+            // indirect-args) before classify rebuilds them this frame.
+            // Cheap: ~64 bytes per write at typical bucket counts.
+            if let Some(edge_buffers) = ctx.material_edge_buffers {
+                edge_buffers.reset_header(&self.gpu)?;
+            }
+
             self.render_passes.material_classify.render(&ctx)?;
         }
 
@@ -1164,6 +1178,26 @@ pub struct RenderContext<'a> {
     /// `dispatchWorkgroupsIndirect`.
     pub material_classify_buffers:
         &'a crate::render_passes::material_classify::buffers::ClassifyBuffers,
+    /// Priority-3 MSAA edge-resolve composite buffer. `Some` only
+    /// when MSAA is on (no edges to resolve under single-sample).
+    /// Bound read-write by classify (slot 4 of group(0)) and by the
+    /// per-shader edge_resolve / skybox_edge / final_blend pipelines.
+    pub material_edge_buffers:
+        Option<&'a crate::render_passes::material_opaque::edge_buffers::MaterialEdgeBuffers>,
+    /// `EdgeBufferLayout` uniform companion. Same `Some` discipline.
+    pub material_edge_layout_uniform: Option<&'a web_sys::GpuBuffer>,
+    /// Bind-group-layout cache. Used by passes that build their own
+    /// runtime bind groups inside `render()` (e.g. material-opaque's
+    /// edge-resolve helpers).
+    pub bind_group_layouts: &'a crate::bind_group_layout::BindGroupLayouts,
+    /// Camera buffer — bound directly by the skybox edge-resolve
+    /// pipeline. The primary opaque + main shading binds this through
+    /// the opaque bind groups; the edge-resolve flow's standalone
+    /// skybox shader needs it on its own group.
+    pub camera: &'a crate::camera::CameraBuffer,
+    /// Scene environment (skybox texture + sampler). Read by the
+    /// skybox edge-resolve pipeline's standalone bind group.
+    pub environment: &'a crate::environment::Environment,
     /// Active feature gates. Read by the geometry pass to fork
     /// between `drawIndirect` (under `gpu_culling`) and the legacy
     /// CPU-recorded `draw_indexed_*` loop.
