@@ -23,39 +23,30 @@
 {% include "material_opaque_wgsl/bind_groups.wgsl" %}
 
 // ─────────────────────────────────────────────────────────────────
-// Group(3) extension: edge-resolve emission buffers + layout uniform.
+// Group(3) extension: edge-resolve data buffer + layout uniform.
 //
 // `shared_wgsl/shadow/bind_groups.wgsl` (included above by way of
 // bind_groups.wgsl) declares bindings 0..=9 at this group; we append
-// bindings 10 and 11 here to carry the edge buffer (read-write
-// storage) and the edge-layout uniform.
+// bindings 10/11 here to carry the data buffer (read-write storage)
+// and the edge-layout uniform.
+//
+// The args_buffer is NOT bound here — its atomic counters are
+// mirrored into `edge_data`'s header (offsets supplied via
+// `edge_layout`). This keeps the compute stage's storage-buffer count
+// at 10 (the WebGPU baseline) instead of bumping it to 11.
 
-struct EdgeIndirectArgs {
-    workgroup_count_x: u32,
-    workgroup_count_y: u32,
-    workgroup_count_z: u32,
-    _pad: u32,
-};
-
-struct EdgeBuffersReadOnly {
-    edge_count: u32,
-    edge_overflow_count: u32,
-    _pad_counters: vec2<u32>,
-    final_blend_args: EdgeIndirectArgs,
-    skybox_edge_args: EdgeIndirectArgs,
-    {% for entry in bucket_entries %}
-    {{ entry.args_field() }}_edge: EdgeIndirectArgs,
-    {% endfor %}
-    data: array<u32>,
-};
-
-// Edge-resolve writes to the accumulator slot region (per-thread; each
-// (edge_pixel_id, slot_index) is owned exclusively) — so the binding
-// is read_write. Atomic counters are unused on this side.
-@group({{ shadow_group_index }}) @binding(10) var<storage, read_write> edge_buffers: EdgeBuffersReadOnly;
+// data_buffer: small counter-mirror header + edge_to_xy + edge_slot_map
+// + accumulator + sample lists, indexed via the EdgeBufferLayout
+// uniform's u32-stride offsets.
+@group({{ shadow_group_index }}) @binding(10) var<storage, read_write> edge_data: array<u32>;
 
 struct EdgeBufferLayout {
     max_edge_budget: u32,
+    // u32-stride indices into `edge_data` of the atomic-counter
+    // mirrors classify writes during edge emission.
+    edge_count_index: u32,
+    per_shader_count_base: u32,
+    skybox_count_index: u32,
     edge_to_xy_base: u32,
     edge_slot_map_base: u32,
     accumulator_base: u32,

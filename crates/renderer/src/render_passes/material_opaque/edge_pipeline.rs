@@ -177,6 +177,11 @@ impl MaterialEdgePipelines {
         if anti_aliasing.msaa_sample_count.is_none() {
             return Ok(());
         }
+        tracing::info!(
+            target: "awsm_renderer::boot_timing",
+            "MaterialEdgePipelines::ensure_compiled: compiling {} buckets + skybox + final_blend",
+            bucket_entries.len()
+        );
 
         let texture_pool_arrays_len = opaque_bind_groups.texture_pool_arrays_len;
         let texture_pool_samplers_len = opaque_bind_groups.texture_pool_sampler_keys.len() as u32;

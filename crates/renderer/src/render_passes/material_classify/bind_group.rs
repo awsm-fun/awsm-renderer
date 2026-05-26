@@ -90,23 +90,37 @@ impl MaterialClassifyBindGroups {
             ),
         ];
 
-        // Priority 3 — bind the edge buffer + edge-layout uniform when
-        // MSAA is on AND the device supports the full edge_resolve
-        // dispatch wiring (5 bind groups, 11 storage buffers). On
-        // unsupported devices (e.g. macOS Metal at maxBindGroups=4),
-        // `material_edge_buffers` is None and the classify pass's
-        // bind-group layout was built without slots 4+5 to match.
+        // Priority 3 — bind the edge buffers (args + data) + edge-layout
+        // uniform when MSAA is on AND the device supports the full
+        // edge_resolve dispatch wiring. On unsupported devices (or
+        // non-MSAA frames) `material_edge_buffers` is None and the
+        // classify pass's bind-group layout was built without slots
+        // 4/5/6 to match. The split between args_buffer and data_buffer
+        // is required so neither buffer is simultaneously bound as
+        // Storage(read-write) and used as Indirect (WebGPU rejects that
+        // combo within a single compute pass's sync scope).
         if msaa {
             if let (Some(edge_buffers), Some(edge_layout_uniform)) =
                 (ctx.material_edge_buffers, ctx.material_edge_layout_uniform)
             {
+                // 4: args_buffer (atomic counters + per-shader
+                //    workgroup_count_x cells; storage RW for classify,
+                //    read by indirect dispatch downstream).
                 entries.push(BindGroupEntry::new(
                     4,
-                    BindGroupResource::Buffer(BufferBinding::new(&edge_buffers.buffer)),
+                    BindGroupResource::Buffer(BufferBinding::new(&edge_buffers.args_buffer)),
                 ));
+                // 5: edge_layout uniform.
                 entries.push(BindGroupEntry::new(
                     5,
                     BindGroupResource::Buffer(BufferBinding::new(edge_layout_uniform)),
+                ));
+                // 6: data_buffer (edge_to_xy + edge_slot_map +
+                //    accumulator + sample lists; storage RW for the
+                //    shader writes).
+                entries.push(BindGroupEntry::new(
+                    6,
+                    BindGroupResource::Buffer(BufferBinding::new(&edge_buffers.data_buffer)),
                 ));
             }
             // else: edge bindings absent — layout was built without
@@ -181,10 +195,18 @@ async fn create_bind_group_layout_key(
         },
     ];
 
-    // Priority 3 — MSAA edge emission. Adds two bindings (storage RW
-    // edge buffer + uniform edge-layout) to the multisampled variant
-    // when the device supports the full Stage 3 dispatch wiring.
+    // Priority 3 — MSAA edge emission. Adds three bindings when the
+    // device supports the full Stage 3 dispatch wiring:
+    //   4: args_buffer (storage RW — atomic counters + per-shader
+    //      workgroup_count_x cells).
+    //   5: edge_layout (uniform — host-uploaded offsets).
+    //   6: data_buffer (storage RW — edge_to_xy + edge_slot_map +
+    //      accumulator + sample lists).
+    // Splitting args + data into two buffers sidesteps the WebGPU
+    // validation rule that a single buffer can't be Indirect-readable
+    // and Storage(read-write) inside one compute pass.
     if multisampled_geometry && edge_emit_supported(ctx) {
+        // 4: args_buffer
         entries.push(BindGroupLayoutCacheKeyEntry {
             resource: BindGroupLayoutResource::Buffer(
                 BufferBindingLayout::new().with_binding_type(BufferBindingType::Storage),
@@ -193,9 +215,19 @@ async fn create_bind_group_layout_key(
             visibility_fragment: false,
             visibility_compute: true,
         });
+        // 5: edge_layout uniform
         entries.push(BindGroupLayoutCacheKeyEntry {
             resource: BindGroupLayoutResource::Buffer(
                 BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
+            ),
+            visibility_vertex: false,
+            visibility_fragment: false,
+            visibility_compute: true,
+        });
+        // 6: data_buffer
+        entries.push(BindGroupLayoutCacheKeyEntry {
+            resource: BindGroupLayoutResource::Buffer(
+                BufferBindingLayout::new().with_binding_type(BufferBindingType::Storage),
             ),
             visibility_vertex: false,
             visibility_fragment: false,

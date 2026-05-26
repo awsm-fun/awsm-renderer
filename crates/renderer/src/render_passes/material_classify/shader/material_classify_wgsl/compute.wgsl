@@ -192,13 +192,19 @@ fn cs_main(
 
         // Edge pixel: 2+ distinct shader_ids (counts skybox as one).
         if (seen_count >= 2u) {
-            // Allocate compact edge_pixel_id.
+            // Allocate compact edge_pixel_id. The atomic counter lives
+            // in args_buffer / `edge_buffers` (drives indirect dispatch
+            // for final_blend); we also mirror it into edge_data's
+            // header so the resolve shaders can read it without binding
+            // args_buffer (saves a storage-buffer slot vs the 10-cap).
             let edge_id = atomicAdd(&edge_buffers.edge_count, 1u);
+            atomicAdd(&edge_data[edge_layout.edge_count_index], 1u);
             if (edge_id < edge_layout.max_edge_budget) {
-                // Write edge_to_xy at index edge_id (offset in u32
-                // strides from the buffer start).
+                // Write edge_to_xy via atomicStore (edge_data is
+                // declared as array<atomic<u32>> so even plain stores
+                // go through the atomic interface).
                 let packed_xy = (u32(coords.x) & 0xFFFFu) | ((u32(coords.y) & 0xFFFFu) << 16u);
-                edge_buffers.data[edge_layout.edge_to_xy_base + edge_id] = packed_xy;
+                atomicStore(&edge_data[edge_layout.edge_to_xy_base + edge_id], packed_xy);
 
                 // Pack slot_map: 4 bytes, each byte is a bucket index
                 // (or 0xFE for skybox, 0xFF for empty slot).
@@ -206,12 +212,12 @@ fn cs_main(
                     | ((seen[1] & 0xFFu) << 8u)
                     | ((seen[2] & 0xFFu) << 16u)
                     | ((seen[3] & 0xFFu) << 24u);
-                edge_buffers.data[edge_layout.edge_slot_map_base + edge_id] = slot_map;
+                atomicStore(&edge_data[edge_layout.edge_slot_map_base + edge_id], slot_map);
 
                 // For each per-shader sample mask: append (edge_id,
                 // sample_mask) to that bucket's sample list. Skybox
-                // samples route to skybox_edge_args (separate from
-                // the per-bucket lists).
+                // samples route to the skybox sample list (separate
+                // reserved region).
                 var skybox_mask: u32 = 0u;
                 {% for entry in bucket_entries %}
                 var mask_{{ loop.index0 }}: u32 = 0u;
@@ -227,25 +233,28 @@ fn cs_main(
                     }
                     {% endfor %}
                 }
-                // Append per-bucket entries.
+                // Append per-bucket entries. The atomic index counter
+                // is mirrored on both args_buffer (for indirect
+                // dispatch) and edge_data's header (for shader reads).
                 {% for entry in bucket_entries %}
                 if (mask_{{ loop.index0 }} != 0u) {
-                    let slot_idx = atomicAdd(&edge_buffers.{{ entry.args_field() }}_edge.workgroup_count_x, 1u);
-                    if (slot_idx < edge_layout.sample_entries_per_bucket) {
-                        let entry_packed = (edge_id & 0x00FFFFFFu) | ((mask_{{ loop.index0 }} & 0xFFu) << 24u);
-                        edge_buffers.data[edge_layout.{{ entry.args_field() }}_sample_list_base + slot_idx] = entry_packed;
+                    let slot_idx_{{ loop.index0 }} = atomicAdd(&edge_buffers.{{ entry.args_field() }}_edge.workgroup_count_x, 1u);
+                    atomicAdd(&edge_data[edge_layout.per_shader_count_base + {{ loop.index0 }}u], 1u);
+                    if (slot_idx_{{ loop.index0 }} < edge_layout.sample_entries_per_bucket) {
+                        let entry_packed_{{ loop.index0 }} = (edge_id & 0x00FFFFFFu) | ((mask_{{ loop.index0 }} & 0xFFu) << 24u);
+                        atomicStore(&edge_data[edge_layout.{{ entry.args_field() }}_sample_list_base + slot_idx_{{ loop.index0 }}], entry_packed_{{ loop.index0 }});
                     }
                 }
                 {% endfor %}
-                // Skybox sample list lives in the skybox_edge_args slot;
-                // host knows its offset same as per-bucket lists (see
-                // skybox_edge_resolve template).
+                // Skybox sample list — counter mirrored into both
+                // args_buffer and edge_data header.
                 if (skybox_mask != 0u) {
-                    atomicAdd(&edge_buffers.skybox_edge_args.workgroup_count_x, 1u);
-                    // The skybox sample-entry buffer is reserved as
-                    // its own region; left unimplemented in this
-                    // commit — follow-up commit adds skybox sample
-                    // entries + skybox edge resolve dispatch.
+                    let sky_slot_idx = atomicAdd(&edge_buffers.skybox_edge_args.workgroup_count_x, 1u);
+                    atomicAdd(&edge_data[edge_layout.skybox_count_index], 1u);
+                    if (sky_slot_idx < edge_layout.sample_entries_per_bucket) {
+                        let sky_entry_packed = (edge_id & 0x00FFFFFFu) | ((skybox_mask & 0xFFu) << 24u);
+                        atomicStore(&edge_data[edge_layout.skybox_sample_list_base + sky_slot_idx], sky_entry_packed);
+                    }
                 }
                 // Final blend args: one workgroup per edge pixel
                 // (workgroup_size = 64, so divide by 64).

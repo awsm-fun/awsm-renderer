@@ -13,29 +13,16 @@
 {% include "shared_wgsl/camera.wgsl" %}
 /*************** END camera.wgsl ******************/
 
-struct EdgeIndirectArgsSky {
-    workgroup_count_x: u32,
-    workgroup_count_y: u32,
-    workgroup_count_z: u32,
-    _pad: u32,
-};
-
-struct EdgeBuffersSky {
-    edge_count: u32,
-    edge_overflow_count: u32,
-    _pad_counters: vec2<u32>,
-    final_blend_args: EdgeIndirectArgsSky,
-    skybox_edge_args: EdgeIndirectArgsSky,
-    {% for entry in bucket_entries %}
-    {{ entry.args_field() }}_edge: EdgeIndirectArgsSky,
-    {% endfor %}
-    data: array<u32>,
-};
-
-@group(0) @binding(0) var<storage, read_write> edge_buffers: EdgeBuffersSky;
+// data_buffer: small counter-mirror header + edge_to_xy + edge_slot_map
+// + accumulator + sample lists. The skybox entry count lives in the
+// header at `skybox_count_index` (supplied via the layout uniform).
+@group(0) @binding(0) var<storage, read_write> edge_data: array<u32>;
 
 struct EdgeBufferLayoutSky {
     max_edge_budget: u32,
+    edge_count_index: u32,
+    per_shader_count_base: u32,
+    skybox_count_index: u32,
     edge_to_xy_base: u32,
     edge_slot_map_base: u32,
     accumulator_base: u32,

@@ -3,29 +3,16 @@
 // Only needs: the edge buffer (read-only counters + per-edge arrays +
 // accumulator) and the opaque storage texture as the write target.
 
-struct EdgeIndirectArgsRO {
-    workgroup_count_x: u32,
-    workgroup_count_y: u32,
-    workgroup_count_z: u32,
-    _pad: u32,
-};
-
-struct EdgeBuffersRO {
-    edge_count: u32,
-    edge_overflow_count: u32,
-    _pad_counters: vec2<u32>,
-    final_blend_args: EdgeIndirectArgsRO,
-    skybox_edge_args: EdgeIndirectArgsRO,
-    {% for entry in bucket_entries %}
-    {{ entry.args_field() }}_edge: EdgeIndirectArgsRO,
-    {% endfor %}
-    data: array<u32>,
-};
-
-@group(0) @binding(0) var<storage, read> edge_buffers: EdgeBuffersRO;
+// data_buffer (read-only): small counter-mirror header + edge_to_xy +
+// edge_slot_map + accumulator + sample lists. final_blend reads
+// edge_count from the header, plus edge_to_xy + accumulator.
+@group(0) @binding(0) var<storage, read> edge_data: array<u32>;
 
 struct EdgeBufferLayoutRO {
     max_edge_budget: u32,
+    edge_count_index: u32,
+    per_shader_count_base: u32,
+    skybox_count_index: u32,
     edge_to_xy_base: u32,
     edge_slot_map_base: u32,
     accumulator_base: u32,

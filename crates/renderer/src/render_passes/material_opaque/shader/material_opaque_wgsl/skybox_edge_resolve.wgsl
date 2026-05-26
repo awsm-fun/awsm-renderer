@@ -26,8 +26,9 @@
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let thread_index = gid.x;
-    let entry_count = edge_buffers.skybox_edge_args.workgroup_count_x;
-    if (thread_index >= entry_count * 64u) {
+    // Skybox entry count is mirrored into edge_data's header.
+    let entry_count = edge_data[edge_layout.skybox_count_index];
+    if (thread_index >= entry_count) {
         return;
     }
     if (thread_index >= edge_layout.sample_entries_per_bucket) {
@@ -37,7 +38,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // `skybox_sample_list_base` offset (see EdgeBufferLayout). It's a
     // separate reserved region — the classify pass appends here via
     // skybox_edge_args.workgroup_count_x as the index allocator.
-    let packed_entry = edge_buffers.data[edge_layout.skybox_sample_list_base + thread_index];
+    let packed_entry = edge_data[edge_layout.skybox_sample_list_base + thread_index];
     if (packed_entry == 0u) {
         return;
     }
@@ -47,13 +48,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
-    let packed_xy = edge_buffers.data[edge_layout.edge_to_xy_base + edge_pixel_id];
+    let packed_xy = edge_data[edge_layout.edge_to_xy_base + edge_pixel_id];
     let coords = vec2<i32>(
         i32(packed_xy & 0xFFFFu),
         i32((packed_xy >> 16u) & 0xFFFFu),
     );
 
-    let slot_map = edge_buffers.data[edge_layout.edge_slot_map_base + edge_pixel_id];
+    let slot_map = edge_data[edge_layout.edge_slot_map_base + edge_pixel_id];
     var slot_index: u32 = 4u;
     for (var i = 0u; i < 4u; i++) {
         let byte_val = (slot_map >> (i * 8u)) & 0xFFu;
@@ -91,8 +92,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     let accum_word_index = edge_layout.accumulator_base + (edge_pixel_id * 4u + slot_index) * 4u;
-    edge_buffers.data[accum_word_index + 0u] = bitcast<u32>(color_sum.x);
-    edge_buffers.data[accum_word_index + 1u] = bitcast<u32>(color_sum.y);
-    edge_buffers.data[accum_word_index + 2u] = bitcast<u32>(color_sum.z);
-    edge_buffers.data[accum_word_index + 3u] = bitcast<u32>(f32(sample_count));
+    edge_data[accum_word_index + 0u] = bitcast<u32>(color_sum.x);
+    edge_data[accum_word_index + 1u] = bitcast<u32>(color_sum.y);
+    edge_data[accum_word_index + 2u] = bitcast<u32>(color_sum.z);
+    edge_data[accum_word_index + 3u] = bitcast<u32>(f32(sample_count));
 }
