@@ -52,6 +52,28 @@ impl AwsmRenderer {
     // or just call .update_all() right before .render() for convenience
     /// Executes a full render with optional hooks.
     pub fn render(&mut self, hooks: Option<&RenderHooks>) -> Result<()> {
+        // Per-frame pre-amble: drain the pipeline scheduler's resolved
+        // compile futures. Transitions (Pending → Ready / Failed) are
+        // applied here; bucket-entries cache invalidations + per-pass
+        // typed-accessor cache refreshes happen synchronously off the
+        // status events. This is the load-bearing "transitions happen
+        // between frames, not mid-frame" invariant from
+        // docs/plans/more-optimizations.md § Scheduler driving and
+        // transition timing.
+        let applied = self.poll_pipeline_scheduler();
+        if applied > 0 {
+            tracing::debug!(
+                target: "awsm_renderer::pipeline_readiness",
+                "render-preamble drain: {} transitions applied",
+                applied
+            );
+        }
+        // The status events themselves are drained by frontends via
+        // drain_pipeline_status_events. The renderer-internal side
+        // effects (cache rebuilds) are applied directly inside the
+        // scheduler's apply_resolution path — see
+        // pipeline_scheduler/mod.rs for the wiring.
+
         if let Some(hook) = hooks.and_then(|h| h.pre_render.as_ref()) {
             {
                 let _maybe_span_guard = if self.logging.render_timings {
