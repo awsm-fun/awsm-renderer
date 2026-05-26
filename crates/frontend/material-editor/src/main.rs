@@ -88,48 +88,51 @@ async fn run() -> anyhow::Result<()> {
 
 /// Build an `AwsmRenderer` against the preview canvas.
 ///
-/// Returns a [`RendererHost`] wrapping the live renderer. The
-/// material-editor's preview pane mounts the canvas under
-/// `id="preview-canvas"`; the renderer attaches to that element's
-/// GPU context. The actual render-loop dispatch + stub-scene mesh
-/// construction (a quad with the loaded material applied) is the
-/// next-session UI work — Phase 18 ships the registration plumbing
-/// so the material's bytes flow through the renderer-side packer
-/// correctly even before the visible mesh lands.
+/// Polls for the canvas (dominator mounts asynchronously), then
+/// constructs the renderer via `AwsmRendererBuilder`. The actual
+/// stub-scene mesh + RAF loop is started by the caller (`run()`)
+/// once the host is populated.
 async fn boot_renderer() -> anyhow::Result<RendererHost> {
-    // The canvas may not exist yet when this future first runs
-    // (dominator mounts asynchronously). Poll briefly for it before
-    // giving up. 50 attempts × 16 ms ≈ 800 ms total budget — far
-    // longer than the dominator mount takes on any sane page.
+    use awsm_renderer::AwsmRendererBuilder;
+    use awsm_renderer_core::configuration::{
+        CanvasAlphaMode, CanvasConfiguration, CanvasToneMappingMode,
+    };
+    use awsm_renderer_core::renderer::{AwsmRendererWebGpuBuilder, DeviceRequestLimits};
     use gloo_timers::future::TimeoutFuture;
-    let mut canvas = None;
+    use wasm_bindgen::JsCast;
+
+    // Poll for the canvas with an 800 ms budget.
+    let mut canvas: Option<web_sys::HtmlCanvasElement> = None;
     for _ in 0..50 {
         if let Some(elem) = web_sys::window()
             .and_then(|w| w.document())
             .and_then(|d| d.get_element_by_id("preview-canvas"))
         {
-            canvas = Some(elem);
-            break;
+            if let Ok(c) = elem.dyn_into::<web_sys::HtmlCanvasElement>() {
+                canvas = Some(c);
+                break;
+            }
         }
         TimeoutFuture::new(16).await;
     }
     let canvas = canvas.ok_or_else(|| anyhow::anyhow!("preview-canvas not in DOM after 800ms"))?;
-    let _canvas = canvas; // Held for future render-loop wiring.
 
-    // The full AwsmRendererBuilder::new(...) → build() chain is the
-    // remaining Phase-9 wiring. The builder requires a
-    // AwsmRendererWebGpuBuilder pointing at the canvas's WebGPU
-    // context — straightforward (~30 LoC), but the dominator-side
-    // setup that follows (loading a default mesh, attaching the
-    // material, running a RAF loop) is the bulk of the work.
-    //
-    // For the registration-plumbing path this file delivers, the
-    // renderer-side state is exercised through the
-    // RendererRecompileSink: when the user edits the WGSL, the
-    // sink builds a MaterialRegistration, calls register_material,
-    // and the result (Ok / WgslCompile-error) surfaces back into
-    // the editor's error pane.
-    Err(anyhow::anyhow!(
-        "boot_renderer: full AwsmRenderer construction is the next-session UI wiring"
-    ))
+    let gpu = web_sys::window()
+        .ok_or_else(|| anyhow::anyhow!("no window"))?
+        .navigator()
+        .gpu();
+    let gpu_builder = AwsmRendererWebGpuBuilder::new(gpu, canvas)
+        .with_configuration(
+            CanvasConfiguration::default()
+                .with_alpha_mode(CanvasAlphaMode::Opaque)
+                .with_tone_mapping(CanvasToneMappingMode::Standard),
+        )
+        .with_device_request_limits(DeviceRequestLimits::max_all());
+
+    let renderer = AwsmRendererBuilder::new(gpu_builder)
+        .build()
+        .await
+        .map_err(|e| anyhow::anyhow!("AwsmRendererBuilder::build failed: {e:?}"))?;
+
+    Ok(RendererHost::new(renderer))
 }
