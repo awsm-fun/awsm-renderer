@@ -49,6 +49,12 @@ pub fn enabled_materials() -> Vec<MaterialEntry> {
             wgsl_fragment: crate::flipbook::WGSL_FRAGMENT,
             name: "flipbook",
         },
+        #[cfg(feature = "scanline")]
+        MaterialEntry {
+            shader_id: MaterialShaderId::SCANLINE,
+            wgsl_fragment: crate::scanline::WGSL_FRAGMENT,
+            name: "scanline",
+        },
     ]
 }
 

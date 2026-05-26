@@ -33,8 +33,12 @@ impl MaterialShaderId {
     pub const TOON: Self = Self(3);
     /// Sprite-sheet flipbook. See `awsm-materials::flipbook`.
     pub const FLIPBOOK: Self = Self(4);
+    /// Scanline overlay (promoted from the dynamic-material worked
+    /// example). See `awsm-materials::scanline`. Gated by the
+    /// `scanline` Cargo feature on this crate.
+    pub const SCANLINE: Self = Self(5);
 
-    /// Reserved boundary: ids `5..DYNAMIC_START` are held for future
+    /// Reserved boundary: ids `6..DYNAMIC_START` are held for future
     /// first-party materials.
     ///
     /// The first dynamic-material registration receives this value; each
@@ -94,6 +98,8 @@ impl MaterialShaderId {
             Some("SHADER_ID_TOON")
         } else if self == Self::FLIPBOOK {
             Some("SHADER_ID_FLIPBOOK")
+        } else if self == Self::SCANLINE {
+            Some("SHADER_ID_SCANLINE")
         } else {
             None
         }

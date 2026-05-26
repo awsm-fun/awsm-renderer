@@ -22,6 +22,7 @@ pbr-standard = []
 unlit = []
 toon = []
 flipbook = []
+scanline = []
 
 [dependencies]
 awsm-renderer-core = { path = "../renderer-core", features = ["texture-pool"] }
