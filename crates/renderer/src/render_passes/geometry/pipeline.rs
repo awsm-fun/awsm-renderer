@@ -181,7 +181,11 @@ impl GeometryPipelines {
     /// `(instancing × meta_storage)`, collapsed across cull mode
     /// (cull has no shader effect).
     pub fn shader_cache_keys(multisampled_geometry: bool) -> Vec<crate::shaders::ShaderCacheKey> {
-        let msaa_samples = if multisampled_geometry { Some(4u32) } else { None };
+        let msaa_samples = if multisampled_geometry {
+            Some(4u32)
+        } else {
+            None
+        };
         let mut keys = Vec::with_capacity(3);
         for (instancing, meta_storage_array) in [(false, true), (false, false), (true, false)] {
             keys.push(
@@ -218,7 +222,11 @@ impl GeometryPipelines {
         bind_groups: &GeometryBindGroups,
         multisampled_geometry: bool,
     ) -> Result<GeometryPrewarmDescriptors> {
-        let msaa_samples = if multisampled_geometry { Some(4u32) } else { None };
+        let msaa_samples = if multisampled_geometry {
+            Some(4u32)
+        } else {
+            None
+        };
         let pipeline_layout_key_storage = ctx.pipeline_layouts.get_key(
             ctx.gpu,
             ctx.bind_group_layouts,
@@ -392,20 +400,14 @@ impl GeometryPipelines {
         opts: GeometryRenderPipelineKeyOpts<'_>,
     ) -> Result<RenderPipelineKey> {
         let level = match opts.anti_aliasing.has_msaa_checked()? {
-            true => self
-                .render_pipeline_keys
-                .msaa_4_anti_alias
-                .as_ref()
-                .ok_or(AwsmError::PipelineVariantNotCompiled(
-                    "geometry: msaa_4 branch not yet compiled",
-                ))?,
-            false => self
-                .render_pipeline_keys
-                .no_anti_alias
-                .as_ref()
-                .ok_or(AwsmError::PipelineVariantNotCompiled(
+            true => self.render_pipeline_keys.msaa_4_anti_alias.as_ref().ok_or(
+                AwsmError::PipelineVariantNotCompiled("geometry: msaa_4 branch not yet compiled"),
+            )?,
+            false => self.render_pipeline_keys.no_anti_alias.as_ref().ok_or(
+                AwsmError::PipelineVariantNotCompiled(
                     "geometry: no_anti_alias branch not yet compiled",
-                ))?,
+                ),
+            )?,
         };
         let level = if opts.instancing {
             &level.instancing
@@ -428,7 +430,9 @@ impl GeometryPipelines {
 
 /// Helper for `merge_resolved` / `from_resolved`: turns 9 leaf slots
 /// (shape × cull = 9 entries) into the nested Level1 struct.
-fn build_level1(entries: &[(GeometryLeafSlot, RenderPipelineKey)]) -> GeometryRenderPipelineKeysLevel1 {
+fn build_level1(
+    entries: &[(GeometryLeafSlot, RenderPipelineKey)],
+) -> GeometryRenderPipelineKeysLevel1 {
     let mut by_shape: HashMap<(GeometryPipelineShape, GeometryCullKey), RenderPipelineKey> =
         HashMap::with_capacity(entries.len());
     for (slot, key) in entries {

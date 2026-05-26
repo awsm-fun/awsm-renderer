@@ -25,9 +25,7 @@ use awsm_renderer_core::pipeline::primitive::CullMode;
 use slotmap::new_key_type;
 
 use crate::{
-    anti_alias::AntiAliasing,
-    dynamic_materials::MaterialRegistration,
-    error::AwsmError,
+    anti_alias::AntiAliasing, dynamic_materials::MaterialRegistration, error::AwsmError,
     render_passes::material_opaque::shader::template::MipmapMode,
 };
 
@@ -173,7 +171,9 @@ pub enum PassDef {
     /// Per-frame scene-pass clear.
     ScenePassClear,
     /// HZB seed compute (active only when `gpu_culling` feature is on).
-    HzbSeed { samples: u8 },
+    HzbSeed {
+        samples: u8,
+    },
     /// EVSM compute pipelines (only after first shadow-caster).
     Evsm,
     /// Line primitives render pass.
@@ -187,8 +187,12 @@ pub enum PassDef {
         snapshot: PipelineConfigSnapshot,
     },
     /// Post-processing pipelines.
-    Bloom { resolution: (u32, u32) },
-    Smaa { resolution: (u32, u32) },
+    Bloom {
+        resolution: (u32, u32),
+    },
+    Smaa {
+        resolution: (u32, u32),
+    },
     Dof,
     /// Priority-3 MSAA-edge-resolve helpers (shared across all
     /// materials).

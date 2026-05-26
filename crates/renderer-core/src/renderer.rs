@@ -349,8 +349,8 @@ fn log_device_limits(device: &web_sys::GpuDevice) {
 fn install_uncaptured_error_hook(device: &web_sys::GpuDevice) {
     let on_err = Closure::<dyn FnMut(JsValue)>::new(move |event: JsValue| {
         // event.error is the GpuError; .message carries the human-readable string.
-        let error_obj = js_sys::Reflect::get(&event, &JsValue::from_str("error"))
-            .unwrap_or(JsValue::UNDEFINED);
+        let error_obj =
+            js_sys::Reflect::get(&event, &JsValue::from_str("error")).unwrap_or(JsValue::UNDEFINED);
         let message = js_sys::Reflect::get(&error_obj, &JsValue::from_str("message"))
             .ok()
             .and_then(|v| v.as_string())

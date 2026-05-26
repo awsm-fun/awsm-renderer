@@ -423,7 +423,8 @@ impl RenderPasses {
         // Geometry MSAA-lazy: only the active branch's 9 descriptors.
         let multisampled_geometry = ctx.anti_aliasing.has_msaa_checked()?;
         let geometry_descs =
-            GeometryPipelines::build_descriptors(ctx, &bindings.geometry_bg, multisampled_geometry).await?;
+            GeometryPipelines::build_descriptors(ctx, &bindings.geometry_bg, multisampled_geometry)
+                .await?;
         let geometry_range =
             render_pool.len()..render_pool.len() + geometry_descs.pipeline_cache_keys.len();
         render_pool.extend(geometry_descs.pipeline_cache_keys.iter().cloned());

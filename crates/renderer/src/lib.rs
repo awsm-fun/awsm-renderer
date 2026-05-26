@@ -1804,9 +1804,7 @@ impl AwsmRenderer {
     /// Drain status events accumulated since the last call. Frontends
     /// use this to drive "compiling N of M" UI without per-frame
     /// polling.
-    pub fn drain_pipeline_status_events(
-        &mut self,
-    ) -> Vec<crate::pipeline_scheduler::StatusEvent> {
+    pub fn drain_pipeline_status_events(&mut self) -> Vec<crate::pipeline_scheduler::StatusEvent> {
         self.pipeline_scheduler.drain_status_events()
     }
 
