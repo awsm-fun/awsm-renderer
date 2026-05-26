@@ -4,9 +4,13 @@
 //! Three bind-group shapes, one per pipeline kind:
 //!
 //! 1. **EdgeResolveBindGroups** — for `material_edge_resolve_{shader_id}`.
-//!    Shares the primary opaque pipeline's group(0)/lights/textures/shadows
-//!    binding shape, then adds a group(4) carrying the edge buffer (read-write
-//!    storage) + the edge-layout uniform.
+//!    Shares the primary opaque pipeline's group(0) / lights /
+//!    texture-pool binding shape, then extends group(3) (shadows) with
+//!    two extra bindings at the end carrying the edge buffer
+//!    (read-write storage) + the edge-layout uniform. This folds what
+//!    was previously a separate group(4) into shadows so the layout
+//!    fits in 4 bind groups — required to activate on devices with
+//!    `maxBindGroups = 4` (macOS Metal in particular).
 //!
 //! 2. **SkyboxEdgeResolveBindGroups** — for `skybox_edge_resolve`.
 //!    Compact: just the edge buffer + layout + camera + skybox tex/sampler.
@@ -27,6 +31,7 @@ use awsm_renderer_core::texture::{TextureSampleType, TextureViewDimension};
 use crate::bind_group_layout::BindGroupLayoutKey;
 use crate::bind_group_layout::{BindGroupLayoutCacheKey, BindGroupLayoutCacheKeyEntry};
 use crate::error::Result;
+use crate::render_passes::shared::material::bind_group::shadow_bind_group_layout_entries;
 use crate::render_passes::RenderPassInitContext;
 
 /// Bind-group layouts for the MSAA edge-resolve pipelines.
@@ -35,16 +40,18 @@ use crate::render_passes::RenderPassInitContext;
 /// (no per-frame variation); the *bind groups* themselves are built
 /// lazily via `recreate()` when the edge buffer is first allocated.
 pub struct MaterialEdgeBindGroupLayouts {
-    /// Layout for the per-shader-id edge_resolve pipelines.
-    /// Composed of (group(0): primary-opaque-main, group(1): lights,
-    /// group(2): texture-pool, group(3): shadows, group(4):
-    /// edge_buffer + edge_layout).
+    /// Layout for the per-shader-id edge_resolve pipelines' **group(3)**
+    /// — the shadow bind-group layout extended with the edge buffer
+    /// (read-write storage) + edge-layout uniform appended at the end
+    /// (bindings 10 and 11).
     ///
-    /// Stored as the standalone group(4) layout key — the other 4
-    /// groups are reused from `MaterialOpaqueBindGroups` and bound at
-    /// dispatch time. Edge_resolve pipeline layout = the existing
-    /// opaque pipeline layout extended with this key.
-    pub edge_resolve_group4_layout_key: BindGroupLayoutKey,
+    /// The edge_resolve pipeline layout is 4 groups: main(0) / lights(1)
+    /// / texture-pool(2) / extended-shadows(3). At dispatch time the
+    /// render pass builds the extended shadow bind group fresh each
+    /// frame (10 shadow resources + 2 edge resources) and binds it at
+    /// slot 3 in place of the primary opaque pipeline's plain shadow
+    /// bind group.
+    pub edge_resolve_extended_shadows_layout_key: BindGroupLayoutKey,
 
     /// Layout for the global skybox_edge_resolve pipeline (single
     /// bind group at group(0)).
@@ -60,42 +67,53 @@ impl MaterialEdgeBindGroupLayouts {
     /// `BindGroupLayouts`; cheap on subsequent calls with the same
     /// renderer config.
     pub fn new(ctx: &mut RenderPassInitContext<'_>) -> Result<Self> {
-        let edge_resolve_group4_layout_key = build_edge_resolve_group4_layout(ctx)?;
+        let edge_resolve_extended_shadows_layout_key = build_extended_shadows_layout(ctx)?;
         let skybox_edge_group0_layout_key = build_skybox_edge_layout(ctx)?;
         let final_blend_group0_layout_key = build_final_blend_layout(ctx)?;
 
         Ok(Self {
-            edge_resolve_group4_layout_key,
+            edge_resolve_extended_shadows_layout_key,
             skybox_edge_group0_layout_key,
             final_blend_group0_layout_key,
         })
     }
 }
 
-fn build_edge_resolve_group4_layout(
+/// Builds the extended-shadows bind-group layout used by the
+/// per-shader-id edge_resolve pipelines at group(3).
+///
+/// Bindings 0..=9 are the standard shadow entries (must stay
+/// byte-for-byte compatible with the opaque shadow layout — same shadow
+/// resources are bound here). Bindings 10..=11 are the edge buffer +
+/// edge-layout uniform that were previously living in a separate
+/// group(4); folding them in here lets the edge_resolve pipeline layout
+/// fit in 4 bind groups so it activates on macOS Metal
+/// (`maxBindGroups = 4`).
+fn build_extended_shadows_layout(
     ctx: &mut RenderPassInitContext<'_>,
 ) -> Result<BindGroupLayoutKey> {
-    // 0: edge_buffer — storage RW (atomics owned by classify;
-    //                  this side writes accumulator slots).
-    // 1: edge_layout — uniform.
-    let entries = vec![
-        BindGroupLayoutCacheKeyEntry {
-            resource: BindGroupLayoutResource::Buffer(
-                BufferBindingLayout::new().with_binding_type(BufferBindingType::Storage),
-            ),
-            visibility_vertex: false,
-            visibility_fragment: false,
-            visibility_compute: true,
-        },
-        BindGroupLayoutCacheKeyEntry {
-            resource: BindGroupLayoutResource::Buffer(
-                BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
-            ),
-            visibility_vertex: false,
-            visibility_fragment: false,
-            visibility_compute: true,
-        },
-    ];
+    let mut entries = shadow_bind_group_layout_entries(true);
+
+    // 10: edge_buffer — storage RW (atomics owned by classify; this
+    //                   side writes accumulator slots).
+    entries.push(BindGroupLayoutCacheKeyEntry {
+        resource: BindGroupLayoutResource::Buffer(
+            BufferBindingLayout::new().with_binding_type(BufferBindingType::Storage),
+        ),
+        visibility_vertex: false,
+        visibility_fragment: false,
+        visibility_compute: true,
+    });
+    // 11: edge_layout — uniform.
+    entries.push(BindGroupLayoutCacheKeyEntry {
+        resource: BindGroupLayoutResource::Buffer(
+            BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
+        ),
+        visibility_vertex: false,
+        visibility_fragment: false,
+        visibility_compute: true,
+    });
+
     Ok(ctx
         .bind_group_layouts
         .get_key(ctx.gpu, BindGroupLayoutCacheKey { entries })?)

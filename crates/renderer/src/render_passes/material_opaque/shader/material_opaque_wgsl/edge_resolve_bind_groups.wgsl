@@ -1,12 +1,16 @@
 // Bind-group declarations for the per-shader-id edge_resolve compute
-// shader. Shares the texture/lights/shadows binding shape with the
-// primary opaque pipeline so the same texture-pool / lights / shadows
-// bind groups can be reused at dispatch time. Adds the edge-buffer
-// + layout bindings at group(4) — distinct group index from the
-// classify pass's binding so concurrent dispatches don't collide.
+// shader. Shares the texture/lights binding shape with the primary
+// opaque pipeline so the same texture-pool / lights bind groups can
+// be reused at dispatch time. The edge-buffer + layout bindings used
+// to live in a separate group(4); they are now appended to the
+// shadow bind group at group(3) (bindings 10 and 11) so the whole
+// layout fits in 4 bind groups — required to activate on devices
+// with `maxBindGroups = 4` (macOS Metal in particular).
 
 // ─────────────────────────────────────────────────────────────────
-// Group(0): main textures + buffers (same as primary opaque pass).
+// Group(0..3): main textures + buffers / lights / texture-pool /
+// shadows (same as primary opaque pass). The shadow group below is
+// extended at the end with the edge-buffer + edge-layout bindings.
 //
 // For brevity, the edge_resolve pipelines reuse the exact same group(0)
 // bindings as compute.wgsl's primary path — see
@@ -19,7 +23,12 @@
 {% include "material_opaque_wgsl/bind_groups.wgsl" %}
 
 // ─────────────────────────────────────────────────────────────────
-// Group(4): edge-resolve emission buffers + layout uniform.
+// Group(3) extension: edge-resolve emission buffers + layout uniform.
+//
+// `shared_wgsl/shadow/bind_groups.wgsl` (included above by way of
+// bind_groups.wgsl) declares bindings 0..=9 at this group; we append
+// bindings 10 and 11 here to carry the edge buffer (read-write
+// storage) and the edge-layout uniform.
 
 struct EdgeIndirectArgs {
     workgroup_count_x: u32,
@@ -43,7 +52,7 @@ struct EdgeBuffersReadOnly {
 // Edge-resolve writes to the accumulator slot region (per-thread; each
 // (edge_pixel_id, slot_index) is owned exclusively) — so the binding
 // is read_write. Atomic counters are unused on this side.
-@group(4) @binding(0) var<storage, read_write> edge_buffers: EdgeBuffersReadOnly;
+@group({{ shadow_group_index }}) @binding(10) var<storage, read_write> edge_buffers: EdgeBuffersReadOnly;
 
 struct EdgeBufferLayout {
     max_edge_budget: u32,
@@ -57,4 +66,4 @@ struct EdgeBufferLayout {
     sample_entries_per_bucket: u32,
 };
 
-@group(4) @binding(1) var<uniform> edge_layout: EdgeBufferLayout;
+@group({{ shadow_group_index }}) @binding(11) var<uniform> edge_layout: EdgeBufferLayout;

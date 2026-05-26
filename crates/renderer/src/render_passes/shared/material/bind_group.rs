@@ -12,7 +12,6 @@ use awsm_renderer_core::texture::{TextureSampleType, TextureViewDimension};
 use indexmap::IndexSet;
 
 use crate::bind_group_layout::{BindGroupLayoutCacheKey, BindGroupLayoutCacheKeyEntry};
-use crate::bind_groups::BindGroupRecreateContext;
 use crate::error::Result;
 use crate::{
     bind_group_layout::BindGroupLayoutKey, render_passes::RenderPassInitContext,
@@ -268,12 +267,15 @@ pub fn shadow_bind_group_layout_entries(
     ]
 }
 
-/// Builds the seven bind-group entries for the shadow bind group from
-/// the live `Shadows` state in the recreation context.
+/// Builds the bind-group entries for the shadow bind group from the
+/// live `Shadows` state. Takes `&Shadows` directly (rather than a
+/// `BindGroupRecreateContext`) so it can also be called from
+/// `render_pass.rs` flows (e.g. the per-frame edge-resolve extended
+/// shadows bind group build) without needing the full recreate
+/// context plumbing.
 pub fn build_shadow_bind_group_entries<'a>(
-    ctx: &'a BindGroupRecreateContext<'a>,
+    shadows: &'a crate::shadows::Shadows,
 ) -> Vec<BindGroupEntry<'a>> {
-    let shadows = ctx.shadows;
     vec![
         BindGroupEntry::new(
             0,

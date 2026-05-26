@@ -372,6 +372,7 @@ impl AwsmRenderer {
             bind_group_layouts: &self.bind_group_layouts,
             camera: &self.camera,
             environment: &self.environment,
+            shadows: &self.shadows,
             features: &self.features,
             compaction_buffers: self.compaction_buffers.as_ref(),
             coverage_buffers: self.coverage_buffers.as_ref(),
@@ -1198,6 +1199,12 @@ pub struct RenderContext<'a> {
     /// Scene environment (skybox texture + sampler). Read by the
     /// skybox edge-resolve pipeline's standalone bind group.
     pub environment: &'a crate::environment::Environment,
+    /// Shadow subsystem. Read by the edge-resolve flow to build the
+    /// per-frame extended-shadows bind group (the 10 shadow resources
+    /// plus the 2 edge-resolve resources, all bound at group(3) of the
+    /// edge_resolve pipeline layout). Mirrors `BindGroupRecreateContext`
+    /// for parity with the opaque-pass shadow bind-group construction.
+    pub shadows: &'a crate::shadows::Shadows,
     /// Active feature gates. Read by the geometry pass to fork
     /// between `drawIndirect` (under `gpu_culling`) and the legacy
     /// CPU-recorded `draw_indexed_*` loop.

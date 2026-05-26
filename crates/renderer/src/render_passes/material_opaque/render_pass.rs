@@ -33,6 +33,7 @@ use crate::{
             edge_buffers::MaterialEdgeBuffers, edge_pipeline::MaterialEdgePipelines,
             pipeline::MaterialOpaquePipelines,
         },
+        shared::material::bind_group::build_shadow_bind_group_entries,
         RenderPassInitContext,
     },
     renderable::Renderable,
@@ -149,7 +150,13 @@ impl MaterialOpaqueRenderPass {
         // (~few µs per group) and the cache-invalidation discipline
         // (edge buffer recreate, texture-view recreate, MSAA flip)
         // would be intricate to get right across the whole pipeline.
-        let (edge_resolve_group4, skybox_edge_group, final_blend_group) =
+        //
+        // `extended_shadows_group` is the shadow bind group with the
+        // edge buffer + layout uniform appended (bindings 10/11); it
+        // is bound at slot 3 of the edge_resolve pipeline layout in
+        // place of the primary opaque shadow bind group, which is how
+        // the layout fits in 4 bind groups instead of 5.
+        let (extended_shadows_group, skybox_edge_group, final_blend_group) =
             self.build_edge_bind_groups(ctx, edge_buffers, edge_layout_uniform)?;
 
         let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
@@ -157,7 +164,7 @@ impl MaterialOpaqueRenderPass {
         ));
 
         // ── Per-shader-id edge_resolve dispatches ────────────────────
-        let (main_bind_group, lights_bind_group, texture_bind_group, shadows_bind_group) =
+        let (main_bind_group, lights_bind_group, texture_bind_group, _shadows_bind_group) =
             self.bind_groups.get_bind_groups()?;
 
         let bucket_entries = ctx.dynamic_materials.bucket_entries_cached();
@@ -175,14 +182,15 @@ impl MaterialOpaqueRenderPass {
                 continue;
             };
             if !any_per_shader {
-                // Set the four primary opaque bind groups once for the
-                // edge_resolve dispatches — they all share groups 0..3
-                // with the primary opaque pipeline.
+                // Set the four edge_resolve bind groups once — main(0),
+                // lights(1), texture-pool(2) reuse the primary opaque
+                // bind groups; extended-shadows(3) is the per-frame
+                // shadow + edge composite (replacing the primary
+                // opaque shadow bind group at this slot).
                 compute_pass.set_bind_group(0u32, main_bind_group, None)?;
                 compute_pass.set_bind_group(1u32, lights_bind_group, None)?;
                 compute_pass.set_bind_group(2u32, texture_bind_group, None)?;
-                compute_pass.set_bind_group(3u32, shadows_bind_group, None)?;
-                compute_pass.set_bind_group(4u32, &edge_resolve_group4, None)?;
+                compute_pass.set_bind_group(3u32, &extended_shadows_group, None)?;
                 any_per_shader = true;
             }
             compute_pass.set_pipeline(ctx.pipelines.compute.get(pipeline_key)?);
@@ -234,24 +242,27 @@ impl MaterialOpaqueRenderPass {
     )> {
         let layouts = &self.edge_bind_group_layouts;
 
-        // edge_resolve_group4: edge buffer (storage RW) + layout uniform.
-        let entries_g4 = vec![
-            BindGroupEntry::new(
-                0,
-                BindGroupResource::Buffer(BufferBinding::new(&edge_buffers.buffer)),
-            ),
-            BindGroupEntry::new(
-                1,
-                BindGroupResource::Buffer(BufferBinding::new(edge_layout_uniform)),
-            ),
-        ];
-        let descriptor_g4 = BindGroupDescriptor::new(
+        // extended_shadows_group: the standard 10 shadow bindings
+        // followed by edge_buffer (binding 10, storage RW) + edge_layout
+        // (binding 11, uniform). Bound at slot 3 of the edge_resolve
+        // pipeline layout in place of the primary opaque shadow bind
+        // group — the fold that lets the layout fit in 4 bind groups.
+        let mut entries_shadows = build_shadow_bind_group_entries(ctx.shadows);
+        entries_shadows.push(BindGroupEntry::new(
+            10,
+            BindGroupResource::Buffer(BufferBinding::new(&edge_buffers.buffer)),
+        ));
+        entries_shadows.push(BindGroupEntry::new(
+            11,
+            BindGroupResource::Buffer(BufferBinding::new(edge_layout_uniform)),
+        ));
+        let descriptor_shadows = BindGroupDescriptor::new(
             ctx.bind_group_layouts
-                .get(layouts.edge_resolve_group4_layout_key)?,
-            Some("Material Edge Resolve - Group 4"),
-            entries_g4,
+                .get(layouts.edge_resolve_extended_shadows_layout_key)?,
+            Some("Material Edge Resolve - Extended Shadows (Group 3)"),
+            entries_shadows,
         );
-        let edge_resolve_group4 = ctx.gpu.create_bind_group(&descriptor_g4.into());
+        let extended_shadows_group = ctx.gpu.create_bind_group(&descriptor_shadows.into());
 
         // Skybox-edge bind group: edge buffer + layout + camera + skybox tex + sampler.
         let entries_sky = vec![
@@ -307,7 +318,7 @@ impl MaterialOpaqueRenderPass {
         );
         let final_blend_group = ctx.gpu.create_bind_group(&descriptor_final.into());
 
-        Ok((edge_resolve_group4, skybox_edge_group, final_blend_group))
+        Ok((extended_shadows_group, skybox_edge_group, final_blend_group))
     }
 
     /// Executes the opaque material pass.
