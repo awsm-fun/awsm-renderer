@@ -184,8 +184,12 @@ impl MaterialEdgePipelines {
 
         // Build per-shader-id edge-resolve pipeline layout (reused
         // across every shader_id since their bind-group shape is
-        // identical — group(0..3) from the primary opaque pipeline +
-        // group(4) edge-resolve).
+        // identical). 4 groups total: main(0) / lights(1) /
+        // texture-pool(2) / extended-shadows(3). The extended-shadows
+        // layout is the primary opaque shadow layout with the edge
+        // buffer + edge-layout uniform appended at bindings 10/11 —
+        // folded in so the layout fits in 4 bind groups (macOS Metal
+        // caps at `maxBindGroups = 4`).
         let main_bgl = opaque_bind_groups.multisampled_main_bind_group_layout_key;
         let edge_resolve_layout_key = pipeline_layouts.get_key(
             gpu,
@@ -194,8 +198,7 @@ impl MaterialEdgePipelines {
                 main_bgl,
                 opaque_bind_groups.lights_bind_group_layout_key,
                 opaque_bind_groups.texture_pool_textures_bind_group_layout_key,
-                opaque_bind_groups.shadows_bind_group_layout_key,
-                edge_layouts.edge_resolve_group4_layout_key,
+                edge_layouts.edge_resolve_extended_shadows_layout_key,
             ]),
         )?;
         let skybox_edge_layout_key = pipeline_layouts.get_key(
