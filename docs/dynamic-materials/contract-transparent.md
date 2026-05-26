@@ -125,16 +125,23 @@ per-shader-id sort order; only per-mesh world-space depth.
 
 ## Alpha mode
 
-`alpha_mode = Blend` → this contract.
+`alpha_mode = Blend` → this contract (transparent fragment pass).
 
-`alpha_mode = Mask { cutoff }` still routes through the opaque compute
-kernel (the alpha-mask discard is set by your fragment's
-`output.alpha = 0.0`) — see [opaque contract](contract-opaque.md).
+`alpha_mode = Mask { cutoff }` → **also this contract**. The
+codebase treats masked materials as part of the transparency pass
+(`MaterialShader::is_transparency_pass` returns true whenever
+`alpha_cutoff().is_some()`); the transparent WGSL path runs
+`discard` for fragments whose alpha is below the cutoff. So your
+soft-glass / etched-glass / cut-out leaf material wires the same
+way: write the WGSL fragment against `TransparentShadingInput`,
+return your alpha through `TransparentShadingOutput.color.a`,
+and the renderer handles the cutoff comparison.
 
-`alpha_mode = Opaque` → opaque kernel.
+`alpha_mode = Opaque` → [opaque contract](contract-opaque.md).
 
 Custom materials cannot override the alpha-mode-driven routing
-(`is_transparency_pass()` derives from `alpha_mode` directly).
+(`Material::is_transparency_pass` derives from the registration's
+`alpha_mode` directly).
 
 ---
 
@@ -145,35 +152,42 @@ Same list as opaque — see
 
 ---
 
-## Example — soft-glass (Phase 7)
+## Example — soft-glass
 
 ```wgsl
 // shader.wgsl for the soft-glass material
 //
 // Layout (material.json):
 //   uniforms: [tint: Color3 = [0.85, 0.92, 1.0],
-//              refraction_strength: F32 = 0.05]
+//              edge_alpha: F32 = 0.85,
+//              face_alpha: F32 = 0.25]
 //   textures: []
 //   buffers:  []
 //
 // alpha_mode: Blend, double_sided: true
 
-let camera = camera_from_raw(camera_raw);
-
-// Refract the opaque background sample by perturbing the screen-space
-// lookup along the surface normal.
-let normal_screen = (camera.view * vec4<f32>(input.world_normal, 0.0)).xy;
-let offset = normal_screen * input.material.refraction_strength;
-let bg_uv = vec2<f32>(0.5, 0.5) + offset;
-let bg_rgb = textureSampleLevel(input.opaque_background, input.opaque_sampler, bg_uv, 0.0).rgb;
-
-// Schlick-ish view-angle alpha (more opaque at grazing angles).
+// Schlick-ish view-angle alpha — more opaque at grazing angles
+// (edges of curved surfaces), more transparent face-on. The output
+// alpha drives the standard (src.a, 1-src.a) blend the transparent
+// pass uses; the kernel composites the dst (opaque background)
+// behind us automatically, so the dynamic shader doesn't have to
+// sample it itself.
 let cos_theta = clamp(dot(input.world_normal, input.surface_to_camera), 0.0, 1.0);
-let alpha = mix(0.85, 0.25, cos_theta);
+let alpha = mix(input.material.edge_alpha, input.material.face_alpha, cos_theta);
 
-let color = bg_rgb * input.material.tint;
+let color = input.material.tint;
 return TransparentShadingOutput(vec4<f32>(color, alpha));
 ```
 
-(Phase 7 of the dynamic-materials plan lands this exact material as the
-first end-to-end transparent test case.)
+**Why this example doesn't sample the opaque background directly:**
+the dynamic-material wrapper intentionally doesn't bind the
+opaque-target texture on `TransparentShadingInput`. The renderer's
+PBR transmission code calls `sample_transmission_background(...)`
+from `material_transparent_wgsl/fragment.wgsl`, but that helper
+needs `frag_pos: vec4<f32>` + the camera struct, neither of which
+the wrapper exposes today. Materials that need refractive sampling
+(true glass, dispersion, etc.) should promote to first-party PBR
+with `KHR_materials_transmission` rather than fight the dynamic
+schema's intentionally-minimal surface. For pure colour-tinted
+soft-glass effects, alpha-blending against the framebuffer's
+existing contents is enough — which is what this example does.

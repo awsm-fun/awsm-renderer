@@ -522,7 +522,7 @@ async fn load_inner() -> anyhow::Result<LoadOutcome> {
     }
 
     crate::loading_modal::set("Materializing scene…");
-    crate::scene::snapshot::apply_to(&snapshot, &state.scene);
+    crate::scene::snapshot::apply_to(&snapshot, &state.scene, &state.custom_materials);
     state.scene.bump_revision();
 
     state.clear_selection();

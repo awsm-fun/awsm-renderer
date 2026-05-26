@@ -8,21 +8,32 @@
 
 use crate::scene::{node::Node, types::AssetStatus, Scene};
 use awsm_scene_schema::{EditorNode, EditorProject};
+use futures_signals::signal_vec::MutableVec;
 use std::sync::Arc;
 
 /// The editor's snapshot type — same shape as the on-disk format.
 pub type SceneSnapshot = EditorProject;
 
-/// Capture the live `Scene` into an `EditorProject`.
-pub fn capture(scene: &Scene) -> EditorProject {
+/// Capture the live `Scene` + AppState's `custom_materials` list into
+/// an `EditorProject`. `custom_materials` lives on `AppState`
+/// (reactive across the whole editor session), not on `Scene` — so
+/// it's threaded through as a separate arg rather than reached via
+/// `&Scene`. Without this, Save / undo / redo would drop every
+/// imported custom material on every commit.
+pub fn capture(
+    scene: &Scene,
+    custom_materials: &MutableVec<awsm_scene_schema::CustomMaterialRef>,
+) -> EditorProject {
     let environment = scene.environment.get_cloned();
     let shadows = scene.shadows.get_cloned();
     let assets = scene.assets.lock().unwrap().clone();
-    // Phase 5 of the dynamic-materials plan will populate this from the
-    // editor's reactive `Scene::custom_materials` mutable; Phase 1's
-    // snapshot keeps it empty so the schema field round-trips cleanly
-    // without yet wiring an editor-side store.
-    let custom_materials: Vec<awsm_scene_schema::CustomMaterialRef> = Vec::new();
+    // Snapshot the imported-material refs as a plain Vec. The
+    // renderer-side registrations themselves are NOT part of the
+    // snapshot — those rebuild from the on-disk `material.json` +
+    // `shader.wgsl` on load. The schema-side list is just the
+    // (name, folder) pointers that drive re-registration.
+    let custom_materials: Vec<awsm_scene_schema::CustomMaterialRef> =
+        custom_materials.lock_ref().iter().cloned().collect();
     let nodes = scene
         .nodes
         .lock_ref()
@@ -44,10 +55,23 @@ pub fn capture(scene: &Scene) -> EditorProject {
 }
 
 /// Replace the live scene's contents with an `EditorProject` in-place.
-pub fn apply_to(snapshot: &EditorProject, scene: &Scene) {
+/// `custom_materials` is repopulated from the snapshot so undo / redo
+/// / load all see the right imported-material list.
+pub fn apply_to(
+    snapshot: &EditorProject,
+    scene: &Scene,
+    custom_materials: &MutableVec<awsm_scene_schema::CustomMaterialRef>,
+) {
     scene.environment.set(snapshot.environment.clone());
     scene.shadows.set(snapshot.shadows.clone());
     *scene.assets.lock().unwrap() = snapshot.assets.clone();
+    {
+        let mut lock = custom_materials.lock_mut();
+        lock.clear();
+        for m in &snapshot.custom_materials {
+            lock.push_cloned(m.clone());
+        }
+    }
     let mut lock = scene.nodes.lock_mut();
     lock.clear();
     for snap in &snapshot.nodes {

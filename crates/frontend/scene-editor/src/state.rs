@@ -254,9 +254,10 @@ impl AppState {
     }
 
     /// Capture the current scene into a snapshot. Used by history commit
-    /// and Save.
+    /// and Save. Includes the imported custom-material list so undo /
+    /// redo / save / reload all preserve it.
     pub fn snapshot_scene(&self) -> SceneSnapshot {
-        crate::scene::snapshot::capture(&self.scene)
+        crate::scene::snapshot::capture(&self.scene, &self.custom_materials)
     }
 
     /// Push the pre-mutation snapshot onto the undo stack. Call *before*

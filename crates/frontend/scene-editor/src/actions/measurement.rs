@@ -66,7 +66,7 @@ pub async fn load_scene_by_path(scene_name: String) -> Result<(), JsValue> {
     super::project::drop_renderer_caches().await;
     state.pending_assets.lock().unwrap().clear();
 
-    crate::scene::snapshot::apply_to(&snapshot, &state.scene);
+    crate::scene::snapshot::apply_to(&snapshot, &state.scene, &state.custom_materials);
     state.scene.bump_revision();
     state.clear_selection();
     state.history.lock().unwrap().clear();
@@ -187,7 +187,7 @@ pub async fn load_external_test_scene(scene_name: String) -> Result<(), JsValue>
     super::project::drop_renderer_caches().await;
     state.pending_assets.lock().unwrap().clear();
 
-    crate::scene::snapshot::apply_to(&snapshot, &state.scene);
+    crate::scene::snapshot::apply_to(&snapshot, &state.scene, &state.custom_materials);
     state.scene.bump_revision();
     state.clear_selection();
     state.history.lock().unwrap().clear();
