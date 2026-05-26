@@ -81,9 +81,11 @@ impl PointHandleSet {
             mat.metallic_factor = 0.0;
             mat.roughness_factor = 1.0;
             mat.emissive_factor = [0.6, 1.4, 1.6];
-            let key = renderer
-                .materials
-                .insert(Material::Pbr(Box::new(mat)), &renderer.textures);
+            let key = renderer.materials.insert(
+                Material::Pbr(Box::new(mat)),
+                &renderer.textures,
+                &renderer.dynamic_materials,
+            );
             self.material_key = Some(key);
         }
         let material_key = self.material_key.unwrap();

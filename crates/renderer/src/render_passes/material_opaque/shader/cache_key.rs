@@ -32,6 +32,32 @@ pub struct ShaderCacheKeyMaterialOpaque {
     /// See `awsm_renderer::dynamic_materials::DynamicMaterials::dispatch_hash`
     /// for the hashing details.
     pub dispatch_hash: u64,
+    /// `Some` when `shader_id.is_dynamic()`: carries the registered
+    /// material's WGSL fragment + the auto-generated `MaterialData`
+    /// struct declaration so the opaque-compute template can emit the
+    /// wrapped `custom_shade_<id>` function + matching dispatch arm.
+    /// `None` for first-party ids — those are still handled by the
+    /// hand-rolled `{% if shader_id == ... %}` arms in compute.wgsl.
+    pub dynamic_shader: Option<DynamicShaderInfo>,
+}
+
+/// Per-dynamic-material info embedded in the opaque cache key so the
+/// template emission can wrap the author's WGSL into a
+/// `fn custom_shade_<id>(...)` and dispatch to it from the kernel.
+///
+/// Hashed by `(shader_id, layout_hash, wgsl_hash)` — the field names
+/// + bodies are recomputed from the layout / WGSL at template-render
+/// time. Two distinct registrations with byte-identical hashes
+/// produce the same compiled WGSL.
+#[derive(Hash, Debug, Clone, PartialEq, Eq)]
+pub struct DynamicShaderInfo {
+    /// The auto-generated `struct CustomMaterialData_<id>` declaration
+    /// (output of `dynamic_layout::generate_wgsl_struct`).
+    pub struct_decl: String,
+    /// The author's WGSL fragment, verbatim. Wrapped at template-
+    /// render time into `fn custom_shade_<id>(input: OpaqueShadingInput)
+    /// -> OpaqueShadingOutput { <fragment> }`.
+    pub wgsl_fragment: String,
 }
 
 impl From<ShaderCacheKeyMaterialOpaque> for ShaderCacheKey {

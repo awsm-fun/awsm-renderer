@@ -97,6 +97,41 @@
 {% include "material_opaque_wgsl/helpers/material_shading.wgsl" %}
 /*************** END material_shading.wgsl ******************/
 
+{% if shader_id.is_dynamic() %}
+/*************** START dynamic-material wrapper ******************/
+// Auto-generated per the registered material's layout. Phase 4 wraps
+// the author's WGSL fragment in a function the dispatch arm below
+// calls; see docs/dynamic-materials/contract-opaque.md for the
+// `OpaqueShadingInput` / `OpaqueShadingOutput` contract.
+//
+// The contract types are declared here (inline rather than in
+// shared_wgsl/) because they exist exclusively for the wrapper —
+// first-party materials read their inputs from the kernel directly.
+
+struct OpaqueShadingInput {
+    coords: vec2<i32>,
+    screen_dims: vec2<u32>,
+    triangle_index: u32,
+    barycentric: vec3<f32>,
+    main_instance_id: u32,
+    world_normal: vec3<f32>,
+    world_position: vec3<f32>,
+    surface_to_camera: vec3<f32>,
+    material_offset: u32,
+};
+struct OpaqueShadingOutput {
+    color: vec3<f32>,
+    alpha: f32,
+};
+
+{{ dynamic_struct_decl|safe }}
+
+fn custom_shade_dynamic(input: OpaqueShadingInput) -> OpaqueShadingOutput {
+{{ dynamic_wgsl_fragment|safe }}
+}
+/*************** END dynamic-material wrapper ******************/
+{% endif %}
+
 {% if debug.any() %}
 /*************** START debug.wgsl ******************/
 {% include "material_opaque_wgsl/helpers/debug.wgsl" %}
@@ -249,6 +284,8 @@ fn main(
         if (shader_id != SHADER_ID_TOON) { return; }
     {% else if shader_id == MaterialShaderId::FLIPBOOK %}
         if (shader_id != SHADER_ID_FLIPBOOK) { return; }
+    {% else if shader_id.is_dynamic() %}
+        if (shader_id != {{ shader_id.as_u32() }}u) { return; }
     {% endif %}
 
     let vertex_attribute_stride = material_mesh_meta.vertex_attribute_stride / 4; // 4 bytes per float
@@ -429,6 +466,22 @@ fn main(
         );
         color = flipbook_result.rgb;
         base_alpha = flipbook_result.a;
+    {% else if shader_id.is_dynamic() %}
+        // Dynamic custom material — wrapped fragment lives above.
+        let dyn_input = OpaqueShadingInput(
+            coords,
+            screen_dims,
+            triangle_index,
+            barycentric,
+            main_instance_id,
+            world_normal,
+            standard_coordinates.world_position,
+            standard_coordinates.surface_to_camera,
+            material_offset,
+        );
+        let dyn_out = custom_shade_dynamic(dyn_input);
+        color = dyn_out.color;
+        base_alpha = dyn_out.alpha;
     {% endif %}
 
 

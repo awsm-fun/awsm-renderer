@@ -21,6 +21,63 @@ use awsm_materials::{MaterialAlphaMode, MaterialShaderId};
 
 pub use error::AwsmDynamicMaterialError;
 
+use awsm_materials::dynamic::{
+    DynamicMaterialContext, DynamicTextureBinding,
+};
+use awsm_materials::dynamic_layout::MaterialLayout;
+
+/// Adapter that implements [`DynamicMaterialContext`] over the
+/// renderer's [`DynamicMaterials`] registry.
+///
+/// Per-material `layout` + `alpha_mode` are looked up from
+/// [`MaterialRegistration`]. `resolve_texture_index` returns
+/// `u32::MAX` for unbound slots (the WGSL `texture_pool_sample_*`
+/// helpers treat that as "no texture"). `buffer_slice` returns `None`
+/// — Phase 6 wires the extras-pool allocator.
+pub struct DynamicMaterialPackContext<'a> {
+    materials: &'a DynamicMaterials,
+    layouts: HashMap<MaterialShaderId, MaterialLayout>,
+}
+
+impl<'a> DynamicMaterialPackContext<'a> {
+    /// Wraps a `&DynamicMaterials` for use as a
+    /// [`DynamicMaterialContext`]. The layouts referenced from inside
+    /// the context are derived eagerly from the registry's
+    /// [`MaterialRegistration::layout_hash`]-keyed entries.
+    pub fn new(materials: &'a DynamicMaterials) -> Self {
+        let mut layouts = HashMap::new();
+        for (id, reg) in materials.iter() {
+            layouts.insert(id, reg.layout.clone());
+        }
+        Self { materials, layouts }
+    }
+}
+
+impl<'a> DynamicMaterialContext for DynamicMaterialPackContext<'a> {
+    fn layout(&self, shader_id: MaterialShaderId) -> Option<&MaterialLayout> {
+        self.layouts.get(&shader_id)
+    }
+
+    fn alpha_mode(&self, shader_id: MaterialShaderId) -> Option<awsm_materials::MaterialAlphaMode> {
+        self.materials.get(shader_id).map(|r| r.alpha_mode)
+    }
+
+    fn resolve_texture_index(&self, _binding: Option<&DynamicTextureBinding>) -> u32 {
+        // Phase 5 wires real texture-pool lookups through the
+        // renderer's TextureContext. For Phase 4, unbound = u32::MAX
+        // (the WGSL helpers treat that as "no texture").
+        u32::MAX
+    }
+
+    fn buffer_slice(
+        &self,
+        _shader_id: MaterialShaderId,
+        _buffer_slot_index: usize,
+    ) -> Option<(u32, u32)> {
+        None
+    }
+}
+
 /// One bucket entry — the template-rendering view of a single registered
 /// material (first-party OR dynamic). Returned by
 /// [`DynamicMaterials::bucket_entries`].
@@ -265,6 +322,10 @@ pub struct MaterialRegistration {
     /// triangles. Plumbed onto the mesh's `double_sided` flag the same
     /// way first-party materials' `double_sided()` does.
     pub double_sided: bool,
+    /// The material's uniform + texture + buffer layout. Drives both
+    /// the auto-generated `struct CustomMaterialData_<id>` WGSL
+    /// declaration and the per-instance byte packing.
+    pub layout: MaterialLayout,
     /// Stable hash over the layout (uniforms + textures + buffers).
     /// Drives the renderer's per-shader-id pipeline cache invalidation.
     /// Set by the consumer; the renderer never computes this itself.
@@ -288,15 +349,24 @@ impl crate::AwsmRenderer {
     /// Idempotent on `(name, layout_hash, wgsl_hash)`: re-registering the
     /// same material returns the same id without recompiling.
     ///
-    /// **Phase 0**: the stub returns the next id but does not yet wire the
-    /// material into the renderer's template substitution machinery — see
-    /// Phase 3 for the registry + cache-hash plumbing and Phase 4 / Phase 7
-    /// for the opaque + transparent template substitution.
+    /// **Phase 4**: the new shader_id is inserted; the next render call's
+    /// classify-pass cache lookup misses (since `bucket_entries` changed)
+    /// and triggers a recompile of the classify shader. The opaque-compute
+    /// pipeline for the new shader_id is compiled on first dispatch (or
+    /// eagerly via [`Self::prewarm_pipelines`]).
     pub fn register_material(
         &mut self,
         registration: MaterialRegistration,
     ) -> Result<MaterialShaderId, AwsmDynamicMaterialError> {
-        self.dynamic_materials.insert(registration)
+        let id = self.dynamic_materials.insert(registration)?;
+        // Ensure the classify buffer has capacity for the (possibly
+        // larger) bucket count. The mid-session header writer
+        // re-emits the per-bucket offsets at the new layout.
+        let new_count = bucket_entries(&self.dynamic_materials).len() as u32;
+        let _ = self
+            .material_classify_buffers
+            .ensure_bucket_count(&self.gpu, new_count);
+        Ok(id)
     }
 
     /// Removes a previously-registered dynamic material.

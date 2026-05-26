@@ -327,9 +327,11 @@ fn start_worker_renderer(canvas: web_sys::OffscreenCanvas) -> Result<(), JsValue
         mat.metallic_factor = 0.0;
         mat.roughness_factor = 0.6;
         mat.emissive_factor = [2.0, 4.0, 6.0];
-        let material_key = renderer
-            .materials
-            .insert(Material::Pbr(Box::new(mat)), &renderer.textures);
+        let material_key = renderer.materials.insert(
+            Material::Pbr(Box::new(mat)),
+            &renderer.textures,
+            &renderer.dynamic_materials,
+        );
         let transform_key = renderer.transforms.insert(
             Transform {
                 translation: Vec3::new(0.0, 0.0, -3.0),

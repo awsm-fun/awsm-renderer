@@ -185,6 +185,13 @@ impl MaterialOpaquePipelines {
                             // ensure_keys time so a registration triggers
                             // the right pipeline recompile.
                             dispatch_hash: 0,
+                            // Builder-time prewarm covers only first-party
+                            // shader_ids — dynamic registrations land
+                            // through the `prewarm_pipelines` path
+                            // (Phase 6) which builds a fresh cache key
+                            // for each dynamic shader_id with its
+                            // registration's struct_decl + wgsl_fragment.
+                            dynamic_shader: None,
                         }
                         .into(),
                         layout_key,
@@ -345,5 +352,16 @@ impl MaterialOpaquePipelines {
                 shader_id,
             })
             .copied()
+    }
+
+    /// Inserts a compiled opaque-compute pipeline for a dynamic
+    /// shader_id. Called from `AwsmRenderer::prewarm_pipelines` after
+    /// compiling a registered material's per-shader-id pipeline.
+    pub fn insert_dynamic_pipeline(
+        &mut self,
+        key_id: PipelineKeyId,
+        pipeline_key: ComputePipelineKey,
+    ) {
+        self.main.insert(key_id, pipeline_key);
     }
 }

@@ -655,6 +655,7 @@ impl RenderPasses {
             pipelines: MaterialClassifyPipelines::from_resolved(
                 compute_keys[ranges.classify].to_vec(),
             ),
+            dynamic_pipeline_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
         };
 
         let material_decal = match (

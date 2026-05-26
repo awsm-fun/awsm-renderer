@@ -69,10 +69,20 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     pub shader_id_consts: String,
     /// Which material shader_id this specialized pipeline handles.
     /// The compute.wgsl template renders only the matching material's
-    /// shading code (PBR / Unlit / Toon), with a per-pixel guard
-    /// early-returning on mismatch so a full-screen dispatch is
-    /// correct even before classify+indirect lands.
+    /// shading code (PBR / Unlit / Toon / FlipBook / a registered
+    /// dynamic material), with a per-pixel guard early-returning on
+    /// mismatch so a full-screen dispatch is correct even before
+    /// classify+indirect lands.
     pub shader_id: MaterialShaderId,
+    /// For dynamic shader ids: the auto-generated `struct
+    /// CustomMaterialData_<id> { ... }` declaration emitted above the
+    /// author's WGSL fragment. Empty string for first-party ids.
+    pub dynamic_struct_decl: String,
+    /// For dynamic shader ids: the author's WGSL fragment (wrapped at
+    /// template render time into
+    /// `fn custom_shade_<id>(...) -> OpaqueShadingOutput { <body> }`).
+    /// Empty string for first-party ids.
+    pub dynamic_wgsl_fragment: String,
 }
 
 impl ShaderTemplateMaterialOpaqueCompute {
@@ -133,6 +143,16 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
                 shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
                 shader_id: value.shader_id,
+                dynamic_struct_decl: value
+                    .dynamic_shader
+                    .as_ref()
+                    .map(|d| d.struct_decl.clone())
+                    .unwrap_or_default(),
+                dynamic_wgsl_fragment: value
+                    .dynamic_shader
+                    .as_ref()
+                    .map(|d| d.wgsl_fragment.clone())
+                    .unwrap_or_default(),
             },
         };
 

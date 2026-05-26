@@ -2,10 +2,15 @@
 //! tile buckets + indirect-dispatch args consumed by the opaque
 //! material pipelines.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+
 use awsm_renderer_core::command::compute_pass::ComputePassDescriptor;
 
 use crate::{
+    dynamic_materials::BucketEntry,
     error::Result,
+    pipelines::compute_pipeline::ComputePipelineKey,
     render::RenderContext,
     render_passes::{
         material_classify::{
@@ -16,9 +21,20 @@ use crate::{
 };
 
 /// Material classify pass bind groups and pipelines.
+///
+/// The base `pipelines` field holds the first-party-only pipeline keys
+/// compiled at builder time. When dynamic materials register, a
+/// different bucket-entry list is needed; the new pipeline gets
+/// compiled via [`crate::AwsmRenderer::prewarm_pipelines`] and looked
+/// up here at dispatch time via `dynamic_pipeline_cache`.
 pub struct MaterialClassifyRenderPass {
     pub bind_groups: MaterialClassifyBindGroups,
     pub pipelines: MaterialClassifyPipelines,
+    /// (bucket_entries, msaa) → compiled pipeline. Populated by
+    /// `prewarm_pipelines`. RefCell so the dispatch path can take a
+    /// snapshot without `&mut self`.
+    pub dynamic_pipeline_cache:
+        RefCell<HashMap<(Vec<BucketEntry>, Option<u32>), ComputePipelineKey>>,
 }
 
 impl MaterialClassifyRenderPass {
@@ -30,6 +46,7 @@ impl MaterialClassifyRenderPass {
         Ok(Self {
             bind_groups,
             pipelines,
+            dynamic_pipeline_cache: RefCell::new(HashMap::new()),
         })
     }
 
@@ -37,12 +54,37 @@ impl MaterialClassifyRenderPass {
     /// the visibility buffer. Per-workgroup atomic-or builds a bucket
     /// mask, then thread 0 atomically appends the tile to each
     /// bucket bit it touched.
+    ///
+    /// When dynamic materials are registered, the dispatch uses a
+    /// pre-compiled "dynamic-aware" pipeline keyed on the current
+    /// bucket_entries. `prewarm_pipelines` populates this cache;
+    /// without prewarm the dispatch falls back to the first-party-only
+    /// pipeline (which still classifies first-party shader_ids
+    /// correctly, but dynamic-id pixels won't enter any bucket and
+    /// won't be shaded).
     pub fn render(&self, ctx: &RenderContext) -> Result<()> {
         let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
             &ComputePassDescriptor::new(Some("Material Classify Pass")).into(),
         ));
 
-        let pipeline_key = if ctx.anti_aliasing.msaa_sample_count.is_some() {
+        let msaa = ctx.anti_aliasing.msaa_sample_count;
+        let pipeline_key = if !ctx.dynamic_materials.is_empty() {
+            let entries = crate::dynamic_materials::bucket_entries(ctx.dynamic_materials);
+            self.dynamic_pipeline_cache
+                .borrow()
+                .get(&(entries, msaa))
+                .copied()
+                .unwrap_or_else(|| {
+                    // Cache miss — fall back to the first-party pipeline.
+                    // Caller should have invoked `prewarm_pipelines` after
+                    // the registration to populate this cache.
+                    if msaa.is_some() {
+                        self.pipelines.multisampled_pipeline_key
+                    } else {
+                        self.pipelines.singlesampled_pipeline_key
+                    }
+                })
+        } else if msaa.is_some() {
             self.pipelines.multisampled_pipeline_key
         } else {
             self.pipelines.singlesampled_pipeline_key

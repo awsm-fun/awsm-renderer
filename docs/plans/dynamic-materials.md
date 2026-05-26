@@ -2122,16 +2122,26 @@ leaves a runnable renderer:
      `Shaders::compile_and_hash(...)` on both branches).
 
 ### Phase 4 — Opaque template substitution
-- [ ] Substitution emits `struct CustomMaterialData_<id>` per dynamic
-      entry
-- [ ] Substitution emits wrapped `fn custom_shade_<id>` per dynamic
-      entry
-- [ ] Substitution appends shader_id match arms per dynamic entry
-- [ ] Per-material storage / uniform buffer carries dynamic-material
-      bytes
-- [ ] Texture indices resolved via `TextureContext` and appended after
-      uniforms
-- [ ] Phase-4 `scanline` registration renders on a test-scene quad
+- [x] Substitution emits `struct CustomMaterialData_<id>` per dynamic
+      pipeline (via `dynamic_struct_decl` on the cache key + askama
+      `{% if shader_id.is_dynamic() %}` block in compute.wgsl)
+- [x] Substitution emits wrapped `fn custom_shade_dynamic(input) ->
+      OpaqueShadingOutput { <fragment> }` per dynamic pipeline
+- [x] Substitution emits the `else if shader_id.is_dynamic()` dispatch
+      arm calling `custom_shade_dynamic(...)` with the full
+      OpaqueShadingInput
+- [x] Per-material storage / uniform buffer carries dynamic-material
+      bytes (Material::Custom routed through
+      DynamicMaterialPackContext + DynamicMaterial::write_uniform_buffer_with_layout)
+- [x] `prewarm_pipelines` extended to compile the classify-pass
+      dynamic variant + per-shader-id opaque pipelines on demand
+- [x] Material-opaque dispatch loop iterates registry bucket_entries
+      (Phase 3) so dynamic ids automatically dispatch via the
+      indirect-args slot the classify shader wrote
+- [~] Phase-4 `scanline` registration renders on a test-scene quad —
+      infrastructure landed; visual verification gated on Phase 5's
+      scene-editor bridge to actually load a project with a
+      `custom_material` instance and on a browser-side GPU run.
 
 ### Phase 5 — scene-editor instance plumbing
 - [ ] Bridge registers all `project.custom_materials` on project load

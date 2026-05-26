@@ -65,7 +65,8 @@ use awsm_materials::{
 impl AwsmRenderer {
     /// Updates a material in place.
     pub fn update_material(&mut self, key: MaterialKey, f: impl FnMut(&mut Material)) {
-        self.materials.update(key, &self.textures, f);
+        self.materials
+            .update(key, &self.textures, &self.dynamic_materials, f);
     }
 
     /// Removes a material and frees its slot in the materials storage
@@ -172,7 +173,15 @@ impl Material {
     }
 
     /// Returns the packed uniform buffer data for the material.
-    pub fn uniform_buffer_data(&self, ctx: &dyn TextureContext) -> Vec<u8> {
+    ///
+    /// `dynamic_ctx` is only consulted for [`Material::Custom`]
+    /// instances; first-party variants take the simpler
+    /// [`TextureContext`]-only path.
+    pub fn uniform_buffer_data(
+        &self,
+        ctx: &dyn TextureContext,
+        dynamic_ctx: &dyn awsm_materials::dynamic::DynamicMaterialContext,
+    ) -> Vec<u8> {
         let mut data = Vec::with_capacity(256);
         match self {
             Material::Pbr(m) => {
@@ -187,15 +196,11 @@ impl Material {
             Material::FlipBook(m) => {
                 MaterialShader::write_uniform_buffer(m.as_ref(), ctx, &mut data);
             }
-            // Phase 2 wires `DynamicMaterial::write_uniform_buffer` to
-            // walk the registry's layout. Phase 0 has no registered
-            // material that could produce a `Custom` instance, so this
-            // arm is structurally unreachable until the schema-side
-            // bridge starts producing `Material::Custom` (Phase 5).
-            Material::Custom(_) => {
-                unreachable!(
-                    "Material::Custom uniform buffer packing is wired in Phase 2 / Phase 5"
-                );
+            Material::Custom(m) => {
+                // Dynamic materials walk the registry's layout via the
+                // context (DynamicMaterialContext). See
+                // crates/materials/src/dynamic.rs.
+                m.write_uniform_buffer_with_layout(dynamic_ctx, &mut data);
             }
         }
         data
@@ -256,7 +261,12 @@ impl Materials {
     }
 
     /// Inserts a material and returns its key.
-    pub fn insert(&mut self, material: Material, textures: &Textures) -> MaterialKey {
+    pub fn insert(
+        &mut self,
+        material: Material,
+        textures: &Textures,
+        dynamic_materials: &crate::dynamic_materials::DynamicMaterials,
+    ) -> MaterialKey {
         let is_transparency_pass = material.is_transparency_pass();
 
         let key = self.lookup.insert(material);
@@ -264,7 +274,7 @@ impl Materials {
             self._is_transparency_pass.insert(key, ());
         }
 
-        self.update(key, textures, |_| {});
+        self.update(key, textures, dynamic_materials, |_| {});
 
         key
     }
@@ -314,6 +324,7 @@ impl Materials {
         &mut self,
         key: MaterialKey,
         textures: &Textures,
+        dynamic_materials: &crate::dynamic_materials::DynamicMaterials,
         mut f: impl FnMut(&mut Material),
     ) {
         if let Some(material) = self.lookup.get_mut(key) {
@@ -328,7 +339,9 @@ impl Materials {
                 }
             }
 
-            let data = material.uniform_buffer_data(textures);
+            let dynamic_ctx =
+                crate::dynamic_materials::DynamicMaterialPackContext::new(dynamic_materials);
+            let data = material.uniform_buffer_data(textures, &dynamic_ctx);
             match self.buffer.update(key, &data) {
                 Ok(_) => {
                     self.gpu_dirty = true;

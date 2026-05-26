@@ -380,6 +380,14 @@ impl AwsmRenderer {
             None
         };
 
+        // Dynamic materials — warm the classify-pass variant for the
+        // current bucket_entries (so the next render uses the right
+        // pipeline) and the per-shader-id opaque-compute pipeline for
+        // each registered dynamic material.
+        if !self.dynamic_materials.is_empty() {
+            self.prewarm_dynamic_pipelines().await?;
+        }
+
         // Build one request per mesh. `ensure_keys` on both caches
         // dedupes internally by cache key, so we don't need to
         // dedupe at the request level — and dedup'ing here by
@@ -423,6 +431,161 @@ impl AwsmRenderer {
                 &self.render_textures.formats,
             )
             .await?;
+
+        Ok(())
+    }
+
+    /// Compile the classify-pass variant + the per-shader-id opaque-
+    /// compute pipelines for every currently-registered dynamic
+    /// material. Called from [`Self::prewarm_pipelines`] when the
+    /// dynamic registry is non-empty. Idempotent on cache hits.
+    async fn prewarm_dynamic_pipelines(&mut self) -> crate::error::Result<()> {
+        use crate::render_passes::material_classify::shader::cache_key::ShaderCacheKeyMaterialClassify;
+
+        let entries = crate::dynamic_materials::bucket_entries(&self.dynamic_materials);
+
+        // 1. Classify variant — one per MSAA mode. Compile the
+        //    shader, build the pipeline cache key, ensure it.
+        for msaa in [Some(4u32), None] {
+            let classify_key = ShaderCacheKeyMaterialClassify {
+                msaa_sample_count: msaa,
+                bucket_entries: entries.clone(),
+            };
+            let shader_key = self
+                .shaders
+                .get_key(&self.gpu, classify_key)
+                .await?;
+            // Reuse the existing pipeline layout key from the
+            // already-compiled classify pipeline (the layout doesn't
+            // change with bucket count, only the shader source does).
+            let bind_groups = &self.render_passes.material_classify.bind_groups;
+            let layout_key = if msaa.is_some() {
+                bind_groups.multisampled_bind_group_layout_key
+            } else {
+                bind_groups.singlesampled_bind_group_layout_key
+            };
+            let pipeline_layout_key = self.pipeline_layouts.get_key(
+                &self.gpu,
+                &mut self.bind_group_layouts,
+                crate::pipeline_layouts::PipelineLayoutCacheKey::new(vec![layout_key]),
+            )?;
+            let pipeline_cache_key =
+                crate::pipelines::compute_pipeline::ComputePipelineCacheKey::new(
+                    shader_key,
+                    pipeline_layout_key,
+                );
+            let keys = self
+                .pipelines
+                .compute
+                .ensure_keys(
+                    &self.gpu,
+                    &self.shaders,
+                    &self.pipeline_layouts,
+                    vec![pipeline_cache_key],
+                )
+                .await?;
+            // Store the resolved key in the render pass's per-bucket-
+            // entries cache so dispatch can find it.
+            self.render_passes
+                .material_classify
+                .dynamic_pipeline_cache
+                .borrow_mut()
+                .insert((entries.clone(), msaa), keys[0]);
+        }
+
+        // 2. Per-dynamic-id opaque pipelines — one per shader_id, per
+        //    (MSAA, mipmap) variant. The opaque cache key carries
+        //    `dynamic_shader` so each registered material gets its
+        //    own specialized pipeline.
+        let dispatch_hash = self.dynamic_materials.dispatch_hash();
+        for (shader_id, reg) in self.dynamic_materials.iter() {
+            // Build the auto-generated struct decl from the layout.
+            let struct_decl = awsm_materials::dynamic_layout::generate_wgsl_struct(
+                "MaterialData",
+                &reg.layout,
+            );
+            let dynamic_shader = Some(
+                crate::render_passes::material_opaque::shader::cache_key::DynamicShaderInfo {
+                    struct_decl,
+                    wgsl_fragment: reg.wgsl_fragment.clone(),
+                },
+            );
+
+            let opaque_bg = &self.render_passes.material_opaque.bind_groups;
+            let texture_pool_arrays_len = opaque_bg.texture_pool_arrays_len;
+            let texture_pool_samplers_len = opaque_bg.texture_pool_sampler_keys.len() as u32;
+            let multisampled_layout_key = self.pipeline_layouts.get_key(
+                &self.gpu,
+                &mut self.bind_group_layouts,
+                crate::pipeline_layouts::PipelineLayoutCacheKey::new(vec![
+                    opaque_bg.multisampled_main_bind_group_layout_key,
+                    opaque_bg.lights_bind_group_layout_key,
+                    opaque_bg.texture_pool_textures_bind_group_layout_key,
+                    opaque_bg.shadows_bind_group_layout_key,
+                ]),
+            )?;
+            let singlesampled_layout_key = self.pipeline_layouts.get_key(
+                &self.gpu,
+                &mut self.bind_group_layouts,
+                crate::pipeline_layouts::PipelineLayoutCacheKey::new(vec![
+                    opaque_bg.singlesampled_main_bind_group_layout_key,
+                    opaque_bg.lights_bind_group_layout_key,
+                    opaque_bg.texture_pool_textures_bind_group_layout_key,
+                    opaque_bg.shadows_bind_group_layout_key,
+                ]),
+            )?;
+
+            for &(msaa, mipmaps) in &[
+                (Some(4u32), true),
+                (Some(4u32), false),
+                (None, true),
+                (None, false),
+            ] {
+                let cache_key =
+                    crate::render_passes::material_opaque::shader::cache_key::ShaderCacheKeyMaterialOpaque {
+                        texture_pool_arrays_len,
+                        texture_pool_samplers_len,
+                        msaa_sample_count: msaa,
+                        mipmaps,
+                        shader_id,
+                        dispatch_hash,
+                        dynamic_shader: dynamic_shader.clone(),
+                    };
+                let shader_key = self.shaders.get_key(&self.gpu, cache_key).await?;
+                let layout_key = if msaa.is_some() {
+                    multisampled_layout_key
+                } else {
+                    singlesampled_layout_key
+                };
+                let pipeline_cache_key =
+                    crate::pipelines::compute_pipeline::ComputePipelineCacheKey::new(
+                        shader_key,
+                        layout_key,
+                    );
+                let keys = self
+                    .pipelines
+                    .compute
+                    .ensure_keys(
+                        &self.gpu,
+                        &self.shaders,
+                        &self.pipeline_layouts,
+                        vec![pipeline_cache_key],
+                    )
+                    .await?;
+                self.render_passes
+                    .material_opaque
+                    .pipelines
+                    .insert_dynamic_pipeline(
+                        crate::render_passes::material_opaque::pipeline::PipelineKeyId {
+                            msaa_sample_count: msaa,
+                            mipmaps,
+                            shader_id,
+                        },
+                        keys[0],
+                    );
+            }
+            let _ = reg;
+        }
 
         Ok(())
     }
