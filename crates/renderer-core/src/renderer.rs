@@ -227,6 +227,23 @@ impl AwsmRendererWebGpuBuilder {
             return Err(AwsmCoreError::GpuDevice("is null".to_string()));
         }
 
+        // Diagnostic: one-shot dump of the effective device limits, so a
+        // user reporting an init failure (especially on Android, where
+        // SPIR-V / Vulkan caps differ from desktop) has the actual cap
+        // values in the logs rather than us guessing from
+        // hardcoded-spec-minimum assumptions.
+        log_device_limits(&device);
+
+        // Diagnostic: wire `onuncapturederror` so the JS validation /
+        // OOM / internal-error channel surfaces in our tracing stream.
+        // Dawn passes async pipeline failures through Promise rejection
+        // (caught at the call site), but anything that fires
+        // out-of-band (runtime validation, device lost, OOM under
+        // memory pressure) lands here. The
+        // `awsm_renderer_core::uncaptured_error` target lets the
+        // operator filter for it.
+        install_uncaptured_error_hook(&device);
+
         context
             .configure(
                 &self
@@ -244,6 +261,130 @@ impl AwsmRendererWebGpuBuilder {
             canvas_kind: self.canvas,
         })
     }
+}
+
+/// One-shot dump of `device.limits()` at device-creation time.
+///
+/// Reaches through `js_sys::Reflect` rather than the typed
+/// `GpuSupportedLimits` getters because not every limit we care to
+/// surface has a typed accessor in our enabled web-sys feature set
+/// (and the Reflect path is forward-compatible — newly-exposed limits
+/// in Chrome stable show up automatically as the spec advances).
+///
+/// Logs under `target = "awsm_renderer_core::limits"` at `info`. Filter
+/// via `RUST_LOG=awsm_renderer_core::limits=info`.
+fn log_device_limits(device: &web_sys::GpuDevice) {
+    let limits = device.limits();
+    if limits.is_null() || limits.is_undefined() {
+        tracing::warn!(target: "awsm_renderer_core::limits", "device.limits() is null/undefined");
+        return;
+    }
+
+    // Keys worth surfacing for diagnosing renderer failures (storage
+    // buffer caps, binding sizes, workgroup caps). Order roughly
+    // matches the WebGPU spec's table of supported limits.
+    const KEYS: &[&str] = &[
+        "maxTextureDimension1D",
+        "maxTextureDimension2D",
+        "maxTextureDimension3D",
+        "maxTextureArrayLayers",
+        "maxBindGroups",
+        "maxBindingsPerBindGroup",
+        "maxDynamicUniformBuffersPerPipelineLayout",
+        "maxDynamicStorageBuffersPerPipelineLayout",
+        "maxSampledTexturesPerShaderStage",
+        "maxSamplersPerShaderStage",
+        "maxStorageBuffersPerShaderStage",
+        "maxStorageTexturesPerShaderStage",
+        "maxUniformBuffersPerShaderStage",
+        "maxUniformBufferBindingSize",
+        "maxStorageBufferBindingSize",
+        "maxBufferSize",
+        "maxVertexBuffers",
+        "maxVertexAttributes",
+        "maxVertexBufferArrayStride",
+        "maxInterStageShaderVariables",
+        "maxColorAttachments",
+        "maxColorAttachmentBytesPerSample",
+        "maxComputeWorkgroupStorageSize",
+        "maxComputeInvocationsPerWorkgroup",
+        "maxComputeWorkgroupSizeX",
+        "maxComputeWorkgroupSizeY",
+        "maxComputeWorkgroupSizeZ",
+        "maxComputeWorkgroupsPerDimension",
+    ];
+
+    let mut parts = Vec::with_capacity(KEYS.len());
+    for key in KEYS {
+        let js_key = JsValue::from_str(key);
+        match js_sys::Reflect::get(limits.as_ref(), &js_key) {
+            Ok(v) if !v.is_undefined() && !v.is_null() => {
+                if let Some(n) = v.as_f64() {
+                    parts.push(format!("{}={}", key, n as u64));
+                } else if let Some(s) = v.as_string() {
+                    parts.push(format!("{}={}", key, s));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    tracing::info!(
+        target: "awsm_renderer_core::limits",
+        "device limits: {}",
+        parts.join(" ")
+    );
+}
+
+/// Install `device.onuncapturederror` listener. The closure leaks
+/// intentionally (`forget`) — it's a one-shot install for the lifetime
+/// of the device, and the device itself is owned by the renderer for
+/// the lifetime of the page.
+///
+/// The event carries a `GpuError` (validation / OOM / internal) on its
+/// `error` field. We pull the message via `js_sys::Reflect` rather than
+/// typed bindings — that way the hook keeps working even if the
+/// enabled `web-sys` features drift, and it's robust against
+/// browser-specific extras on the error type.
+fn install_uncaptured_error_hook(device: &web_sys::GpuDevice) {
+    let on_err = Closure::<dyn FnMut(JsValue)>::new(move |event: JsValue| {
+        // event.error is the GpuError; .message carries the human-readable string.
+        let error_obj = js_sys::Reflect::get(&event, &JsValue::from_str("error"))
+            .unwrap_or(JsValue::UNDEFINED);
+        let message = js_sys::Reflect::get(&error_obj, &JsValue::from_str("message"))
+            .ok()
+            .and_then(|v| v.as_string())
+            .unwrap_or_else(|| "<no message>".to_string());
+
+        // The error category is identifiable by constructor name
+        // (`GPUValidationError` / `GPUInternalError` / `GPUOutOfMemoryError`).
+        let category = js_sys::Reflect::get(&error_obj, &JsValue::from_str("constructor"))
+            .and_then(|c| js_sys::Reflect::get(&c, &JsValue::from_str("name")))
+            .ok()
+            .and_then(|v| v.as_string())
+            .unwrap_or_else(|| "GpuError".to_string());
+
+        tracing::error!(
+            target: "awsm_renderer_core::uncaptured_error",
+            "GPU uncaptured ({}): {}",
+            category,
+            message
+        );
+    });
+
+    let listener: &js_sys::Function = on_err.as_ref().unchecked_ref();
+    if let Err(err) = js_sys::Reflect::set(
+        device.as_ref(),
+        &JsValue::from_str("onuncapturederror"),
+        listener,
+    ) {
+        tracing::warn!(
+            target: "awsm_renderer_core::uncaptured_error",
+            "failed to install onuncapturederror hook: {:?}",
+            err
+        );
+    }
+    on_err.forget();
 }
 
 /// Requested device limits to increase WebGPU caps.

@@ -80,6 +80,21 @@ pub enum AwsmError {
     #[error("Unregistered Cull Mode: {0:?}")]
     UnsupportedCullMode(CullMode),
 
+    /// A render-frame dispatch site found that a pipeline variant
+    /// hasn't been compiled yet (pipeline group still `Pending`, or
+    /// `Failed` and skipped). Used by the warn-and-skip safety net in
+    /// the render-frame preamble; never raised from synchronous code
+    /// paths.
+    #[error("Pipeline variant not yet compiled: {0}")]
+    PipelineVariantNotCompiled(&'static str),
+
+    /// A config-change API (e.g. `set_anti_aliasing`,
+    /// `set_post_processing`) was called before `AwsmRendererBuilder::build`
+    /// finished its eager-set compile batch. The first valid call site
+    /// is post-`.await` of the build.
+    #[error("Renderer not ready (config-change API called before build completed)")]
+    NotReady,
+
     #[error("{0}")]
     Texture(#[from] AwsmTextureError),
 

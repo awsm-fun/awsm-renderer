@@ -736,9 +736,9 @@ Mark items `[x]` as completed. Commit the checklist update along with each item 
 
 ### Stage 0 — Pre-flight diagnostics (standalone re-lands, no architectural dependency)
 
-- [ ] **0.1** Land Lessons B: adapter + device limits log + `onuncapturederror` hook in `crates/renderer-core/src/renderer.rs`. Use typed web-sys bindings if you also enable the right features in workspace `Cargo.toml` (`GpuValidationError`, `GpuInternalError`, `GpuOutOfMemoryError`, `GpuUncapturedErrorEvent`); fall back to `js_sys::Reflect` if the feature flags don't resolve cleanly. Logs under `target = "awsm_renderer_core::limits"` and `target = "awsm_renderer_core::uncaptured_error"`. (Body: [§ Lessons B](#b-adapter--device-limits-log--onuncapturederror-hook).)
-- [ ] **0.2** Land Lessons C: `PipelineVariantNotCompiled(&'static str)` variant on `AwsmRendererError` in `crates/renderer/src/error.rs`. Don't wire any call sites yet — Priority 1 introduces them. (Body: [§ Lessons C](#c-pipelinevariantnotcompiled-error-variant).)
-- [ ] **0.3** Commit Stage 0.
+- [x] **0.1** Land Lessons B: adapter + device limits log + `onuncapturederror` hook in `crates/renderer-core/src/renderer.rs`. Used `js_sys::Reflect` for both limit dump and uncaptured-error message extraction — robust to feature drift and supports limit keys not in our enabled web-sys features. Added `GpuUncapturedErrorEvent`, `GpuError`, `GpuValidationError`, `GpuInternalError`, `GpuOutOfMemoryError` to workspace `web-sys` features for future typed access. Logs under `target = "awsm_renderer_core::limits"` and `target = "awsm_renderer_core::uncaptured_error"`.
+- [x] **0.2** Land Lessons C: added `PipelineVariantNotCompiled(&'static str)` and `NotReady` variants on `AwsmError` in `crates/renderer/src/error.rs`. Not wired yet — Stage 1 introduces consumers.
+- [x] **0.3** Commit Stage 0.
 
 ### Stage 1 — Pipeline-readiness machinery (Priority 1)
 
