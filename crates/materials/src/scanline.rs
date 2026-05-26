@@ -255,13 +255,8 @@ mod tests {
             UniformValue::F32(0.3),
         ];
         let id = MaterialShaderId::from_dynamic_raw(MaterialShaderId::DYNAMIC_START);
-        let dynamic = DynamicMaterial::new(
-            id,
-            crate::MaterialAlphaMode::Opaque,
-            false,
-            &layout,
-            values,
-        );
+        let dynamic =
+            DynamicMaterial::new(id, crate::MaterialAlphaMode::Opaque, false, &layout, values);
         let dyn_ctx = StubDynamicCtx {
             layout: layout.clone(),
         };

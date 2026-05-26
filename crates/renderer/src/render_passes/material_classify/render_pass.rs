@@ -8,7 +8,6 @@ use std::collections::HashMap;
 use awsm_renderer_core::command::compute_pass::ComputePassDescriptor;
 
 use crate::{
-    dynamic_materials::BucketEntry,
     error::Result,
     pipelines::compute_pipeline::ComputePipelineKey,
     render::RenderContext,
@@ -30,11 +29,15 @@ use crate::{
 pub struct MaterialClassifyRenderPass {
     pub bind_groups: MaterialClassifyBindGroups,
     pub pipelines: MaterialClassifyPipelines,
-    /// (bucket_entries, msaa) → compiled pipeline. Populated by
+    /// `(dispatch_hash, msaa) → compiled pipeline`. Populated by
     /// `prewarm_pipelines`. RefCell so the dispatch path can take a
     /// snapshot without `&mut self`.
-    pub dynamic_pipeline_cache:
-        RefCell<HashMap<(Vec<BucketEntry>, Option<u32>), ComputePipelineKey>>,
+    ///
+    /// Previously keyed on `(Vec<BucketEntry>, Option<u32>)` — the
+    /// dispatch path allocated a fresh `Vec` every frame to probe.
+    /// Now the key is `(u64, Option<u32>)` (the registry's cached
+    /// `dispatch_hash`); the per-frame probe stays alloc-free.
+    pub dynamic_pipeline_cache: RefCell<HashMap<(u64, Option<u32>), ComputePipelineKey>>,
 }
 
 impl MaterialClassifyRenderPass {
@@ -80,10 +83,13 @@ impl MaterialClassifyRenderPass {
             self.pipelines.singlesampled_pipeline_key
         };
         let pipeline_key_opt = if !ctx.dynamic_materials.is_empty() {
-            let entries = crate::dynamic_materials::bucket_entries(ctx.dynamic_materials);
+            // `(dispatch_hash, msaa)` keyed lookup — both halves are
+            // `Copy`, so the probe is alloc-free on the hot path
+            // (vs the previous `Vec<BucketEntry>` clone-and-hash).
+            let key = (ctx.dynamic_materials.dispatch_hash_cached(), msaa);
             self.dynamic_pipeline_cache
                 .borrow()
-                .get(&(entries, msaa))
+                .get(&key)
                 .copied()
                 .or(first_party_key)
         } else {

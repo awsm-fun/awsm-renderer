@@ -88,7 +88,10 @@ impl MaterialOpaqueRenderPass {
         // skybox routing lands cleanly. For each bucket, dispatch
         // its specialized opaque-compute pipeline at the indirect-
         // args offset classify wrote to.
-        let bucket_entries = crate::dynamic_materials::bucket_entries(ctx.dynamic_materials);
+        //
+        // Reads from the registry's cached slice — refreshed on
+        // register / unregister, so no per-frame alloc + sort.
+        let bucket_entries = ctx.dynamic_materials.bucket_entries_cached();
         for (bucket_index, entry) in bucket_entries.iter().enumerate() {
             let Some(pipeline_key) = self
                 .pipelines

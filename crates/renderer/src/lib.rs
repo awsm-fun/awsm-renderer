@@ -487,8 +487,11 @@ impl AwsmRenderer {
         use crate::render_passes::material_transparent::shader::cache_key::ShaderCacheKeyMaterialTransparent;
         use crate::render_passes::shared::material::cache_key::ShaderMaterialVertexAttributes;
 
-        let entries = crate::dynamic_materials::bucket_entries(&self.dynamic_materials);
-        let dispatch_hash = self.dynamic_materials.dispatch_hash();
+        // Pull the registry's cached bucket-entries slice + dispatch_hash —
+        // both are refreshed by the most recent register/unregister and
+        // match what the dispatch-time probes read.
+        let entries = self.dynamic_materials.bucket_entries_cached().to_vec();
+        let dispatch_hash = self.dynamic_materials.dispatch_hash_cached();
 
         // Layout keys — resolved once and reused across every
         // pipeline variant. Cheap sync inserts into the layout cache.
@@ -690,11 +693,17 @@ impl AwsmRenderer {
         for ((slot, _), pipeline_key) in compute_jobs.into_iter().zip(resolved) {
             match slot {
                 Slot::Classify(msaa) => {
+                    // Cache key matches the dispatch-time probe in
+                    // `MaterialClassifyRenderPass::render`:
+                    // `(dispatch_hash, msaa)`. The dispatch_hash
+                    // identifies "which set of dynamic registrations
+                    // does this pipeline expect"; `msaa` covers the
+                    // single AA axis classify is specialised on.
                     self.render_passes
                         .material_classify
                         .dynamic_pipeline_cache
                         .borrow_mut()
-                        .insert((entries.clone(), msaa), pipeline_key);
+                        .insert((dispatch_hash, msaa), pipeline_key);
                 }
                 Slot::Opaque(shader_id, msaa, mipmaps) => {
                     self.render_passes

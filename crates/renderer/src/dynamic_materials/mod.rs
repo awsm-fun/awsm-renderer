@@ -261,6 +261,23 @@ pub fn sanitize_wgsl_name(name: &str) -> String {
 pub struct DynamicMaterials {
     registrations: HashMap<MaterialShaderId, MaterialRegistration>,
     next_dynamic_id: u32,
+    /// Cached `bucket_entries` view of the registry, refreshed on
+    /// every register / unregister. The opaque + classify render
+    /// passes hit this cached slice per frame to avoid the
+    /// `Vec<BucketEntry>` alloc + the dynamic-id sort that the
+    /// free-function `bucket_entries()` does. Identical contents to
+    /// what that function would produce — first-party prefix +
+    /// dynamic suffix sorted by ascending shader_id.
+    bucket_entries_cache: Vec<BucketEntry>,
+    /// Cached `dispatch_hash` of the registry — keyed on the same
+    /// `(shader_id, name, layout_hash, wgsl_hash)` set as
+    /// [`Self::dispatch_hash`], refreshed alongside
+    /// `bucket_entries_cache`. The classify pass's
+    /// `dynamic_pipeline_cache` previously keyed on
+    /// `(Vec<BucketEntry>, Option<u32>)` and re-built the Vec every
+    /// frame; now the per-frame probe uses `(u64, Option<u32>)`
+    /// instead so neither side allocates on the hot path.
+    dispatch_hash_cache: u64,
 }
 
 impl DynamicMaterials {
@@ -268,9 +285,72 @@ impl DynamicMaterials {
     /// [`AwsmRenderer::register_material`](crate::AwsmRenderer::register_material)
     /// is called.
     pub fn new() -> Self {
+        // Seed the cache with the first-party bucket prefix so an
+        // empty-registry render-pass probe doesn't need to know the
+        // registry is empty — the slice itself is correct.
         Self {
             registrations: HashMap::new(),
             next_dynamic_id: MaterialShaderId::DYNAMIC_START,
+            bucket_entries_cache: first_party_bucket_entries(),
+            dispatch_hash_cache: 0,
+        }
+    }
+
+    /// Returns the cached bucket-entries slice (first-party prefix +
+    /// currently-registered dynamic materials sorted by shader_id).
+    /// `O(1)` lookup; the cache is refreshed by
+    /// [`Self::refresh_caches`] on every register / unregister.
+    ///
+    /// Replaces per-frame `bucket_entries(&materials)` allocations
+    /// on the opaque + classify hot paths.
+    pub fn bucket_entries_cached(&self) -> &[BucketEntry] {
+        &self.bucket_entries_cache
+    }
+
+    /// Returns the cached `dispatch_hash` (same value
+    /// [`Self::dispatch_hash`] would compute, but `O(1)`). Used by
+    /// the classify pass's per-frame pipeline-cache probe so the
+    /// key stays a plain `(u64, Option<u32>)` instead of a freshly-
+    /// allocated `Vec<BucketEntry>`.
+    pub fn dispatch_hash_cached(&self) -> u64 {
+        self.dispatch_hash_cache
+    }
+
+    /// Recomputes `bucket_entries_cache` + `dispatch_hash_cache`
+    /// from the current `registrations`. Called by `insert` /
+    /// `remove` after they mutate the registry — never by external
+    /// code on the hot path.
+    fn refresh_caches(&mut self) {
+        // bucket_entries: first-party prefix + sorted dynamic.
+        let mut entries: Vec<BucketEntry> =
+            Vec::with_capacity(first_party_bucket_entries().len() + self.registrations.len());
+        for fp in first_party_bucket_entries() {
+            entries.push(fp);
+        }
+        let mut dynamics: Vec<_> = self.registrations.iter().collect();
+        dynamics.sort_by_key(|(id, _)| id.as_u32());
+        for (shader_id, reg) in dynamics {
+            entries.push(BucketEntry {
+                shader_id: *shader_id,
+                name: sanitize_wgsl_name(&reg.name),
+            });
+        }
+        self.bucket_entries_cache = entries;
+
+        // dispatch_hash: identical algorithm to `Self::dispatch_hash`.
+        if self.registrations.is_empty() {
+            self.dispatch_hash_cache = 0;
+        } else {
+            let mut entries: Vec<_> = self.registrations.iter().collect();
+            entries.sort_by_key(|(id, _)| id.as_u32());
+            let mut hasher = DefaultHasher::new();
+            for (id, reg) in entries {
+                id.as_u32().hash(&mut hasher);
+                reg.name.hash(&mut hasher);
+                reg.layout_hash.hash(&mut hasher);
+                reg.wgsl_hash.hash(&mut hasher);
+            }
+            self.dispatch_hash_cache = hasher.finish();
         }
     }
 
@@ -344,6 +424,10 @@ impl DynamicMaterials {
         let id = MaterialShaderId::from_dynamic_raw(self.next_dynamic_id);
         self.next_dynamic_id = self.next_dynamic_id.saturating_add(1);
         self.registrations.insert(id, registration);
+        // Refresh the bucket-entries + dispatch-hash caches so the
+        // next render frame's hot-path probe sees the new entry
+        // without re-allocating per-frame.
+        self.refresh_caches();
         Ok(id)
     }
 
@@ -357,8 +441,12 @@ impl DynamicMaterials {
         }
         self.registrations
             .remove(&shader_id)
-            .map(|_| ())
-            .ok_or(AwsmDynamicMaterialError::UnknownShaderId(shader_id))
+            .ok_or(AwsmDynamicMaterialError::UnknownShaderId(shader_id))?;
+        // Refresh caches even on the empty-after-removal case so the
+        // dispatch_hash collapses back to the `0` sentinel that
+        // first-party-only builds compile against.
+        self.refresh_caches();
+        Ok(())
     }
 }
 
