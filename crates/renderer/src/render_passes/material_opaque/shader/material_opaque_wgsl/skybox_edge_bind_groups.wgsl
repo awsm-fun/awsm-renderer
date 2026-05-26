@@ -20,7 +20,8 @@ struct EdgeIndirectArgsSky {
     _pad: u32,
 };
 
-struct EdgeBuffersSky {
+// args_buffer-shaped struct (read-only — counters + indirect-args).
+struct EdgeArgsBufferSky {
     edge_count: u32,
     edge_overflow_count: u32,
     _pad_counters: vec2<u32>,
@@ -29,10 +30,10 @@ struct EdgeBuffersSky {
     {% for entry in bucket_entries %}
     {{ entry.args_field() }}_edge: EdgeIndirectArgsSky,
     {% endfor %}
-    data: array<u32>,
 };
 
-@group(0) @binding(0) var<storage, read_write> edge_buffers: EdgeBuffersSky;
+// data_buffer: edge_to_xy + edge_slot_map + accumulator + sample lists.
+@group(0) @binding(0) var<storage, read_write> edge_data: array<u32>;
 
 struct EdgeBufferLayoutSky {
     max_edge_budget: u32,
@@ -56,3 +57,8 @@ struct EdgeBufferLayoutSky {
 
 @group(0) @binding(3) var skybox_tex: texture_cube<f32>;
 @group(0) @binding(4) var skybox_sampler: sampler;
+
+// args_buffer (read-only) — entry-count snapshot. Also the indirect
+// dispatch source for this pass; Indirect + Storage(read) on the same
+// buffer is allowed by WebGPU since neither usage is writable.
+@group(0) @binding(5) var<storage, read> edge_args: EdgeArgsBufferSky;

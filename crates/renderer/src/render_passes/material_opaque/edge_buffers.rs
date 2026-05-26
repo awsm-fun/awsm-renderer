@@ -1,22 +1,33 @@
 //! GPU storage buffers backing the per-shader-id MSAA edge-resolve
 //! pipeline (Priority 3 in docs/plans/more-optimizations.md).
 //!
+//! Two GPU buffers, split to satisfy WebGPU's "a buffer cannot be both
+//! Indirect-readable and Storage(read-write) in the same synchronization
+//! scope" validation rule:
+//!
+//! - **`args_buffer`** — `Indirect | CopyDst` only. Holds the two
+//!   atomic counters (edge_count, edge_overflow_count) and the
+//!   `(2 + bucket_count)` `DispatchIndirectArgs` entries
+//!   (final_blend + skybox + per-shader). Bound as `storage RW` to
+//!   classify (so it can atomicAdd into the counters and per-shader
+//!   workgroup_count_x), and read as `dispatch_workgroups_indirect`'s
+//!   source by the edge_resolve / skybox_edge_resolve / final_blend
+//!   dispatches.
+//!
+//! - **`data_buffer`** — `Storage | CopyDst` only. Holds
+//!   `edge_to_xy`, `edge_slot_map`, `accumulator`, the per-shader-id
+//!   sample lists, and the skybox sample list. Bound as `storage RW`
+//!   to classify (writes edge_to_xy / edge_slot_map / sample entries),
+//!   to the per-shader edge_resolve pipelines (writes accumulator
+//!   slots), and to the skybox/final_blend pipelines (final_blend
+//!   reads). Never used as Indirect.
+//!
 //! The classify pass extension allocates a compact `edge_pixel_id` per
 //! edge pixel (via an atomic counter capped at [`MAX_EDGE_BUDGET`]),
-//! writes its `(x, y)` coords into [`MaterialEdgeBuffers::edge_to_xy`],
-//! its 4-byte shader_id slot map into
-//! [`MaterialEdgeBuffers::edge_slot_map`], and a per-shader-id
+//! writes its `(x, y)` coords into `edge_to_xy`, its 4-byte shader_id
+//! slot map into `edge_slot_map`, and a per-shader-id
 //! `(edge_pixel_id, sample_mask_byte)` entry into the matching
 //! per-shader-id sample-list bucket.
-//!
-//! The per-shader-id `material_edge_resolve_{shader_id}` pipelines
-//! indirect-dispatch over their bucket's sample list, shade each
-//! sample, and write the summed `(color, sample_count)` into
-//! [`MaterialEdgeBuffers::accumulator`] at
-//! `edge_pixel_id × 4 + slot_index`. The `final_blend` pipeline
-//! indirect-dispatches one thread per edge_pixel_id, reads the 4
-//! accumulator slots, blends weighted by their sample counts, and
-//! writes the result to `opaque_tex[edge_to_xy[edge_pixel_id]]`.
 //!
 //! See [§ Pass structure](docs/plans/more-optimizations.md#pass-structure)
 //! and [§ Memory budget](docs/plans/more-optimizations.md#memory-budget)
@@ -74,7 +85,7 @@ pub fn unpack_edge_sample_entry(packed: u32) -> (u32, u8) {
     (edge_pixel_id, sample_mask)
 }
 
-/// Packed `(x: u16, y: u16)` for [`MaterialEdgeBuffers::edge_to_xy`].
+/// Packed `(x: u16, y: u16)` for the edge_to_xy region.
 ///
 /// 16 bits per axis caps us at 65535-pixel viewports per axis (plenty
 /// for any near-term display surface).
@@ -99,41 +110,52 @@ pub const ACCUMULATOR_SLOTS_PER_EDGE: u32 = 4;
 /// Bytes per accumulator slot (vec4<f32>).
 pub const ACCUMULATOR_SLOT_BYTES: u32 = 16;
 
-/// Header byte layout for the edge counters + indirect-args region.
-///
-/// Layout (16-byte aligned):
-///   - `edge_count: atomic<u32>`             — bytes [0, 4)
-///   - `edge_overflow_count: atomic<u32>`    — bytes [4, 8)
-///   - `final_blend_args: DispatchIndirectArgs` — bytes [16, 32) (aligned)
-///   - `skybox_edge_args: DispatchIndirectArgs` — bytes [32, 48)
-///   - `per_shader_id_args: array<DispatchIndirectArgs, bucket_count>` — bytes [48, 48 + bucket_count*16)
-///
-/// Buckets line up with `dynamic_materials::bucket_entries()` (first-party
-/// + dynamic) — same indexing scheme as the classify pass uses.
-pub fn header_bytes(bucket_count: u32) -> u32 {
-    // 2 atomic u32 counters + 8 bytes pad to 16-byte align.
-    let counters_bytes = 16u32;
-    let final_blend_args_bytes = INDIRECT_ARGS_STRIDE;
-    let skybox_edge_args_bytes = INDIRECT_ARGS_STRIDE;
-    let per_shader_args_bytes = bucket_count.saturating_mul(INDIRECT_ARGS_STRIDE);
-    let unpadded =
-        counters_bytes + final_blend_args_bytes + skybox_edge_args_bytes + per_shader_args_bytes;
-    // Pad to 16 to keep the trailing arrays aligned.
-    (unpadded + 15) & !15
+// ─────────────────────────────────────────────────────────────────
+// args_buffer layout (Indirect | CopyDst).
+//
+// Layout (16-byte aligned):
+//   - edge_count: atomic<u32>             — bytes [0, 4)
+//   - edge_overflow_count: atomic<u32>    — bytes [4, 8)
+//   - 8 bytes pad
+//   - final_blend_args:    DispatchIndirectArgs — bytes [16, 32)
+//   - skybox_edge_args:    DispatchIndirectArgs — bytes [32, 48)
+//   - per_shader_id_args:  array<DispatchIndirectArgs, bucket_count>
+//                                                — bytes [48, 48 + bucket_count*16)
+//
+// Buckets line up with `dynamic_materials::bucket_entries()` (first-party
+// + dynamic) — same indexing scheme as the classify pass uses.
+
+/// Bytes used by the atomic counters at the head of `args_buffer`.
+pub const ARGS_COUNTERS_BYTES: u32 = 16;
+
+/// Total bytes for the `args_buffer`.
+pub fn args_buffer_bytes(bucket_count: u32) -> u32 {
+    // counters + final_blend + skybox + per-shader
+    ARGS_COUNTERS_BYTES + (2u32.saturating_add(bucket_count)).saturating_mul(INDIRECT_ARGS_STRIDE)
 }
 
-/// Computed offset of the `edge_to_xy` array (in bytes) inside the
-/// composite buffer. Comes right after the header.
-pub fn edge_to_xy_offset(bucket_count: u32) -> u32 {
-    header_bytes(bucket_count)
+// ─────────────────────────────────────────────────────────────────
+// data_buffer layout (Storage | CopyDst).
+//
+// Layout (no header — offsets start at 0):
+//   - edge_to_xy:       array<u32, max_edge_budget>            — packed (x:16, y:16)
+//   - edge_slot_map:    array<u32, max_edge_budget>            — 4 shader_ids × 8 bits
+//   - accumulator:      array<vec4<f32>, max_edge_budget × 4>
+//   - per-shader-id sample lists: array<array<u32, sample_entries_per_bucket>, bucket_count>
+//   - skybox sample list: array<u32, sample_entries_per_bucket>
+
+/// Byte offset of `edge_to_xy` inside `data_buffer`. The data buffer
+/// has no header, so this is 0.
+pub fn edge_to_xy_offset(_bucket_count: u32) -> u32 {
+    0
 }
 
-/// Computed offset of the `edge_slot_map` array (in bytes).
-pub fn edge_slot_map_offset(bucket_count: u32, max_edge_budget: u32) -> u32 {
-    edge_to_xy_offset(bucket_count) + max_edge_budget.saturating_mul(4)
+/// Byte offset of `edge_slot_map` inside `data_buffer`.
+pub fn edge_slot_map_offset(_bucket_count: u32, max_edge_budget: u32) -> u32 {
+    edge_to_xy_offset(_bucket_count) + max_edge_budget.saturating_mul(4)
 }
 
-/// Computed offset of the `accumulator` array (in bytes).
+/// Byte offset of `accumulator` inside `data_buffer`.
 pub fn accumulator_offset(bucket_count: u32, max_edge_budget: u32) -> u32 {
     edge_slot_map_offset(bucket_count, max_edge_budget) + max_edge_budget.saturating_mul(4)
 }
@@ -145,7 +167,8 @@ pub fn accumulator_bytes(max_edge_budget: u32) -> u32 {
         .saturating_mul(ACCUMULATOR_SLOT_BYTES)
 }
 
-/// Computed offset of the per-shader-id sample entries region.
+/// Byte offset of the first per-shader-id sample-list entry inside
+/// `data_buffer`.
 pub fn sample_entries_offset(bucket_count: u32, max_edge_budget: u32) -> u32 {
     accumulator_offset(bucket_count, max_edge_budget) + accumulator_bytes(max_edge_budget)
 }
@@ -155,43 +178,52 @@ pub fn sample_entries_per_bucket(max_edge_budget: u32) -> u32 {
     max_edge_budget.saturating_mul(SAMPLE_ENTRIES_PER_BUCKET_MULTIPLIER)
 }
 
-/// Offset of the skybox sample-list region. Allocated as an extra
-/// bucket-shaped slot tacked on after the per-shader-id sample lists.
+/// Byte offset of the skybox sample-list region inside `data_buffer`.
 pub fn skybox_sample_list_offset(bucket_count: u32, max_edge_budget: u32) -> u32 {
     let per_bucket_bytes = sample_entries_per_bucket(max_edge_budget).saturating_mul(4);
     sample_entries_offset(bucket_count, max_edge_budget)
         + bucket_count.saturating_mul(per_bucket_bytes)
 }
 
-/// Total bytes for the entire composite edge buffer (header + per-edge
-/// arrays + per-shader-id sample lists + skybox sample list).
-pub fn total_buffer_bytes(bucket_count: u32, max_edge_budget: u32) -> u32 {
+/// Total bytes for `data_buffer` (per-edge arrays + per-shader-id
+/// sample lists + skybox sample list).
+pub fn data_buffer_bytes(bucket_count: u32, max_edge_budget: u32) -> u32 {
     let per_bucket_bytes = sample_entries_per_bucket(max_edge_budget).saturating_mul(4);
     skybox_sample_list_offset(bucket_count, max_edge_budget) + per_bucket_bytes
 }
 
-/// Composite GPU buffer for the MSAA edge-resolve flow.
+/// Composite GPU buffers for the MSAA edge-resolve flow.
 ///
-/// One buffer holds the header (counters + indirect args), the
-/// per-edge arrays (`edge_to_xy`, `edge_slot_map`, `accumulator`), and
-/// the per-shader-id sample-entry lists. Resized when the bucket count
-/// (a dynamic-material registration grew the registry) or the
-/// max_edge_budget changes.
+/// Split across two GpuBuffers so the dispatch-indirect args (the
+/// counters + per-shader workgroup_count_x cells) can live in a
+/// `Indirect | CopyDst`-usage buffer, while the storage-writable
+/// accumulator / sample lists live in a `Storage | CopyDst` buffer.
+/// WebGPU rejects a single buffer that's bound as Indirect AND
+/// Storage(read-write) in the same compute pass's synchronization
+/// scope — splitting them sidesteps the validation conflict entirely.
+///
+/// Resized when the bucket count (a dynamic-material registration grew
+/// the registry) or the max_edge_budget changes.
 pub struct MaterialEdgeBuffers {
-    /// Storage + indirect-arg GPU buffer. Used by classify
-    /// (read-write atomics), by per-shader-id edge_resolve pipelines
-    /// (read-only sample lists + write-only accumulator slot per
-    /// thread), and by final_blend (read-only accumulator + read-only
-    /// edge_to_xy).
-    pub buffer: web_sys::GpuBuffer,
+    /// `Indirect | CopyDst` GPU buffer holding atomic counters and
+    /// the `(2 + bucket_count)` indirect-args slots. Classify binds it
+    /// as `storage RW`; edge_resolve / skybox_edge_resolve / final_blend
+    /// use it as `dispatch_workgroups_indirect`'s source.
+    pub args_buffer: web_sys::GpuBuffer,
+    /// `Storage | CopyDst` GPU buffer holding `edge_to_xy`,
+    /// `edge_slot_map`, the accumulator, and the per-shader-id +
+    /// skybox sample lists.
+    pub data_buffer: web_sys::GpuBuffer,
     pub bucket_count: u32,
     pub max_edge_budget: u32,
-    pub size_bytes: u32,
-    /// CPU staging vec sized to `header_bytes(bucket_count)`. Written
-    /// once per frame at the top of classify to clear the atomic
-    /// counters + reset the indirect-arg `(x=0, y=1, z=1, pad=0)`
-    /// slots. Tile arrays are overwritten in place by the shader.
-    header_scratch: Vec<u8>,
+    pub args_size_bytes: u32,
+    pub data_size_bytes: u32,
+    /// CPU staging vec sized to `args_buffer_bytes(bucket_count)`.
+    /// Written once per frame at the top of classify to clear the
+    /// atomic counters + reset the indirect-arg `(x=0, y=1, z=1, pad=0)`
+    /// slots. The data buffer's regions are overwritten in place by
+    /// the shader.
+    args_scratch: Vec<u8>,
 }
 
 impl MaterialEdgeBuffers {
@@ -213,12 +245,18 @@ impl MaterialEdgeBuffers {
     ) -> Result<Self, AwsmCoreError> {
         let bucket_count = bucket_count.max(1);
         let max_edge_budget = max_edge_budget.max(1);
-        let size_bytes = total_buffer_bytes(bucket_count, max_edge_budget);
+        let args_size_bytes = args_buffer_bytes(bucket_count);
+        let data_size_bytes = data_buffer_bytes(bucket_count, max_edge_budget);
 
-        let buffer = gpu.create_buffer(
+        let args_buffer = gpu.create_buffer(
             &BufferDescriptor::new(
-                Some("MaterialEdgeBuffers"),
-                size_bytes as usize,
+                Some("MaterialEdgeBuffers::args"),
+                args_size_bytes as usize,
+                // Storage so classify can atomicAdd into the counters
+                // and per-shader workgroup_count_x cells; Indirect so
+                // the edge dispatches can read their workgroup counts
+                // from here; CopyDst so reset_header can rewrite it
+                // each frame.
                 BufferUsage::new()
                     .with_storage()
                     .with_indirect()
@@ -227,20 +265,32 @@ impl MaterialEdgeBuffers {
             .into(),
         )?;
 
-        let header = header_bytes(bucket_count) as usize;
-        let mut header_scratch = vec![0u8; header];
-        write_header(&mut header_scratch, bucket_count);
+        let data_buffer = gpu.create_buffer(
+            &BufferDescriptor::new(
+                Some("MaterialEdgeBuffers::data"),
+                data_size_bytes as usize,
+                // Storage so all the per-edge data lives here. NO
+                // Indirect — that's exclusively on args_buffer.
+                BufferUsage::new().with_storage().with_copy_dst(),
+            )
+            .into(),
+        )?;
+
+        let mut args_scratch = vec![0u8; args_size_bytes as usize];
+        write_args_header(&mut args_scratch, bucket_count);
 
         Ok(Self {
-            buffer,
+            args_buffer,
+            data_buffer,
             bucket_count,
             max_edge_budget,
-            size_bytes,
-            header_scratch,
+            args_size_bytes,
+            data_size_bytes,
+            args_scratch,
         })
     }
 
-    /// Recreates the buffer if a dynamic-material registration grew
+    /// Recreates the buffers if a dynamic-material registration grew
     /// the bucket count past the current size. Caller is responsible
     /// for rebuilding dependent bind groups when this returns `true`.
     pub fn ensure_bucket_count(
@@ -255,36 +305,37 @@ impl MaterialEdgeBuffers {
         Ok(true)
     }
 
-    /// Writes the per-frame header reset into the buffer: zeroes the
-    /// edge_count + edge_overflow_count atomics and re-asserts
-    /// `(y=1, z=1)` on every indirect-arg slot. Tile arrays remain
-    /// untouched (overwritten by the shader).
+    /// Writes the per-frame `args_buffer` reset: zeroes both atomic
+    /// counters (`edge_count`, `edge_overflow_count`) and re-asserts
+    /// `(y=1, z=1)` on every indirect-arg slot. The data buffer's
+    /// regions remain untouched (the shader overwrites them in place).
     pub fn reset_header(&self, gpu: &AwsmRendererWebGpu) -> Result<(), AwsmCoreError> {
         gpu.write_buffer(
-            &self.buffer,
+            &self.args_buffer,
             None,
-            self.header_scratch.as_slice(),
+            self.args_scratch.as_slice(),
             None,
             None,
         )
     }
 
-    /// Byte offset of the final_blend indirect-arg slot. Passed to
-    /// `dispatchWorkgroupsIndirect` for the final blend pipeline.
+    /// Byte offset of the `final_blend` indirect-arg slot in
+    /// `args_buffer`. Passed to `dispatch_workgroups_indirect`.
     pub fn final_blend_args_offset() -> u32 {
-        // After the two atomic u32 counters + 8 bytes alignment pad.
-        16
+        ARGS_COUNTERS_BYTES
     }
 
-    /// Byte offset of the skybox_edge indirect-arg slot.
+    /// Byte offset of the `skybox_edge` indirect-arg slot in
+    /// `args_buffer`.
     pub fn skybox_edge_args_offset() -> u32 {
-        16 + INDIRECT_ARGS_STRIDE
+        ARGS_COUNTERS_BYTES + INDIRECT_ARGS_STRIDE
     }
 
     /// Byte offset of the per-shader-id indirect-arg slot for bucket
-    /// `bucket_index`. Passed to `dispatchWorkgroupsIndirect`.
+    /// `bucket_index` in `args_buffer`. Passed to
+    /// `dispatch_workgroups_indirect`.
     pub fn per_shader_args_offset(bucket_index: u32) -> u32 {
-        16 + 2 * INDIRECT_ARGS_STRIDE + bucket_index * INDIRECT_ARGS_STRIDE
+        ARGS_COUNTERS_BYTES + 2 * INDIRECT_ARGS_STRIDE + bucket_index * INDIRECT_ARGS_STRIDE
     }
 }
 
@@ -303,15 +354,14 @@ impl MaterialEdgeBuffers {
 ///   <first_party_0>_sample_list_base
 ///   <first_party_1>_sample_list_base
 ///   ... (bucket_count entries total)
+///   skybox_sample_list_base
 ///   sample_entries_per_bucket
+///
+/// All `*_base` values are u32-stride indices from the start of the
+/// `edge_data` storage buffer (no header to skip — the data buffer
+/// starts at offset 0 with `edge_to_xy`).
 pub fn build_edge_layout_uniform_bytes(bucket_count: u32, max_edge_budget: u32) -> Vec<u8> {
-    // All `*_base` values are **u32-stride indices** from the start of
-    // the WGSL `EdgeBuffers.data: array<u32>` runtime array — i.e. they
-    // count u32 words past the struct header. The struct header in WGSL
-    // has the same byte size as our [`header_bytes`], so we subtract
-    // it from each byte offset and divide by 4 to get u32 strides.
-    let header = header_bytes(bucket_count);
-    let to_stride = |byte_off: u32| -> u32 { (byte_off.saturating_sub(header)) / 4 };
+    let to_stride = |byte_off: u32| -> u32 { byte_off / 4 };
 
     let mut words: Vec<u32> = Vec::with_capacity(6 + bucket_count as usize);
     words.push(max_edge_budget);
@@ -366,32 +416,32 @@ pub fn build_edge_layout_uniform(
     Ok((buffer, bytes.len() as u32))
 }
 
-/// Writes the initial header into `dst`. Layout per the module-level
-/// docs: 2 atomic counters + 1 final_blend args slot + 1 skybox_edge
-/// args slot + bucket_count per-shader-id args slots.
-pub fn write_header(dst: &mut [u8], bucket_count: u32) {
+/// Writes the initial `args_buffer` header into `dst`. Layout per the
+/// module-level docs: 2 atomic counters + 8B pad + 1 final_blend args
+/// slot + 1 skybox_edge args slot + bucket_count per-shader-id args
+/// slots.
+pub fn write_args_header(dst: &mut [u8], bucket_count: u32) {
     let one = 1u32.to_ne_bytes();
     // Counters: both zero (default).
     // (bytes [0, 4) and [4, 8) are already zeroed by vec![0u8; ...].)
-
     // 8-byte alignment pad: zeros.
 
     // final_blend args slot at byte offset 16.
-    let final_blend_base = 16usize;
+    let final_blend_base = ARGS_COUNTERS_BYTES as usize;
     dst[final_blend_base..final_blend_base + 4].copy_from_slice(&[0; 4]); // x
     dst[final_blend_base + 4..final_blend_base + 8].copy_from_slice(&one); // y
     dst[final_blend_base + 8..final_blend_base + 12].copy_from_slice(&one); // z
     dst[final_blend_base + 12..final_blend_base + 16].copy_from_slice(&[0; 4]); // pad
 
     // skybox_edge args slot at byte offset 32.
-    let skybox_base = 16 + INDIRECT_ARGS_STRIDE as usize;
+    let skybox_base = (ARGS_COUNTERS_BYTES + INDIRECT_ARGS_STRIDE) as usize;
     dst[skybox_base..skybox_base + 4].copy_from_slice(&[0; 4]); // x
     dst[skybox_base + 4..skybox_base + 8].copy_from_slice(&one); // y
     dst[skybox_base + 8..skybox_base + 12].copy_from_slice(&one); // z
     dst[skybox_base + 12..skybox_base + 16].copy_from_slice(&[0; 4]); // pad
 
     // Per-shader-id args slots.
-    let per_shader_base = 16 + 2 * INDIRECT_ARGS_STRIDE as usize;
+    let per_shader_base = (ARGS_COUNTERS_BYTES + 2 * INDIRECT_ARGS_STRIDE) as usize;
     for bucket in 0..bucket_count as usize {
         let base = per_shader_base + bucket * INDIRECT_ARGS_STRIDE as usize;
         dst[base..base + 4].copy_from_slice(&[0; 4]); // x
@@ -424,9 +474,16 @@ mod tests {
     }
 
     #[test]
-    fn header_size_is_aligned() {
+    fn args_size_is_aligned() {
         for bucket_count in [1u32, 4, 5, 17] {
-            assert_eq!(header_bytes(bucket_count) % 16, 0);
+            assert_eq!(args_buffer_bytes(bucket_count) % 16, 0);
+        }
+    }
+
+    #[test]
+    fn data_offsets_start_at_zero() {
+        for bucket_count in [1u32, 4, 17] {
+            assert_eq!(edge_to_xy_offset(bucket_count), 0);
         }
     }
 }

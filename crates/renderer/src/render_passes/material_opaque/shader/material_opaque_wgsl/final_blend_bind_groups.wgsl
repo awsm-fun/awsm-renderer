@@ -10,7 +10,8 @@ struct EdgeIndirectArgsRO {
     _pad: u32,
 };
 
-struct EdgeBuffersRO {
+// args_buffer-shaped struct (read-only — counters + indirect-args).
+struct EdgeArgsBufferRO {
     edge_count: u32,
     edge_overflow_count: u32,
     _pad_counters: vec2<u32>,
@@ -19,10 +20,11 @@ struct EdgeBuffersRO {
     {% for entry in bucket_entries %}
     {{ entry.args_field() }}_edge: EdgeIndirectArgsRO,
     {% endfor %}
-    data: array<u32>,
 };
 
-@group(0) @binding(0) var<storage, read> edge_buffers: EdgeBuffersRO;
+// data_buffer (read-only): edge_to_xy + edge_slot_map + accumulator +
+// sample lists. final_blend reads edge_to_xy + accumulator only.
+@group(0) @binding(0) var<storage, read> edge_data: array<u32>;
 
 struct EdgeBufferLayoutRO {
     max_edge_budget: u32,
@@ -42,3 +44,8 @@ struct EdgeBufferLayoutRO {
 //
 // Format templated to match the runtime render-texture format ({{ color_format }}).
 @group(0) @binding(2) var opaque_tex: texture_storage_2d<{{ color_format }}, write>;
+
+// args_buffer (read-only) — edge_count snapshot. Also the indirect
+// dispatch source for this pass; Indirect + Storage(read) on the same
+// buffer is allowed by WebGPU.
+@group(0) @binding(3) var<storage, read> edge_args: EdgeArgsBufferRO;

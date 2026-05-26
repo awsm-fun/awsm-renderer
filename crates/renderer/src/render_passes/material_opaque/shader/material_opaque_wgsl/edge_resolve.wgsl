@@ -374,18 +374,19 @@ fn main(
     // entry from this shader_id's sample list. The list lives at the
     // host-supplied `sample_list_base` offset in the storage buffer.
     let thread_index = gid.x;
-    let entry_count = edge_buffers.{{ bucket_args_field }}_edge.workgroup_count_x;
+    // workgroup_count_x is the per-shader entry count atomically
+    // incremented by classify (now living on args_buffer / `edge_args`).
+    let entry_count = edge_args.{{ bucket_args_field }}_edge.workgroup_count_x;
     // workgroup_count_x in indirect args was atomicAdded-per-entry by
     // classify; the dispatch sized to ceil(count / 64) workgroups means
     // some threads overshoot. Bail.
-    if (thread_index >= entry_count * 64u) {
-        // Should never hit — count is already divided. Defensive bail.
+    if (thread_index >= entry_count) {
         return;
     }
     if (thread_index >= edge_layout.sample_entries_per_bucket) {
         return;
     }
-    let packed_entry = edge_buffers.data[edge_layout.{{ bucket_sample_list_base }} + thread_index];
+    let packed_entry = edge_data[edge_layout.{{ bucket_sample_list_base }} + thread_index];
     if (packed_entry == 0u) {
         // Empty entry sentinel.
         return;
@@ -396,7 +397,7 @@ fn main(
         return;
     }
 
-    let packed_xy = edge_buffers.data[edge_layout.edge_to_xy_base + edge_pixel_id];
+    let packed_xy = edge_data[edge_layout.edge_to_xy_base + edge_pixel_id];
     let coords = vec2<i32>(
         i32(packed_xy & 0xFFFFu),
         i32((packed_xy >> 16u) & 0xFFFFu),
@@ -405,7 +406,7 @@ fn main(
     // Find our slot in the slot_map (4 bytes packed). The byte's
     // value is the bucket_index this thread's shader_id was assigned;
     // we know our own bucket_index statically via the template.
-    let slot_map = edge_buffers.data[edge_layout.edge_slot_map_base + edge_pixel_id];
+    let slot_map = edge_data[edge_layout.edge_slot_map_base + edge_pixel_id];
     var slot_index: u32 = 4u;
     for (var i = 0u; i < 4u; i++) {
         let byte_val = (slot_map >> (i * 8u)) & 0xFFu;
@@ -445,9 +446,9 @@ fn main(
     // accumulator is laid out as `array<vec4<f32>>` starting at
     // `accumulator_base` (in u32 strides; each vec4 takes 4 u32s).
     let accum_word_index = edge_layout.accumulator_base + (edge_pixel_id * 4u + slot_index) * 4u;
-    edge_buffers.data[accum_word_index + 0u] = bitcast<u32>(color_sum.x);
-    edge_buffers.data[accum_word_index + 1u] = bitcast<u32>(color_sum.y);
-    edge_buffers.data[accum_word_index + 2u] = bitcast<u32>(color_sum.z);
+    edge_data[accum_word_index + 0u] = bitcast<u32>(color_sum.x);
+    edge_data[accum_word_index + 1u] = bitcast<u32>(color_sum.y);
+    edge_data[accum_word_index + 2u] = bitcast<u32>(color_sum.z);
     // Pack (alpha_sum, sample_count_as_float) into the w component —
     // final_blend needs both. We pack them into a vec2<f16>-ish encoding
     // since two values must share one slot; alpha_sum maps to the low
@@ -455,5 +456,5 @@ fn main(
     // sample_count (final blend recomputes alpha as alpha_sum / count
     // via a separate buffer if needed). Stage 3.7 may add a parallel
     // alpha buffer if alpha-resolve quality demands it.
-    edge_buffers.data[accum_word_index + 3u] = bitcast<u32>(f32(sample_count));
+    edge_data[accum_word_index + 3u] = bitcast<u32>(f32(sample_count));
 }

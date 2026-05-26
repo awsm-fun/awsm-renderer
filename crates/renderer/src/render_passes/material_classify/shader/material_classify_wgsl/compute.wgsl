@@ -192,13 +192,16 @@ fn cs_main(
 
         // Edge pixel: 2+ distinct shader_ids (counts skybox as one).
         if (seen_count >= 2u) {
-            // Allocate compact edge_pixel_id.
+            // Allocate compact edge_pixel_id (atomic counter lives in
+            // args_buffer / `edge_buffers`).
             let edge_id = atomicAdd(&edge_buffers.edge_count, 1u);
             if (edge_id < edge_layout.max_edge_budget) {
-                // Write edge_to_xy at index edge_id (offset in u32
-                // strides from the buffer start).
+                // Write edge_to_xy into `edge_data` at index edge_id
+                // (offset in u32 strides from `edge_data`'s base — no
+                // header to skip, base values come from the layout
+                // uniform).
                 let packed_xy = (u32(coords.x) & 0xFFFFu) | ((u32(coords.y) & 0xFFFFu) << 16u);
-                edge_buffers.data[edge_layout.edge_to_xy_base + edge_id] = packed_xy;
+                edge_data[edge_layout.edge_to_xy_base + edge_id] = packed_xy;
 
                 // Pack slot_map: 4 bytes, each byte is a bucket index
                 // (or 0xFE for skybox, 0xFF for empty slot).
@@ -206,7 +209,7 @@ fn cs_main(
                     | ((seen[1] & 0xFFu) << 8u)
                     | ((seen[2] & 0xFFu) << 16u)
                     | ((seen[3] & 0xFFu) << 24u);
-                edge_buffers.data[edge_layout.edge_slot_map_base + edge_id] = slot_map;
+                edge_data[edge_layout.edge_slot_map_base + edge_id] = slot_map;
 
                 // For each per-shader sample mask: append (edge_id,
                 // sample_mask) to that bucket's sample list. Skybox
@@ -227,25 +230,29 @@ fn cs_main(
                     }
                     {% endfor %}
                 }
-                // Append per-bucket entries.
+                // Append per-bucket entries. The atomic index counter
+                // lives on args_buffer (`edge_buffers.<name>_edge`),
+                // but the entry payload lands in `edge_data` at the
+                // host-supplied sample_list_base.
                 {% for entry in bucket_entries %}
                 if (mask_{{ loop.index0 }} != 0u) {
                     let slot_idx = atomicAdd(&edge_buffers.{{ entry.args_field() }}_edge.workgroup_count_x, 1u);
                     if (slot_idx < edge_layout.sample_entries_per_bucket) {
                         let entry_packed = (edge_id & 0x00FFFFFFu) | ((mask_{{ loop.index0 }} & 0xFFu) << 24u);
-                        edge_buffers.data[edge_layout.{{ entry.args_field() }}_sample_list_base + slot_idx] = entry_packed;
+                        edge_data[edge_layout.{{ entry.args_field() }}_sample_list_base + slot_idx] = entry_packed;
                     }
                 }
                 {% endfor %}
-                // Skybox sample list lives in the skybox_edge_args slot;
-                // host knows its offset same as per-bucket lists (see
-                // skybox_edge_resolve template).
+                // Skybox sample list lives in `edge_data` at
+                // skybox_sample_list_base; the atomic index counter
+                // shares the skybox_edge_args.workgroup_count_x slot
+                // on args_buffer.
                 if (skybox_mask != 0u) {
-                    atomicAdd(&edge_buffers.skybox_edge_args.workgroup_count_x, 1u);
-                    // The skybox sample-entry buffer is reserved as
-                    // its own region; left unimplemented in this
-                    // commit — follow-up commit adds skybox sample
-                    // entries + skybox edge resolve dispatch.
+                    let sky_slot_idx = atomicAdd(&edge_buffers.skybox_edge_args.workgroup_count_x, 1u);
+                    if (sky_slot_idx < edge_layout.sample_entries_per_bucket) {
+                        let sky_entry_packed = (edge_id & 0x00FFFFFFu) | ((skybox_mask & 0xFFu) << 24u);
+                        edge_data[edge_layout.skybox_sample_list_base + sky_slot_idx] = sky_entry_packed;
+                    }
                 }
                 // Final blend args: one workgroup per edge pixel
                 // (workgroup_size = 64, so divide by 64).

@@ -23,36 +23,45 @@
 {% include "material_opaque_wgsl/bind_groups.wgsl" %}
 
 // ─────────────────────────────────────────────────────────────────
-// Group(3) extension: edge-resolve emission buffers + layout uniform.
+// Group(3) extension: edge-resolve data buffer + layout uniform +
+// args buffer (read-only).
 //
 // `shared_wgsl/shadow/bind_groups.wgsl` (included above by way of
 // bind_groups.wgsl) declares bindings 0..=9 at this group; we append
-// bindings 10 and 11 here to carry the edge buffer (read-write
-// storage) and the edge-layout uniform.
+// bindings 10/11/12 here to carry the data buffer (read-write
+// storage), the edge-layout uniform, and the args buffer (read-only
+// storage — also the indirect-dispatch source, but Indirect +
+// Storage(read) on the same buffer is allowed by WebGPU since neither
+// usage is writable).
+//
+// The args/data buffer split is what unblocks Stage 3 — a single
+// buffer that's simultaneously bound as Storage(read-write) AND used
+// as Indirect inside one compute pass is rejected; splitting the
+// indirect args + counters into a separate buffer from the
+// storage-writable accumulator sidesteps it entirely.
 
-struct EdgeIndirectArgs {
+struct EdgeIndirectArgsRO {
     workgroup_count_x: u32,
     workgroup_count_y: u32,
     workgroup_count_z: u32,
     _pad: u32,
 };
 
-struct EdgeBuffersReadOnly {
+// args_buffer-shaped struct (read-only — counters + indirect-args only).
+struct EdgeArgsBufferRO {
     edge_count: u32,
     edge_overflow_count: u32,
     _pad_counters: vec2<u32>,
-    final_blend_args: EdgeIndirectArgs,
-    skybox_edge_args: EdgeIndirectArgs,
+    final_blend_args: EdgeIndirectArgsRO,
+    skybox_edge_args: EdgeIndirectArgsRO,
     {% for entry in bucket_entries %}
-    {{ entry.args_field() }}_edge: EdgeIndirectArgs,
+    {{ entry.args_field() }}_edge: EdgeIndirectArgsRO,
     {% endfor %}
-    data: array<u32>,
 };
 
-// Edge-resolve writes to the accumulator slot region (per-thread; each
-// (edge_pixel_id, slot_index) is owned exclusively) — so the binding
-// is read_write. Atomic counters are unused on this side.
-@group({{ shadow_group_index }}) @binding(10) var<storage, read_write> edge_buffers: EdgeBuffersReadOnly;
+// data_buffer: edge_to_xy + edge_slot_map + accumulator + sample lists,
+// indexed via the EdgeBufferLayout uniform's u32-stride offsets.
+@group({{ shadow_group_index }}) @binding(10) var<storage, read_write> edge_data: array<u32>;
 
 struct EdgeBufferLayout {
     max_edge_budget: u32,
@@ -67,3 +76,5 @@ struct EdgeBufferLayout {
 };
 
 @group({{ shadow_group_index }}) @binding(11) var<uniform> edge_layout: EdgeBufferLayout;
+
+@group({{ shadow_group_index }}) @binding(12) var<storage, read> edge_args: EdgeArgsBufferRO;

@@ -11,7 +11,7 @@
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let edge_pixel_id = gid.x;
-    let total_edges = edge_buffers.edge_count;
+    let total_edges = edge_args.edge_count;
     if (edge_pixel_id >= total_edges) {
         return;
     }
@@ -19,7 +19,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
-    let packed_xy = edge_buffers.data[edge_layout.edge_to_xy_base + edge_pixel_id];
+    let packed_xy = edge_data[edge_layout.edge_to_xy_base + edge_pixel_id];
     let coords = vec2<i32>(
         i32(packed_xy & 0xFFFFu),
         i32((packed_xy >> 16u) & 0xFFFFu),
@@ -30,10 +30,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     for (var slot = 0u; slot < 4u; slot++) {
         let accum_word_index = edge_layout.accumulator_base + (edge_pixel_id * 4u + slot) * 4u;
-        let r = bitcast<f32>(edge_buffers.data[accum_word_index + 0u]);
-        let g = bitcast<f32>(edge_buffers.data[accum_word_index + 1u]);
-        let b = bitcast<f32>(edge_buffers.data[accum_word_index + 2u]);
-        let count = bitcast<f32>(edge_buffers.data[accum_word_index + 3u]);
+        let r = bitcast<f32>(edge_data[accum_word_index + 0u]);
+        let g = bitcast<f32>(edge_data[accum_word_index + 1u]);
+        let b = bitcast<f32>(edge_data[accum_word_index + 2u]);
+        let count = bitcast<f32>(edge_data[accum_word_index + 3u]);
         if (count > 0.0) {
             color_sum += vec3<f32>(r, g, b);
             total_count += count;

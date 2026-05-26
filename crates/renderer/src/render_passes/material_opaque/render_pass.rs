@@ -162,12 +162,14 @@ impl MaterialOpaqueRenderPass {
         // WebGPU validation rule: within a single compute pass, a
         // buffer used as `Indirect` (dispatch_workgroups_indirect's
         // args source) cannot also be bound as writable `Storage`.
-        // The `edge_buffer` is both — its header carries the
-        // indirect args; its body is the accumulator that
-        // edge_resolve writes to. So each edge dispatch gets its
-        // own compute pass, isolating the usage to a fresh sync
-        // scope each time. The overhead is small — encoder-level
-        // pass begin/end is cheap; the actual GPU work is unchanged.
+        // The `MaterialEdgeBuffers` split (args_buffer vs data_buffer)
+        // resolves this for the storage-writable accumulator side; the
+        // args_buffer itself is bound only as `Storage(read)` here,
+        // which is compatible with its concurrent Indirect usage as
+        // the dispatch source. We still isolate each edge dispatch
+        // into its own compute pass — cheap (pass begin/end overhead
+        // is microscopic) and keeps the synchronization-scope reasoning
+        // local per pipeline.
 
         let (main_bind_group, lights_bind_group, texture_bind_group, _shadows_bind_group) =
             self.bind_groups.get_bind_groups()?;
@@ -196,7 +198,7 @@ impl MaterialOpaqueRenderPass {
             compute_pass.set_bind_group(3u32, &extended_shadows_group, None)?;
             compute_pass.set_pipeline(ctx.pipelines.compute.get(pipeline_key)?);
             compute_pass.dispatch_workgroups_indirect_with_u32(
-                &edge_buffers.buffer,
+                &edge_buffers.args_buffer,
                 MaterialEdgeBuffers::per_shader_args_offset(bucket_index as u32),
             );
             compute_pass.end();
@@ -210,7 +212,7 @@ impl MaterialOpaqueRenderPass {
             compute_pass.set_pipeline(ctx.pipelines.compute.get(pipeline_key)?);
             compute_pass.set_bind_group(0u32, &skybox_edge_group, None)?;
             compute_pass.dispatch_workgroups_indirect_with_u32(
-                &edge_buffers.buffer,
+                &edge_buffers.args_buffer,
                 MaterialEdgeBuffers::skybox_edge_args_offset(),
             );
             compute_pass.end();
@@ -226,7 +228,7 @@ impl MaterialOpaqueRenderPass {
             compute_pass.set_pipeline(ctx.pipelines.compute.get(pipeline_key)?);
             compute_pass.set_bind_group(0u32, &final_blend_group, None)?;
             compute_pass.dispatch_workgroups_indirect_with_u32(
-                &edge_buffers.buffer,
+                &edge_buffers.args_buffer,
                 MaterialEdgeBuffers::final_blend_args_offset(),
             );
             compute_pass.end();
@@ -251,18 +253,23 @@ impl MaterialOpaqueRenderPass {
         let layouts = &self.edge_bind_group_layouts;
 
         // extended_shadows_group: the standard 10 shadow bindings
-        // followed by edge_buffer (binding 10, storage RW) + edge_layout
-        // (binding 11, uniform). Bound at slot 3 of the edge_resolve
-        // pipeline layout in place of the primary opaque shadow bind
-        // group — the fold that lets the layout fit in 4 bind groups.
+        // followed by edge_data (binding 10, storage RW) + edge_layout
+        // (binding 11, uniform) + edge_args (binding 12, storage RO).
+        // Bound at slot 3 of the edge_resolve pipeline layout in place
+        // of the primary opaque shadow bind group — the fold that lets
+        // the layout fit in 4 bind groups.
         let mut entries_shadows = build_shadow_bind_group_entries(ctx.shadows);
         entries_shadows.push(BindGroupEntry::new(
             10,
-            BindGroupResource::Buffer(BufferBinding::new(&edge_buffers.buffer)),
+            BindGroupResource::Buffer(BufferBinding::new(&edge_buffers.data_buffer)),
         ));
         entries_shadows.push(BindGroupEntry::new(
             11,
             BindGroupResource::Buffer(BufferBinding::new(edge_layout_uniform)),
+        ));
+        entries_shadows.push(BindGroupEntry::new(
+            12,
+            BindGroupResource::Buffer(BufferBinding::new(&edge_buffers.args_buffer)),
         ));
         let descriptor_shadows = BindGroupDescriptor::new(
             ctx.bind_group_layouts
@@ -272,11 +279,12 @@ impl MaterialOpaqueRenderPass {
         );
         let extended_shadows_group = ctx.gpu.create_bind_group(&descriptor_shadows.into());
 
-        // Skybox-edge bind group: edge buffer + layout + camera + skybox tex + sampler.
+        // Skybox-edge bind group: data + layout + camera + skybox tex +
+        // sampler + args.
         let entries_sky = vec![
             BindGroupEntry::new(
                 0,
-                BindGroupResource::Buffer(BufferBinding::new(&edge_buffers.buffer)),
+                BindGroupResource::Buffer(BufferBinding::new(&edge_buffers.data_buffer)),
             ),
             BindGroupEntry::new(
                 1,
@@ -294,6 +302,10 @@ impl MaterialOpaqueRenderPass {
                 4,
                 BindGroupResource::Sampler(&ctx.environment.skybox.sampler),
             ),
+            BindGroupEntry::new(
+                5,
+                BindGroupResource::Buffer(BufferBinding::new(&edge_buffers.args_buffer)),
+            ),
         ];
         let descriptor_sky = BindGroupDescriptor::new(
             ctx.bind_group_layouts
@@ -303,11 +315,12 @@ impl MaterialOpaqueRenderPass {
         );
         let skybox_edge_group = ctx.gpu.create_bind_group(&descriptor_sky.into());
 
-        // Final-blend bind group: edge buffer (RO) + layout + opaque storage texture.
+        // Final-blend bind group: data (RO) + layout + opaque storage
+        // texture + args (RO).
         let entries_final = vec![
             BindGroupEntry::new(
                 0,
-                BindGroupResource::Buffer(BufferBinding::new(&edge_buffers.buffer)),
+                BindGroupResource::Buffer(BufferBinding::new(&edge_buffers.data_buffer)),
             ),
             BindGroupEntry::new(
                 1,
@@ -316,6 +329,10 @@ impl MaterialOpaqueRenderPass {
             BindGroupEntry::new(
                 2,
                 BindGroupResource::TextureView(Cow::Borrowed(&ctx.render_texture_views.opaque)),
+            ),
+            BindGroupEntry::new(
+                3,
+                BindGroupResource::Buffer(BufferBinding::new(&edge_buffers.args_buffer)),
             ),
         ];
         let descriptor_final = BindGroupDescriptor::new(
