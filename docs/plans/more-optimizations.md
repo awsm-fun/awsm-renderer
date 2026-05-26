@@ -10,9 +10,11 @@ Operating rules for the implementing agent:
 2. **Commits are for organization, not gating.** Commit logically (one commit per checklist item, or per small group of related items) to assist future `git bisect`. Commits do **not** need to be in a working state — partial-but-coherent changes are fine. Do not run tests between commits.
 3. **Update the checklist in this document as each item is completed.** Mark items with `[x]`. Commit the checklist update with each item or batch.
 4. **Do not stop at commits or at the end of a priority.** Keep going through every checklist item. Only stop when the entire list (including testing + PR) is done.
-5. **After all implementation checklist items are complete**, use a preview browser (e.g. `mcp__Claude_Preview__*` tooling) to load each frontend (`material-editor`, `scene-editor`, `model-tests`) and exercise features you think are worth verifying — at minimum: cold-boot to `phase = Ready`, gltf load with incremental paint, MSAA on/off toggle, shadow toggle on a directional light, dynamic-material registration flow, material-editor recompile cycle. Capture the boot-timing logs to confirm pipeline counts match the [§ The eager set](#the-eager-set-cold-boot) table.
+5. **After all implementation checklist items are complete**, use a preview browser (e.g. `mcp__Claude_Preview__*` or `mcp__Claude_in_Chrome__*` tooling) to load each frontend (`material-editor`, `scene-editor`, `model-tests`) and exercise features you think are worth verifying — at minimum: cold-boot to `phase = Ready`, gltf load with incremental paint, MSAA on/off toggle, shadow toggle on a directional light, dynamic-material registration flow, material-editor recompile cycle. Capture the boot-timing logs to confirm pipeline counts match the [§ The eager set](#the-eager-set-cold-boot) table.
 6. **Once testing passes**, run `cargo fmt --all` and `task lint`. Resolve any warnings/errors. Then commit the formatting fixes.
-7. **Open a PR for the branch on GitHub** using `gh pr create`. PR body should summarize the architectural change, link this doc, and call out the migration / breaking-change list from [§ Migration of the dynamic-materials API](#migration-of-the-dynamic-materials-api).
+7. **Open a PR for the branch on GitHub** using `gh pr create`. PR body should summarize the architectural change, link this doc, and call out the migration / breaking-change list from [§ Migration of the dynamic-materials API](#migration-of-the-dynamic-materials-api). PR body should also link [§ Post-implementation human checklist](#post-implementation-human-checklist) and note that those items remain for the human reviewer.
+
+**The agent's work ends at the PR being open.** Items requiring physical hardware setup (Android device plugged in) or human judgment (PR review, merge approval) live in [§ Post-implementation human checklist](#post-implementation-human-checklist) and are explicitly out-of-scope for the agent's pass. Do **not** wait, poll, or block on those — open the PR and stop.
 
 If you hit a genuine blocker (e.g. a WebGPU primitive doesn't behave as the doc assumes), record the surprise in this doc inline near the relevant section and continue with the best alternative — don't stop to ask. The user trusts the agent to make reasonable adaptations; they want forward progress over consultative perfection.
 
@@ -784,9 +786,8 @@ Mark items `[x]` as completed. Commit the checklist update along with each item 
 - [ ] **3.7** Wire the new pipelines through `PipelineGroupDef`: `Material(def)` now compiles 2 pipelines (`primary_{shader_id}` + `edge_resolve_{shader_id}`); add `PassDef::EdgeResolveSkybox` and `PassDef::EdgeResolveBlend` to the scheduler-managed set, triggered when first opaque material is registered. (Body: [§ Pipeline count and packaging](#pipeline-count-and-packaging).)
 - [ ] **3.8** Implement runtime `MAX_EDGE_BUDGET` cap with atomic-add fallback for overflow. Tunable per-target default (512k desktop, 256k mobile). (Body: [§ Memory budget](#memory-budget).)
 - [ ] **3.9** Update `docs/dynamic-materials/contract-opaque.md` to document the new "WGSL fragment runs in both primary and edge_resolve contexts" guarantee, and that cross-material MSAA edges now work for dynamic materials too.
-- [ ] **3.10** Hand-test on desktop: MSAA-on scenes with PBR + UNLIT + a dynamic material in close proximity. Verify cross-material edges render correctly (no PBR-fallback substitution).
-- [ ] **3.11** Hand-test on Android via `task debug-mobile:chrome-check`: confirm PBR primary pipeline compile drops from ~14 s → ~2-3 s. Confirm init reaches `phase = Ready` with no `VK_ERROR_INITIALIZATION_FAILED`.
-- [ ] **3.12** Commit Stage 3.
+- [ ] **3.10** Test via preview browser: MSAA-on scenes with PBR + UNLIT + a dynamic material in close proximity. Verify cross-material edges render correctly (no PBR-fallback substitution). (Android device verification lives in [§ Post-implementation human checklist](#post-implementation-human-checklist).)
+- [ ] **3.11** Commit Stage 3.
 
 ### Stage 4 — End-to-end testing
 
@@ -795,8 +796,9 @@ Mark items `[x]` as completed. Commit the checklist update along with each item 
 - [ ] **4.3** Run `task model-tests:dev`. Walk through several gltf models (at least one with PBR + UNLIT, one with shadows, one with transmission). Verify each loads with incremental paint, all materials end up Ready.
 - [ ] **4.4** Toggle features: MSAA off→on→off, bloom off→on→off, SMAA off→on. Verify modal appears each time, content recompiles, scene renders correctly post-recompile.
 - [ ] **4.5** Add a shadow-casting directional light to a scene that didn't have one. Verify EVSM + ShadowGen pipelines submit when light is added, modal shows, shadows appear when ready.
-- [ ] **4.6** Optional: run `task debug-mobile:chrome-check` if Android device is available. Verify init succeeds, gltf-load TTFP is fast, no SPIR-V rejections.
-- [ ] **4.7** Boot-timing log audit: collect logs from a cold-boot + gltf load. Verify pipeline counts match the [§ The eager set](#the-eager-set-cold-boot) table for the eager batch. Verify subsequent batches are sized as expected (e.g. 2 pipelines per first-party shader_id for PBR/UNLIT/TOON/FLIPBOOK).
+- [ ] **4.6** Boot-timing log audit: collect logs from a cold-boot + gltf load. Verify pipeline counts match the [§ The eager set](#the-eager-set-cold-boot) table for the eager batch. Verify subsequent batches are sized as expected (e.g. 2 pipelines per first-party shader_id for PBR/UNLIT/TOON/FLIPBOOK).
+
+(Android device verification lives in [§ Post-implementation human checklist](#post-implementation-human-checklist).)
 
 ### Stage 5 — CI prep + PR
 
@@ -809,6 +811,41 @@ Mark items `[x]` as completed. Commit the checklist update along with each item 
 ### Stage 6 — Parked
 
 - [ ] **6.1** Priority 4 (build-time pipeline cache): parked, waiting on Dawn pipeline-cache spec stabilization. Leave the section in this doc for future reference.
+
+---
+
+## Post-implementation human checklist
+
+**Out of scope for the implementing agent.** These items require physical hardware setup, the user's environment, or human judgment that can't be delegated. They run **after** the agent's PR is open.
+
+Do not let these block the agent's pass — the agent completes its checklist and stops at "PR opened." The human picks up from here whenever it's convenient.
+
+### Android device verification
+
+- [ ] **H.1** Plug in Android phone with `chrome://flags#enable-unsafe-webgpu` enabled. Run `task debug-mobile:chrome-check` from project root.
+- [ ] **H.2** Confirm init reaches `phase = Ready` with no `VK_ERROR_INITIALIZATION_FAILED`. Capture boot-timing log lines for the eager batch — should show <500 ms total compile.
+- [ ] **H.3** Load a test scene with a PBR mesh. Confirm:
+   - Skybox + camera UI visible within ~500 ms of `phase = Ready`.
+   - PBR mesh appears within ~3 s (the primary pipeline compile time on the test Android device).
+   - No watchdog kills (`External Instance reference no longer exists` absent from logs).
+   - Cross-material MSAA edges render correctly (close-up of two-material boundary looks right).
+- [ ] **H.4** Toggle MSAA off → on → off. Confirm modal appears, scene recompiles, no driver rejection on the recompile.
+- [ ] **H.5** Toggle bloom on. Confirm Bloom pipeline submits and resolves, effect appears post-recompile.
+- [ ] **H.6** Add a shadow-casting light. Confirm EVSM + ShadowGen submit and resolve, shadows render.
+- [ ] **H.7** Register a dynamic material via `material-editor` on desktop, save to project, load in `scene-editor` on Android. Confirm the dynamic material's pipelines compile on Android and the material renders.
+- [ ] **H.8** Performance sanity: at 1080p with a moderate scene (~100k triangles, mixed materials), confirm 60 fps target is held. If not, capture a profile and note the bottleneck — most likely the edge-resolve atomic-add fallback if `MAX_EDGE_BUDGET` is too low.
+
+### PR review + merge
+
+- [ ] **H.9** Review the PR on GitHub. Check that the implementation faithfully follows the architecture in this doc — flag any deviations the agent recorded inline (per "If you hit a genuine blocker" rule).
+- [ ] **H.10** Inspect the dynamic-materials migration in `material-editor` + `scene-editor`. Confirm the editor stays responsive during compile and the "compiling N of M" modal looks right.
+- [ ] **H.11** Spot-check the test surface: `cargo test --workspace --target wasm32-unknown-unknown` (or whatever the project's actual test runner is) for any failures.
+- [ ] **H.12** Approve and merge once satisfied.
+
+### Post-merge monitoring
+
+- [ ] **H.13** Watch CI on `main` for the first few commits after merge. Any regression specifically tied to the readiness machinery should surface in cold-boot timing or pipeline-count metrics in the boot-timing logs of the model-tests fixture.
+- [ ] **H.14** If a user reports a "mesh is invisible" bug after merge, first check for `tracing::warn!` lines from the render-frame preamble — those indicate a missing trigger in some insertion path that wasn't covered.
 
 ---
 
