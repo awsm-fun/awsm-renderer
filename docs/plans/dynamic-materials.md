@@ -2383,3 +2383,27 @@ contract for non-editor consumers. Tick these before declaring done.
 - [x] `docs/dynamic-materials/promotion.md` describes the
       dynamic→first-party promotion path with `scanline` as the
       worked example.
+
+---
+
+## Loose-end tracking
+
+The remaining `[~]` items above split cleanly into two follow-up
+plans. Track work there going forward; this file stays as the
+historical record of what was built across Phases 0–14.
+
+- **Optimization-flavoured items** (cold-boot, pipeline-compile,
+  lazy-pool, build-time cache, dynamic-materials prewarm scope)
+  → [`more-optimizations.md`](more-optimizations.md). The
+  dynamic-materials work landed five passes' worth of lazy-pool
+  refactors on top of that plan's geometry-pass starting point.
+  The "Progress since this plan was written" section there is
+  the up-to-date summary.
+
+- **Non-optimization remainder** (asset authoring for
+  `irregular-atlas` / `soft-glass` test scenes, material-editor UI
+  niceties, cross-port deep-link, headless screenshot harness,
+  doc-link cleanup, extras-pool resize + compaction)
+  → [`remainder.md`](remainder.md). Each item has an explicit
+  acceptance criterion; none of them block any consumer of the
+  dynamic-materials surface.
