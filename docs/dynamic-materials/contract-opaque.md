@@ -54,15 +54,23 @@ struct OpaqueShadingInput {
     barycentric: vec3<f32>,         // interpolated barycentric (sums to 1)
     main_instance_id: u32,          // INSTANCE_ATTR_NONE if no per-instance tint
     // Shading-frame data ------------------------------------------------
-    world_normal: vec3<f32>,        // world-space normal (tangent-frame N)
-    tbn: Tbn,                       // tangent-bitangent-normal frame
+    world_normal: vec3<f32>,        // world-space normal
     world_position: vec3<f32>,      // world-space surface position
     surface_to_camera: vec3<f32>,   // normalized vector from surface to camera
     // Per-material data -------------------------------------------------
-    material: MaterialData,         // your auto-generated struct (see below)
     material_offset: u32,           // byte offset for material_load_* calls
+    material: MaterialData,         // your auto-generated struct (see below)
 }
 ```
+
+Field order mirrors the emitted struct exactly (see
+`material_opaque_wgsl/compute.wgsl::OpaqueShadingInput`). The
+wrapper exposes the world-space normal but does NOT pre-compute a
+tangent / bitangent frame — authors that need one reconstruct it
+themselves from `world_normal` + the per-pixel UV derivatives.
+Most dynamic materials (overlay effects, scanlines, simple PBR
+tints) don't need a TBN, so the wrapper trades flexibility for
+keeping the per-pixel cost low.
 
 `MaterialData` is **auto-generated** from your `material.json` layout — see
 "Per-material data" below.
