@@ -24,7 +24,9 @@ pub struct MaterialClassifyRenderPass {
 impl MaterialClassifyRenderPass {
     pub async fn new(ctx: &mut RenderPassInitContext<'_>) -> Result<Self> {
         let bind_groups = MaterialClassifyBindGroups::new(ctx).await?;
-        let pipelines = MaterialClassifyPipelines::new(ctx, &bind_groups).await?;
+        let first_party_entries = crate::dynamic_materials::first_party_bucket_entries();
+        let pipelines =
+            MaterialClassifyPipelines::new(ctx, &bind_groups, &first_party_entries).await?;
         Ok(Self {
             bind_groups,
             pipelines,

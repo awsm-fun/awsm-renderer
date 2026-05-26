@@ -2022,15 +2022,32 @@ list.
       `bit-identical-WGSL` invariant survives because the WGSL emitter
       doesn't consume `dispatch_hash` itself — only the cache key
       does, and the hash collapses to a stable constant when empty).
-- [ ] **Host-side `ClassifyBuffers` is registry-driven** — DEFERRED.
-      `buffers.rs::BUCKET_COUNT` and the named-field
-      `args_pbr` / `args_unlit` / `args_toon` / `args_flipbook` header
-      writer remain. The next-session checklist is below.
-- [ ] **Classify `compute.wgsl` is an askama template** — DEFERRED;
-      see the next-session checklist below.
+- [x] **Host-side `ClassifyBuffers` is registry-driven** — landed.
+      `BUCKET_COUNT` constant replaced by a `bucket_count` field;
+      `header_bytes(bucket_count)` + `write_header` walk
+      `0..bucket_count`. New `ensure_bucket_count` method recreates
+      the buffer when a dynamic-material registration grows the
+      registry.
+- [x] **Classify `compute.wgsl` + `bind_groups.wgsl` are askama
+      templates** — landed. Both walk `bucket_entries` (the
+      `Vec<BucketEntry>` carried on the cache key) to emit:
+        * `const BUCKET_BIT_<NAME>: u32 = (1u << index);` per entry
+        * `const SHADER_ID_<NAME>: u32 = N;` per entry
+        * the `shader_id == SHADER_ID_<NAME>` if/else chain
+        * one `args_<name>` + `<name>_offset` field on `ClassifyOutput`
+        * one per-bucket extract block (`atomicAdd` + slot write)
+      The trailing padding inside `ClassifyOutput` (between
+      `bucket_capacity` and the runtime `array<vec2<u32>>`) is
+      template-driven via `pad_words_iter` so the WGSL stays in
+      lockstep with `header_bytes(bucket_count)` for every bucket
+      count.
+- [x] Material-opaque dispatch loop iterates `bucket_entries(ctx.dynamic_materials)`
+      instead of the hard-coded `[(PBR, 0), (UNLIT, 1), ...]` array,
+      so registrations + bucket-order changes flow through cleanly.
 - [ ] Verified: registering a dynamic material against a one-quad
-      scene shows its bucket bit set + its pipeline dispatched — gated
-      on the deferred classify-templating work.
+      scene shows its bucket bit set + its pipeline dispatched —
+      requires browser-side GPU verification, which is gated on the
+      Phase-4 opaque-substitution + a real registration call.
 
 #### Next-session checklist — classify templating refactor
 

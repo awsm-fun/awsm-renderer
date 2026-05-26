@@ -329,6 +329,7 @@ impl AwsmRenderer {
             transforms: &self.transforms,
             meshes: &self.meshes,
             materials: &self.materials,
+            dynamic_materials: &self.dynamic_materials,
             pipelines: &self.pipelines,
             instances: &self.instances,
             bind_groups: &self.bind_groups,
@@ -1108,6 +1109,11 @@ pub struct RenderContext<'a> {
     pub meshes: &'a Meshes,
     pub pipelines: &'a Pipelines,
     pub materials: &'a Materials,
+    /// Runtime-registered dynamic-material registry. Read by the
+    /// material_opaque dispatch loop to iterate the same bucket list
+    /// (first-party + dynamic) the classify shader was compiled
+    /// against. See [`crate::dynamic_materials`].
+    pub dynamic_materials: &'a crate::dynamic_materials::DynamicMaterials,
     pub instances: &'a Instances,
     pub bind_groups: &'a BindGroups,
     pub render_passes: &'a RenderPasses,

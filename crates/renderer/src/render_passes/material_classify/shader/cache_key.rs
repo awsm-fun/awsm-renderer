@@ -1,14 +1,37 @@
 //! Shader cache key for the material classify compute pass.
 
-use crate::{render_passes::shader_cache_key::ShaderCacheKeyRenderPass, shaders::ShaderCacheKey};
+use crate::{
+    dynamic_materials::BucketEntry, render_passes::shader_cache_key::ShaderCacheKeyRenderPass,
+    shaders::ShaderCacheKey,
+};
 
-/// Cache key for the classify compute pipeline. MSAA matters because
-/// the visibility texture is sampled either single- or multisampled;
-/// the classify shader only reads sample 0 either way, but the
-/// declared binding type has to match.
+/// Cache key for the classify compute pipeline.
+///
+/// Fields:
+/// - `msaa_sample_count` — MSAA matters because the visibility texture
+///   is sampled either single- or multisampled; the classify shader
+///   only reads sample 0 either way, but the declared binding type
+///   has to match.
+/// - `bucket_entries` — the full registered-bucket list (first-party +
+///   currently-registered dynamic materials), in shader-id-sorted
+///   order. The templated `ClassifyOutput` struct + per-bucket extract
+///   loop walk this list, so any change here changes the shader
+///   source. Carries the strings so the cache hash naturally
+///   disambiguates two registries with the same bucket count but
+///   different registered names. An empty list (zero dynamic materials
+///   registered, no first-party features either) collapses to a stable
+///   empty hash — the pre-feature compiled-WGSL sentinel.
 #[derive(Hash, Debug, Clone, PartialEq, Eq)]
 pub struct ShaderCacheKeyMaterialClassify {
     pub msaa_sample_count: Option<u32>,
+    pub bucket_entries: Vec<BucketEntry>,
+}
+
+impl ShaderCacheKeyMaterialClassify {
+    /// Convenience — `bucket_entries.len() as u32`.
+    pub fn bucket_count(&self) -> u32 {
+        self.bucket_entries.len() as u32
+    }
 }
 
 impl From<ShaderCacheKeyMaterialClassify> for ShaderCacheKey {

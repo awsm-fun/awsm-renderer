@@ -14,7 +14,8 @@
 //! designated skybox owner — see compute.wgsl — so it's the one
 //! pipeline that *must* dispatch even when no PBR meshes are present.
 
-use awsm_materials::MaterialShaderId;
+// MaterialShaderId no longer needed in this file — the dispatch loop now
+// iterates registry bucket entries instead of hard-coded ids.
 use awsm_renderer_core::command::compute_pass::ComputePassDescriptor;
 
 use crate::{
@@ -81,25 +82,24 @@ impl MaterialOpaqueRenderPass {
 
         let classify_buffer = &ctx.material_classify_buffers.buffer;
 
-        // PBR — also owns skybox, so always dispatched.
-        // Bucket index 0 == PBR; classify wrote its tiles starting at
-        // `pbr_offset` and its workgroup count to `args_pbr.x`.
-        for (shader_id, bucket_index) in [
-            (MaterialShaderId::PBR, 0u32),
-            (MaterialShaderId::UNLIT, 1u32),
-            (MaterialShaderId::TOON, 2u32),
-            (MaterialShaderId::FLIPBOOK, 3u32),
-        ] {
+        // Iterate the same bucket list the classify shader was
+        // compiled against (first-party + currently-registered
+        // dynamic materials). PBR is at index 0 by convention so
+        // skybox routing lands cleanly. For each bucket, dispatch
+        // its specialized opaque-compute pipeline at the indirect-
+        // args offset classify wrote to.
+        let bucket_entries = crate::dynamic_materials::bucket_entries(ctx.dynamic_materials);
+        for (bucket_index, entry) in bucket_entries.iter().enumerate() {
             let Some(pipeline_key) = self
                 .pipelines
-                .get_compute_pipeline_key(ctx.anti_aliasing, shader_id)
+                .get_compute_pipeline_key(ctx.anti_aliasing, entry.shader_id)
             else {
                 continue;
             };
             compute_pass.set_pipeline(ctx.pipelines.compute.get(pipeline_key)?);
             compute_pass.dispatch_workgroups_indirect_with_u32(
                 classify_buffer,
-                indirect_args_offset(bucket_index),
+                indirect_args_offset(bucket_index as u32),
             );
         }
 

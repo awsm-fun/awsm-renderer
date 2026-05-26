@@ -21,6 +21,118 @@ use awsm_materials::{MaterialAlphaMode, MaterialShaderId};
 
 pub use error::AwsmDynamicMaterialError;
 
+/// One bucket entry — the template-rendering view of a single registered
+/// material (first-party OR dynamic). Returned by
+/// [`DynamicMaterials::bucket_entries`].
+///
+/// The classify pass + the opaque substitution template walk this list
+/// to emit:
+/// - one indirect-args slot + offset per entry (host-side header)
+/// - one `BUCKET_BIT_<NAME>` const per entry (WGSL)
+/// - one `args_<name>` + `<name>_offset` field per entry on
+///   `ClassifyOutput` (WGSL)
+/// - one `if shader_id == SHADER_ID_<NAME>` arm per entry (WGSL)
+/// - one per-bucket extract block per entry (WGSL)
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct BucketEntry {
+    /// Stable per-build shader id for this bucket.
+    pub shader_id: MaterialShaderId,
+    /// WGSL-safe identifier suffix used for `args_<name>` /
+    /// `<name>_offset` / `BUCKET_BIT_<NAME>` / `SHADER_ID_<NAME>`. For
+    /// first-party materials this is the canonical
+    /// [`wgsl_const_name`](MaterialShaderId::wgsl_const_name)-derived
+    /// lowercased name (`pbr`, `unlit`, `toon`, `flipbook`). For
+    /// dynamic materials this is the registered material's `name`
+    /// lower-cased + with non-alphanumeric chars converted to `_`.
+    pub name: String,
+}
+
+impl BucketEntry {
+    /// `pbr` → `BUCKET_BIT_PBR`, `irregular-atlas` → `BUCKET_BIT_IRREGULAR_ATLAS`.
+    pub fn bucket_bit_const(&self) -> String {
+        format!("BUCKET_BIT_{}", self.name.to_uppercase())
+    }
+
+    /// `pbr` → `SHADER_ID_PBR`.
+    pub fn shader_id_const(&self) -> String {
+        format!("SHADER_ID_{}", self.name.to_uppercase())
+    }
+
+    /// `pbr` → `args_pbr`. Used as a struct-field name on
+    /// `ClassifyOutput`.
+    pub fn args_field(&self) -> String {
+        format!("args_{}", self.name)
+    }
+
+    /// `pbr` → `pbr_offset`. Per-bucket starting offset into the
+    /// classify-output `tiles` array.
+    pub fn offset_field(&self) -> String {
+        format!("{}_offset", self.name)
+    }
+}
+
+/// Returns the canonical bucket list — first-party materials in their
+/// hard-coded order followed by every registered dynamic material in
+/// shader-id-sorted order. The classify-pass + the opaque/transparent
+/// substitution templates use this list as their single source of
+/// truth.
+///
+/// Free function so the same list can be assembled from the renderer
+/// side (which holds `DynamicMaterials`) and from any caller with only
+/// a `&MaterialRegistry`-shaped view.
+pub fn bucket_entries(dynamic: &DynamicMaterials) -> Vec<BucketEntry> {
+    let mut entries = Vec::with_capacity(4 + dynamic.len());
+    for first_party in awsm_materials::registry::enabled_materials() {
+        entries.push(BucketEntry {
+            shader_id: first_party.shader_id,
+            name: first_party.name.to_string(),
+        });
+    }
+    let mut dynamics: Vec<_> = dynamic.iter().collect();
+    dynamics.sort_by_key(|(id, _)| id.as_u32());
+    for (shader_id, reg) in dynamics {
+        entries.push(BucketEntry {
+            shader_id,
+            name: sanitize_wgsl_name(&reg.name),
+        });
+    }
+    entries
+}
+
+/// Returns the first-party-only bucket list — the `bucket_entries` value
+/// the renderer uses at builder-time prewarm (before any dynamic material
+/// can be registered). Stable across the program's lifetime; mid-session
+/// registrations produce a different list (via [`bucket_entries`]) and
+/// trigger a recompile via the dispatch-hash on affected cache keys.
+pub fn first_party_bucket_entries() -> Vec<BucketEntry> {
+    awsm_materials::registry::enabled_materials()
+        .iter()
+        .map(|e| BucketEntry {
+            shader_id: e.shader_id,
+            name: e.name.to_string(),
+        })
+        .collect()
+}
+
+/// Convert a material name into a valid WGSL identifier suffix. Replaces
+/// non-alphanumeric characters with `_` and lowercases the result so the
+/// emitted `BUCKET_BIT_<NAME>` / `args_<name>` / `SHADER_ID_<NAME>`
+/// symbols are guaranteed to parse.
+pub fn sanitize_wgsl_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() || out.chars().next().unwrap().is_ascii_digit() {
+        out.insert(0, '_');
+    }
+    out
+}
+
 /// Renderer-side state for runtime-registered dynamic materials.
 ///
 /// Phase 0 ships this as a placeholder — a `HashMap<MaterialShaderId, MaterialRegistration>`

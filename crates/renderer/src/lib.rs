@@ -1001,8 +1001,18 @@ impl AwsmRendererBuilder {
         // Sized for a small initial viewport; recreated by
         // `ClassifyBuffers::ensure_capacity` on first frame once the
         // real render-texture size is known.
+        // Builder-time sizing — no dynamic materials yet, so bucket
+        // count is the first-party-only baseline.
+        // `register_material` calls `ensure_bucket_count` if it grows
+        // the registry past the current value.
+        let first_party_bucket_count =
+            crate::dynamic_materials::first_party_bucket_entries().len() as u32;
         let material_classify_buffers =
-            render_passes::material_classify::buffers::ClassifyBuffers::new(&gpu, 1024)?;
+            render_passes::material_classify::buffers::ClassifyBuffers::new(
+                &gpu,
+                1024,
+                first_party_bucket_count,
+            )?;
 
         // Decals subsystem — fixed-capacity GPU storage buffer
         // allocated up front; per-frame upload only touches the

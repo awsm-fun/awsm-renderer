@@ -1,5 +1,6 @@
 //! Compute pipeline for the material classify pass.
 
+use crate::dynamic_materials::BucketEntry;
 use crate::error::Result;
 use crate::pipeline_layouts::PipelineLayoutCacheKey;
 use crate::pipelines::compute_pipeline::{ComputePipelineCacheKey, ComputePipelineKey};
@@ -23,11 +24,12 @@ impl MaterialClassifyPipelines {
     pub async fn new(
         ctx: &mut RenderPassInitContext<'_>,
         bind_groups: &MaterialClassifyBindGroups,
+        bucket_entries: &[BucketEntry],
     ) -> Result<Self> {
         ctx.shaders
-            .ensure_keys(ctx.gpu, Self::shader_cache_keys())
+            .ensure_keys(ctx.gpu, Self::shader_cache_keys(bucket_entries))
             .await?;
-        let descs = Self::build_descriptors(ctx, bind_groups).await?;
+        let descs = Self::build_descriptors(ctx, bind_groups, bucket_entries).await?;
         let pipeline_keys = ctx
             .pipelines
             .compute
@@ -41,13 +43,15 @@ impl MaterialClassifyPipelines {
         Ok(Self::from_resolved(pipeline_keys))
     }
 
-    pub fn shader_cache_keys() -> Vec<ShaderCacheKey> {
+    pub fn shader_cache_keys(bucket_entries: &[BucketEntry]) -> Vec<ShaderCacheKey> {
         vec![
             ShaderCacheKey::from(ShaderCacheKeyMaterialClassify {
                 msaa_sample_count: Some(4),
+                bucket_entries: bucket_entries.to_vec(),
             }),
             ShaderCacheKey::from(ShaderCacheKeyMaterialClassify {
                 msaa_sample_count: None,
+                bucket_entries: bucket_entries.to_vec(),
             }),
         ]
     }
@@ -55,6 +59,7 @@ impl MaterialClassifyPipelines {
     pub async fn build_descriptors(
         ctx: &mut RenderPassInitContext<'_>,
         bind_groups: &MaterialClassifyBindGroups,
+        bucket_entries: &[BucketEntry],
     ) -> Result<MaterialClassifyPrewarmDescriptors> {
         let multisampled_pipeline_layout_key = ctx.pipeline_layouts.get_key(
             ctx.gpu,
@@ -73,6 +78,7 @@ impl MaterialClassifyPipelines {
                 ctx.gpu,
                 ShaderCacheKeyMaterialClassify {
                     msaa_sample_count: Some(4),
+                    bucket_entries: bucket_entries.to_vec(),
                 },
             )
             .await?;
@@ -82,6 +88,7 @@ impl MaterialClassifyPipelines {
                 ctx.gpu,
                 ShaderCacheKeyMaterialClassify {
                     msaa_sample_count: None,
+                    bucket_entries: bucket_entries.to_vec(),
                 },
             )
             .await?;

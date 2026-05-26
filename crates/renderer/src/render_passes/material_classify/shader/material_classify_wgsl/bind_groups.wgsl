@@ -8,7 +8,9 @@
 //      `u32` of each entry is the `shader_id`.
 //   3: classify_output    — storage[RW] (atomic) buckets + indirect
 //      args. Layout matches the
-//      `ClassifyBuffers` Rust-side header verbatim.
+//      `ClassifyBuffers` Rust-side header verbatim and is generated
+//      per-registration by walking `bucket_entries` (first-party +
+//      every registered dynamic material).
 
 /*************** START material_mesh_meta.wgsl ******************/
 {% include "shared_wgsl/material_mesh_meta.wgsl" %}
@@ -35,23 +37,26 @@ struct ClassifyIndirectArgs {
 };
 
 // Storage-buffer layout — must stay in lockstep with the byte writer
-// in `material_classify::buffers::write_header`. The four indirect
-// args slots are at offsets 0/16/32/48; `dispatchWorkgroupsIndirect`
-// reads each as `(x, y, z)` from the bound buffer.
+// in `material_classify::buffers::write_header`. The N indirect args
+// slots are at offsets `i * 16`; `dispatchWorkgroupsIndirect` reads
+// each as `(x, y, z)` from the bound buffer at that offset.
+//
+// Generated per-registration: one `args_<name>` field per bucket,
+// then one `<name>_offset` field per bucket, then the shared
+// `bucket_capacity`, then `pad_words` words of alignment padding so
+// the trailing `tiles` array (vec2<u32>, 8 B stride) starts on a
+// 16-byte boundary. The host's `header_bytes(bucket_count)` matches.
 struct ClassifyOutput {
-    args_pbr: ClassifyIndirectArgs,
-    args_unlit: ClassifyIndirectArgs,
-    args_toon: ClassifyIndirectArgs,
-    args_flipbook: ClassifyIndirectArgs,
-    pbr_offset: u32,
-    unlit_offset: u32,
-    toon_offset: u32,
-    flipbook_offset: u32,
+{% for entry in bucket_entries %}
+    {{ entry.args_field() }}: ClassifyIndirectArgs,
+{% endfor %}
+{% for entry in bucket_entries %}
+    {{ entry.offset_field() }}: u32,
+{% endfor %}
     bucket_capacity: u32,
-    // Alignment padding — header is 96 B so the trailing tiles array
-    // (vec2<u32>, 8 B stride) starts 16-byte aligned. The Rust writer
-    // leaves the three trailing u32s zero.
-    _pad_align: vec3<u32>,
+{% for pad in pad_words_iter %}
+    _pad_align_{{ pad }}: u32,
+{% endfor %}
     tiles: array<vec2<u32>>,
 };
 

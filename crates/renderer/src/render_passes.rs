@@ -328,7 +328,16 @@ impl RenderPasses {
             shader_cache_keys.extend(OcclusionPipelines::shader_cache_keys());
             shader_cache_keys.extend(CompactionPipeline::shader_cache_keys(features));
         }
-        shader_cache_keys.extend(MaterialClassifyPipelines::shader_cache_keys());
+        // Builder-time prewarm — no dynamic materials can be registered
+        // before `AwsmRendererBuilder::build` returns, so the bucket
+        // list is the first-party-only baseline. Mid-session
+        // `register_material` changes the bucket list, which changes the
+        // classify shader's cache key and triggers a recompile via the
+        // same `ensure_keys` plumbing the orchestrator uses.
+        let first_party_entries = crate::dynamic_materials::first_party_bucket_entries();
+        shader_cache_keys.extend(MaterialClassifyPipelines::shader_cache_keys(
+            &first_party_entries,
+        ));
         if let Some(bg) = coverage_bg_single.as_ref() {
             shader_cache_keys.extend(CoveragePipelines::shader_cache_keys(bg));
         }
@@ -431,8 +440,13 @@ impl RenderPasses {
             None
         };
 
-        let classify_descs =
-            MaterialClassifyPipelines::build_descriptors(ctx, &bindings.classify_bg).await?;
+        let classify_first_party_entries = crate::dynamic_materials::first_party_bucket_entries();
+        let classify_descs = MaterialClassifyPipelines::build_descriptors(
+            ctx,
+            &bindings.classify_bg,
+            &classify_first_party_entries,
+        )
+        .await?;
         let classify_range =
             compute_pool.len()..compute_pool.len() + classify_descs.pipeline_cache_keys.len();
         compute_pool.extend(classify_descs.pipeline_cache_keys.iter().cloned());

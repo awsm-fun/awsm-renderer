@@ -246,7 +246,7 @@ pub fn generate_wgsl_struct(struct_name: &str, layout: &MaterialLayout) -> Strin
     let mut offset: usize = 0;
     let mut pad_counter: usize = 0;
 
-    let mut emit_field = |out: &mut String,
+    let emit_field = |out: &mut String,
                           offset: &mut usize,
                           pad_counter: &mut usize,
                           name: &str,
