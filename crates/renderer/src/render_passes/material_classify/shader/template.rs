@@ -45,6 +45,10 @@ pub struct ShaderTemplateMaterialClassifyBindGroups {
     /// 0, 1, 2, or 3 depending on `bucket_count` (see
     /// [`pad_words_count`]).
     pub pad_words_iter: Vec<u32>,
+    /// When `true`, emit the EdgeBuffers + EdgeBufferLayout bind-group
+    /// declarations (group(0) bindings 4 and 5). Priority 3 in
+    /// docs/plans/more-optimizations.md.
+    pub emit_edge_data: bool,
 }
 
 /// Compute shader body for the classify pass.
@@ -61,6 +65,10 @@ pub struct ShaderTemplateMaterialClassifyCompute {
     /// - the `shader_id == SHADER_ID_<NAME>` if/else chain
     /// - one per-bucket extract block per entry
     pub bucket_entries: Vec<BucketEntry>,
+    /// When `true`, emit the Priority-3 edge-data emission block
+    /// (per-pixel 4-sample shader_id scan + edge_pixel_id allocation +
+    /// edge_to_xy / edge_slot_map / per-shader sample list writes).
+    pub emit_edge_data: bool,
 }
 
 /// Returns the number of trailing `u32` padding words the templated
@@ -101,11 +109,13 @@ impl TryFrom<&ShaderCacheKeyMaterialClassify> for ShaderTemplateMaterialClassify
                 multisampled_geometry,
                 bucket_entries: bucket_entries.clone(),
                 pad_words_iter,
+                emit_edge_data: key.emit_edge_data,
             },
             compute: ShaderTemplateMaterialClassifyCompute {
                 multisampled_geometry,
                 shader_id_consts,
                 bucket_entries,
+                emit_edge_data: key.emit_edge_data,
             },
         })
     }

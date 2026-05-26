@@ -580,6 +580,11 @@ impl AwsmRenderer {
                 ShaderCacheKeyMaterialClassify {
                     msaa_sample_count: msaa,
                     bucket_entries: entries.clone(),
+                    // Stage 3 edge-data emission stays off here — the
+                    // dynamic-material prewarm path doesn't yet thread
+                    // through the edge-buffer binding shape; Stage 3.7
+                    // wires up the matching pipeline-layout variant.
+                    emit_edge_data: false,
                 }
                 .into(),
             );

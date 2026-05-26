@@ -25,6 +25,14 @@ use crate::{
 pub struct ShaderCacheKeyMaterialClassify {
     pub msaa_sample_count: Option<u32>,
     pub bucket_entries: Vec<BucketEntry>,
+    /// When `true`, the classify shader also emits per-edge data into
+    /// the [`MaterialEdgeBuffers`](crate::render_passes::material_opaque::edge_buffers::MaterialEdgeBuffers)
+    /// buffer (edge_pixel_id allocation, edge_to_xy, edge_slot_map,
+    /// per-shader-id sample lists). Required for the Priority 3
+    /// per-shader-id edge resolve flow; orthogonal to single- vs
+    /// multi-sampled visibility texture (so the single-sampled variant
+    /// can still compile with this off as a zero-cost no-op).
+    pub emit_edge_data: bool,
 }
 
 impl ShaderCacheKeyMaterialClassify {
