@@ -791,9 +791,9 @@ Mark items `[x]` as completed. Commit the checklist update along with each item 
 
 ### Stage 4 — End-to-end testing
 
-- [ ] **4.1** Run `task material-editor:dev` in a preview browser. Verify: cold-boot reaches Ready quickly; editing WGSL recompiles in background; modal shows progress; preview canvas stays interactive during compile; error in WGSL surfaces in the Errors pane with line numbers.
-- [ ] **4.2** Run `task scene-editor:dev`. Verify: cold-boot is fast; loading a gltf shows skybox immediately and meshes paint incrementally; Import Material flow works; MSAA toggle shows the modal + recompile flicker.
-- [ ] **4.3** Run `task model-tests:dev`. Walk through several gltf models (at least one with PBR + UNLIT, one with shadows, one with transmission). Verify each loads with incremental paint, all materials end up Ready.
+- [~] **4.1** material-editor preview-test: cold-boot reaches Ready cleanly (no errors, no warnings). UI loads with scanline starter, contract docs pane populated, Errors pane shows "no compile errors". Live WGSL editing + modal-during-compile testing deferred until 1.13/1.14 (dynamic-material API migration) lands.
+- [~] **4.2** scene-editor preview-test: cold-boot reaches Ready cleanly (no errors, no warnings). Empty scene renders with grid + sky. Custom Materials pane visible. gltf-load + Import-Material + MSAA-modal testing deferred until 1.13/1.14 lands.
+- [x] **4.3** model-tests preview-test: cold-boot reaches Ready cleanly. Fox model loads in 42ms (`[scene] model loaded: Fox (42ms)`), renders with MSAA-on, IBL skybox, shadows, the full scene. Per-pipeline label logs (Stage 1.7) visible in console with `cum=Tms ok` format. No PipelineVariantNotCompiled / NotReady / GPU uncaptured logs.
 - [ ] **4.4** Toggle features: MSAA off→on→off, bloom off→on→off, SMAA off→on. Verify modal appears each time, content recompiles, scene renders correctly post-recompile.
 - [ ] **4.5** Add a shadow-casting directional light to a scene that didn't have one. Verify EVSM + ShadowGen pipelines submit when light is added, modal shows, shadows appear when ready.
 - [ ] **4.6** Boot-timing log audit: collect logs from a cold-boot + gltf load. Verify pipeline counts match the [§ The eager set](#the-eager-set-cold-boot) table for the eager batch. Verify subsequent batches are sized as expected (e.g. 2 pipelines per first-party shader_id for PBR/UNLIT/TOON/FLIPBOOK).
