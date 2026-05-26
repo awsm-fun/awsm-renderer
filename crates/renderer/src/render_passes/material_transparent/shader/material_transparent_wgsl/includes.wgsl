@@ -42,6 +42,10 @@
 {% include "shared_wgsl/material.wgsl" %}
 /*************** END material.wgsl ******************/
 
+/*************** START extras.wgsl ******************/
+{% include "shared_wgsl/extras.wgsl" %}
+/*************** END extras.wgsl ******************/
+
 /*************** START mesh_meta.wgsl ******************/
 {% include "shared_wgsl/material_mesh_meta.wgsl" %}
 /*************** END mesh_meta.wgsl ******************/

@@ -157,6 +157,9 @@ impl AwsmRenderer {
                 [res_w, res_h],
             )?;
         }
+        // Extras pool — flush any dirty bytes from BufferSlot
+        // updates this frame. No-op when nothing's changed.
+        self.extras_pool.write_gpu(&self.gpu)?;
         // Shadows must fit cascades + populate the descriptor buffer
         // *before* the lights buffer is packed — `Lights::write_gpu`
         // queries `shadow_index_for` per-light and bakes the result
@@ -297,6 +300,7 @@ impl AwsmRenderer {
                 shadows: &self.shadows,
                 mesh_light_indices_gpu: &self.mesh_light_indices_gpu,
                 material_classify_buffers: &self.material_classify_buffers,
+                extras_pool: &self.extras_pool,
                 decals: self.decals.as_ref(),
                 occlusion_buffers: self.occlusion_buffers.as_ref(),
                 hzb_full_view: self

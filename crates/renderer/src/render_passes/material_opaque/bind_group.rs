@@ -337,6 +337,13 @@ impl MaterialOpaqueBindGroups {
             entries.len() as u32,
             BindGroupResource::Buffer(BufferBinding::new(&ctx.frame_globals.gpu_buffer)),
         ));
+        // Extras pool — renderer-wide variable-length per-material
+        // data buffer backing custom materials' `BufferSlot`
+        // declarations. See `dynamic_materials::extras_pool`.
+        entries.push(BindGroupEntry::new(
+            entries.len() as u32,
+            BindGroupResource::Buffer(BufferBinding::new(&ctx.extras_pool.buffer)),
+        ));
 
         let descriptor = BindGroupDescriptor::new(
             ctx.bind_group_layouts
@@ -676,6 +683,16 @@ async fn create_main_bind_group_layout_key(
         BindGroupLayoutCacheKeyEntry {
             resource: BindGroupLayoutResource::Buffer(
                 BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
+            ),
+            visibility_vertex: false,
+            visibility_fragment: false,
+            visibility_compute: true,
+        },
+        // Extras pool — variable-length per-material data backing
+        // custom materials' `BufferSlot` declarations.
+        BindGroupLayoutCacheKeyEntry {
+            resource: BindGroupLayoutResource::Buffer(
+                BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),
             ),
             visibility_vertex: false,
             visibility_fragment: false,

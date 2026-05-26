@@ -54,6 +54,11 @@ pub struct BindGroupRecreateContext<'a> {
     /// the opaque dispatch.
     pub material_classify_buffers:
         &'a crate::render_passes::material_classify::buffers::ClassifyBuffers,
+    /// Renderer-wide variable-length per-material data pool. Bound on
+    /// the opaque + transparent main bind groups so custom-material
+    /// WGSL fragments can resolve `<slot>_offset` /
+    /// `<slot>_length` via `extras_load_*` helpers.
+    pub extras_pool: &'a crate::dynamic_materials::extras_pool::ExtrasPool,
     /// Projection-decal subsystem. Holds the per-decal GPU buffer the
     /// `material_decal` compute pass reads at shading time. `None`
     /// when `features.decals == false` — the decal pass's bind groups

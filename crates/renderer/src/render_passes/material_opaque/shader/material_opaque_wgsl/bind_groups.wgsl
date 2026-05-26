@@ -70,6 +70,13 @@ struct ClassifyBuckets {
 // for layout. Rides alongside the camera uniform; one upload per frame.
 @group(0) @binding(22) var<uniform> frame_globals_raw: FrameGlobalsRaw;
 
+// Renderer-wide variable-length per-material data pool. Backs
+// `BufferSlot` declarations on registered dynamic materials. See
+// `shared_wgsl/extras.wgsl` for the load helpers and
+// `crates/renderer/src/dynamic_materials/extras_pool.rs` for the
+// host-side allocator.
+@group(0) @binding(23) var<storage, read> extras_pool: array<u32>;
+
 @group(1) @binding(0) var<uniform> lights_info: LightsInfoPacked;
 // `lights` is a uniform array.
 // Uniform memory is constant-cached for the lockstep per-pixel walk;

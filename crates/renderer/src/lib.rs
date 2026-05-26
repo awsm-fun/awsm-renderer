@@ -272,7 +272,7 @@ pub struct AwsmRenderer {
 /// pool itself.
 pub static COMPATIBITLIY_REQUIREMENTS: LazyLock<CompatibilityRequirements> =
     LazyLock::new(|| CompatibilityRequirements {
-        storage_buffers: Some(9),
+        storage_buffers: Some(10),
     });
 
 impl AwsmRenderer {

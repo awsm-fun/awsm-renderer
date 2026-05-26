@@ -58,6 +58,10 @@
 {% include "shared_wgsl/material.wgsl" %}
 /*************** END material.wgsl ******************/
 
+/*************** START extras.wgsl ******************/
+{% include "shared_wgsl/extras.wgsl" %}
+/*************** END extras.wgsl ******************/
+
 
 {% match mipmap %}
     {% when MipmapMode::Gradient %}
