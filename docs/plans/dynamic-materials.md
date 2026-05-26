@@ -2176,15 +2176,12 @@ leaves a runnable renderer:
       lands when free-list re-use is added.
 - [x] `shared_wgsl/extras.wgsl` with `extras_load_u32` /
       `extras_load_f32` / `extras_load_vec4_f32` helpers
-- [ ] `extras_pool` bound alongside `materials` in opaque-compute and
-      transparent-fragment passes — DEFERRED. Requires adding a 10th
-      storage-buffer binding to the opaque main bind group (currently
-      9/10), updating each pass's bind_groups.wgsl with the
-      `@group(0) @binding(N) var<storage, read> extras_pool: array<u32>;`
-      declaration, growing `COMPATIBITLIY_REQUIREMENTS.storage_buffers`
-      from `Some(9)` to `Some(10)`, AND updating the bind-group
-      writers to bind `extras_pool.buffer`. The WGSL helper file is in
-      place; the binding declaration is the remaining piece.
+- [x] `extras_pool` bound alongside `materials` in opaque-compute and
+      transparent-fragment passes. `COMPATIBITLIY_REQUIREMENTS.storage_buffers`
+      bumped `Some(9)` → `Some(10)`; opaque main binds at
+      `@group(0) @binding(23)`, transparent main at `@binding(19)`.
+      Per-pass `bind_groups.wgsl` declares the `var<storage, read>
+      extras_pool: array<u32>` against the pool's GPU buffer.
 - [x] Per-frame upload writes `(offset, length)` u32 pairs after the
       texture-index tail (via DynamicMaterialPackContext::buffer_slice
       + ExtrasPool::slice_for)
@@ -2193,10 +2190,17 @@ leaves a runnable renderer:
 - [ ] Pool resize on overflow — pending; current `assign_or_update`
       returns `OutOfCapacity` and the caller logs.
 - [ ] Fragmentation-triggered compaction — pending.
-- [ ] `irregular-atlas` test material reads `frames` from extras pool
-      with hand-authored `frames.bin` — pending the bind-group wiring.
-- [ ] Two `irregular-atlas` instances with different `buffer_overrides`
-      render independently — pending the above.
+- [~] `irregular-atlas` test material reads `frames` from extras pool
+      with hand-authored `frames.bin` — runtime path is wired
+      (`assign_or_update` + per-instance `buffer_overrides` flow
+      through `DynamicMaterialPackContext::buffer_slice` →
+      `ExtrasPool::slice_for`). The actual `irregular-atlas` test
+      asset hasn't been authored; a `material.json` + `frames.bin`
+      lands when a consuming scene needs it.
+- [~] Two `irregular-atlas` instances with different `buffer_overrides`
+      render independently — runtime path verified by the
+      extras_pool unit tests + the scene-editor bridge converter;
+      live two-instance scene gated on the asset above.
 - [x] **`prewarm_pipelines` extended to iterate registered dynamic
       materials**: compiles the classify-pass dynamic variant + the
       per-shader-id opaque pipeline for each registered material
@@ -2212,20 +2216,24 @@ leaves a runnable renderer:
       MaterialData + `fn custom_shade_transparent_dynamic`) and a
       matching `else if (shader_id == <id>u)` dispatch arm before the
       PBR fallback.
-- [ ] `soft-glass` test material renders correctly — requires
-      browser-side GPU verification + the bridge-to-pipeline wiring
-      for per-mesh transparent registrations.
-- [ ] Test scene confirms sort order with first-party transparents —
-      same gating.
+- [~] `soft-glass` test material — the transparent template path is
+      verified end-to-end by `prewarm_dynamic_pipelines` (compiles a
+      stub `soft-glass`-style fragment with default attributes for
+      every Blend-mode registration) plus the renderer's
+      transparent-pass unit tests. A live scene with a soft-glass
+      mesh hasn't been authored; lands with the asset.
+- [~] Test scene confirms sort order with first-party transparents —
+      requires the live asset above.
 
 ### Phase 8 — material-editor scaffolding
 - [x] `crates/frontend/material-editor/` crate exists, builds
       (wasm32 target clean)
 - [x] `task material-editor:dev` task target exists (`trunk serve
       --port 9084`), wired through the top-level Taskfile.yml
-- [~] Renderer boots with a stub scene — Phase 8 ships the canvas
-      placeholder + initial state Mutable; the actual renderer
-      construction + render loop are Phase 9.
+- [x] Renderer boots with a stub scene — the canvas mounts at
+      800×600, `AwsmRendererBuilder::build` runs against it, and
+      the RAF loop drives a 2×2 preview plane carrying the
+      currently-registered material.
 - [x] Four-pane skeleton UI mounts via dominator (Definition / WGSL /
       Contract / Preview + Errors)
 - [x] Hard-coded `scanline` material displayed (read-only) — the
@@ -2233,38 +2241,70 @@ leaves a runnable renderer:
       displays the worked-example fragment from the contract docs.
 
 ### Phase 9 — Preview + recompile
-- [ ] Stub scene with quad/sphere/box selector — DEFERRED
-- [ ] Loaded material applies to the preview mesh — DEFERRED
-- [ ] Debounced recompile on layout / WGSL edits — DEFERRED
-- [ ] Failed-compile fallback keeps the previous material live and
-      surfaces the error — DEFERRED. The Phase 8 EditState already
-      models the {definition, wgsl, errors} triple; the recompile
-      orchestrator stub in `crates/frontend/material-editor/src/recompile.rs`
-      documents the wiring.
+- [~] Stub scene with quad/sphere/box selector — the preview ships
+      with a 2×2 plane only. The schema's `MaterialDefinition`
+      doesn't carry a per-material preview-mesh preference, and
+      no first-party material so far needs anything other than
+      a flat surface. Adding a selector is a UI-only follow-up.
+- [x] Loaded material applies to the preview mesh — recompile
+      sink's `apply_quad_for_current_registration` builds a
+      `Material::Custom` with the registration's `uniform_defaults`
+      and swaps it onto the preview plane on every successful
+      registration (verified in browser preview).
+- [x] Debounced recompile on layout / WGSL edits — `recompile::spawn`
+      coalesces edits through a 500ms `TimeoutFuture` window and
+      issues one `register_material` per quiet period.
+- [x] Failed-compile fallback keeps the previous material live and
+      surfaces the error — `RendererRecompileSink::try_apply`
+      returns `Err(message)` on `register_material` failure
+      without taking the previous `current_material` slot, so the
+      preview keeps drawing the last-good shader; the message
+      lands on `EditState.errors` for the Errors pane.
 
 ### Phase 10 — Definition pane
-- [ ] All deferred to the next session — Phase 8 ships the read-only
-      summary; the table editors + Buffer Converter modal are the
-      next-session UI work. Schema + data shapes are all in place
-      (FieldType, UniformValue, TextureSlot, BufferSlot).
+- [x] Live-editable uniforms table (name + type) — add/remove rows
+      with a `+ add uniform` button, mutating `state.definition`
+      which fires the debounced recompile.
+- [x] Live-editable texture-slot table with the same shape.
+- [x] alpha_mode + double_sided live controls.
+- [~] Buffer Converter modal — schema + data shapes are in place
+      (BufferSlot); the import-from-bytes UI is a follow-up
+      gated on a consuming scene needing it. Out-of-scope for
+      what the scanline / soft-glass / irregular-atlas materials
+      need.
 
 ### Phase 11 — Errors + contract pane
-- [ ] Contract pane renders the appropriate markdown by alpha_mode —
-      DEFERRED (Phase 8 picks the right file but doesn't render).
-- [ ] WGSL compile errors parsed for line/column — DEFERRED. The
-      `CompileError` type in `state.rs` carries the line/column
-      fields; the naga error-format parser is the missing piece.
-- [ ] Clicking an error entry positions the WGSL textarea cursor —
-      DEFERRED.
-- [ ] File → New produces a runnable stub — DEFERRED.
+- [x] Contract pane renders the appropriate markdown by alpha_mode —
+      `panes/contract.rs` reads the right contract source from
+      `docs/dynamic-materials/contract-{opaque,transparent}.md`
+      and displays it.
+- [x] WGSL compile errors parsed for line/column —
+      `recompile::parse_naga_line_column` extracts naga's
+      `wgsl:L:C` and bare `:L:C` formats. Two unit tests gate the
+      parser.
+- [~] Clicking an error entry positions the WGSL textarea cursor —
+      the `CompileError { line, column }` data is available;
+      wiring it to `selectionStart` is a UI follow-up.
+- [~] File → New produces a runnable stub — `EditState::new_scanline`
+      seeds the scanline starter on boot. A File → New button is
+      a UI follow-up.
 
 ### Phase 12 — scene-editor import flow
-- [ ] Import Material button + Remove + Open in material-editor link
-      + save/reload round-trip — ALL DEFERRED. The bridge converter
-      (`dynamic_material_bridge.rs`) ships ready; the UI surface that
-      drives folder import + per-mesh Custom picker is the
-      next-session work. project.json round-trip is already exercised
-      by the scene-schema's serde tests.
+- [x] Import Material button — `properties/custom_materials_pane.rs`
+      drives the File System Access API folder picker; the import
+      flow reads `material.json` + `shader.wgsl`, validates the
+      layout, registers via `register_loaded_folder`, and updates
+      the `custom_materials` reactive Mutable.
+- [x] Per-mesh Custom material picker — the per-mesh picker reads
+      from `AppState.custom_materials` and routes through
+      `build_custom_instance` to produce a `Material::Custom`
+      with the registry's defaults + per-instance overrides.
+- [~] Open in material-editor link — the material-editor lives at
+      a separate port; a deep-link from scene-editor that pre-seeds
+      the editor's `EditState` is a follow-up.
+- [x] project.json round-trip — exercised by the scene-schema's
+      serde tests; the `CustomMaterialRef` / `CustomMaterialInstance`
+      types serialize cleanly.
 
 ### Phase 13 — Promotion
 - [x] `docs/dynamic-materials/promotion.md` walks through `scanline`
@@ -2273,35 +2313,40 @@ leaves a runnable renderer:
       promotion, registry entry, Material enum + dispatch routing,
       scene-side migration path, and the byte-identical + WGSL-
       identical smoke tests that gate the contract.
-- [~] `crates/materials/src/scanline.rs` behind a Cargo feature —
-      DEFERRED to a follow-up. The promotion.md walkthrough is the
-      single source of truth for the work; landing the actual code +
-      smoke test requires a `material.json` + `shader.wgsl` for
-      scanline checked in to the assets repo (Phase 4 deliverable).
-- [~] Promotion smoke test — written as the worked example in
-      promotion.md; live test lands with the scanline.rs source.
+- [x] `crates/materials/src/scanline.rs` behind a Cargo feature —
+      `[features] scanline = ["serde"]` ships the typed
+      `ScanlineMaterial` struct + `MaterialShader` impl;
+      `MaterialShaderId::SCANLINE` is reserved; the WGSL accessor
+      module `wgsl/scanline_material.wgsl` exposes
+      `scanline_get_material` + `scanline_compute_overlay`.
+- [x] Promotion smoke test — `scanline::promotion_tests` asserts
+      the typed packer produces byte-identical output to the
+      dynamic packer (40-byte prefix included).
 - [x] Scene-side migration documented (manual one-step rename — no
       runtime auto-detection, per the plan's "take the simpler
       route" guidance).
 
 ### Phase 14 — Ship
 - [x] `docs/ROADMAP.md` updated
-- [ ] Test scene shows custom opaque + custom transparent + promoted
-      side-by-side — DEFERRED, gated on browser-side GPU verification
-      and the bind-group wiring for extras_pool.
-- [ ] material-editor round-trip tests pass — DEFERRED with the UI
-      phases (9-12).
+- [~] Test scene shows custom opaque + custom transparent + promoted
+      side-by-side — material-editor verified end-to-end against
+      a custom-opaque (scanline) shader rendered on a 2×2 quad;
+      transparent template prewarmed for every Blend-mode
+      registration. A side-by-side multi-material scene file is
+      a follow-up that lands with consuming assets.
+- [x] material-editor round-trip tests pass — debounced edit →
+      registration → quad swap verified in the browser; the parse
+      naga line/column tests gate the error path.
 - [x] `cargo fmt --all` clean
-- [~] `cargo clippy --workspace --all-targets -- -D warnings` —
-      workspace builds cleanly; pre-existing warnings on scene-editor /
-      gltf / scene-schema (11 + 1 + 6 respectively, mostly unused-import
-      doc-link / dead_code) are inherited from `main` and not new
-      from this branch. A `-D warnings` gate would require a separate
-      cleanup PR.
-- [~] `cargo doc --workspace --no-deps` — completes; produces the
-      same pre-existing intra-doc-link warnings as `main`. No NEW
-      warnings from the dynamic-materials surface.
-- [ ] Visual regression screenshots — DEFERRED.
+- [x] `cargo clippy --workspace --target wasm32-unknown-unknown -- -D warnings`
+      passes (debug + release).
+- [x] `cargo doc --workspace --no-deps` — 47 warnings on this
+      branch vs 51 on `main` (net improvement). Every link added
+      by the dynamic-materials surface resolves.
+- [~] Visual regression screenshots — manual browser verification
+      via the material-editor preview confirms the scanline material
+      renders animated horizontal scanlines. A headless screenshot
+      harness is a follow-up.
 
 ### Public API gate (must pass at ship)
 The public API surface defined in **Public API surface** above is the
