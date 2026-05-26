@@ -22,8 +22,7 @@
 //! `awsm_renderer::dynamic_materials::MaterialRegistration` before calling
 //! `AwsmRenderer::register_material`.
 //!
-//! See `docs/plans/dynamic-materials.md` for the architectural rationale and
-//! `docs/dynamic-materials/contract-{opaque,transparent}.md` for the
+//! See `docs/dynamic-materials/contract-{opaque,transparent}.md` for the
 //! author-facing WGSL contract this on-disk shape ultimately wires up to.
 
 use std::collections::HashMap;

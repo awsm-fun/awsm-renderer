@@ -95,7 +95,8 @@ pub enum Material {
     /// Runtime-registered custom material. Backed by the generic
     /// [`DynamicMaterial`] interpreter — see
     /// [`crate::dynamic_materials`] for the registration API and
-    /// `docs/plans/dynamic-materials.md` for the contract docs.
+    /// `docs/dynamic-materials/contract-{opaque,transparent}.md` for
+    /// the WGSL author contract.
     Custom(Box<DynamicMaterial>),
 }
 
@@ -180,8 +181,15 @@ impl Material {
             Material::Pbr(m) => m.has_transmission(),
             Material::Unlit(_) | Material::Toon(_) => false,
             Material::FlipBook(_) => false,
-            // Dynamic materials cannot opt into transmission — see
-            // "Skybox ownership" in `docs/plans/dynamic-materials.md`.
+            // Dynamic materials cannot opt into KHR_materials_transmission.
+            // Reasoning: transmission samples the pre-blit opaque
+            // target, which the dynamic-material wrapper intentionally
+            // doesn't expose (the `frag_pos: vec4<f32>` + `Camera` args
+            // that `sample_transmission_background(...)` needs aren't on
+            // `TransparentShadingInput`). Materials that need refractive
+            // sampling promote to first-party PBR. See
+            // `docs/dynamic-materials/contract-transparent.md` § "Helpers
+            // in scope" for the trade-off rationale.
             Material::Custom(_) => false,
         }
     }

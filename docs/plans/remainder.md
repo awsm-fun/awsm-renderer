@@ -108,7 +108,7 @@ This is a real piece of infrastructure work — ~1-2 days, mostly the diff-toler
 
 ### `crates/renderer/README.md` walkthrough
 
-Phase 14 of `dynamic-materials.md` calls out a renderer README walkthrough that introduces the public surface. Currently `crates/renderer/README.md` exists but doesn't cover the dynamic-material entry points (`register_material`, `MaterialRegistration`, `Material::Custom`, etc.).
+The dynamic-materials public surface (`register_material`, `MaterialRegistration`, `Material::Custom`, etc.) doesn't have a top-level entry point in `crates/renderer/README.md`. The rustdoc + `crates/renderer/examples/dynamic_material.rs` cover the API; a README section makes it discoverable.
 
 **Acceptance**: README section walks a fresh consumer through the canonical "register a dynamic material, build a Material::Custom, add a mesh that uses it, render" sequence. Cross-references `docs/dynamic-materials/contract-{opaque,transparent}.md` for the WGSL contract.
 
@@ -150,6 +150,6 @@ Both are runtime-correctness items, not optimizations — current behavior is "e
 ## Cross-references
 
 - Cold-boot / pipeline / shader / lazy-pool work: [`more-optimizations.md`](more-optimizations.md).
-- Dynamic-materials phase tracking (mostly historical, kept as the source-of-truth for what was built): [`dynamic-materials.md`](dynamic-materials.md).
 - Material WGSL author contracts: [`../dynamic-materials/contract-opaque.md`](../dynamic-materials/contract-opaque.md), [`../dynamic-materials/contract-transparent.md`](../dynamic-materials/contract-transparent.md).
 - Promotion walkthrough (dynamic → first-party): [`../dynamic-materials/promotion.md`](../dynamic-materials/promotion.md).
+- Integration example: [`../../crates/renderer/examples/dynamic_material.rs`](../../crates/renderer/examples/dynamic_material.rs).

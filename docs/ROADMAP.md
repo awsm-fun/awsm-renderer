@@ -1,16 +1,23 @@
 # Next up
-- Dynamic materials 🚧 — runtime-registered custom WGSL fragments
-  ([`docs/plans/dynamic-materials.md`](plans/dynamic-materials.md)).
-  Phase-0 through Phase-8 + Phase-13 docs landed on `dynamic-shaders`:
-  MaterialShaderId rewrite, scene-schema MaterialDefinition + folder
-  loader + contract docs, layout helpers with thorough alignment tests,
-  registry-driven classify pass templating, opaque template
-  substitution + prewarm wiring, extras-pool storage subsystem +
-  shared_wgsl helper, transparent fragment template hooks,
-  scene-editor bridge converter, material-editor crate skeleton, and
-  promotion walkthrough. Visual verification + the material-editor
-  interactive UI (Phases 9-12) are the remaining gates before
-  crates.io major-version bump.
+- Dynamic materials ✅ — runtime-registered custom WGSL fragments.
+  Landed across PR #98 on `dynamic-shaders`: `MaterialShaderId`
+  rewrite + dynamic range, scene-schema `MaterialDefinition` +
+  folder loader, layout helpers with alignment tests, registry-driven
+  classify-pass templating, opaque + transparent template
+  substitution + prewarm wiring, extras-pool storage subsystem, a
+  scene-editor Import Material flow + per-mesh Custom picker, a
+  standalone `material-editor` frontend with live preview +
+  debounced recompile + contract/errors panes, scanline first-party
+  promotion (byte-identical smoke test), and a Public API
+  contract surface documented at
+  [`docs/dynamic-materials/contract-opaque.md`](dynamic-materials/contract-opaque.md)
+  + [`docs/dynamic-materials/contract-transparent.md`](dynamic-materials/contract-transparent.md)
+  + [`docs/dynamic-materials/promotion.md`](dynamic-materials/promotion.md).
+  Remaining follow-ups split between
+  [`docs/plans/more-optimizations.md`](plans/more-optimizations.md)
+  (cold-boot / lazy-pool work) and
+  [`docs/plans/remainder.md`](plans/remainder.md) (asset authoring,
+  UI polish, headless screenshot harness).
 
 - Temporal shaders ✅ — renderer-wide `FrameGlobals` uniform (`time`,
   `delta_time`, `frame_count`, `resolution`) bound alongside the camera

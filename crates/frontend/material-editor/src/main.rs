@@ -1,8 +1,11 @@
 //! Material-editor — standalone authoring tool for runtime-registered
 //! custom materials.
 //!
-//! See `docs/plans/dynamic-materials.md` for the architectural rationale.
-//! UI is built with dominator + futures-signals, mirroring scene-editor.
+//! The author-facing WGSL contract is in
+//! `docs/dynamic-materials/contract-{opaque,transparent}.md`; the
+//! promotion-to-first-party walkthrough is in
+//! `docs/dynamic-materials/promotion.md`. UI is built with dominator +
+//! futures-signals, mirroring scene-editor.
 //!
 //! ## Architecture
 //!

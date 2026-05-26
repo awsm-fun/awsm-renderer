@@ -262,14 +262,12 @@ pub struct AwsmRenderer {
 ///
 /// ## Dynamic-materials `extras_pool` slot
 ///
-/// The dynamic-materials plan (Phase 6) earmarks the 10th and final
-/// slot for the `extras_pool` storage buffer that backs `BufferSlot`
-/// declarations on registered custom materials. When that binding
-/// lands across the opaque + transparent passes, bump this cap to
-/// `Some(10)`. See `docs/plans/dynamic-materials.md` under "Storage
-/// strategy" / "Storage-buffer budget watch" for the rationale and
-/// `crates/renderer/src/dynamic_materials/extras_pool.rs` for the
-/// pool itself.
+/// The 10th storage-buffer slot is reserved for the `extras_pool`
+/// buffer that backs `BufferSlot` declarations on registered custom
+/// materials. The pool itself is documented at
+/// `crates/renderer/src/dynamic_materials/extras_pool.rs`; the
+/// per-binding wiring lives in the opaque + transparent passes'
+/// `bind_groups.wgsl` (binding 23 / 19 respectively).
 pub static COMPATIBITLIY_REQUIREMENTS: LazyLock<CompatibilityRequirements> =
     LazyLock::new(|| CompatibilityRequirements {
         storage_buffers: Some(10),
@@ -381,12 +379,14 @@ impl AwsmRenderer {
     /// paid, just relocated to a phase the consumer can label
     /// clearly.
     ///
-    /// ## Future work
+    /// ## Dynamic materials
     ///
-    /// - **Dynamic materials** (see `docs/plans/dynamic-materials.md`
-    ///   Phase 3): runtime-registered custom shaders. After
-    ///   registration, this method should walk `enabled_materials()`
-    ///   and warm every (shader_id × attribute-set) combo it returns.
+    /// Runtime-registered custom shaders (`Material::Custom`) flow
+    /// through this same path via [`Self::prewarm_dynamic_pipelines`],
+    /// which compiles the classify-pass variant + the per-shader-id
+    /// opaque pipeline + (for Blend-mode registrations) a transparent
+    /// stub for every currently-registered dynamic material. Triggered
+    /// implicitly by `register_material`; idempotent on cache hits.
     pub async fn prewarm_pipelines(&mut self) -> crate::error::Result<()> {
         let _maybe_span = if self.logging.render_timings {
             Some(tracing::span!(tracing::Level::INFO, "Prewarm Pipelines").entered())
