@@ -282,6 +282,7 @@ version = "0.1.7"
 dependencies = [
  "anyhow",
  "awsm-curves",
+ "awsm-materials",
  "awsm-meshgen",
  "awsm-particles",
  "awsm-renderer",

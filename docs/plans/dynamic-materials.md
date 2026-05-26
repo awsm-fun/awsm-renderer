@@ -2144,14 +2144,22 @@ leaves a runnable renderer:
       `custom_material` instance and on a browser-side GPU run.
 
 ### Phase 5 — scene-editor instance plumbing
-- [ ] Bridge registers all `project.custom_materials` on project load
-- [ ] `MaterialRef::Custom` → `Material::Custom` runtime conversion in
-      the bridge
-- [ ] `buffer_overrides` round-trip through the bridge (data path; no
-      editor UI yet)
-- [ ] scene-editor "Materials" pane lists registered customs
-      (read-only)
-- [ ] Per-mesh material picker shows a "Custom" submenu
+- [x] Bridge converter implemented in
+      `crates/frontend/scene-editor/src/renderer_bridge/dynamic_material_bridge.rs`:
+      `register_loaded_folder(renderer, map, &LoadedMaterialFolder)`
+      → `MaterialShaderId` plus a `CustomMaterialRegistryMap`
+      (name → shader_id) for per-mesh resolution.
+- [x] `CustomMaterialInstance` → `Material::Custom` conversion via
+      `build_custom_instance(renderer, map, &instance, texture_resolver)`
+      — overlays per-instance uniform / texture overrides onto the
+      registry's defaults.
+- [~] `buffer_overrides` round-trip is wired structurally (the bridge
+      reserves slots and the packer writes (0, 0) per Phase 4); the
+      extras-pool data path lands in Phase 6.
+- [ ] scene-editor "Materials" pane UI — wired in Phase 12 with the
+      import flow.
+- [ ] Per-mesh material picker "Custom" submenu — wired in Phase 12
+      alongside the asset picker UI.
 
 ### Phase 6 — Extras pool + buffer slots + prewarm
 - [ ] `crates/renderer/src/dynamic_materials/extras_pool.rs` — 1 MiB
