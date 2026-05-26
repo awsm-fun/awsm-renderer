@@ -559,6 +559,7 @@ impl AwsmRenderer {
                         shader_id,
                         dispatch_hash,
                         dynamic_shader: dynamic_shader.clone(),
+                        bucket_entries: entries.clone(),
                     };
                 let shader_key = self.shaders.get_key(&self.gpu, cache_key).await?;
                 let layout_key = if msaa.is_some() {

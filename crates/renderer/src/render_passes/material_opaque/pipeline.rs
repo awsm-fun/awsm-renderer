@@ -192,6 +192,7 @@ impl MaterialOpaquePipelines {
                             // for each dynamic shader_id with its
                             // registration's struct_decl + wgsl_fragment.
                             dynamic_shader: None,
+                            bucket_entries: crate::dynamic_materials::first_party_bucket_entries(),
                         }
                         .into(),
                         layout_key,

@@ -154,16 +154,16 @@ fn main(
     // pipeline's specialized `shader_id` picks the matching offset
     // statically; `workgroup_id.x` is the bucket entry index;
     // `local_invocation_id.xy` is the 8×8 thread → pixel offset.
+    // Templated bucket_offset lookup — the pipeline is specialized
+    // for one shader_id, so the askama if-branch resolves to exactly
+    // one entry at template-render time. Walks the same bucket_entries
+    // list the classify-pass template walks.
     let bucket_offset =
-    {%- if shader_id == MaterialShaderId::PBR -%}
-        classify_buckets.pbr_offset
-    {%- else if shader_id == MaterialShaderId::UNLIT -%}
-        classify_buckets.unlit_offset
-    {%- else if shader_id == MaterialShaderId::TOON -%}
-        classify_buckets.toon_offset
-    {%- else if shader_id == MaterialShaderId::FLIPBOOK -%}
-        classify_buckets.flipbook_offset
-    {%- endif -%}
+    {%- for entry in bucket_entries -%}
+        {%- if shader_id == entry.shader_id -%}
+        classify_buckets.{{ entry.offset_field() }}
+        {%- endif -%}
+    {%- endfor -%}
     ;
     let tile = classify_buckets.tiles[bucket_offset + wg_id.x];
     let coords = vec2<i32>(i32(tile.x * 8u + lid.x), i32(tile.y * 8u + lid.y));

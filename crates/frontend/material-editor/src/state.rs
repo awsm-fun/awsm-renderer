@@ -89,23 +89,25 @@ impl EditState {
     }
 }
 
-/// Hard-coded WGSL fragment for the scanline material — matches the
-/// worked example in `docs/dynamic-materials/contract-opaque.md`.
-const SCANLINE_WGSL: &str = r#"// scanline material
-// Layout: tint, scan_freq, scan_speed, scan_strength, base texture.
-
+/// Hard-coded WGSL fragment for the scanline material — a minimal
+/// stub that uses only the input fields the current
+/// `OpaqueShadingInput` provides + `frame_globals_raw` (in scope from
+/// the kernel's bind group). The full per-material-data access path
+/// (input.material.<field>) lands once `generate_wgsl_loader`
+/// emits the typed accessor; until then the author manually pulls
+/// uniforms via material_load_* using input.material_offset.
+const SCANLINE_WGSL: &str = r#"// scanline material — minimal stub that compiles cleanly against
+// the current OpaqueShadingInput contract (coords + screen_dims +
+// material_offset). The full per-material-uniform access path lands
+// once the wrapper auto-emits a typed `material: MaterialData` field
+// on input — until then the author reads from `materials` directly
+// via material_load_* using input.material_offset.
+let coords_f = vec2<f32>(f32(input.coords.x), f32(input.coords.y));
+let dims_f = vec2<f32>(f32(input.screen_dims.x), f32(input.screen_dims.y));
+let uv = coords_f / dims_f;
 let fg = frame_globals_from_raw(frame_globals_raw);
-let uv = vec2<f32>(f32(input.coords.x), f32(input.coords.y))
-       / vec2<f32>(f32(input.screen_dims.x), f32(input.screen_dims.y));
-
-let scan = sin(uv.y * input.material.scan_freq
-             + fg.time * input.material.scan_speed);
-let overlay = mix(vec3<f32>(0.0), input.material.tint,
-                  scan * input.material.scan_strength);
-
-// (No texture sampling in this stub — the full version reads
-// input.material.base_index via material_load_texture_info_raw +
-// texture_pool_sample_no_mips. See contract-opaque.md.)
+let scan = sin(uv.y * 80.0 + fg.time * 0.5);
+let overlay = mix(vec3<f32>(0.0), vec3<f32>(0.6, 0.9, 0.6), scan * 0.3);
 let color = vec3<f32>(0.5, 0.5, 0.5) + overlay;
 return OpaqueShadingOutput(color, 1.0);
 "#;

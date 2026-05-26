@@ -35,6 +35,13 @@ pub struct ShaderTemplateMaterialOpaqueBindGroups {
     /// `shared_wgsl/shadow/bind_groups.wgsl` include can be reused by
     /// the transparent pipeline (slot 1 as of 16.B).
     pub shadow_group_index: u32,
+    /// Registry bucket list — drives the templated `ClassifyBuckets`
+    /// struct emit, must match the classify-pass writer's struct
+    /// byte-for-byte.
+    pub bucket_entries: Vec<crate::dynamic_materials::BucketEntry>,
+    /// Trailing alignment-pad u32 indices for `ClassifyBuckets`,
+    /// mirrors the classify-pass template's `pad_words_iter`.
+    pub pad_words_iter: Vec<u32>,
     /// Whether `apply_sscs` should compile its real body (true on the
     /// opaque pass — it has `depth_tex` bound) or short-circuit to
     /// `return 1.0` (true on the transparent pass — sampling its own
@@ -83,6 +90,11 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     /// `fn custom_shade_<id>(...) -> OpaqueShadingOutput { <body> }`).
     /// Empty string for first-party ids.
     pub dynamic_wgsl_fragment: String,
+    /// Registry bucket list — used by the per-shader-id
+    /// `bucket_offset` lookup chain so dynamic shader_ids can resolve
+    /// their `classify_buckets.<name>_offset` field. Mirrors the
+    /// classify-pass template's `bucket_entries`.
+    pub bucket_entries: Vec<crate::dynamic_materials::BucketEntry>,
 }
 
 impl ShaderTemplateMaterialOpaqueCompute {
@@ -120,6 +132,12 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
         let msaa_sample_count = value.msaa_sample_count.unwrap_or_default();
         let debug = ShaderTemplateMaterialOpaqueDebug::new();
 
+        let bucket_entries = value.bucket_entries.clone();
+        let pad_words_iter: Vec<u32> = (0
+            ..crate::render_passes::material_classify::shader::template::pad_words_count(
+                bucket_entries.len() as u32,
+            ))
+            .collect();
         let _self = Self {
             bind_groups: ShaderTemplateMaterialOpaqueBindGroups {
                 texture_pool_arrays_len,
@@ -130,6 +148,8 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 debug,
                 shadow_group_index: 3,
                 sscs_available: true,
+                bucket_entries: bucket_entries.clone(),
+                pad_words_iter,
             },
             compute: ShaderTemplateMaterialOpaqueCompute {
                 texture_pool_arrays_len,
@@ -153,6 +173,7 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                     .as_ref()
                     .map(|d| d.wgsl_fragment.clone())
                     .unwrap_or_default(),
+                bucket_entries,
             },
         };
 
@@ -258,6 +279,17 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaqueEmpty> for ShaderTemplateMaterialOpaqu
     type Error = AwsmShaderError;
 
     fn try_from(value: &ShaderCacheKeyMaterialOpaqueEmpty) -> Result<Self> {
+        // The empty variant is built at builder time only — no dynamic
+        // materials exist yet, so the first-party bucket list is the
+        // right value. If dynamic registrations ever needed to feed
+        // the empty path, ShaderCacheKeyMaterialOpaqueEmpty would grow
+        // the same bucket_entries field as ShaderCacheKeyMaterialOpaque.
+        let bucket_entries = crate::dynamic_materials::first_party_bucket_entries();
+        let pad_words_iter: Vec<u32> = (0
+            ..crate::render_passes::material_classify::shader::template::pad_words_count(
+                bucket_entries.len() as u32,
+            ))
+            .collect();
         Ok(Self {
             texture_pool_arrays_len: value.texture_pool_arrays_len,
             texture_pool_samplers_len: value.texture_pool_samplers_len,
@@ -269,6 +301,8 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaqueEmpty> for ShaderTemplateMaterialOpaqu
             use_mesh_light_slices: false,
             materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
             shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
+            bucket_entries,
+            pad_words_iter,
         })
     }
 }
@@ -300,6 +334,13 @@ pub struct ShaderTemplateMaterialOpaqueEmpty {
     /// Generated `const SHADER_ID_X: u32 = N;` lines — see
     /// `awsm_materials::registry::build_shader_id_consts`.
     pub shader_id_consts: String,
+    /// Mirror of the opaque-compute field. The templated
+    /// `ClassifyBuckets` struct in bind_groups.wgsl walks this list to
+    /// keep its layout aligned with the classify-pass writer's struct.
+    pub bucket_entries: Vec<crate::dynamic_materials::BucketEntry>,
+    /// Mirror of the opaque-compute field — trailing alignment-pad
+    /// u32 indices for the templated `ClassifyBuckets` struct.
+    pub pad_words_iter: Vec<u32>,
 }
 
 impl ShaderTemplateMaterialOpaqueEmpty {

@@ -2,7 +2,10 @@
 
 use awsm_materials::MaterialShaderId;
 
-use crate::{render_passes::shader_cache_key::ShaderCacheKeyRenderPass, shaders::ShaderCacheKey};
+use crate::{
+    dynamic_materials::BucketEntry, render_passes::shader_cache_key::ShaderCacheKeyRenderPass,
+    shaders::ShaderCacheKey,
+};
 
 /// Cache key for opaque material shaders.
 ///
@@ -39,6 +42,14 @@ pub struct ShaderCacheKeyMaterialOpaque {
     /// `None` for first-party ids — those are still handled by the
     /// hand-rolled `{% if shader_id == ... %}` arms in compute.wgsl.
     pub dynamic_shader: Option<DynamicShaderInfo>,
+    /// Full registry bucket list — needed to template the read-only
+    /// `ClassifyBuckets` struct in `bind_groups.wgsl` AND the
+    /// per-shader-id `bucket_offset` lookup in `compute.wgsl`. The
+    /// byte layout of `ClassifyBuckets` here MUST match the
+    /// classify-pass-side struct (which is also templated from the
+    /// same `bucket_entries`) so the read view aligns with the
+    /// write view byte-for-byte.
+    pub bucket_entries: Vec<BucketEntry>,
 }
 
 /// Per-dynamic-material info embedded in the opaque cache key so the
