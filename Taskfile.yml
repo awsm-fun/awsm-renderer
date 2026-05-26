@@ -8,6 +8,8 @@ includes:
   config:
     taskfile: ./taskfiles/config.yml
     flatten: true
+  material-editor:
+    taskfile: ./taskfiles/frontend/material-editor.yml
   model-tests:
     taskfile: ./taskfiles/frontend/model-tests.yml
   scene-editor:

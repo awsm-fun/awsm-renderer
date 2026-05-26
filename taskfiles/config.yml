@@ -21,6 +21,7 @@ vars:
   PORT_SCENE_EDITOR_DEV: 9081
   PORT_MEDIA_LOCAL_DEV: 9082
   PORT_MEDIA_ADDITIONAL_ASSETS_DEV: 9083
+  PORT_MATERIAL_EDITOR_DEV: 9084
 
   # URLs — dev (served by the per-frontend dev recipes + media servers)
   URL_DEV_SITE_INDEX: "http://localhost:{{.PORT_SITE_INDEX_DEV}}"

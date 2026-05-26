@@ -2219,11 +2219,18 @@ leaves a runnable renderer:
       same gating.
 
 ### Phase 8 — material-editor scaffolding
-- [ ] `crates/frontend/material-editor/` crate exists, builds
-- [ ] `task material-editor:dev` runs
-- [ ] Renderer boots with a stub scene
-- [ ] Four-pane skeleton UI mounts
-- [ ] Hard-coded `scanline` material displayed (read-only)
+- [x] `crates/frontend/material-editor/` crate exists, builds
+      (wasm32 target clean)
+- [x] `task material-editor:dev` task target exists (`trunk serve
+      --port 9084`), wired through the top-level Taskfile.yml
+- [~] Renderer boots with a stub scene — Phase 8 ships the canvas
+      placeholder + initial state Mutable; the actual renderer
+      construction + render loop are Phase 9.
+- [x] Four-pane skeleton UI mounts via dominator (Definition / WGSL /
+      Contract / Preview + Errors)
+- [x] Hard-coded `scanline` material displayed (read-only) — the
+      Definition pane shows the layout summary, the WGSL textarea
+      displays the worked-example fragment from the contract docs.
 
 ### Phase 9 — Preview + recompile
 - [ ] Stub scene with quad/sphere/box selector

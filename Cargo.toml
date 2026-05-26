@@ -11,6 +11,7 @@ members = [
     "crates/renderer-gltf",
     "crates/scene-schema",
     "crates/web-shared",
+    "crates/frontend/material-editor",
     "crates/frontend/model-tests",
     "crates/frontend/scene-editor",
     "crates/examples/render-worker",
