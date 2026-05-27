@@ -264,17 +264,26 @@ impl GltfMeshExt for AwsmRenderer {
                             kind: MaterialDefKind::FirstParty,
                             config_snapshot: snapshot,
                         };
-                        let ids = self
+                        let _ids = self
                             .pipeline_scheduler
                             .submit_pipeline_group_batch(vec![PipelineGroupDef::Material(def)]);
-                        // First-party pipelines are eager → Ready
-                        // immediately. (A future migration that moves
-                        // first-party compile to be lazy will defer
-                        // this mark_ready to the compile-resolve site.)
-                        for id in ids {
-                            if matches!(id, PipelineGroupId::Material(_)) {
-                                self.pipeline_scheduler.mark_ready(id);
-                            }
+                        let _ = PipelineGroupId::Material; // silence unused-import warning
+                                                           // Block D.1 PART 2 first-party extension:
+                                                           // kick off real-future compile for this
+                                                           // shader_id's opaque pipelines. Scheduler
+                                                           // entry transitions Pending → Ready when the
+                                                           // last sub-pipeline resolves via
+                                                           // poll_pipeline_scheduler's drain of
+                                                           // inflight_compile. (Previously this site
+                                                           // immediately mark_ready'd because the
+                                                           // pipelines were eagerly compiled in build();
+                                                           // they're now lazy and compile here.)
+                        if let Err(e) = self.launch_first_party_material_compile(shader_id) {
+                            tracing::warn!(
+                                target: "awsm_renderer::pipeline_readiness",
+                                "launch_first_party_material_compile({:?}) failed: {:?}",
+                                shader_id, e
+                            );
                         }
                     }
                     ctx.material_keys
