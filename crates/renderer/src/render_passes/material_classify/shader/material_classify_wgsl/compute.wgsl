@@ -124,110 +124,124 @@ fn cs_main(
     // observed CPU-side; the full atomic-add fallback (a hash-bucketed
     // overflow accumulator region) is parked as Block C.2 future work.
     if (in_bounds) {
-        // Scan 4 samples. Each entry holds (shader_id, sample_index).
-        //
-        // ROOT-CAUSE FIX (May 27, post-`a903e4c`): these were `vec4<u32>`
-        // with dynamic-index writes (`sample_shader_ids[s] = …`). On the
-        // current Tint→SPIR-V/Metal compile path that pattern silently
-        // *no-ops* — the writes never land, so `sample_shader_ids` and
-        // `sample_mat_offs` stayed at their initial all-equal values for
-        // every pixel. `seen_count` was thus always 1 and
-        // `any_mesh_differs` always false → **classify emitted zero
-        // edges**, the entire Stage-3 dispatch chain ran with
-        // `workgroup_count_x = 0`, every silhouette pixel rendered with
-        // primary-opaque sample-0 shading, and the user saw blatant
-        // stair-step aliasing on the MorphStressTest shelf bottom and
-        // capsule edges. `array<u32, 4>` honours dynamic-index writes
-        // (it's how the `seen[]` array below has always worked) — that
-        // simple change makes the whole edge-emission path actually
-        // populate.
-        var sample_shader_ids: array<u32, 4> = array<u32, 4>(0xFFFFu, 0xFFFFu, 0xFFFFu, 0xFFFFu);
-        var sample_mat_offs: array<u32, 4> = array<u32, 4>(0u, 0u, 0u, 0u);
-        var distinct_count: u32 = 0u;
-        // 4 slots, each u8 packed into a u32. SHADER_ID_NONE = 0xFF.
+        // Scan 4 samples — FULLY-STATIC version, no dynamic indexing
+        // anywhere. Naga/Tint silently no-op'd dynamic-index writes
+        // into both `vec4<u32>` and (turns out per the user's repro)
+        // also `array<u32, 4>` in some configurations. Working around
+        // entirely by unrolling and using individual `let`s.
+
+        let v0 = textureLoad(visibility_data_tex, coords, 0);
+        let v1 = textureLoad(visibility_data_tex, coords, 1);
+        let v2 = textureLoad(visibility_data_tex, coords, 2);
+        let v3 = textureLoad(visibility_data_tex, coords, 3);
+
+        let tri_0 = join32(v0.x, v0.y);
+        let tri_1 = join32(v1.x, v1.y);
+        let tri_2 = join32(v2.x, v2.y);
+        let tri_3 = join32(v3.x, v3.y);
+
+        let mat_off_0 = join32(v0.z, v0.w);
+        let mat_off_1 = join32(v1.z, v1.w);
+        let mat_off_2 = join32(v2.z, v2.w);
+        let mat_off_3 = join32(v3.z, v3.w);
+
+        // Helper bucket-id derivation, inlined per sample.
+        // `sample_sid` semantics: 0xFEu = skybox/uncovered/HUD,
+        // [0, bucket_count) = real bucket, 0xFFu = sentinel-unmapped
+        // (shouldn't happen in practice; treated like skybox below).
+        var sid_0: u32 = 0xFFu;
+        if (tri_0 == U32_MAX) {
+            sid_0 = 0xFEu;
+        } else {
+            let mm = material_mesh_metas[mat_off_0 / 256u];
+            if (mm.is_hud == 1u) { sid_0 = 0xFEu; }
+            else {
+                let raw_sid = materials_data[mm.material_offset / 4u];
+                {% for entry in bucket_entries %}
+                if (raw_sid == {{ entry.shader_id_const() }}) { sid_0 = {{ loop.index0 }}u; }
+                {% endfor %}
+            }
+        }
+        var sid_1: u32 = 0xFFu;
+        if (tri_1 == U32_MAX) {
+            sid_1 = 0xFEu;
+        } else {
+            let mm = material_mesh_metas[mat_off_1 / 256u];
+            if (mm.is_hud == 1u) { sid_1 = 0xFEu; }
+            else {
+                let raw_sid = materials_data[mm.material_offset / 4u];
+                {% for entry in bucket_entries %}
+                if (raw_sid == {{ entry.shader_id_const() }}) { sid_1 = {{ loop.index0 }}u; }
+                {% endfor %}
+            }
+        }
+        var sid_2: u32 = 0xFFu;
+        if (tri_2 == U32_MAX) {
+            sid_2 = 0xFEu;
+        } else {
+            let mm = material_mesh_metas[mat_off_2 / 256u];
+            if (mm.is_hud == 1u) { sid_2 = 0xFEu; }
+            else {
+                let raw_sid = materials_data[mm.material_offset / 4u];
+                {% for entry in bucket_entries %}
+                if (raw_sid == {{ entry.shader_id_const() }}) { sid_2 = {{ loop.index0 }}u; }
+                {% endfor %}
+            }
+        }
+        var sid_3: u32 = 0xFFu;
+        if (tri_3 == U32_MAX) {
+            sid_3 = 0xFEu;
+        } else {
+            let mm = material_mesh_metas[mat_off_3 / 256u];
+            if (mm.is_hud == 1u) { sid_3 = 0xFEu; }
+            else {
+                let raw_sid = materials_data[mm.material_offset / 4u];
+                {% for entry in bucket_entries %}
+                if (raw_sid == {{ entry.shader_id_const() }}) { sid_3 = {{ loop.index0 }}u; }
+                {% endfor %}
+            }
+        }
+
+        // Build the distinct-shader-id list (`seen[0..seen_count)`) by
+        // explicit static comparisons. Static `seen_*` vars avoid the
+        // dynamic-write-into-array problem.
+        var seen_0: u32 = sid_0;
+        var seen_1: u32 = 0xFFu;
+        var seen_2: u32 = 0xFFu;
+        var seen_3: u32 = 0xFFu;
+        var seen_count: u32 = 1u;
+
+        if (sid_1 != seen_0) {
+            seen_1 = sid_1;
+            seen_count = 2u;
+        }
+        let sid_2_new = (sid_2 != seen_0) && (sid_2 != seen_1);
+        if (sid_2_new) {
+            if (seen_count == 1u) { seen_1 = sid_2; }
+            else if (seen_count == 2u) { seen_2 = sid_2; }
+            seen_count = seen_count + 1u;
+        }
+        let sid_3_new = (sid_3 != seen_0) && (sid_3 != seen_1) && (sid_3 != seen_2);
+        if (sid_3_new) {
+            if (seen_count == 1u) { seen_1 = sid_3; }
+            else if (seen_count == 2u) { seen_2 = sid_3; }
+            else if (seen_count == 3u) { seen_3 = sid_3; }
+            seen_count = seen_count + 1u;
+        }
+
         var slot_map: u32 = 0xFFFFFFFFu;
 
-        for (var s = 0u; s < 4u; s++) {
-            // Load this sample's shader_id via the multisampled
-            // visibility-data texture. For sample 0 the loaded value
-            // is the same as the primary sample above; the per-sample
-            // textureLoad with explicit sample index needs the texture
-            // to be bound as multisampled.
-            var sample_vis: vec4<u32>;
-            switch (s) {
-                case 0u: { sample_vis = textureLoad(visibility_data_tex, coords, 0); }
-                case 1u: { sample_vis = textureLoad(visibility_data_tex, coords, 1); }
-                case 2u: { sample_vis = textureLoad(visibility_data_tex, coords, 2); }
-                case 3u, default: { sample_vis = textureLoad(visibility_data_tex, coords, 3); }
-            }
-            let sample_tri = join32(sample_vis.x, sample_vis.y);
-            // mat_meta_off is the byte offset into `material_mesh_metas`
-            // for this sample's mesh. Same offset = same mesh. For
-            // uncovered (skybox) samples, sample_vis.z/.w hold U32_MAX
-            // sentinels; the joined value collapses to U32_MAX-like
-            // and stays distinct from any real mesh offset.
-            sample_mat_offs[s] = join32(sample_vis.z, sample_vis.w);
-            var sample_sid: u32;
-            if (sample_tri == U32_MAX) {
-                // Skybox bucket: arbitrary marker we'll route to the
-                // skybox-edge slot. Use 0xFE so it can't collide with
-                // a real shader_id (kept under 8 bits to fit in the
-                // packed slot_map byte).
-                sample_sid = 0xFEu;
-            } else {
-                let sample_meta_off = join32(sample_vis.z, sample_vis.w);
-                let sample_mesh_meta = material_mesh_metas[sample_meta_off / 256u];
-                if (sample_mesh_meta.is_hud == 1u) {
-                    // HUD — same as skybox-effective for edge purposes.
-                    sample_sid = 0xFEu;
-                } else {
-                    let sample_raw_sid = materials_data[sample_mesh_meta.material_offset / 4u];
-                    // Clip to 8 bits — first-party ids are 1..5;
-                    // dynamic ids are >= 10_000 so they DO collide on
-                    // truncation. For the slot_map slot id we instead
-                    // store the bucket index (0..bucket_count-1)
-                    // which always fits.
-                    var bucket_index: u32 = 0xFFu;
-                    {% for entry in bucket_entries %}
-                    if (sample_raw_sid == {{ entry.shader_id_const() }}) {
-                        bucket_index = {{ loop.index0 }}u;
-                    }
-                    {% endfor %}
-                    sample_sid = bucket_index;
-                }
-            }
-            sample_shader_ids[s] = sample_sid;
-        }
-
-        // Find distinct shader_ids and pack into slot_map.
-        var seen_count: u32 = 0u;
-        var seen: array<u32, 4> = array<u32, 4>(0xFFu, 0xFFu, 0xFFu, 0xFFu);
-        for (var s = 0u; s < 4u; s++) {
-            let sid = sample_shader_ids[s];
-            var already_seen = false;
-            for (var i = 0u; i < seen_count; i++) {
-                if (seen[i] == sid) {
-                    already_seen = true;
-                    break;
-                }
-            }
-            if (!already_seen && seen_count < 4u) {
-                seen[seen_count] = sid;
-                seen_count += 1u;
-            }
-        }
-
         // Edge pixel: 2+ distinct shader_ids (counts skybox as one)
-        // OR samples cover different triangles even within the SAME
-        // shader_id. The second condition catches the common case of
-        // mesh-vs-mesh boundaries where both meshes share the same
-        // material flavour (e.g. PBR-vs-PBR adjacent meshes). Pre-fix,
-        // only multi-shader_id pixels routed to edge_resolve, so
-        // single-shader_id scenes (the typical PBR case) had silently-
-        // broken MSAA at every inter-mesh boundary.
-        let any_mesh_differs = (sample_mat_offs[0] != sample_mat_offs[1])
-            || (sample_mat_offs[0] != sample_mat_offs[2])
-            || (sample_mat_offs[0] != sample_mat_offs[3]);
+        // OR samples cover different meshes (different mat_off).
+        // We deliberately do NOT include "different tri_id within the
+        // same mesh" — that fires at intra-mesh triangle seams of
+        // tessellated curved surfaces, and the resulting per-sample
+        // re-shading produces wireframe-like artifacts (samples on
+        // adjacent triangles can have wildly different bary derivs /
+        // depth, so the average isn't a smooth blend).
+        let any_mesh_differs = (mat_off_0 != mat_off_1)
+            || (mat_off_0 != mat_off_2)
+            || (mat_off_0 != mat_off_3);
         if (seen_count >= 2u || any_mesh_differs) {
             // Allocate compact edge_pixel_id. The atomic counter lives
             // in args_buffer / `edge_buffers` (drives indirect dispatch
@@ -245,31 +259,42 @@ fn cs_main(
 
                 // Pack slot_map: 4 bytes, each byte is a bucket index
                 // (or 0xFE for skybox, 0xFF for empty slot).
-                slot_map = (seen[0] & 0xFFu)
-                    | ((seen[1] & 0xFFu) << 8u)
-                    | ((seen[2] & 0xFFu) << 16u)
-                    | ((seen[3] & 0xFFu) << 24u);
+                slot_map = (seen_0 & 0xFFu)
+                    | ((seen_1 & 0xFFu) << 8u)
+                    | ((seen_2 & 0xFFu) << 16u)
+                    | ((seen_3 & 0xFFu) << 24u);
                 atomicStore(&edge_data[edge_layout.edge_slot_map_base + edge_id], slot_map);
 
                 // For each per-shader sample mask: append (edge_id,
                 // sample_mask) to that bucket's sample list. Skybox
                 // samples route to the skybox sample list (separate
-                // reserved region).
+                // reserved region). Unrolled per-sample to avoid any
+                // dynamic indexing into per-sample arrays.
                 var skybox_mask: u32 = 0u;
                 {% for entry in bucket_entries %}
                 var mask_{{ loop.index0 }}: u32 = 0u;
                 {% endfor %}
-                for (var s = 0u; s < 4u; s++) {
-                    let sid = sample_shader_ids[s];
-                    if (sid == 0xFEu) {
-                        skybox_mask |= 1u << s;
-                    }
-                    {% for entry in bucket_entries %}
-                    else if (sid == {{ loop.index0 }}u) {
-                        mask_{{ loop.index0 }} |= 1u << s;
-                    }
-                    {% endfor %}
-                }
+
+                // Sample 0
+                if (sid_0 == 0xFEu) { skybox_mask |= 1u; }
+                {% for entry in bucket_entries %}
+                else if (sid_0 == {{ loop.index0 }}u) { mask_{{ loop.index0 }} |= 1u; }
+                {% endfor %}
+                // Sample 1
+                if (sid_1 == 0xFEu) { skybox_mask |= 2u; }
+                {% for entry in bucket_entries %}
+                else if (sid_1 == {{ loop.index0 }}u) { mask_{{ loop.index0 }} |= 2u; }
+                {% endfor %}
+                // Sample 2
+                if (sid_2 == 0xFEu) { skybox_mask |= 4u; }
+                {% for entry in bucket_entries %}
+                else if (sid_2 == {{ loop.index0 }}u) { mask_{{ loop.index0 }} |= 4u; }
+                {% endfor %}
+                // Sample 3
+                if (sid_3 == 0xFEu) { skybox_mask |= 8u; }
+                {% for entry in bucket_entries %}
+                else if (sid_3 == {{ loop.index0 }}u) { mask_{{ loop.index0 }} |= 8u; }
+                {% endfor %}
                 // Append per-bucket entries. The atomic index counter
                 // is mirrored on both args_buffer (for indirect
                 // dispatch) and edge_data's header (for shader reads).
