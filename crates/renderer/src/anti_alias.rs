@@ -79,6 +79,38 @@ impl AwsmRenderer {
         self.bind_groups
             .mark_create(BindGroupCreate::TextureViewRecreate);
 
+        // ── Block D.3: config-flip scheduler transition. Every
+        //    currently-Ready material with a config_snapshot stale
+        //    against the new anti_aliasing config flips back to
+        //    Pending so frontends subscribed to drain_pipeline_status_events
+        //    see the recompile cycle. The materials transition back to
+        //    Ready at the end of this method (after the existing
+        //    recompile phases land their new pipelines). Pure
+        //    observability — the existing recompile flow already
+        //    produces the right pipelines for the new config.
+        let new_snapshot = crate::pipeline_scheduler::PipelineConfigSnapshot {
+            msaa: self.anti_aliasing.clone(),
+            mipmap: if self.anti_aliasing.mipmap {
+                crate::render_passes::material_opaque::shader::template::MipmapMode::Gradient
+            } else {
+                crate::render_passes::material_opaque::shader::template::MipmapMode::None
+            },
+            use_mesh_light_slices: false,
+            gpu_culling: self.features.gpu_culling,
+            coverage_lod: self.features.coverage_lod,
+            debug_bitmask: 0,
+            default_cull_mode: awsm_renderer_core::pipeline::primitive::CullMode::Back,
+        };
+        let stale_material_ids = self
+            .pipeline_scheduler
+            .materials_with_stale_snapshot(&new_snapshot);
+        for mid in &stale_material_ids {
+            self.pipeline_scheduler.mark_material_pending(
+                crate::pipeline_scheduler::PipelineGroupId::Material(*mid),
+                new_snapshot.clone(),
+            );
+        }
+
         // ── Phase 1: collect descriptors for every pass affected by
         //    an AA change. Each builder returns "the cache keys this
         //    pass needs for the *new* config" — descriptors for
@@ -402,6 +434,16 @@ impl AwsmRenderer {
         //    pending compile if a shadow caster is registered and
         //    pipelines aren't yet compiled. No-op when nothing to do.
         self.ensure_shadow_pipelines_compiled().await?;
+
+        // ── Block D.3 (config-flip completion): every material we
+        //    flipped to Pending at the top of this method has now been
+        //    recompiled (the cross-pass batches above produced their
+        //    new pipelines). Transition them back to Ready so the
+        //    scheduler-status surface reflects the true GPU state.
+        for mid in stale_material_ids {
+            self.pipeline_scheduler
+                .mark_ready(crate::pipeline_scheduler::PipelineGroupId::Material(mid));
+        }
         Ok(())
     }
 }

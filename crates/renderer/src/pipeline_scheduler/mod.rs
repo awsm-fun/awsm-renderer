@@ -308,6 +308,55 @@ impl PipelineScheduler {
         // discards stale resolutions silently.
     }
 
+    /// Iterate every currently-submitted [`MaterialId`] whose
+    /// `MaterialDef.config_snapshot` differs from `expected`. Used by
+    /// the `set_anti_aliasing` config-flip path (Block D.3): when the
+    /// active config drifts, the scheduler iterates here, flips each
+    /// stale entry back to `Pending`, drives recompile, then marks
+    /// each `Ready` on success.
+    pub fn materials_with_stale_snapshot(
+        &self,
+        expected: &PipelineConfigSnapshot,
+    ) -> Vec<MaterialId> {
+        self.materials
+            .iter()
+            .filter(|(_, state)| {
+                state.status.is_ready() && state.def.config_snapshot != *expected
+            })
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    /// Flip a Ready material back to `Pending` (Block D.3 config-flip
+    /// reset). Bumps the generation marker so any in-flight stale
+    /// compile resolutions get discarded. Updates `config_snapshot`
+    /// to the new active config so subsequent status queries see the
+    /// right one. No-op if the id doesn't exist or isn't a material.
+    pub fn mark_material_pending(
+        &mut self,
+        id: PipelineGroupId,
+        new_snapshot: PipelineConfigSnapshot,
+    ) {
+        let PipelineGroupId::Material(mid) = id else {
+            return;
+        };
+        let Some(state) = self.materials.get_mut(mid) else {
+            return;
+        };
+        state.status = PipelineGroupStatus::Pending;
+        state.generation = state.generation.wrapping_add(1);
+        state.def.config_snapshot = new_snapshot;
+        self.events.push(StatusEvent {
+            id,
+            status: PipelineGroupStatus::Pending,
+        });
+        tracing::info!(
+            target: "awsm_renderer::pipeline_readiness",
+            "mark_material_pending: material({:?}) -> Pending (config-flip)",
+            mid
+        );
+    }
+
     /// Find the [`MaterialId`] in the scheduler whose `MaterialDef`
     /// matches the given `MaterialShaderId`. Returns `None` if no
     /// submitted material has this shader_id.
