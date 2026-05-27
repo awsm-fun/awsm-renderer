@@ -54,9 +54,16 @@ pub(super) const VARIANT_KEYS: [LineVariantKey; 4] = [
 
 /// The four registered render pipelines for the line renderer, indexed
 /// by [`LineVariantKey`].
+///
+/// **Lazy-pool semantics (Block B.3):** `variants` is `None` until the
+/// first line primitive is registered and the next
+/// `AwsmRenderer::wait_for_pipelines_ready` drives the compile.
+/// `bind_group_layout_key` is registered eagerly at cold-boot so
+/// `add_line_*` can construct per-line bind groups before any pipeline
+/// exists; dispatch warn-skips while `variants` is None.
 pub(super) struct LinePipelines {
     pub bind_group_layout_key: BindGroupLayoutKey,
-    pub variants: [RenderPipelineKey; 4],
+    pub variants: Option<[RenderPipelineKey; 4]>,
 }
 
 /// Pre-resolved layouts + descriptors for the line renderer's 4
@@ -70,6 +77,21 @@ pub(super) struct LinePipelinesDescriptors {
 }
 
 impl LinePipelines {
+    /// Cold-boot path (Block B.3): register the BGL only and leave
+    /// `variants = None`. The 4 pipeline cache keys are built lazily by
+    /// `LineRenderer::ensure_pipelines_compiled` on first add_line_*.
+    pub(super) fn register_layouts_only(
+        gpu: &AwsmRendererWebGpu,
+        bind_group_layouts: &mut BindGroupLayouts,
+    ) -> Result<Self> {
+        let bind_group_layout_key =
+            bind_group_layouts.get_key(gpu, line_bind_group_layout_cache_key())?;
+        Ok(Self {
+            bind_group_layout_key,
+            variants: None,
+        })
+    }
+
     /// Sync-apart-from-shader-resolve descriptor build. Registers the
     /// bind-group + pipeline layouts, fetches the (cache-hit pre-warmed
     /// by `RenderPasses::new`) line shader key, and produces the 4
@@ -81,40 +103,8 @@ impl LinePipelines {
         shaders: &mut Shaders,
         formats: &RenderTextureFormats,
     ) -> Result<LinePipelinesDescriptors> {
-        let bind_group_layout_cache_key = BindGroupLayoutCacheKey {
-            entries: vec![
-                BindGroupLayoutCacheKeyEntry {
-                    // @binding(0) camera_raw : uniform
-                    resource: BindGroupLayoutResource::Buffer(
-                        BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
-                    ),
-                    visibility_vertex: true,
-                    visibility_fragment: false,
-                    visibility_compute: false,
-                },
-                BindGroupLayoutCacheKeyEntry {
-                    // @binding(1) segments : read-only storage
-                    resource: BindGroupLayoutResource::Buffer(
-                        BufferBindingLayout::new()
-                            .with_binding_type(BufferBindingType::ReadOnlyStorage),
-                    ),
-                    visibility_vertex: true,
-                    visibility_fragment: false,
-                    visibility_compute: false,
-                },
-                BindGroupLayoutCacheKeyEntry {
-                    // @binding(2) line_uniform : uniform
-                    resource: BindGroupLayoutResource::Buffer(
-                        BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
-                    ),
-                    visibility_vertex: true,
-                    visibility_fragment: false,
-                    visibility_compute: false,
-                },
-            ],
-        };
-
-        let bind_group_layout_key = bind_group_layouts.get_key(gpu, bind_group_layout_cache_key)?;
+        let bind_group_layout_key =
+            bind_group_layouts.get_key(gpu, line_bind_group_layout_cache_key())?;
 
         // Route through the shared `Shaders` cache. The line shader is
         // pre-warmed by `RenderPasses::new`'s cross-pass shader
@@ -150,12 +140,65 @@ impl LinePipelines {
         }
         Self {
             bind_group_layout_key: descs.bind_group_layout_key,
-            variants,
+            variants: Some(variants),
         }
     }
 
-    pub(super) fn get(&self, variant: LineVariantKey) -> RenderPipelineKey {
-        self.variants[variant_index(variant)]
+    /// Folds resolved pipeline keys into an existing `LinePipelines`
+    /// (preserves the pre-registered `bind_group_layout_key`). Used by
+    /// the lazy compile path (`LineRenderer::ensure_pipelines_compiled`)
+    /// to populate `variants` on first line primitive insertion.
+    pub(super) fn install_resolved(&mut self, resolved: Vec<RenderPipelineKey>) {
+        debug_assert_eq!(resolved.len(), 4);
+        let mut variants = [RenderPipelineKey::default(); 4];
+        for (v, key) in VARIANT_KEYS.iter().zip(resolved) {
+            variants[variant_index(*v)] = key;
+        }
+        self.variants = Some(variants);
+    }
+
+    /// Returns the resolved pipeline key for `variant`, or `None` if
+    /// the lazy compile hasn't run yet (no line primitives inserted).
+    pub(super) fn get(&self, variant: LineVariantKey) -> Option<RenderPipelineKey> {
+        self.variants.as_ref().map(|v| v[variant_index(variant)])
+    }
+}
+
+/// Shared BGL cache key — used by both the cold-boot
+/// `register_layouts_only` path and the lazy `build_descriptors` path.
+/// Centralized so the layout shape can't drift between the two.
+fn line_bind_group_layout_cache_key() -> BindGroupLayoutCacheKey {
+    BindGroupLayoutCacheKey {
+        entries: vec![
+            BindGroupLayoutCacheKeyEntry {
+                // @binding(0) camera_raw : uniform
+                resource: BindGroupLayoutResource::Buffer(
+                    BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
+                ),
+                visibility_vertex: true,
+                visibility_fragment: false,
+                visibility_compute: false,
+            },
+            BindGroupLayoutCacheKeyEntry {
+                // @binding(1) segments : read-only storage
+                resource: BindGroupLayoutResource::Buffer(
+                    BufferBindingLayout::new()
+                        .with_binding_type(BufferBindingType::ReadOnlyStorage),
+                ),
+                visibility_vertex: true,
+                visibility_fragment: false,
+                visibility_compute: false,
+            },
+            BindGroupLayoutCacheKeyEntry {
+                // @binding(2) line_uniform : uniform
+                resource: BindGroupLayoutResource::Buffer(
+                    BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
+                ),
+                visibility_vertex: true,
+                visibility_fragment: false,
+                visibility_compute: false,
+            },
+        ],
     }
 }
 

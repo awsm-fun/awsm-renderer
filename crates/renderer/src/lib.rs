@@ -1542,22 +1542,22 @@ impl AwsmRendererBuilder {
         shaders.ensure_keys(&gpu, all_shader_keys).await?;
 
         // ── 2. Tail descriptors (cache-hit shader resolutions for
-        //       Lines / Shadows caster; Shadows internally
-        //       issues 3 EVSM `compile_shader` calls that return
-        //       modules immediately + surface their validate futures
-        //       via `ShadowsDescriptors::evsm`).
+        //       Shadows caster; Shadows internally issues 3 EVSM
+        //       `compile_shader` calls that return modules immediately
+        //       + surface their validate futures via
+        //       `ShadowsDescriptors::evsm`).
         //
         // Picker is no longer built here (Block B.4) — it's compiled
         // on the first `pick()` query via
         // `AwsmRenderer::ensure_picker_compiled`.
-        let line_descs = LineRenderer::build_descriptors(
-            &gpu,
-            &mut bind_group_layouts,
-            &mut pipeline_layouts,
-            &mut shaders,
-            &render_textures.formats,
-        )
-        .await?;
+        //
+        // Lines (Block B.3) are no longer built here — the 4 pipeline
+        // variants compile on first line primitive insertion via
+        // `AwsmRenderer::ensure_line_pipelines_compiled`, driven by
+        // `wait_for_pipelines_ready`. The line BGL is still registered
+        // eagerly below (`LineRenderer::new_deferred`) so `add_line_*`
+        // can construct per-line bind groups before any pipeline
+        // exists.
         // Shadows::build_descriptors needs the geometry bind groups,
         // which now live inside render_passes_plan.bindings. We don't
         // have render_passes_plan.bindings as a public field — drill
@@ -1656,11 +1656,9 @@ impl AwsmRendererBuilder {
         let mut render_pool: Vec<pipelines::render_pipeline::RenderPipelineCacheKey> =
             render_passes_descs.render_pipeline_cache_keys.clone();
         let render_passes_render_len = render_pool.len();
-        let line_render_range = {
-            let s = render_pool.len();
-            render_pool.extend(line_descs.pipeline_cache_keys().iter().cloned());
-            s..render_pool.len()
-        };
+        // Line pipelines are deferred (Block B.3) — no entries
+        // appended here. The 4 variants compile on first line primitive
+        // insertion via `AwsmRenderer::ensure_line_pipelines_compiled`.
         let caster_render_range = {
             let s = render_pool.len();
             render_pool.extend(caster_pipeline_cache_keys.iter().cloned());
@@ -1715,8 +1713,11 @@ impl AwsmRendererBuilder {
         // Picker stays `None` at build (Block B.4) — compiled lazily on
         // first `pick()` via `AwsmRenderer::ensure_picker_compiled`.
         let picker: Option<Picker> = None;
-        let lines =
-            LineRenderer::from_resolved(line_descs, render_keys[line_render_range].to_vec());
+        // Block B.3: cold-boot LineRenderer registers the line BGL but
+        // leaves the 4 pipeline variants unbuilt. The first
+        // `add_line_*` call sets `pipelines_compile_requested = true`;
+        // `wait_for_pipelines_ready` then drives `ensure_pipelines_compiled`.
+        let lines = LineRenderer::new_deferred(&gpu, &mut bind_group_layouts)?;
         let shadows = shadows::Shadows::from_resolved(
             &gpu,
             &bind_group_layouts,
@@ -1971,6 +1972,12 @@ impl AwsmRenderer {
         // wired (TODO: surface ensure_keys per-pipeline errors back to
         // scheduler).
         self.prewarm_pipelines().await?;
+
+        // Block B.3: if any line primitive has been registered since
+        // build (or since the last `wait_for_pipelines_ready`), drive
+        // the lazy line-pipeline compile here so the next frame can
+        // dispatch the fat-line pass instead of warn-skipping.
+        self.ensure_line_pipelines_compiled().await?;
 
         // Phase 2: drain any scheduler-pushed futures. Today this is
         // a near-no-op (Block D migration will push real compile

@@ -392,6 +392,21 @@ impl AwsmRenderer {
                 )
                 .await?;
         }
+
+        // ── Phase 8 (Block B.3): line pipelines lazy ensure. Cold-boot
+        //    leaves the 4 line-pipeline variants uncompiled; the first
+        //    `add_line_*` flips `pipelines_compile_requested`. The 4
+        //    variants already cover the MSAA cross product (compile
+        //    once, valid for both states), so this is effectively a
+        //    no-op on MSAA flip once the variants are populated — but
+        //    if a line was registered after a previous
+        //    `wait_for_pipelines_ready` AND `set_anti_aliasing` is the
+        //    next API call before another `wait_for_pipelines_ready`,
+        //    we still want the dispatch to render the line under the
+        //    new AA state instead of warn-skipping.
+        if !self.lines.is_empty() || self.lines.pipelines_compile_requested() {
+            self.ensure_line_pipelines_compiled().await?;
+        }
         Ok(())
     }
 }
