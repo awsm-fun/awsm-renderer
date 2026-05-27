@@ -263,25 +263,24 @@ fn cs_main(
             || (cov_0 != cov_2)
             || (cov_0 != cov_3);
 
-        // NEIGHBOR-PIXEL silhouette detection for the mesh-vs-mesh case.
+        // NEIGHBOR-PIXEL mesh-vs-mesh silhouette detection.
         //
-        // The per-sample-coverage check above catches mesh-vs-skybox
-        // (some samples uncovered). But two adjacent real meshes sharing
-        // a silhouette (e.g. the floating platform and the wood floor
-        // beneath it) both have every sample covered — `cov_N=true`
-        // uniformly — and the per-sample `mat_off` channels (v.z, v.w)
-        // get broadcast across samples by this Tint/Naga compile, so
-        // an in-pixel mat_meta comparison can't see the difference
-        // either. The values that ARE distinct across mesh boundaries
-        // are sample-0 vis_data PER PIXEL: each pixel's fragment writes
-        // its own mesh's data into sample 0. So we look at 4 neighbour
-        // pixels (right, left, down, up), sample 0 only, and detect
-        // when their `mat_off` (or coverage) differs from ours. That
-        // catches mesh-vs-mesh silhouettes without firing at intra-mesh
-        // tri seams (adjacent pixels of the same mesh share `mat_off`,
-        // they just have different `tri_id` — only `tri_id` is checked
-        // for "edge within a pixel," and we explicitly DON'T do that
-        // here because it produces wireframe artifacts).
+        // Only fires when BOTH current pixel AND the neighbor are
+        // covered by REAL geometry (`tri_id != U32_MAX`) but their
+        // meshes differ (sample-0 mat_meta differs across pixels —
+        // the Tint mat_meta-broadcast bug only collapses values
+        // *within* a pixel, not across pixel invocations). Critically,
+        // we skip neighbors whose sample 0 is uncovered — that's the
+        // mesh-vs-skybox silhouette, which the in-pixel coverage check
+        // already handles. Firing here for "1 pixel inside the
+        // silhouette" pixels would cause edge_resolve to run on
+        // fully-mesh-covered pixels near a skybox border, where the
+        // per-sample shading variance on a curved surface (smooth
+        // normals + slightly-different bary derivs) makes the 4-sample
+        // average come out 1-pixel darker than primary's sample-0 →
+        // visible "dark outline" around every capsule. Matching
+        // main's `edge_mask_neighbors` which has the same
+        // `if (neighbor_id == U32_MAX) continue;` guard.
         let neighbor_offsets = array<vec2<i32>, 4>(
             vec2<i32>(1, 0),
             vec2<i32>(-1, 0),
@@ -289,20 +288,30 @@ fn cs_main(
             vec2<i32>(0, -1),
         );
         var neighbor_mesh_differs: bool = false;
-        for (var ni = 0; ni < 4; ni++) {
-            let n_coords = coords + neighbor_offsets[ni];
-            if (n_coords.x < 0 || n_coords.y < 0
-                || n_coords.x >= i32(screen_dims.x)
-                || n_coords.y >= i32(screen_dims.y)) {
-                continue;
-            }
-            let nv = textureLoad(visibility_data_tex, n_coords, 0);
-            // Compare the raw z/w channels directly (mat_meta_offset
-            // split16'd). Bypass join32 the same way we did for the
-            // in-pixel check.
-            if (nv.z != v0.z || nv.w != v0.w) {
-                neighbor_mesh_differs = true;
-                break;
+        if (cov_0) {
+            for (var ni = 0; ni < 4; ni++) {
+                let n_coords = coords + neighbor_offsets[ni];
+                if (n_coords.x < 0 || n_coords.y < 0
+                    || n_coords.x >= i32(screen_dims.x)
+                    || n_coords.y >= i32(screen_dims.y)) {
+                    continue;
+                }
+                let nv = textureLoad(visibility_data_tex, n_coords, 0);
+                // Skip uncovered neighbors — covered by the in-pixel
+                // coverage check above. Per-channel raw check on
+                // x/y (tri_id) — that's the half of vis_data that
+                // Tint doesn't broadcast across samples within a
+                // pixel, and it's reliably distinct across pixels
+                // covered by different meshes.
+                if (nv.x == 0xFFFFu && nv.y == 0xFFFFu) {
+                    continue;
+                }
+                // Compare current pixel's sample-0 mat_meta (z, w)
+                // against neighbor's sample-0 mat_meta.
+                if (nv.z != v0.z || nv.w != v0.w) {
+                    neighbor_mesh_differs = true;
+                    break;
+                }
             }
         }
 
