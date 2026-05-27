@@ -795,7 +795,22 @@ Mark items `[x]` as completed. Commit the checklist update along with each item 
 - [x] **3.9** Contract docs update (`docs/dynamic-materials/contract-opaque.md`): document that registered dynamic-material WGSL fragment runs in both primary AND edge_resolve contexts; cross-material MSAA edges now work for dynamic materials too.
 - [x] **3.10** Preview-browser smoke test: Fox renders cleanly with smooth edges, IBL + shadows intact, no GPU errors, no PipelineVariantNotCompiled.
 - [x] **3.11** All Stage 3 commits merged + tested.
-- [~] **3.12** **Stage 3 dispatch DISABLED in `5b43b53`** (post-merge): on-device verification on `MorphStressTest` revealed `final_blend` was overwriting `opaque_tex` with values that produced visibly worse MSAA silhouettes than the legacy inline `msaa_resolve_samples` (clear stairsteps vs. smooth gradient). Root-cause investigation in `.claude-msaa-debug.md`: the data-buffer `edge_count` mirror reports far fewer edges than the args-buffer `workgroup_count_x` has dispatched threads for, despite classify atomicAdd'ing both per-edge — points to a sync bug between the two buffers, OR to `reset_header` racing with classify, OR to a uniform-vs-shader mismatch on `edge_count_index`. **Resolution shipped**: `render_edge_resolve` early-returns at top, so primary opaque's inline `msaa_resolve_samples` remains authoritative (matches `main` byte-for-byte at the WGSL level — all `material_opaque/.../*.wgsl` files diff zero against `main`). Stage 3 pipelines still compile at boot via `ensure_compiled` — re-enabling the dispatch is a single-line removal once the data-flow bug is fixed.
+- [x] **3.2 fully** (`1a13d20`, May 27) — the actual deletion of
+  `msaa_resolve_samples` + `msaa_process_sample` +
+  `msaa_apply_instance_tint` from primary opaque, plus the
+  associated `MsaaResolveResult` / `MsaaSampleResult` structs from
+  `material_shading.wgsl`. Stage 3 dispatch is the sole MSAA-resolve
+  path; primary opaque shades sample-0 directly for its specialized
+  shader_id only. The cross-shader switch that inlined every
+  material's shading body into every primary pipeline's SPIR-V
+  (O(N) bloat in dynamic-material count) is gone. Verified on
+  MorphStressTest + Fox; capsule silhouettes show smooth 4-sample
+  averaged transitions. Earlier `5b43b53` Stage-3-dispatch-disable
+  was a misdiagnosis under bad diagnostic-instrumentation (read
+  details in `.claude-msaa-debug.md` session 4). With Stage 3
+  dispatch correctly active and the legacy path deleted, quality
+  matches `main` byte-for-byte at the resolve level and SPIR-V no
+  longer bloats with each dynamic material registration.
 
 ### Stage 4 — End-to-end testing
 
