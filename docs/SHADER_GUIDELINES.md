@@ -100,6 +100,17 @@ fn load_msaa_sample(coords: vec2<i32>, s: u32) -> vec4<f32> {
 
 ## MSAA Processing Patterns
 
+> **Material authors note**: as of the Stage 3 architecture (see
+> [`PERFORMANCE.md` §1a](PERFORMANCE.md#1a-msaa-as-a-separate-dispatch-chain-decoupled-from-materials)),
+> opaque material authors **do not write MSAA code**. You author a
+> single-sample shading function; the framework's per-shader-id
+> `edge_resolve` pipeline drives the per-sample loop around your code
+> at edge pixels. The dynamic-material `contract-opaque.md` codifies
+> this dual-context invariant. The patterns below apply to **framework
+> code** that does need to handle samples directly — `material_classify`,
+> the per-shader `edge_resolve` template, `skybox_edge_resolve`,
+> `final_blend` — not to your custom material's shading body.
+
 ### Shared vs Per-Sample Data
 
 For MSAA resolve, distinguish between:
@@ -155,6 +166,65 @@ fn msaa_resolve_samples(/* ... */) -> ResolveResult {
     return ResolveResult(color_sum, valid_count);
 }
 ```
+
+## Tint / SPIR-V codegen gotchas
+
+### Dynamic indexing into `vec4<u32>` (and sometimes `array<u32, N>`) writes silently no-ops
+
+Discovered during Stage 3 MSAA debugging. On the current Tint → SPIR-V
+/ Metal compile path, writes to a `vec4<u32>` (or, in some
+configurations, an `array<u32, N>`) with a dynamic-index `i` inside a
+loop **silently NO-OP** — no validation error, no warning, the writes
+just don't land. Reads from the dynamic index still work, which makes
+the bug invisible until you trace what changed.
+
+**Bad** — writes silently disappear, the array stays at its initial
+state for every invocation:
+
+```wgsl
+var sample_shader_ids: vec4<u32> = vec4<u32>(0xFFu, 0xFFu, 0xFFu, 0xFFu);
+for (var s = 0u; s < 4u; s++) {
+    let sid = compute_shader_id_for_sample(s);
+    sample_shader_ids[s] = sid;            // NO-OP on Tint/Metal
+}
+let any_differs = (sample_shader_ids[0] != sample_shader_ids[1])
+               || (sample_shader_ids[0] != sample_shader_ids[2])
+               || (sample_shader_ids[0] != sample_shader_ids[3]);
+```
+
+**Workaround** — fully unroll, use individual `let`s or scalar `var`s,
+no dynamic index into a vec4 / array:
+
+```wgsl
+let sid_0 = compute_shader_id_for_sample(0u);
+let sid_1 = compute_shader_id_for_sample(1u);
+let sid_2 = compute_shader_id_for_sample(2u);
+let sid_3 = compute_shader_id_for_sample(3u);
+let any_differs = (sid_0 != sid_1) || (sid_0 != sid_2) || (sid_0 != sid_3);
+```
+
+This pattern shows up across the MSAA classify + edge_resolve shaders;
+when adding new per-sample logic, **never write to a `vec4` / array
+via a dynamic index inside a loop**. Unroll, or use four scalar
+locals.
+
+Symptom to watch for: a shader that "looks correct" but produces
+output as if a per-sample state variable was never updated past its
+initial value. Diagnose by writing a binary high-contrast colour at
+the point the value should have changed (see
+[`DEBUGGING-PREVIEW.md`](DEBUGGING-PREVIEW.md)) — if the colour never
+appears, the dynamic-index write is being dropped.
+
+### Loop unrolling for the dispatch-time-known case
+
+If a `var` array is small (≤4 elements) AND the loop bound is a
+compile-time constant, prefer **fully unrolled scalar `let`s** over
+either a `vec4` or `array<u32, N>` for per-sample state. This sidesteps
+both the dynamic-index-write bug above and any ambiguity about whether
+the compiler will inline-vs-spill the array. The MSAA classify shader
+uses this pattern for `sid_0..sid_3`, `seen_0..seen_3`, etc.
+
+---
 
 ## General Best Practices
 

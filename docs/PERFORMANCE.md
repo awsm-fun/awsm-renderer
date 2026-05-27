@@ -55,14 +55,41 @@ Frame structure (per `crates/renderer/src/render.rs::render`):
 └──────────┬───────────┘
            │
 ┌──────────▼───────────┐
-│ Material classify    │  Per-tile shader_id bucketing; writes
-│ (compute)            │  indirect-dispatch args + tile lists.
+│ Material classify    │  Per-tile shader_id bucketing AND per-pixel
+│ (compute)            │  MSAA-edge detection (coverage / mat_meta /
+│                      │  depth / normal). Writes per-bucket
+│                      │  indirect-dispatch args + tile lists + the
+│                      │  edge sample-list buffers.
 └──────────┬───────────┘
            │
 ┌──────────▼───────────┐
-│ Material opaque      │  One dispatchIndirect per shader_id.
-│ (compute)            │  Reads visibility + meta + materials,
+│ Material opaque      │  One dispatchIndirect per shader_id. Shades
+│ (compute)            │  sample 0 only — cheap fast path for the
+│                      │  ~90 % of pixels classify marks as non-edge.
+│                      │  Reads visibility + meta + materials,
 │                      │  writes opaque_tex.
+└──────────┬───────────┘
+           │
+   (MSAA-on, edge pixels only)
+┌──────────▼───────────┐
+│ Per-shader-id        │  One indirect dispatch per material shader_id.
+│   edge_resolve       │  Shades the per-sample bits classify flagged
+│ (compute)            │  for that bucket; sums into the per-edge
+│                      │  accumulator slot. The per-pipeline SPIR-V
+│                      │  knows about exactly one shader_id — no
+│                      │  cross-material switch inlined.
+└──────────┬───────────┘
+           │
+┌──────────▼───────────┐
+│ Skybox edge_resolve  │  Same shape, for samples that hit no
+│ (compute)            │  geometry (skybox). Material-agnostic.
+└──────────┬───────────┘
+           │
+┌──────────▼───────────┐
+│ Final blend          │  One thread per edge-pixel; weighted average
+│ (compute)            │  of up to 4 accumulator slots; writes the
+│                      │  resolved colour back to opaque_tex.
+│                      │  Material-agnostic.
 └──────────┬───────────┘
            │
    (optional)
@@ -106,6 +133,131 @@ Source of truth for the order: `render.rs`. Each pass has a
 named `tracing` span whose timings surface via
 `tracing-web::performance_layer` into
 `performance.getEntriesByType('measure')`.
+
+### 1a. MSAA as a separate dispatch chain, decoupled from materials
+
+The five-pass MSAA chain in the diagram above — **classify → primary
+opaque → per-shader edge_resolve → skybox edge_resolve → final_blend**
+— is the renderer's most important architectural choice for both
+**mobile reachability** and **long-term material extensibility**. It's
+worth understanding before you reach for the tuning knobs in §5.
+
+The naive way to MSAA a visibility-buffer renderer is to inline the
+per-sample resolve into the primary opaque compute kernel: detect
+edges, branch, and shade 4 samples on the edge path. That's how the
+pre-Stage-3 implementation worked, and it's what every classical
+forward MSAA renderer does conceptually. It produces correct output
+but pays for it with **shader bloat**: every material's shading body
+gets duplicated 4× inside one giant kernel, and every material has to
+hand-roll its MSAA-aware control flow.
+
+The Stage 3 architecture splits these concerns:
+
+- **Edge detection is its own pass** (`material_classify`). Looks at
+  per-sample `vis_data` / depth / `normal_tangent` from the geometry
+  pass and decides "is this pixel an edge". Material-agnostic — the
+  same pass works for PBR, Unlit, Toon, FlipBook, custom dynamic
+  materials, and any future material that lands.
+- **Primary opaque shades sample 0 only** — every material pipeline
+  becomes a single-sample compute kernel. ~90 % of pixels go through
+  this fast path on a typical scene.
+- **Per-shader-id `edge_resolve`** is dispatched only over edge pixels
+  the material owns. The per-pipeline SPIR-V knows about exactly one
+  material's shading body; there's no cross-material switch table
+  inlined.
+- **`final_blend`** averages the per-sample contributions for each
+  edge pixel and writes the resolved colour. Material-agnostic, one
+  tiny kernel for the whole scene.
+
+The wins from this split, in priority order:
+
+#### Mobile / Android-Vulkan reachability
+
+The non-split design produced a PBR primary-opaque compute pipeline
+whose SPIR-V was large enough that Android Chrome's Dawn/Vulkan
+backend rejected it at init with `VK_ERROR_INITIALIZATION_FAILED`.
+**The renderer would not start on Android at all.** Splitting the
+4-sample resolve into a separate per-shader-id pipeline shrinks each
+primary-opaque pipeline's SPIR-V by ~80 %, which is what unblocks
+Android-Vulkan init. The full PBR resolve still happens — it just
+lives in a pipeline whose SPIR-V budget is small enough on its own.
+
+This is the headline reason Stage 3 exists. The fact that it also
+gives the architectural wins below is bonus.
+
+#### Material authors don't write MSAA code
+
+A material author — first-party or runtime-registered dynamic — writes
+**a single-sample shading function**. They don't see `msaa_sample_count`,
+they don't query sample state, they don't write edge-detection logic.
+The shading function runs in both contexts (primary opaque shades
+sample 0; edge_resolve calls the same function once per set sample bit
+on edge pixels). The framework drives the per-sample loop.
+
+The dynamic-material `contract-opaque.md` codifies this **dual-context
+invariant**: the same authored WGSL fragment runs in both call sites,
+and the framework guarantees both produce a correct result without the
+author knowing which one is calling. **Dynamic materials registered at
+runtime get MSAA for free.**
+
+#### Adding new materials doesn't recompile existing ones
+
+Each material's shading body lives in its own per-shader-id pipeline.
+Adding a new dynamic material is *one new small pipeline* (primary
+opaque + edge_resolve variant), not a recompile of a single giant
+multi-material kernel. This matters most when:
+
+- The editor hot-reloads a custom material — only the affected
+  shader's pipelines recompile.
+- A game registers 10+ runtime materials — the per-pipeline cost stays
+  bounded; first-party PBR / Unlit / Toon are unaffected.
+- The pipeline cache hit rate stays high across scenes that use
+  different material mixes.
+
+#### MSAA is independently extensible
+
+The edge-detection signals live in one file (`material_classify_wgsl/
+compute.wgsl`). The current gate is `seen_count >= 2 || any_mesh_differs
+|| depth_edge || neighbor_edge`. Adding a 5th signal (e.g. velocity-
+based detection for temporal AA) is a one-line gate addition + however
+much texture-load wiring the signal needs. Material shaders stay
+oblivious.
+
+The four trustable signals at the gate today, with thresholds taken
+from main's pre-Stage-3 `msaa_resolve_samples` reference:
+
+| Signal | Catches |
+|---|---|
+| `seen_count >= 2u` | Multi-shader-id silhouette (e.g. PBR pixel adjacent to UNLIT pixel within one tile) |
+| `any_mesh_differs` | Mesh-vs-mesh silhouette where two distinct meshes touch in screen-space |
+| `depth_edge` | Same-mesh in-pixel silhouettes — e.g. the platform's top/front-face seam in MorphStressTest |
+| `neighbor_edge` | Coverage + normal + depth check on the 4 cardinal neighbours — catches silhouettes that run between pixels and tile-facet boundaries with rotated normals |
+
+#### Runtime cost is at parity with the inlined design
+
+The per-pixel total GPU work is essentially unchanged. Non-edge pixels
+do less work (no inline branch + only sample-0 shading); edge pixels
+do the same work split across more dispatches. The dispatch-count
+overhead (`classify → opaque → per-shader edge_resolve × N → skybox
+edge_resolve → final_blend`) is ~5 extra GPU work-graph nodes per
+frame — tens of microseconds at most, well inside the existing
+per-frame budget.
+
+For numbers, see [`edge-resolve-baseline.md`](edge-resolve-baseline.md)
+which captures the Fox / 1080p / MSAA-4 baseline at mean 16.68 ms /
+p99 17.6 ms (vsync-aligned).
+
+#### What the architecture costs
+
+- One extra MSAA-only compute pass (`classify` does double duty for
+  bucketing AND edge detection; this is unconditional). On a non-MSAA
+  configuration the edge-detection legs are template-gated out, so
+  the cost is 0.
+- One extra storage texture bind in classify (`normal_tangent_tex`,
+  group 0 binding 9) — read-only re-use of the multisampled
+  normal/tangent the geometry pass writes anyway, no new allocation.
+- Several extra GPU dispatches per frame, dominated by indirect-args
+  setup overhead. Negligible at typical scene complexity.
 
 ---
 
