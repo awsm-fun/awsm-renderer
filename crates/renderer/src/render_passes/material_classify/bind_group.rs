@@ -122,6 +122,19 @@ impl MaterialClassifyBindGroups {
                     6,
                     BindGroupResource::Buffer(BufferBinding::new(&edge_buffers.data_buffer)),
                 ));
+                // 7: depth_tex (multisampled depth view) for per-sample
+                //    depth variance silhouette detection.
+                entries.push(BindGroupEntry::new(
+                    7,
+                    BindGroupResource::TextureView(Cow::Borrowed(&ctx.render_texture_views.depth)),
+                ));
+                // 8: camera uniform (for view-space depth conversion
+                //    in main's edge_mask_depth_msaa / edge_mask_neighbors
+                //    threshold comparison).
+                entries.push(BindGroupEntry::new(
+                    8,
+                    BindGroupResource::Buffer(BufferBinding::new(&ctx.camera.gpu_buffer)),
+                ));
             }
             // else: edge bindings absent — layout was built without
             // them too, so the bind group is valid with just the 4
@@ -228,6 +241,29 @@ async fn create_bind_group_layout_key(
         entries.push(BindGroupLayoutCacheKeyEntry {
             resource: BindGroupLayoutResource::Buffer(
                 BufferBindingLayout::new().with_binding_type(BufferBindingType::Storage),
+            ),
+            visibility_vertex: false,
+            visibility_fragment: false,
+            visibility_compute: true,
+        });
+        // 7: depth_tex — multisampled depth texture used by classify to
+        //    detect mesh-vs-mesh in-pixel silhouettes via per-sample
+        //    depth variance (matches main's edge_mask_depth_msaa).
+        entries.push(BindGroupLayoutCacheKeyEntry {
+            resource: BindGroupLayoutResource::Texture(
+                TextureBindingLayout::new()
+                    .with_view_dimension(TextureViewDimension::N2d)
+                    .with_sample_type(TextureSampleType::Depth)
+                    .with_multisampled(true),
+            ),
+            visibility_vertex: false,
+            visibility_fragment: false,
+            visibility_compute: true,
+        });
+        // 8: camera uniform for view-space depth conversion.
+        entries.push(BindGroupLayoutCacheKeyEntry {
+            resource: BindGroupLayoutResource::Buffer(
+                BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
             ),
             visibility_vertex: false,
             visibility_fragment: false,

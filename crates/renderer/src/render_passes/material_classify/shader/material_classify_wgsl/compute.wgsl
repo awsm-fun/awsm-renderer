@@ -22,6 +22,25 @@
 
 {% include "shared_wgsl/math.wgsl" %}
 
+{% if emit_edge_data && multisampled_geometry %}
+// Linearize a raw depth-buffer value into view-space Z. Ported from
+// main's helpers/msaa.wgsl::viewSpaceDepth — same math, same name
+// adjusted to snake_case. Required so a relative depth threshold
+// (EDGE_DEPTH_THRESHOLD = 0.02 = 2%) works consistently across the
+// scene; raw NDC depth is non-linear so the same threshold near vs
+// far would produce wildly different real-world distances.
+fn view_space_depth(camera: Camera, depth: f32, pixel_coords: vec2<f32>, screen_dims: vec2<f32>) -> f32 {
+    let ndc_xy = vec2<f32>(
+        (pixel_coords.x / screen_dims.x) * 2.0 - 1.0,
+        1.0 - (pixel_coords.y / screen_dims.y) * 2.0,
+    );
+    let clip_pos = vec4<f32>(ndc_xy, depth, 1.0);
+    let view_pos_h = camera.inv_proj * clip_pos;
+    let view_pos = view_pos_h.xyz / view_pos_h.w;
+    return view_pos.z;
+}
+{% endif %}
+
 // Bits in the workgroup-shared mask. One per registered bucket; the
 // PBR bit is at index 0 by convention so the skybox-fallback routing
 // (which assigns the PBR bit unconditionally for skybox pixels) maps
@@ -259,36 +278,105 @@ fn cs_main(
         let cov_1 = tri_1 != U32_MAX;
         let cov_2 = tri_2 != U32_MAX;
         let cov_3 = tri_3 != U32_MAX;
-        let any_mesh_differs = (cov_0 != cov_1)
+        // Mesh-vs-skybox silhouette (coverage mismatch) OR mesh-vs-mesh
+        // silhouette in the same pixel (different mat_meta_offset
+        // across samples). Earlier hypothesis that mat_meta gets
+        // broadcast by Tint may have been wrong — empirical retest with
+        // the depth-tex / view-space pipeline showed the per-sample data
+        // IS distinct after all when MULTIPLE fragments cover the same
+        // pixel (e.g. capsule fragment over samples 0,1 + platform
+        // fragment over samples 2,3 each write their own mat_meta).
+        let any_cov_differs = (cov_0 != cov_1)
             || (cov_0 != cov_2)
             || (cov_0 != cov_3);
+        let any_mat_differs = (mat_off_0 != mat_off_1)
+            || (mat_off_0 != mat_off_2)
+            || (mat_off_0 != mat_off_3);
+        let any_mesh_differs = any_cov_differs || any_mat_differs;
 
-        // NEIGHBOR-PIXEL mesh-vs-mesh silhouette detection.
+        // PORT OF MAIN'S MSAA EDGE DETECTION (edge_mask_depth_msaa +
+        // edge_mask_neighbors).
         //
-        // Only fires when BOTH current pixel AND the neighbor are
-        // covered by REAL geometry (`tri_id != U32_MAX`) but their
-        // meshes differ (sample-0 mat_meta differs across pixels —
-        // the Tint mat_meta-broadcast bug only collapses values
-        // *within* a pixel, not across pixel invocations). Critically,
-        // we skip neighbors whose sample 0 is uncovered — that's the
-        // mesh-vs-skybox silhouette, which the in-pixel coverage check
-        // already handles. Firing here for "1 pixel inside the
-        // silhouette" pixels would cause edge_resolve to run on
-        // fully-mesh-covered pixels near a skybox border, where the
-        // per-sample shading variance on a curved surface (smooth
-        // normals + slightly-different bary derivs) makes the 4-sample
-        // average come out 1-pixel darker than primary's sample-0 →
-        // visible "dark outline" around every capsule. Matching
-        // main's `edge_mask_neighbors` which has the same
-        // `if (neighbor_id == U32_MAX) continue;` guard.
-        let neighbor_offsets = array<vec2<i32>, 4>(
-            vec2<i32>(1, 0),
-            vec2<i32>(-1, 0),
-            vec2<i32>(0, 1),
-            vec2<i32>(0, -1),
-        );
-        var neighbor_mesh_differs: bool = false;
+        // Two checks combined:
+        // (1) Per-sample VIEW-SPACE depth variance in this pixel —
+        //     catches in-pixel mesh-vs-mesh silhouettes where ≥2
+        //     samples cover different surfaces. Uses view-space depth
+        //     (linearized via camera.inv_proj) so the same relative
+        //     threshold works near AND far from the camera. Raw
+        //     depth-buffer comparison fired too aggressively at far
+        //     depths and not at all near the camera.
+        // (2) 4-neighbor view-space depth/coverage check — catches
+        //     silhouettes where the silhouette runs *between* pixels
+        //     (current pixel fully covered, neighbor fully uncovered
+        //     or at very different depth). Matches main's
+        //     edge_mask_neighbors which returns true for uncovered
+        //     neighbors AND for covered neighbors with depth delta >
+        //     EDGE_DEPTH_THRESHOLD.
+        //
+        // Thresholds taken verbatim from main:
+        //   EDGE_DEPTH_THRESHOLD = 0.02  (2% relative view-space depth)
+        //   EDGE_MSAA_DEPTH_THRESHOLD = 0.02  (same scale, same threshold)
+        let camera = camera_from_raw(camera_raw);
+        let screen_dims_f32 = vec2<f32>(f32(screen_dims.x), f32(screen_dims.y));
+        let pixel_center = vec2<f32>(f32(coords.x) + 0.5, f32(coords.y) + 0.5);
+
+        // ── Check 1: in-pixel depth variance (view-space) ──────────
+        var sample_count: u32 = 0u;
+        var vdmin: f32 = 1.0e9;
+        var vdmax: f32 = -1.0e9;
         if (cov_0) {
+            let d = textureLoad(depth_tex, coords, 0);
+            let vd = view_space_depth(camera, d, pixel_center, screen_dims_f32);
+            vdmin = min(vdmin, vd);
+            vdmax = max(vdmax, vd);
+            sample_count = sample_count + 1u;
+        }
+        if (cov_1) {
+            let d = textureLoad(depth_tex, coords, 1);
+            let vd = view_space_depth(camera, d, pixel_center, screen_dims_f32);
+            vdmin = min(vdmin, vd);
+            vdmax = max(vdmax, vd);
+            sample_count = sample_count + 1u;
+        }
+        if (cov_2) {
+            let d = textureLoad(depth_tex, coords, 2);
+            let vd = view_space_depth(camera, d, pixel_center, screen_dims_f32);
+            vdmin = min(vdmin, vd);
+            vdmax = max(vdmax, vd);
+            sample_count = sample_count + 1u;
+        }
+        if (cov_3) {
+            let d = textureLoad(depth_tex, coords, 3);
+            let vd = view_space_depth(camera, d, pixel_center, screen_dims_f32);
+            vdmin = min(vdmin, vd);
+            vdmax = max(vdmax, vd);
+            sample_count = sample_count + 1u;
+        }
+        var depth_edge: bool = false;
+        if (sample_count >= 2u) {
+            let depth_range = abs(vdmax - vdmin);
+            let avg_depth = abs((vdmax + vdmin) * 0.5);
+            depth_edge = depth_range > (0.02 * avg_depth);
+        }
+
+        // ── Check 2: 4-neighbor view-space depth + coverage check ───
+        var neighbor_edge: bool = false;
+        if (cov_0) {
+            let center_d = textureLoad(depth_tex, coords, 0);
+            let center_vd = view_space_depth(camera, center_d, pixel_center, screen_dims_f32);
+            let depth_threshold = 0.02 * abs(center_vd);
+            let neighbor_offsets = array<vec2<i32>, 4>(
+                vec2<i32>(1, 0),
+                vec2<i32>(-1, 0),
+                vec2<i32>(0, 1),
+                vec2<i32>(0, -1),
+            );
+            let pixel_offsets = array<vec2<f32>, 4>(
+                vec2<f32>(1.0, 0.0),
+                vec2<f32>(-1.0, 0.0),
+                vec2<f32>(0.0, 1.0),
+                vec2<f32>(0.0, -1.0),
+            );
             for (var ni = 0; ni < 4; ni++) {
                 let n_coords = coords + neighbor_offsets[ni];
                 if (n_coords.x < 0 || n_coords.y < 0
@@ -297,25 +385,39 @@ fn cs_main(
                     continue;
                 }
                 let nv = textureLoad(visibility_data_tex, n_coords, 0);
-                // Skip uncovered neighbors — covered by the in-pixel
-                // coverage check above. Per-channel raw check on
-                // x/y (tri_id) — that's the half of vis_data that
-                // Tint doesn't broadcast across samples within a
-                // pixel, and it's reliably distinct across pixels
-                // covered by different meshes.
-                if (nv.x == 0xFFFFu && nv.y == 0xFFFFu) {
-                    continue;
+                let n_tri = join32(nv.x, nv.y);
+                if (n_tri == U32_MAX) {
+                    // Main fires "neighbor uncovered = edge" here. We
+                    // need to do the same to catch silhouettes where
+                    // the silhouette runs between pixels (the
+                    // platform-bottom-vs-skybox-floor case).
+                    neighbor_edge = true;
+                    break;
                 }
-                // Compare current pixel's sample-0 mat_meta (z, w)
-                // against neighbor's sample-0 mat_meta.
-                if (nv.z != v0.z || nv.w != v0.w) {
-                    neighbor_mesh_differs = true;
+                let n_depth = textureLoad(depth_tex, n_coords, 0);
+                let n_pixel_center = pixel_center + pixel_offsets[ni];
+                let n_vd = view_space_depth(camera, n_depth, n_pixel_center, screen_dims_f32);
+                if (abs(center_vd - n_vd) > depth_threshold) {
+                    neighbor_edge = true;
                     break;
                 }
             }
         }
 
-        if (seen_count >= 2u || any_mesh_differs || neighbor_mesh_differs) {
+        // NOTE: depth_edge and neighbor_edge BOTH disabled. They fire
+        // on pixels at the capsule-on-platform contact (mesh-vs-mesh
+        // in-pixel) where the per-sample data is inconsistent: tri_id
+        // is per-sample-distinct (different mesh per sample) while
+        // mat_meta_offset gets broadcast across samples by the
+        // fragment shader output path on this Tint/Naga compile. The
+        // result is `shade_sample` looking up the WRONG mesh's index
+        // buffer with the OTHER mesh's tri_id → garbage vertex data →
+        // black/corrupt shading. With both checks off we cleanly catch
+        // mesh-vs-skybox silhouettes (coverage mismatch via cov_N
+        // checks) without producing those black artifacts; mesh-vs-mesh
+        // in-pixel silhouettes remain MSAA-resolved by neither check
+        // and stay stair-stepped (same as before).
+        if (seen_count >= 2u || any_mesh_differs /* || depth_edge || neighbor_edge */) {
             // Allocate compact edge_pixel_id. The atomic counter lives
             // in args_buffer / `edge_buffers` (drives indirect dispatch
             // for final_blend); we also mirror it into edge_data's

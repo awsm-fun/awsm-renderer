@@ -147,4 +147,23 @@ struct EdgeBufferLayout {
 // written via `atomicStore` to satisfy the storage type — equivalent
 // to a plain store for our purposes.
 @group(0) @binding(6) var<storage, read_write> edge_data: array<atomic<u32>>;
+
+// Multisampled depth texture — used to detect mesh-vs-mesh in-pixel
+// silhouettes via per-sample depth variance. Mirrors main's
+// `edge_mask_depth_msaa` check: if ≥2 covered samples in this pixel
+// have meaningfully-different depths, the pixel straddles two
+// surfaces (even if mat_meta gets broadcast across samples by Tint).
+@group(0) @binding(7) var depth_tex: texture_depth_multisampled_2d;
+
+/*************** START camera.wgsl ******************/
+{% include "shared_wgsl/camera.wgsl" %}
+/*************** END camera.wgsl ******************/
+
+// Camera uniform — needed by viewSpaceDepth() to linearize raw
+// depth-buffer values before comparing them with main's relative
+// threshold (EDGE_DEPTH_THRESHOLD = 0.02). Without view-space the
+// non-linear depth distribution causes the threshold to fire
+// indiscriminately near the far plane and not at all near the near
+// plane.
+@group(0) @binding(8) var<uniform> camera_raw: CameraRaw;
 {% endif %}
