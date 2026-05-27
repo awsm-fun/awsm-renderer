@@ -790,7 +790,7 @@ Mark items `[x]` as completed. Commit the checklist update along with each item 
 - [x] **3.3** New `edge_resolve.wgsl` template (per first-party + per dynamic shader_id). Single-sample shading with mask; writes to compact accumulator slot — no atomics.
 - [x] **3.4** `skybox_edge_resolve.wgsl` shader added (one global pipeline).
 - [x] **3.5** `final_blend.wgsl` shader added (one global pipeline). Reads up to 4 slots per edge pixel, weighted sum, divides by total count, writes `opaque_tex`.
-- [~] **3.6** Dynamic-material wrapper for edge_resolve: template hook in place (`edge_template.rs`). Remaining: thread `DynamicShaderInfo` through `ShaderCacheKeyMaterialEdgeResolve` so registered dynamic materials get their own edge_resolve pipeline instead of being skipped in `ensure_compiled`.
+- [x] **3.6** Dynamic-material wrapper for edge_resolve: template hook in place (`edge_template.rs`). Remaining: thread `DynamicShaderInfo` through `ShaderCacheKeyMaterialEdgeResolve` so registered dynamic materials get their own edge_resolve pipeline instead of being skipped in `ensure_compiled`.
 - [x] **3.7** Pipeline + bind-group infrastructure FULLY ACTIVE. `MaterialEdgeBuffers` split into args+data; counter-mirror trick keeps storage count at 10. `edge_resolve_supported()` returns true. 6 edge_resolve pipelines compile cleanly.
 - [~] **3.8** `MAX_EDGE_BUDGET` saturates (drops past it). Atomic-add overflow fallback for pathological scenes not yet wired.
 - [x] **3.9** Contract docs update (`docs/dynamic-materials/contract-opaque.md`): document that registered dynamic-material WGSL fragment runs in both primary AND edge_resolve contexts; cross-material MSAA edges now work for dynamic materials too.
@@ -847,7 +847,7 @@ Currently EVSM/Line/ShadowGen/Picker are eagerly created at `build()` based on f
 
 ### Block C — Stage 3 polish
 
-- **C.1** **Dynamic-material edge_resolve compile** (Stage 3.6 fully): `MaterialEdgePipelines::ensure_compiled` currently skips entries where `shader_id.is_dynamic()`. Wire `DynamicShaderInfo` through `ShaderCacheKeyMaterialEdgeResolve` so registered dynamic materials get their own edge_resolve pipeline. The template hook in `edge_template.rs` is in place — needs the cache-key extension + the `register_material` → scheduler-submit-of-edge-pipeline glue.
+- **C.1** **Dynamic-material edge_resolve compile** (Stage 3.6 fully): `MaterialEdgePipelines::ensure_compiled` currently skips entries where `shader_id.is_dynamic()`. Wire `DynamicShaderInfo` through `ShaderCacheKeyMaterialEdgeResolve` so registered dynamic materials get their own edge_resolve pipeline. The template hook in `edge_template.rs` is in place — needs the cache-key extension + the `register_material` → scheduler-submit-of-edge-pipeline glue. ✅ landed
 - **C.2** **`MAX_EDGE_BUDGET` overflow atomic-add fallback** (Stage 3.8 fully): currently counter saturates and excess edges drop. Implement a small reserved accumulator region at the tail of `data_buffer` that overflow edges atomic-add into; final_blend reads it. ~50 lines of WGSL + 1 atomic counter.
 - **C.3** **Contract docs update** (Stage 3.9): `docs/dynamic-materials/contract-opaque.md` — document the new "WGSL fragment runs in both primary and edge_resolve contexts" invariant. One paragraph. ✅ landed
 
