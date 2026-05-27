@@ -125,9 +125,13 @@ impl AwsmRenderer {
             None
         };
 
-        // Picker descriptors — only present when `features.picking`
-        // is on. Returns the picker's BGLs + the (single) pipeline
-        // cache key for the new MSAA. The previously-compiled
+        // Picker descriptors — only present when the picker has been
+        // lazily compiled (Block B.4: `self.picker` stays `None` until
+        // first `pick()` query even when `features.picking == true`).
+        // When the picker isn't yet built, this whole block is skipped —
+        // the next `pick()` will compile it for the live AA config.
+        // When it IS built, returns the picker's BGLs + the (single)
+        // pipeline cache key for the new MSAA. The previously-compiled
         // variant on `self.picker` is preserved via `merge_resolved`.
         let picker_descs = if let Some(picker) = self.picker.as_ref() {
             let _ = picker; // bind for clarity; we only need to know it's Some

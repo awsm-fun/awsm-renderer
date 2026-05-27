@@ -1517,9 +1517,10 @@ impl AwsmRendererBuilder {
         let mut all_shader_keys: Vec<shaders::ShaderCacheKey> =
             std::mem::take(&mut render_passes_plan.shader_cache_keys);
         all_shader_keys.extend(shadows::ShadowsDescriptors::caster_shader_cache_keys());
-        if features.picking {
-            all_shader_keys.extend(Picker::shader_cache_keys(&anti_aliasing));
-        }
+        // Picker shaders are no longer batched here — the entire Picker
+        // subsystem is deferred until first `pick()` query
+        // (`AwsmRenderer::ensure_picker_compiled`). Cold-boot compiles
+        // 0 picker pipelines even when `features.picking == true`.
         all_shader_keys.push(shaders::ShaderCacheKey::from(
             render_passes::lines::ShaderCacheKeyLine,
         ));
@@ -1541,24 +1542,14 @@ impl AwsmRendererBuilder {
         shaders.ensure_keys(&gpu, all_shader_keys).await?;
 
         // ── 2. Tail descriptors (cache-hit shader resolutions for
-        //       Picker / Lines / Shadows caster; Shadows internally
+        //       Lines / Shadows caster; Shadows internally
         //       issues 3 EVSM `compile_shader` calls that return
         //       modules immediately + surface their validate futures
         //       via `ShadowsDescriptors::evsm`).
-        let picker_descs = if features.picking {
-            Some(
-                Picker::build_descriptors(
-                    &gpu,
-                    &mut bind_group_layouts,
-                    &mut pipeline_layouts,
-                    &mut shaders,
-                    &anti_aliasing,
-                )
-                .await?,
-            )
-        } else {
-            None
-        };
+        //
+        // Picker is no longer built here (Block B.4) — it's compiled
+        // on the first `pick()` query via
+        // `AwsmRenderer::ensure_picker_compiled`.
         let line_descs = LineRenderer::build_descriptors(
             &gpu,
             &mut bind_group_layouts,
@@ -1649,11 +1640,8 @@ impl AwsmRendererBuilder {
         let mut compute_pool: Vec<pipelines::compute_pipeline::ComputePipelineCacheKey> =
             render_passes_descs.compute_pipeline_cache_keys.clone();
         let render_passes_compute_len = compute_pool.len();
-        let picker_compute_range = picker_descs.as_ref().map(|d| {
-            let s = compute_pool.len();
-            compute_pool.extend(d.pipeline_cache_keys.iter().cloned());
-            s..compute_pool.len()
-        });
+        // Picker compute pipelines are deferred (Block B.4) — no
+        // entries appended here.
         let evsm_compute_range = {
             let s = compute_pool.len();
             compute_pool.extend(evsm_pipeline_cache_keys.iter().cloned());
@@ -1724,14 +1712,9 @@ impl AwsmRendererBuilder {
             render_passes_render_keys,
         )?;
 
-        let picker = match (picker_descs, picker_compute_range) {
-            (Some(descs), Some(range)) => Some(Picker::from_resolved(
-                &gpu,
-                descs,
-                compute_keys[range].to_vec(),
-            )?),
-            _ => None,
-        };
+        // Picker stays `None` at build (Block B.4) — compiled lazily on
+        // first `pick()` via `AwsmRenderer::ensure_picker_compiled`.
+        let picker: Option<Picker> = None;
         let lines =
             LineRenderer::from_resolved(line_descs, render_keys[line_render_range].to_vec());
         let shadows = shadows::Shadows::from_resolved(

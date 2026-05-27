@@ -1000,7 +1000,7 @@ pub async fn debug_pick(x: i32, y: i32) -> String {
     use awsm_renderer::picker::PickResult;
     let handle = crate::context::renderer_handle();
     let pick_result = {
-        let renderer = handle.lock().await;
+        let mut renderer = handle.lock().await;
         renderer.pick(x, y).await
     };
     match pick_result {
