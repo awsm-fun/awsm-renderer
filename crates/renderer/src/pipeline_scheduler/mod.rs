@@ -115,6 +115,30 @@ pub enum CompileInstallTarget {
         /// Mipmap-gradient variant on or off.
         mipmaps: bool,
     },
+    /// Compute: per-shader-id MSAA `edge_resolve` pipeline. Each
+    /// registered first-party + dynamic shader_id has one of these,
+    /// keyed on `(shader_id, mipmaps)`. The shader cache key also
+    /// captures `bucket_entries` so any new dynamic-material
+    /// registration invalidates and recompiles every existing
+    /// per-shader edge_resolve pipeline.
+    EdgeResolvePerShader {
+        /// Shader-id of the material whose edge contribution this
+        /// pipeline shades.
+        shader_id: awsm_materials::MaterialShaderId,
+        /// Mipmap-gradient variant.
+        mipmaps: bool,
+    },
+    /// Compute: global `skybox_edge_resolve` pipeline (shades skybox
+    /// MSAA samples at edge pixels). Keyed only on `bucket_entries`;
+    /// recompiled on every dynamic-material register so the templated
+    /// bucket-list constants match the classify pass.
+    EdgeResolveSkybox,
+    /// Compute: global `final_blend` pipeline (the post-resolve
+    /// compositor that reads up-to-4 accumulator slots per edge
+    /// pixel + writes the weighted average to `opaque_tex`). Keyed
+    /// on `bucket_entries` + the runtime color format; recompiled
+    /// alongside skybox edge resolve.
+    EdgeResolveFinalBlend,
 }
 
 /// Resolution of one sub-pipeline within a `PipelineGroupId`'s
@@ -498,6 +522,15 @@ impl PipelineScheduler {
     /// detect stale-config resolutions.
     pub fn material_generation(&self, mid: MaterialId) -> Option<u32> {
         self.materials.get(mid).map(|s| s.generation)
+    }
+
+    /// Returns the number of in-flight sub-pipeline compiles charged
+    /// to this material's group. Used by the launch path to decide
+    /// whether to call [`Self::mark_ready`] inline (count == 0, all
+    /// cache hits) vs. defer Ready until the last sub-pipeline
+    /// resolves via [`Self::note_subcompile_complete`].
+    pub fn pending_subcompile_count(&self, mid: MaterialId) -> u32 {
+        self.pending_subcompiles.get(&mid).copied().unwrap_or(0)
     }
 
     /// Find the [`MaterialId`] in the scheduler whose `MaterialDef`

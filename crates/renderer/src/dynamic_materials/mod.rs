@@ -512,28 +512,22 @@ impl crate::AwsmRenderer {
     /// Idempotent on `(name, layout_hash, wgsl_hash)`: re-registering the
     /// same material returns the same id without recompiling.
     ///
-    /// **Readiness contract:**
-    /// - The **primary opaque + classify** pipelines for the new
-    ///   shader_id are pushed into the scheduler's `inflight_compile`
-    ///   queue by [`Self::launch_dynamic_material_compile`]
-    ///   (transitively invoked here). The render-frame preamble's
-    ///   `poll_pipeline_scheduler` drains them, marks the scheduler
-    ///   entry `Ready`, and the next render frame can dispatch the
-    ///   material's primary opaque path.
-    /// - **MSAA `edge_resolve` pipelines** are NOT yet pushed via the
-    ///   scheduler — they're driven by
-    ///   [`Self::prewarm_pipelines`]'s `MaterialEdgePipelines::ensure_compiled`
-    ///   call (which [`Self::wait_for_pipelines_ready`] invokes
-    ///   internally). Until that fires after `register_material`,
-    ///   `render_edge_resolve`'s all-or-nothing readiness gate
-    ///   (Stage 3.5 / C.5) warn-skips the **entire** MSAA edge chain
-    ///   — not just the new material's contribution, but every
-    ///   already-compiled bucket too. **For MSAA edge correctness,
-    ///   callers must `await` either [`Self::prewarm_pipelines`] or
-    ///   [`Self::wait_for_pipelines_ready`] after `register_material`
-    ///   returns.** Pushing edge_resolve into the scheduler's promise
-    ///   queue (so the no-await flow produces MSAA edges) is a
-    ///   follow-up; see the TODO in `launch_dynamic_material_compile`.
+    /// **Readiness contract (Block D.1 PART 2 + edge-resolve push):**
+    /// every pipeline the new material needs to render correctly —
+    /// primary opaque (4 MSAA × mipmaps variants), classify
+    /// (2 MSAA variants), per-shader `edge_resolve` for the new
+    /// shader_id, plus the global `skybox_edge_resolve` and
+    /// `final_blend` (whose cache keys depend on `bucket_entries`
+    /// and are recompiled on every register so the templated
+    /// bucket constants match the classify pass) — is pushed into
+    /// the scheduler's `inflight_compile` queue via
+    /// [`Self::launch_dynamic_material_compile`]. The scheduler
+    /// flips the material `Pending → Ready` only when the **whole**
+    /// MSAA-edge chain is GPU-resident. Frontends subscribed to
+    /// [`Self::drain_pipeline_status_events`] correctly observe
+    /// Ready after MSAA edge resolution is fully functional for
+    /// the new material — no separate `prewarm_pipelines.await` is
+    /// needed for edge correctness.
     pub fn register_material(
         &mut self,
         registration: MaterialRegistration,
@@ -750,17 +744,21 @@ impl crate::AwsmRenderer {
     ///
     /// **Readiness flow**: `register_material` pushes real compile
     /// futures into the scheduler's `inflight_compile` set via
-    /// [`Self::launch_dynamic_material_compile`] (Block D.1 PART 2).
-    /// The scheduler's [`Self::poll_pipeline_scheduler`] (called
-    /// each render-frame preamble) drains those futures and marks
-    /// the corresponding material `Ready` when its last sub-pipeline
-    /// resolves. Frontends that need to block until ready use
-    /// [`Self::wait_for_pipelines_ready`], which polls until no
-    /// further transitions are applied; frontends that just want a
-    /// progress signal subscribe to
+    /// [`Self::launch_dynamic_material_compile`] (Block D.1 PART 2 +
+    /// edge-resolve extension). The promise set covers every
+    /// pipeline the material needs to render correctly — opaque,
+    /// classify, per-shader edge_resolve, skybox edge_resolve,
+    /// final_blend. The scheduler's [`Self::poll_pipeline_scheduler`]
+    /// (called each render-frame preamble) drains those futures
+    /// and marks the corresponding material `Ready` when its last
+    /// sub-pipeline resolves. Frontends that need to block until
+    /// ready use [`Self::wait_for_pipelines_ready`], which polls
+    /// until no further transitions are applied; frontends that
+    /// just want a progress signal subscribe to
     /// [`Self::drain_pipeline_status_events`] and render fall-back
     /// content (loading modal / placeholder mesh) until Ready
-    /// arrives.
+    /// arrives. Either approach yields full MSAA-edge correctness
+    /// for the new material on the next render after Ready.
     ///
     /// [`Self::prewarm_pipelines`] still exists as the lower-level
     /// compile-drive surface; the A.1 bridge inside it now marks
