@@ -65,6 +65,14 @@ impl AwsmRenderer {
         if self.anti_aliasing == aa {
             return Ok(());
         }
+        // Capture previous MSAA state before commit so the
+        // edge-pipeline recompile (Block B.5) can detect off → on
+        // transitions and lazily compile edge_resolve pipelines for
+        // the new MSAA state. `has_msaa_checked` validates the
+        // sample count here too, but a prior `set_anti_aliasing`
+        // call would have rejected an unsupported count, so this is
+        // effectively `is_some()` once we're past `build()`.
+        let prev_msaa_on = self.anti_aliasing.has_msaa_checked()?;
         self.anti_aliasing = aa;
         self.bind_groups
             .mark_create(BindGroupCreate::AntiAliasingChange);
@@ -331,6 +339,51 @@ impl AwsmRenderer {
                 &self.render_textures.formats,
             )
             .await?;
+
+        // ── Phase 7 (Block B.5): edge_resolve pipeline lazy compile
+        //    on MSAA off → on. Cold-boot only compiled edge_resolve
+        //    pipelines when MSAA was on at startup; without this,
+        //    toggling MSAA off → on after build leaves them empty
+        //    and the render-frame preamble's `warn_pipeline_not_compiled`
+        //    silently skips them, so cross-material MSAA edges fall
+        //    through.
+        //
+        //    Only fires on the off → on edge AND when the device
+        //    actually supports the required limits — mirrors the
+        //    `edge_resolve_enabled` gate at the build site
+        //    (`lib.rs` ~1390). on → off and on → on (4 → 4 — already
+        //    short-circuited above) and off → off paths skip; their
+        //    dispatch sites are already guarded.
+        let new_msaa_on = multisampled_geometry;
+        if !prev_msaa_on
+            && new_msaa_on
+            && crate::edge_resolve_supported(&self.gpu)
+        {
+            let color_wgsl = awsm_renderer_core::texture::texture_format_to_wgsl_storage(
+                self.render_textures.formats.color,
+            )?;
+            let bucket_entries = crate::dynamic_materials::first_party_bucket_entries();
+            let crate::pipelines::Pipelines {
+                render: _render_pipelines,
+                compute: compute_pipelines,
+            } = &mut self.pipelines;
+            self.render_passes
+                .material_opaque
+                .edge_pipelines
+                .ensure_compiled(
+                    &self.gpu,
+                    &mut self.shaders,
+                    compute_pipelines,
+                    &mut self.pipeline_layouts,
+                    &mut self.bind_group_layouts,
+                    &self.render_passes.material_opaque.bind_groups,
+                    &self.render_passes.material_opaque.edge_bind_group_layouts,
+                    &bucket_entries,
+                    &self.anti_aliasing,
+                    color_wgsl,
+                )
+                .await?;
+        }
         Ok(())
     }
 }
