@@ -37,6 +37,171 @@ A separate but architecturally aligned change replaces the PBR shader's `msaa_re
 
 ---
 
+## 🚨 ACTIVE WORK — Stage 3 MSAA silhouette quality (2026-05-27, mid-debug, NOT FINISHED)
+
+**Status: BLOCKED on visible silhouette aliasing the user can see on the MorphStressTest scene and the previous agent could not see in screenshots.** A fresh session needs to pick this up. Read this whole section, including the linked debugging doc, **before touching any code**.
+
+### Read this first
+
+[`docs/DEBUGGING-PREVIEW.md`](../DEBUGGING-PREVIEW.md) — the single most important operational lesson from the failed session: **the `preview_screenshot` tool returns a compressed/downscaled image. You cannot trust your visual reading of it to verify rendering correctness.** The previous agent repeatedly declared "fixed" based on its own screenshot reading and was repeatedly told no by the user (who is on a real display). Don't repeat that. Use `getImageData` pixel reads via `preview_eval` and/or ask the user concrete yes/no questions about specific colours at specific locations.
+
+### What the user is seeing that the previous agent could not
+
+Open MorphStressTest at `?cam=-0.48,0.13,2.2916,0,0.2,0` (the `?cam=` URL helper landed in commit `6988b7c`, persistent in this branch). User reports:
+
+- **Stair-step aliasing on the bottom edge of the platform** against the wood floor below it.
+- Stair-step on capsule silhouettes.
+- Stair-step on capsule edges against the wall behind the shelf.
+- Generally: this branch's MSAA edges are visibly worse than `main`'s same scene + camera.
+
+The user reference: on `main`, the same scene at the same camera renders smooth, anti-aliased silhouettes (main uses an inline `msaa_resolve_samples` per primary-opaque pixel that detects edges via depth/normal discontinuity and shades 4 samples).
+
+### Where Stage 3 stands architecturally
+
+Stage 3 replaces main's inline `msaa_resolve_samples` (the SPIR-V bloat that blocked Android-Chrome init) with a separated scatter dispatch chain — see [§ Priority 3](#priority-3--replace-msaa_resolve_samples) for the architectural rationale. The chain:
+
+1. **Geometry pass** writes per-sample `vis_data` (Rgba16Uint), depth (multisampled), normal_tangent into multisampled textures. (unchanged)
+2. **Classify pass** scans each pixel and decides "is this an edge". If yes: atomic-allocate an `edge_pixel_id`, store `(x, y)` in `edge_to_xy`, store the 4-byte `slot_map` (which shader_id owns each of the up-to-4 distinct buckets at this pixel) in `edge_slot_map`, and append a `(edge_pixel_id, sample_mask)` entry to each owning bucket's per-shader sample list. Atomically increments per-bucket indirect-dispatch `workgroup_count_x`.
+3. **Primary opaque** (each shader_id's compute pipeline) shades **sample 0 only** and writes the resulting color to `opaque_tex`. Per tile, per pixel of the bucket. Cheap fast path for non-edge pixels.
+4. **Per-shader-id `edge_resolve`** (one pipeline per bucket) is indirect-dispatched over the bucket's sample list. Each thread loads its `(edge_pixel_id, sample_mask)` entry, shades each bit-set sample using that sample's `vis_data` / `bary` / `normal` (per-sample texture loads), sums them, writes `vec4(color_sum, count_as_f32)` into `accumulator[edge_pixel_id × 4 + slot_index]` where `slot_index` is found by scanning `edge_slot_map` for the bucket index.
+5. **`skybox_edge_resolve`** does the same for samples that hit no geometry (skybox).
+6. **`final_blend`** is indirect-dispatched over edge pixels (one thread per `edge_pixel_id`). Reads up to 4 accumulator slots, computes the weighted average `(sum_color) / (sum_count)`, writes it to `opaque_tex` (overwriting primary's sample-0 write at that pixel).
+
+The architecture is sound and matches what the user proposed in conversation ("for every material pipeline, if edge → write into a dedicated edge texture; else → write into the regular texture; then do a resolve step on the edge texture"). The bug is somewhere in the wiring, not in the design.
+
+### What we (believe we) know — verify before relying on
+
+The previous session ran a number of diagnostics and reached conclusions. **Re-verify each one with the proper methodology in `DEBUGGING-PREVIEW.md` — some of these conclusions may be wrong due to the agent misreading compressed screenshots.**
+
+1. **Per-sample `vis_data.x/.y` (tri_id) IS distinct between samples** at silhouettes and intra-mesh triangle seams. Verified by writing a categorical diagnostic colour from primary opaque (red = tri-channels differ, blue = uniform) — silhouettes lit up red. ✅ Believed reliable.
+
+2. **Per-sample `vis_data.z/.w` (mat_meta_offset) appeared uniform across samples** in MorphStressTest. The previous agent first interpreted this as "Tint broadcasts the z/w channels of the fragment output across all MSAA samples" but **this hypothesis is unverified**. An alternative explanation is just that MorphStressTest uses a single "Cube" mesh for all the geometry (capsules are morph-target instances of one mesh) — so there literally is no mat_meta diversity in this scene. **A fresh session must verify which is true.** Test scene with multiple distinct meshes (e.g. load Fox plus a separate gltf and see if their mat_meta differ per-sample at the touching pixel) is the discriminator.
+
+3. **Classify's edge-detection gate** currently fires on: (a) per-sample coverage mismatch via `tri_N != U32_MAX` differing — catches mesh-vs-skybox silhouettes; (b) per-sample mat_meta_offset differing — supposed to catch mesh-vs-mesh in-pixel, may or may not actually fire (point 2). A `depth_tex` binding + `view_space_depth` helper exists in classify (bindings 7 and 8) but **the `depth_edge` and `neighbor_edge` gates are commented out** because earlier attempts to use them produced black artifacts.
+
+4. **The `final_blend` math itself appears correct**. The hot-pink-everywhere test from the previous session lit pink where classify said edge; no pink at non-edge pixels. The accumulator → average → store pipeline runs end-to-end.
+
+5. **Edge_resolve per-sample shading may produce wrong colors when samples cover different surfaces** (e.g. capsule touching platform). The previous session saw "black sides on capsules" when `depth_edge` was on, suggesting per-sample shading at those pixels was returning ~0 from the helper functions. **Root cause not pinned.** Hypotheses: (a) sample's `sample_mesh_meta` lookup uses the broadcast `mat_meta` value and so points to wrong mesh's index buffer when shading a sample that's actually on another mesh; (b) `shade_sample` falls through one of its early-return zero paths (`tri_id == U32_MAX`, `is_hud == 1`, `sample_shader_id != template shader_id`) for samples that shouldn't bail.
+
+### What was left in the codebase by the previous session
+
+The previous session committed exploratory work and never reverted the diagnostic hacks. **Do this cleanup FIRST before any new diagnostic work** so the baseline is clean:
+
+1. **`crates/renderer/src/render_passes/material_opaque/shader/material_opaque_wgsl/compute.wgsl`** — has a `{% if multisampled_geometry %} … textureStore(opaque_tex, coords, vec4<f32>(r, g, b, 1.0)); return; {% endif %}` diagnostic block right before the final write. **Remove it** so primary opaque returns to writing its actual computed color.
+
+2. **`crates/renderer/src/render_passes/material_opaque/render_pass.rs::render_edge_resolve`** — has an unconditional `return Ok(())` near the top added as a diagnostic disable. **Remove it** so Stage 3 dispatches actually run.
+
+3. **`crates/renderer/src/render_passes/material_classify/shader/material_classify_wgsl/compute.wgsl`** — has computed-but-unused `depth_edge` and `neighbor_edge` local variables and the `view_space_depth` helper. Decide based on the diagnostic results whether to use them in the gate — if yes, uncomment; if no, remove the dead code AND the `depth_tex`/`camera` bindings they need (slots 7 and 8 in classify's bind group layout — see `material_classify/bind_group.rs`). Cleanup must be coherent across `bind_group.rs` + the shader's `bind_groups.wgsl` + `compute.wgsl`.
+
+4. **`crates/renderer/src/render_passes/material_opaque/shader/material_opaque_wgsl/final_blend.wgsl`** — should write `vec4<f32>(final_color, final_alpha)`, no diagnostic color override. (May already be clean — verify.)
+
+5. Re-run `cargo fmt --all` and `task lint`. Should be clean.
+
+After cleanup, the **baseline rendering state** before you start diagnosing should be:
+- Stage 3 dispatch runs normally
+- Coverage mismatch is the only edge-detection signal that fires (mat_meta diff is a no-op due to whatever's going on with z/w)
+- Visual quality is "mesh-vs-skybox silhouettes anti-aliased; mesh-vs-mesh in-pixel silhouettes NOT anti-aliased; intra-mesh tri seams correctly NOT detected as edges"
+
+### Diagnostic plan — methodical, with the user
+
+Follow this in order. Do not skip steps. Use binary high-contrast colors per `DEBUGGING-PREVIEW.md` and confirm visually **with the user** at each step, not from your own screenshot reading.
+
+#### Step A: Empirically resolve "is per-sample z/w distinct in a true multi-mesh scene?"
+
+Load a scene that has multiple distinct meshes touching in screen-space (e.g. the scene-editor with two gltf models placed adjacent, or any model-tests scene other than MorphStressTest where multiple meshes meet). In primary opaque's compute shader, write a diagnostic that emits **yellow** at pixels where `s0.z != s1.z OR s0.w != s1.w` AND `s0.x != s1.x OR s0.y != s1.y`. **Yellow** then means "true mesh-vs-mesh in-pixel silhouette where both halves of vis_data differ across samples".
+
+Ask the user: "Do you see yellow at the boundary where mesh A touches mesh B?"
+
+Outcome:
+- **Yellow at multi-mesh boundaries** → per-sample z/w is per-sample distinct, and MorphStressTest's apparent uniformity was because it's a single-mesh scene. Classify's mat_meta diff check is fundamentally correct; it just had no work to do in MorphStressTest. Move on to Step B.
+- **No yellow even at multi-mesh boundaries** → Tint really does broadcast z/w of the fragment output. This is a driver-level bug. Workaround: drop the mat_meta diff check entirely from classify, and use per-sample DEPTH variance (Step C) as the mesh-vs-mesh discriminator.
+
+#### Step B: For MorphStressTest specifically, what IS the user seeing on the platform bottom?
+
+The platform is one mesh ("Cube"). The wood floor below is the skybox cubemap. So platform-bottom-vs-floor is **mesh-vs-skybox**, which classify's coverage check already fires on. If the user still sees stair-step there, the bug is either:
+
+- B.1 — classify is NOT firing on those specific pixels (verify by writing pure cyan from `final_blend` for every edge pixel — `textureStore(opaque_tex, coords, vec4<f32>(0.0, 1.0, 1.0, 1.0))` — and asking the user "do you see cyan all along the bottom edge of the platform, every pixel?"). The earlier test showed cyan AT the platform tile boundaries, but did NOT verify the platform's outer silhouette. Confirm.
+
+- B.2 — classify IS firing but `final_blend` writes the wrong color (verify by writing pure pink only when `total_count >= 2` and pure orange when `total_count == 1` and pure red when `total_count == 0` — confirms `final_blend` sees the expected sample counts at the silhouette).
+
+- B.3 — `final_blend` writes the right value but it's getting clobbered downstream by the opaque→transparent blit. Verify by writing pure pink to `opaque_tex` from `final_blend` and checking if it survives to the final framebuffer (it should — the blit just copies opaque_tex; nothing should overwrite it post-resolve).
+
+- B.4 — `edge_resolve` writes zero into the accumulator for valid samples. Verify by writing fixed `vec4(1.0, 0.0, 0.0, 4.0)` (red, count=4) into the accumulator from `edge_resolve` instead of computed shading — then `final_blend` should write pure red at every edge pixel. If it does → edge_resolve plumbing is fine, the issue is in the per-sample shading itself. If it doesn't → accumulator-write or accumulator-read is broken.
+
+#### Step C: Test per-sample DEPTH detection (only if Step A says z/w is broadcast)
+
+The `depth_tex` binding is already in place. Use it: write a diagnostic emitting **magenta** at pixels where `abs(view_space_depth(s0) - view_space_depth(s1)) > 0.02 * abs(view_space_depth(s0))` (main's `EDGE_MSAA_DEPTH_THRESHOLD`). Confirm with the user: does magenta light up at silhouettes AND not on smooth curved-surface interiors? The previous session got "black pixels on capsule sides" when using depth-edge — that was a separate bug in edge_resolve, not in the depth_edge detection. Resolve it methodically.
+
+#### Step D: Compare to main, pixel by pixel
+
+For the same scene + camera as main, use `getImageData` to read the exact RGBA at five specific points along the platform's bottom silhouette. Switch to `main` (`git checkout main`, dev rebuild), grab the same five pixels via `getImageData`. The RGBA deltas between branches will tell you precisely where this branch differs. **Use the pixel reads as ground truth, not screenshots.**
+
+#### Step E: Fix the actual bug
+
+Driven by what A-D reveal, fix the wiring. Possibilities include but are not limited to:
+- Adding `depth_edge` to the classify gate (if Step C says depth is the right signal)
+- Wiring per-sample mesh_meta correctly into shade_sample (if Step A confirms broadcast and you need to bypass z/w in vis_data — possibly by sampling a parallel `tri_to_mesh` lookup texture or a per-instance ID texture)
+- Fixing whatever shade_sample early-return is silently returning zero in legitimate cases (compare main's `msaa_process_sample` against `edge_resolve.wgsl::shade_sample` line by line)
+- Adjusting the `slot_index` scan in `edge_resolve.wgsl` if the bucket-index packing is off
+
+Each change: test with binary colors, confirm with user, only then move to the next.
+
+### Constraints and non-negotiable success criteria
+
+The next session is **not** allowed to:
+
+- **Regress the optimization plan.** Stage 3's per-shader-id edge_resolve + final_blend dispatch chain stays. The whole point of this branch is to keep the SPIR-V budget low enough for Android-Vulkan. Reverting to main's inline `msaa_resolve_samples` is **NOT** an acceptable fix. If a clean fix requires changes to the architecture, propose them in the doc, ask the user, then do it — don't roll back silently.
+
+- **Add new bind-group bindings or buffers without explicit justification.** The current 7-binding classify layout (slot 0–6) plus the optional 7/8 (depth_tex + camera) was already a careful fit against macOS Metal's `maxBindGroups = 4`. Adding more is a real cost. Justify in the doc.
+
+- **Leave diagnostic colors / `return Ok(())` shortcuts / dead helpers in the final commits.** Strip them before each commit that lands the fix. Diagnostic commits are fine as separate scratch commits during the debug pass; final-state commits are clean.
+
+- **Skip mobile / Android verification.** The point of the entire optimization branch is mobile / Android-Chrome boot. Verify cold-boot pipeline counts haven't grown (use `RUST_LOG=awsm_renderer::boot_timing=info` and compare to the table in [§ The eager set](#the-eager-set-cold-boot)). Verify per-frame edge dispatch overhead hasn't grown (use the `awsm_renderer::edge_resolve` log target).
+
+- **Declare success based on Claude's own screenshot reading.** Either the user confirms specifically ("yes, that artifact at coords X is gone") OR `getImageData` reads at specific pixels match the expected values OR a quantitative comparison vs `main` shows equivalence. "Looks fine to me" is not acceptable evidence of fix.
+
+The success criteria for this work:
+
+1. **MorphStressTest at `?cam=-0.48,0.13,2.2916,0,0.2,0`** — all visible silhouettes (capsule edges, platform top, platform right, platform bottom against the floor) are at least as smooth as `main`'s same-scene, same-camera output, verified by side-by-side `getImageData` pixel reads at five user-chosen sample points. No black-rim or wireframe artifacts on capsule bodies.
+
+2. **A multi-mesh scene** (Fox in model-tests, or scene-editor with two distinct gltf models) — mesh-vs-mesh silhouettes (where two real meshes touch in screen-space) are also anti-aliased.
+
+3. **Boot timing** — cold-boot pipeline count on a zero-scene matches the [§ The eager set](#the-eager-set-cold-boot) table. No new compute or render pipelines snuck in unnecessarily.
+
+4. **Per-frame perf** — edge_resolve + final_blend per-frame cost on the MorphStressTest scene at 1080p is within 10% of pre-debug baseline (the previous session didn't measure, so establish a baseline first by running with profiling enabled on the current state, then compare after the fix).
+
+5. **No regression in `task lint` or `cargo fmt --all`**.
+
+6. **The doc is updated** to reflect the final committed fix, including: which gate signals classify uses, what `edge_resolve` and `final_blend` do, and a brief paragraph on the dead-end approaches that didn't work and why (so a future session doesn't re-explore them).
+
+### Workflow expectations
+
+- This is a methodical debug session, not a fix-by-feel session. The previous session burned several hours of context on guess-and-iterate. Read the situation, set up minimum-viable diagnostics, confirm with the user, decide.
+
+- **Commit small.** Each diagnostic is a throw-away — `git stash` it after the answer comes back, don't commit. The committed history should only contain the final fix(es).
+
+- **Don't push to origin until the user has confirmed the fix.** The branch is `more-optimizations` — 9 commits ahead of origin at the time of writing. Some of those commits are exploratory dead-ends that may also need to be reset before the final push (the user can decide; ask).
+
+- **Stop and ask the user any time the diagnostic results disagree with your model.** Don't iterate blindly. The previous session iterated blindly for hours.
+
+### Commit history at debug-pause-time (for orientation)
+
+```
+c2ebf85 classify: detect mesh-vs-mesh in-pixel silhouettes by per-sample mat_meta diff
+c3ee91e classify: tighten neighbor-pixel mesh check to skip uncovered neighbors
+4fa0c45 classify: add neighbor-pixel mesh check for mesh-vs-mesh silhouettes
+59a999a classify: detect silhouettes by per-sample COVERAGE mismatch (not mat_meta)
+61b382d classify+edge_resolve: fully static-unroll edge detection; revert C.6 per-sample depth
+c7c6297 docs(more-optimizations): record vec4 dynamic-index root cause + C.7
+6988b7c model-tests: support ?cam=yaw,pitch,r,lx,ly,lz query for reproducible repros
+d27994b material_classify: fix vec4 dynamic-index writes silently no-op'ing → ZERO edges/frame
+a903e4c material_opaque: fix MSAA stage-3 silhouette aliasing (C.4 + C.5 + C.6)
+```
+
+Some of these commits genuinely improved the renderer (`d27994b` is load-bearing — vec4 → array<u32, 4> static-unroll is required for classify to detect any edges at all on the current Tint build). Others are exploratory dead-ends that may need to be reverted as part of the final clean-up. Examine each before deciding.
+
+---
+
 ## Status today (2026-05-27)
 
 PR #99 on the `more-optimizations` branch is open and substantially complete. What's landed:
