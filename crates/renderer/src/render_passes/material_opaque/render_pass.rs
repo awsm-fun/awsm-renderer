@@ -115,6 +115,30 @@ impl MaterialOpaqueRenderPass {
     /// finalize-textures flow). Until that lands, this method
     /// short-circuits at the top with a tracing warn.
     pub fn render_edge_resolve(&self, ctx: &RenderContext) -> Result<()> {
+        // ── Stage 3 edge_resolve flow currently DISABLED ───────────────
+        //
+        // Investigation on MorphStressTest revealed that the Stage 3
+        // classify → per-shader edge_resolve → final_blend flow
+        // (Priority 3 in docs/plans/more-optimizations.md) produces
+        // visibly *worse* MSAA-resolve quality than the legacy inline
+        // `msaa_resolve_samples` path inside `compute.wgsl`. The
+        // overwrite of `opaque_tex` by `final_blend` replaces the
+        // good 4-sample average that primary opaque already wrote
+        // with values that show pixel-level stairsteps at silhouettes.
+        //
+        // Until the Stage 3 data-flow is debugged (see
+        // `.claude-msaa-debug.md` for the running diagnostic notes),
+        // this method early-returns so primary opaque's
+        // `msaa_resolve_samples` remains the authoritative MSAA
+        // resolver — matching the quality of `main`.
+        //
+        // The pipeline-compile path is preserved (the pipelines still
+        // compile at boot via `ensure_compiled`) so flipping this back
+        // on for further debugging only requires removing this guard.
+        let _ = ctx;
+        return Ok(());
+
+        #[allow(unreachable_code)]
         // No MSAA → no edges → nothing to dispatch.
         if ctx.anti_aliasing.msaa_sample_count.is_none() {
             return Ok(());
