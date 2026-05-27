@@ -665,9 +665,33 @@ mod tests {
     }
 
     #[test]
-    fn data_offsets_start_at_zero() {
+    fn data_buffer_layout_is_monotonic_and_starts_after_header() {
+        // The data_buffer carries a counter-mirror header at offset 0
+        // (since `92ca74e` — the 10-storage-buffer-cap workaround that
+        // mirrors classify's atomic counters into the data_buffer so
+        // the resolve shaders don't need to bind args_buffer
+        // separately). Each region must come after the previous one;
+        // `edge_to_xy` specifically lives immediately after the
+        // header.
         for bucket_count in [1u32, 4, 17] {
-            assert_eq!(edge_to_xy_offset(bucket_count), 0);
+            for max_edge_budget in [1024u32, 65536] {
+                let header = data_header_bytes(bucket_count);
+                let xy = edge_to_xy_offset(bucket_count);
+                let slot_map = edge_slot_map_offset(bucket_count, max_edge_budget);
+                let accum = accumulator_offset(bucket_count, max_edge_budget);
+                let entries = sample_entries_offset(bucket_count, max_edge_budget);
+
+                // Counter-mirror header is at offset 0; edge_to_xy
+                // starts right after it.
+                assert_eq!(xy, header,
+                    "edge_to_xy must start right after the counter-mirror header (bucket_count={bucket_count})");
+
+                // Layout is monotonic: header → edge_to_xy →
+                // edge_slot_map → accumulator → sample lists.
+                assert!(xy < slot_map);
+                assert!(slot_map < accum);
+                assert!(accum < entries);
+            }
         }
     }
 }
