@@ -371,6 +371,39 @@ impl ComputePipelines {
         Ok(slot.into_iter().map(Option::unwrap).collect())
     }
 
+    /// Sync cache lookup — returns the `ComputePipelineKey` for an
+    /// already-cached cache key, or `None` if the cache doesn't
+    /// contain it. Used by the literal-push-futures launch path
+    /// (Block D.1 PART 2) to skip already-installed sub-pipelines
+    /// before kicking off a new compile.
+    pub fn cache_lookup(
+        &self,
+        cache_key: &ComputePipelineCacheKey,
+    ) -> Option<&ComputePipelineKey> {
+        self.cache.get(cache_key)
+    }
+
+    /// Sync install of a resolved `GpuComputePipeline` — inserts into
+    /// the slotmap, registers the cache_key → key mapping, returns
+    /// the new `ComputePipelineKey`. Used by
+    /// `AwsmRenderer::apply_compile_resolution` (Block D.1 PART 2)
+    /// when a pushed compile future resolves. Idempotent on cache
+    /// hits: if `cache_key` is already in the cache, returns the
+    /// existing key + drops the parameter `pipeline` (a parallel
+    /// submit raced and won).
+    pub fn install_resolved_pipeline(
+        &mut self,
+        pipeline: web_sys::GpuComputePipeline,
+        cache_key: ComputePipelineCacheKey,
+    ) -> ComputePipelineKey {
+        if let Some(existing) = self.cache.get(&cache_key) {
+            return *existing;
+        }
+        let key = self.lookup.insert(pipeline);
+        self.cache.insert(cache_key, key);
+        key
+    }
+
     /// Returns a compute pipeline for a key.
     pub fn get(&self, key: ComputePipelineKey) -> Result<&web_sys::GpuComputePipeline> {
         self.lookup

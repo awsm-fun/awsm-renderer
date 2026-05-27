@@ -1941,9 +1941,24 @@ impl AwsmRenderer {
     /// Poll the scheduler's `FuturesUnordered` for resolved compiles.
     /// Called from the render loop's pre-frame phase.
     ///
+    /// Drives BOTH inflight queues:
+    /// - Legacy `inflight` (whole-batch CompileResolutions, currently
+    ///   driven by explicit `mark_ready` / `mark_failed`).
+    /// - Block D.1 PART 2 `inflight_compile` (per-sub-pipeline
+    ///   compile promises). Each resolution installs the resolved
+    ///   `GpuComputePipeline` into the per-pass cache + decrements
+    ///   the material's sub-compile counter (transition to Ready
+    ///   when counter hits 0).
+    ///
     /// Returns the number of transitions applied this poll.
     pub fn poll_pipeline_scheduler(&mut self) -> usize {
-        self.pipeline_scheduler.poll_resolved()
+        // Legacy inflight (whole-batch).
+        let mut applied = self.pipeline_scheduler.poll_resolved();
+        // D.1 PART 2 inflight_compile (per-sub-pipeline).
+        while self.apply_compile_resolution() {
+            applied += 1;
+        }
+        applied
     }
 
     /// Drive any pending compiles to completion and return when every
@@ -1981,14 +1996,30 @@ impl AwsmRenderer {
         // dispatch the fat-line pass instead of warn-skipping.
         self.ensure_line_pipelines_compiled().await?;
 
-        // Phase 2: drain any scheduler-pushed futures. Today this is
-        // a near-no-op (Block D migration will push real compile
-        // futures here); kept as the integration surface so when D
-        // lands, wait_for_pipelines_ready stays the right answer.
-        const MAX_ROUNDS: usize = 1024;
+        // Phase 2: drain real D.1 PART 2 inflight_compile via async
+        // Stream::next — each .await yields to the JS event loop so
+        // Dawn's compile promises can fire. Once next() returns None
+        // (the FuturesUnordered is empty), every sub-pipeline has
+        // resolved and apply_compile_resolution installed it.
         let mut total = 0usize;
+        loop {
+            let resolution_opt = {
+                use futures::StreamExt;
+                self.pipeline_scheduler.inflight_compile.next().await
+            };
+            let Some(resolution) = resolution_opt else {
+                break;
+            };
+            self.apply_compile_resolution_inline(resolution);
+            total += 1;
+        }
+
+        // Phase 3: drain legacy whole-batch inflight (currently empty
+        // — explicit mark_ready / mark_failed callers don't push to
+        // it). Kept for future Pass-flavoured push-futures work.
+        const MAX_ROUNDS: usize = 1024;
         for _ in 0..MAX_ROUNDS {
-            let applied = self.poll_pipeline_scheduler();
+            let applied = self.pipeline_scheduler.poll_resolved();
             total += applied;
             if applied == 0 {
                 break;

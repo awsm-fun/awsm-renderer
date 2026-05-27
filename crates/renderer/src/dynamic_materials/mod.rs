@@ -616,6 +616,20 @@ impl crate::AwsmRenderer {
                 id, e
             );
         }
+        // Block D.1 PART 2 literal-future launch: kick off the
+        // sub-pipeline compile promises sync-now, push them into
+        // PipelineScheduler::inflight_compile. The renderer's
+        // poll_pipeline_scheduler drains + installs them per-frame.
+        // Frontends watching drain_pipeline_status_events see the
+        // material light up Ready when the last sub-pipeline lands —
+        // no `prewarm_pipelines().await` round-trip needed.
+        if let Err(e) = self.launch_dynamic_material_compile(id) {
+            tracing::warn!(
+                target: "awsm_renderer::pipeline_readiness",
+                "launch_dynamic_material_compile failed for {:?}: {:?}",
+                id, e
+            );
+        }
         Ok(id)
     }
 

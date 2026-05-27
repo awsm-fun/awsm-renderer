@@ -34,6 +34,7 @@
 
 #![warn(missing_docs)]
 
+pub mod launch;
 pub mod types;
 
 pub use types::*;
@@ -87,6 +88,60 @@ pub struct CompileResolution {
 
 type PendingFuture = Pin<Box<dyn Future<Output = CompileResolution> + 'static>>;
 
+/// Install target for a per-pipeline compile resolution (Block D.1
+/// PART 2). Carried by [`PipelineCompileResolution`] so
+/// `apply_compile_resolution` on the renderer knows which per-pass
+/// cache to install the resolved [`web_sys::GpuComputePipeline`] /
+/// [`web_sys::GpuRenderPipeline`] into.
+///
+/// Each variant ties a resolved pipeline back to its identity in the
+/// per-pass cache layer (`material_classify.dynamic_pipeline_cache`,
+/// `material_opaque.pipelines.per_shader_id`, etc.).
+#[derive(Clone)]
+pub enum CompileInstallTarget {
+    /// Compute: dynamic-material classify pipeline (per dispatch_hash + msaa).
+    ClassifyDynamic {
+        /// Classify dispatch_hash at submission.
+        dispatch_hash: u64,
+        /// MSAA sample count (`Some(4)` or `None`).
+        msaa: Option<u32>,
+    },
+    /// Compute: dynamic-material opaque pipeline (per shader_id × msaa × mipmaps).
+    OpaqueDynamic {
+        /// Shader-id of the dynamic material.
+        shader_id: awsm_materials::MaterialShaderId,
+        /// MSAA sample count.
+        msaa: Option<u32>,
+        /// Mipmap-gradient variant on or off.
+        mipmaps: bool,
+    },
+}
+
+/// Resolution of one sub-pipeline within a `PipelineGroupId`'s
+/// compile (Block D.1 PART 2). One scheduler material can fan out to
+/// multiple sub-pipeline resolutions (classify ×2 MSAA + opaque ×4
+/// (msaa × mipmaps) for a Blend dynamic material = 6 sub-pipelines).
+/// When the last sub-pipeline lands, the scheduler flips the
+/// MaterialId to `Ready`.
+pub struct PipelineCompileResolution {
+    /// Owning scheduler id.
+    pub id: PipelineGroupId,
+    /// Generation captured when the compile was kicked off.
+    pub generation: u32,
+    /// Per-pass install target.
+    pub target: CompileInstallTarget,
+    /// Original cache key — used by `pipelines.compute.cache.insert`
+    /// after the slotmap installs the resolved pipeline.
+    pub cache_key: crate::pipelines::compute_pipeline::ComputePipelineCacheKey,
+    /// Resolved `GpuComputePipeline` from `create_compute_pipeline_async`
+    /// or the JS-side rejection value (carries the shader-compile
+    /// diagnostic when the underlying shader fails to compile).
+    pub result: std::result::Result<web_sys::GpuComputePipeline, wasm_bindgen::JsValue>,
+}
+
+type PipelineCompileFuture =
+    Pin<Box<dyn Future<Output = PipelineCompileResolution> + 'static>>;
+
 /// Status-stream event surface for frontends.
 #[derive(Debug)]
 pub struct StatusEvent {
@@ -116,7 +171,27 @@ pub struct StatusEvent {
 pub struct PipelineScheduler {
     materials: SlotMap<MaterialId, MaterialState>,
     passes: HashMap<PassKind, PassState>,
+    /// Legacy inflight queue for whole-batch `CompileResolution`s (the
+    /// `(id, generation, Result<(), AwsmError>)` shape). Polled by
+    /// [`Self::poll_resolved`] from the render-loop pre-frame phase.
+    /// Currently driven by the A.1 bridge via explicit `mark_ready` /
+    /// `mark_failed`; no real futures pushed to it.
     inflight: FuturesUnordered<PendingFuture>,
+    /// Block D.1 PART 2 inflight: real per-pipeline compile promises
+    /// pushed by `AwsmRenderer::launch_dynamic_material_compile`.
+    /// Each resolves to a [`PipelineCompileResolution`] carrying the
+    /// `GpuComputePipeline` JsValue + install target; the renderer's
+    /// `apply_compile_resolution` drives the install at poll time.
+    /// `pub(crate)` so `AwsmRenderer::wait_for_pipelines_ready` can
+    /// await the next resolution directly via `Stream::next` for the
+    /// proper async-yield semantics.
+    pub(crate) inflight_compile: FuturesUnordered<PipelineCompileFuture>,
+    /// Per-material sub-pipeline countdown (Block D.1 PART 2). Each
+    /// time `submit_pipeline_group_batch_async` issues a sub-pipeline
+    /// for a material, the count increments. `apply_compile_resolution`
+    /// decrements on each successful install; when the count hits 0
+    /// the material's `Pending → Ready` transition fires.
+    pending_subcompiles: HashMap<MaterialId, u32>,
     events: Vec<StatusEvent>,
 }
 
@@ -133,8 +208,74 @@ impl PipelineScheduler {
             materials: SlotMap::with_key(),
             passes: HashMap::new(),
             inflight: FuturesUnordered::new(),
+            inflight_compile: FuturesUnordered::new(),
+            pending_subcompiles: HashMap::new(),
             events: Vec::new(),
         }
+    }
+
+    /// Push a real compile future onto the inflight queue (Block D.1
+    /// PART 2). The future will be drained by
+    /// [`AwsmRenderer::poll_pipeline_scheduler`] at the next frame's
+    /// pre-frame phase. Bumps the per-material sub-compile counter
+    /// when the `id` is a `Material` so `apply_compile_resolution`
+    /// knows when to mark Ready.
+    pub fn push_compile_future(
+        &mut self,
+        id: PipelineGroupId,
+        future: PipelineCompileFuture,
+    ) {
+        if let PipelineGroupId::Material(mid) = id {
+            *self.pending_subcompiles.entry(mid).or_insert(0) += 1;
+        }
+        self.inflight_compile.push(future);
+    }
+
+    /// Drain ONE resolved compile future from `inflight_compile`, if
+    /// any is ready. Returns `None` when the queue is empty or the
+    /// next future is still pending. Caller (the renderer) consumes
+    /// the resolution + does the install.
+    pub fn next_compile_resolution(&mut self) -> Option<PipelineCompileResolution> {
+        let waker = futures::task::noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        match Pin::new(&mut self.inflight_compile).poll_next(&mut cx) {
+            Poll::Ready(Some(r)) => Some(r),
+            _ => None,
+        }
+    }
+
+    /// Decrement the sub-compile counter for a material; if it hits
+    /// zero, transition the material to `Ready` and emit the status
+    /// event. Called by `apply_compile_resolution` after each
+    /// successful install. Returns `true` when the material has just
+    /// flipped to Ready.
+    pub fn note_subcompile_complete(&mut self, mid: MaterialId) -> bool {
+        let count = self.pending_subcompiles.entry(mid).or_insert(0);
+        if *count > 0 {
+            *count -= 1;
+        }
+        if *count == 0 {
+            self.pending_subcompiles.remove(&mid);
+            // Only mark Ready if the material is still in the scheduler
+            // and still Pending (drop_material_group races, stale
+            // generations, etc. all silently no-op).
+            if let Some(state) = self.materials.get_mut(mid) {
+                if state.status.is_pending() {
+                    state.status = PipelineGroupStatus::Ready;
+                    self.events.push(StatusEvent {
+                        id: PipelineGroupId::Material(mid),
+                        status: PipelineGroupStatus::Ready,
+                    });
+                    tracing::info!(
+                        target: "awsm_renderer::pipeline_readiness",
+                        "subcompile-complete: material({:?}) -> Ready",
+                        mid
+                    );
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Submit a batch of pipeline groups. Returns ids in the same order as
@@ -353,6 +494,15 @@ impl PipelineScheduler {
             "mark_material_pending: material({:?}) -> Pending (config-flip)",
             mid
         );
+    }
+
+    /// Returns the current generation marker for a material id, or
+    /// `None` if the id isn't in the scheduler. Used by the literal-
+    /// push-futures launch path (Block D.1 PART 2) to capture the
+    /// generation at submit time so apply_compile_resolution can
+    /// detect stale-config resolutions.
+    pub fn material_generation(&self, mid: MaterialId) -> Option<u32> {
+        self.materials.get(mid).map(|s| s.generation)
     }
 
     /// Find the [`MaterialId`] in the scheduler whose `MaterialDef`
