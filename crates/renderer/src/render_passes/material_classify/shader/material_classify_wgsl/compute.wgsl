@@ -125,24 +125,24 @@ fn cs_main(
     // overflow accumulator region) is parked as Block C.2 future work.
     if (in_bounds) {
         // Scan 4 samples. Each entry holds (shader_id, sample_index).
-        var sample_shader_ids: vec4<u32> = vec4<u32>(0xFFFFu, 0xFFFFu, 0xFFFFu, 0xFFFFu);
-        // Per-sample mesh signature — used to detect MESH-vs-MESH
-        // edges within the SAME shader_id (e.g. PBR capsule against
-        // PBR pedestal). Pre-fix, classify only emitted edge data
-        // when distinct shader_ids appeared; PBR-vs-PBR-mesh
-        // boundaries fell through (NOT an edge) and rendered with
-        // sample-0-only shading from the primary opaque pass —
-        // visibly aliased on MorphStressTest's capsule-vs-capsule and
-        // capsule-vs-pedestal contacts. We discriminate by
-        // `mat_meta_off` (the per-sample mesh-meta byte offset) —
-        // two samples on the same MESH share this even when they're
-        // on adjacent triangles (which keeps within-mesh triangle
-        // boundaries OUT of edge detection — those would cause
-        // wireframe-like artifacts from re-shading sample-0-vs-
-        // samples-1..3 with slightly different per-sample positions).
-        // Skybox samples use `U32_MAX` as their `mat_meta_off`
-        // sentinel — already distinct from any real mesh's offset.
-        var sample_mat_offs: vec4<u32> = vec4<u32>(0u);
+        //
+        // ROOT-CAUSE FIX (May 27, post-`a903e4c`): these were `vec4<u32>`
+        // with dynamic-index writes (`sample_shader_ids[s] = …`). On the
+        // current Tint→SPIR-V/Metal compile path that pattern silently
+        // *no-ops* — the writes never land, so `sample_shader_ids` and
+        // `sample_mat_offs` stayed at their initial all-equal values for
+        // every pixel. `seen_count` was thus always 1 and
+        // `any_mesh_differs` always false → **classify emitted zero
+        // edges**, the entire Stage-3 dispatch chain ran with
+        // `workgroup_count_x = 0`, every silhouette pixel rendered with
+        // primary-opaque sample-0 shading, and the user saw blatant
+        // stair-step aliasing on the MorphStressTest shelf bottom and
+        // capsule edges. `array<u32, 4>` honours dynamic-index writes
+        // (it's how the `seen[]` array below has always worked) — that
+        // simple change makes the whole edge-emission path actually
+        // populate.
+        var sample_shader_ids: array<u32, 4> = array<u32, 4>(0xFFFFu, 0xFFFFu, 0xFFFFu, 0xFFFFu);
+        var sample_mat_offs: array<u32, 4> = array<u32, 4>(0u, 0u, 0u, 0u);
         var distinct_count: u32 = 0u;
         // 4 slots, each u8 packed into a u32. SHADER_ID_NONE = 0xFF.
         var slot_map: u32 = 0xFFFFFFFFu;
@@ -225,9 +225,9 @@ fn cs_main(
         // only multi-shader_id pixels routed to edge_resolve, so
         // single-shader_id scenes (the typical PBR case) had silently-
         // broken MSAA at every inter-mesh boundary.
-        let any_mesh_differs = (sample_mat_offs.x != sample_mat_offs.y)
-            || (sample_mat_offs.x != sample_mat_offs.z)
-            || (sample_mat_offs.x != sample_mat_offs.w);
+        let any_mesh_differs = (sample_mat_offs[0] != sample_mat_offs[1])
+            || (sample_mat_offs[0] != sample_mat_offs[2])
+            || (sample_mat_offs[0] != sample_mat_offs[3]);
         if (seen_count >= 2u || any_mesh_differs) {
             // Allocate compact edge_pixel_id. The atomic counter lives
             // in args_buffer / `edge_buffers` (drives indirect dispatch
