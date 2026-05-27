@@ -868,7 +868,7 @@ The user wants "everything everything". Items from ROADMAP.md + opportunities su
 - **E.4** **Per-pipeline-cumulative-timing log polish**: per-pipeline labels currently log on resolve. Add a per-batch sort-by-finish-time summary at the end of each `ensure_keys` call so the operator can scan "which pipeline finished last."
 - **E.5** **Edge_resolve runtime profile sanity**: at 1080p with the Fox scene, capture frame-time delta between the inline-path (pre-Stage-3) and the new edge_resolve path. Confirm parity or improvement. If a regression appears, investigate the per-frame `reset_header` cost vs. classify's extra writes.
 - **E.6** **`cargo doc --workspace --no-deps` warning audit** (Stage 5.3): resolve any new doc-link warnings introduced by this PR. Pre-existing warnings (in render-worker / web-shared / renderer-gltf) are out of scope but worth noting.
-- **E.7** **Workspace-wide `-W missing_docs` gate** for the new `pipeline_scheduler` module (per `remainder.md` § "Public API gate").
+- **E.7** **Workspace-wide `-W missing_docs` gate** for the new `pipeline_scheduler` module (per `remainder.md` § "Public API gate"). ✅ landed (module-scoped via inner attribute)
 
 ### Block F — Verification, finalize, merge prep
 
