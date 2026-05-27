@@ -164,9 +164,21 @@ fn start_render_loop(handle: RendererHandle, state: EditState) {
                             PipelineGroupStatus::Ready => {
                                 pending = pending.saturating_sub(1);
                             }
-                            PipelineGroupStatus::Failed { error } => {
+                            PipelineGroupStatus::Failed { error: _ } => {
+                                // The event's `error` is intentionally
+                                // a placeholder (`PipelineVariantNotCompiled
+                                // ("see scheduler state")`) — the real
+                                // failure detail lives on the
+                                // scheduler's material/pass state. Query
+                                // it back via `pipeline_group_status`.
                                 pending = pending.saturating_sub(1);
-                                latest_err = Some(format!("{error}"));
+                                let err_msg = match host.renderer.pipeline_group_status(ev.id) {
+                                    Some(PipelineGroupStatus::Failed { error: real }) => {
+                                        format!("{real}")
+                                    }
+                                    _ => "compile failed (status no longer queryable)".to_string(),
+                                };
+                                latest_err = Some(err_msg);
                             }
                         }
                     }
