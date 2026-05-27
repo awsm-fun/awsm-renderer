@@ -173,7 +173,13 @@ fn shade_sample(
 
     let sample_tbn = unpack_normal_tangent(textures.normal_tangent);
     let sample_normal = sample_tbn.N;
-    let standard_coordinates = get_standard_coordinates(coords, screen_dims);
+    // Per-sample depth — see standard.wgsl::get_standard_coordinates_sample
+    // for why sample-0 depth is wrong for samples 1-3 at silhouette
+    // pixels. `depth_tex` here is `texture_depth_multisampled_2d`
+    // (edge_resolve only dispatches under MSAA-on, and the bind-group
+    // shape it shares with primary opaque flips the multisampled
+    // variant in via the `multisampled_geometry` template flag).
+    let standard_coordinates = get_standard_coordinates_sample(coords, screen_dims, sample_index);
 
     let sample_mat_offset = sample_mesh_meta.material_offset;
     let sample_stride = sample_mesh_meta.vertex_attribute_stride / 4;

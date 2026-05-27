@@ -68,8 +68,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     let camera = camera_from_raw(camera_raw);
-    let screen_dims_u = textureDimensions(skybox_tex);
-    let screen_dims_f32 = vec2<f32>(f32(screen_dims_u.x), f32(screen_dims_u.y));
+    // BUG FIX: previously used `textureDimensions(skybox_tex)` which
+    // returns CUBEMAP FACE dimensions (e.g. 512×512), NOT the render
+    // target screen size. `sample_skybox` reconstructs the ray
+    // direction from `coords / screen_dims_f32`, so wrong dimensions
+    // produced wildly wrong ray directions, sampling the wrong part
+    // of the skybox at every silhouette pixel. Use the camera's
+    // viewport size — that's the render-target screen size by
+    // construction (Camera.viewport_size from CameraRaw.viewport.zw).
+    let screen_dims_f32 = camera.viewport_size;
 
     var color_sum = vec3<f32>(0.0);
     var alpha_sum: f32 = 0.0;

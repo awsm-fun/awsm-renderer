@@ -9,11 +9,34 @@ struct StandardCoordinates {
 }
 
 fn get_standard_coordinates(coords: vec2<i32>, screen_dims: vec2<u32>) -> StandardCoordinates {
+    return get_standard_coordinates_sample(coords, screen_dims, 0);
+}
+
+// Per-sample variant. Used by the Stage 3 `edge_resolve.wgsl` so each
+// MSAA sample's `world_position` / `surface_to_camera` is reconstructed
+// from its own depth value, not sample 0's — critical at silhouette
+// pixels where sample 0 may be on a different surface (e.g. skybox)
+// from samples 1-3 (e.g. a capsule). Without this, lighting for
+// samples 1-3 at silhouettes was computed against sample 0's depth,
+// producing subtly-wrong shadows / point-light falloff at every
+// silhouette pixel.
+//
+// `depth_tex` is bound as `texture_multisampled_2d<f32>` when
+// `multisampled_geometry` is true (which is the only context this
+// shader runs in — edge_resolve only dispatches under MSAA-on); the
+// `sample_index` argument is honoured by `textureLoad`. The non-MSAA
+// primary path uses `get_standard_coordinates(coords, screen_dims)`
+// (which delegates here with sample 0), preserving existing behaviour.
+fn get_standard_coordinates_sample(
+    coords: vec2<i32>,
+    screen_dims: vec2<u32>,
+    sample_index: u32,
+) -> StandardCoordinates {
     // Convert raw camera uniform to friendly structure
     let camera = camera_from_raw(camera_raw);
 
     let screen_dims_f32 = vec2<f32>(f32(screen_dims.x), f32(screen_dims.y));
-    let depth_sample : f32 = textureLoad(depth_tex, coords, 0);
+    let depth_sample : f32 = textureLoad(depth_tex, coords, i32(sample_index));
 
     // Pixel center UV and NDC (flip Y once)
     let uv = (vec2<f32>(coords) + 0.5) / screen_dims_f32;

@@ -145,6 +145,64 @@ impl MaterialOpaqueRenderPass {
                 }
             };
 
+        // All-or-nothing readiness gate (Stage 3 stale-slot fix).
+        //
+        // `classify` builds `slot_map` and the per-bucket sample-list
+        // entries from the same `seen[]` scan — if a bucket is assigned
+        // a slot, classify ALSO emits an entry for it. The per-shader
+        // edge_resolve pipeline for that bucket is then expected to
+        // write that slot of `accumulator` this frame. `final_blend`
+        // reads every assigned slot.
+        //
+        // If a per-shader pipeline is missing (Pending — e.g. a dynamic
+        // material registered mid-frame, MSAA flip recompile in flight,
+        // or the first-party eager-set hasn't resolved), the assigned
+        // slot is NOT written this frame and `accumulator` retains
+        // whatever previous-frame edge_pixel_id at that index wrote.
+        // `final_blend`'s `if (count > 0.0)` guard only catches the
+        // zero-initialized case; a positive stale count slips through
+        // and corrupts every edge pixel that bucket appears at.
+        //
+        // The safe, simple fix: if any required per-shader pipeline is
+        // missing, skip the WHOLE chain (per-shader + skybox + final
+        // blend) for this frame. Result: edge pixels show whatever the
+        // primary opaque pass wrote (sample-0 shading — degraded MSAA,
+        // not corruption). When all pipelines finish compiling, the
+        // dispatch resumes naturally and MSAA edges resolve correctly.
+        let bucket_entries = ctx.dynamic_materials.bucket_entries_cached();
+        let mut missing_any = false;
+        for entry in bucket_entries.iter() {
+            if self
+                .edge_pipelines
+                .get_per_shader_pipeline_key(ctx.anti_aliasing, entry.shader_id)
+                .is_none()
+            {
+                let id_label = format!("{:?}", entry.shader_id);
+                warn_pipeline_not_compiled(
+                    "material_opaque::edge_resolve::per_shader",
+                    id_label.as_str(),
+                );
+                missing_any = true;
+            }
+        }
+        if missing_any {
+            // Skip the whole chain. Don't dispatch any per-shader
+            // edge_resolve either: even if some buckets ARE ready, their
+            // slots would land in `accumulator`, but the missing
+            // buckets' slots would not — and `final_blend` reads every
+            // assigned slot. Either everyone resolves this frame or no
+            // one does.
+            return Ok(());
+        }
+        if self
+            .edge_pipelines
+            .skybox_edge_resolve_pipeline_key
+            .is_none()
+        {
+            warn_pipeline_not_compiled("material_opaque::edge_resolve", "skybox");
+            return Ok(());
+        }
+
         // Build the three edge bind groups for this frame. Built on
         // every frame (not cached) — bind-group construction is cheap
         // (~few µs per group) and the cache-invalidation discipline
@@ -175,19 +233,13 @@ impl MaterialOpaqueRenderPass {
             self.bind_groups.get_bind_groups()?;
 
         // ── Per-shader-id edge_resolve dispatches ────────────────────
-        let bucket_entries = ctx.dynamic_materials.bucket_entries_cached();
+        // Pre-check above guarantees every bucket has a compiled
+        // pipeline; the lookup is infallible here.
         for (bucket_index, entry) in bucket_entries.iter().enumerate() {
-            let Some(pipeline_key) = self
+            let pipeline_key = self
                 .edge_pipelines
                 .get_per_shader_pipeline_key(ctx.anti_aliasing, entry.shader_id)
-            else {
-                let id_label = format!("{:?}", entry.shader_id);
-                warn_pipeline_not_compiled(
-                    "material_opaque::edge_resolve::per_shader",
-                    id_label.as_str(),
-                );
-                continue;
-            };
+                .expect("per-shader edge_resolve pipeline missing after readiness pre-check");
             let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
                 &ComputePassDescriptor::new(Some("Material Opaque - Edge Resolve (per-shader)"))
                     .into(),
@@ -205,19 +257,22 @@ impl MaterialOpaqueRenderPass {
         }
 
         // ── Skybox edge resolve ─────────────────────────────────────
-        if let Some(pipeline_key) = self.edge_pipelines.skybox_edge_resolve_pipeline_key {
+        // Pre-check above already bailed when this is None.
+        let skybox_pipeline_key = self
+            .edge_pipelines
+            .skybox_edge_resolve_pipeline_key
+            .expect("skybox_edge_resolve pipeline missing after readiness pre-check");
+        {
             let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
                 &ComputePassDescriptor::new(Some("Material Opaque - Skybox Edge Resolve")).into(),
             ));
-            compute_pass.set_pipeline(ctx.pipelines.compute.get(pipeline_key)?);
+            compute_pass.set_pipeline(ctx.pipelines.compute.get(skybox_pipeline_key)?);
             compute_pass.set_bind_group(0u32, &skybox_edge_group, None)?;
             compute_pass.dispatch_workgroups_indirect_with_u32(
                 &edge_buffers.args_buffer,
                 MaterialEdgeBuffers::skybox_edge_args_offset(),
             );
             compute_pass.end();
-        } else {
-            warn_pipeline_not_compiled("material_opaque::edge_resolve", "skybox");
         }
 
         // ── Final blend ─────────────────────────────────────────────
