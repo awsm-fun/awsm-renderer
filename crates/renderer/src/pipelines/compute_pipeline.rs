@@ -132,7 +132,11 @@ impl ComputePipelines {
             .iter()
             .map(|&input_idx| {
                 let ck = &inputs[input_idx];
-                format!("{:?}:{:?}", ck.shader_key, ck.layout_key)
+                let shader_label = shaders
+                    .get_label(ck.shader_key)
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| format!("{:?}", ck.shader_key));
+                format!("{}:{:?}", shader_label, ck.layout_key)
             })
             .collect();
         let promises = descriptors
