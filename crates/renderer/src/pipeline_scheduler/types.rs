@@ -69,7 +69,10 @@ pub enum PipelineGroupStatus {
     /// with a corrected definition. The mesh / pass dispatch site
     /// silently skips Failed groups (one-shot warn in the
     /// render-frame preamble).
-    Failed { error: AwsmError },
+    Failed {
+        /// Underlying compile error.
+        error: AwsmError,
+    },
 }
 
 /// Coarse-grained equality for status-stream consumers that don't need
@@ -154,16 +157,21 @@ pub enum PassDef {
     /// The empty opaque compute pipeline — runs on skybox-only frames
     /// and the bucket-skip path. Always eager.
     OpaqueEmpty {
+        /// Renderer-config snapshot this pipeline is keyed on.
         snapshot: PipelineConfigSnapshot,
     },
     /// MSAA variant of the classify compute pass.
     ClassifyMsaa {
+        /// MSAA sample count this pipeline targets.
         samples: u8,
+        /// Renderer-config snapshot this pipeline is keyed on.
         snapshot: PipelineConfigSnapshot,
     },
     /// MSAA variant of the geometry render passes.
     GeometryMsaa {
+        /// MSAA sample count this pipeline targets.
         samples: u8,
+        /// Renderer-config snapshot this pipeline is keyed on.
         snapshot: PipelineConfigSnapshot,
     },
     /// Display blit — renders the opaque target to the swap chain.
@@ -172,34 +180,44 @@ pub enum PassDef {
     ScenePassClear,
     /// HZB seed compute (active only when `gpu_culling` feature is on).
     HzbSeed {
+        /// MSAA sample count this pipeline targets.
         samples: u8,
     },
     /// EVSM compute pipelines (only after first shadow-caster).
     Evsm,
     /// Line primitives render pass.
     Line {
+        /// Renderer-config snapshot this pipeline is keyed on.
         snapshot: PipelineConfigSnapshot,
     },
     /// Shadow-gen render pipelines.
     ShadowGen,
     /// Mouse-picker compute pipeline.
     Picker {
+        /// Renderer-config snapshot this pipeline is keyed on.
         snapshot: PipelineConfigSnapshot,
     },
     /// Post-processing pipelines.
     Bloom {
+        /// `(width, height)` of the post-fx target this pipeline is sized for.
         resolution: (u32, u32),
     },
+    /// SMAA post-fx pipelines.
     Smaa {
+        /// `(width, height)` of the post-fx target this pipeline is sized for.
         resolution: (u32, u32),
     },
+    /// Depth-of-field post-fx pipelines.
     Dof,
     /// Priority-3 MSAA-edge-resolve helpers (shared across all
     /// materials).
     EdgeResolveSkybox {
+        /// Renderer-config snapshot this pipeline is keyed on.
         snapshot: PipelineConfigSnapshot,
     },
+    /// MSAA-edge-resolve helper for transparent (Blend) materials.
     EdgeResolveBlend {
+        /// Renderer-config snapshot this pipeline is keyed on.
         snapshot: PipelineConfigSnapshot,
     },
 }
@@ -209,20 +227,44 @@ pub enum PassDef {
 /// scheduler.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum PassKind {
+    /// The empty opaque compute pipeline (skybox-only / bucket-skip path).
     OpaqueEmpty,
-    ClassifyMsaa { samples: u8 },
-    GeometryMsaa { samples: u8 },
+    /// MSAA variant of the classify compute pass, parametrised by sample count.
+    ClassifyMsaa {
+        /// MSAA sample count.
+        samples: u8,
+    },
+    /// MSAA variant of the geometry render passes, parametrised by sample count.
+    GeometryMsaa {
+        /// MSAA sample count.
+        samples: u8,
+    },
+    /// Display-blit pipeline.
     Display,
+    /// Scene-pass clear pipeline.
     ScenePassClear,
-    HzbSeed { samples: u8 },
+    /// HZB seed compute pipeline (parametrised by sample count).
+    HzbSeed {
+        /// MSAA sample count.
+        samples: u8,
+    },
+    /// EVSM compute pipelines.
     Evsm,
+    /// Line-primitives render pipeline.
     Line,
+    /// Shadow-gen render pipelines.
     ShadowGen,
+    /// Mouse-picker compute pipeline.
     Picker,
+    /// Bloom post-fx pipelines.
     Bloom,
+    /// SMAA post-fx pipelines.
     Smaa,
+    /// Depth-of-field post-fx pipelines.
     Dof,
+    /// MSAA-edge-resolve helper for skybox.
     EdgeResolveSkybox,
+    /// MSAA-edge-resolve helper for transparent (Blend) materials.
     EdgeResolveBlend,
 }
 
@@ -260,10 +302,15 @@ impl PassDef {
 /// [`PassDef`] variant.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PipelineConfigSnapshot {
+    /// Active anti-aliasing mode (MSAA sample count or off).
     pub msaa: AntiAliasing,
+    /// Active mipmap-sampling mode.
     pub mipmap: MipmapMode,
+    /// Whether the mesh-light-slices optimisation is active.
     pub use_mesh_light_slices: bool,
+    /// Whether GPU culling (HZB) is active.
     pub gpu_culling: bool,
+    /// Whether coverage-LOD selection is active.
     pub coverage_lod: bool,
     /// Currently-set debug bitmask. Most debug branches are
     /// PBR-template-only; included here for completeness.

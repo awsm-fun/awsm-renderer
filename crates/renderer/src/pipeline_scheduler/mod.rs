@@ -32,11 +32,7 @@
 //!   literal "push real compile futures onto `inflight`" direction is
 //!   preserved as a Block D follow-up.
 
-// E.7 missing_docs gate deferred — the pipeline_scheduler module has
-// ~49 fields/variants on public types that need docstrings before the
-// gate can land without flooding the build with warnings. The
-// docstring sweep is straightforward but voluminous; not blocking the
-// architecture.
+#![warn(missing_docs)]
 
 pub mod types;
 
@@ -54,7 +50,9 @@ use crate::error::AwsmError;
 
 /// Per-material state stored in the scheduler.
 pub struct MaterialState {
+    /// Original submission definition (snapshot-pinned).
     pub def: MaterialDef,
+    /// Current readiness state.
     pub status: PipelineGroupStatus,
     /// Generation marker — increments each time this material's pipelines
     /// are resubmitted (e.g. after a config flip). Used to discard stale
@@ -65,8 +63,12 @@ pub struct MaterialState {
 
 /// Per-pass state stored in the scheduler.
 pub struct PassState {
+    /// Original submission definition for this pass group.
     pub def: PassDef,
+    /// Current readiness state.
     pub status: PipelineGroupStatus,
+    /// Generation marker — bumped on every resubmission so stale compile
+    /// resolutions can be dropped silently.
     pub generation: u32,
 }
 
@@ -74,8 +76,12 @@ pub struct PassState {
 /// for the scheduler to find the right slot and decide whether to
 /// commit the transition (or drop it as stale).
 pub struct CompileResolution {
+    /// Id of the group that this resolution applies to.
     pub id: PipelineGroupId,
+    /// Generation marker captured when the future was queued; compared
+    /// against the slot's current generation to detect staleness.
     pub generation: u32,
+    /// Outcome of the compile.
     pub result: Result<(), AwsmError>,
 }
 
@@ -84,7 +90,9 @@ type PendingFuture = Pin<Box<dyn Future<Output = CompileResolution> + 'static>>;
 /// Status-stream event surface for frontends.
 #[derive(Debug)]
 pub struct StatusEvent {
+    /// Id of the group whose status changed.
     pub id: PipelineGroupId,
+    /// New status for the group.
     pub status: PipelineGroupStatus,
 }
 
