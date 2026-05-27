@@ -863,7 +863,7 @@ This is the bigger refactor: replace the per-pass eager `new()` calls in `AwsmRe
 
 The user wants "everything everything". Items from ROADMAP.md + opportunities surfaced during this work:
 
-- **E.1** **Compute-pipeline labels in Lessons A**: render-pipeline labels embed the shader's `debug_label`; compute-pipeline labels are still `compute:ShaderKey(_):PipelineLayoutKey(_)`. Use the new `Shaders::get_label()` helper added in Stage 1.7 to thread the shader name through (~20 lines).
+- **E.1** **Compute-pipeline labels in Lessons A** ✅ landed: render-pipeline labels embed the shader's `debug_label`; compute-pipeline labels are still `compute:ShaderKey(_):PipelineLayoutKey(_)`. Use the new `Shaders::get_label()` helper added in Stage 1.7 to thread the shader name through (~20 lines).
 - **E.2** **Multithreading prep**: `pipeline_scheduler` currently uses single-threaded `FuturesUnordered`. Audit for SharedArrayBuffer-readiness when wasm32-multithread lands. Document the boundaries.
 - **E.3** **Test surface**: `wait_for_pipelines_ready()` test helper is in place; sweep `crates/renderer/tests/` and `crates/renderer/examples/` for sites that still rely on sync-insert-then-dispatch.
 - **E.4** **Per-pipeline-cumulative-timing log polish**: per-pipeline labels currently log on resolve. Add a per-batch sort-by-finish-time summary at the end of each `ensure_keys` call so the operator can scan "which pipeline finished last."
