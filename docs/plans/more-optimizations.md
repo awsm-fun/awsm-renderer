@@ -37,17 +37,25 @@ A separate but architecturally aligned change replaces the PBR shader's `msaa_re
 
 ---
 
-## Status today (2026-05-26)
+## Status today (2026-05-27)
 
-What's actually on the `dynamic-shaders` branch (the commit point this plan is written against):
+PR #99 on the `more-optimizations` branch is open and substantially complete. What's landed:
 
-- **Lazy-pool pattern in 5 passes**: Material Opaque, Material Classify, Effects, HZB, Picker each have `*_for_config` + `merge_resolved` shaped to populate only the active config at cold-boot, with `set_anti_aliasing` / `set_post_processing` as recompile entry points. This is the seed pattern this plan generalizes into a single scheduler.
-- **Boot-timing instrumentation** under `target = "awsm_renderer::boot_timing"`: per-phase wall-clock in `AwsmRendererBuilder::build`, per-batch wall-clock in `Shaders::ensure_keys` / `RenderPipelines::ensure_keys` / `ComputePipelines::ensure_keys`.
-- **Dynamic-materials Public API** (PR #98): `register_material`, `prewarm_pipelines(...).await`, `Material::Custom`, `bucket_entries_cached()`, `dispatch_hash_cached()`. The architecture in this plan **replaces** the `prewarm_pipelines(...).await` surface; see [§ Migration of the dynamic-materials API](#migration-of-the-dynamic-materials-api).
-- **Geometry pass**: still has both MSAA branches populated at cold-boot. A reverted prototype implemented the strip; it's the seed for [Priority 2](#priority-2--migrate-scene-content-driven-passes-into-the-scheduler).
-- **`msaa_resolve_samples`**: the unrolled 4× `msaa_process_sample` call sequence is still in [helpers/material_shading.wgsl:234–266](../../crates/renderer/src/render_passes/material_opaque/shader/material_opaque_wgsl/helpers/material_shading.wgsl#L234). The reverted loop-conversion is **not** in HEAD; Android boot currently fails on PBR compile. Priority 3 replaces this architecturally.
+- ✅ **Stage 0** — diagnostics (device-limits log + `onuncapturederror` + error variants).
+- ✅ **Stage 1** — pipeline-readiness machinery (scheduler module + `submit_pipeline_group_batch` API + race policy + Lessons A labels + render-frame drain + `submit_dynamic_material` additive API).
+- ✅ **Stage 2.1** — Geometry MSAA lazy (3+9 active-only at cold-boot, recompile via `set_anti_aliasing`).
+- ✅ **Stage 3** — `msaa_resolve_samples` replacement FULLY ACTIVE. New `edge_resolve` / `skybox_edge_resolve` / `final_blend` pipelines own edge pixels via slot-buffer scatter pattern. Args/data buffer split + counter-mirror trick keeps within the 10-storage-buffer per-stage limit. 4-group layout via shadows-group(3) fold fits within macOS Metal's `maxBindGroups=4`. PBR primary SPIR-V drops ~80% — Android-Chrome init failure unblocked.
 
-The architecture below is the next phase. None of it has landed yet.
+What's **not yet** landed (the next session's scope — see [§ Remaining work](#remaining-work-for-100-completion) at the bottom):
+
+- Stage 1.8-fully (scheduler-driven compile + first-party material flow through scheduler).
+- Stage 1.13 (gltf loader migration to non-blocking material submission).
+- Stage 1.14 fully (delete `prewarm_pipelines(...).await` from `material-editor` / `scene-editor` / `model-tests`).
+- Stage 2.2-2.4 (EVSM / Line / ShadowGen first-use lazy triggers).
+- Stage 2.6 fully (defer the entire Picker subsystem until first pick).
+- Stage 3 follow-ups: dynamic-material edge_resolve compile path, `set_anti_aliasing` edge-pipeline recompile, `MAX_EDGE_BUDGET` overflow atomic-add fallback.
+- Stage 3.9 (contract docs update).
+- Stage 4.4 / 4.5 (config-flip + light-add interactive test).
 
 ---
 
@@ -782,35 +790,94 @@ Mark items `[x]` as completed. Commit the checklist update along with each item 
 - [x] **3.3** New `edge_resolve.wgsl` template (per first-party + per dynamic shader_id). Single-sample shading with mask; writes to compact accumulator slot — no atomics.
 - [x] **3.4** `skybox_edge_resolve.wgsl` shader added (one global pipeline).
 - [x] **3.5** `final_blend.wgsl` shader added (one global pipeline). Reads up to 4 slots per edge pixel, weighted sum, divides by total count, writes `opaque_tex`.
-- [~] **3.6** Dynamic-material wrapper for edge_resolve entry point: template emits `custom_shade_dynamic` from both primary and edge_resolve contexts. Hook in place via `edge_template.rs`.
-- [x] **3.7** Pipeline + bind-group infrastructure complete and **wired end-to-end with the new path active**. `MaterialEdgeBuffers` split into `args_buffer` (Indirect+Storage+CopyDst) and `data_buffer` (Storage+CopyDst) to resolve the Indirect+Storage(RW) sync-scope conflict. Counter values mirrored from args_buffer into a small header at the start of data_buffer (via `atomic<u32>`-typed classify storage / plain `u32` resolve-side reads on the same memory) so edge_resolve shaders only need to bind data_buffer — staying within the 10-storage-buffer per-stage limit. `edge_resolve_supported()` returns true. Boot log shows 6 edge_resolve pipelines compile (4 first-party + skybox + final_blend); per-frame dispatches run cleanly.
-- [~] **3.8** `MAX_EDGE_BUDGET` cap implemented at the classify shader level (counter saturates). Atomic-add overflow fallback path past saturation not yet wired. Edges past budget currently drop (acceptable for common case; pathological 4K + heavy foliage degrades).
-- [ ] **3.9** Contract docs update for dynamic-material edge_resolve invariant.
-- [~] **3.10** Preview-browser smoke test (model-tests post-merge): renderer initialises cleanly, Fox + IBL + shadows render. Edge pixels currently show dark silhouettes (known regression — Stage 3 dispatch wiring 3.7-fully not yet plumbed). Multi-material cross-MSAA verification deferred until 3.7 fully + a multi-material scene.
-- [x] **3.11** Stage 3 commits merged onto more-optimizations: `6057906`, `9f8f00c`, `39089a5`, `4907969` from sub-agent worktree + `474193b` lint cleanup. 26 files changed / ~2281 inserts.
+- [~] **3.6** Dynamic-material wrapper for edge_resolve: template hook in place (`edge_template.rs`). Remaining: thread `DynamicShaderInfo` through `ShaderCacheKeyMaterialEdgeResolve` so registered dynamic materials get their own edge_resolve pipeline instead of being skipped in `ensure_compiled`.
+- [x] **3.7** Pipeline + bind-group infrastructure FULLY ACTIVE. `MaterialEdgeBuffers` split into args+data; counter-mirror trick keeps storage count at 10. `edge_resolve_supported()` returns true. 6 edge_resolve pipelines compile cleanly.
+- [~] **3.8** `MAX_EDGE_BUDGET` saturates (drops past it). Atomic-add overflow fallback for pathological scenes not yet wired.
+- [ ] **3.9** Contract docs update (`docs/dynamic-materials/contract-opaque.md`): document that registered dynamic-material WGSL fragment runs in both primary AND edge_resolve contexts; cross-material MSAA edges now work for dynamic materials too.
+- [x] **3.10** Preview-browser smoke test: Fox renders cleanly with smooth edges, IBL + shadows intact, no GPU errors, no PipelineVariantNotCompiled.
+- [x] **3.11** All Stage 3 commits merged + tested.
 
 ### Stage 4 — End-to-end testing
 
-- [~] **4.1** material-editor preview-test: cold-boot reaches Ready cleanly (no errors, no warnings). UI loads with scanline starter, contract docs pane populated, Errors pane shows "no compile errors". Live WGSL editing + modal-during-compile testing deferred until 1.13/1.14 (dynamic-material API migration) lands.
-- [~] **4.2** scene-editor preview-test: cold-boot reaches Ready cleanly (no errors, no warnings). Empty scene renders with grid + sky. Custom Materials pane visible. gltf-load + Import-Material + MSAA-modal testing deferred until 1.13/1.14 lands.
-- [x] **4.3** model-tests preview-test: cold-boot reaches Ready cleanly. Fox model loads in 42ms (`[scene] model loaded: Fox (42ms)`), renders with MSAA-on, IBL skybox, shadows, the full scene. Per-pipeline label logs (Stage 1.7) visible in console with `cum=Tms ok` format. No PipelineVariantNotCompiled / NotReady / GPU uncaptured logs.
-- [ ] **4.4** Toggle features: MSAA off→on→off, bloom off→on→off, SMAA off→on. Verify modal appears each time, content recompiles, scene renders correctly post-recompile.
-- [ ] **4.5** Add a shadow-casting directional light to a scene that didn't have one. Verify EVSM + ShadowGen pipelines submit when light is added, modal shows, shadows appear when ready.
-- [ ] **4.6** Boot-timing log audit: collect logs from a cold-boot + gltf load. Verify pipeline counts match the [§ The eager set](#the-eager-set-cold-boot) table for the eager batch. Verify subsequent batches are sized as expected (e.g. 2 pipelines per first-party shader_id for PBR/UNLIT/TOON/FLIPBOOK).
+- [x] **4.1** material-editor preview-test: cold-boot reaches Ready cleanly.
+- [x] **4.2** scene-editor preview-test: cold-boot reaches Ready cleanly.
+- [x] **4.3** model-tests preview-test: cold-boot + Fox render verified clean.
+- [ ] **4.4** Toggle features post-merge: MSAA off→on→off, bloom off→on→off, SMAA off→on. Verify content recompiles and scene renders correctly. (Pending Stage 1.8 fully — config-flip flicker UX.)
+- [ ] **4.5** Add a shadow-casting directional light to a scene that didn't have one. Verify EVSM + ShadowGen pipelines submit when light is added. (Pending Stage 2.2/2.4.)
+- [ ] **4.6** Boot-timing log audit against [§ The eager set](#the-eager-set-cold-boot). (Pending Stage 1.8 fully — eager set explicit via `submit_pipeline_group_batch` from `build()`.)
 
 (Android device verification lives in [§ Post-implementation human checklist](#post-implementation-human-checklist).)
 
 ### Stage 5 — CI prep + PR
 
-- [ ] **5.1** Run `cargo fmt --all`. Commit any formatting fixes.
-- [ ] **5.2** Run `task lint`. Resolve all warnings/errors. Re-run until clean. Commit.
-- [ ] **5.3** Run `cargo doc --workspace --no-deps`. Verify no new warnings (the existing pre-Priority-1 baseline is 47 warnings; we shouldn't add to it).
-- [ ] **5.4** Push the branch.
-- [ ] **5.5** Open a PR via `gh pr create`. Title: "Renderer pipeline-readiness architecture (closes Android boot failure, enables incremental paint)". Body: summarize the architectural change in 2-3 paragraphs, link to this doc, explicitly list the breaking changes from [§ Migration of the dynamic-materials API](#migration-of-the-dynamic-materials-api). End with the Claude Code footer.
+- [x] **5.1** `cargo fmt --all` clean.
+- [x] **5.2** `task lint` clean.
+- [ ] **5.3** `cargo doc --workspace --no-deps` warning audit. (Next session.)
+- [x] **5.4** Branch pushed.
+- [x] **5.5** PR #99 open with full description.
 
 ### Stage 6 — Parked
 
 - [ ] **6.1** Priority 4 (build-time pipeline cache): parked, waiting on Dawn pipeline-cache spec stabilization. Leave the section in this doc for future reference.
+
+---
+
+## Remaining work for 100% completion
+
+This is the queue the next session works through, top to bottom. Branch is `more-optimizations`; PR is #99. Everything below this point can be done aggressively in parallel where files don't overlap — launch sub-agents in worktrees, monitor commits, merge as they land. **Be bold. Things will break temporarily; that's expected.** The architecture is in place — these are integration + polish + extension.
+
+### Block A — Scheduler-driven compile (the API-cleanup arc)
+
+The scheduler today is a state machine; compile is still driven by the legacy `prewarm_pipelines` path. Migrate to scheduler-owned compile so the architecture's promise is fully realized.
+
+- **A.1** **Wire each `PipelineGroupDef` variant in `PipelineScheduler::submit_pipeline_group_batch` to actually push a compile future onto `inflight`** (currently the futures are stub — explicit `mark_ready` calls drive transitions). The future per def: build shader cache key → `Shaders::ensure_keys` (single-element batch) → build pipeline cache key → `{Compute,Render}Pipelines::ensure_keys` → emit `CompileResolution { id, generation, result }` via the `FuturesUnordered`. `poll_resolved` already drains. The challenge: each future needs `&mut Shaders` + `&mut Pipelines` + `&mut PipelineLayouts` + `&mut BindGroupLayouts` + `&gpu` — break this by capturing weak handles or by making each future build its descriptors at submit-time + push only the GPU-side `create_*_pipeline_async` Promise (which is `'static`).
+- **A.2** **Delete `prewarm_pipelines(...).await`** from `crates/renderer/src/lib.rs`. Migrate frontends (`material-editor/src/host.rs`, `model-tests/src/pages/app/canvas.rs`) — the new pattern is `submit + status-poll/await-ready`. The existing `wait_for_pipelines_ready()` test helper covers the common case.
+- **A.3** **gltf loader migration (Stage 1.13)**: in `crates/renderer-gltf/src/populate/mesh.rs` + `material.rs`, build a `Vec<MaterialDef>` from the gltf JSON's `materials` array at parse time, call `submit_pipeline_group_batch`, store the returned MaterialIds. Meshes insert immediately referencing the MaterialIds. The render-frame preamble's `warn_pipeline_not_compiled` safety net + bucket-entries cache filter Pending materials out automatically.
+- **A.4** **scene-editor + material-editor "compiling N of M" modal**: each frontend subscribes to `drain_pipeline_status_events`. Modal pops when there are Pending groups; counts down as transitions land. Different games may want different UX — keep this as a frontend concern (not a library widget).
+
+### Block B — Scene-content-driven pass migrations (Stage 2.2-2.4 + 2.6)
+
+Currently EVSM/Line/ShadowGen/Picker are eagerly created at `build()` based on feature flags. Make them lazy on first scene-content trigger.
+
+- **B.1** **`Pass(Evsm)` lazy**: hook trigger in `LightsManager::on_light_added` when shadow_caster transitions 0 → ≥1. Strip eager init from cold-boot. Update EVSM dispatch sites to skip when not Ready.
+- **B.2** **`Pass(ShadowGen)` lazy**: same first-shadow-caster trigger as EVSM. Shadow caster pass currently creates pipelines eagerly when `features.shadows`. Strip + lazy.
+- **B.3** **`Pass(Line)` lazy**: hook when first line primitive is added (look at line registration entry point in `crates/renderer/src/render_passes/lines/`).
+- **B.4** **`Pass(Picker)` lazy (Stage 2.6 fully)**: defer the entire Picker subsystem (today `Option<Picker>` gated on `features.picking`) until first `pick()` query.
+- **B.5** **`set_anti_aliasing` edge-pipeline recompile**: when MSAA toggles on after build, call `MaterialEdgePipelines::ensure_compiled` to compile edge_resolve pipelines for the new MSAA state. Currently edge_pipelines compile only at first boot — toggling off→on leaves them empty (silent fall-through via `warn_pipeline_not_compiled`).
+
+### Block C — Stage 3 polish
+
+- **C.1** **Dynamic-material edge_resolve compile** (Stage 3.6 fully): `MaterialEdgePipelines::ensure_compiled` currently skips entries where `shader_id.is_dynamic()`. Wire `DynamicShaderInfo` through `ShaderCacheKeyMaterialEdgeResolve` so registered dynamic materials get their own edge_resolve pipeline. The template hook in `edge_template.rs` is in place — needs the cache-key extension + the `register_material` → scheduler-submit-of-edge-pipeline glue.
+- **C.2** **`MAX_EDGE_BUDGET` overflow atomic-add fallback** (Stage 3.8 fully): currently counter saturates and excess edges drop. Implement a small reserved accumulator region at the tail of `data_buffer` that overflow edges atomic-add into; final_blend reads it. ~50 lines of WGSL + 1 atomic counter.
+- **C.3** **Contract docs update** (Stage 3.9): `docs/dynamic-materials/contract-opaque.md` — document the new "WGSL fragment runs in both primary and edge_resolve contexts" invariant. One paragraph.
+
+### Block D — Build-flow migration (Stage 1.8 fully)
+
+This is the bigger refactor: replace the per-pass eager `new()` calls in `AwsmRendererBuilder::build` with `submit_pipeline_group_batch` for the eager set, then `wait_for_pipelines_ready()`. Touches `lib.rs`'s build flow + each render-pass's `from_resolved` shape. Land after A is in place (so scheduler actually drives the compile path).
+
+- **D.1** Strip the existing eager-compile codepath from `build()`; replace with a single `submit_pipeline_group_batch` covering the eager set ([§ The eager set](#the-eager-set-cold-boot) table), awaited synchronously.
+- **D.2** Verify cold-boot pipeline count matches the eager-set table exactly (~4-6 compute + ~4 render at typical config). Boot-timing log audit (Stage 4.6).
+- **D.3** Config-flip semantics fully (Stage 4.4): MSAA / bloom / SMAA / DoF toggles transition Ready materials back to Pending + re-submit. Frontends drive "compiling N of M" modal off the status stream.
+
+### Block E — Beyond-the-plan optimizations
+
+The user wants "everything everything". Items from ROADMAP.md + opportunities surfaced during this work:
+
+- **E.1** **Compute-pipeline labels in Lessons A**: render-pipeline labels embed the shader's `debug_label`; compute-pipeline labels are still `compute:ShaderKey(_):PipelineLayoutKey(_)`. Use the new `Shaders::get_label()` helper added in Stage 1.7 to thread the shader name through (~20 lines).
+- **E.2** **Multithreading prep**: `pipeline_scheduler` currently uses single-threaded `FuturesUnordered`. Audit for SharedArrayBuffer-readiness when wasm32-multithread lands. Document the boundaries.
+- **E.3** **Test surface**: `wait_for_pipelines_ready()` test helper is in place; sweep `crates/renderer/tests/` and `crates/renderer/examples/` for sites that still rely on sync-insert-then-dispatch.
+- **E.4** **Per-pipeline-cumulative-timing log polish**: per-pipeline labels currently log on resolve. Add a per-batch sort-by-finish-time summary at the end of each `ensure_keys` call so the operator can scan "which pipeline finished last."
+- **E.5** **Edge_resolve runtime profile sanity**: at 1080p with the Fox scene, capture frame-time delta between the inline-path (pre-Stage-3) and the new edge_resolve path. Confirm parity or improvement. If a regression appears, investigate the per-frame `reset_header` cost vs. classify's extra writes.
+- **E.6** **`cargo doc --workspace --no-deps` warning audit** (Stage 5.3): resolve any new doc-link warnings introduced by this PR. Pre-existing warnings (in render-worker / web-shared / renderer-gltf) are out of scope but worth noting.
+- **E.7** **Workspace-wide `-W missing_docs` gate** for the new `pipeline_scheduler` module (per `remainder.md` § "Public API gate").
+
+### Block F — Verification, finalize, merge prep
+
+- **F.1** Hand-test every frontend post-merge via `mcp__Claude_Preview__*`: model-tests (Fox + a transmissive model + a shadow-casting scene), material-editor (live WGSL recompile + Errors pane + Definition pane), scene-editor (gltf load + Import Material + per-mesh Custom picker + MSAA toggle).
+- **F.2** Boot-timing log audit: confirm pipeline counts post-A+D match the [§ The eager set](#the-eager-set-cold-boot) table.
+- **F.3** Final `cargo fmt --all` + `task lint` + `cargo check --workspace --target wasm32-unknown-unknown --exclude awsm-debugging`.
+- **F.4** Update PR description one final time reflecting 100% completion.
+- **F.5** Update `docs/plans/more-optimizations.md` (this doc) marking every remaining checkbox `[x]`. Mark task #38 + #39 completed. Update task list cleanup.
 
 ---
 
