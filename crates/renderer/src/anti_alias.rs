@@ -362,7 +362,10 @@ impl AwsmRenderer {
             let color_wgsl = awsm_renderer_core::texture::texture_format_to_wgsl_storage(
                 self.render_textures.formats.color,
             )?;
-            let bucket_entries = crate::dynamic_materials::first_party_bucket_entries();
+            let bucket_entries = self
+                .dynamic_materials
+                .bucket_entries_cached()
+                .to_vec();
             let crate::pipelines::Pipelines {
                 render: _render_pipelines,
                 compute: compute_pipelines,
@@ -381,6 +384,7 @@ impl AwsmRenderer {
                     &bucket_entries,
                     &self.anti_aliasing,
                     color_wgsl,
+                    Some(&self.dynamic_materials),
                 )
                 .await?;
         }

@@ -444,6 +444,44 @@ impl AwsmRenderer {
         // each registered dynamic material.
         if !self.dynamic_materials.is_empty() {
             self.prewarm_dynamic_pipelines().await?;
+
+            // After dynamic shader/pipeline caches are warm, also
+            // compile the per-shader-id edge_resolve pipelines for the
+            // updated bucket list — Block C.1 wiring so newly-registered
+            // dynamic shader_ids get their cross-material MSAA edge
+            // contribution instead of falling through to
+            // `warn_pipeline_not_compiled`.
+            if self.anti_aliasing.msaa_sample_count.is_some()
+                && edge_resolve_supported(&self.gpu)
+            {
+                let color_wgsl =
+                    awsm_renderer_core::texture::texture_format_to_wgsl_storage(
+                        self.render_textures.formats.color,
+                    )?;
+                let bucket_entries =
+                    self.dynamic_materials.bucket_entries_cached().to_vec();
+                let crate::pipelines::Pipelines {
+                    render: _render_pipelines,
+                    compute: compute_pipelines,
+                } = &mut self.pipelines;
+                self.render_passes
+                    .material_opaque
+                    .edge_pipelines
+                    .ensure_compiled(
+                        &self.gpu,
+                        &mut self.shaders,
+                        compute_pipelines,
+                        &mut self.pipeline_layouts,
+                        &mut self.bind_group_layouts,
+                        &self.render_passes.material_opaque.bind_groups,
+                        &self.render_passes.material_opaque.edge_bind_group_layouts,
+                        &bucket_entries,
+                        &self.anti_aliasing,
+                        color_wgsl,
+                        Some(&self.dynamic_materials),
+                    )
+                    .await?;
+            }
         }
 
         // Build one request per mesh. `ensure_keys` on both caches
@@ -767,6 +805,24 @@ impl AwsmRenderer {
                         );
                 }
                 Slot::TransparentSkip => unreachable!("filtered out above"),
+            }
+        }
+
+        // ── Phase 6 (Block A.1 bridge): mark every scheduler-tracked
+        //    dynamic material whose pipelines we just compiled as
+        //    `Ready`. The scheduler treats this as the canonical
+        //    state transition; frontends watching the status stream
+        //    (drain_pipeline_status_events) observe each material
+        //    light up here. Materials not in the scheduler (legacy
+        //    `register_material` callers that bypassed
+        //    `submit_dynamic_material`) are silently skipped — they
+        //    never had a scheduler entry to flip.
+        let dyn_ids: Vec<awsm_materials::MaterialShaderId> =
+            self.dynamic_materials.iter().map(|(sid, _)| sid).collect();
+        for sid in dyn_ids {
+            if let Some(mid) = self.pipeline_scheduler.find_material_by_shader_id(sid) {
+                self.pipeline_scheduler
+                    .mark_ready(crate::pipeline_scheduler::PipelineGroupId::Material(mid));
             }
         }
 
@@ -1731,6 +1787,7 @@ impl AwsmRendererBuilder {
                     &bucket_entries,
                     &anti_aliasing,
                     color_wgsl,
+                    None,
                 )
                 .await?;
         }

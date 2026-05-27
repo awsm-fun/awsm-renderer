@@ -26,12 +26,13 @@ use std::collections::HashMap;
 use awsm_materials::MaterialShaderId;
 
 use crate::anti_alias::AntiAliasing;
-use crate::dynamic_materials::BucketEntry;
+use crate::dynamic_materials::{BucketEntry, DynamicMaterials};
 use crate::error::Result;
 use crate::pipeline_layouts::{PipelineLayoutCacheKey, PipelineLayoutKey};
 use crate::pipelines::compute_pipeline::{ComputePipelineCacheKey, ComputePipelineKey};
 use crate::render_passes::material_opaque::bind_group::MaterialOpaqueBindGroups;
 use crate::render_passes::material_opaque::edge_bind_group::MaterialEdgeBindGroupLayouts;
+use crate::render_passes::material_opaque::shader::cache_key::DynamicShaderInfo;
 use crate::render_passes::material_opaque::shader::edge_cache_key::{
     ShaderCacheKeyMaterialEdgeResolve, ShaderCacheKeyMaterialFinalBlend,
     ShaderCacheKeyMaterialSkyboxEdgeResolve,
@@ -172,6 +173,7 @@ impl MaterialEdgePipelines {
         bucket_entries: &[BucketEntry],
         anti_aliasing: &AntiAliasing,
         color_wgsl_format: &str,
+        dynamic_registry: Option<&DynamicMaterials>,
     ) -> Result<()> {
         // No MSAA → no edges → no compile.
         if anti_aliasing.msaa_sample_count.is_none() {
@@ -227,20 +229,42 @@ impl MaterialEdgePipelines {
         let mut pipeline_layout_keys: Vec<PipelineLayoutKey> = Vec::new();
 
         for (bucket_index, entry) in bucket_entries.iter().enumerate() {
-            // Skip dynamic shader_ids for now — they need DynamicShaderInfo,
-            // which lives on the dynamic registration. First-party only at
-            // this commit; dynamic wiring lands when the dynamic-material
-            // scheduler integration does (Stage 1.14).
-            if entry.shader_id.is_dynamic() {
-                continue;
-            }
+            // Dynamic shader_ids need their `DynamicShaderInfo` triple
+            // (struct_decl / loader_decl / wgsl_fragment) templated into
+            // the edge_resolve shader. Look up the registration in the
+            // dynamic registry; without it, skip (no shading body to
+            // template — dispatch site falls through via
+            // `warn_pipeline_not_compiled`).
+            let (dispatch_hash, dynamic_shader) = if entry.shader_id.is_dynamic() {
+                let Some(registry) = dynamic_registry else {
+                    continue;
+                };
+                let Some(reg) = registry.get(entry.shader_id) else {
+                    continue;
+                };
+                let info = DynamicShaderInfo {
+                    struct_decl: awsm_materials::dynamic_layout::generate_wgsl_struct(
+                        "MaterialData",
+                        &reg.layout,
+                    ),
+                    loader_decl: awsm_materials::dynamic_layout::generate_wgsl_loader(
+                        "MaterialData",
+                        "material_data_load",
+                        &reg.layout,
+                    ),
+                    wgsl_fragment: reg.wgsl_fragment.clone(),
+                };
+                (registry.dispatch_hash_cached(), Some(info))
+            } else {
+                (0, None)
+            };
             let key = ShaderCacheKeyMaterialEdgeResolve {
                 texture_pool_arrays_len,
                 texture_pool_samplers_len,
                 mipmaps,
                 shader_id: entry.shader_id,
-                dispatch_hash: 0,
-                dynamic_shader: None,
+                dispatch_hash,
+                dynamic_shader,
                 bucket_entries: bucket_entries.to_vec(),
                 bucket_index: bucket_index as u32,
             };
