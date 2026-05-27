@@ -359,12 +359,31 @@ fn cs_main(
             depth_edge = depth_range > (0.02 * avg_depth);
         }
 
-        // ── Check 2: 4-neighbor view-space depth + coverage check ───
+        // ── Check 2: 4-neighbor coverage + normal + depth check ─────
+        //
+        // Order matches main's `edge_mask_neighbors`:
+        //   1. neighbor uncovered (tri_id == U32_MAX) → edge.
+        //   2. normal discontinuity (dot < 0.95 ≈ 18°) → edge.
+        //   3. depth discontinuity (relative 2% in view-space) → edge.
+        //
+        // The normal check is critical at tile-facet boundaries on the
+        // platform top, where adjacent same-mesh tiles share depth +
+        // mat_meta but rotate their surface normal by a small angle.
+        // Depth-only neighbour detection misses these and leaves a
+        // diagonal stripe of aliasing along the platform's top-front
+        // edge.
+        let EDGE_NORMAL_THRESHOLD: f32 = 0.95;
         var neighbor_edge: bool = false;
         if (cov_0) {
             let center_d = textureLoad(depth_tex, coords, 0);
             let center_vd = view_space_depth(camera, center_d, pixel_center, screen_dims_f32);
             let depth_threshold = 0.02 * abs(center_vd);
+            // Center normal: sample-0 of the multisampled normal_tangent
+            // texture, unpacked via the shared TBN helper. Same convention
+            // the primary opaque + edge_resolve paths use.
+            let center_nt = textureLoad(normal_tangent_tex, coords, 0);
+            let center_tbn = unpack_normal_tangent(center_nt);
+            let center_normal = center_tbn.N;
             let neighbor_offsets = array<vec2<i32>, 4>(
                 vec2<i32>(1, 0),
                 vec2<i32>(-1, 0),
@@ -387,13 +406,17 @@ fn cs_main(
                 let nv = textureLoad(visibility_data_tex, n_coords, 0);
                 let n_tri = join32(nv.x, nv.y);
                 if (n_tri == U32_MAX) {
-                    // Main fires "neighbor uncovered = edge" here. We
-                    // need to do the same to catch silhouettes where
-                    // the silhouette runs between pixels (the
-                    // platform-bottom-vs-skybox-floor case).
                     neighbor_edge = true;
                     break;
                 }
+                // Normal discontinuity (sample 0 of neighbour pixel).
+                let n_nt = textureLoad(normal_tangent_tex, n_coords, 0);
+                let n_tbn = unpack_normal_tangent(n_nt);
+                if (dot(center_normal, n_tbn.N) < EDGE_NORMAL_THRESHOLD) {
+                    neighbor_edge = true;
+                    break;
+                }
+                // Depth discontinuity (view-space relative).
                 let n_depth = textureLoad(depth_tex, n_coords, 0);
                 let n_pixel_center = pixel_center + pixel_offsets[ni];
                 let n_vd = view_space_depth(camera, n_depth, n_pixel_center, screen_dims_f32);
@@ -404,20 +427,25 @@ fn cs_main(
             }
         }
 
-        // NOTE: depth_edge and neighbor_edge BOTH disabled. They fire
-        // on pixels at the capsule-on-platform contact (mesh-vs-mesh
-        // in-pixel) where the per-sample data is inconsistent: tri_id
-        // is per-sample-distinct (different mesh per sample) while
-        // mat_meta_offset gets broadcast across samples by the
-        // fragment shader output path on this Tint/Naga compile. The
-        // result is `shade_sample` looking up the WRONG mesh's index
-        // buffer with the OTHER mesh's tri_id → garbage vertex data →
-        // black/corrupt shading. With both checks off we cleanly catch
-        // mesh-vs-skybox silhouettes (coverage mismatch via cov_N
-        // checks) without producing those black artifacts; mesh-vs-mesh
-        // in-pixel silhouettes remain MSAA-resolved by neither check
-        // and stay stair-stepped (same as before).
-        if (seen_count >= 2u || any_mesh_differs /* || depth_edge || neighbor_edge */) {
+        // Edge gate. Four signals, all needed for parity with main's
+        // `msaa_resolve_samples` edge detection:
+        //   * `seen_count >= 2u`        — multi-shader-id silhouette
+        //   * `any_mesh_differs`        — mesh-vs-mesh (different mat_meta)
+        //   * `depth_edge`              — per-sample depth variance
+        //                                 (same-mesh in-pixel, e.g. the
+        //                                 platform's top/front-face seam)
+        //   * `neighbor_edge`           — 4-neighbour depth/coverage check
+        //                                 (silhouette runs between pixels)
+        //
+        // depth_edge + neighbor_edge were previously disabled because
+        // they produced "black sides on capsules" — that was an artefact
+        // of the texture-pool-arrays-len template mismatch in
+        // `texture_pool_sample_grad` (every same-mesh edge fell into the
+        // `default → vec4(0)` branch in edge_resolve's compiled shader).
+        // With the recompile wired into `finalize_gpu_textures`
+        // (textures.rs), per-sample shading at same-mesh edges produces
+        // the right value and the depth signals can be re-enabled.
+        if (seen_count >= 2u || any_mesh_differs || depth_edge || neighbor_edge) {
             // Allocate compact edge_pixel_id. The atomic counter lives
             // in args_buffer / `edge_buffers` (drives indirect dispatch
             // for final_blend); we also mirror it into edge_data's

@@ -166,4 +166,16 @@ struct EdgeBufferLayout {
 // indiscriminately near the far plane and not at all near the near
 // plane.
 @group(0) @binding(8) var<uniform> camera_raw: CameraRaw;
+
+// Normal-tangent texture (per-sample, MSAA). Mirrors main's
+// `edge_mask_neighbors` normal-discontinuity check: at platform-tile
+// boundaries where adjacent facets share the same depth + coverage +
+// mat_meta but different surface orientation, the center vs neighbor
+// normals diverge by > ~18° (dot < 0.95) and main detects this as an
+// edge. Without it, branch's classify misses the platform's
+// top-front-edge tile-grout silhouettes and renders them with
+// sample-0-only shading → ~50 pixels of visible aliasing along the
+// diagonal slope of the platform top in the canonical MorphStressTest
+// view.
+@group(0) @binding(9) var normal_tangent_tex: texture_multisampled_2d<f32>;
 {% endif %}

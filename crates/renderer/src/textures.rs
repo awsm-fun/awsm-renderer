@@ -341,6 +341,48 @@ impl AwsmRenderer {
             .pipelines
             .install_per_mesh_keys(mesh_keys, transparent_pipeline_keys);
 
+        // Edge-resolve pipelines (Stage 3) reference the texture pool
+        // through the same shared `material_opaque/bind_groups.wgsl`
+        // include — their templated `texture_pool_arrays_len` switch
+        // shape must match the runtime pool, or per-sample base-color
+        // texture samples fall into the `default → vec4(0)` branch and
+        // every silhouette edge pixel resolves to ~black. (See the
+        // 2026-05-27 follow-up note in `docs/plans/more-optimizations.md`
+        // for the diagnostic chain.)
+        //
+        // The primary opaque pipelines were just recompiled above against
+        // the new bind groups; mirror that for `edge_pipelines` here so
+        // both stay in lock-step.
+        if self.anti_aliasing.msaa_sample_count.is_some()
+            && crate::edge_resolve_supported(&self.gpu)
+        {
+            let color_wgsl = awsm_renderer_core::texture::texture_format_to_wgsl_storage(
+                self.render_textures.formats.color,
+            )?;
+            let bucket_entries = self.dynamic_materials.bucket_entries_cached().to_vec();
+            let crate::pipelines::Pipelines {
+                render: _render_pipelines,
+                compute: compute_pipelines,
+            } = &mut self.pipelines;
+            self.render_passes
+                .material_opaque
+                .edge_pipelines
+                .ensure_compiled(
+                    &self.gpu,
+                    &mut self.shaders,
+                    compute_pipelines,
+                    &mut self.pipeline_layouts,
+                    &mut self.bind_group_layouts,
+                    &self.render_passes.material_opaque.bind_groups,
+                    &self.render_passes.material_opaque.edge_bind_group_layouts,
+                    &bucket_entries,
+                    &self.anti_aliasing,
+                    color_wgsl,
+                    Some(&self.dynamic_materials),
+                )
+                .await?;
+        }
+
         Ok(())
     }
 
