@@ -206,12 +206,77 @@ impl GltfMeshExt for AwsmRenderer {
                     let material =
                         pbr_material_mapper(self, ctx, primitive_buffer_info, gltf_material)
                             .await?;
+                    // Block A.3: also bridge first-party materials
+                    // through the pipeline-readiness scheduler so the
+                    // scheduler's view of "what materials are in this
+                    // scene" stays accurate. First-party pipelines are
+                    // pre-compiled in the cold-boot eager set so we can
+                    // mark Ready immediately — the entry is purely
+                    // observability (frontends watching the status
+                    // stream see PBR / UNLIT / TOON / FLIPBOOK
+                    // materials register here). Dynamic materials
+                    // route through `register_material` which already
+                    // bridges via A.1.
+                    let shader_id = material.shader_id();
+                    let alpha_mode_for_def = match &material {
+                        awsm_renderer::materials::Material::Pbr(m) => *m.alpha_mode(),
+                        awsm_renderer::materials::Material::Unlit(m) => *m.alpha_mode(),
+                        awsm_renderer::materials::Material::Toon(m) => *m.alpha_mode(),
+                        awsm_renderer::materials::Material::FlipBook(m) => *m.alpha_mode(),
+                        awsm_renderer::materials::Material::Custom(m) => m.alpha_mode,
+                    };
+                    let double_sided_for_def = material.double_sided();
                     let key = self.materials.insert(
                         material,
                         &self.textures,
                         &self.dynamic_materials,
                         &self.extras_pool,
                     );
+                    // Submit MaterialDef::FirstParty for first-party
+                    // shader_ids only (dynamic flow uses
+                    // register_material's A.1 bridge). Failures here
+                    // are non-fatal — the mesh still routes through
+                    // the existing material_key path; only scheduler
+                    // observability degrades.
+                    if !shader_id.is_dynamic() {
+                        use awsm_renderer::pipeline_scheduler::{
+                            MaterialDef, MaterialDefKind, PipelineConfigSnapshot,
+                            PipelineGroupDef, PipelineGroupId,
+                        };
+                        let snapshot = PipelineConfigSnapshot {
+                            msaa: self.anti_aliasing.clone(),
+                            mipmap: if self.anti_aliasing.mipmap {
+                                awsm_renderer::render_passes::material_opaque::shader::template::MipmapMode::Gradient
+                            } else {
+                                awsm_renderer::render_passes::material_opaque::shader::template::MipmapMode::None
+                            },
+                            use_mesh_light_slices: false,
+                            gpu_culling: self.features.gpu_culling,
+                            coverage_lod: self.features.coverage_lod,
+                            debug_bitmask: 0,
+                            default_cull_mode:
+                                awsm_renderer_core::pipeline::primitive::CullMode::Back,
+                        };
+                        let def = MaterialDef {
+                            shader_id,
+                            alpha_mode: alpha_mode_for_def,
+                            double_sided: double_sided_for_def,
+                            kind: MaterialDefKind::FirstParty,
+                            config_snapshot: snapshot,
+                        };
+                        let ids = self
+                            .pipeline_scheduler
+                            .submit_pipeline_group_batch(vec![PipelineGroupDef::Material(def)]);
+                        // First-party pipelines are eager → Ready
+                        // immediately. (A future migration that moves
+                        // first-party compile to be lazy will defer
+                        // this mark_ready to the compile-resolve site.)
+                        for id in ids {
+                            if matches!(id, PipelineGroupId::Material(_)) {
+                                self.pipeline_scheduler.mark_ready(id);
+                            }
+                        }
+                    }
                     ctx.material_keys
                         .lock()
                         .unwrap()
