@@ -811,7 +811,7 @@ Mark items `[x]` as completed. Commit the checklist update along with each item 
 
 - [x] **5.1** `cargo fmt --all` clean.
 - [x] **5.2** `task lint` clean.
-- [ ] **5.3** `cargo doc --workspace --no-deps` warning audit. (Next session.)
+- [x] **5.3** `cargo doc --workspace --no-deps` warning audit. ✅ landed (Block E.6 — zero warnings workspace-wide).
 - [x] **5.4** Branch pushed.
 - [x] **5.5** PR #99 open with full description.
 
@@ -867,7 +867,7 @@ The user wants "everything everything". Items from ROADMAP.md + opportunities su
 - **E.3** **Test surface**: `wait_for_pipelines_ready()` test helper is in place; sweep `crates/renderer/tests/` and `crates/renderer/examples/` for sites that still rely on sync-insert-then-dispatch.
 - **E.4** **Per-pipeline-cumulative-timing log polish**: per-pipeline labels currently log on resolve. Add a per-batch sort-by-finish-time summary at the end of each `ensure_keys` call so the operator can scan "which pipeline finished last."
 - **E.5** **Edge_resolve runtime profile sanity**: at 1080p with the Fox scene, capture frame-time delta between the inline-path (pre-Stage-3) and the new edge_resolve path. Confirm parity or improvement. If a regression appears, investigate the per-frame `reset_header` cost vs. classify's extra writes.
-- **E.6** **`cargo doc --workspace --no-deps` warning audit** (Stage 5.3): resolve any new doc-link warnings introduced by this PR. Pre-existing warnings (in render-worker / web-shared / renderer-gltf) are out of scope but worth noting.
+- **E.6** **`cargo doc --workspace --no-deps` warning audit** (Stage 5.3): resolve any new doc-link warnings introduced by this PR. Pre-existing warnings (in render-worker / web-shared / renderer-gltf) are out of scope but worth noting. ✅ landed (zero workspace warnings — all 43 fixed, including pre-existing pre-PR warnings in render-worker / web-shared / renderer-gltf / scene-editor / model-tests).
 - **E.7** **Workspace-wide `-W missing_docs` gate** for the new `pipeline_scheduler` module (per `remainder.md` § "Public API gate"). ✅ landed (module-scoped via inner attribute)
 
 ### Block F — Verification, finalize, merge prep
