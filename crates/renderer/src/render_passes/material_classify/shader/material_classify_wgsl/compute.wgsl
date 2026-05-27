@@ -262,7 +262,51 @@ fn cs_main(
         let any_mesh_differs = (cov_0 != cov_1)
             || (cov_0 != cov_2)
             || (cov_0 != cov_3);
-        if (seen_count >= 2u || any_mesh_differs) {
+
+        // NEIGHBOR-PIXEL silhouette detection for the mesh-vs-mesh case.
+        //
+        // The per-sample-coverage check above catches mesh-vs-skybox
+        // (some samples uncovered). But two adjacent real meshes sharing
+        // a silhouette (e.g. the floating platform and the wood floor
+        // beneath it) both have every sample covered — `cov_N=true`
+        // uniformly — and the per-sample `mat_off` channels (v.z, v.w)
+        // get broadcast across samples by this Tint/Naga compile, so
+        // an in-pixel mat_meta comparison can't see the difference
+        // either. The values that ARE distinct across mesh boundaries
+        // are sample-0 vis_data PER PIXEL: each pixel's fragment writes
+        // its own mesh's data into sample 0. So we look at 4 neighbour
+        // pixels (right, left, down, up), sample 0 only, and detect
+        // when their `mat_off` (or coverage) differs from ours. That
+        // catches mesh-vs-mesh silhouettes without firing at intra-mesh
+        // tri seams (adjacent pixels of the same mesh share `mat_off`,
+        // they just have different `tri_id` — only `tri_id` is checked
+        // for "edge within a pixel," and we explicitly DON'T do that
+        // here because it produces wireframe artifacts).
+        let neighbor_offsets = array<vec2<i32>, 4>(
+            vec2<i32>(1, 0),
+            vec2<i32>(-1, 0),
+            vec2<i32>(0, 1),
+            vec2<i32>(0, -1),
+        );
+        var neighbor_mesh_differs: bool = false;
+        for (var ni = 0; ni < 4; ni++) {
+            let n_coords = coords + neighbor_offsets[ni];
+            if (n_coords.x < 0 || n_coords.y < 0
+                || n_coords.x >= i32(screen_dims.x)
+                || n_coords.y >= i32(screen_dims.y)) {
+                continue;
+            }
+            let nv = textureLoad(visibility_data_tex, n_coords, 0);
+            // Compare the raw z/w channels directly (mat_meta_offset
+            // split16'd). Bypass join32 the same way we did for the
+            // in-pixel check.
+            if (nv.z != v0.z || nv.w != v0.w) {
+                neighbor_mesh_differs = true;
+                break;
+            }
+        }
+
+        if (seen_count >= 2u || any_mesh_differs || neighbor_mesh_differs) {
             // Allocate compact edge_pixel_id. The atomic counter lives
             // in args_buffer / `edge_buffers` (drives indirect dispatch
             // for final_blend); we also mirror it into edge_data's
