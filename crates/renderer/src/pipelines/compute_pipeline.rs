@@ -139,6 +139,11 @@ impl ComputePipelines {
                 format!("{}:{:?}", shader_label, ck.layout_key)
             })
             .collect();
+        // Per-promise finish-time recording — captures the cumulative
+        // wall-clock at the moment each individual promise resolves so
+        // we can emit a sort-by-finish summary at the end (E.4).
+        let finish_times: std::rc::Rc<std::cell::RefCell<Vec<(usize, f64, bool)>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(Vec::with_capacity(n)));
         let promises = descriptors
             .iter()
             .enumerate()
@@ -146,10 +151,13 @@ impl ComputePipelines {
                 let label = labels[i].clone();
                 let total = n;
                 let promise = JsFuture::from(gpu.create_compute_pipeline_promise(d));
+                let ft = finish_times.clone();
                 async move {
                     let r = promise.await;
                     let cum_ms = web_sys::js_sys::Date::now() - t_start;
-                    let outcome = if r.is_ok() { "ok" } else { "ERR" };
+                    let ok = r.is_ok();
+                    ft.borrow_mut().push((i, cum_ms, ok));
+                    let outcome = if ok { "ok" } else { "ERR" };
                     tracing::info!(
                         target: "awsm_renderer::boot_timing",
                         "pipeline {}/{} compute:{} cum={:.0}ms {}",
@@ -166,15 +174,37 @@ impl ComputePipelines {
 
         let results = futures::future::join_all(promises).await;
         let dt_ms = web_sys::js_sys::Date::now() - t_start;
-        // One log line per batched ensure_keys call. Each line shows
-        // batch size + wall-clock so the user can attribute cold-boot
-        // time to a specific subsystem (prewarm vs lazy-pool recompile
-        // vs per-mesh transparent etc). Filter via the
-        // `awsm_renderer::boot_timing` target.
+        // One log line per batched ensure_keys call.
         tracing::info!(
             target: "awsm_renderer::boot_timing",
             "ComputePipelines::ensure_keys: {n} pipelines compiled in {dt_ms:.0}ms",
         );
+        // E.4: sort-by-finish-time summary — operator can scan to see
+        // which compute pipeline finished last (the long pole). Only
+        // emitted for batches of 2+ (single-pipeline batches don't
+        // benefit). Bracket order = chronological resolution order.
+        if n >= 2 {
+            let mut ft = finish_times.borrow_mut();
+            ft.sort_by(|a, b| {
+                a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            let summary: Vec<String> = ft
+                .iter()
+                .map(|(i, cum, ok)| {
+                    format!(
+                        "{}{}@{:.0}ms",
+                        labels[*i],
+                        if *ok { "" } else { "!" },
+                        cum
+                    )
+                })
+                .collect();
+            tracing::info!(
+                target: "awsm_renderer::boot_timing",
+                "  finish-order [compute, {n} pipes]: {}",
+                summary.join(" → "),
+            );
+        }
 
         let mut inputs_owned: Vec<Option<ComputePipelineCacheKey>> =
             inputs.into_iter().map(Some).collect();

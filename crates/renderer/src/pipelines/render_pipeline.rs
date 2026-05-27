@@ -172,7 +172,11 @@ impl RenderPipelines {
             })
             .collect();
         // Sync-issue every Promise. Dawn has started compiling all N
-        // by the time this loop returns.
+        // by the time this loop returns. Finish times (E.4) recorded
+        // through a shared RefCell so we can sort + summarize at the
+        // end without serializing the futures.
+        let finish_times: std::rc::Rc<std::cell::RefCell<Vec<(usize, f64, bool)>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(Vec::with_capacity(n)));
         let promises = descriptors
             .iter()
             .enumerate()
@@ -180,10 +184,13 @@ impl RenderPipelines {
                 let label = labels[i].clone();
                 let total = n;
                 let promise = JsFuture::from(gpu.create_render_pipeline_promise(d));
+                let ft = finish_times.clone();
                 async move {
                     let r = promise.await;
                     let cum_ms = web_sys::js_sys::Date::now() - t_start;
-                    let outcome = if r.is_ok() { "ok" } else { "ERR" };
+                    let ok = r.is_ok();
+                    ft.borrow_mut().push((i, cum_ms, ok));
+                    let outcome = if ok { "ok" } else { "ERR" };
                     tracing::info!(
                         target: "awsm_renderer::boot_timing",
                         "pipeline {}/{} render:{} cum={:.0}ms {}",
@@ -205,6 +212,28 @@ impl RenderPipelines {
             target: "awsm_renderer::boot_timing",
             "RenderPipelines::ensure_keys: {n} pipelines compiled in {dt_ms:.0}ms",
         );
+        // E.4: sort-by-finish-time summary — chronological order makes
+        // the long-pole pipeline obvious. Only for batches of 2+.
+        if n >= 2 {
+            let mut ft = finish_times.borrow_mut();
+            ft.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            let summary: Vec<String> = ft
+                .iter()
+                .map(|(i, cum, ok)| {
+                    format!(
+                        "{}{}@{:.0}ms",
+                        labels[*i],
+                        if *ok { "" } else { "!" },
+                        cum
+                    )
+                })
+                .collect();
+            tracing::info!(
+                target: "awsm_renderer::boot_timing",
+                "  finish-order [render, {n} pipes]: {}",
+                summary.join(" → "),
+            );
+        }
 
         // Move owned cache keys out of `inputs` exactly once each, in
         // input order, so `self.cache.insert(cache_key, key)` takes
