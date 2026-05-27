@@ -12,21 +12,35 @@ fn get_standard_coordinates(coords: vec2<i32>, screen_dims: vec2<u32>) -> Standa
     return get_standard_coordinates_sample(coords, screen_dims, 0);
 }
 
-// Per-sample variant. Used by the Stage 3 `edge_resolve.wgsl` so each
-// MSAA sample's `world_position` / `surface_to_camera` is reconstructed
-// from its own depth value, not sample 0's — critical at silhouette
-// pixels where sample 0 may be on a different surface (e.g. skybox)
-// from samples 1-3 (e.g. a capsule). Without this, lighting for
-// samples 1-3 at silhouettes was computed against sample 0's depth,
-// producing subtly-wrong shadows / point-light falloff at every
-// silhouette pixel.
+// Per-sample variant. Reconstructs `world_position` / `surface_to_camera`
+// from a specific MSAA sample's depth, not sample 0's. Intended to
+// give the Stage 3 `edge_resolve.wgsl::shade_sample` per-sample
+// world-position fidelity at silhouette pixels where sample 0 may be
+// on a different surface (e.g. skybox) from samples 1-3 (e.g. a
+// capsule).
+//
+// **Status: defined but not currently called by `edge_resolve.wgsl`.**
+// The Stage 3 silhouette debug pass (May 27) found that per-sample
+// world-position produced visible dark shading deltas at intra-mesh
+// triangle seams of tessellated curved surfaces — once averaged
+// through `final_blend`, those deltas read as wireframe artifacts at
+// every classify-detected edge. `edge_resolve.wgsl::shade_sample`
+// reverted to `get_standard_coordinates(coords, screen_dims)`
+// (sample-0 depth, matching main's pre-Stage-3 `msaa_resolve_samples`
+// behaviour exactly) which produces numerical parity with main on
+// MorphStressTest.
+//
+// This per-sample helper is kept available for two reasons:
+//   * It's the right tool if the per-sample shading delta problem is
+//     ever isolated and fixed (e.g. via a smoothing filter or by
+//     using sample-0 depth only when intra-mesh seams are detected).
+//   * It documents the per-sample convention so a future
+//     `edge_resolve.wgsl` rewrite has a starting point.
 //
 // `depth_tex` is bound as `texture_multisampled_2d<f32>` when
-// `multisampled_geometry` is true (which is the only context this
-// shader runs in — edge_resolve only dispatches under MSAA-on); the
-// `sample_index` argument is honoured by `textureLoad`. The non-MSAA
-// primary path uses `get_standard_coordinates(coords, screen_dims)`
-// (which delegates here with sample 0), preserving existing behaviour.
+// `multisampled_geometry` is true. The non-MSAA primary path uses
+// `get_standard_coordinates(coords, screen_dims)` (which delegates
+// here with `sample_index = 0`).
 fn get_standard_coordinates_sample(
     coords: vec2<i32>,
     screen_dims: vec2<u32>,

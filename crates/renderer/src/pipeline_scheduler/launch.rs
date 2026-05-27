@@ -52,6 +52,29 @@ impl crate::AwsmRenderer {
     /// Skipped silently if the material has no scheduler entry
     /// (caller never called `submit_pipeline_group_batch` /
     /// `submit_dynamic_material` / `register_material`'s A.1 bridge).
+    ///
+    /// **TODO (follow-up PR):** push the per-shader `edge_resolve`
+    /// pipeline promise (and the global `skybox_edge_resolve` +
+    /// `final_blend` promises when the bucket list changes) into the
+    /// scheduler's `inflight_compile` queue too, mirroring the
+    /// opaque/classify pattern above. Today the edge_resolve compile
+    /// is driven only by `MaterialEdgePipelines::ensure_compiled`
+    /// (called from `prewarm_pipelines` and the
+    /// `set_anti_aliasing` MSAA-on path), so a frontend that
+    /// `register_material`s and relies purely on
+    /// `drain_pipeline_status_events` for Ready signalling sees the
+    /// scheduler mark the material `Ready` BEFORE its edge_resolve
+    /// pipeline is compiled. `render_edge_resolve`'s all-or-nothing
+    /// readiness gate (Stage 3.5 / C.5) then warn-skips the entire
+    /// MSAA edge chain until something else triggers a prewarm. For
+    /// now, `register_material`'s rustdoc requires callers to
+    /// `await` `prewarm_pipelines` or `wait_for_pipelines_ready` for
+    /// MSAA edge correctness post-register. Doing the structural
+    /// push-into-scheduler fix needs new `CompileInstallTarget`
+    /// variants (`EdgeResolvePerShader`, `SkyboxEdgeResolve`,
+    /// `FinalBlend`) + a refactor of `MaterialEdgePipelines::ensure_compiled`
+    /// into a prepare-promises form parallel to
+    /// `compute_pipelines.ensure_keys_prepare`.
     pub fn launch_dynamic_material_compile(
         &mut self,
         shader_id: MaterialShaderId,

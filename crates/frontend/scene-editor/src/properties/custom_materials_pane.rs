@@ -85,8 +85,20 @@ fn render_import_button(
                 // Register against the live renderer via the
                 // dynamic_material_bridge converter. Holds the
                 // renderer lock briefly — the registration is
-                // synchronous; pipeline compile fires async via
-                // prewarm_pipelines below.
+                // synchronous; the post-register
+                // `wait_for_pipelines_ready` then drives the pipeline
+                // scheduler's `inflight_compile` queue (opaque +
+                // classify pipelines) AND the edge_resolve set's
+                // `ensure_compiled` (via `prewarm_pipelines`, which
+                // `wait_for_pipelines_ready` invokes internally) so
+                // the new material has both its primary opaque
+                // pipeline AND its per-shader edge_resolve pipeline
+                // ready before the next render frame. Without this
+                // await, `render_edge_resolve`'s all-or-nothing
+                // readiness gate (Stage 3.5 / C.5) would warn-skip
+                // the entire MSAA edge chain — not just for the new
+                // material, but for every already-compiled bucket —
+                // until something else triggered a prewarm.
                 let renderer = crate::context::renderer_handle();
                 let mut renderer = renderer.lock().await;
                 let mut map = crate::renderer_bridge::dynamic_material_bridge::CustomMaterialRegistryMap::new();
@@ -96,6 +108,11 @@ fn render_import_button(
                     &loaded,
                 ) {
                     Ok(_id) => {
+                        if let Err(err) = renderer.wait_for_pipelines_ready().await {
+                            tracing::warn!(
+                                "wait_for_pipelines_ready after custom material import: {err}"
+                            );
+                        }
                         let name = loaded.definition.name.clone();
                         let folder = std::path::PathBuf::from(format!(
                             "assets/materials/{}",

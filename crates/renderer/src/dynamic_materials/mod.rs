@@ -512,11 +512,28 @@ impl crate::AwsmRenderer {
     /// Idempotent on `(name, layout_hash, wgsl_hash)`: re-registering the
     /// same material returns the same id without recompiling.
     ///
-    /// **Phase 4**: the new shader_id is inserted; the next render call's
-    /// classify-pass cache lookup misses (since `bucket_entries` changed)
-    /// and triggers a recompile of the classify shader. The opaque-compute
-    /// pipeline for the new shader_id is compiled on first dispatch (or
-    /// eagerly via [`Self::prewarm_pipelines`]).
+    /// **Readiness contract:**
+    /// - The **primary opaque + classify** pipelines for the new
+    ///   shader_id are pushed into the scheduler's `inflight_compile`
+    ///   queue by [`Self::launch_dynamic_material_compile`]
+    ///   (transitively invoked here). The render-frame preamble's
+    ///   `poll_pipeline_scheduler` drains them, marks the scheduler
+    ///   entry `Ready`, and the next render frame can dispatch the
+    ///   material's primary opaque path.
+    /// - **MSAA `edge_resolve` pipelines** are NOT yet pushed via the
+    ///   scheduler — they're driven by
+    ///   [`Self::prewarm_pipelines`]'s `MaterialEdgePipelines::ensure_compiled`
+    ///   call (which [`Self::wait_for_pipelines_ready`] invokes
+    ///   internally). Until that fires after `register_material`,
+    ///   `render_edge_resolve`'s all-or-nothing readiness gate
+    ///   (Stage 3.5 / C.5) warn-skips the **entire** MSAA edge chain
+    ///   — not just the new material's contribution, but every
+    ///   already-compiled bucket too. **For MSAA edge correctness,
+    ///   callers must `await` either [`Self::prewarm_pipelines`] or
+    ///   [`Self::wait_for_pipelines_ready`] after `register_material`
+    ///   returns.** Pushing edge_resolve into the scheduler's promise
+    ///   queue (so the no-await flow produces MSAA edges) is a
+    ///   follow-up; see the TODO in `launch_dynamic_material_compile`.
     pub fn register_material(
         &mut self,
         registration: MaterialRegistration,
