@@ -216,12 +216,12 @@ multi-material kernel. This matters most when:
 
 #### MSAA is independently extensible
 
-The edge-detection signals live in one file (`material_classify_wgsl/
-compute.wgsl`). The current gate is `seen_count >= 2 || any_mesh_differs
-|| depth_edge || neighbor_edge`. Adding a 5th signal (e.g. velocity-
-based detection for temporal AA) is a one-line gate addition + however
-much texture-load wiring the signal needs. Material shaders stay
-oblivious.
+The edge-detection signals live in one file
+(`material_classify_wgsl/compute.wgsl`). The current gate is
+`seen_count >= 2u || any_mesh_differs || depth_edge || neighbor_edge`.
+Adding a 5th signal (e.g. velocity-based detection for temporal AA)
+is a one-line gate addition + however much texture-load wiring the
+signal needs. Material shaders stay oblivious.
 
 The four trustable signals at the gate today, with thresholds taken
 from main's pre-Stage-3 `msaa_resolve_samples` reference:

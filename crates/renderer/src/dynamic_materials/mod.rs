@@ -731,14 +731,25 @@ impl crate::AwsmRenderer {
     ///   [`Self::pipeline_group_status`] /
     ///   [`Self::drain_pipeline_status_events`] for the Ready transition.
     ///
-    /// **Stage 1 status**: today the scheduler's compile future is a
-    /// stub (resolves immediately to Ready); the actual compile work
-    /// still requires a follow-up `.await` of either
-    /// [`Self::prewarm_pipelines`] (the legacy surface) or a Stage 1.8-fully
-    /// completion that wires real compile through the scheduler.
-    /// Frontends migrating from `register_material + prewarm.await`
-    /// to this new API gain the readiness-state contract surface
-    /// now and the real-async compile when Stage 1.8 lands.
+    /// **Readiness flow**: `register_material` pushes real compile
+    /// futures into the scheduler's `inflight_compile` set via
+    /// [`Self::launch_dynamic_material_compile`] (Block D.1 PART 2).
+    /// The scheduler's [`Self::poll_pipeline_scheduler`] (called
+    /// each render-frame preamble) drains those futures and marks
+    /// the corresponding material `Ready` when its last sub-pipeline
+    /// resolves. Frontends that need to block until ready use
+    /// [`Self::wait_for_pipelines_ready`], which polls until no
+    /// further transitions are applied; frontends that just want a
+    /// progress signal subscribe to
+    /// [`Self::drain_pipeline_status_events`] and render fall-back
+    /// content (loading modal / placeholder mesh) until Ready
+    /// arrives.
+    ///
+    /// [`Self::prewarm_pipelines`] still exists as the lower-level
+    /// compile-drive surface; the A.1 bridge inside it now marks
+    /// the scheduler entries Ready when its `ensure_keys` resolves,
+    /// so the two surfaces are interchangeable for the
+    /// readiness-state contract.
     pub fn submit_dynamic_material(
         &mut self,
         registration: MaterialRegistration,

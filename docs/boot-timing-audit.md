@@ -35,33 +35,32 @@ Plus subsequent batches as the Fox model's transparent meshes resolve their per-
 | `Pass(Display)` render | 1 | ✅ | Matches |
 | `Pass(ScenePassClear)` render | 1 | ✅ | Matches |
 | `Pass(HzbSeed)` compute (if gpu_culling) | 1 | ✅ (gpu_culling on) | Matches |
-| First-party material opaque (PBR + UNLIT + TOON + FLIPBOOK) | 0 — should be scheduler-managed | **4** | **Drift**: first-party opaque pipelines still compile eagerly — see "Open drift" below |
-| Edge_resolve per shader_id (PBR + UNLIT + TOON + FLIPBOOK) | 0 — scheduler-managed | 4 + skybox_edge + final_blend (Stage 3) | Stage 3 added these as eager when MSAA is on at boot |
+| First-party material opaque (PBR + UNLIT + TOON + FLIPBOOK) | 0 — scheduler-managed | ✅ 0 (Block D.1 PART 2) | `MaterialOpaquePipelines::shader_descriptors_and_layouts` passes `include_first_party: false` at cold boot; `launch_first_party_material_compile` fires on the gltf populate path's first per-`shader_id` registration. |
+| Edge_resolve per shader_id (PBR + UNLIT + TOON + FLIPBOOK) + skybox_edge + final_blend | 0 — scheduler-managed | 6 at boot when MSAA is on | Cold-boot compiles via `MaterialEdgePipelines::ensure_compiled` in `AwsmRendererBuilder::build`. See "Remaining drift" below. |
 | `Pass(Evsm)` | 0 — lazy | ✅ 0 (Block B.1) | First shadow caster triggers compile |
 | `Pass(ShadowGen)` | 0 — lazy | ✅ 0 (Block B.2) | Same trigger |
 | `Pass(Line)` | 0 — lazy | ✅ 0 (Block B.3) | First add_line_* triggers |
 | `Pass(Picker)` | 0 — lazy | ✅ 0 (Block B.4) | First pick() triggers |
 | `Pass(Bloom)` / `Pass(Smaa)` / `Pass(Dof)` | 0 — lazy | ✅ 0 (Stage 2.5 — pre-existing) | Toggled on via set_post_processing |
 
-**Net cold-boot pipeline count**: ~10 compute (OpaqueEmpty + ClassifyMsaa + HzbSeed + 4 first-party opaque + edge_resolve set if MSAA on) + ~9 render (3 GeometryMsaa + Display + ScenePassClear + others). Close to the doc's target of "~4 compute + ~4 render at typical config" once first-party + edge_resolve are removed from the eager set.
+**Net cold-boot pipeline count** on a zero-scene with MSAA-on: ~6 compute (OpaqueEmpty + ClassifyMsaa + HzbSeed + edge_resolve set: 4 per-shader + skybox + final_blend) + ~5 render (3 GeometryMsaa + Display + ScenePassClear). First-party material opaque pipelines (4) compile lazily on first material registration via the gltf populate path's `launch_first_party_material_compile`.
 
-## Open drift
+## Remaining drift
 
-**First-party material opaque pipelines** (PBR / UNLIT / TOON / FLIPBOOK) and the **edge_resolve set** (per shader_id + skybox + final_blend) still compile eagerly at boot:
+**Edge_resolve set** (per shader_id × 4 + skybox + final_blend = 6 pipelines) still compiles eagerly at boot whenever MSAA is on:
 
-- First-party opaque: the cold-boot path compiles 1 variant per shader_id for the active (MSAA, mipmaps, lights, …) tuple — 4 pipelines.
-- Edge_resolve: when MSAA is on at boot, the edge_resolve set compiles via `MaterialEdgePipelines::ensure_compiled` in `AwsmRendererBuilder::build` — 6 pipelines (4 per-shader + skybox + final_blend).
+- Via `MaterialEdgePipelines::ensure_compiled` in `AwsmRendererBuilder::build`.
 
 Per the doc, these should be scheduler-managed (lazy on first material insertion). The migration would:
 
-1. Strip the eager `MaterialOpaquePipelines::from_resolved` call from `lib.rs:build()`.
-2. Submit each first-party shader_id as `MaterialDef::FirstParty` to the scheduler (Block A.3 already does this for gltf-driven materials but they're already-compiled at submission time — the migration flips that to compile-on-submission).
-3. Update the gltf populate's `submit_to_scheduler_for_first_party` path (in `crates/renderer-gltf/src/populate/mesh.rs`) to await `wait_for_pipelines_ready` BEFORE the mesh's first dispatch.
+1. Strip the eager `MaterialEdgePipelines::ensure_compiled` call from `lib.rs:build()`.
+2. Have `launch_first_party_material_compile` / `launch_dynamic_material_compile` also push the edge_resolve variant for the registered shader_id (the per-shader edge_resolve pipeline is shader-id-keyed in the same way the primary opaque pipeline is).
+3. Keep the skybox_edge_resolve + final_blend compile eager (or lift them into a `Pass(EdgeChain)` scheduler entry — they're material-agnostic).
 
-That migration is non-trivial (the existing eager flow is load-bearing for the cold-boot render of the skybox / empty scene). Parked under the same "Block D literal push-futures" follow-up that Block D.1's `ensure_keys` factor was the foundation for.
+That migration is non-trivial (the existing eager flow runs after the bind groups are constructed and before the first render). Parked under the same "Block D literal push-futures" follow-up that Block D.1's `ensure_keys` factor was the foundation for.
 
 ## What the audit means in practice
 
-The Block B migrations (EVSM / ShadowGen / Line / Picker) took effect cleanly — those subsystems compile 0 pipelines at boot. The cold-boot cost reduced from "compile every pipeline the scene could ever need" to "compile every pipeline the *active default* + *first-party materials*". For an Android device booting an empty scene with no shadow casters / no lines / no picker, the savings are substantial (the EVSM + ShadowGen + Line + Picker pipelines were the bulk of the SPIR-V bloat that wasn't already addressed by Stage 3).
+The Block B migrations (EVSM / ShadowGen / Line / Picker) took effect cleanly — those subsystems compile 0 pipelines at boot. Block D.1 PART 2 extended this to first-party material opaque pipelines (PBR / UNLIT / TOON / FLIPBOOK), which now also compile lazily on the gltf-populate path's first per-`shader_id` registration. The cold-boot cost reduced from "compile every pipeline the scene could ever need" to "compile only the active default pipelines + the edge_resolve set when MSAA is on". For an Android device booting an empty scene with no shadow casters / no lines / no picker, the savings are substantial (the EVSM + ShadowGen + Line + Picker pipelines were the bulk of the SPIR-V bloat that wasn't already addressed by Stage 3).
 
-The first-party + edge_resolve eager set remaining is a deliberate trade-off: their pipelines are small (the Stage 3 SPIR-V drop made them tractable on Android) and they're needed before the first material renders. Moving them to lazy would defer the first material-render frame by ~3 s on Android; the current ~1 s cold-boot to first-render is preferable. A future PR can explore frame-1 skybox-only + frame-N material-on-Ready if that trade-off becomes worth revisiting.
+The edge_resolve eager set remaining is a deliberate trade-off: those pipelines are small (the Stage 3 SPIR-V split made them tractable on Android) and they're needed before the first material renders with MSAA edge resolution. A future PR can explore frame-1-only with eager skybox + final_blend and per-shader-id edge_resolve lazy with the primary opaque pipeline.
