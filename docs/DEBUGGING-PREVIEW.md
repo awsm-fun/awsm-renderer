@@ -145,15 +145,30 @@ Trunk's `--watch` does not always pick up `touch` updates with no content change
 - If you change a bind-group layout, the cached pipeline keys may be stale. Hard reload is mandatory.
 - The animation morph cycle continues between reloads — so the "same" camera state will show a different morph frame. Don't compare two screenshots taken seconds apart and treat them as identical scenes.
 
-## `?cam=` URL override (model-tests frontend)
+## `?cam=` URL override (model-tests frontend) — use it on EVERY test
 
-`crates/frontend/model-tests/src/pages/app/scene/camera/view/orbit.rs::setup_from_gltf` accepts a `?cam=yaw,pitch,radius,lx,ly,lz` query string to seed the OrbitCamera. Use this to land at a reproducible camera state for every test run rather than driving wheel events.
+`crates/frontend/model-tests/src/pages/app/scene/camera/view/orbit.rs::setup_from_gltf` accepts a `?cam=yaw,pitch,radius,lx,ly,lz` query string to seed the OrbitCamera. **Always use this on every navigation** for a reproducible camera. Without it the camera lands at the auto-aabb default and you cannot compare against any reference image the user is comparing against.
+
+The MSAA-debugging canonical configuration:
 
 ```
-?cam=-0.48,0.13,2.2916,0,0.2,0
+/app/model/MorphStressTest?cam=-0.48,0.13,2.2916,0,0.2,0
 ```
 
-This is the canonical camera the user has been using for the MorphStressTest MSAA-aliasing repro.
+For close-zoom verification (the camera the user has been using to point out aliasing the agent could not see), additionally dispatch 8 wheel-down notches on the canvas after page-load:
+
+```js
+const c = document.querySelector('canvas');
+const r = c.getBoundingClientRect();
+for (let i = 0; i < 8; i++) {
+  c.dispatchEvent(new WheelEvent('wheel', {
+    deltaY: -100, bubbles: true,
+    clientX: r.left + r.width/2, clientY: r.top + r.height/2,
+  }));
+}
+```
+
+**Verify every test at both default zoom AND close zoom.** Aliasing artifacts that are invisible at default zoom can become glaring at close zoom — that asymmetry was a major factor in the previous session's misdiagnoses.
 
 ## Methodology checklist
 

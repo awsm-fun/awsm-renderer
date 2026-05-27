@@ -45,9 +45,36 @@ A separate but architecturally aligned change replaces the PBR shader's `msaa_re
 
 [`docs/DEBUGGING-PREVIEW.md`](../DEBUGGING-PREVIEW.md) — the single most important operational lesson from the failed session: **the `preview_screenshot` tool returns a compressed/downscaled image. You cannot trust your visual reading of it to verify rendering correctness.** The previous agent repeatedly declared "fixed" based on its own screenshot reading and was repeatedly told no by the user (who is on a real display). Don't repeat that. Use `getImageData` pixel reads via `preview_eval` and/or ask the user concrete yes/no questions about specific colours at specific locations.
 
+### Canonical test configuration (use this for EVERY MSAA verification)
+
+**Scene: MorphStressTest.** Frontend: `model-tests`. URL: `/app/model/MorphStressTest?cam=-0.48,0.13,2.2916,0,0.2,0`.
+
+The `?cam=` URL helper landed in commit `6988b7c` and is persistent — it parses `yaw,pitch,radius,lx,ly,lz` and overrides `OrbitCamera` in `setup_from_gltf`. **Always include the `?cam=` param** when navigating: without it the camera lands at the aabb-derived default and you cannot compare to the canonical repro view the user has been using.
+
+For zoomed-in verification, dispatch wheel events on the canvas via `preview_eval` *after* the page has loaded (~15s wait for compile). 8 wheel-down notches lands at the close zoom the user has been pointing at. Don't visually estimate "how zoomed in" you are — measure with `getImageData` against known features (e.g. the platform's bottom-edge tile bottoms should occupy roughly 1/3 of the canvas height at the user's reference zoom).
+
+```js
+// canonical close-zoom for verification
+(async () => {
+  await new Promise(r => setTimeout(r, 15000)); // wait for compile + load
+  const c = document.querySelector('canvas');
+  const r = c.getBoundingClientRect();
+  for (let i = 0; i < 8; i++) {
+    c.dispatchEvent(new WheelEvent('wheel', {
+      deltaY: -100, bubbles: true,
+      clientX: r.left + r.width/2, clientY: r.top + r.height/2,
+    }));
+  }
+})()
+```
+
+**Step A** (multi-mesh in-pixel mat_meta verification) is the exception — that step explicitly needs a *different* scene with two distinct gltf meshes touching in screen-space, because MorphStressTest is a single "Cube" mesh and won't expose mesh-vs-mesh per-sample diversity. For Step A, switch to scene-editor or pick a model-tests gltf that has multiple meshes (e.g. `Fox` has one mesh, look for something else). Once Step A is answered, return to the canonical MorphStressTest + camera for every other step.
+
+**Never** use a different scene or camera for a verification step without explicitly noting why in your reasoning. The user is comparing your output mentally against the same scene+camera in `main`; using a different view makes the comparison invalid.
+
 ### What the user is seeing that the previous agent could not
 
-Open MorphStressTest at `?cam=-0.48,0.13,2.2916,0,0.2,0` (the `?cam=` URL helper landed in commit `6988b7c`, persistent in this branch). User reports:
+At the canonical scene+camera above, the user reports:
 
 - **Stair-step aliasing on the bottom edge of the platform** against the wood floor below it.
 - Stair-step on capsule silhouettes.
@@ -162,7 +189,7 @@ The next session is **not** allowed to:
 
 The success criteria for this work:
 
-1. **MorphStressTest at `?cam=-0.48,0.13,2.2916,0,0.2,0`** — all visible silhouettes (capsule edges, platform top, platform right, platform bottom against the floor) are at least as smooth as `main`'s same-scene, same-camera output, verified by side-by-side `getImageData` pixel reads at five user-chosen sample points. No black-rim or wireframe artifacts on capsule bodies.
+1. **MorphStressTest at the canonical camera+zoom (see "Canonical test configuration" above)** — all visible silhouettes (capsule edges, platform top, platform right, platform bottom against the floor) are at least as smooth as `main`'s same-scene, same-camera, same-zoom output, verified by side-by-side `getImageData` pixel reads at five user-chosen sample points. No black-rim or wireframe artifacts on capsule bodies. **Run this verification at both the default zoom (no wheel events) AND the close zoom (8 wheel-down notches) — the previous session's blindness to artifacts was partly because the same artifact is more visible at close zoom.**
 
 2. **A multi-mesh scene** (Fox in model-tests, or scene-editor with two distinct gltf models) — mesh-vs-mesh silhouettes (where two real meshes touch in screen-space) are also anti-aliased.
 
