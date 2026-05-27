@@ -1960,21 +1960,39 @@ impl AwsmRenderer {
         self.pipeline_scheduler.poll_resolved()
     }
 
-    /// Test-only helper. Synchronously drains the scheduler until all
-    /// currently-submitted groups have resolved (or the limit is hit).
-    /// Production code uses the status stream / `pipeline_group_status`
-    /// instead.
+    /// Drive any pending compiles to completion and return when every
+    /// scheduler-tracked group is either `Ready` or `Failed`.
     ///
-    /// Returns the total number of transitions applied.
+    /// Block A.2: this is the **canonical post-submit await surface**.
+    /// Frontends that have just called `register_material` /
+    /// `submit_dynamic_material` / (future) gltf-loader-driven
+    /// `submit_pipeline_group_batch` await this to know the GPU side
+    /// is caught up — at which point any mesh referencing the newly
+    /// submitted material will start dispatching on the next render
+    /// frame.
+    ///
+    /// Internally:
+    /// 1. Runs `prewarm_pipelines` (the existing batched compile
+    ///    flow), which the A.1 bridge wires to `mark_ready` for each
+    ///    scheduler-tracked material whose pipelines resolve.
+    /// 2. Drains `poll_pipeline_scheduler` until no further
+    ///    transitions apply (covers any scheduler-pushed futures from
+    ///    the eventual Stage-D push-futures migration).
+    ///
+    /// Returns the total number of transitions applied. Diagnostic
+    /// only — callers don't usually inspect.
     pub async fn wait_for_pipelines_ready(&mut self) -> crate::error::Result<usize> {
-        // Stub futures resolve in one poll; real compile futures may
-        // need multiple rounds as the JS event loop pumps Dawn's
-        // promise resolutions. We iterate up to `MAX_ROUNDS` times,
-        // yielding to the runtime between polls so JS-side work can
-        // make progress. (The wasm32 microtask queue handles this via
-        // `wasm-bindgen-futures::yield_now` — but we can also just
-        // poll-drain in a tight loop because the stub futures complete
-        // synchronously.)
+        // Phase 1: drive compile through the existing batched path.
+        // The A.1 bridge inside prewarm_dynamic_pipelines marks
+        // scheduler entries Ready on success; mark_failed isn't yet
+        // wired (TODO: surface ensure_keys per-pipeline errors back to
+        // scheduler).
+        self.prewarm_pipelines().await?;
+
+        // Phase 2: drain any scheduler-pushed futures. Today this is
+        // a near-no-op (Block D migration will push real compile
+        // futures here); kept as the integration surface so when D
+        // lands, wait_for_pipelines_ready stays the right answer.
         const MAX_ROUNDS: usize = 1024;
         let mut total = 0usize;
         for _ in 0..MAX_ROUNDS {

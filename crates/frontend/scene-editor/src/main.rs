@@ -118,8 +118,8 @@ pub fn main() {
                             {
                                 let handle = renderer_handle();
                                 let mut r = handle.lock().await;
-                                if let Err(err) = r.prewarm_pipelines().await {
-                                    tracing::warn!("prewarm_pipelines: {err}");
+                                if let Err(err) = r.wait_for_pipelines_ready().await {
+                                    tracing::warn!("wait_for_pipelines_ready: {err}");
                                 }
                             }
                             awsm_web_shared::util::window::set_boot_loader_message(
