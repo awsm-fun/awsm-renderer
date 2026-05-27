@@ -160,12 +160,20 @@ impl MaterialOpaquePipelines {
         ctx: &mut RenderPassInitContext<'_>,
         bind_groups: &MaterialOpaqueBindGroups,
     ) -> Result<Vec<OpaqueShaderDesc>> {
-        Self::shader_descriptors_for_config(
+        // Block D.1 PART 2 first-party extension: the eager-batch
+        // path (called from `AwsmRendererBuilder::build`) emits ONLY
+        // the empty-opaque pipeline. First-party material opaque
+        // pipelines (PBR / UNLIT / TOON / FLIPBOOK) defer until
+        // `launch_first_party_material_compile` fires — gltf-driven
+        // material register + the explicit `register_first_party_*`
+        // builder paths both trigger it.
+        Self::shader_descriptors_for_config_with(
             ctx.gpu,
             ctx.bind_group_layouts,
             ctx.pipeline_layouts,
             bind_groups,
             ctx.anti_aliasing,
+            false,
         )
     }
 
@@ -181,6 +189,32 @@ impl MaterialOpaquePipelines {
         pipeline_layouts: &mut crate::pipeline_layouts::PipelineLayouts,
         bind_groups: &MaterialOpaqueBindGroups,
         anti_aliasing: &AntiAliasing,
+    ) -> Result<Vec<OpaqueShaderDesc>> {
+        Self::shader_descriptors_for_config_with(
+            gpu,
+            bind_group_layouts,
+            pipeline_layouts,
+            bind_groups,
+            anti_aliasing,
+            true,
+        )
+    }
+
+    /// Block D.1 PART 2 extension to first-party materials: emit
+    /// shader descriptors with the OPAQUE_SHADER_IDS iteration
+    /// gated by `include_first_party`. When `false`, only the
+    /// empty-opaque pipeline is emitted — first-party pipelines
+    /// (PBR / UNLIT / TOON / FLIPBOOK) compile lazily on first
+    /// material register via
+    /// `AwsmRenderer::launch_first_party_material_compile`. Cold-boot
+    /// on a zero-scene compiles 0 material pipelines (was 4).
+    pub(crate) fn shader_descriptors_for_config_with(
+        gpu: &awsm_renderer_core::renderer::AwsmRendererWebGpu,
+        bind_group_layouts: &mut crate::bind_group_layout::BindGroupLayouts,
+        pipeline_layouts: &mut crate::pipeline_layouts::PipelineLayouts,
+        bind_groups: &MaterialOpaqueBindGroups,
+        anti_aliasing: &AntiAliasing,
+        include_first_party: bool,
     ) -> Result<Vec<OpaqueShaderDesc>> {
         // Which (main_bgl, slot) is active? Only emit the descriptors
         // for the live MSAA branch — the other half stays uncompiled
@@ -221,32 +255,34 @@ impl MaterialOpaquePipelines {
         let mut shader_descs: Vec<OpaqueShaderDesc> =
             Vec::with_capacity(OPAQUE_SHADER_IDS.len() + 1);
 
-        for &shader_id in OPAQUE_SHADER_IDS {
-            shader_descs.push(OpaqueShaderDesc {
-                shader_cache: ShaderCacheKeyMaterialOpaque {
-                    texture_pool_arrays_len,
-                    texture_pool_samplers_len,
-                    msaa_sample_count: active_msaa,
-                    mipmaps: active_mipmaps,
-                    shader_id,
-                    // Builder-time prewarm — no dynamic materials
-                    // can be registered before `build()` returns,
-                    // so the stable empty-state sentinel applies.
-                    // Mid-session dynamic registrations go through
-                    // `prewarm_pipelines` which builds its own cache
-                    // keys with the live `dispatch_hash`.
-                    dispatch_hash: 0,
-                    dynamic_shader: None,
-                    bucket_entries: crate::dynamic_materials::first_party_bucket_entries(),
-                }
-                .into(),
-                layout_key,
-                slot: OpaquePipelineSlot::Main(PipelineKeyId {
-                    msaa_sample_count: active_msaa,
-                    mipmaps: active_mipmaps,
-                    shader_id,
-                }),
-            });
+        if include_first_party {
+            for &shader_id in OPAQUE_SHADER_IDS {
+                shader_descs.push(OpaqueShaderDesc {
+                    shader_cache: ShaderCacheKeyMaterialOpaque {
+                        texture_pool_arrays_len,
+                        texture_pool_samplers_len,
+                        msaa_sample_count: active_msaa,
+                        mipmaps: active_mipmaps,
+                        shader_id,
+                        // Builder-time prewarm — no dynamic materials
+                        // can be registered before `build()` returns,
+                        // so the stable empty-state sentinel applies.
+                        // Mid-session dynamic registrations go through
+                        // `prewarm_pipelines` which builds its own cache
+                        // keys with the live `dispatch_hash`.
+                        dispatch_hash: 0,
+                        dynamic_shader: None,
+                        bucket_entries: crate::dynamic_materials::first_party_bucket_entries(),
+                    }
+                    .into(),
+                    layout_key,
+                    slot: OpaquePipelineSlot::Main(PipelineKeyId {
+                        msaa_sample_count: active_msaa,
+                        mipmaps: active_mipmaps,
+                        shader_id,
+                    }),
+                });
+            }
         }
         shader_descs.push(OpaqueShaderDesc {
             shader_cache: ShaderCacheKeyMaterialOpaqueEmpty {

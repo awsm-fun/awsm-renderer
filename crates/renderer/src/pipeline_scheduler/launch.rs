@@ -289,6 +289,186 @@ impl crate::AwsmRenderer {
         Ok(())
     }
 
+    /// Block D.1 PART 2 first-party extension: kick off real-future
+    /// compile for a FIRST-PARTY material's opaque pipeline.
+    /// Mirrors [`Self::launch_dynamic_material_compile`] but with
+    /// `dynamic_shader: None` and a hard-coded first-party shader_id
+    /// (PBR / UNLIT / TOON / FLIPBOOK).
+    ///
+    /// Called from `AwsmRenderer::register_first_party_material` —
+    /// the gltf-loader's first-party material insert path. Cold-boot
+    /// no longer compiles first-party opaque pipelines (the eager
+    /// `shader_descriptors_and_layouts` path now skips them); they
+    /// land via this method as gltf materials register.
+    ///
+    /// **MSAA + mipmap variants**: compiles all 4 (msaa × mipmaps)
+    /// combinations for this shader_id, so MSAA-flip + mipmap-flip
+    /// don't trigger a fresh recompile. (Dynamic materials do the
+    /// same.) The classify pipelines are NOT touched here — they're
+    /// either already eager (no dynamic registered) or compiled via
+    /// `launch_dynamic_material_compile` when dynamics enter.
+    ///
+    /// Idempotent on cache hits: variants already compiled are
+    /// skipped; the scheduler counter only tracks actual in-flight
+    /// async compiles.
+    pub fn launch_first_party_material_compile(
+        &mut self,
+        shader_id: MaterialShaderId,
+    ) -> Result<(), crate::error::AwsmError> {
+        if shader_id.is_dynamic() {
+            // Dynamic shader_ids route through launch_dynamic_material_compile.
+            return self.launch_dynamic_material_compile(shader_id);
+        }
+        let Some(mid) = self
+            .pipeline_scheduler
+            .find_material_by_shader_id(shader_id)
+        else {
+            return Ok(());
+        };
+        let group_id = PipelineGroupId::Material(mid);
+
+        // First-party materials use the stable empty-state dispatch_hash
+        // at registration time. The `dispatch_hash: 0` sentinel matches
+        // what `MaterialOpaquePipelines::shader_descriptors_for_config_with`
+        // used to emit in the eager batch.
+        let dispatch_hash = self.dynamic_materials.dispatch_hash_cached();
+
+        let opaque_bg = &self.render_passes.material_opaque.bind_groups;
+        let texture_pool_arrays_len = opaque_bg.texture_pool_arrays_len;
+        let texture_pool_samplers_len = opaque_bg.texture_pool_sampler_keys.len() as u32;
+        let opaque_layout_msaa = self.pipeline_layouts.get_key(
+            &self.gpu,
+            &self.bind_group_layouts,
+            crate::pipeline_layouts::PipelineLayoutCacheKey::new(vec![
+                opaque_bg.multisampled_main_bind_group_layout_key,
+                opaque_bg.lights_bind_group_layout_key,
+                opaque_bg.texture_pool_textures_bind_group_layout_key,
+                opaque_bg.shadows_bind_group_layout_key,
+            ]),
+        )?;
+        let opaque_layout_no_msaa = self.pipeline_layouts.get_key(
+            &self.gpu,
+            &self.bind_group_layouts,
+            crate::pipeline_layouts::PipelineLayoutCacheKey::new(vec![
+                opaque_bg.singlesampled_main_bind_group_layout_key,
+                opaque_bg.lights_bind_group_layout_key,
+                opaque_bg.texture_pool_textures_bind_group_layout_key,
+                opaque_bg.shadows_bind_group_layout_key,
+            ]),
+        )?;
+
+        // Bucket entries snapshot — for first-party-only scenes
+        // matches `first_party_bucket_entries()`; with dynamics
+        // registered uses the live `bucket_entries_cached()`.
+        let entries = self.dynamic_materials.bucket_entries_cached().to_vec();
+
+        let mut shader_jobs: Vec<crate::shaders::ShaderCacheKey> = Vec::new();
+        let mut slots: Vec<LaunchSlot> = Vec::new();
+
+        for &(msaa, mipmaps) in &[
+            (Some(4u32), true),
+            (Some(4u32), false),
+            (None, true),
+            (None, false),
+        ] {
+            shader_jobs.push(
+                ShaderCacheKeyMaterialOpaque {
+                    texture_pool_arrays_len,
+                    texture_pool_samplers_len,
+                    msaa_sample_count: msaa,
+                    mipmaps,
+                    shader_id,
+                    dispatch_hash,
+                    dynamic_shader: None,
+                    bucket_entries: entries.clone(),
+                }
+                .into(),
+            );
+            slots.push(LaunchSlot::Opaque { msaa, mipmaps });
+        }
+
+        let resolved_shader_keys = self
+            .shaders
+            .ensure_keys_sync_skip_validate(&self.gpu, shader_jobs)?;
+
+        let mut compute_jobs: Vec<(LaunchSlot, ComputePipelineCacheKey)> =
+            Vec::with_capacity(slots.len());
+        for (shader_key, slot) in resolved_shader_keys.into_iter().zip(slots) {
+            let layout = match &slot {
+                LaunchSlot::Opaque { msaa, .. } => {
+                    if msaa.is_some() {
+                        opaque_layout_msaa
+                    } else {
+                        opaque_layout_no_msaa
+                    }
+                }
+                LaunchSlot::Classify { .. } => unreachable!("classify not emitted here"),
+            };
+            compute_jobs.push((slot, ComputePipelineCacheKey::new(shader_key, layout)));
+        }
+
+        let mut promise_jobs: Vec<(LaunchSlot, ComputePipelineCacheKey)> = Vec::new();
+        for (slot, cache_key) in &compute_jobs {
+            if let Some(existing_key) = self.pipelines.compute.cache_lookup(cache_key).copied() {
+                install_per_pass(self, slot, shader_id, dispatch_hash, existing_key);
+            } else {
+                promise_jobs.push((slot.clone(), cache_key.clone()));
+            }
+        }
+        if promise_jobs.is_empty() {
+            self.pipeline_scheduler.mark_ready(group_id);
+            return Ok(());
+        }
+
+        let cache_keys_only: Vec<ComputePipelineCacheKey> =
+            promise_jobs.iter().map(|(_, k)| k.clone()).collect();
+        let mut prepped =
+            crate::pipelines::compute_pipeline::ComputePipelines::ensure_keys_prepare(
+                &self.gpu,
+                &self.shaders,
+                &self.pipeline_layouts,
+                cache_keys_only.clone(),
+            )?;
+        let Some(generation) = self.pipeline_scheduler.material_generation(mid) else {
+            return Ok(());
+        };
+        let promises = std::mem::take(&mut prepped.promises);
+        for ((slot, cache_key), promise) in promise_jobs.into_iter().zip(promises) {
+            let target = match &slot {
+                LaunchSlot::Opaque { msaa, mipmaps } => CompileInstallTarget::OpaqueDynamic {
+                    shader_id,
+                    msaa: *msaa,
+                    mipmaps: *mipmaps,
+                },
+                LaunchSlot::Classify { .. } => unreachable!(),
+            };
+            let id = group_id;
+            let cache_key_clone = cache_key.clone();
+            let fut: std::pin::Pin<
+                Box<dyn std::future::Future<Output = PipelineCompileResolution>>,
+            > = Box::pin(async move {
+                let result: std::result::Result<web_sys::GpuComputePipeline, JsValue> =
+                    promise.await;
+                PipelineCompileResolution {
+                    id,
+                    generation,
+                    target,
+                    cache_key: cache_key_clone,
+                    result,
+                }
+            });
+            self.pipeline_scheduler.push_compile_future(group_id, fut);
+        }
+        tracing::info!(
+            target: "awsm_renderer::pipeline_readiness",
+            "launch_first_party_material_compile({:?}): {} sub-pipelines pushed for material({:?})",
+            shader_id,
+            cache_keys_only.len(),
+            mid,
+        );
+        Ok(())
+    }
+
     /// Drain ONE pipeline compile resolution from the scheduler's
     /// inflight_compile (non-blocking), install + decrement the
     /// sub-compile counter. Returns `true` when a resolution was
