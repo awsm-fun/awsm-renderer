@@ -843,7 +843,7 @@ Currently EVSM/Line/ShadowGen/Picker are eagerly created at `build()` based on f
 - **B.2** **`Pass(ShadowGen)` lazy**: same first-shadow-caster trigger as EVSM. Shadow caster pass currently creates pipelines eagerly when `features.shadows`. Strip + lazy.
 - **B.3** **`Pass(Line)` lazy**: hook when first line primitive is added (look at line registration entry point in `crates/renderer/src/render_passes/lines/`).
 - **B.4** **`Pass(Picker)` lazy (Stage 2.6 fully)**: defer the entire Picker subsystem (today `Option<Picker>` gated on `features.picking`) until first `pick()` query.
-- **B.5** **`set_anti_aliasing` edge-pipeline recompile**: when MSAA toggles on after build, call `MaterialEdgePipelines::ensure_compiled` to compile edge_resolve pipelines for the new MSAA state. Currently edge_pipelines compile only at first boot — toggling off→on leaves them empty (silent fall-through via `warn_pipeline_not_compiled`).
+- **B.5** **`set_anti_aliasing` edge-pipeline recompile** ✅ landed: when MSAA toggles on after build, call `MaterialEdgePipelines::ensure_compiled` to compile edge_resolve pipelines for the new MSAA state. Currently edge_pipelines compile only at first boot — toggling off→on leaves them empty (silent fall-through via `warn_pipeline_not_compiled`).
 
 ### Block C — Stage 3 polish
 
