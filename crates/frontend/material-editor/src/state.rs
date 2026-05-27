@@ -42,6 +42,15 @@ pub struct EditState {
     /// compiled cleanly). Phase 9 populates this from
     /// `register_material` results.
     pub errors: Arc<Mutable<Vec<CompileError>>>,
+    /// Number of pipeline groups currently in `Pending` state from
+    /// the renderer's pipeline scheduler. Driven by the RAF tick which
+    /// calls `drain_pipeline_status_events` each frame. Block A.4: a
+    /// modal overlay shows while this is `> 0`.
+    pub compile_pending: Arc<Mutable<usize>>,
+    /// Last error string from a `Failed` status event (if any). Reset
+    /// when a fresh compile batch opens — keeps the modal's
+    /// "Last error" subsection scoped to the current compile cycle.
+    pub compile_last_error: Arc<Mutable<Option<String>>>,
 }
 
 impl EditState {
@@ -85,6 +94,8 @@ impl EditState {
             definition: Arc::new(Mutable::new(def)),
             wgsl_source: Arc::new(Mutable::new(SCANLINE_WGSL.to_string())),
             errors: Arc::new(Mutable::new(Vec::new())),
+            compile_pending: Arc::new(Mutable::new(0)),
+            compile_last_error: Arc::new(Mutable::new(None)),
         }
     }
 }

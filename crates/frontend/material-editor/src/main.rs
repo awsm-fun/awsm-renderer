@@ -91,7 +91,7 @@ async fn run() -> anyhow::Result<()> {
             Ok(host) => {
                 *renderer_handle_for_boot.borrow_mut() = Some(host);
                 tracing::info!("[material-editor] renderer ready");
-                start_render_loop(renderer_handle_for_boot.clone());
+                start_render_loop(renderer_handle_for_boot.clone(), state_for_boot.clone());
                 // Re-fire the WGSL signal so the debounced recompile
                 // loop registers the initial material now that the
                 // renderer exists. `Mutable::set` triggers the
@@ -124,17 +124,60 @@ async fn run() -> anyhow::Result<()> {
 /// `last_matrices`-based dirty tracking marks the camera buffer dirty
 /// during the initial frames — without this the very first frame
 /// renders against zero matrices and the quad never appears.
-fn start_render_loop(handle: RendererHandle) {
+fn start_render_loop(handle: RendererHandle, state: EditState) {
     use awsm_renderer::camera::CameraMatrices;
+    use awsm_renderer::pipeline_scheduler::PipelineGroupStatus;
     use glam::{Mat4, Vec3};
     use std::cell::RefCell;
     use std::rc::Rc;
 
     let raf_holder: Rc<RefCell<Option<gloo_render::AnimationFrame>>> = Rc::new(RefCell::new(None));
 
-    fn tick(handle: RendererHandle, raf_holder: Rc<RefCell<Option<gloo_render::AnimationFrame>>>) {
+    fn tick(
+        handle: RendererHandle,
+        state: EditState,
+        raf_holder: Rc<RefCell<Option<gloo_render::AnimationFrame>>>,
+    ) {
         if let Ok(mut guard) = handle.try_borrow_mut() {
             if let Some(host) = guard.as_mut() {
+                // Block A.4: drain pipeline status events into the
+                // editor's compile_pending counter. Pending → +1,
+                // Ready/Failed → -1 (saturating). Failed events also
+                // surface their error string in the modal's "Last
+                // error" subsection. Cleared on the leading edge of a
+                // fresh compile batch (prev_pending == 0 transitioning
+                // to >0) so the next batch starts clean.
+                let events = host.renderer.drain_pipeline_status_events();
+                if !events.is_empty() {
+                    let prev_pending = state.compile_pending.get();
+                    let mut pending = prev_pending;
+                    let mut latest_err: Option<String> = None;
+                    let mut opened_new_batch = false;
+                    for ev in events {
+                        match ev.status {
+                            PipelineGroupStatus::Pending => {
+                                if pending == 0 {
+                                    opened_new_batch = true;
+                                }
+                                pending = pending.saturating_add(1);
+                            }
+                            PipelineGroupStatus::Ready => {
+                                pending = pending.saturating_sub(1);
+                            }
+                            PipelineGroupStatus::Failed { error } => {
+                                pending = pending.saturating_sub(1);
+                                latest_err = Some(format!("{error}"));
+                            }
+                        }
+                    }
+                    state.compile_pending.set(pending);
+                    if let Some(msg) = latest_err {
+                        state.compile_last_error.set(Some(msg));
+                    } else if opened_new_batch && prev_pending == 0 {
+                        state.compile_last_error.set(None);
+                    }
+                }
+
                 // Camera: looking at the quad at (0, 0, -3) from
                 // slightly above + back so the preview shows the
                 // material in a 3/4 view. Aspect is left at 1:1
@@ -164,14 +207,15 @@ fn start_render_loop(handle: RendererHandle) {
             }
         }
         let next_handle = handle.clone();
+        let next_state = state.clone();
         let next_holder = raf_holder.clone();
         let new_raf = gloo_render::request_animation_frame(move |_ts| {
-            tick(next_handle.clone(), next_holder.clone());
+            tick(next_handle.clone(), next_state.clone(), next_holder.clone());
         });
         *raf_holder.borrow_mut() = Some(new_raf);
     }
 
-    tick(handle, raf_holder);
+    tick(handle, state, raf_holder);
 }
 
 /// Build an `AwsmRenderer` against the preview canvas.

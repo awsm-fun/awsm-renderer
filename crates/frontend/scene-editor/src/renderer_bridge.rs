@@ -25,7 +25,8 @@ pub mod texture_cache;
 
 use crate::collider_wireframe::sync_editor_wireframes;
 use crate::context::{
-    camera_handle, render_hooks_handle, renderer_handle, set_raf, set_render_hooks,
+    camera_handle, compile_last_error_handle, compile_pending_handle, render_hooks_handle,
+    renderer_handle, set_raf, set_render_hooks,
 };
 use crate::prelude::*;
 use awsm_renderer::render::RenderHooks;
@@ -140,6 +141,47 @@ fn render_one_frame() {
     }
 
     if let Some(renderer) = renderer.as_mut() {
+        // Block A.4: drain pipeline scheduler status events into the
+        // shared compile-status state so the floating modal can read
+        // it as a dominator signal. Pending → +1, Ready/Failed →
+        // -1 (saturating). Failed events also publish their error
+        // string to `compile_last_error`. Cleared on the leading edge
+        // of a fresh compile batch (prev_pending == 0 transitioning
+        // to >0) so the next batch starts clean.
+        let events = renderer.drain_pipeline_status_events();
+        if !events.is_empty() {
+            use awsm_renderer::pipeline_scheduler::PipelineGroupStatus;
+            let pending_handle = compile_pending_handle();
+            let last_err_handle = compile_last_error_handle();
+            let prev_pending = pending_handle.get();
+            let mut pending = prev_pending;
+            let mut latest_err: Option<String> = None;
+            let mut opened_new_batch = false;
+            for ev in events {
+                match ev.status {
+                    PipelineGroupStatus::Pending => {
+                        if pending == 0 {
+                            opened_new_batch = true;
+                        }
+                        pending = pending.saturating_add(1);
+                    }
+                    PipelineGroupStatus::Ready => {
+                        pending = pending.saturating_sub(1);
+                    }
+                    PipelineGroupStatus::Failed { error } => {
+                        pending = pending.saturating_sub(1);
+                        latest_err = Some(format!("{error}"));
+                    }
+                }
+            }
+            pending_handle.set(pending);
+            if let Some(msg) = latest_err {
+                last_err_handle.set(Some(msg));
+            } else if opened_new_batch && prev_pending == 0 {
+                last_err_handle.set(None);
+            }
+        }
+
         // If the user picked an authored camera from the header, drive
         // the viewport from its CameraBehavior (mirroring the player's
         // camera_driver). Otherwise stick with the free-fly matrices

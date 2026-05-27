@@ -30,6 +30,12 @@ use awsm_web_shared::util::free_camera::FreeCamera as Camera;
 pub type RendererHandle = Arc<xutex::AsyncMutex<AwsmRenderer>>;
 pub type CameraHandle = Arc<std::sync::Mutex<Camera>>;
 pub type RenderHooksHandle = Arc<std::sync::RwLock<Option<RenderHooks>>>;
+/// Block A.4: per-frame pipeline-compile state surfaced to the UI by
+/// the RAF tick draining `AwsmRenderer::drain_pipeline_status_events`.
+/// `pending` is the live count of groups in `Pending`; `last_error`
+/// carries the most recent `Failed` event's error string.
+pub type CompilePendingHandle = Arc<futures_signals::signal::Mutable<usize>>;
+pub type CompileLastErrorHandle = Arc<futures_signals::signal::Mutable<Option<String>>>;
 /// Pre-warmed Phase-4.3a worker pool for off-main-thread glTF parsing.
 /// Built once at editor init (before APP_CONTEXT is populated) so the
 /// first asset load issues `pool.dispatch::<GltfParseJob>(..)` directly
@@ -179,6 +185,30 @@ pub fn render_hooks_handle() -> RenderHooksHandle {
     })
 }
 
+/// Block A.4: handle to the pipeline-compile pending counter. RAF
+/// tick writes; the floating compile-status overlay reads via a
+/// dominator signal.
+pub fn compile_pending_handle() -> CompilePendingHandle {
+    APP_CONTEXT.with(|ctx| {
+        ctx.get()
+            .expect("AppContext not initialized")
+            .compile_pending
+            .clone()
+    })
+}
+
+/// Block A.4: handle to the most-recent compile error string surfaced
+/// by a `Failed` scheduler event. Shown in the compile-status modal's
+/// "Last error" subsection.
+pub fn compile_last_error_handle() -> CompileLastErrorHandle {
+    APP_CONTEXT.with(|ctx| {
+        ctx.get()
+            .expect("AppContext not initialized")
+            .compile_last_error
+            .clone()
+    })
+}
+
 pub fn set_render_hooks(hooks: RenderHooks) {
     APP_CONTEXT.with(|ctx| {
         if let Some(ctx) = ctx.get() {
@@ -320,6 +350,8 @@ pub async fn create_context(canvas: web_sys::HtmlCanvasElement) -> EditorResult<
         render_hooks,
         resize_observer: Arc::new(resize_observer),
         worker_pool,
+        compile_pending: Arc::new(futures_signals::signal::Mutable::new(0)),
+        compile_last_error: Arc::new(futures_signals::signal::Mutable::new(None)),
         _drop_tracker: Arc::new(AppContextDropTracker),
     };
 
@@ -354,6 +386,12 @@ struct AppContext {
     // bootstrap (the default), `None` when bootstrap failed or
     // `?gltf-worker=off` opted out. See `WorkerPoolHandle` doc.
     worker_pool: WorkerPoolHandle,
+
+    // Block A.4: shared compile-status state. The RAF tick drains
+    // `drain_pipeline_status_events` and writes the counter; the
+    // floating compile-status modal reads it via dominator signals.
+    compile_pending: CompilePendingHandle,
+    compile_last_error: CompileLastErrorHandle,
 
     // just for debugging
     _drop_tracker: Arc<AppContextDropTracker>,

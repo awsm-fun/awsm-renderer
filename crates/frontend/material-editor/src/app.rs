@@ -24,30 +24,38 @@ use crate::{panes, state::EditState};
 /// of the state so the recompile loop can listen for edits.
 pub fn root_with_state(state: EditState) -> Dom {
     html!("div", {
-        .style("display", "grid")
-        .style("grid-template-rows", "40px 1fr 240px")
-        .style("grid-template-columns", "320px 1fr 320px")
+        .style("position", "relative")
         .style("height", "100vh")
         .style("font-family", "sans-serif")
-        .children(&mut [
-            // Top bar — spans all three columns.
-            html!("div", {
-                .style("grid-column", "1 / span 3")
-                .style("padding", "8px")
-                .style("background", "#222")
-                .style("color", "#eee")
-                .text("awsm material editor — Phase 8 scaffold")
-            }),
-            panes::definition::render(&state),
-            panes::wgsl_editor::render(&state),
-            panes::contract::render(&state),
-            // Bottom: preview (left half of last row) + errors (right).
-            html!("div", {
-                .style("grid-column", "1 / span 2")
-                .style("border-top", "1px solid #333")
-                .child(panes::preview::render(&state))
-            }),
-            panes::errors::render(&state),
-        ])
+        .child(html!("div", {
+            .style("display", "grid")
+            .style("grid-template-rows", "40px 1fr 240px")
+            .style("grid-template-columns", "320px 1fr 320px")
+            .style("height", "100vh")
+            .children(&mut [
+                // Top bar — spans all three columns.
+                html!("div", {
+                    .style("grid-column", "1 / span 3")
+                    .style("padding", "8px")
+                    .style("background", "#222")
+                    .style("color", "#eee")
+                    .text("awsm material editor — Phase 8 scaffold")
+                }),
+                panes::definition::render(&state),
+                panes::wgsl_editor::render(&state),
+                panes::contract::render(&state),
+                // Bottom: preview (left half of last row) + errors (right).
+                html!("div", {
+                    .style("grid-column", "1 / span 2")
+                    .style("border-top", "1px solid #333")
+                    .child(panes::preview::render(&state))
+                }),
+                panes::errors::render(&state),
+            ])
+        }))
+        // Block A.4: floating compile-status overlay. Auto-shows
+        // whenever the renderer's pipeline scheduler has any group
+        // `Pending`; auto-dismisses when all transitions resolve.
+        .child(panes::compile_modal::render(&state))
     })
 }
