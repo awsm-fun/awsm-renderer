@@ -114,11 +114,21 @@ impl OrbitCamera {
                             .split(',')
                             .filter_map(|s| s.parse::<f32>().ok())
                             .collect();
+                        tracing::info!(
+                            target: "awsm_renderer::camera_debug",
+                            "cam= URL override seen: parts={:?}",
+                            parts,
+                        );
                         if parts.len() == 6 {
                             self.yaw = parts[0];
                             self.pitch = parts[1];
                             self.radius = parts[2];
                             self.look_at = Vec3::new(parts[3], parts[4], parts[5]);
+                            tracing::info!(
+                                target: "awsm_renderer::camera_debug",
+                                "cam= URL override APPLIED: yaw={} pitch={} radius={} look_at={:?}",
+                                self.yaw, self.pitch, self.radius, self.look_at,
+                            );
                         }
                     }
                 }

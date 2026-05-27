@@ -239,9 +239,29 @@ fn cs_main(
         // re-shading produces wireframe-like artifacts (samples on
         // adjacent triangles can have wildly different bary derivs /
         // depth, so the average isn't a smooth blend).
-        let any_mesh_differs = (mat_off_0 != mat_off_1)
-            || (mat_off_0 != mat_off_2)
-            || (mat_off_0 != mat_off_3);
+        //
+        // SILHOUETTE detection: a pixel is a silhouette edge iff its
+        // 4 samples are MIXED between "covered by geometry" and "not".
+        // Diagnosis showed that tri_id (v.x / v.y channels) IS distinct
+        // per sample at silhouettes (and intra-mesh tri seams), while
+        // mat_meta_offset (v.z / v.w) gets broadcast across samples by
+        // the fragment shader output path on this Tint compile. Using
+        // mat_meta diff alone never caught silhouettes; using tri_id
+        // diff caught silhouettes AND intra-mesh tri seams — but the
+        // latter produced wireframe artifacts when edge_resolve
+        // shaded per-sample. The clean discriminator: was sample N
+        // *covered* by any triangle? `tri_id == U32_MAX` means
+        // uncovered (clear value). Mixed coverage across the 4
+        // samples = silhouette against skybox/uncovered region. All
+        // covered with differing tri_ids = intra-mesh seam (NOT a
+        // silhouette; skip).
+        let cov_0 = tri_0 != U32_MAX;
+        let cov_1 = tri_1 != U32_MAX;
+        let cov_2 = tri_2 != U32_MAX;
+        let cov_3 = tri_3 != U32_MAX;
+        let any_mesh_differs = (cov_0 != cov_1)
+            || (cov_0 != cov_2)
+            || (cov_0 != cov_3);
         if (seen_count >= 2u || any_mesh_differs) {
             // Allocate compact edge_pixel_id. The atomic counter lives
             // in args_buffer / `edge_buffers` (drives indirect dispatch
