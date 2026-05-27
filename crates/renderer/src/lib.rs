@@ -1867,11 +1867,87 @@ impl AwsmRendererBuilder {
             .bind_groups
             .mark_create(crate::bind_groups::BindGroupCreate::TextureViewRecreate);
 
+        // Block D.1 PART 3: register the eager set with the scheduler.
+        // The eager set (the pipelines compiled inline above by the
+        // per-pass `from_resolved` calls) is now tracked through the
+        // scheduler's PassDef SlotMap. They're already-compiled, so we
+        // immediately transition Pending → Ready. Frontends watching
+        // drain_pipeline_status_events observe each PassKind register;
+        // config-flip semantics (Block D.3) can walk the Pass entries
+        // similarly to materials.
+        //
+        // The literal "compile drives THROUGH the scheduler" shape
+        // (submit → scheduler kicks off compile → wait_for_pipelines_ready)
+        // would additionally require each render-pass's `from_resolved`
+        // to factor into `new_deferred` + `ensure_pipelines_compiled`
+        // for the eager set's individual passes — that's a multi-day
+        // refactor and is parked for a follow-up. The bookkeeping here
+        // is the architectural promise's observability piece: scheduler
+        // knows the full eager set; frontends + config-flip + status
+        // queries all see it.
+        {
+            use crate::pipeline_scheduler::{
+                PassDef, PipelineConfigSnapshot, PipelineGroupDef, PipelineGroupId,
+            };
+            let snapshot = PipelineConfigSnapshot {
+                msaa: _self.anti_aliasing.clone(),
+                mipmap: if _self.anti_aliasing.mipmap {
+                    crate::render_passes::material_opaque::shader::template::MipmapMode::Gradient
+                } else {
+                    crate::render_passes::material_opaque::shader::template::MipmapMode::None
+                },
+                use_mesh_light_slices: false,
+                gpu_culling: _self.features.gpu_culling,
+                coverage_lod: _self.features.coverage_lod,
+                debug_bitmask: 0,
+                default_cull_mode: awsm_renderer_core::pipeline::primitive::CullMode::Back,
+            };
+            let active_msaa_samples: u8 = if _self.anti_aliasing.has_msaa_checked()? { 4 } else { 1 };
+            let mut eager_passes: Vec<PipelineGroupDef> = vec![
+                PipelineGroupDef::Pass(PassDef::OpaqueEmpty {
+                    snapshot: snapshot.clone(),
+                }),
+                PipelineGroupDef::Pass(PassDef::ClassifyMsaa {
+                    samples: active_msaa_samples,
+                    snapshot: snapshot.clone(),
+                }),
+                PipelineGroupDef::Pass(PassDef::GeometryMsaa {
+                    samples: active_msaa_samples,
+                    snapshot: snapshot.clone(),
+                }),
+                PipelineGroupDef::Pass(PassDef::Display),
+                PipelineGroupDef::Pass(PassDef::ScenePassClear),
+            ];
+            if _self.features.gpu_culling {
+                eager_passes.push(PipelineGroupDef::Pass(PassDef::HzbSeed {
+                    samples: active_msaa_samples,
+                }));
+            }
+            if edge_resolve_enabled {
+                eager_passes.push(PipelineGroupDef::Pass(PassDef::EdgeResolveSkybox {
+                    snapshot: snapshot.clone(),
+                }));
+                eager_passes.push(PipelineGroupDef::Pass(PassDef::EdgeResolveBlend {
+                    snapshot: snapshot.clone(),
+                }));
+            }
+            let pass_ids = _self
+                .pipeline_scheduler
+                .submit_pipeline_group_batch(eager_passes);
+            for id in &pass_ids {
+                if matches!(id, PipelineGroupId::Pass(_)) {
+                    _self.pipeline_scheduler.mark_ready(*id);
+                }
+            }
+            tracing::info!(
+                target: "awsm_renderer::pipeline_readiness",
+                "eager-set registered with scheduler: {} groups marked Ready",
+                pass_ids.len()
+            );
+        }
+
         // Race-policy: config-change APIs become available now that
-        // the eager batch is done. The pipeline_scheduler is empty
-        // at this point — all the existing eager compile-paths still
-        // populate the per-pass key caches directly. Stage 1 follow-up
-        // wires the scheduler into those eager paths.
+        // the eager batch is done.
         _self.build_complete = true;
 
         emit_phase(RendererLoadingPhase::Ready);
