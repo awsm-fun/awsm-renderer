@@ -344,13 +344,17 @@ PR #99 on the `more-optimizations` branch is open and substantially complete. Wh
   8 pixels differ by 1/255 at canvas-left-edge sub-pixel rounding. Well
   within the success criterion.
 
-What's **not yet** landed (genuine remainder — small surface area):
+What's **not yet** landed:
 
+**Out-of-scope for the agent (human / hardware gates):**
+- [§ Post-implementation human checklist](#post-implementation-human-checklist) — H.1 through H.6, the on-device Android verification pass. Requires a phone plugged in with `chrome://flags#enable-unsafe-webgpu`; the whole point of this branch is that on Android Chrome this should now reach `phase = Ready` instead of `VK_ERROR_INITIALIZATION_FAILED`. Cannot be done from a developer machine.
+
+**Parked-by-design (no behavioural difference left to capture):**
 - Stage 1.8-fully **literal** (push real compile futures into FuturesUnordered): assessed as disproportionate vs the A.1 bridge approach which delivers the same observable behaviour. Parked under Block D.
 - Stage 1.13 (gltf loader explicit `submit_pipeline_group_batch(MaterialDef::FirstParty(...))`): first-party pipelines already compile in the eager set, so submitting is bookkeeping-only. Becomes load-bearing when first-party variants go lazy.
 - Block D (build-flow migration to scheduler-driven eager set + full config-flip semantics): the "bigger refactor" — parked. Renderer works correctly today via the A.1 bridge + the existing batched compile path; Block D is observability + uniformity polish.
-- Stage 4.4 / 4.5 (config-flip + light-add interactive smoke test): manual hand-test, ~10 min when in the editor.
-- E.2 (multithreading prep audit), E.3 (test-helper sweep), E.5 (edge_resolve runtime profile), E.6 (cargo doc warning audit — already noted: 43 warnings vs ~47 baseline, net improvement), E.7 (missing_docs gate for pipeline_scheduler — ~49 fields need stub docs first): polish items, parked.
+- 6.1 Priority 4 (build-time pipeline cache): parked waiting on Dawn pipeline-cache spec stabilization.
+- E.2 (multithreading prep audit), E.3 (test-helper sweep), E.5 (edge_resolve runtime profile — baseline captured at `docs/edge-resolve-baseline.md`; cross-branch A/B parked), E.7 (missing_docs gate for pipeline_scheduler — ~49 fields need stub docs first): polish items, parked.
 
 ---
 
