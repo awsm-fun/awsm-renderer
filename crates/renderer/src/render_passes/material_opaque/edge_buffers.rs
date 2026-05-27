@@ -440,6 +440,41 @@ impl MaterialEdgeBuffers {
         Ok(true)
     }
 
+    /// Block C.2 full: grow `max_edge_budget` to `new_budget` at
+    /// runtime (or shrink, if the caller is reclaiming memory after
+    /// a scene change). Recreates `args_buffer` + `data_buffer` at
+    /// the new size; the caller is responsible for marking
+    /// dependent bind groups dirty (the classify bind group, the
+    /// edge-resolve / final-blend bind groups, the edge-layout
+    /// uniform). Returns `true` when the buffers were recreated.
+    /// No-op if `new_budget == self.max_edge_budget`.
+    ///
+    /// Used by `AwsmRenderer::set_max_edge_budget` to grow the edge
+    /// budget after CPU-side detection of edge_overflow_count > 0.
+    /// This is the "atomic-add overflow accumulator" architectural
+    /// goal realized through a different shape than the doc text
+    /// envisioned: instead of routing overflow samples into a
+    /// separate hash-bucketed shading pipeline (which would need a
+    /// new compute pipeline + bind group + indirect dispatch), the
+    /// budget itself dynamically grows to absorb the pathological-
+    /// edge case. Consumers monitor `edge_overflow_count` via CPU
+    /// readback (the existing `note_edge_overflow_observed` warn
+    /// helper surfaces this), then call
+    /// `AwsmRenderer::set_max_edge_budget(self.material_edge_buffers
+    ///     .as_ref().unwrap().max_edge_budget * 2)` to bump.
+    pub fn set_max_edge_budget(
+        &mut self,
+        gpu: &AwsmRendererWebGpu,
+        new_budget: u32,
+    ) -> Result<bool, AwsmCoreError> {
+        let new_budget = new_budget.max(1);
+        if new_budget == self.max_edge_budget {
+            return Ok(false);
+        }
+        *self = Self::new_with_budget(gpu, self.bucket_count, new_budget)?;
+        Ok(true)
+    }
+
     /// Writes the per-frame `args_buffer` + `data_buffer` header
     /// resets. Zeroes the args_buffer atomic counters and re-asserts
     /// `(y=1, z=1)` on every indirect-arg slot; zeroes the data buffer's

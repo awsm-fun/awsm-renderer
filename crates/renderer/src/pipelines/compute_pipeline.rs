@@ -376,10 +376,7 @@ impl ComputePipelines {
     /// contain it. Used by the literal-push-futures launch path
     /// (Block D.1 PART 2) to skip already-installed sub-pipelines
     /// before kicking off a new compile.
-    pub fn cache_lookup(
-        &self,
-        cache_key: &ComputePipelineCacheKey,
-    ) -> Option<&ComputePipelineKey> {
+    pub fn cache_lookup(&self, cache_key: &ComputePipelineCacheKey) -> Option<&ComputePipelineKey> {
         self.cache.get(cache_key)
     }
 

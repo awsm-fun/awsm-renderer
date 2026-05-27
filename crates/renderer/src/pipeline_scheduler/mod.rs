@@ -139,8 +139,7 @@ pub struct PipelineCompileResolution {
     pub result: std::result::Result<web_sys::GpuComputePipeline, wasm_bindgen::JsValue>,
 }
 
-type PipelineCompileFuture =
-    Pin<Box<dyn Future<Output = PipelineCompileResolution> + 'static>>;
+type PipelineCompileFuture = Pin<Box<dyn Future<Output = PipelineCompileResolution> + 'static>>;
 
 /// Status-stream event surface for frontends.
 #[derive(Debug)]
@@ -220,11 +219,7 @@ impl PipelineScheduler {
     /// pre-frame phase. Bumps the per-material sub-compile counter
     /// when the `id` is a `Material` so `apply_compile_resolution`
     /// knows when to mark Ready.
-    pub fn push_compile_future(
-        &mut self,
-        id: PipelineGroupId,
-        future: PipelineCompileFuture,
-    ) {
+    pub fn push_compile_future(&mut self, id: PipelineGroupId, future: PipelineCompileFuture) {
         if let PipelineGroupId::Material(mid) = id {
             *self.pending_subcompiles.entry(mid).or_insert(0) += 1;
         }

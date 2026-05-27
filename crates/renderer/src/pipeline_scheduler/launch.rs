@@ -29,9 +29,7 @@
 use awsm_materials::{MaterialAlphaMode, MaterialShaderId};
 use wasm_bindgen::JsValue;
 
-use crate::pipeline_scheduler::{
-    CompileInstallTarget, PipelineCompileResolution, PipelineGroupId,
-};
+use crate::pipeline_scheduler::{CompileInstallTarget, PipelineCompileResolution, PipelineGroupId};
 use crate::pipelines::compute_pipeline::ComputePipelineCacheKey;
 use crate::render_passes::material_classify::shader::cache_key::ShaderCacheKeyMaterialClassify;
 use crate::render_passes::material_opaque::shader::cache_key::{
@@ -59,7 +57,10 @@ impl crate::AwsmRenderer {
         shader_id: MaterialShaderId,
     ) -> Result<(), crate::error::AwsmError> {
         // Find the scheduler MaterialId for this shader_id.
-        let Some(mid) = self.pipeline_scheduler.find_material_by_shader_id(shader_id) else {
+        let Some(mid) = self
+            .pipeline_scheduler
+            .find_material_by_shader_id(shader_id)
+        else {
             return Ok(());
         };
         let group_id = PipelineGroupId::Material(mid);
@@ -144,8 +145,7 @@ impl crate::AwsmRenderer {
                 ShaderCacheKeyMaterialClassify {
                     msaa_sample_count: msaa,
                     bucket_entries: entries.clone(),
-                    emit_edge_data: msaa.is_some()
-                        && crate::edge_resolve_supported(&self.gpu),
+                    emit_edge_data: msaa.is_some() && crate::edge_resolve_supported(&self.gpu),
                 }
                 .into(),
             );
@@ -215,9 +215,7 @@ impl crate::AwsmRenderer {
         // the scheduler's inflight_compile queue.
         let mut promise_jobs: Vec<(LaunchSlot, ComputePipelineCacheKey)> = Vec::new();
         for (slot, cache_key) in &compute_jobs {
-            if let Some(existing_key) =
-                self.pipelines.compute.cache_lookup(cache_key).copied()
-            {
+            if let Some(existing_key) = self.pipelines.compute.cache_lookup(cache_key).copied() {
                 install_per_pass(self, slot, shader_id, dispatch_hash, existing_key);
             } else {
                 promise_jobs.push((slot.clone(), cache_key.clone()));
@@ -237,12 +235,13 @@ impl crate::AwsmRenderer {
         // returned promises are 'static so they outlive this borrow).
         let cache_keys_only: Vec<ComputePipelineCacheKey> =
             promise_jobs.iter().map(|(_, k)| k.clone()).collect();
-        let mut prepped = crate::pipelines::compute_pipeline::ComputePipelines::ensure_keys_prepare(
-            &self.gpu,
-            &self.shaders,
-            &self.pipeline_layouts,
-            cache_keys_only.clone(),
-        )?;
+        let mut prepped =
+            crate::pipelines::compute_pipeline::ComputePipelines::ensure_keys_prepare(
+                &self.gpu,
+                &self.shaders,
+                &self.pipeline_layouts,
+                cache_keys_only.clone(),
+            )?;
 
         // The factored ensure_keys_prepare treats every input as a miss;
         // prep.promises has the same length as promise_jobs.
@@ -252,9 +251,7 @@ impl crate::AwsmRenderer {
         };
         let promises = std::mem::take(&mut prepped.promises);
 
-        for ((slot, cache_key), promise) in
-            promise_jobs.into_iter().zip(promises.into_iter())
-        {
+        for ((slot, cache_key), promise) in promise_jobs.into_iter().zip(promises.into_iter()) {
             let target = match &slot {
                 LaunchSlot::Classify { msaa } => CompileInstallTarget::ClassifyDynamic {
                     dispatch_hash,

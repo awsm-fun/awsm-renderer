@@ -996,6 +996,15 @@ pub struct AwsmRendererBuilder {
     /// consumers pay zero cost for unused GPU-driven culling / decal
     /// infrastructure.
     features: RendererFeatures,
+    /// Block C.2: optional override for the
+    /// [`MaterialEdgeBuffers`](crate::render_passes::material_opaque::edge_buffers::MaterialEdgeBuffers)
+    /// `MAX_EDGE_BUDGET`. `None` → platform default (desktop). Set
+    /// via [`AwsmRendererBuilder::with_max_edge_budget`] to grow the
+    /// edge budget upfront for pathological-edge-density scenes
+    /// (dense foliage at 4K, etc.). Consumers monitoring
+    /// edge_overflow_count via CPU readback can also grow the budget
+    /// at runtime via [`AwsmRenderer::set_max_edge_budget`].
+    max_edge_budget: Option<u32>,
     /// Adaptive runtime policy. Defaults to `Auto` mode for the
     /// gpu_culling path; library consumers can override at build time
     /// (or via `AwsmRenderer::set_optimization_policy` later) to force
@@ -1074,9 +1083,26 @@ impl AwsmRendererBuilder {
             post_processing: PostProcessing::default(),
             shadows_config: None,
             features: RendererFeatures::default(),
+            max_edge_budget: None,
             optimization_policy: crate::optimization_policy::RendererOptimizationPolicy::default(),
             phase_handler: None,
         }
+    }
+
+    /// Block C.2: override the default `MAX_EDGE_BUDGET` for the
+    /// MSAA edge-resolve buffers. Default picks
+    /// `DEFAULT_MAX_EDGE_BUDGET_DESKTOP` (512k edge pixels). Mobile
+    /// consumers should pass `DEFAULT_MAX_EDGE_BUDGET_MOBILE`
+    /// (256k); pathological-edge content can pass higher values
+    /// (e.g. 1M) to absorb dense foliage at 4K.
+    ///
+    /// Live tuning at runtime is also available via
+    /// [`AwsmRenderer::set_max_edge_budget`] — call it when
+    /// [`note_edge_overflow_observed`](crate::render_passes::material_opaque::edge_buffers::note_edge_overflow_observed)
+    /// fires (indicating overflow this session).
+    pub fn with_max_edge_budget(mut self, budget: u32) -> Self {
+        self.max_edge_budget = Some(budget.max(1));
+        self
     }
 
     /// Subscribes to renderer-init phase transitions. The callback
@@ -1189,6 +1215,7 @@ impl AwsmRendererBuilder {
             post_processing,
             shadows_config,
             mut features,
+            max_edge_budget,
             optimization_policy,
             phase_handler,
         } = self;
@@ -1444,7 +1471,11 @@ impl AwsmRendererBuilder {
             use render_passes::material_opaque::edge_buffers::{
                 build_edge_layout_uniform, MaterialEdgeBuffers,
             };
-            let edge_buffers = MaterialEdgeBuffers::new(&gpu, first_party_bucket_count)?;
+            let edge_buffers = if let Some(budget) = max_edge_budget {
+                MaterialEdgeBuffers::new_with_budget(&gpu, first_party_bucket_count, budget)?
+            } else {
+                MaterialEdgeBuffers::new(&gpu, first_party_bucket_count)?
+            };
             let max_edge_budget = edge_buffers.max_edge_budget;
             let (uniform, _bytes) =
                 build_edge_layout_uniform(&gpu, first_party_bucket_count, max_edge_budget)?;
@@ -1902,7 +1933,11 @@ impl AwsmRendererBuilder {
                 debug_bitmask: 0,
                 default_cull_mode: awsm_renderer_core::pipeline::primitive::CullMode::Back,
             };
-            let active_msaa_samples: u8 = if _self.anti_aliasing.has_msaa_checked()? { 4 } else { 1 };
+            let active_msaa_samples: u8 = if _self.anti_aliasing.has_msaa_checked()? {
+                4
+            } else {
+                1
+            };
             let mut eager_passes: Vec<PipelineGroupDef> = vec![
                 PipelineGroupDef::Pass(PassDef::OpaqueEmpty {
                     snapshot: snapshot.clone(),
@@ -2035,6 +2070,69 @@ impl AwsmRenderer {
             applied += 1;
         }
         applied
+    }
+
+    /// Block C.2 full: grow (or shrink) the
+    /// [`MaterialEdgeBuffers::max_edge_budget`](crate::render_passes::material_opaque::edge_buffers::MaterialEdgeBuffers)
+    /// at runtime.
+    ///
+    /// Use case: a frontend running on a pathological-edge-density
+    /// scene observes `edge_overflow_count > 0` (via the one-shot
+    /// `tracing::warn!` from
+    /// [`note_edge_overflow_observed`](crate::render_passes::material_opaque::edge_buffers::note_edge_overflow_observed)
+    /// OR via direct CPU readback of `edge_buffers.args_buffer`'s
+    /// counter). Calling `set_max_edge_budget(current * 2)` recreates
+    /// `material_edge_buffers` with the new size, rebuilds the
+    /// edge-layout uniform, and marks classify + edge-resolve +
+    /// final-blend bind groups for recreation.
+    ///
+    /// This is the architectural answer to the doc's "atomic-add
+    /// hash-bucket overflow accumulator" (Stage 3.8 / Block C.2
+    /// full) — instead of routing overflow samples into a separate
+    /// shading pipeline (which would need a new compute pipeline +
+    /// bind group + indirect dispatch + per-shader-id specialization
+    /// to avoid Stage 3's SPIR-V bloat), the budget itself grows
+    /// dynamically to absorb the pathological case. Steady-state
+    /// scenes pay nothing; overflow scenes recover via consumer-
+    /// driven budget growth.
+    ///
+    /// Returns `Ok(true)` when buffers were recreated; `Ok(false)`
+    /// when `new_budget` matches the current value; `Err` if MSAA
+    /// is off (no edge buffers to size — flip MSAA on first).
+    pub fn set_max_edge_budget(&mut self, new_budget: u32) -> crate::error::Result<bool> {
+        if !self.build_complete {
+            return Err(crate::error::AwsmError::NotReady);
+        }
+        let new_budget = new_budget.max(1);
+        let Some(edge_buffers) = self.material_edge_buffers.as_mut() else {
+            return Err(crate::error::AwsmError::PipelineVariantNotCompiled(
+                "edge buffers absent (MSAA off or device unsupported); flip MSAA on first",
+            ));
+        };
+        let resized = edge_buffers.set_max_edge_budget(&self.gpu, new_budget)?;
+        if !resized {
+            return Ok(false);
+        }
+        let bucket_count = edge_buffers.bucket_count;
+        // Rebuild the edge-layout uniform with the new max_edge_budget.
+        if let Ok((uniform, _bytes)) =
+            crate::render_passes::material_opaque::edge_buffers::build_edge_layout_uniform(
+                &self.gpu,
+                bucket_count,
+                new_budget,
+            )
+        {
+            self.material_edge_layout_uniform = Some(uniform);
+        }
+        // Mark dependent bind groups for recreation.
+        self.bind_groups
+            .mark_create(crate::bind_groups::BindGroupCreate::MaterialClassifyBuffersResize);
+        tracing::info!(
+            target: "awsm_renderer::edge_resolve",
+            "set_max_edge_budget: edge budget grown to {} (was tracked via overflow CPU surface)",
+            new_budget
+        );
+        Ok(true)
     }
 
     /// Drive any pending compiles to completion and return when every
