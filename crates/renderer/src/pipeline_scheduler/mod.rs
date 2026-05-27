@@ -320,9 +320,7 @@ impl PipelineScheduler {
     ) -> Vec<MaterialId> {
         self.materials
             .iter()
-            .filter(|(_, state)| {
-                state.status.is_ready() && state.def.config_snapshot != *expected
-            })
+            .filter(|(_, state)| state.status.is_ready() && state.def.config_snapshot != *expected)
             .map(|(id, _)| id)
             .collect()
     }

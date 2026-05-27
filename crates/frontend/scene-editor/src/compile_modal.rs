@@ -117,10 +117,16 @@ fn inject_spin_keyframes() {
     if INJECTED.get().is_some() {
         return;
     }
-    let Some(window) = web_sys::window() else { return };
-    let Some(document) = window.document() else { return };
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Some(document) = window.document() else {
+        return;
+    };
     let Some(head) = document.head() else { return };
-    let Ok(style) = document.create_element("style") else { return };
+    let Ok(style) = document.create_element("style") else {
+        return;
+    };
     style.set_text_content(Some(
         "@keyframes awsm-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }",
     ));

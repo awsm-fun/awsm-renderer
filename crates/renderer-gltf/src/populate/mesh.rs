@@ -240,8 +240,8 @@ impl GltfMeshExt for AwsmRenderer {
                     // observability degrades.
                     if !shader_id.is_dynamic() {
                         use awsm_renderer::pipeline_scheduler::{
-                            MaterialDef, MaterialDefKind, PipelineConfigSnapshot,
-                            PipelineGroupDef, PipelineGroupId,
+                            MaterialDef, MaterialDefKind, PipelineConfigSnapshot, PipelineGroupDef,
+                            PipelineGroupId,
                         };
                         let snapshot = PipelineConfigSnapshot {
                             msaa: self.anti_aliasing.clone(),
