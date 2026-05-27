@@ -33,11 +33,92 @@
 //! and [§ Memory budget](docs/plans/more-optimizations.md#memory-budget)
 //! for the architectural design.
 
+use std::sync::Mutex;
+
 use awsm_renderer_core::{
     buffers::{BufferDescriptor, BufferUsage},
     error::AwsmCoreError,
     renderer::AwsmRendererWebGpu,
 };
+
+// ─────────────────────────────────────────────────────────────────
+// MAX_EDGE_BUDGET overflow diagnostics (Stage 3.8 / Block C.2 — MVP).
+//
+// The classify pass atomically allocates a compact `edge_pixel_id` per
+// edge pixel. If the counter saturates at `MAX_EDGE_BUDGET`, subsequent
+// edges atomicAdd into `edge_buffers.edge_overflow_count` and the
+// classify shader's `if (edge_id < max_edge_budget)` clamp drops them
+// silently — those pixels miss edge resolution and render with whatever
+// the primary pass wrote (sample 0).
+//
+// The full fix (a hash-bucketed atomic-add overflow tail accumulator,
+// re-read by `final_blend` for pixels not allocated in the primary slot
+// range) is parked as a future enhancement: it requires layout changes
+// across `edge_resolve.wgsl`, `final_blend.wgsl`, the uniform packing,
+// and careful fixed-point/atomic semantics — multiple hours of work and
+// non-trivial validation risk.
+//
+// The MVP shipped today: surface the budget in the boot log and provide
+// a one-shot warn helper for consumers that want to add CPU-side
+// readback later. The shader-side clamp + overflow counter atomics are
+// already in place (see classify's `compute.wgsl`).
+
+static BUDGET_LOG_GUARD: Mutex<bool> = Mutex::new(false);
+static OVERFLOW_WARN_GUARD: Mutex<bool> = Mutex::new(false);
+
+/// One-shot info log announcing the active edge budget. Called from
+/// [`MaterialEdgeBuffers::new_with_budget`]; subsequent calls are no-ops
+/// for the rest of the session.
+fn note_edge_budget_initialized(bucket_count: u32, max_edge_budget: u32) {
+    if let Ok(mut guard) = BUDGET_LOG_GUARD.lock() {
+        if !*guard {
+            *guard = true;
+            let accumulator_mb =
+                (accumulator_bytes(max_edge_budget) as f64) / (1024.0 * 1024.0);
+            tracing::info!(
+                target: "awsm_renderer::edge_resolve",
+                bucket_count,
+                max_edge_budget,
+                accumulator_mb,
+                "MAX_EDGE_BUDGET initialized — edges beyond this count saturate the counter \
+                 (edge_overflow_count atomicAdd) and skip edge_resolve; affected pixels render \
+                 with the primary-sample shading. Full atomic-add overflow fallback is parked \
+                 (see docs/plans/more-optimizations.md Block C.2)."
+            );
+        }
+    }
+}
+
+/// One-shot warn announcing observed `edge_overflow_count > 0`. Intended
+/// to be invoked from a (future) CPU-side `mapAsync` readback of the
+/// `edge_overflow_count` mirror in `data_buffer`'s header. Idempotent
+/// per session — calling it every frame is safe; only the first call
+/// emits.
+///
+/// Not currently wired into a per-frame readback path; exposed so a
+/// later session that adds the readback (alongside the existing
+/// coverage-buffer mapAsync flow) can flip the diagnostic on without
+/// touching this module.
+pub fn note_edge_overflow_observed(overflow_count: u32, max_edge_budget: u32) {
+    if overflow_count == 0 {
+        return;
+    }
+    if let Ok(mut guard) = OVERFLOW_WARN_GUARD.lock() {
+        if !*guard {
+            *guard = true;
+            tracing::warn!(
+                target: "awsm_renderer::edge_resolve",
+                overflow_count,
+                max_edge_budget,
+                "MAX_EDGE_BUDGET exceeded — edge_overflow_count={overflow_count} edges past \
+                 budget {max_edge_budget} were dropped this frame; those pixels rendered with \
+                 primary-sample shading instead of full MSAA resolve. Raise the budget or \
+                 lower edge density; the atomic-add overflow fallback (Block C.2 full fix) \
+                 is not yet wired in.",
+            );
+        }
+    }
+}
 
 /// Default per-shader-id sample-list capacity in entries (each entry is
 /// 4 bytes: `(edge_pixel_id:24, sample_mask:8)`). At 4 entries per pixel
@@ -330,6 +411,8 @@ impl MaterialEdgeBuffers {
         // at frame start. The shader atomicAdds against it as edges
         // are allocated.
         let data_header_scratch = vec![0u8; data_header_bytes(bucket_count) as usize];
+
+        note_edge_budget_initialized(bucket_count, max_edge_budget);
 
         Ok(Self {
             args_buffer,

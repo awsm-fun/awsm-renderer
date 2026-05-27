@@ -563,7 +563,81 @@ impl crate::AwsmRenderer {
             self.bind_groups
                 .mark_create(crate::bind_groups::BindGroupCreate::MaterialClassifyBuffersResize);
         }
+        // Block A.1 bridge: also submit the material to the
+        // pipeline-readiness scheduler so its lifecycle is observable
+        // via the status stream / pipeline_group_status. The
+        // returned MaterialId is intentionally discarded — callers
+        // wanting the typed scheduler handle use the
+        // `submit_dynamic_material` API which returns it explicitly.
+        // The `prewarm_dynamic_pipelines` bridge marks each
+        // scheduler entry `Ready` once compile resolves. Bridge
+        // failures are logged but not propagated — register_material
+        // succeeded and the bucket-routing path works without the
+        // scheduler entry; only the observability surface degrades.
+        if let Err(e) = self.submit_to_scheduler_for_shader_id(id) {
+            tracing::warn!(
+                target: "awsm_renderer::pipeline_readiness",
+                "submit_to_scheduler_for_shader_id failed for {:?}: {:?}",
+                id, e
+            );
+        }
         Ok(id)
+    }
+
+    /// Internal helper: build a `MaterialDef` for a freshly-registered
+    /// dynamic material and submit it to the scheduler. Idempotent —
+    /// a duplicate submit for the same shader_id just adds a second
+    /// scheduler entry (which the prewarm bridge marks Ready
+    /// alongside the first). Kept private; the public surfaces are
+    /// `register_material` and `submit_dynamic_material`.
+    fn submit_to_scheduler_for_shader_id(
+        &mut self,
+        shader_id: awsm_materials::MaterialShaderId,
+    ) -> Result<(), crate::error::AwsmError> {
+        use crate::pipeline_scheduler::{
+            MaterialDef, MaterialDefKind, PipelineConfigSnapshot, PipelineGroupDef,
+        };
+        // Skip if this shader_id already has a scheduler entry
+        // (avoids ballooning the SlotMap on idempotent
+        // `register_material(same_payload)` calls — these are common
+        // from material-editor's debounced recompile loop hitting the
+        // hash-based idempotency gate inside the registry).
+        if self
+            .pipeline_scheduler
+            .find_material_by_shader_id(shader_id)
+            .is_some()
+        {
+            return Ok(());
+        }
+        // We need the registration to snapshot its alpha_mode +
+        // double_sided + boxed kind. The registry just inserted it.
+        let registration = match self.dynamic_materials.get(shader_id) {
+            Some(r) => r.clone(),
+            None => return Ok(()), // shouldn't happen, but bail quietly
+        };
+        let snapshot = PipelineConfigSnapshot {
+            msaa: self.anti_aliasing.clone(),
+            mipmap: if self.anti_aliasing.mipmap {
+                crate::render_passes::material_opaque::shader::template::MipmapMode::Gradient
+            } else {
+                crate::render_passes::material_opaque::shader::template::MipmapMode::None
+            },
+            use_mesh_light_slices: false,
+            gpu_culling: self.features.gpu_culling,
+            coverage_lod: self.features.coverage_lod,
+            debug_bitmask: 0,
+            default_cull_mode: awsm_renderer_core::pipeline::primitive::CullMode::Back,
+        };
+        let def = MaterialDef {
+            shader_id,
+            alpha_mode: registration.alpha_mode,
+            double_sided: registration.double_sided,
+            kind: MaterialDefKind::Dynamic(Box::new(registration)),
+            config_snapshot: snapshot,
+        };
+        self.pipeline_scheduler
+            .submit_pipeline_group_batch(vec![PipelineGroupDef::Material(def)]);
+        Ok(())
     }
 
     /// Removes a previously-registered dynamic material.
@@ -621,45 +695,19 @@ impl crate::AwsmRenderer {
         registration: MaterialRegistration,
     ) -> Result<(MaterialShaderId, crate::pipeline_scheduler::MaterialId), crate::error::AwsmError>
     {
-        use crate::pipeline_scheduler::{
-            MaterialDef, MaterialDefKind, PipelineConfigSnapshot, PipelineGroupDef, PipelineGroupId,
-        };
-
-        // 1. Existing sync registration (returns the bucket-routing id).
-        let shader_id = self.register_material(registration.clone())?;
-
-        // 2. Snapshot the current config so the scheduler can detect
-        //    config-drift later (Stage 1.8 / 1.14 fully).
-        let snapshot = PipelineConfigSnapshot {
-            msaa: self.anti_aliasing.clone(),
-            mipmap: if self.anti_aliasing.mipmap {
-                crate::render_passes::material_opaque::shader::template::MipmapMode::Gradient
-            } else {
-                crate::render_passes::material_opaque::shader::template::MipmapMode::None
-            },
-            use_mesh_light_slices: false,
-            gpu_culling: self.features.gpu_culling,
-            coverage_lod: self.features.coverage_lod,
-            debug_bitmask: 0,
-            default_cull_mode: awsm_renderer_core::pipeline::primitive::CullMode::Back,
-        };
-
-        // 3. Submit to the scheduler.
-        let def = MaterialDef {
-            shader_id,
-            alpha_mode: registration.alpha_mode,
-            double_sided: registration.double_sided,
-            kind: MaterialDefKind::Dynamic(Box::new(registration)),
-            config_snapshot: snapshot,
-        };
-        let ids = self
+        // `register_material` now bridges the scheduler internally
+        // (Block A.1). After it returns, we just look up the
+        // scheduler-side MaterialId that was allocated for this
+        // shader_id and return it alongside.
+        let shader_id = self.register_material(registration)?;
+        let material_id = self
             .pipeline_scheduler
-            .submit_pipeline_group_batch(vec![PipelineGroupDef::Material(def)]);
-        let material_id = match ids[0] {
-            PipelineGroupId::Material(mid) => mid,
-            PipelineGroupId::Pass(_) => unreachable!("submit returned Pass for Material def"),
-        };
-
+            .find_material_by_shader_id(shader_id)
+            .ok_or_else(|| {
+                crate::error::AwsmError::PipelineVariantNotCompiled(
+                    "register_material did not populate scheduler",
+                )
+            })?;
         Ok((shader_id, material_id))
     }
 }

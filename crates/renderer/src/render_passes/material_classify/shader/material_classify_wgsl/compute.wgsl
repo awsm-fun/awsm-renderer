@@ -115,10 +115,14 @@ fn cs_main(
     // sample list.
     //
     // Saturation: if edge_count saturates at MAX_EDGE_BUDGET, the
-    // overflow counter increments and we fall through without writing
-    // (the per-shader-id slow-path accumulator slot is not yet
-    // implemented — this stub keeps the buffer consistent, follow-up
-    // commits add the atomic-add fallback).
+    // `edge_buffers.edge_overflow_count` atomic increments (see else
+    // branch below) and we fall through without writing. The dropped
+    // pixels render with the primary-sample shading written by the
+    // material's primary pass — visually a missing-MSAA-resolve, not a
+    // black hole. Stage 3.8 MVP (see edge_buffers.rs::note_edge_overflow_observed)
+    // surfaces this via a one-shot tracing::warn when overflow is
+    // observed CPU-side; the full atomic-add fallback (a hash-bucketed
+    // overflow accumulator region) is parked as Block C.2 future work.
     if (in_bounds) {
         // Scan 4 samples. Each entry holds (shader_id, sample_index).
         var sample_shader_ids: vec4<u32> = vec4<u32>(0xFFFFu, 0xFFFFu, 0xFFFFu, 0xFFFFu);
