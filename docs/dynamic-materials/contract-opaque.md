@@ -41,6 +41,22 @@ body — at the top of `shader.wgsl`, *outside* the implicit
 `custom_shade_<ID>` wrapper. The renderer emits all author-declared items
 at module scope before the wrapper.
 
+### Dual-context invariant — primary opaque AND edge_resolve
+
+Your fragment is wrapped into **two** compute kernels per `shader_id`,
+not one: the **primary opaque** kernel (full-pixel shading across the
+tile) and the per-shader-id **edge_resolve** kernel (single-sample
+shading at MSAA boundary pixels — see
+`crates/renderer/src/render_passes/material_opaque/edge_pipeline.rs`
+and `…/shader/edge_template.rs`). The same `custom_shade_<ID>` body is
+emitted into both; the wrapper supplies the right `OpaqueShadingInput`
+in each context (full pixel vs. masked sub-sample). The Stage 3 work
+deleted the old PBR `msaa_resolve_samples` fallback, so cross-material
+MSAA edges that previously fell back to PBR shading for dynamic
+materials now render with your exact shading code. Write one fragment;
+keep it free of state that assumes a particular call-site, and both
+contexts work without any extra opt-in.
+
 ---
 
 ## Input — `OpaqueShadingInput`
