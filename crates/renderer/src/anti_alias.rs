@@ -71,15 +71,28 @@ impl AwsmRenderer {
         self.bind_groups
             .mark_create(BindGroupCreate::TextureViewRecreate);
 
-        // ── Block D.3: config-flip scheduler transition. Every
-        //    currently-Ready material with a config_snapshot stale
-        //    against the new anti_aliasing config flips back to
-        //    Pending so frontends subscribed to drain_pipeline_status_events
-        //    see the recompile cycle. The materials transition back to
-        //    Ready at the end of this method (after the existing
-        //    recompile phases land their new pipelines). Pure
-        //    observability — the existing recompile flow already
-        //    produces the right pipelines for the new config.
+        // ── Block D.3: identify stale materials. Block D.3's original
+        //    flow marked these `Pending` up front so frontends
+        //    subscribed to `drain_pipeline_status_events` saw the
+        //    recompile cycle in flight. That created a hole on error
+        //    paths: any `?` in the fallible phases below would
+        //    propagate before the closing `mark_ready` loop, leaving
+        //    the scheduler entries stuck in `Pending` forever (and
+        //    the compile-modal counter never balancing).
+        //
+        //    `set_anti_aliasing` is an `&mut self` async method —
+        //    the renderer mutex is held for its full duration, so
+        //    frontends can't render between the early `mark_pending`
+        //    and the closing `mark_ready` anyway. There's no
+        //    observability benefit from doing the Pending transition
+        //    early — both events land in the same
+        //    `drain_pipeline_status_events` batch the frontend reads
+        //    after `set_anti_aliasing.await` returns. Defer **both**
+        //    mark_pending and mark_ready to the success tail (below).
+        //    On any error path, neither runs and the entries remain
+        //    `Ready` with their stale snapshots — meaning the next
+        //    `set_anti_aliasing` call correctly sees them as still
+        //    stale and retries the recompile.
         let new_snapshot = crate::pipeline_scheduler::PipelineConfigSnapshot {
             msaa: self.anti_aliasing.clone(),
             mipmap: if self.anti_aliasing.mipmap {
@@ -96,12 +109,6 @@ impl AwsmRenderer {
         let stale_material_ids = self
             .pipeline_scheduler
             .materials_with_stale_snapshot(&new_snapshot);
-        for mid in &stale_material_ids {
-            self.pipeline_scheduler.mark_material_pending(
-                crate::pipeline_scheduler::PipelineGroupId::Material(*mid),
-                new_snapshot.clone(),
-            );
-        }
 
         // ── Phase 1: collect descriptors for every pass affected by
         //    an AA change. Each builder returns "the cache keys this
@@ -430,11 +437,28 @@ impl AwsmRenderer {
         //    pipelines aren't yet compiled. No-op when nothing to do.
         self.ensure_shadow_pipelines_compiled().await?;
 
-        // ── Block D.3 (config-flip completion): every material we
-        //    flipped to Pending at the top of this method has now been
-        //    recompiled (the cross-pass batches above produced their
-        //    new pipelines). Transition them back to Ready so the
-        //    scheduler-status surface reflects the true GPU state.
+        // ── Block D.3 (config-flip completion): every stale material
+        //    we identified above has now been recompiled by the
+        //    cross-pass batches that produced their new pipelines.
+        //    Transition them through Pending → Ready (in tight
+        //    succession; both events land in the same
+        //    `drain_pipeline_status_events` batch) so the
+        //    scheduler-status surface reflects the true GPU state
+        //    AND the entry's `config_snapshot` is refreshed to the
+        //    new config (the snapshot update happens inside
+        //    `mark_material_pending`; `mark_ready` preserves it).
+        //
+        //    This deferral is the second half of the bug-fix above:
+        //    if any phase above failed via `?`, neither call runs,
+        //    and the entries stay `Ready` with their stale snapshot —
+        //    correct for "retry on next set_anti_aliasing" semantics
+        //    (the next call sees them as stale and retries).
+        for mid in &stale_material_ids {
+            self.pipeline_scheduler.mark_material_pending(
+                crate::pipeline_scheduler::PipelineGroupId::Material(*mid),
+                new_snapshot.clone(),
+            );
+        }
         for mid in stale_material_ids {
             self.pipeline_scheduler
                 .mark_ready(crate::pipeline_scheduler::PipelineGroupId::Material(mid));
