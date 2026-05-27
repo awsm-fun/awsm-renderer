@@ -4,7 +4,7 @@
 //! library consumer needs. Each defaults to `false`, so library
 //! consumers (tools / 2D-with-some-3D / minimal viewers) pay zero
 //! overhead for features they don't use. Game-side and editor builds
-//! opt in explicitly via [`AwsmRendererBuilder::with_features`].
+//! opt in explicitly via [`crate::AwsmRendererBuilder::with_features`].
 
 /// Tri-state toggle for renderer capabilities whose availability
 /// depends on hardware / browser support.

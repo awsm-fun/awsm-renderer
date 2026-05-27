@@ -83,7 +83,7 @@ fn drop_raster_bitmap(asset_id: AssetId) {
 /// "missing raster ⇒ untextured material" behaviour).
 ///
 /// This is the *only* async step in the editor's raster-texture upload
-/// pipeline; running it before [`instance_template`] acquires the
+/// pipeline; running it before `instance_template` acquires the
 /// renderer lock keeps the lock held for the strict minimum (GPU
 /// allocation only, no software image decode), which avoids the
 /// pathological `try_lock` contention spam on the render-loop side.

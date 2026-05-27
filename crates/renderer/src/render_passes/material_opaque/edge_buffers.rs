@@ -23,7 +23,7 @@
 //!   reads). Never used as Indirect.
 //!
 //! The classify pass extension allocates a compact `edge_pixel_id` per
-//! edge pixel (via an atomic counter capped at [`MAX_EDGE_BUDGET`]),
+//! edge pixel (via an atomic counter capped at `MAX_EDGE_BUDGET`),
 //! writes its `(x, y)` coords into `edge_to_xy`, its 4-byte shader_id
 //! slot map into `edge_slot_map`, and a per-shader-id
 //! `(edge_pixel_id, sample_mask_byte)` entry into the matching
@@ -187,7 +187,7 @@ pub fn unpack_xy(packed: u32) -> (u32, u32) {
 /// MSAA sample), so 4 slots per edge is exact.
 pub const ACCUMULATOR_SLOTS_PER_EDGE: u32 = 4;
 
-/// Bytes per accumulator slot (vec4<f32>).
+/// Bytes per accumulator slot (`vec4<f32>`).
 pub const ACCUMULATOR_SLOT_BYTES: u32 = 16;
 
 // ─────────────────────────────────────────────────────────────────
@@ -250,7 +250,7 @@ pub fn data_header_bytes(bucket_count: u32) -> u32 {
     (unpadded + 15) & !15
 }
 
-/// Byte offset of `edge_count_mirror` (atomic<u32>) inside `data_buffer`.
+/// Byte offset of `edge_count_mirror` (`atomic<u32>`) inside `data_buffer`.
 pub fn data_edge_count_offset() -> u32 {
     0
 }

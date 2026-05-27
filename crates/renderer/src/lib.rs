@@ -183,7 +183,7 @@ pub struct AwsmRenderer {
     /// `counts_buffer`; the renderer copies to `readback_buffer`
     /// each frame and a `mapAsync` resolves with last-frame's
     /// counts on a future frame. The result feeds
-    /// [`MeshCoverage::ingest`]. `None` when
+    /// [`crate::coverage::MeshCoverage::ingest`]. `None` when
     /// `features.coverage_lod == false`.
     pub coverage_buffers: Option<render_passes::coverage::buffers::CoverageBuffers>,
     /// State for the coverage readback loop. `Arc<Mutex<…>>` so the
@@ -260,7 +260,7 @@ pub struct AwsmRenderer {
     /// drives async compile, the SlotMap of material groups, and the
     /// per-pass-kind map. Per the architecture in
     /// `docs/plans/more-optimizations.md`, frontends submit
-    /// [`PipelineGroupDef`]s, get [`PipelineGroupId`]s back
+    /// [`crate::pipeline_scheduler::PipelineGroupDef`]s, get [`crate::pipeline_scheduler::PipelineGroupId`]s back
     /// immediately, and watch for status transitions via
     /// `drain_pipeline_status_events` or `pipeline_group_status`.
     ///
@@ -426,7 +426,7 @@ impl AwsmRenderer {
     /// ## Dynamic materials
     ///
     /// Runtime-registered custom shaders (`Material::Custom`) flow
-    /// through this same path via [`Self::prewarm_dynamic_pipelines`],
+    /// through this same path via `Self::prewarm_dynamic_pipelines`,
     /// which compiles the classify-pass variant + the per-shader-id
     /// opaque pipeline + (for Blend-mode registrations) a transparent
     /// stub for every currently-registered dynamic material. Triggered

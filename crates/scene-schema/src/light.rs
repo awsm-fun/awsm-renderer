@@ -33,7 +33,7 @@ pub enum LightConfig {
 }
 
 /// On-disk shadow configuration for a punctual light. Mirrors the
-/// runtime [`awsm_renderer::shadows::LightShadowParams`]; the scene
+/// runtime `awsm_renderer::shadows::LightShadowParams`; the scene
 /// editor converts between them in its renderer bridge.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]

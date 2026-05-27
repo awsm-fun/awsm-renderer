@@ -126,7 +126,7 @@ impl AwsmRenderer {
         self.update_line(key, positions, colors, LineTopology::Strip)
     }
 
-    /// Re-uploads positions + colors as line-list pairs (see [`add_line_segments`]).
+    /// Re-uploads positions + colors as line-list pairs (see [`Self::add_line_segments`]).
     pub fn update_line_segments(
         &mut self,
         key: LineKey,

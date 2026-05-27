@@ -144,7 +144,7 @@ impl GeometryPipelines {
     /// **active MSAA branch only**. Per the lazy-pool architecture
     /// in `docs/plans/more-optimizations.md` § Lessons D, the
     /// inactive branch is populated on first `set_anti_aliasing`
-    /// flip via [`AwsmRenderer::set_anti_aliasing`]'s recompile
+    /// flip via [`crate::AwsmRenderer::set_anti_aliasing`]'s recompile
     /// path.
     pub async fn new(
         ctx: &mut RenderPassInitContext<'_>,

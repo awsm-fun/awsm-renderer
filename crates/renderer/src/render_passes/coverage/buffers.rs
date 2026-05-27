@@ -7,7 +7,7 @@
 //! - `readback_buffer`: `MAP_READ | COPY_DST`. Each frame we
 //!   `copyBufferToBuffer(counts → readback)` and kick off a
 //!   `mapAsync` that resolves on a future frame. The mapped bytes
-//!   feed [`MeshCoverage::ingest`].
+//!   feed [`crate::coverage::MeshCoverage::ingest`].
 //!
 //! Single-buffer (not ringed) readback path: the renderer drops the
 //! frame's readback if a prior frame's `mapAsync` is still in

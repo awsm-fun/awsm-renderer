@@ -63,8 +63,9 @@ pub struct RenderPipelinesPrepWithPromises {
     pub prep: RenderPipelinesPrep,
     /// `'static` futures that resolve to the raw `GpuRenderPipeline` (or
     /// a creation error). Owns its label + finish-time recorder.
-    pub promises:
-        Vec<Pin<Box<dyn Future<Output = std::result::Result<web_sys::GpuRenderPipeline, JsValue>>>>>,
+    pub promises: Vec<
+        Pin<Box<dyn Future<Output = std::result::Result<web_sys::GpuRenderPipeline, JsValue>>>>,
+    >,
 }
 
 impl RenderPipelines {
@@ -141,8 +142,7 @@ impl RenderPipelines {
         if miss_keys.is_empty() {
             return Ok(slot.into_iter().map(Option::unwrap).collect());
         }
-        let mut prepped =
-            Self::ensure_keys_prepare(gpu, shaders, pipeline_layouts, miss_keys)?;
+        let mut prepped = Self::ensure_keys_prepare(gpu, shaders, pipeline_layouts, miss_keys)?;
         let promises = std::mem::take(&mut prepped.promises);
         let results = futures::future::join_all(promises).await;
         let resolved = self.ensure_keys_install(prepped.prep, results)?;
@@ -173,8 +173,7 @@ impl RenderPipelines {
         // Direct callers (the pipeline_scheduler) can do the same
         // pre-pass if they want cache-hit shortcuts.
         let pending_input_indices: Vec<usize> = (0..inputs.len()).collect();
-        let pending_targets: Vec<Vec<usize>> =
-            (0..inputs.len()).map(|i| vec![i]).collect();
+        let pending_targets: Vec<Vec<usize>> = (0..inputs.len()).map(|i| vec![i]).collect();
 
         let mut descriptors: Vec<web_sys::GpuRenderPipelineDescriptor> =
             Vec::with_capacity(pending_input_indices.len());
@@ -233,10 +232,7 @@ impl RenderPipelines {
                     as Pin<
                         Box<
                             dyn Future<
-                                Output = std::result::Result<
-                                    web_sys::GpuRenderPipeline,
-                                    JsValue,
-                                >,
+                                Output = std::result::Result<web_sys::GpuRenderPipeline, JsValue>,
                             >,
                         >,
                     >

@@ -2,9 +2,9 @@
 //!
 //! Single bind group:
 //!   0 visibility_data_tex — uint texture (per-pixel material id).
-//!   1 material_mesh_metas — storage[RO] mesh-meta table.
-//!   2 materials_data      — storage[RO] material payload (for shader_id).
-//!   3 classify_output     — storage[RW] (atomic) per-`shader_id` buckets.
+//!   1 material_mesh_metas — `storage[RO]` mesh-meta table.
+//!   2 materials_data      — `storage[RO]` material payload (for shader_id).
+//!   3 classify_output     — `storage[RW]` (atomic) per-`shader_id` buckets.
 
 use std::borrow::Cow;
 

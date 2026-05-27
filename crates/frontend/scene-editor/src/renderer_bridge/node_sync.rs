@@ -131,7 +131,7 @@ pub struct Bridge {
     /// iterate only the nodes that actually own lights instead of
     /// walking the entire bridge table every frame.
     pub light_node_ids: Mutex<std::collections::HashSet<NodeId>>,
-    /// Mirror of [`light_node_ids`] for Decal kinds.
+    /// Mirror of [`Self::light_node_ids`] for Decal kinds.
     pub decal_node_ids: Mutex<std::collections::HashSet<NodeId>>,
     /// Mirror for Collider kinds. Iterated by
     /// `collider_wireframe::render::collect_shapes` each frame to

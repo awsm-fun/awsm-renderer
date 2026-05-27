@@ -7,7 +7,7 @@
 //! pixel width, giving true 1-3px GPU widths without geometry-shader hacks.
 //!
 //! Each line owns its own storage buffer, uniform buffer (viewport + width),
-//! and bind group. Per frame, [`render_lines`] re-writes the uniform buffer
+//! and bind group. Per frame, `LinesRenderer::render` re-writes the uniform buffer
 //! with the current viewport size, then issues one draw call per line
 //! (4 vertices × N-1 instances, `TriangleStrip` topology).
 //!

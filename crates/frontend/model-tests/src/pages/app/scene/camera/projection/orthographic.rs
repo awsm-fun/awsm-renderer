@@ -5,7 +5,7 @@ use crate::pages::app::scene::camera::CameraView;
 
 use super::clip_planes::tight_clip_planes_from_aabb;
 
-/// Orthographic projection camera for WebGPU (depth range [0,1])
+/// Orthographic projection camera for WebGPU (depth range `[0,1]`)
 #[derive(Debug, Clone)]
 pub struct OrthographicCamera {
     pub left: f32,

@@ -31,7 +31,7 @@ use crate::state::app_state;
 /// for every Model node to materialise on the GPU.
 ///
 /// Tuning scenes ship with empty `assets` + only `nodes`, so this
-/// is the minimal subset of [`crate::actions::project::load_inner`]'s
+/// is the minimal subset of `crate::actions::project::load_inner`'s
 /// behaviour — no glTF material extraction, no raster texture
 /// staging. If the tuning scene set grows to include external
 /// assets, mirror the relevant `load_inner` blocks here.

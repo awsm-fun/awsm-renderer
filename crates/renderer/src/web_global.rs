@@ -1,7 +1,7 @@
 //! Runtime-global picking helpers — bridges the main-thread
 //! [`web_sys::Window`] and worker [`web_sys::DedicatedWorkerGlobalScope`]
 //! APIs behind a single call surface so the same renderer source
-//! works in both contexts (the [`OffscreenCanvas`] worker-mode
+//! works in both contexts (the [`web_sys::OffscreenCanvas`] worker-mode
 //! deployment shipped in Phase 4.4 needs the worker side of every
 //! `navigator` / `performance` / `requestAnimationFrame` call).
 //!
@@ -11,7 +11,7 @@
 //! subsystems route through [`navigator_gpu`] / [`performance`] /
 //! [`request_animation_frame`] rather than touching `web_sys::window()`
 //! directly. The only remaining direct call inside this crate is
-//! [`crate::workers::pool::default_worker_count`] (intentional — it's
+//! `crate::workers::pool::default_worker_count` (intentional — it's
 //! the main-thread bootstrap path; spawning a `WorkerPool` from
 //! within a worker takes the explicit-count constructor anyway, so
 //! the direct `window()` there is harmless). The lower-level

@@ -143,7 +143,7 @@ pub enum WorkerPoolBootstrap {
     /// Auto-discover the wasm-bindgen `--target web` glue URL.
     ///
     /// **Requires a main-thread / DOM context.** The implementation in
-    /// [`crate::workers::blob::awsm_bundle_url`] walks
+    /// `crate::workers::blob::awsm_bundle_url` walks
     /// `document.querySelectorAll("script[type=module]")` to find the
     /// glue `import` statement; if `document` is undefined (i.e. the
     /// pool is being constructed *from inside another worker*), it

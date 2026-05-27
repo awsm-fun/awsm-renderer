@@ -2,7 +2,7 @@
 //!
 //! Per-frame flow:
 //! 1. CPU walks `renderables.opaque`, packs each into an
-//!    [`buffers::OcclusionInstance`] (world AABB + meta offset),
+//!    `buffers::OcclusionInstance` (world AABB + meta offset),
 //!    writes the array into the GPU instance buffer.
 //! 2. Compute shader at `workgroup_size(64)` runs one thread per
 //!    instance: frustum-test against camera planes, HZB-test against

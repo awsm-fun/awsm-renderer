@@ -76,8 +76,9 @@ pub struct ComputePipelinesPrepWithPromises {
     /// `'static` futures — each resolves to the raw
     /// `GpuComputePipeline` JsValue or a creation error. Owns its
     /// label + finish-time recorder; safe to push into a scheduler.
-    pub promises:
-        Vec<Pin<Box<dyn Future<Output = std::result::Result<web_sys::GpuComputePipeline, JsValue>>>>>,
+    pub promises: Vec<
+        Pin<Box<dyn Future<Output = std::result::Result<web_sys::GpuComputePipeline, JsValue>>>>,
+    >,
 }
 
 impl ComputePipelines {
@@ -152,8 +153,7 @@ impl ComputePipelines {
         if miss_keys.is_empty() {
             return Ok(slot.into_iter().map(Option::unwrap).collect());
         }
-        let mut prepped =
-            Self::ensure_keys_prepare(gpu, shaders, pipeline_layouts, miss_keys)?;
+        let mut prepped = Self::ensure_keys_prepare(gpu, shaders, pipeline_layouts, miss_keys)?;
         let promises = std::mem::take(&mut prepped.promises);
         let results = futures::future::join_all(promises).await;
         let resolved = self.ensure_keys_install(prepped.prep, results)?;
@@ -202,8 +202,7 @@ impl ComputePipelines {
         // preserved in the wrapper below by checking `self.cache` first
         // and emitting a tighter `prepare` only over the misses.
         let pending_input_indices: Vec<usize> = (0..inputs.len()).collect();
-        let pending_targets: Vec<Vec<usize>> =
-            (0..inputs.len()).map(|i| vec![i]).collect();
+        let pending_targets: Vec<Vec<usize>> = (0..inputs.len()).map(|i| vec![i]).collect();
 
         let mut descriptors: Vec<web_sys::GpuComputePipelineDescriptor> =
             Vec::with_capacity(pending_input_indices.len());
@@ -239,7 +238,11 @@ impl ComputePipelines {
             .collect();
         let finish_times: std::rc::Rc<std::cell::RefCell<Vec<(usize, f64, bool)>>> =
             std::rc::Rc::new(std::cell::RefCell::new(Vec::with_capacity(n)));
-        let promises: Vec<Pin<Box<dyn Future<Output = std::result::Result<web_sys::GpuComputePipeline, JsValue>>>>> = descriptors
+        let promises: Vec<
+            Pin<
+                Box<dyn Future<Output = std::result::Result<web_sys::GpuComputePipeline, JsValue>>>,
+            >,
+        > = descriptors
             .iter()
             .enumerate()
             .map(|(i, d)| {
@@ -264,7 +267,14 @@ impl ComputePipelines {
                     );
                     r
                 };
-                Box::pin(fut) as Pin<Box<dyn Future<Output = std::result::Result<web_sys::GpuComputePipeline, JsValue>>>>
+                Box::pin(fut)
+                    as Pin<
+                        Box<
+                            dyn Future<
+                                Output = std::result::Result<web_sys::GpuComputePipeline, JsValue>,
+                            >,
+                        >,
+                    >
             })
             .collect();
 
@@ -290,7 +300,6 @@ impl ComputePipelines {
         prep: ComputePipelinesPrep,
         results: Vec<std::result::Result<web_sys::GpuComputePipeline, JsValue>>,
     ) -> Result<Vec<ComputePipelineKey>> {
-
         let ComputePipelinesPrep {
             inputs,
             mut slot,

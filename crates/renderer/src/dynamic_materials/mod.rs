@@ -40,7 +40,7 @@ use awsm_materials::TextureContext;
 /// renderer's [`TextureContext`] (when attached via
 /// [`with_textures`](Self::with_textures)) to the packed
 /// `array_and_layer` encoding documented on
-/// [`shared_wgsl::TextureInfoRaw`]. Unbound slots and lookups that
+/// `shared_wgsl::TextureInfoRaw`. Unbound slots and lookups that
 /// can't resolve return `u32::MAX` (the WGSL helpers treat that as
 /// "no texture"). `buffer_slice` resolves through the extras pool
 /// when one was attached via [`with_extras`](Self::with_extras).
@@ -299,7 +299,7 @@ impl DynamicMaterials {
     /// Returns the cached bucket-entries slice (first-party prefix +
     /// currently-registered dynamic materials sorted by shader_id).
     /// `O(1)` lookup; the cache is refreshed by
-    /// [`Self::refresh_caches`] on every register / unregister.
+    /// `Self::refresh_caches` on every register / unregister.
     ///
     /// Replaces per-frame `bucket_entries(&materials)` allocations
     /// on the opaque + classify hot paths.

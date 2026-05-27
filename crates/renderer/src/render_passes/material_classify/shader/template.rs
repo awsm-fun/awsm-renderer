@@ -18,7 +18,7 @@ use crate::{
 };
 
 /// Classify pass shader template — bind groups + compute in one
-/// askama-rendered string (concatenated by [`into_source`]). Mirrors
+/// askama-rendered string (concatenated by [`Self::into_source`]). Mirrors
 /// the layout of the other render-pass templates.
 pub struct ShaderTemplateMaterialClassify {
     pub bind_groups: ShaderTemplateMaterialClassifyBindGroups,

@@ -117,7 +117,7 @@ pub struct EvsmDescriptors {
     /// orchestrator registers them into the shader cache via
     /// `Shaders::insert_uncached` after the validate join completes,
     /// and feeds the resulting `ShaderKey`s into
-    /// [`EvsmPass::pipeline_cache_keys`] to build the 3 compute
+    /// [`EvsmDescriptors::pipeline_cache_keys`] to build the 3 compute
     /// pipeline cache keys it pools into the cross-tail batch.
     pub modules: [web_sys::GpuShaderModule; 3],
     pub params_buffer: web_sys::GpuBuffer,

@@ -329,7 +329,7 @@ impl AwsmRendererWebGpu {
         CommandEncoder::new(encoder)
     }
 
-    /// See [create_command_encoder](create_command_encoder) for usage.
+    /// See [`Self::create_command_encoder`] for usage.
     /// Submits a single command buffer.
     pub fn submit_commands(&self, command_buffer: &web_sys::GpuCommandBuffer) {
         self.device
@@ -337,7 +337,7 @@ impl AwsmRendererWebGpu {
             .submit(std::slice::from_ref(command_buffer));
     }
 
-    /// See [create_command_encoder](create_command_encoder) for usage.
+    /// See [`Self::create_command_encoder`] for usage.
     /// Submits a batch of command buffers.
     pub fn submit_commands_batch<'a>(
         &self,
