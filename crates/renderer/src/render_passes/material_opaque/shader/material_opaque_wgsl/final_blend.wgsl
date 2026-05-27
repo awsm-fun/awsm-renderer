@@ -26,10 +26,27 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         i32((packed_xy >> 16u) & 0xFFFFu),
     );
 
+    // Read the per-pixel slot_map to know which accumulator slots are
+    // valid THIS frame. slot_map[i] holds either a bucket_index, 0xFE
+    // (skybox), or 0xFF (empty slot — no shader_id assigned). The
+    // accumulator buffer is NOT cleared between frames (would be
+    // expensive — up to max_edge_budget × 64 bytes per frame). Slots
+    // not written this frame carry stale data from previous frames;
+    // reading them in here was the silent-MSAA-broken bug pre-fix —
+    // every edge pixel got bias from whichever stale color happened to
+    // land in those slots.
+    let slot_map = edge_data[edge_layout.edge_slot_map_base + edge_pixel_id];
+
     var color_sum = vec3<f32>(0.0);
     var total_count: f32 = 0.0;
 
     for (var slot = 0u; slot < 4u; slot++) {
+        // Skip slots that have no shader_id assigned this frame. Their
+        // accumulator region holds stale data.
+        let slot_byte = (slot_map >> (slot * 8u)) & 0xFFu;
+        if (slot_byte == 0xFFu) {
+            continue;
+        }
         let accum_word_index = edge_layout.accumulator_base + (edge_pixel_id * 4u + slot) * 4u;
         let r = bitcast<f32>(edge_data[accum_word_index + 0u]);
         let g = bitcast<f32>(edge_data[accum_word_index + 1u]);
