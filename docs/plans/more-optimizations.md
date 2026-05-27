@@ -793,7 +793,7 @@ Mark items `[x]` as completed. Commit the checklist update along with each item 
 - [~] **3.6** Dynamic-material wrapper for edge_resolve: template hook in place (`edge_template.rs`). Remaining: thread `DynamicShaderInfo` through `ShaderCacheKeyMaterialEdgeResolve` so registered dynamic materials get their own edge_resolve pipeline instead of being skipped in `ensure_compiled`.
 - [x] **3.7** Pipeline + bind-group infrastructure FULLY ACTIVE. `MaterialEdgeBuffers` split into args+data; counter-mirror trick keeps storage count at 10. `edge_resolve_supported()` returns true. 6 edge_resolve pipelines compile cleanly.
 - [~] **3.8** `MAX_EDGE_BUDGET` saturates (drops past it). Atomic-add overflow fallback for pathological scenes not yet wired.
-- [ ] **3.9** Contract docs update (`docs/dynamic-materials/contract-opaque.md`): document that registered dynamic-material WGSL fragment runs in both primary AND edge_resolve contexts; cross-material MSAA edges now work for dynamic materials too.
+- [x] **3.9** Contract docs update (`docs/dynamic-materials/contract-opaque.md`): document that registered dynamic-material WGSL fragment runs in both primary AND edge_resolve contexts; cross-material MSAA edges now work for dynamic materials too.
 - [x] **3.10** Preview-browser smoke test: Fox renders cleanly with smooth edges, IBL + shadows intact, no GPU errors, no PipelineVariantNotCompiled.
 - [x] **3.11** All Stage 3 commits merged + tested.
 
@@ -849,7 +849,7 @@ Currently EVSM/Line/ShadowGen/Picker are eagerly created at `build()` based on f
 
 - **C.1** **Dynamic-material edge_resolve compile** (Stage 3.6 fully): `MaterialEdgePipelines::ensure_compiled` currently skips entries where `shader_id.is_dynamic()`. Wire `DynamicShaderInfo` through `ShaderCacheKeyMaterialEdgeResolve` so registered dynamic materials get their own edge_resolve pipeline. The template hook in `edge_template.rs` is in place — needs the cache-key extension + the `register_material` → scheduler-submit-of-edge-pipeline glue.
 - **C.2** **`MAX_EDGE_BUDGET` overflow atomic-add fallback** (Stage 3.8 fully): currently counter saturates and excess edges drop. Implement a small reserved accumulator region at the tail of `data_buffer` that overflow edges atomic-add into; final_blend reads it. ~50 lines of WGSL + 1 atomic counter.
-- **C.3** **Contract docs update** (Stage 3.9): `docs/dynamic-materials/contract-opaque.md` — document the new "WGSL fragment runs in both primary and edge_resolve contexts" invariant. One paragraph.
+- **C.3** **Contract docs update** (Stage 3.9): `docs/dynamic-materials/contract-opaque.md` — document the new "WGSL fragment runs in both primary and edge_resolve contexts" invariant. One paragraph. ✅ landed
 
 ### Block D — Build-flow migration (Stage 1.8 fully)
 
