@@ -215,7 +215,7 @@ impl PipelineScheduler {
 
     /// Push a real compile future onto the inflight queue (Block D.1
     /// PART 2). The future will be drained by
-    /// [`AwsmRenderer::poll_pipeline_scheduler`] at the next frame's
+    /// `AwsmRenderer::poll_pipeline_scheduler` at the next frame's
     /// pre-frame phase. Bumps the per-material sub-compile counter
     /// when the `id` is a `Material` so `apply_compile_resolution`
     /// knows when to mark Ready.

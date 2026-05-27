@@ -1,14 +1,14 @@
 //! Block D.1 PART 2 — sync compile-launch path that pushes real
-//! compile promises into [`PipelineScheduler::inflight_compile`].
+//! compile promises into the scheduler's `inflight_compile` queue.
 //!
-//! The architecture per the plan doc's [§ Block D] prescription:
+//! The architecture per the plan doc's § Block D prescription:
 //!
 //! 1. **Sync at submit time** — `AwsmRenderer::launch_dynamic_material_compile`
 //!    is called when a new dynamic material registers. It synchronously:
 //!    - Installs every shader needed (via
-//!      [`Shaders::ensure_keys_sync_skip_validate`]). Compile_shader is
-//!      a sync browser call; validation is skipped here and surfaces
-//!      later as a `create_compute_pipeline_async` rejection.
+//!      `Shaders::ensure_keys_sync_skip_validate`). `compile_shader`
+//!      is a sync browser call; validation is skipped here and
+//!      surfaces later as a `create_compute_pipeline_async` rejection.
 //!    - Builds all pipeline cache keys + descriptors (sync — needs
 //!      `&Shaders` + `&PipelineLayouts`).
 //!    - Issues every `gpu.create_compute_pipeline_promise` back-to-back
@@ -16,11 +16,11 @@
 //!      loop returns).
 //!    - Wraps each `JsFuture` in a closure that emits a
 //!      [`PipelineCompileResolution`] when the pipeline resolves; pushes
-//!      it into the scheduler.
+//!      it into the scheduler via `push_compile_future`.
 //!
-//! 2. **`AwsmRenderer::poll_pipeline_scheduler`** drains
-//!    [`PipelineScheduler::next_compile_resolution`] per-frame and
-//!    calls `apply_compile_resolution` to install the resolved pipeline
+//! 2. **`AwsmRenderer::poll_pipeline_scheduler`** drains the
+//!    scheduler's `inflight_compile` queue per-frame and calls
+//!    `apply_compile_resolution` to install the resolved pipeline
 //!    into the per-pass cache + decrement the scheduler's
 //!    sub-compile counter. When the last sub-pipeline lands, the
 //!    material flips Pending → Ready and frontends subscribed to the
@@ -251,7 +251,7 @@ impl crate::AwsmRenderer {
         };
         let promises = std::mem::take(&mut prepped.promises);
 
-        for ((slot, cache_key), promise) in promise_jobs.into_iter().zip(promises.into_iter()) {
+        for ((slot, cache_key), promise) in promise_jobs.into_iter().zip(promises) {
             let target = match &slot {
                 LaunchSlot::Classify { msaa } => CompileInstallTarget::ClassifyDynamic {
                     dispatch_hash,
