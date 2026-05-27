@@ -498,24 +498,38 @@ fn cs_main(
                 {% for entry in bucket_entries %}
                 else if (sid_3 == {{ loop.index0 }}u) { mask_{{ loop.index0 }} |= 8u; }
                 {% endfor %}
-                // Append per-bucket entries. The atomic index counter
-                // is mirrored on both args_buffer (for indirect
-                // dispatch) and edge_data's header (for shader reads).
+                // Append per-bucket entries. The slot is allocated via
+                // the data-side per-bucket counter (which doubles as
+                // edge_resolve's `entry_count` thread-bound). The
+                // args-side `workgroup_count_x` only needs to grow
+                // every 64th slot, matching edge_resolve's
+                // `@workgroup_size(64)` — without that gate we'd
+                // dispatch 64× more workgroups than needed (each would
+                // early-exit via the `thread_index >= entry_count`
+                // check, but the wasted dispatch overhead adds up at
+                // high edge density).
                 {% for entry in bucket_entries %}
                 if (mask_{{ loop.index0 }} != 0u) {
-                    let slot_idx_{{ loop.index0 }} = atomicAdd(&edge_buffers.{{ entry.args_field() }}_edge.workgroup_count_x, 1u);
-                    atomicAdd(&edge_data[edge_layout.per_shader_count_base + {{ loop.index0 }}u], 1u);
+                    let slot_idx_{{ loop.index0 }} = atomicAdd(&edge_data[edge_layout.per_shader_count_base + {{ loop.index0 }}u], 1u);
+                    if ((slot_idx_{{ loop.index0 }} & 63u) == 0u) {
+                        atomicAdd(&edge_buffers.{{ entry.args_field() }}_edge.workgroup_count_x, 1u);
+                    }
                     if (slot_idx_{{ loop.index0 }} < edge_layout.sample_entries_per_bucket) {
                         let entry_packed_{{ loop.index0 }} = (edge_id & 0x00FFFFFFu) | ((mask_{{ loop.index0 }} & 0xFFu) << 24u);
                         atomicStore(&edge_data[edge_layout.{{ entry.args_field() }}_sample_list_base + slot_idx_{{ loop.index0 }}], entry_packed_{{ loop.index0 }});
                     }
                 }
                 {% endfor %}
-                // Skybox sample list — counter mirrored into both
-                // args_buffer and edge_data header.
+                // Skybox sample list — same allocator pattern as the
+                // per-bucket case above. Slot via the data-side counter
+                // (read by skybox_edge_resolve as `entry_count`); the
+                // workgroup_count_x in args_buffer grows every 64th
+                // slot to match skybox_edge_resolve's @workgroup_size(64).
                 if (skybox_mask != 0u) {
-                    let sky_slot_idx = atomicAdd(&edge_buffers.skybox_edge_args.workgroup_count_x, 1u);
-                    atomicAdd(&edge_data[edge_layout.skybox_count_index], 1u);
+                    let sky_slot_idx = atomicAdd(&edge_data[edge_layout.skybox_count_index], 1u);
+                    if ((sky_slot_idx & 63u) == 0u) {
+                        atomicAdd(&edge_buffers.skybox_edge_args.workgroup_count_x, 1u);
+                    }
                     if (sky_slot_idx < edge_layout.sample_entries_per_bucket) {
                         let sky_entry_packed = (edge_id & 0x00FFFFFFu) | ((skybox_mask & 0xFFu) << 24u);
                         atomicStore(&edge_data[edge_layout.skybox_sample_list_base + sky_slot_idx], sky_entry_packed);

@@ -65,14 +65,6 @@ impl AwsmRenderer {
         if self.anti_aliasing == aa {
             return Ok(());
         }
-        // Capture previous MSAA state before commit so the
-        // edge-pipeline recompile (Block B.5) can detect off → on
-        // transitions and lazily compile edge_resolve pipelines for
-        // the new MSAA state. `has_msaa_checked` validates the
-        // sample count here too, but a prior `set_anti_aliasing`
-        // call would have rejected an unsupported count, so this is
-        // effectively `is_some()` once we're past `build()`.
-        let prev_msaa_on = self.anti_aliasing.has_msaa_checked()?;
         self.anti_aliasing = aa;
         self.bind_groups
             .mark_create(BindGroupCreate::AntiAliasingChange);
@@ -377,21 +369,24 @@ impl AwsmRenderer {
             .await?;
 
         // ── Phase 7 (Block B.5): edge_resolve pipeline lazy compile
-        //    on MSAA off → on. Cold-boot only compiled edge_resolve
-        //    pipelines when MSAA was on at startup; without this,
-        //    toggling MSAA off → on after build leaves them empty
-        //    and the render-frame preamble's `warn_pipeline_not_compiled`
-        //    silently skips them, so cross-material MSAA edges fall
-        //    through.
+        //    for any AA-flip whose new state has MSAA on.
         //
-        //    Only fires on the off → on edge AND when the device
-        //    actually supports the required limits — mirrors the
-        //    `edge_resolve_enabled` gate at the build site
-        //    (`lib.rs` ~1390). on → off and on → on (4 → 4 — already
-        //    short-circuited above) and off → off paths skip; their
-        //    dispatch sites are already guarded.
+        //    `EdgeResolvePipelineKeyId` is keyed on (shader_id,
+        //    mipmaps), so a config-flip that keeps MSAA on but
+        //    changes the mipmap mode (Gradient ↔ None) needs the
+        //    new mipmap variants compiled too. The previous gate
+        //    only fired on `!prev_msaa_on && new_msaa_on`, which
+        //    silently warn-skipped the cross-material MSAA chain on
+        //    mipmap-only toggles. `ensure_compiled` is idempotent
+        //    (cache-hits on already-compiled variants), so calling
+        //    it on every MSAA-on transition is safe and correct;
+        //    only the actually-new variants pay compile cost.
+        //
+        //    Gated on `edge_resolve_supported` (matches the build
+        //    site's `edge_resolve_enabled`). New state with MSAA
+        //    off skips — dispatch sites are already guarded.
         let new_msaa_on = multisampled_geometry;
-        if !prev_msaa_on && new_msaa_on && crate::edge_resolve_supported(&self.gpu) {
+        if new_msaa_on && crate::edge_resolve_supported(&self.gpu) {
             let color_wgsl = awsm_renderer_core::texture::texture_format_to_wgsl_storage(
                 self.render_textures.formats.color,
             )?;

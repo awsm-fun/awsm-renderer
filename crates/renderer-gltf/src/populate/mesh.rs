@@ -243,41 +243,60 @@ impl GltfMeshExt for AwsmRenderer {
                             MaterialDef, MaterialDefKind, PipelineConfigSnapshot, PipelineGroupDef,
                             PipelineGroupId,
                         };
-                        let snapshot = PipelineConfigSnapshot {
-                            msaa: self.anti_aliasing.clone(),
-                            mipmap: if self.anti_aliasing.mipmap {
-                                awsm_renderer::render_passes::material_opaque::shader::template::MipmapMode::Gradient
-                            } else {
-                                awsm_renderer::render_passes::material_opaque::shader::template::MipmapMode::None
-                            },
-                            use_mesh_light_slices: false,
-                            gpu_culling: self.features.gpu_culling,
-                            coverage_lod: self.features.coverage_lod,
-                            debug_bitmask: 0,
-                            default_cull_mode:
-                                awsm_renderer_core::pipeline::primitive::CullMode::Back,
-                        };
-                        let def = MaterialDef {
-                            shader_id,
-                            alpha_mode: alpha_mode_for_def,
-                            double_sided: double_sided_for_def,
-                            kind: MaterialDefKind::FirstParty,
-                            config_snapshot: snapshot,
-                        };
-                        let _ids = self
-                            .pipeline_scheduler
-                            .submit_pipeline_group_batch(vec![PipelineGroupDef::Material(def)]);
-                        let _ = PipelineGroupId::Material; // silence unused-import warning
-                                                           // Block D.1 PART 2 first-party extension:
-                                                           // kick off real-future compile for this
-                                                           // shader_id's opaque pipelines. Scheduler
-                                                           // entry transitions Pending → Ready when the
-                                                           // last sub-pipeline resolves via
-                                                           // poll_pipeline_scheduler's drain of
-                                                           // inflight_compile. (Previously this site
-                                                           // immediately mark_ready'd because the
-                                                           // pipelines were eagerly compiled in build();
-                                                           // they're now lazy and compile here.)
+                        // De-duplicate scheduler submissions per `shader_id`.
+                        //
+                        // First-party scheduler entries are tracked per-
+                        // shader-id, not per-gltf-material: the underlying
+                        // compile (`launch_first_party_material_compile`)
+                        // looks up a single matching entry by `shader_id`
+                        // and only marks THAT one Ready. If we submitted a
+                        // fresh entry for every gltf material in the
+                        // scene (a scene with two PBR materials would
+                        // push two entries here), the second + subsequent
+                        // entries would stay Pending forever — and
+                        // `drain_pipeline_status_events` + the compile
+                        // modal would never balance. The per-shader-id
+                        // pipeline cache is what the dispatch site reads,
+                        // so one scheduler entry per `shader_id` is the
+                        // right tracking shape.
+                        if !shader_id.is_dynamic()
+                            && self
+                                .pipeline_scheduler
+                                .find_material_by_shader_id(shader_id)
+                                .is_none()
+                        {
+                            let snapshot = PipelineConfigSnapshot {
+                                msaa: self.anti_aliasing.clone(),
+                                mipmap: if self.anti_aliasing.mipmap {
+                                    awsm_renderer::render_passes::material_opaque::shader::template::MipmapMode::Gradient
+                                } else {
+                                    awsm_renderer::render_passes::material_opaque::shader::template::MipmapMode::None
+                                },
+                                use_mesh_light_slices: false,
+                                gpu_culling: self.features.gpu_culling,
+                                coverage_lod: self.features.coverage_lod,
+                                debug_bitmask: 0,
+                                default_cull_mode:
+                                    awsm_renderer_core::pipeline::primitive::CullMode::Back,
+                            };
+                            let def = MaterialDef {
+                                shader_id,
+                                alpha_mode: alpha_mode_for_def,
+                                double_sided: double_sided_for_def,
+                                kind: MaterialDefKind::FirstParty,
+                                config_snapshot: snapshot,
+                            };
+                            let _ids = self
+                                .pipeline_scheduler
+                                .submit_pipeline_group_batch(vec![PipelineGroupDef::Material(def)]);
+                            let _ = PipelineGroupId::Material; // silence unused-import warning
+                        }
+                        // Block D.1 PART 2 first-party extension: kick
+                        // off real-future compile for this shader_id's
+                        // opaque pipelines. Idempotent — the underlying
+                        // `ensure_keys` cache-hits on a repeat call so
+                        // a second gltf material with the same
+                        // shader_id pays nothing.
                         if let Err(e) = self.launch_first_party_material_compile(shader_id) {
                             tracing::warn!(
                                 target: "awsm_renderer::pipeline_readiness",

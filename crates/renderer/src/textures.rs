@@ -341,6 +341,43 @@ impl AwsmRenderer {
             .pipelines
             .install_per_mesh_keys(mesh_keys, transparent_pipeline_keys);
 
+        // Re-launch the compile for every currently-registered
+        // scheduler material entry.
+        //
+        // The opaque-pipeline rebuild above only emits descriptors for
+        // the `OpaquePipelineSlot::Empty*` slots (`MaterialOpaquePipelines::
+        // shader_descriptors_and_layouts` passes `include_first_party:
+        // false`), and `from_resolved` constructs the typed cache
+        // from those slots wholesale — wiping any first-party /
+        // dynamic material pipeline keys that were previously
+        // compiled. That wipe is intentional: their underlying
+        // shaders were compiled with the OLD `texture_pool_arrays_len`
+        // template substitution, and the new `texture_pool_textures`
+        // BGL doesn't match the OLD pipeline's layout, so reusing
+        // those keys would either silently sample the
+        // `default → vec4(0)` branch (the bug that motivated the
+        // Stage 3 silhouette-quality fix in `53202fa`) or fail
+        // outright at dispatch validation.
+        //
+        // Re-launching compile for every registered material here
+        // re-populates the typed cache with fresh keys keyed to the
+        // new bind-group layouts. `launch_first_party_material_compile`
+        // routes dynamic shader_ids to `launch_dynamic_material_compile`
+        // automatically, so a single iteration covers both.
+        // Idempotent: when the new shader cache keys hit the cache,
+        // `ensure_keys` short-circuits cheaply.
+        let registered_shader_ids = self.pipeline_scheduler.registered_material_shader_ids();
+        for shader_id in registered_shader_ids {
+            if let Err(e) = self.launch_first_party_material_compile(shader_id) {
+                tracing::warn!(
+                    target: "awsm_renderer::pipeline_readiness",
+                    "post texture-pool-grow recompile of material({:?}) failed: {:?}",
+                    shader_id,
+                    e
+                );
+            }
+        }
+
         // Edge-resolve pipelines (Stage 3) reference the texture pool
         // through the same shared `material_opaque/bind_groups.wgsl`
         // include — their templated `texture_pool_arrays_len` switch

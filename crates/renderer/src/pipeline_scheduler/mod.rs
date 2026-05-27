@@ -523,6 +523,28 @@ impl PipelineScheduler {
         None
     }
 
+    /// Returns the `MaterialShaderId` of every currently-submitted
+    /// scheduler material entry (dedup-by-shader_id at the call site
+    /// is the caller's job; in practice the gltf populate path
+    /// already de-duplicates per shader_id, so this method returns
+    /// one id per registered material).
+    ///
+    /// Used by [`crate::AwsmRenderer::finalize_gpu_textures`] to
+    /// re-launch the compile for every currently-registered material
+    /// after a texture-pool grow has invalidated their previously-
+    /// compiled pipelines' bind-group-layout shape. The launch path
+    /// (`launch_first_party_material_compile` /
+    /// `launch_dynamic_material_compile`) is idempotent — when the
+    /// new shader cache keys hit the cache (e.g. the rebuild was
+    /// triggered by a non-pool change that happened to also bump
+    /// `BindGroupCreate::TexturePool`), it short-circuits cheaply.
+    pub fn registered_material_shader_ids(&self) -> Vec<awsm_materials::MaterialShaderId> {
+        self.materials
+            .iter()
+            .map(|(_, state)| state.def.shader_id)
+            .collect()
+    }
+
     /// Poll the in-flight `FuturesUnordered` for resolved compiles,
     /// applying their transitions to the material/pass state and
     /// emitting status events. Called from the render loop's pre-frame
