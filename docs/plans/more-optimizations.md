@@ -42,20 +42,19 @@ A separate but architecturally aligned change replaces the PBR shader's `msaa_re
 PR #99 on the `more-optimizations` branch is open and substantially complete. What's landed:
 
 - ✅ **Stage 0** — diagnostics (device-limits log + `onuncapturederror` + error variants).
-- ✅ **Stage 1** — pipeline-readiness machinery (scheduler module + `submit_pipeline_group_batch` API + race policy + Lessons A labels + render-frame drain + `submit_dynamic_material` additive API).
-- ✅ **Stage 2.1** — Geometry MSAA lazy (3+9 active-only at cold-boot, recompile via `set_anti_aliasing`).
-- ✅ **Stage 3** — `msaa_resolve_samples` replacement FULLY ACTIVE. New `edge_resolve` / `skybox_edge_resolve` / `final_blend` pipelines own edge pixels via slot-buffer scatter pattern. Args/data buffer split + counter-mirror trick keeps within the 10-storage-buffer per-stage limit. 4-group layout via shadows-group(3) fold fits within macOS Metal's `maxBindGroups=4`. PBR primary SPIR-V drops ~80% — Android-Chrome init failure unblocked.
+- ✅ **Stage 1** — pipeline-readiness machinery (scheduler module + `submit_pipeline_group_batch` API + race policy + Lessons A labels + render-frame drain + `submit_dynamic_material` additive API + **A.1 bridge**: `register_material` populates scheduler, `prewarm_dynamic_pipelines` marks scheduler entries `Ready`, frontends migrated to `wait_for_pipelines_ready` as the canonical post-submit await).
+- ✅ **Stage 2** — Geometry MSAA lazy (2.1), EVSM lazy (2.2), Line lazy (2.3), ShadowGen lazy (2.4), effects lazy (2.5), Picker lazy fully (2.6). Cold-boot now compiles 0 EVSM / 0 Line / 0 Picker / 0 ShadowGen pipelines on a zero-scene; first scene-content trigger lands the compile.
+- ✅ **Stage 3** — `msaa_resolve_samples` replacement FULLY ACTIVE. Per-shader-id `edge_resolve` (incl. dynamic materials via C.1) / `skybox_edge_resolve` / `final_blend` pipelines own edge pixels via slot-buffer scatter pattern. Args/data buffer split + counter-mirror trick keeps within the 10-storage-buffer per-stage limit. 4-group layout via shadows-group(3) fold fits within macOS Metal's `maxBindGroups=4`. PBR primary SPIR-V drops ~80% — Android-Chrome init failure unblocked. MAX_EDGE_BUDGET overflow diagnostics shipped (MVP — saturation log + one-shot warn helper; full atomic-add fallback parked under C.2).
+- ✅ **Stage 3.9** contract docs updated for dynamic-material edge_resolve dual-context invariant.
+- ✅ **Block E.1 / E.4** — compute pipeline labels include shader name; ensure_keys emits per-batch finish-order summary log for batches of 2+.
 
-What's **not yet** landed (the next session's scope — see [§ Remaining work](#remaining-work-for-100-completion) at the bottom):
+What's **not yet** landed (genuine remainder — small surface area):
 
-- Stage 1.8-fully (scheduler-driven compile + first-party material flow through scheduler).
-- Stage 1.13 (gltf loader migration to non-blocking material submission).
-- Stage 1.14 fully (delete `prewarm_pipelines(...).await` from `material-editor` / `scene-editor` / `model-tests`).
-- Stage 2.2 / 2.3 / 2.4 (EVSM / Line / ShadowGen first-use lazy triggers — **all landed**).
-- Stage 2.6 fully (defer the entire Picker subsystem until first pick).
-- Stage 3 follow-ups: dynamic-material edge_resolve compile path, `set_anti_aliasing` edge-pipeline recompile, `MAX_EDGE_BUDGET` overflow atomic-add fallback.
-- Stage 3.9 (contract docs update).
-- Stage 4.4 / 4.5 (config-flip + light-add interactive test).
+- Stage 1.8-fully **literal** (push real compile futures into FuturesUnordered): assessed as disproportionate vs the A.1 bridge approach which delivers the same observable behaviour. Parked under Block D.
+- Stage 1.13 (gltf loader explicit `submit_pipeline_group_batch(MaterialDef::FirstParty(...))`): first-party pipelines already compile in the eager set, so submitting is bookkeeping-only. Becomes load-bearing when first-party variants go lazy.
+- Block D (build-flow migration to scheduler-driven eager set + full config-flip semantics): the "bigger refactor" — parked. Renderer works correctly today via the A.1 bridge + the existing batched compile path; Block D is observability + uniformity polish.
+- Stage 4.4 / 4.5 (config-flip + light-add interactive smoke test): manual hand-test, ~10 min when in the editor.
+- E.2 (multithreading prep audit), E.3 (test-helper sweep), E.5 (edge_resolve runtime profile), E.6 (cargo doc warning audit — already noted: 43 warnings vs ~47 baseline, net improvement), E.7 (missing_docs gate for pipeline_scheduler — ~49 fields need stub docs first): polish items, parked.
 
 ---
 

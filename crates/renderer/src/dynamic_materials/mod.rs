@@ -563,6 +563,41 @@ impl crate::AwsmRenderer {
             self.bind_groups
                 .mark_create(crate::bind_groups::BindGroupCreate::MaterialClassifyBuffersResize);
         }
+        // Symmetric resize for `material_edge_buffers` (Stage 3): the
+        // args_buffer + data_buffer are sized for (bucket_count, edge
+        // budget). Without this, classify's binding(4) on the
+        // multi-sampled bind group keeps pointing at the
+        // smaller-bucket args buffer, and Dawn rejects the dispatch:
+        //   [Buffer "MaterialEdgeBuffers::args"] bound with size N is
+        //   too small. The pipeline requires at least M.
+        // Surfaced by material-editor preview after the first dynamic
+        // material registers (bucket 4 → 5).
+        if let Some(edge_buffers) = self.material_edge_buffers.as_mut() {
+            let edge_resized = edge_buffers.ensure_bucket_count(&self.gpu, new_count)?;
+            if edge_resized {
+                // The edge args/data buffers live on the classify
+                // multi-sampled bind group (binding 4/5) — the same
+                // recreate mark used for classify-buffers covers
+                // them. Mark explicitly even though the classify
+                // resize above likely already marked it: tolerant of
+                // future re-sequencing.
+                self.bind_groups.mark_create(
+                    crate::bind_groups::BindGroupCreate::MaterialClassifyBuffersResize,
+                );
+                // Also rebuild the edge-layout uniform so the per-frame
+                // header knows the new bucket count + max_edge_budget.
+                let max_edge_budget = edge_buffers.max_edge_budget;
+                if let Ok((uniform, _bytes)) =
+                    crate::render_passes::material_opaque::edge_buffers::build_edge_layout_uniform(
+                        &self.gpu,
+                        new_count,
+                        max_edge_budget,
+                    )
+                {
+                    self.material_edge_layout_uniform = Some(uniform);
+                }
+            }
+        }
         // Block A.1 bridge: also submit the material to the
         // pipeline-readiness scheduler so its lifecycle is observable
         // via the status stream / pipeline_group_status. The
