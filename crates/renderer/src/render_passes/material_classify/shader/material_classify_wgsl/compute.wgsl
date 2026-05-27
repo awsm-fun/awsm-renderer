@@ -126,6 +126,23 @@ fn cs_main(
     if (in_bounds) {
         // Scan 4 samples. Each entry holds (shader_id, sample_index).
         var sample_shader_ids: vec4<u32> = vec4<u32>(0xFFFFu, 0xFFFFu, 0xFFFFu, 0xFFFFu);
+        // Per-sample mesh signature — used to detect MESH-vs-MESH
+        // edges within the SAME shader_id (e.g. PBR capsule against
+        // PBR pedestal). Pre-fix, classify only emitted edge data
+        // when distinct shader_ids appeared; PBR-vs-PBR-mesh
+        // boundaries fell through (NOT an edge) and rendered with
+        // sample-0-only shading from the primary opaque pass —
+        // visibly aliased on MorphStressTest's capsule-vs-capsule and
+        // capsule-vs-pedestal contacts. We discriminate by
+        // `mat_meta_off` (the per-sample mesh-meta byte offset) —
+        // two samples on the same MESH share this even when they're
+        // on adjacent triangles (which keeps within-mesh triangle
+        // boundaries OUT of edge detection — those would cause
+        // wireframe-like artifacts from re-shading sample-0-vs-
+        // samples-1..3 with slightly different per-sample positions).
+        // Skybox samples use `U32_MAX` as their `mat_meta_off`
+        // sentinel — already distinct from any real mesh's offset.
+        var sample_mat_offs: vec4<u32> = vec4<u32>(0u);
         var distinct_count: u32 = 0u;
         // 4 slots, each u8 packed into a u32. SHADER_ID_NONE = 0xFF.
         var slot_map: u32 = 0xFFFFFFFFu;
@@ -144,6 +161,12 @@ fn cs_main(
                 case 3u, default: { sample_vis = textureLoad(visibility_data_tex, coords, 3); }
             }
             let sample_tri = join32(sample_vis.x, sample_vis.y);
+            // mat_meta_off is the byte offset into `material_mesh_metas`
+            // for this sample's mesh. Same offset = same mesh. For
+            // uncovered (skybox) samples, sample_vis.z/.w hold U32_MAX
+            // sentinels; the joined value collapses to U32_MAX-like
+            // and stays distinct from any real mesh offset.
+            sample_mat_offs[s] = join32(sample_vis.z, sample_vis.w);
             var sample_sid: u32;
             if (sample_tri == U32_MAX) {
                 // Skybox bucket: arbitrary marker we'll route to the
@@ -194,8 +217,18 @@ fn cs_main(
             }
         }
 
-        // Edge pixel: 2+ distinct shader_ids (counts skybox as one).
-        if (seen_count >= 2u) {
+        // Edge pixel: 2+ distinct shader_ids (counts skybox as one)
+        // OR samples cover different triangles even within the SAME
+        // shader_id. The second condition catches the common case of
+        // mesh-vs-mesh boundaries where both meshes share the same
+        // material flavour (e.g. PBR-vs-PBR adjacent meshes). Pre-fix,
+        // only multi-shader_id pixels routed to edge_resolve, so
+        // single-shader_id scenes (the typical PBR case) had silently-
+        // broken MSAA at every inter-mesh boundary.
+        let any_mesh_differs = (sample_mat_offs.x != sample_mat_offs.y)
+            || (sample_mat_offs.x != sample_mat_offs.z)
+            || (sample_mat_offs.x != sample_mat_offs.w);
+        if (seen_count >= 2u || any_mesh_differs) {
             // Allocate compact edge_pixel_id. The atomic counter lives
             // in args_buffer / `edge_buffers` (drives indirect dispatch
             // for final_blend); we also mirror it into edge_data's
