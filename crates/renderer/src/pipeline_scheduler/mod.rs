@@ -25,14 +25,18 @@
 //!   `PassKind`, `PipelineConfigSnapshot`, `MaterialId`) is complete in
 //!   [`types`].
 //! - The [`PipelineScheduler`] struct holds the slot maps and the
-//!   `FuturesUnordered`; `submit_pipeline_group_batch` is implemented
-//!   skeleton-only — it allocates ids and emits Pending status, but the
-//!   compile futures it builds are `async { Ok(()) }` stubs. **Wiring each
-//!   `PipelineGroupDef` variant to the actual compile path
-//!   (`Shaders::ensure_keys` + `{Render,Compute}Pipelines::ensure_keys`)
-//!   is the next step** (Stage 1 follow-up commits). Integration with
-//!   `AwsmRendererBuilder::build` and the call-site migrations are
-//!   downstream of that.
+//!   `FuturesUnordered`. Real compile is driven via the Block A.1
+//!   bridge inside `prewarm_dynamic_pipelines` (in
+//!   `crates/renderer/src/lib.rs`): each scheduler entry is marked
+//!   `Ready` once the existing batched compile path resolves. The
+//!   literal "push real compile futures onto `inflight`" direction is
+//!   preserved as a Block D follow-up.
+
+// E.7 missing_docs gate deferred — the pipeline_scheduler module has
+// ~49 fields/variants on public types that need docstrings before the
+// gate can land without flooding the build with warnings. The
+// docstring sweep is straightforward but voluminous; not blocking the
+// architecture.
 
 pub mod types;
 

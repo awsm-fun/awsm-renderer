@@ -216,9 +216,7 @@ impl AwsmRenderer {
     /// either is set. Until compile completes, the line dispatch
     /// warn-skips via `pipeline_scheduler::warn_pipeline_not_compiled`.
     pub async fn ensure_line_pipelines_compiled(&mut self) -> Result<()> {
-        if self.lines.pipelines.variants.is_some()
-            && !self.lines.pipelines_compile_requested
-        {
+        if self.lines.pipelines.variants.is_some() && !self.lines.pipelines_compile_requested {
             return Ok(());
         }
         // Nothing to do if no entries AND no explicit request — keep
