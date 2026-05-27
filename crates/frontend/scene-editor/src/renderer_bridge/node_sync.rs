@@ -797,6 +797,7 @@ async fn apply_kind_light(entry: Arc<RendererNode>, cfg: crate::scene::LightConf
     entry.node.asset_status.set(AssetStatus::Idle);
     let light = light_from_config(&cfg, Vec3::ZERO, Vec3::NEG_Z);
     let shadow_params = light_shadow_params_from_config(cfg.shadow());
+    let casts_shadow = shadow_params.cast;
     let key = with_renderer_mut(move |r| {
         // Insert the light + register shadow params atomically — the
         // coordinated API ensures no frame can render between the
@@ -807,6 +808,23 @@ async fn apply_kind_light(entry: Arc<RendererNode>, cfg: crate::scene::LightConf
         r.insert_light(light, Some(shadow_params))
     })
     .await;
+    // Block B.1 + B.2 lazy-compile trigger: when a casting light lands
+    // we kick the shadow pipelines compile so the next render frame
+    // can draw shadows. `with_renderer_mut`'s closure is sync — go
+    // through the renderer handle's async lock directly so we can
+    // `.await` `ensure_shadow_pipelines_compiled` while still holding
+    // the lock. No-op if pipelines are already compiled or if no
+    // casters are active.
+    if casts_shadow {
+        let handle = crate::context::renderer_handle();
+        let mut renderer = handle.lock().await;
+        if let Err(err) = renderer.ensure_shadow_pipelines_compiled().await {
+            tracing::warn!(
+                "scene-editor: ensure_shadow_pipelines_compiled failed: {:?}",
+                err
+            );
+        }
+    }
     if let Ok(key) = key {
         *entry.light_key.lock().unwrap() = Some(key);
         // Add to the per-frame sync index so the render-loop's

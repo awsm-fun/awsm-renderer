@@ -451,15 +451,11 @@ impl AwsmRenderer {
             // dynamic shader_ids get their cross-material MSAA edge
             // contribution instead of falling through to
             // `warn_pipeline_not_compiled`.
-            if self.anti_aliasing.msaa_sample_count.is_some()
-                && edge_resolve_supported(&self.gpu)
-            {
-                let color_wgsl =
-                    awsm_renderer_core::texture::texture_format_to_wgsl_storage(
-                        self.render_textures.formats.color,
-                    )?;
-                let bucket_entries =
-                    self.dynamic_materials.bucket_entries_cached().to_vec();
+            if self.anti_aliasing.msaa_sample_count.is_some() && edge_resolve_supported(&self.gpu) {
+                let color_wgsl = awsm_renderer_core::texture::texture_format_to_wgsl_storage(
+                    self.render_textures.formats.color,
+                )?;
+                let bucket_entries = self.dynamic_materials.bucket_entries_cached().to_vec();
                 let crate::pipelines::Pipelines {
                     render: _render_pipelines,
                     compute: compute_pipelines,
@@ -1642,11 +1638,10 @@ impl AwsmRendererBuilder {
         let render_passes_compute_len = compute_pool.len();
         // Picker compute pipelines are deferred (Block B.4) — no
         // entries appended here.
-        let evsm_compute_range = {
-            let s = compute_pool.len();
-            compute_pool.extend(evsm_pipeline_cache_keys.iter().cloned());
-            s..compute_pool.len()
-        };
+        // EVSM compute pipelines are deferred (Block B.1) — held on
+        // `shadows.pending_evsm_cache_keys` and resolved by
+        // `Shadows::ensure_pipelines_compiled` on the first
+        // shadow-casting light. No entries appended.
         let effects_compute_range = {
             let s = compute_pool.len();
             compute_pool.extend(effects_descs.pipeline_cache_keys.iter().cloned());
@@ -1659,11 +1654,10 @@ impl AwsmRendererBuilder {
         // Line pipelines are deferred (Block B.3) — no entries
         // appended here. The 4 variants compile on first line primitive
         // insertion via `AwsmRenderer::ensure_line_pipelines_compiled`.
-        let caster_render_range = {
-            let s = render_pool.len();
-            render_pool.extend(caster_pipeline_cache_keys.iter().cloned());
-            s..render_pool.len()
-        };
+        // Shadow caster render pipelines are deferred (Block B.2) —
+        // held on `shadows.pending_caster_cache_keys` and resolved by
+        // `Shadows::ensure_pipelines_compiled` on the first
+        // shadow-casting light. No entries appended.
         let display_render_range = {
             let s = render_pool.len();
             render_pool.extend(display_descs.pipeline_cache_keys.iter().cloned());
@@ -1718,12 +1712,20 @@ impl AwsmRendererBuilder {
         // `add_line_*` call sets `pipelines_compile_requested = true`;
         // `wait_for_pipelines_ready` then drives `ensure_pipelines_compiled`.
         let lines = LineRenderer::new_deferred(&gpu, &mut bind_group_layouts)?;
+        // Shadows are constructed in the deferred path (Block B.1 + B.2):
+        // empty `caster_resolved` / `evsm_resolved` slices stash the
+        // pending cache keys on `Shadows`; pipeline compile is
+        // triggered by `Shadows::ensure_pipelines_compiled` on the
+        // first shadow-casting light. Non-pipeline GPU resources
+        // (atlases, bind groups, buffers) still materialise here.
         let shadows = shadows::Shadows::from_resolved(
             &gpu,
             &bind_group_layouts,
             shadows_descs,
-            render_keys[caster_render_range].to_vec(),
-            compute_keys[evsm_compute_range].to_vec(),
+            Vec::new(),
+            Vec::new(),
+            caster_pipeline_cache_keys,
+            evsm_pipeline_cache_keys,
         )?;
         render_passes.effects.pipelines.install_resolved(
             &post_processing,

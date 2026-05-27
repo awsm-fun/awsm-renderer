@@ -73,8 +73,7 @@ fn note_edge_budget_initialized(bucket_count: u32, max_edge_budget: u32) {
     if let Ok(mut guard) = BUDGET_LOG_GUARD.lock() {
         if !*guard {
             *guard = true;
-            let accumulator_mb =
-                (accumulator_bytes(max_edge_budget) as f64) / (1024.0 * 1024.0);
+            let accumulator_mb = (accumulator_bytes(max_edge_budget) as f64) / (1024.0 * 1024.0);
             tracing::info!(
                 target: "awsm_renderer::edge_resolve",
                 bucket_count,

@@ -220,12 +220,7 @@ impl RenderPipelines {
             let summary: Vec<String> = ft
                 .iter()
                 .map(|(i, cum, ok)| {
-                    format!(
-                        "{}{}@{:.0}ms",
-                        labels[*i],
-                        if *ok { "" } else { "!" },
-                        cum
-                    )
+                    format!("{}{}@{:.0}ms", labels[*i], if *ok { "" } else { "!" }, cum)
                 })
                 .collect();
             tracing::info!(

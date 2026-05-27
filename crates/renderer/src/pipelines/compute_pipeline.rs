@@ -185,18 +185,11 @@ impl ComputePipelines {
         // benefit). Bracket order = chronological resolution order.
         if n >= 2 {
             let mut ft = finish_times.borrow_mut();
-            ft.sort_by(|a, b| {
-                a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
-            });
+            ft.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
             let summary: Vec<String> = ft
                 .iter()
                 .map(|(i, cum, ok)| {
-                    format!(
-                        "{}{}@{:.0}ms",
-                        labels[*i],
-                        if *ok { "" } else { "!" },
-                        cum
-                    )
+                    format!("{}{}@{:.0}ms", labels[*i], if *ok { "" } else { "!" }, cum)
                 })
                 .collect();
             tracing::info!(

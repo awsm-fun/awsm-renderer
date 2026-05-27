@@ -359,17 +359,11 @@ impl AwsmRenderer {
         //    short-circuited above) and off → off paths skip; their
         //    dispatch sites are already guarded.
         let new_msaa_on = multisampled_geometry;
-        if !prev_msaa_on
-            && new_msaa_on
-            && crate::edge_resolve_supported(&self.gpu)
-        {
+        if !prev_msaa_on && new_msaa_on && crate::edge_resolve_supported(&self.gpu) {
             let color_wgsl = awsm_renderer_core::texture::texture_format_to_wgsl_storage(
                 self.render_textures.formats.color,
             )?;
-            let bucket_entries = self
-                .dynamic_materials
-                .bucket_entries_cached()
-                .to_vec();
+            let bucket_entries = self.dynamic_materials.bucket_entries_cached().to_vec();
             let crate::pipelines::Pipelines {
                 render: _render_pipelines,
                 compute: compute_pipelines,
@@ -395,18 +389,19 @@ impl AwsmRenderer {
 
         // ── Phase 8 (Block B.3): line pipelines lazy ensure. Cold-boot
         //    leaves the 4 line-pipeline variants uncompiled; the first
-        //    `add_line_*` flips `pipelines_compile_requested`. The 4
-        //    variants already cover the MSAA cross product (compile
-        //    once, valid for both states), so this is effectively a
-        //    no-op on MSAA flip once the variants are populated — but
-        //    if a line was registered after a previous
-        //    `wait_for_pipelines_ready` AND `set_anti_aliasing` is the
-        //    next API call before another `wait_for_pipelines_ready`,
-        //    we still want the dispatch to render the line under the
-        //    new AA state instead of warn-skipping.
+        //    `add_line_*` flips `pipelines_compile_requested`. Recompile
+        //    on MSAA flip is a no-op once variants populate.
         if !self.lines.is_empty() || self.lines.pipelines_compile_requested() {
             self.ensure_line_pipelines_compiled().await?;
         }
+
+        // ── Phase 9 (Block B.1 + B.2): shadow pipeline compile. Caster
+        //    + EVSM pipelines are MSAA-invariant (depth-only fragment +
+        //    compute) so a flip doesn't itself require recompile, but
+        //    use this `.await` as a convenient moment to land any
+        //    pending compile if a shadow caster is registered and
+        //    pipelines aren't yet compiled. No-op when nothing to do.
+        self.ensure_shadow_pipelines_compiled().await?;
         Ok(())
     }
 }
