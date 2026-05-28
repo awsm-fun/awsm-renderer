@@ -64,49 +64,60 @@ impl HzbRenderPass {
     /// / 8, with the per-thread bounds check inside the WGSL handling
     /// the leftover when dimensions aren't a multiple of 8.
     pub fn render(&self, ctx: &RenderContext) -> Result<()> {
-        // Seed pass.
-        {
-            let compute_pass = ctx
-                .command_encoder
-                .begin_compute_pass(Some(&ComputePassDescriptor::new(Some("HZB Seed")).into()));
-            // Lazy-pool: the seed variant for the *other* MSAA mode
-            // may not be compiled yet if the user just switched
-            // without calling `set_anti_aliasing.await`. Skip the
-            // seed dispatch in that case — downstream reduce passes
-            // sample whatever HZB texture state existed before
-            // (worst case: a slightly stale HZB feeds occlusion
-            // culling for one frame).
-            let pipeline_key_opt = if ctx.anti_aliasing.msaa_sample_count.is_some() {
-                self.pipelines.seed_msaa
-            } else {
-                self.pipelines.seed_single
-            };
-            let Some(pipeline_key) = pipeline_key_opt else {
-                compute_pass.end();
-                return Ok(());
-            };
-            compute_pass.set_pipeline(ctx.pipelines.compute.get(pipeline_key)?);
-            compute_pass.set_bind_group(0, self.bind_groups.seed()?, None)?;
-            let workgroups_x = self.texture.width.div_ceil(8);
-            let workgroups_y = self.texture.height.div_ceil(8);
-            compute_pass.dispatch_workgroups(workgroups_x, Some(workgroups_y), Some(1));
-            compute_pass.end();
-        }
+        // T2.1: coalesce the seed + per-mip reduce dispatches into a
+        // single compute pass. Each separate `begin_compute_pass` is
+        // ~30 µs of pass open/close + synchronization overhead on
+        // mobile drivers; with ⌈log₂(max(W,H))⌉ ≈ 10 reduce
+        // transitions at a typical viewport, that's ~300 µs/frame
+        // recoverable.
+        //
+        // WebGPU automatically inserts a storage-binding barrier
+        // between intra-pass dispatches that share writes-to-then-
+        // reads-from the same texture binding, so reduce mip(N+1)
+        // correctly sees the values reduce mip(N) wrote. Pipeline
+        // and bind-group switches inside one compute pass are
+        // explicitly permitted by the spec.
+        let compute_pass = ctx
+            .command_encoder
+            .begin_compute_pass(Some(&ComputePassDescriptor::new(Some("HZB Build")).into()));
 
-        // Reduce pass per mip transition.
+        // Seed dispatch — depth → mip 0.
+        // Lazy-pool: the seed variant for the *other* MSAA mode may
+        // not be compiled yet if the user just switched without
+        // calling `set_anti_aliasing.await`. Skip the seed dispatch
+        // (and the whole pass) in that case — downstream consumers
+        // sample whatever HZB texture state existed before (worst
+        // case: a slightly stale HZB feeds occlusion culling for
+        // one frame).
+        let seed_pipeline_key_opt = if ctx.anti_aliasing.msaa_sample_count.is_some() {
+            self.pipelines.seed_msaa
+        } else {
+            self.pipelines.seed_single
+        };
+        let Some(seed_pipeline_key) = seed_pipeline_key_opt else {
+            compute_pass.end();
+            return Ok(());
+        };
+        compute_pass.set_pipeline(ctx.pipelines.compute.get(seed_pipeline_key)?);
+        compute_pass.set_bind_group(0, self.bind_groups.seed()?, None)?;
+        let seed_x = self.texture.width.div_ceil(8);
+        let seed_y = self.texture.height.div_ceil(8);
+        compute_pass.dispatch_workgroups(seed_x, Some(seed_y), Some(1));
+
+        // Reduce dispatches — mip 0→1, 1→2, …, N-2→N-1. All inside
+        // the same pass; switch to the reduce pipeline once, then
+        // re-bind per mip transition.
+        let reduce_pipeline = ctx.pipelines.compute.get(self.pipelines.reduce)?;
+        compute_pass.set_pipeline(reduce_pipeline);
         for transition in 0..(self.texture.mip_count.saturating_sub(1)) as usize {
-            let compute_pass = ctx
-                .command_encoder
-                .begin_compute_pass(Some(&ComputePassDescriptor::new(Some("HZB Reduce")).into()));
-            compute_pass.set_pipeline(ctx.pipelines.compute.get(self.pipelines.reduce)?);
             compute_pass.set_bind_group(0, self.bind_groups.reduce_at(transition)?, None)?;
             let (dst_w, dst_h) = self.texture.mip_dims((transition + 1) as u32);
             let workgroups_x = dst_w.div_ceil(8);
             let workgroups_y = dst_h.div_ceil(8);
             compute_pass.dispatch_workgroups(workgroups_x, Some(workgroups_y), Some(1));
-            compute_pass.end();
         }
 
+        compute_pass.end();
         Ok(())
     }
 }

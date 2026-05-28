@@ -276,9 +276,16 @@ impl AwsmRenderer {
                 })?;
         }
 
-        let render_texture_views =
-            self.render_textures
-                .views(&self.gpu, self.anti_aliasing.clone(), viewport_size)?;
+        let render_texture_views = self.render_textures.views(
+            &self.gpu,
+            self.anti_aliasing.clone(),
+            viewport_size,
+            // T2.5: lazy opaque-mip-chain allocation. Once a
+            // transmissive material registers, the flag is sticky
+            // true and the texture grows to full mip count on the
+            // next `views()`.
+            self.materials.has_seen_transmission(),
+        )?;
 
         if render_texture_views.size_changed {
             self.bind_groups

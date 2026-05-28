@@ -134,11 +134,20 @@ impl RenderTextures {
     /// `getCurrentTexture().getSize()` wasm↔JS hop. The pair is stable
     /// for the duration of the frame, so the cached value is
     /// unconditionally safe to reuse.
+    ///
+    /// `needs_opaque_mip_chain` is `Materials::has_seen_transmission`
+    /// — T2.5 lazy mip-chain allocation. When `false`, the opaque
+    /// texture is created with `mip_level_count = 1` (saves ~33% of
+    /// its allocation footprint). The first frame the flag flips
+    /// true, this method reallocates with the full chain — the same
+    /// `TextureViewRecreate` event the caller fires on size change
+    /// rebuilds dependent bind groups.
     pub fn views(
         &mut self,
         gpu: &AwsmRendererWebGpu,
         anti_aliasing: AntiAliasing,
         current_size: (u32, u32),
+        needs_opaque_mip_chain: bool,
     ) -> Result<RenderTextureViews> {
 
         let size_changed = match self.inner.as_ref() {
@@ -151,7 +160,15 @@ impl RenderTextures {
             None => false,
         };
 
-        if size_changed || anti_aliasing_changed {
+        // T2.5: opaque mip-chain state changed (false → true). The
+        // false → true direction is the only one we care about; the
+        // flag is sticky so the texture never shrinks back to mip 1.
+        let opaque_mips_grown = match self.inner.as_ref() {
+            Some(inner) => needs_opaque_mip_chain && !inner.opaque_has_mip_chain,
+            None => false,
+        };
+
+        if size_changed || anti_aliasing_changed || opaque_mips_grown {
             if let Some(inner) = self.inner.take() {
                 inner.destroy();
             }
@@ -166,6 +183,7 @@ impl RenderTextures {
                 current_size.1,
                 anti_aliasing,
                 &self.features,
+                needs_opaque_mip_chain,
             )?;
             self.inner = Some(inner);
         }
@@ -319,6 +337,12 @@ pub struct RenderTexturesInner {
     pub opaque_storage_view: web_sys::GpuTextureView,
     pub opaque_full_view: web_sys::GpuTextureView,
     pub opaque_mip_count: u32,
+    /// T2.5: `true` when the opaque texture carries the full
+    /// `floor(log2(max(W,H))) + 1` mip chain (allocated because a
+    /// transmissive material is registered); `false` when allocated
+    /// with `mip_level_count = 1`. Read by `RenderTextures::views`
+    /// to detect a false → true transition that needs reallocation.
+    pub opaque_has_mip_chain: bool,
     pub opaque_to_transparent_blit_bind_group_msaa_4: web_sys::GpuBindGroup,
     pub opaque_to_transparent_blit_bind_group_no_anti_alias: web_sys::GpuBindGroup,
 
@@ -359,6 +383,11 @@ pub struct RenderTexturesInner {
 
 impl RenderTexturesInner {
     /// Creates render textures and views for the given size.
+    ///
+    /// `needs_opaque_mip_chain` controls T2.5's lazy mip allocation:
+    /// `false` → opaque texture allocated with `mip_level_count = 1`
+    /// (the only mip the opaque pass writes); `true` → full
+    /// `floor(log2(max(W,H))) + 1` chain for transmission sampling.
     pub fn new(
         gpu: &AwsmRendererWebGpu,
         render_texture_formats: RenderTextureFormats,
@@ -369,6 +398,7 @@ impl RenderTexturesInner {
         height: u32,
         anti_aliasing: AntiAliasing,
         features: &RendererFeatures,
+        needs_opaque_mip_chain: bool,
     ) -> Result<Self> {
         let maybe_multisample_texture =
             |format: TextureFormat, label: &'static str| -> TextureDescriptor<'static> {
@@ -429,7 +459,27 @@ impl RenderTexturesInner {
         // populated by the opaque pass; subsequent mips are filled in by
         // `OpaqueMipgen` between the opaque pass and the transparent pass
         // when the frame uses transmission.
-        let opaque_mip_count = mip_levels_for(width, height);
+        //
+        // T2.3 audit (see docs/plans/more-optimizations.md): RENDER_ATTACHMENT
+        // dropped — this texture is never used as a render-pass color
+        // attachment. The frame-start clear runs via `TextureClearer::clear`
+        // which uses `copy_buffer_to_texture` (needs COPY_DST, not
+        // RENDER_ATTACHMENT). On a TBR mobile GPU, RENDER_ATTACHMENT on a
+        // storage-bound texture forces the driver to evict its on-chip tile
+        // cache across compute pass boundaries — dropping the flag here is
+        // the single biggest TBR-friendly change.
+        //
+        // T2.5: mip chain allocation is now lazy. `needs_opaque_mip_chain`
+        // is `Materials::has_seen_transmission` — when no transmissive
+        // material has ever been registered, only mip 0 exists (the only
+        // level the opaque pass actually writes). The first transmissive
+        // material registration flips that flag and reallocates with the
+        // full chain on the next `views()` call.
+        let opaque_mip_count = if needs_opaque_mip_chain {
+            mip_levels_for(width, height)
+        } else {
+            1
+        };
         let opaque = gpu
             .create_texture(
                 &TextureDescriptor::new(
@@ -438,7 +488,6 @@ impl RenderTexturesInner {
                     TextureUsage::new()
                         .with_storage_binding()
                         .with_texture_binding()
-                        .with_render_attachment()
                         .with_copy_dst(),
                 )
                 .with_label("Opaque")
@@ -484,6 +533,11 @@ impl RenderTexturesInner {
         // multisampled transparent target. Gated by `features.decals`
         // — the texture is ~16 MB at 4K, and skipping it is the
         // largest single allocation behind the decals feature flag.
+        //
+        // T2.3: RENDER_ATTACHMENT + COPY_DST dropped — written via
+        // storage by the decal compute pass, read as a texture in the
+        // composite. Neither flag has any current consumer. Same TBR
+        // tile-cache benefit as `opaque` above.
         let decal_color = if features.decals {
             Some(
                 gpu.create_texture(
@@ -492,9 +546,7 @@ impl RenderTexturesInner {
                         Extent3d::new(width, Some(height), Some(1)),
                         TextureUsage::new()
                             .with_storage_binding()
-                            .with_texture_binding()
-                            .with_render_attachment()
-                            .with_copy_dst(),
+                            .with_texture_binding(),
                     )
                     .with_label("DecalColor")
                     .into(),
@@ -519,14 +571,19 @@ impl RenderTexturesInner {
             )
             .map_err(AwsmRenderTextureError::CreateTexture)?;
 
-        // NEVER multisampled, that's the point
+        // NEVER multisampled, that's the point.
+        //
+        // T2.3: STORAGE_BINDING dropped — composite is only ever bound as
+        // a sampled `texture_2d<f32>` (in effects + the
+        // material_decal composite + the non-AA blit path), never as a
+        // storage texture. RENDER_ATTACHMENT stays — it's the MSAA
+        // resolve target for the transparent / HUD passes.
         let composite = gpu
             .create_texture(
                 &TextureDescriptor::new(
                     render_texture_formats.color,
                     Extent3d::new(width, Some(height), Some(1)),
                     TextureUsage::new()
-                        .with_storage_binding()
                         .with_texture_binding()
                         .with_render_attachment(),
                 )
@@ -535,6 +592,10 @@ impl RenderTexturesInner {
             )
             .map_err(AwsmRenderTextureError::CreateTexture)?;
 
+        // T2.3: RENDER_ATTACHMENT dropped on both `effects` and `bloom`
+        // — these are pure compute-pass outputs (storage write from the
+        // effects compute pass, texture read in display + effects). No
+        // render attachment consumer in any pass.
         let effects = gpu
             .create_texture(
                 &TextureDescriptor::new(
@@ -542,8 +603,7 @@ impl RenderTexturesInner {
                     Extent3d::new(width, Some(height), Some(1)),
                     TextureUsage::new()
                         .with_storage_binding()
-                        .with_texture_binding()
-                        .with_render_attachment(),
+                        .with_texture_binding(),
                 )
                 .with_label("Effects")
                 .into(),
@@ -557,8 +617,7 @@ impl RenderTexturesInner {
                     Extent3d::new(width, Some(height), Some(1)),
                     TextureUsage::new()
                         .with_storage_binding()
-                        .with_texture_binding()
-                        .with_render_attachment(),
+                        .with_texture_binding(),
                 )
                 .with_label("Bloom")
                 .into(),
@@ -692,6 +751,7 @@ impl RenderTexturesInner {
             opaque_storage_view,
             opaque_full_view,
             opaque_mip_count,
+            opaque_has_mip_chain: needs_opaque_mip_chain,
             opaque_clearer: TextureClearer::new(gpu, render_texture_formats.color, width, height)
                 .map_err(AwsmRenderTextureError::CreateTextureClearer)?,
             opaque_to_transparent_blit_bind_group_msaa_4,

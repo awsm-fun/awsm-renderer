@@ -117,6 +117,7 @@ impl AwsmRenderer {
             &self.gpu,
             self.anti_aliasing.clone(),
             viewport_size,
+            self.materials.has_seen_transmission(),
         )?;
         let ctx = crate::bind_groups::BindGroupRecreateContext {
             gpu: &self.gpu,
