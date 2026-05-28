@@ -112,6 +112,14 @@ impl AwsmRenderer {
     pub fn set_mesh_hud(&mut self, mesh_key: MeshKey, hud: bool) -> crate::error::Result<()> {
         let mesh = self.meshes.get_mut(mesh_key)?;
         mesh.hud = hud;
+        if hud {
+            // T2.6: first HUD usage flips the sticky flag so the next
+            // `RenderTextures::views` allocates the HUD depth
+            // attachment. Stays true for the renderer's lifetime —
+            // a single HUD transition is cheap and the alternative
+            // would be re-shrinking on every HUD toggle.
+            self.meshes.mark_hud_used();
+        }
         self.sync_spatial_for_mesh(mesh_key);
         Ok(())
     }
@@ -601,6 +609,12 @@ pub struct Meshes {
     /// remember to keep it in sync; reuse-and-clear gets us the bulk
     /// of the win with none of the maintenance burden.
     skin_consumers_scratch: HashMap<SkinKey, Vec<MeshKey>>,
+    /// T2.6 sticky flag — set to `true` the first time any mesh
+    /// transitions to the HUD render group, and never cleared. The
+    /// HUD depth texture is allocated only when this flag is true,
+    /// saving a full-screen Depth32/Depth24 attachment on builds
+    /// that never use HUD overlays (the library / game default).
+    has_seen_hud: bool,
 }
 impl Meshes {
     // Initial sizes assume ~1000 vertices per mesh
@@ -693,7 +707,25 @@ impl Meshes {
             last_effective_material: SecondaryMap::new(),
             skin_zero_coverage_grace: SecondaryMap::new(),
             skin_consumers_scratch: HashMap::new(),
+            has_seen_hud: false,
         })
+    }
+
+    /// Has any mesh ever been routed through the HUD render group?
+    /// Sticky-true; used by `RenderTextures::views` to defer
+    /// allocation of the HUD depth attachment until a HUD renderable
+    /// actually exists. Builds that never insert a HUD mesh (the
+    /// library / game default) save a full-screen depth attachment.
+    pub fn has_seen_hud(&self) -> bool {
+        self.has_seen_hud
+    }
+
+    /// Internal: stickily mark that HUD rendering is now in use.
+    /// Called from the public `set_mesh_hud(.., true)` and any other
+    /// insertion path that places a mesh into the HUD group from
+    /// scratch.
+    pub(crate) fn mark_hud_used(&mut self) {
+        self.has_seen_hud = true;
     }
 
     /// Walk every mesh with a `cheap_material_key` authored and patch
@@ -1100,6 +1132,13 @@ impl Meshes {
             mesh.world_aabb = resource_aabb;
         }
 
+        // T2.6: catch the insert-with-`hud: true` path too, not just
+        // post-insert `set_mesh_hud(true)` flips. Either route into
+        // the HUD render group should trip the sticky flag so the HUD
+        // depth attachment lands by the next render frame.
+        if mesh.hud {
+            self.has_seen_hud = true;
+        }
         let mesh_key = self.list.insert(mesh.clone());
         self.mesh_to_resource.insert(mesh_key, resource_key);
 

@@ -118,6 +118,7 @@ impl AwsmRenderer {
             self.anti_aliasing.clone(),
             viewport_size,
             self.materials.has_seen_transmission(),
+            self.meshes.has_seen_hud(),
         )?;
         let ctx = crate::bind_groups::BindGroupRecreateContext {
             gpu: &self.gpu,

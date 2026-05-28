@@ -109,14 +109,25 @@ impl GeometryRenderPass {
             ]
         };
 
-        let depth_stencil_attachment = DepthStencilAttachment::new(if is_hud {
-            &ctx.render_texture_views.hud_depth
+        // T2.6: `hud_depth` is Optional — built only after the first
+        // HUD-flagged mesh registers. The caller in
+        // `AwsmRenderer::render` gates the HUD geometry pass on
+        // `!renderables.hud.is_empty()` (T1.10), and any non-empty
+        // HUD set implies `Meshes::has_seen_hud == true` which in
+        // turn allocates the texture. By the time `is_hud == true`
+        // here, `hud_depth` is therefore guaranteed `Some`.
+        let depth_view = if is_hud {
+            ctx.render_texture_views.hud_depth.as_ref().expect(
+                "hud_depth view absent during HUD geometry pass — invariant violated: \
+                 a HUD renderable must flip Meshes::has_seen_hud before any HUD pass call",
+            )
         } else {
             &ctx.render_texture_views.depth
-        })
-        .with_depth_load_op(LoadOp::Clear)
-        .with_depth_store_op(StoreOp::Store)
-        .with_depth_clear_value(1.0);
+        };
+        let depth_stencil_attachment = DepthStencilAttachment::new(depth_view)
+            .with_depth_load_op(LoadOp::Clear)
+            .with_depth_store_op(StoreOp::Store)
+            .with_depth_clear_value(1.0);
 
         let render_pass = ctx.command_encoder.begin_render_pass(
             &RenderPassDescriptor {

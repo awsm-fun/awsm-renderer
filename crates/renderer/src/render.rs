@@ -285,6 +285,9 @@ impl AwsmRenderer {
             // true and the texture grows to full mip count on the
             // next `views()`.
             self.materials.has_seen_transmission(),
+            // T2.6: lazy HUD depth allocation. False until the first
+            // HUD-flagged mesh enters the registry.
+            self.meshes.has_seen_hud(),
         )?;
 
         if render_texture_views.size_changed {
@@ -1518,13 +1521,25 @@ impl<'a> RenderContext<'a> {
                 color_attachment.with_resolve_target(&self.render_texture_views.composite);
         }
 
+        // T2.6: `hud_depth` is Optional — built only after the first
+        // HUD renderable has registered. This entry point is reachable
+        // only from the HUD render-pass call sites, which are now
+        // gated on `!renderables.hud.is_empty()` (T1.10) — by the
+        // time we get here the HUD render group is non-empty, which
+        // means at least one mesh has flipped `Meshes::has_seen_hud`
+        // and the texture has been allocated. The expect is the
+        // narrowed invariant.
+        let hud_depth_view = self.render_texture_views.hud_depth.as_ref().expect(
+            "hud_depth view absent at begin_hud_transparent_pass — invariant violated: \
+             a HUD renderable must flip Meshes::has_seen_hud before any HUD pass call",
+        );
         self.command_encoder
             .begin_render_pass(
                 &RenderPassDescriptor {
                     label,
                     color_attachments: vec![color_attachment],
                     depth_stencil_attachment: Some(
-                        DepthStencilAttachment::new(&self.render_texture_views.hud_depth)
+                        DepthStencilAttachment::new(hud_depth_view)
                             .with_depth_load_op(LoadOp::Clear)
                             .with_depth_clear_value(1.0)
                             .with_depth_store_op(StoreOp::Store),

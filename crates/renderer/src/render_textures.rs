@@ -142,12 +142,20 @@ impl RenderTextures {
     /// true, this method reallocates with the full chain — the same
     /// `TextureViewRecreate` event the caller fires on size change
     /// rebuilds dependent bind groups.
+    ///
+    /// `needs_hud_depth` is `Meshes::has_seen_hud` — T2.6 lazy HUD
+    /// depth allocation. When `false`, the HUD depth attachment is
+    /// skipped entirely (the HUD passes themselves are already gated
+    /// on the same condition at the call site). When the first HUD
+    /// renderable registers, the flag flips and the texture is
+    /// allocated on the next `views()` call.
     pub fn views(
         &mut self,
         gpu: &AwsmRendererWebGpu,
         anti_aliasing: AntiAliasing,
         current_size: (u32, u32),
         needs_opaque_mip_chain: bool,
+        needs_hud_depth: bool,
     ) -> Result<RenderTextureViews> {
 
         let size_changed = match self.inner.as_ref() {
@@ -168,7 +176,15 @@ impl RenderTextures {
             None => false,
         };
 
-        if size_changed || anti_aliasing_changed || opaque_mips_grown {
+        // T2.6: HUD depth attachment appeared. Same sticky semantics
+        // as the opaque mip chain — once the flag flips to true, it
+        // never flips back.
+        let hud_depth_appeared = match self.inner.as_ref() {
+            Some(inner) => needs_hud_depth && inner.hud_depth.is_none(),
+            None => false,
+        };
+
+        if size_changed || anti_aliasing_changed || opaque_mips_grown || hud_depth_appeared {
             if let Some(inner) = self.inner.take() {
                 inner.destroy();
             }
@@ -184,6 +200,7 @@ impl RenderTextures {
                 anti_aliasing,
                 &self.features,
                 needs_opaque_mip_chain,
+                needs_hud_depth,
             )?;
             self.inner = Some(inner);
         }
@@ -258,7 +275,12 @@ pub struct RenderTextureViews {
     pub bloom: web_sys::GpuTextureView,
 
     pub depth: web_sys::GpuTextureView,
-    pub hud_depth: web_sys::GpuTextureView,
+    /// T2.6: `None` until the first HUD renderable registers
+    /// (`Meshes::has_seen_hud`). The HUD geometry / transparent
+    /// passes are already gated on `renderables.hud.is_empty()` at
+    /// their call sites (T1.10), so they never sample `hud_depth`
+    /// before it materializes.
+    pub hud_depth: Option<web_sys::GpuTextureView>,
     pub size_changed: bool,
     pub width: u32,
     pub height: u32,
@@ -300,6 +322,8 @@ impl RenderTextureViews {
             // ^ `Option::clone()` — stays `None` when decals are gated off.
             depth: inner.depth_view.clone(),
             hud_depth: inner.hud_depth_view.clone(),
+            // ^ `Option::clone()` — `None` until T2.6's sticky flag
+            // flips on the first HUD renderable insertion.
             effects: inner.effects_view.clone(),
             bloom: inner.bloom_view.clone(),
             composite: inner.composite_view.clone(),
@@ -362,8 +386,13 @@ pub struct RenderTexturesInner {
     pub depth: web_sys::GpuTexture,
     pub depth_view: web_sys::GpuTextureView,
 
-    pub hud_depth: web_sys::GpuTexture,
-    pub hud_depth_view: web_sys::GpuTextureView,
+    /// T2.6: lazy HUD depth attachment — `None` while
+    /// `Meshes::has_seen_hud` is false. The texture sits on the inner
+    /// rather than `RenderTextures` so it participates in the same
+    /// destroy-and-recreate lifecycle as everything else on
+    /// viewport resize / AA flip / mip-chain growth.
+    pub hud_depth: Option<web_sys::GpuTexture>,
+    pub hud_depth_view: Option<web_sys::GpuTextureView>,
 
     pub composite: web_sys::GpuTexture,
     pub composite_view: web_sys::GpuTextureView,
@@ -399,6 +428,7 @@ impl RenderTexturesInner {
         anti_aliasing: AntiAliasing,
         features: &RendererFeatures,
         needs_opaque_mip_chain: bool,
+        needs_hud_depth: bool,
     ) -> Result<Self> {
         let maybe_multisample_texture =
             |format: TextureFormat, label: &'static str| -> TextureDescriptor<'static> {
@@ -565,11 +595,21 @@ impl RenderTexturesInner {
             // sample it directly for world-position reconstruction.
             .map_err(AwsmRenderTextureError::CreateTexture)?;
 
-        let hud_depth = gpu
-            .create_texture(
-                &maybe_multisample_texture(render_texture_formats.depth, "Hud Depth").into(),
+        // T2.6: HUD depth attachment is allocated only after the first
+        // HUD renderable has registered. Saves a full-screen depth
+        // texture (Depth32 = 4 bytes/texel, Depth24Plus also 4
+        // bytes/texel; ~5 MB at 400×800 mobile, ~33 MB at 4K) on the
+        // common library/game builds that never use the HUD pass.
+        let hud_depth = if needs_hud_depth {
+            Some(
+                gpu.create_texture(
+                    &maybe_multisample_texture(render_texture_formats.depth, "Hud Depth").into(),
+                )
+                .map_err(AwsmRenderTextureError::CreateTexture)?,
             )
-            .map_err(AwsmRenderTextureError::CreateTexture)?;
+        } else {
+            None
+        };
 
         // NEVER multisampled, that's the point.
         //
@@ -693,9 +733,12 @@ impl RenderTexturesInner {
             .create_view()
             .map_err(|e| AwsmRenderTextureError::CreateTextureView(format!("depth: {e:?}")))?;
 
-        let hud_depth_view = hud_depth
-            .create_view()
-            .map_err(|e| AwsmRenderTextureError::CreateTextureView(format!("hud_depth: {e:?}")))?;
+        let hud_depth_view = match hud_depth.as_ref() {
+            Some(tex) => Some(tex.create_view().map_err(|e| {
+                AwsmRenderTextureError::CreateTextureView(format!("hud_depth: {e:?}"))
+            })?),
+            None => None,
+        };
 
         let composite_view = composite
             .create_view()
@@ -801,6 +844,9 @@ impl RenderTexturesInner {
             tex.destroy();
         }
         self.depth.destroy();
+        if let Some(tex) = self.hud_depth {
+            tex.destroy();
+        }
         self.composite.destroy();
         self.effects.destroy();
         self.bloom.destroy();
