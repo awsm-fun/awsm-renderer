@@ -177,7 +177,12 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 debug,
                 shadows_enabled: true,
                 use_mesh_light_slices: true,
-                use_froxel_lights: false,
+                // Phase 2: enable the per-froxel walk in the shared
+                // lights.wgsl. The opaque compute path takes it only
+                // when the oversized-mesh sentinel
+                // (`light_slice_count == OVERSIZED_SENTINEL`) fires
+                // for the current mesh.
+                use_froxel_lights: true,
                 froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
                 froxel_max_per_froxel_capacity:
                     crate::render_passes::light_culling::DEFAULT_MAX_PER_FROXEL_CAPACITY,

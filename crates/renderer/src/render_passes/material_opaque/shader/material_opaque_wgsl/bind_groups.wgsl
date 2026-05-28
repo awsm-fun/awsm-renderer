@@ -94,6 +94,23 @@ struct ClassifyBuckets {
 // storage-buffer slot saved. The indices buffer stays separate
 // because its size is variable (sum of all slice counts).
 @group(1) @binding(2) var<storage, read> mesh_light_indices: array<u32>;
+// GPU light-culling consumer-side bindings. Used by the
+// `apply_lighting_per_froxel*` walk in the shared `lights.wgsl` —
+// taken only when the oversized-mesh sentinel
+// (`light_slice_count == 0xFFFFFFFFu`) fires. Same CullParams /
+// froxel_storage byte layout as the cull pass writes.
+struct CullParams {
+    tiles_x: u32,
+    tiles_y: u32,
+    viewport_w: u32,
+    viewport_h: u32,
+    z_near: f32,
+    z_far: f32,
+    log_far_over_near: f32,
+    _pad: f32,
+};
+@group(1) @binding(3) var<uniform> cull_params: CullParams;
+@group(1) @binding(4) var<storage, read> froxel_storage: array<u32>;
 
 {% for i in 0..texture_pool_arrays_len %}
     @group(2) @binding({{ i }}u) var pool_tex_{{ i }}: texture_2d_array<f32>;
