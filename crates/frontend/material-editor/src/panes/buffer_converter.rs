@@ -192,7 +192,18 @@ fn file_picker(
                 let reader_for_closure = reader.clone();
                 let pending_for_closure = pending.clone();
                 let status_for_closure = status.clone();
-                let onload = Closure::once_into_js(move || {
+                // `Closure::once` returns a Closure handle; the
+                // `set_onload` call below borrows its underlying
+                // Function. We then `.forget()` the handle so the
+                // closure stays alive until the FileReader fires.
+                // Without `forget`, the Closure (and its underlying
+                // JS function) drops at end-of-scope here — before
+                // the async `read_as_*` resolves — and the load
+                // callback would throw or no-op. This is the
+                // standard wasm-bindgen pattern for one-shot async
+                // callbacks; the small leak per file load (a few
+                // hundred bytes) is acceptable for editor authoring.
+                let onload = Closure::once(move || {
                     let result = match reader_for_closure.result() {
                         Ok(v) => v,
                         Err(_) => {
@@ -225,6 +236,7 @@ fn file_picker(
                     }
                 });
                 reader.set_onload(Some(onload.as_ref().unchecked_ref()));
+                onload.forget();
                 let result = if is_json {
                     reader.read_as_text(&file)
                 } else {

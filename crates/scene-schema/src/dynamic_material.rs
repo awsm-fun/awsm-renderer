@@ -685,21 +685,24 @@ mod tests {
     /// catches it in CI.
     #[test]
     fn test_material_json_files_parse() {
-        // The path is relative to the workspace root when `cargo test`
-        // runs against this crate, but the test binary's working
-        // directory is the package root. Walk up until we find the
-        // workspace root (containing `assets/test-materials/`).
-        let mut dir = std::env::current_dir().expect("cwd");
-        for _ in 0..8 {
-            if dir.join("assets/test-materials").is_dir() {
-                break;
-            }
-            if !dir.pop() {
-                panic!("could not locate workspace root from {dir:?}");
-            }
-        }
+        // Anchor on `CARGO_MANIFEST_DIR` (the crate root) instead of
+        // `current_dir()` so the test is invariant to the runner's
+        // working directory — `cargo test`, IDE-driven runs, and CI
+        // harnesses can all set cwd differently. Walk ancestors until
+        // we find the workspace root (the directory containing
+        // `assets/test-materials/`).
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workspace_root = manifest_dir
+            .ancestors()
+            .find(|p| p.join("assets/test-materials").is_dir())
+            .unwrap_or_else(|| {
+                panic!(
+                    "could not locate workspace root (no assets/test-materials/ \
+                     ancestor of {manifest_dir:?})"
+                )
+            });
         for folder in ["scanline", "irregular-atlas", "soft-glass"] {
-            let path = dir.join(format!("assets/test-materials/{folder}/material.json"));
+            let path = workspace_root.join(format!("assets/test-materials/{folder}/material.json"));
             let text =
                 std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
             let def: MaterialDefinition =
