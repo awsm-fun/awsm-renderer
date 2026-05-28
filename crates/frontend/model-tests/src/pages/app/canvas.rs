@@ -124,8 +124,8 @@ impl AppCanvas {
                         // "Initializing renderer" phase and made
                         // first-load latency feel inexplicable.
                         state.ctx.loading_status.lock_mut().shader_prewarm = Ok(true);
-                        if let Err(err) = renderer.prewarm_pipelines().await {
-                            tracing::warn!("prewarm_pipelines: {err}");
+                        if let Err(err) = renderer.wait_for_pipelines_ready().await {
+                            tracing::warn!("wait_for_pipelines_ready: {err}");
                             state.ctx.loading_status.lock_mut().shader_prewarm =
                                 Err(err.to_string());
                             return;

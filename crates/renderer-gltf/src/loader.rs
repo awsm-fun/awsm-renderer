@@ -1,6 +1,6 @@
 //! Loads glTF assets independently of the renderer.
 //!
-//! This is a web-specific adaptation of https://github.com/gltf-rs/gltf/blob/master/src/import.rs.
+//! This is a web-specific adaptation of <https://github.com/gltf-rs/gltf/blob/master/src/import.rs>.
 //! Main differences:
 //! 1. Everything is async.
 //! 2. Uses web APIs (via the internal `ImageData` helper).

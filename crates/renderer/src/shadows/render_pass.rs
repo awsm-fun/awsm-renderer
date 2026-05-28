@@ -17,6 +17,7 @@ use awsm_renderer_core::pipeline::primitive::IndexFormat;
 
 use crate::error::Result;
 use crate::frustum::Frustum;
+use crate::pipeline_scheduler::warn_pipeline_not_compiled;
 use crate::render::RenderContext;
 use crate::scene_spatial::NodeFilter;
 use crate::shadows::Shadows;
@@ -24,8 +25,19 @@ use crate::shadows::Shadows;
 /// Records every shadow-generation render pass for the current frame.
 ///
 /// Called between the geometry pass and light culling. Skipped
-/// entirely when [`Shadows::any_active`] returns `false`.
+/// entirely when [`Shadows::any_active`] returns `false`. Also skipped
+/// (with a one-shot `warn_pipeline_not_compiled` log) when the shadow
+/// caster pipelines haven't yet been compiled — Block B.1 + B.2 defers
+/// pipeline compile until the first shadow-casting light triggers
+/// [`Shadows::ensure_pipelines_compiled`]; if a render frame fires
+/// between "light added" and "pipelines resolved" the warn-skip keeps
+/// the frame alive instead of erroring.
 pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
+    // Pipelines deferred until first shadow-caster (Block B.1 + B.2).
+    if !shadows.pipelines_compiled() {
+        warn_pipeline_not_compiled("shadow_gen", "caster");
+        return Ok(());
+    }
     // The 2D `shadow_atlas` is still shared across spot-light views,
     // and `LoadOp::Clear` there is attachment-wide. So we clear it on
     // the first spot-atlas pass of the frame and `Load` on subsequent
@@ -168,7 +180,13 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
                     continue;
                 };
 
-                let pipeline_key = shadows.shadow_pipeline_key(mesh.instanced, is_cube);
+                // Pipelines-compiled guard at the top of `record`
+                // ensures these Options are Some here. Defensive
+                // `else` skips the draw if the invariant is broken.
+                let Some(pipeline_key) = shadows.shadow_pipeline_key(mesh.instanced, is_cube)
+                else {
+                    continue;
+                };
                 if last_pipeline_key != Some(pipeline_key) {
                     render_pass.set_pipeline(ctx.pipelines.render.get(pipeline_key)?);
                     last_pipeline_key = Some(pipeline_key);
@@ -268,18 +286,21 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
 
 fn dispatch_evsm(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
     use awsm_renderer_core::command::compute_pass::{ComputePassDescriptor, ComputePassEncoder};
-    let moment_pipeline = ctx
-        .pipelines
-        .compute
-        .get(shadows.evsm_pass.moment_write_pipeline_key)?;
-    let blur_h_pipeline = ctx
-        .pipelines
-        .compute
-        .get(shadows.evsm_pass.blur_h_pipeline_key)?;
-    let blur_v_pipeline = ctx
-        .pipelines
-        .compute
-        .get(shadows.evsm_pass.blur_v_pipeline_key)?;
+    // EVSM pipelines deferred until the first shadow-caster (Block B.1).
+    // The pipelines-compiled guard in `record` covers the common case,
+    // but warn-skip here as well so an unexpected entry into this
+    // function produces a controlled outcome.
+    let (Some(moment_pipeline_key), Some(blur_h_pipeline_key), Some(blur_v_pipeline_key)) = (
+        shadows.evsm_pass.moment_write_pipeline_key,
+        shadows.evsm_pass.blur_h_pipeline_key,
+        shadows.evsm_pass.blur_v_pipeline_key,
+    ) else {
+        warn_pipeline_not_compiled("evsm", "moment_write+blur");
+        return Ok(());
+    };
+    let moment_pipeline = ctx.pipelines.compute.get(moment_pipeline_key)?;
+    let blur_h_pipeline = ctx.pipelines.compute.get(blur_h_pipeline_key)?;
+    let blur_v_pipeline = ctx.pipelines.compute.get(blur_v_pipeline_key)?;
 
     for entry in &shadows.evsm_dispatch_queue {
         // Skip EVSM dispatch for throttled cascades — the source

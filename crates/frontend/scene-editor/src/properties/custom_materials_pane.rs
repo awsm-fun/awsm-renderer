@@ -85,8 +85,16 @@ fn render_import_button(
                 // Register against the live renderer via the
                 // dynamic_material_bridge converter. Holds the
                 // renderer lock briefly — the registration is
-                // synchronous; pipeline compile fires async via
-                // prewarm_pipelines below.
+                // synchronous and `register_material` pushes every
+                // sub-pipeline (opaque + classify + per-shader
+                // edge_resolve + skybox + final_blend) into the
+                // pipeline scheduler's `inflight_compile` queue.
+                // The compile-modal subscription
+                // (`drain_pipeline_status_events` in
+                // `renderer_bridge.rs`) drives the
+                // "Compiling N pipelines…" UI; the next render
+                // frame's `poll_pipeline_scheduler` lands the
+                // pipelines + marks the material `Ready`.
                 let renderer = crate::context::renderer_handle();
                 let mut renderer = renderer.lock().await;
                 let mut map = crate::renderer_bridge::dynamic_material_bridge::CustomMaterialRegistryMap::new();

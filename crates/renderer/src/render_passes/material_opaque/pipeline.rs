@@ -160,12 +160,27 @@ impl MaterialOpaquePipelines {
         ctx: &mut RenderPassInitContext<'_>,
         bind_groups: &MaterialOpaqueBindGroups,
     ) -> Result<Vec<OpaqueShaderDesc>> {
-        Self::shader_descriptors_for_config(
+        // Block D.1 PART 2 first-party extension: the eager-batch
+        // path (called from `AwsmRendererBuilder::build`) emits ONLY
+        // the empty-opaque pipeline. First-party material opaque
+        // pipelines (PBR / UNLIT / TOON / FLIPBOOK) defer until
+        // `launch_first_party_material_compile` fires — gltf-driven
+        // material register + the explicit `register_first_party_*`
+        // builder paths both trigger it.
+        //
+        // At builder-build time no dynamic material can be registered
+        // yet (build() returns the renderer before any
+        // `register_material` call), so the empty-state bucket list
+        // is exactly `first_party_bucket_entries()`.
+        let bucket_entries = crate::dynamic_materials::first_party_bucket_entries();
+        Self::shader_descriptors_for_config_with(
             ctx.gpu,
             ctx.bind_group_layouts,
             ctx.pipeline_layouts,
             bind_groups,
             ctx.anti_aliasing,
+            &bucket_entries,
+            false,
         )
     }
 
@@ -181,6 +196,35 @@ impl MaterialOpaquePipelines {
         pipeline_layouts: &mut crate::pipeline_layouts::PipelineLayouts,
         bind_groups: &MaterialOpaqueBindGroups,
         anti_aliasing: &AntiAliasing,
+        bucket_entries: &[crate::dynamic_materials::BucketEntry],
+    ) -> Result<Vec<OpaqueShaderDesc>> {
+        Self::shader_descriptors_for_config_with(
+            gpu,
+            bind_group_layouts,
+            pipeline_layouts,
+            bind_groups,
+            anti_aliasing,
+            bucket_entries,
+            true,
+        )
+    }
+
+    /// Block D.1 PART 2 extension to first-party materials: emit
+    /// shader descriptors with the OPAQUE_SHADER_IDS iteration
+    /// gated by `include_first_party`. When `false`, only the
+    /// empty-opaque pipeline is emitted — first-party pipelines
+    /// (PBR / UNLIT / TOON / FLIPBOOK) compile lazily on first
+    /// material register via
+    /// `AwsmRenderer::launch_first_party_material_compile`. Cold-boot
+    /// on a zero-scene compiles 0 material pipelines (was 4).
+    pub(crate) fn shader_descriptors_for_config_with(
+        gpu: &awsm_renderer_core::renderer::AwsmRendererWebGpu,
+        bind_group_layouts: &mut crate::bind_group_layout::BindGroupLayouts,
+        pipeline_layouts: &mut crate::pipeline_layouts::PipelineLayouts,
+        bind_groups: &MaterialOpaqueBindGroups,
+        anti_aliasing: &AntiAliasing,
+        bucket_entries: &[crate::dynamic_materials::BucketEntry],
+        include_first_party: bool,
     ) -> Result<Vec<OpaqueShaderDesc>> {
         // Which (main_bgl, slot) is active? Only emit the descriptors
         // for the live MSAA branch — the other half stays uncompiled
@@ -221,32 +265,34 @@ impl MaterialOpaquePipelines {
         let mut shader_descs: Vec<OpaqueShaderDesc> =
             Vec::with_capacity(OPAQUE_SHADER_IDS.len() + 1);
 
-        for &shader_id in OPAQUE_SHADER_IDS {
-            shader_descs.push(OpaqueShaderDesc {
-                shader_cache: ShaderCacheKeyMaterialOpaque {
-                    texture_pool_arrays_len,
-                    texture_pool_samplers_len,
-                    msaa_sample_count: active_msaa,
-                    mipmaps: active_mipmaps,
-                    shader_id,
-                    // Builder-time prewarm — no dynamic materials
-                    // can be registered before `build()` returns,
-                    // so the stable empty-state sentinel applies.
-                    // Mid-session dynamic registrations go through
-                    // `prewarm_pipelines` which builds its own cache
-                    // keys with the live `dispatch_hash`.
-                    dispatch_hash: 0,
-                    dynamic_shader: None,
-                    bucket_entries: crate::dynamic_materials::first_party_bucket_entries(),
-                }
-                .into(),
-                layout_key,
-                slot: OpaquePipelineSlot::Main(PipelineKeyId {
-                    msaa_sample_count: active_msaa,
-                    mipmaps: active_mipmaps,
-                    shader_id,
-                }),
-            });
+        if include_first_party {
+            for &shader_id in OPAQUE_SHADER_IDS {
+                shader_descs.push(OpaqueShaderDesc {
+                    shader_cache: ShaderCacheKeyMaterialOpaque {
+                        texture_pool_arrays_len,
+                        texture_pool_samplers_len,
+                        msaa_sample_count: active_msaa,
+                        mipmaps: active_mipmaps,
+                        shader_id,
+                        // Builder-time prewarm — no dynamic materials
+                        // can be registered before `build()` returns,
+                        // so the stable empty-state sentinel applies.
+                        // Mid-session dynamic registrations go through
+                        // `prewarm_pipelines` which builds its own cache
+                        // keys with the live `dispatch_hash`.
+                        dispatch_hash: 0,
+                        dynamic_shader: None,
+                        bucket_entries: bucket_entries.to_vec(),
+                    }
+                    .into(),
+                    layout_key,
+                    slot: OpaquePipelineSlot::Main(PipelineKeyId {
+                        msaa_sample_count: active_msaa,
+                        mipmaps: active_mipmaps,
+                        shader_id,
+                    }),
+                });
+            }
         }
         shader_descs.push(OpaqueShaderDesc {
             shader_cache: ShaderCacheKeyMaterialOpaqueEmpty {
@@ -429,5 +475,25 @@ impl MaterialOpaquePipelines {
         pipeline_key: ComputePipelineKey,
     ) {
         self.main.insert(key_id, pipeline_key);
+    }
+
+    /// Clear every per-shader-id opaque pipeline entry. The empty-slot
+    /// pipelines (`msaa_4_empty_compute_pipeline_key` /
+    /// `singlesampled_empty_compute_pipeline_key`) are preserved —
+    /// they don't depend on the bucket layout.
+    ///
+    /// Used by `AwsmRenderer::register_material` to invalidate stale
+    /// (shader_id, msaa, mipmaps) entries before relaunching the
+    /// compile loop with the new bucket layout. Without this clear,
+    /// dispatch in the window between relaunch + scheduler resolution
+    /// reads the OLD pipelines (compiled against the previous, smaller
+    /// `bucket_entries` list) against the newly-resized classify /
+    /// edge buffers — every `<shader>_offset` field has shifted to a
+    /// new struct offset, so dispatch fans into the wrong tile lists.
+    /// After clearing, `get_compute_pipeline_key` returns `None` for
+    /// those entries and the dispatch site's `Option` guard skips
+    /// the draw until the new pipeline lands.
+    pub fn clear_dynamic_pipelines(&mut self) {
+        self.main.clear();
     }
 }

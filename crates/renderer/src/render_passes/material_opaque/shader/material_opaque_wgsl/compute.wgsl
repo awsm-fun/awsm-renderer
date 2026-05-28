@@ -241,23 +241,16 @@ fn main(
         }
     {% endif %}
 
-    // Special case: we've hit the skybox in our main sample (triangle_index is U32_MAX)
-    // and yet at least one other MSAA sample hit geometry (any_sample_hit is true from above)
-    // so we need to blend all samples properly with the skybox and per-sample shading.
-    // Same ownership rule as above — only PBR writes the resolve.
+    // Sample 0 is skybox but other samples hit geometry — this is a
+    // silhouette edge pixel. Stage 3 edge_resolve owns the per-sample
+    // blend; primary opaque writes the skybox base color so the
+    // edge_resolve / final_blend pass has a clean starting point if
+    // any sample-mask happens to be zero (defensive).
     {% if multisampled_geometry %}
         if (triangle_index == U32_MAX) {
             {% if shader_id == MaterialShaderId::PBR %}
-                let lights_info_sky = get_lights_info();
-                let resolve_result = msaa_resolve_samples(camera, coords, screen_dims, screen_dims_f32, lights_info_sky);
-
-                if (resolve_result.valid_samples > 0u) {
-                    let final_color = resolve_result.color / f32(resolve_result.valid_samples);
-                    let final_alpha = resolve_result.alpha / f32(resolve_result.valid_samples);
-                    textureStore(opaque_tex, coords, vec4<f32>(final_color, final_alpha));
-                } else {
-                    textureStore(opaque_tex, coords, vec4<f32>(1.0, 0.0, 1.0, 1.0));
-                }
+                let color = sample_skybox(coords, screen_dims_f32, camera, skybox_tex, skybox_sampler);
+                textureStore(opaque_tex, coords, color);
             {% endif %}
             return;
         }
@@ -500,22 +493,14 @@ fn main(
     {% endif %}
 
 
-    // MSAA edge detection and per-sample processing
-    {% if multisampled_geometry && !debug.msaa_detect_edges %}
-        let samples_to_process = msaa_sample_count_for_pixel(camera, coords, pixel_center, screen_dims_f32, world_normal, triangle_index);
-
-        // If more than 1 sample to process, it's an edge pixel
-        if (samples_to_process > 1u) {
-            let resolve_result = msaa_resolve_samples(camera, coords, screen_dims, screen_dims_f32, lights_info);
-
-            if (resolve_result.valid_samples > 0u) {
-                let final_color = resolve_result.color / f32(resolve_result.valid_samples);
-                let final_alpha = resolve_result.alpha / f32(resolve_result.valid_samples);
-                textureStore(opaque_tex, coords, vec4<f32>(final_color, final_alpha));
-                return;
-            }
-        }
-    {% endif %}
+    // Edge-resolve is owned by the Stage 3 dispatch chain
+    // (classify → per-shader edge_resolve → final_blend). Primary
+    // opaque always writes the sample-0 shaded color here; final_blend
+    // overwrites at classify-detected edge pixels with the proper
+    // 4-sample average. This keeps the primary-opaque SPIR-V scoped
+    // to a single shader_id (the per-pipeline specialization) — no
+    // cross-shader switch inlined, no growth as dynamic materials
+    // register. See docs/plans/more-optimizations.md § Priority 3.
 
     {% if debug.normals %}
         // Debug visualization: encode normal as color

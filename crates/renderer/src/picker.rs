@@ -68,13 +68,104 @@ impl PickResult {
 }
 
 impl AwsmRenderer {
+    /// Lazily compiles the Picker subsystem on first use.
+    ///
+    /// Cold-boot (Block B.4) leaves `self.picker == None` even when
+    /// `features.picking == true`. The first `pick()` call funnels
+    /// through here, which builds the BGLs, compiles the active
+    /// MSAA's compute pipeline, allocates the picker state buffers,
+    /// AND creates the bind group inline (so the immediately-following
+    /// `pick()` body can dispatch without waiting for a render frame
+    /// to trigger the bind-group recreate dispatcher).
+    ///
+    /// No-op when `features.picking == false` (callers still get
+    /// `PickResult::Disabled` from `pick()` itself) or when the
+    /// picker is already compiled.
+    pub async fn ensure_picker_compiled(&mut self) -> Result<()> {
+        if !self.features.picking || self.picker.is_some() {
+            return Ok(());
+        }
+
+        // Build + compile + state alloc. Goes through `Picker::new`
+        // (the un-pooled path) — there's no other subsystem to batch
+        // with this far past `build()`, so the standalone
+        // `ensure_keys` here is fine.
+        let picker = Picker::new(
+            &self.gpu,
+            &mut self.bind_group_layouts,
+            &mut self.pipeline_layouts,
+            &mut self.shaders,
+            &mut self.pipelines,
+            &self.anti_aliasing,
+        )
+        .await?;
+        self.picker = Some(picker);
+
+        // Create the picker bind group inline so the caller's
+        // `pick()` dispatch can run this frame. Build a one-shot
+        // `BindGroupRecreateContext` and call `recreate_bind_group`
+        // directly on the picker (rather than going through the
+        // `BindGroupCreate::TextureViewRecreate` mark, which would
+        // also re-create every other texture-view-dependent bind
+        // group).
+        let render_texture_views = self
+            .render_textures
+            .views(&self.gpu, self.anti_aliasing.clone())?;
+        let ctx = crate::bind_groups::BindGroupRecreateContext {
+            gpu: &self.gpu,
+            render_texture_views: &render_texture_views,
+            textures: &self.textures,
+            materials: &self.materials,
+            bind_group_layouts: &mut self.bind_group_layouts,
+            meshes: &self.meshes,
+            camera: &self.camera,
+            frame_globals: &self.frame_globals,
+            environment: &self.environment,
+            lights: &self.lights,
+            transforms: &self.transforms,
+            instances: &self.instances,
+            anti_aliasing: &self.anti_aliasing,
+            shadows: &self.shadows,
+            mesh_light_indices_gpu: &self.mesh_light_indices_gpu,
+            material_classify_buffers: &self.material_classify_buffers,
+            material_edge_buffers: self.material_edge_buffers.as_ref(),
+            material_edge_layout_uniform: self.material_edge_layout_uniform.as_ref(),
+            extras_pool: &self.extras_pool,
+            decals: self.decals.as_ref(),
+            occlusion_buffers: self.occlusion_buffers.as_ref(),
+            hzb_full_view: self
+                .render_passes
+                .hzb
+                .as_ref()
+                .map(|hzb| hzb.texture.view_all.clone()),
+            decal_classify_buffers: self.decal_classify_buffers.as_ref(),
+            compaction_buffers: self.compaction_buffers.as_ref(),
+            coverage_buffers: self.coverage_buffers.as_ref(),
+            features: &self.features,
+        };
+        if let Some(p) = self.picker.as_mut() {
+            p.recreate_bind_group(&ctx)?;
+        }
+        Ok(())
+    }
+
     /// Performs a GPU pick at the given pixel coordinates.
     ///
     /// Returns [`PickResult::Disabled`] when the renderer was built
     /// without [`crate::features::RendererFeatures::picking`] — the
     /// picker subsystem doesn't exist in that case and there's no
     /// runtime cost to call this method.
-    pub async fn pick(&self, x: i32, y: i32) -> Result<PickResult> {
+    ///
+    /// On first invocation (when `features.picking == true`), this
+    /// lazily compiles the entire Picker subsystem via
+    /// [`Self::ensure_picker_compiled`] — cold-boot now compiles 0
+    /// picker pipelines, paying the cost only when the user
+    /// actually clicks.
+    pub async fn pick(&mut self, x: i32, y: i32) -> Result<PickResult> {
+        if !self.features.picking {
+            return Ok(PickResult::Disabled);
+        }
+        self.ensure_picker_compiled().await?;
         let Some(picker) = self.picker.as_ref() else {
             return Ok(PickResult::Disabled);
         };

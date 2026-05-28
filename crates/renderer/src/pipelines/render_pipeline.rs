@@ -18,8 +18,11 @@ use awsm_renderer_core::{
 };
 use slotmap::{new_key_type, SlotMap};
 use thiserror::Error;
-use wasm_bindgen::JsCast;
+use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
+
+use std::future::Future;
+use std::pin::Pin;
 
 use crate::{
     bind_groups::AwsmBindGroupError,
@@ -31,6 +34,38 @@ use crate::{
 pub struct RenderPipelines {
     lookup: SlotMap<RenderPipelineKey, web_sys::GpuRenderPipeline>,
     cache: HashMap<RenderPipelineCacheKey, RenderPipelineKey>,
+}
+
+/// Sync-side prep state captured by [`RenderPipelines::ensure_keys_prepare`]
+/// and consumed by [`RenderPipelines::ensure_keys_install`]. See
+/// [`crate::pipelines::compute_pipeline::ComputePipelinesPrep`] for the
+/// rationale.
+pub struct RenderPipelinesPrep {
+    /// Original cache keys in input order.
+    pub inputs: Vec<RenderPipelineCacheKey>,
+    /// Per-input resolved slots.
+    pub slot: Vec<Option<RenderPipelineKey>>,
+    /// Indices into `inputs` whose compile promise is in flight.
+    pub pending_input_indices: Vec<usize>,
+    /// Per-pending-index list of input slots wanting the resolved key.
+    pub pending_targets: Vec<Vec<usize>>,
+    /// Per-pending-index display labels.
+    pub labels: Vec<String>,
+    /// Batch start time.
+    pub t_start: f64,
+    /// Per-promise finish-time + ok-flag recorder.
+    pub finish_times: std::rc::Rc<std::cell::RefCell<Vec<(usize, f64, bool)>>>,
+}
+
+/// Bundle returned by [`RenderPipelines::ensure_keys_prepare`].
+pub struct RenderPipelinesPrepWithPromises {
+    /// Sync-side prep state.
+    pub prep: RenderPipelinesPrep,
+    /// `'static` futures that resolve to the raw `GpuRenderPipeline` (or
+    /// a creation error). Owns its label + finish-time recorder.
+    pub promises: Vec<
+        Pin<Box<dyn Future<Output = std::result::Result<web_sys::GpuRenderPipeline, JsValue>>>>,
+    >,
 }
 
 impl RenderPipelines {
@@ -90,54 +125,76 @@ impl RenderPipelines {
     where
         I: IntoIterator<Item = RenderPipelineCacheKey>,
     {
-        // Collect input order. Each cache key is allocated/cloned
-        // exactly *once* — when it crosses the IntoIterator boundary
-        // into `inputs`. Cache hits never touch the owned key after
-        // that; cache misses keep the key in `inputs` until install
-        // time, when it's moved into `self.cache` by `Option::take`.
-        // `RenderPipelineCacheKey` carries heap vectors (vertex
-        // layouts, fragment targets, constants) so the double-clone
-        // the previous version did (once into the dedup `seen` map,
-        // once into a separate `pending_keys` vec) showed up on the
-        // per-mesh transparent batch path.
+        // Cache-hit fast path. Build a miss-only batch for prepare,
+        // stitch the resolved keys back into the full input slot.
+        //
+        // **Within-batch miss dedup**: if the same uncached cache
+        // key appears more than once in the input batch (common in
+        // per-mesh transparent rebuilds — many meshes share the same
+        // pipeline cache key), we issue ONE
+        // `createRenderPipelineAsync` per unique miss and fan the
+        // resolved key back to every input slot that wanted it.
+        // Without dedup, Dawn ran every duplicate promise to
+        // completion and the install-time cache-hit guard discarded
+        // all but one — compile cost was already spent.
         let inputs: Vec<RenderPipelineCacheKey> = cache_keys.into_iter().collect();
         let mut slot: Vec<Option<RenderPipelineKey>> = vec![None; inputs.len()];
-
-        // Misses, dedup'd. `pending_input_indices[pending_idx]` is
-        // the index into `inputs` whose cache key represents the
-        // pending compile; `pending_targets[pending_idx]` is every
-        // input slot that wants the resulting RenderPipelineKey.
-        let mut pending_input_indices: Vec<usize> = Vec::new();
-        let mut pending_targets: Vec<Vec<usize>> = Vec::new();
-
-        // Dedup pass — `seen` borrows into `inputs` so it never
-        // clones a cache key. Scoped block so the borrow on `inputs`
-        // is released before we move keys out of it below.
-        {
-            let mut seen: HashMap<&RenderPipelineCacheKey, usize> = HashMap::new();
-            for (i, cache_key) in inputs.iter().enumerate() {
-                if let Some(key) = self.cache.get(cache_key) {
-                    slot[i] = Some(*key);
-                    continue;
-                }
-                if let Some(&pending_idx) = seen.get(cache_key) {
-                    pending_targets[pending_idx].push(i);
-                    continue;
-                }
-                seen.insert(cache_key, pending_input_indices.len());
-                pending_targets.push(vec![i]);
-                pending_input_indices.push(i);
+        let mut unique_miss_keys: Vec<RenderPipelineCacheKey> = Vec::new();
+        let mut unique_miss_targets: Vec<Vec<usize>> = Vec::new();
+        let mut unique_miss_index_for_key: HashMap<RenderPipelineCacheKey, usize> = HashMap::new();
+        for (i, k) in inputs.iter().enumerate() {
+            if let Some(key) = self.cache.get(k) {
+                slot[i] = Some(*key);
+            } else if let Some(&u_idx) = unique_miss_index_for_key.get(k) {
+                unique_miss_targets[u_idx].push(i);
+            } else {
+                let u_idx = unique_miss_keys.len();
+                unique_miss_keys.push(k.clone());
+                unique_miss_targets.push(vec![i]);
+                unique_miss_index_for_key.insert(k.clone(), u_idx);
             }
         }
-
-        if pending_input_indices.is_empty() {
+        if unique_miss_keys.is_empty() {
             return Ok(slot.into_iter().map(Option::unwrap).collect());
         }
+        let mut prepped =
+            Self::ensure_keys_prepare(gpu, shaders, pipeline_layouts, unique_miss_keys)?;
+        let promises = std::mem::take(&mut prepped.promises);
+        let results = futures::future::join_all(promises).await;
+        let resolved = self.ensure_keys_install(prepped.prep, results)?;
+        for (key, targets) in resolved.into_iter().zip(unique_miss_targets) {
+            for i in targets {
+                slot[i] = Some(key);
+            }
+        }
+        Ok(slot.into_iter().map(Option::unwrap).collect())
+    }
 
-        // Build all descriptors synchronously. Holding the descriptors
-        // by value (`Vec<web_sys::GpuRenderPipelineDescriptor>`) keeps
-        // them alive for the duration of the parallel await — Dawn
-        // reads from the JS object the descriptor wraps.
+    /// Sync phase 1: dedup, build descriptors, issue every
+    /// `createRenderPipelineAsync` Promise back-to-back. See
+    /// [`crate::pipelines::compute_pipeline::ComputePipelines::ensure_keys_prepare`]
+    /// for the design rationale.
+    pub fn ensure_keys_prepare<I>(
+        gpu: &AwsmRendererWebGpu,
+        shaders: &Shaders,
+        pipeline_layouts: &PipelineLayouts,
+        cache_keys: I,
+    ) -> Result<RenderPipelinesPrepWithPromises>
+    where
+        I: IntoIterator<Item = RenderPipelineCacheKey>,
+    {
+        let inputs: Vec<RenderPipelineCacheKey> = cache_keys.into_iter().collect();
+        let slot: Vec<Option<RenderPipelineKey>> = vec![None; inputs.len()];
+
+        // The prepare API treats every input as a miss; the wrapper
+        // [`Self::ensure_keys`] strips cache hits AND dedups within
+        // the miss set before calling — see that method's
+        // within-batch dedup pre-pass. `prepare` keeps the one-to-one
+        // input-to-promise contract so direct callers that zip
+        // their job list against `prep.promises` keep working.
+        let pending_input_indices: Vec<usize> = (0..inputs.len()).collect();
+        let pending_targets: Vec<Vec<usize>> = (0..inputs.len()).map(|i| vec![i]).collect();
+
         let mut descriptors: Vec<web_sys::GpuRenderPipelineDescriptor> =
             Vec::with_capacity(pending_input_indices.len());
         for &input_idx in &pending_input_indices {
@@ -150,25 +207,110 @@ impl RenderPipelines {
 
         let n = descriptors.len();
         let t_start = web_sys::js_sys::Date::now();
-        // Sync-issue every Promise. Dawn has started compiling all N
-        // by the time this loop returns.
-        let promises: Vec<JsFuture<web_sys::GpuRenderPipeline>> = descriptors
+
+        let labels: Vec<String> = pending_input_indices
             .iter()
-            .map(|d| JsFuture::from(gpu.create_render_pipeline_promise(d)))
+            .map(|&input_idx| {
+                let ck = &inputs[input_idx];
+                let shader_label = shaders
+                    .get_label(ck.shader_key)
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| format!("{:?}", ck.shader_key));
+                format!("{}:{:?}", shader_label, ck.layout_key)
+            })
+            .collect();
+        let finish_times: std::rc::Rc<std::cell::RefCell<Vec<(usize, f64, bool)>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(Vec::with_capacity(n)));
+        let promises: Vec<
+            Pin<Box<dyn Future<Output = std::result::Result<web_sys::GpuRenderPipeline, JsValue>>>>,
+        > = descriptors
+            .iter()
+            .enumerate()
+            .map(|(i, d)| {
+                let label = labels[i].clone();
+                let total = n;
+                let promise = JsFuture::from(gpu.create_render_pipeline_promise(d));
+                let ft = finish_times.clone();
+                let fut = async move {
+                    let r = promise.await;
+                    let cum_ms = web_sys::js_sys::Date::now() - t_start;
+                    let ok = r.is_ok();
+                    ft.borrow_mut().push((i, cum_ms, ok));
+                    let outcome = if ok { "ok" } else { "ERR" };
+                    tracing::info!(
+                        target: "awsm_renderer::boot_timing",
+                        "pipeline {}/{} render:{} cum={:.0}ms {}",
+                        i + 1,
+                        total,
+                        label,
+                        cum_ms,
+                        outcome,
+                    );
+                    r
+                };
+                Box::pin(fut)
+                    as Pin<
+                        Box<
+                            dyn Future<
+                                Output = std::result::Result<web_sys::GpuRenderPipeline, JsValue>,
+                            >,
+                        >,
+                    >
+            })
             .collect();
 
-        // Await all in parallel.
-        let results = futures::future::join_all(promises).await;
+        Ok(RenderPipelinesPrepWithPromises {
+            prep: RenderPipelinesPrep {
+                inputs,
+                slot,
+                pending_input_indices,
+                pending_targets,
+                labels,
+                t_start,
+                finish_times,
+            },
+            promises,
+        })
+    }
+
+    /// Sync phase 2: install awaited results into slotmap + cache.
+    pub fn ensure_keys_install(
+        &mut self,
+        prep: RenderPipelinesPrep,
+        results: Vec<std::result::Result<web_sys::GpuRenderPipeline, JsValue>>,
+    ) -> Result<Vec<RenderPipelineKey>> {
+        let RenderPipelinesPrep {
+            inputs,
+            mut slot,
+            pending_input_indices,
+            pending_targets,
+            labels,
+            t_start,
+            finish_times,
+        } = prep;
+
+        let n = pending_input_indices.len();
         let dt_ms = web_sys::js_sys::Date::now() - t_start;
         tracing::info!(
             target: "awsm_renderer::boot_timing",
             "RenderPipelines::ensure_keys: {n} pipelines compiled in {dt_ms:.0}ms",
         );
+        if n >= 2 {
+            let mut ft = finish_times.borrow_mut();
+            ft.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            let summary: Vec<String> = ft
+                .iter()
+                .map(|(i, cum, ok)| {
+                    format!("{}{}@{:.0}ms", labels[*i], if *ok { "" } else { "!" }, cum)
+                })
+                .collect();
+            tracing::info!(
+                target: "awsm_renderer::boot_timing",
+                "  finish-order [render, {n} pipes]: {}",
+                summary.join(" → "),
+            );
+        }
 
-        // Move owned cache keys out of `inputs` exactly once each, in
-        // input order, so `self.cache.insert(cache_key, key)` takes
-        // ownership without an extra clone. Unconsumed `None` slots
-        // (cache hits) drop with `inputs_owned` at end of function.
         let mut inputs_owned: Vec<Option<RenderPipelineCacheKey>> =
             inputs.into_iter().map(Some).collect();
 
@@ -177,9 +319,18 @@ impl RenderPipelines {
             .zip(results)
             .zip(pending_targets)
         {
+            let cache_key_ref = inputs_owned[input_idx]
+                .as_ref()
+                .expect("pending input slot must own its key");
+            if let Some(existing) = self.cache.get(cache_key_ref).copied() {
+                for i in input_targets {
+                    slot[i] = Some(existing);
+                }
+                let _ = result;
+                continue;
+            }
             let pipeline: web_sys::GpuRenderPipeline = result
-                .map_err(|e| AwsmRenderPipelineError::Core(AwsmCoreError::pipeline_creation(e)))?
-                .unchecked_into();
+                .map_err(|e| AwsmRenderPipelineError::Core(AwsmCoreError::pipeline_creation(e)))?;
             let key = self.lookup.insert(pipeline);
             let cache_key = inputs_owned[input_idx]
                 .take()

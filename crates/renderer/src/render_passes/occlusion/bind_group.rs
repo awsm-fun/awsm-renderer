@@ -3,8 +3,8 @@
 //! Single bind group:
 //!   0 camera          uniform (CameraRaw)
 //!   1 hzb_tex         sampled R32Float texture (full mip chain)
-//!   2 instances       storage[RO] OcclusionInstance array
-//!   3 visible         storage[RW] u32 array
+//!   2 instances       `storage[RO]` OcclusionInstance array
+//!   3 visible         `storage[RW]` u32 array
 //!   4 params          uniform (active_count)
 
 use std::borrow::Cow;

@@ -31,7 +31,7 @@ use crate::state::app_state;
 /// for every Model node to materialise on the GPU.
 ///
 /// Tuning scenes ship with empty `assets` + only `nodes`, so this
-/// is the minimal subset of [`crate::actions::project::load_inner`]'s
+/// is the minimal subset of `crate::actions::project::load_inner`'s
 /// behaviour — no glTF material extraction, no raster texture
 /// staging. If the tuning scene set grows to include external
 /// assets, mirror the relevant `load_inner` blocks here.
@@ -1000,7 +1000,7 @@ pub async fn debug_pick(x: i32, y: i32) -> String {
     use awsm_renderer::picker::PickResult;
     let handle = crate::context::renderer_handle();
     let pick_result = {
-        let renderer = handle.lock().await;
+        let mut renderer = handle.lock().await;
         renderer.pick(x, y).await
     };
     match pick_result {

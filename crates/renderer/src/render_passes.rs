@@ -114,6 +114,11 @@ struct RenderPassesBindings {
     decal_bg: Option<material_decal::bind_group::MaterialDecalBindGroups>,
     decal_classify_bg: Option<material_decal::classify::bind_group::DecalClassifyBindGroups>,
     opaque_bg: material_opaque::bind_group::MaterialOpaqueBindGroups,
+    /// Bind-group layouts for the per-shader-id MSAA edge-resolve
+    /// pipelines (Priority 3 in docs/plans/more-optimizations.md).
+    /// Allocated up-front — cheap; the actual edge_resolve pipelines
+    /// compile lazily via the scheduler.
+    opaque_edge_bind_group_layouts: material_opaque::edge_bind_group::MaterialEdgeBindGroupLayouts,
     transparent_bg: material_transparent::bind_group::MaterialTransparentBindGroups,
     transparent_pipelines: material_transparent::pipeline::MaterialTransparentPipelines,
     effects_bg: effects::bind_group::EffectsBindGroups,
@@ -307,6 +312,8 @@ impl RenderPasses {
             (None, None)
         };
         let opaque_bg = material_opaque::bind_group::MaterialOpaqueBindGroups::new(ctx).await?;
+        let opaque_edge_bind_group_layouts =
+            material_opaque::edge_bind_group::MaterialEdgeBindGroupLayouts::new(ctx)?;
         let transparent_bg =
             material_transparent::bind_group::MaterialTransparentBindGroups::new(ctx).await?;
         let effects_bg = effects::bind_group::EffectsBindGroups::new(ctx).await?;
@@ -331,7 +338,11 @@ impl RenderPasses {
         // will need. The orchestrator concatenates this onto the
         // cross-renderer shader pool — see `AwsmRendererBuilder::build`.
         let mut shader_cache_keys: Vec<ShaderCacheKey> = Vec::new();
-        shader_cache_keys.extend(GeometryPipelines::shader_cache_keys());
+        // Geometry MSAA-lazy: only the active branch's 3 shader keys
+        // at cold-boot. Inactive branch fills on first
+        // set_anti_aliasing flip.
+        let multisampled_geometry = ctx.anti_aliasing.has_msaa_checked()?;
+        shader_cache_keys.extend(GeometryPipelines::shader_cache_keys(multisampled_geometry));
         if features.gpu_culling {
             shader_cache_keys.extend(HzbPipelines::shader_cache_keys(ctx.anti_aliasing));
             shader_cache_keys.extend(OcclusionPipelines::shader_cache_keys());
@@ -345,6 +356,7 @@ impl RenderPasses {
         // same `ensure_keys` plumbing the orchestrator uses.
         let first_party_entries = crate::dynamic_materials::first_party_bucket_entries();
         shader_cache_keys.extend(MaterialClassifyPipelines::shader_cache_keys(
+            ctx.gpu,
             &first_party_entries,
             ctx.anti_aliasing,
         ));
@@ -377,6 +389,7 @@ impl RenderPasses {
                 decal_bg,
                 decal_classify_bg,
                 opaque_bg,
+                opaque_edge_bind_group_layouts,
                 transparent_bg,
                 transparent_pipelines,
                 effects_bg,
@@ -416,8 +429,11 @@ impl RenderPasses {
         let mut compute_pool: Vec<ComputePipelineCacheKey> = Vec::new();
         let mut render_pool: Vec<RenderPipelineCacheKey> = Vec::new();
 
+        // Geometry MSAA-lazy: only the active branch's 9 descriptors.
+        let multisampled_geometry = ctx.anti_aliasing.has_msaa_checked()?;
         let geometry_descs =
-            GeometryPipelines::build_descriptors(ctx, &bindings.geometry_bg).await?;
+            GeometryPipelines::build_descriptors(ctx, &bindings.geometry_bg, multisampled_geometry)
+                .await?;
         let geometry_range =
             render_pool.len()..render_pool.len() + geometry_descs.pipeline_cache_keys.len();
         render_pool.extend(geometry_descs.pipeline_cache_keys.iter().cloned());
@@ -602,6 +618,7 @@ impl RenderPasses {
             decal_bg,
             decal_classify_bg,
             opaque_bg,
+            opaque_edge_bind_group_layouts,
             transparent_bg,
             transparent_pipelines,
             effects_bg,
@@ -712,6 +729,12 @@ impl RenderPasses {
                 per_pass_descs.opaque_slots,
                 compute_keys[ranges.opaque].to_vec(),
             ),
+            // Edge-resolve pipelines are scheduler-managed — empty
+            // at cold-boot, populate lazily as edge_resolve compile
+            // futures resolve.
+            edge_pipelines:
+                crate::render_passes::material_opaque::edge_pipeline::MaterialEdgePipelines::new(),
+            edge_bind_group_layouts: opaque_edge_bind_group_layouts,
         };
 
         let material_transparent = MaterialTransparentRenderPass {

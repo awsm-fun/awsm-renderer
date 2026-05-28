@@ -158,7 +158,7 @@ impl SceneSpatial {
 
     /// Sets flags on a live node without re-keying it. The `dynamic`
     /// flag is intentionally NOT honored here — moving between the tree
-    /// and the sidecar happens through [`set_dynamic`] so the caller is
+    /// and the sidecar happens through [`Self::set_dynamic`] so the caller is
     /// explicit about the migration.
     pub fn set_flags(&mut self, mesh_key: MeshKey, flags: SceneNodeFlags) {
         if let Some(node) = self.nodes.get_mut(mesh_key) {
@@ -223,7 +223,7 @@ impl SceneSpatial {
     }
 
     /// Force a full `RTree::bulk_load` rebuild on the next
-    /// [`rebuild_if_needed`] call. Called by the renderer when a large
+    /// [`Self::rebuild_if_needed`] call. Called by the renderer when a large
     /// batch of inserts has just landed (asset stream-in, scene swap).
     pub fn mark_rebuild_needed(&mut self) {
         self.dirty_since_rebuild = u32::MAX;

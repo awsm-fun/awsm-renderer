@@ -98,7 +98,7 @@ impl FreeCamera {
     /// which sits comfortably outside the largest current game arena
     /// (jetpack-duel's 18 m-radius dome) without being so far that
     /// smaller scenes (pole-balance) look like specks. Tunable per-
-    /// game via [`FreeCamera::set_aabb`] once that wiring exists.
+    /// game via `FreeCamera::set_aabb` once that wiring exists.
     pub fn new_default_cube(aspect: f32) -> Self {
         Self::new_aabb(Aabb::new_cube(40.0, 40.0), aspect, 1.1)
     }

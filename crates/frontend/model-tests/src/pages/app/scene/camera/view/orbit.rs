@@ -102,5 +102,37 @@ impl OrbitCamera {
     pub fn setup_from_gltf(&mut self, _doc: &gltf::Document) {
         // TODO: Implement proper camera orientation detection based on glTF scene data
         // For now, use consistent defaults and let users rotate manually
+
+        // Optional URL-query override for reproducible repro shots.
+        //   ?cam=yaw,pitch,radius,lx,ly,lz
+        if let Some(window) = web_sys::window() {
+            if let Ok(query) = window.location().search() {
+                let query = query.trim_start_matches('?');
+                for pair in query.split('&') {
+                    if let Some(val) = pair.strip_prefix("cam=") {
+                        let parts: Vec<f32> = val
+                            .split(',')
+                            .filter_map(|s| s.parse::<f32>().ok())
+                            .collect();
+                        tracing::info!(
+                            target: "awsm_renderer::camera_debug",
+                            "cam= URL override seen: parts={:?}",
+                            parts,
+                        );
+                        if parts.len() == 6 {
+                            self.yaw = parts[0];
+                            self.pitch = parts[1];
+                            self.radius = parts[2];
+                            self.look_at = Vec3::new(parts[3], parts[4], parts[5]);
+                            tracing::info!(
+                                target: "awsm_renderer::camera_debug",
+                                "cam= URL override APPLIED: yaw={} pitch={} radius={} look_at={:?}",
+                                self.yaw, self.pitch, self.radius, self.look_at,
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 }

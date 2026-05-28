@@ -190,9 +190,88 @@ impl Shaders {
             .collect())
     }
 
+    /// Sync variant of [`Self::ensure_keys`] (Block D.1 PART 2). Skips
+    /// the `validate_shader().await` round-trip so the scheduler's
+    /// `submit_pipeline_group_batch` can install shader modules
+    /// synchronously, build pipeline descriptors using the resolved
+    /// keys, and issue `create_*_pipeline_async` promises in the same
+    /// sync window — pushing only the pipeline promises into
+    /// `FuturesUnordered`.
+    ///
+    /// **Trade-off**: validation errors surface later as pipeline-
+    /// creation errors. The `create_*_pipeline_async` promise's
+    /// rejection includes the underlying shader-compile diagnostic,
+    /// so the diagnostic path is preserved — just delayed by one
+    /// async hop. For the existing async `ensure_keys` path that
+    /// wants early shader-error reporting, validate is still awaited.
+    pub fn ensure_keys_sync_skip_validate<I>(
+        &mut self,
+        gpu: &AwsmRendererWebGpu,
+        cache_keys: I,
+    ) -> Result<Vec<ShaderKey>>
+    where
+        I: IntoIterator<Item = ShaderCacheKey>,
+    {
+        let inputs: Vec<ShaderCacheKey> = cache_keys.into_iter().collect();
+        let mut slots: Vec<Option<ShaderKey>> = Vec::with_capacity(inputs.len());
+        let mut pending_for: HashMap<ShaderCacheKey, usize> = HashMap::new();
+        let mut pending: Vec<(ShaderCacheKey, web_sys::GpuShaderModule)> = Vec::new();
+        for cache_key in &inputs {
+            if let Some(&shader_key) = self.cache.get(cache_key) {
+                slots.push(Some(shader_key));
+                continue;
+            }
+            if pending_for.contains_key(cache_key) {
+                slots.push(None);
+                continue;
+            }
+            let descriptor = ShaderTemplate::try_from(cache_key)?.into_descriptor()?;
+            let module = gpu.compile_shader(&descriptor);
+            pending_for.insert(cache_key.clone(), pending.len());
+            pending.push((cache_key.clone(), module));
+            slots.push(None);
+        }
+        // Install everything sync — validate is intentionally skipped.
+        let mut pending_keys: Vec<ShaderKey> = Vec::with_capacity(pending.len());
+        for (cache_key, module) in pending {
+            let shader_key = self.lookup.insert(module);
+            self.cache.insert(cache_key, shader_key);
+            pending_keys.push(shader_key);
+        }
+        for (slot, cache_key) in slots.iter_mut().zip(&inputs) {
+            if slot.is_some() {
+                continue;
+            }
+            if let Some(&pending_idx) = pending_for.get(cache_key) {
+                *slot = Some(pending_keys[pending_idx]);
+            }
+        }
+        Ok(slots
+            .into_iter()
+            .map(|s| s.expect("every input slot is filled by cache + pending"))
+            .collect())
+    }
+
     /// Returns a shader module by key.
     pub fn get(&self, shader_key: ShaderKey) -> Option<&web_sys::GpuShaderModule> {
         self.lookup.get(shader_key)
+    }
+
+    /// Reverse-lookup: returns the template debug label for a given
+    /// `ShaderKey`, or `None` if the key isn't in the cache.
+    ///
+    /// Used by the per-pipeline boot-timing log to attach a
+    /// human-readable shader-template name to each pipeline. Linear
+    /// scan of the cache (O(N) in shader-count) — only called during
+    /// pipeline-compile logging, not on the hot path.
+    pub fn get_label(&self, shader_key: ShaderKey) -> Option<String> {
+        for (cache_key, &key) in &self.cache {
+            if key == shader_key {
+                let template = ShaderTemplate::try_from(cache_key).ok()?;
+                return template.debug_label().map(|s| s.to_string());
+            }
+        }
+        None
     }
 }
 

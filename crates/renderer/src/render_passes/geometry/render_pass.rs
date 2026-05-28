@@ -37,9 +37,14 @@ pub struct GeometryRenderPass {
 
 impl GeometryRenderPass {
     /// Creates the geometry render pass resources.
+    ///
+    /// Per the lazy-pool architecture, only the active MSAA branch is
+    /// compiled at construction time. The inactive branch is filled
+    /// on the first `set_anti_aliasing` flip.
     pub async fn new(ctx: &mut RenderPassInitContext<'_>) -> Result<Self> {
+        let multisampled_geometry = ctx.anti_aliasing.has_msaa_checked()?;
         let bind_groups = GeometryBindGroups::new(ctx).await?;
-        let pipelines = GeometryPipelines::new(ctx, &bind_groups).await?;
+        let pipelines = GeometryPipelines::new(ctx, &bind_groups, multisampled_geometry).await?;
 
         Ok(Self {
             bind_groups,

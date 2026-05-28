@@ -54,6 +54,12 @@ impl AwsmRenderer {
     /// resident, so the next render frame can dispatch without
     /// further awaits.
     pub async fn set_post_processing(&mut self, pp: PostProcessing) -> Result<()> {
+        // Race policy per docs/plans/more-optimizations.md: config-change
+        // APIs return NotReady when called before build() finishes its
+        // eager batch.
+        if !self.build_complete {
+            return Err(crate::error::AwsmError::NotReady);
+        }
         // No-op fast path — caller asked for the state we're
         // already in. Saves a redundant batched ensure on UI
         // double-fire (common when sliders re-emit on every focus

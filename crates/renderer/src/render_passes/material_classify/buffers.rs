@@ -2,7 +2,7 @@
 //! tile buckets and indirect-dispatch args.
 //!
 //! Single buffer holds:
-//! - One [`DispatchIndirectArgs`]-shaped slot per registered bucket
+//! - One `DispatchIndirectArgs`-shaped slot per registered bucket
 //!   (first-party + dynamic) at the start — written atomically by
 //!   classify, read by the driver via `dispatchWorkgroupsIndirect`.
 //! - Per-bucket starting offsets and the shared per-bucket capacity.

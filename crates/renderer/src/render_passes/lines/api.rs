@@ -103,6 +103,14 @@ impl AwsmRenderer {
                 crate::buffer::mapped_uploader::MappedUploader::new("Line Uniform"),
             ),
         });
+        // Block B.3: cold-boot path leaves `lines.pipelines.variants`
+        // unpopulated; on the first `add_line_*` we flip the request
+        // flag so the renderer's `wait_for_pipelines_ready` (or an
+        // explicit `ensure_line_pipelines_compiled`) drives the
+        // compile. Dispatch warn-skips until then.
+        if self.lines.pipelines.variants.is_none() {
+            self.lines.pipelines_compile_requested = true;
+        }
         Ok(Some(key))
     }
 
@@ -118,7 +126,7 @@ impl AwsmRenderer {
         self.update_line(key, positions, colors, LineTopology::Strip)
     }
 
-    /// Re-uploads positions + colors as line-list pairs (see [`add_line_segments`]).
+    /// Re-uploads positions + colors as line-list pairs (see [`Self::add_line_segments`]).
     pub fn update_line_segments(
         &mut self,
         key: LineKey,
@@ -193,5 +201,38 @@ impl AwsmRenderer {
     /// Number of registered line strips.
     pub fn line_count(&self) -> usize {
         self.lines.entries.len()
+    }
+
+    /// Block B.3: lazily compiles the 4 line pipeline variants on the
+    /// transition from "no line primitives" to "first line primitive
+    /// inserted". Idempotent — subsequent calls are no-ops once
+    /// `pipelines.variants` is populated.
+    ///
+    /// Cold-boot leaves `LineRenderer::pipelines.variants = None`; the
+    /// first `add_line_strip` / `add_line_segments` sets
+    /// `pipelines_compile_requested = true`. This method (driven by
+    /// `wait_for_pipelines_ready` and by the MSAA-toggle path in
+    /// `set_anti_aliasing`) checks both flags and compiles when
+    /// either is set. Until compile completes, the line dispatch
+    /// warn-skips via `pipeline_scheduler::warn_pipeline_not_compiled`.
+    pub async fn ensure_line_pipelines_compiled(&mut self) -> Result<()> {
+        if self.lines.pipelines.variants.is_some() && !self.lines.pipelines_compile_requested {
+            return Ok(());
+        }
+        // Nothing to do if no entries AND no explicit request — keep
+        // cold-boot lazy until a real consumer shows up.
+        if self.lines.entries.is_empty() && !self.lines.pipelines_compile_requested {
+            return Ok(());
+        }
+        self.lines
+            .ensure_pipelines_compiled(
+                &self.gpu,
+                &mut self.bind_group_layouts,
+                &mut self.pipeline_layouts,
+                &mut self.pipelines,
+                &mut self.shaders,
+                &self.render_textures.formats,
+            )
+            .await
     }
 }

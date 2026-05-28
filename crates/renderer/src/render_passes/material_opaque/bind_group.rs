@@ -401,7 +401,7 @@ impl MaterialOpaqueBindGroups {
 
     /// Recreates the shadow bind group for the opaque material pass.
     pub fn recreate_shadows(&mut self, ctx: &BindGroupRecreateContext<'_>) -> Result<()> {
-        let entries = build_shadow_bind_group_entries(ctx);
+        let entries = build_shadow_bind_group_entries(ctx.shadows);
 
         let descriptor = BindGroupDescriptor::new(
             ctx.bind_group_layouts

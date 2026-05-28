@@ -258,8 +258,8 @@ impl RendererRecompileSink {
 async fn prewarm_holding_borrow(handle: RendererHandle) {
     let mut guard = handle.borrow_mut();
     if let Some(host) = guard.as_mut() {
-        if let Err(e) = host.renderer.prewarm_pipelines().await {
-            tracing::warn!("[material-editor] prewarm_pipelines failed: {e:?}");
+        if let Err(e) = host.renderer.wait_for_pipelines_ready().await {
+            tracing::warn!("[material-editor] wait_for_pipelines_ready failed: {e:?}");
         }
     }
 }

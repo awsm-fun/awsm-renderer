@@ -1,6 +1,7 @@
 mod actions;
 mod canvas;
 mod collider_wireframe;
+mod compile_modal;
 mod config;
 mod content_hash;
 mod context;
@@ -118,8 +119,8 @@ pub fn main() {
                             {
                                 let handle = renderer_handle();
                                 let mut r = handle.lock().await;
-                                if let Err(err) = r.prewarm_pipelines().await {
-                                    tracing::warn!("prewarm_pipelines: {err}");
+                                if let Err(err) = r.wait_for_pipelines_ready().await {
+                                    tracing::warn!("wait_for_pipelines_ready: {err}");
                                 }
                             }
                             awsm_web_shared::util::window::set_boot_loader_message(
@@ -198,5 +199,10 @@ fn render_initialized() -> Dom {
             }))
             .child(SidebarRight::new(properties::render).render())
         }))
+        // Block A.4: floating overlay that auto-shows whenever the
+        // renderer's pipeline scheduler has any group `Pending`.
+        // Non-blocking — the user can keep editing while pipelines
+        // compile in the background.
+        .child(compile_modal::render())
     })
 }

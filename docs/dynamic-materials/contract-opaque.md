@@ -19,16 +19,20 @@ For transparent materials (`alpha_mode = Blend`) see
 Your `shader.wgsl` is wrapped at template-emission time into:
 
 ```wgsl
-fn custom_shade_<ID>(input: OpaqueShadingInput) -> OpaqueShadingOutput {
+fn custom_shade_dynamic(input: OpaqueShadingInput) -> OpaqueShadingOutput {
     // <your shader.wgsl body, verbatim>
 }
 ```
 
-where `<ID>` is the dynamic shader id assigned by the registry
-(`>= MaterialShaderId::DYNAMIC_START`). The opaque compute kernel
-dispatches one workgroup per tile containing your material's `shader_id`
-(driven by the classify pass) and, per pixel, calls
-`custom_shade_<ID>(input)` then writes its output to `opaque_tex`.
+The wrapper is named `custom_shade_dynamic` literally — not parameterized
+by the registry-assigned shader id. Each dynamic material's WGSL is
+template-instantiated as its own pipeline (the `shader_id` lives in the
+`ComputePipelineCacheKey`), so collisions on the function name aren't a
+concern: every pipeline has its own copy of the wrapper. The opaque
+compute kernel dispatches one workgroup per tile containing your
+material's `shader_id` (driven by the classify pass) and, per pixel,
+calls `custom_shade_dynamic(input)` then writes its output to
+`opaque_tex`.
 
 Your fragment **must end with `return OpaqueShadingOutput(...)`**. You may
 declare local helper functions inside the function body but cannot declare
@@ -38,8 +42,24 @@ scope.
 
 If you need extra structs or helpers, declare them above the function
 body — at the top of `shader.wgsl`, *outside* the implicit
-`custom_shade_<ID>` wrapper. The renderer emits all author-declared items
+`custom_shade_dynamic` wrapper. The renderer emits all author-declared items
 at module scope before the wrapper.
+
+### Dual-context invariant — primary opaque AND edge_resolve
+
+Your fragment is wrapped into **two** compute kernels per `shader_id`,
+not one: the **primary opaque** kernel (full-pixel shading across the
+tile) and the per-shader-id **edge_resolve** kernel (single-sample
+shading at MSAA boundary pixels — see
+`crates/renderer/src/render_passes/material_opaque/edge_pipeline.rs`
+and `…/shader/edge_template.rs`). The same `custom_shade_dynamic` body is
+emitted into both; the wrapper supplies the right `OpaqueShadingInput`
+in each context (full pixel vs. masked sub-sample). The Stage 3 work
+deleted the old PBR `msaa_resolve_samples` fallback, so cross-material
+MSAA edges that previously fell back to PBR shading for dynamic
+materials now render with your exact shading code. Write one fragment;
+keep it free of state that assumes a particular call-site, and both
+contexts work without any extra opt-in.
 
 ---
 
@@ -134,7 +154,7 @@ struct MaterialData {
 }
 ```
 
-Inside `custom_shade_<ID>`, the wrapper has already populated `input.material`
+Inside `custom_shade_dynamic`, the wrapper has already populated `input.material`
 for you — read fields directly: `let tint = input.material.tint;`.
 
 ---

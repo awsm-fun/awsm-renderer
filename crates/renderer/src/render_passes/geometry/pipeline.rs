@@ -140,23 +140,21 @@ pub struct GeometryPrewarmDescriptors {
 }
 
 impl GeometryPipelines {
-    /// Creates geometry pipeline layouts and cached keys.
-    ///
-    /// Wrapper for the standalone path — pre-warms 8 shader variants
-    /// then compiles 18 pipelines in one `ensure_keys` batch. The
-    /// cross-pass pooling path in `RenderPasses::new` calls
-    /// [`Self::shader_cache_keys`] + [`Self::build_descriptors`] +
-    /// [`Self::from_resolved`] directly so the geometry + opaque +
-    /// every other pass's shader and pipeline compiles share one
-    /// global batch.
+    /// Creates geometry pipeline layouts and cached keys for the
+    /// **active MSAA branch only**. Per the lazy-pool architecture
+    /// in `docs/plans/more-optimizations.md` § Lessons D, the
+    /// inactive branch is populated on first `set_anti_aliasing`
+    /// flip via [`crate::AwsmRenderer::set_anti_aliasing`]'s recompile
+    /// path.
     pub async fn new(
         ctx: &mut RenderPassInitContext<'_>,
         bind_groups: &GeometryBindGroups,
+        multisampled_geometry: bool,
     ) -> Result<Self> {
         ctx.shaders
-            .ensure_keys(ctx.gpu, Self::shader_cache_keys())
+            .ensure_keys(ctx.gpu, Self::shader_cache_keys(multisampled_geometry))
             .await?;
-        let descs = Self::build_descriptors(ctx, bind_groups).await?;
+        let descs = Self::build_descriptors(ctx, bind_groups, multisampled_geometry).await?;
         let pipeline_keys = ctx
             .pipelines
             .render
@@ -167,46 +165,68 @@ impl GeometryPipelines {
                 descs.pipeline_cache_keys.clone(),
             )
             .await?;
-        Self::from_resolved(&descs, pipeline_keys)
+        let mut empty = Self {
+            pipeline_layout_key_storage: descs.pipeline_layout_key_storage,
+            pipeline_layout_key_uniform: descs.pipeline_layout_key_uniform,
+            render_pipeline_keys: GeometryRenderPipelineKeys {
+                no_anti_alias: None,
+                msaa_4_anti_alias: None,
+            },
+        };
+        empty.merge_resolved(&descs, pipeline_keys)?;
+        Ok(empty)
     }
 
-    /// 8 unique shader cache keys: `(msaa × instancing × meta_storage)`
-    /// collapsed across cull mode (cull has no shader effect).
-    ///
-    /// **Lazy-pool note:** Geometry's nested Level1/2/3 lookup tree
-    /// assumes both MSAA branches are populated, and the shape
-    /// (instancing × meta_storage) + cull axes are per-mesh
-    /// (scene-content driven). Restructuring `from_resolved` to
-    /// support partial fills would touch the dispatch hot path —
-    /// not a clean win since the eager 18-pipeline batch compiles in
-    /// parallel anyway. We keep this eager and accept the cold-boot
-    /// cost. The other passes (Material Opaque, Classify, Effects,
-    /// HZB, Picker) are the ones that benefit cleanly from lazy.
-    pub fn shader_cache_keys() -> Vec<crate::shaders::ShaderCacheKey> {
-        let mut keys = Vec::with_capacity(8);
-        for msaa_samples in [None, Some(4u32)] {
-            for (instancing, meta_storage_array) in [(false, true), (false, false), (true, false)] {
-                keys.push(
-                    ShaderCacheKeyGeometry {
-                        instancing_transforms: instancing,
-                        meta_storage_array,
-                        msaa_samples,
-                    }
-                    .into(),
-                );
-            }
+    /// Shader cache keys for **one MSAA branch** — 3 variants:
+    /// `(instancing × meta_storage)`, collapsed across cull mode
+    /// (cull has no shader effect).
+    pub fn shader_cache_keys(multisampled_geometry: bool) -> Vec<crate::shaders::ShaderCacheKey> {
+        let msaa_samples = if multisampled_geometry {
+            Some(4u32)
+        } else {
+            None
+        };
+        let mut keys = Vec::with_capacity(3);
+        for (instancing, meta_storage_array) in [(false, true), (false, false), (true, false)] {
+            keys.push(
+                ShaderCacheKeyGeometry {
+                    instancing_transforms: instancing,
+                    meta_storage_array,
+                    msaa_samples,
+                }
+                .into(),
+            );
         }
         keys
     }
 
+    /// Returns `true` iff the lookup tree already has a populated
+    /// Level1 for the requested anti-aliasing state. Used by
+    /// `set_anti_aliasing` to skip the recompile when toggling back
+    /// to a previously-active branch.
+    pub fn has_branch_for(&self, anti_aliasing: &AntiAliasing) -> bool {
+        match anti_aliasing.has_msaa_checked() {
+            Ok(true) => self.render_pipeline_keys.msaa_4_anti_alias.is_some(),
+            Ok(false) => self.render_pipeline_keys.no_anti_alias.is_some(),
+            Err(_) => false,
+        }
+    }
+
     /// Resolves the bind-group-derived pipeline layouts + builds the
-    /// 18 leaf render-pipeline cache keys (and matching slot ids).
+    /// **9 leaf render-pipeline cache keys for the requested MSAA
+    /// branch** (instancing × meta_storage × cull_mode = 9 leaves).
     /// Requires that [`Self::shader_cache_keys`] has already been
     /// `Shaders::ensure_keys`'d.
     pub async fn build_descriptors(
         ctx: &mut RenderPassInitContext<'_>,
         bind_groups: &GeometryBindGroups,
+        multisampled_geometry: bool,
     ) -> Result<GeometryPrewarmDescriptors> {
+        let msaa_samples = if multisampled_geometry {
+            Some(4u32)
+        } else {
+            None
+        };
         let pipeline_layout_key_storage = ctx.pipeline_layouts.get_key(
             ctx.gpu,
             ctx.bind_group_layouts,
@@ -238,46 +258,44 @@ impl GeometryPipelines {
 
         const CULL_MODES: &[CullMode] = &[CullMode::None, CullMode::Back, CullMode::Front];
 
-        let mut pipeline_cache_keys = Vec::with_capacity(18);
-        let mut slots = Vec::with_capacity(18);
+        let mut pipeline_cache_keys = Vec::with_capacity(9);
+        let mut slots = Vec::with_capacity(9);
 
-        for msaa_samples in [None, Some(4u32)] {
-            for &shape in &[
-                GeometryPipelineShape::NoInstancingStorageMeta,
-                GeometryPipelineShape::NoInstancingUniformMeta,
-                GeometryPipelineShape::Instancing,
-            ] {
-                let (instancing, meta_storage_array, layout_key) = match shape {
-                    GeometryPipelineShape::NoInstancingStorageMeta => {
-                        (false, true, pipeline_layout_key_storage)
-                    }
-                    GeometryPipelineShape::NoInstancingUniformMeta => {
-                        (false, false, pipeline_layout_key_uniform)
-                    }
-                    GeometryPipelineShape::Instancing => (true, false, pipeline_layout_key_uniform),
-                };
-                let shader_cache = ShaderCacheKeyGeometry {
-                    instancing_transforms: instancing,
-                    meta_storage_array,
-                    msaa_samples,
-                };
-                let shader_key = ctx.shaders.get_key(ctx.gpu, shader_cache).await?;
-                for &cull_mode in CULL_MODES {
-                    pipeline_cache_keys.push(build_geometry_cache_key(
-                        shader_key,
-                        layout_key,
-                        depth_format,
-                        &color_targets,
-                        msaa_samples,
-                        instancing,
-                        cull_mode,
-                    ));
-                    slots.push(GeometryLeafSlot {
-                        msaa_4: msaa_samples == Some(4),
-                        shape,
-                        cull: GeometryCullKey::from_cull_mode(cull_mode)?,
-                    });
+        for &shape in &[
+            GeometryPipelineShape::NoInstancingStorageMeta,
+            GeometryPipelineShape::NoInstancingUniformMeta,
+            GeometryPipelineShape::Instancing,
+        ] {
+            let (instancing, meta_storage_array, layout_key) = match shape {
+                GeometryPipelineShape::NoInstancingStorageMeta => {
+                    (false, true, pipeline_layout_key_storage)
                 }
+                GeometryPipelineShape::NoInstancingUniformMeta => {
+                    (false, false, pipeline_layout_key_uniform)
+                }
+                GeometryPipelineShape::Instancing => (true, false, pipeline_layout_key_uniform),
+            };
+            let shader_cache = ShaderCacheKeyGeometry {
+                instancing_transforms: instancing,
+                meta_storage_array,
+                msaa_samples,
+            };
+            let shader_key = ctx.shaders.get_key(ctx.gpu, shader_cache).await?;
+            for &cull_mode in CULL_MODES {
+                pipeline_cache_keys.push(build_geometry_cache_key(
+                    shader_key,
+                    layout_key,
+                    depth_format,
+                    &color_targets,
+                    msaa_samples,
+                    instancing,
+                    cull_mode,
+                ));
+                slots.push(GeometryLeafSlot {
+                    msaa_4: msaa_samples == Some(4),
+                    shape,
+                    cull: GeometryCullKey::from_cull_mode(cull_mode)?,
+                });
             }
         }
 
@@ -289,75 +307,107 @@ impl GeometryPipelines {
         })
     }
 
-    /// Folds resolved pipeline keys back into the nested level-1/2/3
-    /// struct shape `get_render_pipeline_key` walks.
+    /// Folds the resolved pipeline keys for **one MSAA branch** into
+    /// the existing struct's slot tree. Used both at cold-boot
+    /// (active-branch population) and during `set_anti_aliasing`
+    /// recompile (the inactive-branch fill).
+    pub fn merge_resolved(
+        &mut self,
+        descs: &GeometryPrewarmDescriptors,
+        pipeline_keys: Vec<RenderPipelineKey>,
+    ) -> Result<()> {
+        if descs.slots.len() != pipeline_keys.len() {
+            panic!(
+                "geometry merge_resolved: slot count mismatch (slots={}, keys={})",
+                descs.slots.len(),
+                pipeline_keys.len()
+            );
+        }
+
+        // Group keys by msaa branch. Within a single submitted batch,
+        // every slot will share the same `msaa_4` flag (we only build
+        // descriptors for one branch at a time), but we tolerate
+        // mixed input for forward-compat.
+        let mut by_msaa: HashMap<bool, Vec<(GeometryLeafSlot, RenderPipelineKey)>> = HashMap::new();
+        for (slot, key) in descs.slots.iter().zip(pipeline_keys) {
+            by_msaa.entry(slot.msaa_4).or_default().push((*slot, key));
+        }
+
+        for (msaa_4, entries) in by_msaa {
+            let level1 = build_level1(&entries);
+            if msaa_4 {
+                self.render_pipeline_keys.msaa_4_anti_alias = Some(level1);
+            } else {
+                self.render_pipeline_keys.no_anti_alias = Some(level1);
+            }
+        }
+
+        // Refresh layout keys if they weren't set yet (cold-boot calls
+        // `new()` which constructs the struct with these; recompile
+        // paths re-use the already-set values).
+        if descs.pipeline_layout_key_storage != self.pipeline_layout_key_storage
+            || descs.pipeline_layout_key_uniform != self.pipeline_layout_key_uniform
+        {
+            // Layouts are stable across MSAA branches (MSAA only
+            // affects the multisample state on the pipeline, not the
+            // bind-group layouts). Mismatch here would indicate a
+            // logic bug. Leave the existing values in place.
+        }
+
+        Ok(())
+    }
+
+    /// Folds resolved pipeline keys for **both** MSAA branches back
+    /// into the nested level-1/2/3 struct shape that
+    /// [`Self::get_render_pipeline_key`] walks. Retained for callers
+    /// that still want to build both branches eagerly in one pass —
+    /// new call sites should prefer [`Self::new`] +
+    /// [`Self::merge_resolved`] which compile just the active branch
+    /// at cold-boot.
+    ///
+    /// Panics if the input `pipeline_keys` doesn't supply every
+    /// `(msaa_4, shape, cull)` slot the lookup tree expects.
     pub fn from_resolved(
         descs: &GeometryPrewarmDescriptors,
         pipeline_keys: Vec<RenderPipelineKey>,
     ) -> Result<Self> {
-        let mut slot_map: HashMap<
-            (bool, GeometryPipelineShape, GeometryCullKey),
-            RenderPipelineKey,
-        > = HashMap::with_capacity(descs.slots.len());
+        let mut by_msaa: HashMap<bool, Vec<(GeometryLeafSlot, RenderPipelineKey)>> = HashMap::new();
         for (slot, key) in descs.slots.iter().zip(pipeline_keys) {
-            slot_map.insert((slot.msaa_4, slot.shape, slot.cull), key);
+            by_msaa.entry(slot.msaa_4).or_default().push((*slot, key));
         }
-        let take = |msaa_4: bool,
-                    shape: GeometryPipelineShape,
-                    cull: GeometryCullKey|
-         -> RenderPipelineKey {
-            *slot_map.get(&(msaa_4, shape, cull)).unwrap_or_else(|| {
-                panic!(
-                    "geometry pipeline slot missing: msaa_4={msaa_4} shape={shape:?} cull={cull:?}"
-                );
-            })
-        };
-        let level2 =
-            |msaa_4: bool, shape: GeometryPipelineShape| -> GeometryRenderPipelineKeysLevel2 {
-                GeometryRenderPipelineKeysLevel2 {
-                    no_cull: GeometryRenderPipelineKeysLevel3 {
-                        render_pipeline_key: take(msaa_4, shape, GeometryCullKey::None),
-                    },
-                    back_cull: GeometryRenderPipelineKeysLevel3 {
-                        render_pipeline_key: take(msaa_4, shape, GeometryCullKey::Back),
-                    },
-                    front_cull: GeometryRenderPipelineKeysLevel3 {
-                        render_pipeline_key: take(msaa_4, shape, GeometryCullKey::Front),
-                    },
-                }
-            };
-        let level1 = |msaa_4: bool| -> GeometryRenderPipelineKeysLevel1 {
-            GeometryRenderPipelineKeysLevel1 {
-                no_instancing_storage_meta: level2(
-                    msaa_4,
-                    GeometryPipelineShape::NoInstancingStorageMeta,
-                ),
-                no_instancing_uniform_meta: level2(
-                    msaa_4,
-                    GeometryPipelineShape::NoInstancingUniformMeta,
-                ),
-                instancing: level2(msaa_4, GeometryPipelineShape::Instancing),
-            }
-        };
+        let no_anti_alias = by_msaa.remove(&false).map(|e| build_level1(&e));
+        let msaa_4_anti_alias = by_msaa.remove(&true).map(|e| build_level1(&e));
 
         Ok(Self {
             pipeline_layout_key_storage: descs.pipeline_layout_key_storage,
             pipeline_layout_key_uniform: descs.pipeline_layout_key_uniform,
             render_pipeline_keys: GeometryRenderPipelineKeys {
-                no_anti_alias: level1(false),
-                msaa_4_anti_alias: level1(true),
+                no_anti_alias,
+                msaa_4_anti_alias,
             },
         })
     }
 
     /// Returns the render pipeline key for the requested options.
+    ///
+    /// Returns `Err(AwsmError::PipelineVariantNotCompiled(...))` when
+    /// the requested MSAA branch isn't yet populated — the
+    /// render-frame preamble's warn-and-skip path translates this
+    /// into a `tracing::warn!` + dispatch skip. Per the lazy-pool
+    /// architecture in `docs/plans/more-optimizations.md`.
     pub fn get_render_pipeline_key(
         &self,
         opts: GeometryRenderPipelineKeyOpts<'_>,
     ) -> Result<RenderPipelineKey> {
         let level = match opts.anti_aliasing.has_msaa_checked()? {
-            true => &self.render_pipeline_keys.msaa_4_anti_alias,
-            false => &self.render_pipeline_keys.no_anti_alias,
+            true => self.render_pipeline_keys.msaa_4_anti_alias.as_ref().ok_or(
+                AwsmError::PipelineVariantNotCompiled("geometry: msaa_4 branch not yet compiled"),
+            )?,
+            false => self.render_pipeline_keys.no_anti_alias.as_ref().ok_or(
+                AwsmError::PipelineVariantNotCompiled(
+                    "geometry: no_anti_alias branch not yet compiled",
+                ),
+            )?,
         };
         let level = if opts.instancing {
             &level.instancing
@@ -378,6 +428,41 @@ impl GeometryPipelines {
     }
 }
 
+/// Helper for `merge_resolved` / `from_resolved`: turns 9 leaf slots
+/// (shape × cull = 9 entries) into the nested Level1 struct.
+fn build_level1(
+    entries: &[(GeometryLeafSlot, RenderPipelineKey)],
+) -> GeometryRenderPipelineKeysLevel1 {
+    let mut by_shape: HashMap<(GeometryPipelineShape, GeometryCullKey), RenderPipelineKey> =
+        HashMap::with_capacity(entries.len());
+    for (slot, key) in entries {
+        by_shape.insert((slot.shape, slot.cull), *key);
+    }
+    let take = |shape: GeometryPipelineShape, cull: GeometryCullKey| -> RenderPipelineKey {
+        *by_shape.get(&(shape, cull)).unwrap_or_else(|| {
+            panic!("geometry pipeline slot missing: shape={shape:?} cull={cull:?}");
+        })
+    };
+    let level2 = |shape: GeometryPipelineShape| -> GeometryRenderPipelineKeysLevel2 {
+        GeometryRenderPipelineKeysLevel2 {
+            no_cull: GeometryRenderPipelineKeysLevel3 {
+                render_pipeline_key: take(shape, GeometryCullKey::None),
+            },
+            back_cull: GeometryRenderPipelineKeysLevel3 {
+                render_pipeline_key: take(shape, GeometryCullKey::Back),
+            },
+            front_cull: GeometryRenderPipelineKeysLevel3 {
+                render_pipeline_key: take(shape, GeometryCullKey::Front),
+            },
+        }
+    };
+    GeometryRenderPipelineKeysLevel1 {
+        no_instancing_storage_meta: level2(GeometryPipelineShape::NoInstancingStorageMeta),
+        no_instancing_uniform_meta: level2(GeometryPipelineShape::NoInstancingUniformMeta),
+        instancing: level2(GeometryPipelineShape::Instancing),
+    }
+}
+
 pub struct GeometryRenderPipelineKeyOpts<'a> {
     pub anti_aliasing: &'a AntiAliasing,
     pub instancing: bool,
@@ -386,8 +471,12 @@ pub struct GeometryRenderPipelineKeyOpts<'a> {
 }
 
 pub struct GeometryRenderPipelineKeys {
-    pub no_anti_alias: GeometryRenderPipelineKeysLevel1,
-    pub msaa_4_anti_alias: GeometryRenderPipelineKeysLevel1,
+    /// `None` when this MSAA branch hasn't been compiled yet. Per the
+    /// lazy-pool architecture, only the active branch is populated at
+    /// cold-boot; the inactive branch fills on first
+    /// `set_anti_aliasing` flip.
+    pub no_anti_alias: Option<GeometryRenderPipelineKeysLevel1>,
+    pub msaa_4_anti_alias: Option<GeometryRenderPipelineKeysLevel1>,
 }
 
 pub struct GeometryRenderPipelineKeysLevel1 {

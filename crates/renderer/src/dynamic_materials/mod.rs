@@ -40,7 +40,7 @@ use awsm_materials::TextureContext;
 /// renderer's [`TextureContext`] (when attached via
 /// [`with_textures`](Self::with_textures)) to the packed
 /// `array_and_layer` encoding documented on
-/// [`shared_wgsl::TextureInfoRaw`]. Unbound slots and lookups that
+/// `shared_wgsl::TextureInfoRaw`. Unbound slots and lookups that
 /// can't resolve return `u32::MAX` (the WGSL helpers treat that as
 /// "no texture"). `buffer_slice` resolves through the extras pool
 /// when one was attached via [`with_extras`](Self::with_extras).
@@ -138,6 +138,30 @@ impl<'a> DynamicMaterialContext for DynamicMaterialPackContext<'a> {
             .and_then(|pool| pool.slice_for(shader_id, buffer_slot_index))
     }
 }
+
+/// Hard cap on the total number of bucket entries (first-party +
+/// dynamic) that the renderer accepts. Driven by the tightest
+/// per-bucket-index encoding across the classify + edge pipelines:
+///
+/// 1. **Classify `tile_mask` (32 bits — TIGHTEST)**: the per-workgroup
+///    `var<workgroup> tile_mask: atomic<u32>` accumulates a
+///    `BUCKET_BIT_<NAME> = (1u << index)` per visible bucket id, then
+///    fans into one atomic-incremented `args_<name>.workgroup_count_x`
+///    cell per set bit. A bucket index `>= 32` would compile to a
+///    WGSL `1u << 32u`, which is implementation-defined (typically `0`
+///    on Dawn) — the bucket effectively wouldn't classify.
+///    See `material_classify/shader/material_classify_wgsl/compute.wgsl`.
+///
+/// 2. **Edge `edge_slot_map` (8 bits per sample, `0xFE` / `0xFF`
+///    reserved)**: looser cap at 254. Not the binding constraint here
+///    but documented for context — both encodings would need widening
+///    in lock-step before the bucket count could grow past 32.
+///
+/// 32 is generous for any realistic scene (4 first-party + 28 dynamic
+/// materials co-resident). `register_material` rejects any
+/// registration that would push past this cap with
+/// [`AwsmDynamicMaterialError::BucketCapExceeded`].
+pub const MAX_BUCKET_ENTRIES: usize = 32;
 
 /// One bucket entry — the template-rendering view of a single registered
 /// material (first-party OR dynamic). Returned by [`bucket_entries`].
@@ -299,7 +323,7 @@ impl DynamicMaterials {
     /// Returns the cached bucket-entries slice (first-party prefix +
     /// currently-registered dynamic materials sorted by shader_id).
     /// `O(1)` lookup; the cache is refreshed by
-    /// [`Self::refresh_caches`] on every register / unregister.
+    /// `Self::refresh_caches` on every register / unregister.
     ///
     /// Replaces per-frame `bucket_entries(&materials)` allocations
     /// on the opaque + classify hot paths.
@@ -365,6 +389,20 @@ impl DynamicMaterials {
     }
 
     /// Returns the count of currently-registered dynamic materials.
+    /// Returns `true` if inserting `registration` would NOT grow the
+    /// registry (i.e., it'd be idempotent on an existing
+    /// `(name, layout_hash, wgsl_hash)`). Used by
+    /// [`crate::AwsmRenderer::register_material`] to skip the
+    /// bucket-cap pre-check when a re-registration would just return
+    /// the existing shader id.
+    pub fn would_be_idempotent(&self, registration: &MaterialRegistration) -> bool {
+        self.registrations.values().any(|existing| {
+            existing.name == registration.name
+                && existing.layout_hash == registration.layout_hash
+                && existing.wgsl_hash == registration.wgsl_hash
+        })
+    }
+
     pub fn len(&self) -> usize {
         self.registrations.len()
     }
@@ -512,15 +550,47 @@ impl crate::AwsmRenderer {
     /// Idempotent on `(name, layout_hash, wgsl_hash)`: re-registering the
     /// same material returns the same id without recompiling.
     ///
-    /// **Phase 4**: the new shader_id is inserted; the next render call's
-    /// classify-pass cache lookup misses (since `bucket_entries` changed)
-    /// and triggers a recompile of the classify shader. The opaque-compute
-    /// pipeline for the new shader_id is compiled on first dispatch (or
-    /// eagerly via [`Self::prewarm_pipelines`]).
+    /// **Readiness contract (Block D.1 PART 2 + edge-resolve push):**
+    /// every pipeline the new material needs to render correctly —
+    /// primary opaque (4 MSAA × mipmaps variants), classify
+    /// (2 MSAA variants), per-shader `edge_resolve` for the new
+    /// shader_id, plus the global `skybox_edge_resolve` and
+    /// `final_blend` (whose cache keys depend on `bucket_entries`
+    /// and are recompiled on every register so the templated
+    /// bucket constants match the classify pass) — is pushed into
+    /// the scheduler's `inflight_compile` queue via
+    /// [`Self::launch_dynamic_material_compile`]. The scheduler
+    /// flips the material `Pending → Ready` only when the **whole**
+    /// MSAA-edge chain is GPU-resident. Frontends subscribed to
+    /// [`Self::drain_pipeline_status_events`] correctly observe
+    /// Ready after MSAA edge resolution is fully functional for
+    /// the new material — no separate `prewarm_pipelines.await` is
+    /// needed for edge correctness.
     pub fn register_material(
         &mut self,
         registration: MaterialRegistration,
     ) -> Result<MaterialShaderId, AwsmDynamicMaterialError> {
+        // Bucket-id cap (see [`MAX_BUCKET_ENTRIES`]). A successful
+        // insert below grows `bucket_entries` by one ONLY if this is
+        // a brand-new `(name, layout_hash, wgsl_hash)`; idempotent
+        // re-registrations (same name + same hashes) reuse the
+        // existing shader_id and don't expand the bucket list.
+        //
+        // Run the idempotency lookup FIRST so we don't reject a
+        // re-registration of an existing entry once the registry is
+        // at saturation — the registry's contract (per
+        // `DynamicMaterials::insert`) is: same name + same hashes
+        // returns the existing shader_id with no growth, and that
+        // contract must hold even at the cap.
+        if !self.dynamic_materials.would_be_idempotent(&registration) {
+            let current_len = bucket_entries(&self.dynamic_materials).len();
+            if current_len >= MAX_BUCKET_ENTRIES {
+                return Err(AwsmDynamicMaterialError::BucketCapExceeded {
+                    would_be: current_len + 1,
+                    max: MAX_BUCKET_ENTRIES,
+                });
+            }
+        }
         let buffer_defaults = registration.buffer_defaults.clone();
         let id = self.dynamic_materials.insert(registration)?;
         // Assign extras-pool slices for any buffer-slot defaults
@@ -563,7 +633,215 @@ impl crate::AwsmRenderer {
             self.bind_groups
                 .mark_create(crate::bind_groups::BindGroupCreate::MaterialClassifyBuffersResize);
         }
+        // Symmetric resize for `material_edge_buffers` (Stage 3): the
+        // args_buffer + data_buffer are sized for (bucket_count, edge
+        // budget). Without this, classify's binding(4) on the
+        // multi-sampled bind group keeps pointing at the
+        // smaller-bucket args buffer, and Dawn rejects the dispatch:
+        //   [Buffer "MaterialEdgeBuffers::args"] bound with size N is
+        //   too small. The pipeline requires at least M.
+        // Surfaced by material-editor preview after the first dynamic
+        // material registers (bucket 4 → 5).
+        if let Some(edge_buffers) = self.material_edge_buffers.as_mut() {
+            let edge_resized = edge_buffers.ensure_bucket_count(&self.gpu, new_count)?;
+            if edge_resized {
+                // The edge args/data buffers live on the classify
+                // multi-sampled bind group (binding 4/5) — the same
+                // recreate mark used for classify-buffers covers
+                // them. Mark explicitly even though the classify
+                // resize above likely already marked it: tolerant of
+                // future re-sequencing.
+                self.bind_groups.mark_create(
+                    crate::bind_groups::BindGroupCreate::MaterialClassifyBuffersResize,
+                );
+                // Also rebuild the edge-layout uniform so the per-frame
+                // header knows the new bucket count + max_edge_budget.
+                let max_edge_budget = edge_buffers.max_edge_budget;
+                if let Ok((uniform, _bytes)) =
+                    crate::render_passes::material_opaque::edge_buffers::build_edge_layout_uniform(
+                        &self.gpu,
+                        new_count,
+                        max_edge_budget,
+                    )
+                {
+                    self.material_edge_layout_uniform = Some(uniform);
+                }
+            }
+        }
+        // Block A.1 bridge: also submit the material to the
+        // pipeline-readiness scheduler so its lifecycle is observable
+        // via the status stream / pipeline_group_status. The
+        // returned MaterialId is intentionally discarded — callers
+        // wanting the typed scheduler handle use the
+        // `submit_dynamic_material` API which returns it explicitly.
+        // The `prewarm_dynamic_pipelines` bridge marks each
+        // scheduler entry `Ready` once compile resolves. Bridge
+        // failures are logged but not propagated — register_material
+        // succeeded and the bucket-routing path works without the
+        // scheduler entry; only the observability surface degrades.
+        if let Err(e) = self.submit_to_scheduler_for_shader_id(id) {
+            tracing::warn!(
+                target: "awsm_renderer::pipeline_readiness",
+                "submit_to_scheduler_for_shader_id failed for {:?}: {:?}",
+                id, e
+            );
+        }
+        // Block D.1 PART 2 literal-future launch: kick off the
+        // sub-pipeline compile promises sync-now, push them into
+        // PipelineScheduler::inflight_compile. The renderer's
+        // poll_pipeline_scheduler drains + installs them per-frame.
+        // Frontends watching drain_pipeline_status_events see the
+        // material light up Ready when the last sub-pipeline lands —
+        // no `prewarm_pipelines().await` round-trip needed.
+        //
+        // ALL registered materials (not just the newly-inserted one)
+        // get relaunched: this insert grew `bucket_entries`, which
+        // shifts the generated `ClassifyOutput` struct field offsets
+        // (every previously-registered shader_id's `<shader>_offset`
+        // field now lives at a different byte position).
+        //
+        // **Stale typed-cache invalidation**: before relaunching, we
+        // clear every (shader_id, msaa, mipmaps) entry from the
+        // opaque per-pass cache and every (shader_id, mipmaps) entry
+        // + globals from the edge per-pass cache. The lookup keys are
+        // bucket-layout-AGNOSTIC ((shader_id, msaa, mipmaps) for
+        // opaque, (shader_id, mipmaps) for edge per-shader), so
+        // without this clear the dispatch path in the window between
+        // relaunch and scheduler resolution would hit the OLD
+        // pipeline keys — pipelines compiled against the previous
+        // (smaller) bucket layout, dispatching against the newly
+        // resized classify/edge buffers with WRONG offsets.
+        //
+        // After clearing, the dispatch site's `Option` guard returns
+        // `None` and skips the draw for that material until the new
+        // pipeline lands. The classify per-pass cache is
+        // self-invalidating — it's keyed on `dispatch_hash` which
+        // changes on every bucket mutation, so old entries become
+        // unreachable orphans (no clear needed there).
+        self.render_passes
+            .material_opaque
+            .pipelines
+            .clear_dynamic_pipelines();
+        self.render_passes
+            .material_opaque
+            .edge_pipelines
+            .clear_dynamic_pipelines();
+
+        // Opaque shader cache keys include `bucket_entries`, so the
+        // launch path's `cache_lookup` correctly misses every stale
+        // variant and pushes fresh compiles into the scheduler.
+        //
+        // Matches the pattern in `finalize_gpu_textures` after a
+        // texture-pool grow — the scheduler's `registered_material_shader_ids()`
+        // is the single source-of-truth for "every material currently
+        // tracked by the readiness system". `launch_first_party_material_compile`
+        // forwards dynamic shader_ids to `launch_dynamic_material_compile`
+        // automatically, so a single iteration covers both classes.
+        // Cross-call waiter dedup inside the launch path (see
+        // `PipelineScheduler::register_compute_compile_waiter`)
+        // ensures the global classify + edge-chain promises are
+        // pushed once for the whole loop, not N times per
+        // registered material; every waiter's subcompile counter is
+        // still bumped so Ready transitions wait on the shared
+        // compile.
+        //
+        // **Pending transition for existing materials**: mark every
+        // PREVIOUSLY-REGISTERED material `Pending` before launching.
+        // The just-submitted material `id` is already Pending from
+        // `submit_to_scheduler_for_shader_id` above. Without the
+        // mark, existing materials stay in `Ready` while their
+        // replacement compiles are in flight — the typed pipeline
+        // cache has just been cleared, dispatch skips them via the
+        // Option guards, but `pipeline_group_status` /
+        // `drain_pipeline_status_events` still report Ready,
+        // confusing the compile modal + any consumer-driven readiness
+        // gates. The generation bump inside
+        // `mark_material_pending_for_relaunch` is also what makes
+        // the apply_compile_resolution stale-generation gate discard
+        // old in-flight resolutions (compiled against the previous
+        // bucket layout).
+        let registered_shader_ids = self.pipeline_scheduler.registered_material_shader_ids();
+        for shader_id in &registered_shader_ids {
+            if *shader_id == id {
+                // Newly-inserted material: already Pending from
+                // submit. Skip the redundant mark.
+                continue;
+            }
+            if let Some(mid) = self
+                .pipeline_scheduler
+                .find_material_by_shader_id(*shader_id)
+            {
+                self.pipeline_scheduler.mark_material_pending_for_relaunch(
+                    crate::pipeline_scheduler::PipelineGroupId::Material(mid),
+                );
+            }
+        }
+        for shader_id in registered_shader_ids {
+            if let Err(e) = self.launch_first_party_material_compile(shader_id) {
+                tracing::warn!(
+                    target: "awsm_renderer::pipeline_readiness",
+                    "post-register_material relaunch of material({:?}) failed: {:?}",
+                    shader_id, e
+                );
+            }
+        }
         Ok(id)
+    }
+
+    /// Internal helper: build a `MaterialDef` for a freshly-registered
+    /// dynamic material and submit it to the scheduler. Idempotent —
+    /// a duplicate submit for the same shader_id just adds a second
+    /// scheduler entry (which the prewarm bridge marks Ready
+    /// alongside the first). Kept private; the public surfaces are
+    /// `register_material` and `submit_dynamic_material`.
+    fn submit_to_scheduler_for_shader_id(
+        &mut self,
+        shader_id: awsm_materials::MaterialShaderId,
+    ) -> Result<(), crate::error::AwsmError> {
+        use crate::pipeline_scheduler::{
+            MaterialDef, MaterialDefKind, PipelineConfigSnapshot, PipelineGroupDef,
+        };
+        // Skip if this shader_id already has a scheduler entry
+        // (avoids ballooning the SlotMap on idempotent
+        // `register_material(same_payload)` calls — these are common
+        // from material-editor's debounced recompile loop hitting the
+        // hash-based idempotency gate inside the registry).
+        if self
+            .pipeline_scheduler
+            .find_material_by_shader_id(shader_id)
+            .is_some()
+        {
+            return Ok(());
+        }
+        // We need the registration to snapshot its alpha_mode +
+        // double_sided + boxed kind. The registry just inserted it.
+        let registration = match self.dynamic_materials.get(shader_id) {
+            Some(r) => r.clone(),
+            None => return Ok(()), // shouldn't happen, but bail quietly
+        };
+        let snapshot = PipelineConfigSnapshot {
+            msaa: self.anti_aliasing.clone(),
+            mipmap: if self.anti_aliasing.mipmap {
+                crate::render_passes::material_opaque::shader::template::MipmapMode::Gradient
+            } else {
+                crate::render_passes::material_opaque::shader::template::MipmapMode::None
+            },
+            use_mesh_light_slices: false,
+            gpu_culling: self.features.gpu_culling,
+            coverage_lod: self.features.coverage_lod,
+            debug_bitmask: 0,
+            default_cull_mode: awsm_renderer_core::pipeline::primitive::CullMode::Back,
+        };
+        let def = MaterialDef {
+            shader_id,
+            alpha_mode: registration.alpha_mode,
+            double_sided: registration.double_sided,
+            kind: MaterialDefKind::Dynamic(Box::new(registration)),
+            config_snapshot: snapshot,
+        };
+        self.pipeline_scheduler
+            .submit_pipeline_group_batch(vec![PipelineGroupDef::Material(def)]);
+        Ok(())
     }
 
     /// Removes a previously-registered dynamic material.
@@ -592,5 +870,63 @@ impl crate::AwsmRenderer {
         &self,
     ) -> impl Iterator<Item = (MaterialShaderId, &MaterialRegistration)> {
         self.dynamic_materials.iter()
+    }
+
+    /// Submit a dynamic material via the new pipeline-readiness API.
+    ///
+    /// Per the architecture in `docs/plans/more-optimizations.md`,
+    /// this is the non-blocking submission entry point that registers
+    /// the material AND submits a `PipelineGroupDef::Material(Dynamic)`
+    /// to the renderer's scheduler. Returns:
+    ///
+    /// - `MaterialShaderId` — same as `register_material`, for the
+    ///   bucket-routing path and `Material::Custom { shader_id }` field.
+    /// - `MaterialId` — new scheduler-side handle to a
+    ///   `PipelineGroupId::Material(_)`. Frontends watch this id via
+    ///   [`Self::pipeline_group_status`] /
+    ///   [`Self::drain_pipeline_status_events`] for the Ready transition.
+    ///
+    /// **Readiness flow**: `register_material` pushes real compile
+    /// futures into the scheduler's `inflight_compile` set via
+    /// [`Self::launch_dynamic_material_compile`] (Block D.1 PART 2 +
+    /// edge-resolve extension). The promise set covers every
+    /// pipeline the material needs to render correctly — opaque,
+    /// classify, per-shader edge_resolve, skybox edge_resolve,
+    /// final_blend. The scheduler's [`Self::poll_pipeline_scheduler`]
+    /// (called each render-frame preamble) drains those futures
+    /// and marks the corresponding material `Ready` when its last
+    /// sub-pipeline resolves. Frontends that need to block until
+    /// ready use [`Self::wait_for_pipelines_ready`], which polls
+    /// until no further transitions are applied; frontends that
+    /// just want a progress signal subscribe to
+    /// [`Self::drain_pipeline_status_events`] and render fall-back
+    /// content (loading modal / placeholder mesh) until Ready
+    /// arrives. Either approach yields full MSAA-edge correctness
+    /// for the new material on the next render after Ready.
+    ///
+    /// [`Self::prewarm_pipelines`] still exists as the lower-level
+    /// compile-drive surface; the A.1 bridge inside it now marks
+    /// the scheduler entries Ready when its `ensure_keys` resolves,
+    /// so the two surfaces are interchangeable for the
+    /// readiness-state contract.
+    pub fn submit_dynamic_material(
+        &mut self,
+        registration: MaterialRegistration,
+    ) -> Result<(MaterialShaderId, crate::pipeline_scheduler::MaterialId), crate::error::AwsmError>
+    {
+        // `register_material` now bridges the scheduler internally
+        // (Block A.1). After it returns, we just look up the
+        // scheduler-side MaterialId that was allocated for this
+        // shader_id and return it alongside.
+        let shader_id = self.register_material(registration)?;
+        let material_id = self
+            .pipeline_scheduler
+            .find_material_by_shader_id(shader_id)
+            .ok_or_else(|| {
+                crate::error::AwsmError::PipelineVariantNotCompiled(
+                    "register_material did not populate scheduler",
+                )
+            })?;
+        Ok((shader_id, material_id))
     }
 }

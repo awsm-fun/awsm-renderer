@@ -17,6 +17,42 @@ use crate::{
 };
 
 impl AwsmRenderer {
+    /// Compiles the shadow caster + EVSM pipelines if at least one
+    /// shadow-casting light is registered AND the pipelines aren't
+    /// already compiled. Idempotent and cheap when nothing to do.
+    ///
+    /// Block B.1 + B.2 lazy-compile entry point. Cold-boot leaves
+    /// shadow pipelines uncompiled even when `features.shadows == true`.
+    /// The first shadow-caster (added via [`Self::insert_light`] with a
+    /// casting `LightShadowParams`, [`Self::set_light_shadow_params`],
+    /// or [`Self::update_light_shadow`] that flips `cast` on) makes
+    /// the pipelines necessary — call this then `.await` before the
+    /// next `render()` to guarantee shadows draw that frame. If the
+    /// caller forgets, the dispatch sites in
+    /// `shadows::render_pass::record` and `dispatch_evsm` issue a
+    /// one-shot `warn_pipeline_not_compiled` and silently skip the
+    /// pass that frame; subsequent frames also skip until pipelines
+    /// land.
+    pub async fn ensure_shadow_pipelines_compiled(&mut self) -> crate::error::Result<()> {
+        if !self.shadows.any_active() || self.shadows.pipelines_compiled() {
+            return Ok(());
+        }
+        let crate::pipelines::Pipelines {
+            render: render_pipelines,
+            compute: compute_pipelines,
+        } = &mut self.pipelines;
+        self.shadows
+            .ensure_pipelines_compiled(
+                &self.gpu,
+                &self.shaders,
+                &self.pipeline_layouts,
+                render_pipelines,
+                compute_pipelines,
+            )
+            .await?;
+        Ok(())
+    }
+
     /// Replaces the renderer-wide shadow config. Player / runtime
     /// equivalent of the editor's "shadows" inspector — load the
     /// `ShadowsConfig` from disk (via `awsm_scene_schema` → `into()`

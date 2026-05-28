@@ -38,7 +38,7 @@ impl AwsmRenderer {
     /// `inverse_transform` + `world_aabb` (use [`Decal::new`] as the
     /// canonical constructor instead). No-op when the decals feature
     /// is off — there can be no live keys without an allocated
-    /// [`Decals`] subsystem.
+    /// [`crate::decals::Decals`] subsystem.
     pub fn update_decal(&mut self, key: DecalKey, f: impl FnOnce(&mut Decal)) {
         if let Some(decals) = self.decals.as_mut() {
             decals.update(key, f);

@@ -4,16 +4,16 @@
 //!
 //! ### Architecture
 //!
-//! - **Main thread** ([`main_thread_boot`]): creates a `<canvas>`,
+//! - **Main thread** (`main_thread_boot`): creates a `<canvas>`,
 //!   calls `transferControlToOffscreen()`, spawns a worker that
 //!   imports this same wasm bundle, and posts the offscreen canvas +
 //!   the shared `WebAssembly.Module` to it. After init, the main
 //!   thread captures pointer/resize events and forwards them via
 //!   `postMessage` so the worker-side renderer can react.
 //!
-//! - **Worker thread** ([`worker_thread_boot`]): receives the
-//!   `OffscreenCanvas`, builds an [`AwsmRendererWebGpuBuilder`] via
-//!   the [`new_with_offscreen_canvas`] constructor added in
+//! - **Worker thread** (`worker_thread_boot`): receives the
+//!   `OffscreenCanvas`, builds an [`awsm_renderer_core::renderer::AwsmRendererWebGpuBuilder`] via
+//!   the [`new_with_offscreen_canvas`](awsm_renderer_core::renderer::AwsmRendererWebGpuBuilder::new_with_offscreen_canvas) constructor added in
 //!   Phase 4.4, and drives a `requestAnimationFrame`-paced render
 //!   loop. Today the worker only `tracing::trace!`s any
 //!   [`WorkerInputEvent`] it receives — wiring those into a free
@@ -54,7 +54,7 @@
 //! - A real glTF scene — the procedural box keeps the asset-loading
 //!   surface area off the example. Plug a real scene in by calling
 //!   `renderer.populate_gltf(..)` after init in
-//!   [`start_worker_renderer`].
+//!   `start_worker_renderer`.
 //! - Punctual lights, an environment map, or shadows — the emissive
 //!   PBR factor stands in. Add real lighting through `renderer.lights`
 //!   / `renderer.environment` once those need exercising on the
@@ -355,6 +355,13 @@ fn start_worker_renderer(canvas: web_sys::OffscreenCanvas) -> Result<(), JsValue
         // counter stays lock-free. Single-threaded today (the
         // `requestAnimationFrame` closure and the boot future share
         // the worker scope), so the atomic / lock cost is zero.
+        //
+        // `AwsmRenderer` became `!Send + !Sync` once the
+        // `pipeline_scheduler`'s `FuturesUnordered` was added (its trait
+        // objects don't carry an explicit `Send` bound — see
+        // `crates/renderer/src/pipeline_scheduler/mod.rs`). Wasm32 is
+        // single-threaded, so the lint is theoretical here.
+        #[allow(clippy::arc_with_non_send_sync)]
         let renderer_cell = std::sync::Arc::new(std::sync::Mutex::new(renderer));
         let rotation_bits =
             std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0.0f32.to_bits()));

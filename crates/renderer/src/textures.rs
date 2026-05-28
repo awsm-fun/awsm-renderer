@@ -341,6 +341,127 @@ impl AwsmRenderer {
             .pipelines
             .install_per_mesh_keys(mesh_keys, transparent_pipeline_keys);
 
+        // Re-launch the compile for every currently-registered
+        // scheduler material entry.
+        //
+        // The opaque-pipeline rebuild above only emits descriptors for
+        // the `OpaquePipelineSlot::Empty*` slots (`MaterialOpaquePipelines::
+        // shader_descriptors_and_layouts` passes `include_first_party:
+        // false`), and `from_resolved` constructs the typed cache
+        // from those slots wholesale — wiping any first-party /
+        // dynamic material pipeline keys that were previously
+        // compiled. That wipe is intentional: their underlying
+        // shaders were compiled with the OLD `texture_pool_arrays_len`
+        // template substitution, and the new `texture_pool_textures`
+        // BGL doesn't match the OLD pipeline's layout, so reusing
+        // those keys would either silently sample the
+        // `default → vec4(0)` branch (the bug that motivated the
+        // Stage 3 silhouette-quality fix in `53202fa`) or fail
+        // outright at dispatch validation.
+        //
+        // Mirror that wipe on the edge_pipelines per-pass cache: the
+        // edge_resolve shaders also depend on the OLD
+        // `texture_pool_arrays_len`, and after the wipe above the
+        // dispatch path skips the affected materials via the Option
+        // guards on `get_compute_pipeline_key`. Without clearing
+        // `edge_pipelines.per_shader` + the global skybox /
+        // final_blend keys here too, edge dispatch would still hit
+        // the OLD-pool-shape pipelines until the new ones land.
+        self.render_passes
+            .material_opaque
+            .edge_pipelines
+            .clear_dynamic_pipelines();
+
+        // Mark every registered material `Pending` BEFORE relaunching.
+        // Without this, `pipeline_group_status` /
+        // `drain_pipeline_status_events` report Ready while the typed
+        // cache is empty (dispatch skipping via the Option guard), so
+        // the compile-modal UI is misleading and any
+        // `note_subcompile_complete` from the relaunch's promises
+        // doesn't emit a balancing Pending → Ready event. The
+        // generation bump also makes the apply_compile_resolution
+        // stale-generation gate discard any OLD in-flight resolutions
+        // that haven't yet landed (those were compiled against the
+        // previous pool shape).
+        let registered_shader_ids = self.pipeline_scheduler.registered_material_shader_ids();
+        for shader_id in &registered_shader_ids {
+            if let Some(mid) = self
+                .pipeline_scheduler
+                .find_material_by_shader_id(*shader_id)
+            {
+                self.pipeline_scheduler.mark_material_pending_for_relaunch(
+                    crate::pipeline_scheduler::PipelineGroupId::Material(mid),
+                );
+            }
+        }
+
+        // Re-launching compile for every registered material here
+        // re-populates the typed cache with fresh keys keyed to the
+        // new bind-group layouts. `launch_first_party_material_compile`
+        // routes dynamic shader_ids to `launch_dynamic_material_compile`
+        // automatically, so a single iteration covers both. It also
+        // calls `launch_edge_resolve_compile` internally, which is
+        // why this method no longer separately awaits
+        // `edge_pipelines.ensure_compiled` — the scheduler's
+        // cross-call waiter dedup (see
+        // `PipelineScheduler::register_compute_compile_waiter`)
+        // ensures the global edge chain (per-shader edges + skybox +
+        // final_blend) is compiled once for the whole loop rather
+        // than once per registered material, and a separate
+        // `ensure_compiled` await would duplicate that work without
+        // the scheduler's in-flight guard catching it.
+        for shader_id in registered_shader_ids {
+            if let Err(e) = self.launch_first_party_material_compile(shader_id) {
+                tracing::warn!(
+                    target: "awsm_renderer::pipeline_readiness",
+                    "post texture-pool-grow recompile of material({:?}) failed: {:?}",
+                    shader_id,
+                    e
+                );
+            }
+        }
+
+        // No-materials fallback: with no registered materials, the
+        // launch loop above iterated zero times, so the global edge
+        // chain wasn't compiled. Do it synchronously here for the
+        // first-party-only case (e.g. a scene with first-party
+        // gltf meshes but no submitted scheduler entries yet).
+        // Gated on MSAA + device support, same as the loop's
+        // internal `launch_edge_resolve_compile`.
+        if self
+            .pipeline_scheduler
+            .registered_material_shader_ids()
+            .is_empty()
+            && self.anti_aliasing.msaa_sample_count.is_some()
+            && crate::edge_resolve_supported(&self.gpu)
+        {
+            let color_wgsl = awsm_renderer_core::texture::texture_format_to_wgsl_storage(
+                self.render_textures.formats.color,
+            )?;
+            let bucket_entries = self.dynamic_materials.bucket_entries_cached().to_vec();
+            let crate::pipelines::Pipelines {
+                render: _render_pipelines,
+                compute: compute_pipelines,
+            } = &mut self.pipelines;
+            self.render_passes
+                .material_opaque
+                .edge_pipelines
+                .ensure_compiled(
+                    &self.gpu,
+                    &mut self.shaders,
+                    compute_pipelines,
+                    &mut self.pipeline_layouts,
+                    &mut self.bind_group_layouts,
+                    &self.render_passes.material_opaque.bind_groups,
+                    &self.render_passes.material_opaque.edge_bind_group_layouts,
+                    &bucket_entries,
+                    &self.anti_aliasing,
+                    color_wgsl,
+                    Some(&self.dynamic_materials),
+                )
+                .await?;
+        }
+
         Ok(())
     }
 
@@ -859,7 +980,7 @@ impl Textures {
     /// renderer-gltf-seeded `TextureKey`) wouldn't reach `add_image` —
     /// it'd silently fail `sampler_index` lookup at draw time and the
     /// shader would `SkipTexture` (rendering the material's base-color
-    /// factor alone, i.e. pure white for a [1,1,1,1] default).
+    /// factor alone, i.e. pure white for a `[1,1,1,1]` default).
     ///
     /// Call this from any path that binds an existing `TextureKey` to
     /// a new sampler that wasn't previously in the pool, then ensure

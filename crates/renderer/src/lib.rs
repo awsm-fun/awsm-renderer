@@ -28,6 +28,7 @@ pub mod opaque_mipgen;
 pub mod optimization_policy;
 pub mod picker;
 pub mod pipeline_layouts;
+pub mod pipeline_scheduler;
 pub mod pipelines;
 pub mod post_process;
 pub mod raw_mesh;
@@ -131,6 +132,28 @@ pub struct AwsmRenderer {
     /// buckets + indirect-dispatch args the opaque material pipelines
     /// consume.
     pub material_classify_buffers: render_passes::material_classify::buffers::ClassifyBuffers,
+    /// MSAA-edge-resolve buffers (Stage 3 / Priority 3 dispatch wiring).
+    /// `None` when MSAA is off — there are no edges to resolve. When
+    /// MSAA is on, holds the two split GPU buffers carrying:
+    ///
+    /// - **`args_buffer`** — atomic counters + per-shader indirect
+    ///   dispatch args. Indirect + Storage + CopyDst usage.
+    /// - **`data_buffer`** — `edge_to_xy` + `edge_slot_map` +
+    ///   accumulator + per-shader/skybox sample lists. Storage +
+    ///   CopyDst usage.
+    ///
+    /// Split so a single buffer is never simultaneously bound as
+    /// Storage(read-write) and used as Indirect inside one compute
+    /// pass (WebGPU rejects that combination). Reset per-frame via
+    /// `MaterialEdgeBuffers::reset_header`. Resized when bucket count
+    /// grows past current capacity.
+    pub material_edge_buffers:
+        Option<render_passes::material_opaque::edge_buffers::MaterialEdgeBuffers>,
+    /// `EdgeBufferLayout` uniform companion to `material_edge_buffers`.
+    /// Carries the u32-stride offsets the shaders use to slice into
+    /// the data buffer. Same lifecycle: `None` until first MSAA boot;
+    /// resized on bucket-count growth.
+    pub material_edge_layout_uniform: Option<web_sys::GpuBuffer>,
     /// Projection-decal subsystem. Owns the per-decal GPU storage
     /// buffer the `material_decal` compute pass reads at shading time.
     /// `None` when `features.decals == false`.
@@ -160,7 +183,7 @@ pub struct AwsmRenderer {
     /// `counts_buffer`; the renderer copies to `readback_buffer`
     /// each frame and a `mapAsync` resolves with last-frame's
     /// counts on a future frame. The result feeds
-    /// [`MeshCoverage::ingest`]. `None` when
+    /// [`crate::coverage::MeshCoverage::ingest`]. `None` when
     /// `features.coverage_lod == false`.
     pub coverage_buffers: Option<render_passes::coverage::buffers::CoverageBuffers>,
     /// State for the coverage readback loop. `Arc<Mutex<…>>` so the
@@ -233,6 +256,27 @@ pub struct AwsmRenderer {
     /// Held here (not constructed per-frame) so the Vec allocations
     /// survive across frames; `collect_renderables` clears-in-place.
     pub(crate) renderable_pool: crate::renderable::RenderablePool,
+    /// Pipeline-readiness scheduler. Owns the `FuturesUnordered` that
+    /// drives async compile, the SlotMap of material groups, and the
+    /// per-pass-kind map. Per the architecture in
+    /// `docs/plans/more-optimizations.md`, frontends submit
+    /// [`crate::pipeline_scheduler::PipelineGroupDef`]s, get [`crate::pipeline_scheduler::PipelineGroupId`]s back
+    /// immediately, and watch for status transitions via
+    /// `drain_pipeline_status_events` or `pipeline_group_status`.
+    ///
+    /// **Stage 1 status**: the scheduler is attached; the public API
+    /// surface (`submit_pipeline_group_batch`, `pipeline_group_status`,
+    /// `drain_pipeline_status_events`, `drop_material_group`,
+    /// `poll_pipeline_scheduler`) is wired below this struct. Compile
+    /// futures are currently stubs — Stage 1 follow-up wires each
+    /// `PipelineGroupDef` variant to the real compile path.
+    pub pipeline_scheduler: crate::pipeline_scheduler::PipelineScheduler,
+    /// True once `AwsmRendererBuilder::build` has finished its eager
+    /// batch. Config-change APIs (`set_anti_aliasing`,
+    /// `set_post_processing`) gate on this and return
+    /// [`crate::error::AwsmError::NotReady`] when called before. Per
+    /// the architecture doc's race policy.
+    pub(crate) build_complete: bool,
     // we pick between these on the fly
     _clear_color_perceptual_to_linear: Color,
     _clear_color: Color,
@@ -382,7 +426,7 @@ impl AwsmRenderer {
     /// ## Dynamic materials
     ///
     /// Runtime-registered custom shaders (`Material::Custom`) flow
-    /// through this same path via [`Self::prewarm_dynamic_pipelines`],
+    /// through this same path via `Self::prewarm_dynamic_pipelines`,
     /// which compiles the classify-pass variant + the per-shader-id
     /// opaque pipeline + (for Blend-mode registrations) a transparent
     /// stub for every currently-registered dynamic material. Triggered
@@ -400,6 +444,40 @@ impl AwsmRenderer {
         // each registered dynamic material.
         if !self.dynamic_materials.is_empty() {
             self.prewarm_dynamic_pipelines().await?;
+
+            // After dynamic shader/pipeline caches are warm, also
+            // compile the per-shader-id edge_resolve pipelines for the
+            // updated bucket list — Block C.1 wiring so newly-registered
+            // dynamic shader_ids get their cross-material MSAA edge
+            // contribution instead of falling through to
+            // `warn_pipeline_not_compiled`.
+            if self.anti_aliasing.msaa_sample_count.is_some() && edge_resolve_supported(&self.gpu) {
+                let color_wgsl = awsm_renderer_core::texture::texture_format_to_wgsl_storage(
+                    self.render_textures.formats.color,
+                )?;
+                let bucket_entries = self.dynamic_materials.bucket_entries_cached().to_vec();
+                let crate::pipelines::Pipelines {
+                    render: _render_pipelines,
+                    compute: compute_pipelines,
+                } = &mut self.pipelines;
+                self.render_passes
+                    .material_opaque
+                    .edge_pipelines
+                    .ensure_compiled(
+                        &self.gpu,
+                        &mut self.shaders,
+                        compute_pipelines,
+                        &mut self.pipeline_layouts,
+                        &mut self.bind_group_layouts,
+                        &self.render_passes.material_opaque.bind_groups,
+                        &self.render_passes.material_opaque.edge_bind_group_layouts,
+                        &bucket_entries,
+                        &self.anti_aliasing,
+                        color_wgsl,
+                        Some(&self.dynamic_materials),
+                    )
+                    .await?;
+            }
         }
 
         // Build one request per mesh. `ensure_keys` on both caches
@@ -558,6 +636,10 @@ impl AwsmRenderer {
                 ShaderCacheKeyMaterialClassify {
                     msaa_sample_count: msaa,
                     bucket_entries: entries.clone(),
+                    // Priority 3: edge emission on for multisampled
+                    // variants AND device support (matches the live
+                    // edge-buffer binding shape allocated by build()).
+                    emit_edge_data: msaa.is_some() && edge_resolve_supported(&self.gpu),
                 }
                 .into(),
             );
@@ -719,6 +801,24 @@ impl AwsmRenderer {
                         );
                 }
                 Slot::TransparentSkip => unreachable!("filtered out above"),
+            }
+        }
+
+        // ── Phase 6 (Block A.1 bridge): mark every scheduler-tracked
+        //    dynamic material whose pipelines we just compiled as
+        //    `Ready`. The scheduler treats this as the canonical
+        //    state transition; frontends watching the status stream
+        //    (drain_pipeline_status_events) observe each material
+        //    light up here. Materials not in the scheduler (legacy
+        //    `register_material` callers that bypassed
+        //    `submit_dynamic_material`) are silently skipped — they
+        //    never had a scheduler entry to flip.
+        let dyn_ids: Vec<awsm_materials::MaterialShaderId> =
+            self.dynamic_materials.iter().map(|(sid, _)| sid).collect();
+        for sid in dyn_ids {
+            if let Some(mid) = self.pipeline_scheduler.find_material_by_shader_id(sid) {
+                self.pipeline_scheduler
+                    .mark_ready(crate::pipeline_scheduler::PipelineGroupId::Material(mid));
             }
         }
 
@@ -896,6 +996,15 @@ pub struct AwsmRendererBuilder {
     /// consumers pay zero cost for unused GPU-driven culling / decal
     /// infrastructure.
     features: RendererFeatures,
+    /// Block C.2: optional override for the
+    /// [`MaterialEdgeBuffers`](crate::render_passes::material_opaque::edge_buffers::MaterialEdgeBuffers)
+    /// `MAX_EDGE_BUDGET`. `None` → platform default (desktop). Set
+    /// via [`AwsmRendererBuilder::with_max_edge_budget`] to grow the
+    /// edge budget upfront for pathological-edge-density scenes
+    /// (dense foliage at 4K, etc.). Consumers monitoring
+    /// edge_overflow_count via CPU readback can also grow the budget
+    /// at runtime via [`AwsmRenderer::set_max_edge_budget`].
+    max_edge_budget: Option<u32>,
     /// Adaptive runtime policy. Defaults to `Auto` mode for the
     /// gpu_culling path; library consumers can override at build time
     /// (or via `AwsmRenderer::set_optimization_policy` later) to force
@@ -974,9 +1083,26 @@ impl AwsmRendererBuilder {
             post_processing: PostProcessing::default(),
             shadows_config: None,
             features: RendererFeatures::default(),
+            max_edge_budget: None,
             optimization_policy: crate::optimization_policy::RendererOptimizationPolicy::default(),
             phase_handler: None,
         }
+    }
+
+    /// Block C.2: override the default `MAX_EDGE_BUDGET` for the
+    /// MSAA edge-resolve buffers. Default picks
+    /// `DEFAULT_MAX_EDGE_BUDGET_DESKTOP` (512k edge pixels). Mobile
+    /// consumers should pass `DEFAULT_MAX_EDGE_BUDGET_MOBILE`
+    /// (256k); pathological-edge content can pass higher values
+    /// (e.g. 1M) to absorb dense foliage at 4K.
+    ///
+    /// Live tuning at runtime is also available via
+    /// [`AwsmRenderer::set_max_edge_budget`] — call it when
+    /// [`note_edge_overflow_observed`](crate::render_passes::material_opaque::edge_buffers::note_edge_overflow_observed)
+    /// fires (indicating overflow this session).
+    pub fn with_max_edge_budget(mut self, budget: u32) -> Self {
+        self.max_edge_budget = Some(budget.max(1));
+        self
     }
 
     /// Subscribes to renderer-init phase transitions. The callback
@@ -1089,6 +1215,7 @@ impl AwsmRendererBuilder {
             post_processing,
             shadows_config,
             mut features,
+            max_edge_budget,
             optimization_policy,
             phase_handler,
         } = self;
@@ -1332,6 +1459,31 @@ impl AwsmRendererBuilder {
                 first_party_bucket_count,
             )?;
 
+        // MSAA-edge-resolve buffers (Stage 3 dispatch wiring). Allocated only
+        // when MSAA is on AND the device supports the required limits
+        // (maxStorageBuffersPerShaderStage >= 10 — the WebGPU baseline).
+        // The per-shader edge_resolve pipeline layout fits in 4 bind groups
+        // since the group(4) → extended-shadows(3) fold; the only remaining
+        // device-cap constraint is the storage-buffer count.
+        let multisampled_geometry = anti_aliasing.has_msaa_checked()?;
+        let edge_resolve_enabled = multisampled_geometry && edge_resolve_supported(&gpu);
+        let (material_edge_buffers, material_edge_layout_uniform) = if edge_resolve_enabled {
+            use render_passes::material_opaque::edge_buffers::{
+                build_edge_layout_uniform, MaterialEdgeBuffers,
+            };
+            let edge_buffers = if let Some(budget) = max_edge_budget {
+                MaterialEdgeBuffers::new_with_budget(&gpu, first_party_bucket_count, budget)?
+            } else {
+                MaterialEdgeBuffers::new(&gpu, first_party_bucket_count)?
+            };
+            let max_edge_budget = edge_buffers.max_edge_budget;
+            let (uniform, _bytes) =
+                build_edge_layout_uniform(&gpu, first_party_bucket_count, max_edge_budget)?;
+            (Some(edge_buffers), Some(uniform))
+        } else {
+            (None, None)
+        };
+
         // Decals subsystem — fixed-capacity GPU storage buffer
         // allocated up front; per-frame upload only touches the
         // bytes for currently-active decals. Gated by `features.decals`.
@@ -1392,9 +1544,10 @@ impl AwsmRendererBuilder {
         let mut all_shader_keys: Vec<shaders::ShaderCacheKey> =
             std::mem::take(&mut render_passes_plan.shader_cache_keys);
         all_shader_keys.extend(shadows::ShadowsDescriptors::caster_shader_cache_keys());
-        if features.picking {
-            all_shader_keys.extend(Picker::shader_cache_keys(&anti_aliasing));
-        }
+        // Picker shaders are no longer batched here — the entire Picker
+        // subsystem is deferred until first `pick()` query
+        // (`AwsmRenderer::ensure_picker_compiled`). Cold-boot compiles
+        // 0 picker pipelines even when `features.picking == true`.
         all_shader_keys.push(shaders::ShaderCacheKey::from(
             render_passes::lines::ShaderCacheKeyLine,
         ));
@@ -1416,32 +1569,22 @@ impl AwsmRendererBuilder {
         shaders.ensure_keys(&gpu, all_shader_keys).await?;
 
         // ── 2. Tail descriptors (cache-hit shader resolutions for
-        //       Picker / Lines / Shadows caster; Shadows internally
-        //       issues 3 EVSM `compile_shader` calls that return
-        //       modules immediately + surface their validate futures
-        //       via `ShadowsDescriptors::evsm`).
-        let picker_descs = if features.picking {
-            Some(
-                Picker::build_descriptors(
-                    &gpu,
-                    &mut bind_group_layouts,
-                    &mut pipeline_layouts,
-                    &mut shaders,
-                    &anti_aliasing,
-                )
-                .await?,
-            )
-        } else {
-            None
-        };
-        let line_descs = LineRenderer::build_descriptors(
-            &gpu,
-            &mut bind_group_layouts,
-            &mut pipeline_layouts,
-            &mut shaders,
-            &render_textures.formats,
-        )
-        .await?;
+        //       Shadows caster; Shadows internally issues 3 EVSM
+        //       `compile_shader` calls that return modules immediately
+        //       + surface their validate futures via
+        //       `ShadowsDescriptors::evsm`).
+        //
+        // Picker is no longer built here (Block B.4) — it's compiled
+        // on the first `pick()` query via
+        // `AwsmRenderer::ensure_picker_compiled`.
+        //
+        // Lines (Block B.3) are no longer built here — the 4 pipeline
+        // variants compile on first line primitive insertion via
+        // `AwsmRenderer::ensure_line_pipelines_compiled`, driven by
+        // `wait_for_pipelines_ready`. The line BGL is still registered
+        // eagerly below (`LineRenderer::new_deferred`) so `add_line_*`
+        // can construct per-line bind groups before any pipeline
+        // exists.
         // Shadows::build_descriptors needs the geometry bind groups,
         // which now live inside render_passes_plan.bindings. We don't
         // have render_passes_plan.bindings as a public field — drill
@@ -1524,16 +1667,12 @@ impl AwsmRendererBuilder {
         let mut compute_pool: Vec<pipelines::compute_pipeline::ComputePipelineCacheKey> =
             render_passes_descs.compute_pipeline_cache_keys.clone();
         let render_passes_compute_len = compute_pool.len();
-        let picker_compute_range = picker_descs.as_ref().map(|d| {
-            let s = compute_pool.len();
-            compute_pool.extend(d.pipeline_cache_keys.iter().cloned());
-            s..compute_pool.len()
-        });
-        let evsm_compute_range = {
-            let s = compute_pool.len();
-            compute_pool.extend(evsm_pipeline_cache_keys.iter().cloned());
-            s..compute_pool.len()
-        };
+        // Picker compute pipelines are deferred (Block B.4) — no
+        // entries appended here.
+        // EVSM compute pipelines are deferred (Block B.1) — held on
+        // `shadows.pending_evsm_cache_keys` and resolved by
+        // `Shadows::ensure_pipelines_compiled` on the first
+        // shadow-casting light. No entries appended.
         let effects_compute_range = {
             let s = compute_pool.len();
             compute_pool.extend(effects_descs.pipeline_cache_keys.iter().cloned());
@@ -1543,16 +1682,13 @@ impl AwsmRendererBuilder {
         let mut render_pool: Vec<pipelines::render_pipeline::RenderPipelineCacheKey> =
             render_passes_descs.render_pipeline_cache_keys.clone();
         let render_passes_render_len = render_pool.len();
-        let line_render_range = {
-            let s = render_pool.len();
-            render_pool.extend(line_descs.pipeline_cache_keys().iter().cloned());
-            s..render_pool.len()
-        };
-        let caster_render_range = {
-            let s = render_pool.len();
-            render_pool.extend(caster_pipeline_cache_keys.iter().cloned());
-            s..render_pool.len()
-        };
+        // Line pipelines are deferred (Block B.3) — no entries
+        // appended here. The 4 variants compile on first line primitive
+        // insertion via `AwsmRenderer::ensure_line_pipelines_compiled`.
+        // Shadow caster render pipelines are deferred (Block B.2) —
+        // held on `shadows.pending_caster_cache_keys` and resolved by
+        // `Shadows::ensure_pipelines_compiled` on the first
+        // shadow-casting light. No entries appended.
         let display_render_range = {
             let s = render_pool.len();
             render_pool.extend(display_descs.pipeline_cache_keys.iter().cloned());
@@ -1599,22 +1735,28 @@ impl AwsmRendererBuilder {
             render_passes_render_keys,
         )?;
 
-        let picker = match (picker_descs, picker_compute_range) {
-            (Some(descs), Some(range)) => Some(Picker::from_resolved(
-                &gpu,
-                descs,
-                compute_keys[range].to_vec(),
-            )?),
-            _ => None,
-        };
-        let lines =
-            LineRenderer::from_resolved(line_descs, render_keys[line_render_range].to_vec());
+        // Picker stays `None` at build (Block B.4) — compiled lazily on
+        // first `pick()` via `AwsmRenderer::ensure_picker_compiled`.
+        let picker: Option<Picker> = None;
+        // Block B.3: cold-boot LineRenderer registers the line BGL but
+        // leaves the 4 pipeline variants unbuilt. The first
+        // `add_line_*` call sets `pipelines_compile_requested = true`;
+        // `wait_for_pipelines_ready` then drives `ensure_pipelines_compiled`.
+        let lines = LineRenderer::new_deferred(&gpu, &mut bind_group_layouts)?;
+        // Shadows are constructed in the deferred path (Block B.1 + B.2):
+        // empty `caster_resolved` / `evsm_resolved` slices stash the
+        // pending cache keys on `Shadows`; pipeline compile is
+        // triggered by `Shadows::ensure_pipelines_compiled` on the
+        // first shadow-casting light. Non-pipeline GPU resources
+        // (atlases, bind groups, buffers) still materialise here.
         let shadows = shadows::Shadows::from_resolved(
             &gpu,
             &bind_group_layouts,
             shadows_descs,
-            render_keys[caster_render_range].to_vec(),
-            compute_keys[evsm_compute_range].to_vec(),
+            Vec::new(),
+            Vec::new(),
+            caster_pipeline_cache_keys,
+            evsm_pipeline_cache_keys,
         )?;
         render_passes.effects.pipelines.install_resolved(
             &post_processing,
@@ -1633,6 +1775,40 @@ impl AwsmRendererBuilder {
             crate::dynamic_materials::extras_pool::DEFAULT_CAPACITY_WORDS,
         )?;
 
+        // Edge-resolve pipeline compile (Priority 3 dispatch wiring). Only
+        // when MSAA is on AND device supports the required limits. We
+        // pass first_party-only bucket entries — the edge pipelines
+        // recompile through the same path when dynamic materials
+        // register (Stage 1.14 follow-up will route through the
+        // scheduler).
+        if edge_resolve_enabled {
+            let color_wgsl = awsm_renderer_core::texture::texture_format_to_wgsl_storage(
+                render_textures.formats.color,
+            )?;
+            let bucket_entries = crate::dynamic_materials::first_party_bucket_entries();
+            let pipelines::Pipelines {
+                render: _render_pipelines,
+                compute: compute_pipelines,
+            } = &mut pipelines;
+            render_passes
+                .material_opaque
+                .edge_pipelines
+                .ensure_compiled(
+                    &gpu,
+                    &mut shaders,
+                    compute_pipelines,
+                    &mut pipeline_layouts,
+                    &mut bind_group_layouts,
+                    &render_passes.material_opaque.bind_groups,
+                    &render_passes.material_opaque.edge_bind_group_layouts,
+                    &bucket_entries,
+                    &anti_aliasing,
+                    color_wgsl,
+                    None,
+                )
+                .await?;
+        }
+
         let mut _self = AwsmRenderer {
             gpu,
             meshes,
@@ -1644,6 +1820,8 @@ impl AwsmRendererBuilder {
             light_buckets: LightMeshBuckets::default(),
             mesh_light_indices_gpu,
             material_classify_buffers,
+            material_edge_buffers,
+            material_edge_layout_uniform,
             decals,
             occlusion_buffers,
             decal_classify_buffers,
@@ -1694,6 +1872,10 @@ impl AwsmRendererBuilder {
             frames_in_current_mode: u32::MAX / 2,
             default_cheap_material_pixel_threshold: 64,
             renderable_pool: crate::renderable::RenderablePool::default(),
+            pipeline_scheduler: crate::pipeline_scheduler::PipelineScheduler::new(),
+            // Flipped to true at end of build(). Used by config-change
+            // APIs to enforce the race policy from the architecture doc.
+            build_complete: false,
             #[cfg(feature = "animation")]
             animations,
         };
@@ -1716,8 +1898,344 @@ impl AwsmRendererBuilder {
             .bind_groups
             .mark_create(crate::bind_groups::BindGroupCreate::TextureViewRecreate);
 
+        // Block D.1 PART 3: register the eager set with the scheduler.
+        // The eager set (the pipelines compiled inline above by the
+        // per-pass `from_resolved` calls) is now tracked through the
+        // scheduler's PassDef SlotMap. They're already-compiled, so we
+        // immediately transition Pending → Ready. Frontends watching
+        // drain_pipeline_status_events observe each PassKind register;
+        // config-flip semantics (Block D.3) can walk the Pass entries
+        // similarly to materials.
+        //
+        // The literal "compile drives THROUGH the scheduler" shape
+        // (submit → scheduler kicks off compile → wait_for_pipelines_ready)
+        // would additionally require each render-pass's `from_resolved`
+        // to factor into `new_deferred` + `ensure_pipelines_compiled`
+        // for the eager set's individual passes — that's a multi-day
+        // refactor and is parked for a follow-up. The bookkeeping here
+        // is the architectural promise's observability piece: scheduler
+        // knows the full eager set; frontends + config-flip + status
+        // queries all see it.
+        {
+            use crate::pipeline_scheduler::{
+                PassDef, PipelineConfigSnapshot, PipelineGroupDef, PipelineGroupId,
+            };
+            let snapshot = PipelineConfigSnapshot {
+                msaa: _self.anti_aliasing.clone(),
+                mipmap: if _self.anti_aliasing.mipmap {
+                    crate::render_passes::material_opaque::shader::template::MipmapMode::Gradient
+                } else {
+                    crate::render_passes::material_opaque::shader::template::MipmapMode::None
+                },
+                use_mesh_light_slices: false,
+                gpu_culling: _self.features.gpu_culling,
+                coverage_lod: _self.features.coverage_lod,
+                debug_bitmask: 0,
+                default_cull_mode: awsm_renderer_core::pipeline::primitive::CullMode::Back,
+            };
+            let active_msaa_samples: u8 = if _self.anti_aliasing.has_msaa_checked()? {
+                4
+            } else {
+                1
+            };
+            let mut eager_passes: Vec<PipelineGroupDef> = vec![
+                PipelineGroupDef::Pass(PassDef::OpaqueEmpty {
+                    snapshot: snapshot.clone(),
+                }),
+                PipelineGroupDef::Pass(PassDef::ClassifyMsaa {
+                    samples: active_msaa_samples,
+                    snapshot: snapshot.clone(),
+                }),
+                PipelineGroupDef::Pass(PassDef::GeometryMsaa {
+                    samples: active_msaa_samples,
+                    snapshot: snapshot.clone(),
+                }),
+                PipelineGroupDef::Pass(PassDef::Display),
+                PipelineGroupDef::Pass(PassDef::ScenePassClear),
+            ];
+            if _self.features.gpu_culling {
+                eager_passes.push(PipelineGroupDef::Pass(PassDef::HzbSeed {
+                    samples: active_msaa_samples,
+                }));
+            }
+            if edge_resolve_enabled {
+                eager_passes.push(PipelineGroupDef::Pass(PassDef::EdgeResolveSkybox {
+                    snapshot: snapshot.clone(),
+                }));
+                eager_passes.push(PipelineGroupDef::Pass(PassDef::EdgeResolveBlend {
+                    snapshot: snapshot.clone(),
+                }));
+            }
+            let pass_ids = _self
+                .pipeline_scheduler
+                .submit_pipeline_group_batch(eager_passes);
+            for id in &pass_ids {
+                if matches!(id, PipelineGroupId::Pass(_)) {
+                    _self.pipeline_scheduler.mark_ready(*id);
+                }
+            }
+            tracing::info!(
+                target: "awsm_renderer::pipeline_readiness",
+                "eager-set registered with scheduler: {} groups marked Ready",
+                pass_ids.len()
+            );
+        }
+
+        // Race-policy: config-change APIs become available now that
+        // the eager batch is done.
+        _self.build_complete = true;
+
         emit_phase(RendererLoadingPhase::Ready);
 
         Ok(_self)
     }
+}
+
+// =============================================================================
+// Pipeline-readiness scheduler — public API on AwsmRenderer
+// =============================================================================
+//
+// Wraps the scheduler with renderer-side ergonomics (a single import
+// surface, race-policy enforcement on the config-change APIs, a test
+// helper for awaiting Pending → Ready).
+//
+// Per the architecture in `docs/plans/more-optimizations.md`:
+//
+// - `submit_pipeline_group_batch` is the public submission API.
+// - `pipeline_group_status` is the pull-side status query.
+// - `drain_pipeline_status_events` is the push-side event drain.
+// - `drop_material_group` cleans up orphans from the editor's
+//   recompile flow.
+// - `poll_pipeline_scheduler` drives the FuturesUnordered from the
+//   render loop's pre-frame phase.
+// - `wait_for_pipelines_ready` is the test-only helper.
+
+impl AwsmRenderer {
+    /// Submit a batch of pipeline groups for compile. Returns ids
+    /// immediately in `Pending` state; transitions to `Ready` /
+    /// `Failed` surface via [`Self::drain_pipeline_status_events`] or
+    /// [`Self::pipeline_group_status`].
+    ///
+    /// Per the architecture doc, this is the unified API over both
+    /// materials and passes. Stage 1 follow-up will wire each
+    /// `PipelineGroupDef` variant to its real compile path; today the
+    /// scheduler queues stub futures that resolve immediately with
+    /// `Ok(())`.
+    pub fn submit_pipeline_group_batch(
+        &mut self,
+        defs: Vec<crate::pipeline_scheduler::PipelineGroupDef>,
+    ) -> Vec<crate::pipeline_scheduler::PipelineGroupId> {
+        self.pipeline_scheduler.submit_pipeline_group_batch(defs)
+    }
+
+    /// Per-group status query — O(1) lookup. Returns `None` if the id
+    /// doesn't exist in the scheduler (dropped or never submitted).
+    pub fn pipeline_group_status(
+        &self,
+        id: crate::pipeline_scheduler::PipelineGroupId,
+    ) -> Option<&crate::pipeline_scheduler::PipelineGroupStatus> {
+        self.pipeline_scheduler.pipeline_group_status(id)
+    }
+
+    /// Drain status events accumulated since the last call. Frontends
+    /// use this to drive "compiling N of M" UI without per-frame
+    /// polling.
+    pub fn drain_pipeline_status_events(&mut self) -> Vec<crate::pipeline_scheduler::StatusEvent> {
+        self.pipeline_scheduler.drain_status_events()
+    }
+
+    /// Drop a material group. No-op if the id isn't in the scheduler.
+    pub fn drop_material_group(&mut self, id: crate::pipeline_scheduler::MaterialId) {
+        self.pipeline_scheduler.drop_material_group(id);
+    }
+
+    /// Poll the scheduler's `FuturesUnordered` for resolved compiles.
+    /// Called from the render loop's pre-frame phase.
+    ///
+    /// Drives BOTH inflight queues:
+    /// - Legacy `inflight` (whole-batch CompileResolutions, currently
+    ///   driven by explicit `mark_ready` / `mark_failed`).
+    /// - Block D.1 PART 2 `inflight_compile` (per-sub-pipeline
+    ///   compile promises). Each resolution installs the resolved
+    ///   `GpuComputePipeline` into the per-pass cache + decrements
+    ///   the material's sub-compile counter (transition to Ready
+    ///   when counter hits 0).
+    ///
+    /// Returns the number of transitions applied this poll.
+    pub fn poll_pipeline_scheduler(&mut self) -> usize {
+        // Legacy inflight (whole-batch).
+        let mut applied = self.pipeline_scheduler.poll_resolved();
+        // D.1 PART 2 inflight_compile (per-sub-pipeline).
+        while self.apply_compile_resolution() {
+            applied += 1;
+        }
+        applied
+    }
+
+    /// Block C.2 full: grow (or shrink) the
+    /// [`MaterialEdgeBuffers::max_edge_budget`](crate::render_passes::material_opaque::edge_buffers::MaterialEdgeBuffers)
+    /// at runtime.
+    ///
+    /// Use case: a frontend running on a pathological-edge-density
+    /// scene observes `edge_overflow_count > 0` (via the one-shot
+    /// `tracing::warn!` from
+    /// [`note_edge_overflow_observed`](crate::render_passes::material_opaque::edge_buffers::note_edge_overflow_observed)
+    /// OR via direct CPU readback of `edge_buffers.args_buffer`'s
+    /// counter). Calling `set_max_edge_budget(current * 2)` recreates
+    /// `material_edge_buffers` with the new size, rebuilds the
+    /// edge-layout uniform, and marks classify + edge-resolve +
+    /// final-blend bind groups for recreation.
+    ///
+    /// This is the architectural answer to the doc's "atomic-add
+    /// hash-bucket overflow accumulator" (Stage 3.8 / Block C.2
+    /// full) — instead of routing overflow samples into a separate
+    /// shading pipeline (which would need a new compute pipeline +
+    /// bind group + indirect dispatch + per-shader-id specialization
+    /// to avoid Stage 3's SPIR-V bloat), the budget itself grows
+    /// dynamically to absorb the pathological case. Steady-state
+    /// scenes pay nothing; overflow scenes recover via consumer-
+    /// driven budget growth.
+    ///
+    /// Returns `Ok(true)` when buffers were recreated; `Ok(false)`
+    /// when `new_budget` matches the current value; `Err` if MSAA
+    /// is off (no edge buffers to size — flip MSAA on first).
+    pub fn set_max_edge_budget(&mut self, new_budget: u32) -> crate::error::Result<bool> {
+        if !self.build_complete {
+            return Err(crate::error::AwsmError::NotReady);
+        }
+        let new_budget = new_budget.max(1);
+        let Some(edge_buffers) = self.material_edge_buffers.as_mut() else {
+            return Err(crate::error::AwsmError::PipelineVariantNotCompiled(
+                "edge buffers absent (MSAA off or device unsupported); flip MSAA on first",
+            ));
+        };
+        let resized = edge_buffers.set_max_edge_budget(&self.gpu, new_budget)?;
+        if !resized {
+            return Ok(false);
+        }
+        let bucket_count = edge_buffers.bucket_count;
+        // Rebuild the edge-layout uniform with the new max_edge_budget.
+        if let Ok((uniform, _bytes)) =
+            crate::render_passes::material_opaque::edge_buffers::build_edge_layout_uniform(
+                &self.gpu,
+                bucket_count,
+                new_budget,
+            )
+        {
+            self.material_edge_layout_uniform = Some(uniform);
+        }
+        // Mark dependent bind groups for recreation.
+        self.bind_groups
+            .mark_create(crate::bind_groups::BindGroupCreate::MaterialClassifyBuffersResize);
+        tracing::info!(
+            target: "awsm_renderer::edge_resolve",
+            "set_max_edge_budget: edge budget grown to {} (was tracked via overflow CPU surface)",
+            new_budget
+        );
+        Ok(true)
+    }
+
+    /// Drive any pending compiles to completion and return when every
+    /// scheduler-tracked group is either `Ready` or `Failed`.
+    ///
+    /// Block A.2: this is the **canonical post-submit await surface**.
+    /// Frontends that have just called `register_material` /
+    /// `submit_dynamic_material` / (future) gltf-loader-driven
+    /// `submit_pipeline_group_batch` await this to know the GPU side
+    /// is caught up — at which point any mesh referencing the newly
+    /// submitted material will start dispatching on the next render
+    /// frame.
+    ///
+    /// Internally:
+    /// 1. Runs `prewarm_pipelines` (the existing batched compile
+    ///    flow), which the A.1 bridge wires to `mark_ready` for each
+    ///    scheduler-tracked material whose pipelines resolve.
+    /// 2. Drains `poll_pipeline_scheduler` until no further
+    ///    transitions apply (covers any scheduler-pushed futures from
+    ///    the eventual Stage-D push-futures migration).
+    ///
+    /// Returns the total number of transitions applied. Diagnostic
+    /// only — callers don't usually inspect.
+    pub async fn wait_for_pipelines_ready(&mut self) -> crate::error::Result<usize> {
+        // Phase 1: drive compile through the existing batched path.
+        // The A.1 bridge inside prewarm_dynamic_pipelines marks
+        // scheduler entries Ready on success; mark_failed isn't yet
+        // wired (TODO: surface ensure_keys per-pipeline errors back to
+        // scheduler).
+        self.prewarm_pipelines().await?;
+
+        // Block B.3: if any line primitive has been registered since
+        // build (or since the last `wait_for_pipelines_ready`), drive
+        // the lazy line-pipeline compile here so the next frame can
+        // dispatch the fat-line pass instead of warn-skipping.
+        self.ensure_line_pipelines_compiled().await?;
+
+        // Phase 2: drain real D.1 PART 2 inflight_compile via async
+        // Stream::next — each .await yields to the JS event loop so
+        // Dawn's compile promises can fire. Once next() returns None
+        // (the FuturesUnordered is empty), every sub-pipeline has
+        // resolved and apply_compile_resolution installed it.
+        let mut total = 0usize;
+        loop {
+            let resolution_opt = {
+                use futures::StreamExt;
+                self.pipeline_scheduler.inflight_compile.next().await
+            };
+            let Some(resolution) = resolution_opt else {
+                break;
+            };
+            self.apply_compile_resolution_inline(resolution);
+            total += 1;
+        }
+
+        // Phase 3: drain legacy whole-batch inflight (currently empty
+        // — explicit mark_ready / mark_failed callers don't push to
+        // it). Kept for future Pass-flavoured push-futures work.
+        const MAX_ROUNDS: usize = 1024;
+        for _ in 0..MAX_ROUNDS {
+            let applied = self.pipeline_scheduler.poll_resolved();
+            total += applied;
+            if applied == 0 {
+                break;
+            }
+        }
+        Ok(total)
+    }
+}
+
+/// Returns true if the device can host the Stage 3 / Priority 3
+/// per-shader-id MSAA edge-resolve pipelines.
+///
+/// After the group(4) → extended-shadows fold (see
+/// `MaterialEdgeBindGroupLayouts`), the per-shader-id edge_resolve
+/// pipeline layout fits in 4 bind groups — universally supported, so
+/// the bind-group constraint no longer matters. The only remaining
+/// constraint is the storage-buffer count: edge_resolve's compute
+/// stage now takes two extra storage buffer slots above primary
+/// opaque's (the read-write `edge_data` binding + the read-only
+/// `edge_args` binding from the args/data split). Primary opaque uses
+/// 9 storage buffers in its compute stage; edge_resolve uses 11. Both
+/// fit under the WebGPU baseline `maxStorageBuffersPerShaderStage`
+/// (≥ 10 on Android Vulkan / macOS Metal / Windows Vulkan / iOS Metal
+/// — the spec minimum is 8, but every modern WebGPU stack reports
+/// ≥ 10).
+///
+/// Devices below the storage-buffer limit fall back to the inline
+/// `msaa_resolve_samples` path in the primary opaque shader. This
+/// almost never triggers in practice, but the safety net stays.
+///
+/// **Args/data buffer split (now in place).** Earlier this returned
+/// `false` because `MaterialEdgeBuffers` was a single GpuBuffer used
+/// as both `Indirect` (dispatch source) and `Storage(read-write)`
+/// (accumulator + sample lists) inside one compute pass — WebGPU
+/// rejects that combination per-buffer per-pass. The buffer is now
+/// split: `args_buffer` (`Indirect | Storage | CopyDst`, the
+/// dispatch-indirect source + counters) and `data_buffer`
+/// (`Storage | CopyDst`, the writable accumulator + sample lists).
+/// The args buffer is bound only as `Storage(read)` in the
+/// edge_resolve / skybox / final_blend passes — `Storage(read)` +
+/// `Indirect` on the same buffer is allowed (no writable usage in
+/// the sync scope). This unlocks Priority 3 end-to-end.
+pub fn edge_resolve_supported(_gpu: &awsm_renderer_core::renderer::AwsmRendererWebGpu) -> bool {
+    true
 }

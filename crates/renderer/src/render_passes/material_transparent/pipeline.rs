@@ -80,7 +80,7 @@ impl MaterialTransparentPipelines {
     /// from `Materials::has_transmission(mesh.material_key)`) because
     /// this function lives in a sub-module that doesn't carry a
     /// `&Materials` of its own. It drives the depth-write state — see
-    /// [`build_transparent_pipeline_cache_key`] for the rationale.
+    /// `build_transparent_pipeline_cache_key` for the rationale.
     ///
     /// Thin wrapper over [`Self::set_render_pipeline_keys_batched`].
     /// Hot-path one-mesh callers (procedural meshes inserted live,

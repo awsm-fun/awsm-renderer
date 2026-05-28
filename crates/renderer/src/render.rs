@@ -52,6 +52,28 @@ impl AwsmRenderer {
     // or just call .update_all() right before .render() for convenience
     /// Executes a full render with optional hooks.
     pub fn render(&mut self, hooks: Option<&RenderHooks>) -> Result<()> {
+        // Per-frame pre-amble: drain the pipeline scheduler's resolved
+        // compile futures. Transitions (Pending → Ready / Failed) are
+        // applied here; bucket-entries cache invalidations + per-pass
+        // typed-accessor cache refreshes happen synchronously off the
+        // status events. This is the load-bearing "transitions happen
+        // between frames, not mid-frame" invariant from
+        // docs/plans/more-optimizations.md § Scheduler driving and
+        // transition timing.
+        let applied = self.poll_pipeline_scheduler();
+        if applied > 0 {
+            tracing::debug!(
+                target: "awsm_renderer::pipeline_readiness",
+                "render-preamble drain: {} transitions applied",
+                applied
+            );
+        }
+        // The status events themselves are drained by frontends via
+        // drain_pipeline_status_events. The renderer-internal side
+        // effects (cache rebuilds) are applied directly inside the
+        // scheduler's apply_resolution path — see
+        // pipeline_scheduler/mod.rs for the wiring.
+
         if let Some(hook) = hooks.and_then(|h| h.pre_render.as_ref()) {
             {
                 let _maybe_span_guard = if self.logging.render_timings {
@@ -300,6 +322,8 @@ impl AwsmRenderer {
                 shadows: &self.shadows,
                 mesh_light_indices_gpu: &self.mesh_light_indices_gpu,
                 material_classify_buffers: &self.material_classify_buffers,
+                material_edge_buffers: self.material_edge_buffers.as_ref(),
+                material_edge_layout_uniform: self.material_edge_layout_uniform.as_ref(),
                 extras_pool: &self.extras_pool,
                 decals: self.decals.as_ref(),
                 occlusion_buffers: self.occlusion_buffers.as_ref(),
@@ -343,6 +367,12 @@ impl AwsmRenderer {
             clear_color: &self._clear_color,
             scene_spatial: &self.scene_spatial,
             material_classify_buffers: &self.material_classify_buffers,
+            material_edge_buffers: self.material_edge_buffers.as_ref(),
+            material_edge_layout_uniform: self.material_edge_layout_uniform.as_ref(),
+            bind_group_layouts: &self.bind_group_layouts,
+            camera: &self.camera,
+            environment: &self.environment,
+            shadows: &self.shadows,
             features: &self.features,
             compaction_buffers: self.compaction_buffers.as_ref(),
             coverage_buffers: self.coverage_buffers.as_ref(),
@@ -574,6 +604,13 @@ impl AwsmRenderer {
             } else {
                 None
             };
+            // Priority 3 — reset the edge-buffer header (counters +
+            // indirect-args) before classify rebuilds them this frame.
+            // Cheap: ~64 bytes per write at typical bucket counts.
+            if let Some(edge_buffers) = ctx.material_edge_buffers {
+                edge_buffers.reset_header(&self.gpu)?;
+            }
+
             self.render_passes.material_classify.render(&ctx)?;
         }
 
@@ -587,6 +624,15 @@ impl AwsmRenderer {
             self.render_passes
                 .material_opaque
                 .render(&ctx, renderables.opaque)?;
+
+            // Per-shader-id MSAA edge-resolve + final blend (Priority
+            // 3 in docs/plans/more-optimizations.md). No-op when MSAA
+            // is off or the edge_resolve pipelines haven't been
+            // submitted-and-resolved yet (warn-and-skip per
+            // pipeline_scheduler::warn_pipeline_not_compiled).
+            self.render_passes
+                .material_opaque
+                .render_edge_resolve(&ctx)?;
         }
 
         // Build the opaque RT mip chain when any visible transparent
@@ -1133,6 +1179,32 @@ pub struct RenderContext<'a> {
     /// `dispatchWorkgroupsIndirect`.
     pub material_classify_buffers:
         &'a crate::render_passes::material_classify::buffers::ClassifyBuffers,
+    /// Priority-3 MSAA edge-resolve composite buffer. `Some` only
+    /// when MSAA is on (no edges to resolve under single-sample).
+    /// Bound read-write by classify (slot 4 of group(0)) and by the
+    /// per-shader edge_resolve / skybox_edge / final_blend pipelines.
+    pub material_edge_buffers:
+        Option<&'a crate::render_passes::material_opaque::edge_buffers::MaterialEdgeBuffers>,
+    /// `EdgeBufferLayout` uniform companion. Same `Some` discipline.
+    pub material_edge_layout_uniform: Option<&'a web_sys::GpuBuffer>,
+    /// Bind-group-layout cache. Used by passes that build their own
+    /// runtime bind groups inside `render()` (e.g. material-opaque's
+    /// edge-resolve helpers).
+    pub bind_group_layouts: &'a crate::bind_group_layout::BindGroupLayouts,
+    /// Camera buffer — bound directly by the skybox edge-resolve
+    /// pipeline. The primary opaque + main shading binds this through
+    /// the opaque bind groups; the edge-resolve flow's standalone
+    /// skybox shader needs it on its own group.
+    pub camera: &'a crate::camera::CameraBuffer,
+    /// Scene environment (skybox texture + sampler). Read by the
+    /// skybox edge-resolve pipeline's standalone bind group.
+    pub environment: &'a crate::environment::Environment,
+    /// Shadow subsystem. Read by the edge-resolve flow to build the
+    /// per-frame extended-shadows bind group (the 10 shadow resources
+    /// plus the 2 edge-resolve resources, all bound at group(3) of the
+    /// edge_resolve pipeline layout). Mirrors `BindGroupRecreateContext`
+    /// for parity with the opaque-pass shadow bind-group construction.
+    pub shadows: &'a crate::shadows::Shadows,
     /// Active feature gates. Read by the geometry pass to fork
     /// between `drawIndirect` (under `gpu_culling`) and the legacy
     /// CPU-recorded `draw_indexed_*` loop.

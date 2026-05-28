@@ -5,6 +5,7 @@ use crate::{
     bind_group_layout::BindGroupLayouts,
     error::Result,
     pipeline_layouts::PipelineLayouts,
+    pipeline_scheduler::warn_pipeline_not_compiled,
     pipelines::{render_pipeline::RenderPipelineKey, Pipelines},
     render::RenderContext,
     render_textures::RenderTextureFormats,
@@ -26,6 +27,13 @@ pub struct LineRenderer {
     /// (collider wireframes, point handles, selection outlines)
     /// don't bounce the allocator.
     pub(super) pack_buf: Vec<GpuLineSegment>,
+    /// Block B.3: flips to `true` the first time `add_line_*` registers
+    /// a `LineEntry` against an un-compiled `LinePipelines`. The next
+    /// `AwsmRenderer::wait_for_pipelines_ready` (or an explicit
+    /// `ensure_line_pipelines_compiled` call) drives the actual
+    /// compile via `ensure_pipelines_compiled`. Dispatch silently
+    /// warn-skips between the request and the compile.
+    pub(super) pipelines_compile_requested: bool,
 }
 
 /// Pre-resolved layouts + 4 pipeline cache keys for the line renderer.
@@ -75,6 +83,76 @@ impl LineRenderer {
         Ok(Self::from_resolved(descs, resolved))
     }
 
+    /// Cold-boot construction (Block B.3): registers the line BGL so
+    /// `add_line_*` can create per-line bind groups, but defers the 4
+    /// pipeline-variant compiles until the first line primitive is
+    /// inserted. The `LineRenderer` ends up with
+    /// `pipelines.variants = None`; dispatch warn-skips until the next
+    /// `wait_for_pipelines_ready` (or explicit
+    /// `ensure_line_pipelines_compiled`) drives the compile.
+    pub fn new_deferred(
+        gpu: &AwsmRendererWebGpu,
+        bind_group_layouts: &mut BindGroupLayouts,
+    ) -> Result<Self> {
+        Ok(Self {
+            pipelines: LinePipelines::register_layouts_only(gpu, bind_group_layouts)?,
+            entries: SlotMap::with_key(),
+            pack_buf: Vec::new(),
+            pipelines_compile_requested: false,
+        })
+    }
+
+    /// Idempotent lazy compile of the 4 line pipeline variants
+    /// (Block B.3). Returns immediately if `pipelines.variants` is
+    /// already populated. Cache hits on `bind_group_layouts` /
+    /// `pipeline_layouts` / `shaders` make the descriptor build cheap;
+    /// the actual GPU work is the 4 pipeline compiles inside
+    /// `ensure_keys`. Called from `AwsmRenderer::ensure_line_pipelines_compiled`,
+    /// which is itself driven by `wait_for_pipelines_ready` and the
+    /// MSAA-toggle path in `set_anti_aliasing`.
+    pub async fn ensure_pipelines_compiled(
+        &mut self,
+        gpu: &AwsmRendererWebGpu,
+        bind_group_layouts: &mut BindGroupLayouts,
+        pipeline_layouts: &mut PipelineLayouts,
+        pipelines: &mut Pipelines,
+        shaders: &mut Shaders,
+        formats: &RenderTextureFormats,
+    ) -> Result<()> {
+        if self.pipelines.variants.is_some() {
+            self.pipelines_compile_requested = false;
+            return Ok(());
+        }
+        let descs = LinePipelines::build_descriptors(
+            gpu,
+            bind_group_layouts,
+            pipeline_layouts,
+            shaders,
+            formats,
+        )
+        .await?;
+        let resolved = pipelines
+            .render
+            .ensure_keys(
+                gpu,
+                shaders,
+                pipeline_layouts,
+                descs.pipeline_cache_keys.clone(),
+            )
+            .await?;
+        self.pipelines.install_resolved(resolved);
+        self.pipelines_compile_requested = false;
+        Ok(())
+    }
+
+    /// Block B.3: `true` if a `LineEntry` has been registered but the
+    /// 4 pipeline variants haven't been compiled yet. The renderer's
+    /// `wait_for_pipelines_ready` checks this and drives the compile
+    /// on transition.
+    pub fn pipelines_compile_requested(&self) -> bool {
+        self.pipelines_compile_requested
+    }
+
     /// Builds layouts + 4 pipeline cache keys. Cache-hit on the line
     /// shader (pre-warmed by `RenderPasses::new`); otherwise sync.
     pub async fn build_descriptors(
@@ -101,6 +179,7 @@ impl LineRenderer {
             pipelines: LinePipelines::from_resolved(descs.inner, resolved),
             entries: SlotMap::with_key(),
             pack_buf: Vec::new(),
+            pipelines_compile_requested: false,
         }
     }
 
@@ -122,6 +201,15 @@ impl LineRenderer {
     /// registered lines (it returns early).
     pub fn render(&self, ctx: &RenderContext) -> Result<()> {
         if self.entries.is_empty() {
+            return Ok(());
+        }
+        // Lazy-pool guard (Block B.3): a line primitive was registered
+        // before pipelines were compiled. `add_line_*` sets
+        // `pipelines_compile_requested = true`; the renderer's
+        // `wait_for_pipelines_ready` drives the actual compile. Warn
+        // once per session and skip the pass until then.
+        if self.pipelines.variants.is_none() {
+            warn_pipeline_not_compiled("line_pass", "all_variants");
             return Ok(());
         }
         let msaa = ctx.anti_aliasing.has_msaa_checked()?;
@@ -152,7 +240,10 @@ impl LineRenderer {
                 msaa,
             };
             if current_variant != Some(variant) {
-                let pipeline_key = self.pipelines.get(variant);
+                let Some(pipeline_key) = self.pipelines.get(variant) else {
+                    warn_pipeline_not_compiled("line_pass", "variant");
+                    continue;
+                };
                 render_pass.set_pipeline(ctx.pipelines.render.get(pipeline_key)?);
                 current_variant = Some(variant);
             }

@@ -2,7 +2,7 @@
 //!
 //! Builds a max-reduced mip chain from the final-resolution depth
 //! buffer via successive compute passes. The result lives in
-//! [`HzbTexture`] (an `r32float` mip chain) and is consumed by:
+//! [`texture::HzbTexture`] (an `r32float` mip chain) and is consumed by:
 //! - GPU occlusion culling (`render_passes/occlusion/`) — coarse-
 //!   reject instances whose screen-space AABB sits behind the HZB
 //!   lookup at their footprint mip.

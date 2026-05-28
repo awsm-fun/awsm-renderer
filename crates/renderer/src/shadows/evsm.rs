@@ -84,12 +84,16 @@ pub struct EvsmPass {
     pub moment_write_pipeline_layout_key: PipelineLayoutKey,
     /// Pipeline layout for either blur half-pass.
     pub blur_pipeline_layout_key: PipelineLayoutKey,
-    /// Compute pipeline that reads depth, writes 4 moments.
-    pub moment_write_pipeline_key: ComputePipelineKey,
-    /// Horizontal Gaussian blur half-pass.
-    pub blur_h_pipeline_key: ComputePipelineKey,
-    /// Vertical Gaussian blur half-pass.
-    pub blur_v_pipeline_key: ComputePipelineKey,
+    /// Compute pipeline that reads depth, writes 4 moments. `None`
+    /// until [`crate::shadows::Shadows::ensure_pipelines_compiled`]
+    /// runs — deferred until the first shadow-casting light is added.
+    pub moment_write_pipeline_key: Option<ComputePipelineKey>,
+    /// Horizontal Gaussian blur half-pass. See `moment_write_pipeline_key`
+    /// for deferred-compile semantics.
+    pub blur_h_pipeline_key: Option<ComputePipelineKey>,
+    /// Vertical Gaussian blur half-pass. See `moment_write_pipeline_key`
+    /// for deferred-compile semantics.
+    pub blur_v_pipeline_key: Option<ComputePipelineKey>,
     /// Per-cascade params uniform buffer.
     pub params_buffer: web_sys::GpuBuffer,
     /// CPU staging for `params_buffer`, re-uploaded once per frame.
@@ -113,7 +117,7 @@ pub struct EvsmDescriptors {
     /// orchestrator registers them into the shader cache via
     /// `Shaders::insert_uncached` after the validate join completes,
     /// and feeds the resulting `ShaderKey`s into
-    /// [`EvsmPass::pipeline_cache_keys`] to build the 3 compute
+    /// [`EvsmDescriptors::pipeline_cache_keys`] to build the 3 compute
     /// pipeline cache keys it pools into the cross-tail batch.
     pub modules: [web_sys::GpuShaderModule; 3],
     pub params_buffer: web_sys::GpuBuffer,
@@ -328,16 +332,31 @@ impl EvsmPass {
     /// Folds resolved compute pipeline keys back into the typed
     /// `EvsmPass`. Sync; the orchestrator has already run the
     /// validate join + the cross-tail `ComputePipelines::ensure_keys`.
+    ///
+    /// Pass an empty `resolved` slice to construct an `EvsmPass` with
+    /// pipeline keys deferred (`None`). The orchestrator's lazy path
+    /// (Block B.1) uses this — pipelines compile on first shadow-caster
+    /// via `Shadows::ensure_pipelines_compiled`.
     pub fn from_resolved(descs: EvsmDescriptors, resolved: Vec<ComputePipelineKey>) -> Self {
-        debug_assert_eq!(resolved.len(), 3);
+        let (moment_write, blur_h, blur_v) = match resolved.len() {
+            3 => (Some(resolved[0]), Some(resolved[1]), Some(resolved[2])),
+            0 => (None, None, None),
+            other => {
+                debug_assert!(
+                    other == 0 || other == 3,
+                    "EvsmPass::from_resolved expects 0 or 3 resolved keys, got {other}"
+                );
+                (None, None, None)
+            }
+        };
         Self {
             moment_write_layout_key: descs.moment_write_layout_key,
             blur_layout_key: descs.blur_layout_key,
             moment_write_pipeline_layout_key: descs.moment_write_pipeline_layout_key,
             blur_pipeline_layout_key: descs.blur_pipeline_layout_key,
-            moment_write_pipeline_key: resolved[0],
-            blur_h_pipeline_key: resolved[1],
-            blur_v_pipeline_key: resolved[2],
+            moment_write_pipeline_key: moment_write,
+            blur_h_pipeline_key: blur_h,
+            blur_v_pipeline_key: blur_v,
             params_buffer: descs.params_buffer,
             params_bytes: descs.params_bytes,
             active_cascade_count: 0,

@@ -141,8 +141,8 @@ impl AwsmRenderer {
     /// renderer's `default_cheap_material_pixel_threshold`).
     ///
     /// Constraint (validated here): the cheap material MUST share the
-    /// authored material's [`MaterialShaderId`] AND its
-    /// [`is_transparency_pass`] classification. The per-frame routing
+    /// authored material's [`crate::materials::MaterialShaderId`] AND its
+    /// [`is_transparency_pass`](crate::materials::Material::is_transparency_pass) classification. The per-frame routing
     /// in `Meshes::refresh_cheap_material_routing` only swaps the
     /// GPU-side `material_offset` — it doesn't migrate the mesh
     /// between the opaque / transparent renderable pools or rebuild

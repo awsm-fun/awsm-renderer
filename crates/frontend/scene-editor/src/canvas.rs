@@ -85,7 +85,7 @@ fn on_pointer_down(canvas: &web_sys::HtmlCanvasElement, x: i32, y: i32, _shift: 
         // Run the GPU pick to see what's under the cursor.
         let handle = renderer_handle();
         let pick_result = {
-            let renderer = handle.lock().await;
+            let mut renderer = handle.lock().await;
             renderer.pick(local_x, local_y).await
         };
 
