@@ -39,6 +39,16 @@ pub struct ShaderTemplateTransparentMaterialIncludes {
     /// the shared `lights.wgsl` `{% if use_mesh_light_slices %}`
     /// resolves; always `false` here.
     pub use_mesh_light_slices: bool,
+    /// Transparent always uses the per-froxel punctual walk produced
+    /// by the GPU light-culling pass. The shared `lights.wgsl` emits
+    /// `apply_lighting_per_froxel*` only when this is `true`.
+    pub use_froxel_lights: bool,
+    /// Froxel slice count baked into the consumer shader's
+    /// exponential z-slice math. Read from the cache key.
+    pub froxel_slice_count: u32,
+    /// Per-froxel capacity baked into the consumer shader's
+    /// `min(count, MAX)` clamp. Read from the cache key.
+    pub froxel_max_per_froxel_capacity: u32,
     /// Concatenated `wgsl_fragment()` of every enabled material — see
     /// `awsm_materials::registry::build_materials_wgsl`.
     pub materials_wgsl: String,
@@ -60,6 +70,9 @@ impl ShaderTemplateTransparentMaterialIncludes {
             debug: ShaderTemplateMaterialTransparentDebug::new(),
             shadows_enabled: true,
             use_mesh_light_slices: false,
+            use_froxel_lights: true,
+            froxel_slice_count: cache_key.froxel_slice_count,
+            froxel_max_per_froxel_capacity: cache_key.froxel_max_per_froxel_capacity,
             materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
             shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
         }

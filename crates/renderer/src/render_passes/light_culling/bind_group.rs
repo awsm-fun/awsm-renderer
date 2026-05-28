@@ -7,9 +7,8 @@
 //!   1 cull_params      — uniform, per-frame tile/slice/capacity/near-far.
 //!   2 lights_info      — uniform `LightsInfoPacked`.
 //!   3 lights           — uniform `array<LightPacked, MAX_PUNCTUAL_LIGHTS>`.
-//!   4 froxel_counts    — storage RW (atomics) per-froxel count.
-//!   5 froxel_indices   — storage RW flat index list.
-//!   6 overflow_counter — storage RW single atomic counter.
+//!   4 froxel_storage   — storage RW (atomics), merged count + indices.
+//!   5 overflow_counter — storage RW single atomic counter.
 
 use awsm_renderer_core::bind_groups::{
     BindGroupDescriptor, BindGroupEntry, BindGroupLayoutResource, BindGroupResource,
@@ -46,11 +45,9 @@ impl LightCullingBindGroups {
             uniform_entry(),
             // 3 lights — uniform.
             uniform_entry(),
-            // 4 froxel_counts — storage RW (atomics).
+            // 4 froxel_storage — storage RW (atomics + indices).
             storage_rw_entry(),
-            // 5 froxel_indices — storage RW.
-            storage_rw_entry(),
-            // 6 overflow_counter — storage RW (atomic).
+            // 5 overflow_counter — storage RW (atomic).
             storage_rw_entry(),
         ];
         let bind_group_layout_key = ctx
@@ -98,14 +95,10 @@ impl LightCullingBindGroups {
             ),
             BindGroupEntry::new(
                 4,
-                BindGroupResource::Buffer(BufferBinding::new(&buffers.counts_buffer)),
+                BindGroupResource::Buffer(BufferBinding::new(&buffers.storage_buffer)),
             ),
             BindGroupEntry::new(
                 5,
-                BindGroupResource::Buffer(BufferBinding::new(&buffers.indices_buffer)),
-            ),
-            BindGroupEntry::new(
-                6,
                 BindGroupResource::Buffer(BufferBinding::new(&buffers.overflow_buffer)),
             ),
         ];

@@ -517,3 +517,256 @@ fn apply_lighting_with_transmission(
 
     return color;
 }
+
+{% if use_froxel_lights %}
+// ─────────────────────────────────────────────────────────────────
+// Per-froxel walks.
+//
+// Used when the shading shader binds the GPU light-culling pass's
+// output (`cull_params` + `froxel_storage`). Mirrors
+// `apply_lighting` / `_with_transmission` but the punctual loop
+// reads `froxel_storage` instead of walking the full `n_lights`
+// range.
+//
+// `froxel_storage` layout per froxel (see
+// `render_passes/light_culling/shader/light_culling_wgsl/bind_groups.wgsl`):
+//   stride = MAX_PER_FROXEL_CAPACITY + 1
+//   slot 0:           count (clamped at read time)
+//   slots 1..1+count: light indices
+//
+// The directional walk stays flat (no spatial culling — directional
+// lights affect every pixel by definition).
+// ─────────────────────────────────────────────────────────────────
+
+const FROXEL_TILE_PIXEL_SIZE: u32 = 16u;
+const FROXEL_SLICE_COUNT: u32 = {{ froxel_slice_count }}u;
+const FROXEL_MAX_PER_FROXEL_CAPACITY: u32 = {{ froxel_max_per_froxel_capacity }}u;
+const FROXEL_STRIDE_CONSUMER: u32 = FROXEL_MAX_PER_FROXEL_CAPACITY + 1u;
+
+// Maps a fragment's screen-space pixel coordinates + view-space depth
+// (positive forward) into a froxel base index in `froxel_storage`.
+fn froxel_base_for_pixel(pixel_xy: vec2<f32>, view_z: f32) -> u32 {
+    let tile_x = u32(pixel_xy.x) / FROXEL_TILE_PIXEL_SIZE;
+    let tile_y = u32(pixel_xy.y) / FROXEL_TILE_PIXEL_SIZE;
+    let tile_x_clamped = min(tile_x, max(cull_params.tiles_x, 1u) - 1u);
+    let tile_y_clamped = min(tile_y, max(cull_params.tiles_y, 1u) - 1u);
+    // Exponential z-slice mapping inverse:
+    //   s = log(z / z_near) / log(z_far / z_near)
+    let z = max(view_z, cull_params.z_near);
+    let s = log(z / cull_params.z_near) / max(cull_params.log_far_over_near, 1e-6);
+    let z_slice = clamp(u32(s * f32(FROXEL_SLICE_COUNT)), 0u, FROXEL_SLICE_COUNT - 1u);
+    let tiles_per_layer = cull_params.tiles_x * cull_params.tiles_y;
+    let froxel_idx = z_slice * tiles_per_layer + tile_y_clamped * cull_params.tiles_x + tile_x_clamped;
+    return froxel_idx * FROXEL_STRIDE_CONSUMER;
+}
+
+fn apply_lighting_per_froxel(
+    material_color: PbrMaterialColor,
+    surface_to_camera: vec3<f32>,
+    world_position: vec3<f32>,
+    lights_info: LightsInfo,
+    receive_shadows: u32,
+    // Fragment's screen-space pixel coords (`@builtin(position).xy`).
+    pixel_xy: vec2<f32>,
+) -> vec3<f32> {
+    var color = vec3<f32>(0.0);
+
+    {% if has_lighting_ibl() %}
+        color = brdf_ibl(
+            material_color,
+            material_color.normal,
+            surface_to_camera,
+            ibl_filtered_env_tex,
+            ibl_filtered_env_sampler,
+            ibl_irradiance_tex,
+            ibl_irradiance_sampler,
+            brdf_lut_tex,
+            brdf_lut_sampler,
+            lights_info.ibl
+        );
+    {% endif %}
+
+    {% if has_lighting_punctual() %}
+        let view_z = -(camera_raw.view * vec4<f32>(world_position, 1.0)).z;
+        {% if shadows_enabled %}
+            let view_z_for_shadow = view_z;
+        {% endif %}
+
+        // Directional walk — flat over n_lights, skipping non-directionals.
+        for(var i = 0u; i < lights_info.n_lights; i = i + 1u) {
+            let light = get_light(i);
+            if light.kind != 1u {
+                continue;
+            }
+            let light_brdf = light_to_brdf(light, material_color.normal, world_position);
+            let direct = brdf_direct(material_color, light_brdf, surface_to_camera);
+            {% if shadows_enabled %}
+                var visibility: f32 = 1.0;
+                if receive_shadows != 0u {
+                    visibility = sample_shadow_directional(
+                        light.shadow_index,
+                        world_position,
+                        material_color.normal,
+                        view_z_for_shadow,
+                    );
+                    if light.shadow_index != SHADOW_INDEX_NONE {
+                        let sscs_dir = normalize(-light.direction);
+                        visibility = visibility * apply_sscs(world_position, sscs_dir);
+                    }
+                }
+                color += direct * visibility;
+            {% else %}
+                color += direct;
+            {% endif %}
+        }
+
+        // Per-froxel punctual walk.
+        if lights_info.n_lights > 0u {
+            let base = froxel_base_for_pixel(pixel_xy, view_z);
+            let raw_count = froxel_storage[base];
+            let count = min(raw_count, FROXEL_MAX_PER_FROXEL_CAPACITY);
+            for(var i = 0u; i < count; i = i + 1u) {
+                let li = froxel_storage[base + 1u + i];
+                let light = get_light(li);
+                // Defensive — directional shouldn't appear in the slice.
+                if light.kind == 1u {
+                    continue;
+                }
+                let light_brdf = light_to_brdf(light, material_color.normal, world_position);
+                let direct = brdf_direct(material_color, light_brdf, surface_to_camera);
+                {% if shadows_enabled %}
+                    var visibility: f32 = 1.0;
+                    if receive_shadows != 0u {
+                        visibility = sample_shadow_directional(
+                            light.shadow_index,
+                            world_position,
+                            material_color.normal,
+                            view_z_for_shadow,
+                        );
+                    }
+                    color += direct * visibility;
+                {% else %}
+                    color += direct;
+                {% endif %}
+            }
+        }
+
+        {% if shadows_enabled %}
+            if lights_info.n_lights > 0u {
+                color = debug_cascade_tint(
+                    color,
+                    get_light(0u).shadow_index,
+                    world_position,
+                    view_z_for_shadow,
+                );
+            }
+        {% endif %}
+    {% endif %}
+
+    return color;
+}
+
+fn apply_lighting_per_froxel_with_transmission(
+    material_color: PbrMaterialColor,
+    surface_to_camera: vec3<f32>,
+    world_position: vec3<f32>,
+    lights_info: LightsInfo,
+    transmission_background: vec3<f32>,
+    receive_shadows: u32,
+    pixel_xy: vec2<f32>,
+) -> vec3<f32> {
+    var color = vec3<f32>(0.0);
+
+    {% if has_lighting_ibl() %}
+        color = brdf_ibl_with_transmission(
+            material_color,
+            material_color.normal,
+            surface_to_camera,
+            ibl_filtered_env_tex,
+            ibl_filtered_env_sampler,
+            ibl_irradiance_tex,
+            ibl_irradiance_sampler,
+            brdf_lut_tex,
+            brdf_lut_sampler,
+            lights_info.ibl,
+            transmission_background
+        );
+    {% endif %}
+
+    {% if has_lighting_punctual() %}
+        let view_z = -(camera_raw.view * vec4<f32>(world_position, 1.0)).z;
+        {% if shadows_enabled %}
+            let view_z_for_shadow = view_z;
+        {% endif %}
+
+        for(var i = 0u; i < lights_info.n_lights; i = i + 1u) {
+            let light = get_light(i);
+            if light.kind != 1u {
+                continue;
+            }
+            let light_brdf = light_to_brdf(light, material_color.normal, world_position);
+            let direct = brdf_direct(material_color, light_brdf, surface_to_camera);
+            {% if shadows_enabled %}
+                var visibility: f32 = 1.0;
+                if receive_shadows != 0u {
+                    visibility = sample_shadow_directional(
+                        light.shadow_index,
+                        world_position,
+                        material_color.normal,
+                        view_z_for_shadow,
+                    );
+                    if light.shadow_index != SHADOW_INDEX_NONE {
+                        let sscs_dir = normalize(-light.direction);
+                        visibility = visibility * apply_sscs(world_position, sscs_dir);
+                    }
+                }
+                color += direct * visibility;
+            {% else %}
+                color += direct;
+            {% endif %}
+        }
+
+        if lights_info.n_lights > 0u {
+            let base = froxel_base_for_pixel(pixel_xy, view_z);
+            let raw_count = froxel_storage[base];
+            let count = min(raw_count, FROXEL_MAX_PER_FROXEL_CAPACITY);
+            for(var i = 0u; i < count; i = i + 1u) {
+                let li = froxel_storage[base + 1u + i];
+                let light = get_light(li);
+                if light.kind == 1u {
+                    continue;
+                }
+                let light_brdf = light_to_brdf(light, material_color.normal, world_position);
+                let direct = brdf_direct(material_color, light_brdf, surface_to_camera);
+                {% if shadows_enabled %}
+                    var visibility: f32 = 1.0;
+                    if receive_shadows != 0u {
+                        visibility = sample_shadow_directional(
+                            light.shadow_index,
+                            world_position,
+                            material_color.normal,
+                            view_z_for_shadow,
+                        );
+                    }
+                    color += direct * visibility;
+                {% else %}
+                    color += direct;
+                {% endif %}
+            }
+        }
+
+        {% if shadows_enabled %}
+            if lights_info.n_lights > 0u {
+                color = debug_cascade_tint(
+                    color,
+                    get_light(0u).shadow_index,
+                    world_position,
+                    view_z_for_shadow,
+                );
+            }
+        {% endif %}
+    {% endif %}
+
+    return color;
+}
+{% endif %}

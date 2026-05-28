@@ -14,6 +14,8 @@
 const TILE_PIXEL_SIZE: u32 = 16u;
 const SLICE_COUNT: u32 = {{ slice_count }}u;
 const MAX_PER_FROXEL_CAPACITY: u32 = {{ max_per_froxel_capacity }}u;
+// Stride per froxel in `froxel_storage`: one u32 for the count + capacity for the indices.
+const FROXEL_STRIDE: u32 = MAX_PER_FROXEL_CAPACITY + 1u;
 const WORKGROUP_SIZE_LIGHTS: u32 = 64u;
 
 // Project an NDC corner (z = 0 → near plane) to a normalized view-space
@@ -48,13 +50,15 @@ fn cs_main(
 
     let tiles_per_layer = cull_params.tiles_x * cull_params.tiles_y;
     let froxel_idx = z_slice * tiles_per_layer + tile_y * cull_params.tiles_x + tile_x;
+    // Base offset of this froxel inside the merged count+indices storage.
+    let froxel_base = froxel_idx * FROXEL_STRIDE;
 
     // Thread 0 of each workgroup resets the per-froxel count. The atomic
     // store + workgroupBarrier guarantees other threads in this workgroup
     // see 0 before issuing their own atomicAdds. Cross-workgroup synchro-
     // nisation isn't required — each workgroup owns a distinct froxel_idx.
     if (lid.x == 0u) {
-        atomicStore(&froxel_counts[froxel_idx], 0u);
+        atomicStore(&froxel_storage[froxel_base], 0u);
     }
 
     // ── Reconstruct the froxel's view-space frustum ───────────────
@@ -142,10 +146,12 @@ fn cs_main(
             let b_ok = signed_dist_through_origin(bottom_normal, pos_view) >= -range;
 
             if (z_ok && l_ok && r_ok && t_ok && b_ok) {
-                // Atomic-append.
-                let slot = atomicAdd(&froxel_counts[froxel_idx], 1u);
+                // Atomic-append into this froxel's slice. Slot 0 of the
+                // stride holds the count; light indices live at slots
+                // 1..1+MAX_PER_FROXEL_CAPACITY.
+                let slot = atomicAdd(&froxel_storage[froxel_base], 1u);
                 if (slot < MAX_PER_FROXEL_CAPACITY) {
-                    froxel_indices[froxel_idx * MAX_PER_FROXEL_CAPACITY + slot] = li;
+                    atomicStore(&froxel_storage[froxel_base + 1u + slot], li);
                 } else {
                     // We bumped the count past capacity. Tell the CPU.
                     // The consumer reads `min(count, MAX_PER_FROXEL_CAPACITY)`

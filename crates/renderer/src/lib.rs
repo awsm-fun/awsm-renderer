@@ -764,6 +764,9 @@ impl AwsmRenderer {
                             dispatch_hash,
                             dynamic_shader_id: Some(shader_id),
                             dynamic_shader: dynamic_shader.clone(),
+                            froxel_slice_count: render_passes::light_culling::DEFAULT_SLICE_COUNT,
+                            froxel_max_per_froxel_capacity:
+                                render_passes::light_culling::DEFAULT_MAX_PER_FROXEL_CAPACITY,
                         }
                         .into(),
                     );

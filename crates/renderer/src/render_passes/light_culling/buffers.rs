@@ -1,22 +1,22 @@
 //! GPU storage buffers backing the light-culling pass.
 //!
-//! Owns four buffers:
+//! Owns three buffers:
 //!
 //! - **`params_buffer`** (uniform): per-frame `CullParams` reset (tiles,
 //!   near/far, capacity). Re-written each frame via `writeBuffer`.
-//! - **`counts_buffer`** (storage RW + copy_src): per-froxel atomic
-//!   count of appended light indices. The cull shader zeroes its own
-//!   per-froxel cell at workgroup start (no global pre-pass needed).
-//!   Bound read-only by the transparent / opaque-oversized shaders to
-//!   iterate the light slice.
-//! - **`indices_buffer`** (storage RW): flat
-//!   `[froxel_count * max_per_froxel_capacity]` of u32 light indices.
-//!   Same RW / read-only split as `counts_buffer`.
+//! - **`storage_buffer`** (storage RW + copy_src): merged per-froxel
+//!   count + light indices. Layout per froxel:
+//!     slot 0:           atomic count
+//!     slots 1..1+count: light indices
+//!   Stride = `max_per_froxel_capacity + 1`. Merged into a single
+//!   binding so the consumer shaders (transparent + opaque-oversized)
+//!   stay under WebGPU's `maxStorageBuffersPerShaderStage = 10`
+//!   baseline — those passes already bind 9 storage buffers.
 //! - **`overflow_buffer`** (storage RW + copy_src): single
 //!   `atomic<u32>` incremented per dropped index. The CPU mapAsync
 //!   readback drives the auto-grow path.
 //!
-//! All four are recreated when the viewport tile count grows OR when
+//! Buffers are recreated when the viewport tile count grows OR when
 //! `set_max_per_froxel_capacity` raises the per-froxel budget. The
 //! shader cache key encodes `max_per_froxel_capacity` so a budget bump
 //! also recompiles the cull pipeline (and the consumer shaders that
@@ -51,11 +51,9 @@ pub const DEFAULT_MAX_PER_FROXEL_CAPACITY: u32 = 32;
 /// (z_near, z_far, log_far_over_near, _pad).
 pub const CULL_PARAMS_BYTE_SIZE: usize = 32;
 
-/// Byte size of a single per-froxel count entry (one `u32`).
-pub const COUNT_ENTRY_BYTE_SIZE: usize = 4;
-
-/// Byte size of a single per-froxel index entry (one `u32`).
-pub const INDEX_ENTRY_BYTE_SIZE: usize = 4;
+/// Byte size of a single storage-buffer entry (one `u32`). One per-froxel
+/// stride is `(max_per_froxel_capacity + 1) * STORAGE_ENTRY_BYTE_SIZE`.
+pub const STORAGE_ENTRY_BYTE_SIZE: usize = 4;
 
 /// Byte size of the overflow counter (single `u32`). Sits at offset 0
 /// of `overflow_buffer`; the readback ring copies just this `u32` and
@@ -65,17 +63,11 @@ pub const OVERFLOW_BYTE_SIZE: usize = 4;
 static PARAMS_USAGE: LazyLock<BufferUsage> =
     LazyLock::new(|| BufferUsage::new().with_uniform().with_copy_dst());
 
-static COUNTS_USAGE: LazyLock<BufferUsage> = LazyLock::new(|| {
+static STORAGE_USAGE: LazyLock<BufferUsage> = LazyLock::new(|| {
     BufferUsage::new()
         .with_storage()
         .with_copy_dst()
         .with_copy_src()
-});
-
-static INDICES_USAGE: LazyLock<BufferUsage> = LazyLock::new(|| {
-    BufferUsage::new()
-        .with_storage()
-        .with_copy_dst()
 });
 
 static OVERFLOW_USAGE: LazyLock<BufferUsage> = LazyLock::new(|| {
@@ -88,8 +80,10 @@ static OVERFLOW_USAGE: LazyLock<BufferUsage> = LazyLock::new(|| {
 /// Storage backing for the light-culling pass.
 pub struct LightCullingBuffers {
     pub params_buffer: web_sys::GpuBuffer,
-    pub counts_buffer: web_sys::GpuBuffer,
-    pub indices_buffer: web_sys::GpuBuffer,
+    /// Merged count + indices storage. Stride per froxel:
+    /// `max_per_froxel_capacity + 1` × `u32`. Slot 0 holds the count;
+    /// slots 1.. hold light indices.
+    pub storage_buffer: web_sys::GpuBuffer,
     pub overflow_buffer: web_sys::GpuBuffer,
     /// Number of view-space depth slices baked into the shader.
     pub slice_count: u32,
@@ -138,23 +132,15 @@ impl LightCullingBuffers {
             .into(),
         )?;
 
-        let counts_buffer = gpu.create_buffer(
+        // Merged storage: per-froxel stride = (max_per_froxel_capacity + 1)
+        // (one count + capacity index slots), times the froxel count.
+        let stride = max_per_froxel_capacity.saturating_add(1).max(2);
+        let storage_entries = froxel_count.saturating_mul(stride).max(1);
+        let storage_buffer = gpu.create_buffer(
             &BufferDescriptor::new(
-                Some("LightCullingCounts"),
-                froxel_count as usize * COUNT_ENTRY_BYTE_SIZE,
-                *COUNTS_USAGE,
-            )
-            .into(),
-        )?;
-
-        let indices_capacity = froxel_count
-            .saturating_mul(max_per_froxel_capacity)
-            .max(1);
-        let indices_buffer = gpu.create_buffer(
-            &BufferDescriptor::new(
-                Some("LightCullingIndices"),
-                indices_capacity as usize * INDEX_ENTRY_BYTE_SIZE,
-                *INDICES_USAGE,
+                Some("LightCullingStorage"),
+                storage_entries as usize * STORAGE_ENTRY_BYTE_SIZE,
+                *STORAGE_USAGE,
             )
             .into(),
         )?;
@@ -170,8 +156,7 @@ impl LightCullingBuffers {
 
         Ok(Self {
             params_buffer,
-            counts_buffer,
-            indices_buffer,
+            storage_buffer,
             overflow_buffer,
             slice_count,
             max_per_froxel_capacity,

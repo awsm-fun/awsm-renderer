@@ -3,22 +3,21 @@
 // Single bind group:
 //   0: camera_raw       — uniform, view matrix + viewport for screen-tile reconstruction.
 //   1: cull_params      — uniform, per-frame tile/slice/capacity/near-far config.
-//   2: lights_info      — uniform `LightsInfoPacked` (the canonical helper struct from
-//                          shared/lights.wgsl). The cull only consumes `.data.x` (`n_lights`),
-//                          but binds the same buffer the shading passes use so the
-//                          render-side `BindGroupCreate::LightsInfoCreate` event covers it.
-//   3: lights           — uniform `array<LightPacked, MAX_PUNCTUAL_LIGHTS>`. Same physical
-//                          buffer as the opaque/transparent main pass; same name so the
-//                          shared `get_light(i)` helper resolves it.
-//   4: froxel_counts    — storage RW (atomics), per-froxel count of appended indices.
-//   5: froxel_indices   — storage RW, flat `[froxel_count * max_per_froxel_capacity]` of u32 light indices.
-//   6: overflow_counter — storage RW (atomic), single u32 incremented per dropped index.
+//   2: lights_info      — uniform `LightsInfoPacked`.
+//   3: lights           — uniform `array<LightPacked, MAX_PUNCTUAL_LIGHTS>`.
+//   4: froxel_storage   — storage RW (atomics), combined count + indices buffer (see layout below).
+//   5: overflow_counter — storage RW (atomic), single u32 incremented per dropped index.
 //
-// Each froxel's index slice lives at
-// `froxel_indices[froxel_idx * MAX_PER_FROXEL_CAPACITY .. + count]`. `offset` is implicit
-// — every froxel has the same capacity, so we don't need a prefix scan. Saturation
-// increments `overflow_counter` and the CPU's auto-grow readback bumps the budget on
-// the next frame.
+// `froxel_storage` is laid out as `(MAX_PER_FROXEL_CAPACITY + 1)`-u32 strides:
+//   stride = MAX_PER_FROXEL_CAPACITY + 1
+//   slot 0:           per-froxel count (atomic)
+//   slots 1..1+count: light indices (atomic-stored)
+//
+// Merging counts + indices into one storage binding keeps the consumer
+// (transparent / opaque-oversized) shaders under WebGPU's
+// `maxStorageBuffersPerShaderStage = 10` baseline (those passes already
+// bind 9 storage buffers — see `crates/renderer/src/lib.rs:332` for the
+// budget).
 
 /*************** START camera.wgsl ******************/
 {% include "shared_wgsl/camera.wgsl" %}
@@ -59,6 +58,5 @@ struct CullParams {
 @group(0) @binding(1) var<uniform> cull_params: CullParams;
 @group(0) @binding(2) var<uniform> lights_info: LightsInfoPacked;
 @group(0) @binding(3) var<uniform> lights: array<LightPacked, {{ max_punctual_lights }}u>;
-@group(0) @binding(4) var<storage, read_write> froxel_counts: array<atomic<u32>>;
-@group(0) @binding(5) var<storage, read_write> froxel_indices: array<u32>;
-@group(0) @binding(6) var<storage, read_write> overflow_counter: atomic<u32>;
+@group(0) @binding(4) var<storage, read_write> froxel_storage: array<atomic<u32>>;
+@group(0) @binding(5) var<storage, read_write> overflow_counter: atomic<u32>;

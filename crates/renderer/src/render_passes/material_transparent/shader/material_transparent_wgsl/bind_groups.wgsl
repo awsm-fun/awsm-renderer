@@ -39,6 +39,29 @@ struct TransformPacked {
 // Renderer-wide variable-length per-material data pool — backs
 // custom-material `BufferSlot` declarations on transparents.
 @group(0) @binding(19) var<storage, read> extras_pool: array<u32>;
+// ─── Light-culling froxel readback ────────────────────────────────
+// `cull_params` carries the per-frame tile / slice / capacity / near-far
+// state the cull pass wrote; `froxel_storage` is the merged
+// count + indices buffer the cull pass wrote (read-only here). Both
+// drive the per-pixel `apply_lighting_per_froxel*` walk in the shared
+// `lighting/lights.wgsl`. The CullParams struct decl is duplicated from
+// the cull pass's `bind_groups.wgsl` — the same byte layout, kept in
+// lockstep manually.
+struct CullParams {
+    tiles_x: u32,
+    tiles_y: u32,
+    viewport_w: u32,
+    viewport_h: u32,
+    z_near: f32,
+    z_far: f32,
+    log_far_over_near: f32,
+    _pad: f32,
+};
+@group(0) @binding(20) var<uniform> cull_params: CullParams;
+// `froxel_storage` is laid out as `(MAX_PER_FROXEL_CAPACITY + 1)`-u32
+// strides — slot 0 is the count, slots 1.. are the light indices. See
+// `light_culling_wgsl/bind_groups.wgsl` for the writer side.
+@group(0) @binding(21) var<storage, read> froxel_storage: array<u32>;
 
 // ─── Shadow bind group (group 1) ───────────────────────────────────
 // Includes the shared shadow bindings (atlas + cube + EVSM + globals

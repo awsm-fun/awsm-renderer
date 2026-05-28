@@ -68,6 +68,19 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     /// `mesh_light_slices` + `mesh_light_indices`. Opaque is true;
     /// transparent stays false.
     pub use_mesh_light_slices: bool,
+    /// Phase-2 placeholder — when `true`, the shared `lights.wgsl`
+    /// emits `apply_lighting_per_froxel*` for the oversized-mesh path.
+    /// Set to `false` for opaque until Phase 2 actually wires the
+    /// sentinel branch in the shader; the template fields must still
+    /// be declared because askama type-checks every `{% if %}` /
+    /// `{{ var }}` reference even when the gate is closed.
+    pub use_froxel_lights: bool,
+    /// Phase-2 placeholder — froxel slice count (read by the
+    /// shading-time froxel index calc).
+    pub froxel_slice_count: u32,
+    /// Phase-2 placeholder — per-froxel capacity for the
+    /// `min(count, MAX)` clamp.
+    pub froxel_max_per_froxel_capacity: u32,
     /// Concatenated `wgsl_fragment()` of every enabled material — see
     /// `awsm_materials::registry::build_materials_wgsl`.
     pub materials_wgsl: String,
@@ -164,6 +177,10 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 debug,
                 shadows_enabled: true,
                 use_mesh_light_slices: true,
+                use_froxel_lights: false,
+                froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
+                froxel_max_per_froxel_capacity:
+                    crate::render_passes::light_culling::DEFAULT_MAX_PER_FROXEL_CAPACITY,
                 materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
                 shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
                 shader_id: value.shader_id,
@@ -307,6 +324,10 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaqueEmpty> for ShaderTemplateMaterialOpaqu
             shadows_enabled: false,
             sscs_available: false,
             use_mesh_light_slices: false,
+            use_froxel_lights: false,
+            froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
+            froxel_max_per_froxel_capacity:
+                crate::render_passes::light_culling::DEFAULT_MAX_PER_FROXEL_CAPACITY,
             materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
             shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
             bucket_entries,
@@ -336,6 +357,17 @@ pub struct ShaderTemplateMaterialOpaqueEmpty {
     /// touches the per-mesh slice path but the shared lights include
     /// needs the symbol in scope.
     pub use_mesh_light_slices: bool,
+    /// Mirror of the opaque-compute flag. The empty template doesn't
+    /// emit the per-froxel walk either, but the shared `lights.wgsl`
+    /// references the symbol so it must be declared.
+    pub use_froxel_lights: bool,
+    /// Mirror of the opaque-compute field. Unused in the empty path
+    /// (the `{% if use_froxel_lights %}` gate is closed) but askama
+    /// type-checks every `{{ var }}` reference even inside a closed
+    /// gate, so the field has to exist.
+    pub froxel_slice_count: u32,
+    /// Mirror of the opaque-compute field — see `froxel_slice_count`.
+    pub froxel_max_per_froxel_capacity: u32,
     /// Concatenated `wgsl_fragment()` of every enabled material — see
     /// `awsm_materials::registry::build_materials_wgsl`.
     pub materials_wgsl: String,

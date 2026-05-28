@@ -176,6 +176,11 @@ impl MaterialTransparentPipelines {
                 dynamic_shader_id: None,
                 dynamic_shader: None,
                 instancing_transforms: req.mesh.instanced,
+                // GPU light-culling consumer-side cache key fields.
+                // Bumped via the auto-grow path when overflow is observed.
+                froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
+                froxel_max_per_froxel_capacity:
+                    crate::render_passes::light_culling::DEFAULT_MAX_PER_FROXEL_CAPACITY,
             });
         }
         Ok(out)
@@ -228,6 +233,9 @@ impl MaterialTransparentPipelines {
                 dynamic_shader_id: None,
                 dynamic_shader: None,
                 instancing_transforms: req.mesh.instanced,
+                froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
+                froxel_max_per_froxel_capacity:
+                    crate::render_passes::light_culling::DEFAULT_MAX_PER_FROXEL_CAPACITY,
             };
             let shader_key = shaders.get_key(gpu, shader_cache_key).await?;
             let vbo_layouts = vertex_buffer_layouts(req.mesh, mesh_buffer_info);
@@ -315,6 +323,9 @@ impl MaterialTransparentPipelines {
                 dynamic_shader_id: None,
                 dynamic_shader: None,
                 instancing_transforms: req.mesh.instanced,
+                froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
+                froxel_max_per_froxel_capacity:
+                    crate::render_passes::light_culling::DEFAULT_MAX_PER_FROXEL_CAPACITY,
             });
         }
 

@@ -300,23 +300,29 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
                 camera,
             );
 
-            // Apply lighting with screen-space transmission
-            color = apply_lighting_with_transmission(
+            // Apply lighting with screen-space transmission.
+            // Transparent always takes the per-froxel punctual walk —
+            // the cull pass populated `froxel_storage`; directional
+            // lights still walk the small global prefix inside the
+            // function.
+            color = apply_lighting_per_froxel_with_transmission(
                 material_color,
                 surface_to_camera,
                 input.world_position,
                 lights_info,
                 transmission_background,
                 (material_mesh_meta.receive_shadows & material_mesh_meta.shadow_receiver_gate),
+                input.frag_pos.xy,
             );
         } else {
-            // Standard lighting without transmission
-            color = apply_lighting(
+            // Standard lighting without transmission.
+            color = apply_lighting_per_froxel(
                 material_color,
                 surface_to_camera,
                 input.world_position,
                 lights_info,
                 (material_mesh_meta.receive_shadows & material_mesh_meta.shadow_receiver_gate),
+                input.frag_pos.xy,
             );
         }
 
