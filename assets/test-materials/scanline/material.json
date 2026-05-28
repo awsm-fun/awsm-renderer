@@ -1,0 +1,30 @@
+{
+  "name": "scanline",
+  "version": 1,
+  "alpha_mode": "opaque",
+  "double_sided": false,
+  "uniforms": [
+    {
+      "name": "tint",
+      "ty": "color3",
+      "default": { "kind": "color3", "value": [0.6, 0.9, 0.6] }
+    },
+    {
+      "name": "scan_freq",
+      "ty": "f32",
+      "default": { "kind": "f32", "value": 80.0 }
+    },
+    {
+      "name": "scan_speed",
+      "ty": "f32",
+      "default": { "kind": "f32", "value": 0.5 }
+    },
+    {
+      "name": "scan_strength",
+      "ty": "f32",
+      "default": { "kind": "f32", "value": 0.3 }
+    }
+  ],
+  "textures": [],
+  "buffers": []
+}

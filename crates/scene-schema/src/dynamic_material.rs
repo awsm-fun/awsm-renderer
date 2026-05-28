@@ -676,6 +676,40 @@ mod tests {
         assert_eq!(words, vec![0x0403_0201, 0xffff_ffff]);
     }
 
+    /// Parse the canonical test-material `material.json` files
+    /// shipped under `assets/test-materials/`. These are the
+    /// procedural placeholders driving the dynamic-material end-to-end
+    /// surface (irregular-atlas + soft-glass + scanline). A change
+    /// to the schema serde tags that breaks the on-disk JSON would
+    /// otherwise only surface at first-use in an editor — this test
+    /// catches it in CI.
+    #[test]
+    fn test_material_json_files_parse() {
+        // The path is relative to the workspace root when `cargo test`
+        // runs against this crate, but the test binary's working
+        // directory is the package root. Walk up until we find the
+        // workspace root (containing `assets/test-materials/`).
+        let mut dir = std::env::current_dir().expect("cwd");
+        for _ in 0..8 {
+            if dir.join("assets/test-materials").is_dir() {
+                break;
+            }
+            if !dir.pop() {
+                panic!("could not locate workspace root from {dir:?}");
+            }
+        }
+        for folder in ["scanline", "irregular-atlas", "soft-glass"] {
+            let path = dir.join(format!("assets/test-materials/{folder}/material.json"));
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+            let def: MaterialDefinition = serde_json::from_str(&text)
+                .unwrap_or_else(|e| panic!("parse {path:?}: {e}"));
+            validate_layout_names(&def)
+                .unwrap_or_else(|e| panic!("validate {path:?}: {e:?}"));
+            assert_eq!(def.name, folder.to_string());
+        }
+    }
+
     #[cfg(feature = "fs-loader")]
     #[test]
     fn loader_round_trip() {
