@@ -51,6 +51,57 @@ pub struct EditState {
     /// when a fresh compile batch opens — keeps the modal's
     /// "Last error" subsection scoped to the current compile cycle.
     pub compile_last_error: Arc<Mutable<Option<String>>>,
+    /// Preview-canvas mesh shape. Default `Plane` matches the historic
+    /// 2×2 stub; the selector in the Preview pane header lets the
+    /// author switch to a curved or volumetric shape so materials
+    /// that read `world_normal` / `world_tangent` non-trivially can
+    /// be inspected. Updates trigger a debounced re-apply path that
+    /// regenerates the preview mesh (see `recompile.rs` and
+    /// `host::apply_quad_for_current_registration`).
+    pub preview_mesh: Arc<Mutable<PreviewMeshKind>>,
+}
+
+/// Preview-canvas mesh shape selectable from the Preview pane header.
+/// `Plane` is the default; the other variants are used when a material's
+/// visual behavior depends on geometry. The meshgen primitives ship the
+/// underlying mesh data — this enum is just the user-facing tag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreviewMeshKind {
+    /// 2×2 plane, the default. Matches the historic stub.
+    Plane,
+    /// Unit-radius sphere — the workhorse for any material that reads
+    /// world_normal.
+    Sphere,
+    /// 1×1×1 box centered at origin.
+    Box,
+    /// Unit-radius × 1.5 height cylinder.
+    Cylinder,
+    /// Major-radius 1, tube-radius 0.3 torus.
+    Torus,
+}
+
+impl PreviewMeshKind {
+    /// Human-readable label for the Preview-pane dropdown.
+    pub fn label(self) -> &'static str {
+        match self {
+            PreviewMeshKind::Plane => "Plane",
+            PreviewMeshKind::Sphere => "Sphere",
+            PreviewMeshKind::Box => "Box",
+            PreviewMeshKind::Cylinder => "Cylinder",
+            PreviewMeshKind::Torus => "Torus",
+        }
+    }
+
+    /// Every kind in display order. Drives the dropdown rendering.
+    pub fn all() -> &'static [PreviewMeshKind] {
+        &[
+            PreviewMeshKind::Plane,
+            PreviewMeshKind::Sphere,
+            PreviewMeshKind::Box,
+            PreviewMeshKind::Cylinder,
+            PreviewMeshKind::Torus,
+        ]
+    }
 }
 
 impl EditState {
@@ -64,6 +115,7 @@ impl EditState {
             errors: Arc::new(Mutable::new(Vec::new())),
             compile_pending: Arc::new(Mutable::new(0)),
             compile_last_error: Arc::new(Mutable::new(None)),
+            preview_mesh: Arc::new(Mutable::new(PreviewMeshKind::Plane)),
         }
     }
 

@@ -68,7 +68,7 @@ async fn run() -> anyhow::Result<()> {
     // means Rc + Mutable's interior mutability are sufficient
     // (clippy flags Arc<!Send> otherwise).
     let sink: Rc<Mutable<Box<dyn RecompileSink>>> = Rc::new(Mutable::new(Box::new(
-        RendererRecompileSink::new(renderer_handle.clone()),
+        RendererRecompileSink::new(renderer_handle.clone(), state.preview_mesh.clone()),
     )));
     recompile::spawn(state.clone(), sink);
 

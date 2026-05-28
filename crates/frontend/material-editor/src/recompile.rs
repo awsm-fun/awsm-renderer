@@ -176,6 +176,28 @@ pub fn spawn(state: EditState, sink: Rc<futures_signals::signal::Mutable<Box<dyn
                 .await;
         });
     }
+    // The preview-mesh selector also feeds the trigger so a kind
+    // change (e.g. plane -> sphere) gets debounced into the same
+    // "apply within DEBOUNCE_MS" window the WGSL edits use. The sink's
+    // idempotency gate notices that hashes match but the mesh kind
+    // drifted and routes through `apply_quad_for_current_registration`
+    // without rebuilding the pipeline.
+    {
+        let trigger = trigger.clone();
+        let preview_mesh = state.preview_mesh.clone();
+        spawn_local(async move {
+            preview_mesh
+                .signal_cloned()
+                .for_each(move |_| {
+                    let trigger = trigger.clone();
+                    async move {
+                        let next = trigger.get() + 1;
+                        trigger.set(next);
+                    }
+                })
+                .await;
+        });
+    }
 
     let state_for_loop = state.clone();
     let trigger_for_loop = trigger.clone();
