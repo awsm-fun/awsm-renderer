@@ -135,12 +135,13 @@ impl ExtrasPool {
                     // via the `saturating_add` above.
                     let mut new_capacity = self.capacity_words;
                     while new_capacity < new_next {
-                        new_capacity = new_capacity
-                            .checked_mul(2)
-                            .ok_or(ExtrasPoolError::OutOfCapacity {
-                                needed: new_next,
-                                capacity: self.capacity_words,
-                            })?;
+                        new_capacity =
+                            new_capacity
+                                .checked_mul(2)
+                                .ok_or(ExtrasPoolError::OutOfCapacity {
+                                    needed: new_next,
+                                    capacity: self.capacity_words,
+                                })?;
                     }
                     self.grow_to(gpu, new_capacity)?;
                     resized = true;

@@ -602,12 +602,14 @@ impl crate::AwsmRenderer {
             if data.is_empty() {
                 continue;
             }
-            match self.extras_pool.assign_or_update(&self.gpu, id, slot_index, data) {
+            match self
+                .extras_pool
+                .assign_or_update(&self.gpu, id, slot_index, data)
+            {
                 Ok(outcome) => {
                     if outcome.resized {
-                        self.bind_groups.mark_create(
-                            crate::bind_groups::BindGroupCreate::ExtrasPoolResize,
-                        );
+                        self.bind_groups
+                            .mark_create(crate::bind_groups::BindGroupCreate::ExtrasPoolResize);
                     }
                 }
                 Err(e) => {
