@@ -1,0 +1,25 @@
+{
+  "name": "soft-glass",
+  "version": 1,
+  "alpha_mode": "blend",
+  "double_sided": true,
+  "uniforms": [
+    {
+      "name": "tint",
+      "ty": "color3",
+      "default": { "kind": "color3", "value": [0.75, 0.88, 0.95] }
+    },
+    {
+      "name": "edge_alpha",
+      "ty": "f32",
+      "default": { "kind": "f32", "value": 0.95 }
+    },
+    {
+      "name": "face_alpha",
+      "ty": "f32",
+      "default": { "kind": "f32", "value": 0.25 }
+    }
+  ],
+  "textures": [],
+  "buffers": []
+}

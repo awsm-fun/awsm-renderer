@@ -676,6 +676,42 @@ mod tests {
         assert_eq!(words, vec![0x0403_0201, 0xffff_ffff]);
     }
 
+    /// Parse the canonical test-material `material.json` files
+    /// shipped under `assets/test-materials/`. These are the
+    /// procedural placeholders driving the dynamic-material end-to-end
+    /// surface (irregular-atlas + soft-glass + scanline). A change
+    /// to the schema serde tags that breaks the on-disk JSON would
+    /// otherwise only surface at first-use in an editor — this test
+    /// catches it in CI.
+    #[test]
+    fn test_material_json_files_parse() {
+        // Anchor on `CARGO_MANIFEST_DIR` (the crate root) instead of
+        // `current_dir()` so the test is invariant to the runner's
+        // working directory — `cargo test`, IDE-driven runs, and CI
+        // harnesses can all set cwd differently. Walk ancestors until
+        // we find the workspace root (the directory containing
+        // `assets/test-materials/`).
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workspace_root = manifest_dir
+            .ancestors()
+            .find(|p| p.join("assets/test-materials").is_dir())
+            .unwrap_or_else(|| {
+                panic!(
+                    "could not locate workspace root (no assets/test-materials/ \
+                     ancestor of {manifest_dir:?})"
+                )
+            });
+        for folder in ["scanline", "irregular-atlas", "soft-glass"] {
+            let path = workspace_root.join(format!("assets/test-materials/{folder}/material.json"));
+            let text =
+                std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+            let def: MaterialDefinition =
+                serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse {path:?}: {e}"));
+            validate_layout_names(&def).unwrap_or_else(|e| panic!("validate {path:?}: {e:?}"));
+            assert_eq!(def.name, folder.to_string());
+        }
+    }
+
     #[cfg(feature = "fs-loader")]
     #[test]
     fn loader_round_trip() {

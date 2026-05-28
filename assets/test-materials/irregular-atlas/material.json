@@ -1,0 +1,20 @@
+{
+  "name": "irregular-atlas",
+  "version": 1,
+  "alpha_mode": "opaque",
+  "double_sided": false,
+  "uniforms": [
+    {
+      "name": "frame_rate",
+      "ty": "f32",
+      "default": { "kind": "f32", "value": 4.0 }
+    }
+  ],
+  "textures": [],
+  "buffers": [
+    {
+      "name": "frames",
+      "default": "frames.bin"
+    }
+  ]
+}

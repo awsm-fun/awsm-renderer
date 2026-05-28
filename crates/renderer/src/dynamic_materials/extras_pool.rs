@@ -60,6 +60,19 @@ pub struct ExtrasPool {
     /// — the per-slice assignment the WGSL `extras_load_*` helpers
     /// read from.
     slices: HashMap<(MaterialShaderId, usize), (u32, u32)>,
+    /// Exact-size free list — slices reclaimed by [`Self::drop_shader`]
+    /// when a `MaterialShaderId` is unregistered (the editor's
+    /// edit→re-register cycle is the most common producer). Keyed by
+    /// slice length in words; values are LIFO stacks of free offsets.
+    ///
+    /// Same-length re-allocation is the dominant case (a material's
+    /// `BufferSlot` layout doesn't change between edits — only the
+    /// bytes do). Free entries at one length don't satisfy a request
+    /// at a different length; those gaps fragment until the bump
+    /// allocator overflows and grows past them. Full best-fit /
+    /// coalescing compaction is parked as a future enhancement; the
+    /// exact-size path handles the common case at trivial cost.
+    free_list: HashMap<u32, Vec<u32>>,
     /// Bytes of `shadow` that are dirty (range in bytes — same units
     /// `DynamicStorageBuffer::take_dirty_ranges` returns).
     dirty_range: Option<(u32, u32)>,
@@ -86,6 +99,7 @@ impl ExtrasPool {
             next_offset: 0,
             shadow: vec![0u32; capacity_words as usize],
             slices: HashMap::new(),
+            free_list: HashMap::new(),
             dirty_range: None,
             uploader: MappedUploader::new("ExtrasPool"),
         })
@@ -123,32 +137,30 @@ impl ExtrasPool {
         let mut resized = false;
         let (offset, length) = match self.slices.get(&key) {
             Some(&(off, prev_len)) if prev_len == len => (off, prev_len),
-            _ => {
-                let offset = self.next_offset;
-                let new_next = offset.saturating_add(len);
-                if new_next > self.capacity_words {
-                    // Grow until the next free offset fits. Two halts:
-                    // we double on each iteration (so `new_next` is
-                    // reached in O(log) steps); and `len` can never
-                    // exceed the addressable u32 range without first
-                    // overflowing `new_next`, which we'd have caught
-                    // via the `saturating_add` above.
-                    let mut new_capacity = self.capacity_words;
-                    while new_capacity < new_next {
-                        new_capacity =
-                            new_capacity
-                                .checked_mul(2)
-                                .ok_or(ExtrasPoolError::OutOfCapacity {
-                                    needed: new_next,
-                                    capacity: self.capacity_words,
-                                })?;
-                    }
-                    self.grow_to(gpu, new_capacity)?;
-                    resized = true;
+            // Either the key isn't assigned yet, or its previous slice
+            // is the wrong length and needs to be replaced. In the
+            // latter case the old slice goes onto the free list so a
+            // future same-length allocation can reclaim it.
+            existing => {
+                if let Some(&(old_off, old_len)) = existing {
+                    self.free_list.entry(old_len).or_default().push(old_off);
+                    self.slices.remove(&key);
                 }
-                self.next_offset = offset.saturating_add(len);
-                self.slices.insert(key, (offset, len));
-                (offset, len)
+                // Prefer a free-list hit at the exact length — pops the
+                // most recently freed offset (LIFO) so locally adjacent
+                // edit→re-register cycles tend to land on the same
+                // bytes.
+                if let Some(stack) = self.free_list.get_mut(&len) {
+                    if let Some(offset) = stack.pop() {
+                        self.slices.insert(key, (offset, len));
+                        (offset, len)
+                    } else {
+                        // Stack empty — fall through to bump.
+                        self.bump_allocate(gpu, key, len, &mut resized)?
+                    }
+                } else {
+                    self.bump_allocate(gpu, key, len, &mut resized)?
+                }
             }
         };
         let start = offset as usize;
@@ -173,6 +185,68 @@ impl ExtrasPool {
             length,
             resized,
         })
+    }
+
+    /// Bump-allocate a fresh slice of `len` words; grows the pool if
+    /// the bump overflows. Sets `*resized` to true when the grow path
+    /// is taken so the caller can mark the corresponding bind group
+    /// recreation event.
+    fn bump_allocate(
+        &mut self,
+        gpu: &AwsmRendererWebGpu,
+        key: (MaterialShaderId, usize),
+        len: u32,
+        resized: &mut bool,
+    ) -> Result<(u32, u32), ExtrasPoolError> {
+        let offset = self.next_offset;
+        let new_next = offset.saturating_add(len);
+        if new_next > self.capacity_words {
+            // Grow until the next free offset fits. Two halts: we double
+            // on each iteration (so `new_next` is reached in O(log)
+            // steps); and `len` can never exceed the addressable u32
+            // range without first overflowing `new_next`, which we'd
+            // have caught via the `saturating_add` above.
+            let mut new_capacity = self.capacity_words;
+            while new_capacity < new_next {
+                new_capacity =
+                    new_capacity
+                        .checked_mul(2)
+                        .ok_or(ExtrasPoolError::OutOfCapacity {
+                            needed: new_next,
+                            capacity: self.capacity_words,
+                        })?;
+            }
+            self.grow_to(gpu, new_capacity)?;
+            *resized = true;
+        }
+        self.next_offset = offset.saturating_add(len);
+        self.slices.insert(key, (offset, len));
+        Ok((offset, len))
+    }
+
+    /// Reclaim every slice owned by `shader_id`. Called from
+    /// `DynamicMaterials::unregister_material` to release per-slot
+    /// allocations back to the free list when a `MaterialShaderId`
+    /// is unregistered (editor edit→re-register cycle, scene teardown,
+    /// etc.). Slices land in the same exact-size free list used by
+    /// [`Self::assign_or_update`]; the next equal-length allocation
+    /// reclaims them.
+    ///
+    /// Returns the number of slices reclaimed (zero when the shader
+    /// had no `BufferSlot`s, or had already been dropped).
+    pub fn drop_shader(&mut self, shader_id: MaterialShaderId) -> usize {
+        let drained: Vec<((MaterialShaderId, usize), (u32, u32))> = self
+            .slices
+            .iter()
+            .filter(|((sid, _), _)| *sid == shader_id)
+            .map(|(k, v)| (*k, *v))
+            .collect();
+        let count = drained.len();
+        for (key, (offset, len)) in drained {
+            self.slices.remove(&key);
+            self.free_list.entry(len).or_default().push(offset);
+        }
+        count
     }
 
     /// Grow the pool to at least `new_capacity_words`. Reallocates the

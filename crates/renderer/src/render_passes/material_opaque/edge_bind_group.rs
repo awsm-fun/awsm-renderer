@@ -1,5 +1,5 @@
 //! Bind groups for the per-shader-id edge_resolve / skybox_edge_resolve /
-//! final_blend pipelines (Priority 3 in docs/plans/more-optimizations.md).
+//! final_blend pipelines (Priority 3 in https://github.com/dakom/awsm-renderer/pull/99).
 //!
 //! These bind groups all reference the **data_buffer half** of
 //! `MaterialEdgeBuffers` (the storage-writable side). The args_buffer

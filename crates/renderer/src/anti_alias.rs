@@ -51,7 +51,7 @@ impl AwsmRenderer {
     /// cached, so toggling back-and-forth pays the compile cost
     /// only on the first transition in each direction.
     pub async fn set_anti_aliasing(&mut self, aa: AntiAliasing) -> Result<()> {
-        // Race policy per docs/plans/more-optimizations.md: config-change
+        // Race policy per https://github.com/dakom/awsm-renderer/pull/99: config-change
         // APIs return NotReady when called before build() finishes its
         // eager batch. The frontends already structure their renderer
         // lifecycle to call this post-`build().await`; this just makes

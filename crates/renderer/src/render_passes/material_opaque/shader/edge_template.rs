@@ -1,6 +1,6 @@
 //! Askama templates for the per-shader-id edge_resolve + skybox /
 //! final_blend shaders (Priority 3 in
-//! docs/plans/more-optimizations.md).
+//! https://github.com/dakom/awsm-renderer/pull/99).
 
 use askama::Template;
 use awsm_materials::MaterialShaderId;

@@ -1,7 +1,7 @@
 //! Type surface for the pipeline-readiness scheduler.
 //!
 //! Per the architecture documented in
-//! [`docs/plans/more-optimizations.md`](../../../../docs/plans/more-optimizations.md):
+//! [`https://github.com/dakom/awsm-renderer/pull/99`](../../../../https://github.com/dakom/awsm-renderer/pull/99):
 //!
 //! - [`PipelineGroupId`] / [`PipelineGroupStatus`] / [`PipelineGroupDef`] —
 //!   the unified handles + state + input over both materials and passes.

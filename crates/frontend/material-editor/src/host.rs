@@ -14,7 +14,7 @@ use std::rc::Rc;
 use awsm_materials::dynamic::DynamicMaterial;
 use awsm_materials::dynamic_layout::{FieldType, UniformValue};
 use awsm_materials::MaterialShaderId;
-use awsm_meshgen::primitives::plane_mesh;
+use awsm_meshgen::primitives::{box_mesh, cylinder_mesh, plane_mesh, sphere_mesh, torus_mesh};
 use awsm_renderer::dynamic_materials::MaterialRegistration;
 use awsm_renderer::materials::{Material, MaterialKey};
 use awsm_renderer::meshes::MeshKey;
@@ -24,6 +24,7 @@ use awsm_renderer::AwsmRenderer;
 use glam::Vec3;
 
 use crate::recompile::RecompileSink;
+use crate::state::PreviewMeshKind;
 
 /// Shared renderer state. The `Option` is `None` between page load
 /// and the async `AwsmRendererBuilder::build` completing.
@@ -59,6 +60,12 @@ pub struct RendererHost {
     /// `Material::Custom` with the right default values without
     /// re-reading from the registry on every render frame.
     pub last_registration: Option<MaterialRegistration>,
+    /// Preview-mesh kind currently bound to `quad_mesh`. Compared
+    /// against the desired kind on each `apply_quad_for_current_registration`
+    /// — when they differ the mesh is removed and rebuilt; when they
+    /// match only the material is reassigned. `None` until the first
+    /// mesh is spawned.
+    pub current_preview_mesh: Option<PreviewMeshKind>,
 }
 
 impl RendererHost {
@@ -72,31 +79,42 @@ impl RendererHost {
             quad_transform: None,
             quad_material: None,
             last_registration: None,
+            current_preview_mesh: None,
         }
     }
 
-    /// Bind the most-recently-registered material to a stub preview
-    /// quad. Called from the recompile sink after each successful
-    /// registration so the preview canvas shows the live shader.
+    /// Bind the most-recently-registered material to the preview
+    /// mesh of the requested `desired_mesh` kind. Called from the
+    /// recompile sink after each successful registration AND whenever
+    /// the user changes the Preview-pane mesh selector.
     ///
-    /// On first call: spawns the plane mesh + transform + a
-    /// `Material::Custom` keyed on `shader_id`, then calls
-    /// `add_raw_mesh` to register it with the visibility-buffer pass.
-    ///
-    /// On subsequent calls: replaces the existing material binding
-    /// via `update_material` so the mesh swaps to the new shader
-    /// without re-uploading geometry.
+    /// Three cases:
+    /// - **First call (no mesh yet)**: spawn mesh + transform +
+    ///   `Material::Custom`; record everything.
+    /// - **Same `desired_mesh` as before**: rewrite the material
+    ///   binding in place via `update_material` so the geometry stays
+    ///   put and only the shader flips. This is the dominant case
+    ///   (every recompile cycle, user keeps the same shape).
+    /// - **Different `desired_mesh`**: remove the old mesh + spawn a
+    ///   fresh one. The material key is reused — only the geometry
+    ///   changes. (Removing the mesh handles its own transform +
+    ///   material cleanup in `AwsmRenderer::remove_mesh`.)
     pub fn apply_quad_for_current_registration(
         &mut self,
         shader_id: MaterialShaderId,
         reg: &MaterialRegistration,
+        desired_mesh: PreviewMeshKind,
     ) -> anyhow::Result<()> {
         let dynamic_material = build_default_dynamic_material(shader_id, reg);
+        let mesh_kind_changed = self
+            .current_preview_mesh
+            .map(|prev| prev != desired_mesh)
+            .unwrap_or(true);
 
-        match self.quad_material {
-            Some(key) => {
-                // Subsequent registration: rewrite the material in
-                // place so the same mesh starts drawing the new shader.
+        if !mesh_kind_changed {
+            if let Some(key) = self.quad_material {
+                // Steady-state path: same mesh kind, new shader.
+                // Rewrite the material in place.
                 let renderer = &mut self.renderer;
                 renderer.materials.update(
                     key,
@@ -107,61 +125,162 @@ impl RendererHost {
                         *m = Material::Custom(Box::new(dynamic_material.clone()));
                     },
                 );
-            }
-            None => {
-                // First registration: spawn a 2x2 plane in front of the
-                // camera. The plane faces +Y in object space; transform
-                // rotates -90° around X to face +Z (toward the camera).
-                let mesh = plane_mesh(2.0, 2.0, 1, 1);
-                let raw = RawMeshData {
-                    positions: mesh.positions,
-                    normals: mesh.normals,
-                    uvs: mesh.uvs,
-                    colors: mesh.colors,
-                    indices: mesh.indices,
-                };
-
-                // The plane primitive ships its vertices in the XZ
-                // plane with normals pointing +Y. We rotate by +90°
-                // around X so the normal lands at +Z, pointing back
-                // toward the camera at z=+1.5. (Rotating by -90° —
-                // the obvious "tilt it forward" direction — pushes
-                // the normal to -Z and backface-culls the plane,
-                // producing a fully black preview canvas with no
-                // pipeline errors. This was the root cause of the
-                // earlier "preview never paints" bug.)
-                let transform_key = self.renderer.transforms.insert(
-                    Transform {
-                        translation: Vec3::new(0.0, 0.0, -3.0),
-                        rotation: glam::Quat::from_rotation_x(std::f32::consts::FRAC_PI_2),
-                        ..Default::default()
-                    },
-                    None,
-                );
-
-                let material_key = {
-                    let renderer = &mut self.renderer;
-                    renderer.materials.insert(
-                        Material::Custom(Box::new(dynamic_material)),
-                        &renderer.textures,
-                        &renderer.dynamic_materials,
-                        &renderer.extras_pool,
-                    )
-                };
-
-                let mesh_key = self
-                    .renderer
-                    .add_raw_mesh(raw, transform_key, material_key)
-                    .map_err(|e| anyhow::anyhow!("add_raw_mesh failed: {e:?}"))?;
-
-                self.quad_mesh = Some(mesh_key);
-                self.quad_transform = Some(transform_key);
-                self.quad_material = Some(material_key);
+                self.last_registration = Some(reg.clone());
+                return Ok(());
             }
         }
 
+        // Either first call or the user picked a different mesh
+        // kind. If there's an existing mesh + transform + material,
+        // remove them first; otherwise spawn fresh.
+        if let Some(mesh) = self.quad_mesh.take() {
+            // remove_mesh also drops the transform + material binding
+            // — see AwsmRenderer::remove_mesh.
+            let _ = self.renderer.remove_mesh(mesh);
+            self.quad_transform = None;
+            self.quad_material = None;
+        }
+
+        let (raw, transform) = build_preview_geometry(desired_mesh);
+
+        let transform_key = self.renderer.transforms.insert(transform, None);
+
+        let material_key = {
+            let renderer = &mut self.renderer;
+            renderer.materials.insert(
+                Material::Custom(Box::new(dynamic_material)),
+                &renderer.textures,
+                &renderer.dynamic_materials,
+                &renderer.extras_pool,
+            )
+        };
+
+        let mesh_key = self
+            .renderer
+            .add_raw_mesh(raw, transform_key, material_key)
+            .map_err(|e| anyhow::anyhow!("add_raw_mesh failed: {e:?}"))?;
+
+        self.quad_mesh = Some(mesh_key);
+        self.quad_transform = Some(transform_key);
+        self.quad_material = Some(material_key);
+        self.current_preview_mesh = Some(desired_mesh);
         self.last_registration = Some(reg.clone());
         Ok(())
+    }
+}
+
+/// Build the raw-mesh + initial-transform pair for a given preview-mesh
+/// kind. Sizes / orientations are tuned so the camera-at-(0, 0, 1.5)
+/// preview rig (see `main.rs`) frames each shape comfortably.
+fn build_preview_geometry(kind: PreviewMeshKind) -> (RawMeshData, Transform) {
+    let translation = Vec3::new(0.0, 0.0, -3.0);
+    match kind {
+        PreviewMeshKind::Plane => {
+            // The plane primitive ships its vertices in the XZ plane
+            // with normals pointing +Y. We rotate by +90° around X so
+            // the normal lands at +Z, pointing back toward the camera
+            // at z=+1.5. (Rotating by -90° — the obvious "tilt it
+            // forward" direction — pushes the normal to -Z and
+            // backface-culls the plane, producing a fully black
+            // preview canvas with no pipeline errors. This was the
+            // root cause of the earlier "preview never paints" bug.)
+            let mesh = plane_mesh(2.0, 2.0, 1, 1);
+            let raw = RawMeshData {
+                positions: mesh.positions,
+                normals: mesh.normals,
+                uvs: mesh.uvs,
+                colors: mesh.colors,
+                indices: mesh.indices,
+            };
+            (
+                raw,
+                Transform {
+                    translation,
+                    rotation: glam::Quat::from_rotation_x(std::f32::consts::FRAC_PI_2),
+                    ..Default::default()
+                },
+            )
+        }
+        PreviewMeshKind::Sphere => {
+            let mesh = sphere_mesh(1.0, 32, 16);
+            let raw = RawMeshData {
+                positions: mesh.positions,
+                normals: mesh.normals,
+                uvs: mesh.uvs,
+                colors: mesh.colors,
+                indices: mesh.indices,
+            };
+            (
+                raw,
+                Transform {
+                    translation,
+                    ..Default::default()
+                },
+            )
+        }
+        PreviewMeshKind::Box => {
+            let mesh = box_mesh(Vec3::splat(1.5));
+            let raw = RawMeshData {
+                positions: mesh.positions,
+                normals: mesh.normals,
+                uvs: mesh.uvs,
+                colors: mesh.colors,
+                indices: mesh.indices,
+            };
+            // Slight rotation so all three visible faces are visible —
+            // otherwise a face-on view hides the silhouette info that
+            // makes a box more interesting than a plane.
+            (
+                raw,
+                Transform {
+                    translation,
+                    rotation: glam::Quat::from_euler(
+                        glam::EulerRot::YXZ,
+                        std::f32::consts::FRAC_PI_4,
+                        -std::f32::consts::FRAC_PI_8,
+                        0.0,
+                    ),
+                    ..Default::default()
+                },
+            )
+        }
+        PreviewMeshKind::Cylinder => {
+            let mesh = cylinder_mesh(0.75, 2.0, 32);
+            let raw = RawMeshData {
+                positions: mesh.positions,
+                normals: mesh.normals,
+                uvs: mesh.uvs,
+                colors: mesh.colors,
+                indices: mesh.indices,
+            };
+            // Tilt slightly so the curved side dominates the view.
+            (
+                raw,
+                Transform {
+                    translation,
+                    rotation: glam::Quat::from_rotation_z(std::f32::consts::FRAC_PI_8),
+                    ..Default::default()
+                },
+            )
+        }
+        PreviewMeshKind::Torus => {
+            let mesh = torus_mesh(1.0, 0.3, 48, 24);
+            let raw = RawMeshData {
+                positions: mesh.positions,
+                normals: mesh.normals,
+                uvs: mesh.uvs,
+                colors: mesh.colors,
+                indices: mesh.indices,
+            };
+            (
+                raw,
+                Transform {
+                    translation,
+                    rotation: glam::Quat::from_rotation_x(-std::f32::consts::FRAC_PI_3),
+                    ..Default::default()
+                },
+            )
+        }
     }
 }
 
@@ -237,12 +356,27 @@ fn default_uniform_value(ty: FieldType) -> UniformValue {
 ///    opaque pipelines are warm before the next render frame.
 pub struct RendererRecompileSink {
     handle: RendererHandle,
+    /// Clone of `EditState.preview_mesh` so the sink can read the
+    /// currently-selected preview-mesh kind at the moment of apply.
+    /// Mutating the selector triggers a debounce-window recompile via
+    /// the spawn loop in `recompile.rs`; this field carries the kind
+    /// across into the host.
+    preview_mesh: std::sync::Arc<futures_signals::signal::Mutable<crate::state::PreviewMeshKind>>,
 }
 
 impl RendererRecompileSink {
-    /// Construct a sink wrapping the shared renderer handle.
-    pub fn new(handle: RendererHandle) -> Self {
-        Self { handle }
+    /// Construct a sink wrapping the shared renderer handle + a clone
+    /// of the editor's `preview_mesh` selector.
+    pub fn new(
+        handle: RendererHandle,
+        preview_mesh: std::sync::Arc<
+            futures_signals::signal::Mutable<crate::state::PreviewMeshKind>,
+        >,
+    ) -> Self {
+        Self {
+            handle,
+            preview_mesh,
+        }
     }
 }
 
@@ -277,13 +411,27 @@ impl RecompileSink for RendererRecompileSink {
         };
 
         // Idempotency gate: if the (layout_hash, wgsl_hash) matches
-        // the active registration, this is a no-op edit (debounce
-        // window caught the same keystrokes twice; user pressed
-        // recompile without changing anything; etc.). Skip the
-        // unregister/register churn AND the pipeline-recompile
-        // round trip.
+        // the active registration, the material itself is unchanged.
+        // But the trigger ALSO fires on preview-mesh selector changes
+        // — so before the early-return, check whether the desired
+        // preview-mesh kind drifted; if so, re-apply with the existing
+        // material so the geometry updates without churning the
+        // pipeline cache.
         let incoming_hashes = (reg.layout_hash, reg.wgsl_hash);
+        let desired_mesh = self.preview_mesh.get();
         if host.current_hashes == Some(incoming_hashes) {
+            if host.current_preview_mesh == Some(desired_mesh) {
+                return Ok(());
+            }
+            if let (Some(id), Some(prev_reg)) =
+                (host.current_material, host.last_registration.clone())
+            {
+                if let Err(e) =
+                    host.apply_quad_for_current_registration(id, &prev_reg, desired_mesh)
+                {
+                    return Err(format!("apply_quad (mesh-only): {e}"));
+                }
+            }
             return Ok(());
         }
 
@@ -325,7 +473,9 @@ impl RecompileSink for RendererRecompileSink {
         // Failures here surface back as Err so the editor's errors
         // pane shows them rather than silently rendering a stale
         // shader.
-        if let Err(e) = host.apply_quad_for_current_registration(new_id, &reg_for_quad) {
+        if let Err(e) =
+            host.apply_quad_for_current_registration(new_id, &reg_for_quad, desired_mesh)
+        {
             return Err(format!("apply_quad: {e}"));
         }
 

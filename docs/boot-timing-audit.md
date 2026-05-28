@@ -1,6 +1,6 @@
 # Boot-timing audit — cold-boot pipeline count
 
-Block D.2 of [`plans/more-optimizations.md`](plans/more-optimizations.md). Captures the observed cold-boot pipeline count against the doc's [§ The eager set](plans/more-optimizations.md#the-eager-set-cold-boot) table to confirm Block B's lazy migrations took effect.
+Block D.2 of [PR #99](https://github.com/dakom/awsm-renderer/pull/99). Captures the observed cold-boot pipeline count against the doc's [§ The eager set](https://github.com/dakom/awsm-renderer/pull/99) table to confirm Block B's lazy migrations took effect.
 
 ## Methodology
 

@@ -13,11 +13,11 @@
   [`docs/dynamic-materials/contract-opaque.md`](dynamic-materials/contract-opaque.md)
   + [`docs/dynamic-materials/contract-transparent.md`](dynamic-materials/contract-transparent.md)
   + [`docs/dynamic-materials/promotion.md`](dynamic-materials/promotion.md).
-  Remaining follow-ups split between
-  [`docs/plans/more-optimizations.md`](plans/more-optimizations.md)
+  Remaining follow-ups landed across
+  [PR #99](https://github.com/dakom/awsm-renderer/pull/99)
   (cold-boot / lazy-pool work) and
-  [`docs/plans/remainder.md`](plans/remainder.md) (asset authoring,
-  UI polish, headless screenshot harness).
+  [PR #102](https://github.com/dakom/awsm-renderer/pull/102) (asset
+  authoring, UI polish, extras-pool reclamation, MSAA edge auto-grow).
 
 - Temporal shaders ✅ — renderer-wide `FrameGlobals` uniform (`time`,
   `delta_time`, `frame_count`, `resolution`) bound alongside the camera

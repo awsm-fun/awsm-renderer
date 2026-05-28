@@ -1,6 +1,6 @@
 # Edge_resolve runtime baseline — model-tests / Fox / 1080p / MSAA-4
 
-Block E.5 of [`plans/more-optimizations.md`](plans/more-optimizations.md). Captures a current-baseline frame-time profile of the model-tests Fox scene with the Stage-3 edge_resolve path active, so future regressions (or improvements) have a reference point.
+Block E.5 of [PR #99](https://github.com/dakom/awsm-renderer/pull/99). Captures a current-baseline frame-time profile of the model-tests Fox scene with the Stage-3 edge_resolve path active, so future regressions (or improvements) have a reference point.
 
 Pre-Stage-3 comparison wasn't captured this session per the parked-scope decision; the methodology below is reproducible on `main` (commit before Stage 3 landed) for an after-the-fact A/B if needed.
 

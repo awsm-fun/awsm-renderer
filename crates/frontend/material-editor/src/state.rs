@@ -8,6 +8,7 @@
 //! hard-coded scanline material. Phase 9 wires it to a real renderer
 //! preview.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use futures_signals::signal::Mutable;
@@ -51,6 +52,86 @@ pub struct EditState {
     /// when a fresh compile batch opens — keeps the modal's
     /// "Last error" subsection scoped to the current compile cycle.
     pub compile_last_error: Arc<Mutable<Option<String>>>,
+    /// Preview-canvas mesh shape. Default `Plane` matches the historic
+    /// 2×2 stub; the selector in the Preview pane header lets the
+    /// author switch to a curved or volumetric shape so materials
+    /// that read `world_normal` / `world_tangent` non-trivially can
+    /// be inspected. Updates trigger a debounced re-apply path that
+    /// regenerates the preview mesh (see `recompile.rs` and
+    /// `host::apply_quad_for_current_registration`).
+    pub preview_mesh: Arc<Mutable<PreviewMeshKind>>,
+    /// In-memory bytes for each `BufferSlot` default, keyed by slot
+    /// name. Populated by the Definition pane's Buffer Converter modal
+    /// (file drop / file picker / JSON paste). The recompile pipeline
+    /// threads these through `MaterialRegistration.buffer_defaults`
+    /// so the live preview reflects what the author dropped in,
+    /// without requiring a disk write to `assets/materials/<name>/<slot>.bin`
+    /// first.
+    ///
+    /// Slots without an entry default to empty (the
+    /// `MaterialData.<slot>_length` field reads 0 in the shader,
+    /// matching the contract docs).
+    pub buffer_defaults: Arc<Mutable<HashMap<String, Vec<u32>>>>,
+    /// The slot name currently being edited by the Buffer Converter
+    /// modal (`Some("frames")` while the modal is open, `None` when
+    /// the modal is closed). The Definition pane renders the modal as
+    /// a child of the root layout; it watches this signal to know
+    /// whether to display itself.
+    pub converter_open_for_slot: Arc<Mutable<Option<String>>>,
+    /// `?folder=<name>` query-param payload, read once at boot. When
+    /// `Some`, the deep-link banner shows up at the top of the editor
+    /// offering to open the named folder via the FS Access API; on
+    /// successful read the banner clears this back to `None`. The
+    /// folder name is informational only — the browser's
+    /// `show_directory_picker` requires a user-gesture click, so the
+    /// banner's button is what kicks the picker.
+    pub deep_link_folder: Arc<Mutable<Option<String>>>,
+    /// Last error from a deep-link load attempt, surfaced as a tooltip
+    /// / inline message in the banner. Cleared on the next attempt.
+    pub deep_link_error: Arc<Mutable<Option<String>>>,
+}
+
+/// Preview-canvas mesh shape selectable from the Preview pane header.
+/// `Plane` is the default; the other variants are used when a material's
+/// visual behavior depends on geometry. The meshgen primitives ship the
+/// underlying mesh data — this enum is just the user-facing tag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreviewMeshKind {
+    /// 2×2 plane, the default. Matches the historic stub.
+    Plane,
+    /// Unit-radius sphere — the workhorse for any material that reads
+    /// world_normal.
+    Sphere,
+    /// 1×1×1 box centered at origin.
+    Box,
+    /// Unit-radius × 1.5 height cylinder.
+    Cylinder,
+    /// Major-radius 1, tube-radius 0.3 torus.
+    Torus,
+}
+
+impl PreviewMeshKind {
+    /// Human-readable label for the Preview-pane dropdown.
+    pub fn label(self) -> &'static str {
+        match self {
+            PreviewMeshKind::Plane => "Plane",
+            PreviewMeshKind::Sphere => "Sphere",
+            PreviewMeshKind::Box => "Box",
+            PreviewMeshKind::Cylinder => "Cylinder",
+            PreviewMeshKind::Torus => "Torus",
+        }
+    }
+
+    /// Every kind in display order. Drives the dropdown rendering.
+    pub fn all() -> &'static [PreviewMeshKind] {
+        &[
+            PreviewMeshKind::Plane,
+            PreviewMeshKind::Sphere,
+            PreviewMeshKind::Box,
+            PreviewMeshKind::Cylinder,
+            PreviewMeshKind::Torus,
+        ]
+    }
 }
 
 impl EditState {
@@ -64,6 +145,11 @@ impl EditState {
             errors: Arc::new(Mutable::new(Vec::new())),
             compile_pending: Arc::new(Mutable::new(0)),
             compile_last_error: Arc::new(Mutable::new(None)),
+            preview_mesh: Arc::new(Mutable::new(PreviewMeshKind::Plane)),
+            buffer_defaults: Arc::new(Mutable::new(HashMap::new())),
+            converter_open_for_slot: Arc::new(Mutable::new(None)),
+            deep_link_folder: Arc::new(Mutable::new(None)),
+            deep_link_error: Arc::new(Mutable::new(None)),
         }
     }
 
@@ -83,6 +169,8 @@ impl EditState {
         self.wgsl_source.set(wgsl);
         self.errors.set(Vec::new());
         self.compile_last_error.set(None);
+        self.buffer_defaults.set(HashMap::new());
+        self.converter_open_for_slot.set(None);
     }
 }
 

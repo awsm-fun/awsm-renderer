@@ -58,7 +58,7 @@ impl AwsmRenderer {
         // typed-accessor cache refreshes happen synchronously off the
         // status events. This is the load-bearing "transitions happen
         // between frames, not mid-frame" invariant from
-        // docs/plans/more-optimizations.md § Scheduler driving and
+        // https://github.com/dakom/awsm-renderer/pull/99 § Scheduler driving and
         // transition timing.
         let applied = self.poll_pipeline_scheduler();
         if applied > 0 {
@@ -113,6 +113,67 @@ impl AwsmRenderer {
             .take();
         if let Some(snapshot) = pending_snapshot {
             self.coverage.ingest(snapshot, self.frame_index);
+        }
+
+        // Ingest any MSAA edge-overflow snapshot resolved on a prior
+        // frame's `mapAsync`. When `edge_overflow_count > 0`, the
+        // classify pass dropped that many edges past `MAX_EDGE_BUDGET`
+        // and those pixels shaded with sample-0 instead of full MSAA.
+        // Auto-grow: double the budget so the next frame has headroom.
+        // No-op when MSAA is off (no edge buffers, no producer
+        // scheduled), or when the prior `mapAsync` returned 0.
+        let pending_edge_overflow = self
+            .edge_overflow_readback_state
+            .lock()
+            .unwrap()
+            .pending_overflow_count
+            .take();
+        if let Some((edge_count, overflow_count)) = pending_edge_overflow {
+            if overflow_count > 0 {
+                let current_budget = self
+                    .material_edge_buffers
+                    .as_ref()
+                    .map(|eb| eb.max_edge_budget)
+                    .unwrap_or(0);
+                if current_budget > 0 {
+                    // Double, clamped at u32::MAX/2 so the *2 in a
+                    // future overflow can't wrap. Realistic overflow
+                    // counts stay well below this — the clamp is just
+                    // for defense.
+                    let new_budget = current_budget.saturating_mul(2).min(u32::MAX / 2);
+                    if new_budget > current_budget {
+                        match self.set_max_edge_budget(new_budget) {
+                            Ok(true) => {
+                                tracing::info!(
+                                    target: "awsm_renderer::edge_resolve",
+                                    edge_count,
+                                    overflow_count,
+                                    new_budget,
+                                    "edge-overflow auto-grow: doubled MAX_EDGE_BUDGET \
+                                     ({current_budget} -> {new_budget}) to absorb \
+                                     {overflow_count} dropped edges from the prior frame",
+                                );
+                            }
+                            Ok(false) => {}
+                            Err(e) => {
+                                tracing::warn!(
+                                    target: "awsm_renderer::edge_resolve",
+                                    "edge-overflow auto-grow failed: {e:?}; pathological \
+                                     scenes will continue dropping edges (degraded MSAA, not \
+                                     a crash)",
+                                );
+                            }
+                        }
+                    }
+                }
+                // Surface the one-shot warn helper too, so
+                // tracing-subscribers without the auto-grow info-line
+                // filter still see the overflow signal.
+                crate::render_passes::material_opaque::edge_buffers::note_edge_overflow_observed(
+                    overflow_count,
+                    current_budget,
+                );
+            }
         }
 
         // Cheap-material LOD: re-route every mesh-with-a-cheap-variant
@@ -630,7 +691,7 @@ impl AwsmRenderer {
                 .render(&ctx, renderables.opaque)?;
 
             // Per-shader-id MSAA edge-resolve + final blend (Priority
-            // 3 in docs/plans/more-optimizations.md). No-op when MSAA
+            // 3 in https://github.com/dakom/awsm-renderer/pull/99). No-op when MSAA
             // is off or the edge_resolve pipelines haven't been
             // submitted-and-resolved yet (warn-and-skip per
             // pipeline_scheduler::warn_pipeline_not_compiled).
@@ -638,6 +699,34 @@ impl AwsmRenderer {
                 .material_opaque
                 .render_edge_resolve(&ctx)?;
         }
+
+        // Kick the edge-overflow readback copy. `copy_buffer_to_buffer`
+        // is recorded INTO the command encoder so it executes strictly
+        // after the classify dispatch (and after the edge_resolve /
+        // final_blend dispatches that also touched edge_data); the
+        // `mapAsync` spawn-local lives below the `submit_commands`
+        // call so the GPU sees the copy before the host requests the
+        // map. Single-buffered (`inflight` gate) per the comment on
+        // `EdgeOverflowReadbackState`.
+        let kick_edge_overflow_readback = if let Some(edge_buffers) =
+            self.material_edge_buffers.as_ref()
+        {
+            let inflight = self.edge_overflow_readback_state.lock().unwrap().inflight;
+            if !inflight {
+                ctx.command_encoder.copy_buffer_to_buffer(
+                    &edge_buffers.data_buffer,
+                    0,
+                    &edge_buffers.overflow_readback_buffer,
+                    0,
+                    crate::render_passes::material_opaque::edge_buffers::EDGE_OVERFLOW_READBACK_BYTES,
+                )?;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
 
         // Build the opaque RT mip chain when any visible transparent
         // material uses transmission. The transparent pass uses these
@@ -1129,6 +1218,50 @@ impl AwsmRenderer {
                 state.pending_snapshot = Some(snapshot);
                 state.inflight = false;
             });
+        }
+
+        // Kick the MSAA edge-overflow `mapAsync` readback. Same shape
+        // as the coverage readback above: the copy was recorded into
+        // the command encoder before submit; this just hands control
+        // to the host to map the resolved buffer when the GPU finishes.
+        // Resolves a frame or two later; the next render preamble
+        // ingests `pending_overflow_count` and calls
+        // `set_max_edge_budget(current * 2)` if overflow > 0. The
+        // `material_edge_buffers` here is always `Some` because
+        // `kick_edge_overflow_readback` was only set true inside the
+        // matching `if let Some(edge_buffers)` arm.
+        if kick_edge_overflow_readback {
+            if let Some(edge_buffers) = self.material_edge_buffers.as_ref() {
+                let readback_buffer = edge_buffers.overflow_readback_buffer.clone();
+                let state = std::sync::Arc::clone(&self.edge_overflow_readback_state);
+                state.lock().unwrap().inflight = true;
+                wasm_bindgen_futures::spawn_local(async move {
+                    let result = crate::core::buffers::extract_buffer_vec(
+                        &readback_buffer,
+                        Some(crate::render_passes::material_opaque::edge_buffers::EDGE_OVERFLOW_READBACK_BYTES),
+                    )
+                    .await;
+                    let snapshot: Option<(u32, u32)> = match result {
+                        Ok(bytes) if bytes.len() >= 8 => {
+                            let edge_count = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+                            let overflow_count =
+                                u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+                            Some((edge_count, overflow_count))
+                        }
+                        Ok(_) => None,
+                        Err(err) => {
+                            tracing::warn!(
+                                target: "awsm_renderer::edge_resolve",
+                                "edge-overflow readback mapAsync failed: {err:?}",
+                            );
+                            None
+                        }
+                    };
+                    let mut state = state.lock().unwrap();
+                    state.pending_overflow_count = snapshot;
+                    state.inflight = false;
+                });
+            }
         }
 
         if let Some(hook) = hooks.and_then(|h| h.post_render.as_ref()) {

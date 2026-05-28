@@ -11,7 +11,7 @@ use futures_signals::signal_vec::SignalVecExt;
 use wasm_bindgen::JsCast;
 
 use awsm_scene_schema::dynamic_material::{
-    FieldType, MaterialDefinition, TextureSlot, UniformField, UniformValue,
+    BufferSlot, FieldType, MaterialDefinition, TextureSlot, UniformField, UniformValue,
 };
 use awsm_scene_schema::material::MaterialAlphaMode;
 
@@ -57,6 +57,79 @@ pub fn render(state: &EditState) -> Dom {
                 });
             }))
         }))
+        .child(html!("h4", { .text("Buffers") }))
+        .child(render_buffer_table(state))
+        .child(html!("button", {
+            .style("margin-top", "8px")
+            .text("+ add buffer slot")
+            .event(clone!(definition => move |_: events::Click| {
+                let mut def = definition.lock_mut();
+                let n = def.buffers.len();
+                def.buffers.push(BufferSlot {
+                    name: format!("buf_{}", n),
+                    default: None,
+                });
+            }))
+        }))
+    })
+}
+
+fn render_buffer_table(state: &EditState) -> Dom {
+    let definition = state.definition.clone();
+    let converter_open = state.converter_open_for_slot.clone();
+    let buffer_defaults = state.buffer_defaults.clone();
+    html!("div", {
+        .child_signal(definition.signal_cloned().map(clone!(
+            definition, converter_open, buffer_defaults => move |def| {
+            Some(html!("ul", {
+                .style("padding-left", "12px")
+                .children(def.buffers.iter().enumerate().map(|(i, b)| {
+                    let definition = definition.clone();
+                    let converter_open = converter_open.clone();
+                    let buffer_defaults = buffer_defaults.clone();
+                    let name = b.name.clone();
+                    let name_for_count = name.clone();
+                    let name_for_button = name.clone();
+                    let name_for_remove = name.clone();
+                    html!("li", {
+                        .style("display", "flex")
+                        .style("align-items", "center")
+                        .style("gap", "6px")
+                        .style("margin-bottom", "2px")
+                        .child(html!("span", {
+                            .style("flex", "1")
+                            .text(&name)
+                        }))
+                        .child(html!("span", {
+                            .style("color", "#888")
+                            .style("font-size", "11px")
+                            .text_signal(buffer_defaults.signal_cloned().map(move |defs| {
+                                defs.get(&name_for_count)
+                                    .map(|v| format!("{} words", v.len()))
+                                    .unwrap_or_else(|| "(empty)".to_string())
+                            }))
+                        }))
+                        .child(html!("button", {
+                            .text("Edit data…")
+                            .event(clone!(converter_open => move |_: events::Click| {
+                                converter_open.set(Some(name_for_button.clone()));
+                            }))
+                        }))
+                        .child(html!("button", {
+                            .text("×")
+                            .event(clone!(definition, buffer_defaults => move |_: events::Click| {
+                                let mut def = definition.lock_mut();
+                                if i < def.buffers.len() {
+                                    def.buffers.remove(i);
+                                }
+                                drop(def);
+                                buffer_defaults.lock_mut().remove(&name_for_remove);
+                            }))
+                        }))
+                    })
+                }).collect::<Vec<_>>())
+            }))
+        })))
     })
 }
 

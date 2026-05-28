@@ -1,5 +1,5 @@
 //! GPU storage buffers backing the per-shader-id MSAA edge-resolve
-//! pipeline (Priority 3 in docs/plans/more-optimizations.md).
+//! pipeline (Priority 3 in https://github.com/dakom/awsm-renderer/pull/99).
 //!
 //! Two GPU buffers, split to satisfy WebGPU's "a buffer cannot be both
 //! Indirect-readable and Storage(read-write) in the same synchronization
@@ -29,8 +29,8 @@
 //! `(edge_pixel_id, sample_mask_byte)` entry into the matching
 //! per-shader-id sample-list bucket.
 //!
-//! See [§ Pass structure](docs/plans/more-optimizations.md#pass-structure)
-//! and [§ Memory budget](docs/plans/more-optimizations.md#memory-budget)
+//! See [§ Pass structure](https://github.com/dakom/awsm-renderer/pull/99#pass-structure)
+//! and [§ Memory budget](https://github.com/dakom/awsm-renderer/pull/99#memory-budget)
 //! for the architectural design.
 
 use std::sync::Mutex;
@@ -82,7 +82,7 @@ fn note_edge_budget_initialized(bucket_count: u32, max_edge_budget: u32) {
                 "MAX_EDGE_BUDGET initialized — edges beyond this count saturate the counter \
                  (edge_overflow_count atomicAdd) and skip edge_resolve; affected pixels render \
                  with the primary-sample shading. Full atomic-add overflow fallback is parked \
-                 (see docs/plans/more-optimizations.md Block C.2)."
+                 (see https://github.com/dakom/awsm-renderer/pull/99 Block C.2)."
             );
         }
     }
@@ -332,10 +332,21 @@ pub struct MaterialEdgeBuffers {
     /// as `storage RW`; edge_resolve / skybox_edge_resolve / final_blend
     /// use it as `dispatch_workgroups_indirect`'s source.
     pub args_buffer: web_sys::GpuBuffer,
-    /// `Storage | CopyDst` GPU buffer holding `edge_to_xy`,
+    /// `Storage | CopyDst | CopySrc` GPU buffer holding `edge_to_xy`,
     /// `edge_slot_map`, the accumulator, and the per-shader-id +
-    /// skybox sample lists.
+    /// skybox sample lists. `CopySrc` is for the 8-byte counter
+    /// readback into [`Self::overflow_readback_buffer`] each frame —
+    /// `edge_count_mirror` + `edge_overflow_count_mirror` live at the
+    /// start of this buffer.
     pub data_buffer: web_sys::GpuBuffer,
+    /// `MapRead | CopyDst` 8-byte buffer holding a single frame's
+    /// `(edge_count, edge_overflow_count)` u32 pair copied from
+    /// `data_buffer`'s header. Read asynchronously via `mapAsync` by
+    /// the auto-grow loop in `render.rs`; when `edge_overflow_count >
+    /// 0` the renderer calls
+    /// [`crate::AwsmRenderer::set_max_edge_budget`]`(current * 2)` so
+    /// the next frame's classify dispatch has the capacity it needs.
+    pub overflow_readback_buffer: web_sys::GpuBuffer,
     pub bucket_count: u32,
     pub max_edge_budget: u32,
     pub args_size_bytes: u32,
@@ -353,6 +364,12 @@ pub struct MaterialEdgeBuffers {
     /// shader.
     data_header_scratch: Vec<u8>,
 }
+
+/// Bytes the overflow-readback buffer holds —
+/// `(edge_count: u32, edge_overflow_count: u32)`. Lives at offset 0
+/// of [`MaterialEdgeBuffers::data_buffer`]; the per-frame copy
+/// targets [`MaterialEdgeBuffers::overflow_readback_buffer`].
+pub const EDGE_OVERFLOW_READBACK_BYTES: u32 = 8;
 
 impl MaterialEdgeBuffers {
     /// Creates the edge buffers with the default desktop-profile
@@ -399,7 +416,25 @@ impl MaterialEdgeBuffers {
                 data_size_bytes as usize,
                 // Storage so all the per-edge data lives here. NO
                 // Indirect — that's exclusively on args_buffer.
-                BufferUsage::new().with_storage().with_copy_dst(),
+                // CopySrc so the per-frame 8-byte counter readback
+                // can copy_buffer_to_buffer into
+                // `overflow_readback_buffer`.
+                BufferUsage::new()
+                    .with_storage()
+                    .with_copy_dst()
+                    .with_copy_src(),
+            )
+            .into(),
+        )?;
+
+        // 8-byte readback target for (edge_count, edge_overflow_count).
+        // Single-buffered: the auto-grow loop in render.rs only kicks
+        // the copy + mapAsync when no prior readback is in flight.
+        let overflow_readback_buffer = gpu.create_buffer(
+            &BufferDescriptor::new(
+                Some("MaterialEdgeBuffers::overflow_readback"),
+                EDGE_OVERFLOW_READBACK_BYTES as usize,
+                BufferUsage::new().with_map_read().with_copy_dst(),
             )
             .into(),
         )?;
@@ -416,6 +451,7 @@ impl MaterialEdgeBuffers {
         Ok(Self {
             args_buffer,
             data_buffer,
+            overflow_readback_buffer,
             bucket_count,
             max_edge_budget,
             args_size_bytes,

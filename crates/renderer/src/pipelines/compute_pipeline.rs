@@ -248,7 +248,7 @@ impl ComputePipelines {
         let t_start = web_sys::js_sys::Date::now();
 
         // Per-pipeline label + cumulative-timing wrapper (Lessons A from
-        // docs/plans/more-optimizations.md). Each individual future is
+        // https://github.com/dakom/awsm-renderer/pull/99). Each individual future is
         // wrapped to log on resolve with its finish-order index and
         // cumulative wall-clock since batch start. **Critically:** the
         // wrapping uses an `async move { ... promise.await ... }` block

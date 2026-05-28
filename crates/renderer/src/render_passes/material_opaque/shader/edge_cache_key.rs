@@ -1,6 +1,6 @@
 //! Shader cache keys for the per-shader-id MSAA edge-resolve shaders +
 //! the global skybox_edge_resolve + final_blend shaders (Priority 3 in
-//! docs/plans/more-optimizations.md).
+//! https://github.com/dakom/awsm-renderer/pull/99).
 
 use awsm_materials::MaterialShaderId;
 
