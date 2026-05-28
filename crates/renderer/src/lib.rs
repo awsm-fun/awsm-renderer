@@ -1364,8 +1364,24 @@ impl AwsmRendererBuilder {
     }
 
     /// Sets render texture formats.
+    ///
+    /// Clears any pending depth-format override stashed by an earlier
+    /// [`Self::with_profile`] call — the explicit formats struct the
+    /// caller is supplying here wins, per the documented builder
+    /// contract ("later `with_*` calls win" over `with_profile`).
+    /// Without this clear, the call sequence
+    ///
+    /// ```ignore
+    /// .with_profile(RendererProfile::Mobile)            // stashes Depth24Plus
+    /// .with_render_texture_formats(my_custom_formats)   // depth = Depth32Float
+    /// ```
+    ///
+    /// would silently clobber `my_custom_formats.depth` back to
+    /// `Depth24Plus` inside `build()`'s post-probe override-apply
+    /// step.
     pub fn with_render_texture_formats(mut self, formats: RenderTextureFormats) -> Self {
         self.render_texture_formats = Some(formats);
+        self.render_texture_formats_depth_override = None;
         self
     }
 
