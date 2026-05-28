@@ -68,18 +68,22 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     /// `mesh_light_slices` + `mesh_light_indices`. Opaque is true;
     /// transparent stays false.
     pub use_mesh_light_slices: bool,
-    /// Phase-2 placeholder — when `true`, the shared `lights.wgsl`
-    /// emits `apply_lighting_per_froxel*` for the oversized-mesh path.
-    /// Set to `false` for opaque until Phase 2 actually wires the
-    /// sentinel branch in the shader; the template fields must still
-    /// be declared because askama type-checks every `{% if %}` /
-    /// `{{ var }}` reference even when the gate is closed.
+    /// When `true`, the shared `lights.wgsl` emits the
+    /// `apply_lighting_per_froxel*` helpers used by the future
+    /// oversized-opaque routing (see
+    /// `docs/plans/light-culling.md` § Phase 2). Today opaque holds
+    /// this `false` — only transparent consumes the per-froxel walk.
+    /// The three fields below stay declared regardless because askama
+    /// type-checks every `{% if %}` / `{{ var }}` reference in the
+    /// included template, even inside a closed gate.
     pub use_froxel_lights: bool,
-    /// Phase-2 placeholder — froxel slice count (read by the
-    /// shading-time froxel index calc).
+    /// Number of view-space Z slices in the cull grid. Constant-
+    /// folded into the per-pixel froxel-index calc that the gated
+    /// `apply_lighting_per_froxel*` helpers contain.
     pub froxel_slice_count: u32,
-    /// Phase-2 placeholder — per-froxel capacity for the
-    /// `min(count, MAX)` clamp.
+    /// Per-froxel light-index budget used for the `min(count, MAX)`
+    /// clamp at shading time. Phase 1D's auto-grow path bumps this
+    /// and recompiles the consuming shader via the cache key.
     pub froxel_max_per_froxel_capacity: u32,
     /// Concatenated `wgsl_fragment()` of every enabled material — see
     /// `awsm_materials::registry::build_materials_wgsl`.

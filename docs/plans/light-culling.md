@@ -1,814 +1,354 @@
-# GPU light culling — design plan
+# GPU light culling — handoff to finish Phase 2 + 1D
 
-**Branch**: `light-culling`. **Status**: Phase 1 (cull pass + transparent
-consumption) landed. Phase 2 (oversized-opaque routing) implemented
-then reverted — see [§ Storage-buffer cap blocker](#storage-buffer-cap-blocker-2026-05-28).
+**Branch**: `light-culling`. **PR**: [#104](https://github.com/dakom/awsm-renderer/pull/104).
+**Status**: Phase 1A + 1C landed and verified. Phase 2 + 1D **stashed**,
+not pushed — three bugs found, two fixed, one unidentified. This file
+is the operational handoff for the next session. When the work is
+done, **the last commit deletes this file.**
 
-This is a tailored proposal — it builds on the renderer's existing
-visibility-buffer pipeline, the per-mesh CPU bucket system in
-[`crates/renderer/src/light_buckets/`](../../crates/renderer/src/light_buckets/),
-and the empty pass scaffold already wired up at
-[`crates/renderer/src/render_passes/light_culling/`](../../crates/renderer/src/render_passes/light_culling/).
-It is **not** a generic clustered-forward whitepaper.
-
-All design decisions are resolved — see
-[§ Resolved decisions](#resolved-decisions-2026-05-28) at the bottom
-for the planning-conversation outcomes.
+If you are not the next-session implementer, you can skip the rest.
 
 ---
 
-## What we already have
+## Self-test: does the current PR still work?
 
-- **Per-mesh CPU light buckets**
-  ([`light_buckets/buckets.rs`](../../crates/renderer/src/light_buckets/buckets.rs)).
-  For each active punctual light, `SceneSpatial::query_envelope` returns the
-  meshes whose world AABB overlaps the light's influence sphere; the transpose
-  gives each mesh a short `Vec<u32>` of light indices. The per-mesh slice is
-  patched into the mesh's `MaterialMeshMeta` (offset + count), so the opaque
-  shader reads it for free as part of the meta load already on the hot path.
-- **Directional-light global prefix** — directional lights bypass the per-mesh
-  slice entirely. Every opaque pixel loops over the small prefix (~4 typical)
-  unconditionally.
-- **Oversized-mesh flagging** — meshes whose AABB diagonal exceeds 50 m AND
-  who land in a bucket with more than 16 lights get flagged in
-  `LightMeshBuckets::oversized_meshes`. Nothing currently consumes the flag;
-  the design here is what consumes it.
-- **Transparent path is flat** — `material_transparent` does NOT use per-mesh
-  slices; every transparent fragment loops over **all** punctual lights
-  (`MAX_PUNCTUAL_LIGHTS = 1024`, but the live count is what's in the buffer).
-- **Visibility buffer + per-sample depth** — `vis_data` (Rgba16Uint) gives
-  per-sample mesh identity; depth is multisampled when MSAA is on.
-- **Empty pass scaffold** at
-  [`render_passes/light_culling/`](../../crates/renderer/src/render_passes/light_culling/)
-  — bind_group, pipeline, render_pass, shader/template all exist as stubs.
-  `render.rs` already calls `self.render_passes.light_culling.render(&ctx)?`
-  between shadow generation and material classify.
+Before touching anything, confirm the pushed PR baseline still
+renders. From the repo root:
 
----
-
-## What this design adds and why
-
-The renderer is **CPU-coarse / GPU-zero today** for light culling. That's
-fine on the opaque path for scenes where every mesh is small relative to
-each light's influence volume — the per-mesh slice keeps the per-pixel
-loop short. It breaks down in three places:
-
-1. **Oversized meshes** — a single floor mesh spanning the room enters every
-   point-light bucket. Every pixel of that mesh then loops over every
-   point light, regardless of whether the pixel's actual world-space
-   position is inside that light's range.
-2. **Transparency** — flat per-pixel loop over all 1024 slots is wasteful
-   when a screen tile only sees 2–4 lights.
-3. **Z-cull** — a point light behind the camera, or in front of the
-   near depth, still passes the CPU AABB overlap test against any mesh
-   sticking through it. No frustum / depth gate is applied.
-
-We want a **per-froxel light list on the GPU** (3D cells indexed by
-screen-space tile × view-space Z slice) that catches all three cases.
-The CPU per-mesh path stays — it's the right answer for small meshes —
-but the GPU per-froxel list becomes the authoritative cull for:
-
-- Every transparent fragment.
-- Every fragment of a mesh flagged `oversized`.
-- Small-mesh opaque fragments stay on the per-mesh slice path
-  (see [§ Resolved decision A](#a-opaque-shading-default)).
-
-The new GPU pass does **3D froxel culling** (16×16 screen tiles ×
-~32 view-space depth slices, exponential spacing). This is the
-modern Forward+ shape used by Unreal, Unity HDRP, Doom Eternal, and
-Frostbite — for a general renderer, this matches the industry
-baseline. See [§ Resolved decision C](#c-3d-froxels) for the trade-off
-analysis.
-
----
-
-## Where in the frame the cull runs
-
-The existing scaffold places `light_culling.render(...)` between shadow
-generation and material classify
-([`render.rs:584`](../../crates/renderer/src/render.rs#L584)). I'm keeping
-that slot. Rationale:
-
-- **After geometry pass** — keeps the slot location consistent with
-  any future depth-aware variant (the current analytic-froxel design
-  doesn't read depth, but a follow-up 2D-tile fallback for embedded
-  GPUs might). No ordering hazard at this slot regardless.
-- **After shadow gen** — shadow gen reads the per-mesh shadow-receiver
-  flag (already populated CPU-side), independent of GPU light culling.
-  No ordering hazard.
-- **Before material classify** — classify uses 8×8 screen-space tiles
-  ([`material_classify/render_pass.rs`](../../crates/renderer/src/render_passes/material_classify/render_pass.rs));
-  light culling uses 16×16 screen-space tiles × 32 Z slices = froxels.
-  Light culling's screen tile is a 2×2 block of classify tiles, so the
-  shading shaders can derive the froxel index from a pixel's classify
-  tile with `(classify_tile >> 1, z_slice_from_depth(pixel.depth))`.
-- **Before transparent pass** — the transparent pass binds the same
-  froxel light list and uses it as a direct replacement for its
-  current flat-all-lights loop.
-
-This means the cull pass runs **once per frame** at a single point in the
-graph; its output is consumed by classify (optionally), opaque (optionally
-— see [§ Resolved decision A](#a-opaque-shading-default)), and
-transparent (always).
-
-**Why not after material classify?** Because the per-froxel light list
-benefits classify's edge-detection (a tile crossing a sharp light cutoff
-is automatically a per-pixel light edge — though we don't need that for
-correctness today, it's worth noting for future fine-grain culling).
-
-**Why not after opaque shading?** Because opaque shading is the biggest
-consumer; running the cull after it forces transparent to keep its
-flat loop.
-
-**Why not run two culls — pre-opaque and post-opaque?** Tempting (the
-post-opaque cull would have the final depth buffer including all opaque
-surfaces, giving tighter Z bounds for transparency), but the cost is one
-extra compute dispatch that would only matter for transmissive materials
-that bend the depth budget. Defer this; the geometry-pass depth is a
-good-enough upper bound for transparent.
-
----
-
-## Tile size
-
-**16×16 pixels per screen tile** (× 32 Z slices = froxels), not 8×8.
-Reasoning:
-
-- Classify uses 8×8 because its work per tile is tiny (a single
-  visibility scan + bucket-append). Light culling has much heavier
-  per-froxel work (per-light frustum / sphere test, atomic appends
-  to a per-froxel list) and benefits from amortizing that work over
-  a larger tile.
-- 16×16 pixels is the **screen-tile** footprint, NOT the cull pass's
-  workgroup size. The cull pass dispatches per-froxel with a
-  64-thread workgroup (see § Algorithm sketch); the 16×16 number
-  just describes the screen extent each froxel covers.
-- The light list scales as
-  `(viewport_w / 16) × (viewport_h / 16) × slice_count`. At 1920×1080
-  with 32 slices that's `120 × 68 × 32` ≈ 261k froxels. With a
-  per-froxel budget of 32 light indices, the indices buffer is
-  ~32 MiB worst-case; auto-grow ([§ E](#e-saturation-fallback))
-  keeps the steady state much lower.
-- 16×16 is the standard Forward+ pick — most of the literature
-  reference data is at this size, easier to compare results to.
-
-The 8×8 classify tiles still exist; light culling's 16×16 screen
-tiles are strict multiples (one screen tile covers a 2×2 block of
-classify tiles). The shading shader can map either way without
-conversion math.
-
----
-
-## Algorithm sketch
-
-The cull pass runs once per frame. Output is per-froxel — a 3D grid
-of `(tile_x, tile_y, z_slice)` cells, each carrying its own light
-list. Tile dimensions are `16×16 px × 32 Z slices`.
-
-**Z-slice mapping**: exponential from camera near to far per the
-Doom-Eternal-style formula:
-
-```
-slice = floor( log2(view_z / near) / log2(far / near) * SLICE_COUNT )
+```sh
+trunk serve --port 9090 --address 127.0.0.1 \
+  --watch crates/frontend/scene-editor \
+  --watch crates/renderer \
+  --watch crates/renderer-core \
+  --watch crates/editor \
+  --watch crates/scene-schema \
+  --watch crates/web-shared
 ```
 
-Exponential spacing gives the slices closest to the camera (where
-small objects with lots of nearby lights dominate the visual budget)
-the most resolution.
+Open `http://localhost:9090/`. In the browser DevTools console:
 
-**Per froxel (one workgroup per froxel, NOT per tile)**:
-
-1. **Phase 1 — froxel view-space AABB.** Reconstruct the froxel's
-   view-space frustum from `(tile_x, tile_y, z_slice)`: 4 side planes
-   from the tile's screen-space pixel rect, 2 near/far planes from
-   the exponential Z mapping. No depth-texture reads needed — every
-   froxel covers a fixed view-space region.
-2. **Phase 2 — frustum + sphere test.** Each thread iterates a chunk
-   of the active punctual-light list. For each light:
-   - Reconstruct the light's world-space bounding sphere (already in
-     the light's row 1 as `pos_range`).
-   - Sphere-vs-frustum test (cheap closed-form: distance from sphere
-     center to each plane, reject if any > radius).
-   - For spot lights, additionally test the cone direction against
-     the froxel's view direction. Conservative — false-positives are
-     fine; missing a light isn't.
-3. **Phase 3 — append.** Lights that pass the test are atomic-appended
-   to that froxel's light-index list. Overflow atomic-adds into a
-   per-frame overflow counter (CPU mapAsync next frame; auto-grow on
-   detection — see [§ Resolved decision E](#e-saturation-fallback)).
-4. **Phase 4 — directional prefix.** Directional lights aren't culled
-   (they have no bounded volume). The existing global-prefix path
-   stays — every shaded pixel walks the small directional list
-   unconditionally.
-
-**Why per-froxel instead of per-tile-with-depth-reduce**: a tile's
-"true" Z range from a depth pre-pass is tighter, but tiles spanning
-near-camera + far-wall (corridors, outdoor) still see a wide range.
-Exponential froxels give the close-camera slices fine resolution
-where it matters and don't need the depth pre-pass at all (which
-sidesteps the multi-sample-depth-reduce question — answer B).
-
-Workgroup size: **start at 64 threads, one workgroup per froxel.**
-Lights iterated per-thread; the cap is
-`ceil(active_punctual_count / 64)` lights per thread. 64-thread
-workgroups give good GPU occupancy on the typical 32-warp / 32-wave
-hardware and match the Forward+ cull-pass shape used by Unreal /
-Frostbite. The total work per frame is
-`tiles_x × tiles_y × slice_count × ceil(lights / 64)`. At 1920×1080
-with 32 slices and 256 lights: `120 × 68 × 32 × 4` ≈ 1 M
-per-light-test operations per frame — entirely GPU-bound and
-sub-millisecond.
-
-The 64 figure is provisional: Phase 3's perf-validation step (see
-§ Phasing) profiles the cull pass at 1080p and 4K with ~1024 lights
-and decides whether to widen (128 / 256) for better occupancy on
-high-light-count scenes. Switching is a single workgroup-size
-constant in the WGSL + the matching `ceil(lights / N)` chunk size
-in Rust.
-
----
-
-## Output buffer shape
-
-Two storage buffers, both indexed per-froxel:
-
-- `froxel_light_offsets: array<vec2<u32>>` — one (offset, count) per
-  froxel. Indexed by
-  `tile_y * tiles_per_row * slice_count + z_slice * tiles_per_row + tile_x`.
-  Count is 0 for froxels with no lights; offset is the start index
-  into the indices array. Equivalently: a single `array<u32>` where
-  `[2*i]` is offset and `[2*i+1]` is count, packed tightly.
-- `froxel_light_indices: array<u32>` — flat array of `light_index`
-  (the same index the per-mesh path uses, i.e. position in
-  `Lights::iter()`). Each froxel's slice is
-  `[offsets[f].offset .. offsets[f].offset + offsets[f].count]`.
-
-Per-froxel capacity: 32 light indices (= 128 bytes). At 1920×1080
-with 32 Z slices: `120 × 68 × 32 × 128` = ~32 MiB worst-case
-(`max_per_froxel_capacity × froxel_count`). Allocated once at
-viewport size; reallocated via `set_max_per_froxel_capacity` on
-overflow ([§ Resolved decision E](#e-saturation-fallback)) or via the
-standard `ensure_capacity → mark_create` pattern when the viewport
-grows.
-
-A **per-frame overflow counter** lives at a fixed offset in
-`froxel_light_indices`'s header: `atomic<u32>` that the shader
-atomic-adds whenever a froxel's append would exceed capacity. The CPU
-reads it via `mapAsync` next frame (same pattern as the new
-`EdgeOverflowReadbackState` for MSAA edges); when overflow > 0, the
-renderer calls `set_max_per_froxel_capacity(current * 2)` and
-recreates the buffers. Pathological scenes self-correct in one frame.
-This is **auto-grow**, deliberately different from Unreal's
-static-budget full-list-fallback — see [§ Resolved decision E](#e-saturation-fallback).
-
----
-
-## How the shading shaders consume it
-
-### Opaque (per-pixel, per-shader_id)
-
-Currently each opaque pixel reads its mesh's `MaterialMeshMeta` and
-loops over the per-mesh light slice. Under this design:
-
-- **Default (small-mesh) path** — unchanged. The per-mesh slice IS
-  the short list; froxel culling is bypassed. We hit this whenever
-  the mesh's `OVERSIZED` flag (already maintained CPU-side) is false.
-- **Oversized-mesh path** — the per-mesh slice is replaced by the
-  per-pixel froxel slice (froxel cull gives a list scoped to where
-  the mesh actually projects in screen + depth). Detection:
-  `MaterialMeshMeta.mesh_light_slice.count` encodes a sentinel value
-  (e.g. `count = 0xFFFFFFFF`) meaning "use froxel list instead." Set
-  by `MeshLightIndicesGpu::write_gpu` when the mesh is in
-  `LightMeshBuckets::oversized_meshes`.
-
-The shader branch becomes:
-
-```wgsl
-let slice = material_mesh_meta.light_slice;
-if (slice.count == 0xFFFFFFFFu) {
-    // Oversized → froxel path
-    let froxel = pixel_to_froxel(input.coords, input.depth);
-    let entry = froxel_light_offsets[froxel];
-    for (var i = 0u; i < entry.count; i++) {
-        let li = froxel_light_indices[entry.offset + i];
-        …
-    }
-} else {
-    // Normal mesh-bucket path (unchanged).
-    for (var i = 0u; i < slice.count; i++) {
-        let li = mesh_light_indices[slice.offset + i];
-        …
-    }
-}
+```js
+window.wasmBindings.load_scene_by_path('tuning-1k-meshes')
 ```
 
-The `pixel_to_froxel` helper combines the screen-space tile and Z
-slice: `(coords.xy / 16u, z_slice_from_depth(depth))`. The branch is
-per-pixel but the predicate is uniform per-mesh: every fragment of
-the oversized mesh takes the froxel path, every fragment of small
-meshes takes the mesh path. No wave divergence.
+Expected: the 32 × 32 grid of coloured boxes renders with shadow cast
+from the directional light. If that doesn't work, **stop and
+investigate before doing anything else** — the baseline regressed and
+nothing else in this document is valid until you understand why.
 
-(Saturation handling is not in the per-pixel shader: under
-[§ Resolved decision E](#e-saturation-fallback) the cull pass
-auto-grows `max_per_froxel_capacity` between frames whenever the
-shader observes overflow. The shading-time loop just reads
-`entry.count` — guaranteed to be the true count when the cull pass
-read it.)
-
-### Transparent (per-pixel, per-shader_id)
-
-Currently flat-loops over all punctual lights. Under this design:
-**always** use the froxel list. Same branch as the oversized-opaque
-path; no per-mesh sentinel needed (every transparent fragment uses
-the froxel path unconditionally). This is the biggest win —
-transparent fragments today are unbounded by per-mesh culling, and
-32–1024 lights per pixel is meaningful waste.
-
-### Why not put every opaque fragment on the froxel path?
-
-Considered. Two reasons against making it default:
-
-1. **The per-mesh slice is cheaper for small meshes.** A typical mesh
-   touches 1–4 lights; the froxel list might have 8–16. The per-mesh
-   loop is shorter for the common case.
-2. **The per-mesh slice already passes a stronger AABB test** — it knows
-   which meshes a light overlaps, which the tile-test doesn't. The
-   froxel test sees "a light's sphere intersects this froxel's
-   frustum" but that doesn't mean the mesh inside the froxel is in
-   the light's range.
-
-[§ Resolved decision A](#a-opaque-shading-default) confirms this
-design: per-mesh default for small meshes, froxel override for
-oversized + transparent.
+Repeat with `tuning-64-lights` — should show 10 spheres on a floor
+surrounded by 64 coloured punctual lights.
 
 ---
 
-## Memory budget
+## What's already done (in the PR)
 
-At 1920×1080 with 32 Z slices:
+- **3D froxel cull compute pass.** One workgroup per
+  `(tile_x, tile_y, z_slice)`. Side-plane sphere/frustum test, near/far
+  from the exponential Z-slice mapping (`z(s) = near · (far/near)^s`),
+  atomic-append into a per-froxel slice. WGSL in
+  [`render_passes/light_culling/shader/light_culling_wgsl/`](../../crates/renderer/src/render_passes/light_culling/shader/light_culling_wgsl/).
+- **Transparent shader consumes per-froxel lights** via
+  `apply_lighting_per_froxel*` in
+  [`shared_wgsl/lighting/lights.wgsl`](../../crates/renderer/src/render_passes/shared/shared_wgsl/lighting/lights.wgsl).
+  Replaces the flat 1024-light loop on every transparent fragment with
+  a per-pixel froxel walk (steady-state ≤ 32 lights).
+- **`tuning-1024-lights` test fixture** authored via
+  [`generate_tuning_scenes.rs`](../../crates/scene-schema/examples/generate_tuning_scenes.rs) —
+  ~1000 point lights + an oversized floor + a Blend-mode glass pane +
+  a 40-light corner cluster meant to trigger Phase 1D auto-grow.
+- **Buffer scaffolding for Phase 2 + 1D** that didn't ship:
+  `LightCullingBuffers` already exposes `set_max_per_froxel_capacity`,
+  `params_buffer`, and the `overflow_buffer` has `copy_src` for the
+  readback path.
 
-- `froxel_light_offsets`: 120 × 68 × 32 × 8 bytes = ~2 MiB. Persistent.
-- `froxel_light_indices`: 120 × 68 × 32 × 32 × 4 bytes = ~32 MiB
-  worst-case (`max_per_froxel_capacity * froxel_count`). Persistent;
-  shrinks at lower viewport / capacity values.
-- Per-frame staging via the existing `MappedUploader` pattern: ~16 KiB
-  of camera-derived frustum bounds + light bounds metadata (uploaded
-  once per frame).
-
-At 4K (3840×2160) × 32 slices: 4× the above — 8 MiB + 128 MiB. The
-128 MiB upper bound is worst-case `max_per_froxel_capacity = 32` on
-4K; auto-grow ([§ Resolved decision E](#e-saturation-fallback)) starts
-lower and only grows when overflow is observed, so in practice the
-steady state is 1–4 lights per froxel and the buffer is ~4–16 MiB at
-4K.
-
-Per-froxel capacity = 32 is the initial guess. From the CPU bucket
-stats we already have (`LightMeshBuckets::last_max_bucket`),
-realistic interior scenes have at most ~10 lights per froxel. 32
-leaves headroom; the auto-grow path covers any pathological case
-within one frame.
+The **opaque** pass still uses the per-mesh CPU bucket path
+([`light_buckets/buckets.rs`](../../crates/renderer/src/light_buckets/buckets.rs))
+and doesn't consume the cull output yet. That's what Phase 2 lands.
 
 ---
 
-## Pipeline + bind-group plan
+## What's stashed
 
-The empty scaffold already imports `ShaderTemplateLightCulling` and a
-shader-cache-key struct. Filling them out:
+Apply with:
 
-### Bind group layout (one bind group, slot 0)
-
-| Binding | Resource | Notes |
-|---|---|---|
-| 0 | `camera_raw: uniform` | View/proj matrices for frustum reconstruction + near/far for the Z-slice mapping. Already on `ctx.camera.gpu_buffer`. |
-| 1 | `lights_info: uniform` | Total `light_count` for per-thread chunk size. |
-| 2 | `lights_punctual: uniform` | The packed `LightPacked` array (already at `ctx.lights.gpu_punctual_buffer`). |
-| 3 | `froxel_light_offsets: storage<read_write>` | Output. `array<vec2<u32>>` indexed by `tile_y * tiles_per_row * slice_count + z * tiles_per_row + tile_x`. |
-| 4 | `froxel_light_indices: storage<read_write>` | Output. Flat array of `u32` light indices. Atomics on the per-froxel append counter live inside `offsets`. |
-| 5 | `overflow_counter: storage<read_write>` | Single `atomic<u32>` — incremented when a froxel's append would exceed its capacity. CPU mapAsync next frame; auto-grow on detection. |
-
-4 storage + 2 uniform bindings on one group. No depth texture binding
-— froxel view-space bounds come from the Z-slice mapping (analytic),
-not from a depth-texture reduction. Single MSAA-agnostic cache key
-shape:
-
-```rust
-#[derive(Hash, Debug, Clone, PartialEq, Eq)]
-pub struct ShaderCacheKeyLightCulling {
-    pub slice_count: u32,
-    pub max_per_froxel_capacity: u32,
-}
+```sh
+git stash apply
 ```
 
-One pipeline. Recompiles on auto-grow (when `max_per_froxel_capacity`
-changes).
+The stash contains a working Phase 2 + Phase 1D implementation EXCEPT
+for one remaining bug — **rendering produces a black canvas on every
+scene, including empty ones with no lights.** Read this whole document
+before diving in; the bug is subtle.
 
-### Pipeline-readiness integration
+### What the stash architecturally does
 
-Per the [pipeline-readiness scheduler](../../crates/renderer/src/pipeline_scheduler/),
-this is a new `PassDef::LightCulling { samples: u8 }`. Two variants
-(samples=1, samples=4) submit to the scheduler and transition Pending →
-Ready independently. The render-frame preamble's `warn_pipeline_not_compiled`
-already covers "skip if Pending"; if the cull pipeline isn't ready yet,
-the shading shaders fall back to the per-mesh / flat path (the existing
-behavior).
+The big move is **merging `mesh_light_indices` and the cull pass's
+`froxel_storage` into a single storage buffer** owned by
+`LightCullingBuffers`. Required because the opaque pass was already at
+its `maxStorageBuffersPerShaderStage` ceiling — adding a second
+storage binding pushed it over (Dawn counts `opaque_tex`
+storage-texture inside the same per-stage budget; the renderer was at
+9 storage buffers + 1 storage texture = 10/10 pre-Phase-2).
 
-### Lazy or eager?
+Layout of the merged `LightCullingBuffers::storage_buffer`:
 
-**Lazy on first scene with at least one punctual light.** A zero-scene
-shouldn't pay the compile cost. The trigger is the first call to
-`insert_light` with `Light::Point` or `Light::Spot` — mirrors the
-shadow / EVSM lazy-compile pattern from PR #99 Block B. Until that
-trigger fires, the existing scaffold's `render(&ctx)` is a no-op and
-the shading shaders take the existing per-mesh path.
+```
+[ 0 .. mesh_indices_capacity_u32 )            ← CPU-written per-mesh slice
+[ mesh_indices_capacity_u32 .. end )          ← GPU cull pass per-froxel data
+                                                stride = (max_per_froxel_capacity + 1) u32
+                                                slot 0   = atomic count
+                                                slots 1+ = light indices
+```
 
----
+`MeshLightIndicesGpu` no longer owns `indices_buffer`; it routes its
+per-frame upload through `light_culling_buffers.storage_buffer` head
+region. The cull WGSL adds `cull_params.mesh_indices_capacity_u32` to
+every froxel offset so its writes land in the tail. Both opaque and
+transparent bind the same physical buffer and use the same offset
+arithmetic via `cull_params`.
 
-## Bind-group integration on the consuming side
+`max_per_froxel_capacity` is **runtime, not compile-time** — it lives
+on `cull_params` so the Phase 1D auto-grow path can bump it without
+recompiling the cull or consumer shaders.
 
-The opaque + transparent main bind groups gain two new entries
-(`froxel_light_offsets`, `froxel_light_indices`). That requires:
+### What's also in the stash
 
-- Two new `BindGroupCreate` events:
-  - `LightCullingFroxelsResize` — when the output buffers grow
-    (viewport resize OR auto-grow capacity bump). Rebinds opaque
-    main, transparent main, light_culling itself.
-  - `LightCullingOverflowReadback` — when the `with_copy_src`
-    overflow-counter buffer is recreated (only happens on
-    capacity-grow). Rebinds light_culling only.
-- Layout-key bump on opaque + transparent main BGLs. This is a
-  pipeline-cache-key change — all opaque + transparent pipelines
-  recompile once, then stay.
-
-That's a one-time recompile cost; subsequent runs hit the cache.
-
----
-
-## Test scene — `tuning-1024-lights`
-
-The existing tuning suite tops out at
-[`tuning-64-lights`](../../crates/frontend/scene-editor/dist/assets/world/tuning-64-lights/project.json)
-which is too small to stress-test froxel culling. Phase 1 adds a new
-scene **`tuning-1024-lights`** authored via the same
-[generator pattern](../../crates/scene-schema/examples/generate_tuning_scenes.rs):
-
-- ~1000 point lights (just under the `MAX_PUNCTUAL_LIGHTS = 1024`
-  cap in [`lights.rs:29`](../../crates/renderer/src/lights.rs#L29);
-  staying under the cap keeps this scene independent of any future
-  cap bump). Spread across a 100m × 100m floor in a quasi-random
-  grid so steady-state per-froxel counts stay in the 2–8 range and
-  pathological clusters land in a few specific froxels.
-- One large floor plane (100m × 100m) — exceeds the
-  `OVERSIZED_AABB_DIAGONAL_METERS = 50.0` threshold
-  ([`buckets.rs:28`](../../crates/renderer/src/light_buckets/buckets.rs#L28))
-  so it routes through the new oversized → froxel path (Phase 2).
-- A medium-density grid of small props (chairs / boxes / spheres,
-  ~50 meshes, each well under 50m diagonal) — these stay on the
-  per-mesh slice path and are the regression-check baseline (no
-  visual change expected).
-- A soft-glass transparent material (single sphere or pane) in
-  front of a wall — exercises the transparent-froxel path.
-- A handful of light clusters intentionally overlap (e.g. 40+ lights
-  concentrated in one corner) so a single froxel exceeds the initial
-  `max_per_froxel_capacity = 32` budget and triggers the auto-grow
-  readback (Phase 3 acceptance).
-
-Generation: add a `scene_1024_lights()` function and a
-`("tuning-1024-lights", scene_1024_lights())` entry to the loop in
-[`generate_tuning_scenes.rs:34-42`](../../crates/scene-schema/examples/generate_tuning_scenes.rs#L34).
-Run `cargo run --example generate_tuning_scenes -p awsm-scene-schema`
-to write `assets/world/tuning-1024-lights/project.json`. Update the
-example's module-doc list at the top with the new entry. The
-scene-editor frontend picks it up automatically — loadable via
-`window.wasmBindings.load_scene_by_path("tuning-1024-lights")` as
-documented in
-[`actions/measurement.rs:8`](../../crates/frontend/scene-editor/src/actions/measurement.rs#L8).
-
-This scene becomes the visual + perf acceptance fixture for all
-three phases — the acceptance criteria below reference it directly.
+- **Phase 1D auto-grow readback.** `FroxelOverflowReadbackState`
+  mirrors `EdgeOverflowReadbackState` byte-for-byte —
+  `copy_buffer_to_buffer` recorded into the per-frame encoder right
+  after the cull dispatch, `spawn_local` `mapAsync` after submit,
+  ingest at next frame's top + `set_max_per_froxel_capacity(current * 2)`
+  on observed overflow.
+- **Phase 2 sentinel routing.** `MeshLightIndicesGpu` writes
+  `light_slice_count = 0xFFFFFFFFu` into `MaterialMeshMeta` for meshes
+  in `LightMeshBuckets::oversized_meshes()`. Opaque WGSL branches on
+  the sentinel and takes `apply_lighting_per_froxel` instead of the
+  per-mesh walk.
+- **Temporary cull verification.** `debug_cull_heatmap` field on the
+  opaque template, gated by `option_env!("AWSM_DEBUG_CULL_HEATMAP")`.
+  When set, the opaque shader overrides the final colour with a
+  per-pixel green→red gradient over the froxel light count.
 
 ---
 
-## Phasing
+## Bugs found and fixed (already in the stash)
 
-Three phases. Each is shippable on its own.
+### 1. Mapped staging ring oversized
 
-### Phase 1 — 3D froxel pass + transparent consumption
+`MeshLightIndicesGpu::write_gpu` was passing `total_storage_bytes` (~30 MB
+on a 1080p viewport) as the `MappedUploader::write_dirty_ranges`
+`dest_size` parameter. `MappedStagingRing` interprets that as the
+backing-buffer size and allocates `ring_depth × dest_size` slots with
+`mappedAtCreation: true`. Three × 30 MB = 90 MB of mapped staging
+buffers, which exhausted Chrome's device-wide mapped pool and broke
+unrelated mapped uploads (Shadow Descriptors started warning with
+`createBuffer ... is too large for the implementation when
+mappedAtCreation == true` once per frame).
 
-- Author the `tuning-1024-lights` test scene per § Test scene above.
-  Land this first so subsequent phases have a stable fixture to
-  visually regress against.
-- Fill in the bind group, pipeline, cache-key, shader template under
-  `crates/renderer/src/render_passes/light_culling/`.
-- Write the WGSL: exponential Z-slice mapping + per-froxel
-  frustum/sphere test + atomic append.
-- Output: `froxel_light_offsets` + `froxel_light_indices` storage
-  buffers.
-- Wire transparent shaders to look up per-froxel lights via
-  `(tile_x, tile_y, z_slice) → offset+count` instead of flat-looping
-  all punctual lights.
-- Opaque path stays on per-mesh slice (unchanged this phase).
-- Auto-grow infra: per-frame overflow counter + mapAsync readback +
-  `set_max_per_froxel_capacity(current * 2)` on detection. Mirrors
-  the `set_max_edge_budget` pattern from MSAA.
+**Fix in stash**: pass `head_region_bytes = mesh_indices_capacity_u32 × 4`
+instead. The CPU only writes the head region; the cull pass writes
+the tail via shader-side atomics with no host upload, so the staging
+ring never needs to back it.
 
-**Acceptance**: a scene with 32+ point lights and a transparent
-material in front of a wall renders correctly; per-frame profile
-shows transparent shader cost dropping (the loop is now bounded).
-No opaque regression.
+### 2. `ensure_viewport` ordering
 
-### Phase 2 — oversized-mesh routing for opaque
+`render.rs` preamble was calling `mesh_light_indices_gpu.write_gpu`
+BEFORE `light_culling_buffers.ensure_viewport`. On the first frame
+(where the placeholder 16 × 16 viewport gets resized to the real
+swap-chain size), the viewport resize calls `Self::new(...)` and
+replaces the whole `storage_buffer`, wiping the freshly-uploaded mesh
+indices.
 
-- `MeshLightIndicesGpu::write_gpu` writes the `count = 0xFFFFFFFF`
-  sentinel into oversized meshes' `MaterialMeshMeta` slot.
-- Opaque shader gains the per-froxel branch behind the sentinel.
-- Small-mesh opaque keeps the per-mesh slice path.
+**Fix in stash**: moved the cull-pass per-frame setup (`ensure_viewport`,
+`write_params`, `reset_overflow`) above `mesh_light_indices_gpu.write_gpu`
+so the buffer is sized first, then the mesh upload lands in the final
+buffer for the frame.
 
-**Acceptance**: a scene with a single floor mesh spanning a room
-with 32 point lights renders correctly; per-pixel light count
-drops from "all 32" to "only the lights overlapping that pixel's
-froxel."
+### 3. ⚠️ Black canvas — root cause unidentified
 
-### Phase 3 — auto-grow hardening + perf validation
+After both fixes above, every scene renders fully black — including
+empty scenes that should show just the procedural skybox. **No GPU
+validation errors. No WGSL compile errors. No uncaptured error queue
+entries.** The renderer is running, frames are submitted, the cull
+pass dispatches, the opaque empty pipeline (which is the skybox path
+on an empty scene) compiles cleanly.
 
-- Stress-test the clustered-light corner of `tuning-1024-lights`
-  (40+ lights in a single froxel); confirm auto-grow fires within
-  one frame and steady-state perf converges.
-- Profile cull-pass cost at 1080p and 4K with ~1000 lights;
-  confirm <500 µs per frame.
-- Profile per-fragment shader cost on the oversized floor in
-  `tuning-1024-lights`; confirm <2× the small-mesh fragment cost.
-- Decide whether to widen the cull workgroup from 64 to 128 / 256
-  based on the high-light-count profile (see § Algorithm sketch).
+This is the one you have to fix.
 
 ---
 
-## What this design deliberately does NOT do
+## Debugging recipe for bug #3
 
-- **Transparent meshes' depth contribution.** The analytic-froxel
-  design doesn't read depth at all, so transparent surfaces neither
-  contribute to nor consume the cull's depth bounds — every froxel
-  covers a fixed view-space region regardless of what geometry sits
-  inside it. Lights in front of opaque geometry but behind transparent
-  geometry are still in the froxel's light list — correct,
-  conservative.
-- **Per-pixel light-list reconstruction.** Some renderers do a
-  "subgroup-shuffle" per-pixel light list. Not needed here — the
-  froxel list is already short enough (≤32 steady-state) that
-  per-pixel iteration is cheap.
-- **Light-list compaction between frames.** Each frame writes its
-  own list from scratch. Temporal reuse would buy nothing while the
-  camera moves; static-camera scenes don't need the optimization either
-  (the cull pass is already cheap).
-- **Mesh-shader / mesh-shader-like culling at the light level.** Not
-  supported on WebGPU.
-- **Replacing the directional-light global prefix.** Directional lights
-  don't benefit from spatial culling (they affect every pixel by
-  definition). They stay in the small global-prefix loop.
+Work in this order. Don't skip steps.
 
----
+### Step 1 — Confirm both fixes from the stash actually applied
 
-## Where it touches existing code
+```sh
+git stash apply
+cargo check -p awsm-renderer    # must pass clean
+grep -n "head_region_bytes" crates/renderer/src/light_buckets/gpu.rs   # fix #1
+grep -n "viewport_w_for_cull" crates/renderer/src/render.rs            # fix #2
+```
 
-Read-only references (no edits expected):
+If either grep returns nothing, the stash didn't apply cleanly —
+investigate before continuing.
 
-- `crates/renderer/src/light_buckets/buckets.rs` — `oversized_meshes()`
-  consumed by `MeshLightIndicesGpu::write_gpu`.
-- `crates/renderer/src/lights.rs` — `Lights::iter()` order is the
-  light-index space the froxel list uses.
+### Step 2 — Reproduce the black canvas on the simplest case
 
-Files that grow (estimated diff size):
+Launch trunk (see "Self-test" above). Navigate to the scene editor
+WITHOUT loading any scene. You should see the procedural skybox.
+**You will see black.** That's bug #3.
 
-- `crates/renderer/src/render_passes/light_culling/` — ~600 lines of
-  Rust + WGSL across the 4 files now empty.
-- `crates/renderer/src/bind_groups.rs` — +1 `BindGroupCreate` variant
-  (`LightCullingTilesResize`) + the routing match-arm. ~20 lines.
-- `crates/renderer/src/render_passes/material_opaque/bind_group.rs`
-  and `material_transparent/bind_group.rs` — +2 bindings each on the
-  main bind group; recreate paths gain two new buffer entries. ~30
-  lines total.
-- `crates/renderer/templates/material_opaque_wgsl/...` and
-  `material_transparent_wgsl/...` — the per-pixel light-list branch.
-  ~50 lines of WGSL.
-- `crates/renderer/src/light_buckets/gpu.rs` — sentinel write for
-  oversized meshes in `write_gpu`. ~10 lines.
-- `crates/renderer/src/pipeline_scheduler/` — register the new
-  `PassDef::LightCulling` variant + its compile path. ~40 lines.
+Take a screenshot. Then in the DevTools console:
 
-Total: ~750 lines, mostly mechanical wiring.
+```js
+// dump all queued GPU device errors
+const adapter = await navigator.gpu.requestAdapter();
+const device = await adapter.requestDevice();
+device.pushErrorScope('validation');
+// trigger a frame somehow (resize the canvas slightly)
+const err = await device.popErrorScope();
+console.log('error:', err);
+```
 
----
+Document what `err` contains. The bug may surface only there — the
+production renderer doesn't print uncaptured validation errors when
+they fire mid-frame on a different device handle.
 
-## Acceptance criteria (end-to-end)
+### Step 3 — Hypothesis ranking (most-to-least likely)
 
-The plan is "done" when:
+1. **Opaque-empty pipeline silently fails compile** because the new
+   bindings on the `lights` BGL (slot 2 lights_storage, slot 3
+   cull_params) don't match the empty pipeline's pipeline-layout
+   expectations. Check by adding a `tracing::info!` at every pipeline
+   compile site for `OpaqueEmpty` and confirming `Ready` fires.
+2. **The merged storage buffer's `min_binding_size`** computed from the
+   WGSL struct doesn't match what the host binds. The
+   `lights_storage: array<u32>` shader binding has no minimum size,
+   but `cull_params: CullParams` has a fixed 48-byte struct. Verify
+   `LightCullingBuffers::params_buffer` is created at ≥ 48 bytes from
+   frame 0 (it is, but double-check the bytes are actually written
+   before the first opaque dispatch).
+3. **Bind-group recreation order** still wrong. The fix in step 2
+   ensured `light_culling_buffers` is sized before
+   `mesh_light_indices_gpu.write_gpu`, but `bind_groups.recreate(...)`
+   runs even later (around `render.rs:460`). Between the cull-buffer
+   resize (which marks `LightCullingFroxelsResize`) and the recreate
+   call, no rendering happens — but ALSO between the recreate and the
+   first render pass, the bind-group routing for
+   `LightCullingFroxelsResize` may not be hitting OpaqueLights
+   correctly. Re-check the fan-out in `bind_groups.rs:363` and confirm
+   `recreate_lights` actually rebuilds against the new buffer.
+4. **The `MaterialMeshMeta.light_slice_count` sentinel collides with
+   "no lights" semantics.** The stash sets count = `0xFFFFFFFFu` for
+   oversized meshes. The opaque shader's per-mesh path interprets that
+   as a huge count and tries to loop 4 billion times — but only if the
+   sentinel branch isn't taken first. Verify that on an empty scene,
+   no mesh has the sentinel (no meshes = no sentinel writes), so
+   `light_slice_count = 0` everywhere. The bug should not be visible
+   on an empty scene if this hypothesis is correct.
+5. **The shared `lights.wgsl` template substitution.** Phase 2's stash
+   renames `mesh_light_indices` → `lights_storage` everywhere and adds
+   the per-froxel walk under `{% if use_froxel_lights %}`. The empty
+   template sets `use_froxel_lights = false`, so the per-froxel walk
+   isn't emitted — but the binding declarations (`@binding(2)
+   lights_storage`, `@binding(3) cull_params`) ARE emitted
+   unconditionally from `material_opaque_wgsl/bind_groups.wgsl`. If
+   the empty pipeline doesn't reference those bindings in any function
+   body, WGSL drops them as dead — but the pipeline LAYOUT still
+   requires them. Pipeline-layout vs shader-binding mismatch would
+   throw a validation error, but it might be swallowed.
 
-1. The `tuning-1024-lights` scene (~1000 point lights + transparent
-   pane + oversized floor) renders at 60 fps at 1080p on the dev
-   machine. Today the same scene would be transparent-shader-bound
-   on the flat-all-lights loop AND opaque-shader-bound on the
-   oversized floor's bucket-of-1024.
-2. The cull-pass profile shows ≤500 µs per frame at 1080p with ~1000
-   lights and the default 32-slice froxel grid (~261k froxels at
-   1920×1080 ÷ 16² × 32).
-3. The oversized floor in `tuning-1024-lights` shades correctly with
-   a per-pixel light count matching ground truth (verified by debug
-   visualization: each pixel colored by `count`).
-4. MSAA on/off both work — the cull pass derives froxel view-space
-   bounds analytically from the camera near/far + the exponential
-   Z-slice mapping, not from a depth-texture reduction, so MSAA's
-   per-sample depths don't enter the picture at all.
-5. No regression on the small-mesh scenes that currently use the
-   per-mesh slice — same frame time, same visual output (byte-identical
-   pixel reads via `getImageData` per the existing MSAA debugging
-   methodology in `docs/DEBUGGING-PREVIEW.md`).
+### Step 4 — Targeted instrumentation
 
----
+Add a one-shot log at the top of the opaque pass's `render(...)` that
+prints which bucket(s) have non-zero workgroup counts. If everything
+is 0, the classify pass didn't write any tiles — the bug is upstream
+of opaque entirely. If the opaque dispatch is correct but the output
+is black, the bug is in opaque shading.
 
-## Resolved decisions (2026-05-28)
+`crates/renderer/src/render_passes/material_opaque/render_pass.rs`
+has the dispatch. Add a `tracing::info_span` around it with the
+indirect-args buffer contents read back via `mapAsync` (one-shot,
+discarded after the first hit).
 
-All six original open questions resolved in the initial planning
-conversation; a second pre-implementation pass on 2026-05-28 added
-three more decisions (G, H, I below) covering the test scene,
-workgroup size, and PR workflow. The design now bakes them all in.
+### Step 5 — Bisect against the PR baseline
 
-### A. Opaque shading default
+If steps 1–4 don't isolate it, copy `crates/renderer/src/` to a
+scratch dir and progressively revert pieces of the stash until the
+canvas un-blacks. The order to revert in (most → least likely to
+matter):
 
-**Per-mesh default, per-froxel for oversized.** Strictly tighter cull
-than Unreal for small meshes (chair: 2 lights vs Unreal's 3+). Floor
-case (oversized) routes to per-froxel via the existing CPU-side
-`OVERSIZED` flag in `light_buckets/buckets.rs`. Two code paths in
-the shader; the branch is uniform per mesh so no GPU warp divergence.
-This is the only option that makes the visibility-buffer architecture
-actually pay off for lighting.
+1. Opaque WGSL sentinel branch (`compute.wgsl`) — revert to PR
+   baseline's plain `apply_lighting_per_mesh` call.
+2. Opaque BGL changes in `bind_group.rs` — go back to single
+   `mesh_light_indices` binding.
+3. `MeshLightIndicesGpu` refactor — go back to owning its own buffer.
 
-### B. Depth reduce
-
-**N/A under the analytic-froxel design** (decision C below).
-
-This question only mattered for a 2D-tile-with-per-frame-depth-reduce
-cull (where the depth pre-pass would have given the tile a tighter Z
-range than camera near/far). Picking 3D froxels with an exponential
-Z-slice mapping derives every froxel's view-space bounds analytically
-from the camera near/far at compile-time — no depth-texture reads at
-all. The sample-0-vs-sample-min-max question doesn't apply.
-
-If a future revision adds a 2D-tile fallback path (e.g. for an
-embedded GPU profile that can't afford the 3D froxel buffer), bring
-this question back and pick sample-0 then for consistency with
-`get_standard_coordinates`.
-
-### C. 3D froxels
-
-**Match Unreal: ship 3D froxels (16×16×32, exponential Z spacing)
-from day one.** This is the modern Forward+ shape (Unreal, Unity
-HDRP, Doom Eternal, Frostbite). 2D-only is the late-2000s shape that
-loosens up on deep tiles. For a general renderer, 3D is the right
-answer to match the industry baseline. Costs 4× the 2D buffer size
-(~4 MB at 4K) and ~2× compute per cull dispatch, but cull rate is
-the industry standard.
-
-The Phase plan adjusts: there is no "2D first, 3D later" stop. Phase
-1 ships 3D froxels for the transparent path; Phase 2 extends to
-oversized-opaque routing; Phases 3-5 are polish + tuning.
-
-### D. Lazy-compile trigger
-
-**Lazy on first punctual-light insert.** Matches the PR #99 Block B
-pattern (EVSM, ShadowGen, Line, Picker). Zero-scene +
-directional-only scenes never compile the cull pipeline. First
-`Light::Point` / `Light::Spot` insertion triggers compile via the
-scheduler; readiness propagates the usual way. Frontends that need
-the compile done before a fireball can call
-`wait_for_pipelines_ready`.
-
-### E. Saturation fallback
-
-**Auto-grow per-froxel capacity** (mirror the MSAA `set_max_edge_budget`
-pattern). Shader counts overflows via a small atomic counter; CPU
-reads via `mapAsync` from a `with_copy_src` storage region; renderer
-calls `set_max_per_froxel_capacity(current * 2)` and recreates the
-buffer + marks bind groups for recreation. Pathological scenes
-self-correct in one frame. Consistent with the rest of the
-renderer's growable-budget pattern (extras-pool, MSAA edge,
-classify capacity).
-
-This beats Unreal's static-budget full-list-fallback because:
-- Steady-state memory is identical (you converge to the same
-  water mark).
-- Unreal's fallback is a permanent perf cliff for the duration of
-  the scene; ours is one frame of mapAsync latency.
-- Combines with the existing per-frame coverage + edge-overflow
-  mapAsync pattern (one extra u32 readback, no new sync point).
-
-### F. Tile size
-
-**16×16 screen tile** (× 32 Z slices = froxel). Matches Forward+
-literature; the 16×16 figure is the screen-extent each froxel
-covers, not the cull-pass workgroup size (see decision H below for
-the actual workgroup shape). Classify's 8×8 tiles remain distinct;
-one cull tile covers a 2×2 block of classify tiles.
-
-### G. Test scene
-
-**`tuning-1024-lights`**, authored via
-[`generate_tuning_scenes.rs`](../../crates/scene-schema/examples/generate_tuning_scenes.rs).
-~1000 lights (one shy of `MAX_PUNCTUAL_LIGHTS = 1024` so the scene
-doesn't depend on a future cap bump), one oversized floor, a small
-prop grid as the no-regression baseline, a transparent pane, and an
-intentional 40+ light cluster to trigger the auto-grow path. See
-§ Test scene above for the full spec. Lands as the first commit in
-Phase 1 so subsequent phases regress against a stable fixture.
-
-### H. Cull-pass workgroup size
-
-**Start at 64 threads / workgroup, one workgroup per froxel.**
-Matches Forward+ practice and gets the implementation done. Phase 3
-profiles at ~1000 lights, 1080p + 4K and decides whether to widen
-to 128 / 256 — switching is a single WGSL constant + matching
-`ceil(lights / N)` chunk-size in Rust, low cost to revisit.
-
-The earlier "256 threads per workgroup" claim in § Tile size was a
-mismatch between the screen-tile footprint (16×16 pixels) and the
-cull-pass workgroup shape; both sections now say 64 explicitly with
-Phase 3 as the revisit point.
-
-### I. PR / branch workflow
-
-**Single `light-culling` branch, single PR covering all three
-phases.** ~750 lines of mostly mechanical wiring; splitting Phase 1
-(transparent path + new bind-group layout) from Phase 2 (oversized
-opaque) would leave opaque-oversized fragments on the old per-mesh
-path until the second PR landed — net worse for review and for
-mid-merge bisecting. Implementation order inside the PR still
-follows the Phase 1 → 2 → 3 sequence; commits stay phase-aligned so
-the PR can be read top-down.
+Whichever step un-blacks the canvas is the bug surface.
 
 ---
 
-## Storage-buffer cap blocker (2026-05-28)
+## Acceptance criteria for shipping the stash
 
-**Phase 2 implemented and reverted.** The oversized-opaque routing
-adds two new bindings on the opaque pass's `lights` BGL — a
-`cull_params` uniform and a `froxel_storage` read-only storage view of
-the same buffer the cull pass writes. The uniform is free (separate
-device cap); the storage buffer is the problem.
+1. `tuning-1k-meshes` renders identically to the PR baseline (same
+   shadow falloff on the boxes; visually compare to the screenshot in
+   the PR description).
+2. `tuning-64-lights` renders the 10 spheres with multi-coloured
+   punctual lighting matching the PR baseline.
+3. `tuning-1024-lights` renders a 100m floor with ~1000 small point
+   lights visible as coloured pools on the floor, plus the back wall,
+   plus the glass pane in front of the back wall. The camera will
+   need to be positioned with `window.wasmBindings.set_camera_…` or
+   manual orbit-cam — the default load position is too distant for
+   the small props to be visible without adjustment.
+4. Run with `AWSM_DEBUG_CULL_HEATMAP=1` env var set at trunk launch;
+   reload; load `tuning-1024-lights`. The opaque floor should show a
+   smooth green-to-red gradient sampling the per-froxel light count —
+   greenish where there's 1 light, yellow-orange under the corner
+   cluster, red where overflow happened.
+5. Watch the dev log; after the corner cluster (which exceeds the
+   default `max_per_froxel_capacity = 32`) renders for one frame,
+   you should see `light-culling overflow auto-grow: doubled
+   max_per_froxel_capacity (32 -> 64) to absorb N dropped light
+   indices from the prior frame` (the Phase 1D readback firing).
+   Steady-state from the next frame onwards: heatmap settles into
+   green/yellow (no more red), overflow auto-grow doesn't fire again.
 
-Dawn enforces `maxStorageBuffersPerShaderStage = 10` and counts the
-`opaque_tex: texture_storage_2d<rgba16float, write>` binding against
-that budget — it's a writable resource visible to the compute stage.
-So the opaque compute pipeline's pre-Phase-2 storage budget was
-**8 ROS in main BGL + 1 storage texture (`opaque_tex`) + 1 ROS in
-lights BGL** = 10/10. Phase 2's `+1 storage` for `froxel_storage`
-pushed it to 11/10 → pipeline-layout validation failure on every
-opaque compute pipeline.
+When all five pass:
 
-The Phase 2 implementation lives in commit `753338e` (reverted in
-`9a099c4`). To bring it back, one of these has to give:
-
-1. **Merge `mesh_light_indices` + `froxel_storage` into one storage
-   buffer.** Per-froxel data after the per-mesh tail, with the
-   boundary written into a small header (or a `CullParams` field).
-   Cull pass writes its region; CPU writes the mesh region.
-   Net: -1 binding on the consumer side, drops Phase 2's storage cost
-   to zero.
-2. **Drop `mesh_light_indices` entirely.** Route every mesh through
-   the per-froxel walk (small-mesh perf regression: 1–4 lights → 4–8).
-3. **Audit `opaque_tex`** — confirm whether Dawn really counts storage
-   textures against `maxStorageBuffersPerShaderStage` or whether a
-   different limit applies. If the cap is actually only buffers, the
-   real budget was 9/10 pre-Phase-2 and 10/10 post-Phase-2, which is
-   in spec.
-
-Option 1 is the cleanest follow-up. Phase 2 ships in a separate PR
-once that consolidation is in place.
-
-In the meantime, the per-mesh CPU bucket path still handles oversized
-meshes — they just get the full bucket-size loop (which is
-exactly what the plan called out as the breakdown case). The
-transparent-froxel path (Phase 1C) is the user-visible perf win in
-this PR.
+- Remove the temporary `debug_cull_heatmap` field, the
+  `AWSM_DEBUG_CULL_HEATMAP` env-var toggle, and the heatmap override
+  block in `material_opaque_wgsl/compute.wgsl`. Cache-key churn from
+  the removal: this field is only on `ShaderTemplateMaterialOpaqueCompute`,
+  not on the cache key, so removing it costs nothing.
+- Update the PR description to mention Phase 2 + 1D landed.
+- Squash or rebase your work onto the existing PR commits (your
+  call — the PR is small enough either way).
+- **Delete this file** (`git rm docs/plans/light-culling.md`) in the
+  final commit. The plan is done; the architecture is documented in
+  the code (`crates/renderer/src/render_passes/light_culling/` module
+  docs + `LightCullingBuffers` doc comments).
 
 ---
 
-## Cross-references
+## Notes on what NOT to redo
 
-- Existing per-mesh CPU culling:
-  [`light_buckets/buckets.rs`](../../crates/renderer/src/light_buckets/buckets.rs),
-  [`light_buckets/gpu.rs`](../../crates/renderer/src/light_buckets/gpu.rs).
-- Existing pass scaffold (empty):
-  [`render_passes/light_culling/`](../../crates/renderer/src/render_passes/light_culling/).
-- Visibility buffer + depth attachment shape:
-  [`render_textures.rs`](../../crates/renderer/src/render_textures.rs),
-  [`render_passes/geometry/`](../../crates/renderer/src/render_passes/geometry/).
-- Pipeline-readiness scheduler (for lazy-compile integration):
-  [`pipeline_scheduler/mod.rs`](../../crates/renderer/src/pipeline_scheduler/mod.rs).
-- Bind-group recreate event pattern:
-  [`bind_groups.rs`](../../crates/renderer/src/bind_groups.rs).
-- Standard depth-coordinate convention used elsewhere:
-  [`templates/helpers/standard.wgsl`](../../crates/renderer/templates/helpers/standard.wgsl).
-- The Stage-3 edge-resolve overflow pattern referenced under
-  decision E:
-  [`render_passes/material_opaque/edge_buffers.rs`](../../crates/renderer/src/render_passes/material_opaque/edge_buffers.rs)
-  (`note_edge_overflow_observed` + the auto-grow readback wired in
-  [`render.rs`](../../crates/renderer/src/render.rs) — landed in
-  [PR #102](https://github.com/dakom/awsm-renderer/pull/102)).
+- **Don't try to keep `mesh_light_indices` as a separate buffer.**
+  That path is what blew up the opaque storage cap. The merge is the
+  right architecture — the bug isn't with merging, it's with one of
+  the bind-group / pipeline interactions documented above.
+- **Don't reintroduce `MAX_PER_FROXEL_CAPACITY` as a WGSL `const`.**
+  The auto-grow path needs it as a runtime `cull_params` field. The
+  cache key field `froxel_max_per_froxel_capacity` is still useful for
+  the consumer (transparent/opaque) shaders' compile-time clamp where
+  one exists, but the cull pass itself reads the runtime value.
+- **Don't fold `cull_params` into the camera buffer.** Tempting (saves
+  one binding) but binds the cull-pass lifecycle to camera-buffer
+  recreation, which is a separate concern. Camera updates happen
+  per-frame at sub-µs cost; cull params change at viewport-resize
+  cadence. Keep them separate.
+- **Don't try to ship Phase 2 without Phase 1D.** They share the
+  `cull_params.max_per_froxel_capacity` runtime field. Half of one
+  without the other is more work than just landing both together.
