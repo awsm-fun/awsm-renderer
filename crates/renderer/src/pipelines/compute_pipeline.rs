@@ -134,31 +134,50 @@ impl ComputePipelines {
     {
         // Cache-hit fast path: avoid building descriptors / issuing
         // promises for any input whose key is already in the cache.
-        // We still call `ensure_keys_prepare` for the miss set; the
-        // prep returns its own dedup'd `pending_input_indices` /
-        // `pending_targets`, so we just need to feed it the misses
-        // and stitch the resulting keys back into the full input slot.
+        //
+        // **Within-batch miss dedup**: if the same uncached cache key
+        // appears more than once in the input batch (common in
+        // per-mesh transparent rebuilds + relaunch loops over
+        // registered shader_ids), we issue ONE
+        // `createComputePipelineAsync` promise per unique miss key
+        // and fan the resolved key back to every input slot that
+        // wanted it. Without this dedup, Dawn ran every duplicate
+        // promise to completion and `ensure_keys_install`'s post-hoc
+        // cache-hit guard discarded all but one — the compile cost
+        // was already spent.
         let inputs: Vec<ComputePipelineCacheKey> = cache_keys.into_iter().collect();
         let mut slot: Vec<Option<ComputePipelineKey>> = vec![None; inputs.len()];
-        let mut miss_indices: Vec<usize> = Vec::new();
-        let mut miss_keys: Vec<ComputePipelineCacheKey> = Vec::new();
+        let mut unique_miss_keys: Vec<ComputePipelineCacheKey> = Vec::new();
+        // For each unique miss key, the input slots that should
+        // receive the resolved pipeline key.
+        let mut unique_miss_targets: Vec<Vec<usize>> = Vec::new();
+        let mut unique_miss_index_for_key: HashMap<ComputePipelineCacheKey, usize> = HashMap::new();
         for (i, k) in inputs.iter().enumerate() {
             if let Some(key) = self.cache.get(k) {
                 slot[i] = Some(*key);
+            } else if let Some(&u_idx) = unique_miss_index_for_key.get(k) {
+                unique_miss_targets[u_idx].push(i);
             } else {
-                miss_indices.push(i);
-                miss_keys.push(k.clone());
+                let u_idx = unique_miss_keys.len();
+                unique_miss_keys.push(k.clone());
+                unique_miss_targets.push(vec![i]);
+                unique_miss_index_for_key.insert(k.clone(), u_idx);
             }
         }
-        if miss_keys.is_empty() {
+        if unique_miss_keys.is_empty() {
             return Ok(slot.into_iter().map(Option::unwrap).collect());
         }
-        let mut prepped = Self::ensure_keys_prepare(gpu, shaders, pipeline_layouts, miss_keys)?;
+        let mut prepped =
+            Self::ensure_keys_prepare(gpu, shaders, pipeline_layouts, unique_miss_keys)?;
         let promises = std::mem::take(&mut prepped.promises);
         let results = futures::future::join_all(promises).await;
         let resolved = self.ensure_keys_install(prepped.prep, results)?;
-        for (i, key) in miss_indices.into_iter().zip(resolved) {
-            slot[i] = Some(key);
+        // `resolved` has one entry per unique miss; fan out to every
+        // input slot that wanted it.
+        for (key, targets) in resolved.into_iter().zip(unique_miss_targets) {
+            for i in targets {
+                slot[i] = Some(key);
+            }
         }
         Ok(slot.into_iter().map(Option::unwrap).collect())
     }
@@ -201,6 +220,17 @@ impl ComputePipelines {
         // The original `ensure_keys` had cache-hit shortcuts —
         // preserved in the wrapper below by checking `self.cache` first
         // and emitting a tighter `prepare` only over the misses.
+        //
+        // **Within-batch dedup**: see the corresponding pre-pass in
+        // [`Self::ensure_keys`]. `prepare` keeps its one-to-one
+        // input-to-promise contract so direct callers (the
+        // pipeline_scheduler launch path) that zip
+        // `(promise_jobs, prep.promises)` keep working. The wrapper
+        // dedups BEFORE calling `prepare` and fans the resolved key
+        // back out to every input slot via the prep's own
+        // `pending_targets`. Launch sites build `promise_jobs` from
+        // distinct `(slot, cache_key)` tuples — duplicate cache keys
+        // there would be a bug, not a perf concern.
         let pending_input_indices: Vec<usize> = (0..inputs.len()).collect();
         let pending_targets: Vec<Vec<usize>> = (0..inputs.len()).map(|i| vec![i]).collect();
 

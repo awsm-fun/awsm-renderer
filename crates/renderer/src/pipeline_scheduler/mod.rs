@@ -215,6 +215,33 @@ pub struct PipelineScheduler {
     /// decrements on each successful install; when the count hits 0
     /// the material's `Pending → Ready` transition fires.
     pending_subcompiles: HashMap<MaterialId, u32>,
+    /// **Cross-call in-flight cache-key set** (compute pipelines).
+    ///
+    /// Launch sites (`launch_dynamic_material_compile`,
+    /// `launch_first_party_material_compile`,
+    /// `launch_edge_resolve_compile`) all install resolved pipelines
+    /// into the SAME shared `ComputePipelines.cache` via
+    /// `install_resolved_pipeline`. When two launches in the same
+    /// outer loop want the same cache key (e.g. the classify variant
+    /// — keyed on `(msaa, bucket_entries, emit_edge_data)`, NOT
+    /// shader_id — or any of the edge-chain variants that iterate
+    /// over `bucket_entries`), the first launch issues
+    /// `createComputePipelineAsync`, and the second launch's
+    /// `cache_lookup` misses (the cache only gets populated at
+    /// resolution time, not at promise-issuance time) → it issues a
+    /// duplicate promise.
+    ///
+    /// Launch sites consult `is_compute_compile_in_flight` after the
+    /// cache miss check; when true, they skip the duplicate push.
+    /// `install_resolved_pipeline` removes the cache key from this
+    /// set on resolution, so a future launch (post-resolution) finds
+    /// the now-cached key via the cache lookup path.
+    ///
+    /// Tracks compute pipelines only — render pipelines don't have
+    /// the same cross-call pattern today (per-mesh batches go through
+    /// `set_render_pipeline_keys_batched`'s within-batch dedup).
+    inflight_compute_cache_keys:
+        std::collections::HashSet<crate::pipelines::compute_pipeline::ComputePipelineCacheKey>,
     events: Vec<StatusEvent>,
 }
 
@@ -233,8 +260,41 @@ impl PipelineScheduler {
             inflight: FuturesUnordered::new(),
             inflight_compile: FuturesUnordered::new(),
             pending_subcompiles: HashMap::new(),
+            inflight_compute_cache_keys: std::collections::HashSet::new(),
             events: Vec::new(),
         }
+    }
+
+    /// Returns `true` if a compute pipeline compile promise has
+    /// already been pushed into `inflight_compile` for this cache key
+    /// and hasn't yet resolved. Launch sites consult this to skip
+    /// cross-call duplicate compiles.
+    pub fn is_compute_compile_in_flight(
+        &self,
+        key: &crate::pipelines::compute_pipeline::ComputePipelineCacheKey,
+    ) -> bool {
+        self.inflight_compute_cache_keys.contains(key)
+    }
+
+    /// Mark a compute pipeline cache key as in-flight. Called by
+    /// launch sites at the moment they push a compile promise into
+    /// `inflight_compile`. Idempotent — duplicate marks are a no-op.
+    pub fn mark_compute_compile_in_flight(
+        &mut self,
+        key: crate::pipelines::compute_pipeline::ComputePipelineCacheKey,
+    ) {
+        self.inflight_compute_cache_keys.insert(key);
+    }
+
+    /// Remove a cache key from the in-flight set. Called from the
+    /// install path (`apply_compile_resolution_inline`) once the
+    /// promise resolves — at that point the cache lookup will hit,
+    /// so subsequent launches go through the cache-hit fast path.
+    pub fn unmark_compute_compile_in_flight(
+        &mut self,
+        key: &crate::pipelines::compute_pipeline::ComputePipelineCacheKey,
+    ) {
+        self.inflight_compute_cache_keys.remove(key);
     }
 
     /// Push a real compile future onto the inflight queue (Block D.1

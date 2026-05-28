@@ -127,27 +127,45 @@ impl RenderPipelines {
     {
         // Cache-hit fast path. Build a miss-only batch for prepare,
         // stitch the resolved keys back into the full input slot.
+        //
+        // **Within-batch miss dedup**: if the same uncached cache
+        // key appears more than once in the input batch (common in
+        // per-mesh transparent rebuilds — many meshes share the same
+        // pipeline cache key), we issue ONE
+        // `createRenderPipelineAsync` per unique miss and fan the
+        // resolved key back to every input slot that wanted it.
+        // Without dedup, Dawn ran every duplicate promise to
+        // completion and the install-time cache-hit guard discarded
+        // all but one — compile cost was already spent.
         let inputs: Vec<RenderPipelineCacheKey> = cache_keys.into_iter().collect();
         let mut slot: Vec<Option<RenderPipelineKey>> = vec![None; inputs.len()];
-        let mut miss_indices: Vec<usize> = Vec::new();
-        let mut miss_keys: Vec<RenderPipelineCacheKey> = Vec::new();
+        let mut unique_miss_keys: Vec<RenderPipelineCacheKey> = Vec::new();
+        let mut unique_miss_targets: Vec<Vec<usize>> = Vec::new();
+        let mut unique_miss_index_for_key: HashMap<RenderPipelineCacheKey, usize> = HashMap::new();
         for (i, k) in inputs.iter().enumerate() {
             if let Some(key) = self.cache.get(k) {
                 slot[i] = Some(*key);
+            } else if let Some(&u_idx) = unique_miss_index_for_key.get(k) {
+                unique_miss_targets[u_idx].push(i);
             } else {
-                miss_indices.push(i);
-                miss_keys.push(k.clone());
+                let u_idx = unique_miss_keys.len();
+                unique_miss_keys.push(k.clone());
+                unique_miss_targets.push(vec![i]);
+                unique_miss_index_for_key.insert(k.clone(), u_idx);
             }
         }
-        if miss_keys.is_empty() {
+        if unique_miss_keys.is_empty() {
             return Ok(slot.into_iter().map(Option::unwrap).collect());
         }
-        let mut prepped = Self::ensure_keys_prepare(gpu, shaders, pipeline_layouts, miss_keys)?;
+        let mut prepped =
+            Self::ensure_keys_prepare(gpu, shaders, pipeline_layouts, unique_miss_keys)?;
         let promises = std::mem::take(&mut prepped.promises);
         let results = futures::future::join_all(promises).await;
         let resolved = self.ensure_keys_install(prepped.prep, results)?;
-        for (i, key) in miss_indices.into_iter().zip(resolved) {
-            slot[i] = Some(key);
+        for (key, targets) in resolved.into_iter().zip(unique_miss_targets) {
+            for i in targets {
+                slot[i] = Some(key);
+            }
         }
         Ok(slot.into_iter().map(Option::unwrap).collect())
     }
@@ -169,9 +187,11 @@ impl RenderPipelines {
         let slot: Vec<Option<RenderPipelineKey>> = vec![None; inputs.len()];
 
         // The prepare API treats every input as a miss; the wrapper
-        // [`Self::ensure_keys`] strips cache hits before calling.
-        // Direct callers (the pipeline_scheduler) can do the same
-        // pre-pass if they want cache-hit shortcuts.
+        // [`Self::ensure_keys`] strips cache hits AND dedups within
+        // the miss set before calling — see that method's
+        // within-batch dedup pre-pass. `prepare` keeps the one-to-one
+        // input-to-promise contract so direct callers that zip
+        // their job list against `prep.promises` keep working.
         let pending_input_indices: Vec<usize> = (0..inputs.len()).collect();
         let pending_targets: Vec<Vec<usize>> = (0..inputs.len()).map(|i| vec![i]).collect();
 

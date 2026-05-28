@@ -476,4 +476,24 @@ impl MaterialOpaquePipelines {
     ) {
         self.main.insert(key_id, pipeline_key);
     }
+
+    /// Clear every per-shader-id opaque pipeline entry. The empty-slot
+    /// pipelines (`msaa_4_empty_compute_pipeline_key` /
+    /// `singlesampled_empty_compute_pipeline_key`) are preserved —
+    /// they don't depend on the bucket layout.
+    ///
+    /// Used by `AwsmRenderer::register_material` to invalidate stale
+    /// (shader_id, msaa, mipmaps) entries before relaunching the
+    /// compile loop with the new bucket layout. Without this clear,
+    /// dispatch in the window between relaunch + scheduler resolution
+    /// reads the OLD pipelines (compiled against the previous, smaller
+    /// `bucket_entries` list) against the newly-resized classify /
+    /// edge buffers — every `<shader>_offset` field has shifted to a
+    /// new struct offset, so dispatch fans into the wrong tile lists.
+    /// After clearing, `get_compute_pipeline_key` returns `None` for
+    /// those entries and the dispatch site's `Option` guard skips
+    /// the draw until the new pipeline lands.
+    pub fn clear_dynamic_pipelines(&mut self) {
+        self.main.clear();
+    }
 }

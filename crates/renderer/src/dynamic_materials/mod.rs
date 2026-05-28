@@ -639,13 +639,38 @@ impl crate::AwsmRenderer {
         // get relaunched: this insert grew `bucket_entries`, which
         // shifts the generated `ClassifyOutput` struct field offsets
         // (every previously-registered shader_id's `<shader>_offset`
-        // field now lives at a different byte position). Opaque
-        // shader cache keys include `bucket_entries`, so the launch
-        // path's `cache_lookup` correctly misses every stale variant
-        // and pushes fresh compiles into the scheduler. First-party
-        // shader_ids whose bucket layout hasn't shifted (none — every
-        // material's offsets shift on bucket growth) would cache-hit
-        // and short-circuit cheaply.
+        // field now lives at a different byte position).
+        //
+        // **Stale typed-cache invalidation**: before relaunching, we
+        // clear every (shader_id, msaa, mipmaps) entry from the
+        // opaque per-pass cache and every (shader_id, mipmaps) entry
+        // + globals from the edge per-pass cache. The lookup keys are
+        // bucket-layout-AGNOSTIC ((shader_id, msaa, mipmaps) for
+        // opaque, (shader_id, mipmaps) for edge per-shader), so
+        // without this clear the dispatch path in the window between
+        // relaunch and scheduler resolution would hit the OLD
+        // pipeline keys — pipelines compiled against the previous
+        // (smaller) bucket layout, dispatching against the newly
+        // resized classify/edge buffers with WRONG offsets.
+        //
+        // After clearing, the dispatch site's `Option` guard returns
+        // `None` and skips the draw for that material until the new
+        // pipeline lands. The classify per-pass cache is
+        // self-invalidating — it's keyed on `dispatch_hash` which
+        // changes on every bucket mutation, so old entries become
+        // unreachable orphans (no clear needed there).
+        self.render_passes
+            .material_opaque
+            .pipelines
+            .clear_dynamic_pipelines();
+        self.render_passes
+            .material_opaque
+            .edge_pipelines
+            .clear_dynamic_pipelines();
+
+        // Opaque shader cache keys include `bucket_entries`, so the
+        // launch path's `cache_lookup` correctly misses every stale
+        // variant and pushes fresh compiles into the scheduler.
         //
         // Matches the pattern in `finalize_gpu_textures` after a
         // texture-pool grow — the scheduler's `registered_material_shader_ids()`
@@ -653,6 +678,10 @@ impl crate::AwsmRenderer {
         // tracked by the readiness system". `launch_first_party_material_compile`
         // forwards dynamic shader_ids to `launch_dynamic_material_compile`
         // automatically, so a single iteration covers both classes.
+        // Cross-call in-flight dedup inside the launch path (see
+        // `PipelineScheduler::is_compute_compile_in_flight`) ensures
+        // the global classify + edge-chain promises are pushed once
+        // for the whole loop, not N times per registered material.
         let registered_shader_ids = self.pipeline_scheduler.registered_material_shader_ids();
         for shader_id in registered_shader_ids {
             if let Err(e) = self.launch_first_party_material_compile(shader_id) {

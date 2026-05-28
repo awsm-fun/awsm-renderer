@@ -158,6 +158,20 @@ impl MaterialEdgePipelines {
         self.per_shader.insert(key_id, pipeline_key);
     }
 
+    /// Clear every per-shader-id edge_resolve pipeline entry, plus
+    /// the global skybox + final_blend keys. Used by
+    /// `AwsmRenderer::register_material` to invalidate stale edge
+    /// chain entries before relaunching with the new bucket layout —
+    /// see `MaterialOpaquePipelines::clear_dynamic_pipelines` for
+    /// the full rationale. The dispatch site's `Option` guards in
+    /// `get_per_shader_pipeline_key` / `render_edge_resolve` skip
+    /// the affected work until the new compiles land.
+    pub fn clear_dynamic_pipelines(&mut self) {
+        self.per_shader.clear();
+        self.skybox_edge_resolve_pipeline_key = None;
+        self.final_blend_pipeline_key = None;
+    }
+
     /// Build the descriptor list for the current bucket entries +
     /// AA config + color format. Sync — caller drives the actual
     /// shader/pipeline compile (either async via

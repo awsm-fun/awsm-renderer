@@ -230,11 +230,39 @@ impl crate::AwsmRenderer {
         }
 
         // Cache-hit dedup pass: install hits inline, defer misses to
-        // the scheduler's inflight_compile queue.
+        // the scheduler's inflight_compile queue. The
+        // `is_compute_compile_in_flight` check is the cross-call
+        // dedup — when an outer loop (e.g. `register_material`'s
+        // relaunch over `registered_material_shader_ids()`) calls
+        // this method N times with overlapping classify cache keys
+        // (the classify variant is keyed on `(msaa, bucket_entries,
+        // emit_edge_data)`, NOT shader_id, so every dynamic launch
+        // in the same loop wants the SAME classify cache key), the
+        // first launch pushes the promise and marks it in-flight;
+        // subsequent launches see the in-flight mark and skip the
+        // duplicate `createComputePipelineAsync` call. The single
+        // resolved install lands in the shared
+        // `ComputePipelines.cache` (and the per-pass classify cache
+        // via `install_per_pass`), which is what each individual
+        // launch would have done.
         let mut promise_jobs: Vec<(LaunchSlot, ComputePipelineCacheKey)> = Vec::new();
         for (slot, cache_key) in &compute_jobs {
             if let Some(existing_key) = self.pipelines.compute.cache_lookup(cache_key).copied() {
                 install_per_pass(self, slot, shader_id, dispatch_hash, existing_key);
+            } else if self
+                .pipeline_scheduler
+                .is_compute_compile_in_flight(cache_key)
+            {
+                // Skip — the earlier-launch's promise will install
+                // for everyone via the global `ComputePipelines.cache`
+                // + per-pass slot map. Subcompile counter NOT
+                // incremented for this material; its Ready transition
+                // doesn't wait on the de-duplicated promise (the
+                // earlier launch already counted it). For the
+                // classify case in particular, classify is a shared
+                // per-pass cache keyed by `(dispatch_hash, msaa)` —
+                // not per-material — so dispatch correctness holds.
+                continue;
             } else {
                 promise_jobs.push((slot.clone(), cache_key.clone()));
             }
@@ -291,6 +319,12 @@ impl crate::AwsmRenderer {
                         result,
                     }
                 });
+                // Mark the cache key as in-flight BEFORE the push so
+                // any subsequent launch in this call stack (same sync
+                // window) skips the duplicate. `apply_compile_resolution_inline`
+                // removes the mark after install.
+                self.pipeline_scheduler
+                    .mark_compute_compile_in_flight(cache_key);
                 self.pipeline_scheduler.push_compile_future(group_id, fut);
             }
             tracing::info!(
@@ -439,10 +473,17 @@ impl crate::AwsmRenderer {
             compute_jobs.push((slot, ComputePipelineCacheKey::new(shader_key, layout)));
         }
 
+        // Cache-hit + cross-call dedup. See the matching block in
+        // `launch_dynamic_material_compile` for the full rationale.
         let mut promise_jobs: Vec<(LaunchSlot, ComputePipelineCacheKey)> = Vec::new();
         for (slot, cache_key) in &compute_jobs {
             if let Some(existing_key) = self.pipelines.compute.cache_lookup(cache_key).copied() {
                 install_per_pass(self, slot, shader_id, dispatch_hash, existing_key);
+            } else if self
+                .pipeline_scheduler
+                .is_compute_compile_in_flight(cache_key)
+            {
+                continue;
             } else {
                 promise_jobs.push((slot.clone(), cache_key.clone()));
             }
@@ -488,6 +529,8 @@ impl crate::AwsmRenderer {
                         result,
                     }
                 });
+                self.pipeline_scheduler
+                    .mark_compute_compile_in_flight(cache_key);
                 self.pipeline_scheduler.push_compile_future(group_id, fut);
             }
             tracing::info!(
@@ -613,20 +656,36 @@ impl crate::AwsmRenderer {
             ));
         }
 
-        // Cache-hit dedup: install hits inline, defer misses to the
-        // scheduler's inflight_compile queue.
+        // Cache-hit + cross-call dedup. The edge-chain descriptors
+        // iterate over EVERY bucket entry (every registered material's
+        // shader_id) plus skybox + final_blend globals. When this
+        // method is called in a relaunch loop (one call per registered
+        // shader_id from `register_material` / `set_anti_aliasing` /
+        // `finalize_gpu_textures`), every call wants the SAME N+2
+        // cache keys. Without the in-flight check, each call would
+        // push duplicate `createComputePipelineAsync` promises for
+        // the whole chain. The check skips cross-call duplicates;
+        // the single resolved install lands in the shared
+        // `ComputePipelines.cache` + the per-pass `edge_pipelines`
+        // slot map, which is what every individual launch would do.
         let mut promise_jobs: Vec<(EdgeLaunchSlot, ComputePipelineCacheKey)> = Vec::new();
         for (slot, cache_key) in &compute_jobs {
             if let Some(existing_key) = self.pipelines.compute.cache_lookup(cache_key).copied() {
                 install_edge_per_pass(self, &slot.0, existing_key);
+            } else if self
+                .pipeline_scheduler
+                .is_compute_compile_in_flight(cache_key)
+            {
+                continue;
             } else {
                 promise_jobs.push((slot.clone(), cache_key.clone()));
             }
         }
 
         if promise_jobs.is_empty() {
-            // Every variant was a cache hit; no promises pushed and
-            // no subcompile-counter increment to balance.
+            // Every variant was a cache hit or already in flight; no
+            // promises pushed and no subcompile-counter increment to
+            // balance.
             return Ok(());
         }
 
@@ -665,6 +724,8 @@ impl crate::AwsmRenderer {
                     result,
                 }
             });
+            self.pipeline_scheduler
+                .mark_compute_compile_in_flight(cache_key);
             self.pipeline_scheduler.push_compile_future(group_id, fut);
         }
         tracing::info!(
@@ -707,6 +768,16 @@ impl crate::AwsmRenderer {
             cache_key,
             result,
         } = resolution;
+        // Whatever happens below (success, failure, stale-discard,
+        // or pass-unsupported), this cache key is no longer in-flight.
+        // Remove it FIRST so a future relaunch with the same key
+        // routes through the normal cache-hit / cache-miss path. If
+        // we deferred this past the stale-generation drop, the key
+        // would stay flagged in-flight indefinitely and the next
+        // launch would silently skip even though no install lands.
+        self.pipeline_scheduler
+            .unmark_compute_compile_in_flight(&cache_key);
+
         let mid = match id {
             PipelineGroupId::Material(mid) => mid,
             PipelineGroupId::Pass(_) => {

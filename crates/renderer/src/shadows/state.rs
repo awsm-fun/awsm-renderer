@@ -1393,8 +1393,24 @@ impl Shadows {
             target: "awsm_renderer::boot_timing",
             "Shadows::ensure_pipelines_compiled: first shadow-caster — compiling 4 caster + 3 EVSM pipelines"
         );
-        let caster_keys = std::mem::take(&mut self.pending_caster_cache_keys);
-        let evsm_keys = std::mem::take(&mut self.pending_evsm_cache_keys);
+        // Clone (not `take`) so a fallible `?` on either ensure_keys
+        // await leaves the pending vectors intact for the next retry.
+        // The previous `mem::take` flow emptied the pending vectors
+        // BEFORE either await ran — if the caster batch rejected
+        // (e.g. transient WebGPU device hiccup or a broken shader),
+        // the `?` bailed with both pending vectors emptied AND every
+        // pipeline option still `None`. The next ensure_pipelines_compiled
+        // call hit the "pending cache keys empty" guard and returned
+        // `Ok(())`, leaving shadows uncompiled for the rest of the
+        // session.
+        //
+        // Cache keys are cheap (a few small u64-ish fields per entry,
+        // 7 entries total). Cloning is preferable to the alternative
+        // of `take`+restore-on-error since it avoids the gotcha where
+        // an early-return between the two awaits leaves the vectors
+        // half-emptied.
+        let caster_keys = self.pending_caster_cache_keys.clone();
+        let evsm_keys = self.pending_evsm_cache_keys.clone();
 
         let caster_resolved = render_pipelines
             .ensure_keys(gpu, shaders, pipeline_layouts, caster_keys)
@@ -1411,6 +1427,10 @@ impl Shadows {
         self.evsm_pass.moment_write_pipeline_key = Some(evsm_resolved[0]);
         self.evsm_pass.blur_h_pipeline_key = Some(evsm_resolved[1]);
         self.evsm_pass.blur_v_pipeline_key = Some(evsm_resolved[2]);
+        // Both batches landed — clear the pending vectors so the
+        // next call's "already compiled" fast path takes over.
+        self.pending_caster_cache_keys.clear();
+        self.pending_evsm_cache_keys.clear();
         Ok(())
     }
 
