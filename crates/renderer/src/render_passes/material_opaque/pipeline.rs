@@ -167,12 +167,19 @@ impl MaterialOpaquePipelines {
         // `launch_first_party_material_compile` fires — gltf-driven
         // material register + the explicit `register_first_party_*`
         // builder paths both trigger it.
+        //
+        // At builder-build time no dynamic material can be registered
+        // yet (build() returns the renderer before any
+        // `register_material` call), so the empty-state bucket list
+        // is exactly `first_party_bucket_entries()`.
+        let bucket_entries = crate::dynamic_materials::first_party_bucket_entries();
         Self::shader_descriptors_for_config_with(
             ctx.gpu,
             ctx.bind_group_layouts,
             ctx.pipeline_layouts,
             bind_groups,
             ctx.anti_aliasing,
+            &bucket_entries,
             false,
         )
     }
@@ -189,6 +196,7 @@ impl MaterialOpaquePipelines {
         pipeline_layouts: &mut crate::pipeline_layouts::PipelineLayouts,
         bind_groups: &MaterialOpaqueBindGroups,
         anti_aliasing: &AntiAliasing,
+        bucket_entries: &[crate::dynamic_materials::BucketEntry],
     ) -> Result<Vec<OpaqueShaderDesc>> {
         Self::shader_descriptors_for_config_with(
             gpu,
@@ -196,6 +204,7 @@ impl MaterialOpaquePipelines {
             pipeline_layouts,
             bind_groups,
             anti_aliasing,
+            bucket_entries,
             true,
         )
     }
@@ -214,6 +223,7 @@ impl MaterialOpaquePipelines {
         pipeline_layouts: &mut crate::pipeline_layouts::PipelineLayouts,
         bind_groups: &MaterialOpaqueBindGroups,
         anti_aliasing: &AntiAliasing,
+        bucket_entries: &[crate::dynamic_materials::BucketEntry],
         include_first_party: bool,
     ) -> Result<Vec<OpaqueShaderDesc>> {
         // Which (main_bgl, slot) is active? Only emit the descriptors
@@ -272,7 +282,7 @@ impl MaterialOpaquePipelines {
                         // keys with the live `dispatch_hash`.
                         dispatch_hash: 0,
                         dynamic_shader: None,
-                        bucket_entries: crate::dynamic_materials::first_party_bucket_entries(),
+                        bucket_entries: bucket_entries.to_vec(),
                     }
                     .into(),
                     layout_key,

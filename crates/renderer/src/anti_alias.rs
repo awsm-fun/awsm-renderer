@@ -65,7 +65,46 @@ impl AwsmRenderer {
         if self.anti_aliasing == aa {
             return Ok(());
         }
+        let prev_msaa_on = self.anti_aliasing.has_msaa_checked()?;
         self.anti_aliasing = aa;
+        let new_msaa_on = self.anti_aliasing.has_msaa_checked()?;
+
+        // MSAA off → on transition: allocate `material_edge_buffers`
+        // + `material_edge_layout_uniform` if they're not already
+        // resident. The multisampled classify bind-group layout
+        // statically includes the edge bindings (slots 4..=9) at
+        // boot, but the buffers themselves are only allocated when
+        // MSAA is on at build time (see `lib.rs`'s `edge_resolve_enabled`
+        // gate). Without this allocation, the next frame's
+        // `BindGroupCreate::AntiAliasingChange`-driven recreate of
+        // the multisampled classify bind group has nothing to bind
+        // into slots 4..=9 → WebGPU rejects the bind-group create
+        // with a "required entry missing" validation error.
+        //
+        // Gated on `edge_resolve_supported` (matches the build-site's
+        // `edge_resolve_enabled`). MSAA-on transition on a device
+        // that doesn't support the full edge_resolve dispatch wiring
+        // is a no-op here — the multisampled classify layout was
+        // built without slots 4..=9 to match (see
+        // `create_bind_group_layout_key`'s `edge_emit_supported` gate),
+        // so the base 4-entry bind group is valid.
+        if !prev_msaa_on
+            && new_msaa_on
+            && self.material_edge_buffers.is_none()
+            && crate::edge_resolve_supported(&self.gpu)
+        {
+            let bucket_count = self.dynamic_materials.bucket_entries_cached().len() as u32;
+            use crate::render_passes::material_opaque::edge_buffers::{
+                build_edge_layout_uniform, MaterialEdgeBuffers,
+            };
+            let edge_buffers = MaterialEdgeBuffers::new(&self.gpu, bucket_count)?;
+            let max_edge_budget = edge_buffers.max_edge_budget;
+            let (uniform, _bytes) =
+                build_edge_layout_uniform(&self.gpu, bucket_count, max_edge_budget)?;
+            self.material_edge_buffers = Some(edge_buffers);
+            self.material_edge_layout_uniform = Some(uniform);
+        }
+
         self.bind_groups
             .mark_create(BindGroupCreate::AntiAliasingChange);
         self.bind_groups
@@ -116,6 +155,24 @@ impl AwsmRenderer {
         //    already-compiled variants resolve as cache hits inside
         //    `ensure_keys`, so the cross-pass batches stay sized to
         //    the *new* work only.
+        // Use the LIVE bucket list for both the opaque + classify
+        // cross-pass batches. In a scene with registered dynamic
+        // materials, `bucket_entries_cached()` expands past
+        // `first_party_bucket_entries()` to include each dynamic
+        // shader_id's bucket. The opaque shader cache keys and the
+        // classify struct layout both depend on this list — feeding
+        // the first-party-only baseline here would compile + install
+        // first-party opaque pipelines that read the classify-output
+        // buffer at the WRONG `<shader>_offset` offsets, so per-tile
+        // dispatch fans out into the wrong tile lists.
+        //
+        // The dynamic-shader opaque variants are NOT emitted by this
+        // cross-pass batch (it's `include_first_party: true` →
+        // OPAQUE_SHADER_IDS only). Those are recompiled via the
+        // launch loop below (after Phase 7) — `launch_first_party_material_compile`
+        // forwards dynamic shader_ids to `launch_dynamic_material_compile`
+        // automatically.
+        let live_bucket_entries = self.dynamic_materials.bucket_entries_cached().to_vec();
         let opaque_descs =
             crate::render_passes::material_opaque::pipeline::MaterialOpaquePipelines::shader_descriptors_for_config(
                 &self.gpu,
@@ -123,8 +180,8 @@ impl AwsmRenderer {
                 &mut self.pipeline_layouts,
                 &self.render_passes.material_opaque.bind_groups,
                 &self.anti_aliasing,
+                &live_bucket_entries,
             )?;
-        let classify_first_party_entries = crate::dynamic_materials::first_party_bucket_entries();
         let classify_descs =
             crate::render_passes::material_classify::pipeline::MaterialClassifyPipelines::build_descriptors_for_config(
                 &self.gpu,
@@ -132,7 +189,7 @@ impl AwsmRenderer {
                 &mut self.pipeline_layouts,
                 &mut self.shaders,
                 &self.render_passes.material_classify.bind_groups,
-                &classify_first_party_entries,
+                &live_bucket_entries,
                 &self.anti_aliasing,
             )
             .await?;
@@ -392,7 +449,13 @@ impl AwsmRenderer {
         //    Gated on `edge_resolve_supported` (matches the build
         //    site's `edge_resolve_enabled`). New state with MSAA
         //    off skips — dispatch sites are already guarded.
-        let new_msaa_on = multisampled_geometry;
+        //
+        //    `new_msaa_on` was captured early (alongside `prev_msaa_on`)
+        //    so the MSAA-off→on edge-buffer allocation above can also
+        //    consult it. `multisampled_geometry` (computed in Phase 4b
+        //    for the geometry branch's lazy-pool selector) is the same
+        //    value; rebinding here for local readability.
+        debug_assert_eq!(new_msaa_on, multisampled_geometry);
         if new_msaa_on && crate::edge_resolve_supported(&self.gpu) {
             let color_wgsl = awsm_renderer_core::texture::texture_format_to_wgsl_storage(
                 self.render_textures.formats.color,
@@ -438,30 +501,61 @@ impl AwsmRenderer {
         self.ensure_shadow_pipelines_compiled().await?;
 
         // ── Block D.3 (config-flip completion): every stale material
-        //    we identified above has now been recompiled by the
-        //    cross-pass batches that produced their new pipelines.
-        //    Transition them through Pending → Ready (in tight
-        //    succession; both events land in the same
-        //    `drain_pipeline_status_events` batch) so the
-        //    scheduler-status surface reflects the true GPU state
-        //    AND the entry's `config_snapshot` is refreshed to the
-        //    new config (the snapshot update happens inside
-        //    `mark_material_pending`; `mark_ready` preserves it).
+        //    we identified above must transition through
+        //    Pending → Ready so the scheduler-status surface reflects
+        //    the new GPU state AND the entry's `config_snapshot` is
+        //    refreshed to the new config (the snapshot update happens
+        //    inside `mark_material_pending`; `mark_ready` preserves it).
         //
-        //    This deferral is the second half of the bug-fix above:
-        //    if any phase above failed via `?`, neither call runs,
-        //    and the entries stay `Ready` with their stale snapshot —
-        //    correct for "retry on next set_anti_aliasing" semantics
-        //    (the next call sees them as stale and retries).
+        //    This deferral is the second half of the bug-fix in the
+        //    early stale-id collection block: if any phase above
+        //    failed via `?`, neither call runs, and the entries stay
+        //    `Ready` with their stale snapshot — correct for
+        //    "retry on next set_anti_aliasing" semantics (the next
+        //    call sees them as stale and retries).
         for mid in &stale_material_ids {
             self.pipeline_scheduler.mark_material_pending(
                 crate::pipeline_scheduler::PipelineGroupId::Material(*mid),
                 new_snapshot.clone(),
             );
         }
-        for mid in stale_material_ids {
-            self.pipeline_scheduler
-                .mark_ready(crate::pipeline_scheduler::PipelineGroupId::Material(mid));
+
+        // ── Block D.3.1 (registered-material relaunch): the cross-pass
+        //    batches above (`shader_descriptors_for_config` +
+        //    `build_descriptors_for_config`) cover classify + first-party
+        //    opaque variants against the LIVE `bucket_entries_cached()`
+        //    bucket list. DYNAMIC-shader opaque variants are NOT emitted
+        //    by those cross-pass batches — they're only built when the
+        //    launch path fires.
+        //
+        //    Relaunching every registered material's compile path here
+        //    closes the gap: dynamic shader_ids route into
+        //    `launch_dynamic_material_compile` (compiles their opaque +
+        //    classify + edge_resolve variants for the new AA config);
+        //    first-party shader_ids route into
+        //    `launch_first_party_material_compile` which is a cheap
+        //    cache-hit no-op when the cross-pass batches above already
+        //    installed the correct variants.
+        //
+        //    The launch path's `pending_subcompile_count(mid) == 0`
+        //    fast-path marks each material Ready inline when every
+        //    sub-pipeline cache-hit; otherwise it pushes promises into
+        //    the scheduler's `inflight_compile` queue and the next
+        //    `poll_pipeline_scheduler` resolution path (via
+        //    `note_subcompile_complete`) flips it to Ready when the
+        //    last sub-pipeline lands. Either way the material lands
+        //    Ready against the live config — no manual `mark_ready`
+        //    loop needed here.
+        let registered_shader_ids = self.pipeline_scheduler.registered_material_shader_ids();
+        for shader_id in registered_shader_ids {
+            if let Err(e) = self.launch_first_party_material_compile(shader_id) {
+                tracing::warn!(
+                    target: "awsm_renderer::pipeline_readiness",
+                    "post-AA-flip relaunch of material({:?}) failed: {:?}",
+                    shader_id,
+                    e
+                );
+            }
         }
         Ok(())
     }

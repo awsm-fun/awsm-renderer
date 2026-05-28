@@ -634,12 +634,34 @@ impl crate::AwsmRenderer {
         // Frontends watching drain_pipeline_status_events see the
         // material light up Ready when the last sub-pipeline lands —
         // no `prewarm_pipelines().await` round-trip needed.
-        if let Err(e) = self.launch_dynamic_material_compile(id) {
-            tracing::warn!(
-                target: "awsm_renderer::pipeline_readiness",
-                "launch_dynamic_material_compile failed for {:?}: {:?}",
-                id, e
-            );
+        //
+        // ALL registered materials (not just the newly-inserted one)
+        // get relaunched: this insert grew `bucket_entries`, which
+        // shifts the generated `ClassifyOutput` struct field offsets
+        // (every previously-registered shader_id's `<shader>_offset`
+        // field now lives at a different byte position). Opaque
+        // shader cache keys include `bucket_entries`, so the launch
+        // path's `cache_lookup` correctly misses every stale variant
+        // and pushes fresh compiles into the scheduler. First-party
+        // shader_ids whose bucket layout hasn't shifted (none — every
+        // material's offsets shift on bucket growth) would cache-hit
+        // and short-circuit cheaply.
+        //
+        // Matches the pattern in `finalize_gpu_textures` after a
+        // texture-pool grow — the scheduler's `registered_material_shader_ids()`
+        // is the single source-of-truth for "every material currently
+        // tracked by the readiness system". `launch_first_party_material_compile`
+        // forwards dynamic shader_ids to `launch_dynamic_material_compile`
+        // automatically, so a single iteration covers both classes.
+        let registered_shader_ids = self.pipeline_scheduler.registered_material_shader_ids();
+        for shader_id in registered_shader_ids {
+            if let Err(e) = self.launch_first_party_material_compile(shader_id) {
+                tracing::warn!(
+                    target: "awsm_renderer::pipeline_readiness",
+                    "post-register_material relaunch of material({:?}) failed: {:?}",
+                    shader_id, e
+                );
+            }
         }
         Ok(id)
     }
