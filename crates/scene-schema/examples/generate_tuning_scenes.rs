@@ -17,13 +17,15 @@
 //! 5. `tuning-coverage`         — 100 small props at varying camera distances.
 //! 6. `tuning-10k-meshes`       — 10K boxes (100×100×1 grid).
 //! 7. `tuning-importance-tiers` — 16 lights spanning a 4×4 (distance, intensity) grid; drives importance-tier cutoff tuning.
+//! 8. `tuning-1024-lights`      — ~1000 point lights spread over a 100m oversized floor + a transparent pane + a 40-light corner cluster; the GPU light-culling acceptance fixture (see docs/plans/light-culling.md).
 
 use std::{fs, path::PathBuf};
 
 use awsm_scene_schema::{
     AssetTable, CubeFaceUpdateRate, EditorNode, EditorProject, EnvironmentConfig, EvsmCutoff,
-    FarCascadeUpdateRate, LightConfig, LightShadowConfig, LightShadowHardness, MaterialDef,
-    MaterialShading, MeshShadowConfig, NodeId, NodeKind, PrimitiveShape, ShadowsConfig, Trs,
+    FarCascadeUpdateRate, LightConfig, LightShadowConfig, LightShadowHardness, MaterialAlphaMode,
+    MaterialDef, MaterialShading, MeshShadowConfig, NodeId, NodeKind, PrimitiveShape,
+    ShadowsConfig, Trs,
 };
 
 fn main() -> std::io::Result<()> {
@@ -39,6 +41,7 @@ fn main() -> std::io::Result<()> {
         ("tuning-coverage", scene_coverage()),
         ("tuning-10k-meshes", scene_10k_meshes()),
         ("tuning-importance-tiers", scene_importance_tiers()),
+        ("tuning-1024-lights", scene_1024_lights()),
     ] {
         let dir = out_root.join(name);
         fs::create_dir_all(&dir)?;
@@ -764,5 +767,192 @@ fn scene_importance_tiers() -> EditorProject {
         }
     }
     project.nodes.push(root_group("lights", light_children));
+    project
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Scene 8 — GPU light-culling acceptance fixture.
+//
+// ~1000 point lights (one shy of MAX_PUNCTUAL_LIGHTS = 1024) spread
+// over a 100m × 100m floor plane that exceeds the
+// OVERSIZED_AABB_DIAGONAL_METERS threshold (so it routes through the
+// oversized → froxel opaque path), plus:
+//   - ~50 small prop boxes / spheres as the no-regression baseline
+//     (these stay on the per-mesh CPU slice path);
+//   - a single ~3m blend-mode glass pane in front of a back wall to
+//     exercise the transparent → froxel path;
+//   - an intentional 40-light corner cluster at (-45, _, -45) that
+//     concentrates enough lights into a single 16-pixel × 32-slice
+//     froxel to trigger the auto-grow overflow path on first frame.
+//
+// See docs/plans/light-culling.md § Test scene.
+// ─────────────────────────────────────────────────────────────────────
+
+fn scene_1024_lights() -> EditorProject {
+    let mut project = empty_project("tuning-1024-lights");
+
+    // Oversized floor — 100m × 100m, diagonal ≈ 141m > 50m threshold.
+    project.nodes.push(plane_node(
+        "floor_oversized",
+        [0.0, -0.01, 0.0],
+        100.0,
+        100.0,
+        [0.22, 0.22, 0.25, 1.0],
+    ));
+
+    // Back wall — also oversized; gives the transparent pane something
+    // to refract/blend against.
+    project.nodes.push(box_node(
+        "back_wall",
+        [0.0, 5.0, -45.0],
+        [80.0, 10.0, 0.5],
+        [0.5, 0.45, 0.4, 1.0],
+    ));
+
+    // ── Small prop baseline (~50 meshes well under the 50m diagonal) ──
+    // These stay on the per-mesh slice path — they're the
+    // regression-check baseline.
+    let mut props = Vec::with_capacity(50);
+    let prop_count_x = 10;
+    let prop_count_z = 5;
+    let prop_spacing = 7.0_f32;
+    let prop_offset_x = -(prop_count_x as f32 - 1.0) * prop_spacing * 0.5;
+    let prop_offset_z = -(prop_count_z as f32 - 1.0) * prop_spacing * 0.5;
+    for ix in 0..prop_count_x {
+        for iz in 0..prop_count_z {
+            let x = prop_offset_x + ix as f32 * prop_spacing;
+            let z = prop_offset_z + iz as f32 * prop_spacing;
+            let hue = (ix as f32 * 0.13 + iz as f32 * 0.21) % 1.0;
+            if (ix + iz) % 2 == 0 {
+                props.push(box_node(
+                    &format!("prop_box_{ix}_{iz}"),
+                    [x, 0.6, z],
+                    [1.0, 1.2, 1.0],
+                    hsv_to_rgba(hue, 0.4, 0.85),
+                ));
+            } else {
+                props.push(sphere_node(
+                    &format!("prop_sphere_{ix}_{iz}"),
+                    [x, 0.8, z],
+                    0.8,
+                    hsv_to_rgba(hue, 0.5, 0.9),
+                ));
+            }
+        }
+    }
+    project.nodes.push(root_group("props", props));
+
+    // ── Transparent pane ──────────────────────────────────────────────
+    // A thin glass plate in front of the back wall. Uses Blend alpha
+    // mode so it lands on the transparent shader path that consumes
+    // the froxel list directly.
+    let glass_pane = EditorNode {
+        id: NodeId::new(),
+        name: "glass_pane".to_string(),
+        transform: Trs {
+            translation: [0.0, 4.0, -35.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0, 1.0, 1.0],
+        },
+        kind: NodeKind::Primitive {
+            shape: PrimitiveShape::Box {
+                dims: [12.0, 6.0, 0.1],
+            },
+            material: None,
+            inline_material: MaterialDef {
+                base_color: [0.8, 0.9, 1.0, 0.35],
+                metallic: 0.0,
+                roughness: 0.15,
+                alpha_mode: MaterialAlphaMode::Blend,
+                shading: MaterialShading::Pbr,
+                ..MaterialDef::default()
+            },
+            custom_material: None,
+            shadow: MeshShadowConfig::default(),
+        },
+        locked: false,
+        visible: true,
+        prefab: false,
+        children: Vec::new(),
+    };
+    project.nodes.push(glass_pane);
+
+    // ── Lights ────────────────────────────────────────────────────────
+    // Target: ~1000 lights. We split into two groups:
+    //   - 960 lights in a quasi-random 32×30 grid spread across the
+    //     full 100m floor. Per-froxel steady state stays in the 2–8
+    //     range (each light's range ≈ 6m, much smaller than the 100m
+    //     extent).
+    //   - 40 lights tightly clustered at the (-45, _, -45) corner.
+    //     All within ~3m of each other, all with overlapping ranges,
+    //     so a single froxel sees 40+ lights and triggers
+    //     `max_per_froxel_capacity` overflow → auto-grow on frame 2.
+    //
+    // Shadows: none (per-light shadow-pass cost would dominate the
+    // profile and isn't what this fixture targets).
+    let mut lights = Vec::with_capacity(1024);
+
+    let grid_x = 32_i32;
+    let grid_z = 30_i32;
+    let extent = 45.0_f32; // half-extent across the floor
+    for ix in 0..grid_x {
+        for iz in 0..grid_z {
+            // Quasi-random jitter so the grid isn't aligned with the
+            // froxel grid (would otherwise put every cell's lights in
+            // exactly the same froxel).
+            let fx = ix as f32 / (grid_x - 1).max(1) as f32;
+            let fz = iz as f32 / (grid_z - 1).max(1) as f32;
+            let jitter_x = ((ix * 73 + iz * 17) % 31) as f32 / 31.0 - 0.5;
+            let jitter_z = ((ix * 37 + iz * 53) % 29) as f32 / 29.0 - 0.5;
+            let x = (fx * 2.0 - 1.0) * extent + jitter_x * 1.5;
+            let z = (fz * 2.0 - 1.0) * extent + jitter_z * 1.5;
+            let h = 1.0 + ((ix + iz) % 5) as f32 * 0.4;
+            let hue = ((ix * 7 + iz * 11) % 100) as f32 / 100.0;
+            let color = hsv_to_rgb_arr(hue, 0.6, 1.0);
+            lights.push(point_light(
+                &format!("grid_light_{ix}_{iz}"),
+                [x, h, z],
+                color,
+                12.0,
+                6.0,
+                shadow_off(),
+            ));
+        }
+    }
+
+    // 40-light overflow cluster — all within ~3m, all overlapping.
+    for i in 0..40 {
+        let theta = (i as f32 / 40.0) * std::f32::consts::TAU;
+        let r = 1.0 + (i % 4) as f32 * 0.4;
+        let x = -45.0 + theta.cos() * r;
+        let z = -45.0 + theta.sin() * r;
+        let h = 1.2 + (i % 3) as f32 * 0.3;
+        let hue = (i as f32 * 0.027) % 1.0;
+        lights.push(point_light(
+            &format!("cluster_{i}"),
+            [x, h, z],
+            hsv_to_rgb_arr(hue, 0.7, 1.0),
+            8.0,
+            5.0,
+            shadow_off(),
+        ));
+    }
+
+    project.nodes.push(root_group("lights", lights));
+
+    // A single directional light keeps IBL/ambient roughly consistent
+    // with the other tuning scenes — exercises the directional global
+    // prefix path (which the cull pass deliberately bypasses).
+    project.nodes.push(directional_light(
+        "sun",
+        // ~30° tilt down + slight Y rotation. Quaternion authored
+        // directly to avoid pulling in a math dep — derived from
+        // axis-angle (1,0,0) * -30°.
+        [-0.2588, 0.0, 0.0, 0.9659],
+        [1.0, 0.96, 0.88],
+        2.0,
+        shadow_off(),
+    ));
+
     project
 }

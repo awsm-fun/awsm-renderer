@@ -137,8 +137,10 @@ Reasoning:
   per-froxel work (per-light frustum / sphere test, atomic appends
   to a per-froxel list) and benefits from amortizing that work over
   a larger tile.
-- 16×16 = 256 threads per workgroup, which lines up with the typical
-  WebGPU `maxComputeWorkgroupSizeX × Y` = 256 we already use elsewhere.
+- 16×16 pixels is the **screen-tile** footprint, NOT the cull pass's
+  workgroup size. The cull pass dispatches per-froxel with a
+  64-thread workgroup (see § Algorithm sketch); the 16×16 number
+  just describes the screen extent each froxel covers.
 - The light list scales as
   `(viewport_w / 16) × (viewport_h / 16) × slice_count`. At 1920×1080
   with 32 slices that's `120 × 68 × 32` ≈ 261k froxels. With a
@@ -204,14 +206,23 @@ Exponential froxels give the close-camera slices fine resolution
 where it matters and don't need the depth pre-pass at all (which
 sidesteps the multi-sample-depth-reduce question — answer B).
 
-Workgroup size: one workgroup per froxel. Lights iterated per-thread;
-the cap is `ceil(active_punctual_count / 64)` lights per thread
-(64-thread workgroups give good GPU occupancy on the typical 32-
-warp / 32-wave hardware). The total work per frame is
+Workgroup size: **start at 64 threads, one workgroup per froxel.**
+Lights iterated per-thread; the cap is
+`ceil(active_punctual_count / 64)` lights per thread. 64-thread
+workgroups give good GPU occupancy on the typical 32-warp / 32-wave
+hardware and match the Forward+ cull-pass shape used by Unreal /
+Frostbite. The total work per frame is
 `tiles_x × tiles_y × slice_count × ceil(lights / 64)`. At 1920×1080
-with 32 slices and 256 lights: `120 × 68 × 32 × 4 ≈ 1 M
+with 32 slices and 256 lights: `120 × 68 × 32 × 4` ≈ 1 M
 per-light-test operations per frame — entirely GPU-bound and
 sub-millisecond.
+
+The 64 figure is provisional: Phase 3's perf-validation step (see
+§ Phasing) profiles the cull pass at 1080p and 4K with ~1024 lights
+and decides whether to widen (128 / 256) for better occupancy on
+high-light-count scenes. Switching is a single workgroup-size
+constant in the WGSL + the matching `ceil(lights / N)` chunk size
+in Rust.
 
 ---
 
@@ -430,12 +441,60 @@ That's a one-time recompile cost; subsequent runs hit the cache.
 
 ---
 
+## Test scene — `tuning-1024-lights`
+
+The existing tuning suite tops out at
+[`tuning-64-lights`](../../crates/frontend/scene-editor/dist/assets/world/tuning-64-lights/project.json)
+which is too small to stress-test froxel culling. Phase 1 adds a new
+scene **`tuning-1024-lights`** authored via the same
+[generator pattern](../../crates/scene-schema/examples/generate_tuning_scenes.rs):
+
+- ~1000 point lights (just under the `MAX_PUNCTUAL_LIGHTS = 1024`
+  cap in [`lights.rs:29`](../../crates/renderer/src/lights.rs#L29);
+  staying under the cap keeps this scene independent of any future
+  cap bump). Spread across a 100m × 100m floor in a quasi-random
+  grid so steady-state per-froxel counts stay in the 2–8 range and
+  pathological clusters land in a few specific froxels.
+- One large floor plane (100m × 100m) — exceeds the
+  `OVERSIZED_AABB_DIAGONAL_METERS = 50.0` threshold
+  ([`buckets.rs:28`](../../crates/renderer/src/light_buckets/buckets.rs#L28))
+  so it routes through the new oversized → froxel path (Phase 2).
+- A medium-density grid of small props (chairs / boxes / spheres,
+  ~50 meshes, each well under 50m diagonal) — these stay on the
+  per-mesh slice path and are the regression-check baseline (no
+  visual change expected).
+- A soft-glass transparent material (single sphere or pane) in
+  front of a wall — exercises the transparent-froxel path.
+- A handful of light clusters intentionally overlap (e.g. 40+ lights
+  concentrated in one corner) so a single froxel exceeds the initial
+  `max_per_froxel_capacity = 32` budget and triggers the auto-grow
+  readback (Phase 3 acceptance).
+
+Generation: add a `scene_1024_lights()` function and a
+`("tuning-1024-lights", scene_1024_lights())` entry to the loop in
+[`generate_tuning_scenes.rs:34-42`](../../crates/scene-schema/examples/generate_tuning_scenes.rs#L34).
+Run `cargo run --example generate_tuning_scenes -p awsm-scene-schema`
+to write `assets/world/tuning-1024-lights/project.json`. Update the
+example's module-doc list at the top with the new entry. The
+scene-editor frontend picks it up automatically — loadable via
+`window.wasmBindings.load_scene_by_path("tuning-1024-lights")` as
+documented in
+[`actions/measurement.rs:8`](../../crates/frontend/scene-editor/src/actions/measurement.rs#L8).
+
+This scene becomes the visual + perf acceptance fixture for all
+three phases — the acceptance criteria below reference it directly.
+
+---
+
 ## Phasing
 
 Three phases. Each is shippable on its own.
 
 ### Phase 1 — 3D froxel pass + transparent consumption
 
+- Author the `tuning-1024-lights` test scene per § Test scene above.
+  Land this first so subsequent phases have a stable fixture to
+  visually regress against.
 - Fill in the bind group, pipeline, cache-key, shader template under
   `crates/renderer/src/render_passes/light_culling/`.
 - Write the WGSL: exponential Z-slice mapping + per-froxel
@@ -469,12 +528,15 @@ froxel."
 
 ### Phase 3 — auto-grow hardening + perf validation
 
-- Stress-test with 64+ lights in a single froxel; confirm
-  auto-grow fires within one frame and steady-state perf converges.
-- Profile cull-pass cost at 1080p and 4K with 256 lights;
+- Stress-test the clustered-light corner of `tuning-1024-lights`
+  (40+ lights in a single froxel); confirm auto-grow fires within
+  one frame and steady-state perf converges.
+- Profile cull-pass cost at 1080p and 4K with ~1000 lights;
   confirm <500 µs per frame.
-- Profile per-fragment shader cost in oversized-mesh scenes;
-  confirm <2× the small-mesh fragment cost.
+- Profile per-fragment shader cost on the oversized floor in
+  `tuning-1024-lights`; confirm <2× the small-mesh fragment cost.
+- Decide whether to widen the cull workgroup from 64 to 128 / 256
+  based on the high-light-count profile (see § Algorithm sketch).
 
 ---
 
@@ -538,15 +600,16 @@ Total: ~750 lines, mostly mechanical wiring.
 
 The plan is "done" when:
 
-1. A model-tests scene with `MAX_PUNCTUAL_LIGHTS / 4 ≈ 256` point lights
-   distributed across the room, plus a soft-glass transparent material,
-   renders at 60 fps at 1080p on the dev machine. Today this scene
-   (if it existed) would be transparent-shader-bound on the flat loop.
-2. The cull-pass profile shows ≤500 µs per frame at 1080p with 256
+1. The `tuning-1024-lights` scene (~1000 point lights + transparent
+   pane + oversized floor) renders at 60 fps at 1080p on the dev
+   machine. Today the same scene would be transparent-shader-bound
+   on the flat-all-lights loop AND opaque-shader-bound on the
+   oversized floor's bucket-of-1024.
+2. The cull-pass profile shows ≤500 µs per frame at 1080p with ~1000
    lights and the default 32-slice froxel grid (~261k froxels at
    1920×1080 ÷ 16² × 32).
-3. The oversized-floor-mesh test scene shades correctly with a
-   per-pixel light count matching ground truth (verified by debug
+3. The oversized floor in `tuning-1024-lights` shades correctly with
+   a per-pixel light count matching ground truth (verified by debug
    visualization: each pixel colored by `count`).
 4. MSAA on/off both work — the cull pass derives froxel view-space
    bounds analytically from the camera near/far + the exponential
@@ -561,8 +624,10 @@ The plan is "done" when:
 
 ## Resolved decisions (2026-05-28)
 
-All six open questions resolved in a planning conversation with the
-user; the design now bakes them in.
+All six original open questions resolved in the initial planning
+conversation; a second pre-implementation pass on 2026-05-28 added
+three more decisions (G, H, I below) covering the test scene,
+workgroup size, and PR workflow. The design now bakes them all in.
 
 ### A. Opaque shading default
 
@@ -636,10 +701,45 @@ This beats Unreal's static-budget full-list-fallback because:
 ### F. Tile size
 
 **16×16 screen tile** (× 32 Z slices = froxel). Matches Forward+
-literature; amortizes the per-froxel cull work across 256 threads
-per workgroup (lines up with our typical
-`maxComputeWorkgroupSizeX × Y = 256`). Classify's 8×8 tiles remain
-distinct; one cull tile covers a 2×2 block of classify tiles.
+literature; the 16×16 figure is the screen-extent each froxel
+covers, not the cull-pass workgroup size (see decision H below for
+the actual workgroup shape). Classify's 8×8 tiles remain distinct;
+one cull tile covers a 2×2 block of classify tiles.
+
+### G. Test scene
+
+**`tuning-1024-lights`**, authored via
+[`generate_tuning_scenes.rs`](../../crates/scene-schema/examples/generate_tuning_scenes.rs).
+~1000 lights (one shy of `MAX_PUNCTUAL_LIGHTS = 1024` so the scene
+doesn't depend on a future cap bump), one oversized floor, a small
+prop grid as the no-regression baseline, a transparent pane, and an
+intentional 40+ light cluster to trigger the auto-grow path. See
+§ Test scene above for the full spec. Lands as the first commit in
+Phase 1 so subsequent phases regress against a stable fixture.
+
+### H. Cull-pass workgroup size
+
+**Start at 64 threads / workgroup, one workgroup per froxel.**
+Matches Forward+ practice and gets the implementation done. Phase 3
+profiles at ~1000 lights, 1080p + 4K and decides whether to widen
+to 128 / 256 — switching is a single WGSL constant + matching
+`ceil(lights / N)` chunk-size in Rust, low cost to revisit.
+
+The earlier "256 threads per workgroup" claim in § Tile size was a
+mismatch between the screen-tile footprint (16×16 pixels) and the
+cull-pass workgroup shape; both sections now say 64 explicitly with
+Phase 3 as the revisit point.
+
+### I. PR / branch workflow
+
+**Single `light-culling` branch, single PR covering all three
+phases.** ~750 lines of mostly mechanical wiring; splitting Phase 1
+(transparent path + new bind-group layout) from Phase 2 (oversized
+opaque) would leave opaque-oversized fragments on the old per-mesh
+path until the second PR landed — net worse for review and for
+mid-merge bisecting. Implementation order inside the PR still
+follows the Phase 1 → 2 → 3 sequence; commits stay phase-aligned so
+the PR can be read top-down.
 
 ---
 
