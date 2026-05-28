@@ -379,6 +379,20 @@ impl DynamicMaterials {
     }
 
     /// Returns the count of currently-registered dynamic materials.
+    /// Returns `true` if inserting `registration` would NOT grow the
+    /// registry (i.e., it'd be idempotent on an existing
+    /// `(name, layout_hash, wgsl_hash)`). Used by
+    /// [`crate::AwsmRenderer::register_material`] to skip the
+    /// bucket-cap pre-check when a re-registration would just return
+    /// the existing shader id.
+    pub fn would_be_idempotent(&self, registration: &MaterialRegistration) -> bool {
+        self.registrations.values().any(|existing| {
+            existing.name == registration.name
+                && existing.layout_hash == registration.layout_hash
+                && existing.wgsl_hash == registration.wgsl_hash
+        })
+    }
+
     pub fn len(&self) -> usize {
         self.registrations.len()
     }
@@ -552,21 +566,20 @@ impl crate::AwsmRenderer {
         // re-registrations (same name + same hashes) reuse the
         // existing shader_id and don't expand the bucket list.
         //
-        // We can't cheaply tell which case we're in before calling
-        // `insert` (the registry owns the idempotency check), so we
-        // do a conservative pre-check: if even a fresh insert would
-        // push past the cap, reject up front. False positives (a
-        // would-be idempotent re-registration getting rejected
-        // because the registry is already at the cap) can't happen
-        // — the cap is `len < MAX`, and an idempotent
-        // re-registration of an existing entry doesn't need the
-        // capacity to grow.
-        let current_len = bucket_entries(&self.dynamic_materials).len();
-        if current_len >= MAX_BUCKET_ENTRIES {
-            return Err(AwsmDynamicMaterialError::BucketCapExceeded {
-                would_be: current_len + 1,
-                max: MAX_BUCKET_ENTRIES,
-            });
+        // Run the idempotency lookup FIRST so we don't reject a
+        // re-registration of an existing entry once the registry is
+        // at saturation — the registry's contract (per
+        // `DynamicMaterials::insert`) is: same name + same hashes
+        // returns the existing shader_id with no growth, and that
+        // contract must hold even at the cap.
+        if !self.dynamic_materials.would_be_idempotent(&registration) {
+            let current_len = bucket_entries(&self.dynamic_materials).len();
+            if current_len >= MAX_BUCKET_ENTRIES {
+                return Err(AwsmDynamicMaterialError::BucketCapExceeded {
+                    would_be: current_len + 1,
+                    max: MAX_BUCKET_ENTRIES,
+                });
+            }
         }
         let buffer_defaults = registration.buffer_defaults.clone();
         let id = self.dynamic_materials.insert(registration)?;
@@ -714,11 +727,45 @@ impl crate::AwsmRenderer {
         // tracked by the readiness system". `launch_first_party_material_compile`
         // forwards dynamic shader_ids to `launch_dynamic_material_compile`
         // automatically, so a single iteration covers both classes.
-        // Cross-call in-flight dedup inside the launch path (see
-        // `PipelineScheduler::is_compute_compile_in_flight`) ensures
-        // the global classify + edge-chain promises are pushed once
-        // for the whole loop, not N times per registered material.
+        // Cross-call waiter dedup inside the launch path (see
+        // `PipelineScheduler::register_compute_compile_waiter`)
+        // ensures the global classify + edge-chain promises are
+        // pushed once for the whole loop, not N times per
+        // registered material; every waiter's subcompile counter is
+        // still bumped so Ready transitions wait on the shared
+        // compile.
+        //
+        // **Pending transition for existing materials**: mark every
+        // PREVIOUSLY-REGISTERED material `Pending` before launching.
+        // The just-submitted material `id` is already Pending from
+        // `submit_to_scheduler_for_shader_id` above. Without the
+        // mark, existing materials stay in `Ready` while their
+        // replacement compiles are in flight — the typed pipeline
+        // cache has just been cleared, dispatch skips them via the
+        // Option guards, but `pipeline_group_status` /
+        // `drain_pipeline_status_events` still report Ready,
+        // confusing the compile modal + any consumer-driven readiness
+        // gates. The generation bump inside
+        // `mark_material_pending_for_relaunch` is also what makes
+        // the apply_compile_resolution stale-generation gate discard
+        // old in-flight resolutions (compiled against the previous
+        // bucket layout).
         let registered_shader_ids = self.pipeline_scheduler.registered_material_shader_ids();
+        for shader_id in &registered_shader_ids {
+            if *shader_id == id {
+                // Newly-inserted material: already Pending from
+                // submit. Skip the redundant mark.
+                continue;
+            }
+            if let Some(mid) = self
+                .pipeline_scheduler
+                .find_material_by_shader_id(*shader_id)
+            {
+                self.pipeline_scheduler.mark_material_pending_for_relaunch(
+                    crate::pipeline_scheduler::PipelineGroupId::Material(mid),
+                );
+            }
+        }
         for shader_id in registered_shader_ids {
             if let Err(e) = self.launch_first_party_material_compile(shader_id) {
                 tracing::warn!(

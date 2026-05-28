@@ -215,33 +215,37 @@ pub struct PipelineScheduler {
     /// decrements on each successful install; when the count hits 0
     /// the material's `Pending → Ready` transition fires.
     pending_subcompiles: HashMap<MaterialId, u32>,
-    /// **Cross-call in-flight cache-key set** (compute pipelines).
+    /// **Cross-call in-flight waiter map** (compute pipelines).
     ///
     /// Launch sites (`launch_dynamic_material_compile`,
     /// `launch_first_party_material_compile`,
     /// `launch_edge_resolve_compile`) all install resolved pipelines
-    /// into the SAME shared `ComputePipelines.cache` via
-    /// `install_resolved_pipeline`. When two launches in the same
-    /// outer loop want the same cache key (e.g. the classify variant
-    /// — keyed on `(msaa, bucket_entries, emit_edge_data)`, NOT
-    /// shader_id — or any of the edge-chain variants that iterate
-    /// over `bucket_entries`), the first launch issues
+    /// into the SAME shared `ComputePipelines.cache`. When two
+    /// launches in the same outer loop want the same cache key
+    /// (e.g. the classify variant — keyed on
+    /// `(msaa, bucket_entries, emit_edge_data)`, NOT shader_id — or
+    /// any of the edge-chain variants that iterate over
+    /// `bucket_entries`), the first launch issues
     /// `createComputePipelineAsync`, and the second launch's
     /// `cache_lookup` misses (the cache only gets populated at
     /// resolution time, not at promise-issuance time) → it issues a
     /// duplicate promise.
     ///
-    /// Launch sites consult `is_compute_compile_in_flight` after the
-    /// cache miss check; when true, they skip the duplicate push.
-    /// `install_resolved_pipeline` removes the cache key from this
-    /// set on resolution, so a future launch (post-resolution) finds
-    /// the now-cached key via the cache lookup path.
+    /// **Waiter tracking**: when a later launch skips a cache key
+    /// because it's already in flight, we append the later
+    /// material's id to the waiter list AND bump its
+    /// `pending_subcompiles` counter — that way the late material's
+    /// Ready transition still waits on the shared compile resolving.
+    /// When the promise resolves, every waiter material's counter
+    /// decrements via `note_subcompile_complete`. Otherwise the late
+    /// materials could fire Ready while
+    /// `render_edge_resolve` is still warn-skipping their bucket.
     ///
     /// Tracks compute pipelines only — render pipelines don't have
     /// the same cross-call pattern today (per-mesh batches go through
     /// `set_render_pipeline_keys_batched`'s within-batch dedup).
-    inflight_compute_cache_keys:
-        std::collections::HashSet<crate::pipelines::compute_pipeline::ComputePipelineCacheKey>,
+    inflight_compute_cache_waiters:
+        HashMap<crate::pipelines::compute_pipeline::ComputePipelineCacheKey, Vec<MaterialId>>,
     events: Vec<StatusEvent>,
 }
 
@@ -260,41 +264,81 @@ impl PipelineScheduler {
             inflight: FuturesUnordered::new(),
             inflight_compile: FuturesUnordered::new(),
             pending_subcompiles: HashMap::new(),
-            inflight_compute_cache_keys: std::collections::HashSet::new(),
+            inflight_compute_cache_waiters: HashMap::new(),
             events: Vec::new(),
         }
     }
 
-    /// Returns `true` if a compute pipeline compile promise has
-    /// already been pushed into `inflight_compile` for this cache key
-    /// and hasn't yet resolved. Launch sites consult this to skip
-    /// cross-call duplicate compiles.
-    pub fn is_compute_compile_in_flight(
-        &self,
-        key: &crate::pipelines::compute_pipeline::ComputePipelineCacheKey,
+    /// Register material `mid` as a waiter for the compute pipeline
+    /// compile of `cache_key`. Bumps `mid`'s `pending_subcompiles`
+    /// counter so its Ready transition waits on this compile.
+    ///
+    /// Returns `true` if this is the FIRST waiter (caller should
+    /// push a new compile promise into `inflight_compile`).
+    /// Returns `false` if another launch already pushed the promise
+    /// (caller skips the duplicate push; the existing promise's
+    /// resolution will install for every waiter via
+    /// `take_compute_compile_waiters`).
+    ///
+    /// Either way, `mid`'s subcompile counter is incremented — the
+    /// resolution path decrements it via `note_subcompile_complete`
+    /// for every waiter, which is what blocks the late material's
+    /// Ready transition until the shared compile lands.
+    pub fn register_compute_compile_waiter(
+        &mut self,
+        cache_key: crate::pipelines::compute_pipeline::ComputePipelineCacheKey,
+        mid: MaterialId,
     ) -> bool {
-        self.inflight_compute_cache_keys.contains(key)
+        *self.pending_subcompiles.entry(mid).or_insert(0) += 1;
+        let was_first = !self.inflight_compute_cache_waiters.contains_key(&cache_key);
+        self.inflight_compute_cache_waiters
+            .entry(cache_key)
+            .or_default()
+            .push(mid);
+        was_first
     }
 
-    /// Mark a compute pipeline cache key as in-flight. Called by
-    /// launch sites at the moment they push a compile promise into
-    /// `inflight_compile`. Idempotent — duplicate marks are a no-op.
-    pub fn mark_compute_compile_in_flight(
+    /// Remove and return every material that registered as a waiter
+    /// for `cache_key`. Called from the install path
+    /// (`apply_compile_resolution_inline`) on every compile
+    /// resolution (success OR failure) — for each waiter, the caller
+    /// invokes `note_subcompile_complete` to decrement the counter
+    /// and fire the Ready transition when the count hits zero.
+    ///
+    /// After the take, a fresh launch for the same cache_key (e.g.
+    /// a later relaunch loop) will be treated as a NEW first waiter
+    /// — by then the cache should be populated and the launch site's
+    /// `cache_lookup` path will short-circuit before reaching this
+    /// API.
+    pub fn take_compute_compile_waiters(
         &mut self,
-        key: crate::pipelines::compute_pipeline::ComputePipelineCacheKey,
-    ) {
-        self.inflight_compute_cache_keys.insert(key);
+        cache_key: &crate::pipelines::compute_pipeline::ComputePipelineCacheKey,
+    ) -> Vec<MaterialId> {
+        self.inflight_compute_cache_waiters
+            .remove(cache_key)
+            .unwrap_or_default()
     }
 
-    /// Remove a cache key from the in-flight set. Called from the
-    /// install path (`apply_compile_resolution_inline`) once the
-    /// promise resolves — at that point the cache lookup will hit,
-    /// so subsequent launches go through the cache-hit fast path.
-    pub fn unmark_compute_compile_in_flight(
-        &mut self,
-        key: &crate::pipelines::compute_pipeline::ComputePipelineCacheKey,
-    ) {
-        self.inflight_compute_cache_keys.remove(key);
+    /// Returns `true` if there is at least one waiter for
+    /// `cache_key`. Used by launch sites that want to combine the
+    /// cache-hit check plus in-flight check into a single decision.
+    pub fn has_compute_compile_waiter(
+        &self,
+        cache_key: &crate::pipelines::compute_pipeline::ComputePipelineCacheKey,
+    ) -> bool {
+        self.inflight_compute_cache_waiters.contains_key(cache_key)
+    }
+
+    /// Push a raw compile future onto the inflight queue WITHOUT
+    /// bumping any material's pending-subcompile counter.
+    ///
+    /// Used by launch sites paired with
+    /// `register_compute_compile_waiter` — the latter takes care of
+    /// the per-waiter counter bumps (including the first waiter),
+    /// so the push step only needs to drive the future onto the
+    /// FuturesUnordered queue.
+    pub(crate) fn push_compile_future_no_count(&mut self, future: PipelineCompileFuture) {
+        self.inflight_compile.push(future);
     }
 
     /// Push a real compile future onto the inflight queue (Block D.1
@@ -582,6 +626,48 @@ impl PipelineScheduler {
     /// detect stale-config resolutions.
     pub fn material_generation(&self, mid: MaterialId) -> Option<u32> {
         self.materials.get(mid).map(|s| s.generation)
+    }
+
+    /// Transition material `mid` to `Pending` and bump its generation,
+    /// preserving the existing `config_snapshot`. Used by the
+    /// bucket-grow + texture-pool-grow relaunch paths
+    /// ([`crate::AwsmRenderer::register_material`] +
+    /// [`crate::AwsmRenderer::finalize_gpu_textures`]) which need to
+    /// invalidate the in-flight pipeline state for every registered
+    /// material — those events don't change the renderer-wide config
+    /// snapshot (no AA / mipmap flip), but they DO invalidate every
+    /// previously-compiled pipeline whose cache key embeds
+    /// `bucket_entries` or `texture_pool_arrays_len`.
+    ///
+    /// Generation bump is what makes the existing apply_compile_resolution
+    /// stale-generation gate discard old in-flight resolutions
+    /// (compiled against the previous bucket / pool shape) instead of
+    /// letting them install into the freshly-cleared typed cache.
+    ///
+    /// No-op if `id` isn't a Material or the material isn't tracked.
+    /// Idempotent on already-Pending materials (still bumps generation
+    /// + emits a Pending status event).
+    pub fn mark_material_pending_for_relaunch(&mut self, id: PipelineGroupId) {
+        let PipelineGroupId::Material(mid) = id else {
+            return;
+        };
+        let Some(state) = self.materials.get_mut(mid) else {
+            return;
+        };
+        state.status = PipelineGroupStatus::Pending;
+        state.generation = state.generation.wrapping_add(1);
+        // config_snapshot intentionally NOT updated — this transition
+        // is driven by bucket / texture-pool layout changes, not a
+        // config flip, so the snapshot stays accurate.
+        self.events.push(StatusEvent {
+            id,
+            status: PipelineGroupStatus::Pending,
+        });
+        tracing::info!(
+            target: "awsm_renderer::pipeline_readiness",
+            "mark_material_pending_for_relaunch: material({:?}) -> Pending (bucket/pool relaunch)",
+            mid
+        );
     }
 
     /// Returns the number of in-flight sub-pipeline compiles charged

@@ -229,42 +229,35 @@ impl crate::AwsmRenderer {
             compute_jobs.push((slot, ComputePipelineCacheKey::new(shader_key, layout)));
         }
 
-        // Cache-hit dedup pass: install hits inline, defer misses to
-        // the scheduler's inflight_compile queue. The
-        // `is_compute_compile_in_flight` check is the cross-call
-        // dedup — when an outer loop (e.g. `register_material`'s
-        // relaunch over `registered_material_shader_ids()`) calls
-        // this method N times with overlapping classify cache keys
-        // (the classify variant is keyed on `(msaa, bucket_entries,
-        // emit_edge_data)`, NOT shader_id, so every dynamic launch
-        // in the same loop wants the SAME classify cache key), the
-        // first launch pushes the promise and marks it in-flight;
-        // subsequent launches see the in-flight mark and skip the
-        // duplicate `createComputePipelineAsync` call. The single
-        // resolved install lands in the shared
-        // `ComputePipelines.cache` (and the per-pass classify cache
-        // via `install_per_pass`), which is what each individual
-        // launch would have done.
+        // Cache-hit + cross-call waiter dedup. When an outer loop
+        // (e.g. `register_material`'s relaunch over
+        // `registered_material_shader_ids()`) calls this method N
+        // times with overlapping classify cache keys (classify is
+        // keyed on `(msaa, bucket_entries, emit_edge_data)`, NOT
+        // shader_id, so every dynamic launch in the same loop wants
+        // the SAME classify cache key), the first launch issues the
+        // promise and registers itself as the first waiter;
+        // subsequent launches register as ADDITIONAL waiters (their
+        // `pending_subcompiles` counter bumps too so their Ready
+        // transition still waits on the shared compile) and skip
+        // the duplicate `createComputePipelineAsync`. On resolution,
+        // every waiter material's counter decrements via the
+        // `take_compute_compile_waiters` fan-out in
+        // `apply_compile_resolution_inline`.
         let mut promise_jobs: Vec<(LaunchSlot, ComputePipelineCacheKey)> = Vec::new();
         for (slot, cache_key) in &compute_jobs {
             if let Some(existing_key) = self.pipelines.compute.cache_lookup(cache_key).copied() {
                 install_per_pass(self, slot, shader_id, dispatch_hash, existing_key);
-            } else if self
-                .pipeline_scheduler
-                .is_compute_compile_in_flight(cache_key)
-            {
-                // Skip — the earlier-launch's promise will install
-                // for everyone via the global `ComputePipelines.cache`
-                // + per-pass slot map. Subcompile counter NOT
-                // incremented for this material; its Ready transition
-                // doesn't wait on the de-duplicated promise (the
-                // earlier launch already counted it). For the
-                // classify case in particular, classify is a shared
-                // per-pass cache keyed by `(dispatch_hash, msaa)` —
-                // not per-material — so dispatch correctness holds.
-                continue;
             } else {
-                promise_jobs.push((slot.clone(), cache_key.clone()));
+                let is_first_waiter = self
+                    .pipeline_scheduler
+                    .register_compute_compile_waiter(cache_key.clone(), mid);
+                if is_first_waiter {
+                    promise_jobs.push((slot.clone(), cache_key.clone()));
+                }
+                // else: already in flight; mid is now in the waiter
+                // list and its subcompile counter is bumped. No
+                // promise push needed.
             }
         }
 
@@ -305,7 +298,6 @@ impl crate::AwsmRenderer {
                     },
                 };
                 let id = group_id;
-                let cache_key_clone = cache_key.clone();
                 let fut: std::pin::Pin<
                     Box<dyn std::future::Future<Output = PipelineCompileResolution>>,
                 > = Box::pin(async move {
@@ -315,17 +307,16 @@ impl crate::AwsmRenderer {
                         id,
                         generation,
                         target,
-                        cache_key: cache_key_clone,
+                        cache_key,
                         result,
                     }
                 });
-                // Mark the cache key as in-flight BEFORE the push so
-                // any subsequent launch in this call stack (same sync
-                // window) skips the duplicate. `apply_compile_resolution_inline`
-                // removes the mark after install.
-                self.pipeline_scheduler
-                    .mark_compute_compile_in_flight(cache_key);
-                self.pipeline_scheduler.push_compile_future(group_id, fut);
+                // Counter was bumped + waiter registered by the
+                // register_compute_compile_waiter call above (which
+                // returned `is_first_waiter=true` for the entries
+                // that made it into `promise_jobs`). Push the future
+                // onto the inflight queue without re-bumping.
+                self.pipeline_scheduler.push_compile_future_no_count(fut);
             }
             tracing::info!(
                 target: "awsm_renderer::pipeline_readiness",
@@ -473,19 +464,20 @@ impl crate::AwsmRenderer {
             compute_jobs.push((slot, ComputePipelineCacheKey::new(shader_key, layout)));
         }
 
-        // Cache-hit + cross-call dedup. See the matching block in
-        // `launch_dynamic_material_compile` for the full rationale.
+        // Cache-hit + cross-call waiter dedup. See the matching
+        // block in `launch_dynamic_material_compile` for the full
+        // rationale + waiter-tracking semantics.
         let mut promise_jobs: Vec<(LaunchSlot, ComputePipelineCacheKey)> = Vec::new();
         for (slot, cache_key) in &compute_jobs {
             if let Some(existing_key) = self.pipelines.compute.cache_lookup(cache_key).copied() {
                 install_per_pass(self, slot, shader_id, dispatch_hash, existing_key);
-            } else if self
-                .pipeline_scheduler
-                .is_compute_compile_in_flight(cache_key)
-            {
-                continue;
             } else {
-                promise_jobs.push((slot.clone(), cache_key.clone()));
+                let is_first_waiter = self
+                    .pipeline_scheduler
+                    .register_compute_compile_waiter(cache_key.clone(), mid);
+                if is_first_waiter {
+                    promise_jobs.push((slot.clone(), cache_key.clone()));
+                }
             }
         }
 
@@ -515,7 +507,6 @@ impl crate::AwsmRenderer {
                     LaunchSlot::Classify { .. } => unreachable!(),
                 };
                 let id = group_id;
-                let cache_key_clone = cache_key.clone();
                 let fut: std::pin::Pin<
                     Box<dyn std::future::Future<Output = PipelineCompileResolution>>,
                 > = Box::pin(async move {
@@ -525,13 +516,11 @@ impl crate::AwsmRenderer {
                         id,
                         generation,
                         target,
-                        cache_key: cache_key_clone,
+                        cache_key,
                         result,
                     }
                 });
-                self.pipeline_scheduler
-                    .mark_compute_compile_in_flight(cache_key);
-                self.pipeline_scheduler.push_compile_future(group_id, fut);
+                self.pipeline_scheduler.push_compile_future_no_count(fut);
             }
             tracing::info!(
                 target: "awsm_renderer::pipeline_readiness",
@@ -656,36 +645,50 @@ impl crate::AwsmRenderer {
             ));
         }
 
-        // Cache-hit + cross-call dedup. The edge-chain descriptors
-        // iterate over EVERY bucket entry (every registered material's
-        // shader_id) plus skybox + final_blend globals. When this
-        // method is called in a relaunch loop (one call per registered
-        // shader_id from `register_material` / `set_anti_aliasing` /
+        // Cache-hit + cross-call waiter dedup. The edge-chain
+        // descriptors iterate over EVERY bucket entry (every
+        // registered material's shader_id) plus skybox + final_blend
+        // globals. When this method is called in a relaunch loop
+        // (one call per registered shader_id from
+        // `register_material` / `set_anti_aliasing` /
         // `finalize_gpu_textures`), every call wants the SAME N+2
-        // cache keys. Without the in-flight check, each call would
-        // push duplicate `createComputePipelineAsync` promises for
-        // the whole chain. The check skips cross-call duplicates;
-        // the single resolved install lands in the shared
-        // `ComputePipelines.cache` + the per-pass `edge_pipelines`
-        // slot map, which is what every individual launch would do.
+        // cache keys. Without the waiter check, each call would push
+        // duplicate `createComputePipelineAsync` promises.
+        //
+        // `register_compute_compile_waiter` bumps THIS material's
+        // subcompile counter even for the skip path — so a late
+        // material's Ready transition waits on the shared edge-chain
+        // promise that the first material owns. On resolution,
+        // `take_compute_compile_waiters` fans the install + counter
+        // decrement to every waiter material.
         let mut promise_jobs: Vec<(EdgeLaunchSlot, ComputePipelineCacheKey)> = Vec::new();
+        let mid_for_waiter = match group_id {
+            PipelineGroupId::Material(m) => Some(m),
+            PipelineGroupId::Pass(_) => None,
+        };
         for (slot, cache_key) in &compute_jobs {
             if let Some(existing_key) = self.pipelines.compute.cache_lookup(cache_key).copied() {
                 install_edge_per_pass(self, &slot.0, existing_key);
-            } else if self
-                .pipeline_scheduler
-                .is_compute_compile_in_flight(cache_key)
-            {
-                continue;
+            } else if let Some(mid) = mid_for_waiter {
+                let is_first_waiter = self
+                    .pipeline_scheduler
+                    .register_compute_compile_waiter(cache_key.clone(), mid);
+                if is_first_waiter {
+                    promise_jobs.push((slot.clone(), cache_key.clone()));
+                }
             } else {
+                // No material group_id (e.g. a hypothetical
+                // Pass-driven edge-chain launch — not used today).
+                // Skip waiter tracking; just push the promise.
                 promise_jobs.push((slot.clone(), cache_key.clone()));
             }
         }
 
         if promise_jobs.is_empty() {
             // Every variant was a cache hit or already in flight; no
-            // promises pushed and no subcompile-counter increment to
-            // balance.
+            // promises pushed and no NEW subcompile-counter increment
+            // to balance (waiter counter bumps for skips happen
+            // inside `register_compute_compile_waiter`).
             return Ok(());
         }
 
@@ -710,7 +713,6 @@ impl crate::AwsmRenderer {
                 EdgePipelineSlot::FinalBlend => CompileInstallTarget::EdgeResolveFinalBlend,
             };
             let id = group_id;
-            let cache_key_clone = cache_key.clone();
             let fut: std::pin::Pin<
                 Box<dyn std::future::Future<Output = PipelineCompileResolution>>,
             > = Box::pin(async move {
@@ -720,13 +722,11 @@ impl crate::AwsmRenderer {
                     id,
                     generation,
                     target,
-                    cache_key: cache_key_clone,
+                    cache_key,
                     result,
                 }
             });
-            self.pipeline_scheduler
-                .mark_compute_compile_in_flight(cache_key);
-            self.pipeline_scheduler.push_compile_future(group_id, fut);
+            self.pipeline_scheduler.push_compile_future_no_count(fut);
         }
         tracing::info!(
             target: "awsm_renderer::pipeline_readiness",
@@ -768,15 +768,17 @@ impl crate::AwsmRenderer {
             cache_key,
             result,
         } = resolution;
-        // Whatever happens below (success, failure, stale-discard,
-        // or pass-unsupported), this cache key is no longer in-flight.
-        // Remove it FIRST so a future relaunch with the same key
-        // routes through the normal cache-hit / cache-miss path. If
-        // we deferred this past the stale-generation drop, the key
-        // would stay flagged in-flight indefinitely and the next
-        // launch would silently skip even though no install lands.
-        self.pipeline_scheduler
-            .unmark_compute_compile_in_flight(&cache_key);
+
+        // Take the full waiter list — every material that registered
+        // an interest in this cache key (the original launcher + every
+        // later launch that hit `register_compute_compile_waiter`'s
+        // cross-call dedup path). Each waiter's subcompile counter
+        // was bumped at register-time; we must decrement here, even
+        // on stale-drop / failure, otherwise late-waiter materials
+        // would stay Pending forever.
+        let waiters = self
+            .pipeline_scheduler
+            .take_compute_compile_waiters(&cache_key);
 
         let mid = match id {
             PipelineGroupId::Material(mid) => mid,
@@ -785,23 +787,45 @@ impl crate::AwsmRenderer {
                     target: "awsm_renderer::pipeline_readiness",
                     "apply_compile_resolution: Pass-flavoured resolution not yet supported"
                 );
+                // Balance waiter counts even on this unsupported
+                // path so materials don't get stuck Pending.
+                for waiter_mid in waiters {
+                    self.pipeline_scheduler.note_subcompile_complete(waiter_mid);
+                }
                 return;
             }
         };
-        // Stale-generation drop: a config-flip or unregister bumped
-        // generation between submit + resolve; the resolved pipeline
-        // would be installed against an outdated config.
-        if self
+
+        // Stale-generation drop: a config flip / bucket-grow /
+        // texture-pool-grow bumped this material's generation between
+        // promise-issuance and resolution. The compiled pipeline was
+        // built against an outdated cache key — discard the install.
+        //
+        // Subtle: this check uses the PROMISE's launcher generation,
+        // not each waiter's. That's correct — every waiter on this
+        // cache_key wanted THE SAME pipeline (cache keys embed every
+        // input that affects compile output). If the original
+        // launcher's gen is stale, every waiter's wait on this key
+        // is stale too — the bucket-grow / config-flip path would
+        // have triggered fresh launches for the new cache keys for
+        // each of them, and those will resolve and install
+        // separately.
+        let stale = self
             .pipeline_scheduler
             .material_generation(mid)
             .map(|g| g != generation)
-            .unwrap_or(true)
-        {
+            .unwrap_or(true);
+
+        if stale {
             tracing::debug!(
                 target: "awsm_renderer::pipeline_readiness",
-                "apply_compile_resolution: stale resolution dropped (material({:?}))",
-                mid
+                "apply_compile_resolution: stale resolution dropped (material({:?}), waiters={})",
+                mid,
+                waiters.len()
             );
+            for waiter_mid in waiters {
+                self.pipeline_scheduler.note_subcompile_complete(waiter_mid);
+            }
             return;
         }
 
@@ -820,6 +844,17 @@ impl crate::AwsmRenderer {
                         "create_compute_pipeline_async rejected",
                     ),
                 );
+                // Drain waiter counts so additional waiters don't get
+                // stuck Pending. They'll still be marked Failed if
+                // any of their OWN compiles fail; this cache_key's
+                // failure only marks the primary launcher Failed
+                // (matching the existing single-waiter contract —
+                // late waiters may be on the same broken shader, but
+                // they'll surface their own failure events
+                // separately).
+                for waiter_mid in waiters {
+                    self.pipeline_scheduler.note_subcompile_complete(waiter_mid);
+                }
                 return;
             }
         };
@@ -827,7 +862,9 @@ impl crate::AwsmRenderer {
         // Install: slotmap + cache + per-pass. Edge resolve targets
         // route to the edge_pipelines cache via the edge install
         // helper; the opaque/classify targets go through the
-        // `LaunchSlot`-shaped install path.
+        // `LaunchSlot`-shaped install path. The per-pass install is
+        // GLOBAL (keyed by shader_id / msaa / mipmaps), so the
+        // single install covers every waiter material.
         let pipeline_key = self
             .pipelines
             .compute
@@ -850,7 +887,12 @@ impl crate::AwsmRenderer {
             }
         }
 
-        self.pipeline_scheduler.note_subcompile_complete(mid);
+        // Decrement every waiter's subcompile counter. Materials
+        // whose counter hits zero transition Pending → Ready and
+        // emit a status event.
+        for waiter_mid in waiters {
+            self.pipeline_scheduler.note_subcompile_complete(waiter_mid);
+        }
     }
 }
 
