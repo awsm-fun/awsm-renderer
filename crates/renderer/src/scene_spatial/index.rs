@@ -81,6 +81,15 @@ impl SceneSpatial {
         }
     }
 
+    /// Returns the rebuild-cadence config picked at construction.
+    /// Read-only — the index doesn't expose a setter because the
+    /// thresholds are baked into the periodic-rebuild loop. Used by
+    /// [`crate::AwsmRenderer::remove_all`] to preserve the cadence
+    /// across a scene-clear rebuild.
+    pub fn config(&self) -> SceneSpatialConfig {
+        self.config
+    }
+
     /// Total leaf count (static + dynamic). The debug invariant in
     /// `update.rs` asserts this matches the meshes-with-world-aabb count.
     pub fn len(&self) -> usize {

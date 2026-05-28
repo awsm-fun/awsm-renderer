@@ -357,16 +357,41 @@ pub static COMPATIBITLIY_REQUIREMENTS: LazyLock<CompatibilityRequirements> =
 
 impl AwsmRenderer {
     /// Removes all scene data by rebuilding the renderer state.
+    ///
+    /// Preserves every field the user picked at build time — both the
+    /// historical set (`logging`, `clear_color`, `render_texture_formats`,
+    /// `features`, `optimization_policy`) and the
+    /// [`crate::profile::RendererProfile`]-derived bundle
+    /// (`anti_aliasing`, `post_processing`, `shadows_config`,
+    /// `max_edge_budget`, `scene_spatial_config`,
+    /// `recommended_shadow_quality_tier`). Forwarding the *current
+    /// values* rather than re-resolving the profile means any
+    /// post-profile per-knob override the frontend chained on top is
+    /// preserved too — `remove_all` is a scene-data wipe, not a
+    /// config-reset.
     pub async fn remove_all(&mut self) -> crate::error::Result<()> {
         // meh, just recreate the renderer, it's fine
-        let renderer = AwsmRendererBuilder::new(self.gpu.clone())
+        let mut builder = AwsmRendererBuilder::new(self.gpu.clone())
             .with_logging(self.logging.clone())
             .with_clear_color(self._clear_color.clone())
             .with_render_texture_formats(self.render_textures.formats.clone())
             .with_features(self.features.clone())
             .with_optimization_policy(self.optimization_policy.clone())
-            .build()
-            .await?;
+            .with_anti_aliasing(self.anti_aliasing.clone())
+            .with_post_processing(self.post_processing.clone())
+            .with_shadows_config(self.shadows.config().clone())
+            .with_scene_spatial_config(self.scene_spatial.config());
+        if let Some(budget) = self
+            .material_edge_buffers
+            .as_ref()
+            .map(|eb| eb.max_edge_budget)
+        {
+            builder = builder.with_max_edge_budget(budget);
+        }
+        if let Some(tier) = self.recommended_shadow_quality_tier {
+            builder = builder.with_recommended_shadow_quality_tier(tier);
+        }
+        let renderer = builder.build().await?;
 
         *self = renderer;
         Ok(())
@@ -1291,6 +1316,32 @@ impl AwsmRendererBuilder {
     /// Sets the anti-aliasing configuration.
     pub fn with_anti_aliasing(mut self, anti_aliasing: AntiAliasing) -> Self {
         self.anti_aliasing = anti_aliasing;
+        self
+    }
+
+    /// Sets the post-processing configuration. Mirrors
+    /// [`Self::with_anti_aliasing`] — used by
+    /// [`AwsmRenderer::remove_all`] to preserve the live post-process
+    /// state across the scene-clear rebuild, and by frontends that
+    /// want to start from a non-default tonemapper / bloom / DoF
+    /// config without going through `set_post_processing` after build.
+    pub fn with_post_processing(mut self, post_processing: PostProcessing) -> Self {
+        self.post_processing = post_processing;
+        self
+    }
+
+    /// Pins the recommended shadow quality tier reported by
+    /// [`AwsmRenderer::recommended_shadow_quality_tier`]. Normally set
+    /// implicitly via [`Self::with_profile`]; this setter exists so
+    /// [`AwsmRenderer::remove_all`] can preserve the value across a
+    /// scene-clear rebuild without re-running profile resolution
+    /// (which would clobber any post-profile per-knob overrides the
+    /// frontend chained on top).
+    pub fn with_recommended_shadow_quality_tier(
+        mut self,
+        tier: crate::shadows::ShadowQualityTier,
+    ) -> Self {
+        self.recommended_shadow_quality_tier = Some(tier);
         self
     }
 
