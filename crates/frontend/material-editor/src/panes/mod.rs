@@ -1,5 +1,6 @@
 //! Panes of the material-editor UI.
 
+pub mod buffer_converter;
 pub mod compile_modal;
 pub mod contract;
 pub mod definition;

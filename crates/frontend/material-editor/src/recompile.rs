@@ -44,6 +44,17 @@ const DEBOUNCE_MS: u32 = 500;
 pub fn build_registration(state: &EditState) -> MaterialRegistration {
     let def = state.definition.lock_ref().clone();
     let wgsl = state.wgsl_source.lock_ref().clone();
+    // BufferSlot defaults sourced from the editor's in-memory map
+    // (populated by the Buffer Converter modal). Slot order matches
+    // `def.buffers`; absent entries default to an empty Vec, which
+    // the extras-pool path treats as "<slot>_length = 0" in the
+    // shader (matches the contract docs).
+    let buffer_defaults_map = state.buffer_defaults.lock_ref().clone();
+    let buffer_defaults: Vec<Vec<u32>> = def
+        .buffers
+        .iter()
+        .map(|b| buffer_defaults_map.get(&b.name).cloned().unwrap_or_default())
+        .collect();
     let layout = convert_layout(&def);
     let alpha_mode = convert_alpha_mode(def.alpha_mode.clone());
 
@@ -75,6 +86,18 @@ pub fn build_registration(state: &EditState) -> MaterialRegistration {
     let layout_hash = h.finish();
     let mut h2 = std::collections::hash_map::DefaultHasher::new();
     wgsl.hash(&mut h2);
+    // Fold the buffer-default bytes into wgsl_hash so the idempotency
+    // gate in the sink notices a Buffer Converter modal apply (which
+    // changes only `buffer_defaults`, not `def` or `wgsl_source`).
+    // Without this, dropping in a new `.bin` for an already-registered
+    // material would silently no-op the recompile and the preview
+    // would keep showing the prior bytes.
+    for (i, b) in def.buffers.iter().enumerate() {
+        b.name.hash(&mut h2);
+        if let Some(data) = buffer_defaults.get(i) {
+            data.hash(&mut h2);
+        }
+    }
     let wgsl_hash = h2.finish();
 
     // Per-uniform schema-declared defaults. The editor's
@@ -98,7 +121,7 @@ pub fn build_registration(state: &EditState) -> MaterialRegistration {
         layout_hash,
         wgsl_hash,
         wgsl_fragment: wgsl,
-        buffer_defaults: Vec::new(),
+        buffer_defaults,
         uniform_defaults,
     }
 }
@@ -187,6 +210,24 @@ pub fn spawn(state: EditState, sink: Rc<futures_signals::signal::Mutable<Box<dyn
         let preview_mesh = state.preview_mesh.clone();
         spawn_local(async move {
             preview_mesh
+                .signal_cloned()
+                .for_each(move |_| {
+                    let trigger = trigger.clone();
+                    async move {
+                        let next = trigger.get() + 1;
+                        trigger.set(next);
+                    }
+                })
+                .await;
+        });
+    }
+    // Buffer Converter modal updates land in
+    // `state.buffer_defaults`. Same debounce window.
+    {
+        let trigger = trigger.clone();
+        let buffer_defaults = state.buffer_defaults.clone();
+        spawn_local(async move {
+            buffer_defaults
                 .signal_cloned()
                 .for_each(move |_| {
                     let trigger = trigger.clone();

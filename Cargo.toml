@@ -165,6 +165,8 @@ features = [
     "ResizeQuality",
     "FileList",
     "File",
+    "FileReader",
+    "HtmlTextAreaElement",
     "Window",
     "BlobPropertyBag",
     "Url",

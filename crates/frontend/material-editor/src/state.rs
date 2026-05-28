@@ -8,6 +8,7 @@
 //! hard-coded scanline material. Phase 9 wires it to a real renderer
 //! preview.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use futures_signals::signal::Mutable;
@@ -59,6 +60,24 @@ pub struct EditState {
     /// regenerates the preview mesh (see `recompile.rs` and
     /// `host::apply_quad_for_current_registration`).
     pub preview_mesh: Arc<Mutable<PreviewMeshKind>>,
+    /// In-memory bytes for each `BufferSlot` default, keyed by slot
+    /// name. Populated by the Definition pane's Buffer Converter modal
+    /// (file drop / file picker / JSON paste). The recompile pipeline
+    /// threads these through `MaterialRegistration.buffer_defaults`
+    /// so the live preview reflects what the author dropped in,
+    /// without requiring a disk write to `assets/materials/<name>/<slot>.bin`
+    /// first.
+    ///
+    /// Slots without an entry default to empty (the
+    /// `MaterialData.<slot>_length` field reads 0 in the shader,
+    /// matching the contract docs).
+    pub buffer_defaults: Arc<Mutable<HashMap<String, Vec<u32>>>>,
+    /// The slot name currently being edited by the Buffer Converter
+    /// modal (`Some("frames")` while the modal is open, `None` when
+    /// the modal is closed). The Definition pane renders the modal as
+    /// a child of the root layout; it watches this signal to know
+    /// whether to display itself.
+    pub converter_open_for_slot: Arc<Mutable<Option<String>>>,
 }
 
 /// Preview-canvas mesh shape selectable from the Preview pane header.
@@ -116,6 +135,8 @@ impl EditState {
             compile_pending: Arc::new(Mutable::new(0)),
             compile_last_error: Arc::new(Mutable::new(None)),
             preview_mesh: Arc::new(Mutable::new(PreviewMeshKind::Plane)),
+            buffer_defaults: Arc::new(Mutable::new(HashMap::new())),
+            converter_open_for_slot: Arc::new(Mutable::new(None)),
         }
     }
 
@@ -135,6 +156,8 @@ impl EditState {
         self.wgsl_source.set(wgsl);
         self.errors.set(Vec::new());
         self.compile_last_error.set(None);
+        self.buffer_defaults.set(HashMap::new());
+        self.converter_open_for_slot.set(None);
     }
 }
 
