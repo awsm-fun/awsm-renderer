@@ -107,29 +107,45 @@ impl ExtrasPool {
     /// Assign a slice to `(shader_id, slot_index)` and copy `data`
     /// into the shadow + dirty range. If a slice was previously
     /// assigned and its length matches, the existing offset is
-    /// reused. Otherwise a fresh slice is bump-allocated.
-    ///
-    /// Returns the `(offset_in_words, length_in_words)` pair.
+    /// reused. Otherwise a fresh slice is bump-allocated; on
+    /// allocator overflow the pool doubles its GPU capacity and
+    /// retries (so the per-call contract is "this always succeeds
+    /// for any reasonable `data.len()`").
     pub fn assign_or_update(
         &mut self,
+        gpu: &AwsmRendererWebGpu,
         shader_id: MaterialShaderId,
         slot_index: usize,
         data: &[u32],
-    ) -> Result<(u32, u32), ExtrasPoolError> {
+    ) -> Result<AssignOutcome, ExtrasPoolError> {
         let len = data.len() as u32;
         let key = (shader_id, slot_index);
+        let mut resized = false;
         let (offset, length) = match self.slices.get(&key) {
             Some(&(off, prev_len)) if prev_len == len => (off, prev_len),
             _ => {
                 let offset = self.next_offset;
                 let new_next = offset.saturating_add(len);
                 if new_next > self.capacity_words {
-                    return Err(ExtrasPoolError::OutOfCapacity {
-                        needed: new_next,
-                        capacity: self.capacity_words,
-                    });
+                    // Grow until the next free offset fits. Two halts:
+                    // we double on each iteration (so `new_next` is
+                    // reached in O(log) steps); and `len` can never
+                    // exceed the addressable u32 range without first
+                    // overflowing `new_next`, which we'd have caught
+                    // via the `saturating_add` above.
+                    let mut new_capacity = self.capacity_words;
+                    while new_capacity < new_next {
+                        new_capacity = new_capacity
+                            .checked_mul(2)
+                            .ok_or(ExtrasPoolError::OutOfCapacity {
+                                needed: new_next,
+                                capacity: self.capacity_words,
+                            })?;
+                    }
+                    self.grow_to(gpu, new_capacity)?;
+                    resized = true;
                 }
-                self.next_offset = new_next;
+                self.next_offset = offset.saturating_add(len);
                 self.slices.insert(key, (offset, len));
                 (offset, len)
             }
@@ -139,6 +155,8 @@ impl ExtrasPool {
         self.shadow[start..end].copy_from_slice(data);
 
         // Mark the byte range as dirty for the next per-frame upload.
+        // On resize the whole live range is already covered (see
+        // `grow_to`), so the further extension here is a no-op.
         let dirty_start_bytes = offset * 4;
         let dirty_end_bytes = (offset + length) * 4;
         match self.dirty_range {
@@ -149,7 +167,61 @@ impl ExtrasPool {
                 self.dirty_range = Some((dirty_start_bytes, dirty_end_bytes));
             }
         }
-        Ok((offset, length))
+        Ok(AssignOutcome {
+            offset,
+            length,
+            resized,
+        })
+    }
+
+    /// Grow the pool to at least `new_capacity_words`. Reallocates the
+    /// GPU buffer, widens the shadow vec, and marks the live prefix
+    /// (`0..next_offset`) dirty so the next-frame upload re-populates
+    /// the fresh buffer. The shadow is the authoritative byte source —
+    /// no `copyBufferToBuffer` is needed.
+    fn grow_to(
+        &mut self,
+        gpu: &AwsmRendererWebGpu,
+        new_capacity_words: u32,
+    ) -> Result<(), ExtrasPoolError> {
+        debug_assert!(new_capacity_words > self.capacity_words);
+        let new_buffer = gpu
+            .create_buffer(
+                &BufferDescriptor::new(
+                    Some("ExtrasPool"),
+                    (new_capacity_words as usize) * 4,
+                    *BUFFER_USAGE,
+                )
+                .into(),
+            )
+            .map_err(ExtrasPoolError::Core)?;
+        self.buffer = new_buffer;
+        self.capacity_words = new_capacity_words;
+        self.shadow.resize(new_capacity_words as usize, 0);
+        // Re-dirty everything currently live so the next upload
+        // re-populates the new buffer. The MappedUploader's per-frame
+        // path discards any in-flight staging that targeted the old
+        // buffer (the old buffer is dropped here; web-sys's GpuBuffer
+        // is a refcount handle, so any prior submitted command-encoder
+        // recording that referenced the old handle still works for
+        // that frame — but the next frame's writes go to the new
+        // handle via `self.buffer` and the bind groups recreated on
+        // `ExtrasPoolResize`).
+        if self.next_offset > 0 {
+            let live_end_bytes = self.next_offset * 4;
+            self.dirty_range = match self.dirty_range {
+                Some((_, e)) => Some((0, e.max(live_end_bytes))),
+                None => Some((0, live_end_bytes)),
+            };
+        }
+        tracing::info!(
+            target: "awsm_renderer::extras_pool",
+            "ExtrasPool grew to {} words ({} bytes); live bytes={}",
+            new_capacity_words,
+            (new_capacity_words as usize) * 4,
+            self.next_offset * 4,
+        );
+        Ok(())
     }
 
     /// Per-frame upload — flushes any dirty range through the
@@ -175,13 +247,38 @@ impl ExtrasPool {
     }
 }
 
+/// Outcome of [`ExtrasPool::assign_or_update`]: the slice assignment
+/// plus a `resized` flag the caller uses to mark
+/// [`crate::bind_groups::BindGroupCreate::ExtrasPoolResize`] when the
+/// underlying GPU buffer was grown.
+///
+/// The shadow `Vec<u32>` is the authoritative source of every live
+/// slice's bytes, so a resize doesn't need `copyBufferToBuffer` from
+/// the old buffer — we widen the shadow, mark the live range dirty,
+/// and let the next-frame upload re-populate the fresh buffer.
+#[derive(Clone, Copy, Debug)]
+pub struct AssignOutcome {
+    /// Offset into the pool (in u32 words) at which the assigned
+    /// slice begins.
+    pub offset: u32,
+    /// Length of the slice in u32 words.
+    pub length: u32,
+    /// `true` if the pool grew on this call (the GPU buffer was
+    /// reallocated). Callers MUST mark
+    /// [`crate::bind_groups::BindGroupCreate::ExtrasPoolResize`]
+    /// when this is `true` — otherwise the opaque + transparent
+    /// main bind groups silently keep pointing at the dropped
+    /// buffer handle.
+    pub resized: bool,
+}
+
 /// Errors produced by the extras-pool allocator.
 #[derive(Debug, thiserror::Error)]
 pub enum ExtrasPoolError {
-    /// The bump allocator ran out of contiguous space. Phase 6 stub:
-    /// the caller falls back to (0, 0) so the material renders against
-    /// zeroed data; the resize-on-overflow + compaction paths are
-    /// future work.
+    /// The bump allocator's grow path overflowed `u32` capacity — the
+    /// pool can never reach the requested size. In practice this is
+    /// never hit: 4 GiB of u32 words is more than any author would ask
+    /// for, and the grow path stops well before that.
     #[error("[extras-pool] out of capacity: needed {needed} words, capacity {capacity}")]
     OutOfCapacity {
         /// Total words the allocator needed for the next slice.
@@ -189,4 +286,9 @@ pub enum ExtrasPoolError {
         /// Current pool capacity in words.
         capacity: u32,
     },
+    /// GPU buffer (re)creation failed during a grow. The pool stays at
+    /// its previous capacity; the caller's `assign_or_update` returns
+    /// without inserting the slice.
+    #[error("[extras-pool] gpu buffer creation failed: {0:?}")]
+    Core(AwsmCoreError),
 }
