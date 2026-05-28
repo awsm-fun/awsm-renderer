@@ -139,6 +139,20 @@ impl<'a> DynamicMaterialContext for DynamicMaterialPackContext<'a> {
     }
 }
 
+/// Hard cap on the total number of bucket entries (first-party +
+/// dynamic) that the renderer accepts. The classify pass's per-pixel
+/// `edge_slot_map` packs four 8-bit sample bucket ids into a single
+/// `u32`, reserving `0xFE` for skybox / HUD / uncovered samples and
+/// `0xFF` for the "empty slot" sentinel — see the `slot_map` build at
+/// the bottom of `material_classify/shader/material_classify_wgsl/compute.wgsl`.
+///
+/// Real bucket ids must therefore live in `[0, 254)`, so a renderer
+/// configuration with 4 first-party + 250 dynamic materials is the
+/// theoretical maximum. `register_material` rejects any registration
+/// that would push past this cap with
+/// [`AwsmDynamicMaterialError::BucketCapExceeded`].
+pub const MAX_BUCKET_ENTRIES: usize = 254;
+
 /// One bucket entry — the template-rendering view of a single registered
 /// material (first-party OR dynamic). Returned by [`bucket_entries`].
 ///
@@ -532,6 +546,28 @@ impl crate::AwsmRenderer {
         &mut self,
         registration: MaterialRegistration,
     ) -> Result<MaterialShaderId, AwsmDynamicMaterialError> {
+        // Bucket-id cap (see [`MAX_BUCKET_ENTRIES`]). A successful
+        // insert below grows `bucket_entries` by one ONLY if this is
+        // a brand-new `(name, layout_hash, wgsl_hash)`; idempotent
+        // re-registrations (same name + same hashes) reuse the
+        // existing shader_id and don't expand the bucket list.
+        //
+        // We can't cheaply tell which case we're in before calling
+        // `insert` (the registry owns the idempotency check), so we
+        // do a conservative pre-check: if even a fresh insert would
+        // push past the cap, reject up front. False positives (a
+        // would-be idempotent re-registration getting rejected
+        // because the registry is already at the cap) can't happen
+        // — the cap is `len < MAX`, and an idempotent
+        // re-registration of an existing entry doesn't need the
+        // capacity to grow.
+        let current_len = bucket_entries(&self.dynamic_materials).len();
+        if current_len >= MAX_BUCKET_ENTRIES {
+            return Err(AwsmDynamicMaterialError::BucketCapExceeded {
+                would_be: current_len + 1,
+                max: MAX_BUCKET_ENTRIES,
+            });
+        }
         let buffer_defaults = registration.buffer_defaults.clone();
         let id = self.dynamic_materials.insert(registration)?;
         // Assign extras-pool slices for any buffer-slot defaults

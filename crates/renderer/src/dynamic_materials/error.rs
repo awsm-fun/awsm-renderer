@@ -49,4 +49,20 @@ pub enum AwsmDynamicMaterialError {
     /// was growing.
     #[error("[dynamic-material] {0}")]
     Core(#[from] AwsmCoreError),
+
+    /// Registration would push `bucket_entries.len()` past the
+    /// `MAX_BUCKET_ENTRIES` cap (the classify pass's per-pixel
+    /// edge_slot_map encodes each sample's bucket id in 8 bits with
+    /// `0xFE` / `0xFF` reserved as `skybox` / `empty` sentinels — see
+    /// `compute.wgsl`'s `slot_map` build). Going past 254 real bucket
+    /// ids would alias real buckets onto the sentinels and corrupt
+    /// the edge_resolve accumulator routing.
+    #[error("[dynamic-material] bucket-id cap exceeded: would push bucket_entries.len() to {would_be}, max is {max} (edge_slot_map encoding reserves 0xFE/0xFF)")]
+    BucketCapExceeded {
+        /// What `bucket_entries.len()` would become if this
+        /// registration were accepted.
+        would_be: usize,
+        /// The hard cap (currently 254).
+        max: usize,
+    },
 }
