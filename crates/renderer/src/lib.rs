@@ -103,6 +103,30 @@ pub struct CoverageReadbackState {
     pub pending_snapshot: Option<Vec<(MeshKey, u32)>>,
 }
 
+/// Per-frame state for the MSAA edge-budget overflow readback loop.
+///
+/// The render frame copies 8 bytes
+/// (`edge_count`, `edge_overflow_count`) from
+/// [`crate::render_passes::material_opaque::edge_buffers::MaterialEdgeBuffers::data_buffer`]
+/// into a CPU-mappable buffer, then kicks `mapAsync`. When the read
+/// resolves, the next frame's preamble inspects
+/// `pending_overflow_count`: if > 0, the renderer calls
+/// [`crate::AwsmRenderer::set_max_edge_budget`]`(current * 2)` so
+/// subsequent frames have headroom. Single-buffered (`inflight`
+/// gates the next kick) — under high mapping latency we lose one
+/// frame's signal rather than ringing a buffer.
+#[derive(Default)]
+pub struct EdgeOverflowReadbackState {
+    /// `true` while a `mapAsync` is in flight against
+    /// `MaterialEdgeBuffers::overflow_readback_buffer`. Subsequent
+    /// frames skip the copy + kick until the prior resolves.
+    pub inflight: bool,
+    /// Pending `(edge_count, edge_overflow_count)` snapshot from the
+    /// most recently resolved `mapAsync`. Ingested at the top of the
+    /// next render (set to `None` after reading).
+    pub pending_overflow_count: Option<(u32, u32)>,
+}
+
 /// Main renderer state and GPU resources.
 pub struct AwsmRenderer {
     pub gpu: core::renderer::AwsmRendererWebGpu,
@@ -192,6 +216,11 @@ pub struct AwsmRenderer {
     /// future-proof for the day the renderer moves across threads
     /// (single-threaded today, so the lock is uncontested).
     pub coverage_readback_state: std::sync::Arc<std::sync::Mutex<CoverageReadbackState>>,
+    /// State for the MSAA edge-budget auto-grow readback loop. Same
+    /// `Arc<Mutex<…>>` discipline as `coverage_readback_state` —
+    /// `mapAsync` writes through the lock from a detached
+    /// `spawn_local` future.
+    pub edge_overflow_readback_state: std::sync::Arc<std::sync::Mutex<EdgeOverflowReadbackState>>,
     /// Monotonic frame index. Wraps every ~272 years at 60 Hz — safe to
     /// treat as unbounded for any practical session. Drives the
     /// `skin_update_period` gate and other "every Nth frame" cadences.
@@ -1830,6 +1859,9 @@ impl AwsmRendererBuilder {
             coverage_buffers,
             coverage_readback_state: std::sync::Arc::new(std::sync::Mutex::new(
                 CoverageReadbackState::default(),
+            )),
+            edge_overflow_readback_state: std::sync::Arc::new(std::sync::Mutex::new(
+                EdgeOverflowReadbackState::default(),
             )),
             frame_index: 0,
             shaders,
