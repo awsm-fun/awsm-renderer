@@ -863,7 +863,7 @@ impl Textures {
         logging: &AwsmRendererLogging,
         gpu: &AwsmRendererWebGpu,
     ) -> Result<bool> {
-        let _maybe_span_guard = if logging.render_timings {
+        let _maybe_span_guard = if logging.render_timings.sub_frame() {
             Some(tracing::span!(tracing::Level::INFO, "Textures GPU write").entered())
         } else {
             None
@@ -880,7 +880,7 @@ impl Textures {
         bind_groups: &mut BindGroups,
     ) -> Result<()> {
         if self.texture_transforms_gpu_dirty {
-            let _maybe_span_guard = if logging.render_timings {
+            let _maybe_span_guard = if logging.render_timings.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "Texture Transforms GPU write").entered())
             } else {
                 None

@@ -602,13 +602,24 @@ impl crate::AwsmRenderer {
             if data.is_empty() {
                 continue;
             }
-            if let Err(e) = self.extras_pool.assign_or_update(id, slot_index, data) {
-                tracing::warn!(
-                    "extras_pool: failed to assign default for ({:?}, {}): {:?}",
-                    id,
-                    slot_index,
-                    e
-                );
+            match self
+                .extras_pool
+                .assign_or_update(&self.gpu, id, slot_index, data)
+            {
+                Ok(outcome) => {
+                    if outcome.resized {
+                        self.bind_groups
+                            .mark_create(crate::bind_groups::BindGroupCreate::ExtrasPoolResize);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "extras_pool: failed to assign default for ({:?}, {}): {:?}",
+                        id,
+                        slot_index,
+                        e
+                    );
+                }
             }
         }
         // Ensure the classify buffer has capacity for the (possibly

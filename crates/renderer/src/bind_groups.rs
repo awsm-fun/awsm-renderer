@@ -158,6 +158,11 @@ pub enum BindGroupCreate {
     /// kept here so a future dynamic-resize path (when MAX_DECAL_COUNT
     /// becomes a per-frame value) doesn't need to add a new variant.
     DecalsResize,
+    /// Dynamic-materials `extras_pool` GPU buffer was reallocated (the
+    /// bump allocator overflowed and the pool grew to 2× capacity).
+    /// Both the opaque and transparent main bind groups bind
+    /// `extras_pool.buffer` and must re-bind the new handle.
+    ExtrasPoolResize,
 }
 
 /// Tracks pending bind group recreations.
@@ -373,6 +378,15 @@ impl BindGroups {
                 BindGroupCreate::DecalClassifyBuffersResize => {
                     functions_to_call.insert(FunctionToCall::MaterialDecalClassify);
                     functions_to_call.insert(FunctionToCall::MaterialDecalMain);
+                }
+                BindGroupCreate::ExtrasPoolResize => {
+                    // `extras_pool.buffer` is bound on the opaque
+                    // + transparent main bind groups (see the
+                    // `recreate_main` paths in each pass). A pool
+                    // resize re-allocates the GPU buffer, so both
+                    // groups must re-bind the new handle.
+                    functions_to_call.insert(FunctionToCall::OpaqueMain);
+                    functions_to_call.insert(FunctionToCall::TransparentMain);
                 }
             }
         }

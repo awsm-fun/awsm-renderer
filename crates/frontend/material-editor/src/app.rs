@@ -15,9 +15,21 @@
 //! definition + wgsl panes (read-only). Subsequent phases fill in the
 //! interactivity.
 
-use dominator::{html, Dom};
+use dominator::{clone, events, html, with_node, Dom};
 
-use crate::{panes, state::EditState};
+use crate::{
+    panes,
+    state::{EditState, Starter},
+};
+
+/// Starter templates exposed by the File → New menu. Order matches the
+/// dropdown order. `Scanline` is the default `EditState::new_scanline`
+/// seed; the other two are clean-slate options.
+const FILE_NEW_STARTERS: &[Starter] = &[
+    Starter::ConstantRed,
+    Starter::UnlitBaseline,
+    Starter::Scanline,
+];
 
 /// Construct the root DOM element for the material-editor with a
 /// pre-built [`EditState`]. The caller (`main.rs`) keeps a clone
@@ -39,7 +51,60 @@ pub fn root_with_state(state: EditState) -> Dom {
                     .style("padding", "8px")
                     .style("background", "#222")
                     .style("color", "#eee")
-                    .text("awsm material editor — Phase 8 scaffold")
+                    .style("display", "flex")
+                    .style("align-items", "center")
+                    .style("gap", "12px")
+                    .child(html!("span", {
+                        .style("flex", "0 0 auto")
+                        .text("awsm material editor")
+                    }))
+                    // File → New starter dropdown. Selecting a value
+                    // wipes the live state and seeds it with the
+                    // chosen template, then resets the <select> back
+                    // to its placeholder so the next pick fires the
+                    // change event again. The debounced recompile
+                    // loop picks the new wgsl + definition up on its
+                    // next tick.
+                    .child(html!("label", {
+                        .style("color", "#aaa")
+                        .style("font-size", "12px")
+                        .text("File:")
+                    }))
+                    .child(html!("select" => web_sys::HtmlSelectElement, {
+                        .style("background", "#111")
+                        .style("color", "#eee")
+                        .style("border", "1px solid #444")
+                        .style("padding", "2px 6px")
+                        .style("font-size", "12px")
+                        .child(html!("option", {
+                            .attr("value", "")
+                            .text("New…")
+                        }))
+                        .children(FILE_NEW_STARTERS.iter().enumerate().map(|(i, s)| {
+                            html!("option", {
+                                .attr("value", &i.to_string())
+                                .text(s.label())
+                            })
+                        }).collect::<Vec<_>>())
+                        .with_node!(elem => {
+                            .event(clone!(state => move |_: events::Change| {
+                                let idx = elem.value();
+                                if idx.is_empty() {
+                                    return;
+                                }
+                                if let Ok(i) = idx.parse::<usize>() {
+                                    if let Some(starter) = FILE_NEW_STARTERS.get(i) {
+                                        state.reset_to(*starter);
+                                    }
+                                }
+                                // Reset back to the placeholder so the
+                                // same selection can re-fire on a later
+                                // pick. setting "" matches the placeholder
+                                // option's value above.
+                                elem.set_value("");
+                            }))
+                        })
+                    }))
                 }),
                 panes::definition::render(&state),
                 panes::wgsl_editor::render(&state),

@@ -57,47 +57,129 @@ impl EditState {
     /// Creates the initial edit state with a hard-coded `scanline`
     /// material — the worked example from the contract docs.
     pub fn new_scanline() -> Self {
-        let def = MaterialDefinition {
-            name: "scanline".into(),
-            version: 1,
-            alpha_mode: MaterialAlphaMode::Opaque,
-            double_sided: false,
-            uniforms: vec![
-                UniformField {
-                    name: "tint".into(),
-                    ty: FieldType::Color3,
-                    default: UniformValue::Color3([0.6, 0.9, 0.6]),
-                },
-                UniformField {
-                    name: "scan_freq".into(),
-                    ty: FieldType::F32,
-                    default: UniformValue::F32(80.0),
-                },
-                UniformField {
-                    name: "scan_speed".into(),
-                    ty: FieldType::F32,
-                    default: UniformValue::F32(0.5),
-                },
-                UniformField {
-                    name: "scan_strength".into(),
-                    ty: FieldType::F32,
-                    default: UniformValue::F32(0.3),
-                },
-            ],
-            textures: vec![TextureSlot {
-                name: "base".into(),
-                default: None,
-            }],
-            buffers: Vec::<BufferSlot>::new(),
-        };
+        let (def, wgsl) = starter_scanline();
         Self {
             definition: Arc::new(Mutable::new(def)),
-            wgsl_source: Arc::new(Mutable::new(SCANLINE_WGSL.to_string())),
+            wgsl_source: Arc::new(Mutable::new(wgsl)),
             errors: Arc::new(Mutable::new(Vec::new())),
             compile_pending: Arc::new(Mutable::new(0)),
             compile_last_error: Arc::new(Mutable::new(None)),
         }
     }
+
+    /// Resets the live state to the chosen starter template. Mutates
+    /// `definition` + `wgsl_source` in place (instead of swapping out
+    /// the whole `EditState`) so the panes' signal subscriptions stay
+    /// live; the debounced-recompile loop picks the changes up on the
+    /// next tick. Errors and last-error are cleared eagerly so the
+    /// fresh starter doesn't show a stale-from-prior-edit list.
+    pub fn reset_to(&self, starter: Starter) {
+        let (def, wgsl) = match starter {
+            Starter::Scanline => starter_scanline(),
+            Starter::ConstantRed => starter_constant_red(),
+            Starter::UnlitBaseline => starter_unlit_baseline(),
+        };
+        self.definition.set(def);
+        self.wgsl_source.set(wgsl);
+        self.errors.set(Vec::new());
+        self.compile_last_error.set(None);
+    }
+}
+
+/// Available starter templates exposed by the File → New menu. Each
+/// variant maps to a hand-authored `(MaterialDefinition, wgsl)` pair
+/// below.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Starter {
+    /// The Phase-8 worked example — animated horizontal scanlines over
+    /// a mid-gray base. Demonstrates `frame_globals.time` + multiple
+    /// uniforms.
+    Scanline,
+    /// Minimal "constant red" body — the smallest possible runnable
+    /// opaque material. Useful as a starting point for somebody who
+    /// just wants the boilerplate out of the way.
+    ConstantRed,
+    /// Unlit pass-through of a single base color uniform — the
+    /// "hello world" for a material that exposes a single tint.
+    UnlitBaseline,
+}
+
+impl Starter {
+    /// Human-readable label for the File → New menu entry.
+    pub fn label(self) -> &'static str {
+        match self {
+            Starter::Scanline => "Scanline (animated)",
+            Starter::ConstantRed => "Constant red (minimal)",
+            Starter::UnlitBaseline => "Unlit tint (single color)",
+        }
+    }
+}
+
+fn starter_scanline() -> (MaterialDefinition, String) {
+    let def = MaterialDefinition {
+        name: "scanline".into(),
+        version: 1,
+        alpha_mode: MaterialAlphaMode::Opaque,
+        double_sided: false,
+        uniforms: vec![
+            UniformField {
+                name: "tint".into(),
+                ty: FieldType::Color3,
+                default: UniformValue::Color3([0.6, 0.9, 0.6]),
+            },
+            UniformField {
+                name: "scan_freq".into(),
+                ty: FieldType::F32,
+                default: UniformValue::F32(80.0),
+            },
+            UniformField {
+                name: "scan_speed".into(),
+                ty: FieldType::F32,
+                default: UniformValue::F32(0.5),
+            },
+            UniformField {
+                name: "scan_strength".into(),
+                ty: FieldType::F32,
+                default: UniformValue::F32(0.3),
+            },
+        ],
+        textures: vec![TextureSlot {
+            name: "base".into(),
+            default: None,
+        }],
+        buffers: Vec::<BufferSlot>::new(),
+    };
+    (def, SCANLINE_WGSL.to_string())
+}
+
+fn starter_constant_red() -> (MaterialDefinition, String) {
+    let def = MaterialDefinition {
+        name: "constant-red".into(),
+        version: 1,
+        alpha_mode: MaterialAlphaMode::Opaque,
+        double_sided: false,
+        uniforms: Vec::new(),
+        textures: Vec::new(),
+        buffers: Vec::new(),
+    };
+    (def, CONSTANT_RED_WGSL.to_string())
+}
+
+fn starter_unlit_baseline() -> (MaterialDefinition, String) {
+    let def = MaterialDefinition {
+        name: "unlit-tint".into(),
+        version: 1,
+        alpha_mode: MaterialAlphaMode::Opaque,
+        double_sided: false,
+        uniforms: vec![UniformField {
+            name: "tint".into(),
+            ty: FieldType::Color3,
+            default: UniformValue::Color3([0.8, 0.4, 0.2]),
+        }],
+        textures: Vec::new(),
+        buffers: Vec::new(),
+    };
+    (def, UNLIT_BASELINE_WGSL.to_string())
 }
 
 /// Hard-coded WGSL fragment for the scanline material — a minimal
@@ -121,4 +203,23 @@ let overlay = mix(vec3<f32>(0.0), input.material.tint,
                   scan * input.material.scan_strength);
 let color = vec3<f32>(0.5, 0.5, 0.5) + overlay;
 return OpaqueShadingOutput(color, 1.0);
+"#;
+
+/// Minimal runnable opaque shader — no uniforms, just a constant color.
+/// The smallest possible body that lights up the preview.
+const CONSTANT_RED_WGSL: &str = r#"// constant-red — the minimal opaque material.
+// No uniforms, no textures, no buffer slots: just a single
+// hard-coded color. Use as the boilerplate-out-of-the-way starting
+// point when authoring a brand-new material from scratch.
+return OpaqueShadingOutput(vec3<f32>(0.9, 0.15, 0.15), 1.0);
+"#;
+
+/// Unlit pass-through that returns the single `tint` uniform as the
+/// final color. One step up from `constant-red` — demonstrates the
+/// `input.material.<field>` accessor.
+const UNLIT_BASELINE_WGSL: &str = r#"// unlit-tint — single-uniform unlit material.
+// Demonstrates the `input.material.<field>` access pattern with the
+// minimum surface area. Add more uniforms in the Definition pane to
+// extend; the wrapper regenerates `MaterialData` on every edit.
+return OpaqueShadingOutput(input.material.tint, 1.0);
 "#;

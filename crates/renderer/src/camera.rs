@@ -247,7 +247,7 @@ impl CameraBuffer {
         _bind_groups: &BindGroups,
     ) -> Result<()> {
         if self.gpu_dirty {
-            let _maybe_span_guard = if logging.render_timings {
+            let _maybe_span_guard = if logging.render_timings.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "Camera GPU write").entered())
             } else {
                 None

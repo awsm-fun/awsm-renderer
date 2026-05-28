@@ -73,7 +73,12 @@ impl AppCanvas {
 
                         let loading_status = state.ctx.loading_status.clone();
                         let mut renderer = match AwsmRendererBuilder::new(gpu_builder)
-                            .with_logging(AwsmRendererLogging { render_timings: true })
+                            .with_logging(AwsmRendererLogging {
+                                // Default tier comes from build profile + `?trace=…` URL
+                                // override. See `crate::logger::default_render_timings` and
+                                // `docs/perf-tracing.md` for the policy.
+                                render_timings: crate::logger::default_render_timings(),
+                            })
                             .with_clear_color(Color::MID_GREY)
                             // model-tests wires .pick() to mouse-down
                             // for editor-mode click-to-select; opt in

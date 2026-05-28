@@ -496,7 +496,15 @@ async fn create_renderer(canvas: web_sys::HtmlCanvasElement) -> EditorResult<Aws
     };
     let renderer = AwsmRendererBuilder::new(gpu_builder)
         .with_logging(AwsmRendererLogging {
-            render_timings: cfg!(debug_assertions),
+            // Default tier: SubFrame in debug, Frame in release; `?trace=…`
+            // URL param overrides. See `docs/perf-tracing.md`.
+            render_timings: awsm_web_shared::perf::resolve_render_timings(
+                if cfg!(debug_assertions) {
+                    awsm_renderer::debug::RenderTimings::SubFrame
+                } else {
+                    awsm_renderer::debug::RenderTimings::Frame
+                },
+            ),
         })
         .with_clear_color(Color::MID_GREY)
         .with_features(features)

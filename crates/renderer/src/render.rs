@@ -76,7 +76,7 @@ impl AwsmRenderer {
 
         if let Some(hook) = hooks.and_then(|h| h.pre_render.as_ref()) {
             {
-                let _maybe_span_guard = if self.logging.render_timings {
+                let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
                     Some(tracing::span!(tracing::Level::INFO, "PreRender Hook").entered())
                 } else {
                     None
@@ -85,7 +85,11 @@ impl AwsmRenderer {
             }
         }
 
-        let _maybe_span_guard = if self.logging.render_timings {
+        // Outermost frame span — fires on any non-Off tier so the
+        // shipping build still produces one `performance.measure`
+        // per frame. Everything *inside* `render()` is gated on
+        // `.sub_frame()`.
+        let _maybe_span_guard = if self.logging.render_timings.enabled() {
             Some(tracing::span!(tracing::Level::INFO, "Render").entered())
         } else {
             None
@@ -478,7 +482,7 @@ impl AwsmRenderer {
 
         if let Some(hook) = hooks.and_then(|h| h.first_pass.as_ref()) {
             {
-                let _maybe_span_guard = if self.logging.render_timings {
+                let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
                     Some(tracing::span!(tracing::Level::INFO, "FirstPass Hook").entered())
                 } else {
                     None
@@ -488,7 +492,7 @@ impl AwsmRenderer {
         }
 
         {
-            let _maybe_span_guard = if self.logging.render_timings {
+            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "Geometry RenderPass").entered())
             } else {
                 None
@@ -500,7 +504,7 @@ impl AwsmRenderer {
         }
 
         {
-            let _maybe_span_guard = if self.logging.render_timings {
+            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "HUD Geometry RenderPass").entered())
             } else {
                 None
@@ -513,7 +517,7 @@ impl AwsmRenderer {
 
         if let Some(hook) = hooks.and_then(|h| h.after_geometry_pass.as_ref()) {
             {
-                let _maybe_span_guard = if self.logging.render_timings {
+                let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
                     Some(tracing::span!(tracing::Level::INFO, "AfterGeometryPass Hook").entered())
                 } else {
                     None
@@ -537,7 +541,7 @@ impl AwsmRenderer {
             self.render_passes.coverage.as_ref(),
             self.coverage_buffers.as_ref(),
         ) {
-            let _maybe_span_guard = if self.logging.render_timings {
+            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "Coverage RenderPass").entered())
             } else {
                 None
@@ -566,7 +570,7 @@ impl AwsmRenderer {
         // the freshly-written shadow maps. Short-circuits when there
         // are no active shadow casters.
         if self.shadows.any_active() {
-            let _maybe_span_guard = if self.logging.render_timings {
+            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "Shadow Generation").entered())
             } else {
                 None
@@ -575,7 +579,7 @@ impl AwsmRenderer {
         }
 
         {
-            let _maybe_span_guard = if self.logging.render_timings {
+            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "Light Culling RenderPass").entered())
             } else {
                 None
@@ -585,7 +589,7 @@ impl AwsmRenderer {
         }
 
         {
-            let _maybe_span_guard = if self.logging.render_timings {
+            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "Clear opaque").entered())
             } else {
                 None
@@ -599,7 +603,7 @@ impl AwsmRenderer {
         // opaque pipelines consume below. Runs once per frame; cheap
         // (~few hundred microseconds on a 4K viewport).
         {
-            let _maybe_span_guard = if self.logging.render_timings {
+            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "Material Classify RenderPass").entered())
             } else {
                 None
@@ -615,7 +619,7 @@ impl AwsmRenderer {
         }
 
         {
-            let _maybe_span_guard = if self.logging.render_timings {
+            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "Material Opaque RenderPass").entered())
             } else {
                 None
@@ -645,7 +649,7 @@ impl AwsmRenderer {
             .iter()
             .any(|r| self.materials.has_transmission(r.material_key()));
         if scene_has_transmission {
-            let _maybe_span_guard = if self.logging.render_timings {
+            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "Opaque Mipgen").entered())
             } else {
                 None
@@ -673,7 +677,7 @@ impl AwsmRenderer {
         }
 
         {
-            let _maybe_span_guard = if ctx.logging.render_timings {
+            let _maybe_span_guard = if ctx.logging.render_timings.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "Opaque to Transparent Blit").entered())
             } else {
                 None
@@ -724,7 +728,7 @@ impl AwsmRenderer {
         // this frame.
         if frame_opts.hzb {
             if let Some(hzb) = self.render_passes.hzb.as_ref() {
-                let _maybe_span_guard = if self.logging.render_timings {
+                let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
                     Some(tracing::span!(tracing::Level::INFO, "HZB RenderPass").entered())
                 } else {
                     None
@@ -751,7 +755,7 @@ impl AwsmRenderer {
             self.render_passes.material_decal.as_ref(),
             self.decals.as_ref(),
         ) {
-            let _maybe_span_guard = if ctx.logging.render_timings {
+            let _maybe_span_guard = if ctx.logging.render_timings.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "Material Decal RenderPass").entered())
             } else {
                 None
@@ -861,7 +865,7 @@ impl AwsmRenderer {
                 }
 
                 if occlusion_instance_count > 0 {
-                    let _maybe_span_guard = if self.logging.render_timings {
+                    let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
                         Some(
                             tracing::span!(
                                 tracing::Level::INFO,
@@ -885,7 +889,7 @@ impl AwsmRenderer {
                     // `CompactionBuffers::args_ready`.)
                     if let Some(compaction_pass) = self.render_passes.occlusion_compaction.as_ref()
                     {
-                        let _maybe_span_guard = if self.logging.render_timings {
+                        let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
                             Some(
                                 tracing::span!(
                                     tracing::Level::INFO,
@@ -931,7 +935,7 @@ impl AwsmRenderer {
         // blit (so depth + transparent target are populated) and before any
         // `before_transparent_pass` hook so editor overlays can draw on top.
         {
-            let _maybe_span_guard = if self.logging.render_timings {
+            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "Line RenderPass").entered())
             } else {
                 None
@@ -941,7 +945,7 @@ impl AwsmRenderer {
 
         if let Some(hook) = hooks.and_then(|h| h.before_transparent_pass.as_ref()) {
             {
-                let _maybe_span_guard = if self.logging.render_timings {
+                let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
                     Some(
                         tracing::span!(tracing::Level::INFO, "BeforeTransparentPass Hook")
                             .entered(),
@@ -954,7 +958,7 @@ impl AwsmRenderer {
         }
 
         {
-            let _maybe_span_guard = if self.logging.render_timings {
+            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
                 Some(
                     tracing::span!(tracing::Level::INFO, "Material Transparent RenderPass")
                         .entered(),
@@ -970,7 +974,7 @@ impl AwsmRenderer {
 
         if let Some(hook) = hooks.and_then(|h| h.after_transparent_pass.as_ref()) {
             {
-                let _maybe_span_guard = if self.logging.render_timings {
+                let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
                     Some(
                         tracing::span!(tracing::Level::INFO, "AfterTransparentPass Hook").entered(),
                     )
@@ -982,7 +986,7 @@ impl AwsmRenderer {
         }
 
         {
-            let _maybe_span_guard = if self.logging.render_timings {
+            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "HUD RenderPass").entered())
             } else {
                 None
@@ -998,7 +1002,7 @@ impl AwsmRenderer {
             .render_texture_views
             .transparent_to_composite_blit_bind_group_no_anti_alias
         {
-            let _maybe_span_guard = if self.logging.render_timings {
+            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
                 Some(
                     tracing::span!(tracing::Level::INFO, "Non-antialised composite blit").entered(),
                 )
@@ -1016,7 +1020,7 @@ impl AwsmRenderer {
         }
 
         {
-            let _maybe_span_guard = if self.logging.render_timings {
+            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "Effects RenderPass").entered())
             } else {
                 None
@@ -1026,7 +1030,7 @@ impl AwsmRenderer {
         }
 
         {
-            let _maybe_span_guard = if self.logging.render_timings {
+            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "Display RenderPass").entered())
             } else {
                 None
@@ -1037,7 +1041,7 @@ impl AwsmRenderer {
 
         if let Some(hook) = hooks.and_then(|h| h.last_pass.as_ref()) {
             {
-                let _maybe_span_guard = if self.logging.render_timings {
+                let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
                     Some(tracing::span!(tracing::Level::INFO, "LastPass Hook").entered())
                 } else {
                     None
@@ -1129,7 +1133,7 @@ impl AwsmRenderer {
 
         if let Some(hook) = hooks.and_then(|h| h.post_render.as_ref()) {
             {
-                let _maybe_span_guard = if self.logging.render_timings {
+                let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
                     Some(tracing::span!(tracing::Level::INFO, "PostRender Hook").entered())
                 } else {
                     None

@@ -253,7 +253,7 @@ impl<Key: slotmap::Key, Info: MorphInfo> MorphData<Key, Info> {
         bind_group_create_value_kind: BindGroupCreate,
     ) -> Result<()> {
         if self.weights_dirty {
-            let _maybe_span_guard = if logging.render_timings {
+            let _maybe_span_guard = if logging.render_timings.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "Morph Weights GPU write").entered())
             } else {
                 None
@@ -292,7 +292,7 @@ impl<Key: slotmap::Key, Info: MorphInfo> MorphData<Key, Info> {
             self.weights_dirty = false;
         }
         if self.values_dirty {
-            let _maybe_span_guard = if logging.render_timings {
+            let _maybe_span_guard = if logging.render_timings.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "Morph Values GPU write").entered())
             } else {
                 None
