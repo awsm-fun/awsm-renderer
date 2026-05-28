@@ -127,14 +127,19 @@ impl RenderTextures {
     }
 
     /// Returns render texture views, recreating if size or AA changed.
+    ///
+    /// `current_size` is the live swap-chain `(width, height)` — caller
+    /// passes the value `AwsmRenderer::render` already snapped at the
+    /// top of the frame, sparing this method a redundant
+    /// `getCurrentTexture().getSize()` wasm↔JS hop. The pair is stable
+    /// for the duration of the frame, so the cached value is
+    /// unconditionally safe to reuse.
     pub fn views(
         &mut self,
         gpu: &AwsmRendererWebGpu,
         anti_aliasing: AntiAliasing,
+        current_size: (u32, u32),
     ) -> Result<RenderTextureViews> {
-        let current_size = gpu
-            .current_context_texture_size()
-            .map_err(AwsmRenderTextureError::CurrentScreenSize)?;
 
         let size_changed = match self.inner.as_ref() {
             Some(inner) => (inner.width, inner.height) != current_size,

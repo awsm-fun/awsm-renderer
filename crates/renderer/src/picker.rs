@@ -108,9 +108,16 @@ impl AwsmRenderer {
         // `BindGroupCreate::TextureViewRecreate` mark, which would
         // also re-create every other texture-view-dependent bind
         // group).
-        let render_texture_views = self
-            .render_textures
-            .views(&self.gpu, self.anti_aliasing.clone())?;
+        // Picker compile is a one-shot ahead of the first `pick()` and
+        // runs outside the render loop's `viewport_size` cache, so we
+        // fetch the size here directly. Cheap (single wasm↔JS hop on a
+        // user-driven path, not per-frame).
+        let viewport_size = self.gpu.current_context_texture_size()?;
+        let render_texture_views = self.render_textures.views(
+            &self.gpu,
+            self.anti_aliasing.clone(),
+            viewport_size,
+        )?;
         let ctx = crate::bind_groups::BindGroupRecreateContext {
             gpu: &self.gpu,
             render_texture_views: &render_texture_views,

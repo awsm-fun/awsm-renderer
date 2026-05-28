@@ -38,6 +38,16 @@ impl Morphs {
         gpu: &AwsmRendererWebGpu,
         bind_groups: &mut BindGroups,
     ) -> Result<()> {
+        // Scenes without morph targets — the common case — pay nothing
+        // beyond this two-load comparison. Skipping the inner
+        // `write_gpu` calls avoids the per-frame initial-dirty
+        // `writeBuffer` of the empty 4 kB starter buffer on the first
+        // frame after construction, plus any future change to
+        // `*_dirty` defaults can't accidentally trigger an empty
+        // upload mid-session.
+        if self.geometry.is_empty() && self.material.is_empty() {
+            return Ok(());
+        }
         self.geometry.write_gpu(
             logging,
             gpu,
@@ -138,6 +148,14 @@ impl<Key: slotmap::Key, Info: MorphInfo> MorphData<Key, Info> {
         self.infos
             .get(key)
             .ok_or_else(|| AwsmMeshError::MorphNotFound(format!("{:?}", key)))
+    }
+
+    /// Returns `true` when no morph data is registered. Cheap (one
+    /// SlotMap length read); the morph `write_gpu` path uses this to
+    /// skip its inner `geometry` + `material` writes entirely on
+    /// scenes with no morph targets.
+    pub fn is_empty(&self) -> bool {
+        self.infos.is_empty()
     }
 
     /// Inserts morph data from f32 weights and values.

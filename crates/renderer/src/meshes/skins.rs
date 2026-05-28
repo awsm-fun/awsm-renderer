@@ -243,6 +243,13 @@ impl Skins {
         }
     }
 
+    /// Returns `true` when no skin is registered. Cheap (one DenseSlotMap
+    /// length read); used by `write_gpu` to skip its work entirely on
+    /// scenes without any skinned meshes.
+    pub fn is_empty(&self) -> bool {
+        self.skeleton_transforms.is_empty()
+    }
+
     /// Writes skin buffers to the GPU.
     pub fn write_gpu(
         &mut self,
@@ -250,6 +257,13 @@ impl Skins {
         gpu: &AwsmRendererWebGpu,
         bind_groups: &mut BindGroups,
     ) -> Result<()> {
+        // Scenes without any skins — the common case — pay nothing
+        // beyond this length read. Skipping the inner writes avoids the
+        // first-frame `writeBuffer` of the empty 2 kB / 8 kB starter
+        // buffers (`*_gpu_dirty` defaults to `true` at construction).
+        if self.is_empty() {
+            return Ok(());
+        }
         if self.matrices_gpu_dirty {
             let _maybe_span_guard = if logging.render_timings.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "Skin Matrices GPU write").entered())

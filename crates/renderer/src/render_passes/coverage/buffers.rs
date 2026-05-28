@@ -17,6 +17,7 @@
 
 use awsm_renderer_core::{
     buffers::{BufferDescriptor, BufferUsage},
+    command::CommandEncoder,
     error::AwsmCoreError,
     renderer::AwsmRendererWebGpu,
 };
@@ -37,10 +38,10 @@ pub struct CoverageBuffers {
     /// `copyBufferToBuffer(counts → readback)` runs each frame; a
     /// `mapAsync` then resolves with last-frame's counts.
     pub readback_buffer: web_sys::GpuBuffer,
-    /// CPU-side zero buffer used to clear `counts_buffer` each
-    /// frame (writeBuffer of zeros, sized to `capacity * 4` bytes).
-    /// Reallocated on capacity changes.
-    pub zero_scratch: Vec<u8>,
+    /// Byte length of `counts_buffer` (`capacity * 4`). Tracked so
+    /// `reset_counts` can issue a single contiguous `clear_buffer`
+    /// without re-computing the size each frame.
+    pub size_bytes: usize,
     pub capacity: u32,
 }
 
@@ -74,7 +75,7 @@ impl CoverageBuffers {
         Ok(Self {
             counts_buffer,
             readback_buffer,
-            zero_scratch: vec![0u8; size_bytes],
+            size_bytes,
             capacity,
         })
     }
@@ -98,13 +99,16 @@ impl CoverageBuffers {
     /// Zero the counts buffer for this frame. The compute pass
     /// atomic-adds on top; without the reset the counts would
     /// accumulate across frames.
-    pub fn reset_counts(&self, gpu: &AwsmRendererWebGpu) -> Result<(), AwsmCoreError> {
-        gpu.write_buffer(
-            &self.counts_buffer,
-            None,
-            self.zero_scratch.as_slice(),
-            None,
-            None,
-        )
+    ///
+    /// Recorded into the command encoder as `clear_buffer` so the
+    /// zero-out is GPU-side and inline with the rest of the frame's
+    /// command stream — strictly before the coverage compute dispatch
+    /// reads the counts. Previously this was a per-frame
+    /// `queue.writeBuffer` of a `capacity * 4` byte CPU scratch
+    /// (4 KB at the default starter; grows with mesh count), every
+    /// byte of which crossed the wasm↔JS boundary just to be
+    /// overwritten by the next atomicAdd.
+    pub fn reset_counts(&self, encoder: &CommandEncoder) {
+        encoder.clear_buffer(&self.counts_buffer, None, None);
     }
 }

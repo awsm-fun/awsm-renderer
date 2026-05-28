@@ -35,6 +35,19 @@ impl EffectsRenderPass {
 
     /// Executes the effects pass.
     pub fn render(&self, ctx: &RenderContext) -> Result<()> {
+        // Skip the entire pass when nothing is configured to consume it.
+        // The fallback `BloomPhase::None` dispatch existed historically
+        // to host SMAA/DoF wiring, but when bloom + dof + smaa are all
+        // off it's a viewport-wide compute dispatch (workgroup grid
+        // `(W/8, H/8)`) that does no observable work — and on a TBR
+        // mobile GPU each begin_compute_pass forces a tile flush. The
+        // Display pass continues to do tonemapping/exposure on its own,
+        // so dropping this pass changes nothing visible. SMAA flips back
+        // on independently below.
+        if !ctx.post_processing.bloom && !ctx.post_processing.dof && !ctx.anti_aliasing.smaa {
+            return Ok(());
+        }
+
         let workgroup_size = (
             ctx.render_texture_views.width.div_ceil(8),
             ctx.render_texture_views.height.div_ceil(8),

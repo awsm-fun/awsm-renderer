@@ -750,6 +750,7 @@ impl RenderPasses {
         let display = DisplayRenderPass {
             bind_groups: display_bg,
             pipelines: display_pipelines,
+            last_exposure_scale: std::cell::Cell::new(None),
         };
 
         Ok(Self {
