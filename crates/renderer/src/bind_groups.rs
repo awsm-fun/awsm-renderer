@@ -54,6 +54,11 @@ pub struct BindGroupRecreateContext<'a> {
     /// the opaque dispatch.
     pub material_classify_buffers:
         &'a crate::render_passes::material_classify::buffers::ClassifyBuffers,
+    /// GPU light-culling froxel buffers (params uniform + per-froxel
+    /// counts + flat indices + overflow counter). Bound RW on the cull
+    /// pass; bound read-only by the transparent + opaque-oversized
+    /// shaders that consume the per-froxel light slice.
+    pub light_culling_buffers: &'a crate::render_passes::light_culling::LightCullingBuffers,
     /// Priority-3 MSAA edge-resolve composite buffer. `Some` only when
     /// MSAA is on (no edges to resolve under single-sample). Bound
     /// read-write to the classify pass (binding 4) and the per-shader
@@ -163,6 +168,13 @@ pub enum BindGroupCreate {
     /// Both the opaque and transparent main bind groups bind
     /// `extras_pool.buffer` and must re-bind the new handle.
     ExtrasPoolResize,
+    /// GPU light-culling froxel buffers were (re)allocated — either
+    /// because the viewport tile count grew, or because the auto-grow
+    /// path bumped `max_per_froxel_capacity`. The cull pass rebinds
+    /// the new buffer handles; the transparent + opaque main bind
+    /// groups also rebind (Phase 1C / Phase 2 of the light-culling
+    /// plan land the consumer-side bindings).
+    LightCullingFroxelsResize,
 }
 
 /// Tracks pending bind group recreations.
@@ -385,6 +397,16 @@ impl BindGroups {
                     // `recreate_main` paths in each pass). A pool
                     // resize re-allocates the GPU buffer, so both
                     // groups must re-bind the new handle.
+                    functions_to_call.insert(FunctionToCall::OpaqueMain);
+                    functions_to_call.insert(FunctionToCall::TransparentMain);
+                }
+                BindGroupCreate::LightCullingFroxelsResize => {
+                    // Cull pass owns the four froxel buffers; on resize
+                    // it must re-bind them. The consumer-side rebindings
+                    // (opaque main + transparent main) land in Phase 1C
+                    // / Phase 2 once the consumer shaders take the
+                    // froxel path; until then the fan-out is cull-only.
+                    functions_to_call.insert(FunctionToCall::LightCulling);
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
                     functions_to_call.insert(FunctionToCall::TransparentMain);
                 }

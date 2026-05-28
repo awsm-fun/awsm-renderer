@@ -333,6 +333,29 @@ impl AwsmRenderer {
         }
         self.material_classify_buffers.reset_header(&self.gpu)?;
 
+        // ── Light culling per-frame setup ────────────────────────
+        //
+        // Resize froxel buffers if the viewport tile count grew. Write
+        // the `CullParams` uniform (cheap, 32 bytes, cached). Zero the
+        // overflow counter. The shader resets each per-froxel count at
+        // workgroup-entry, so the host doesn't have to.
+        if self.light_culling_buffers.ensure_viewport(
+            &self.gpu,
+            render_texture_views.width,
+            render_texture_views.height,
+        )? {
+            self.bind_groups
+                .mark_create(BindGroupCreate::LightCullingFroxelsResize);
+        }
+        // Extract camera near/far from the live projection matrix. The
+        // CameraBuffer doesn't separately carry near/far — it's derived
+        // here from `inv_proj` so a future ortho-camera variant still
+        // gets a sensible (z_near, z_far) pair.
+        let (z_near, z_far) = camera_near_far_from_projection(&self.camera.last_matrices);
+        self.light_culling_buffers
+            .write_params(&self.gpu, z_near, z_far)?;
+        self.light_culling_buffers.reset_overflow(&self.gpu)?;
+
         // Build a snapshot of the active mesh count so we can size the
         // occlusion-cull buffers before bind groups are recreated.
         // Refining this to the actual opaque-renderable count requires
@@ -410,6 +433,7 @@ impl AwsmRenderer {
                 shadows: &self.shadows,
                 mesh_light_indices_gpu: &self.mesh_light_indices_gpu,
                 material_classify_buffers: &self.material_classify_buffers,
+                light_culling_buffers: &self.light_culling_buffers,
                 material_edge_buffers: self.material_edge_buffers.as_ref(),
                 material_edge_layout_uniform: self.material_edge_layout_uniform.as_ref(),
                 extras_pool: &self.extras_pool,
@@ -455,6 +479,8 @@ impl AwsmRenderer {
             clear_color: &self._clear_color,
             scene_spatial: &self.scene_spatial,
             material_classify_buffers: &self.material_classify_buffers,
+            light_culling_buffers: &self.light_culling_buffers,
+            live_punctual_count: self.lights.iter_active_punctual().count() as u32,
             material_edge_buffers: self.material_edge_buffers.as_ref(),
             material_edge_layout_uniform: self.material_edge_layout_uniform.as_ref(),
             bind_group_layouts: &self.bind_group_layouts,
@@ -1364,6 +1390,14 @@ pub struct RenderContext<'a> {
     /// `dispatchWorkgroupsIndirect`.
     pub material_classify_buffers:
         &'a crate::render_passes::material_classify::buffers::ClassifyBuffers,
+    /// GPU light-culling froxel buffers. The cull pass writes the
+    /// per-froxel `(count, indices)`; the transparent + opaque-
+    /// oversized shaders read it back at shading time.
+    pub light_culling_buffers: &'a crate::render_passes::light_culling::LightCullingBuffers,
+    /// Number of live punctual lights this frame — same value the
+    /// cull and shading shaders see in `lights_info.data.x`. Used by
+    /// the cull pass to skip the entire dispatch when zero.
+    pub live_punctual_count: u32,
     /// Priority-3 MSAA edge-resolve composite buffer. `Some` only
     /// when MSAA is on (no edges to resolve under single-sample).
     /// Bound read-write by classify (slot 4 of group(0)) and by the
@@ -1425,6 +1459,14 @@ pub struct RenderContext<'a> {
 }
 
 impl<'a> RenderContext<'a> {
+    /// Live punctual-light count this frame. The cull pass + shading
+    /// shaders both read this via `lights_info.data.x`; the cull pass's
+    /// `render()` consults this CPU mirror to skip the dispatch when
+    /// zero (typical for skybox-only / directional-only scenes).
+    pub fn live_punctual_light_count(&self) -> u32 {
+        self.live_punctual_count
+    }
+
     /// Begins a visibility-buffer extension pass for world-space opaque geometry.
     ///
     /// This pass loads the existing visibility attachments and world depth, allowing custom hooks
@@ -1577,4 +1619,43 @@ impl<'a> RenderContext<'a> {
             )
             .map_err(Into::into)
     }
+}
+
+/// Derives view-space `(near, far)` from a perspective projection
+/// matrix. The renderer doesn't separately track near/far — they're
+/// derived from `proj` so the camera buffer stays the single source
+/// of truth. Returns sensible defaults (`(0.1, 1000.0)`) when no
+/// camera matrices have been uploaded yet (first-frame race).
+///
+/// Recovery (right-handed glam / WebGPU NDC `z ∈ [0, 1]`):
+///   `proj[2][2] = far / (near - far)`
+///   `proj[3][2] = far * near / (near - far)`
+/// solved as
+///   `near = proj[3][2] / proj[2][2]`
+///   `far  = proj[3][2] / (proj[2][2] + 1)`
+fn camera_near_far_from_projection(
+    last_matrices: &Option<crate::camera::CameraMatrices>,
+) -> (f32, f32) {
+    let Some(matrices) = last_matrices else {
+        return (0.1, 1000.0);
+    };
+    if matrices.is_orthographic() {
+        // Orthographic: no perspective divide; near/far come from
+        // `proj[2][2]` and `proj[3][2]` differently. The exponential
+        // froxel mapping assumes perspective; for ortho we just hand
+        // back something safe and let the cull pass cover the whole
+        // depth range coarsely.
+        return (0.1, 1000.0);
+    }
+    let p22 = matrices.projection.z_axis.z;
+    let p32 = matrices.projection.w_axis.z;
+    // Guard against degenerate matrices.
+    if p22.abs() < f32::EPSILON || (p22 + 1.0).abs() < f32::EPSILON {
+        return (0.1, 1000.0);
+    }
+    let near = p32 / p22;
+    let far = p32 / (p22 + 1.0);
+    let near = near.abs().max(1e-4);
+    let far = far.abs().max(near + 1e-3);
+    (near, far)
 }

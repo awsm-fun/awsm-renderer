@@ -157,6 +157,11 @@ pub struct AwsmRenderer {
     /// buckets + indirect-dispatch args the opaque material pipelines
     /// consume.
     pub material_classify_buffers: render_passes::material_classify::buffers::ClassifyBuffers,
+    /// GPU light-culling froxel buffers (per-frame params uniform +
+    /// per-froxel counts + flat indices + overflow counter). Owned at
+    /// the top level so the per-frame `ensure_viewport` / `write_params`
+    /// / `reset_overflow` calls run before bind-group recreation.
+    pub light_culling_buffers: render_passes::light_culling::LightCullingBuffers,
     /// MSAA-edge-resolve buffers (Stage 3 / Priority 3 dispatch wiring).
     /// `None` when MSAA is off — there are no edges to resolve. When
     /// MSAA is on, holds the two split GPU buffers carrying:
@@ -1660,6 +1665,19 @@ impl AwsmRendererBuilder {
                 first_party_bucket_count,
             )?;
 
+        // Light-culling froxel buffers. Sized to a tiny placeholder
+        // viewport; per-frame `ensure_viewport` grows them once the
+        // real swap-chain size is known. Capacity-tier (per-froxel
+        // budget) is the default; the auto-grow path bumps it after
+        // an observed overflow.
+        let light_culling_buffers = render_passes::light_culling::LightCullingBuffers::new(
+            &gpu,
+            16,
+            16,
+            render_passes::light_culling::DEFAULT_SLICE_COUNT,
+            render_passes::light_culling::DEFAULT_MAX_PER_FROXEL_CAPACITY,
+        )?;
+
         // MSAA-edge-resolve buffers (Stage 3 dispatch wiring). Allocated only
         // when MSAA is on AND the device supports the required limits
         // (maxStorageBuffersPerShaderStage >= 10 — the WebGPU baseline).
@@ -2022,6 +2040,7 @@ impl AwsmRendererBuilder {
             light_buckets: LightMeshBuckets::default(),
             mesh_light_indices_gpu,
             material_classify_buffers,
+            light_culling_buffers,
             material_edge_buffers,
             material_edge_layout_uniform,
             decals,
