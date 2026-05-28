@@ -21,7 +21,7 @@
 //!
 //! See `docs/perf-tracing.md` for the rationale and worked numbers.
 
-use awsm_renderer::debug::RenderTimings;
+use awsm_renderer::{debug::RenderTimings, profile::RendererProfile};
 use tracing_subscriber::filter::LevelFilter;
 
 /// Read `?trace=…` from `window.location.search`, if any. Returns
@@ -29,6 +29,33 @@ use tracing_subscriber::filter::LevelFilter;
 /// back to its build-time default.
 pub fn render_timings_override() -> Option<RenderTimings> {
     query_param("trace").and_then(|v| RenderTimings::parse(&v))
+}
+
+/// Read `?mobile=…` from `window.location.search` and resolve to a
+/// [`RendererProfile`]. Accepts:
+///
+/// - `true` / `1` / `yes` / `mobile` → `RendererProfile::Mobile`
+/// - `false` / `0` / `no` / `desktop` → `RendererProfile::Desktop`
+/// - `cinema` / `max` / `ultra` → `RendererProfile::Cinema`
+///
+/// Returns `None` when the param is absent or unrecognised — caller
+/// falls back to its build-time default.
+pub fn renderer_profile_override() -> Option<RendererProfile> {
+    let raw = query_param("mobile")?;
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "mobile" => Some(RendererProfile::Mobile),
+        "false" | "0" | "no" | "desktop" => Some(RendererProfile::Desktop),
+        "cinema" | "max" | "ultra" => Some(RendererProfile::Cinema),
+        _ => None,
+    }
+}
+
+/// Resolve the effective renderer profile: query param wins, else the
+/// supplied build-time default. Frontends call this when constructing
+/// the renderer so a `?mobile=true` link forces the mobile-friendly
+/// defaults even on a desktop browser (and vice versa).
+pub fn resolve_renderer_profile(default: RendererProfile) -> RendererProfile {
+    renderer_profile_override().unwrap_or(default)
 }
 
 /// Read `?log=…` from `window.location.search`, if any.

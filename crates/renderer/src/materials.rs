@@ -241,6 +241,16 @@ pub struct Materials {
     gpu_dirty: bool,
     _is_transparency_pass: SecondaryMap<MaterialKey, ()>,
     uploader: crate::buffer::mapped_uploader::MappedUploader,
+    /// Sticky: set to true the first time a material implementing
+    /// `KHR_materials_transmission` enters the registry, and never
+    /// reset. Drives the T2.5 lazy-allocation of the opaque
+    /// render-texture mip chain — when this is `false`, the opaque
+    /// texture is allocated with `mip_level_count = 1` (the only
+    /// mip the opaque pass actually writes), saving ~33% of its
+    /// allocation size. Goes true → triggers a one-time texture
+    /// reallocation with the full chain next time
+    /// `RenderTextures::views` runs.
+    has_seen_transmission: bool,
 }
 
 impl Materials {
@@ -259,7 +269,20 @@ impl Materials {
             gpu_dirty: true,
             _is_transparency_pass: SecondaryMap::new(),
             uploader: crate::buffer::mapped_uploader::MappedUploader::new("Materials"),
+            has_seen_transmission: false,
         })
+    }
+
+    /// Has any material implementing `KHR_materials_transmission`
+    /// entered the registry during this session? Sticky-true; used by
+    /// `RenderTextures::views` to lazily grow the opaque mip chain
+    /// from `mip_level_count = 1` to the full
+    /// `floor(log2(max(W,H))) + 1`. Scenes that never insert a
+    /// transmissive material pay 0 for the mip-chain GPU storage
+    /// (~33% of the opaque texture size, a few MB on mobile / 10–20
+    /// MB on desktop).
+    pub fn has_seen_transmission(&self) -> bool {
+        self.has_seen_transmission
     }
 
     /// Mapped-ring upload telemetry for this subsystem.
@@ -291,6 +314,12 @@ impl Materials {
         extras_pool: &crate::dynamic_materials::extras_pool::ExtrasPool,
     ) -> MaterialKey {
         let is_transparency_pass = material.is_transparency_pass();
+        // T2.5: track first transmissive-material registration so the
+        // opaque texture's mip chain grows on demand instead of being
+        // allocated up-front. Sticky — flipped once, never reset.
+        if material.has_transmission() {
+            self.has_seen_transmission = true;
+        }
 
         let key = self.lookup.insert(material);
         if is_transparency_pass {
@@ -361,6 +390,20 @@ impl Materials {
                 } else {
                     self._is_transparency_pass.remove(key);
                 }
+            }
+            // T2.5: a previously-non-transmissive material can become
+            // transmissive via `update_material` (e.g. authoring
+            // pipeline that constructs the material first, then
+            // edits in `KHR_materials_transmission` later). Sticky-true
+            // so the opaque texture grows its mip chain on the next
+            // `RenderTextures::views` — otherwise the transparent
+            // shader's `textureNumLevels(opaque_tex)`-based
+            // transmission-blur sampling reads from a 1-mip chain
+            // and silently breaks transmission. The insert path
+            // already does this check (`insert(...)` above); this
+            // closes the post-insert-mutation gap.
+            if material.has_transmission() {
+                self.has_seen_transmission = true;
             }
 
             let dynamic_ctx =

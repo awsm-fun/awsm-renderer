@@ -1,5 +1,6 @@
 //! Display render pass execution.
 
+use std::cell::Cell;
 use std::vec;
 
 use awsm_renderer_core::command::{
@@ -20,6 +21,16 @@ use crate::{
 pub struct DisplayRenderPass {
     pub bind_groups: DisplayBindGroups,
     pub pipelines: DisplayPipelines,
+    /// Last `exposure_scale` (i.e. `exposure.exp2()`) we uploaded.
+    /// `None` until the first frame so the first call always writes;
+    /// subsequent frames re-upload only when the value changes.
+    /// Exposure rarely changes (camera setting, not animated per
+    /// frame), so this gates out the per-frame 4-byte wasm↔JS
+    /// `writeBuffer` round trip on the steady-state path. Public so
+    /// the renderer-internal struct-literal construction (in
+    /// `render_passes.rs::from_resolved`) can initialize it; the
+    /// uploader logic still owns the only writes.
+    pub last_exposure_scale: Cell<Option<f32>>,
 }
 
 impl DisplayRenderPass {
@@ -31,6 +42,7 @@ impl DisplayRenderPass {
         Ok(Self {
             bind_groups,
             pipelines,
+            last_exposure_scale: Cell::new(None),
         })
     }
 
@@ -38,16 +50,25 @@ impl DisplayRenderPass {
     pub fn render(&self, ctx: &RenderContext) -> Result<()> {
         // Upload the per-frame display uniform (currently: exposure scale).
         // exp2(EV) so 0 EV is unity, +1 EV doubles brightness, -1 EV halves.
+        // Exposure is a camera setting that rarely changes between frames
+        // — skip the `writeBuffer` when the value matches the prior frame.
         let exposure_scale = ctx.post_processing.exposure.exp2();
-        let mut bytes = [0u8; super::bind_group::DISPLAY_UNIFORM_SIZE];
-        bytes[0..4].copy_from_slice(&exposure_scale.to_le_bytes());
-        ctx.gpu.write_buffer(
-            &self.bind_groups.uniform_buffer,
-            None,
-            &bytes[..],
-            None,
-            None,
-        )?;
+        let needs_upload = match self.last_exposure_scale.get() {
+            Some(prev) => prev.to_bits() != exposure_scale.to_bits(),
+            None => true,
+        };
+        if needs_upload {
+            let mut bytes = [0u8; super::bind_group::DISPLAY_UNIFORM_SIZE];
+            bytes[0..4].copy_from_slice(&exposure_scale.to_le_bytes());
+            ctx.gpu.write_buffer(
+                &self.bind_groups.uniform_buffer,
+                None,
+                &bytes[..],
+                None,
+                None,
+            )?;
+            self.last_exposure_scale.set(Some(exposure_scale));
+        }
 
         let render_pass = ctx.command_encoder.begin_render_pass(
             &RenderPassDescriptor {

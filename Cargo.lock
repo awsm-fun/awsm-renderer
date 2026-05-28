@@ -200,6 +200,7 @@ dependencies = [
  "awsm-renderer",
  "awsm-renderer-editor",
  "awsm-renderer-gltf",
+ "awsm-web-shared",
  "awsm_web 0.45.0",
  "cfg-if",
  "dominator",

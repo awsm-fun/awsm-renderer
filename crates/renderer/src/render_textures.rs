@@ -127,15 +127,36 @@ impl RenderTextures {
     }
 
     /// Returns render texture views, recreating if size or AA changed.
+    ///
+    /// `current_size` is the live swap-chain `(width, height)` — caller
+    /// passes the value `AwsmRenderer::render` already snapped at the
+    /// top of the frame, sparing this method a redundant
+    /// `getCurrentTexture().getSize()` wasm↔JS hop. The pair is stable
+    /// for the duration of the frame, so the cached value is
+    /// unconditionally safe to reuse.
+    ///
+    /// `needs_opaque_mip_chain` is `Materials::has_seen_transmission`
+    /// — T2.5 lazy mip-chain allocation. When `false`, the opaque
+    /// texture is created with `mip_level_count = 1` (saves ~33% of
+    /// its allocation footprint). The first frame the flag flips
+    /// true, this method reallocates with the full chain — the same
+    /// `TextureViewRecreate` event the caller fires on size change
+    /// rebuilds dependent bind groups.
+    ///
+    /// `needs_hud_depth` is `Meshes::has_seen_hud` — T2.6 lazy HUD
+    /// depth allocation. When `false`, the HUD depth attachment is
+    /// skipped entirely (the HUD passes themselves are already gated
+    /// on the same condition at the call site). When the first HUD
+    /// renderable registers, the flag flips and the texture is
+    /// allocated on the next `views()` call.
     pub fn views(
         &mut self,
         gpu: &AwsmRendererWebGpu,
         anti_aliasing: AntiAliasing,
+        current_size: (u32, u32),
+        needs_opaque_mip_chain: bool,
+        needs_hud_depth: bool,
     ) -> Result<RenderTextureViews> {
-        let current_size = gpu
-            .current_context_texture_size()
-            .map_err(AwsmRenderTextureError::CurrentScreenSize)?;
-
         let size_changed = match self.inner.as_ref() {
             Some(inner) => (inner.width, inner.height) != current_size,
             None => true,
@@ -146,7 +167,23 @@ impl RenderTextures {
             None => false,
         };
 
-        if size_changed || anti_aliasing_changed {
+        // T2.5: opaque mip-chain state changed (false → true). The
+        // false → true direction is the only one we care about; the
+        // flag is sticky so the texture never shrinks back to mip 1.
+        let opaque_mips_grown = match self.inner.as_ref() {
+            Some(inner) => needs_opaque_mip_chain && !inner.opaque_has_mip_chain,
+            None => false,
+        };
+
+        // T2.6: HUD depth attachment appeared. Same sticky semantics
+        // as the opaque mip chain — once the flag flips to true, it
+        // never flips back.
+        let hud_depth_appeared = match self.inner.as_ref() {
+            Some(inner) => needs_hud_depth && inner.hud_depth.is_none(),
+            None => false,
+        };
+
+        if size_changed || anti_aliasing_changed || opaque_mips_grown || hud_depth_appeared {
             if let Some(inner) = self.inner.take() {
                 inner.destroy();
             }
@@ -161,16 +198,30 @@ impl RenderTextures {
                 current_size.1,
                 anti_aliasing,
                 &self.features,
+                needs_opaque_mip_chain,
+                needs_hud_depth,
             )?;
             self.inner = Some(inner);
         }
 
+        // `views_recreated` is `true` for ANY reason `inner` was
+        // rebuilt this frame — viewport resize, AA flip, T2.5
+        // opaque-mip-chain growth, or T2.6 HUD-depth materialization.
+        // The caller fires `BindGroupCreate::TextureViewRecreate`
+        // and invalidates the opaque mipgen cache off this flag, so
+        // all four recreation triggers correctly route their bind
+        // groups and mipgen cache through the rebuild path. Earlier
+        // this flag was named `size_changed` and only fired on the
+        // viewport-resize path — leaving stale views behind in the
+        // T2.5 / T2.6 lazy-allocation paths.
+        let views_recreated =
+            size_changed || anti_aliasing_changed || opaque_mips_grown || hud_depth_appeared;
         Ok(RenderTextureViews::new(
             self.inner.as_ref().unwrap(),
             self.ping_pong(),
             current_size.0,
             current_size.1,
-            size_changed,
+            views_recreated,
         ))
     }
 
@@ -235,8 +286,21 @@ pub struct RenderTextureViews {
     pub bloom: web_sys::GpuTextureView,
 
     pub depth: web_sys::GpuTextureView,
-    pub hud_depth: web_sys::GpuTextureView,
-    pub size_changed: bool,
+    /// T2.6: `None` until the first HUD renderable registers
+    /// (`Meshes::has_seen_hud`). The HUD geometry / transparent
+    /// passes are already gated on `renderables.hud.is_empty()` at
+    /// their call sites (T1.10), so they never sample `hud_depth`
+    /// before it materializes.
+    pub hud_depth: Option<web_sys::GpuTextureView>,
+    /// `true` when `RenderTexturesInner` was destroyed and rebuilt
+    /// during this `views()` call — by viewport resize, AA flip,
+    /// T2.5 opaque-mip-chain growth, or T2.6 HUD-depth
+    /// materialization. Every consumer that caches anything keyed
+    /// to a specific `GpuTextureView` / `GpuTexture` identity (bind
+    /// groups, the opaque mipgen) MUST invalidate on this flag, not
+    /// just on viewport resize — the destroyed textures and their
+    /// views are no longer valid.
+    pub views_recreated: bool,
     pub width: u32,
     pub height: u32,
     pub curr_index: usize,
@@ -250,7 +314,7 @@ impl RenderTextureViews {
         ping_pong: bool,
         width: u32,
         height: u32,
-        size_changed: bool,
+        views_recreated: bool,
     ) -> Self {
         let curr_index = if ping_pong { 0 } else { 1 };
         let prev_index = if ping_pong { 1 } else { 0 };
@@ -277,10 +341,12 @@ impl RenderTextureViews {
             // ^ `Option::clone()` — stays `None` when decals are gated off.
             depth: inner.depth_view.clone(),
             hud_depth: inner.hud_depth_view.clone(),
+            // ^ `Option::clone()` — `None` until T2.6's sticky flag
+            // flips on the first HUD renderable insertion.
             effects: inner.effects_view.clone(),
             bloom: inner.bloom_view.clone(),
             composite: inner.composite_view.clone(),
-            size_changed,
+            views_recreated,
             curr_index,
             prev_index,
             width,
@@ -314,6 +380,12 @@ pub struct RenderTexturesInner {
     pub opaque_storage_view: web_sys::GpuTextureView,
     pub opaque_full_view: web_sys::GpuTextureView,
     pub opaque_mip_count: u32,
+    /// T2.5: `true` when the opaque texture carries the full
+    /// `floor(log2(max(W,H))) + 1` mip chain (allocated because a
+    /// transmissive material is registered); `false` when allocated
+    /// with `mip_level_count = 1`. Read by `RenderTextures::views`
+    /// to detect a false → true transition that needs reallocation.
+    pub opaque_has_mip_chain: bool,
     pub opaque_to_transparent_blit_bind_group_msaa_4: web_sys::GpuBindGroup,
     pub opaque_to_transparent_blit_bind_group_no_anti_alias: web_sys::GpuBindGroup,
 
@@ -333,8 +405,13 @@ pub struct RenderTexturesInner {
     pub depth: web_sys::GpuTexture,
     pub depth_view: web_sys::GpuTextureView,
 
-    pub hud_depth: web_sys::GpuTexture,
-    pub hud_depth_view: web_sys::GpuTextureView,
+    /// T2.6: lazy HUD depth attachment — `None` while
+    /// `Meshes::has_seen_hud` is false. The texture sits on the inner
+    /// rather than `RenderTextures` so it participates in the same
+    /// destroy-and-recreate lifecycle as everything else on
+    /// viewport resize / AA flip / mip-chain growth.
+    pub hud_depth: Option<web_sys::GpuTexture>,
+    pub hud_depth_view: Option<web_sys::GpuTextureView>,
 
     pub composite: web_sys::GpuTexture,
     pub composite_view: web_sys::GpuTextureView,
@@ -354,6 +431,11 @@ pub struct RenderTexturesInner {
 
 impl RenderTexturesInner {
     /// Creates render textures and views for the given size.
+    ///
+    /// `needs_opaque_mip_chain` controls T2.5's lazy mip allocation:
+    /// `false` → opaque texture allocated with `mip_level_count = 1`
+    /// (the only mip the opaque pass writes); `true` → full
+    /// `floor(log2(max(W,H))) + 1` chain for transmission sampling.
     pub fn new(
         gpu: &AwsmRendererWebGpu,
         render_texture_formats: RenderTextureFormats,
@@ -364,6 +446,8 @@ impl RenderTexturesInner {
         height: u32,
         anti_aliasing: AntiAliasing,
         features: &RendererFeatures,
+        needs_opaque_mip_chain: bool,
+        needs_hud_depth: bool,
     ) -> Result<Self> {
         let maybe_multisample_texture =
             |format: TextureFormat, label: &'static str| -> TextureDescriptor<'static> {
@@ -424,7 +508,27 @@ impl RenderTexturesInner {
         // populated by the opaque pass; subsequent mips are filled in by
         // `OpaqueMipgen` between the opaque pass and the transparent pass
         // when the frame uses transmission.
-        let opaque_mip_count = mip_levels_for(width, height);
+        //
+        // T2.3 audit (see docs/plans/more-optimizations.md): RENDER_ATTACHMENT
+        // dropped — this texture is never used as a render-pass color
+        // attachment. The frame-start clear runs via `TextureClearer::clear`
+        // which uses `copy_buffer_to_texture` (needs COPY_DST, not
+        // RENDER_ATTACHMENT). On a TBR mobile GPU, RENDER_ATTACHMENT on a
+        // storage-bound texture forces the driver to evict its on-chip tile
+        // cache across compute pass boundaries — dropping the flag here is
+        // the single biggest TBR-friendly change.
+        //
+        // T2.5: mip chain allocation is now lazy. `needs_opaque_mip_chain`
+        // is `Materials::has_seen_transmission` — when no transmissive
+        // material has ever been registered, only mip 0 exists (the only
+        // level the opaque pass actually writes). The first transmissive
+        // material registration flips that flag and reallocates with the
+        // full chain on the next `views()` call.
+        let opaque_mip_count = if needs_opaque_mip_chain {
+            mip_levels_for(width, height)
+        } else {
+            1
+        };
         let opaque = gpu
             .create_texture(
                 &TextureDescriptor::new(
@@ -433,7 +537,6 @@ impl RenderTexturesInner {
                     TextureUsage::new()
                         .with_storage_binding()
                         .with_texture_binding()
-                        .with_render_attachment()
                         .with_copy_dst(),
                 )
                 .with_label("Opaque")
@@ -479,6 +582,11 @@ impl RenderTexturesInner {
         // multisampled transparent target. Gated by `features.decals`
         // — the texture is ~16 MB at 4K, and skipping it is the
         // largest single allocation behind the decals feature flag.
+        //
+        // T2.3: RENDER_ATTACHMENT + COPY_DST dropped — written via
+        // storage by the decal compute pass, read as a texture in the
+        // composite. Neither flag has any current consumer. Same TBR
+        // tile-cache benefit as `opaque` above.
         let decal_color = if features.decals {
             Some(
                 gpu.create_texture(
@@ -487,9 +595,7 @@ impl RenderTexturesInner {
                         Extent3d::new(width, Some(height), Some(1)),
                         TextureUsage::new()
                             .with_storage_binding()
-                            .with_texture_binding()
-                            .with_render_attachment()
-                            .with_copy_dst(),
+                            .with_texture_binding(),
                     )
                     .with_label("DecalColor")
                     .into(),
@@ -508,20 +614,35 @@ impl RenderTexturesInner {
             // sample it directly for world-position reconstruction.
             .map_err(AwsmRenderTextureError::CreateTexture)?;
 
-        let hud_depth = gpu
-            .create_texture(
-                &maybe_multisample_texture(render_texture_formats.depth, "Hud Depth").into(),
+        // T2.6: HUD depth attachment is allocated only after the first
+        // HUD renderable has registered. Saves a full-screen depth
+        // texture (Depth32 = 4 bytes/texel, Depth24Plus also 4
+        // bytes/texel; ~5 MB at 400×800 mobile, ~33 MB at 4K) on the
+        // common library/game builds that never use the HUD pass.
+        let hud_depth = if needs_hud_depth {
+            Some(
+                gpu.create_texture(
+                    &maybe_multisample_texture(render_texture_formats.depth, "Hud Depth").into(),
+                )
+                .map_err(AwsmRenderTextureError::CreateTexture)?,
             )
-            .map_err(AwsmRenderTextureError::CreateTexture)?;
+        } else {
+            None
+        };
 
-        // NEVER multisampled, that's the point
+        // NEVER multisampled, that's the point.
+        //
+        // T2.3: STORAGE_BINDING dropped — composite is only ever bound as
+        // a sampled `texture_2d<f32>` (in effects + the
+        // material_decal composite + the non-AA blit path), never as a
+        // storage texture. RENDER_ATTACHMENT stays — it's the MSAA
+        // resolve target for the transparent / HUD passes.
         let composite = gpu
             .create_texture(
                 &TextureDescriptor::new(
                     render_texture_formats.color,
                     Extent3d::new(width, Some(height), Some(1)),
                     TextureUsage::new()
-                        .with_storage_binding()
                         .with_texture_binding()
                         .with_render_attachment(),
                 )
@@ -530,6 +651,10 @@ impl RenderTexturesInner {
             )
             .map_err(AwsmRenderTextureError::CreateTexture)?;
 
+        // T2.3: RENDER_ATTACHMENT dropped on both `effects` and `bloom`
+        // — these are pure compute-pass outputs (storage write from the
+        // effects compute pass, texture read in display + effects). No
+        // render attachment consumer in any pass.
         let effects = gpu
             .create_texture(
                 &TextureDescriptor::new(
@@ -537,8 +662,7 @@ impl RenderTexturesInner {
                     Extent3d::new(width, Some(height), Some(1)),
                     TextureUsage::new()
                         .with_storage_binding()
-                        .with_texture_binding()
-                        .with_render_attachment(),
+                        .with_texture_binding(),
                 )
                 .with_label("Effects")
                 .into(),
@@ -552,8 +676,7 @@ impl RenderTexturesInner {
                     Extent3d::new(width, Some(height), Some(1)),
                     TextureUsage::new()
                         .with_storage_binding()
-                        .with_texture_binding()
-                        .with_render_attachment(),
+                        .with_texture_binding(),
                 )
                 .with_label("Bloom")
                 .into(),
@@ -629,9 +752,12 @@ impl RenderTexturesInner {
             .create_view()
             .map_err(|e| AwsmRenderTextureError::CreateTextureView(format!("depth: {e:?}")))?;
 
-        let hud_depth_view = hud_depth
-            .create_view()
-            .map_err(|e| AwsmRenderTextureError::CreateTextureView(format!("hud_depth: {e:?}")))?;
+        let hud_depth_view = match hud_depth.as_ref() {
+            Some(tex) => Some(tex.create_view().map_err(|e| {
+                AwsmRenderTextureError::CreateTextureView(format!("hud_depth: {e:?}"))
+            })?),
+            None => None,
+        };
 
         let composite_view = composite
             .create_view()
@@ -687,6 +813,7 @@ impl RenderTexturesInner {
             opaque_storage_view,
             opaque_full_view,
             opaque_mip_count,
+            opaque_has_mip_chain: needs_opaque_mip_chain,
             opaque_clearer: TextureClearer::new(gpu, render_texture_formats.color, width, height)
                 .map_err(AwsmRenderTextureError::CreateTextureClearer)?,
             opaque_to_transparent_blit_bind_group_msaa_4,
@@ -736,6 +863,9 @@ impl RenderTexturesInner {
             tex.destroy();
         }
         self.depth.destroy();
+        if let Some(tex) = self.hud_depth {
+            tex.destroy();
+        }
         self.composite.destroy();
         self.effects.destroy();
         self.bloom.destroy();

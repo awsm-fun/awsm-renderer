@@ -231,17 +231,25 @@ impl AwsmRenderer {
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
         self.camera
             .write_gpu(&self.logging, &self.gpu, &self.bind_groups)?;
+        // Live swap-chain size — read once per frame and threaded through
+        // `RenderContext.viewport_size`. The value is fixed for the
+        // duration of the frame (set by the surface configuration), so
+        // every pass-level caller that previously re-read it
+        // (`render_textures.views`, `update_camera`, the FrameGlobals
+        // upload below) now consults the same cached pair. Each
+        // `current_context_texture_size()` is a `getCurrentTexture().getSize()`
+        // wasm↔JS hop — cheap individually but it stacked up.
+        let viewport_size = self.gpu.current_context_texture_size()?;
         // FrameGlobals — renderer-wide per-frame uniform. Written after
         // Camera so it shares the same upload batch and lands before any
         // pass that reads it. Resolution comes from the live context
         // texture (matches what render_textures wants to be sized to).
         {
-            let (res_w, res_h) = self.gpu.current_context_texture_size()?;
             self.frame_globals.write_gpu(
                 &self.logging,
                 &self.gpu,
                 self.render_textures.frame_count(),
-                [res_w, res_h],
+                [viewport_size.0, viewport_size.1],
             )?;
         }
         // Extras pool — flush any dirty bytes from BufferSlot
@@ -268,11 +276,21 @@ impl AwsmRenderer {
                 })?;
         }
 
-        let render_texture_views = self
-            .render_textures
-            .views(&self.gpu, self.anti_aliasing.clone())?;
+        let render_texture_views = self.render_textures.views(
+            &self.gpu,
+            self.anti_aliasing.clone(),
+            viewport_size,
+            // T2.5: lazy opaque-mip-chain allocation. Once a
+            // transmissive material registers, the flag is sticky
+            // true and the texture grows to full mip count on the
+            // next `views()`.
+            self.materials.has_seen_transmission(),
+            // T2.6: lazy HUD depth allocation. False until the first
+            // HUD-flagged mesh enters the registry.
+            self.meshes.has_seen_hud(),
+        )?;
 
-        if render_texture_views.size_changed {
+        if render_texture_views.views_recreated {
             self.bind_groups
                 .mark_create(BindGroupCreate::TextureViewRecreate);
         }
@@ -280,7 +298,8 @@ impl AwsmRenderer {
         // Resize the HZB texture to match the live viewport. This
         // recreates the per-mip views, so the HZB bind groups must
         // also be rebuilt — the `TextureViewRecreate` event above
-        // covers that since size_changed implies viewport resize.
+        // covers that since a viewport resize implies
+        // `views_recreated == true`.
         // Skipped when `features.gpu_culling == false`.
         if let Some(hzb) = self.render_passes.hzb.as_mut() {
             if hzb.ensure_size(
@@ -366,7 +385,11 @@ impl AwsmRenderer {
                 self.bind_groups
                     .mark_create(BindGroupCreate::CoverageBuffersResize);
             }
-            coverage_buffers.reset_counts(&self.gpu)?;
+            // Per-frame zero of `counts_buffer` is recorded into the
+            // frame's command encoder below (alongside the coverage
+            // compute dispatch itself). Capacity sizing lands here so
+            // any bind-group recreate event fires before the encoder
+            // path consumes the new layout.
         }
 
         self.bind_groups.recreate(
@@ -448,6 +471,7 @@ impl AwsmRenderer {
             frame_optimizations: std::cell::Cell::new(
                 crate::optimization_policy::FrameOptimizations::default(),
             ),
+            viewport_size,
         };
 
         // Snapshot per-opaque-renderable info that the occlusion + indirect-
@@ -564,7 +588,16 @@ impl AwsmRenderer {
                 .render(&ctx, renderables.opaque, false)?;
         }
 
-        {
+        // Skip the HUD geometry pass entirely when nothing's drawn into it.
+        // The pass body unconditionally opens a render pass on the same 4
+        // MRT visibility targets (+ HUD depth) with `LoadOp::Load`, which
+        // on a TBR mobile GPU is the worst-case antipattern: full-screen
+        // tile-store of the just-written world MRTs back to off-chip RAM,
+        // then immediate tile-load back in, for zero drawn pixels. At a
+        // 400×800 mobile viewport the wasted bandwidth is ~40 MB per
+        // frame, every frame, when HUD is empty. The same skip applies to
+        // the HUD transparent + HUD line passes further below.
+        if !renderables.hud.is_empty() {
             let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "HUD Geometry RenderPass").entered())
             } else {
@@ -607,6 +640,14 @@ impl AwsmRenderer {
             } else {
                 None
             };
+            // Zero the per-mesh atomic counts via a recorded
+            // `clear_buffer` so it runs in command order strictly before
+            // the coverage compute dispatch reads + atomic-adds into
+            // them. Previously this was a `queue.writeBuffer` of
+            // `capacity * 4` bytes of zeros, every byte shipped across
+            // the wasm↔JS boundary — moving to `clear_buffer` zeroes
+            // the GPU buffer in-place with no host upload.
+            coverage_buffers.reset_counts(&ctx.command_encoder);
             coverage_pass.render(&ctx)?;
             let prior_inflight = self.coverage_readback_state.lock().unwrap().inflight;
             if !prior_inflight {
@@ -752,11 +793,13 @@ impl AwsmRenderer {
                 .render_textures
                 .inner()
                 .map(|inner| (inner.opaque.clone(), inner.opaque_mip_count));
-            // The mipgen caches per-mip views + bind groups across frames.
-            // We invalidate explicitly when the render textures were just
-            // recreated (resize / AA change) so the cache stays paired
-            // with the right `GpuTexture` identity.
-            if ctx.render_texture_views.size_changed {
+            // The mipgen caches per-mip views + bind groups across
+            // frames. We invalidate explicitly any time
+            // `RenderTexturesInner` was rebuilt this frame (viewport
+            // resize, AA flip, T2.5 mip-chain grow, T2.6 HUD-depth
+            // grow) so the cache stays paired with the right
+            // `GpuTexture` identity.
+            if ctx.render_texture_views.views_recreated {
                 self.opaque_mipgen.invalidate();
             }
             if let Some((texture, mip_count)) = opaque_info {
@@ -1074,7 +1117,12 @@ impl AwsmRenderer {
             }
         }
 
-        {
+        // HUD transparent / lit pass. Same skip-on-empty rationale as the
+        // HUD geometry pass above — both attachments are LoadOp::Load on
+        // the world-state textures + HUD depth, so emitting the pass
+        // descriptor with zero draws still costs a full-screen tile
+        // round-trip on TBR mobile GPUs.
+        if !renderables.hud.is_empty() {
             let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "HUD RenderPass").entered())
             } else {
@@ -1367,6 +1415,13 @@ pub struct RenderContext<'a> {
     /// `frame_optimizations.get().gpu_occlusion = true` means "run it
     /// this frame."
     pub frame_optimizations: std::cell::Cell<crate::optimization_policy::FrameOptimizations>,
+    /// Cached `(width, height)` of the live swap-chain texture, snapped
+    /// once at the top of `render()` and stable for the whole frame.
+    /// Use this in place of repeated `gpu.current_context_texture_size()`
+    /// calls — each call crosses the wasm↔JS boundary into
+    /// `getCurrentTexture().getSize()`, which is small (~0.1–1 µs) but
+    /// happens at multiple pass-level call sites per frame.
+    pub viewport_size: (u32, u32),
 }
 
 impl<'a> RenderContext<'a> {
@@ -1469,13 +1524,25 @@ impl<'a> RenderContext<'a> {
                 color_attachment.with_resolve_target(&self.render_texture_views.composite);
         }
 
+        // T2.6: `hud_depth` is Optional — built only after the first
+        // HUD renderable has registered. This entry point is reachable
+        // only from the HUD render-pass call sites, which are now
+        // gated on `!renderables.hud.is_empty()` (T1.10) — by the
+        // time we get here the HUD render group is non-empty, which
+        // means at least one mesh has flipped `Meshes::has_seen_hud`
+        // and the texture has been allocated. The expect is the
+        // narrowed invariant.
+        let hud_depth_view = self.render_texture_views.hud_depth.as_ref().expect(
+            "hud_depth view absent at begin_hud_transparent_pass — invariant violated: \
+             a HUD renderable must flip Meshes::has_seen_hud before any HUD pass call",
+        );
         self.command_encoder
             .begin_render_pass(
                 &RenderPassDescriptor {
                     label,
                     color_attachments: vec![color_attachment],
                     depth_stencil_attachment: Some(
-                        DepthStencilAttachment::new(&self.render_texture_views.hud_depth)
+                        DepthStencilAttachment::new(hud_depth_view)
                             .with_depth_load_op(LoadOp::Clear)
                             .with_depth_clear_value(1.0)
                             .with_depth_store_op(StoreOp::Store),

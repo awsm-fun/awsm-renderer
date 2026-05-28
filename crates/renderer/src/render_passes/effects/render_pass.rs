@@ -35,6 +35,25 @@ impl EffectsRenderPass {
 
     /// Executes the effects pass.
     pub fn render(&self, ctx: &RenderContext) -> Result<()> {
+        // PR #103 review note: T1.5 originally attempted to early-exit
+        // here when bloom/dof/smaa are all off, on the theory that the
+        // `BloomPhase::None` dispatch is a no-op. It isn't. The shader
+        // unconditionally does `textureLoad(composite_tex)` followed
+        // by `textureStore(effects_tex, …)` — i.e. it's the only thing
+        // that puts pixels into `effects_tex`, which the display pass
+        // then samples at binding 0 (see `display/bind_group.rs:99`).
+        //
+        // Skipping the dispatch left `effects_tex` with stale /
+        // driver-defined contents and the display pass showed garbage
+        // (or last-known-effects-frame contents) on every frame where
+        // no effects were enabled. Reinstating the dispatch is the
+        // safe path. The bandwidth cost is small (~5 MB at 400×800)
+        // and the only theoretical win was the compute-pass
+        // open/close overhead (~30 µs on mobile), recovering which
+        // would require plumbing post-processing state into the
+        // display bind-group recreation flow so display could sample
+        // `composite` directly — disproportionate complexity for the
+        // saving. Re-evaluate in a follow-up if profiling justifies.
         let workgroup_size = (
             ctx.render_texture_views.width.div_ceil(8),
             ctx.render_texture_views.height.div_ceil(8),

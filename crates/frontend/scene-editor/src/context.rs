@@ -494,7 +494,14 @@ async fn create_renderer(canvas: web_sys::HtmlCanvasElement) -> EditorResult<Aws
         gpu_culling: awsm_renderer::optimization_policy::OptimizationMode::Force,
         ..Default::default()
     };
+    // Profile defaults — Desktop in scene-editor (authoring tool runs
+    // on desktop). `?mobile=true` URL override lets the editor preview
+    // what the mobile profile produces without rebuilding.
+    let profile = awsm_web_shared::perf::resolve_renderer_profile(
+        awsm_renderer::profile::RendererProfile::Desktop,
+    );
     let renderer = AwsmRendererBuilder::new(gpu_builder)
+        .with_profile(profile)
         .with_logging(AwsmRendererLogging {
             // Default tier: SubFrame in debug, Frame in release; `?trace=…`
             // URL param overrides. See `docs/perf-tracing.md`.

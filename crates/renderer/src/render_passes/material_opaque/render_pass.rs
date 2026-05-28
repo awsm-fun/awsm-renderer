@@ -224,71 +224,85 @@ impl MaterialOpaqueRenderPass {
         // resolves this for the storage-writable accumulator side; the
         // args_buffer itself is bound only as `Storage(read)` here,
         // which is compatible with its concurrent Indirect usage as
-        // the dispatch source. We still isolate each edge dispatch
-        // into its own compute pass — cheap (pass begin/end overhead
-        // is microscopic) and keeps the synchronization-scope reasoning
-        // local per pipeline.
+        // the dispatch source.
+        //
+        // T2.2 (see docs/plans/more-optimizations.md): all per-shader,
+        // skybox, and final_blend dispatches now live inside ONE
+        // compute pass. Each separate `begin_compute_pass` on mobile
+        // TBR drivers is a tile flush + barrier sync (~30 µs); with
+        // N material buckets the previous shape paid N + 2 of those.
+        //
+        // Synchronization-scope reasoning: per-shader dispatches each
+        // atomic-add into disjoint shader-bucket regions of the
+        // accumulator (no cross-bucket dependency); skybox writes its
+        // own slot; final_blend reads every accumulator slot and must
+        // therefore land strictly after each per-shader + skybox
+        // dispatch. WebGPU's automatic intra-pass barriers between
+        // dispatches that share writes-to-then-reads-from storage
+        // bindings handle this correctly — `final_blend`'s storage
+        // read of the same buffer all per-shader passes wrote to
+        // forces the barrier on its behalf.
 
         let (main_bind_group, lights_bind_group, texture_bind_group, _shadows_bind_group) =
             self.bind_groups.get_bind_groups()?;
 
+        let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
+            &ComputePassDescriptor::new(Some("Material Opaque - Edge Resolve")).into(),
+        ));
+
         // ── Per-shader-id edge_resolve dispatches ────────────────────
         // Pre-check above guarantees every bucket has a compiled
-        // pipeline; the lookup is infallible here.
+        // pipeline; the lookup is infallible here. Slots 0/1/2/3 set
+        // once up front and reused — only the pipeline changes per
+        // bucket. The shadow bind group at slot 3 is the extended
+        // form (10 shadow bindings + edge_data + edge_layout).
+        compute_pass.set_bind_group(0u32, main_bind_group, None)?;
+        compute_pass.set_bind_group(1u32, lights_bind_group, None)?;
+        compute_pass.set_bind_group(2u32, texture_bind_group, None)?;
+        compute_pass.set_bind_group(3u32, &extended_shadows_group, None)?;
         for (bucket_index, entry) in bucket_entries.iter().enumerate() {
             let pipeline_key = self
                 .edge_pipelines
                 .get_per_shader_pipeline_key(ctx.anti_aliasing, entry.shader_id)
                 .expect("per-shader edge_resolve pipeline missing after readiness pre-check");
-            let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
-                &ComputePassDescriptor::new(Some("Material Opaque - Edge Resolve (per-shader)"))
-                    .into(),
-            ));
-            compute_pass.set_bind_group(0u32, main_bind_group, None)?;
-            compute_pass.set_bind_group(1u32, lights_bind_group, None)?;
-            compute_pass.set_bind_group(2u32, texture_bind_group, None)?;
-            compute_pass.set_bind_group(3u32, &extended_shadows_group, None)?;
             compute_pass.set_pipeline(ctx.pipelines.compute.get(pipeline_key)?);
             compute_pass.dispatch_workgroups_indirect_with_u32(
                 &edge_buffers.args_buffer,
                 MaterialEdgeBuffers::per_shader_args_offset(bucket_index as u32),
             );
-            compute_pass.end();
         }
 
         // ── Skybox edge resolve ─────────────────────────────────────
-        // Pre-check above already bailed when this is None.
+        // Pre-check above already bailed when this is None. The
+        // skybox pipeline layout uses only group(0); the prior
+        // bindings on slots 1/2/3 remain set but go unused, which
+        // is permitted.
         let skybox_pipeline_key = self
             .edge_pipelines
             .skybox_edge_resolve_pipeline_key
             .expect("skybox_edge_resolve pipeline missing after readiness pre-check");
-        {
-            let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
-                &ComputePassDescriptor::new(Some("Material Opaque - Skybox Edge Resolve")).into(),
-            ));
-            compute_pass.set_pipeline(ctx.pipelines.compute.get(skybox_pipeline_key)?);
-            compute_pass.set_bind_group(0u32, &skybox_edge_group, None)?;
-            compute_pass.dispatch_workgroups_indirect_with_u32(
-                &edge_buffers.args_buffer,
-                MaterialEdgeBuffers::skybox_edge_args_offset(),
-            );
-            compute_pass.end();
-        }
+        compute_pass.set_pipeline(ctx.pipelines.compute.get(skybox_pipeline_key)?);
+        compute_pass.set_bind_group(0u32, &skybox_edge_group, None)?;
+        compute_pass.dispatch_workgroups_indirect_with_u32(
+            &edge_buffers.args_buffer,
+            MaterialEdgeBuffers::skybox_edge_args_offset(),
+        );
 
         // ── Final blend ─────────────────────────────────────────────
+        // Reads every accumulator slot written above; the implicit
+        // storage-barrier WebGPU inserts between dispatches that
+        // share read-after-write storage bindings means this lands
+        // strictly after the per-shader + skybox writes.
         if let Some(pipeline_key) = self.edge_pipelines.final_blend_pipeline_key {
-            let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
-                &ComputePassDescriptor::new(Some("Material Opaque - Final Blend")).into(),
-            ));
             compute_pass.set_pipeline(ctx.pipelines.compute.get(pipeline_key)?);
             compute_pass.set_bind_group(0u32, &final_blend_group, None)?;
             compute_pass.dispatch_workgroups_indirect_with_u32(
                 &edge_buffers.args_buffer,
                 MaterialEdgeBuffers::final_blend_args_offset(),
             );
-            compute_pass.end();
         }
 
+        compute_pass.end();
         Ok(())
     }
 

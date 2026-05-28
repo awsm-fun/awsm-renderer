@@ -17,6 +17,6 @@ pub mod frustum_selector;
 #[cfg(test)]
 mod tests;
 
-pub use index::SceneSpatial;
+pub use index::{SceneSpatial, SceneSpatialConfig};
 pub use node::{SceneNode, SceneNodeFlags};
 pub use query::{NodeFilter, SpatialQuery};
