@@ -14,9 +14,7 @@ use std::rc::Rc;
 use awsm_materials::dynamic::DynamicMaterial;
 use awsm_materials::dynamic_layout::{FieldType, UniformValue};
 use awsm_materials::MaterialShaderId;
-use awsm_meshgen::primitives::{
-    box_mesh, cylinder_mesh, plane_mesh, sphere_mesh, torus_mesh,
-};
+use awsm_meshgen::primitives::{box_mesh, cylinder_mesh, plane_mesh, sphere_mesh, torus_mesh};
 use awsm_renderer::dynamic_materials::MaterialRegistration;
 use awsm_renderer::materials::{Material, MaterialKey};
 use awsm_renderer::meshes::MeshKey;

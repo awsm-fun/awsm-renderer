@@ -53,7 +53,12 @@ pub fn build_registration(state: &EditState) -> MaterialRegistration {
     let buffer_defaults: Vec<Vec<u32>> = def
         .buffers
         .iter()
-        .map(|b| buffer_defaults_map.get(&b.name).cloned().unwrap_or_default())
+        .map(|b| {
+            buffer_defaults_map
+                .get(&b.name)
+                .cloned()
+                .unwrap_or_default()
+        })
         .collect();
     let layout = convert_layout(&def);
     let alpha_mode = convert_alpha_mode(def.alpha_mode.clone());

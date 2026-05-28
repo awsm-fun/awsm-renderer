@@ -1244,7 +1244,8 @@ impl AwsmRenderer {
                     let snapshot: Option<(u32, u32)> = match result {
                         Ok(bytes) if bytes.len() >= 8 => {
                             let edge_count = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
-                            let overflow_count = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+                            let overflow_count =
+                                u32::from_le_bytes(bytes[4..8].try_into().unwrap());
                             Some((edge_count, overflow_count))
                         }
                         Ok(_) => None,

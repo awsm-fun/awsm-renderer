@@ -700,12 +700,11 @@ mod tests {
         }
         for folder in ["scanline", "irregular-atlas", "soft-glass"] {
             let path = dir.join(format!("assets/test-materials/{folder}/material.json"));
-            let text = std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("read {path:?}: {e}"));
-            let def: MaterialDefinition = serde_json::from_str(&text)
-                .unwrap_or_else(|e| panic!("parse {path:?}: {e}"));
-            validate_layout_names(&def)
-                .unwrap_or_else(|e| panic!("validate {path:?}: {e:?}"));
+            let text =
+                std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+            let def: MaterialDefinition =
+                serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse {path:?}: {e}"));
+            validate_layout_names(&def).unwrap_or_else(|e| panic!("validate {path:?}: {e:?}"));
             assert_eq!(def.name, folder.to_string());
         }
     }

@@ -238,10 +238,7 @@ fn file_picker(
     })
 }
 
-fn json_textarea(
-    pending: Arc<Mutable<Option<Vec<u32>>>>,
-    status: Arc<Mutable<String>>,
-) -> Dom {
+fn json_textarea(pending: Arc<Mutable<Option<Vec<u32>>>>, status: Arc<Mutable<String>>) -> Dom {
     html!("textarea" => web_sys::HtmlTextAreaElement, {
         .attr("placeholder", "[0.0, 1.0, 0.5, 0.25, …]")
         .style("width", "100%")

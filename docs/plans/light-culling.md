@@ -9,8 +9,8 @@ and the empty pass scaffold already wired up at
 [`crates/renderer/src/render_passes/light_culling/`](../../crates/renderer/src/render_passes/light_culling/).
 It is **not** a generic clustered-forward whitepaper.
 
-A few open questions at the bottom need user input before implementation
-starts.
+All design decisions are resolved (see [§ Resolved decisions](#resolved-decisions-2026-05-28)
+at the bottom for the planning-conversation outcomes).
 
 ---
 
@@ -66,11 +66,15 @@ but the GPU per-tile list becomes the authoritative cull for:
 
 - Every transparent fragment.
 - Every fragment of a mesh flagged `oversized`.
-- Optionally every opaque fragment (open question A).
+- Small-mesh opaque fragments stay on the per-mesh slice path
+  (see [§ Resolved decision A](#a-opaque-shading-default)).
 
-The new GPU pass does **2D screen-tile culling with conservative
-view-space Z extents per tile** (Forward+ shape), with an opt-in path
-toward 3D froxels later (see "Future: 3D froxel clusters" below).
+The new GPU pass does **3D froxel culling** (16×16 screen tiles ×
+~32 view-space depth slices, exponential spacing). This is the
+modern Forward+ shape used by Unreal, Unity HDRP, Doom Eternal, and
+Frostbite — for a general renderer, this matches the industry
+baseline. See [§ Resolved decision C](#c-3d-froxels) for the trade-off
+analysis.
 
 ---
 
@@ -100,7 +104,8 @@ that slot. Rationale:
 
 This means the cull pass runs **once per frame** at a single point in the
 graph; its output is consumed by classify (optionally), opaque (optionally
-— see open question A), and transparent (definitely).
+— see [§ Resolved decision A](#a-opaque-shading-default)), and
+transparent (always).
 
 **Why not after material classify?** Because the per-tile light list
 benefits classify's edge-detection (a tile crossing a sharp light cutoff
@@ -145,38 +150,61 @@ The shading shader can map either way without conversion math.
 
 ## Algorithm sketch
 
-Per cull tile (16×16 px), one workgroup:
+The cull pass runs once per frame. Output is per-froxel — a 3D grid
+of `(tile_x, tile_y, z_slice)` cells, each carrying its own light
+list. Tile dimensions are `16×16 px × 32 Z slices`.
 
-1. **Phase 1 — depth bounds.** Each thread loads its pixel's
-   depth from the depth attachment (sample 0 if MSAA is on; sample-min
-   would be tighter but matches the existing standard of "sample 0 is
-   the canonical depth" — see `helpers/standard.wgsl`). Workgroup-shared
-   reductions produce `(z_min, z_max)` in view space.
-2. **Phase 2 — frustum + sphere test.** Each thread iterates a chunk of
-   the active punctual-light list. For each light:
+**Z-slice mapping**: exponential from camera near to far per the
+Doom-Eternal-style formula:
+
+```
+slice = floor( log2(view_z / near) / log2(far / near) * SLICE_COUNT )
+```
+
+Exponential spacing gives the slices closest to the camera (where
+small objects with lots of nearby lights dominate the visual budget)
+the most resolution.
+
+**Per froxel (one workgroup per froxel, NOT per tile)**:
+
+1. **Phase 1 — froxel view-space AABB.** Reconstruct the froxel's
+   view-space frustum from `(tile_x, tile_y, z_slice)`: 4 side planes
+   from the tile's screen-space pixel rect, 2 near/far planes from
+   the exponential Z mapping. No depth-texture reads needed — every
+   froxel covers a fixed view-space region.
+2. **Phase 2 — frustum + sphere test.** Each thread iterates a chunk
+   of the active punctual-light list. For each light:
    - Reconstruct the light's world-space bounding sphere (already in
      the light's row 1 as `pos_range`).
-   - Convert the tile + (z_min, z_max) bounds into a view-space frustum
-     (4 side planes from the tile's screen-space pixel rect, 2 near/far
-     planes from the depth reduction).
-   - Sphere-vs-frustum test. (Cheap closed-form: distance from sphere
-     center to each plane, reject if any > radius.)
-   - For spot lights, additionally test the cone direction against the
-     tile's view direction. Conservative — false-positives are fine;
-     missing a light isn't.
+   - Sphere-vs-frustum test (cheap closed-form: distance from sphere
+     center to each plane, reject if any > radius).
+   - For spot lights, additionally test the cone direction against
+     the froxel's view direction. Conservative — false-positives are
+     fine; missing a light isn't.
 3. **Phase 3 — append.** Lights that pass the test are atomic-appended
-   to that tile's light-index list. Capacity per tile is fixed (see
-   "Memory budget" below). Overflow tags the tile as "saturated"; the
-   shading shader falls back to looping over the **whole** punctual
-   buffer for that tile (degraded perf, correct shading — same fallback
-   as the existing edge-budget overflow handling in Stage 3).
+   to that froxel's light-index list. Overflow atomic-adds into a
+   per-frame overflow counter (CPU mapAsync next frame; auto-grow on
+   detection — see [§ Resolved decision E](#e-saturation-fallback)).
 4. **Phase 4 — directional prefix.** Directional lights aren't culled
-   (they have no bounded volume). The existing global-prefix path stays
-   — every shaded pixel walks the small directional list unconditionally.
+   (they have no bounded volume). The existing global-prefix path
+   stays — every shaded pixel walks the small directional list
+   unconditionally.
 
-Workgroup size: 16×16 = 256 threads, one per pixel of the tile. The
-per-light test loop is over `ceil(active_punctual_count / 256)` lights
-per thread.
+**Why per-froxel instead of per-tile-with-depth-reduce**: a tile's
+"true" Z range from a depth pre-pass is tighter, but tiles spanning
+near-camera + far-wall (corridors, outdoor) still see a wide range.
+Exponential froxels give the close-camera slices fine resolution
+where it matters and don't need the depth pre-pass at all (which
+sidesteps the multi-sample-depth-reduce question — answer B).
+
+Workgroup size: one workgroup per froxel. Lights iterated per-thread;
+the cap is `ceil(active_punctual_count / 64)` lights per thread
+(64-thread workgroups give good GPU occupancy on the typical 32-
+warp / 32-wave hardware). The total work per frame is
+`tiles_x × tiles_y × slice_count × ceil(lights / 64)`. At 1920×1080
+with 32 slices and 256 lights: `120 × 68 × 32 × 4 ≈ 1 M
+per-light-test operations per frame — entirely GPU-bound and
+sub-millisecond.
 
 ---
 
@@ -199,11 +227,15 @@ Per-tile capacity: 32 light indices (= 128 bytes). At 1920×1080: 8160 ×
 (via the standard `ensure_capacity → mark_create` pattern) when the
 viewport grows.
 
-A **saturation bit** lives in the count: count's high bit (1 << 31) is
-set when the tile overflowed. The shading shader checks the bit and
-either trusts the truncated list (clear) or falls back to looping the
-full punctual buffer (set). The bit cost is one bit of headroom in the
-24-bit-ish realistic light counts.
+A **per-frame overflow counter** lives at a fixed offset in
+`tile_light_indices`'s header: `atomic<u32>` that the shader
+atomic-adds whenever a tile's append would exceed capacity. The CPU
+reads it via `mapAsync` next frame (same pattern as the new
+`EdgeOverflowReadbackState` for MSAA edges); when overflow > 0, the
+renderer calls `set_max_per_tile_capacity(current * 2)` and recreates
+the buffers. Pathological scenes self-correct in one frame. This is
+**auto-grow**, deliberately different from Unreal's
+static-budget full-list-fallback — see [§ Resolved decision E](#e-saturation-fallback).
 
 ---
 
@@ -315,29 +347,28 @@ shader-cache-key struct. Filling them out:
 
 | Binding | Resource | Notes |
 |---|---|---|
-| 0 | `camera_raw: uniform` | View/proj matrices for frustum reconstruction. Already on `ctx.camera.gpu_buffer`. |
-| 1 | `depth_tex: texture_depth_multisampled_2d` (msaa-on) / `texture_depth_2d` (msaa-off) | Sample 0 reads only. |
-| 2 | `lights_info: uniform` | Total `light_count` for per-thread chunk size. |
-| 3 | `lights_punctual: uniform` | The packed `LightPacked` array (already at `ctx.lights.gpu_punctual_buffer`). |
-| 4 | `tile_light_offsets: storage<read_write>` | Output. |
-| 5 | `tile_light_indices: storage<read_write>` | Output. Atomics on the per-tile append counter inside `offsets`. |
+| 0 | `camera_raw: uniform` | View/proj matrices for frustum reconstruction + near/far for the Z-slice mapping. Already on `ctx.camera.gpu_buffer`. |
+| 1 | `lights_info: uniform` | Total `light_count` for per-thread chunk size. |
+| 2 | `lights_punctual: uniform` | The packed `LightPacked` array (already at `ctx.lights.gpu_punctual_buffer`). |
+| 3 | `froxel_light_offsets: storage<read_write>` | Output. `array<vec2<u32>>` indexed by `tile_y * tiles_per_row * slice_count + z * tiles_per_row + tile_x`. |
+| 4 | `froxel_light_indices: storage<read_write>` | Output. Flat array of `u32` light indices. Atomics on the per-froxel append counter live inside `offsets`. |
+| 5 | `overflow_counter: storage<read_write>` | Single `atomic<u32>` — incremented when a froxel's append would exceed its capacity. CPU mapAsync next frame; auto-grow on detection. |
 
-5 storage/uniform bindings + 1 texture = 6 bindings on one group. Well
-inside the per-stage cap.
-
-A **second bind group** is needed for the MSAA cache key variant
-because `texture_depth_multisampled_2d` vs `texture_depth_2d` are
-different binding types and the template needs a cache-key flag. The
-cache-key shape is:
+4 storage + 2 uniform bindings on one group. No depth texture binding
+— froxel view-space bounds come from the Z-slice mapping (analytic),
+not from a depth-texture reduction. Single MSAA-agnostic cache key
+shape:
 
 ```rust
 #[derive(Hash, Debug, Clone, PartialEq, Eq)]
 pub struct ShaderCacheKeyLightCulling {
-    pub msaa: bool,
+    pub slice_count: u32,
+    pub max_per_froxel_capacity: u32,
 }
 ```
 
-Two pipelines compile up-front (or lazily — see "Lazy or eager" below).
+One pipeline. Recompiles on auto-grow (when `max_per_froxel_capacity`
+changes).
 
 ### Pipeline-readiness integration
 
@@ -363,11 +394,15 @@ the shading shaders take the existing per-mesh path.
 ## Bind-group integration on the consuming side
 
 The opaque + transparent main bind groups gain two new entries
-(`tile_light_offsets`, `tile_light_indices`). That requires:
+(`froxel_light_offsets`, `froxel_light_indices`). That requires:
 
-- Two new `BindGroupCreate` events: `LightCullingTilesResize` (when the
-  output buffers grow due to viewport resize) → rebinds opaque main,
-  transparent main, light_culling itself.
+- Two new `BindGroupCreate` events:
+  - `LightCullingFroxelsResize` — when the output buffers grow
+    (viewport resize OR auto-grow capacity bump). Rebinds opaque
+    main, transparent main, light_culling itself.
+  - `LightCullingOverflowReadback` — when the `with_copy_src`
+    overflow-counter buffer is recreated (only happens on
+    capacity-grow). Rebinds light_culling only.
 - Layout-key bump on opaque + transparent main BGLs. This is a
   pipeline-cache-key change — all opaque + transparent pipelines
   recompile once, then stay.
@@ -378,57 +413,49 @@ That's a one-time recompile cost; subsequent runs hit the cache.
 
 ## Phasing
 
-Suggested order so each phase is shippable on its own and the next
-phase has something to A/B against:
+Three phases. Each is shippable on its own.
 
-### Phase 1 — pass scaffold + transparent-only consumption
+### Phase 1 — 3D froxel pass + transparent consumption
 
-- Fill in the bind group, pipeline, cache-key, shader template.
-- Write the WGSL: per-tile depth reduce + sphere test + atomic append.
-- Wire transparent shaders to read `tile_light_offsets` /
-  `tile_light_indices` instead of flat-looping.
-- Opaque path stays on per-mesh slice (unchanged).
+- Fill in the bind group, pipeline, cache-key, shader template under
+  `crates/renderer/src/render_passes/light_culling/`.
+- Write the WGSL: exponential Z-slice mapping + per-froxel
+  frustum/sphere test + atomic append.
+- Output: `froxel_light_offsets` + `froxel_light_indices` storage
+  buffers.
+- Wire transparent shaders to look up per-froxel lights via
+  `(tile_x, tile_y, z_slice) → offset+count` instead of flat-looping
+  all punctual lights.
+- Opaque path stays on per-mesh slice (unchanged this phase).
+- Auto-grow infra: per-frame overflow counter + mapAsync readback +
+  `set_max_per_froxel_capacity(current * 2)` on detection. Mirrors
+  the `set_max_edge_budget` pattern from MSAA.
 
-**Acceptance**: a scene with 32+ point lights and a transparent material
-in front of a wall renders correctly; per-frame profile shows
-transparent shader cost dropping (the loop is now bounded). No opaque
-regression.
+**Acceptance**: a scene with 32+ point lights and a transparent
+material in front of a wall renders correctly; per-frame profile
+shows transparent shader cost dropping (the loop is now bounded).
+No opaque regression.
 
 ### Phase 2 — oversized-mesh routing for opaque
 
 - `MeshLightIndicesGpu::write_gpu` writes the `count = 0xFFFFFFFF`
   sentinel into oversized meshes' `MaterialMeshMeta` slot.
-- Opaque shader gains the per-tile branch behind the sentinel.
+- Opaque shader gains the per-froxel branch behind the sentinel.
+- Small-mesh opaque keeps the per-mesh slice path.
 
-**Acceptance**: a scene with a single floor mesh spanning a room with
-32 point lights renders correctly; per-pixel light count drops from
-"all 32" to "only the lights overlapping that pixel's tile."
+**Acceptance**: a scene with a single floor mesh spanning a room
+with 32 point lights renders correctly; per-pixel light count
+drops from "all 32" to "only the lights overlapping that pixel's
+froxel."
 
-### Phase 3 — saturation fallback hardening
+### Phase 3 — auto-grow hardening + perf validation
 
-- Stress-test with 64+ lights in a single tile.
-- Confirm the saturation bit triggers the full-list fallback and
-  output is visually identical to a non-saturated frame (perf is the
-  only thing that differs).
-
-### Phase 4 — opt-in "tile-first" for all opaque (open question A)
-
-If user wants this: flip the default branch in the opaque shader, gate
-the per-mesh path behind a debug toggle for A/B comparison.
-
-### Phase 5 — Z-tighter cull (open question B)
-
-If user wants higher cull rate: switch the per-tile depth reduce from
-sample-0 to sample-min/max (multisampled reads), or run a coarse
-HZB-style mip reduction over the depth buffer before the cull pass.
-
-### Phase 6 — 3D froxels (open question C)
-
-If the 2D-tile cull is leaving too many lights in tall tiles (e.g.
-high-rise interiors where the tile's Z range spans 50 m), upgrade to
-froxels (16×16 screen tiles × 32 view-space depth slices, exponential
-spacing). The shader change is a depth-to-slice mapping plus one extra
-index into the `tile_light_offsets` lookup.
+- Stress-test with 64+ lights in a single froxel; confirm
+  auto-grow fires within one frame and steady-state perf converges.
+- Profile cull-pass cost at 1080p and 4K with 256 lights;
+  confirm <500 µs per frame.
+- Profile per-fragment shader cost in oversized-mesh scenes;
+  confirm <2× the small-mesh fragment cost.
 
 ---
 
@@ -508,94 +535,78 @@ The plan is "done" when:
 
 ---
 
-## Open questions for user
+## Resolved decisions (2026-05-28)
 
-### A. Default for opaque shading: per-mesh slice or per-tile list?
+All six open questions resolved in a planning conversation with the
+user; the design now bakes them in.
 
-The proposal above says **per-mesh is default, per-tile is the
-oversized-mesh override.** That keeps perf identical for small-mesh
-scenes (the common case) and only changes behavior where the per-mesh
-slice is already a bad fit.
+### A. Opaque shading default
 
-Alternative: flip the default and make every opaque fragment use the
-per-tile list. Pros: one code path, simpler shader; possibly tighter
-culling on average. Cons: regress small-mesh scenes that already work
-well; the per-tile list is *more conservative* than the per-mesh AABB
-test for individual pixels of small meshes.
+**Per-mesh default, per-tile for oversized.** Strictly tighter cull
+than Unreal for small meshes (chair: 2 lights vs Unreal's 3+). Floor
+case (oversized) routes to per-tile via the existing CPU-side
+`OVERSIZED` flag in `light_buckets/buckets.rs`. Two code paths in the
+shader; the branch is uniform per mesh so no GPU warp divergence.
+This is the only option that makes the visibility-buffer architecture
+actually pay off for lighting.
 
-**Question**: keep per-mesh as the opaque default (recommended), or
-flip to per-tile-first?
+### B. Depth reduce
 
-### B. Depth reduce: sample-0 or sample-min/max?
+**Sample-0 only.** Matches the existing `get_standard_coordinates`
+convention used everywhere else in the renderer. May slightly
+over-cull lights at silhouette edges (the tile's "true" Z range is
+tighter than the sample-0 range there); acceptable trade-off for
+matching the rest of the codebase's convention.
 
-The geometry pass writes per-sample depth (4 samples in MSAA mode).
-Sample 0 is the canonical "representative" depth used everywhere else
-in the renderer (`get_standard_coordinates`). The cull's depth bounds
-could:
+### C. 3D froxels
 
-- Use sample 0 only — simple, matches existing convention. May
-  slightly over-cull lights at silhouette edges (the tile's "true" Z
-  range is tighter than the sample-0 range there).
-- Reduce over all 4 samples — tighter bounds, ~4× more depth fetches
-  per cull-thread.
+**Match Unreal: ship 3D froxels (16×16×32, exponential Z spacing)
+from day one.** This is the modern Forward+ shape (Unreal, Unity
+HDRP, Doom Eternal, Frostbite). 2D-only is the late-2000s shape that
+loosens up on deep tiles. For a general renderer, 3D is the right
+answer to match the industry baseline. Costs 4× the 2D buffer size
+(~4 MB at 4K) and ~2× compute per cull dispatch, but cull rate is
+the industry standard.
 
-**Question**: sample 0 (recommended for simplicity + correctness with
-the existing convention), or sample-min/max?
+The Phase plan adjusts: there is no "2D first, 3D later" stop. Phase
+1 ships 3D froxels for the transparent path; Phase 2 extends to
+oversized-opaque routing; Phases 3-5 are polish + tuning.
 
-### C. 3D froxels in Phase 6?
+### D. Lazy-compile trigger
 
-The 2D-tile cull is correct but loose in tall tiles (a tile that spans
-near-camera + far-wall depth ranges sees the union of both light
-sets). 3D froxels (e.g. 16×16×32) split the tile's depth range into
-exponential slices and cull per-slice. Real Forward+ shape.
+**Lazy on first punctual-light insert.** Matches the PR #99 Block B
+pattern (EVSM, ShadowGen, Line, Picker). Zero-scene +
+directional-only scenes never compile the cull pipeline. First
+`Light::Point` / `Light::Spot` insertion triggers compile via the
+scheduler; readiness propagates the usual way. Frontends that need
+the compile done before a fireball can call
+`wait_for_pipelines_ready`.
 
-This is real work — maybe 1–2 days, mostly the depth-to-slice mapping
-+ the per-slice output buffer (~4× the 2D buffer size). Pays off only
-when scenes have wide depth ranges with many lights at different
-depths.
+### E. Saturation fallback
 
-**Question**: ship Phase 6 froxels as part of this work (answer "yes —
-go straight to 3D"), keep it as a follow-up (answer "later"), or skip
-it entirely (answer "2D tiles are enough")?
+**Auto-grow per-tile capacity** (mirror the MSAA `set_max_edge_budget`
+pattern). Shader counts overflows via a small atomic counter; CPU
+reads via `mapAsync` from a `with_copy_src` storage region; renderer
+calls `set_max_per_tile_capacity(current * 2)` and recreates the
+buffer + marks bind groups for recreation. Pathological scenes
+self-correct in one frame. Consistent with the rest of the
+renderer's growable-budget pattern (extras-pool, MSAA edge,
+classify capacity).
 
-### D. Lazy-compile threshold
+This beats Unreal's static-budget full-list-fallback because:
+- Steady-state memory is identical (you converge to the same
+  water mark).
+- Unreal's fallback is a permanent perf cliff for the duration of
+  the scene; ours is one frame of mapAsync latency.
+- Combines with the existing per-frame coverage + edge-overflow
+  mapAsync pattern (one extra u32 readback, no new sync point).
 
-Phase 1 above says "lazy on first punctual-light insert." That means a
-scene with only directional lights never pays the compile cost. Is that
-right, or should the cull pass eagerly compile alongside the cold-boot
-eager set so the first punctual-light insert doesn't pay the compile
-latency?
+### F. Tile size
 
-The PR #99 Block B precedent says "lazy" — but the operations during
-gameplay (e.g. spawning a fireball with a point light) want zero compile
-latency at trigger time.
-
-**Question**: lazy (recommended — matches Block B pattern, can
-`wait_for_pipelines_ready` if needed), or eager?
-
-### E. Saturation fallback shape
-
-The proposal says "tiles that overflow the per-tile capacity flag
-saturated; the shader loops the full punctual buffer for that tile."
-That's degraded performance in those rare cases but correct rendering.
-
-Alternative: a tail-spill region (mirroring the C.2 stage-3 edge
-overflow design) where overflow lights atomic-add into a shared region;
-each tile's saturated entry points at a slice of the tail.
-
-**Question**: simple full-list fallback (recommended; the rare pathological
-case isn't worth the implementation complexity), or tail-spill?
-
-### F. Tile size — 16×16 or smaller?
-
-16×16 was chosen for amortized per-tile work + matches Forward+
-literature. 8×8 would match `material_classify`'s tile size exactly,
-avoiding the 2×2 cull-tile-to-classify-tile mapping. 32×32 would
-reduce the output buffer to a quarter at the cost of looser culling per
-pixel.
-
-**Question**: 16×16 (recommended), 8×8 (matches classify), or 32×32
-(smaller buffer)?
+**16×16.** Matches Forward+ literature; amortizes the per-tile cull
+work across 256 threads per workgroup (lines up with our typical
+`maxComputeWorkgroupSizeX × Y = 256`). Classify's 8×8 tiles remain
+distinct; one cull tile covers a 2×2 block of classify tiles.
 
 ---
 

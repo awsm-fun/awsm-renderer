@@ -104,10 +104,7 @@ fn banner_body(folder_name: String, state: &EditState) -> Dom {
 /// enforce that the user picks a folder with that name (the user
 /// might have renamed it on disk). The actual material's name comes
 /// from the parsed `material.json`.
-async fn load_material_via_picker(
-    state: &EditState,
-    expected_name: &str,
-) -> Result<(), String> {
+async fn load_material_via_picker(state: &EditState, expected_name: &str) -> Result<(), String> {
     use awsm_scene_schema::dynamic_material::{validate_layout_names, MaterialDefinition};
 
     let window = web_sys::window().ok_or("no window")?;
@@ -115,7 +112,9 @@ async fn load_material_via_picker(
     options.set_mode(web_sys::FileSystemPermissionMode::Read);
     let picker_promise = window
         .show_directory_picker_with_options(&options)
-        .map_err(|_| "FS Access API unavailable (requires Chrome / Edge + secure context)".to_string())?;
+        .map_err(|_| {
+            "FS Access API unavailable (requires Chrome / Edge + secure context)".to_string()
+        })?;
     let handle_value = JsFuture::from(picker_promise).await.map_err(|err| {
         // AbortError = user cancelled; surface a quieter message.
         let s = err
@@ -139,8 +138,8 @@ async fn load_material_via_picker(
     let material_json = read_text_file(&dir, "material.json")
         .await
         .map_err(|e| format!("read material.json: {e}"))?;
-    let definition: MaterialDefinition = serde_json::from_str(&material_json)
-        .map_err(|e| format!("parse material.json: {e}"))?;
+    let definition: MaterialDefinition =
+        serde_json::from_str(&material_json).map_err(|e| format!("parse material.json: {e}"))?;
     validate_layout_names(&definition).map_err(|e| format!("validate layout: {e}"))?;
 
     let wgsl = read_text_file(&dir, "shader.wgsl")
