@@ -157,7 +157,6 @@ impl RenderTextures {
         needs_opaque_mip_chain: bool,
         needs_hud_depth: bool,
     ) -> Result<RenderTextureViews> {
-
         let size_changed = match self.inner.as_ref() {
             Some(inner) => (inner.width, inner.height) != current_size,
             None => true,

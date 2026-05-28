@@ -276,10 +276,11 @@ impl Materials {
     /// Has any material implementing `KHR_materials_transmission`
     /// entered the registry during this session? Sticky-true; used by
     /// `RenderTextures::views` to lazily grow the opaque mip chain
-    /// from `mip_level_count = 1` to the full `floor(log2(max(W,H)))
-    /// + 1`. Scenes that never insert a transmissive material pay 0
-    /// for the mip-chain GPU storage (~33% of the opaque texture
-    /// size, a few MB on mobile / 10–20 MB on desktop).
+    /// from `mip_level_count = 1` to the full
+    /// `floor(log2(max(W,H))) + 1`. Scenes that never insert a
+    /// transmissive material pay 0 for the mip-chain GPU storage
+    /// (~33% of the opaque texture size, a few MB on mobile / 10–20
+    /// MB on desktop).
     pub fn has_seen_transmission(&self) -> bool {
         self.has_seen_transmission
     }

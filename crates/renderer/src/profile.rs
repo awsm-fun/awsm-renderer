@@ -256,11 +256,17 @@ mod tests {
     fn mobile_picks_depth24() {
         use awsm_renderer_core::texture::TextureFormat;
         assert_eq!(
-            RendererProfile::Mobile.defaults().render_texture_formats.depth,
+            RendererProfile::Mobile
+                .defaults()
+                .render_texture_formats
+                .depth,
             TextureFormat::Depth24plus
         );
         assert_eq!(
-            RendererProfile::Desktop.defaults().render_texture_formats.depth,
+            RendererProfile::Desktop
+                .defaults()
+                .render_texture_formats
+                .depth,
             TextureFormat::Depth32float
         );
     }
