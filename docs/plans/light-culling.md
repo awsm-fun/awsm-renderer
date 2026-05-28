@@ -1,6 +1,8 @@
 # GPU light culling — design plan
 
-**Branch**: `light-culling`. **Status**: design only; no implementation yet.
+**Branch**: `light-culling`. **Status**: Phase 1 (cull pass + transparent
+consumption) landed. Phase 2 (oversized-opaque routing) implemented
+then reverted — see [§ Storage-buffer cap blocker](#storage-buffer-cap-blocker-2026-05-28).
 
 This is a tailored proposal — it builds on the renderer's existing
 visibility-buffer pipeline, the per-mesh CPU bucket system in
@@ -740,6 +742,51 @@ path until the second PR landed — net worse for review and for
 mid-merge bisecting. Implementation order inside the PR still
 follows the Phase 1 → 2 → 3 sequence; commits stay phase-aligned so
 the PR can be read top-down.
+
+---
+
+## Storage-buffer cap blocker (2026-05-28)
+
+**Phase 2 implemented and reverted.** The oversized-opaque routing
+adds two new bindings on the opaque pass's `lights` BGL — a
+`cull_params` uniform and a `froxel_storage` read-only storage view of
+the same buffer the cull pass writes. The uniform is free (separate
+device cap); the storage buffer is the problem.
+
+Dawn enforces `maxStorageBuffersPerShaderStage = 10` and counts the
+`opaque_tex: texture_storage_2d<rgba16float, write>` binding against
+that budget — it's a writable resource visible to the compute stage.
+So the opaque compute pipeline's pre-Phase-2 storage budget was
+**8 ROS in main BGL + 1 storage texture (`opaque_tex`) + 1 ROS in
+lights BGL** = 10/10. Phase 2's `+1 storage` for `froxel_storage`
+pushed it to 11/10 → pipeline-layout validation failure on every
+opaque compute pipeline.
+
+The Phase 2 implementation lives in commit `753338e` (reverted in
+`9a099c4`). To bring it back, one of these has to give:
+
+1. **Merge `mesh_light_indices` + `froxel_storage` into one storage
+   buffer.** Per-froxel data after the per-mesh tail, with the
+   boundary written into a small header (or a `CullParams` field).
+   Cull pass writes its region; CPU writes the mesh region.
+   Net: -1 binding on the consumer side, drops Phase 2's storage cost
+   to zero.
+2. **Drop `mesh_light_indices` entirely.** Route every mesh through
+   the per-froxel walk (small-mesh perf regression: 1–4 lights → 4–8).
+3. **Audit `opaque_tex`** — confirm whether Dawn really counts storage
+   textures against `maxStorageBuffersPerShaderStage` or whether a
+   different limit applies. If the cap is actually only buffers, the
+   real budget was 9/10 pre-Phase-2 and 10/10 post-Phase-2, which is
+   in spec.
+
+Option 1 is the cleanest follow-up. Phase 2 ships in a separate PR
+once that consolidation is in place.
+
+In the meantime, the per-mesh CPU bucket path still handles oversized
+meshes — they just get the full bucket-size loop (which is
+exactly what the plan called out as the breakdown case). The
+transparent-froxel path (Phase 1C) is the user-visible perf win in
+this PR.
 
 ---
 
