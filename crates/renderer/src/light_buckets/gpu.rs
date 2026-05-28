@@ -145,26 +145,7 @@ impl MeshLightIndicesGpu {
         // patches into one buffer write.
         meshes.meta.zero_all_mesh_light_slices();
 
-        // Oversized meshes route to the per-pixel froxel walk instead
-        // of consuming a per-mesh slice. The opaque shader detects this
-        // via `light_slice_count == OVERSIZED_SENTINEL`; in the per-
-        // mesh slice itself, we write (offset=0, count=sentinel) so the
-        // CPU-side allocator below doesn't burn indices on them.
-        const OVERSIZED_SENTINEL: u32 = 0xFFFFFFFF;
-        let oversized: std::collections::HashSet<crate::meshes::MeshKey> =
-            buckets.oversized_meshes().iter().copied().collect();
-
         for (mesh_key, light_indices) in per_mesh.iter() {
-            if oversized.contains(&mesh_key) {
-                // Sentinel write — opaque shader takes the
-                // per-froxel path; the actual light indices for this
-                // mesh are recoverable from the GPU cull pass's
-                // froxel storage rather than this per-mesh buffer.
-                meshes
-                    .meta
-                    .set_mesh_light_slice(mesh_key, 0, OVERSIZED_SENTINEL);
-                continue;
-            }
             if light_indices.is_empty() {
                 continue;
             }

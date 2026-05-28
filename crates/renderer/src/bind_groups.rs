@@ -401,15 +401,13 @@ impl BindGroups {
                     functions_to_call.insert(FunctionToCall::TransparentMain);
                 }
                 BindGroupCreate::LightCullingFroxelsResize => {
-                    // Cull pass owns the froxel buffers and rebinds
-                    // them on resize. The consumer side has two
-                    // groups: the opaque pass binds froxel_storage on
-                    // its `lights` group (group 1); the transparent
-                    // pass binds it on its `main` group (group 0,
-                    // since 16.B folded the lights into main on the
-                    // transparent path).
+                    // Cull pass owns the four froxel buffers; on resize
+                    // it must re-bind them. The consumer-side rebindings
+                    // (opaque main + transparent main) land in Phase 1C
+                    // / Phase 2 once the consumer shaders take the
+                    // froxel path; until then the fan-out is cull-only.
                     functions_to_call.insert(FunctionToCall::LightCulling);
-                    functions_to_call.insert(FunctionToCall::OpaqueLights);
+                    functions_to_call.insert(FunctionToCall::OpaqueMain);
                     functions_to_call.insert(FunctionToCall::TransparentMain);
                 }
             }

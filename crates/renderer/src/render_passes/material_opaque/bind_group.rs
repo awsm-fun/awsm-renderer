@@ -84,30 +84,6 @@ impl MaterialOpaqueBindGroups {
                 visibility_fragment: false,
                 visibility_compute: true,
             },
-            // cull_params (binding 3): per-frame uniform written by the
-            // light-culling pass. The shading-time
-            // `apply_lighting_per_froxel*` walks read it to derive each
-            // pixel's froxel base index.
-            BindGroupLayoutCacheKeyEntry {
-                resource: BindGroupLayoutResource::Buffer(
-                    BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
-                ),
-                visibility_vertex: false,
-                visibility_fragment: false,
-                visibility_compute: true,
-            },
-            // froxel_storage (binding 4): combined per-froxel
-            // (count + indices) read-only view of the same physical
-            // buffer the cull pass writes RW.
-            BindGroupLayoutCacheKeyEntry {
-                resource: BindGroupLayoutResource::Buffer(
-                    BufferBindingLayout::new()
-                        .with_binding_type(BufferBindingType::ReadOnlyStorage),
-                ),
-                visibility_vertex: false,
-                visibility_fragment: false,
-                visibility_compute: true,
-            },
         ];
 
         let lights_bind_group_layout_key = ctx.bind_group_layouts.get_key(
@@ -408,23 +384,6 @@ impl MaterialOpaqueBindGroups {
             entries.len() as u32,
             BindGroupResource::Buffer(BufferBinding::new(
                 &ctx.mesh_light_indices_gpu.indices_buffer,
-            )),
-        ));
-        // GPU light-culling `cull_params` uniform (Phase 2 — opaque
-        // oversized-mesh path takes the same per-froxel walk the
-        // transparent shader uses).
-        entries.push(BindGroupEntry::new(
-            entries.len() as u32,
-            BindGroupResource::Buffer(BufferBinding::new(
-                &ctx.light_culling_buffers.params_buffer,
-            )),
-        ));
-        // GPU light-culling `froxel_storage` (combined per-froxel
-        // count + indices) read-only.
-        entries.push(BindGroupEntry::new(
-            entries.len() as u32,
-            BindGroupResource::Buffer(BufferBinding::new(
-                &ctx.light_culling_buffers.storage_buffer,
             )),
         ));
 

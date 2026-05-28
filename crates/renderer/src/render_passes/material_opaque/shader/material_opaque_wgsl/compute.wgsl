@@ -407,35 +407,15 @@ fn main(
         }
 
         {% if use_mesh_light_slices %}
-            // Phase 2 oversized-mesh routing: when `light_slice_count`
-            // equals the sentinel 0xFFFFFFFFu, the per-mesh slice was
-            // too coarse to be useful (mesh AABB >50m diagonal AND
-            // its bucket exceeded 16 lights). Take the per-pixel
-            // froxel path instead — same `apply_lighting_per_froxel`
-            // the transparent shader uses. The branch predicate is
-            // uniform per mesh (every fragment of an oversized mesh
-            // takes the froxel path, every fragment of a small mesh
-            // takes the per-mesh path) so there's no warp divergence.
-            if (material_mesh_meta.light_slice_count == 0xFFFFFFFFu) {
-                color = apply_lighting_per_froxel(
-                    material_color,
-                    standard_coordinates.surface_to_camera,
-                    standard_coordinates.world_position,
-                    lights_info,
-                    (material_mesh_meta.receive_shadows & material_mesh_meta.shadow_receiver_gate),
-                    vec2<f32>(f32(coords.x), f32(coords.y)),
-                );
-            } else {
-                color = apply_lighting_per_mesh(
-                    material_color,
-                    standard_coordinates.surface_to_camera,
-                    standard_coordinates.world_position,
-                    lights_info,
-                    (material_mesh_meta.receive_shadows & material_mesh_meta.shadow_receiver_gate),
-                    material_mesh_meta.light_slice_offset,
-                    material_mesh_meta.light_slice_count,
-                );
-            }
+            color = apply_lighting_per_mesh(
+                material_color,
+                standard_coordinates.surface_to_camera,
+                standard_coordinates.world_position,
+                lights_info,
+                (material_mesh_meta.receive_shadows & material_mesh_meta.shadow_receiver_gate),
+                material_mesh_meta.light_slice_offset,
+                material_mesh_meta.light_slice_count,
+            );
         {% else %}
             color = apply_lighting(
                 material_color,
