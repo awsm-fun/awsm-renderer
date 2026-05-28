@@ -8,19 +8,13 @@ Items are grouped by theme. Each has a one-line acceptance criterion. None block
 
 ## Runtime correctness (Phase-6 extras-pool tail)
 
-The extras-pool allocator's runtime path (`assign_or_update` → `slice_for` → `write_dirty_ranges`) is fully implemented and exercised. One tail feature remains:
-
-### Pool resize on overflow ✅
-
-**Done.** `assign_or_update(gpu, …)` now grows the GPU buffer to 2× capacity on bump-allocator overflow, widens the shadow `Vec<u32>`, and re-dirties the live prefix so the next per-frame upload re-populates the new buffer (no `copyBufferToBuffer` needed — the shadow is the authoritative byte source). The new `BindGroupCreate::ExtrasPoolResize` variant rebinds the opaque + transparent main bind groups when this fires.
-
 ### Fragmentation-triggered compaction
 
 Bump-allocator + per-instance overrides means long edit → re-register cycles fragment the pool (each old slice leaks). Nothing reclaims those.
 
 **Acceptance**: a free-list pass runs when fragmentation exceeds a threshold (e.g. >50% of allocated space unreferenced). Compacts surviving slices to the front via `copyBufferToBuffer`, updates `slice_for`, marks bind groups dirty.
 
-Both are runtime-correctness items, not optimizations — current behavior is "errors out at capacity / leaks dead bytes," acceptable for the editor / authoring use case but not for shipping-game runtime.
+Note: most callers other than `materials.write_gpu` resolve the offset dynamically via `buffer_slice`, but the **packed material bytes** held in `Materials::buffer` cache the resolved `<slot>_offset` value from the last pack. Compaction therefore needs a coordinated repack — either invalidate every material that referenced a moved slice, or restrict compaction to slices whose `shader_id` is no longer live (the "free-on-unregister" sub-case is the safer starting point). Current behavior is "errors out at capacity / leaks dead bytes" — acceptable for the editor / authoring use case but not for shipping-game runtime.
 
 ---
 
@@ -73,14 +67,6 @@ The schema + data shapes are in place (`BufferSlot` carries a `default: Option<S
 
 **Acceptance**: a modal in the Definition pane lets the user select a `.bin` / `.json` / drag-and-drop bytes, parse them per the slot's documented schema, and write to `assets/materials/<name>/<slot>.bin`. Required when an `irregular-atlas`-shaped material lands in scene-editor's Import Material flow.
 
-### Error → cursor positioning ✅
-
-**Done.** The Errors pane entries are clickable; clicking positions the WGSL textarea's caret at the reported line+column (best-effort via `setSelectionRange`). See `panes/errors.rs` + `panes/wgsl_editor.rs` — the textarea now has a stable `id` and the errors pane resolves line/column to character offset.
-
-### File → New runnable stub ✅
-
-**Done.** A `File:` dropdown in the top bar offers three starters — `Constant red (minimal)`, `Unlit tint (single color)`, `Scanline (animated)`. Selecting one calls `EditState::reset_to(starter)`, which mutates the live Mutables in place so panes' signal subscriptions stay attached and the debounced-recompile loop picks the change up on the next tick. See [state.rs](../../crates/frontend/material-editor/src/state.rs) + [app.rs](../../crates/frontend/material-editor/src/app.rs).
-
 ---
 
 ## scene-editor UI niceties
@@ -114,10 +100,6 @@ Real infrastructure work — ~1-2 days, mostly diff-tolerance tuning + reference
 
 ## Documentation polish
 
-### `crates/renderer/README.md` walkthrough ✅
-
-**Done.** A new `## Dynamic materials quick start` section in [`crates/renderer/README.md`](../../crates/renderer/README.md) walks a fresh consumer through registering a dynamic material, building a `Material::Custom`, adding a mesh, and rendering. Cross-references the contract docs and the worked example at [`crates/renderer/examples/dynamic_material.rs`](../../crates/renderer/examples/dynamic_material.rs).
-
 ### Doc-link tail cleanup
 
 `cargo doc --workspace --no-deps` runs warning-clean today (per Block E.6). Drive-by warning fixes belong here whenever a new one appears.
@@ -138,10 +120,6 @@ The `awsm-renderer::dynamic_materials` + `pipeline_scheduler` modules are missin
 ### Multithreading prep audit
 
 `pipeline_scheduler` currently uses single-threaded `FuturesUnordered`. Audit for SharedArrayBuffer-readiness when wasm32-multithread lands. Document the boundaries.
-
-### Test surface sweep ✅
-
-**Done.** Verified: `crates/renderer/tests/` does not exist; `crates/renderer/examples/dynamic_material.rs` doesn't drive a render loop (intentional per its own doc comment), so no sync-insert-then-dispatch sites remain.
 
 ### Edge_resolve runtime profile sanity
 
