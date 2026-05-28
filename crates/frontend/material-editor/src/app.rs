@@ -126,5 +126,9 @@ pub fn root_with_state(state: EditState) -> Dom {
         // converter_open_for_slot is Some. Mounted at root so its
         // fixed-positioned backdrop covers the full window.
         .child(panes::buffer_converter::render(&state))
+        // Deep-link banner — shows when EditState's deep_link_folder
+        // is Some (set at boot from the `?folder=` query param).
+        // Auto-clears on successful load.
+        .child(panes::deep_link_banner::render(&state))
     })
 }

@@ -78,6 +78,17 @@ pub struct EditState {
     /// a child of the root layout; it watches this signal to know
     /// whether to display itself.
     pub converter_open_for_slot: Arc<Mutable<Option<String>>>,
+    /// `?folder=<name>` query-param payload, read once at boot. When
+    /// `Some`, the deep-link banner shows up at the top of the editor
+    /// offering to open the named folder via the FS Access API; on
+    /// successful read the banner clears this back to `None`. The
+    /// folder name is informational only — the browser's
+    /// `show_directory_picker` requires a user-gesture click, so the
+    /// banner's button is what kicks the picker.
+    pub deep_link_folder: Arc<Mutable<Option<String>>>,
+    /// Last error from a deep-link load attempt, surfaced as a tooltip
+    /// / inline message in the banner. Cleared on the next attempt.
+    pub deep_link_error: Arc<Mutable<Option<String>>>,
 }
 
 /// Preview-canvas mesh shape selectable from the Preview pane header.
@@ -137,6 +148,8 @@ impl EditState {
             preview_mesh: Arc::new(Mutable::new(PreviewMeshKind::Plane)),
             buffer_defaults: Arc::new(Mutable::new(HashMap::new())),
             converter_open_for_slot: Arc::new(Mutable::new(None)),
+            deep_link_folder: Arc::new(Mutable::new(None)),
+            deep_link_error: Arc::new(Mutable::new(None)),
         }
     }
 

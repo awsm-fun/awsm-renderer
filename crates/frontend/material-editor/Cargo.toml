@@ -46,4 +46,12 @@ features = [
     "Event",
     "InputEvent",
     "KeyboardEvent",
+    # Deep-link (?folder=<name>) flow uses the FS Access API to read
+    # material.json + shader.wgsl out of a user-picked directory.
+    "DirectoryPickerOptions",
+    "FileSystemHandle",
+    "FileSystemHandleKind",
+    "FileSystemPermissionMode",
+    "FileSystemDirectoryHandle",
+    "FileSystemFileHandle",
 ]

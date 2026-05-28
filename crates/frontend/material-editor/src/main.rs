@@ -56,6 +56,13 @@ async fn run() -> anyhow::Result<()> {
     // Mount the UI first so the user sees the editor immediately
     // (even while the renderer is still booting in the background).
     let state = EditState::new_scanline();
+    // Read the ?folder=<name> deep-link param. Stored on EditState;
+    // the banner shows when it's Some, and clicking its button
+    // triggers the FS Access API picker. No-op when the param is
+    // absent.
+    if let Some(folder) = panes::deep_link_banner::read_folder_query_param() {
+        state.deep_link_folder.set(Some(folder));
+    }
     dominator::append_dom(&body, app::root_with_state(state.clone()));
 
     // Stub the renderer handle. The boot future below populates it.
