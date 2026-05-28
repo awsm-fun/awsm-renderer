@@ -51,13 +51,15 @@ pub enum AwsmDynamicMaterialError {
     Core(#[from] AwsmCoreError),
 
     /// Registration would push `bucket_entries.len()` past the
-    /// `MAX_BUCKET_ENTRIES` cap (the classify pass's per-pixel
-    /// edge_slot_map encodes each sample's bucket id in 8 bits with
-    /// `0xFE` / `0xFF` reserved as `skybox` / `empty` sentinels — see
-    /// `compute.wgsl`'s `slot_map` build). Going past 254 real bucket
-    /// ids would alias real buckets onto the sentinels and corrupt
-    /// the edge_resolve accumulator routing.
-    #[error("[dynamic-material] bucket-id cap exceeded: would push bucket_entries.len() to {would_be}, max is {max} (edge_slot_map encoding reserves 0xFE/0xFF)")]
+    /// `MAX_BUCKET_ENTRIES` cap. The tightest constraint is the
+    /// classify pass's per-workgroup `tile_mask: atomic<u32>`, which
+    /// accumulates a `BUCKET_BIT_<NAME> = (1u << index)` per visible
+    /// bucket id — a bucket index `>= 32` would compile to
+    /// `1u << 32u`, an implementation-defined WGSL shift that
+    /// typically resolves to `0` on Dawn, silently dropping the
+    /// bucket from classification. See [`crate::dynamic_materials::MAX_BUCKET_ENTRIES`]
+    /// for the full encoding inventory.
+    #[error("[dynamic-material] bucket-id cap exceeded: would push bucket_entries.len() to {would_be}, max is {max} (tile_mask is u32 → BUCKET_BIT fits at most 32 indices)")]
     BucketCapExceeded {
         /// What `bucket_entries.len()` would become if this
         /// registration were accepted.

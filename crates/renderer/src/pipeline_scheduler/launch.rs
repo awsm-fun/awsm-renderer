@@ -83,6 +83,17 @@ impl crate::AwsmRenderer {
         };
         let group_id = PipelineGroupId::Material(mid);
 
+        // Capture generation up front. `&mut self` for the whole
+        // method body means nothing concurrent can bump it; once
+        // we've passed this guard, all later code can rely on the
+        // captured value. Doing this BEFORE any state mutation
+        // (waiter registration, promise pushes) means we never leak
+        // counter/waiter state if the material is somehow already
+        // gone.
+        let Some(generation) = self.pipeline_scheduler.material_generation(mid) else {
+            return Ok(());
+        };
+
         // Snapshot the active dispatch_hash + bucket_entries (cached
         // refreshes via the registry's per-mutation refresh).
         let entries = self.dynamic_materials.bucket_entries_cached().to_vec();
@@ -236,53 +247,81 @@ impl crate::AwsmRenderer {
         // keyed on `(msaa, bucket_entries, emit_edge_data)`, NOT
         // shader_id, so every dynamic launch in the same loop wants
         // the SAME classify cache key), the first launch issues the
-        // promise and registers itself as the first waiter;
-        // subsequent launches register as ADDITIONAL waiters (their
-        // `pending_subcompiles` counter bumps too so their Ready
-        // transition still waits on the shared compile) and skip
-        // the duplicate `createComputePipelineAsync`. On resolution,
-        // every waiter material's counter decrements via the
-        // `take_compute_compile_waiters` fan-out in
-        // `apply_compile_resolution_inline`.
+        // promise; subsequent launches register as additional
+        // waiters (so their Ready transition waits on the shared
+        // compile) and skip the duplicate
+        // `createComputePipelineAsync`.
+        //
+        // **Waiter registration is deferred until after the fallible
+        // `ensure_keys_prepare` succeeds**: if prep returns Err,
+        // no waiters/counters are touched, so a sync prep error
+        // never leaks subcompile counters or in-flight waiter map
+        // entries. Within this single launch invocation (single
+        // sync window — no concurrent calls in single-threaded
+        // wasm), the decide-vs-register split is safe: the
+        // read-only `has_compute_compile_waiter` check correctly
+        // sees what PRIOR launches have registered, and within
+        // this launch the slot identities (msaa × mipmaps × type)
+        // produce distinct cache keys so there's no
+        // within-batch dedup needed at the decision step.
         let mut promise_jobs: Vec<(LaunchSlot, ComputePipelineCacheKey)> = Vec::new();
+        let mut skip_keys: Vec<ComputePipelineCacheKey> = Vec::new();
         for (slot, cache_key) in &compute_jobs {
             if let Some(existing_key) = self.pipelines.compute.cache_lookup(cache_key).copied() {
                 install_per_pass(self, slot, shader_id, dispatch_hash, existing_key);
+            } else if self
+                .pipeline_scheduler
+                .has_compute_compile_waiter(cache_key)
+            {
+                // Another launch's promise is already in flight for
+                // this cache key. Defer the waiter registration to
+                // AFTER prep succeeds (no prep call needed for skips,
+                // but we still want the same all-or-nothing
+                // registration semantics across the launch).
+                skip_keys.push(cache_key.clone());
             } else {
-                let is_first_waiter = self
-                    .pipeline_scheduler
-                    .register_compute_compile_waiter(cache_key.clone(), mid);
-                if is_first_waiter {
-                    promise_jobs.push((slot.clone(), cache_key.clone()));
-                }
-                // else: already in flight; mid is now in the waiter
-                // list and its subcompile counter is bumped. No
-                // promise push needed.
+                promise_jobs.push((slot.clone(), cache_key.clone()));
             }
         }
 
         let opaque_promise_count = promise_jobs.len();
 
-        if !promise_jobs.is_empty() {
-            // Pre-compute the snapshot of state needed at launch time
-            // (the prepare step needs &Shaders + &PipelineLayouts; the
-            // returned promises are 'static so they outlive this borrow).
+        // Sync prep BEFORE any waiter registration so a prep error
+        // doesn't leak counter / waiter-map state. `Option<Prepped>`
+        // is `None` when there are no promises to push (everything
+        // was cache-hit or skip-via-in-flight).
+        let prepped_opt = if !promise_jobs.is_empty() {
             let cache_keys_only: Vec<ComputePipelineCacheKey> =
                 promise_jobs.iter().map(|(_, k)| k.clone()).collect();
-            let mut prepped =
+            Some(
                 crate::pipelines::compute_pipeline::ComputePipelines::ensure_keys_prepare(
                     &self.gpu,
                     &self.shaders,
                     &self.pipeline_layouts,
                     cache_keys_only,
-                )?;
+                )?,
+            )
+        } else {
+            None
+        };
 
-            // The factored ensure_keys_prepare treats every input as a miss;
-            // prep.promises has the same length as promise_jobs.
-            let generation = match self.pipeline_scheduler.material_generation(mid) {
-                Some(g) => g,
-                None => return Ok(()),
-            };
+        // Prep (if any) succeeded — NOW commit waiter registrations
+        // for skip keys AND push keys. After this point the path is
+        // infallible: every counter bump matches a future push that
+        // drains via `apply_compile_resolution_inline`.
+        for key in &skip_keys {
+            self.pipeline_scheduler
+                .register_compute_compile_waiter(key.clone(), mid);
+        }
+        for (_, key) in &promise_jobs {
+            self.pipeline_scheduler
+                .register_compute_compile_waiter(key.clone(), mid);
+        }
+
+        if let Some(mut prepped) = prepped_opt {
+            // The factored ensure_keys_prepare treats every input as
+            // a miss; prep.promises has the same length as promise_jobs.
+            // `generation` was captured at function top.
             let promises = std::mem::take(&mut prepped.promises);
 
             for ((slot, cache_key), promise) in promise_jobs.into_iter().zip(promises) {
@@ -311,11 +350,6 @@ impl crate::AwsmRenderer {
                         result,
                     }
                 });
-                // Counter was bumped + waiter registered by the
-                // register_compute_compile_waiter call above (which
-                // returned `is_first_waiter=true` for the entries
-                // that made it into `promise_jobs`). Push the future
-                // onto the inflight queue without re-bumping.
                 self.pipeline_scheduler.push_compile_future_no_count(fut);
             }
             tracing::info!(
@@ -331,10 +365,8 @@ impl crate::AwsmRenderer {
         // to this material's subcompile counter, so the material
         // stays `Pending` until ALL of opaque/classify/edge resolve.
         // Idempotent + cache-hit-aware (see method rustdoc).
-        let generation = match self.pipeline_scheduler.material_generation(mid) {
-            Some(g) => g,
-            None => return Ok(()),
-        };
+        // `generation` is the one captured at the top of this
+        // function — no need to re-look it up.
         self.launch_edge_resolve_compile(group_id, generation)?;
 
         // If both launches were full cache hits, no promise pushed
@@ -383,6 +415,14 @@ impl crate::AwsmRenderer {
             return Ok(());
         };
         let group_id = PipelineGroupId::Material(mid);
+
+        // Capture generation up front — see the matching comment in
+        // `launch_dynamic_material_compile` for the rationale (avoid
+        // leaking waiter/counter state on a None lookup that happens
+        // after waiter registration).
+        let Some(generation) = self.pipeline_scheduler.material_generation(mid) else {
+            return Ok(());
+        };
 
         // First-party materials use the stable empty-state dispatch_hash
         // at registration time. The `dispatch_hash: 0` sentinel matches
@@ -466,36 +506,53 @@ impl crate::AwsmRenderer {
 
         // Cache-hit + cross-call waiter dedup. See the matching
         // block in `launch_dynamic_material_compile` for the full
-        // rationale + waiter-tracking semantics.
+        // rationale, including the "defer waiter registration until
+        // after prep succeeds" ordering.
         let mut promise_jobs: Vec<(LaunchSlot, ComputePipelineCacheKey)> = Vec::new();
+        let mut skip_keys: Vec<ComputePipelineCacheKey> = Vec::new();
         for (slot, cache_key) in &compute_jobs {
             if let Some(existing_key) = self.pipelines.compute.cache_lookup(cache_key).copied() {
                 install_per_pass(self, slot, shader_id, dispatch_hash, existing_key);
+            } else if self
+                .pipeline_scheduler
+                .has_compute_compile_waiter(cache_key)
+            {
+                skip_keys.push(cache_key.clone());
             } else {
-                let is_first_waiter = self
-                    .pipeline_scheduler
-                    .register_compute_compile_waiter(cache_key.clone(), mid);
-                if is_first_waiter {
-                    promise_jobs.push((slot.clone(), cache_key.clone()));
-                }
+                promise_jobs.push((slot.clone(), cache_key.clone()));
             }
         }
 
         let opaque_promise_count = promise_jobs.len();
 
-        if !promise_jobs.is_empty() {
+        // Sync prep before any waiter registration.
+        let prepped_opt = if !promise_jobs.is_empty() {
             let cache_keys_only: Vec<ComputePipelineCacheKey> =
                 promise_jobs.iter().map(|(_, k)| k.clone()).collect();
-            let mut prepped =
+            Some(
                 crate::pipelines::compute_pipeline::ComputePipelines::ensure_keys_prepare(
                     &self.gpu,
                     &self.shaders,
                     &self.pipeline_layouts,
                     cache_keys_only,
-                )?;
-            let Some(generation) = self.pipeline_scheduler.material_generation(mid) else {
-                return Ok(());
-            };
+                )?,
+            )
+        } else {
+            None
+        };
+
+        // Now commit waiter registrations (skip + push). Past this
+        // point everything is infallible.
+        for key in &skip_keys {
+            self.pipeline_scheduler
+                .register_compute_compile_waiter(key.clone(), mid);
+        }
+        for (_, key) in &promise_jobs {
+            self.pipeline_scheduler
+                .register_compute_compile_waiter(key.clone(), mid);
+        }
+
+        if let Some(mut prepped) = prepped_opt {
             let promises = std::mem::take(&mut prepped.promises);
             for ((slot, cache_key), promise) in promise_jobs.into_iter().zip(promises) {
                 let target = match &slot {
@@ -539,11 +596,7 @@ impl crate::AwsmRenderer {
         // `launch_edge_resolve_compile`'s rustdoc for why every
         // first-party register triggers a recompile of the global
         // skybox + final_blend (their cache keys depend on
-        // `bucket_entries`).
-        let generation = match self.pipeline_scheduler.material_generation(mid) {
-            Some(g) => g,
-            None => return Ok(()),
-        };
+        // `bucket_entries`). `generation` captured at function top.
         self.launch_edge_resolve_compile(group_id, generation)?;
 
         // If both launches were full cache hits, mark Ready inline.
@@ -646,61 +699,72 @@ impl crate::AwsmRenderer {
         }
 
         // Cache-hit + cross-call waiter dedup. The edge-chain
-        // descriptors iterate over EVERY bucket entry (every
-        // registered material's shader_id) plus skybox + final_blend
-        // globals. When this method is called in a relaunch loop
-        // (one call per registered shader_id from
-        // `register_material` / `set_anti_aliasing` /
-        // `finalize_gpu_textures`), every call wants the SAME N+2
-        // cache keys. Without the waiter check, each call would push
-        // duplicate `createComputePipelineAsync` promises.
-        //
-        // `register_compute_compile_waiter` bumps THIS material's
-        // subcompile counter even for the skip path — so a late
-        // material's Ready transition waits on the shared edge-chain
-        // promise that the first material owns. On resolution,
-        // `take_compute_compile_waiters` fans the install + counter
-        // decrement to every waiter material.
-        let mut promise_jobs: Vec<(EdgeLaunchSlot, ComputePipelineCacheKey)> = Vec::new();
+        // descriptors iterate over EVERY bucket entry plus skybox +
+        // final_blend globals — see the matching block in
+        // `launch_dynamic_material_compile` for the full rationale
+        // and the "defer waiter registration until after prep
+        // succeeds" ordering.
         let mid_for_waiter = match group_id {
             PipelineGroupId::Material(m) => Some(m),
             PipelineGroupId::Pass(_) => None,
         };
+        let mut promise_jobs: Vec<(EdgeLaunchSlot, ComputePipelineCacheKey)> = Vec::new();
+        let mut skip_keys: Vec<ComputePipelineCacheKey> = Vec::new();
         for (slot, cache_key) in &compute_jobs {
             if let Some(existing_key) = self.pipelines.compute.cache_lookup(cache_key).copied() {
                 install_edge_per_pass(self, &slot.0, existing_key);
-            } else if let Some(mid) = mid_for_waiter {
-                let is_first_waiter = self
+            } else if mid_for_waiter.is_some()
+                && self
                     .pipeline_scheduler
-                    .register_compute_compile_waiter(cache_key.clone(), mid);
-                if is_first_waiter {
-                    promise_jobs.push((slot.clone(), cache_key.clone()));
-                }
+                    .has_compute_compile_waiter(cache_key)
+            {
+                skip_keys.push(cache_key.clone());
             } else {
-                // No material group_id (e.g. a hypothetical
-                // Pass-driven edge-chain launch — not used today).
-                // Skip waiter tracking; just push the promise.
                 promise_jobs.push((slot.clone(), cache_key.clone()));
             }
         }
 
-        if promise_jobs.is_empty() {
-            // Every variant was a cache hit or already in flight; no
-            // promises pushed and no NEW subcompile-counter increment
-            // to balance (waiter counter bumps for skips happen
-            // inside `register_compute_compile_waiter`).
+        if promise_jobs.is_empty() && skip_keys.is_empty() {
+            // Every variant was a cache hit; no promises pushed and
+            // no waiter state to commit.
             return Ok(());
         }
 
-        let cache_keys_only: Vec<ComputePipelineCacheKey> =
-            promise_jobs.iter().map(|(_, k)| k.clone()).collect();
-        let mut prepped =
-            crate::pipelines::compute_pipeline::ComputePipelines::ensure_keys_prepare(
-                &self.gpu,
-                &self.shaders,
-                &self.pipeline_layouts,
-                cache_keys_only.clone(),
-            )?;
+        // Sync prep before any waiter registration so a prep error
+        // doesn't leak counter / waiter-map state.
+        let prepped_opt = if !promise_jobs.is_empty() {
+            let cache_keys_only: Vec<ComputePipelineCacheKey> =
+                promise_jobs.iter().map(|(_, k)| k.clone()).collect();
+            Some(
+                crate::pipelines::compute_pipeline::ComputePipelines::ensure_keys_prepare(
+                    &self.gpu,
+                    &self.shaders,
+                    &self.pipeline_layouts,
+                    cache_keys_only,
+                )?,
+            )
+        } else {
+            None
+        };
+
+        // Prep succeeded — commit waiter registrations. Only the
+        // material-id path uses waiters; the pass-id path skips
+        // (no material to charge subcompiles to).
+        if let Some(mid) = mid_for_waiter {
+            for key in &skip_keys {
+                self.pipeline_scheduler
+                    .register_compute_compile_waiter(key.clone(), mid);
+            }
+            for (_, key) in &promise_jobs {
+                self.pipeline_scheduler
+                    .register_compute_compile_waiter(key.clone(), mid);
+            }
+        }
+
+        let Some(mut prepped) = prepped_opt else {
+            return Ok(());
+        };
+        let promise_jobs_count = promise_jobs.len();
         let promises = std::mem::take(&mut prepped.promises);
 
         for ((slot, cache_key), promise) in promise_jobs.into_iter().zip(promises) {
@@ -731,7 +795,7 @@ impl crate::AwsmRenderer {
         tracing::info!(
             target: "awsm_renderer::pipeline_readiness",
             "launch_edge_resolve_compile: {:?} sub-pipelines pushed for {:?}",
-            cache_keys_only.len(),
+            promise_jobs_count,
             group_id,
         );
         Ok(())

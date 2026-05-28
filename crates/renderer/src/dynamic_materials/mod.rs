@@ -140,18 +140,28 @@ impl<'a> DynamicMaterialContext for DynamicMaterialPackContext<'a> {
 }
 
 /// Hard cap on the total number of bucket entries (first-party +
-/// dynamic) that the renderer accepts. The classify pass's per-pixel
-/// `edge_slot_map` packs four 8-bit sample bucket ids into a single
-/// `u32`, reserving `0xFE` for skybox / HUD / uncovered samples and
-/// `0xFF` for the "empty slot" sentinel — see the `slot_map` build at
-/// the bottom of `material_classify/shader/material_classify_wgsl/compute.wgsl`.
+/// dynamic) that the renderer accepts. Driven by the tightest
+/// per-bucket-index encoding across the classify + edge pipelines:
 ///
-/// Real bucket ids must therefore live in `[0, 254)`, so a renderer
-/// configuration with 4 first-party + 250 dynamic materials is the
-/// theoretical maximum. `register_material` rejects any registration
-/// that would push past this cap with
+/// 1. **Classify `tile_mask` (32 bits — TIGHTEST)**: the per-workgroup
+///    `var<workgroup> tile_mask: atomic<u32>` accumulates a
+///    `BUCKET_BIT_<NAME> = (1u << index)` per visible bucket id, then
+///    fans into one atomic-incremented `args_<name>.workgroup_count_x`
+///    cell per set bit. A bucket index `>= 32` would compile to a
+///    WGSL `1u << 32u`, which is implementation-defined (typically `0`
+///    on Dawn) — the bucket effectively wouldn't classify.
+///    See `material_classify/shader/material_classify_wgsl/compute.wgsl`.
+///
+/// 2. **Edge `edge_slot_map` (8 bits per sample, `0xFE` / `0xFF`
+///    reserved)**: looser cap at 254. Not the binding constraint here
+///    but documented for context — both encodings would need widening
+///    in lock-step before the bucket count could grow past 32.
+///
+/// 32 is generous for any realistic scene (4 first-party + 28 dynamic
+/// materials co-resident). `register_material` rejects any
+/// registration that would push past this cap with
 /// [`AwsmDynamicMaterialError::BucketCapExceeded`].
-pub const MAX_BUCKET_ENTRIES: usize = 254;
+pub const MAX_BUCKET_ENTRIES: usize = 32;
 
 /// One bucket entry — the template-rendering view of a single registered
 /// material (first-party OR dynamic). Returned by [`bucket_entries`].
