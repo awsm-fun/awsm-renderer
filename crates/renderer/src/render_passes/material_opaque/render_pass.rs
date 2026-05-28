@@ -99,7 +99,7 @@ impl MaterialOpaqueRenderPass {
     /// (Priority 3). Called from the renderer's frame orchestration
     /// after the primary opaque dispatch.
     ///
-    /// (Stage 3 — see `docs/plans/more-optimizations.md` § Priority 3.)
+    /// (Stage 3 — see `https://github.com/dakom/awsm-renderer/pull/99` § Priority 3.)
     ///
     /// **Lazy-pool semantics:** any pipeline whose typed-key accessor
     /// returns `None` is silently skipped via

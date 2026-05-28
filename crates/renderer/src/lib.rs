@@ -288,7 +288,7 @@ pub struct AwsmRenderer {
     /// Pipeline-readiness scheduler. Owns the `FuturesUnordered` that
     /// drives async compile, the SlotMap of material groups, and the
     /// per-pass-kind map. Per the architecture in
-    /// `docs/plans/more-optimizations.md`, frontends submit
+    /// `https://github.com/dakom/awsm-renderer/pull/99`, frontends submit
     /// [`crate::pipeline_scheduler::PipelineGroupDef`]s, get [`crate::pipeline_scheduler::PipelineGroupId`]s back
     /// immediately, and watch for status transitions via
     /// `drain_pipeline_status_events` or `pipeline_group_status`.
@@ -2031,7 +2031,7 @@ impl AwsmRendererBuilder {
 // surface, race-policy enforcement on the config-change APIs, a test
 // helper for awaiting Pending → Ready).
 //
-// Per the architecture in `docs/plans/more-optimizations.md`:
+// Per the architecture in `https://github.com/dakom/awsm-renderer/pull/99`:
 //
 // - `submit_pipeline_group_batch` is the public submission API.
 // - `pipeline_group_status` is the pull-side status query.

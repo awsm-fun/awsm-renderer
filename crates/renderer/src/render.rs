@@ -58,7 +58,7 @@ impl AwsmRenderer {
         // typed-accessor cache refreshes happen synchronously off the
         // status events. This is the load-bearing "transitions happen
         // between frames, not mid-frame" invariant from
-        // docs/plans/more-optimizations.md § Scheduler driving and
+        // https://github.com/dakom/awsm-renderer/pull/99 § Scheduler driving and
         // transition timing.
         let applied = self.poll_pipeline_scheduler();
         if applied > 0 {
@@ -691,7 +691,7 @@ impl AwsmRenderer {
                 .render(&ctx, renderables.opaque)?;
 
             // Per-shader-id MSAA edge-resolve + final blend (Priority
-            // 3 in docs/plans/more-optimizations.md). No-op when MSAA
+            // 3 in https://github.com/dakom/awsm-renderer/pull/99). No-op when MSAA
             // is off or the edge_resolve pipelines haven't been
             // submitted-and-resolved yet (warn-and-skip per
             // pipeline_scheduler::warn_pipeline_not_compiled).

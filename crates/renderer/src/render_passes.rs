@@ -115,7 +115,7 @@ struct RenderPassesBindings {
     decal_classify_bg: Option<material_decal::classify::bind_group::DecalClassifyBindGroups>,
     opaque_bg: material_opaque::bind_group::MaterialOpaqueBindGroups,
     /// Bind-group layouts for the per-shader-id MSAA edge-resolve
-    /// pipelines (Priority 3 in docs/plans/more-optimizations.md).
+    /// pipelines (Priority 3 in https://github.com/dakom/awsm-renderer/pull/99).
     /// Allocated up-front — cheap; the actual edge_resolve pipelines
     /// compile lazily via the scheduler.
     opaque_edge_bind_group_layouts: material_opaque::edge_bind_group::MaterialEdgeBindGroupLayouts,

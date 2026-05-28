@@ -47,7 +47,7 @@ pub struct ShaderTemplateMaterialClassifyBindGroups {
     pub pad_words_iter: Vec<u32>,
     /// When `true`, emit the EdgeBuffers + EdgeBufferLayout bind-group
     /// declarations (group(0) bindings 4 and 5). Priority 3 in
-    /// docs/plans/more-optimizations.md.
+    /// https://github.com/dakom/awsm-renderer/pull/99.
     pub emit_edge_data: bool,
 }
 

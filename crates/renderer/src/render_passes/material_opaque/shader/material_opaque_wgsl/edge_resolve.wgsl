@@ -12,7 +12,7 @@
 // No atomics. Each (edge_pixel_id, slot_index) is owned by exactly
 // one shader_id, so concurrent writes are race-free.
 //
-// See docs/plans/more-optimizations.md § Pass structure step 4.
+// See https://github.com/dakom/awsm-renderer/pull/99 § Pass structure step 4.
 
 /*************** START color_space.wgsl ******************/
 {% include "shared_wgsl/color_space.wgsl" %}

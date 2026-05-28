@@ -3,7 +3,7 @@
 //! Wraps the existing `Shaders::ensure_keys` +
 //! `{Render,Compute}Pipelines::ensure_keys` batch primitives into a
 //! unified async readiness state machine. Per the architecture in
-//! [`docs/plans/more-optimizations.md`](../../../docs/plans/more-optimizations.md):
+//! [`https://github.com/dakom/awsm-renderer/pull/99`](../../../https://github.com/dakom/awsm-renderer/pull/99):
 //!
 //! - Public API: `submit_pipeline_group_batch(defs) -> Vec<PipelineGroupId>` —
 //!   returns immediately with handles in `Pending` state. Compiles are queued
@@ -867,7 +867,7 @@ use std::sync::Mutex;
 /// call this helper to surface a `tracing::warn!` exactly once per
 /// `(location, identifier)` pair per session, then `return` from the
 /// dispatch. Per [§ Render-frame preamble safety net] in
-/// `docs/plans/more-optimizations.md`.
+/// `https://github.com/dakom/awsm-renderer/pull/99`.
 ///
 /// `location` is a stable string like `"opaque_pass"` or
 /// `"shadow_gen"`; `id` is whichever identifier disambiguates the

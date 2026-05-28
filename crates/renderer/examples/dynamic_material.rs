@@ -102,7 +102,7 @@ return OpaqueShadingOutput(overlay + vec3<f32>(0.5), 1.0);
 }
 
 // In a real consumer (post-pipeline-readiness architecture per
-// docs/plans/more-optimizations.md):
+// https://github.com/dakom/awsm-renderer/pull/99):
 //
 // ```no_run
 // async fn boot() -> awsm_renderer::error::Result<()> {

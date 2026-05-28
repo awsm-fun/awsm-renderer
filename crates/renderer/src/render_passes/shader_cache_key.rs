@@ -37,7 +37,7 @@ pub enum ShaderCacheKeyRenderPass {
     MaterialOpaque(ShaderCacheKeyMaterialOpaque),
     MaterialOpaqueEmpty(ShaderCacheKeyMaterialOpaqueEmpty),
     /// Per-shader-id MSAA edge-resolve — see Priority 3 in
-    /// docs/plans/more-optimizations.md.
+    /// https://github.com/dakom/awsm-renderer/pull/99.
     MaterialEdgeResolve(ShaderCacheKeyMaterialEdgeResolve),
     /// Global skybox-sample MSAA edge-resolve.
     MaterialSkyboxEdgeResolve(ShaderCacheKeyMaterialSkyboxEdgeResolve),

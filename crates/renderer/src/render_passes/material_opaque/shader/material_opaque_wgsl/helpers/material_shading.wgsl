@@ -4,7 +4,7 @@
 // `msaa_apply_instance_tint` cross-shader resolve helpers have been
 // removed: MSAA edge resolution is now owned end-to-end by the
 // classify → per-shader edge_resolve → final_blend pipeline chain
-// (see docs/plans/more-optimizations.md § Priority 3). The legacy
+// (see https://github.com/dakom/awsm-renderer/pull/99 § Priority 3). The legacy
 // helpers carried a runtime switch over every registered shader_id,
 // which inlined every material's shading body into every primary
 // pipeline's SPIR-V — an O(N) bloat in the number of dynamic

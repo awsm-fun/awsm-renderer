@@ -899,7 +899,7 @@ impl crate::AwsmRenderer {
 
     /// Submit a dynamic material via the new pipeline-readiness API.
     ///
-    /// Per the architecture in `docs/plans/more-optimizations.md`,
+    /// Per the architecture in `https://github.com/dakom/awsm-renderer/pull/99`,
     /// this is the non-blocking submission entry point that registers
     /// the material AND submits a `PipelineGroupDef::Material(Dynamic)`
     /// to the renderer's scheduler. Returns:

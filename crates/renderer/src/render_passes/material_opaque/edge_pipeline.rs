@@ -1,5 +1,5 @@
 //! Pipeline cache + descriptors for the per-shader-id MSAA edge-resolve
-//! pipelines (Priority 3 in docs/plans/more-optimizations.md).
+//! pipelines (Priority 3 in https://github.com/dakom/awsm-renderer/pull/99).
 //!
 //! Three categories of pipeline:
 //!
@@ -18,7 +18,7 @@
 //!    pixels. Reads up to 4 accumulator slots per edge pixel, blends
 //!    weighted by per-slot sample count, writes to `opaque_tex`.
 //!
-//! See [§ Pipeline count and packaging](../../../../docs/plans/more-optimizations.md#pipeline-count-and-packaging)
+//! See [§ Pipeline count and packaging](../../../../https://github.com/dakom/awsm-renderer/pull/99#pipeline-count-and-packaging)
 //! for the cost model.
 
 use std::collections::HashMap;

@@ -659,6 +659,9 @@ distinct; one cull tile covers a 2×2 block of classify tiles.
   [`bind_groups.rs`](../../crates/renderer/src/bind_groups.rs).
 - Standard depth-coordinate convention used elsewhere:
   [`templates/helpers/standard.wgsl`](../../crates/renderer/templates/helpers/standard.wgsl).
-- The Stage-3 edge-resolve overflow pattern referenced under question E:
-  [`docs/plans/remaining.md`](remaining.md) → "MAX_EDGE_BUDGET overflow
-  atomic-add fallback".
+- The Stage-3 edge-resolve overflow pattern referenced under
+  decision E:
+  [`render_passes/material_opaque/edge_buffers.rs`](../../crates/renderer/src/render_passes/material_opaque/edge_buffers.rs)
+  (`note_edge_overflow_observed` + the auto-grow readback wired in
+  [`render.rs`](../../crates/renderer/src/render.rs) — landed in
+  [PR #102](https://github.com/dakom/awsm-renderer/pull/102)).

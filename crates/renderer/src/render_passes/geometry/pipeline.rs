@@ -142,7 +142,7 @@ pub struct GeometryPrewarmDescriptors {
 impl GeometryPipelines {
     /// Creates geometry pipeline layouts and cached keys for the
     /// **active MSAA branch only**. Per the lazy-pool architecture
-    /// in `docs/plans/more-optimizations.md` § Lessons D, the
+    /// in `https://github.com/dakom/awsm-renderer/pull/99` § Lessons D, the
     /// inactive branch is populated on first `set_anti_aliasing`
     /// flip via [`crate::AwsmRenderer::set_anti_aliasing`]'s recompile
     /// path.
@@ -394,7 +394,7 @@ impl GeometryPipelines {
     /// the requested MSAA branch isn't yet populated — the
     /// render-frame preamble's warn-and-skip path translates this
     /// into a `tracing::warn!` + dispatch skip. Per the lazy-pool
-    /// architecture in `docs/plans/more-optimizations.md`.
+    /// architecture in `https://github.com/dakom/awsm-renderer/pull/99`.
     pub fn get_render_pipeline_key(
         &self,
         opts: GeometryRenderPipelineKeyOpts<'_>,

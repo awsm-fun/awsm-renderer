@@ -500,7 +500,7 @@ fn main(
     // 4-sample average. This keeps the primary-opaque SPIR-V scoped
     // to a single shader_id (the per-pipeline specialization) — no
     // cross-shader switch inlined, no growth as dynamic materials
-    // register. See docs/plans/more-optimizations.md § Priority 3.
+    // register. See https://github.com/dakom/awsm-renderer/pull/99 § Priority 3.
 
     {% if debug.normals %}
         // Debug visualization: encode normal as color

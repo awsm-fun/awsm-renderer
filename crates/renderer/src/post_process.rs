@@ -54,7 +54,7 @@ impl AwsmRenderer {
     /// resident, so the next render frame can dispatch without
     /// further awaits.
     pub async fn set_post_processing(&mut self, pp: PostProcessing) -> Result<()> {
-        // Race policy per docs/plans/more-optimizations.md: config-change
+        // Race policy per https://github.com/dakom/awsm-renderer/pull/99: config-change
         // APIs return NotReady when called before build() finishes its
         // eager batch.
         if !self.build_complete {

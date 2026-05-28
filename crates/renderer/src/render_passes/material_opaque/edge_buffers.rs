@@ -1,5 +1,5 @@
 //! GPU storage buffers backing the per-shader-id MSAA edge-resolve
-//! pipeline (Priority 3 in docs/plans/more-optimizations.md).
+//! pipeline (Priority 3 in https://github.com/dakom/awsm-renderer/pull/99).
 //!
 //! Two GPU buffers, split to satisfy WebGPU's "a buffer cannot be both
 //! Indirect-readable and Storage(read-write) in the same synchronization
@@ -29,8 +29,8 @@
 //! `(edge_pixel_id, sample_mask_byte)` entry into the matching
 //! per-shader-id sample-list bucket.
 //!
-//! See [§ Pass structure](docs/plans/more-optimizations.md#pass-structure)
-//! and [§ Memory budget](docs/plans/more-optimizations.md#memory-budget)
+//! See [§ Pass structure](https://github.com/dakom/awsm-renderer/pull/99#pass-structure)
+//! and [§ Memory budget](https://github.com/dakom/awsm-renderer/pull/99#memory-budget)
 //! for the architectural design.
 
 use std::sync::Mutex;
@@ -82,7 +82,7 @@ fn note_edge_budget_initialized(bucket_count: u32, max_edge_budget: u32) {
                 "MAX_EDGE_BUDGET initialized — edges beyond this count saturate the counter \
                  (edge_overflow_count atomicAdd) and skip edge_resolve; affected pixels render \
                  with the primary-sample shading. Full atomic-add overflow fallback is parked \
-                 (see docs/plans/more-optimizations.md Block C.2)."
+                 (see https://github.com/dakom/awsm-renderer/pull/99 Block C.2)."
             );
         }
     }
