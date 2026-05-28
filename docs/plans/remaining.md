@@ -8,13 +8,11 @@ Items are grouped by theme. Each has a one-line acceptance criterion. None block
 
 ## Runtime correctness (Phase-6 extras-pool tail)
 
-The extras-pool allocator's runtime path (`assign_or_update` → `slice_for` → `write_dirty_ranges`) is fully implemented and exercised. Two tail features remain:
+The extras-pool allocator's runtime path (`assign_or_update` → `slice_for` → `write_dirty_ranges`) is fully implemented and exercised. One tail feature remains:
 
-### Pool resize on overflow
+### Pool resize on overflow ✅
 
-`assign_or_update` returns `AwsmDynamicMaterialError::OutOfCapacity` when the bump allocator runs out of room. The 1 MiB initial allocation (`DEFAULT_CAPACITY_WORDS = 262_144`) handles every authored material we've shipped, but a real-game consumer registering many `BufferSlot`-heavy materials would hit it.
-
-**Acceptance**: `assign_or_update` re-allocates the GPU buffer with 2× capacity on overflow, marks bind groups for recreation, and copies existing data via `copyBufferToBuffer` so live slices stay valid.
+**Done.** `assign_or_update(gpu, …)` now grows the GPU buffer to 2× capacity on bump-allocator overflow, widens the shadow `Vec<u32>`, and re-dirties the live prefix so the next per-frame upload re-populates the new buffer (no `copyBufferToBuffer` needed — the shadow is the authoritative byte source). The new `BindGroupCreate::ExtrasPoolResize` variant rebinds the opaque + transparent main bind groups when this fires.
 
 ### Fragmentation-triggered compaction
 
@@ -79,11 +77,9 @@ The schema + data shapes are in place (`BufferSlot` carries a `default: Option<S
 
 **Done.** The Errors pane entries are clickable; clicking positions the WGSL textarea's caret at the reported line+column (best-effort via `setSelectionRange`). See `panes/errors.rs` + `panes/wgsl_editor.rs` — the textarea now has a stable `id` and the errors pane resolves line/column to character offset.
 
-### File → New runnable stub
+### File → New runnable stub ✅
 
-`EditState::new_scanline` seeds the scanline starter on boot. A `File → New` button that resets state to a different starter (a minimal "constant red" material, an unlit baseline, etc.) would help new authors get started without copying from an existing one.
-
-**Acceptance**: a New button in the top-bar offers ≥2 starter templates; selecting one wipes the EditState and triggers the debounced recompile.
+**Done.** A `File:` dropdown in the top bar offers three starters — `Constant red (minimal)`, `Unlit tint (single color)`, `Scanline (animated)`. Selecting one calls `EditState::reset_to(starter)`, which mutates the live Mutables in place so panes' signal subscriptions stay attached and the debounced-recompile loop picks the change up on the next tick. See [state.rs](../../crates/frontend/material-editor/src/state.rs) + [app.rs](../../crates/frontend/material-editor/src/app.rs).
 
 ---
 
@@ -118,11 +114,9 @@ Real infrastructure work — ~1-2 days, mostly diff-tolerance tuning + reference
 
 ## Documentation polish
 
-### `crates/renderer/README.md` walkthrough
+### `crates/renderer/README.md` walkthrough ✅
 
-The dynamic-materials public surface (`register_material`, `MaterialRegistration`, `Material::Custom`, etc.) doesn't have a top-level entry point in `crates/renderer/README.md`. The rustdoc + `crates/renderer/examples/dynamic_material.rs` cover the API; a README section makes it discoverable.
-
-**Acceptance**: README section walks a fresh consumer through "register a dynamic material, build a `Material::Custom`, add a mesh that uses it, render." Cross-references `docs/dynamic-materials/contract-{opaque,transparent}.md`.
+**Done.** A new `## Dynamic materials quick start` section in [`crates/renderer/README.md`](../../crates/renderer/README.md) walks a fresh consumer through registering a dynamic material, building a `Material::Custom`, adding a mesh, and rendering. Cross-references the contract docs and the worked example at [`crates/renderer/examples/dynamic_material.rs`](../../crates/renderer/examples/dynamic_material.rs).
 
 ### Doc-link tail cleanup
 
@@ -145,9 +139,9 @@ The `awsm-renderer::dynamic_materials` + `pipeline_scheduler` modules are missin
 
 `pipeline_scheduler` currently uses single-threaded `FuturesUnordered`. Audit for SharedArrayBuffer-readiness when wasm32-multithread lands. Document the boundaries.
 
-### Test surface sweep
+### Test surface sweep ✅
 
-`wait_for_pipelines_ready()` test helper is in place; sweep `crates/renderer/tests/` and `crates/renderer/examples/` for sites that still rely on sync-insert-then-dispatch.
+**Done.** Verified: `crates/renderer/tests/` does not exist; `crates/renderer/examples/dynamic_material.rs` doesn't drive a render loop (intentional per its own doc comment), so no sync-insert-then-dispatch sites remain.
 
 ### Edge_resolve runtime profile sanity
 
