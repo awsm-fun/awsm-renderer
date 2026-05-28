@@ -214,7 +214,11 @@ async fn load_and_populate(asset_id: AssetId) -> Result<AssetTemplate, String> {
     let _ = Url::revoke_object_url(&url);
     let loader = loader_result?;
 
-    let render_timings = with_renderer(|r| r.logging.render_timings).await;
+    // gltf loading spans are sub-frame-level detail (per-primitive
+    // staging), so only emit them when the renderer is configured
+    // for sub-frame timing — the cheaper `Frame` tier shouldn't
+    // explode into hundreds of mesh-load marks per scene load.
+    let render_timings = with_renderer(|r| r.logging.render_timings.sub_frame()).await;
     let gltf_data = loader
         .into_data(Some(
             GltfDataHints::default().with_render_timings(render_timings),

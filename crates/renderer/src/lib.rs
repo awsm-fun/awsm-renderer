@@ -432,7 +432,7 @@ impl AwsmRenderer {
     /// stub for every currently-registered dynamic material. Triggered
     /// implicitly by `register_material`; idempotent on cache hits.
     pub async fn prewarm_pipelines(&mut self) -> crate::error::Result<()> {
-        let _maybe_span = if self.logging.render_timings {
+        let _maybe_span = if self.logging.render_timings.sub_frame() {
             Some(tracing::span!(tracing::Level::INFO, "Prewarm Pipelines").entered())
         } else {
             None

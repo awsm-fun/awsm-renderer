@@ -46,7 +46,7 @@ async fn init_inner() -> anyhow::Result<()> {
     let hints = GltfDataHints::default()
         .with_hud(true)
         .with_hidden(true)
-        .with_render_timings(renderer.logging.render_timings);
+        .with_render_timings(renderer.logging.render_timings.sub_frame());
     let gltf_data = loader
         .into_data(Some(hints))
         .map_err(|e| anyhow::anyhow!("gizmo decode: {e}"))?;

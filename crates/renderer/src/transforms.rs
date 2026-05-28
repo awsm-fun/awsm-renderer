@@ -71,7 +71,7 @@ impl AwsmRenderer {
         // defaults (`SceneSpatialConfig::rebuild_period_frames` /
         // `rebuild_dirty_threshold`).
         {
-            let _maybe_span_guard = if self.logging.render_timings {
+            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "SceneSpatial Rebuild").entered())
             } else {
                 None
@@ -102,7 +102,7 @@ impl AwsmRenderer {
         // value and short-circuits unchanged writes, so the dirty-range
         // set stays sparse on a steady-state stress scene.
         {
-            let _maybe_span_guard = if self.logging.render_timings {
+            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "Shadow Receiver Gate").entered())
             } else {
                 None
@@ -364,7 +364,7 @@ impl Transforms {
         bind_groups: &mut BindGroups,
     ) -> Result<()> {
         if self.gpu_dirty {
-            let _maybe_span_guard = if logging.render_timings {
+            let _maybe_span_guard = if logging.render_timings.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "Transform GPU write").entered())
             } else {
                 None

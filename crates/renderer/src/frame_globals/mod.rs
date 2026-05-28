@@ -124,7 +124,7 @@ impl FrameGlobals {
         frame_count: u32,
         resolution: [u32; 2],
     ) -> std::result::Result<(), AwsmFrameGlobalsError> {
-        let _maybe_span_guard = if logging.render_timings {
+        let _maybe_span_guard = if logging.render_timings.sub_frame() {
             Some(tracing::span!(tracing::Level::INFO, "FrameGlobals GPU write").entered())
         } else {
             None

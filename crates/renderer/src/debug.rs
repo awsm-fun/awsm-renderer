@@ -8,7 +8,75 @@ use std::{
 /// Renderer logging flags.
 #[derive(Clone, Debug, Default)]
 pub struct AwsmRendererLogging {
-    pub render_timings: bool,
+    /// How much per-frame work should open a `tracing` span.
+    ///
+    /// Each span enter/exit on the web routes through
+    /// `tracing_web::performance_layer`, which calls
+    /// `performance.mark()` and `performance.measure()` across the
+    /// wasm↔JS boundary. On mobile the per-call cost is large enough
+    /// that letting every sub-pass open a span dominates frame time
+    /// (see `docs/perf-tracing.md` for the numbers). We therefore
+    /// gate at the call site so a span is never even *created*
+    /// unless the tier permits it.
+    pub render_timings: RenderTimings,
+}
+
+/// How much render-side tracing to emit per frame.
+///
+/// Ordering matters: each tier is a strict superset of the
+/// previous one. Comparing with `>=` is the canonical way to test
+/// at a span site.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RenderTimings {
+    /// No render-timing spans at all. The crate-level default —
+    /// matches the prior `render_timings: bool = false` behavior so
+    /// any embedder that constructs `AwsmRendererLogging::default()`
+    /// pays zero tracing cost. Frontends explicitly opt in to a
+    /// non-`Off` tier; see `crates/web-shared/src/perf.rs` for the
+    /// `?trace=…` URL-param wiring.
+    #[default]
+    Off,
+    /// Just the outermost `"Render"` span — one
+    /// `performance.mark` plus one `performance.measure` per
+    /// frame. This is what the shipping web build runs by default:
+    /// it tells you frame time (and lets the DevTools performance
+    /// panel show a single bar per frame) while costing essentially
+    /// nothing.
+    Frame,
+    /// Every render pass, GPU write, hook, and renderer-internal
+    /// stage opens its own span. This is what you want when
+    /// diagnosing why a frame is slow; it's far too chatty to run
+    /// in shipping builds on mobile.
+    SubFrame,
+}
+
+impl RenderTimings {
+    /// True when *any* render-timing span should be created.
+    /// Equivalent to `!= Off`.
+    pub fn enabled(self) -> bool {
+        self != RenderTimings::Off
+    }
+
+    /// True when sub-frame spans (passes, GPU writes, hooks, …)
+    /// should be created. Equivalent to `>= SubFrame`.
+    pub fn sub_frame(self) -> bool {
+        self >= RenderTimings::SubFrame
+    }
+
+    /// Parse the value of a `?trace=…` URL parameter.
+    ///
+    /// Accepts (case-insensitive): `off`, `none`, `frame`,
+    /// `sub-frame`, `subframe`, `sub_frame`. Returns `None` for
+    /// anything else so callers can fall back to a build-time
+    /// default.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "off" | "none" | "0" => Some(Self::Off),
+            "frame" | "1" => Some(Self::Frame),
+            "sub-frame" | "subframe" | "sub_frame" | "2" => Some(Self::SubFrame),
+            _ => None,
+        }
+    }
 }
 
 /// Debug ID reserved for renderable tracking.
