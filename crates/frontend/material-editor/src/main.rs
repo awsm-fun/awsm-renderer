@@ -283,8 +283,13 @@ async fn boot_renderer() -> anyhow::Result<RendererHost> {
     // Mid-grey clear so an empty preview (no registered material yet,
     // or quad not rasterizing for whatever reason) is visibly
     // distinct from "render never ran" — matches the scene-editor's
-    // convention.
+    // convention. Profile defaults to Desktop with `?mobile=true`
+    // override available.
+    let profile = awsm_web_shared::perf::resolve_renderer_profile(
+        awsm_renderer::profile::RendererProfile::Desktop,
+    );
     let renderer = AwsmRendererBuilder::new(gpu_builder)
+        .with_profile(profile)
         .with_clear_color(awsm_renderer_core::command::color::Color::MID_GREY)
         .build()
         .await

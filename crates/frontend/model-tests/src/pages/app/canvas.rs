@@ -72,7 +72,18 @@ impl AppCanvas {
                             .with_device_request_limits(DeviceRequestLimits::max_all());
 
                         let loading_status = state.ctx.loading_status.clone();
+                        // Profile defaults — Desktop in dev and ship by
+                        // default. `?mobile=true` flips the bundle to
+                        // mobile-friendly defaults (MSAA off, low shadow
+                        // tier, smaller atlases, BVH rebuild halved,
+                        // Depth24Plus). See
+                        // `awsm_renderer::profile::RendererProfile` for
+                        // the full matrix.
+                        let profile = awsm_web_shared::perf::resolve_renderer_profile(
+                            awsm_renderer::profile::RendererProfile::Desktop,
+                        );
                         let mut renderer = match AwsmRendererBuilder::new(gpu_builder)
+                            .with_profile(profile)
                             .with_logging(AwsmRendererLogging {
                                 // Default tier comes from build profile + `?trace=…` URL
                                 // override. See `crate::logger::default_render_timings` and
@@ -83,7 +94,10 @@ impl AppCanvas {
                             // model-tests wires .pick() to mouse-down
                             // for editor-mode click-to-select; opt in
                             // explicitly so PickResult::Disabled isn't
-                            // returned on every click.
+                            // returned on every click. The `with_features`
+                            // override layers on top of the profile —
+                            // profile's `features` already defaults to
+                            // all-off, so this just sets `picking`.
                             .with_features(awsm_renderer::features::RendererFeatures {
                                 picking: true,
                                 ..Default::default()

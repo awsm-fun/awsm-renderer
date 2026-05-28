@@ -31,6 +31,7 @@ pub mod pipeline_layouts;
 pub mod pipeline_scheduler;
 pub mod pipelines;
 pub mod post_process;
+pub mod profile;
 pub mod raw_mesh;
 pub mod render;
 pub mod render_passes;
@@ -306,6 +307,14 @@ pub struct AwsmRenderer {
     /// [`crate::error::AwsmError::NotReady`] when called before. Per
     /// the architecture doc's race policy.
     pub(crate) build_complete: bool,
+    /// Recommended `ShadowQualityTier` set by the active
+    /// [`crate::profile::RendererProfile`]. Scene-side code that
+    /// registers shadow-casting lights should apply the matching
+    /// `LightShadowParams` preset to keep per-light shadow knobs
+    /// (cascade count, hardness, EVSM cutoff) coherent with the
+    /// rest of the profile's defaults. `None` when no profile was
+    /// applied.
+    pub recommended_shadow_quality_tier: Option<crate::shadows::ShadowQualityTier>,
     // we pick between these on the fly
     _clear_color_perceptual_to_linear: Color,
     _clear_color: Color,
@@ -1045,6 +1054,25 @@ pub struct AwsmRendererBuilder {
     /// telemetry consumers can use it to record per-phase elapsed
     /// time.
     phase_handler: Option<RendererLoadingPhaseHandler>,
+    /// Optional override for the BVH rebuild cadence. `None` →
+    /// `SceneSpatialConfig::default()`. Set via
+    /// [`AwsmRendererBuilder::with_scene_spatial_config`] directly
+    /// or indirectly via [`AwsmRendererBuilder::with_profile`].
+    scene_spatial_config: Option<crate::scene_spatial::SceneSpatialConfig>,
+    /// Recommended `ShadowQualityTier` from the active profile.
+    /// Surfaced via [`AwsmRenderer::recommended_shadow_quality_tier`]
+    /// so scene-side code that registers shadow-casting lights can
+    /// apply the matching `LightShadowParams` preset on insert.
+    /// `None` when no profile is set.
+    recommended_shadow_quality_tier: Option<crate::shadows::ShadowQualityTier>,
+    /// Pending depth-format override stashed by `with_profile` when
+    /// no user-supplied `RenderTextureFormats` exists yet. Applied
+    /// inside `build()` after the per-device probe — that's where
+    /// the rest of the format defaults come from. `None` when no
+    /// profile selected one (or the user already supplied a full
+    /// formats struct, in which case `with_profile` mutates it in
+    /// place).
+    render_texture_formats_depth_override: Option<awsm_renderer_core::texture::TextureFormat>,
 }
 
 /// WebGPU builder input for `AwsmRendererBuilder`.
@@ -1115,7 +1143,74 @@ impl AwsmRendererBuilder {
             max_edge_budget: None,
             optimization_policy: crate::optimization_policy::RendererOptimizationPolicy::default(),
             phase_handler: None,
+            scene_spatial_config: None,
+            recommended_shadow_quality_tier: None,
+            render_texture_formats_depth_override: None,
         }
+    }
+
+    /// Apply a coordinated set of defaults from a
+    /// [`crate::profile::RendererProfile`]. Sets `anti_aliasing`,
+    /// `post_processing`, `features`, `optimization_policy`,
+    /// `shadows_config`, `max_edge_budget`, `scene_spatial_config`,
+    /// and the recommended shadow quality tier — all the knobs whose
+    /// right starting value differs between mobile-class and
+    /// desktop-class targets.
+    ///
+    /// **Call order**: invoke this **first**, then chain any per-knob
+    /// `with_*` overrides — the profile mutates the builder's state
+    /// immediately, so later `with_*` calls win.
+    ///
+    /// Frontends typically resolve the profile from a URL parameter
+    /// (`?mobile=true`) via
+    /// [`awsm_web_shared::perf::resolve_renderer_profile`](https://github.com/dakom/awsm-renderer/blob/main/crates/web-shared/src/perf.rs)
+    /// and pass the result here.
+    ///
+    /// **Per-light shadow params** aren't owned by the renderer
+    /// builder — scene-side code reads
+    /// [`AwsmRenderer::recommended_shadow_quality_tier`] after build
+    /// and applies the matching `LightShadowParams` preset on each
+    /// shadow-casting light registration.
+    pub fn with_profile(mut self, profile: crate::profile::RendererProfile) -> Self {
+        let defaults = profile.defaults();
+        self.anti_aliasing = defaults.anti_aliasing;
+        self.post_processing = defaults.post_processing;
+        self.features = defaults.features;
+        self.optimization_policy = defaults.optimization_policy;
+        self.shadows_config = Some(defaults.shadows_config);
+        self.max_edge_budget = Some(defaults.max_edge_budget);
+        self.scene_spatial_config = Some(defaults.scene_spatial);
+        self.recommended_shadow_quality_tier = Some(defaults.shadow_quality_tier);
+        // Render-texture format override: only the `depth` field
+        // varies by profile today. Build a `RenderTextureFormats`
+        // around the per-device baseline at `build()` time if the
+        // user hasn't supplied one — we can't do the async default
+        // probe here in a sync builder method. The depth override
+        // gets re-applied inside `build()` (see the
+        // `render_texture_formats` materialization there).
+        if let Some(formats) = self.render_texture_formats.as_mut() {
+            formats.depth = defaults.render_texture_formats.depth;
+        } else {
+            // Stash the override on a builder-private field so the
+            // build() async path can apply it once the per-device
+            // defaults have been probed. We re-use
+            // `render_texture_formats` indirectly via the
+            // post-profile mutation below.
+            self.render_texture_formats_depth_override =
+                Some(defaults.render_texture_formats.depth);
+        }
+        self
+    }
+
+    /// Override the BVH rebuild cadence directly. The
+    /// [`crate::profile::RendererProfile`] is the usual surface for
+    /// this; only call this directly for bespoke tuning.
+    pub fn with_scene_spatial_config(
+        mut self,
+        config: crate::scene_spatial::SceneSpatialConfig,
+    ) -> Self {
+        self.scene_spatial_config = Some(config);
+        self
     }
 
     /// Block C.2: override the default `MAX_EDGE_BUDGET` for the
@@ -1247,6 +1342,9 @@ impl AwsmRendererBuilder {
             max_edge_budget,
             optimization_policy,
             phase_handler,
+            scene_spatial_config,
+            recommended_shadow_quality_tier,
+            render_texture_formats_depth_override,
         } = self;
 
         let mut phase_handler = phase_handler;
@@ -1321,6 +1419,13 @@ impl AwsmRendererBuilder {
             Some(formats) => formats,
             None => RenderTextureFormats::new(&gpu.device).await,
         };
+        // Apply the profile's depth-format override (if any) on top of
+        // the per-device defaults. Frontends that supplied their own
+        // `RenderTextureFormats` already have `with_profile` mutate
+        // the depth field in place — no second pass needed there.
+        if let Some(depth_override) = render_texture_formats_depth_override {
+            render_texture_formats.depth = depth_override;
+        }
 
         // tracing::info!("Max bind groups: {}", gpu.device.limits().max_bind_groups());
         // tracing::info!(
@@ -1845,7 +1950,8 @@ impl AwsmRendererBuilder {
             frame_globals,
             transforms,
             instances,
-            scene_spatial: SceneSpatial::default(),
+            scene_spatial: SceneSpatial::new(scene_spatial_config.unwrap_or_default()),
+            recommended_shadow_quality_tier,
             light_buckets: LightMeshBuckets::default(),
             mesh_light_indices_gpu,
             material_classify_buffers,

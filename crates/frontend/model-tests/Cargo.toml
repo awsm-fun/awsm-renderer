@@ -11,6 +11,7 @@ rust-version.workspace = true
 awsm-renderer = { path = "../../renderer", features = ["texture-export", "ktx", "serde"] }
 awsm-renderer-gltf = { path = "../../renderer-gltf", features = ["clearcoat", "sheen"] }
 awsm-renderer-editor = { path = "../../editor" }
+awsm-web-shared = { path = "../../web-shared" }
 serde = {workspace = true}
 serde_json = {workspace = true}
 anyhow = {workspace = true}
