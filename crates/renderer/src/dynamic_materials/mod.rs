@@ -861,10 +861,24 @@ impl crate::AwsmRenderer {
     /// pipeline-cache invalidation lands in Phase 3. Returns
     /// [`AwsmDynamicMaterialError::UnknownShaderId`] if the id was never
     /// registered or has already been removed.
+    ///
+    /// Releases any extras-pool slices owned by the shader_id back to
+    /// the free list — the next equal-length `assign_or_update` will
+    /// reclaim the bytes. This is the editor's edit→re-register cycle
+    /// closing back on itself; without it every recompile leaks the
+    /// previous slice into the pool's used region until the bump
+    /// allocator grows past the leak.
     pub fn unregister_material(
         &mut self,
         shader_id: MaterialShaderId,
     ) -> Result<(), AwsmDynamicMaterialError> {
+        let dropped = self.extras_pool.drop_shader(shader_id);
+        if dropped > 0 {
+            tracing::debug!(
+                target: "awsm_renderer::extras_pool",
+                "unregister_material({shader_id:?}): reclaimed {dropped} extras-pool slice(s)",
+            );
+        }
         self.dynamic_materials.remove(shader_id)
     }
 
