@@ -391,6 +391,20 @@ impl Materials {
                     self._is_transparency_pass.remove(key);
                 }
             }
+            // T2.5: a previously-non-transmissive material can become
+            // transmissive via `update_material` (e.g. authoring
+            // pipeline that constructs the material first, then
+            // edits in `KHR_materials_transmission` later). Sticky-true
+            // so the opaque texture grows its mip chain on the next
+            // `RenderTextures::views` — otherwise the transparent
+            // shader's `textureNumLevels(opaque_tex)`-based
+            // transmission-blur sampling reads from a 1-mip chain
+            // and silently breaks transmission. The insert path
+            // already does this check (`insert(...)` above); this
+            // closes the post-insert-mutation gap.
+            if material.has_transmission() {
+                self.has_seen_transmission = true;
+            }
 
             let dynamic_ctx =
                 crate::dynamic_materials::DynamicMaterialPackContext::new(dynamic_materials)

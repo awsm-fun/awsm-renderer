@@ -290,7 +290,7 @@ impl AwsmRenderer {
             self.meshes.has_seen_hud(),
         )?;
 
-        if render_texture_views.size_changed {
+        if render_texture_views.views_recreated {
             self.bind_groups
                 .mark_create(BindGroupCreate::TextureViewRecreate);
         }
@@ -298,7 +298,8 @@ impl AwsmRenderer {
         // Resize the HZB texture to match the live viewport. This
         // recreates the per-mip views, so the HZB bind groups must
         // also be rebuilt — the `TextureViewRecreate` event above
-        // covers that since size_changed implies viewport resize.
+        // covers that since a viewport resize implies
+        // `views_recreated == true`.
         // Skipped when `features.gpu_culling == false`.
         if let Some(hzb) = self.render_passes.hzb.as_mut() {
             if hzb.ensure_size(
@@ -792,11 +793,13 @@ impl AwsmRenderer {
                 .render_textures
                 .inner()
                 .map(|inner| (inner.opaque.clone(), inner.opaque_mip_count));
-            // The mipgen caches per-mip views + bind groups across frames.
-            // We invalidate explicitly when the render textures were just
-            // recreated (resize / AA change) so the cache stays paired
-            // with the right `GpuTexture` identity.
-            if ctx.render_texture_views.size_changed {
+            // The mipgen caches per-mip views + bind groups across
+            // frames. We invalidate explicitly any time
+            // `RenderTexturesInner` was rebuilt this frame (viewport
+            // resize, AA flip, T2.5 mip-chain grow, T2.6 HUD-depth
+            // grow) so the cache stays paired with the right
+            // `GpuTexture` identity.
+            if ctx.render_texture_views.views_recreated {
                 self.opaque_mipgen.invalidate();
             }
             if let Some((texture, mip_count)) = opaque_info {

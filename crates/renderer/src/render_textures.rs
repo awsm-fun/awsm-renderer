@@ -204,12 +204,24 @@ impl RenderTextures {
             self.inner = Some(inner);
         }
 
+        // `views_recreated` is `true` for ANY reason `inner` was
+        // rebuilt this frame — viewport resize, AA flip, T2.5
+        // opaque-mip-chain growth, or T2.6 HUD-depth materialization.
+        // The caller fires `BindGroupCreate::TextureViewRecreate`
+        // and invalidates the opaque mipgen cache off this flag, so
+        // all four recreation triggers correctly route their bind
+        // groups and mipgen cache through the rebuild path. Earlier
+        // this flag was named `size_changed` and only fired on the
+        // viewport-resize path — leaving stale views behind in the
+        // T2.5 / T2.6 lazy-allocation paths.
+        let views_recreated =
+            size_changed || anti_aliasing_changed || opaque_mips_grown || hud_depth_appeared;
         Ok(RenderTextureViews::new(
             self.inner.as_ref().unwrap(),
             self.ping_pong(),
             current_size.0,
             current_size.1,
-            size_changed,
+            views_recreated,
         ))
     }
 
@@ -280,7 +292,15 @@ pub struct RenderTextureViews {
     /// their call sites (T1.10), so they never sample `hud_depth`
     /// before it materializes.
     pub hud_depth: Option<web_sys::GpuTextureView>,
-    pub size_changed: bool,
+    /// `true` when `RenderTexturesInner` was destroyed and rebuilt
+    /// during this `views()` call — by viewport resize, AA flip,
+    /// T2.5 opaque-mip-chain growth, or T2.6 HUD-depth
+    /// materialization. Every consumer that caches anything keyed
+    /// to a specific `GpuTextureView` / `GpuTexture` identity (bind
+    /// groups, the opaque mipgen) MUST invalidate on this flag, not
+    /// just on viewport resize — the destroyed textures and their
+    /// views are no longer valid.
+    pub views_recreated: bool,
     pub width: u32,
     pub height: u32,
     pub curr_index: usize,
@@ -294,7 +314,7 @@ impl RenderTextureViews {
         ping_pong: bool,
         width: u32,
         height: u32,
-        size_changed: bool,
+        views_recreated: bool,
     ) -> Self {
         let curr_index = if ping_pong { 0 } else { 1 };
         let prev_index = if ping_pong { 1 } else { 0 };
@@ -326,7 +346,7 @@ impl RenderTextureViews {
             effects: inner.effects_view.clone(),
             bloom: inner.bloom_view.clone(),
             composite: inner.composite_view.clone(),
-            size_changed,
+            views_recreated,
             curr_index,
             prev_index,
             width,
