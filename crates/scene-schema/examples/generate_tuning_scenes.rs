@@ -17,7 +17,7 @@
 //! 5. `tuning-coverage`         — 100 small props at varying camera distances.
 //! 6. `tuning-10k-meshes`       — 10K boxes (100×100×1 grid).
 //! 7. `tuning-importance-tiers` — 16 lights spanning a 4×4 (distance, intensity) grid; drives importance-tier cutoff tuning.
-//! 8. `tuning-1024-lights`      — ~1000 point lights spread over a 100m oversized floor + a transparent pane + a 40-light corner cluster; the GPU light-culling acceptance fixture (see docs/plans/light-culling.md).
+//! 8. `tuning-1024-lights`      — ~1000 point lights spread over a 100m oversized floor + a transparent pane + a 40-light corner cluster; the GPU light-culling acceptance fixture (see docs/PERFORMANCE.md §5h).
 
 use std::{fs, path::PathBuf};
 
@@ -785,7 +785,7 @@ fn scene_importance_tiers() -> EditorProject {
 //     concentrates enough lights into a single 16-pixel × 32-slice
 //     froxel to trigger the auto-grow overflow path on first frame.
 //
-// See docs/plans/light-culling.md § Test scene.
+// See docs/PERFORMANCE.md §5h (Lighting & light culling).
 // ─────────────────────────────────────────────────────────────────────
 
 fn scene_1024_lights() -> EditorProject {
