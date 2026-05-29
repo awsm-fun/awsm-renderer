@@ -246,13 +246,9 @@ impl AwsmRenderer {
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
         // ── Light culling per-frame setup ────────────────────────
         //
-        // MUST run BEFORE `mesh_light_indices_gpu.write_gpu` —
-        // ensure_viewport may recreate `light_culling_buffers.storage_buffer`
-        // (the merged mesh + froxel buffer), which would wipe the
-        // mesh indices written by `mesh_light_indices_gpu.write_gpu`
-        // if it ran in the other order. The cull pass's per-frame
-        // setup must land first so subsequent writes (mesh indices,
-        // cull dispatch) target the final buffer for the frame.
+        // `ensure_viewport` may recreate `light_culling_buffers.storage_buffer`
+        // (the froxel storage), so it must land before the cull dispatch
+        // writes the per-froxel slices into it for this frame.
         let (viewport_w_for_cull, viewport_h_for_cull) = self.gpu.current_context_texture_size()?;
         if self.light_culling_buffers.ensure_viewport(
             &self.gpu,
@@ -287,22 +283,12 @@ impl AwsmRenderer {
         )?;
         self.light_culling_buffers.reset_overflow(&self.gpu)?;
 
-        // Per-mesh light slice path. Patches slice fields into each
-        // affected mesh's MaterialMeshMeta and uploads the packed
-        // indices into the head region of the merged
-        // `light_culling_buffers.storage_buffer`. MUST run BEFORE
-        // `meshes.meta.write_gpu` so the slice patches land in the
-        // same meta upload, and MUST run AFTER the cull-pass
-        // `ensure_viewport` above so the indices land in the
-        // post-resize buffer.
-        self.mesh_light_indices_gpu.write_gpu(
-            &self.gpu,
-            &self.light_buckets,
-            &self.lights,
-            &mut self.meshes,
-            &mut self.light_culling_buffers,
-            &mut self.bind_groups,
-        )?;
+        // (Removed: the per-mesh light-slice GPU upload. All opaque
+        // shading now reads the per-pixel froxel light list, so the
+        // per-mesh slices in the storage-buffer head are no longer
+        // consumed. `LightMeshBuckets` is still rebuilt elsewhere — it
+        // feeds the shadow-receiver gate — but its slices aren't uploaded.)
+
         // Decals — upload per-decal data if anything changed since last
         // frame. Skipped entirely when the decals feature is off.
         if let Some(decals) = self.decals.as_mut() {
@@ -422,9 +408,8 @@ impl AwsmRenderer {
         }
         self.material_classify_buffers.reset_header(&self.gpu)?;
 
-        // (Light-culling per-frame setup moved earlier — must run
-        // before `mesh_light_indices_gpu.write_gpu` since both touch
-        // `light_culling_buffers.storage_buffer`.)
+        // (Light-culling per-frame setup runs earlier, before the cull
+        // dispatch writes into `light_culling_buffers.storage_buffer`.)
 
         // Build a snapshot of the active mesh count so we can size the
         // occlusion-cull buffers before bind groups are recreated.
