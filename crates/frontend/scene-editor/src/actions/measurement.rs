@@ -961,6 +961,67 @@ pub async fn read_material_sampler_diag() -> String {
     .await
 }
 
+/// Dev-only: dump the live light-culling inputs (camera matrices,
+/// viewport/tile grid, slice count, and every punctual light's world
+/// position + range) so an offline simulation can reproduce the cull
+/// math against ground-truth runtime data. JSON shape:
+/// `{ "proj":[16], "view":[16], "viewport":[w,h], "tiles_x":N,
+///    "tiles_y":M, "slice_count":S, "max_cap":C,
+///    "lights":[{"pos":[x,y,z],"range":r}, ...] }`.
+#[wasm_bindgen]
+pub async fn debug_dump_cull_state() -> String {
+    use awsm_renderer::lights::Light;
+    crate::context::with_renderer(|r| {
+        let m = match r.camera.last_matrices.as_ref() {
+            Some(m) => m,
+            None => return "{\"error\":\"no camera matrices\"}".to_string(),
+        };
+        let proj = m.projection.to_cols_array();
+        let view = m.view.to_cols_array();
+        let b = &r.light_culling_buffers;
+        let arr = |a: &[f32]| {
+            a.iter()
+                .map(|v| format!("{v}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let mut lights = String::from("[");
+        let mut first = true;
+        for (_k, light) in r.lights.iter() {
+            if let Light::Point {
+                position, range, ..
+            }
+            | Light::Spot {
+                position, range, ..
+            } = light
+            {
+                if !first {
+                    lights.push(',');
+                }
+                first = false;
+                lights.push_str(&format!(
+                    "{{\"pos\":[{},{},{}],\"range\":{}}}",
+                    position[0], position[1], position[2], range
+                ));
+            }
+        }
+        lights.push(']');
+        format!(
+            "{{\"proj\":[{}],\"view\":[{}],\"viewport\":[{},{}],\"tiles_x\":{},\"tiles_y\":{},\"slice_count\":{},\"max_cap\":{},\"lights\":{}}}",
+            arr(&proj),
+            arr(&view),
+            b.viewport_w,
+            b.viewport_h,
+            b.tiles_x(),
+            b.tiles_y(),
+            b.slice_count,
+            b.max_per_froxel_capacity,
+            lights
+        )
+    })
+    .await
+}
+
 #[wasm_bindgen]
 pub async fn read_oversized_mesh_stats() -> String {
     let (last_max_bucket, oversized_count) = crate::context::with_renderer_mut(|r| {

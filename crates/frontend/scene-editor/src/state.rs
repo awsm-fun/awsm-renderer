@@ -87,6 +87,9 @@ pub struct AppState {
     /// to `AntiAliasing::default()` so the editor's boot matches the
     /// renderer's defaults.
     pub anti_aliasing: Mutable<AntiAliasing>,
+    /// Dev toggle: light-culling debug heatmap (per-pixel applied-light
+    /// count). Drives `AwsmRenderer::set_light_culling_debug_heatmap`.
+    pub debug_light_heatmap: Mutable<bool>,
     pub rotation_display: Mutable<RotationDisplay>,
     /// Active viewport projection. The header `Camera` tab's dropdown is
     /// the single source of truth; `actions::camera::set_projection_mode`
@@ -191,6 +194,7 @@ impl AppState {
             grid_enabled: Mutable::new(true),
             gizmo_enabled: Mutable::new(true),
             anti_aliasing: Mutable::new(AntiAliasing::default()),
+            debug_light_heatmap: Mutable::new(false),
             rotation_display: Mutable::new(RotationDisplay::EulerDegrees),
             projection_mode: Mutable::new(ProjectionMode::Perspective),
             editor_camera_target: Mutable::new(None),
