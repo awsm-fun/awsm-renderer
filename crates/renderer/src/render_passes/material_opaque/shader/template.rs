@@ -69,11 +69,12 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     /// transparent stays false.
     pub use_mesh_light_slices: bool,
     /// When `true`, the shared `lights.wgsl` emits the
-    /// `apply_lighting_per_froxel*` helpers used by the future
-    /// oversized-opaque routing (see
-    /// `docs/plans/light-culling.md` § Phase 2). Today opaque holds
-    /// this `false` — only transparent consumes the per-froxel walk.
-    /// The three fields below stay declared regardless because askama
+    /// `apply_lighting_per_froxel*` helpers. Opaque sets this `true`:
+    /// oversized meshes (flagged with the `0xFFFFFFFFu` `light_slice_count`
+    /// sentinel) route through the per-pixel froxel walk instead of the
+    /// too-coarse per-mesh slice; small meshes still take the per-mesh
+    /// path (see `compute.wgsl`'s sentinel branch and docs/PERFORMANCE.md
+    /// §5h). The fields below stay declared regardless because askama
     /// type-checks every `{% if %}` / `{{ var }}` reference in the
     /// included template, even inside a closed gate.
     pub use_froxel_lights: bool,
