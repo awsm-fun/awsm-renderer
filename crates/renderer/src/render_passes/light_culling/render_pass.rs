@@ -42,16 +42,24 @@ impl LightCullingRenderPass {
         })
     }
 
-    /// Executes the light culling pass. Skipped when no punctual
-    /// lights are live this frame — the consumer shaders observe
-    /// stale counts in that case, but they also skip the froxel loop
-    /// (transparent: walks `n_lights` from `lights_info` which is 0;
-    /// opaque-oversized: the sentinel routing is bypassed for the
-    /// no-light common case).
+    /// Executes the light culling pass.
+    ///
+    /// The dispatch may only be skipped when there are **no lights at
+    /// all** this frame. It is *not* enough to skip when there are no
+    /// punctual lights: the froxel consumers (transparent always,
+    /// opaque-oversized via the `0xFFFFFFFF` sentinel) walk the
+    /// per-froxel slices whenever `lights_info.n_lights > 0` — which is
+    /// true for directional-only scenes too. Since the cull pass is the
+    /// sole writer/clearer of the per-tile/per-froxel counts, skipping
+    /// it while consumers still read would leave stale counts from a
+    /// prior frame and re-apply removed punctual lights.
+    ///
+    /// With at least one light present we always dispatch; `cs_tile` /
+    /// `cs_main` cheaply clear the counts and skip directionals, so a
+    /// directional-only frame just zeroes the froxel slices.
     pub fn render(&self, ctx: &RenderContext) -> Result<()> {
         let buffers = ctx.light_culling_buffers;
-        let live_punctual = ctx.live_punctual_light_count();
-        if live_punctual == 0 {
+        if ctx.live_light_count() == 0 {
             return Ok(());
         }
         let bind_group = self.bind_groups.get_bind_group()?;

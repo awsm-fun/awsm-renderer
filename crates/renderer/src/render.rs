@@ -547,6 +547,7 @@ impl AwsmRenderer {
             material_classify_buffers: &self.material_classify_buffers,
             light_culling_buffers: &self.light_culling_buffers,
             live_punctual_count: self.lights.iter_active_punctual().count() as u32,
+            live_light_count: self.lights.len() as u32,
             material_edge_buffers: self.material_edge_buffers.as_ref(),
             material_edge_layout_uniform: self.material_edge_layout_uniform.as_ref(),
             bind_group_layouts: &self.bind_group_layouts,
@@ -1518,9 +1519,15 @@ pub struct RenderContext<'a> {
     /// oversized shaders read it back at shading time.
     pub light_culling_buffers: &'a crate::render_passes::light_culling::LightCullingBuffers,
     /// Number of live punctual lights this frame — same value the
-    /// cull and shading shaders see in `lights_info.data.x`. Used by
-    /// the cull pass to skip the entire dispatch when zero.
+    /// cull and shading shaders see in `lights_info.data.x`. Used to
+    /// gate the overflow readback (only punctuals can overflow a froxel).
     pub live_punctual_count: u32,
+    /// Total live light count this frame (punctual + directional) —
+    /// matches `lights_info.n_lights`. The froxel consumers walk the
+    /// per-froxel slices whenever `n_lights > 0`, so the cull pass
+    /// (sole writer/clearer of those counts) must run whenever this is
+    /// non-zero; it may only skip when there are no lights at all.
+    pub live_light_count: u32,
     /// Priority-3 MSAA edge-resolve composite buffer. `Some` only
     /// when MSAA is on (no edges to resolve under single-sample).
     /// Bound read-write by classify (slot 4 of group(0)) and by the
@@ -1588,6 +1595,15 @@ impl<'a> RenderContext<'a> {
     /// zero (typical for skybox-only / directional-only scenes).
     pub fn live_punctual_light_count(&self) -> u32 {
         self.live_punctual_count
+    }
+
+    /// Total live light count this frame (matches `lights_info.n_lights`).
+    /// The cull pass uses this to decide whether it may skip entirely:
+    /// the froxel consumers only walk per-froxel slices when
+    /// `n_lights > 0`, so the cull (sole writer/clearer of those counts)
+    /// must run whenever any light exists.
+    pub fn live_light_count(&self) -> u32 {
+        self.live_light_count
     }
 
     /// Begins a visibility-buffer extension pass for world-space opaque geometry.
