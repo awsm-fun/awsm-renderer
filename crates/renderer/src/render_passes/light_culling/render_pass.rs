@@ -5,10 +5,12 @@
 //! per-froxel count and atomic-appends any punctual light whose world-
 //! space bounding sphere overlaps the froxel's view-space frustum.
 //!
-//! Dispatch is skipped when there are no active punctual lights — the
-//! shading passes then take their existing per-mesh / flat-loop paths,
-//! which are correct (no froxel reads) even though the cull output
-//! buffers stay stale.
+//! Dispatch is skipped only when there are **no lights at all** this
+//! frame. It is *not* skipped on no-punctual / directional-only scenes:
+//! the froxel consumers walk the per-froxel slices whenever
+//! `lights_info.n_lights > 0`, and the cull pass is the sole
+//! writer/clearer of those counts, so skipping it there would leave
+//! stale froxel data. See `render()` for the full rationale.
 
 use awsm_renderer_core::command::compute_pass::ComputePassDescriptor;
 
@@ -31,8 +33,9 @@ impl LightCullingRenderPass {
     /// Creates the light culling render pass resources. Eager compile
     /// — matches the existing scaffold and every other compute pass in
     /// this codebase. The cull dispatch itself is gated on
-    /// `live_punctual_count > 0` at frame time, so the work is paid
-    /// only when there's something to cull.
+    /// `live_light_count() > 0` at frame time (see `render()`): it must
+    /// run for directional-only scenes too, to clear the froxel counts
+    /// the consumers still read; only truly light-free frames skip it.
     pub async fn new(ctx: &mut RenderPassInitContext<'_>) -> Result<Self> {
         let bind_groups = LightCullingBindGroups::new(ctx).await?;
         let pipelines = LightCullingPipelines::new(ctx, &bind_groups).await?;
