@@ -35,10 +35,6 @@ pub struct ShaderTemplateTransparentMaterialIncludes {
     /// `apply_lighting`. Enabled for the transparent pass; the shared
     /// shadow bind group sits at slot 1.
     pub shadows_enabled: bool,
-    /// Transparent stays on the flat light loop. The field exists so
-    /// the shared `lights.wgsl` `{% if use_mesh_light_slices %}`
-    /// resolves; always `false` here.
-    pub use_mesh_light_slices: bool,
     /// Transparent always uses the per-froxel punctual walk produced
     /// by the GPU light-culling pass. The shared `lights.wgsl` emits
     /// `apply_lighting_per_froxel*` only when this is `true`.
@@ -66,7 +62,6 @@ impl ShaderTemplateTransparentMaterialIncludes {
             uv_sets: cache_key.attributes.uv_sets.unwrap_or_default(),
             debug: ShaderTemplateMaterialTransparentDebug::new(),
             shadows_enabled: true,
-            use_mesh_light_slices: false,
             use_froxel_lights: true,
             froxel_slice_count: cache_key.froxel_slice_count,
             materials_wgsl: awsm_materials::registry::build_materials_wgsl(),

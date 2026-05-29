@@ -32,7 +32,7 @@
 // shading machinery (BRDF, shadow sampling, prefix walks) the cull
 // pass doesn't need; copying just the two struct decls keeps the
 // shader template free of unused template flags
-// (`use_mesh_light_slices` / `has_lighting_*` / `shadows_enabled`).
+// (`has_lighting_*` / `shadows_enabled`).
 struct LightPacked {
     pos_range: vec4<f32>,         // .xyz = position, .w = range
     dir_inner: vec4<f32>,         // .xyz = direction, .w = inner-cone cos
@@ -77,10 +77,10 @@ struct CullParams {
 @group(0) @binding(1) var<uniform> cull_params: CullParams;
 @group(0) @binding(2) var<uniform> lights_info: LightsInfoPacked;
 @group(0) @binding(3) var<uniform> lights: array<LightPacked, {{ max_punctual_lights }}u>;
-// `lights_storage`: combined per-mesh + per-froxel u32 array. The cull
-// pass writes per-froxel data at offsets ≥ `cull_params.mesh_indices_capacity_u32`;
-// the head region is populated by `MeshLightIndicesGpu` on the CPU
-// (we don't touch it from the cull shader). Declared as
+// `lights_storage`: per-froxel light-slice u32 array. The cull pass
+// writes per-froxel data at offsets ≥ `cull_params.mesh_indices_capacity_u32`;
+// the `[0..mesh_indices_capacity_u32)` head is an unwritten reserved
+// prefix (a vestige of the removed per-mesh lighting path). Declared as
 // `array<atomic<u32>>` so the per-froxel atomic count + atomic index
 // stores compile cleanly.
 @group(0) @binding(4) var<storage, read_write> lights_storage: array<atomic<u32>>;

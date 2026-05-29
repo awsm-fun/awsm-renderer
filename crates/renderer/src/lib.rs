@@ -64,7 +64,7 @@ use awsm_renderer_core::{
 use bind_groups::BindGroups;
 use camera::CameraBuffer;
 use instances::Instances;
-use light_buckets::{LightMeshBuckets, MeshLightIndicesGpu};
+use light_buckets::LightMeshBuckets;
 use lights::Lights;
 use materials::Materials;
 use meshes::Meshes;
@@ -172,9 +172,6 @@ pub struct AwsmRenderer {
     /// frame from `scene_spatial`. Feeds the per-mesh light-list shader
     /// path.
     pub light_buckets: LightMeshBuckets,
-    /// GPU storage buffers backing `light_buckets` for the shader path.
-    /// Uploaded per-frame from the transposed buckets.
-    pub mesh_light_indices_gpu: MeshLightIndicesGpu,
     /// Per-frame classify-pass output. Holds the per-`shader_id` tile
     /// buckets + indirect-dispatch args the opaque material pipelines
     /// consume.
@@ -369,13 +366,14 @@ pub struct AwsmRenderer {
 ///     material_mesh_metas, materials, attribute_indices,
 ///     attribute_data, transforms (packed model + normal — Option E),
 ///     texture_transforms, instance_attrs.
-///   * 1 storage buffer in `@group(1)`: mesh_light_indices.
+///   * 1 storage buffer in `@group(1)`: lights_storage (the GPU cull
+///     pass's per-froxel light slices).
 ///
 /// Total = 9, leaving 1 spare under a 10-buffer limit. lights +
-/// lights_info are uniforms in group(1) (Option F). The per-mesh
-/// slice (`light_slice_offset` + `light_slice_count`) is packed into
-/// MaterialMeshMeta itself, so no separate slices storage buffer is
-/// needed. The transparent pass peaks at 9. Bumping this lower than
+/// lights_info are uniforms in group(1) (Option F); shading reads the
+/// per-pixel froxel light list from `lights_storage`, so no separate
+/// per-mesh slices storage buffer is needed. The transparent pass
+/// peaks at 9. Bumping this lower than
 /// the binding count will pass adapter compatibility on a device that
 /// exactly meets the declared limit, then fail pipeline validation
 /// when the shader is compiled.
@@ -1016,10 +1014,6 @@ impl AwsmRenderer {
             ("camera", self.camera.upload_stats()),
             ("frame_globals", self.frame_globals.upload_stats()),
             ("lights", self.lights.upload_stats()),
-            (
-                "mesh_light_indices",
-                self.mesh_light_indices_gpu.upload_stats(),
-            ),
             ("shadows", self.shadows.upload_stats()),
         ];
         if let Some(occ) = self.occlusion_buffers.as_ref() {
@@ -1681,7 +1675,6 @@ impl AwsmRendererBuilder {
         // is `describe_shaders → describe_pipelines → from_resolved`,
         // none of which compile pipelines themselves. See
         // `docs/PERFORMANCE.md` §5g for the architectural rationale.
-        let mesh_light_indices_gpu = MeshLightIndicesGpu::new(&gpu)?;
 
         // Sized for a small initial viewport; recreated by
         // `ClassifyBuffers::ensure_capacity` on first frame once the
@@ -1700,9 +1693,8 @@ impl AwsmRendererBuilder {
             )?;
 
         // Light-culling froxel buffers. Sized to a tiny placeholder
-        // viewport + mesh-region; per-frame `ensure_viewport` /
-        // `ensure_mesh_indices_capacity` grow them once the real
-        // swap-chain size + bucket payload are known.
+        // viewport; per-frame `ensure_viewport` grows them once the real
+        // swap-chain size is known.
         let light_culling_buffers = render_passes::light_culling::LightCullingBuffers::new(
             &gpu,
             16,
@@ -2073,7 +2065,6 @@ impl AwsmRendererBuilder {
             scene_spatial: SceneSpatial::new(scene_spatial_config.unwrap_or_default()),
             recommended_shadow_quality_tier,
             light_buckets: LightMeshBuckets::default(),
-            mesh_light_indices_gpu,
             material_classify_buffers,
             light_culling_buffers,
             light_culling_debug_heatmap: 0,
@@ -2190,7 +2181,6 @@ impl AwsmRendererBuilder {
                 } else {
                     crate::render_passes::material_opaque::shader::template::MipmapMode::None
                 },
-                use_mesh_light_slices: false,
                 gpu_culling: _self.features.gpu_culling,
                 coverage_lod: _self.features.coverage_lod,
                 debug_bitmask: 0,

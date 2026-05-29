@@ -498,15 +498,11 @@ fn strip_tracing_span_suffix(name: &str) -> Option<&str> {
 }
 
 /// Read the renderer's light-bucket telemetry.
-/// Returns a JSON string `{ "last_max_bucket": N, "oversized_count": M }`
-/// for the most-recently-rebuilt `LightMeshBuckets`. Drive from
-/// preview_eval after loading `tuning-open-world` (or any authored
-/// scene with terrain / ocean / skyboxes) to inform re-tuning of
-/// `OVERSIZED_LIST_COUNT_THRESHOLD` (default 16) and
-/// `OVERSIZED_AABB_DIAGONAL_METERS` (default 50.0). Returns JSON
-/// (rather than a JS object) to dodge a `serde_wasm_bindgen`
-/// dependency the editor doesn't otherwise carry; the caller does
-/// `JSON.parse()`.
+/// Returns a JSON string `{ "last_max_bucket": N }` — the largest
+/// single-light mesh bucket in the most-recently-rebuilt
+/// `LightMeshBuckets`. Returns JSON (rather than a JS object) to dodge
+/// a `serde_wasm_bindgen` dependency the editor doesn't otherwise
+/// carry; the caller does `JSON.parse()`.
 /// Phase-2.1 upload-ring telemetry. Returns a JSON object keyed by
 /// renderer subsystem (`transforms`, `materials`, `instances.transforms`,
 /// …) plus a `_total` rollup. Each entry exposes
@@ -1024,14 +1020,9 @@ pub async fn debug_dump_cull_state() -> String {
 
 #[wasm_bindgen]
 pub async fn read_oversized_mesh_stats() -> String {
-    let (last_max_bucket, oversized_count) = crate::context::with_renderer_mut(|r| {
-        (
-            r.light_buckets.last_max_bucket(),
-            r.light_buckets.oversized_meshes().len(),
-        )
-    })
-    .await;
-    format!("{{\"last_max_bucket\":{last_max_bucket},\"oversized_count\":{oversized_count}}}")
+    let last_max_bucket =
+        crate::context::with_renderer_mut(|r| r.light_buckets.last_max_bucket()).await;
+    format!("{{\"last_max_bucket\":{last_max_bucket}}}")
 }
 
 /// Dev-only: drive the renderer's GPU pick at the given canvas-local

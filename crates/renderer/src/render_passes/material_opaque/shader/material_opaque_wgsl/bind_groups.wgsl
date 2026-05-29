@@ -87,16 +87,12 @@ struct ClassifyBuckets {
 // `MAX_PUNCTUAL_LIGHTS` is the Rust-side constant; the WGSL array
 // length must match it exactly for binding-size validation.
 @group(1) @binding(1) var<uniform> lights: array<LightPacked, 1024>;
-// `lights_storage`: merged per-mesh + per-froxel u32 array.
-// Head region `[0..cull_params.mesh_indices_capacity_u32)` carries the
-// CPU-written per-mesh light indices (consumed via the per-mesh slice
-// fields in `MaterialMeshMeta`). Tail region carries the GPU cull
-// pass's per-froxel slices (consumed via the per-pixel
-// `apply_lighting_per_froxel*` helpers when the oversized sentinel
-// `light_slice_count == 0xFFFFFFFFu` fires).
-//
-// Merging the two regions onto one binding keeps the opaque compute
-// stage under WebGPU's `maxStorageBuffersPerShaderStage` ceiling.
+// `lights_storage`: the GPU cull pass's per-froxel light-slice u32
+// array, consumed via the per-pixel `apply_lighting_per_froxel*`
+// helpers. The head region `[0..cull_params.mesh_indices_capacity_u32)`
+// is reserved but unwritten since the per-mesh lighting path was
+// removed; the froxel tail starts after it (the offset keeps the
+// froxel base in lockstep with what the cull pass writes).
 @group(1) @binding(2) var<storage, read> lights_storage: array<u32>;
 // `cull_params`: per-frame uniform written by the cull pass. The
 // per-pixel froxel index calc reads `tiles_x/y`, `viewport_w/h`,

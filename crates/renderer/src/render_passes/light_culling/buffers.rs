@@ -5,20 +5,21 @@
 //! - **`params_buffer`** (uniform): per-frame `CullParams` (tiles,
 //!   near/far, capacities, mesh-region offset). Re-written each frame via
 //!   `writeBuffer`.
-//! - **`storage_buffer`** (storage RW + copy_src): **merged** light data,
-//!   laid out as (`MeshLightIndicesGpu` writes the head; the cull pass
-//!   writes the tail):
+//! - **`storage_buffer`** (storage RW + copy_src): the cull pass's
+//!   per-froxel light slices:
 //!
 //!   ```text
-//!   [0 .. mesh_indices_capacity_u32)    per-mesh CPU-written light indices
+//!   [0 .. mesh_indices_capacity_u32)    reserved prefix (unwritten)
 //!   [mesh_indices_capacity_u32 .. end)  per-froxel GPU-written slices;
 //!                                       stride = max_per_froxel_capacity + 1
 //!                                       (slot 0 = atomic count, 1.. = indices)
 //!   ```
 //!
-//!   Merging the two regions into one binding keeps the opaque pass under
-//!   WebGPU's `maxStorageBuffersPerShaderStage` ceiling — both slices
-//!   index into the same `lights_storage` binding.
+//!   The reserved prefix is a vestige of the removed per-mesh lighting
+//!   path (it formerly held CPU-written per-mesh light indices). It's
+//!   left in place as a small constant froxel-base offset
+//!   (`mesh_indices_capacity_u32`, carried on `CullParams`) that both
+//!   the cull writer and the shading reader agree on.
 //! - **`tile_lights_buffer`** (storage RW): the two-level cull's Stage-A
 //!   (`cs_tile`) output — one candidate-light slice per 2D screen tile
 //!   (`tiles_x * tiles_y`), each `tile_light_capacity + 1` u32 (slot 0 =
@@ -35,8 +36,7 @@
 //!
 //! Buffers are recreated when:
 //! - the viewport tile count grows (ensure_viewport)
-//! - the per-froxel budget grows (set_max_per_froxel_capacity)
-//! - the mesh-region capacity grows (ensure_mesh_indices_capacity).
+//! - the per-froxel budget grows (set_max_per_froxel_capacity).
 
 use std::sync::LazyLock;
 
@@ -56,8 +56,10 @@ pub const DEFAULT_SLICE_COUNT: u32 = 32;
 /// Initial per-froxel light-index budget.
 pub const DEFAULT_MAX_PER_FROXEL_CAPACITY: u32 = 32;
 
-/// Initial mesh-region capacity in u32 entries. Grows 2× on overflow
-/// (mirrors `MeshLightIndicesGpu`'s prior growth pattern).
+/// Size (u32 entries) of the reserved prefix that precedes the
+/// per-froxel slices in `storage_buffer`. A vestige of the removed
+/// per-mesh lighting path; kept as a small constant froxel-base offset
+/// the cull writer and shading reader agree on (see the module doc).
 pub const DEFAULT_MESH_INDICES_CAPACITY: u32 = 4;
 
 /// Initial per-2D-screen-tile candidate-light capacity for the two-level
@@ -148,10 +150,11 @@ pub struct LightCullingBuffers {
     /// [`Self::ensure_tile_light_capacity`]. Never exceeds
     /// `MAX_TILE_LIGHT_CAPACITY`.
     pub tile_light_capacity: u32,
-    /// Number of u32 entries reserved at the head of `storage_buffer` for
-    /// the per-mesh light-indices region. The cull pass writes its
-    /// froxel data starting at this offset; `MeshLightIndicesGpu` writes
-    /// mesh indices into the `[0..mesh_indices_capacity_u32)` prefix.
+    /// Number of u32 entries reserved at the head of `storage_buffer`
+    /// before the per-froxel slices begin — the cull pass writes its
+    /// froxel data starting at this offset. The `[0..mesh_indices_capacity_u32)`
+    /// prefix is now an unwritten vestige of the removed per-mesh
+    /// lighting path (kept as a constant froxel-base offset).
     pub mesh_indices_capacity_u32: u32,
     /// Last viewport dimensions the buffers were sized for, in pixels.
     pub viewport_w: u32,
@@ -343,33 +346,6 @@ impl LightCullingBuffers {
             self.slice_count,
             new_capacity,
             self.mesh_indices_capacity_u32,
-            self.tile_light_capacity,
-        )?;
-        Ok(true)
-    }
-
-    /// Grow the mesh-indices region if `needed_capacity` exceeds current
-    /// capacity. Called by `MeshLightIndicesGpu::write_gpu` when its
-    /// per-frame scratch exceeds the head reserve.
-    pub fn ensure_mesh_indices_capacity(
-        &mut self,
-        gpu: &AwsmRendererWebGpu,
-        needed_capacity_u32: u32,
-    ) -> Result<bool, AwsmCoreError> {
-        if needed_capacity_u32 <= self.mesh_indices_capacity_u32 {
-            return Ok(false);
-        }
-        let new_capacity = needed_capacity_u32
-            .checked_mul(2)
-            .unwrap_or(needed_capacity_u32)
-            .max(DEFAULT_MESH_INDICES_CAPACITY);
-        *self = Self::new(
-            gpu,
-            self.viewport_w,
-            self.viewport_h,
-            self.slice_count,
-            self.max_per_froxel_capacity,
-            new_capacity,
             self.tile_light_capacity,
         )?;
         Ok(true)

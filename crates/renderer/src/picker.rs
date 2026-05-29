@@ -135,7 +135,6 @@ impl AwsmRenderer {
             instances: &self.instances,
             anti_aliasing: &self.anti_aliasing,
             shadows: &self.shadows,
-            mesh_light_indices_gpu: &self.mesh_light_indices_gpu,
             material_classify_buffers: &self.material_classify_buffers,
             light_culling_buffers: &self.light_culling_buffers,
             material_edge_buffers: self.material_edge_buffers.as_ref(),

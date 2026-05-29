@@ -44,10 +44,6 @@ pub struct BindGroupRecreateContext<'a> {
     pub instances: &'a Instances,
     pub anti_aliasing: &'a AntiAliasing,
     pub shadows: &'a Shadows,
-    /// Per-mesh light-slice storage buffers. Bound at group(1)
-    /// bindings 2/3 of the material-opaque + material-transparent
-    /// shading passes.
-    pub mesh_light_indices_gpu: &'a crate::light_buckets::MeshLightIndicesGpu,
     /// Classify-pass output buffer. Bound read-write by the classify
     /// pass; bound read-only as the per-`shader_id` tile bucket source
     /// on the opaque main bind group; consumed as indirect-args by
@@ -147,10 +143,6 @@ pub enum BindGroupCreate {
     /// Shadow atlas, EVSM atlas, cube array, or descriptors buffer was recreated;
     /// the opaque + transparent shading bind groups must re-bind the new resources.
     ShadowsResourcesChange,
-    /// `mesh_light_slices` / `mesh_light_indices` GPU buffers were
-    /// reallocated (per-frame grow path). The lights bind groups
-    /// (opaque + transparent) must re-bind the new buffer handles.
-    MeshLightIndicesResize,
     /// Classify output buffer was (re)allocated (first frame, or
     /// viewport resize bumped the tile count past current capacity).
     /// The classify pass's bind group and the opaque main bind group
@@ -272,6 +264,17 @@ impl BindGroups {
                     functions_to_call.insert(FunctionToCall::GeometryTransformMaterials);
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
                     functions_to_call.insert(FunctionToCall::TransparentMeshMaterial);
+                    // The deferred material-classify pass binds the material
+                    // data buffer (`materials.gpu_buffer`, slot 2) to read each
+                    // material's shader_id when bucketing tiles. Materials
+                    // register asynchronously during a scene load, so this
+                    // buffer reallocates mid-load; without rebinding, classify
+                    // reads stale material data, misclassifies, and emits zero
+                    // workgroups for the live buckets — the indirect opaque
+                    // shading dispatch then covers no tiles and the geometry
+                    // renders black until an unrelated event (e.g. a viewport
+                    // resize) rebuilds the classify bind group.
+                    functions_to_call.insert(FunctionToCall::MaterialClassify);
                 }
                 BindGroupCreate::GeometryMeshMetaResize => {
                     functions_to_call.insert(FunctionToCall::GeometryMeta);
@@ -338,6 +341,17 @@ impl BindGroups {
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
                     functions_to_call.insert(FunctionToCall::TransparentMain);
                     functions_to_call.insert(FunctionToCall::Picker);
+                    // The deferred material-classify pass also binds the
+                    // per-mesh material-meta buffer (`meta.material_gpu_buffer`,
+                    // slot 1) to map each visibility sample → shader_id when
+                    // bucketing tiles. When the meta buffer is reallocated on
+                    // grow, classify must rebind it too — otherwise it reads a
+                    // stale buffer, misclassifies (often emitting zero
+                    // workgroups for the live buckets), and the indirect opaque
+                    // shading dispatch covers no tiles, so freshly-loaded
+                    // geometry renders black until some unrelated event (e.g. a
+                    // viewport resize) rebuilds the classify bind group.
+                    functions_to_call.insert(FunctionToCall::MaterialClassify);
                 }
                 BindGroupCreate::MeshGeometryPoolResize => {
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
@@ -359,12 +373,6 @@ impl BindGroups {
                 BindGroupCreate::ShadowsResourcesChange => {
                     functions_to_call.insert(FunctionToCall::OpaqueShadows);
                     functions_to_call.insert(FunctionToCall::TransparentShadows);
-                }
-                BindGroupCreate::MeshLightIndicesResize => {
-                    // Buffers are bound on the lights bind group of
-                    // both shading passes.
-                    functions_to_call.insert(FunctionToCall::OpaqueLights);
-                    functions_to_call.insert(FunctionToCall::TransparentLights);
                 }
                 BindGroupCreate::MaterialClassifyBuffersResize => {
                     // Classify rebuilds its own bind group; opaque

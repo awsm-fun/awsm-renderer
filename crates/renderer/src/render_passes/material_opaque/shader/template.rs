@@ -67,16 +67,11 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     /// Switch the punctual-light walk to the per-mesh slice fed by
     /// `mesh_light_slices` + `mesh_light_indices`. Opaque is true;
     /// transparent stays false.
-    pub use_mesh_light_slices: bool,
     /// When `true`, the shared `lights.wgsl` emits the
-    /// `apply_lighting_per_froxel*` helpers. Opaque sets this `true`:
-    /// oversized meshes (flagged with the `0xFFFFFFFFu` `light_slice_count`
-    /// sentinel) route through the per-pixel froxel walk instead of the
-    /// too-coarse per-mesh slice; small meshes still take the per-mesh
-    /// path (see `compute.wgsl`'s sentinel branch and docs/PERFORMANCE.md
-    /// §5h). The fields below stay declared regardless because askama
-    /// type-checks every `{% if %}` / `{{ var }}` reference in the
-    /// included template, even inside a closed gate.
+    /// `apply_lighting_per_froxel*` helpers. Opaque sets this `true` —
+    /// all opaque shading reads the per-pixel froxel light list produced
+    /// by the GPU cull pass (see `compute.wgsl` and docs/PERFORMANCE.md
+    /// §5h).
     pub use_froxel_lights: bool,
     /// Number of view-space Z slices in the cull grid. Constant-
     /// folded into the per-pixel froxel-index calc that the gated
@@ -177,13 +172,9 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 msaa_sample_count,
                 debug,
                 shadows_enabled: true,
-                use_mesh_light_slices: true,
-                // Phase 2 (redo): opaque shading walks the per-froxel
-                // slice for oversized meshes via the 0xFFFFFFFFu
-                // sentinel in `light_slice_count`. The shared
-                // `lights.wgsl` emits `apply_lighting_per_froxel*`
-                // when this is `true`; small-mesh fragments still
-                // take the per-mesh slice path.
+                // All opaque shading reads the per-pixel froxel light
+                // list from the GPU cull pass; `lights.wgsl` emits the
+                // `apply_lighting_per_froxel*` helpers when this is `true`.
                 use_froxel_lights: true,
                 froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
                 materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
@@ -328,7 +319,6 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaqueEmpty> for ShaderTemplateMaterialOpaqu
             shadow_group_index: 3,
             shadows_enabled: false,
             sscs_available: false,
-            use_mesh_light_slices: false,
             use_froxel_lights: false,
             froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
             materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
@@ -356,10 +346,6 @@ pub struct ShaderTemplateMaterialOpaqueEmpty {
     /// Mirror of the opaque-compute flag. The empty template never
     /// runs SSCS, but the shared shadow include needs the symbol.
     pub sscs_available: bool,
-    /// Mirror of the opaque-compute flag. The empty template never
-    /// touches the per-mesh slice path but the shared lights include
-    /// needs the symbol in scope.
-    pub use_mesh_light_slices: bool,
     /// Mirror of the opaque-compute flag. The empty template doesn't
     /// emit the per-froxel walk either, but the shared `lights.wgsl`
     /// references the symbol so it must be declared.

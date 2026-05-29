@@ -306,8 +306,6 @@ pub struct PipelineConfigSnapshot {
     pub msaa: AntiAliasing,
     /// Active mipmap-sampling mode.
     pub mipmap: MipmapMode,
-    /// Whether the mesh-light-slices optimisation is active.
-    pub use_mesh_light_slices: bool,
     /// Whether GPU culling (HZB) is active.
     pub gpu_culling: bool,
     /// Whether coverage-LOD selection is active.
@@ -326,7 +324,6 @@ impl Default for PipelineConfigSnapshot {
         Self {
             msaa: AntiAliasing::default(),
             mipmap: MipmapMode::Gradient,
-            use_mesh_light_slices: false,
             gpu_culling: false,
             coverage_lod: false,
             debug_bitmask: 0,
