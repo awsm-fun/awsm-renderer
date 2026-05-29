@@ -80,9 +80,11 @@ struct CullParams {
 @group(0) @binding(4) var<storage, read_write> lights_storage: array<atomic<u32>>;
 @group(0) @binding(5) var<storage, read_write> overflow_counter: atomic<u32>;
 // `tile_lights`: two-level cull Stage-A output. One slice per 2D screen
-// tile (`tiles_x * tiles_y`), each `TILE_LIGHT_CAPACITY + 1` u32 wide
-// (slot 0 = atomic count, slots 1.. = candidate light indices). `cs_tile`
+// tile (`tiles_x * tiles_y`), each `cull_params.tile_light_capacity + 1`
+// u32 wide (slot 0 = atomic count, slots 1.. = candidate light indices).
+// The stride is a *runtime* value — `tile_light_capacity` is grown on the
+// CPU to the live punctual count (clamped to MAX_PUNCTUAL_LIGHTS) and the
+// buffer is reallocated to match, so a tile can't overflow. `cs_tile`
 // writes it (side-plane test, no Z); `cs_main` reads each froxel's tile
-// slice and applies only the Z-test. Capacity = MAX_PUNCTUAL_LIGHTS so a
-// tile can't overflow.
+// slice and applies only the Z-test.
 @group(0) @binding(6) var<storage, read_write> tile_lights: array<atomic<u32>>;
