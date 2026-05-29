@@ -21,7 +21,12 @@ use crate::render_passes::RenderPassInitContext;
 /// against. The render path consults these to decide if a rebuild is
 /// required after `set_max_per_froxel_capacity`.
 pub struct LightCullingPipelines {
+    /// Stage B (`cs_main`) — per-froxel Z-refine pipeline.
     pub pipeline_key: ComputePipelineKey,
+    /// Stage A (`cs_tile`) — per-2D-tile side-plane cull pipeline.
+    /// Compiled from the same shader module as `pipeline_key`, selected
+    /// via the `cs_tile` entry point.
+    pub tile_pipeline_key: ComputePipelineKey,
     pub slice_count: u32,
     pub max_per_froxel_capacity: u32,
 }
@@ -84,10 +89,22 @@ impl LightCullingPipelines {
                 gpu,
                 shaders,
                 pipeline_layouts,
-                ComputePipelineCacheKey::new(shader_key, pipeline_layout_key),
+                ComputePipelineCacheKey::new(shader_key, pipeline_layout_key)
+                    .with_entry_point("cs_main"),
+            )
+            .await?;
+        let tile_pipeline_key = pipelines
+            .compute
+            .get_key(
+                gpu,
+                shaders,
+                pipeline_layouts,
+                ComputePipelineCacheKey::new(shader_key, pipeline_layout_key)
+                    .with_entry_point("cs_tile"),
             )
             .await?;
         self.pipeline_key = pipeline_key;
+        self.tile_pipeline_key = tile_pipeline_key;
         self.slice_count = slice_count;
         self.max_per_froxel_capacity = max_per_froxel_capacity;
         Ok(())
@@ -121,11 +138,24 @@ impl LightCullingPipelines {
                 ctx.gpu,
                 ctx.shaders,
                 ctx.pipeline_layouts,
-                ComputePipelineCacheKey::new(shader_key, pipeline_layout_key),
+                ComputePipelineCacheKey::new(shader_key, pipeline_layout_key)
+                    .with_entry_point("cs_main"),
+            )
+            .await?;
+        let tile_pipeline_key = ctx
+            .pipelines
+            .compute
+            .get_key(
+                ctx.gpu,
+                ctx.shaders,
+                ctx.pipeline_layouts,
+                ComputePipelineCacheKey::new(shader_key, pipeline_layout_key)
+                    .with_entry_point("cs_tile"),
             )
             .await?;
         Ok(Self {
             pipeline_key,
+            tile_pipeline_key,
             slice_count,
             max_per_froxel_capacity,
         })

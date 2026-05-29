@@ -7,6 +7,7 @@
 //   3: lights           — uniform `array<LightPacked, MAX_PUNCTUAL_LIGHTS>`.
 //   4: lights_storage   — storage RW (atomics), merged per-mesh + per-froxel buffer (see layout below).
 //   5: overflow_counter — storage RW (atomic), single u32 incremented per dropped index.
+//   6: tile_lights      — storage RW (atomics), two-level Stage-A per-2D-tile candidate list.
 //
 // The per-froxel tail of `lights_storage` is laid out in
 // `(cull_params.max_per_froxel_capacity + 1)`-u32 strides (the capacity
@@ -76,3 +77,10 @@ struct CullParams {
 // stores compile cleanly.
 @group(0) @binding(4) var<storage, read_write> lights_storage: array<atomic<u32>>;
 @group(0) @binding(5) var<storage, read_write> overflow_counter: atomic<u32>;
+// `tile_lights`: two-level cull Stage-A output. One slice per 2D screen
+// tile (`tiles_x * tiles_y`), each `TILE_LIGHT_CAPACITY + 1` u32 wide
+// (slot 0 = atomic count, slots 1.. = candidate light indices). `cs_tile`
+// writes it (side-plane test, no Z); `cs_main` reads each froxel's tile
+// slice and applies only the Z-test. Capacity = MAX_PUNCTUAL_LIGHTS so a
+// tile can't overflow.
+@group(0) @binding(6) var<storage, read_write> tile_lights: array<atomic<u32>>;

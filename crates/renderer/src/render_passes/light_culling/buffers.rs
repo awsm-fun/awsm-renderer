@@ -22,6 +22,14 @@
 //!   under WebGPU's `maxStorageBuffersPerShaderStage` ceiling — the
 //!   per-mesh slice and the per-froxel slice both index into the same
 //!   `lights_storage` binding.
+//! - **`tile_lights_buffer`** (storage RW): the two-level cull's Stage-A
+//!   (`cs_tile`) output — one candidate-light slice per 2D screen tile
+//!   (`tiles_x * tiles_y`), each `TILE_LIGHT_CAPACITY + 1` u32 (slot 0 =
+//!   atomic count). Stage A runs the (Z-independent) side-plane test once
+//!   per tile; Stage B (`cs_main`) reads each froxel's tile slice and
+//!   applies only the cheap Z-slice test — so the expensive side-plane
+//!   work happens once per tile instead of once per froxel (× slice_count).
+//!   Sized to `MAX_PUNCTUAL_LIGHTS` so a tile slice can't overflow.
 //! - **`overflow_buffer`** (storage RW + copy_src): single
 //!   `atomic<u32>` incremented per dropped index. The CPU mapAsync
 //!   readback drives the auto-grow path.
@@ -52,6 +60,13 @@ pub const DEFAULT_MAX_PER_FROXEL_CAPACITY: u32 = 32;
 /// Initial mesh-region capacity in u32 entries. Grows 2× on overflow
 /// (mirrors `MeshLightIndicesGpu`'s prior growth pattern).
 pub const DEFAULT_MESH_INDICES_CAPACITY: u32 = 4;
+
+/// Per-2D-screen-tile candidate-light capacity for the two-level cull's
+/// Stage A (`cs_tile`) output. Sized to `MAX_PUNCTUAL_LIGHTS` so a tile
+/// column can never overflow — at most that many punctual lights exist
+/// in total — which removes any need for an overflow/fallback path in
+/// Stage B. Must match `TILE_LIGHT_CAPACITY` in the cull WGSL.
+pub const TILE_LIGHT_CAPACITY: u32 = crate::lights::MAX_PUNCTUAL_LIGHTS as u32;
 
 /// Byte size of the `CullParams` uniform — must match the WGSL struct.
 /// Layout: 7 × u32 (tiles_x, tiles_y, viewport_w, viewport_h,
@@ -91,11 +106,24 @@ static OVERFLOW_USAGE: LazyLock<BufferUsage> = LazyLock::new(|| {
 static OVERFLOW_READBACK_USAGE: LazyLock<BufferUsage> =
     LazyLock::new(|| BufferUsage::new().with_map_read().with_copy_dst());
 
+/// Stage-A (`cs_tile`) per-2D-tile candidate list. Storage RW only —
+/// `cs_tile` resets the per-tile count each frame and atomic-appends;
+/// `cs_main` reads it. No host upload, so no `copy_dst`/`copy_src`.
+static TILE_LIGHTS_USAGE: LazyLock<BufferUsage> =
+    LazyLock::new(|| BufferUsage::new().with_storage());
+
 /// Storage backing for the light-culling pass.
 pub struct LightCullingBuffers {
     pub params_buffer: web_sys::GpuBuffer,
     /// Merged mesh + froxel storage (see module doc).
     pub storage_buffer: web_sys::GpuBuffer,
+    /// Two-level cull Stage-A output: per-2D-screen-tile candidate light
+    /// list (`tiles_x * tiles_y` slices, each `TILE_LIGHT_CAPACITY + 1`
+    /// u32 — slot 0 = atomic count, slots 1.. = light indices). `cs_main`
+    /// (Stage B) reads each froxel's tile slice and applies only the
+    /// cheap Z-test, so the expensive side-plane test runs once per tile
+    /// instead of once per froxel (× slice_count).
+    pub tile_lights_buffer: web_sys::GpuBuffer,
     pub overflow_buffer: web_sys::GpuBuffer,
     /// Map-readable staging buffer for the per-frame `overflow_buffer`
     /// readback. The host records a `copy_buffer_to_buffer` into the
@@ -169,6 +197,21 @@ impl LightCullingBuffers {
             .into(),
         )?;
 
+        // Two-level cull Stage-A output: one slice per 2D screen tile
+        // (independent of slice_count), `TILE_LIGHT_CAPACITY + 1` u32
+        // each (slot 0 = count). Sized so a tile column can't overflow.
+        let tile_count = tiles_x.saturating_mul(tiles_y).max(1);
+        let tile_lights_entries =
+            tile_count.saturating_mul(TILE_LIGHT_CAPACITY.saturating_add(1)).max(1);
+        let tile_lights_buffer = gpu.create_buffer(
+            &BufferDescriptor::new(
+                Some("LightCullingTileLights"),
+                tile_lights_entries as usize * STORAGE_ENTRY_BYTE_SIZE,
+                *TILE_LIGHTS_USAGE,
+            )
+            .into(),
+        )?;
+
         let overflow_buffer = gpu.create_buffer(
             &BufferDescriptor::new(
                 Some("LightCullingOverflow"),
@@ -190,6 +233,7 @@ impl LightCullingBuffers {
         Ok(Self {
             params_buffer,
             storage_buffer,
+            tile_lights_buffer,
             overflow_buffer,
             overflow_readback_buffer,
             slice_count,

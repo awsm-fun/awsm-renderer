@@ -55,18 +55,25 @@ impl LightCullingRenderPass {
             return Ok(());
         }
         let bind_group = self.bind_groups.get_bind_group()?;
-        let pipeline = ctx.pipelines.compute.get(self.pipelines.pipeline_key)?;
+        let tile_pipeline = ctx.pipelines.compute.get(self.pipelines.tile_pipeline_key)?;
+        let froxel_pipeline = ctx.pipelines.compute.get(self.pipelines.pipeline_key)?;
+        let tiles_x = buffers.tiles_x();
+        let tiles_y = buffers.tiles_y();
 
         let compute_pass = ctx
             .command_encoder
             .begin_compute_pass(Some(&ComputePassDescriptor::new(Some("Light Culling")).into()));
-        compute_pass.set_pipeline(pipeline);
         compute_pass.set_bind_group(0, bind_group, None)?;
-        compute_pass.dispatch_workgroups(
-            buffers.tiles_x(),
-            Some(buffers.tiles_y()),
-            Some(buffers.slice_count),
-        );
+        // Stage A — per-2D-tile side-plane cull (one workgroup per tile,
+        // Z-independent). Writes each tile's candidate light list.
+        compute_pass.set_pipeline(tile_pipeline);
+        compute_pass.dispatch_workgroups(tiles_x, Some(tiles_y), Some(1));
+        // Stage B — per-froxel Z-refine. Reads each froxel's tile
+        // candidate list (written by Stage A above; WebGPU inserts the
+        // read-after-write storage barrier between dispatches in the same
+        // pass) and applies only the cheap Z-slice test.
+        compute_pass.set_pipeline(froxel_pipeline);
+        compute_pass.dispatch_workgroups(tiles_x, Some(tiles_y), Some(buffers.slice_count));
         compute_pass.end();
 
         Ok(())

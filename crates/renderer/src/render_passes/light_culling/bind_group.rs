@@ -9,6 +9,7 @@
 //!   3 lights           — uniform `array<LightPacked, MAX_PUNCTUAL_LIGHTS>`.
 //!   4 lights_storage   — storage RW (atomics), merged per-mesh + per-froxel buffer.
 //!   5 overflow_counter — storage RW single atomic counter.
+//!   6 tile_lights      — storage RW (atomics), two-level Stage-A per-2D-tile candidate list.
 
 use awsm_renderer_core::bind_groups::{
     BindGroupDescriptor, BindGroupEntry, BindGroupLayoutResource, BindGroupResource,
@@ -48,6 +49,8 @@ impl LightCullingBindGroups {
             // 4 lights_storage — storage RW (atomics + indices).
             storage_rw_entry(),
             // 5 overflow_counter — storage RW (atomic).
+            storage_rw_entry(),
+            // 6 tile_lights — storage RW (two-level Stage-A candidates).
             storage_rw_entry(),
         ];
         let bind_group_layout_key = ctx
@@ -100,6 +103,10 @@ impl LightCullingBindGroups {
             BindGroupEntry::new(
                 5,
                 BindGroupResource::Buffer(BufferBinding::new(&buffers.overflow_buffer)),
+            ),
+            BindGroupEntry::new(
+                6,
+                BindGroupResource::Buffer(BufferBinding::new(&buffers.tile_lights_buffer)),
             ),
         ];
         let descriptor = BindGroupDescriptor::new(

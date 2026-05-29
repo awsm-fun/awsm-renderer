@@ -44,6 +44,11 @@ pub struct ShaderTemplateLightCullingCompute {
     /// atomic-append overflow check; the auto-grow path recompiles
     /// when this changes.
     pub max_per_froxel_capacity: u32,
+    /// `MAX_PUNCTUAL_LIGHTS` — the two-level cull's Stage-A per-2D-tile
+    /// candidate capacity (`TILE_LIGHT_CAPACITY`). Matches the buffer
+    /// sizing in `light_culling/buffers.rs` so a tile slice can't
+    /// overflow.
+    pub max_punctual_lights: u32,
 }
 
 impl ShaderTemplateLightCullingCompute {
@@ -52,6 +57,7 @@ impl ShaderTemplateLightCullingCompute {
         Self {
             slice_count: cache_key.slice_count,
             max_per_froxel_capacity: cache_key.max_per_froxel_capacity,
+            max_punctual_lights: MAX_PUNCTUAL_LIGHTS as u32,
         }
     }
 }
