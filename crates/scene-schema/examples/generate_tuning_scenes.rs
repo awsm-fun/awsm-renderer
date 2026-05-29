@@ -42,6 +42,7 @@ fn main() -> std::io::Result<()> {
         ("tuning-10k-meshes", scene_10k_meshes()),
         ("tuning-importance-tiers", scene_importance_tiers()),
         ("tuning-1024-lights", scene_1024_lights()),
+        ("tuning-cull-debug", scene_cull_debug()),
     ] {
         let dir = out_root.join(name);
         fs::create_dir_all(&dir)?;
@@ -53,6 +54,52 @@ fn main() -> std::io::Result<()> {
     }
 
     Ok(())
+}
+
+// Cull-correctness probe scene. An oversized floor (100m → AABB diagonal
+// > 50m) lit by a 5×5 grid of 25 point lights spaced 20m apart, range 6m.
+// 25 > OVERSIZED_LIST_COUNT_THRESHOLD (16), so the floor is flagged
+// OVERSIZED and takes the per-pixel GPU **froxel** path (the per-mesh
+// slice path only kicks in below the threshold — and would trivially show
+// the whole mesh's light list on every pixel, which is *not* what we want
+// to test here). The light spheres are fully disjoint (8m gap between
+// surfaces), so a *correct* froxel cull places AT MOST ONE light in any
+// froxel: with the "Light Heatmap" debug toggle this must show 25 isolated
+// dim-blue blobs (count == 1) over a black floor. Bleeding between blobs,
+// multi-count cells, or a uniformly lit floor would be a froxel cull bug
+// (lights leaking into froxels their sphere does not reach).
+fn scene_cull_debug() -> EditorProject {
+    let mut project = empty_project("tuning-cull-debug");
+    project.nodes.push(plane_node(
+        "floor_oversized",
+        [0.0, -0.01, 0.0],
+        100.0,
+        100.0,
+        [0.25, 0.25, 0.28, 1.0],
+    ));
+    // 8×8 grid, 10m spacing, range 4 → 64 lights, disjoint spheres
+    // (2m gap), and enough *in-frustum* lights overlapping the floor that
+    // its per-mesh bucket exceeds the oversized threshold (16) → froxel
+    // path. range 4 at height 2.5 still reaches the floor (≈3.1m disc).
+    let coords = [-35.0_f32, -25.0, -15.0, -5.0, 5.0, 15.0, 25.0, 35.0];
+    let mut lights = Vec::with_capacity(64);
+    let mut i = 0;
+    for &x in coords.iter() {
+        for &z in coords.iter() {
+            let hue = i as f32 / 64.0;
+            lights.push(point_light(
+                &format!("probe_{i}"),
+                [x, 2.5, z],
+                hsv_to_rgb_arr(hue, 0.7, 1.0),
+                30.0,
+                4.0,
+                shadow_off(),
+            ));
+            i += 1;
+        }
+    }
+    project.nodes.push(root_group("lights", lights));
+    project
 }
 
 fn workspace_root() -> PathBuf {
