@@ -69,6 +69,14 @@ pub struct LoadingStatus {
     /// heavy phase instead of staying on "Populating scene" all
     /// the way through.
     pub populate_finalize: std::result::Result<bool, String>,
+    /// Number of pipeline groups still compiling in the background
+    /// scheduler (drained each frame from
+    /// `AwsmRenderer::drain_pipeline_status_events`). Covers the
+    /// post-`Ready` per-material / per-pass compiles (e.g. the MSAA
+    /// edge-resolve pipelines) that happen *after* the build phases —
+    /// the window where the canvas can otherwise sit black with no
+    /// status. Surfaced so a still-compiling frame never looks broken.
+    pub compile_pending: usize,
 }
 
 impl Default for LoadingStatus {
@@ -83,6 +91,7 @@ impl Default for LoadingStatus {
             gltf_data: Ok(false),
             populate_gpu_upload: Ok(false),
             populate_finalize: Ok(false),
+            compile_pending: 0,
         }
     }
 }
@@ -97,6 +106,7 @@ impl LoadingStatus {
             || matches!(self.gltf_data, Ok(true))
             || matches!(self.populate_gpu_upload, Ok(true))
             || matches!(self.populate_finalize, Ok(true))
+            || self.compile_pending > 0
     }
 
     pub fn ok_strings(&self) -> Vec<String> {
@@ -153,6 +163,16 @@ impl LoadingStatus {
         }
         if let Ok(true) = &self.populate_finalize {
             statuses.push("Finalizing scene (IBL, skybox, lights)...".to_string());
+        }
+
+        // Background pipeline-scheduler compiles (post-build per-material /
+        // per-pass). Shown last because it trails the load phases — this is
+        // the "canvas is black but it's actually compiling" window.
+        if self.compile_pending > 0 {
+            statuses.push(format!(
+                "Compiling render pipelines... ({} remaining, first load only)",
+                self.compile_pending
+            ));
         }
 
         statuses
