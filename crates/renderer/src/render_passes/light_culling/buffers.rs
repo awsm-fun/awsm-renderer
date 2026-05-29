@@ -156,7 +156,15 @@ pub struct LightCullingBuffers {
     /// Last viewport dimensions the buffers were sized for, in pixels.
     pub viewport_w: u32,
     pub viewport_h: u32,
-    /// Current `tiles_x * tiles_y * slice_count`.
+    /// Froxel count the buffers are currently **allocated** for — the
+    /// high-watermark `tiles_x * tiles_y * slice_count` seen so far, not
+    /// necessarily the count for the live viewport. On shrink
+    /// (`ensure_viewport`) the buffers are deliberately kept at this
+    /// larger size and `froxel_count` is left unchanged, so a later
+    /// grow-back to a still-smaller-or-equal size avoids a realloc. The
+    /// per-frame dispatch and `CullParams` derive the *live* froxel grid
+    /// from `viewport_w/h` via `tiles_x()` / `tiles_y()` — never from
+    /// this field — so use it only for allocation/realloc decisions.
     pub froxel_count: u32,
     /// Last `CullParams` payload written into `params_buffer`. Used by the
     /// per-frame upload path to skip the writeBuffer when nothing changed.
@@ -297,7 +305,11 @@ impl LightCullingBuffers {
             return Ok(false);
         }
         if froxel_count_new <= self.froxel_count {
-            // Shrink — keep buffers but track new viewport.
+            // Shrink — keep the larger buffers (high-watermark) and only
+            // track the new viewport. `froxel_count` intentionally stays
+            // at the allocated size so a later grow-back that still fits
+            // skips reallocation; the live grid is always recomputed from
+            // `viewport_w/h` (see the `froxel_count` field doc).
             self.viewport_w = viewport_w;
             self.viewport_h = viewport_h;
             return Ok(false);
