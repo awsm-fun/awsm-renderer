@@ -44,19 +44,32 @@ struct LightsInfoPacked {
 // of every frame so the WGSL doesn't have to derive tile_x / tile_y / near /
 // far from camera matrices.
 struct CullParams {
-    tiles_x: u32,            // ceil(viewport_w / TILE_PIXEL_SIZE)
-    tiles_y: u32,            // ceil(viewport_h / TILE_PIXEL_SIZE)
-    viewport_w: u32,         // viewport width in pixels (for side-plane reconstruction)
-    viewport_h: u32,         // viewport height in pixels
-    z_near: f32,             // camera near plane (view-space, positive)
-    z_far: f32,              // camera far plane (view-space, positive)
-    log_far_over_near: f32,  // precomputed log(z_far / z_near); reused per froxel
-    _pad: f32,
+    tiles_x: u32,                       // ceil(viewport_w / TILE_PIXEL_SIZE)
+    tiles_y: u32,                       // ceil(viewport_h / TILE_PIXEL_SIZE)
+    viewport_w: u32,                    // viewport width in pixels
+    viewport_h: u32,                    // viewport height in pixels
+    mesh_indices_capacity_u32: u32,     // head-region length in lights_storage; the cull pass
+                                        // writes per-froxel data at offsets ≥ this value, and
+                                        // consumer shaders compute the per-pixel froxel base
+                                        // by adding it to the per-froxel-stride offset.
+    max_per_froxel_capacity: u32,       // per-froxel light-index budget. Auto-grow path
+                                        // doubles this without recompiling.
+    _pad0: u32,
+    z_near: f32,                        // camera near plane (view-space, positive)
+    z_far: f32,                         // camera far plane (view-space, positive)
+    log_far_over_near: f32,             // precomputed log(z_far / z_near)
+    _pad1: f32, _pad2: f32,
 };
 
 @group(0) @binding(0) var<uniform> camera_raw: CameraRaw;
 @group(0) @binding(1) var<uniform> cull_params: CullParams;
 @group(0) @binding(2) var<uniform> lights_info: LightsInfoPacked;
 @group(0) @binding(3) var<uniform> lights: array<LightPacked, {{ max_punctual_lights }}u>;
-@group(0) @binding(4) var<storage, read_write> froxel_storage: array<atomic<u32>>;
+// `lights_storage`: combined per-mesh + per-froxel u32 array. The cull
+// pass writes per-froxel data at offsets ≥ `cull_params.mesh_indices_capacity_u32`;
+// the head region is populated by `MeshLightIndicesGpu` on the CPU
+// (we don't touch it from the cull shader). Declared as
+// `array<atomic<u32>>` so the per-froxel atomic count + atomic index
+// stores compile cleanly.
+@group(0) @binding(4) var<storage, read_write> lights_storage: array<atomic<u32>>;
 @group(0) @binding(5) var<storage, read_write> overflow_counter: atomic<u32>;

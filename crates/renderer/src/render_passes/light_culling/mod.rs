@@ -14,5 +14,6 @@ pub mod render_pass;
 pub mod shader;
 
 pub use buffers::{
-    LightCullingBuffers, DEFAULT_MAX_PER_FROXEL_CAPACITY, DEFAULT_SLICE_COUNT, TILE_PIXEL_SIZE,
+    LightCullingBuffers, DEFAULT_MAX_PER_FROXEL_CAPACITY, DEFAULT_MESH_INDICES_CAPACITY,
+    DEFAULT_SLICE_COUNT, TILE_PIXEL_SIZE,
 };

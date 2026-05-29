@@ -81,9 +81,12 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     /// folded into the per-pixel froxel-index calc that the gated
     /// `apply_lighting_per_froxel*` helpers contain.
     pub froxel_slice_count: u32,
-    /// Per-froxel light-index budget used for the `min(count, MAX)`
-    /// clamp at shading time. Phase 1D's auto-grow path bumps this
-    /// and recompiles the consuming shader via the cache key.
+    /// Reserved compile-time per-froxel budget. **Currently unused by
+    /// the emitted WGSL** — the per-pixel froxel walk clamps against the
+    /// *runtime* `cull_params.max_per_froxel_capacity` instead (so the
+    /// Phase 1D auto-grow path can bump the budget without recompiling).
+    /// Kept as a stable seed for a future compile-time clamp variant;
+    /// always set to `DEFAULT_MAX_PER_FROXEL_CAPACITY`.
     pub froxel_max_per_froxel_capacity: u32,
     /// Concatenated `wgsl_fragment()` of every enabled material — see
     /// `awsm_materials::registry::build_materials_wgsl`.
@@ -181,7 +184,13 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 debug,
                 shadows_enabled: true,
                 use_mesh_light_slices: true,
-                use_froxel_lights: false,
+                // Phase 2 (redo): opaque shading walks the per-froxel
+                // slice for oversized meshes via the 0xFFFFFFFFu
+                // sentinel in `light_slice_count`. The shared
+                // `lights.wgsl` emits `apply_lighting_per_froxel*`
+                // when this is `true`; small-mesh fragments still
+                // take the per-mesh slice path.
+                use_froxel_lights: true,
                 froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
                 froxel_max_per_froxel_capacity:
                     crate::render_passes::light_culling::DEFAULT_MAX_PER_FROXEL_CAPACITY,

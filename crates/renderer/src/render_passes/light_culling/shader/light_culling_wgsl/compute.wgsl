@@ -13,10 +13,10 @@
 
 const TILE_PIXEL_SIZE: u32 = 16u;
 const SLICE_COUNT: u32 = {{ slice_count }}u;
-const MAX_PER_FROXEL_CAPACITY: u32 = {{ max_per_froxel_capacity }}u;
-// Stride per froxel in `froxel_storage`: one u32 for the count + capacity for the indices.
-const FROXEL_STRIDE: u32 = MAX_PER_FROXEL_CAPACITY + 1u;
 const WORKGROUP_SIZE_LIGHTS: u32 = 64u;
+// `MAX_PER_FROXEL_CAPACITY` lives on `cull_params` (runtime) so the
+// auto-grow path can bump it without recompiling. The per-froxel
+// stride = `max + 1` is also runtime-derived.
 
 // Project an NDC corner (z = 0 → near plane) to a normalized view-space
 // ray direction emanating from the camera origin.
@@ -50,15 +50,19 @@ fn cs_main(
 
     let tiles_per_layer = cull_params.tiles_x * cull_params.tiles_y;
     let froxel_idx = z_slice * tiles_per_layer + tile_y * cull_params.tiles_x + tile_x;
-    // Base offset of this froxel inside the merged count+indices storage.
-    let froxel_base = froxel_idx * FROXEL_STRIDE;
+    // Base offset of this froxel inside `lights_storage`. The head
+    // region (CPU-written per-mesh indices) occupies
+    // `[0..mesh_indices_capacity_u32)`; the cull pass starts writing
+    // at that offset. `stride = max + 1` (slot 0 = count).
+    let froxel_stride = cull_params.max_per_froxel_capacity + 1u;
+    let froxel_base = cull_params.mesh_indices_capacity_u32 + froxel_idx * froxel_stride;
 
     // Thread 0 of each workgroup resets the per-froxel count. The atomic
     // store + workgroupBarrier guarantees other threads in this workgroup
     // see 0 before issuing their own atomicAdds. Cross-workgroup synchro-
     // nisation isn't required — each workgroup owns a distinct froxel_idx.
     if (lid.x == 0u) {
-        atomicStore(&froxel_storage[froxel_base], 0u);
+        atomicStore(&lights_storage[froxel_base], 0u);
     }
 
     // ── Reconstruct the froxel's view-space frustum ───────────────
@@ -148,13 +152,13 @@ fn cs_main(
             if (z_ok && l_ok && r_ok && t_ok && b_ok) {
                 // Atomic-append into this froxel's slice. Slot 0 of the
                 // stride holds the count; light indices live at slots
-                // 1..1+MAX_PER_FROXEL_CAPACITY.
-                let slot = atomicAdd(&froxel_storage[froxel_base], 1u);
-                if (slot < MAX_PER_FROXEL_CAPACITY) {
-                    atomicStore(&froxel_storage[froxel_base + 1u + slot], li);
+                // 1..1+max_per_froxel_capacity.
+                let slot = atomicAdd(&lights_storage[froxel_base], 1u);
+                if (slot < cull_params.max_per_froxel_capacity) {
+                    atomicStore(&lights_storage[froxel_base + 1u + slot], li);
                 } else {
                     // We bumped the count past capacity. Tell the CPU.
-                    // The consumer reads `min(count, MAX_PER_FROXEL_CAPACITY)`
+                    // The consumer reads `min(count, max_per_froxel_capacity)`
                     // so the out-of-budget lights are silently dropped this
                     // frame; the auto-grow path raises the budget next.
                     atomicAdd(&overflow_counter, 1u);

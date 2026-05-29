@@ -128,6 +128,28 @@ pub struct EdgeOverflowReadbackState {
     pub pending_overflow_count: Option<(u32, u32)>,
 }
 
+/// Mirror of [`EdgeOverflowReadbackState`] for the GPU light-culling
+/// per-froxel capacity auto-grow loop. The cull shader atomic-adds
+/// into `LightCullingBuffers::overflow_buffer` every time it bumps a
+/// froxel's count past `max_per_froxel_capacity`; the host records a
+/// `copy_buffer_to_buffer` into the per-frame command encoder, then
+/// `mapAsync`'s the staging copy. When the resolved value is non-zero,
+/// the next render preamble calls
+/// [`crate::AwsmRenderer::set_max_per_froxel_capacity`]`(current * 2)`
+/// so subsequent frames have headroom. Single-buffered (`inflight`
+/// gates the next kick).
+#[derive(Default)]
+pub struct FroxelOverflowReadbackState {
+    /// `true` while a `mapAsync` is in flight against
+    /// `LightCullingBuffers::overflow_readback_buffer`. Subsequent
+    /// frames skip the copy + kick until the prior resolves.
+    pub inflight: bool,
+    /// Pending `overflow_count` snapshot from the most recently
+    /// resolved `mapAsync`. Ingested at the top of the next render
+    /// (set to `None` after reading).
+    pub pending_overflow_count: Option<u32>,
+}
+
 /// Main renderer state and GPU resources.
 pub struct AwsmRenderer {
     pub gpu: core::renderer::AwsmRendererWebGpu,
@@ -227,6 +249,11 @@ pub struct AwsmRenderer {
     /// `mapAsync` writes through the lock from a detached
     /// `spawn_local` future.
     pub edge_overflow_readback_state: std::sync::Arc<std::sync::Mutex<EdgeOverflowReadbackState>>,
+    /// State for the GPU light-culling per-froxel capacity auto-grow
+    /// loop. Same `Arc<Mutex<…>>` discipline as the other readback
+    /// states.
+    pub froxel_overflow_readback_state:
+        std::sync::Arc<std::sync::Mutex<FroxelOverflowReadbackState>>,
     /// Monotonic frame index. Wraps every ~272 years at 60 Hz — safe to
     /// treat as unbounded for any practical session. Drives the
     /// `skin_update_period` gate and other "every Nth frame" cadences.
@@ -1669,16 +1696,16 @@ impl AwsmRendererBuilder {
             )?;
 
         // Light-culling froxel buffers. Sized to a tiny placeholder
-        // viewport; per-frame `ensure_viewport` grows them once the
-        // real swap-chain size is known. Capacity-tier (per-froxel
-        // budget) is the default; the auto-grow path bumps it after
-        // an observed overflow.
+        // viewport + mesh-region; per-frame `ensure_viewport` /
+        // `ensure_mesh_indices_capacity` grow them once the real
+        // swap-chain size + bucket payload are known.
         let light_culling_buffers = render_passes::light_culling::LightCullingBuffers::new(
             &gpu,
             16,
             16,
             render_passes::light_culling::DEFAULT_SLICE_COUNT,
             render_passes::light_culling::DEFAULT_MAX_PER_FROXEL_CAPACITY,
+            render_passes::light_culling::DEFAULT_MESH_INDICES_CAPACITY,
         )?;
 
         // MSAA-edge-resolve buffers (Stage 3 dispatch wiring). Allocated only
@@ -2058,6 +2085,9 @@ impl AwsmRendererBuilder {
             edge_overflow_readback_state: std::sync::Arc::new(std::sync::Mutex::new(
                 EdgeOverflowReadbackState::default(),
             )),
+            froxel_overflow_readback_state: std::sync::Arc::new(std::sync::Mutex::new(
+                FroxelOverflowReadbackState::default(),
+            )),
             frame_index: 0,
             shaders,
             bind_group_layouts,
@@ -2358,6 +2388,45 @@ impl AwsmRenderer {
             target: "awsm_renderer::edge_resolve",
             "set_max_edge_budget: edge budget grown to {} (was tracked via overflow CPU surface)",
             new_budget
+        );
+        Ok(true)
+    }
+
+    /// Bumps the per-froxel light-index budget used by the GPU
+    /// light-culling pass. Symmetric with
+    /// [`Self::set_max_edge_budget`]: when the per-frame CPU readback
+    /// of `LightCullingBuffers::overflow_buffer` shows that the cull
+    /// shader bumped a froxel's count past
+    /// `max_per_froxel_capacity` (so subsequent lights for that
+    /// froxel were dropped), the renderer doubles the budget on the
+    /// next render. The budget lives as a *runtime* field on the
+    /// `cull_params` uniform, so this only reallocates the per-froxel
+    /// storage (via `LightCullingBuffers::set_max_per_froxel_capacity`)
+    /// and re-binds it — no shader recompile is needed, and the cull +
+    /// consumer shaders read the new capacity from `cull_params`.
+    ///
+    /// Returns `Ok(true)` when the buffers were recreated; `Ok(false)`
+    /// when `new_capacity` matches the current value.
+    pub fn set_max_per_froxel_capacity(
+        &mut self,
+        new_capacity: u32,
+    ) -> crate::error::Result<bool> {
+        if !self.build_complete {
+            return Err(crate::error::AwsmError::NotReady);
+        }
+        let new_capacity = new_capacity.max(1);
+        let resized = self
+            .light_culling_buffers
+            .set_max_per_froxel_capacity(&self.gpu, new_capacity)?;
+        if !resized {
+            return Ok(false);
+        }
+        self.bind_groups
+            .mark_create(crate::bind_groups::BindGroupCreate::LightCullingFroxelsResize);
+        tracing::info!(
+            target: "awsm_renderer::light_culling",
+            "set_max_per_froxel_capacity: per-froxel budget grown to {} after observed overflow",
+            new_capacity,
         );
         Ok(true)
     }

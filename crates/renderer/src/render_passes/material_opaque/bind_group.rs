@@ -71,14 +71,31 @@ impl MaterialOpaqueBindGroups {
                 visibility_fragment: false,
                 visibility_compute: true,
             },
-            // mesh_light_indices (binding 2): packed u32 light indices
-            // referenced by `material_mesh_metas[meta_index]
-            // .light_slice_{offset,count}` (per-mesh slice now lives in
-            // MaterialMeshMeta — saves one storage-buffer slot).
+            // lights_storage (binding 2): merged mesh + froxel storage
+            // view. Head region carries the CPU-written per-mesh light
+            // indices (consumed via
+            // `material_mesh_metas[meta_index].light_slice_{offset,count}`).
+            // Tail region carries the GPU cull pass's per-froxel
+            // slices, indexed at `mesh_indices_capacity_u32 +
+            // froxel_idx * (MAX_PER_FROXEL_CAPACITY + 1)`. Merging the
+            // two regions onto one binding keeps the opaque pass under
+            // WebGPU's `maxStorageBuffersPerShaderStage` ceiling.
             BindGroupLayoutCacheKeyEntry {
                 resource: BindGroupLayoutResource::Buffer(
                     BufferBindingLayout::new()
                         .with_binding_type(BufferBindingType::ReadOnlyStorage),
+                ),
+                visibility_vertex: false,
+                visibility_fragment: false,
+                visibility_compute: true,
+            },
+            // cull_params (binding 3): per-frame uniform written by the
+            // cull pass. The shading-time per-pixel froxel index calc
+            // reads `tiles_x/y`, `viewport_w/h`, `z_near/z_far`,
+            // `log_far_over_near`, and `mesh_indices_capacity_u32`.
+            BindGroupLayoutCacheKeyEntry {
+                resource: BindGroupLayoutResource::Buffer(
+                    BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
                 ),
                 visibility_vertex: false,
                 visibility_fragment: false,
@@ -376,14 +393,29 @@ impl MaterialOpaqueBindGroups {
             BindGroupResource::Buffer(BufferBinding::new(&ctx.lights.gpu_punctual_buffer)),
         ));
 
-        // mesh_light_indices: packed u32 light indices. Slice metadata
-        // for each mesh moved into `MaterialMeshMeta.light_slice_*`
-        // fields so we save one binding (storage-buffer count, plan
-        // Option F).
+        // lights_storage: merged mesh + froxel storage. The head region
+        // `[0..mesh_indices_capacity_u32)` holds the CPU-written per-
+        // mesh light indices; the tail region holds the GPU cull
+        // pass's per-froxel slices. Both regions share the same
+        // binding so the opaque pass's per-mesh and per-pixel-froxel
+        // paths can read from one binding without doubling the
+        // storage-buffer count (the merge replaces what was
+        // `mesh_light_indices` before Phase 2).
         entries.push(BindGroupEntry::new(
             entries.len() as u32,
             BindGroupResource::Buffer(BufferBinding::new(
-                &ctx.mesh_light_indices_gpu.indices_buffer,
+                &ctx.light_culling_buffers.storage_buffer,
+            )),
+        ));
+        // cull_params uniform — same per-frame `CullParams` payload
+        // the cull pass binds. The opaque shader reads
+        // `mesh_indices_capacity_u32` for the mesh→froxel boundary
+        // and the tiles/near/far fields for the per-pixel froxel
+        // index calc.
+        entries.push(BindGroupEntry::new(
+            entries.len() as u32,
+            BindGroupResource::Buffer(BufferBinding::new(
+                &ctx.light_culling_buffers.params_buffer,
             )),
         ));
 

@@ -176,6 +176,47 @@ impl AwsmRenderer {
             }
         }
 
+        // Ingest GPU light-culling froxel-overflow readback. Same
+        // shape as the edge-overflow ingest above. When the cull
+        // shader bumped a froxel's count past
+        // `max_per_froxel_capacity` (so subsequent lights for that
+        // froxel were dropped), double the budget for next frame.
+        let pending_froxel_overflow = self
+            .froxel_overflow_readback_state
+            .lock()
+            .unwrap()
+            .pending_overflow_count
+            .take();
+        if let Some(overflow_count) = pending_froxel_overflow {
+            if overflow_count > 0 {
+                let current_capacity = self.light_culling_buffers.max_per_froxel_capacity;
+                let new_capacity = current_capacity.saturating_mul(2).min(u32::MAX / 2);
+                if new_capacity > current_capacity {
+                    match self.set_max_per_froxel_capacity(new_capacity) {
+                        Ok(true) => {
+                            tracing::info!(
+                                target: "awsm_renderer::light_culling",
+                                overflow_count,
+                                new_capacity,
+                                "light-culling overflow auto-grow: doubled \
+                                 max_per_froxel_capacity ({current_capacity} -> \
+                                 {new_capacity}) to absorb {overflow_count} dropped \
+                                 light indices from the prior frame",
+                            );
+                        }
+                        Ok(false) => {}
+                        Err(e) => {
+                            tracing::warn!(
+                                target: "awsm_renderer::light_culling",
+                                "light-culling overflow auto-grow failed: {e:?}; \
+                                 pathological scenes will continue dropping indices",
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         // Cheap-material LOD: re-route every mesh-with-a-cheap-variant
         // to the effective material's GPU offset based on the
         // just-ingested coverage. Idempotent — the
@@ -203,15 +244,45 @@ impl AwsmRenderer {
         self.meshes
             .morphs
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
+        // ── Light culling per-frame setup ────────────────────────
+        //
+        // MUST run BEFORE `mesh_light_indices_gpu.write_gpu` —
+        // ensure_viewport may recreate `light_culling_buffers.storage_buffer`
+        // (the merged mesh + froxel buffer), which would wipe the
+        // mesh indices written by `mesh_light_indices_gpu.write_gpu`
+        // if it ran in the other order. The cull pass's per-frame
+        // setup must land first so subsequent writes (mesh indices,
+        // cull dispatch) target the final buffer for the frame.
+        let (viewport_w_for_cull, viewport_h_for_cull) =
+            self.gpu.current_context_texture_size()?;
+        if self.light_culling_buffers.ensure_viewport(
+            &self.gpu,
+            viewport_w_for_cull,
+            viewport_h_for_cull,
+        )? {
+            self.bind_groups
+                .mark_create(BindGroupCreate::LightCullingFroxelsResize);
+        }
+        let (z_near_for_cull, z_far_for_cull) =
+            camera_near_far_from_projection(&self.camera.last_matrices);
+        self.light_culling_buffers
+            .write_params(&self.gpu, z_near_for_cull, z_far_for_cull)?;
+        self.light_culling_buffers.reset_overflow(&self.gpu)?;
+
         // Per-mesh light slice path. Patches slice fields into each
         // affected mesh's MaterialMeshMeta and uploads the packed
-        // indices buffer. MUST run BEFORE `meshes.meta.write_gpu` so
-        // the slice patches land in the same meta upload.
+        // indices into the head region of the merged
+        // `light_culling_buffers.storage_buffer`. MUST run BEFORE
+        // `meshes.meta.write_gpu` so the slice patches land in the
+        // same meta upload, and MUST run AFTER the cull-pass
+        // `ensure_viewport` above so the indices land in the
+        // post-resize buffer.
         self.mesh_light_indices_gpu.write_gpu(
             &self.gpu,
             &self.light_buckets,
             &self.lights,
             &mut self.meshes,
+            &mut self.light_culling_buffers,
             &mut self.bind_groups,
         )?;
         // Decals — upload per-decal data if anything changed since last
@@ -333,28 +404,9 @@ impl AwsmRenderer {
         }
         self.material_classify_buffers.reset_header(&self.gpu)?;
 
-        // ── Light culling per-frame setup ────────────────────────
-        //
-        // Resize froxel buffers if the viewport tile count grew. Write
-        // the `CullParams` uniform (cheap, 32 bytes, cached). Zero the
-        // overflow counter. The shader resets each per-froxel count at
-        // workgroup-entry, so the host doesn't have to.
-        if self.light_culling_buffers.ensure_viewport(
-            &self.gpu,
-            render_texture_views.width,
-            render_texture_views.height,
-        )? {
-            self.bind_groups
-                .mark_create(BindGroupCreate::LightCullingFroxelsResize);
-        }
-        // Extract camera near/far from the live projection matrix. The
-        // CameraBuffer doesn't separately carry near/far — it's derived
-        // here from `inv_proj` so a future ortho-camera variant still
-        // gets a sensible (z_near, z_far) pair.
-        let (z_near, z_far) = camera_near_far_from_projection(&self.camera.last_matrices);
-        self.light_culling_buffers
-            .write_params(&self.gpu, z_near, z_far)?;
-        self.light_culling_buffers.reset_overflow(&self.gpu)?;
+        // (Light-culling per-frame setup moved earlier — must run
+        // before `mesh_light_indices_gpu.write_gpu` since both touch
+        // `light_culling_buffers.storage_buffer`.)
 
         // Build a snapshot of the active mesh count so we can size the
         // occlusion-cull buffers before bind groups are recreated.
@@ -715,6 +767,33 @@ impl AwsmRenderer {
 
             self.render_passes.light_culling.render(&ctx)?;
         }
+
+        // Kick the GPU light-culling overflow readback copy. Same
+        // discipline as the edge-overflow readback below:
+        // `copy_buffer_to_buffer` is recorded INTO the command encoder
+        // so it executes strictly after the cull dispatch; the
+        // `mapAsync` spawn-local lives below `submit_commands` so the
+        // GPU sees the copy before the host requests the map.
+        // Single-buffered via the `inflight` gate.
+        let kick_froxel_overflow_readback = {
+            let inflight = self
+                .froxel_overflow_readback_state
+                .lock()
+                .unwrap()
+                .inflight;
+            if !inflight && ctx.live_punctual_count > 0 {
+                ctx.command_encoder.copy_buffer_to_buffer(
+                    &self.light_culling_buffers.overflow_buffer,
+                    0,
+                    &self.light_culling_buffers.overflow_readback_buffer,
+                    0,
+                    crate::render_passes::light_culling::buffers::OVERFLOW_READBACK_BYTES as u32,
+                )?;
+                true
+            } else {
+                false
+            }
+        };
 
         {
             let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
@@ -1336,6 +1415,40 @@ impl AwsmRenderer {
                     state.inflight = false;
                 });
             }
+        }
+
+        // Kick the GPU light-culling `mapAsync` readback. Same shape
+        // as the edge-overflow readback above.
+        if kick_froxel_overflow_readback {
+            let readback_buffer = self.light_culling_buffers.overflow_readback_buffer.clone();
+            let state = std::sync::Arc::clone(&self.froxel_overflow_readback_state);
+            state.lock().unwrap().inflight = true;
+            wasm_bindgen_futures::spawn_local(async move {
+                let result = crate::core::buffers::extract_buffer_vec(
+                    &readback_buffer,
+                    Some(
+                        crate::render_passes::light_culling::buffers::OVERFLOW_READBACK_BYTES
+                            as u32,
+                    ),
+                )
+                .await;
+                let snapshot: Option<u32> = match result {
+                    Ok(bytes) if bytes.len() >= 4 => {
+                        Some(u32::from_le_bytes(bytes[0..4].try_into().unwrap()))
+                    }
+                    Ok(_) => None,
+                    Err(err) => {
+                        tracing::warn!(
+                            target: "awsm_renderer::light_culling",
+                            "froxel-overflow readback mapAsync failed: {err:?}",
+                        );
+                        None
+                    }
+                };
+                let mut state = state.lock().unwrap();
+                state.pending_overflow_count = snapshot;
+                state.inflight = false;
+            });
         }
 
         if let Some(hook) = hooks.and_then(|h| h.post_render.as_ref()) {

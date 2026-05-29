@@ -87,13 +87,38 @@ struct ClassifyBuckets {
 // `MAX_PUNCTUAL_LIGHTS` is the Rust-side constant; the WGSL array
 // length must match it exactly for binding-size validation.
 @group(1) @binding(1) var<uniform> lights: array<LightPacked, 1024>;
-// Per-mesh light-list path. Slice metadata
-// (`light_slice_offset` + `light_slice_count`) now lives inside
-// `MaterialMeshMeta` so each pixel reads it for free as part of the
-// already-required `material_mesh_metas[meta_index]` load — one
-// storage-buffer slot saved. The indices buffer stays separate
-// because its size is variable (sum of all slice counts).
-@group(1) @binding(2) var<storage, read> mesh_light_indices: array<u32>;
+// `lights_storage`: merged per-mesh + per-froxel u32 array.
+// Head region `[0..cull_params.mesh_indices_capacity_u32)` carries the
+// CPU-written per-mesh light indices (consumed via the per-mesh slice
+// fields in `MaterialMeshMeta`). Tail region carries the GPU cull
+// pass's per-froxel slices (consumed via the per-pixel
+// `apply_lighting_per_froxel*` helpers when the oversized sentinel
+// `light_slice_count == 0xFFFFFFFFu` fires).
+//
+// Merging the two regions onto one binding keeps the opaque compute
+// stage under WebGPU's `maxStorageBuffersPerShaderStage` ceiling.
+@group(1) @binding(2) var<storage, read> lights_storage: array<u32>;
+// `cull_params`: per-frame uniform written by the cull pass. The
+// per-pixel froxel index calc reads `tiles_x/y`, `viewport_w/h`,
+// `z_near/z_far`, `log_far_over_near`, and `mesh_indices_capacity_u32`
+// (the head→tail boundary in `lights_storage`).
+//
+// The struct decl is duplicated from the cull pass's
+// `light_culling_wgsl/bind_groups.wgsl`; both must stay byte-aligned.
+struct CullParams {
+    tiles_x: u32,
+    tiles_y: u32,
+    viewport_w: u32,
+    viewport_h: u32,
+    mesh_indices_capacity_u32: u32,
+    max_per_froxel_capacity: u32,
+    _pad0: u32,
+    z_near: f32,
+    z_far: f32,
+    log_far_over_near: f32,
+    _pad1: f32, _pad2: f32,
+};
+@group(1) @binding(3) var<uniform> cull_params: CullParams;
 
 {% for i in 0..texture_pool_arrays_len %}
     @group(2) @binding({{ i }}u) var pool_tex_{{ i }}: texture_2d_array<f32>;

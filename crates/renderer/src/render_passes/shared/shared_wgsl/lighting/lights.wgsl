@@ -205,8 +205,16 @@ fn apply_lighting_per_mesh(
         // (`light_slice_offset` + `light_slice_count`) lives inside the
         // per-mesh `MaterialMeshMeta`, so the caller hands it to us
         // directly — no second storage-buffer fetch.
-        for(var i = 0u; i < slice_count; i = i + 1u) {
-            let light_index = mesh_light_indices[slice_offset + i];
+        // Defensive: the OVERSIZED sentinel (`0xFFFFFFFFu`) is meant to
+        // route a mesh through the per-froxel path in the consumer.
+        // If it ever reaches the per-mesh slice count (routing bug,
+        // stale meta upload, etc.), an unclamped loop spins ~4 billion
+        // iterations and device-losts the GPU (black canvas / tab
+        // crash). Clamp the sentinel to 0 so the per-mesh walk is a
+        // no-op instead.
+        let safe_slice_count = select(slice_count, 0u, slice_count == 0xFFFFFFFFu);
+        for(var i = 0u; i < safe_slice_count; i = i + 1u) {
+            let light_index = lights_storage[slice_offset + i];
             let light = get_light(light_index);
             // Defensive — the CPU side already filters out directional
             // lights from the slice (their AABB is unbounded), but
@@ -309,8 +317,16 @@ fn apply_lighting_per_mesh_with_transmission(
             {% endif %}
         }
 
-        for(var i = 0u; i < slice_count; i = i + 1u) {
-            let light_index = mesh_light_indices[slice_offset + i];
+        // Defensive: the OVERSIZED sentinel (`0xFFFFFFFFu`) is meant to
+        // route a mesh through the per-froxel path in the consumer.
+        // If it ever reaches the per-mesh slice count (routing bug,
+        // stale meta upload, etc.), an unclamped loop spins ~4 billion
+        // iterations and device-losts the GPU (black canvas / tab
+        // crash). Clamp the sentinel to 0 so the per-mesh walk is a
+        // no-op instead.
+        let safe_slice_count = select(slice_count, 0u, slice_count == 0xFFFFFFFFu);
+        for(var i = 0u; i < safe_slice_count; i = i + 1u) {
+            let light_index = lights_storage[slice_offset + i];
             let light = get_light(light_index);
             if light.kind == 1u {
                 continue;
@@ -540,11 +556,15 @@ fn apply_lighting_with_transmission(
 
 const FROXEL_TILE_PIXEL_SIZE: u32 = 16u;
 const FROXEL_SLICE_COUNT: u32 = {{ froxel_slice_count }}u;
-const FROXEL_MAX_PER_FROXEL_CAPACITY: u32 = {{ froxel_max_per_froxel_capacity }}u;
-const FROXEL_STRIDE_CONSUMER: u32 = FROXEL_MAX_PER_FROXEL_CAPACITY + 1u;
+// `max_per_froxel_capacity` is a runtime field on `cull_params` so the
+// auto-grow path can bump the budget without recompiling.
 
 // Maps a fragment's screen-space pixel coordinates + view-space depth
-// (positive forward) into a froxel base index in `froxel_storage`.
+// (positive forward) into a froxel base index in `lights_storage`. The
+// returned index already accounts for the head-region offset
+// (`cull_params.mesh_indices_capacity_u32`) so callers can read
+// `lights_storage[base]` for the count and `lights_storage[base + 1u + i]`
+// for the i-th light index.
 fn froxel_base_for_pixel(pixel_xy: vec2<f32>, view_z: f32) -> u32 {
     let tile_x = u32(pixel_xy.x) / FROXEL_TILE_PIXEL_SIZE;
     let tile_y = u32(pixel_xy.y) / FROXEL_TILE_PIXEL_SIZE;
@@ -557,7 +577,8 @@ fn froxel_base_for_pixel(pixel_xy: vec2<f32>, view_z: f32) -> u32 {
     let z_slice = clamp(u32(s * f32(FROXEL_SLICE_COUNT)), 0u, FROXEL_SLICE_COUNT - 1u);
     let tiles_per_layer = cull_params.tiles_x * cull_params.tiles_y;
     let froxel_idx = z_slice * tiles_per_layer + tile_y_clamped * cull_params.tiles_x + tile_x_clamped;
-    return froxel_idx * FROXEL_STRIDE_CONSUMER;
+    let stride = cull_params.max_per_froxel_capacity + 1u;
+    return cull_params.mesh_indices_capacity_u32 + froxel_idx * stride;
 }
 
 fn apply_lighting_per_froxel(
@@ -623,10 +644,10 @@ fn apply_lighting_per_froxel(
         // Per-froxel punctual walk.
         if lights_info.n_lights > 0u {
             let base = froxel_base_for_pixel(pixel_xy, view_z);
-            let raw_count = froxel_storage[base];
-            let count = min(raw_count, FROXEL_MAX_PER_FROXEL_CAPACITY);
+            let raw_count = lights_storage[base];
+            let count = min(raw_count, cull_params.max_per_froxel_capacity);
             for(var i = 0u; i < count; i = i + 1u) {
-                let li = froxel_storage[base + 1u + i];
+                let li = lights_storage[base + 1u + i];
                 let light = get_light(li);
                 // Defensive — directional shouldn't appear in the slice.
                 if light.kind == 1u {
@@ -728,10 +749,10 @@ fn apply_lighting_per_froxel_with_transmission(
 
         if lights_info.n_lights > 0u {
             let base = froxel_base_for_pixel(pixel_xy, view_z);
-            let raw_count = froxel_storage[base];
-            let count = min(raw_count, FROXEL_MAX_PER_FROXEL_CAPACITY);
+            let raw_count = lights_storage[base];
+            let count = min(raw_count, cull_params.max_per_froxel_capacity);
             for(var i = 0u; i < count; i = i + 1u) {
-                let li = froxel_storage[base + 1u + i];
+                let li = lights_storage[base + 1u + i];
                 let light = get_light(li);
                 if light.kind == 1u {
                     continue;
