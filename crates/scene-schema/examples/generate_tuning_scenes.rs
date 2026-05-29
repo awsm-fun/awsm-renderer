@@ -56,18 +56,14 @@ fn main() -> std::io::Result<()> {
     Ok(())
 }
 
-// Cull-correctness probe scene. An oversized floor (100m → AABB diagonal
-// > 50m) lit by a 5×5 grid of 25 point lights spaced 20m apart, range 6m.
-// 25 > OVERSIZED_LIST_COUNT_THRESHOLD (16), so the floor is flagged
-// OVERSIZED and takes the per-pixel GPU **froxel** path (the per-mesh
-// slice path only kicks in below the threshold — and would trivially show
-// the whole mesh's light list on every pixel, which is *not* what we want
-// to test here). The light spheres are fully disjoint (8m gap between
-// surfaces), so a *correct* froxel cull places AT MOST ONE light in any
-// froxel: with the "Light Heatmap" debug toggle this must show 25 isolated
-// dim-blue blobs (count == 1) over a black floor. Bleeding between blobs,
-// multi-count cells, or a uniformly lit floor would be a froxel cull bug
-// (lights leaking into froxels their sphere does not reach).
+// Cull-correctness probe scene. A large floor lit by an 8×8 grid of
+// point lights (10m spacing, range 4 → disjoint spheres). All opaque
+// meshes shade via the per-pixel GPU **froxel** path (clustered forward),
+// so the "Light Heatmap" debug toggle shows each froxel's applied-light
+// count: clean spatial structure (low counts near lights, black where no
+// light reaches, distance-dependent coarseness) confirms the froxel cull
+// bins only the lights that actually reach each froxel. Use it to sanity-
+// check cull behaviour across camera types (perspective + orthographic).
 fn scene_cull_debug() -> EditorProject {
     let mut project = empty_project("tuning-cull-debug");
     project.nodes.push(plane_node(

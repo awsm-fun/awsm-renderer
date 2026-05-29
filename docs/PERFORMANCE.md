@@ -591,16 +591,18 @@ Surface a builder method (`with_scene_spatial_config`) only if
 the target scene exceeds ~1K dynamic meshes; the defaults handle
 the 1K–5K range fine.
 
-### Oversized-mesh light-bucket knobs (`light_buckets::buckets`)
+### Oversized-mesh light-bucket knobs (`light_buckets::buckets`) — deprecated for shading
 
 | Knob | Default | Notes |
 |---|---|---|
-| `OVERSIZED_LIST_COUNT_THRESHOLD` | 16 | Bucket-depth at which the mesh is split out. |
-| `OVERSIZED_AABB_DIAGONAL_METERS` | 50.0 | Mesh-size threshold. Floor planes / ocean planes / terrain chunks need this. |
+| `OVERSIZED_LIST_COUNT_THRESHOLD` | 16 | (vestigial) bucket-depth gate. |
+| `OVERSIZED_AABB_DIAGONAL_METERS` | 50.0 | (vestigial) mesh-size gate. |
 
-These defaults are validated against the existing tuning
-scenes; re-tune only if a real production scene shows the
-oversized-classification missing terrain-class meshes.
+> **No longer used for shading-path routing.** All surfaces now use the
+> froxel path unconditionally (see §5h history note), so the oversized
+> classification no longer decides anything for lighting. These constants
+> + the classification are pending removal once the per-mesh light-list
+> build is untangled from the shadow-receiver rebuild.
 
 ---
 
@@ -949,15 +951,20 @@ shadows" on mobile.
 
 This is the durable reference for how the renderer decides *which lights
 touch which surfaces*. The guiding principle: **never loop all lights on
-a fragment**. There are two culling paths plus a global path, chosen
-per-mesh on the CPU.
+a fragment**. Punctual lights use a single **clustered (froxel)** path
+for every surface; directional lights use a small global prefix. (This
+unifies what used to be a per-mesh-CPU-bucket path + an "oversized" froxel
+fallback gated on hard-to-tune `AABB>50m AND bucket>16` heuristics — see
+the history note below.)
 
 ### Light types and the global path
 
-- **Directional lights** have infinite extent, so they're never culled —
-  every shaded fragment walks the small directional prefix
-  (`apply_lighting*`'s directional loop over `lights_info.n_lights`,
-  skipping non-directional). With a handful of suns this is negligible.
+- **Directional lights** have infinite extent, so they're never culled.
+  The CPU packs the (≤ 8) directional lights' indices into a small list in
+  the `lights_info` uniform (`data.w` = count, `directional[]` = indices);
+  every shaded fragment walks just that list via `get_n_directional()` /
+  `get_directional_light_index()`. This avoids scanning all `n_lights` per
+  pixel to find the few suns (catastrophic with hundreds of punctuals).
 - **Punctual lights** (point + spot) have a finite range sphere and are
   the subject of culling. Hard cap: `MAX_PUNCTUAL_LIGHTS = 1024`.
 
@@ -973,29 +980,32 @@ storage-buffer binding to the opaque stage, already near the
 `maxStorageBuffersPerShaderStage` ceiling (see §10). So 1024 is treated
 as the design ceiling, not an accident.
 
-### Path 1 — per-mesh CPU buckets (the common case, BVH-accelerated)
+### The single path — per-froxel GPU cull (all opaque + all transparent)
 
-`LightMeshBuckets::rebuild` (`light_buckets/buckets.rs`) assigns lights
-to meshes by querying the **mesh R-tree** (`SceneSpatial`, rstar) with
-each light's world AABB — `O(n_lights × log meshes)`, *not* a brute-force
-scan. Each small mesh ends up with a tight bucket of the punctual lights
-whose range-sphere overlaps its AABB; its fragments walk only that
-bucket (`apply_lighting_per_mesh`). The slice metadata lives in
-`MaterialMeshMeta` and the packed indices in the head region of
-`LightCullingBuffers::storage_buffer`.
+Every surface (opaque via `material_opaque` + the MSAA `edge_resolve`,
+and all transparent) shades punctual lights from its **per-pixel froxel
+light list**. There is no per-mesh light list and no mesh-size gate:
+clustered (froxel) culling is generic and camera-correct for any mesh
+size, so a 1 m prop and a 100 m floor use the same path.
 
-This is hierarchical light culling for the **bulk of geometry** — it's
-already in place and is why typical scenes never feel the light count.
-
-### Path 2 — per-froxel GPU cull (oversized meshes + all transparent)
-
-A per-mesh AABB is too coarse for a *huge* surface (a 100 m floor's AABB
-overlaps everything). Meshes flagged **oversized** (AABB diagonal
-> `OVERSIZED_AABB_DIAGONAL_METERS` = 50 m **and** bucket
-> `OVERSIZED_LIST_COUNT_THRESHOLD` = 16 lights) get a
-`light_slice_count = 0xFFFFFFFF` sentinel and route to the per-pixel
-froxel path instead. **Transparent** surfaces always use the froxel path
-(no per-mesh visibility-buffer entry to hang a bucket on).
+> **History (why this is now one path).** The renderer used to have a
+> per-mesh CPU bucket path (BVH-assigned light lists per mesh) for "small"
+> meshes, and only routed "oversized" meshes (AABB diagonal > 50 m **and**
+> bucket > 16 lights, via a `light_slice_count = 0xFFFFFFFF` sentinel) to
+> the froxel path. That gate was a tuning liability — the thresholds
+> depend on the game/camera/scene, and a big floor with a moderate light
+> count would fall back to per-mesh and dump *every* overlapping light on
+> every pixel (the cause of the "1024-lights floor runs at ~8 fps"
+> regression: ~1000 lights/pixel). Unifying on always-on froxel removed
+> the gate and fixed that (the floor drops to ~tens of lights/pixel after
+> the cull → 60 fps with large headroom). The cull already runs whenever
+> any light is live (transparent needs it), so the unification adds ~zero
+> cull cost. **The CPU `LightMeshBuckets::rebuild` is retained, but now
+> only feeds the shadow-receiver gate** (`is_shadow_receiver` →
+> `MaterialMeshMeta.shadow_receiver_gate`); its per-mesh light-list /
+> oversized-classification output is no longer consumed for shading and is
+> a candidate for a future surgical removal (it shares a rebuild pass with
+> the shadow-receiver flags, so it must be untangled carefully).
 
 The froxel grid (`render_passes/light_culling/`): screen split into
 16×16-px tiles × `DEFAULT_SLICE_COUNT = 32` exponential view-space Z
@@ -1019,6 +1029,15 @@ exactly the Z-independent union of the column's froxels, so the output is
 **identical** to a single-level cull — but the expensive side-plane test
 runs once per tile instead of once per froxel (≈ `SLICE_COUNT`× less).
 Verified pixel-identical (full-canvas diff) on the tuning scenes.
+
+**Camera-type correctness.** The side-plane test (`cs_tile`) is built for
+both projection types: perspective uses the four frustum side planes
+through the camera origin; **orthographic** uses an axis-aligned
+view-space box test instead (parallel rays — the pyramid-plane
+construction is invalid for ortho), selected at runtime via
+`proj[3].w`. Stage B's Z-slice test and the consumer froxel lookup are
+already camera-agnostic. Verified via the `tuning-cull-debug` probe +
+the light-count heatmap in both perspective and orthographic.
 
 ### Runtime-sized capacities (no recompiles, small buffers)
 
