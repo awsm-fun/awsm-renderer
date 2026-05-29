@@ -34,12 +34,11 @@
 const TILE_PIXEL_SIZE: u32 = 16u;
 const SLICE_COUNT: u32 = {{ slice_count }}u;
 const WORKGROUP_SIZE_LIGHTS: u32 = 64u;
-// Per-2D-tile candidate budget. Matches `MAX_PUNCTUAL_LIGHTS` (the cull
-// can never see more lights than exist), so a tile slice can't overflow
-// and Stage B needs no fallback. Kept in lockstep with the
-// `TILE_LIGHT_CAPACITY` constant in `light_culling/buffers.rs`.
-const TILE_LIGHT_CAPACITY: u32 = {{ max_punctual_lights }}u;
-const TILE_LIGHT_STRIDE: u32 = TILE_LIGHT_CAPACITY + 1u;
+// The per-2D-tile candidate budget is a **runtime** value
+// (`cull_params.tile_light_capacity`, per-tile stride = budget + 1). The
+// host grows it toward the live punctual-light count and sizes
+// `tile_lights` to match — so a tile slice can't overflow and Stage B
+// needs no fallback, while staying small for low-light scenes.
 
 // Project an NDC corner (z = 0 → near plane) to a normalized view-space
 // ray direction emanating from the camera origin.
@@ -102,8 +101,9 @@ fn cs_tile(
         return;
     }
 
+    let tile_cap = cull_params.tile_light_capacity;
     let tile_idx = tile_y * cull_params.tiles_x + tile_x;
-    let tile_base = tile_idx * TILE_LIGHT_STRIDE;
+    let tile_base = tile_idx * (tile_cap + 1u);
 
     // Thread 0 resets the per-tile candidate count.
     if (lid.x == 0u) {
@@ -139,9 +139,10 @@ fn cs_tile(
 
             if (l_ok && r_ok && t_ok && b_ok) {
                 let slot = atomicAdd(&tile_lights[tile_base], 1u);
-                // Capacity == MAX_PUNCTUAL_LIGHTS, so `slot` is always in
+                // `tile_cap` tracks the live punctual-light count, which
+                // bounds candidates-per-tile, so `slot` is always in
                 // range; the guard is defense-in-depth.
-                if (slot < TILE_LIGHT_CAPACITY) {
+                if (slot < tile_cap) {
                     atomicStore(&tile_lights[tile_base + 1u + slot], li);
                 }
             }
@@ -183,9 +184,10 @@ fn cs_main(
 
     // Candidates from this froxel's 2D tile (written by cs_tile). All are
     // non-directional and already passed the side planes.
+    let tile_cap = cull_params.tile_light_capacity;
     let tile_idx = tile_y * cull_params.tiles_x + tile_x;
-    let tile_base = tile_idx * TILE_LIGHT_STRIDE;
-    let cand_count = min(atomicLoad(&tile_lights[tile_base]), TILE_LIGHT_CAPACITY);
+    let tile_base = tile_idx * (tile_cap + 1u);
+    let cand_count = min(atomicLoad(&tile_lights[tile_base]), tile_cap);
 
     // Sync so all threads see the zeroed froxel count before appending.
     workgroupBarrier();

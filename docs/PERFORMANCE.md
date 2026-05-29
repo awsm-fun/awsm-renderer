@@ -945,6 +945,127 @@ shadows" on mobile.
 
 ---
 
+## 5h. Lighting & light culling
+
+This is the durable reference for how the renderer decides *which lights
+touch which surfaces*. The guiding principle: **never loop all lights on
+a fragment**. There are two culling paths plus a global path, chosen
+per-mesh on the CPU.
+
+### Light types and the global path
+
+- **Directional lights** have infinite extent, so they're never culled —
+  every shaded fragment walks the small directional prefix
+  (`apply_lighting*`'s directional loop over `lights_info.n_lights`,
+  skipping non-directional). With a handful of suns this is negligible.
+- **Punctual lights** (point + spot) have a finite range sphere and are
+  the subject of culling. Hard cap: `MAX_PUNCTUAL_LIGHTS = 1024`.
+
+### The 1024 cap is deliberate (and load-bearing)
+
+`lights` is a **uniform** buffer: `array<LightPacked, 1024>`, and
+`1024 × 64 B = 64 KB`, which is exactly WebGPU's
+`maxUniformBufferBindingSize`. Uniform (vs storage) is the right choice
+because most fragments read a small, coherent set of light slots. Going
+past 1024 would require moving `lights` to a **storage** buffer in all
+three passes (cull, opaque, transparent) — which also adds a
+storage-buffer binding to the opaque stage, already near the
+`maxStorageBuffersPerShaderStage` ceiling (see §10). So 1024 is treated
+as the design ceiling, not an accident.
+
+### Path 1 — per-mesh CPU buckets (the common case, BVH-accelerated)
+
+`LightMeshBuckets::rebuild` (`light_buckets/buckets.rs`) assigns lights
+to meshes by querying the **mesh R-tree** (`SceneSpatial`, rstar) with
+each light's world AABB — `O(n_lights × log meshes)`, *not* a brute-force
+scan. Each small mesh ends up with a tight bucket of the punctual lights
+whose range-sphere overlaps its AABB; its fragments walk only that
+bucket (`apply_lighting_per_mesh`). The slice metadata lives in
+`MaterialMeshMeta` and the packed indices in the head region of
+`LightCullingBuffers::storage_buffer`.
+
+This is hierarchical light culling for the **bulk of geometry** — it's
+already in place and is why typical scenes never feel the light count.
+
+### Path 2 — per-froxel GPU cull (oversized meshes + all transparent)
+
+A per-mesh AABB is too coarse for a *huge* surface (a 100 m floor's AABB
+overlaps everything). Meshes flagged **oversized** (AABB diagonal
+> `OVERSIZED_AABB_DIAGONAL_METERS` = 50 m **and** bucket
+> `OVERSIZED_LIST_COUNT_THRESHOLD` = 16 lights) get a
+`light_slice_count = 0xFFFFFFFF` sentinel and route to the per-pixel
+froxel path instead. **Transparent** surfaces always use the froxel path
+(no per-mesh visibility-buffer entry to hang a bucket on).
+
+The froxel grid (`render_passes/light_culling/`): screen split into
+16×16-px tiles × `DEFAULT_SLICE_COUNT = 32` exponential view-space Z
+slices. The cull compute pass tests each light's bounding sphere against
+each froxel's frustum and atomic-appends surviving indices into a
+per-froxel slice of `storage_buffer` (tail region). Consumers
+(`apply_lighting_per_froxel*`) walk only their froxel's slice — steady
+state ≤ `max_per_froxel_capacity` lights/pixel.
+
+**Two-level (clustered) cull.** The cull is split into two compute
+dispatches over one shader module (distinct `@compute` entry points):
+- `cs_tile` (Stage A): one workgroup per **2D tile** — runs only the four
+  **side-plane** tests (which are Z-independent) and writes a per-tile
+  candidate list (`tile_lights`).
+- `cs_main` (Stage B): one workgroup per **froxel** — reads only its
+  tile's candidates and applies the cheap **Z-slice** test, writing the
+  per-froxel slices.
+
+Because the side planes don't depend on Z, the tile candidate set is
+exactly the Z-independent union of the column's froxels, so the output is
+**identical** to a single-level cull — but the expensive side-plane test
+runs once per tile instead of once per froxel (≈ `SLICE_COUNT`× less).
+Verified pixel-identical (full-canvas diff) on the tuning scenes.
+
+### Runtime-sized capacities (no recompiles, small buffers)
+
+Both per-froxel budgets are **runtime** fields on the `cull_params`
+uniform, so they grow without recompiling any shader:
+- **`max_per_froxel_capacity`** — per-froxel index budget. **Phase 1D
+  auto-grow**: a per-frame `mapAsync` readback of `overflow_counter`
+  doubles it when the cull dropped indices (e.g. `32 → 64 → 128` on the
+  1024-light fixture), then settles.
+- **`tile_light_capacity`** — Stage-A per-2D-tile candidate budget. Grown
+  by `ensure_tile_light_capacity` toward the **live punctual-light
+  count** (a tile can't hold more candidates than there are punctual
+  lights, so it never overflows — no fallback path). This keeps the
+  `tile_lights` buffer proportional to the actual light count
+  (e.g. ~1 MB at 1080p for 64 lights) instead of always sizing for 1024
+  (~16.8 MB). Identical at the 1024-light ceiling.
+
+### Where the cost is (and isn't)
+
+- **Shading** scales well: per-pixel light count is bounded by the froxel
+  budget, regardless of total lights — the froxel sweet spot is lights
+  *spread across the scene*.
+- **The cull pass itself is still `O(tiles × lights)`** in Stage A (every
+  tile tests every light). The two-level split cut the *constant*, not
+  the asymptotic; total cull cost still grows linearly with light count.
+  ~12 M side-plane tests at 3 k lights (cheap), ~123 M at 30 k (bites).
+- **Point-light shadows are a separate, tighter cap** (8 cube slots —
+  see §5f / `docs/SHADOWS.md`); many *shadowed* point lights thrash that
+  pool independently of culling.
+- **Worst case = many lights in one froxel** (all overlapping one screen
+  region): culling can't help (they genuinely reach those pixels),
+  auto-grow raises the budget, and shading walks them all.
+
+### Direction (parked — see §10)
+
+Pushing to *thousands* of lights (e.g. particle-driven) is **not**
+supported today and is parked, because it's a conditional win that taxes
+the common case. It would need: (1) `lights` uniform → storage (+ raise
+the cap, + resolve the opaque storage-binding budget), and (2) a
+GPU-resident light grid/BVH to make Stage A test only *nearby* lights
+(the only way to beat the `tiles × lights` linear scan). Both should be
+**light-count-gated tiers**, not always-on, and need profiling on real
+high-light scenes first. The CPU rstar tree can't be reused here — it's a
+CPU structure and the froxel cull is a massively-parallel GPU pass.
+
+---
+
 ## 5g. Shader cache warmup — what the browser caches, what we don't
 
 The browser caches compiled WebGPU pipeline objects (PSOs — the
@@ -1690,7 +1811,39 @@ Items that ship out of "parked" move to their relevant section
 items (§11 below) are intentional permanent non-work, not
 parked work.
 
-*Nothing currently parked.*
+### Thousands-of-lights tier (storage-buffer lights + GPU light grid)
+
+**What:** support > 1024 punctual lights (e.g. particle-driven point
+lights) by (1) moving `lights` from a uniform to a storage buffer and
+raising `MAX_PUNCTUAL_LIGHTS`, and (2) adding a GPU-resident light
+grid/BVH so the cull's Stage A tests only *nearby* lights instead of all
+of them.
+
+**Hazard / why parked:** as *always-on* changes neither is win-or-neutral
+for the common (low-light) case — exactly the wrong shape for a general
+renderer:
+- Uniform → storage adds a storage-buffer binding to the opaque stage,
+  which is already near `maxStorageBuffersPerShaderStage` (this device
+  reports 10; the spec minimum is 8, and opaque uses 9). It would need
+  `lights` merged into an existing storage buffer, and risks excluding
+  lower-limit devices. Possible small perf hit for divergent dynamic
+  indexing on some mobile GPUs.
+- A light grid has fixed per-frame build + indirection + memory cost that
+  is a *net loss* when there are few lights to prune.
+- The cull's `O(tiles × lights)` Stage A is the only thing that scales
+  with light count; the grid is the fix, but the benefit is marginal
+  below a few thousand lights and only meaningful at tens of thousands.
+
+**Re-attempt as:** light-count-**gated tiers** (kick in above a
+threshold, leave normal scenes untouched), and **profile on a real
+high-light scene first** — the CPU rstar tree does *not* transfer (it's
+CPU; the froxel cull is GPU-parallel). See §5h for the current design and
+why the per-mesh BVH path already covers typical scenes.
+
+**Evidence to start from:** `tuning-1024-lights` (the densest current
+fixture) renders correctly and auto-grows to cap 128; it's heavy but
+bounded. There is no >1024-light fixture yet — build one (a particle
+emitter of unshadowed point lights) before attempting this.
 
 ## 11. What *not* to do (preserves correctness)
 

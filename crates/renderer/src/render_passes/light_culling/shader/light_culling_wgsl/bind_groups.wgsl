@@ -58,7 +58,9 @@ struct CullParams {
                                         // by adding it to the per-froxel-stride offset.
     max_per_froxel_capacity: u32,       // per-froxel light-index budget. Auto-grow path
                                         // doubles this without recompiling.
-    _pad0: u32,
+    tile_light_capacity: u32,           // per-2D-tile candidate budget (Stage-A `tile_lights`
+                                        // stride = tile_light_capacity + 1). Grows toward the
+                                        // live punctual-light count; runtime so no recompile.
     z_near: f32,                        // camera near plane (view-space, positive)
     z_far: f32,                         // camera far plane (view-space, positive)
     log_far_over_near: f32,             // precomputed log(z_far / z_near)

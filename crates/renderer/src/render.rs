@@ -253,13 +253,27 @@ impl AwsmRenderer {
         // if it ran in the other order. The cull pass's per-frame
         // setup must land first so subsequent writes (mesh indices,
         // cull dispatch) target the final buffer for the frame.
-        let (viewport_w_for_cull, viewport_h_for_cull) =
-            self.gpu.current_context_texture_size()?;
+        let (viewport_w_for_cull, viewport_h_for_cull) = self.gpu.current_context_texture_size()?;
         if self.light_culling_buffers.ensure_viewport(
             &self.gpu,
             viewport_w_for_cull,
             viewport_h_for_cull,
         )? {
+            self.bind_groups
+                .mark_create(BindGroupCreate::LightCullingFroxelsResize);
+        }
+        // Grow the per-2D-tile candidate capacity toward the live
+        // punctual-light count. A tile column can't hold more candidates
+        // than there are punctual lights, so this is a safe
+        // non-overflowing bound — and it keeps the `tile_lights` buffer
+        // small for low-light scenes (the common case). MUST run before
+        // `write_params` so the `tile_light_capacity` written into
+        // `cull_params` matches the (possibly resized) buffer.
+        let live_punctual_for_cull = self.lights.iter_active_punctual().count() as u32;
+        if self
+            .light_culling_buffers
+            .ensure_tile_light_capacity(&self.gpu, live_punctual_for_cull)?
+        {
             self.bind_groups
                 .mark_create(BindGroupCreate::LightCullingFroxelsResize);
         }
@@ -776,11 +790,7 @@ impl AwsmRenderer {
         // GPU sees the copy before the host requests the map.
         // Single-buffered via the `inflight` gate.
         let kick_froxel_overflow_readback = {
-            let inflight = self
-                .froxel_overflow_readback_state
-                .lock()
-                .unwrap()
-                .inflight;
+            let inflight = self.froxel_overflow_readback_state.lock().unwrap().inflight;
             if !inflight && ctx.live_punctual_count > 0 {
                 ctx.command_encoder.copy_buffer_to_buffer(
                     &self.light_culling_buffers.overflow_buffer,

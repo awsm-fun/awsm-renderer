@@ -58,7 +58,9 @@ impl MeshLightIndicesGpu {
     /// Creates an empty mesh light indices builder. The actual storage
     /// buffer lives on `LightCullingBuffers` — this struct just owns
     /// scratch + uploader state.
-    pub fn new(_gpu: &AwsmRendererWebGpu) -> Result<Self, awsm_renderer_core::error::AwsmCoreError> {
+    pub fn new(
+        _gpu: &AwsmRendererWebGpu,
+    ) -> Result<Self, awsm_renderer_core::error::AwsmCoreError> {
         Ok(Self {
             indices_scratch: Vec::with_capacity(64),
             indices_len: 0,
@@ -176,8 +178,7 @@ impl MeshLightIndicesGpu {
         let needed_u32 = (self.indices_scratch.len() / 4) as u32;
         let resized = light_culling_buffers.ensure_mesh_indices_capacity(gpu, needed_u32)?;
         if resized {
-            bind_groups
-                .mark_create(crate::bind_groups::BindGroupCreate::LightCullingFroxelsResize);
+            bind_groups.mark_create(crate::bind_groups::BindGroupCreate::LightCullingFroxelsResize);
         }
 
         // ── Upload into the head region of the shared buffer ─────────

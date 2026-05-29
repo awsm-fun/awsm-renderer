@@ -55,14 +55,17 @@ impl LightCullingRenderPass {
             return Ok(());
         }
         let bind_group = self.bind_groups.get_bind_group()?;
-        let tile_pipeline = ctx.pipelines.compute.get(self.pipelines.tile_pipeline_key)?;
+        let tile_pipeline = ctx
+            .pipelines
+            .compute
+            .get(self.pipelines.tile_pipeline_key)?;
         let froxel_pipeline = ctx.pipelines.compute.get(self.pipelines.pipeline_key)?;
         let tiles_x = buffers.tiles_x();
         let tiles_y = buffers.tiles_y();
 
-        let compute_pass = ctx
-            .command_encoder
-            .begin_compute_pass(Some(&ComputePassDescriptor::new(Some("Light Culling")).into()));
+        let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
+            &ComputePassDescriptor::new(Some("Light Culling")).into(),
+        ));
         compute_pass.set_bind_group(0, bind_group, None)?;
         // Stage A — per-2D-tile side-plane cull (one workgroup per tile,
         // Z-independent). Writes each tile's candidate light list.

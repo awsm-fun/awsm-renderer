@@ -112,7 +112,10 @@ struct CullParams {
     viewport_h: u32,
     mesh_indices_capacity_u32: u32,
     max_per_froxel_capacity: u32,
-    _pad0: u32,
+    // Cull-pass-internal (Stage-A tile candidate budget); declared here
+    // only to keep this duplicated struct byte-aligned — consumers don't
+    // read it.
+    tile_light_capacity: u32,
     z_near: f32,
     z_far: f32,
     log_far_over_near: f32,

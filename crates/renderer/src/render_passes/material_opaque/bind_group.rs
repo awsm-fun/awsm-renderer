@@ -414,9 +414,7 @@ impl MaterialOpaqueBindGroups {
         // index calc.
         entries.push(BindGroupEntry::new(
             entries.len() as u32,
-            BindGroupResource::Buffer(BufferBinding::new(
-                &ctx.light_culling_buffers.params_buffer,
-            )),
+            BindGroupResource::Buffer(BufferBinding::new(&ctx.light_culling_buffers.params_buffer)),
         ));
 
         let descriptor = BindGroupDescriptor::new(

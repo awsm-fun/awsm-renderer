@@ -616,6 +616,7 @@ return TransparentShadingOutput(vec4<f32>(color, alpha));
             dispatch_hash: 0,
             dynamic_shader_id: Some(dyn_id),
             dynamic_shader: Some(dyn_info),
+            froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
         };
 
         let template = ShaderTemplateMaterialTransparent::try_from(&key)
@@ -663,6 +664,7 @@ return TransparentShadingOutput(vec4<f32>(color, alpha));
             dispatch_hash: 0,
             dynamic_shader_id: None,
             dynamic_shader: None,
+            froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
         };
 
         let template = ShaderTemplateMaterialTransparent::try_from(&key)

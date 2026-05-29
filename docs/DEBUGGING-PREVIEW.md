@@ -1,10 +1,87 @@
 # Debugging the renderer via the preview browser
 
 This is a **load-bearing operational document**. If you are about to
-debug a rendering issue using `mcp__Claude_Preview__*` (or
-`mcp__Claude_in_Chrome__*`), read this completely before you take a
-single screenshot. The methodology below is the consolidated lessons
-from multiple multi-hour MSAA / shader debugging sessions.
+debug a rendering issue, read this completely before you take a single
+screenshot. The methodology below is the consolidated lessons from
+multiple multi-hour MSAA / shader / light-culling debugging sessions.
+
+---
+
+## Tooling — use real Chrome via the extension, NOT the in-app preview
+
+**Best practice (do this):** drive a **real Chrome window** through the
+Claude-in-Chrome extension (`mcp__Claude_in_Chrome__*`) and run the dev
+server as a plain background process (`trunk serve …` via the shell), not
+via `mcp__Claude_Preview__preview_start`.
+
+**Do NOT use `mcp__Claude_Preview__*` for this renderer.** Those tools
+render the WebGPU canvas inside the **Claude app's embedded webview**, and
+a heavy WebGPU scene there will **take the Claude app down** (it crashed
+repeatedly across a debugging session — first misdiagnosed as a GPU/driver
+wedge, then as machine instability; the real cause was the in-app webview
+plus oversized tool outputs). Real Chrome is a separate process, so the
+renderer load never touches the Claude app.
+
+### Setup
+
+1. Start the server in the shell (background), e.g.:
+   `cd crates/frontend/scene-editor && … trunk serve --port 9090 …`
+   Wait for `applying new distribution` in the log before loading.
+2. `mcp__Claude_in_Chrome__list_connected_browsers` → `select_browser`.
+3. `mcp__Claude_in_Chrome__tabs_context_mcp { createIfEmpty: true }` →
+   `navigate` your tab to `http://localhost:9090/`. Use **one** tab and
+   reuse it; don't churn tabs (it creates new windows and loses focus).
+4. Drive it with `javascript_tool` (eval), `read_console_messages`
+   (always pass a `pattern`), and the pixel-capture recipes below.
+
+### ⚠️ The tab must be VISIBLE — `requestAnimationFrame` pauses when hidden
+
+This is the single biggest gotcha with real Chrome and it will waste your
+time if you don't know it:
+
+> Chrome **pauses `requestAnimationFrame`** for any tab that isn't the
+> **foreground, active tab of a non-minimized window**. The renderer's
+> draw loop is rAF-driven, so a hidden/backgrounded tab **stops rendering
+> entirely** — the canvas goes to its default 300×150 unrendered state,
+> and any capture wrapped in `requestAnimationFrame` **never resolves**
+> (you get a 45 s CDP `Runtime.evaluate` timeout that *looks* like a hang
+> or a wedged GPU but is neither).
+
+Concretely, the tab reports `hidden` when **either**: it's not the active
+tab in its window, **or** its Chrome window is minimized / fully occluded
+behind another app (e.g. the Claude desktop app in front of it). Driving
+the tab over CDP does **not** bring it to the foreground.
+
+**Always confirm visibility before capturing:**
+
+```js
+new Promise(r => requestAnimationFrame(() => {})) // never resolves if hidden
+// Instead, probe without depending on rAF:
+new Promise(res => { let f=false; requestAnimationFrame(()=>{f=true;});
+  setTimeout(()=>res({vis: document.visibilityState, rafFired: f,
+    canvas: document.querySelector('canvas')?.width + 'x' +
+            document.querySelector('canvas')?.height}), 250); })
+// Want: vis:"visible", rafFired:true, canvas at the real size (e.g. 1308x793).
+```
+
+If it's `hidden` / `rafFired:false` / canvas `300x150`, **ask the user to
+bring that Chrome window to the foreground and click the tab** so it's the
+active tab. There is no reliable way to force window focus from the
+extension. (A `setTimeout`-based read still runs while hidden, but the
+canvas is unrendered, so it's useless for pixel verification — you need a
+genuinely visible tab.)
+
+**Symptom cheat-sheet:** an `Runtime.evaluate` timeout + a trivial eval
+(`Date.now()`) that *does* return instantly = the tab is hidden (rAF
+paused), **not** a renderer hang. Don't go chasing a phantom GPU bug.
+
+### Keep tool outputs small
+
+`read_console_messages` without a `pattern` can dump thousands of
+per-frame log lines; always filter. Avoid returning whole-canvas pixel
+arrays from `javascript_tool` (compute stats in-page, return a short
+summary). Minimise screenshots. (Oversized outputs were a second cause of
+app instability.)
 
 ---
 
@@ -546,14 +623,25 @@ wiping) if a future session might want to grep for compile timing.
 
 ## Related infrastructure
 
-- `mcp__Claude_Preview__preview_start` reads `.claude/launch.json` for
-  available servers; `model-tests` is the canonical canvas for MSAA /
-  rendering experiments.
-- `preview_eval` runs JS in the live page; you can drive UI, inspect
-  state, trigger events, and read DOM (and via `getImageData`, canvas
-  pixels).
-- `preview_console_logs` returns the recent console output — useful
-  for `tracing::info!` messages.
-- For deeper interaction (DOM tree, accessibility, multi-tab),
-  `mcp__Claude_in_Chrome__*` exists. Heavier; only reach for it if
-  `preview_*` can't do what you need.
+The recipes above were originally written for the in-app
+`mcp__Claude_Preview__*` tools. **For this renderer, use real Chrome
+instead** (see the "Tooling" section at the top) — the JS bodies are
+identical; only the tool names change:
+
+| Recipe says | Real-Chrome equivalent (`mcp__Claude_in_Chrome__*`) |
+|---|---|
+| `preview_eval(...)` | `javascript_tool { action: "javascript_exec", text: … }` |
+| `preview_console_logs` | `read_console_messages` (always pass a `pattern`) |
+| `preview_screenshot` | (avoid; prefer `getImageData` stats) |
+| `preview_start` | run `trunk serve …` in the shell (background) |
+
+- The dev server is launched from the shell, not `.claude/launch.json`.
+  The scene-editor canvas is the canonical surface for light-culling /
+  shading experiments; `model-tests` for MSAA.
+- `javascript_tool` runs JS in the live page (drive UI, inspect state,
+  read DOM, and via `getImageData`, canvas pixels). **Remember the
+  visibility gotcha** — rAF-wrapped reads only resolve when the tab is
+  the foreground active tab of a non-minimized window.
+- `read_console_messages` returns recent console output (useful for
+  `tracing::info!`); pass a `pattern` so per-frame spam doesn't bury the
+  line you want.

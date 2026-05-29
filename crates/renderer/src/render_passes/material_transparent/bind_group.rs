@@ -547,9 +547,7 @@ impl MaterialTransparentBindGroups {
         // GPU light-culling `cull_params` uniform.
         entries.push(BindGroupEntry::new(
             entries.len() as u32,
-            BindGroupResource::Buffer(BufferBinding::new(
-                &ctx.light_culling_buffers.params_buffer,
-            )),
+            BindGroupResource::Buffer(BufferBinding::new(&ctx.light_culling_buffers.params_buffer)),
         ));
         // GPU light-culling `lights_storage` (merged buffer; per-froxel tail).
         entries.push(BindGroupEntry::new(

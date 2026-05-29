@@ -1,35 +1,34 @@
 //! GPU storage buffers backing the light-culling pass.
 //!
-//! Owns three buffers:
+//! Owns the buffers backing the light-culling pass:
 //!
-//! - **`params_buffer`** (uniform): per-frame `CullParams` reset (tiles,
-//!   near/far, capacity, mesh-region offset). Re-written each frame via
+//! - **`params_buffer`** (uniform): per-frame `CullParams` (tiles,
+//!   near/far, capacities, mesh-region offset). Re-written each frame via
 //!   `writeBuffer`.
-//! - **`storage_buffer`** (storage RW + copy_src): **merged** light data.
-//!   Layout:
-//!     `[0 .. mesh_indices_capacity_u32)`        — per-mesh CPU-written
-//!                                                  light indices.
-//!                                                  `MeshLightIndicesGpu`
-//!                                                  writes its scratch
-//!                                                  here at offset 0.
-//!     `[mesh_indices_capacity_u32 .. end)`      — per-froxel GPU-written
-//!                                                  stride =
-//!                                                  `max_per_froxel_capacity + 1`
-//!                                                  (slot 0 = atomic
-//!                                                  count, slots 1.. =
-//!                                                  light indices).
-//!   Merging the two regions into one binding keeps the opaque pass
-//!   under WebGPU's `maxStorageBuffersPerShaderStage` ceiling — the
-//!   per-mesh slice and the per-froxel slice both index into the same
-//!   `lights_storage` binding.
+//! - **`storage_buffer`** (storage RW + copy_src): **merged** light data,
+//!   laid out as (`MeshLightIndicesGpu` writes the head; the cull pass
+//!   writes the tail):
+//!
+//!   ```text
+//!   [0 .. mesh_indices_capacity_u32)    per-mesh CPU-written light indices
+//!   [mesh_indices_capacity_u32 .. end)  per-froxel GPU-written slices;
+//!                                       stride = max_per_froxel_capacity + 1
+//!                                       (slot 0 = atomic count, 1.. = indices)
+//!   ```
+//!
+//!   Merging the two regions into one binding keeps the opaque pass under
+//!   WebGPU's `maxStorageBuffersPerShaderStage` ceiling — both slices
+//!   index into the same `lights_storage` binding.
 //! - **`tile_lights_buffer`** (storage RW): the two-level cull's Stage-A
 //!   (`cs_tile`) output — one candidate-light slice per 2D screen tile
-//!   (`tiles_x * tiles_y`), each `TILE_LIGHT_CAPACITY + 1` u32 (slot 0 =
+//!   (`tiles_x * tiles_y`), each `tile_light_capacity + 1` u32 (slot 0 =
 //!   atomic count). Stage A runs the (Z-independent) side-plane test once
 //!   per tile; Stage B (`cs_main`) reads each froxel's tile slice and
 //!   applies only the cheap Z-slice test — so the expensive side-plane
 //!   work happens once per tile instead of once per froxel (× slice_count).
-//!   Sized to `MAX_PUNCTUAL_LIGHTS` so a tile slice can't overflow.
+//!   `tile_light_capacity` tracks the live punctual-light count (a tile
+//!   can't hold more candidates than there are lights), so it never
+//!   overflows and stays small for low-light scenes.
 //! - **`overflow_buffer`** (storage RW + copy_src): single
 //!   `atomic<u32>` incremented per dropped index. The CPU mapAsync
 //!   readback drives the auto-grow path.
@@ -61,18 +60,26 @@ pub const DEFAULT_MAX_PER_FROXEL_CAPACITY: u32 = 32;
 /// (mirrors `MeshLightIndicesGpu`'s prior growth pattern).
 pub const DEFAULT_MESH_INDICES_CAPACITY: u32 = 4;
 
-/// Per-2D-screen-tile candidate-light capacity for the two-level cull's
-/// Stage A (`cs_tile`) output. Sized to `MAX_PUNCTUAL_LIGHTS` so a tile
-/// column can never overflow — at most that many punctual lights exist
-/// in total — which removes any need for an overflow/fallback path in
-/// Stage B. Must match `TILE_LIGHT_CAPACITY` in the cull WGSL.
-pub const TILE_LIGHT_CAPACITY: u32 = crate::lights::MAX_PUNCTUAL_LIGHTS as u32;
+/// Initial per-2D-screen-tile candidate-light capacity for the two-level
+/// cull's Stage A (`cs_tile`) output. The capacity is **runtime**
+/// (carried on `cull_params.tile_light_capacity`, written per frame) and
+/// grown by [`LightCullingBuffers::ensure_tile_light_capacity`] toward
+/// the live punctual-light count — a tile column can hold at most as many
+/// candidates as there are punctual lights, so `live_punctual_count` is a
+/// safe non-overflowing bound (no fallback path needed). Sizing it to the
+/// actual light count instead of `MAX_PUNCTUAL_LIGHTS` keeps the buffer
+/// small for typical low-light scenes (the common case).
+pub const DEFAULT_TILE_LIGHT_CAPACITY: u32 = 16;
+
+/// Hard ceiling for the per-tile candidate capacity — the total punctual
+/// light budget. A tile can never hold more candidates than this.
+pub const MAX_TILE_LIGHT_CAPACITY: u32 = crate::lights::MAX_PUNCTUAL_LIGHTS as u32;
 
 /// Byte size of the `CullParams` uniform — must match the WGSL struct.
-/// Layout: 7 × u32 (tiles_x, tiles_y, viewport_w, viewport_h,
-/// mesh_indices_capacity_u32, max_per_froxel_capacity, _pad0) + 4 × f32
-/// (z_near, z_far, log_far_over_near, _pad1) — padded to 48 bytes for
-/// vec4 alignment.
+/// Layout: 7 u32 (tiles_x, tiles_y, viewport_w, viewport_h,
+/// mesh_indices_capacity_u32, max_per_froxel_capacity, tile_light_capacity)
+/// then 4 f32 (z_near, z_far, log_far_over_near, _pad1), padded to 48
+/// bytes for vec4 alignment.
 pub const CULL_PARAMS_BYTE_SIZE: usize = 48;
 
 /// Byte size of a single storage-buffer entry (one `u32`).
@@ -118,7 +125,7 @@ pub struct LightCullingBuffers {
     /// Merged mesh + froxel storage (see module doc).
     pub storage_buffer: web_sys::GpuBuffer,
     /// Two-level cull Stage-A output: per-2D-screen-tile candidate light
-    /// list (`tiles_x * tiles_y` slices, each `TILE_LIGHT_CAPACITY + 1`
+    /// list (`tiles_x * tiles_y` slices, each `tile_light_capacity + 1`
     /// u32 — slot 0 = atomic count, slots 1.. = light indices). `cs_main`
     /// (Stage B) reads each froxel's tile slice and applies only the
     /// cheap Z-test, so the expensive side-plane test runs once per tile
@@ -135,6 +142,12 @@ pub struct LightCullingBuffers {
     pub slice_count: u32,
     /// Per-froxel light-index budget baked into the shader.
     pub max_per_froxel_capacity: u32,
+    /// Per-2D-tile candidate-light capacity (the `tile_lights` per-tile
+    /// stride is `tile_light_capacity + 1`). Runtime — written into
+    /// `cull_params` and grown toward the live punctual-light count by
+    /// [`Self::ensure_tile_light_capacity`]. Never exceeds
+    /// `MAX_TILE_LIGHT_CAPACITY`.
+    pub tile_light_capacity: u32,
     /// Number of u32 entries reserved at the head of `storage_buffer` for
     /// the per-mesh light-indices region. The cull pass writes its
     /// froxel data starting at this offset; `MeshLightIndicesGpu` writes
@@ -163,10 +176,14 @@ impl LightCullingBuffers {
         slice_count: u32,
         max_per_froxel_capacity: u32,
         mesh_indices_capacity_u32: u32,
+        tile_light_capacity: u32,
     ) -> Result<Self, AwsmCoreError> {
         let viewport_w = viewport_w.max(1);
         let viewport_h = viewport_h.max(1);
-        let mesh_indices_capacity_u32 = mesh_indices_capacity_u32.max(DEFAULT_MESH_INDICES_CAPACITY);
+        let mesh_indices_capacity_u32 =
+            mesh_indices_capacity_u32.max(DEFAULT_MESH_INDICES_CAPACITY);
+        let tile_light_capacity =
+            tile_light_capacity.clamp(DEFAULT_TILE_LIGHT_CAPACITY, MAX_TILE_LIGHT_CAPACITY);
         let tiles_x = viewport_w.div_ceil(TILE_PIXEL_SIZE);
         let tiles_y = viewport_h.div_ceil(TILE_PIXEL_SIZE);
         let froxel_count = tiles_x
@@ -198,11 +215,14 @@ impl LightCullingBuffers {
         )?;
 
         // Two-level cull Stage-A output: one slice per 2D screen tile
-        // (independent of slice_count), `TILE_LIGHT_CAPACITY + 1` u32
-        // each (slot 0 = count). Sized so a tile column can't overflow.
+        // (independent of slice_count), `tile_light_capacity + 1` u32
+        // each (slot 0 = count). `tile_light_capacity` tracks the live
+        // light count (grown via `ensure_tile_light_capacity`), so the
+        // buffer stays small for low-light scenes.
         let tile_count = tiles_x.saturating_mul(tiles_y).max(1);
-        let tile_lights_entries =
-            tile_count.saturating_mul(TILE_LIGHT_CAPACITY.saturating_add(1)).max(1);
+        let tile_lights_entries = tile_count
+            .saturating_mul(tile_light_capacity.saturating_add(1))
+            .max(1);
         let tile_lights_buffer = gpu.create_buffer(
             &BufferDescriptor::new(
                 Some("LightCullingTileLights"),
@@ -239,6 +259,7 @@ impl LightCullingBuffers {
             slice_count,
             max_per_froxel_capacity,
             mesh_indices_capacity_u32,
+            tile_light_capacity,
             viewport_w,
             viewport_h,
             froxel_count,
@@ -288,6 +309,7 @@ impl LightCullingBuffers {
             self.slice_count,
             self.max_per_froxel_capacity,
             self.mesh_indices_capacity_u32,
+            self.tile_light_capacity,
         )?;
         Ok(true)
     }
@@ -309,6 +331,7 @@ impl LightCullingBuffers {
             self.slice_count,
             new_capacity,
             self.mesh_indices_capacity_u32,
+            self.tile_light_capacity,
         )?;
         Ok(true)
     }
@@ -335,7 +358,45 @@ impl LightCullingBuffers {
             self.slice_count,
             self.max_per_froxel_capacity,
             new_capacity,
+            self.tile_light_capacity,
         )?;
+        Ok(true)
+    }
+
+    /// Grow the per-2D-tile candidate capacity toward `needed` (the live
+    /// punctual-light count) when it exceeds the current capacity. A tile
+    /// column can hold at most as many candidates as there are punctual
+    /// lights, so `needed = live_punctual_count` is a safe non-overflowing
+    /// bound. Recreates **only** `tile_lights_buffer` (the froxel/storage
+    /// buffers are independent of light count). Grows with power-of-two
+    /// headroom, capped at `MAX_TILE_LIGHT_CAPACITY`. Returns `true` when
+    /// recreated — the caller must then mark a bind-group recreate so the
+    /// cull bind group rebinds the new buffer handle.
+    pub fn ensure_tile_light_capacity(
+        &mut self,
+        gpu: &AwsmRendererWebGpu,
+        needed: u32,
+    ) -> Result<bool, AwsmCoreError> {
+        if needed <= self.tile_light_capacity {
+            return Ok(false);
+        }
+        let new_capacity = needed
+            .checked_next_power_of_two()
+            .unwrap_or(MAX_TILE_LIGHT_CAPACITY)
+            .clamp(DEFAULT_TILE_LIGHT_CAPACITY, MAX_TILE_LIGHT_CAPACITY);
+        let tile_count = self.tiles_x().saturating_mul(self.tiles_y()).max(1);
+        let entries = tile_count
+            .saturating_mul(new_capacity.saturating_add(1))
+            .max(1);
+        self.tile_lights_buffer = gpu.create_buffer(
+            &BufferDescriptor::new(
+                Some("LightCullingTileLights"),
+                entries as usize * STORAGE_ENTRY_BYTE_SIZE,
+                *TILE_LIGHTS_USAGE,
+            )
+            .into(),
+        )?;
+        self.tile_light_capacity = new_capacity;
         Ok(true)
     }
 
@@ -366,7 +427,7 @@ impl LightCullingBuffers {
         bytes[12..16].copy_from_slice(&self.viewport_h.to_ne_bytes());
         bytes[16..20].copy_from_slice(&self.mesh_indices_capacity_u32.to_ne_bytes());
         bytes[20..24].copy_from_slice(&self.max_per_froxel_capacity.to_ne_bytes());
-        // bytes[24..28] = _pad0, leave zero.
+        bytes[24..28].copy_from_slice(&self.tile_light_capacity.to_ne_bytes());
         bytes[28..32].copy_from_slice(&z_near.to_ne_bytes());
         bytes[32..36].copy_from_slice(&z_far.to_ne_bytes());
         bytes[36..40].copy_from_slice(&log_far_over_near.to_ne_bytes());

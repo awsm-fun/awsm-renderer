@@ -1704,6 +1704,7 @@ impl AwsmRendererBuilder {
             render_passes::light_culling::DEFAULT_SLICE_COUNT,
             render_passes::light_culling::DEFAULT_MAX_PER_FROXEL_CAPACITY,
             render_passes::light_culling::DEFAULT_MESH_INDICES_CAPACITY,
+            render_passes::light_culling::DEFAULT_TILE_LIGHT_CAPACITY,
         )?;
 
         // MSAA-edge-resolve buffers (Stage 3 dispatch wiring). Allocated only
@@ -2405,10 +2406,7 @@ impl AwsmRenderer {
     ///
     /// Returns `Ok(true)` when the buffers were recreated; `Ok(false)`
     /// when `new_capacity` matches the current value.
-    pub fn set_max_per_froxel_capacity(
-        &mut self,
-        new_capacity: u32,
-    ) -> crate::error::Result<bool> {
+    pub fn set_max_per_froxel_capacity(&mut self, new_capacity: u32) -> crate::error::Result<bool> {
         if !self.build_complete {
             return Err(crate::error::AwsmError::NotReady);
         }
