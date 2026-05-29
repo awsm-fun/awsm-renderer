@@ -57,9 +57,11 @@ pub struct ShaderTemplateMaterialEdgeResolveCompute {
     pub msaa_sample_count: u32,
     pub mipmap: MipmapMode,
     pub use_mesh_light_slices: bool,
-    /// Mirror of the opaque-compute flag. Edge-resolve doesn't yet
-    /// take the froxel path, but the shared `lights.wgsl` template
-    /// references the symbol so it must be declared.
+    /// Mirror of the opaque-compute flag. Edge-resolve shades oversized
+    /// meshes too, so it must take the same per-froxel path as the main
+    /// compute pass when the `0xFFFFFFFFu` `light_slice_count` sentinel
+    /// fires — otherwise those edge pixels would lose all punctual
+    /// lighting. `true` so `lights.wgsl` emits `apply_lighting_per_froxel*`.
     pub use_froxel_lights: bool,
     /// Mirror of the opaque-compute field (see `use_froxel_lights`).
     pub froxel_slice_count: u32,
@@ -147,7 +149,7 @@ impl TryFrom<&ShaderCacheKeyMaterialEdgeResolve> for ShaderTemplateMaterialEdgeR
                 msaa_sample_count: 4,
                 mipmap,
                 use_mesh_light_slices: true,
-                use_froxel_lights: false,
+                use_froxel_lights: true,
                 froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
                 shadows_enabled: true,
                 materials_wgsl: awsm_materials::registry::build_materials_wgsl(),

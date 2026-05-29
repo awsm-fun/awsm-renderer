@@ -280,15 +280,33 @@ fn shade_sample(
                 );
         {% endmatch %}
         {% if use_mesh_light_slices %}
-            color = apply_lighting_per_mesh(
-                material_color,
-                standard_coordinates.surface_to_camera,
-                standard_coordinates.world_position,
-                lights_info,
-                (sample_mesh_meta.receive_shadows & sample_mesh_meta.shadow_receiver_gate),
-                sample_mesh_meta.light_slice_offset,
-                sample_mesh_meta.light_slice_count,
-            );
+            // Mirror the main compute path's oversized routing: meshes
+            // flagged OVERSIZED carry `light_slice_count = 0xFFFFFFFFu`,
+            // signalling the per-mesh slice is too coarse and the
+            // per-pixel froxel walk must be used. Without this branch the
+            // sentinel reaches `apply_lighting_per_mesh`, which clamps it
+            // to a 0-length loop and drops *all* punctual lighting on
+            // these edge pixels. Predicate is uniform per mesh.
+            if (sample_mesh_meta.light_slice_count == 0xFFFFFFFFu) {
+                color = apply_lighting_per_froxel(
+                    material_color,
+                    standard_coordinates.surface_to_camera,
+                    standard_coordinates.world_position,
+                    lights_info,
+                    (sample_mesh_meta.receive_shadows & sample_mesh_meta.shadow_receiver_gate),
+                    vec2<f32>(f32(coords.x), f32(coords.y)),
+                );
+            } else {
+                color = apply_lighting_per_mesh(
+                    material_color,
+                    standard_coordinates.surface_to_camera,
+                    standard_coordinates.world_position,
+                    lights_info,
+                    (sample_mesh_meta.receive_shadows & sample_mesh_meta.shadow_receiver_gate),
+                    sample_mesh_meta.light_slice_offset,
+                    sample_mesh_meta.light_slice_count,
+                );
+            }
         {% else %}
             color = apply_lighting(
                 material_color,
