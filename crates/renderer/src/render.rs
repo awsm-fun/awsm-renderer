@@ -279,8 +279,12 @@ impl AwsmRenderer {
         }
         let (z_near_for_cull, z_far_for_cull) =
             camera_near_far_from_projection(&self.camera.last_matrices);
-        self.light_culling_buffers
-            .write_params(&self.gpu, z_near_for_cull, z_far_for_cull)?;
+        self.light_culling_buffers.write_params(
+            &self.gpu,
+            z_near_for_cull,
+            z_far_for_cull,
+            self.light_culling_debug_heatmap,
+        )?;
         self.light_culling_buffers.reset_overflow(&self.gpu)?;
 
         // Per-mesh light slice path. Patches slice fields into each

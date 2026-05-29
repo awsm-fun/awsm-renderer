@@ -41,11 +41,59 @@ const WORKGROUP_SIZE_LIGHTS: u32 = 64u;
 // needs no fallback, while staying small for low-light scenes.
 
 // Project an NDC corner (z = 0 → near plane) to a normalized view-space
-// ray direction emanating from the camera origin.
+// ray direction emanating from the camera origin. PERSPECTIVE ONLY — for
+// orthographic cameras view rays are parallel (not origin-emanating), so
+// this direction is meaningless; the ortho path uses `ndc_to_view_pos`
+// + an axis-aligned box test instead (see `cs_tile`).
 fn ndc_to_view_dir(ndc: vec2<f32>) -> vec3<f32> {
     let clip = vec4<f32>(ndc, 0.0, 1.0);
     let view = camera_raw.inv_proj * clip;
     return normalize(view.xyz / view.w);
+}
+
+// Project an NDC corner (z = 0 → near plane) to a view-space POSITION
+// (not normalized). For an orthographic projection the x/y of this point
+// are the view-space box bounds of the tile column (constant in depth),
+// which is exactly what the ortho side cull needs.
+fn ndc_to_view_pos(ndc: vec2<f32>) -> vec3<f32> {
+    let clip = vec4<f32>(ndc, 0.0, 1.0);
+    let view = camera_raw.inv_proj * clip;
+    return view.xyz / view.w;
+}
+
+// The view-space x/y extent of a screen tile's column. Used by the
+// orthographic side cull (the frustum column is an axis-aligned box, not
+// a pyramid, so the perspective side-plane construction does not apply).
+struct TileViewBox {
+    min_x: f32,
+    max_x: f32,
+    min_y: f32,
+    max_y: f32,
+};
+
+fn tile_view_box(tile_x: u32, tile_y: u32) -> TileViewBox {
+    let viewport_f = vec2<f32>(f32(cull_params.viewport_w), f32(cull_params.viewport_h));
+    let tile_pixel_min = vec2<f32>(f32(tile_x), f32(tile_y)) * f32(TILE_PIXEL_SIZE);
+    let tile_pixel_max = min(tile_pixel_min + vec2<f32>(f32(TILE_PIXEL_SIZE)), viewport_f);
+    let ndc_x_min = tile_pixel_min.x / viewport_f.x * 2.0 - 1.0;
+    let ndc_x_max = tile_pixel_max.x / viewport_f.x * 2.0 - 1.0;
+    let ndc_y_min = 1.0 - tile_pixel_max.y / viewport_f.y * 2.0;
+    let ndc_y_max = 1.0 - tile_pixel_min.y / viewport_f.y * 2.0;
+    let lo = ndc_to_view_pos(vec2<f32>(ndc_x_min, ndc_y_min));
+    let hi = ndc_to_view_pos(vec2<f32>(ndc_x_max, ndc_y_max));
+    var b: TileViewBox;
+    b.min_x = min(lo.x, hi.x);
+    b.max_x = max(lo.x, hi.x);
+    b.min_y = min(lo.y, hi.y);
+    b.max_y = max(lo.y, hi.y);
+    return b;
+}
+
+// Perspective vs orthographic: a perspective projection has
+// `proj[3].w == 0` (the w' = -z perspective divide); orthographic has
+// `proj[3].w == 1`. Mirrors `CameraMatrices::is_orthographic` on the CPU.
+fn camera_is_orthographic() -> bool {
+    return abs(camera_raw.proj[3].w) > 0.5;
 }
 
 // Distance from sphere center to the plane `dot(normal, p) = 0` passing
@@ -110,7 +158,12 @@ fn cs_tile(
         atomicStore(&tile_lights[tile_base], 0u);
     }
 
+    // Tile column geometry. Perspective uses 4 side planes through the
+    // camera origin; orthographic uses an axis-aligned view-space box
+    // (parallel rays — the pyramid plane construction does not apply).
+    let is_ortho = camera_is_orthographic();
     let planes = tile_side_planes(tile_x, tile_y);
+    let vbox = tile_view_box(tile_x, tile_y);
 
     // Sync so all threads see the zeroed count before appending.
     workgroupBarrier();
@@ -129,15 +182,27 @@ fn cs_tile(
             let range = p.pos_range.w;
             let pos_view = (camera_raw.view * vec4<f32>(pos_world, 1.0)).xyz;
 
-            // Side-plane test only (no Z): a sphere straddling or inside
-            // every side plane is a candidate for some froxel in this
-            // column. Stage B applies the Z-slice test.
-            let l_ok = signed_dist_through_origin(planes.left, pos_view) >= -range;
-            let r_ok = signed_dist_through_origin(planes.right, pos_view) >= -range;
-            let t_ok = signed_dist_through_origin(planes.top, pos_view) >= -range;
-            let b_ok = signed_dist_through_origin(planes.bottom, pos_view) >= -range;
+            // Side test only (no Z): a sphere straddling or inside the
+            // tile column is a candidate for some froxel in it. Stage B
+            // applies the Z-slice test.
+            var side_ok: bool;
+            if (is_ortho) {
+                // Orthographic: view-space column is a box; the sphere
+                // overlaps it iff its center is within `range` of the
+                // box in x and y.
+                side_ok = pos_view.x >= vbox.min_x - range
+                    && pos_view.x <= vbox.max_x + range
+                    && pos_view.y >= vbox.min_y - range
+                    && pos_view.y <= vbox.max_y + range;
+            } else {
+                let l_ok = signed_dist_through_origin(planes.left, pos_view) >= -range;
+                let r_ok = signed_dist_through_origin(planes.right, pos_view) >= -range;
+                let t_ok = signed_dist_through_origin(planes.top, pos_view) >= -range;
+                let b_ok = signed_dist_through_origin(planes.bottom, pos_view) >= -range;
+                side_ok = l_ok && r_ok && t_ok && b_ok;
+            }
 
-            if (l_ok && r_ok && t_ok && b_ok) {
+            if (side_ok) {
                 let slot = atomicAdd(&tile_lights[tile_base], 1u);
                 // `tile_cap` tracks the live punctual-light count, which
                 // bounds candidates-per-tile, so `slot` is always in

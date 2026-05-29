@@ -428,6 +428,7 @@ impl LightCullingBuffers {
         gpu: &AwsmRendererWebGpu,
         z_near: f32,
         z_far: f32,
+        debug_light_heatmap: u32,
     ) -> Result<(), AwsmCoreError> {
         let tiles_x = self.tiles_x();
         let tiles_y = self.tiles_y();
@@ -443,7 +444,8 @@ impl LightCullingBuffers {
         bytes[28..32].copy_from_slice(&z_near.to_ne_bytes());
         bytes[32..36].copy_from_slice(&z_far.to_ne_bytes());
         bytes[36..40].copy_from_slice(&log_far_over_near.to_ne_bytes());
-        // bytes[40..48] = _pad1, leave zero.
+        bytes[40..44].copy_from_slice(&debug_light_heatmap.to_ne_bytes());
+        // bytes[44..48] = _pad2, leave zero.
 
         if self.last_params == Some(bytes) {
             return Ok(());

@@ -40,8 +40,12 @@ struct LightPacked {
     kind_outer_pad: vec4<f32>,    // .x = kind (1=Dir, 2=Point, 3=Spot), .y = outer-cone cos, .z = shadow_index (bitcast u32), .w = pad
 };
 
+// Layout kept in lockstep with the shared `lights.wgsl` definition (the
+// shading passes read the `directional` indices; the cull only needs
+// `data.x`, but the struct must match the 48-byte uniform buffer).
 struct LightsInfoPacked {
-    data: vec4<u32>,  // .x = n_lights; .y/.z = IBL mip counts; .w = pad
+    data: vec4<u32>,  // .x = n_lights; .y/.z = IBL mip counts; .w = n_directional
+    directional: array<vec4<u32>, 2>,  // packed indices of the ≤8 directional lights
 };
 
 // Per-frame light-culling parameters. Written via writeBuffer at the top
@@ -64,7 +68,9 @@ struct CullParams {
     z_near: f32,                        // camera near plane (view-space, positive)
     z_far: f32,                         // camera far plane (view-space, positive)
     log_far_over_near: f32,             // precomputed log(z_far / z_near)
-    _pad1: f32, _pad2: f32,
+    debug_light_heatmap: u32,           // 0 = normal shading; 1 = output a per-pixel
+                                        // applied-light-count heatmap (debug only)
+    _pad2: f32,
 };
 
 @group(0) @binding(0) var<uniform> camera_raw: CameraRaw;

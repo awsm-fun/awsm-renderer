@@ -119,7 +119,8 @@ struct CullParams {
     z_near: f32,
     z_far: f32,
     log_far_over_near: f32,
-    _pad1: f32, _pad2: f32,
+    debug_light_heatmap: u32,           // 0 = normal; 1 = applied-light-count heatmap
+    _pad2: f32,
 };
 @group(1) @binding(3) var<uniform> cull_params: CullParams;
 

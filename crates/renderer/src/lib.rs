@@ -184,6 +184,12 @@ pub struct AwsmRenderer {
     /// the top level so the per-frame `ensure_viewport` / `write_params`
     /// / `reset_overflow` calls run before bind-group recreation.
     pub light_culling_buffers: render_passes::light_culling::LightCullingBuffers,
+    /// Debug toggle (dev aid): when non-zero, the shading shaders output a
+    /// per-pixel applied-punctual-light-count heatmap instead of normal
+    /// shading. Written into `CullParams.debug_light_heatmap` each frame via
+    /// `write_params`. Owned here (not on `LightCullingBuffers`) so it
+    /// survives froxel-buffer recreation on resize / auto-grow.
+    pub light_culling_debug_heatmap: u32,
     /// MSAA-edge-resolve buffers (Stage 3 / Priority 3 dispatch wiring).
     /// `None` when MSAA is off — there are no edges to resolve. When
     /// MSAA is on, holds the two split GPU buffers carrying:
@@ -2070,6 +2076,7 @@ impl AwsmRendererBuilder {
             mesh_light_indices_gpu,
             material_classify_buffers,
             light_culling_buffers,
+            light_culling_debug_heatmap: 0,
             material_edge_buffers,
             material_edge_layout_uniform,
             decals,
@@ -2425,6 +2432,16 @@ impl AwsmRenderer {
             new_capacity,
         );
         Ok(true)
+    }
+
+    /// Toggle the light-culling debug heatmap (dev aid). When `on`, the
+    /// shading shaders output a per-pixel applied-punctual-light-count
+    /// heatmap instead of normal shading — blue (few) → red (many) — so
+    /// froxel occupancy / cull behaviour can be inspected visually. The
+    /// value is written into `CullParams.debug_light_heatmap` on the next
+    /// `write_params`; no buffer recreation or shader recompile needed.
+    pub fn set_light_culling_debug_heatmap(&mut self, on: bool) {
+        self.light_culling_debug_heatmap = u32::from(on);
     }
 
     /// Drive any pending compiles to completion and return when every

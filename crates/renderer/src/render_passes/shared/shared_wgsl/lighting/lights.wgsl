@@ -1,5 +1,13 @@
+// `data`: x = n_lights, y = prefiltered-env mip count, z = irradiance mip
+// count, w = n_directional (count of directional lights this frame, ≤ 8).
+// `directional`: packed-array indices of the (≤ 8) directional lights.
+// The shading paths use these to walk *only* the directionals in
+// O(n_directional) instead of scanning all `n_lights` per pixel — the
+// latter is catastrophic when a scene has hundreds/thousands of punctuals
+// (each pixel would skip over every punctual just to find the sun).
 struct LightsInfoPacked {
     data: vec4<u32>,
+    directional: array<vec4<u32>, 2>,
 }
 
 struct LightsInfo {
@@ -61,6 +69,35 @@ fn get_light(i: u32) -> Light {
         p.kind_outer_pad.y,
         bitcast<u32>(p.kind_outer_pad.z),
     );
+}
+
+// Count of directional lights this frame (≤ 8). Reads the global
+// `lights_info` uniform directly so the shading functions (whose
+// `lights_info` *parameter* shadows the global) can still reach it.
+fn get_n_directional() -> u32 {
+    return lights_info.data.w;
+}
+
+// Packed-array index of the `d`-th directional light (`d < get_n_directional()`).
+// Pair with `get_light` to walk only directionals instead of scanning all
+// `n_lights` per pixel.
+fn get_directional_light_index(d: u32) -> u32 {
+    return lights_info.directional[d >> 2u][d & 3u];
+}
+
+// Debug: map an applied-punctual-light count to a jet colormap
+// (black = 0, blue = few, green = mid, red = many; 64+ clamps to red).
+// Used by the `cull_params.debug_light_heatmap` visualization to inspect
+// froxel occupancy / cull behaviour. Tune the 64.0 reference to taste.
+fn light_count_heatmap(count: u32) -> vec3<f32> {
+    if (count == 0u) {
+        return vec3<f32>(0.0, 0.0, 0.0);
+    }
+    let t = saturate(f32(count) / 64.0);
+    let r = saturate(1.5 - abs(4.0 * t - 3.0));
+    let g = saturate(1.5 - abs(4.0 * t - 2.0));
+    let b = saturate(1.5 - abs(4.0 * t - 1.0));
+    return vec3<f32>(r, g, b);
 }
 
 struct LightBrdf {
@@ -174,11 +211,9 @@ fn apply_lighting_per_mesh(
         // so they never live in the per-mesh slice. We still scan the
         // flat list, but skip punctuals (kind != 1u) since the slice
         // owns them.
-        for(var i = 0u; i < lights_info.n_lights; i = i + 1u) {
-            let light = get_light(i);
-            if light.kind != 1u {
-                continue;
-            }
+        let n_directional = get_n_directional();
+        for(var d = 0u; d < n_directional; d = d + 1u) {
+            let light = get_light(get_directional_light_index(d));
             let light_brdf = light_to_brdf(light, material_color.normal, world_position);
             let direct = brdf_direct(material_color, light_brdf, surface_to_camera);
             {% if shadows_enabled %}
@@ -212,6 +247,13 @@ fn apply_lighting_per_mesh(
         // iterations and device-losts the GPU (black canvas / tab
         // crash). Clamp the sentinel to 0 so the per-mesh walk is a
         // no-op instead.
+        // Debug: visualize this mesh's per-mesh light-slice count instead of
+        // shading. Gated on `use_froxel_lights` so `cull_params` is in scope.
+        {% if use_froxel_lights %}
+        if (cull_params.debug_light_heatmap != 0u) {
+            return light_count_heatmap(select(slice_count, 0u, slice_count == 0xFFFFFFFFu));
+        }
+        {% endif %}
         let safe_slice_count = select(slice_count, 0u, slice_count == 0xFFFFFFFFu);
         for(var i = 0u; i < safe_slice_count; i = i + 1u) {
             let light_index = lights_storage[slice_offset + i];
@@ -290,11 +332,9 @@ fn apply_lighting_per_mesh_with_transmission(
             let view_z_for_shadow = -(camera_raw.view * vec4<f32>(world_position, 1.0)).z;
         {% endif %}
 
-        for(var i = 0u; i < lights_info.n_lights; i = i + 1u) {
-            let light = get_light(i);
-            if light.kind != 1u {
-                continue;
-            }
+        let n_directional = get_n_directional();
+        for(var d = 0u; d < n_directional; d = d + 1u) {
+            let light = get_light(get_directional_light_index(d));
             let light_brdf = light_to_brdf(light, material_color.normal, world_position);
             let direct = brdf_direct(material_color, light_brdf, surface_to_camera);
             {% if shadows_enabled %}
@@ -324,6 +364,13 @@ fn apply_lighting_per_mesh_with_transmission(
         // iterations and device-losts the GPU (black canvas / tab
         // crash). Clamp the sentinel to 0 so the per-mesh walk is a
         // no-op instead.
+        // Debug: visualize this mesh's per-mesh light-slice count instead of
+        // shading. Gated on `use_froxel_lights` so `cull_params` is in scope.
+        {% if use_froxel_lights %}
+        if (cull_params.debug_light_heatmap != 0u) {
+            return light_count_heatmap(select(slice_count, 0u, slice_count == 0xFFFFFFFFu));
+        }
+        {% endif %}
         let safe_slice_count = select(slice_count, 0u, slice_count == 0xFFFFFFFFu);
         for(var i = 0u; i < safe_slice_count; i = i + 1u) {
             let light_index = lights_storage[slice_offset + i];
@@ -613,12 +660,18 @@ fn apply_lighting_per_froxel(
             let view_z_for_shadow = view_z;
         {% endif %}
 
+        // Debug: visualize this pixel's froxel light count (what the cull
+        // binned for this froxel) instead of shading. See `light_count_heatmap`.
+        if (cull_params.debug_light_heatmap != 0u) {
+            let dbg_base = froxel_base_for_pixel(pixel_xy, view_z);
+            let dbg_count = min(lights_storage[dbg_base], cull_params.max_per_froxel_capacity);
+            return light_count_heatmap(dbg_count);
+        }
+
         // Directional walk — flat over n_lights, skipping non-directionals.
-        for(var i = 0u; i < lights_info.n_lights; i = i + 1u) {
-            let light = get_light(i);
-            if light.kind != 1u {
-                continue;
-            }
+        let n_directional = get_n_directional();
+        for(var d = 0u; d < n_directional; d = d + 1u) {
+            let light = get_light(get_directional_light_index(d));
             let light_brdf = light_to_brdf(light, material_color.normal, world_position);
             let direct = brdf_direct(material_color, light_brdf, surface_to_camera);
             {% if shadows_enabled %}
@@ -651,6 +704,14 @@ fn apply_lighting_per_froxel(
                 let light = get_light(li);
                 // Defensive — directional shouldn't appear in the slice.
                 if light.kind == 1u {
+                    continue;
+                }
+                // Range reject: the froxel bins every light whose bounding
+                // sphere touches the froxel volume — large distant froxels
+                // over-include lights that can't reach this pixel. Skip them
+                // for the cost of one dot product, before light_to_brdf.
+                let to_light = light.position - world_position;
+                if light.range > 0.0 && dot(to_light, to_light) > light.range * light.range {
                     continue;
                 }
                 let light_brdf = light_to_brdf(light, material_color.normal, world_position);
@@ -720,11 +781,17 @@ fn apply_lighting_per_froxel_with_transmission(
             let view_z_for_shadow = view_z;
         {% endif %}
 
-        for(var i = 0u; i < lights_info.n_lights; i = i + 1u) {
-            let light = get_light(i);
-            if light.kind != 1u {
-                continue;
-            }
+        // Debug: visualize this pixel's froxel light count (what the cull
+        // binned for this froxel) instead of shading. See `light_count_heatmap`.
+        if (cull_params.debug_light_heatmap != 0u) {
+            let dbg_base = froxel_base_for_pixel(pixel_xy, view_z);
+            let dbg_count = min(lights_storage[dbg_base], cull_params.max_per_froxel_capacity);
+            return light_count_heatmap(dbg_count);
+        }
+
+        let n_directional = get_n_directional();
+        for(var d = 0u; d < n_directional; d = d + 1u) {
+            let light = get_light(get_directional_light_index(d));
             let light_brdf = light_to_brdf(light, material_color.normal, world_position);
             let direct = brdf_direct(material_color, light_brdf, surface_to_camera);
             {% if shadows_enabled %}
@@ -755,6 +822,14 @@ fn apply_lighting_per_froxel_with_transmission(
                 let li = lights_storage[base + 1u + i];
                 let light = get_light(li);
                 if light.kind == 1u {
+                    continue;
+                }
+                // Range reject: the froxel bins every light whose bounding
+                // sphere touches the froxel volume — large distant froxels
+                // over-include lights that can't reach this pixel. Skip them
+                // for the cost of one dot product, before light_to_brdf.
+                let to_light = light.position - world_position;
+                if light.range > 0.0 && dot(to_light, to_light) > light.range * light.range {
                     continue;
                 }
                 let light_brdf = light_to_brdf(light, material_color.normal, world_position);
