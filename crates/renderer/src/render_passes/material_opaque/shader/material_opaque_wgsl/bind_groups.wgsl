@@ -87,13 +87,38 @@ struct ClassifyBuckets {
 // `MAX_PUNCTUAL_LIGHTS` is the Rust-side constant; the WGSL array
 // length must match it exactly for binding-size validation.
 @group(1) @binding(1) var<uniform> lights: array<LightPacked, 1024>;
-// Per-mesh light-list path. Slice metadata
-// (`light_slice_offset` + `light_slice_count`) now lives inside
-// `MaterialMeshMeta` so each pixel reads it for free as part of the
-// already-required `material_mesh_metas[meta_index]` load — one
-// storage-buffer slot saved. The indices buffer stays separate
-// because its size is variable (sum of all slice counts).
-@group(1) @binding(2) var<storage, read> mesh_light_indices: array<u32>;
+// `lights_storage`: the GPU cull pass's per-froxel light-slice u32
+// array, consumed via the per-pixel `apply_lighting_per_froxel*`
+// helpers. The head region `[0..cull_params.mesh_indices_capacity_u32)`
+// is reserved but unwritten since the per-mesh lighting path was
+// removed; the froxel tail starts after it (the offset keeps the
+// froxel base in lockstep with what the cull pass writes).
+@group(1) @binding(2) var<storage, read> lights_storage: array<u32>;
+// `cull_params`: per-frame uniform written by the cull pass. The
+// per-pixel froxel index calc reads `tiles_x/y`, `viewport_w/h`,
+// `z_near/z_far`, `log_far_over_near`, and `mesh_indices_capacity_u32`
+// (the head→tail boundary in `lights_storage`).
+//
+// The struct decl is duplicated from the cull pass's
+// `light_culling_wgsl/bind_groups.wgsl`; both must stay byte-aligned.
+struct CullParams {
+    tiles_x: u32,
+    tiles_y: u32,
+    viewport_w: u32,
+    viewport_h: u32,
+    mesh_indices_capacity_u32: u32,
+    max_per_froxel_capacity: u32,
+    // Cull-pass-internal (Stage-A tile candidate budget); declared here
+    // only to keep this duplicated struct byte-aligned — consumers don't
+    // read it.
+    tile_light_capacity: u32,
+    z_near: f32,
+    z_far: f32,
+    log_far_over_near: f32,
+    debug_light_heatmap: u32,           // 0 = normal; 1 = applied-light-count heatmap
+    _pad2: f32,
+};
+@group(1) @binding(3) var<uniform> cull_params: CullParams;
 
 {% for i in 0..texture_pool_arrays_len %}
     @group(2) @binding({{ i }}u) var pool_tex_{{ i }}: texture_2d_array<f32>;

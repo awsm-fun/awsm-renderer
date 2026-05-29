@@ -176,6 +176,9 @@ impl MaterialTransparentPipelines {
                 dynamic_shader_id: None,
                 dynamic_shader: None,
                 instancing_transforms: req.mesh.instanced,
+                // GPU light-culling consumer-side cache key field
+                // (froxel slice count baked into the z-slice math).
+                froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
             });
         }
         Ok(out)
@@ -228,6 +231,7 @@ impl MaterialTransparentPipelines {
                 dynamic_shader_id: None,
                 dynamic_shader: None,
                 instancing_transforms: req.mesh.instanced,
+                froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
             };
             let shader_key = shaders.get_key(gpu, shader_cache_key).await?;
             let vbo_layouts = vertex_buffer_layouts(req.mesh, mesh_buffer_info);
@@ -315,6 +319,7 @@ impl MaterialTransparentPipelines {
                 dynamic_shader_id: None,
                 dynamic_shader: None,
                 instancing_transforms: req.mesh.instanced,
+                froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
             });
         }
 

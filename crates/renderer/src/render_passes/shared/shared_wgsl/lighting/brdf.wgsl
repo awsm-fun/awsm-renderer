@@ -434,6 +434,17 @@ fn iridescence_fresnel(
 // With clearcoat and sheen extensions
 // -------------------------------------------------------------
 fn brdf_direct(color: PbrMaterialColor, light_brdf: LightBrdf, surface_to_camera: vec3<f32>) -> vec3<f32> {
+    // Early-out for lights that contribute nothing: out-of-range punctuals
+    // have zero radiance (`inverse_square` returns 0 once dist ≥ range) and
+    // back-facing surfaces have n·l ≤ 0. Both make the full Cook-Torrance
+    // result exactly zero, so we skip the expensive GGX/Fresnel evaluation.
+    // This is the dominant win for froxel/clustered shading: a froxel can
+    // bin dozens of lights (the cull bounds them to the froxel volume, which
+    // is large in the distance), but only a handful actually reach any given
+    // pixel — the rest are culled here for the cost of a dot product.
+    if (light_brdf.n_dot_l <= 0.0 || dot(light_brdf.radiance, light_brdf.radiance) <= 0.0) {
+        return vec3<f32>(0.0);
+    }
     let n = safe_normalize(light_brdf.normal);
     let v = safe_normalize(surface_to_camera);
     let l = safe_normalize(light_brdf.light_dir);

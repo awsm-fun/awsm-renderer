@@ -64,7 +64,7 @@ use awsm_renderer_core::{
 use bind_groups::BindGroups;
 use camera::CameraBuffer;
 use instances::Instances;
-use light_buckets::{LightMeshBuckets, MeshLightIndicesGpu};
+use light_buckets::LightMeshBuckets;
 use lights::Lights;
 use materials::Materials;
 use meshes::Meshes;
@@ -128,6 +128,28 @@ pub struct EdgeOverflowReadbackState {
     pub pending_overflow_count: Option<(u32, u32)>,
 }
 
+/// Mirror of [`EdgeOverflowReadbackState`] for the GPU light-culling
+/// per-froxel capacity auto-grow loop. The cull shader atomic-adds
+/// into `LightCullingBuffers::overflow_buffer` every time it bumps a
+/// froxel's count past `max_per_froxel_capacity`; the host records a
+/// `copy_buffer_to_buffer` into the per-frame command encoder, then
+/// `mapAsync`'s the staging copy. When the resolved value is non-zero,
+/// the next render preamble calls
+/// [`crate::AwsmRenderer::set_max_per_froxel_capacity`]`(current * 2)`
+/// so subsequent frames have headroom. Single-buffered (`inflight`
+/// gates the next kick).
+#[derive(Default)]
+pub struct FroxelOverflowReadbackState {
+    /// `true` while a `mapAsync` is in flight against
+    /// `LightCullingBuffers::overflow_readback_buffer`. Subsequent
+    /// frames skip the copy + kick until the prior resolves.
+    pub inflight: bool,
+    /// Pending `overflow_count` snapshot from the most recently
+    /// resolved `mapAsync`. Ingested at the top of the next render
+    /// (set to `None` after reading).
+    pub pending_overflow_count: Option<u32>,
+}
+
 /// Main renderer state and GPU resources.
 pub struct AwsmRenderer {
     pub gpu: core::renderer::AwsmRendererWebGpu,
@@ -150,13 +172,21 @@ pub struct AwsmRenderer {
     /// frame from `scene_spatial`. Feeds the per-mesh light-list shader
     /// path.
     pub light_buckets: LightMeshBuckets,
-    /// GPU storage buffers backing `light_buckets` for the shader path.
-    /// Uploaded per-frame from the transposed buckets.
-    pub mesh_light_indices_gpu: MeshLightIndicesGpu,
     /// Per-frame classify-pass output. Holds the per-`shader_id` tile
     /// buckets + indirect-dispatch args the opaque material pipelines
     /// consume.
     pub material_classify_buffers: render_passes::material_classify::buffers::ClassifyBuffers,
+    /// GPU light-culling froxel buffers (per-frame params uniform +
+    /// per-froxel counts + flat indices + overflow counter). Owned at
+    /// the top level so the per-frame `ensure_viewport` / `write_params`
+    /// / `reset_overflow` calls run before bind-group recreation.
+    pub light_culling_buffers: render_passes::light_culling::LightCullingBuffers,
+    /// Debug toggle (dev aid): when non-zero, the shading shaders output a
+    /// per-pixel applied-punctual-light-count heatmap instead of normal
+    /// shading. Written into `CullParams.debug_light_heatmap` each frame via
+    /// `write_params`. Owned here (not on `LightCullingBuffers`) so it
+    /// survives froxel-buffer recreation on resize / auto-grow.
+    pub light_culling_debug_heatmap: u32,
     /// MSAA-edge-resolve buffers (Stage 3 / Priority 3 dispatch wiring).
     /// `None` when MSAA is off — there are no edges to resolve. When
     /// MSAA is on, holds the two split GPU buffers carrying:
@@ -222,6 +252,11 @@ pub struct AwsmRenderer {
     /// `mapAsync` writes through the lock from a detached
     /// `spawn_local` future.
     pub edge_overflow_readback_state: std::sync::Arc<std::sync::Mutex<EdgeOverflowReadbackState>>,
+    /// State for the GPU light-culling per-froxel capacity auto-grow
+    /// loop. Same `Arc<Mutex<…>>` discipline as the other readback
+    /// states.
+    pub froxel_overflow_readback_state:
+        std::sync::Arc<std::sync::Mutex<FroxelOverflowReadbackState>>,
     /// Monotonic frame index. Wraps every ~272 years at 60 Hz — safe to
     /// treat as unbounded for any practical session. Drives the
     /// `skin_update_period` gate and other "every Nth frame" cadences.
@@ -331,13 +366,14 @@ pub struct AwsmRenderer {
 ///     material_mesh_metas, materials, attribute_indices,
 ///     attribute_data, transforms (packed model + normal — Option E),
 ///     texture_transforms, instance_attrs.
-///   * 1 storage buffer in `@group(1)`: mesh_light_indices.
+///   * 1 storage buffer in `@group(1)`: lights_storage (the GPU cull
+///     pass's per-froxel light slices).
 ///
 /// Total = 9, leaving 1 spare under a 10-buffer limit. lights +
-/// lights_info are uniforms in group(1) (Option F). The per-mesh
-/// slice (`light_slice_offset` + `light_slice_count`) is packed into
-/// MaterialMeshMeta itself, so no separate slices storage buffer is
-/// needed. The transparent pass peaks at 9. Bumping this lower than
+/// lights_info are uniforms in group(1) (Option F); shading reads the
+/// per-pixel froxel light list from `lights_storage`, so no separate
+/// per-mesh slices storage buffer is needed. The transparent pass
+/// peaks at 9. Bumping this lower than
 /// the binding count will pass adapter compatibility on a device that
 /// exactly meets the declared limit, then fail pipeline validation
 /// when the shader is compiled.
@@ -759,6 +795,7 @@ impl AwsmRenderer {
                             dispatch_hash,
                             dynamic_shader_id: Some(shader_id),
                             dynamic_shader: dynamic_shader.clone(),
+                            froxel_slice_count: render_passes::light_culling::DEFAULT_SLICE_COUNT,
                         }
                         .into(),
                     );
@@ -977,10 +1014,6 @@ impl AwsmRenderer {
             ("camera", self.camera.upload_stats()),
             ("frame_globals", self.frame_globals.upload_stats()),
             ("lights", self.lights.upload_stats()),
-            (
-                "mesh_light_indices",
-                self.mesh_light_indices_gpu.upload_stats(),
-            ),
             ("shadows", self.shadows.upload_stats()),
         ];
         if let Some(occ) = self.occlusion_buffers.as_ref() {
@@ -1642,7 +1675,6 @@ impl AwsmRendererBuilder {
         // is `describe_shaders → describe_pipelines → from_resolved`,
         // none of which compile pipelines themselves. See
         // `docs/PERFORMANCE.md` §5g for the architectural rationale.
-        let mesh_light_indices_gpu = MeshLightIndicesGpu::new(&gpu)?;
 
         // Sized for a small initial viewport; recreated by
         // `ClassifyBuffers::ensure_capacity` on first frame once the
@@ -1659,6 +1691,19 @@ impl AwsmRendererBuilder {
                 1024,
                 first_party_bucket_count,
             )?;
+
+        // Light-culling froxel buffers. Sized to a tiny placeholder
+        // viewport; per-frame `ensure_viewport` grows them once the real
+        // swap-chain size is known.
+        let light_culling_buffers = render_passes::light_culling::LightCullingBuffers::new(
+            &gpu,
+            16,
+            16,
+            render_passes::light_culling::DEFAULT_SLICE_COUNT,
+            render_passes::light_culling::DEFAULT_MAX_PER_FROXEL_CAPACITY,
+            render_passes::light_culling::DEFAULT_MESH_INDICES_CAPACITY,
+            render_passes::light_culling::DEFAULT_TILE_LIGHT_CAPACITY,
+        )?;
 
         // MSAA-edge-resolve buffers (Stage 3 dispatch wiring). Allocated only
         // when MSAA is on AND the device supports the required limits
@@ -2020,8 +2065,9 @@ impl AwsmRendererBuilder {
             scene_spatial: SceneSpatial::new(scene_spatial_config.unwrap_or_default()),
             recommended_shadow_quality_tier,
             light_buckets: LightMeshBuckets::default(),
-            mesh_light_indices_gpu,
             material_classify_buffers,
+            light_culling_buffers,
+            light_culling_debug_heatmap: 0,
             material_edge_buffers,
             material_edge_layout_uniform,
             decals,
@@ -2035,6 +2081,9 @@ impl AwsmRendererBuilder {
             )),
             edge_overflow_readback_state: std::sync::Arc::new(std::sync::Mutex::new(
                 EdgeOverflowReadbackState::default(),
+            )),
+            froxel_overflow_readback_state: std::sync::Arc::new(std::sync::Mutex::new(
+                FroxelOverflowReadbackState::default(),
             )),
             frame_index: 0,
             shaders,
@@ -2132,7 +2181,6 @@ impl AwsmRendererBuilder {
                 } else {
                     crate::render_passes::material_opaque::shader::template::MipmapMode::None
                 },
-                use_mesh_light_slices: false,
                 gpu_culling: _self.features.gpu_culling,
                 coverage_lod: _self.features.coverage_lod,
                 debug_bitmask: 0,
@@ -2338,6 +2386,52 @@ impl AwsmRenderer {
             new_budget
         );
         Ok(true)
+    }
+
+    /// Bumps the per-froxel light-index budget used by the GPU
+    /// light-culling pass. Symmetric with
+    /// [`Self::set_max_edge_budget`]: when the per-frame CPU readback
+    /// of `LightCullingBuffers::overflow_buffer` shows that the cull
+    /// shader bumped a froxel's count past
+    /// `max_per_froxel_capacity` (so subsequent lights for that
+    /// froxel were dropped), the renderer doubles the budget on the
+    /// next render. The budget lives as a *runtime* field on the
+    /// `cull_params` uniform, so this only reallocates the per-froxel
+    /// storage (via `LightCullingBuffers::set_max_per_froxel_capacity`)
+    /// and re-binds it — no shader recompile is needed, and the cull +
+    /// consumer shaders read the new capacity from `cull_params`.
+    ///
+    /// Returns `Ok(true)` when the buffers were recreated; `Ok(false)`
+    /// when `new_capacity` matches the current value.
+    pub fn set_max_per_froxel_capacity(&mut self, new_capacity: u32) -> crate::error::Result<bool> {
+        if !self.build_complete {
+            return Err(crate::error::AwsmError::NotReady);
+        }
+        let new_capacity = new_capacity.max(1);
+        let resized = self
+            .light_culling_buffers
+            .set_max_per_froxel_capacity(&self.gpu, new_capacity)?;
+        if !resized {
+            return Ok(false);
+        }
+        self.bind_groups
+            .mark_create(crate::bind_groups::BindGroupCreate::LightCullingFroxelsResize);
+        tracing::info!(
+            target: "awsm_renderer::light_culling",
+            "set_max_per_froxel_capacity: per-froxel budget grown to {} after observed overflow",
+            new_capacity,
+        );
+        Ok(true)
+    }
+
+    /// Toggle the light-culling debug heatmap (dev aid). When `on`, the
+    /// shading shaders output a per-pixel applied-punctual-light-count
+    /// heatmap instead of normal shading — blue (few) → red (many) — so
+    /// froxel occupancy / cull behaviour can be inspected visually. The
+    /// value is written into `CullParams.debug_light_heatmap` on the next
+    /// `write_params`; no buffer recreation or shader recompile needed.
+    pub fn set_light_culling_debug_heatmap(&mut self, on: bool) {
+        self.light_culling_debug_heatmap = u32::from(on);
     }
 
     /// Drive any pending compiles to completion and return when every

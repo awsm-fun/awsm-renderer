@@ -176,6 +176,47 @@ impl AwsmRenderer {
             }
         }
 
+        // Ingest GPU light-culling froxel-overflow readback. Same
+        // shape as the edge-overflow ingest above. When the cull
+        // shader bumped a froxel's count past
+        // `max_per_froxel_capacity` (so subsequent lights for that
+        // froxel were dropped), double the budget for next frame.
+        let pending_froxel_overflow = self
+            .froxel_overflow_readback_state
+            .lock()
+            .unwrap()
+            .pending_overflow_count
+            .take();
+        if let Some(overflow_count) = pending_froxel_overflow {
+            if overflow_count > 0 {
+                let current_capacity = self.light_culling_buffers.max_per_froxel_capacity;
+                let new_capacity = current_capacity.saturating_mul(2).min(u32::MAX / 2);
+                if new_capacity > current_capacity {
+                    match self.set_max_per_froxel_capacity(new_capacity) {
+                        Ok(true) => {
+                            tracing::info!(
+                                target: "awsm_renderer::light_culling",
+                                overflow_count,
+                                new_capacity,
+                                "light-culling overflow auto-grow: doubled \
+                                 max_per_froxel_capacity ({current_capacity} -> \
+                                 {new_capacity}) to absorb {overflow_count} dropped \
+                                 light indices from the prior frame",
+                            );
+                        }
+                        Ok(false) => {}
+                        Err(e) => {
+                            tracing::warn!(
+                                target: "awsm_renderer::light_culling",
+                                "light-culling overflow auto-grow failed: {e:?}; \
+                                 pathological scenes will continue dropping indices",
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         // Cheap-material LOD: re-route every mesh-with-a-cheap-variant
         // to the effective material's GPU offset based on the
         // just-ingested coverage. Idempotent — the
@@ -203,17 +244,51 @@ impl AwsmRenderer {
         self.meshes
             .morphs
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
-        // Per-mesh light slice path. Patches slice fields into each
-        // affected mesh's MaterialMeshMeta and uploads the packed
-        // indices buffer. MUST run BEFORE `meshes.meta.write_gpu` so
-        // the slice patches land in the same meta upload.
-        self.mesh_light_indices_gpu.write_gpu(
+        // ── Light culling per-frame setup ────────────────────────
+        //
+        // `ensure_viewport` may recreate `light_culling_buffers.storage_buffer`
+        // (the froxel storage), so it must land before the cull dispatch
+        // writes the per-froxel slices into it for this frame.
+        let (viewport_w_for_cull, viewport_h_for_cull) = self.gpu.current_context_texture_size()?;
+        if self.light_culling_buffers.ensure_viewport(
             &self.gpu,
-            &self.light_buckets,
-            &self.lights,
-            &mut self.meshes,
-            &mut self.bind_groups,
+            viewport_w_for_cull,
+            viewport_h_for_cull,
+        )? {
+            self.bind_groups
+                .mark_create(BindGroupCreate::LightCullingFroxelsResize);
+        }
+        // Grow the per-2D-tile candidate capacity toward the live
+        // punctual-light count. A tile column can't hold more candidates
+        // than there are punctual lights, so this is a safe
+        // non-overflowing bound — and it keeps the `tile_lights` buffer
+        // small for low-light scenes (the common case). MUST run before
+        // `write_params` so the `tile_light_capacity` written into
+        // `cull_params` matches the (possibly resized) buffer.
+        let live_punctual_for_cull = self.lights.iter_active_punctual().count() as u32;
+        if self
+            .light_culling_buffers
+            .ensure_tile_light_capacity(&self.gpu, live_punctual_for_cull)?
+        {
+            self.bind_groups
+                .mark_create(BindGroupCreate::LightCullingFroxelsResize);
+        }
+        let (z_near_for_cull, z_far_for_cull) =
+            camera_near_far_from_projection(&self.camera.last_matrices);
+        self.light_culling_buffers.write_params(
+            &self.gpu,
+            z_near_for_cull,
+            z_far_for_cull,
+            self.light_culling_debug_heatmap,
         )?;
+        self.light_culling_buffers.reset_overflow(&self.gpu)?;
+
+        // (Removed: the per-mesh light-slice GPU upload. All opaque
+        // shading now reads the per-pixel froxel light list, so the
+        // per-mesh slices in the storage-buffer head are no longer
+        // consumed. `LightMeshBuckets` is still rebuilt elsewhere — it
+        // feeds the shadow-receiver gate — but its slices aren't uploaded.)
+
         // Decals — upload per-decal data if anything changed since last
         // frame. Skipped entirely when the decals feature is off.
         if let Some(decals) = self.decals.as_mut() {
@@ -333,6 +408,9 @@ impl AwsmRenderer {
         }
         self.material_classify_buffers.reset_header(&self.gpu)?;
 
+        // (Light-culling per-frame setup runs earlier, before the cull
+        // dispatch writes into `light_culling_buffers.storage_buffer`.)
+
         // Build a snapshot of the active mesh count so we can size the
         // occlusion-cull buffers before bind groups are recreated.
         // Refining this to the actual opaque-renderable count requires
@@ -408,8 +486,8 @@ impl AwsmRenderer {
                 instances: &self.instances,
                 anti_aliasing: &self.anti_aliasing,
                 shadows: &self.shadows,
-                mesh_light_indices_gpu: &self.mesh_light_indices_gpu,
                 material_classify_buffers: &self.material_classify_buffers,
+                light_culling_buffers: &self.light_culling_buffers,
                 material_edge_buffers: self.material_edge_buffers.as_ref(),
                 material_edge_layout_uniform: self.material_edge_layout_uniform.as_ref(),
                 extras_pool: &self.extras_pool,
@@ -455,6 +533,9 @@ impl AwsmRenderer {
             clear_color: &self._clear_color,
             scene_spatial: &self.scene_spatial,
             material_classify_buffers: &self.material_classify_buffers,
+            light_culling_buffers: &self.light_culling_buffers,
+            live_punctual_count: self.lights.iter_active_punctual().count() as u32,
+            live_light_count: self.lights.len() as u32,
             material_edge_buffers: self.material_edge_buffers.as_ref(),
             material_edge_layout_uniform: self.material_edge_layout_uniform.as_ref(),
             bind_group_layouts: &self.bind_group_layouts,
@@ -689,6 +770,29 @@ impl AwsmRenderer {
 
             self.render_passes.light_culling.render(&ctx)?;
         }
+
+        // Kick the GPU light-culling overflow readback copy. Same
+        // discipline as the edge-overflow readback below:
+        // `copy_buffer_to_buffer` is recorded INTO the command encoder
+        // so it executes strictly after the cull dispatch; the
+        // `mapAsync` spawn-local lives below `submit_commands` so the
+        // GPU sees the copy before the host requests the map.
+        // Single-buffered via the `inflight` gate.
+        let kick_froxel_overflow_readback = {
+            let inflight = self.froxel_overflow_readback_state.lock().unwrap().inflight;
+            if !inflight && ctx.live_punctual_count > 0 {
+                ctx.command_encoder.copy_buffer_to_buffer(
+                    &self.light_culling_buffers.overflow_buffer,
+                    0,
+                    &self.light_culling_buffers.overflow_readback_buffer,
+                    0,
+                    crate::render_passes::light_culling::buffers::OVERFLOW_READBACK_BYTES as u32,
+                )?;
+                true
+            } else {
+                false
+            }
+        };
 
         {
             let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
@@ -1312,6 +1416,40 @@ impl AwsmRenderer {
             }
         }
 
+        // Kick the GPU light-culling `mapAsync` readback. Same shape
+        // as the edge-overflow readback above.
+        if kick_froxel_overflow_readback {
+            let readback_buffer = self.light_culling_buffers.overflow_readback_buffer.clone();
+            let state = std::sync::Arc::clone(&self.froxel_overflow_readback_state);
+            state.lock().unwrap().inflight = true;
+            wasm_bindgen_futures::spawn_local(async move {
+                let result = crate::core::buffers::extract_buffer_vec(
+                    &readback_buffer,
+                    Some(
+                        crate::render_passes::light_culling::buffers::OVERFLOW_READBACK_BYTES
+                            as u32,
+                    ),
+                )
+                .await;
+                let snapshot: Option<u32> = match result {
+                    Ok(bytes) if bytes.len() >= 4 => {
+                        Some(u32::from_le_bytes(bytes[0..4].try_into().unwrap()))
+                    }
+                    Ok(_) => None,
+                    Err(err) => {
+                        tracing::warn!(
+                            target: "awsm_renderer::light_culling",
+                            "froxel-overflow readback mapAsync failed: {err:?}",
+                        );
+                        None
+                    }
+                };
+                let mut state = state.lock().unwrap();
+                state.pending_overflow_count = snapshot;
+                state.inflight = false;
+            });
+        }
+
         if let Some(hook) = hooks.and_then(|h| h.post_render.as_ref()) {
             {
                 let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
@@ -1364,6 +1502,20 @@ pub struct RenderContext<'a> {
     /// `dispatchWorkgroupsIndirect`.
     pub material_classify_buffers:
         &'a crate::render_passes::material_classify::buffers::ClassifyBuffers,
+    /// GPU light-culling froxel buffers. The cull pass writes the
+    /// per-froxel `(count, indices)`; the transparent + opaque-
+    /// oversized shaders read it back at shading time.
+    pub light_culling_buffers: &'a crate::render_passes::light_culling::LightCullingBuffers,
+    /// Number of live punctual lights this frame — same value the
+    /// cull and shading shaders see in `lights_info.data.x`. Used to
+    /// gate the overflow readback (only punctuals can overflow a froxel).
+    pub live_punctual_count: u32,
+    /// Total live light count this frame (punctual + directional) —
+    /// matches `lights_info.n_lights`. The froxel consumers walk the
+    /// per-froxel slices whenever `n_lights > 0`, so the cull pass
+    /// (sole writer/clearer of those counts) must run whenever this is
+    /// non-zero; it may only skip when there are no lights at all.
+    pub live_light_count: u32,
     /// Priority-3 MSAA edge-resolve composite buffer. `Some` only
     /// when MSAA is on (no edges to resolve under single-sample).
     /// Bound read-write by classify (slot 4 of group(0)) and by the
@@ -1425,6 +1577,23 @@ pub struct RenderContext<'a> {
 }
 
 impl<'a> RenderContext<'a> {
+    /// Live punctual-light count this frame. The cull pass + shading
+    /// shaders both read this via `lights_info.data.x`; the cull pass's
+    /// `render()` consults this CPU mirror to skip the dispatch when
+    /// zero (typical for skybox-only / directional-only scenes).
+    pub fn live_punctual_light_count(&self) -> u32 {
+        self.live_punctual_count
+    }
+
+    /// Total live light count this frame (matches `lights_info.n_lights`).
+    /// The cull pass uses this to decide whether it may skip entirely:
+    /// the froxel consumers only walk per-froxel slices when
+    /// `n_lights > 0`, so the cull (sole writer/clearer of those counts)
+    /// must run whenever any light exists.
+    pub fn live_light_count(&self) -> u32 {
+        self.live_light_count
+    }
+
     /// Begins a visibility-buffer extension pass for world-space opaque geometry.
     ///
     /// This pass loads the existing visibility attachments and world depth, allowing custom hooks
@@ -1577,4 +1746,43 @@ impl<'a> RenderContext<'a> {
             )
             .map_err(Into::into)
     }
+}
+
+/// Derives view-space `(near, far)` from a perspective projection
+/// matrix. The renderer doesn't separately track near/far — they're
+/// derived from `proj` so the camera buffer stays the single source
+/// of truth. Returns sensible defaults (`(0.1, 1000.0)`) when no
+/// camera matrices have been uploaded yet (first-frame race).
+///
+/// Recovery (right-handed glam / WebGPU NDC `z ∈ [0, 1]`):
+///   `proj[2][2] = far / (near - far)`
+///   `proj[3][2] = far * near / (near - far)`
+/// solved as
+///   `near = proj[3][2] / proj[2][2]`
+///   `far  = proj[3][2] / (proj[2][2] + 1)`
+fn camera_near_far_from_projection(
+    last_matrices: &Option<crate::camera::CameraMatrices>,
+) -> (f32, f32) {
+    let Some(matrices) = last_matrices else {
+        return (0.1, 1000.0);
+    };
+    if matrices.is_orthographic() {
+        // Orthographic: no perspective divide; near/far come from
+        // `proj[2][2]` and `proj[3][2]` differently. The exponential
+        // froxel mapping assumes perspective; for ortho we just hand
+        // back something safe and let the cull pass cover the whole
+        // depth range coarsely.
+        return (0.1, 1000.0);
+    }
+    let p22 = matrices.projection.z_axis.z;
+    let p32 = matrices.projection.w_axis.z;
+    // Guard against degenerate matrices.
+    if p22.abs() < f32::EPSILON || (p22 + 1.0).abs() < f32::EPSILON {
+        return (0.1, 1000.0);
+    }
+    let near = p32 / p22;
+    let far = p32 / (p22 + 1.0);
+    let near = near.abs().max(1e-4);
+    let far = far.abs().max(near + 1e-3);
+    (near, far)
 }

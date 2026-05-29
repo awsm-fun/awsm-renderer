@@ -56,7 +56,13 @@ pub struct ShaderTemplateMaterialEdgeResolveCompute {
     pub multisampled_geometry: bool,
     pub msaa_sample_count: u32,
     pub mipmap: MipmapMode,
-    pub use_mesh_light_slices: bool,
+    /// Mirror of the opaque-compute flag. Edge-resolve shades the same
+    /// geometry as the main compute pass, so it takes the same per-pixel
+    /// froxel light walk. `true` so `lights.wgsl` emits
+    /// `apply_lighting_per_froxel*`.
+    pub use_froxel_lights: bool,
+    /// Mirror of the opaque-compute field (see `use_froxel_lights`).
+    pub froxel_slice_count: u32,
     pub shadows_enabled: bool,
     pub materials_wgsl: String,
     pub shader_id_consts: String,
@@ -140,7 +146,8 @@ impl TryFrom<&ShaderCacheKeyMaterialEdgeResolve> for ShaderTemplateMaterialEdgeR
                 multisampled_geometry: true,
                 msaa_sample_count: 4,
                 mipmap,
-                use_mesh_light_slices: true,
+                use_froxel_lights: true,
+                froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
                 shadows_enabled: true,
                 materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
                 shader_id_consts: awsm_materials::registry::build_shader_id_consts(),

@@ -40,12 +40,12 @@ pub const MATERIAL_MESH_META_MORPH_MATERIAL_BITMASK_TANGENT: u32 = 1 << 1;
 ///   15: visibility_geometry_data_offset
 ///   16: is_hud
 ///   17: receive_shadows
-///   18: light_slice_offset (Option F)
-///   19: light_slice_count  (Option F)
-///   20: receive_decals
-///   21: shadow_receiver_gate (per-frame coverage gate; see
+///   18: receive_decals
+///   19: shadow_receiver_gate (per-frame coverage gate; see
 ///       `MATERIAL_MESH_META_SHADOW_RECEIVER_GATE_OFFSET`)
-///   22..23: reserved / pad (keeps `padding_4` at vec4 alignment)
+///   20..23: reserved / pad (keeps `padding_4` at vec4 alignment;
+///       indices 22..23 formerly held the per-mesh light slice, removed
+///       when shading unified on the per-pixel froxel light list)
 pub const MATERIAL_MESH_META_BYTE_SIZE: usize = 96;
 /// Byte alignment for material mesh meta entries.
 pub const MATERIAL_MESH_META_BYTE_ALIGNMENT: usize = 256;
@@ -62,21 +62,17 @@ pub const MATERIAL_MESH_META_RECEIVE_SHADOWS_OFFSET: usize = 17 * 4;
 /// `Mesh::effective_material_key`) and are patched once per coverage-
 /// cross-threshold transition by `MeshMeta::set_material_offset`.
 pub const MATERIAL_MESH_META_MATERIAL_OFFSET_OFFSET: usize = 6 * 4;
-/// Byte offset of `light_slice_offset` (u32) inside the packed struct.
-/// The 8 bytes from this offset hold the per-mesh light-slice metadata
-/// — `[offset_u32, count_u32]` — written per-frame by `MeshMeta::set_mesh_light_slice`.
-pub const MATERIAL_MESH_META_LIGHT_SLICE_OFFSET: usize = 18 * 4;
 /// Byte offset of the `receive_decals` u32 inside the packed struct.
 /// Used by `MeshMeta::set_receive_decals` for the in-place patch path
 /// so the decal toggle doesn't need to re-pack the entire struct.
-pub const MATERIAL_MESH_META_RECEIVE_DECALS_OFFSET: usize = 20 * 4;
+pub const MATERIAL_MESH_META_RECEIVE_DECALS_OFFSET: usize = 18 * 4;
 /// Byte offset of the `shadow_receiver_gate` u32 inside the packed struct.
 /// Per-frame coverage-driven gate that augments the authored
 /// `receive_shadows` flag — `apply_lighting*` in `lights.wgsl` skips
 /// shadow sampling when this is `0u`, even if `receive_shadows` is `1u`.
 /// Written by `MeshMeta::set_shadow_receiver_gate` from
 /// `transforms::update_transforms` after `LightMeshBuckets::mark_shadow_receivers`.
-pub const MATERIAL_MESH_META_SHADOW_RECEIVER_GATE_OFFSET: usize = 21 * 4;
+pub const MATERIAL_MESH_META_SHADOW_RECEIVER_GATE_OFFSET: usize = 19 * 4;
 
 pub static MATERIAL_BUFFER_USAGE: LazyLock<BufferUsage> = LazyLock::new(|| {
     BufferUsage::new()
@@ -241,29 +237,26 @@ impl<'a> MaterialMeshMeta<'a> {
         // `material_mesh_meta.wgsl`.
         push_u32(if mesh.receive_shadows { 1 } else { 0 });
 
-        // Per-mesh light-slice. Initialised to zero — the per-frame
-        // `MeshMeta::set_mesh_light_slice` patches these two u32s with
-        // the live offset / count into `mesh_light_indices`. A mesh
-        // that never gets a slice walk this frame reads `count = 0`
-        // and the punctual loop is empty (directional lights still
-        // apply via the global prefix).
-        push_u32(0);
-        push_u32(0);
-
-        // receive_decals — consumed by the decal compute pass to skip
-        // the per-decal volume test when the mesh opted out. Matches
-        // the `receive_decals` u32 in `material_mesh_meta.wgsl`.
+        // receive_decals (index 18) — consumed by the decal compute pass
+        // to skip the per-decal volume test when the mesh opted out.
+        // Matches the `receive_decals` u32 in `material_mesh_meta.wgsl`.
         push_u32(if mesh.receive_decals { 1 } else { 0 });
-        // shadow_receiver_gate — per-frame coverage-driven gate. Initial
-        // pack is `1` (conservative: assume receiver until proven
-        // otherwise) so a freshly-inserted mesh shaded before the next
-        // `LightMeshBuckets::mark_shadow_receivers` pass still samples
-        // shadows correctly. Live updates run through
+        // shadow_receiver_gate (index 19) — per-frame coverage-driven
+        // gate. Initial pack is `1` (conservative: assume receiver until
+        // proven otherwise) so a freshly-inserted mesh shaded before the
+        // next `LightMeshBuckets::mark_shadow_receivers` pass still
+        // samples shadows correctly. Live updates run through
         // `MeshMeta::set_shadow_receiver_gate`.
         push_u32(1);
-        // Reserved trailing u32s — keep the populated region at a
-        // vec4 multiple so `padding_4: array<vec4<u32>, _>` stays
-        // vec4-aligned.
+        // Reserved trailing u32s (indices 20-23). The last two formerly
+        // held the per-mesh light slice (`offset`/`count`) for the old
+        // per-mesh lighting path, removed when shading unified on the
+        // per-pixel froxel light list; kept as inert tail padding (each
+        // entry is 256-byte aligned, so removing them reclaims nothing).
+        // The four u32s keep the populated region at a vec4 multiple so
+        // `padding_4: array<vec4<u32>, _>` stays vec4-aligned.
+        push_u32(0);
+        push_u32(0);
         push_u32(0);
         push_u32(0);
 

@@ -26,13 +26,15 @@ pub fn render() -> Dom {
     let last_error = compile_last_error_handle();
 
     html!("div", {
-        // Pinned to the top-right corner so the overlay doesn't fight
-        // the gizmo / sidebar / properties pane for screen real
-        // estate. Stays out of the way of authoring but is
-        // immediately visible.
+        // Centered over the viewport so a still-compiling (black) canvas
+        // never reads as "broken" — the first load of a heavy scene can
+        // sit here for a couple seconds while the driver lowers shaders.
+        // `pointer-events: none` keeps it non-blocking: the user can still
+        // pan / select / edit while pipelines compile in the background.
         .style("position", "fixed")
-        .style("top", "60px")
-        .style("right", "24px")
+        .style("top", "50%")
+        .style("left", "50%")
+        .style("transform", "translate(-50%, -50%)")
         .style("z-index", "9000")
         .style("pointer-events", "none")
         .child_signal(pending.signal().map(clone!(pending, last_error => move |n| {
@@ -74,10 +76,20 @@ fn card(pending: Arc<Mutable<usize>>, last_error: Arc<Mutable<Option<String>>>) 
                 .style("animation", "awsm-spin 0.9s linear infinite")
             }))
             .child(html!("div", {
-                .style("font-size", "0.95rem")
-                .style("font-weight", "600")
-                .text_signal(pending.signal().map(|n| {
-                    format!("Compiling {n} pipeline{}…", if n == 1 { "" } else { "s" })
+                .style("display", "flex")
+                .style("flex-direction", "column")
+                .style("gap", "2px")
+                .child(html!("div", {
+                    .style("font-size", "0.95rem")
+                    .style("font-weight", "600")
+                    .text_signal(pending.signal().map(|n| {
+                        format!("Compiling render pipelines… ({n} remaining)")
+                    }))
+                }))
+                .child(html!("div", {
+                    .style("font-size", "0.75rem")
+                    .style("opacity", "0.7")
+                    .text("First load compiles shaders for your GPU — cached for next time.")
                 }))
             }))
         }))

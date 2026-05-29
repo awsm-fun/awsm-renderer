@@ -39,6 +39,33 @@ struct TransformPacked {
 // Renderer-wide variable-length per-material data pool — backs
 // custom-material `BufferSlot` declarations on transparents.
 @group(0) @binding(19) var<storage, read> extras_pool: array<u32>;
+// ─── Light-culling readback ───────────────────────────────────────
+// `cull_params` + `lights_storage` are the merged consumer-side
+// bindings the GPU light-culling pass writes. The transparent shader
+// only ever takes the per-froxel walk (transparent fragments don't
+// have per-mesh slices), but the binding still points at the merged
+// `[mesh head | froxel tail]` buffer the opaque pass also binds —
+// `apply_lighting_per_froxel*` adds `mesh_indices_capacity_u32` to
+// the per-pixel froxel-base offset.
+//
+// The CullParams struct decl is duplicated from the cull pass's
+// `light_culling_wgsl/bind_groups.wgsl`; both must stay byte-aligned.
+struct CullParams {
+    tiles_x: u32,
+    tiles_y: u32,
+    viewport_w: u32,
+    viewport_h: u32,
+    mesh_indices_capacity_u32: u32,
+    max_per_froxel_capacity: u32,
+    _pad0: u32,
+    z_near: f32,
+    z_far: f32,
+    log_far_over_near: f32,
+    debug_light_heatmap: u32,           // 0 = normal; 1 = applied-light-count heatmap
+    _pad2: f32,
+};
+@group(0) @binding(20) var<uniform> cull_params: CullParams;
+@group(0) @binding(21) var<storage, read> lights_storage: array<u32>;
 
 // ─── Shadow bind group (group 1) ───────────────────────────────────
 // Includes the shared shadow bindings (atlas + cube + EVSM + globals

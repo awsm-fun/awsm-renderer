@@ -53,6 +53,25 @@ pub fn toggle_msaa() {
     });
 }
 
+/// Toggle the light-culling debug heatmap (dev aid): the viewport shows a
+/// per-pixel applied-punctual-light-count heatmap (blue = few → red = many)
+/// instead of normal shading. No recompile / buffer recreation — flips a
+/// `cull_params` flag for the next frame.
+pub fn toggle_light_heatmap() {
+    let state = app_state();
+    let on = {
+        let mut lock = state.debug_light_heatmap.lock_mut();
+        *lock = !*lock;
+        *lock
+    };
+    tracing::info!("action: view::toggle_light_heatmap → {on}");
+    spawn_local(async move {
+        let handle = renderer_handle();
+        let mut renderer = handle.lock().await;
+        renderer.set_light_culling_debug_heatmap(on);
+    });
+}
+
 // ---------------- Skybox ----------------
 
 pub fn apply_default_skybox() {

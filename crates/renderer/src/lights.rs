@@ -173,8 +173,15 @@ pub struct Lights {
 impl Lights {
     /// Size in bytes for a single punctual light.
     pub const PUNCTUAL_LIGHT_SIZE: usize = 64;
-    /// Size in bytes for the lighting info block.
-    pub const INFO_SIZE: usize = 16; // 2 * u32 for mipmap counts, 1 for number of lights, and 1 for padding
+    /// Max directional lights packed into the info uniform's directional
+    /// index list. Directional lights are rare (sun / moon / fill); any
+    /// beyond this are simply dropped from the bounded directional walk.
+    pub const MAX_DIRECTIONAL_LIGHTS: usize = 8;
+    /// Size in bytes for the lighting info block. Layout (matches the
+    /// `LightsInfoPacked` WGSL struct):
+    ///   data: vec4<u32> (16) — x=n_lights, y/z=IBL mip counts, w=n_directional
+    ///   directional: array<vec4<u32>, 2> (32) — packed indices of the ≤8 directionals
+    pub const INFO_SIZE: usize = 48;
 
     /// Creates light buffers and initializes IBL state.
     pub fn new(gpu: &AwsmRendererWebGpu, ibl: Ibl, brdf_lut: BrdfLut) -> Result<Self> {
@@ -415,6 +422,23 @@ impl Lights {
             data[0..4].copy_from_slice(&(self.lights.len() as u32).to_ne_bytes());
             data[4..8].copy_from_slice(&self.ibl.prefiltered_env.mip_count.to_ne_bytes());
             data[8..12].copy_from_slice(&self.ibl.irradiance.mip_count.to_ne_bytes());
+
+            // Directional index list for the bounded per-pixel directional
+            // walk. `data.w` = count; `[16..48]` = up to 8 packed-array
+            // indices. The index is the light's position in the same
+            // `iter().take(MAX_PUNCTUAL_LIGHTS)` order used to pack the
+            // storage buffer, so it matches `get_light(i)` on the GPU.
+            let mut n_directional: u32 = 0;
+            for (i, (_key, light)) in self.lights.iter().take(MAX_PUNCTUAL_LIGHTS).enumerate() {
+                if matches!(light, Light::Directional { .. })
+                    && (n_directional as usize) < Self::MAX_DIRECTIONAL_LIGHTS
+                {
+                    let off = 16 + n_directional as usize * 4;
+                    data[off..off + 4].copy_from_slice(&(i as u32).to_ne_bytes());
+                    n_directional += 1;
+                }
+            }
+            data[12..16].copy_from_slice(&n_directional.to_ne_bytes());
 
             self.info_uploader.write_dirty_ranges(
                 gpu,

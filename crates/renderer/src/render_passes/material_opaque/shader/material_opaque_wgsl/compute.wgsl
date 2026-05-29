@@ -406,15 +406,20 @@ fn main(
             return;
         }
 
-        {% if use_mesh_light_slices %}
-            color = apply_lighting_per_mesh(
+        {% if use_froxel_lights %}
+            // Unified froxel path: every opaque mesh shades punctual
+            // lights from its per-pixel froxel light list (the GPU light
+            // cull). This replaces the old per-mesh-slice / oversized-
+            // sentinel split — clustered (froxel) culling is generic and
+            // camera-correct for any mesh size, so there's no gate to
+            // tune. Directional lights are walked flat (see lights.wgsl).
+            color = apply_lighting_per_froxel(
                 material_color,
                 standard_coordinates.surface_to_camera,
                 standard_coordinates.world_position,
                 lights_info,
                 (material_mesh_meta.receive_shadows & material_mesh_meta.shadow_receiver_gate),
-                material_mesh_meta.light_slice_offset,
-                material_mesh_meta.light_slice_count,
+                vec2<f32>(f32(coords.x), f32(coords.y)),
             );
         {% else %}
             color = apply_lighting(

@@ -308,6 +308,27 @@ impl AppScene {
     pub async fn render(self: &Arc<Self>) -> Result<()> {
         let state = self;
         let mut renderer = state.renderer.lock().await;
+
+        // Surface background pipeline-scheduler compiles (post-`Ready`
+        // per-material / per-pass) in the loading overlay so a frame that
+        // is still compiling never reads as a black hang. Pending → +1,
+        // Ready/Failed → -1 (saturating). Drained every frame.
+        let events = renderer.drain_pipeline_status_events();
+        if !events.is_empty() {
+            use awsm_renderer::pipeline_scheduler::PipelineGroupStatus;
+            let mut status = state.ctx.loading_status.lock_mut();
+            for ev in events {
+                match ev.status {
+                    PipelineGroupStatus::Pending => {
+                        status.compile_pending = status.compile_pending.saturating_add(1);
+                    }
+                    PipelineGroupStatus::Ready | PipelineGroupStatus::Failed { .. } => {
+                        status.compile_pending = status.compile_pending.saturating_sub(1);
+                    }
+                }
+            }
+        }
+
         let editor_guard = state.editor.lock().unwrap();
         let hooks = editor_guard
             .as_ref()

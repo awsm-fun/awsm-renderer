@@ -279,15 +279,17 @@ fn shade_sample(
                     sample_tbn,
                 );
         {% endmatch %}
-        {% if use_mesh_light_slices %}
-            color = apply_lighting_per_mesh(
+        {% if use_froxel_lights %}
+            // Unified froxel path (mirrors the main compute pass): every
+            // edge sample shades punctual lights from its per-pixel froxel
+            // list. No per-mesh-slice / oversized-sentinel split.
+            color = apply_lighting_per_froxel(
                 material_color,
                 standard_coordinates.surface_to_camera,
                 standard_coordinates.world_position,
                 lights_info,
                 (sample_mesh_meta.receive_shadows & sample_mesh_meta.shadow_receiver_gate),
-                sample_mesh_meta.light_slice_offset,
-                sample_mesh_meta.light_slice_count,
+                vec2<f32>(f32(coords.x), f32(coords.y)),
             );
         {% else %}
             color = apply_lighting(

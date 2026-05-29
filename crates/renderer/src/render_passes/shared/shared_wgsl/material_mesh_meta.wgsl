@@ -28,14 +28,6 @@ struct MaterialMeshMeta {
     // slot in `MaterialMeshMeta::to_bytes` — keep the byte offset in
     // lockstep when adding fields above.
     receive_shadows: u32,
-    // Per-mesh light slice.
-    // `light_slice_offset` is the start index into
-    // `mesh_light_indices`; `light_slice_count` is the number of
-    // punctual lights overlapping this mesh. `count = 0` means no
-    // punctual lights reach this mesh this frame (directional lights
-    // are applied separately via the global prefix walk).
-    light_slice_offset: u32,
-    light_slice_count: u32,
     // `1u` means the mesh opts into projection decals;
     // `0u` skips the per-decal volume test in `material_decal`'s
     // compute. Matches `Mesh::receive_decals`.
@@ -51,9 +43,16 @@ struct MaterialMeshMeta {
     // corresponding `u32` slot in `MaterialMeshMeta::to_bytes`
     // (offset `MATERIAL_MESH_META_SHADOW_RECEIVER_GATE_OFFSET`).
     shadow_receiver_gate: u32,
-    // Reserved trailing u32s — keep the populated region at a vec4
-    // boundary so `padding_4` lays out cleanly.
+    // Reserved trailing u32s (indices 20-23). `_reserved2/3` formerly
+    // held the per-mesh light slice (`offset`/`count`) for the old
+    // per-mesh lighting path, removed when shading unified on the
+    // per-pixel froxel light list; the slots are kept as inert tail
+    // padding (each entry is 256-byte aligned, so removing them
+    // reclaims nothing). The four u32s keep the populated region at a
+    // vec4 boundary so `padding_4` lays out cleanly.
     _reserved0: u32,
     _reserved1: u32,
+    _reserved2: u32,
+    _reserved3: u32,
     padding_4: array<vec4<u32>, 10>,
 }

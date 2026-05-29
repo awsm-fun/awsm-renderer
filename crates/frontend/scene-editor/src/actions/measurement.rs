@@ -498,15 +498,11 @@ fn strip_tracing_span_suffix(name: &str) -> Option<&str> {
 }
 
 /// Read the renderer's light-bucket telemetry.
-/// Returns a JSON string `{ "last_max_bucket": N, "oversized_count": M }`
-/// for the most-recently-rebuilt `LightMeshBuckets`. Drive from
-/// preview_eval after loading `tuning-open-world` (or any authored
-/// scene with terrain / ocean / skyboxes) to inform re-tuning of
-/// `OVERSIZED_LIST_COUNT_THRESHOLD` (default 16) and
-/// `OVERSIZED_AABB_DIAGONAL_METERS` (default 50.0). Returns JSON
-/// (rather than a JS object) to dodge a `serde_wasm_bindgen`
-/// dependency the editor doesn't otherwise carry; the caller does
-/// `JSON.parse()`.
+/// Returns a JSON string `{ "last_max_bucket": N }` — the largest
+/// single-light mesh bucket in the most-recently-rebuilt
+/// `LightMeshBuckets`. Returns JSON (rather than a JS object) to dodge
+/// a `serde_wasm_bindgen` dependency the editor doesn't otherwise
+/// carry; the caller does `JSON.parse()`.
 /// Phase-2.1 upload-ring telemetry. Returns a JSON object keyed by
 /// renderer subsystem (`transforms`, `materials`, `instances.transforms`,
 /// …) plus a `_total` rollup. Each entry exposes
@@ -961,16 +957,72 @@ pub async fn read_material_sampler_diag() -> String {
     .await
 }
 
+/// Dev-only: dump the live light-culling inputs (camera matrices,
+/// viewport/tile grid, slice count, and every punctual light's world
+/// position + range) so an offline simulation can reproduce the cull
+/// math against ground-truth runtime data. JSON shape:
+/// `{ "proj":[16], "view":[16], "viewport":[w,h], "tiles_x":N,
+///    "tiles_y":M, "slice_count":S, "max_cap":C,
+///    "lights":[{"pos":[x,y,z],"range":r}, ...] }`.
 #[wasm_bindgen]
-pub async fn read_oversized_mesh_stats() -> String {
-    let (last_max_bucket, oversized_count) = crate::context::with_renderer_mut(|r| {
-        (
-            r.light_buckets.last_max_bucket(),
-            r.light_buckets.oversized_meshes().len(),
+pub async fn debug_dump_cull_state() -> String {
+    use awsm_renderer::lights::Light;
+    crate::context::with_renderer(|r| {
+        let m = match r.camera.last_matrices.as_ref() {
+            Some(m) => m,
+            None => return "{\"error\":\"no camera matrices\"}".to_string(),
+        };
+        let proj = m.projection.to_cols_array();
+        let view = m.view.to_cols_array();
+        let b = &r.light_culling_buffers;
+        let arr = |a: &[f32]| {
+            a.iter()
+                .map(|v| format!("{v}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let mut lights = String::from("[");
+        let mut first = true;
+        for (_k, light) in r.lights.iter() {
+            if let Light::Point {
+                position, range, ..
+            }
+            | Light::Spot {
+                position, range, ..
+            } = light
+            {
+                if !first {
+                    lights.push(',');
+                }
+                first = false;
+                lights.push_str(&format!(
+                    "{{\"pos\":[{},{},{}],\"range\":{}}}",
+                    position[0], position[1], position[2], range
+                ));
+            }
+        }
+        lights.push(']');
+        format!(
+            "{{\"proj\":[{}],\"view\":[{}],\"viewport\":[{},{}],\"tiles_x\":{},\"tiles_y\":{},\"slice_count\":{},\"max_cap\":{},\"lights\":{}}}",
+            arr(&proj),
+            arr(&view),
+            b.viewport_w,
+            b.viewport_h,
+            b.tiles_x(),
+            b.tiles_y(),
+            b.slice_count,
+            b.max_per_froxel_capacity,
+            lights
         )
     })
-    .await;
-    format!("{{\"last_max_bucket\":{last_max_bucket},\"oversized_count\":{oversized_count}}}")
+    .await
+}
+
+#[wasm_bindgen]
+pub async fn read_oversized_mesh_stats() -> String {
+    let last_max_bucket =
+        crate::context::with_renderer_mut(|r| r.light_buckets.last_max_bucket()).await;
+    format!("{{\"last_max_bucket\":{last_max_bucket}}}")
 }
 
 /// Dev-only: drive the renderer's GPU pick at the given canvas-local

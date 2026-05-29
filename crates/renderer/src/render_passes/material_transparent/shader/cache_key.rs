@@ -44,6 +44,10 @@ pub struct ShaderCacheKeyMaterialTransparent {
     /// when `dynamic_shader_id.is_some()`. The fragment template
     /// renders it into a `custom_shade_transparent_dynamic` function.
     pub dynamic_shader: Option<DynamicShaderInfo>,
+    /// GPU light-culling froxel slice count baked into the consumer
+    /// shader (matches the cull pass's WGSL `SLICE_COUNT`). The
+    /// shading-time froxel index calculation constant-folds this.
+    pub froxel_slice_count: u32,
 }
 
 impl From<ShaderCacheKeyMaterialTransparent> for ShaderCacheKey {

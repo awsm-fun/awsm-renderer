@@ -10,7 +10,5 @@
 //! overlapping lights.
 
 mod buckets;
-mod gpu;
 
 pub use buckets::LightMeshBuckets;
-pub use gpu::MeshLightIndicesGpu;

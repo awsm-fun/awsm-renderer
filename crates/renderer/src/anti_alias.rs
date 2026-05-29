@@ -139,7 +139,6 @@ impl AwsmRenderer {
             } else {
                 crate::render_passes::material_opaque::shader::template::MipmapMode::None
             },
-            use_mesh_light_slices: false,
             gpu_culling: self.features.gpu_culling,
             coverage_lod: self.features.coverage_lod,
             debug_bitmask: 0,

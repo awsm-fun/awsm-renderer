@@ -454,7 +454,8 @@ fn build_descriptor(
 
     let layout = pipeline_layouts.get(cache_key.layout_key)?;
 
-    let mut programmable_stage = ProgrammableStage::new(shader_module, None);
+    let mut programmable_stage =
+        ProgrammableStage::new(shader_module, cache_key.entry_point.as_deref());
     programmable_stage.constant_overrides = cache_key.constant_overrides.clone();
 
     // Debug label — same rationale as the render pipeline cache:
@@ -486,6 +487,13 @@ pub struct ComputePipelineCacheKey {
     pub shader_key: ShaderKey,
     pub layout_key: PipelineLayoutKey,
     pub constant_overrides: BTreeMap<ConstantOverrideKey, ConstantOverrideValue>,
+    /// Entry-point override. `None` uses the shader module's single
+    /// `@compute` entry point (the common case). `Some(name)` selects a
+    /// specific entry point — required when one module exposes multiple
+    /// `@compute` functions (e.g. the light-culling pass's two-stage
+    /// `cs_tile` / `cs_main`), and part of the cache key so the distinct
+    /// pipelines don't collide.
+    pub entry_point: Option<String>,
 }
 
 impl ComputePipelineCacheKey {
@@ -495,7 +503,15 @@ impl ComputePipelineCacheKey {
             shader_key,
             layout_key,
             constant_overrides: BTreeMap::new(),
+            entry_point: None,
         }
+    }
+
+    /// Selects a specific `@compute` entry point in the shader module.
+    /// Use when the module exposes more than one compute function.
+    pub fn with_entry_point(mut self, entry_point: &str) -> Self {
+        self.entry_point = Some(entry_point.to_string());
+        self
     }
 
     /// Adds a constant override to the cache key.

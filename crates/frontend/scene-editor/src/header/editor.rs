@@ -8,6 +8,7 @@ pub(super) fn render_editor_row() -> Dom {
     let grid_enabled = state::app_state().grid_enabled.clone();
     let gizmo_enabled = state::app_state().gizmo_enabled.clone();
     let anti_aliasing = state::app_state().anti_aliasing.clone();
+    let debug_light_heatmap = state::app_state().debug_light_heatmap.clone();
     html!("div", {
         .style("display", "flex")
         .style("gap", "1rem")
@@ -37,6 +38,15 @@ pub(super) fn render_editor_row() -> Dom {
             }))
             .with_on_click(|| {
                 actions::view::toggle_msaa();
+            })
+            .render())
+        .child(Checkbox::new(CheckboxStyle::Dark)
+            .with_selected_signal(debug_light_heatmap.signal())
+            .with_content_after(html!("span", {
+                .text("Light Heatmap")
+            }))
+            .with_on_click(|| {
+                actions::view::toggle_light_heatmap();
             })
             .render())
     })

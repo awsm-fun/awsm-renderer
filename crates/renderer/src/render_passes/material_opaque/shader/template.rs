@@ -67,7 +67,16 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     /// Switch the punctual-light walk to the per-mesh slice fed by
     /// `mesh_light_slices` + `mesh_light_indices`. Opaque is true;
     /// transparent stays false.
-    pub use_mesh_light_slices: bool,
+    /// When `true`, the shared `lights.wgsl` emits the
+    /// `apply_lighting_per_froxel*` helpers. Opaque sets this `true` —
+    /// all opaque shading reads the per-pixel froxel light list produced
+    /// by the GPU cull pass (see `compute.wgsl` and docs/PERFORMANCE.md
+    /// §5h).
+    pub use_froxel_lights: bool,
+    /// Number of view-space Z slices in the cull grid. Constant-
+    /// folded into the per-pixel froxel-index calc that the gated
+    /// `apply_lighting_per_froxel*` helpers contain.
+    pub froxel_slice_count: u32,
     /// Concatenated `wgsl_fragment()` of every enabled material — see
     /// `awsm_materials::registry::build_materials_wgsl`.
     pub materials_wgsl: String,
@@ -163,7 +172,11 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 msaa_sample_count,
                 debug,
                 shadows_enabled: true,
-                use_mesh_light_slices: true,
+                // All opaque shading reads the per-pixel froxel light
+                // list from the GPU cull pass; `lights.wgsl` emits the
+                // `apply_lighting_per_froxel*` helpers when this is `true`.
+                use_froxel_lights: true,
+                froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
                 materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
                 shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
                 shader_id: value.shader_id,
@@ -306,7 +319,8 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaqueEmpty> for ShaderTemplateMaterialOpaqu
             shadow_group_index: 3,
             shadows_enabled: false,
             sscs_available: false,
-            use_mesh_light_slices: false,
+            use_froxel_lights: false,
+            froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
             materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
             shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
             bucket_entries,
@@ -332,10 +346,15 @@ pub struct ShaderTemplateMaterialOpaqueEmpty {
     /// Mirror of the opaque-compute flag. The empty template never
     /// runs SSCS, but the shared shadow include needs the symbol.
     pub sscs_available: bool,
-    /// Mirror of the opaque-compute flag. The empty template never
-    /// touches the per-mesh slice path but the shared lights include
-    /// needs the symbol in scope.
-    pub use_mesh_light_slices: bool,
+    /// Mirror of the opaque-compute flag. The empty template doesn't
+    /// emit the per-froxel walk either, but the shared `lights.wgsl`
+    /// references the symbol so it must be declared.
+    pub use_froxel_lights: bool,
+    /// Mirror of the opaque-compute field. Unused in the empty path
+    /// (the `{% if use_froxel_lights %}` gate is closed) but askama
+    /// type-checks every `{{ var }}` reference even inside a closed
+    /// gate, so the field has to exist.
+    pub froxel_slice_count: u32,
     /// Concatenated `wgsl_fragment()` of every enabled material — see
     /// `awsm_materials::registry::build_materials_wgsl`.
     pub materials_wgsl: String,
@@ -584,6 +603,7 @@ return TransparentShadingOutput(vec4<f32>(color, alpha));
             dispatch_hash: 0,
             dynamic_shader_id: Some(dyn_id),
             dynamic_shader: Some(dyn_info),
+            froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
         };
 
         let template = ShaderTemplateMaterialTransparent::try_from(&key)
@@ -631,6 +651,7 @@ return TransparentShadingOutput(vec4<f32>(color, alpha));
             dispatch_hash: 0,
             dynamic_shader_id: None,
             dynamic_shader: None,
+            froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
         };
 
         let template = ShaderTemplateMaterialTransparent::try_from(&key)
