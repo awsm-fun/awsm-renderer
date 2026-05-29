@@ -539,14 +539,14 @@ fn apply_lighting_with_transmission(
 // Per-froxel walks.
 //
 // Used when the shading shader binds the GPU light-culling pass's
-// output (`cull_params` + `froxel_storage`). Mirrors
-// `apply_lighting` / `_with_transmission` but the punctual loop
-// reads `froxel_storage` instead of walking the full `n_lights`
+// output (`cull_params` + the per-froxel tail of `lights_storage`).
+// Mirrors `apply_lighting` / `_with_transmission` but the punctual
+// loop reads the froxel slice instead of walking the full `n_lights`
 // range.
 //
-// `froxel_storage` layout per froxel (see
+// Per-froxel slice layout (see
 // `render_passes/light_culling/shader/light_culling_wgsl/bind_groups.wgsl`):
-//   stride = MAX_PER_FROXEL_CAPACITY + 1
+//   stride = cull_params.max_per_froxel_capacity + 1
 //   slot 0:           count (clamped at read time)
 //   slots 1..1+count: light indices
 //

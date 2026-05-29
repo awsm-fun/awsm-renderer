@@ -3,12 +3,17 @@
 // One workgroup per froxel (tile_x, tile_y, z_slice). Threads inside the
 // workgroup chunk the punctual-light list and atomically append the lights
 // whose world-space bounding sphere overlaps the froxel's view-space frustum
-// into `froxel_indices` at `froxel_idx * MAX_PER_FROXEL_CAPACITY + slot`.
+// into the per-froxel slice of the merged `lights_storage` buffer. The slice
+// base is `cull_params.mesh_indices_capacity_u32 + froxel_idx * stride`,
+// where `stride = cull_params.max_per_froxel_capacity + 1` (slot 0 = atomic
+// count, slots 1.. = light indices). The leading head region
+// `[0..mesh_indices_capacity_u32)` is the CPU-written per-mesh slice and is
+// left untouched here.
 //
-// Saturation handling: `atomicAdd(&froxel_counts[i], 1u)` keeps incrementing
-// even past `MAX_PER_FROXEL_CAPACITY`. When the returned slot is ≥ capacity,
-// the index write is skipped and `overflow_counter` is bumped. Consumer
-// shaders clamp `count` to `MAX_PER_FROXEL_CAPACITY` at read time. The CPU's
+// Saturation handling: the slot-0 count `atomicAdd` keeps incrementing even
+// past `max_per_froxel_capacity`. When the returned slot is ≥ capacity, the
+// index write is skipped and `overflow_counter` is bumped. Consumer shaders
+// clamp `count` to `max_per_froxel_capacity` at read time. The CPU's
 // `mapAsync` readback of `overflow_counter` drives the auto-grow path.
 
 const TILE_PIXEL_SIZE: u32 = 16u;

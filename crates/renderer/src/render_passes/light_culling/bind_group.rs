@@ -7,7 +7,7 @@
 //!   1 cull_params      — uniform, per-frame tile/slice/capacity/near-far.
 //!   2 lights_info      — uniform `LightsInfoPacked`.
 //!   3 lights           — uniform `array<LightPacked, MAX_PUNCTUAL_LIGHTS>`.
-//!   4 froxel_storage   — storage RW (atomics), merged count + indices.
+//!   4 lights_storage   — storage RW (atomics), merged per-mesh + per-froxel buffer.
 //!   5 overflow_counter — storage RW single atomic counter.
 
 use awsm_renderer_core::bind_groups::{
@@ -45,7 +45,7 @@ impl LightCullingBindGroups {
             uniform_entry(),
             // 3 lights — uniform.
             uniform_entry(),
-            // 4 froxel_storage — storage RW (atomics + indices).
+            // 4 lights_storage — storage RW (atomics + indices).
             storage_rw_entry(),
             // 5 overflow_counter — storage RW (atomic).
             storage_rw_entry(),

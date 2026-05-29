@@ -302,9 +302,9 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
 
             // Apply lighting with screen-space transmission.
             // Transparent always takes the per-froxel punctual walk —
-            // the cull pass populated `froxel_storage`; directional
-            // lights still walk the small global prefix inside the
-            // function.
+            // the cull pass populated the per-froxel tail of
+            // `lights_storage`; directional lights still walk the small
+            // global prefix inside the function.
             color = apply_lighting_per_froxel_with_transmission(
                 material_color,
                 surface_to_camera,

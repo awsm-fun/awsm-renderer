@@ -5,11 +5,14 @@
 //   1: cull_params      — uniform, per-frame tile/slice/capacity/near-far config.
 //   2: lights_info      — uniform `LightsInfoPacked`.
 //   3: lights           — uniform `array<LightPacked, MAX_PUNCTUAL_LIGHTS>`.
-//   4: froxel_storage   — storage RW (atomics), combined count + indices buffer (see layout below).
+//   4: lights_storage   — storage RW (atomics), merged per-mesh + per-froxel buffer (see layout below).
 //   5: overflow_counter — storage RW (atomic), single u32 incremented per dropped index.
 //
-// `froxel_storage` is laid out as `(MAX_PER_FROXEL_CAPACITY + 1)`-u32 strides:
-//   stride = MAX_PER_FROXEL_CAPACITY + 1
+// The per-froxel tail of `lights_storage` is laid out in
+// `(cull_params.max_per_froxel_capacity + 1)`-u32 strides (the capacity
+// is a runtime field so the Phase 1D auto-grow path can bump it without
+// recompiling):
+//   stride = cull_params.max_per_froxel_capacity + 1
 //   slot 0:           per-froxel count (atomic)
 //   slots 1..1+count: light indices (atomic-stored)
 //

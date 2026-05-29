@@ -48,10 +48,6 @@ pub struct ShaderCacheKeyMaterialTransparent {
     /// shader (matches the cull pass's WGSL `SLICE_COUNT`). The
     /// shading-time froxel index calculation constant-folds this.
     pub froxel_slice_count: u32,
-    /// GPU light-culling per-froxel capacity. The shader clamps the
-    /// observed `count` to this value before iterating — auto-grow on
-    /// the CPU side bumps this and recompiles the shader.
-    pub froxel_max_per_froxel_capacity: u32,
 }
 
 impl From<ShaderCacheKeyMaterialTransparent> for ShaderCacheKey {

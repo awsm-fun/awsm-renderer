@@ -81,13 +81,6 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     /// folded into the per-pixel froxel-index calc that the gated
     /// `apply_lighting_per_froxel*` helpers contain.
     pub froxel_slice_count: u32,
-    /// Reserved compile-time per-froxel budget. **Currently unused by
-    /// the emitted WGSL** — the per-pixel froxel walk clamps against the
-    /// *runtime* `cull_params.max_per_froxel_capacity` instead (so the
-    /// Phase 1D auto-grow path can bump the budget without recompiling).
-    /// Kept as a stable seed for a future compile-time clamp variant;
-    /// always set to `DEFAULT_MAX_PER_FROXEL_CAPACITY`.
-    pub froxel_max_per_froxel_capacity: u32,
     /// Concatenated `wgsl_fragment()` of every enabled material — see
     /// `awsm_materials::registry::build_materials_wgsl`.
     pub materials_wgsl: String,
@@ -192,8 +185,6 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 // take the per-mesh slice path.
                 use_froxel_lights: true,
                 froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
-                froxel_max_per_froxel_capacity:
-                    crate::render_passes::light_culling::DEFAULT_MAX_PER_FROXEL_CAPACITY,
                 materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
                 shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
                 shader_id: value.shader_id,
@@ -339,8 +330,6 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaqueEmpty> for ShaderTemplateMaterialOpaqu
             use_mesh_light_slices: false,
             use_froxel_lights: false,
             froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
-            froxel_max_per_froxel_capacity:
-                crate::render_passes::light_culling::DEFAULT_MAX_PER_FROXEL_CAPACITY,
             materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
             shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
             bucket_entries,
@@ -379,8 +368,6 @@ pub struct ShaderTemplateMaterialOpaqueEmpty {
     /// type-checks every `{{ var }}` reference even inside a closed
     /// gate, so the field has to exist.
     pub froxel_slice_count: u32,
-    /// Mirror of the opaque-compute field — see `froxel_slice_count`.
-    pub froxel_max_per_froxel_capacity: u32,
     /// Concatenated `wgsl_fragment()` of every enabled material — see
     /// `awsm_materials::registry::build_materials_wgsl`.
     pub materials_wgsl: String,

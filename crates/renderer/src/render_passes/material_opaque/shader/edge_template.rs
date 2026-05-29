@@ -63,8 +63,6 @@ pub struct ShaderTemplateMaterialEdgeResolveCompute {
     pub use_froxel_lights: bool,
     /// Mirror of the opaque-compute field (see `use_froxel_lights`).
     pub froxel_slice_count: u32,
-    /// Mirror of the opaque-compute field.
-    pub froxel_max_per_froxel_capacity: u32,
     pub shadows_enabled: bool,
     pub materials_wgsl: String,
     pub shader_id_consts: String,
@@ -151,8 +149,6 @@ impl TryFrom<&ShaderCacheKeyMaterialEdgeResolve> for ShaderTemplateMaterialEdgeR
                 use_mesh_light_slices: true,
                 use_froxel_lights: false,
                 froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
-                froxel_max_per_froxel_capacity:
-                    crate::render_passes::light_culling::DEFAULT_MAX_PER_FROXEL_CAPACITY,
                 shadows_enabled: true,
                 materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
                 shader_id_consts: awsm_materials::registry::build_shader_id_consts(),

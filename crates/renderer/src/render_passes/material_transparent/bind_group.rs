@@ -257,9 +257,10 @@ impl MaterialTransparentBindGroups {
                 visibility_fragment: true,
                 visibility_compute: false,
             },
-            // GPU light-culling `froxel_storage` (combined per-froxel
-            // count + indices). Bound read-only here; the cull pass
-            // binds the same buffer RW with an atomic-array WGSL view.
+            // GPU light-culling `lights_storage` (the merged per-mesh +
+            // per-froxel buffer; transparent reads the per-froxel tail).
+            // Bound read-only here; the cull pass binds the same buffer
+            // RW with an atomic-array WGSL view.
             BindGroupLayoutCacheKeyEntry {
                 resource: BindGroupLayoutResource::Buffer(
                     BufferBindingLayout::new()
@@ -550,7 +551,7 @@ impl MaterialTransparentBindGroups {
                 &ctx.light_culling_buffers.params_buffer,
             )),
         ));
-        // GPU light-culling `froxel_storage` (combined count + indices).
+        // GPU light-culling `lights_storage` (merged buffer; per-froxel tail).
         entries.push(BindGroupEntry::new(
             entries.len() as u32,
             BindGroupResource::Buffer(BufferBinding::new(
