@@ -40,18 +40,17 @@ pub struct ShaderTemplateLightCullingCompute {
     /// Number of view-space Z slices. Constant-folded into the
     /// exponential-mapping math.
     pub slice_count: u32,
-    /// Per-froxel index-buffer budget. Constant-folded into the
-    /// atomic-append overflow check; the auto-grow path recompiles
-    /// when this changes.
-    pub max_per_froxel_capacity: u32,
 }
 
 impl ShaderTemplateLightCullingCompute {
     /// Creates a compute shader template from the cache key.
+    ///
+    /// Per-froxel capacity is intentionally absent: the WGSL reads it
+    /// from `cull_params` at runtime (no `{{ max_per_froxel_capacity }}`
+    /// substitution), so auto-grow never changes the generated source.
     pub fn new(cache_key: &ShaderCacheKeyLightCulling) -> Self {
         Self {
             slice_count: cache_key.slice_count,
-            max_per_froxel_capacity: cache_key.max_per_froxel_capacity,
         }
     }
 }
