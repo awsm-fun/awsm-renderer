@@ -406,35 +406,21 @@ fn main(
             return;
         }
 
-        {% if use_mesh_light_slices %}
-            // Phase 2 oversized routing: meshes flagged OVERSIZED by
-            // the CPU bucket build (AABB diagonal >50m AND bucket
-            // size >16) get `light_slice_count = 0xFFFFFFFFu` as a
-            // sentinel, signalling that the per-mesh slice is too
-            // coarse and the per-pixel froxel walk should be used
-            // instead. The branch predicate is uniform per mesh, so
-            // no warp divergence — every fragment of an oversized
-            // mesh takes the same path.
-            if (material_mesh_meta.light_slice_count == 0xFFFFFFFFu) {
-                color = apply_lighting_per_froxel(
-                    material_color,
-                    standard_coordinates.surface_to_camera,
-                    standard_coordinates.world_position,
-                    lights_info,
-                    (material_mesh_meta.receive_shadows & material_mesh_meta.shadow_receiver_gate),
-                    vec2<f32>(f32(coords.x), f32(coords.y)),
-                );
-            } else {
-                color = apply_lighting_per_mesh(
-                    material_color,
-                    standard_coordinates.surface_to_camera,
-                    standard_coordinates.world_position,
-                    lights_info,
-                    (material_mesh_meta.receive_shadows & material_mesh_meta.shadow_receiver_gate),
-                    material_mesh_meta.light_slice_offset,
-                    material_mesh_meta.light_slice_count,
-                );
-            }
+        {% if use_froxel_lights %}
+            // Unified froxel path: every opaque mesh shades punctual
+            // lights from its per-pixel froxel light list (the GPU light
+            // cull). This replaces the old per-mesh-slice / oversized-
+            // sentinel split — clustered (froxel) culling is generic and
+            // camera-correct for any mesh size, so there's no gate to
+            // tune. Directional lights are walked flat (see lights.wgsl).
+            color = apply_lighting_per_froxel(
+                material_color,
+                standard_coordinates.surface_to_camera,
+                standard_coordinates.world_position,
+                lights_info,
+                (material_mesh_meta.receive_shadows & material_mesh_meta.shadow_receiver_gate),
+                vec2<f32>(f32(coords.x), f32(coords.y)),
+            );
         {% else %}
             color = apply_lighting(
                 material_color,
