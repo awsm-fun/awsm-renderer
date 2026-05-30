@@ -18,6 +18,8 @@ remains. Branch is green (renderer suite 153 pass, clippy clean).
 | A.2 `compile_progress()` aggregate (pull half) | ✅ partial | `a01fcd9` | compiles; native |
 | B.2 layer 1: `PbrFeatures` derive + feature-hash | ✅ done | `c1c37d2` | 5 native tests |
 | B.2 step A: thread `pbr_features` through opaque cache key + template | ✅ done | `3916324` | renders identical (no-op at `all()`) |
+| B.2 step B: gate sheen+clearcoat brdf lobes (opaque/edge/transparent) | ✅ done | `d21ff92` | **pixel-identical** at `all()` (checksum `2985139072`) |
+| B.2 step C: pass scene feature-union to activate stripping | ⬜ todo | — | needs consistent union across 4 PBR cache-key sites |
 | A.1 compile-engine unification | ⬜ todo | — | — |
 | A.2 phase-tagged `StatusEvent`s (push half) | ⬜ todo | — | — |
 | D.2 transaction boundary (one final-layout reconcile) | ⬜ todo | — | — |
@@ -29,42 +31,48 @@ remains. Branch is green (renderer suite 153 pass, clippy clean).
 | E transparency uber wiring | ⬜ todo | — | depends on B.2 |
 | F.1/F.2/F.3 benchmarks + re-measure + extension dropdown | ⬜ todo | — | after B/C/E |
 
-**Where B.2 stopped, and why it's a genuine block (not timidity):**
-Layers 1 (`PbrFeatures`) and step A (cache-key + template plumbing,
-`pbr_features` defaulting to `all()`) are landed, tested, and render
-identically. The next step — gating the actual WGSL — is blocked on
-*verification*, not on writing the code:
+### ⚠️ KEY FINDING — the uber PBR shader already runtime-guards almost everything
 
-1. **The meaningful GPU win lives in the shared `brdf.wgsl`** (the
-   per-extension lighting lobes: clearcoat, sheen, transmission,
-   anisotropy, iridescence…). That file is `{% include %}`d into THREE
-   templates (opaque compute, opaque edge-resolve, transparent), so
-   gating it means threading `pbr_features` through all three (= `all()`
-   for edge + transparent per Decision 10). Intricate, and a wrong gate
-   silently breaks lighting.
-2. **The win is invisible to the current instrumentation.**
-   `read_render_pass_timings` is CPU-span wall-clock (`performance.measure`)
-   — it measures CPU *encode* time, NOT GPU shading time (the renderer
-   has the `GpuQuerySet` primitives in `renderer-core` but does NOT wire
-   timestamp queries into render passes). Specialization reduces GPU
-   shading work, which these timings cannot show. So the before/after on
-   `tuning-50-materials` primarily validates that **bucket-fanout CPU
-   overhead stays small** (the regression check) — the shading *win*
-   needs GPU-timestamp instrumentation (a Workstream F prerequisite) or
-   a GPU-bound FPS test.
-3. **KHR-path correctness can't be exercised by `tuning-50-materials`**
-   (its inline materials have no KHR extensions). Verifying the gated
-   lobes render correctly *when enabled* needs the model-viewer's KHR
-   sample models (F.3) — a second frontend + supervised check.
+While implementing B.2 the actual `brdf.wgsl` was read end-to-end. The
+result reshapes the expected payoff of the whole opaque-specialization
+effort:
 
-So B.2 step B onward + B.3 is a supervised effort that should (a) first
-wire GPU-timestamp render-pass timing so the win is measurable, then (b)
-gate `brdf.wgsl` + `material_color_calc.wgsl` across the three templates,
-verifying both `tuning-50-materials` (KHR stripped → identical) AND a KHR
-model (uber → identical) in real Chrome.
+**The uber PBR shader already self-optimizes via runtime `if` guards for
+nearly every extension** — iridescence (`if color.iridescence > 0.0`),
+anisotropy (`if color.anisotropy_strength != 0.0`, with an explicit "we
+don't pay for tangent math on every shading point" comment),
+diffuse_transmission, clearcoat-IBL, and the expensive part of sheen-IBL
+all skip themselves when the feature is absent. The `material_color_calc`
+texture samplers likewise all `if exists` guard. **The ONLY extension
+lobes that run unconditionally per shading point are sheen + clearcoat in
+the *direct* lighting path.**
 
-The foundational pieces above were deliberately sequenced first so the
-core work starts from a green, measured, test-locked base.
+Consequence: **per-feature compile-time specialization buys far less
+per-frame GPU time than the "skip all unused extension code" framing
+assumed** — the runtime guards already capture most of it. The genuine
+per-frame win is (a) the sheen+clearcoat direct lobes (now gateable, see
+B.2 step B), and (b) shader binary size / compile time. The broader
+"many small buckets" value is the visibility-buffer batching + compile
+parallelism, **not** dramatically cheaper per-pixel shading. Re-weight
+B.3's cost/benefit accordingly before committing to the full
+per-feature-set bucket routing.
+
+**What landed + how it was verified.** `PbrFeatures` (layer 1), the
+cache-key/template plumbing (step A), and the sheen+clearcoat brdf gating
+across all three `brdf.wgsl` includers (step B) are done and **pixel-
+verified in real Chrome**: at `all()` the gates are all-on and
+`tuning-50-materials` reproduces the baseline checksum `2985139072`
+exactly — the risky shared-lighting change is a proven no-op. Step C
+(pass the scene feature-union so sheen/clearcoat actually strip) is the
+remaining activation; it must keep the union consistent across all four
+PBR opaque cache-key sites (lib.rs prewarm, pipeline.rs builder,
+launch.rs ×2) or a key mismatch drops the pipeline.
+
+**Measurement** (per owner): the metric that matters is **overall FPS on
+the many-materials scene**, measured directly via rAF frame-counting
+(no GPU-timestamp wiring needed) — but the scene must be made GPU-bound
+(higher res / more instances) first, since at 1308×759 it is vsync-capped
+at 60 fps and shading-cost deltas won't show.
 
 **Thesis**: our biggest performance advantage is the visibility-buffer +
 per-bucket classify/shade architecture, which makes *many small opaque
