@@ -44,12 +44,15 @@ fn view_space_depth(camera: Camera, depth: f32, pixel_coords: vec2<f32>, screen_
 // Bits in the workgroup-shared mask. One per registered bucket; the
 // PBR bit is at index 0 by convention so the skybox-fallback routing
 // (which assigns the PBR bit unconditionally for skybox pixels) maps
-// cleanly. `1u << index` for each entry.
+// cleanly. Each bucket lives in word `index / 32` at bit `index % 32`;
+// `tile_mask` is `array<atomic<u32>, n_words>` so the bucket budget can
+// exceed 32 by raising `MAX_BUCKET_WORDS` (n_words). At n_words == 1
+// this is equivalent to the original single-word `1u << index`.
 {% for entry in bucket_entries %}
-const {{ entry.bucket_bit_const() }}: u32 = (1u << {{ loop.index0 }}u);
+const {{ entry.bucket_bit_const() }}: u32 = (1u << {{ loop.index0 % 32 }}u);
 {% endfor %}
 
-var<workgroup> tile_mask: atomic<u32>;
+var<workgroup> tile_mask: array<atomic<u32>, {{ n_words }}u>;
 
 @compute @workgroup_size(8, 8, 1)
 fn cs_main(
@@ -61,7 +64,9 @@ fn cs_main(
     // makes the zero visible to every thread before the per-pixel
     // OR's land.
     if lii == 0u {
-        atomicStore(&tile_mask, 0u);
+        {% for w in words_iter %}
+        atomicStore(&tile_mask[{{ w }}u], 0u);
+        {% endfor %}
     }
     workgroupBarrier();
 
@@ -69,6 +74,10 @@ fn cs_main(
     let coords = vec2<i32>(wg.xy * 8u + lid.xy);
     let in_bounds = coords.x < i32(screen_dims.x) && coords.y < i32(screen_dims.y);
 
+    // `local_word` selects which `tile_mask[]` word this pixel's bucket
+    // bit lives in (bucket index / 32); `local_bit` is the bit within
+    // that word. At n_words == 1 `local_word` is always 0.
+    var local_word: u32 = 0u;
     var local_bit: u32 = 0u;
     if in_bounds {
         let vis = textureLoad(visibility_data_tex, coords, 0);
@@ -76,6 +85,8 @@ fn cs_main(
         if tri == U32_MAX {
             // Skybox — handled by the PBR pipeline (it retains the
             // `triangle_index == U32_MAX → sample_skybox` fallback).
+            // PBR is bucket index 0 → word 0.
+            local_word = 0u;
             local_bit = BUCKET_BIT_PBR;
         } else {
             let meta_offset = join32(vis.z, vis.w);
@@ -86,6 +97,7 @@ fn cs_main(
                 let shader_id = materials_data[mesh_meta.material_offset / 4u];
                 {% for entry in bucket_entries %}
                 {% if loop.first %}if{% else %}else if{% endif %} shader_id == {{ entry.shader_id_const() }} {
+                    local_word = {{ loop.index0 / 32 }}u;
                     local_bit = {{ entry.bucket_bit_const() }};
                 }
                 {% endfor %}
@@ -97,12 +109,17 @@ fn cs_main(
     }
 
     if local_bit != 0u {
-        atomicOr(&tile_mask, local_bit);
+        atomicOr(&tile_mask[local_word], local_bit);
     }
     workgroupBarrier();
 
     if lii == 0u {
-        let mask = atomicLoad(&tile_mask);
+        // Snapshot every mask word once (avoids a per-bucket atomic
+        // load). `mask_word_<w>` is read by each bucket's extract block
+        // via its word index `index / 32`.
+        {% for w in words_iter %}
+        let mask_word_{{ w }} = atomicLoad(&tile_mask[{{ w }}u]);
+        {% endfor %}
         let tile = vec2<u32>(wg.xy);
 
         // One extract block per registered bucket. The atomic returns
@@ -110,7 +127,7 @@ fn cs_main(
         // index into the tile array at
         // `classify_output.<name>_offset + index`.
         {% for entry in bucket_entries %}
-        if (mask & {{ entry.bucket_bit_const() }}) != 0u {
+        if (mask_word_{{ loop.index0 / 32 }} & {{ entry.bucket_bit_const() }}) != 0u {
             let idx_{{ loop.index0 }} = atomicAdd(&classify_output.{{ entry.args_field() }}.workgroup_count_x, 1u);
             let slot_{{ loop.index0 }} = classify_output.{{ entry.offset_field() }} + idx_{{ loop.index0 }};
             if slot_{{ loop.index0 }} < classify_output.{{ entry.offset_field() }} + classify_output.bucket_capacity {

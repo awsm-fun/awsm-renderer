@@ -157,11 +157,24 @@ impl<'a> DynamicMaterialContext for DynamicMaterialPackContext<'a> {
 ///    but documented for context — both encodings would need widening
 ///    in lock-step before the bucket count could grow past 32.
 ///
-/// 32 is generous for any realistic scene (4 first-party + 28 dynamic
-/// materials co-resident). `register_material` rejects any
-/// registration that would push past this cap with
+/// The cap is now an Askama-template-driven multiple of 32: the
+/// classify `tile_mask` is `array<atomic<u32>, MAX_BUCKET_WORDS>`, so
+/// raising [`MAX_BUCKET_WORDS`] from 1 → 2 lifts the cap 32 → 64 at
+/// near-zero cost (one extra workgroup atomic to zero per dispatch; the
+/// real per-frame cost is *active-in-view* bucket fanout, not the mask
+/// width). The 8-bit `edge_slot_map` encoding caps the absolute ceiling
+/// at 254 (≈7 words). `register_material` rejects any registration that
+/// would push past this cap with
 /// [`AwsmDynamicMaterialError::BucketCapExceeded`].
-pub const MAX_BUCKET_ENTRIES: usize = 32;
+///
+/// Default `MAX_BUCKET_WORDS = 1` keeps the generated classify WGSL
+/// semantically identical to the original single-`atomic<u32>` form.
+pub const MAX_BUCKET_WORDS: u32 = 1;
+
+/// Maximum number of co-resident material buckets. Derived from
+/// [`MAX_BUCKET_WORDS`] (32 bits per word). See that const for the cost
+/// model of raising it.
+pub const MAX_BUCKET_ENTRIES: usize = MAX_BUCKET_WORDS as usize * 32;
 
 /// One bucket entry — the template-rendering view of a single registered
 /// material (first-party OR dynamic). Returned by [`bucket_entries`].
