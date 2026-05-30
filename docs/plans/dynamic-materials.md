@@ -1,8 +1,40 @@
 # Materials system overhaul — many small opaque materials, first-class
 
-**Status**: planning complete, ready to implement start-to-finish. Every
-open design question has been resolved (see **Locked decisions**). This
-file is the operational handoff.
+**Status**: in implementation. Every open design question is resolved
+(see **Locked decisions**). This file is the operational handoff +
+live tracker.
+
+### Implementation status (2026-05-30, branch `dynamic-materials-plan`)
+
+Foundational + verifiable phases landed; the deep shader-rewrite core
+remains. Branch is green (renderer suite 153 pass, clippy clean).
+
+| Phase | State | Commit | Verification |
+|---|---|---|---|
+| F.0 baseline fixture + numbers | ✅ done | `f067c41` | captured in real Chrome |
+| D.5 registry regression tests | ✅ done | `c6593fb` | 9 native tests pass |
+| B.4 extensible bucket cap (`MAX_BUCKET_WORDS`) | ✅ done | `45932d0` | real Chrome: n_words 1≡baseline, 2 renders clean |
+| D.1 transactional `register_materials` + `validate_batch` | ✅ done | `4c5e1da` | 6 native tests pass |
+| A.2 `compile_progress()` aggregate (pull half) | ✅ partial | `a01fcd9` | compiles; native |
+| A.1 compile-engine unification | ⬜ todo | — | — |
+| A.2 phase-tagged `StatusEvent`s (push half) | ⬜ todo | — | — |
+| D.2 transaction boundary (one final-layout reconcile) | ⬜ todo | — | — |
+| D.3 `compile_materials(set).await` warmup | ⬜ todo | — | — |
+| B.1/B.2/B.3 on-demand + PBR/Toon templatize + feature buckets | ⬜ todo | — | the indivisible architectural core |
+| C GLTF auto-minimize + `AWSM_material_none` | ⬜ todo | — | depends on B |
+| E transparency uber wiring | ⬜ todo | — | depends on B.2 |
+| F.1/F.2/F.3 benchmarks + re-measure + extension dropdown | ⬜ todo | — | after B/C/E |
+
+**Why the core (B.2/B.3) is not yet done**: it can't be split into
+safe incremental commits. Templatizing PBR per-feature (B.2) has no
+driver for its `{% if %}` flags until the per-feature-set bucket
+machinery (B.3) exists, and B.3's pixel routing + on-demand
+feature-hash→shader_id registration must land together. It's one large
+GPU-coupled change whose correctness can only be established by
+rendering — a supervised effort, not an unattended one. The foundational
+pieces above (cap widening, batch API, progress query, tests, baseline)
+were deliberately sequenced first so that core work starts from a green,
+measured, test-locked base.
 
 **Thesis**: our biggest performance advantage is the visibility-buffer +
 per-bucket classify/shade architecture, which makes *many small opaque
