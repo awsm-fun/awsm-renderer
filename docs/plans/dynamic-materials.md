@@ -1,386 +1,650 @@
-# Dynamic materials — registration lifecycle cleanup
+# Materials system overhaul — many small opaque materials, first-class
 
-**Status**: planning only, no code yet. This file is the operational
-handoff for tightening up the dynamic-material registration path. The
-steady-state opaque-shading architecture is already in good shape — the
-work below is lifecycle/API/docs/tests, not a re-architecture.
+**Status**: planning complete, ready to implement start-to-finish. Every
+open design question has been resolved (see **Locked decisions**). This
+file is the operational handoff.
 
-When the work is done, **the last commit deletes this file.**
+**Thesis**: our biggest performance advantage is the visibility-buffer +
+per-bucket classify/shade architecture, which makes *many small opaque
+materials in one view* cheap. Everything below leans into that:
 
-The recommendations below originated as an external review of the
-`awsm-renderer` dynamic material architecture; this doc adapts them to
-the current codebase, points at the exact files/symbols involved, and
-adds acceptance criteria. Where the review's claims are already true
-or partially landed, that's called out inline.
+- Specialize opaque shaders down to exactly the features a material uses
+  — unused features emit **no code** (no dead branches).
+- Make every distinct opaque feature-set its own small bucket, keyed by a
+  unique `shader_id` (the existing sole bucket discriminator).
+- Compile only what a scene needs, on demand, batched for maximum
+  concurrency, with granular progress reporting.
+- Treat transparency as a *separate* budget: no visibility-buffer
+  benefit, order-sensitive, so it stays an uber-shader.
 
----
-
-## What's already good
-
-The steady-state opaque path is well-aligned with the goal of
-supporting many opaque material archetypes in one scene:
-
-- Geometry is decoupled from material shading
-  ([`render_passes/geometry/`](../../crates/renderer/src/render_passes/geometry/),
-  [`render_passes/material_classify/`](../../crates/renderer/src/render_passes/material_classify/),
-  [`render_passes/material_opaque/`](../../crates/renderer/src/render_passes/material_opaque/)).
-- Opaque shading is bucketed by material `shader_id`
-  ([`dynamic_materials/mod.rs:164`](../../crates/renderer/src/dynamic_materials/mod.rs#L164)
-  — `MAX_BUCKET_ENTRIES = 32`).
-- The renderer dispatches per material bucket using classify-generated
-  indirect args.
-- Pipeline switches scale with active shader buckets, not mesh count
-  or material assignment count.
-- MSAA edge handling is split out so each material author still writes
-  a single-sample shading body.
-
-The follow-up work is not about that path. It's about what happens
-**around** it — registration, hot reload, scene-load warmup.
+When the work is done, **the last commit deletes this file.** The
+architecture lives in the module docs + tests; this plan has no role
+once shipped.
 
 ---
 
-## The actual risk: registration churn
+## Locked decisions
 
-When a new dynamic material is registered today via
-[`AwsmRenderer::register_material`](../../crates/renderer/src/dynamic_materials/mod.rs#L569)
-the renderer has to:
+Resolved with the project owner. These are **not** open questions —
+implement to them directly.
 
-- Grow `bucket_entries`.
-- Resize `ClassifyBuffers` and (when MSAA is on) `MaterialEdgeBuffers`.
-- Rebuild generated classify / opaque / edge-resolve shader templates.
-- Clear per-pass typed pipeline caches keyed on `dispatch_hash`.
-- Mark existing material scheduler entries `Pending` and launch
-  recompiles so they agree with the new bucket layout.
-- Update `bucket_entries_cache` and `dispatch_hash_cache` on
-  `DynamicMaterials`.
+### Architecture
 
-That's correct for **one** registration. It's also correct for **N**
-registrations done one by one — but it does ~N× the work, and most of
-the intermediate states are immediately invalidated by the next
-registration. Painful workflows where that surfaces:
+1. **Feature-specialized PBR → its own bucket per feature-set.** A
+   distinct opaque PBR feature-set (e.g. `base+normal+metallic_roughness`)
+   is its own small opaque bucket / `shader_id`, routed by classify to
+   its own tiny specialized pipeline.
+2. **`shader_id` stays the sole bucket key.** Code confirms `shader_id`
+   is the first u32 of every material payload, classify routes on it
+   ([`material_classify_wgsl/compute.wgsl:86`](../../crates/renderer/src/render_passes/material_classify/shader/material_classify_wgsl/compute.wgsl#L86)),
+   and opaque pipelines are already per-`shader_id`. **No payload-format
+   change, no secondary discriminator.** Each opaque feature-set gets its
+   own `shader_id`.
+3. **Per-feature-set `shader_id`s come from the existing dynamic
+   registry**, keyed by a **deterministic feature-hash** so the same
+   feature-set always resolves to the same `shader_id`/bucket within a
+   build (one bucket per distinct feature-set, shared across all materials
+   that use it). PBR's canonical base id
+   ([`MaterialShaderId::PBR`](../../crates/materials/src/shader_id.rs)) is
+   the **full-feature / force-uber** variant.
+4. **Specialize PBR *and* Toon.** Unlit and Flipbook stay single-bucket
+   (already minimal).
+5. **Any feature-set is its own bucket; exceeding the active-bucket
+   budget is a HARD ERROR** (no silent uber fallback). This pairs with
+   (6): if you hit the cap, widen it.
+6. **The bucket cap is an Askama template variable** (`N_WORDS`), default
+   **32** (one `atomic<u32>` word), **trivially bumped to 64+** by raising
+   `N_WORDS` — a near-zero-cost change (see Workstream B.4).
 
-- Scene load.
-- Editor startup.
-- Material-editor reconnect / refresh.
-- Hot reload of many custom materials.
-- Importing a glTF / scene file with many authored material archetypes.
+### glTF
 
-The fix is not architectural — it's a batch API + a transaction boundary
-+ an explicit "warm up before showing the scene" entry point + tests +
-honest docs.
+7. **Skip-PBR is a per-material custom glTF extension named
+   `AWSM_material_none`.** Per-material only (no whole-file flag).
+8. **`AWSM_material_none` primitives render via a single shared flat/unlit
+   bucket** (one bucket regardless of count; visible, cheap, no PBR
+   compile).
+9. **Standard glTF (no extension): auto-minimize by default.** Derive the
+   minimal opaque feature-set from the material's actual content and route
+   to its specialized bucket. A **global renderer config flag**
+   (working name `pbr_specialization: Auto | ForceUber`) forces the full
+   uber-PBR bucket for compat/debugging.
+10. **Transparency always forces uber.** Any PBR material that renders in
+    the transparency pass — `alpha_mode == Blend`, `alpha_mode == Mask`
+    (cutoff/discard), or transmission — uses the single full-feature uber
+    transparent PBR pipeline, never a specialized bucket. Opaque
+    specialization is opaque-only.
+
+### API & lifecycle
+
+11. **One batch registration method, rich result.**
+    `register_materials(Vec<MaterialRegistration>)` returns a result
+    carrying both `shader_id`s **and** readiness handles per item. The
+    single-item `register_material` becomes a thin wrapper.
+12. **Batches are all-or-nothing / transactional.** Any invalid entry
+    (duplicate name, would exceed budget, malformed layout) rejects the
+    whole batch; nothing is registered or compiled.
+13. **One async scene-load method**: `compile_materials(set).await`
+    registers the final set and resolves only when **all** pipelines are
+    `Ready`. Built on `prewarm_pipelines` internally.
+14. **Progress: aggregate query + phase-tagged events.** Add
+    `compile_progress() -> {total, done, failed, in_flight}` (pull, for
+    progress bars) AND tag status events with a job phase
+    (classify/opaque/edge/transparent) (push, for per-phase breakdown +
+    bottleneck diagnosis).
+15. **Transparent PBR is always uber; no runtime-branching tunability
+    knob.** Specialization is template/compile-time only.
+16. **Transparent custom/dynamic materials stay per-material
+    forward-rendered, as today** — a separate budget from the opaque
+    bucket architecture, not bucketed or specialized.
+
+### Testing & verification
+
+17. **Logic tests are native `#[test]`** (matches the existing ~138
+    tests, run via `cargo test --all-features` in CI). Bucket-count,
+    idempotency, cache-refresh, and feature-hash routing are all non-GPU
+    and tested natively.
+18. **GPU verification uses the scene-editor frontend in real Chrome via
+    the Claude-in-Chrome plugin**, following
+    [`docs/DEBUGGING-PREVIEW.md`](../DEBUGGING-PREVIEW.md) (NOT the in-app
+    preview — it crashes on heavy WebGPU scenes). Create test scenes as
+    needed alongside the existing tuning scenes in
+    [`assets/world/`](../../assets/world/).
+19. **Benchmarks: native warmup-count assertions where they give the
+    coverage** (compiles launched, bucket math, no-N×-churn); **per-frame
+    GPU timing via custom editor scenes in real Chrome** per (18).
 
 ---
 
-## Plan
+## Current state (accurate snapshot)
 
-### 1. Batch registration API
+### What's already good
 
-Add a `register_materials` (or `submit_dynamic_materials` for the async
-scheduler-handle path) that takes `Vec<MaterialRegistration>` and
-performs the bucket-set + cache + buffer resize + compile launch **once**
-for the final bucket layout.
+- Geometry decoupled from material shading
+  ([`geometry/`](../../crates/renderer/src/render_passes/geometry/),
+  [`material_classify/`](../../crates/renderer/src/render_passes/material_classify/),
+  [`material_opaque/`](../../crates/renderer/src/render_passes/material_opaque/)).
+- Opaque shading bucketed by `shader_id`; classify writes per-bucket tile
+  lists, opaque runs one compute pipeline per active bucket. Pipeline
+  switches scale with active buckets, not mesh count.
+- Async compile scheduler
+  ([`pipeline_scheduler/`](../../crates/renderer/src/pipeline_scheduler/))
+  issues `createComputePipelineAsync` promises back-to-back (Dawn
+  parallelizes WGSL→MSL), with cross-call waiter dedup
+  ([`inflight_compute_cache_waiters`](../../crates/renderer/src/pipeline_scheduler/mod.rs))
+  and stale-generation guards.
+- MSAA edge handling split out; each material author writes a single-
+  sample shading body.
+- `prewarm_pipelines`
+  ([`lib.rs:539`](../../crates/renderer/src/lib.rs#L539)) batches
+  shader+pipeline warmup in three phases (collect keys → one
+  `shaders.ensure_keys` → one `pipelines.ensure_keys`).
 
-```rust
-pub fn register_materials(
-    &mut self,
-    registrations: Vec<MaterialRegistration>,
-) -> Result<Vec<MaterialShaderId>, AwsmDynamicMaterialError>;
+### What's missing / wrong for the new direction
 
-// or, for the scheduler-handle path:
-pub fn submit_dynamic_materials(
-    &mut self,
-    registrations: Vec<MaterialRegistration>,
-) -> Result<Vec<(MaterialShaderId, MaterialId)>, AwsmError>;
+- **PBR is an uber-shader.** All ~12 KHR extensions are always compiled
+  and disabled at runtime via `index == 0u` sentinels
+  ([`pbr_material.wgsl`](../../crates/materials/src/wgsl/pbr/pbr_material.wgsl),
+  [`material_color_calc.wgsl`](../../crates/renderer/src/render_passes/material_opaque/shader/material_opaque_wgsl/helpers/material_color_calc.wgsl)).
+  The only Askama specialization today is mipmap mode (`_grad` vs
+  `_no_mips`). No `{% if has_normal_map %}` gating.
+- **All first-party materials are baked into the opaque template** by
+  [`build_materials_wgsl()`](../../crates/materials/src/registry.rs#L64)
+  — always present, never on-demand.
+- **`shader_id` is fixed per material *type*** (PBR=1 always,
+  [`materials.rs:109`](../../crates/renderer/src/materials.rs#L109)); only
+  `Material::Custom` carries a per-registration id.
+- **GLTF always maps to PBR** unless `KHR_materials_unlit`
+  ([`renderer-gltf/src/populate/material.rs:31`](../../crates/renderer-gltf/src/populate/material.rs#L31)).
+  No geometry-only path.
+- **`MAX_BUCKET_ENTRIES = 32`** hard cap from a single
+  `tile_mask: atomic<u32>`
+  ([`compute.wgsl:52`](../../crates/renderer/src/render_passes/material_classify/shader/material_classify_wgsl/compute.wgsl#L52)).
+- **Registration churn relaunches everything.**
+  [`register_material`](../../crates/renderer/src/dynamic_materials/mod.rs#L569)
+  re-marks and relaunches *all* registered materials on every single
+  registration. No batch API.
+- **Progress is coarse.** `StatusEvent { id, status }` carries only
+  Pending/Ready/Failed
+  ([`pipeline_scheduler/mod.rs:168`](../../crates/renderer/src/pipeline_scheduler/mod.rs#L168));
+  `pending_subcompiles` tracks a per-material counter but there's no
+  aggregate or per-phase view. Material-editor just counts Pending events.
+- **No tests** under `dynamic_materials/`; **no benchmark** separating
+  registration cost from steady-state cost.
+
+---
+
+## The feature-hash contract (implementer's spec)
+
+This defines what "a feature-set" is — the input to the deterministic
+feature-hash that selects a bucket `shader_id` (Decision 3). It is the
+single source of truth for B.2/B.3.
+
+A **feature** is any code path that can be compiled out of the opaque
+shader. For PBR, derived directly from the `Option<_>` fields of
+[`PbrMaterial`](../../crates/materials/src/pbr.rs) + the texture-slot
+presence flags:
+
+- Per texture map present: base_color, metallic_roughness, normal,
+  occlusion, emissive (each independently gateable).
+- vertex_color present.
+- Each KHR extension present: emissive_strength, ior, specular,
+  transmission, diffuse_transmission, volume, clearcoat, sheen,
+  dispersion, anisotropy, iridescence.
+
+**Not** part of the feature-hash (and therefore not a bucket dimension):
+
+- `double_sided` — raster state; already part of the *pipeline* key, not
+  the shader/bucket. Two feature-identical materials differing only in
+  `double_sided` share a bucket but get different pipeline variants
+  (existing mechanism).
+- `alpha_mode` — `Opaque` → specialized opaque bucket; `Mask`/`Blend`/
+  transmission → transparent uber path (Decision 10), never an opaque
+  bucket.
+- mipmap mode / MSAA — already orthogonal pipeline-variant dimensions.
+
+Toon uses the same contract over [`ToonMaterial`](../../crates/materials/src/toon.rs)'s
+optional fields.
+
+The feature-hash MUST be stable for a given feature-set within a build
+(so the same combination always maps to the same bucket). The bucket's
+WGSL-safe name is derived from the base material name + a short hash
+suffix (e.g. `pbr_a1b2`), reusing the
+[`BucketEntry`](../../crates/renderer/src/dynamic_materials/mod.rs#L177)
+naming helpers.
+
+---
+
+## Workstream A — First-class compilation batching + progress
+
+### A.1 — Unified batch compile engine
+
+- [ ] One internal "compile this final material set" engine that launches
+      all compiles once against the **final** bucket layout (no per-item
+      relaunch). Shared substrate under GLTF load, dynamic registration,
+      and prewarm.
+- [ ] Make the three-phase batched model (collect keys → one
+      `shaders.ensure_keys` → one `pipelines.ensure_keys`) the **only**
+      compile path; retire per-item serial launch loops.
+- [ ] Confirm cross-call waiter dedup
+      ([`inflight_compute_cache_waiters`](../../crates/renderer/src/pipeline_scheduler/mod.rs))
+      covers the batch path so shared pipelines (classify, edge chain)
+      compile once per batch, not once per material.
+
+### A.2 — Granular progress (Decision 14)
+
+- [ ] Add `compile_progress() -> { total, done, failed, in_flight }`
+      aggregate query on `AwsmRenderer`.
+- [ ] Tag status events with a job phase enum
+      (`Classify | Opaque | EdgeResolve | Transparent | Geometry`); extend
+      `StatusEvent`
+      ([`pipeline_scheduler/mod.rs:168`](../../crates/renderer/src/pipeline_scheduler/mod.rs#L168))
+      accordingly. Emit on launch and on resolve.
+- [ ] Derive `total` from the per-material sub-compile counts already
+      tracked by `pending_subcompiles`
+      ([`pipeline_scheduler/mod.rs`](../../crates/renderer/src/pipeline_scheduler/mod.rs)).
+- [ ] Keep per-phase `tracing` spans so bottlenecks are diagnosable in
+      the browser console (per
+      [`DEBUGGING-PREVIEW.md`](../DEBUGGING-PREVIEW.md) §"Tracing logs").
+- [ ] Update the material-editor's `compile_pending` counter
+      ([`material-editor/src/main.rs`](../../crates/frontend/material-editor/src/main.rs))
+      to drive a real progress bar from `compile_progress()`.
+
+### A.3 — Startup vs runtime workflows (Decision 13)
+
+- [ ] **Scene-load**: `compile_materials(set).await` — registers the
+      final set, resolves when all `Ready`. No partially-missing
+      materials. Built on `prewarm_pipelines`.
+- [ ] **Runtime / hot-reload**: tolerate `Pending`; expose
+      `pipeline_groups_ready()` + a documented "render loading frame"
+      loop. Document both patterns side by side.
+
+---
+
+## Workstream B — On-demand built-ins + opaque PBR/Toon specialization
+
+### B.1 — Built-ins compiled on demand
+
+- [ ] Stop unconditionally baking every `enabled_materials()` fragment
+      into the opaque compute shader. A material's WGSL/pipeline compiles
+      only when a scene contains a material of that base type / feature-set
+      (or an explicit prewarm requests it).
+- [ ] Keep `enabled_materials()` as the *capability* registry (what
+      *can* compile), decoupled from *what is currently compiled*.
+- [ ] Verify a scene using only Unlit compiles no PBR/Toon/Flipbook code.
+
+### B.2 — Templatize PBR (and Toon) per feature (Decision 4)
+
+- [ ] Convert PBR WGSL from "all extensions always present" to Askama
+      `{% if %}` feature gating driven by a `PbrFeatures` flag struct
+      built from the feature-hash contract above. Unused features emit
+      **no code**.
+- [ ] Gate `PbrMaterialGradients` fields + per-feature loader calls in
+      [`material_color_calc.wgsl`](../../crates/renderer/src/render_passes/material_opaque/shader/material_opaque_wgsl/helpers/material_color_calc.wgsl)
+      (today all unconditional).
+- [ ] Derive `PbrFeatures` from the actual `PbrMaterial` (`Option<_>`
+      fields already encode presence).
+- [ ] Apply the same to Toon over `ToonMaterial`.
+- [ ] Keep `index == 0u` runtime sentinels working as defense-in-depth.
+
+### B.3 — One bucket per distinct opaque feature-set (Decisions 1–3, 5)
+
+- [ ] At material creation, compute the feature-hash and resolve it to a
+      `shader_id` via the dynamic registry (deterministic: same
+      feature-set → same id → same bucket). The opaque material payload
+      writes **that** `shader_id` as its first u32 (no format change).
+- [ ] Generalize so a single base material name (PBR/Toon) expands into
+      multiple `BucketEntry`s
+      ([`mod.rs:177`](../../crates/renderer/src/dynamic_materials/mod.rs#L177)),
+      one per feature-hash, each with a unique WGSL-safe name (`pbr_a1b2`).
+- [ ] Classify `SHADER_ID_*`/`BUCKET_BIT_*` generation + routing
+      ([`compute.wgsl:87`](../../crates/renderer/src/render_passes/material_classify/shader/material_classify_wgsl/compute.wgsl#L87))
+      handle many buckets sharing a base material family — routing stays
+      pure `shader_id` equality, so no new per-pixel logic.
+- [ ] Opaque per-bucket pipeline compiles with only its feature-set's
+      WGSL (B.2 flags set from the bucket's feature-hash).
+- [ ] **Hard error on budget overflow** (Decision 5): registering a
+      feature-set that would exceed `N_WORDS * 32` active buckets returns
+      a `BucketCapExceeded`-style error; no silent fallback.
+- [ ] **Force-uber** (Decision 9): when the global
+      `pbr_specialization == ForceUber`, route opaque PBR to the base PBR
+      `shader_id` (single uber bucket) instead of feature-hash buckets.
+
+### B.4 — Extensible bucket cap (Decision 6)
+
+**Cost analysis.** The cap is 32 only because classify uses one
+`var<workgroup> tile_mask: atomic<u32>` with `BUCKET_BIT_<NAME> = 1u <<
+index`
+([`compute.wgsl:49-52`](../../crates/renderer/src/render_passes/material_classify/shader/material_classify_wgsl/compute.wgsl#L49)).
+Widening:
+
+- `tile_mask` → `array<atomic<u32>, N_WORDS>`; `BUCKET_BIT` becomes a
+  `(word, bit)` pair; the per-pixel OR becomes
+  `atomicOr(&tile_mask[word], bit)`; the per-bucket extract loop
+  ([`compute.wgsl:112`](../../crates/renderer/src/render_passes/material_classify/shader/material_classify_wgsl/compute.wgsl#L112))
+  indexes `tile_mask[word]`.
+- **Direct cost is negligible**: `N_WORDS` extra atomic zeroes per
+  dispatch (lane 0 only), `4 * N_WORDS` bytes of workgroup memory, a
+  word-index lookup per bucket. All `O(bucket_count)` loops + buffers
+  (indirect args, edge buffers) already scale dynamically — no new
+  scaling.
+- **The cost that matters** is *active-in-view* bucket fanout: each
+  active bucket = one opaque dispatch + one classify extract arm +
+  (MSAA) one edge-resolve dispatch. That scales with distinct buckets
+  *visible in a frame*, independent of the cap. Measure that
+  (Workstream F), not the mask width.
+
+Checklist:
+
+- [ ] Replace `tile_mask: atomic<u32>` with `array<atomic<u32>, N_WORDS>`;
+      template the `(word, bit)` derivation per `BucketEntry`.
+- [ ] Make `N_WORDS` an Askama template variable; `MAX_BUCKET_ENTRIES =
+      N_WORDS * 32`; **default `N_WORDS = 1` (32)**, trivially raised.
+- [ ] Audit every `1u << index` / 32-assuming site (classify edge
+      `slot_map`,
+      [`MaterialEdgeBuffers`](../../crates/renderer/src/render_passes/material_opaque/edge_buffers.rs),
+      indirect-args strides) and make them word-count-driven.
+- [ ] Document the active-bucket budget as a product decision, backed by
+      Workstream F.
+
+---
+
+## Workstream C — GLTF: drop "always PBR", add `AWSM_material_none`
+
+- [ ] Replace the implicit "every glTF material is PBR" assumption in
+      [`pbr_material_mapper`](../../crates/renderer-gltf/src/populate/material.rs#L31)
+      with **auto-minimization** (Decision 9): map a standard glTF
+      material → the minimal opaque feature-set it actually needs (feeds
+      B.3's feature-hash). `KHR_materials_unlit` → Unlit (unchanged).
+- [ ] Add the **`AWSM_material_none`** per-material extension (Decision 7);
+      when present, skip PBR material creation and route the primitive to
+      the **shared flat/unlit bucket** (Decision 8) — assert **zero** PBR
+      shader compiles for a material-none-only load (provable via A.2
+      counters).
+- [ ] Transparency auto-forces uber (Decision 10): a glTF material that
+      lands in the transparency pass (`Blend`/`Mask`/transmission) maps to
+      the uber transparent PBR path, never a specialized opaque bucket.
+- [ ] Honor the global `pbr_specialization: ForceUber` flag (Decision 9)
+      as the compat escape.
+- [ ] Batch all materials in one glTF load through Workstream A's engine
+      (one batch submit, not one-per-material —
+      [`populate/mesh.rs:195-314`](../../crates/renderer-gltf/src/populate/mesh.rs#L195)).
+- [ ] Emit GLTF-load progress through the A.2 stream.
+
+---
+
+## Workstream D — Dynamic materials, first-class (folds in old plan)
+
+### D.1 — Batch registration API (Decisions 11, 12)
+
+- [ ] `register_materials(Vec<MaterialRegistration>) -> RichResult`
+      (shader_ids + readiness handles), **all-or-nothing**. Single-item
+      `register_material` / `submit_dynamic_material` become wrappers.
+- [ ] Internal order: validate whole batch → cap-check against the
+      **final** count → apply all inserts → refresh
+      `bucket_entries_cache` + `dispatch_hash_cache` once → resize
+      `ClassifyBuffers` once → resize `MaterialEdgeBuffers` (MSAA) once →
+      rebuild edge-layout uniform once → clear layout-dependent pipeline
+      caches once → mark affected scheduler entries `Pending` once →
+      launch compiles against the final layout once → return in input
+      order.
+- [ ] **Invariant**: never launch compiles for intermediate bucket
+      layouts.
+
+### D.2 — Internal transaction boundary
+
+- [ ] Separate mutation from compile-scheduling internally:
+      `apply_registry_mutations` (sync, idempotent) →
+      `reconcile_material_runtime_state` (caches/buffers/bind groups) →
+      `launch_pipeline_compiles_for_final_state`. Keeps registry,
+      caches, `ClassifyBuffers.bucket_count`,
+      `MaterialEdgeBuffers.bucket_count`, edge-layout uniform, bind-group
+      marks, scheduler state, and pipeline caches in sync.
+
+### D.3 — Startup warmup (Decision 13)
+
+- [ ] Scene-load path = `compile_materials(set).await` (shared with A.3).
+- [ ] Hot-reload path = `pipeline_groups_ready()` + loading frames.
+
+### D.4 — Honest cost-model docs
+
+- [ ] Replace "existing materials are unaffected" claims on the
+      [`dynamic_materials` module doc](../../crates/renderer/src/dynamic_materials/mod.rs)
+      with the accurate model: steady-state cost scales with active
+      buckets; bucket-set changes can invalidate/relaunch layout-dependent
+      pipelines. Frame the active-bucket budget as a product budget;
+      state the opaque-only optimization scope.
+
+### D.5 — Regression tests (Decision 17 — native `#[test]`)
+
+- [ ] Register 1st dynamic material → bucket count `first_party + 1`.
+- [ ] Register 2nd → `first_party + 2`.
+- [ ] Re-register identical → unchanged count, same `shader_id`. **Must
+      work at saturation** (idempotency before cap check).
+- [ ] Register to cap → `BucketCapExceeded`.
+- [ ] `unregister_material` → caches refresh.
+- [ ] Register after removal → no stale pipeline keys reused.
+- [ ] MSAA on → `MaterialEdgeBuffers` + edge-layout uniform resize.
+- [ ] Pending/Ready → materials don't report `Ready` while their pipeline
+      cache is cleared and replacement compiles are in flight.
+- [ ] **Feature-hash routing**: two materials with the same feature-set
+      share one bucket/`shader_id`; differing feature-sets get distinct
+      buckets; force-uber collapses both to the base PBR id.
+- [ ] **Batch transactional**: a batch with one invalid entry registers
+      **nothing** (Decision 12).
+- [ ] All native `#[test]` / `#[cfg(test)]`, run via `cargo test
+      --all-features`.
+
+---
+
+## Workstream E — Transparency (uber, Decisions 10, 15, 16)
+
+- [ ] Keep transparent PBR a single full-feature uber-shader
+      ([`material_transparent/`](../../crates/renderer/src/render_passes/material_transparent/)),
+      runtime-branched on material data. **No runtime-branching
+      specialization knob.**
+- [ ] Wire B.2 so the *opaque* path specializes but the *transparent*
+      path requests the full feature-set (all `{% if %}` on) — one
+      transparent PBR pipeline.
+- [ ] Transparent custom/dynamic materials stay per-material
+      forward-rendered (Decision 16); document as a separate budget.
+- [ ] Verify transparent draws hit warm cache after `prewarm` (cache key
+      includes `texture_pool_arrays_len`,
+      [`lib.rs:499`](../../crates/renderer/src/lib.rs#L499)).
+
+---
+
+## Workstream F — Benchmarks & verification (Decisions 18, 19)
+
+### F.0 — Baseline fixture `tuning-50-materials` + before/after procedure
+
+A self-contained 50-mesh scene exists for the headline before/after:
+[`assets/world/tuning-50-materials/`](../../assets/world/tuning-50-materials/)
+(generated by
+[`generate_tuning_scenes.rs`](../../crates/scene-schema/examples/generate_tuning_scenes.rs)
+→ `cargo run --example generate_tuning_scenes -p awsm-scene-schema`).
+
+Composition: **50 meshes, each its own material** — 36 PBR across **23
+distinct feature-sets** (varying texture-slot presence + vertex colors,
+all referencing one tiny placeholder texture since the feature-hash keys
+on slot *presence*), 8 Toon (varied bands), 6 Unlit. **Today all 36 PBR
+collapse to one uber PBR bucket; after the overhaul they fan out to ~23
+specialized buckets** (plus Toon) — landing near the 32-bucket cap, so
+this fixture also exercises B.4. Custom/dynamic materials are
+intentionally absent: the scene-editor's live materialization
+(`node_sync.rs`) doesn't yet consume a primitive's `custom_material`
+field, so they'd measure nothing here (tracked separately).
+
+**Launch + measure** (real Chrome, per
+[`docs/DEBUGGING-PREVIEW.md`](../DEBUGGING-PREVIEW.md) §"Scene-editor:
+load a tuning scene + read timings non-interactively"):
+
+```
+task scene-editor:dev                                  # http://localhost:9081
+# real Chrome, FOREGROUND visible tab (rAF pauses when hidden):
+#   navigate → http://localhost:9081/?trace=sub-frame
+await window.wasmBindings.load_scene_by_path("tuning-50-materials")
+performance.clearMeasures(); // accumulate ~6s of frames, then:
+JSON.parse(window.wasmBindings.read_render_pass_timings(30))
 ```
 
-Internal order:
+**Baseline (BEFORE)** — branch `dynamic-materials-plan` pre-overhaul,
+2026-05-30, default editor settings, 1308×759, 360 frames (~6s),
+CPU-span wall-clock (not GPU timestamps; noisy — compare means):
 
-1. Idempotency / duplicate-name validation for the entire batch.
-2. Bucket-cap check against the **final** count, not per-insert.
-3. Apply all non-idempotent inserts.
-4. Refresh `bucket_entries_cache` + `dispatch_hash_cache` **once**.
-5. Resize `ClassifyBuffers` to the new bucket count **once**.
-6. Resize `MaterialEdgeBuffers` (if MSAA on) **once**.
-7. Rebuild the edge-layout uniform **once**.
-8. Clear bucket-layout-dependent typed pipeline caches **once**.
-9. Mark affected scheduler entries `Pending` **once**.
-10. Launch compile jobs against the **final** bucket layout **once**.
-11. Return shader IDs in input order.
+| Pass | mean ms | p50 | p95 |
+|---|---|---|---|
+| Render (total) | 2.249 | 2.2 | 3.4 |
+| Geometry | 0.178 | 0.2 | 0.3 |
+| Material Classify | 0.035 | 0.0 | 0.1 |
+| **Material Opaque** | **0.107** | 0.1 | 0.2 |
+| Material Transparent | 0.026 | 0.0 | 0.1 |
+| Shadow Generation | 0.128 | 0.1 | 0.3 |
+| Light Culling | 0.039 | 0.0 | 0.1 |
 
-The single most important property: **do not launch compiles for
-intermediate bucket layouts.**
+The **Material Opaque** mean + total **Render** are the headline
+before/after signal. After the overhaul, re-measure with **identical
+settings/camera/canvas** (Phase 9). Expectation: not a large regression,
+likely an opaque-pass improvement (specialized PBR shaders skip the
+unused-extension code the uber shader carries). Watch for a Classify
+regression from increased bucket fanout (~3→~25 active buckets).
 
-The existing single-registration paths
-([`register_material`](../../crates/renderer/src/dynamic_materials/mod.rs#L569),
-[`submit_dynamic_material`](../../crates/renderer/src/dynamic_materials/mod.rs#L937))
-stay — they become thin wrappers over the batch APIs (`register_materials(vec![one])`)
-so call sites don't break.
+> **AA caveat**: baseline was captured at the editor's default AA state.
+> The after-measurement MUST use the same AA state (toggle MSAA off↔4×
+> changes the edge-resolve chain and is a separate axis).
 
-### 2. Internal transaction boundary
+### F.1 — Native warmup-count assertions
 
-Even with the batch API in place, mutation and compile-scheduling are
-worth separating internally so the invariants are easier to reason
-about. Sketch:
+- [ ] Native test/bench asserting warmup **counts**: registering/loading
+      N materials fires **one** bucket-count update, **one** classify
+      resize, **one** edge resize, and **N** pipeline compiles — not `N×`
+      of any. Plus bucket-math correctness across the matrix below. No
+      GPU; runs in CI.
 
-```rust
-// Sync, idempotent, no scheduler work:
-apply_registry_mutations(&mut self, batch) -> RegistryDelta;
+### F.2 — In-browser per-frame timing (real Chrome, per `DEBUGGING-PREVIEW.md`)
 
-// Reconcile derived state (caches, buffers, bind groups):
-reconcile_material_runtime_state(&mut self, delta);
+- [ ] Build custom scene-editor scenes (alongside
+      [`assets/world/`](../../assets/world/) tuning scenes) exercising the
+      matrix; capture per-frame GPU cost in **real Chrome via the
+      Claude-in-Chrome plugin**, following
+      [`docs/DEBUGGING-PREVIEW.md`](../DEBUGGING-PREVIEW.md) (real Chrome,
+      `?cam=` repro, tracing-log compile counts; **never** the in-app
+      preview).
+- [ ] Matrix:
+      - opaque feature-set/bucket count: 4, 8, 16, 28, 56 (exercise the
+        widened cap)
+      - layouts: A spatially-separated, B checkerboard/mixed, C many tiny
+        meshes+materials, D large meshes+few islands
+      - AA: off, 4×
+      - registration mode: one-by-one, batch, prewarmed-before-first-
+        frame, hot-reload-while-rendering
+- [ ] Per-frame metrics (from `tracing` spans in console): total render,
+      Material Classify, Material Opaque, Edge Resolve, Geometry, active
+      buckets, recorded dispatches.
+- [ ] Use F's active-bucket-fanout numbers to set whether to raise the
+      default `N_WORDS` (B.4) and document the active-bucket budget.
 
-// Launch compiles only after reconcile_material_runtime_state
-// converged on the final layout:
-launch_pipeline_compiles_for_final_state(&mut self, delta);
-```
+### F.3 — glTF extension regression check (model-viewer dropdown)
 
-Public API stays simple; the boundary is just an internal contract
-that keeps these in sync:
+Because Workstream C drops the "always PBR" assumption and Workstream B
+specializes PBR per feature-set, the full set of glTF material
+extensions (KHR_materials_clearcoat, sheen, transmission, volume,
+specular, ior, anisotropy, iridescence, emissive_strength,
+diffuse_transmission, unlit, …) MUST be re-verified to still render
+correctly **after everything lands**.
 
-- Registry contents.
-- `bucket_entries_cache` + `dispatch_hash_cache`.
-- `ClassifyBuffers.bucket_count`.
-- `MaterialEdgeBuffers.bucket_count`.
-- The edge-layout uniform.
-- `BindGroupCreate` marks.
-- Scheduler `Pending` / `Ready` state.
-- Per-pass typed pipeline caches.
-
-### 3. Explicit startup warmup
-
-Distinguish two workflows in the public API:
-
-**Scene startup / game load** — compile against the final material set
-before showing the scene:
-
-```rust
-renderer.register_materials(scene.dynamic_materials)?;
-renderer.prewarm_registered_material_pipelines().await?;
-```
-
-**Runtime / editor hot reload** — tolerate temporary `Pending` states
-and per-frame skipped material dispatches:
-
-```rust
-renderer.submit_dynamic_materials(scene.dynamic_materials)?;
-while !renderer.pipeline_groups_ready() {
-    renderer.render_loading_frame()?;
-}
-```
-
-`prewarm_pipelines`
-([`lib.rs:502`](../../crates/renderer/src/lib.rs#L502)) is already the
-plumbing for this — Recommendation 3 is just about giving it a clear
-public name and a documented usage pattern for each workflow.
-
-### 4. Honest docs on the cost model
-
-The current module doc / comments imply
-
-> Adding a new dynamic material is one new small pipeline; existing
-> materials are unaffected.
-
-That's only true if the bucket layout doesn't force existing pipelines
-to be regenerated. Replace with something closer to:
-
-> In steady state, each material archetype owns its own small pipeline,
-> so per-frame cost scales with active material buckets rather than with
-> mesh/material assignments. When the dynamic bucket set changes,
-> bucket-layout-dependent pipelines may need to be invalidated and
-> relaunched so classify, opaque shading, and edge resolve agree on
-> offsets and bucket indices.
-
-Land this on the
-[`dynamic_materials` module doc](../../crates/renderer/src/dynamic_materials/mod.rs)
-and on the top-level `DynamicMaterials` struct.
-
-### 5. Benchmark separating registration cost from steady-state cost
-
-Add a benchmark target (under `benches/` or wired into the existing
-tuning-scene harness) that explicitly separates the two costs.
-
-Matrix:
-
-```
-Dynamic opaque material count:
-  4, 8, 16, 28
-
-Scene layouts:
-  A. spatially separated materials
-  B. checkerboard / highly mixed materials per tile
-  C. many tiny meshes with many materials
-  D. large meshes with few material islands
-
-Anti-aliasing:
-  off, 4×
-
-Registration mode:
-  one-by-one
-  batch
-  prewarmed before first visible frame
-  hot reload while rendering
-```
-
-Metrics:
-
-```
-Per-frame:
-  total render time
-  Material Classify time
-  Material Opaque time
-  Edge Resolve time
-  Geometry pass time
-  active buckets
-  recorded dispatches
-
-Registration / warmup:
-  total registration wall time
-  shader compiles launched
-  compute pipelines launched
-  render pipelines launched (if transparent involved)
-  scheduler Pending → Ready transitions
-  frames with skipped material pipelines
-  peak compile latency
-```
-
-Expected shape:
-
-- Steady-state opaque rendering performs well across all four layouts.
-- Spatially-separated materials (layout A) are best.
-- Highly-mixed tiles (layout B) raise classify fanout and per-bucket
-  shading overlap.
-- One-by-one registration looks visibly worse than batch.
-- MSAA-on validates edge-resolve compile + dispatch scaling.
-
-### 6. Frame `MAX_BUCKET_ENTRIES = 32` as a deliberate product budget
-
-The cap at
-[`dynamic_materials/mod.rs:164`](../../crates/renderer/src/dynamic_materials/mod.rs#L164)
-is fine. Just frame it explicitly in the module doc:
-
-> The renderer supports `4 first-party material buckets + up to 28
-> dynamic material buckets` in any one scene. Dynamic materials are
-> intended for a bounded set of opaque archetypes — dozens of
-> co-resident material families, not hundreds of unique shader graphs
-> in a single visibility-buffer classify set.
-
-The four first-party buckets are enumerated in
-[`first_party_bucket_entries`](../../crates/renderer/src/dynamic_materials/mod.rs#L248)
-(PBR, Unlit, Toon, FlipBook + whatever else `awsm_materials::registry::enabled_materials()`
-returns at build time).
-
-### 7. Strict opaque-vs-transparent expectations in the docs
-
-The dynamic-material bucket architecture primarily optimizes **opaque**
-materials. Transparent materials remain order-sensitive and can't be
-freely pipeline-grouped without risking incorrect alpha composition.
-
-Add this to the module doc:
-
-> The dynamic material bucket architecture primarily optimizes opaque
-> materials. Transparent custom materials should be treated as a separate
-> budget because they remain order-sensitive and are more likely to behave
-> like conventional forward-rendered material passes.
-
-The transparent dynamic-material path already exists (the registration
-code branches on `alpha_mode` to drive transparent-pipeline compiles),
-but it's not what the bucket architecture is optimized for. The doc
-update is about setting honest expectations, not removing the support.
-
-### 8. Regression tests for bucket-layout mutation
-
-There are currently no unit tests under
-[`crates/renderer/src/dynamic_materials/`](../../crates/renderer/src/dynamic_materials/).
-Lock in the contract:
-
-1. Register first dynamic material — bucket count goes from
-   `first_party + 0` to `first_party + 1`.
-2. Register second dynamic material — `first_party + 2`.
-3. Re-register identical material (same name, same hashes) — bucket
-   count unchanged, returns the existing `shader_id`. **This must work
-   even at saturation** (`MAX_BUCKET_ENTRIES`), because the idempotency
-   lookup runs before the cap check (see
-   [`register_material`](../../crates/renderer/src/dynamic_materials/mod.rs#L569)).
-4. Register until bucket cap — confirm `AwsmDynamicMaterialError::BucketCapExceeded`.
-5. Remove via
-   [`unregister_material`](../../crates/renderer/src/dynamic_materials/mod.rs#L871)
-   — confirm `bucket_entries_cache` + `dispatch_hash_cache` refresh.
-6. Register after removal — confirm no stale pipeline keys reused.
-7. MSAA on: confirm `MaterialEdgeBuffers` + edge-layout uniform resize
-   with bucket count.
-8. Pending/Ready: existing materials must not report `Ready` while
-   their typed pipeline cache has been cleared and replacement compiles
-   are in flight.
-
-The renderer is `wasm32`-only, so these need to be `wasm_bindgen_test`
-or guarded under `cfg(not(target_arch = "wasm32"))` with mock GPU
-handles — pick whichever matches how other renderer-internal tests are
-structured (currently: there are none, so this is a greenfield choice).
+- [ ] In the **model-tests / model-viewer** frontend, step through every
+      entry of the **extensions dropdown** and confirm each extension's
+      sample model still renders correctly (compare against `main` /
+      pre-overhaul, real Chrome per `DEBUGGING-PREVIEW.md` — `getImageData`
+      pixel reads or user confirmation, not screenshots).
+- [ ] Pay special attention to: transparent/transmission materials (must
+      route to the uber transparent path, Decision 10), and any material
+      whose feature-set is now compiled into a specialized opaque bucket
+      (the templatized `{% if %}` gating must include every extension the
+      uber shader previously carried).
 
 ---
 
 ## Phasing
 
-Each numbered item below is shippable on its own; later items get
-easier when earlier ones land.
-
-| Order | Item | Notes |
+| Order | Workstream | Notes |
 |---|---|---|
-| 1 | Regression tests (§8) | Lock down current behaviour before refactoring; everything below either re-asserts these or extends them. |
-| 2 | Internal transaction boundary (§2) | Pure refactor; no public-API change. Pre-req for §1's batch path. |
-| 3 | Batch registration API (§1) | Wraps the transaction boundary in a public batch surface. |
-| 4 | Explicit startup warmup (§3) | New public method on top of `prewarm_pipelines`; trivial once §3 lands. |
-| 5 | Docs cleanup (§4, §6, §7) | One commit, no functional change. |
-| 6 | Benchmark harness (§5) | Largest scope; landable independently. Probably its own PR. |
+| 1 | D.5 regression tests | Lock current dynamic-material behaviour before refactoring (native `#[test]`). |
+| 2 | A.1/A.2 batch engine + progress | Shared substrate everything routes through. |
+| 3 | D.1/D.2/D.3 batch registration + transaction boundary + warmup | Wraps the engine in the dynamic-material public surface. |
+| 4 | B.4 extensible bucket cap | Mechanical, unblocks B.3. Cheap; benchmark after. |
+| 5 | B.2 PBR + Toon per-feature templatization | Largest shader-side change. |
+| 6 | B.1/B.3 on-demand built-ins + one-bucket-per-feature-set | Depends on B.2 + B.4. |
+| 7 | C GLTF auto-minimize + `AWSM_material_none` | Depends on B.2/B.3 feature derivation. |
+| 8 | E transparency uber wiring | Depends on B.2 (request full feature-set). |
+| 9 | F benchmarks + docs (A.3/D.4) | Validates the cap budget; finalize honest docs. |
 
 ---
 
 ## Acceptance criteria
 
-The plan is "done" when all of these hold and there are no Phase
-2-equivalent stashed bugs hanging around:
+1. One batch-compile engine drives GLTF load, dynamic registration, and
+   prewarm. Registering/loading N materials fires **one** bucket-count
+   update, **one** classify resize, **one** edge resize, and **N**
+   pipeline compiles — not `N×` of any.
+2. `compile_materials(set).await` lets a frontend register every material,
+   await full readiness, and only then render — no partially-missing
+   materials. A hot-reload path tolerates `Pending`.
+3. `compile_progress()` returns `{total, done, failed, in_flight}` and
+   events are phase-tagged; the material-editor drives a real progress bar
+   from it.
+4. Opaque PBR + Toon are per-feature specialized: a material with no
+   normal map compiles no normal-map code; each distinct feature-set is
+   its own bucket/`shader_id`, deterministically shared across materials.
+5. Built-ins compile on demand: a scene using only one material compiles
+   only that material.
+6. A glTF with `AWSM_material_none` materials loads with **zero** PBR
+   compiles (provable from A.2 counters); those primitives render via the
+   shared flat/unlit bucket.
+7. Exceeding the active-bucket budget is a hard error; `N_WORDS` is an
+   Askama variable (default 32) trivially raised to 64+.
+8. Transparency (Blend/Mask/transmission) always uses the uber transparent
+   PBR pipeline; no runtime-branching specialization knob was added;
+   transparent custom materials stay per-material forward.
+9. `pbr_specialization: ForceUber` collapses opaque PBR to the base uber
+   bucket.
+10. D.5 tests pass as native `#[test]` via `cargo test --all-features`.
+11. F.1 native count-benchmark distinguishes warmup cost from per-frame
+    cost; F.2 timing is captured in real Chrome per `DEBUGGING-PREVIEW.md`.
+12. Docs no longer claim "existing materials are unaffected"
+    unconditionally; opaque-only scope + active-bucket budget stated
+    honestly.
+13. Every entry of the model-viewer **extensions dropdown** still renders
+    correctly after the overhaul (F.3) — the specialized/templatized PBR
+    shaders preserve every KHR-extension result the uber shader produced,
+    and transmission/transparent extensions route to the uber transparent
+    path.
+14. The `tuning-50-materials` after-measurement is recorded next to the
+    F.0 baseline with identical settings; the opaque/total deltas are
+    within the "no large regression" expectation (or the regression is
+    explained).
 
-1. Batch registration is the primary public API; the single-registration
-   methods are thin shims over it (or removed if the call-site count is
-   small enough).
-2. Registering N dynamic materials in one batch fires **one** scheduler
-   bucket-count update, **one** classify-buffer resize, **one**
-   edge-buffer resize, and **N pipeline compiles** — not `N*` of any of
-   those four.
-3. A scene-load API path exists that lets a frontend register every
-   custom material, await full readiness, and only THEN start rendering
-   the scene — without observing partially-missing materials.
-4. Tests from §8 pass on the `wasm32-unknown-unknown` target via
-   `wasm-bindgen-test` (or via a native-target mock if the renderer's
-   testing convention turns out to be native-mock).
-5. The benchmark from §5 produces a CSV-or-JSON dump that distinguishes
-   per-frame steady-state cost from per-registration warmup cost.
-6. Docs no longer claim "existing materials are unaffected"
-   unconditionally.
-
-Then:
-
-- Delete this file (`git rm docs/plans/dynamic-materials.md`) in the
-  final commit. The architecture is documented in
-  [`dynamic_materials/mod.rs`](../../crates/renderer/src/dynamic_materials/mod.rs)
-  module doc + the new tests; the plan doc has no role once the work is
-  shipped.
+Then delete this file (`git rm docs/plans/dynamic-materials.md`) in the
+final commit.
 
 ---
 
 ## Things explicitly NOT to do
 
-- **Don't rewrite the steady-state render path.** The visibility-buffer
-  + per-bucket material pipeline design is the right architecture for
-  the problem this renderer targets. The cleanup here is around its
-  lifecycle, not its design.
-- **Don't raise `MAX_BUCKET_ENTRIES` past 32 to "support more dynamic
-  materials"** until §5's benchmark says the classify-pass cost stays
-  acceptable. The cap is a budget, not an oversight.
-- **Don't try to bucket transparent materials the same way.** They
-  remain order-sensitive. Per §7, treat them as a separate budget and
-  expect a forward-rendered shape there.
-- **Don't conflate "compile fired" with "material visible".** A
-  freshly-registered material whose pipeline is `Pending` shouldn't be
-  classified as `Ready` from the frontend's perspective just because
-  the registration call returned successfully. §8 test 8 locks this in.
+- **Don't rewrite the steady-state render path.** Visibility-buffer +
+  per-bucket classify/shade is the right architecture. This work
+  *deepens* it (more, smaller, specialized buckets).
+- **Don't add a payload-format discriminator for routing.** `shader_id`
+  stays the sole bucket key (Decision 2). Feature-sets get distinct
+  `shader_id`s, not a secondary field.
+- **Don't add runtime branching for tunability.** Specialization is
+  template/compile-time; the transparent path is uber (Decisions 10, 15).
+- **Don't add a silent uber fallback on budget overflow.** It's a hard
+  error (Decision 5); widen `N_WORDS` instead (Decision 6).
+- **Don't bucket transparent materials like opaque.** Order-sensitive,
+  no visibility-buffer benefit — separate forward-rendered budget.
+- **Don't use the in-app preview for GPU verification.** Real Chrome via
+  the Claude plugin only, per
+  [`docs/DEBUGGING-PREVIEW.md`](../DEBUGGING-PREVIEW.md).
+- **Don't conflate "compile fired" with "material visible".** A `Pending`
+  material must not report `Ready` just because the call returned (D.5).

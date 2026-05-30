@@ -1,0 +1,3727 @@
+{
+  "name": "tuning-50-materials",
+  "environment": {
+    "skybox": "built_in_default",
+    "ibl": "built_in_default"
+  },
+  "shadows": {
+    "sscs_enabled": false,
+    "sscs_step_count": 16,
+    "atlas_size": 4096,
+    "evsm_atlas_size": 2048,
+    "evsm_exponent": 10.0,
+    "evsm_blur_radius": 6,
+    "max_point_shadows": 8,
+    "point_shadow_resolution": 1024,
+    "debug_cascade_colors": false
+  },
+  "assets": {
+    "be677a4f-5e94-4de2-bb4e-f5552e75ad5f": {
+      "source": {
+        "texture": {
+          "raster": {
+            "display_name": "placeholder.png"
+          }
+        }
+      },
+      "gltf_material_asset_ids": [],
+      "gltf_image_asset_ids": [],
+      "content_hash": "7310c0157395b5732c24711abbbc644ae273587de38077045470c9c7ea129bdb"
+    }
+  },
+  "custom_materials": [],
+  "nodes": [
+    {
+      "id": "e73abcd3-b17a-4366-bebf-a842f8a7b6fe",
+      "name": "meshes",
+      "transform": {
+        "translation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "kind": "group",
+      "locked": false,
+      "visible": true,
+      "prefab": false,
+      "children": [
+        {
+          "id": "64c2a35c-9ab7-4443-a4d9-4ad7de6bc4e3",
+          "name": "pbr_00_mask00000",
+          "transform": {
+            "translation": [
+              -11.25,
+              0.7,
+              2.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.9,
+                  0.45,
+                  0.45,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.2,
+                "roughness": 0.55,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "22564fa3-fd3a-4c32-9e77-48cc7f4a79ca",
+          "name": "pbr_01_mask00001",
+          "transform": {
+            "translation": [
+              -8.75,
+              0.7,
+              2.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "sphere": {
+                  "radius": 0.6,
+                  "segments_long": 24,
+                  "segments_lat": 16
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.9,
+                  0.54,
+                  0.45,
+                  1.0
+                ],
+                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic": 0.2,
+                "roughness": 0.55,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "042fb007-bc46-454c-a55d-ebe3a1acecec",
+          "name": "pbr_02_mask00011",
+          "transform": {
+            "translation": [
+              -6.25,
+              0.7,
+              2.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.9,
+                  0.63000005,
+                  0.45,
+                  1.0
+                ],
+                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic": 0.2,
+                "roughness": 0.55,
+                "metallic_roughness_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "c3763bd2-2549-4670-a5b8-ea52d7524c68",
+          "name": "pbr_03_mask00111_vc",
+          "transform": {
+            "translation": [
+              -3.75,
+              0.7,
+              2.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "sphere": {
+                  "radius": 0.6,
+                  "segments_long": 24,
+                  "segments_lat": 16
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.9,
+                  0.71999997,
+                  0.45,
+                  1.0
+                ],
+                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic": 0.2,
+                "roughness": 0.55,
+                "metallic_roughness_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": true,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "04ddeb6a-a1bf-4891-ae3c-2e1ce0c922d8",
+          "name": "pbr_04_mask01111",
+          "transform": {
+            "translation": [
+              -1.25,
+              0.7,
+              2.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.9,
+                  0.81,
+                  0.45,
+                  1.0
+                ],
+                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic": 0.2,
+                "roughness": 0.55,
+                "metallic_roughness_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "occlusion_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "bbaa89bd-8cf0-471d-a253-718067103015",
+          "name": "pbr_05_mask11111",
+          "transform": {
+            "translation": [
+              1.25,
+              0.7,
+              2.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "sphere": {
+                  "radius": 0.6,
+                  "segments_long": 24,
+                  "segments_lat": 16
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.9,
+                  0.9,
+                  0.45,
+                  1.0
+                ],
+                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic": 0.2,
+                "roughness": 0.55,
+                "metallic_roughness_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "emissive": [
+                  0.4,
+                  0.25,
+                  0.1
+                ],
+                "emissive_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "normal_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "occlusion_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "8893a117-b204-4005-98cf-902cb8ac8fd8",
+          "name": "pbr_06_mask00100",
+          "transform": {
+            "translation": [
+              3.75,
+              0.7,
+              2.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.80999994,
+                  0.9,
+                  0.45,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.2,
+                "roughness": 0.55,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "b53bb581-be9a-41a7-8b27-fe93daa255b5",
+          "name": "pbr_07_mask00101",
+          "transform": {
+            "translation": [
+              6.25,
+              0.7,
+              2.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "sphere": {
+                  "radius": 0.6,
+                  "segments_long": 24,
+                  "segments_lat": 16
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.71999997,
+                  0.9,
+                  0.45,
+                  1.0
+                ],
+                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic": 0.2,
+                "roughness": 0.55,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "9d55e501-f53c-4ed8-b281-d7a9ae6b46ae",
+          "name": "pbr_08_mask00110_vc",
+          "transform": {
+            "translation": [
+              8.75,
+              0.7,
+              2.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.62999994,
+                  0.9,
+                  0.45,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.2,
+                "roughness": 0.55,
+                "metallic_roughness_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": true,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "4944d598-a187-4bb1-a347-d652a2015542",
+          "name": "pbr_09_mask01000",
+          "transform": {
+            "translation": [
+              11.25,
+              0.7,
+              2.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "sphere": {
+                  "radius": 0.6,
+                  "segments_long": 24,
+                  "segments_lat": 16
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.53999996,
+                  0.9,
+                  0.45,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.2,
+                "roughness": 0.55,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "b755b565-4bdd-4d2b-a300-28bb426f96a7",
+          "name": "pbr_10_mask10000",
+          "transform": {
+            "translation": [
+              -11.25,
+              0.7,
+              4.5
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.45,
+                  0.9,
+                  0.45,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.2,
+                "roughness": 0.55,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.4,
+                  0.25,
+                  0.1
+                ],
+                "emissive_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "e3f8a65d-ce8e-489d-bedb-afeaca91a742",
+          "name": "pbr_11_mask10001",
+          "transform": {
+            "translation": [
+              -8.75,
+              0.7,
+              4.5
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "sphere": {
+                  "radius": 0.6,
+                  "segments_long": 24,
+                  "segments_lat": 16
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.45,
+                  0.9,
+                  0.54,
+                  1.0
+                ],
+                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic": 0.2,
+                "roughness": 0.55,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.4,
+                  0.25,
+                  0.1
+                ],
+                "emissive_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "4bcc770c-250b-468e-b921-1d8252736a08",
+          "name": "pbr_12_mask10101",
+          "transform": {
+            "translation": [
+              -6.25,
+              0.7,
+              4.5
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.45,
+                  0.9,
+                  0.63000005,
+                  1.0
+                ],
+                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic": 0.2,
+                "roughness": 0.55,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.4,
+                  0.25,
+                  0.1
+                ],
+                "emissive_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "normal_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "857ea492-bcbd-4a50-8a56-cc54ad940865",
+          "name": "pbr_13_mask01010_vc",
+          "transform": {
+            "translation": [
+              -3.75,
+              0.7,
+              4.5
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "sphere": {
+                  "radius": 0.6,
+                  "segments_long": 24,
+                  "segments_lat": 16
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.45,
+                  0.9,
+                  0.7199999,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.2,
+                "roughness": 0.55,
+                "metallic_roughness_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "double_sided": false,
+                "vertex_colors_enabled": true,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "bf2945b5-db35-41cf-ad89-fdc724c9b18d",
+          "name": "pbr_14_mask11010",
+          "transform": {
+            "translation": [
+              -1.25,
+              0.7,
+              4.5
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.45,
+                  0.9,
+                  0.80999994,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.2,
+                "roughness": 0.55,
+                "metallic_roughness_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "emissive": [
+                  0.4,
+                  0.25,
+                  0.1
+                ],
+                "emissive_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "normal_texture": null,
+                "occlusion_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "bedf3604-5e03-4c9c-98ed-a1f7ea2610ad",
+          "name": "pbr_15_mask01101",
+          "transform": {
+            "translation": [
+              1.25,
+              0.7,
+              4.5
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "sphere": {
+                  "radius": 0.6,
+                  "segments_long": 24,
+                  "segments_lat": 16
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.45,
+                  0.9,
+                  0.9,
+                  1.0
+                ],
+                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic": 0.2,
+                "roughness": 0.55,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "occlusion_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "b99fda54-f021-4947-8328-f429254a5002",
+          "name": "pbr_16_mask00000",
+          "transform": {
+            "translation": [
+              3.75,
+              0.7,
+              4.5
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.45,
+                  0.8099998,
+                  0.9,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.2,
+                "roughness": 0.55,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "e66af8b7-a146-41b4-a4a2-b56ffeea0b35",
+          "name": "pbr_17_mask00001",
+          "transform": {
+            "translation": [
+              6.25,
+              0.7,
+              4.5
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "sphere": {
+                  "radius": 0.6,
+                  "segments_long": 24,
+                  "segments_lat": 16
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.45,
+                  0.7199999,
+                  0.9,
+                  1.0
+                ],
+                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic": 0.2,
+                "roughness": 0.55,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "bdabdd20-e24a-4b75-a92d-6a275175ba29",
+          "name": "pbr_18_mask00011_vc",
+          "transform": {
+            "translation": [
+              8.75,
+              0.7,
+              4.5
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.45,
+                  0.62999994,
+                  0.9,
+                  1.0
+                ],
+                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic": 0.2,
+                "roughness": 0.55,
+                "metallic_roughness_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": true,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "c47fbbc2-8435-4ce6-9605-ad53c66211c8",
+          "name": "pbr_19_mask00111",
+          "transform": {
+            "translation": [
+              11.25,
+              0.7,
+              4.5
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "sphere": {
+                  "radius": 0.6,
+                  "segments_long": 24,
+                  "segments_lat": 16
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.45,
+                  0.54,
+                  0.9,
+                  1.0
+                ],
+                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic": 0.2,
+                "roughness": 0.55,
+                "metallic_roughness_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "a867f732-1392-4b9d-a4db-fad97c7435b6",
+          "name": "pbr_20_mask01111",
+          "transform": {
+            "translation": [
+              -11.25,
+              0.7,
+              7.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.45,
+                  0.45,
+                  0.9,
+                  1.0
+                ],
+                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic": 0.2,
+                "roughness": 0.55,
+                "metallic_roughness_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "occlusion_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "b6ea250b-e1b3-4d7e-a7d9-f4aa644f5a95",
+          "name": "pbr_21_mask11111",
+          "transform": {
+            "translation": [
+              -8.75,
+              0.7,
+              7.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "sphere": {
+                  "radius": 0.6,
+                  "segments_long": 24,
+                  "segments_lat": 16
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.5399999,
+                  0.45,
+                  0.9,
+                  1.0
+                ],
+                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic": 0.2,
+                "roughness": 0.55,
+                "metallic_roughness_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "emissive": [
+                  0.4,
+                  0.25,
+                  0.1
+                ],
+                "emissive_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "normal_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "occlusion_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "db84ca58-78aa-4f79-b8a6-bc859d332951",
+          "name": "pbr_22_mask00100",
+          "transform": {
+            "translation": [
+              -6.25,
+              0.7,
+              7.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.63000005,
+                  0.45,
+                  0.9,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.2,
+                "roughness": 0.55,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "f015727d-3ccc-4445-b69a-57ae978b38f2",
+          "name": "pbr_23_mask00101_vc",
+          "transform": {
+            "translation": [
+              -3.75,
+              0.7,
+              7.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "sphere": {
+                  "radius": 0.6,
+                  "segments_long": 24,
+                  "segments_lat": 16
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.7199999,
+                  0.45,
+                  0.9,
+                  1.0
+                ],
+                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic": 0.2,
+                "roughness": 0.55,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": true,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "b6d4fcba-00a1-4782-bf01-e73c8c74e3ba",
+          "name": "pbr_24_mask00110",
+          "transform": {
+            "translation": [
+              -1.25,
+              0.7,
+              7.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.81000006,
+                  0.45,
+                  0.9,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.2,
+                "roughness": 0.55,
+                "metallic_roughness_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "1fd4f374-a59c-409b-b234-f351c2c028e3",
+          "name": "pbr_25_mask01000",
+          "transform": {
+            "translation": [
+              1.25,
+              0.7,
+              7.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "sphere": {
+                  "radius": 0.6,
+                  "segments_long": 24,
+                  "segments_lat": 16
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.9,
+                  0.45,
+                  0.9,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.2,
+                "roughness": 0.55,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "f0d29315-f050-4ce7-b430-791b021af1b5",
+          "name": "pbr_26_mask10000",
+          "transform": {
+            "translation": [
+              3.75,
+              0.7,
+              7.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.9,
+                  0.45,
+                  0.81000006,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.2,
+                "roughness": 0.55,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.4,
+                  0.25,
+                  0.1
+                ],
+                "emissive_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "4b42fe0a-b57f-4b1b-baa4-77117324023a",
+          "name": "pbr_27_mask10001",
+          "transform": {
+            "translation": [
+              6.25,
+              0.7,
+              7.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "sphere": {
+                  "radius": 0.6,
+                  "segments_long": 24,
+                  "segments_lat": 16
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.9,
+                  0.45,
+                  0.72000015,
+                  1.0
+                ],
+                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic": 0.2,
+                "roughness": 0.55,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.4,
+                  0.25,
+                  0.1
+                ],
+                "emissive_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "ca993850-7104-473a-95cd-41129b6ce043",
+          "name": "pbr_28_mask10101_vc",
+          "transform": {
+            "translation": [
+              8.75,
+              0.7,
+              7.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.9,
+                  0.45,
+                  0.63000005,
+                  1.0
+                ],
+                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic": 0.2,
+                "roughness": 0.55,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.4,
+                  0.25,
+                  0.1
+                ],
+                "emissive_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "normal_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": true,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "17d9020e-12b9-4cff-8e42-42578173a3d1",
+          "name": "pbr_29_mask01010",
+          "transform": {
+            "translation": [
+              11.25,
+              0.7,
+              7.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "sphere": {
+                  "radius": 0.6,
+                  "segments_long": 24,
+                  "segments_lat": 16
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.9,
+                  0.45,
+                  0.54000014,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.2,
+                "roughness": 0.55,
+                "metallic_roughness_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "16db3fd0-5abf-444a-acdb-13f050cd5d41",
+          "name": "pbr_30_mask11010",
+          "transform": {
+            "translation": [
+              -11.25,
+              0.7,
+              9.5
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.9,
+                  0.45,
+                  0.45,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.2,
+                "roughness": 0.55,
+                "metallic_roughness_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "emissive": [
+                  0.4,
+                  0.25,
+                  0.1
+                ],
+                "emissive_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "normal_texture": null,
+                "occlusion_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "32ed5987-742e-455a-b74f-7dd36b97efb8",
+          "name": "pbr_31_mask01101",
+          "transform": {
+            "translation": [
+              -8.75,
+              0.7,
+              9.5
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "sphere": {
+                  "radius": 0.6,
+                  "segments_long": 24,
+                  "segments_lat": 16
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.9,
+                  0.5399999,
+                  0.45,
+                  1.0
+                ],
+                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic": 0.2,
+                "roughness": 0.55,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "occlusion_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "c042ffd7-e169-474a-bc97-44ba9ad30d14",
+          "name": "pbr_32_mask00000",
+          "transform": {
+            "translation": [
+              -6.25,
+              0.7,
+              9.5
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.9,
+                  0.63000023,
+                  0.45,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.2,
+                "roughness": 0.55,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "4cd997bd-e36e-445e-83c4-540d2bb3bdf1",
+          "name": "pbr_33_mask00001_vc",
+          "transform": {
+            "translation": [
+              -3.75,
+              0.7,
+              9.5
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "sphere": {
+                  "radius": 0.6,
+                  "segments_long": 24,
+                  "segments_lat": 16
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.9,
+                  0.72000015,
+                  0.45,
+                  1.0
+                ],
+                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic": 0.2,
+                "roughness": 0.55,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": true,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "896b89a8-d236-4b28-b804-bd415859e478",
+          "name": "pbr_34_mask00011",
+          "transform": {
+            "translation": [
+              -1.25,
+              0.7,
+              9.5
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.9,
+                  0.81000006,
+                  0.45,
+                  1.0
+                ],
+                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic": 0.2,
+                "roughness": 0.55,
+                "metallic_roughness_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "534a0114-d565-4ef3-aff3-bdffdaf4411c",
+          "name": "pbr_35_mask00111",
+          "transform": {
+            "translation": [
+              1.25,
+              0.7,
+              9.5
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "sphere": {
+                  "radius": 0.6,
+                  "segments_long": 24,
+                  "segments_lat": 16
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.9,
+                  0.9,
+                  0.45,
+                  1.0
+                ],
+                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic": 0.2,
+                "roughness": 0.55,
+                "metallic_roughness_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "7feef582-f550-4f5c-8740-2200c72dde32",
+          "name": "toon_0_b2",
+          "transform": {
+            "translation": [
+              3.75,
+              0.7,
+              9.5
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.35999995,
+                  0.73799986,
+                  0.9,
+                  1.0
+                ],
+                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": {
+                  "toon": {
+                    "diffuse_bands": 2,
+                    "rim_strength": 0.2
+                  }
+                }
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "6b22f54b-f204-4682-b53c-383a79423ef9",
+          "name": "toon_1_b3",
+          "transform": {
+            "translation": [
+              6.25,
+              0.7,
+              9.5
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "sphere": {
+                  "radius": 0.6,
+                  "segments_long": 24,
+                  "segments_lat": 16
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.35999995,
+                  0.6408,
+                  0.9,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": {
+                  "toon": {
+                    "diffuse_bands": 3,
+                    "rim_strength": 0.5
+                  }
+                }
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "93735761-5ffc-482f-bb08-7ad3014d92ba",
+          "name": "toon_2_b4",
+          "transform": {
+            "translation": [
+              8.75,
+              0.7,
+              9.5
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.35999995,
+                  0.54359996,
+                  0.9,
+                  1.0
+                ],
+                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": {
+                  "toon": {
+                    "diffuse_bands": 4,
+                    "rim_strength": 0.8
+                  }
+                }
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "c04c9251-6f5a-4414-9d30-e458391b461a",
+          "name": "toon_3_b5",
+          "transform": {
+            "translation": [
+              11.25,
+              0.7,
+              9.5
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "sphere": {
+                  "radius": 0.6,
+                  "segments_long": 24,
+                  "segments_lat": 16
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.35999995,
+                  0.44640005,
+                  0.9,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": {
+                  "toon": {
+                    "diffuse_bands": 5,
+                    "rim_strength": 0.2
+                  }
+                }
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "c5c14c87-aaa7-4396-96b0-6071aa6a2a9d",
+          "name": "toon_4_b2",
+          "transform": {
+            "translation": [
+              -11.25,
+              0.7,
+              12.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.37079993,
+                  0.35999995,
+                  0.9,
+                  1.0
+                ],
+                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": {
+                  "toon": {
+                    "diffuse_bands": 2,
+                    "rim_strength": 0.5
+                  }
+                }
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "e55c763e-edb8-4994-9e58-1a4c9544d23a",
+          "name": "toon_5_b3",
+          "transform": {
+            "translation": [
+              -8.75,
+              0.7,
+              12.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "sphere": {
+                  "radius": 0.6,
+                  "segments_long": 24,
+                  "segments_lat": 16
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.46799988,
+                  0.35999995,
+                  0.9,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": {
+                  "toon": {
+                    "diffuse_bands": 3,
+                    "rim_strength": 0.8
+                  }
+                }
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "7ba95f6c-d641-4e5c-b8a6-e8ea52418c42",
+          "name": "toon_6_b4",
+          "transform": {
+            "translation": [
+              -6.25,
+              0.7,
+              12.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.56520003,
+                  0.35999995,
+                  0.9,
+                  1.0
+                ],
+                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": {
+                  "toon": {
+                    "diffuse_bands": 4,
+                    "rim_strength": 0.2
+                  }
+                }
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "0b0a33f9-fda2-40f8-9151-f8271c74089f",
+          "name": "toon_7_b5",
+          "transform": {
+            "translation": [
+              -3.75,
+              0.7,
+              12.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "sphere": {
+                  "radius": 0.6,
+                  "segments_long": 24,
+                  "segments_lat": 16
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.66239995,
+                  0.35999995,
+                  0.9,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": {
+                  "toon": {
+                    "diffuse_bands": 5,
+                    "rim_strength": 0.5
+                  }
+                }
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "ea8f0561-4965-4c2e-8b6d-23a3e64e80e0",
+          "name": "unlit_0",
+          "transform": {
+            "translation": [
+              -1.25,
+              0.7,
+              12.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.95,
+                  0.4845,
+                  0.285,
+                  1.0
+                ],
+                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "unlit"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "16c5bb87-59d4-4fec-8fe7-fb94c9b8c6ec",
+          "name": "unlit_1",
+          "transform": {
+            "translation": [
+              1.25,
+              0.7,
+              12.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "sphere": {
+                  "radius": 0.6,
+                  "segments_long": 24,
+                  "segments_lat": 16
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.95,
+                  0.6441,
+                  0.285,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "unlit"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "1cae299c-7216-4328-8b01-abbe62ce9cd5",
+          "name": "unlit_2",
+          "transform": {
+            "translation": [
+              3.75,
+              0.7,
+              12.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.95,
+                  0.8037,
+                  0.285,
+                  1.0
+                ],
+                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "unlit"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "bf226909-6ac8-41e0-8fbe-406139f99eab",
+          "name": "unlit_3",
+          "transform": {
+            "translation": [
+              6.25,
+              0.7,
+              12.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "sphere": {
+                  "radius": 0.6,
+                  "segments_long": 24,
+                  "segments_lat": 16
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.9367,
+                  0.95,
+                  0.285,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "unlit"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "98c2158d-c2ac-44da-8891-d7906e9f7bdf",
+          "name": "unlit_4",
+          "transform": {
+            "translation": [
+              8.75,
+              0.7,
+              12.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.7771,
+                  0.95,
+                  0.285,
+                  1.0
+                ],
+                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "unlit"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "1bc5073e-cf8c-4bab-be5c-e42b8e930187",
+          "name": "unlit_5",
+          "transform": {
+            "translation": [
+              11.25,
+              0.7,
+              12.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "sphere": {
+                  "radius": 0.6,
+                  "segments_long": 24,
+                  "segments_lat": 16
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.61750007,
+                  0.95,
+                  0.285,
+                  1.0
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.7,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "opaque",
+                "shading": "unlit"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        }
+      ]
+    },
+    {
+      "id": "0ea9a981-5463-427b-b24f-311803e3db06",
+      "name": "floor",
+      "transform": {
+        "translation": [
+          0.0,
+          -0.01,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "kind": {
+        "primitive": {
+          "shape": {
+            "plane": {
+              "width": 60.0,
+              "depth": 60.0,
+              "segments_x": 1,
+              "segments_z": 1
+            }
+          },
+          "material": null,
+          "inline_material": {
+            "label": "",
+            "base_color": [
+              0.28,
+              0.28,
+              0.3,
+              1.0
+            ],
+            "base_color_texture": null,
+            "metallic": 0.0,
+            "roughness": 0.9,
+            "metallic_roughness_texture": null,
+            "emissive": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "emissive_texture": null,
+            "normal_texture": null,
+            "occlusion_texture": null,
+            "double_sided": false,
+            "vertex_colors_enabled": false,
+            "alpha_mode": "opaque",
+            "shading": "pbr"
+          },
+          "custom_material": null,
+          "shadow": {
+            "cast": true,
+            "receive": true
+          }
+        }
+      },
+      "locked": false,
+      "visible": true,
+      "prefab": false,
+      "children": []
+    },
+    {
+      "id": "256e23b3-0151-4ea4-9691-32f3bd0b283d",
+      "name": "sun",
+      "transform": {
+        "translation": [
+          0.0,
+          10.0,
+          0.0
+        ],
+        "rotation": [
+          0.3826834,
+          0.0,
+          0.0,
+          0.9238795
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "kind": {
+        "light": {
+          "directional": {
+            "color": [
+              1.0,
+              0.96,
+              0.9
+            ],
+            "intensity": 4.0,
+            "shadow": {
+              "cast": true,
+              "depth_bias": 0.0005,
+              "normal_bias": 0.05,
+              "resolution": 512,
+              "hardness": "soft",
+              "pcss_penumbra_scale": 1.0,
+              "max_distance": 40.0,
+              "cascade_count": 4,
+              "cascade_split_lambda": 0.5,
+              "evsm_cutoff": "last_cascade",
+              "far_cascade_update_rate": "every4_frames",
+              "cube_face_update_rate": "every_frame"
+            }
+          }
+        }
+      },
+      "locked": false,
+      "visible": true,
+      "prefab": false,
+      "children": []
+    },
+    {
+      "id": "611783ac-b0b9-4a74-b6b9-15602c518a4f",
+      "name": "fill",
+      "transform": {
+        "translation": [
+          0.0,
+          8.0,
+          8.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "kind": {
+        "light": {
+          "point": {
+            "color": [
+              0.8,
+              0.85,
+              1.0
+            ],
+            "intensity": 30.0,
+            "range": 40.0,
+            "shadow": {
+              "cast": false,
+              "depth_bias": 0.0005,
+              "normal_bias": 0.05,
+              "resolution": 1024,
+              "hardness": "soft",
+              "pcss_penumbra_scale": 1.0,
+              "max_distance": 100.0,
+              "cascade_count": 4,
+              "cascade_split_lambda": 0.5,
+              "evsm_cutoff": "last_cascade",
+              "far_cascade_update_rate": "every4_frames",
+              "cube_face_update_rate": "every_frame"
+            }
+          }
+        }
+      },
+      "locked": false,
+      "visible": true,
+      "prefab": false,
+      "children": []
+    }
+  ]
+}
