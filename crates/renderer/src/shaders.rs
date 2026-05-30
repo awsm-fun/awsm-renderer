@@ -41,6 +41,14 @@ impl Shaders {
         self.lookup.insert(shader_module)
     }
 
+    /// Sync cache-only lookup: returns the key iff the shader is already
+    /// compiled + cached (e.g. pre-warmed at boot), otherwise `None`.
+    /// Never compiles. Lets sync per-frame paths (e.g. the lazy line
+    /// pipeline compile kick) build pipeline cache keys without awaiting.
+    pub fn get_cached_key(&self, cache_key: impl Into<ShaderCacheKey>) -> Option<ShaderKey> {
+        self.cache.get(&cache_key.into()).copied()
+    }
+
     /// Returns a cached shader key, compiling and caching on demand.
     pub async fn get_key(
         &mut self,

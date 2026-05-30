@@ -31,7 +31,7 @@ use crate::context::{
 use crate::prelude::*;
 use awsm_renderer::render::RenderHooks;
 use awsm_renderer_editor::grid::{pipelines::EditorPipelines, render::render_grid};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use wasm_bindgen_futures::spawn_local;
 
 pub use node_sync::{bridge, Bridge, RendererNode};
@@ -112,11 +112,6 @@ fn render_one_frame() {
 
     let renderer = renderer_handle();
     let mut renderer = renderer.try_lock();
-
-    // Set inside the render block when a lazy line-pipeline compile is
-    // pending; drained into a one-shot `wait_for_pipelines_ready` drive
-    // after the per-frame guard releases (see the end of this fn).
-    let mut needs_pipeline_drive = false;
 
     // Track consecutive frames where the renderer lock was held by some
     // async work (e.g. asset materialization). Single misses are normal
@@ -255,39 +250,6 @@ fn render_one_frame() {
         let hooks = hooks_handle.read().unwrap();
         if let Err(err) = renderer.render(hooks.as_ref()) {
             tracing::error!("render failed: {err}");
-        }
-
-        // The fat-line pipelines are lazy (Block B.3): registering a line
-        // (editor wireframes — selection bbox, gizmo origin, collider
-        // shapes — or any consumer's `add_line_*`) only flags the compile
-        // as *requested*. Unlike material pipelines, the line variants are
-        // NOT pushed through the per-frame scheduler poll inside
-        // `render()`, so nothing drives them after the one boot-time
-        // `wait_for_pipelines_ready`. Without a nudge the line pass
-        // warn-skips forever and no overlays draw. Detect the pending
-        // request here and drive a one-shot compile below.
-        needs_pipeline_drive = renderer.lines.pipelines_compile_requested();
-    }
-
-    // Release the per-frame `try_lock` guard before driving the async
-    // compile (it re-locks via `.await`). Guarded so only one drive is in
-    // flight per request burst; `wait_for_pipelines_ready` also catches
-    // any still-pending material variants (e.g. a post-boot-loaded HUD
-    // mesh like the gizmo) in the same pass.
-    drop(renderer);
-    if needs_pipeline_drive {
-        static DRIVE_INFLIGHT: AtomicBool = AtomicBool::new(false);
-        if !DRIVE_INFLIGHT.swap(true, Ordering::Acquire) {
-            spawn_local(async move {
-                {
-                    let handle = renderer_handle();
-                    let mut renderer = handle.lock().await;
-                    if let Err(err) = renderer.wait_for_pipelines_ready().await {
-                        tracing::warn!("render_one_frame: pipeline compile drive failed: {err}");
-                    }
-                }
-                DRIVE_INFLIGHT.store(false, Ordering::Release);
-            });
         }
     }
 

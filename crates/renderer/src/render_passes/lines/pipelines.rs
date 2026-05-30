@@ -128,6 +128,32 @@ impl LinePipelines {
         })
     }
 
+    /// Fully-sync variant of [`Self::build_descriptors`]'s cache-key
+    /// step, for the per-frame lazy compile kick. Uses the BGL that was
+    /// registered eagerly at cold-boot (`self.bind_group_layout_key`) and
+    /// the caller-supplied `shader_key` (the line shader is pre-warmed at
+    /// boot, so the caller resolves it via `Shaders::get_cached_key` with
+    /// no await). Returns the 4 variant `RenderPipelineCacheKey`s in
+    /// `VARIANT_KEYS` order.
+    pub(super) fn build_cache_keys_sync(
+        &self,
+        gpu: &AwsmRendererWebGpu,
+        bind_group_layouts: &mut BindGroupLayouts,
+        pipeline_layouts: &mut PipelineLayouts,
+        shader_key: crate::shaders::ShaderKey,
+        formats: &RenderTextureFormats,
+    ) -> Result<Vec<RenderPipelineCacheKey>> {
+        let pipeline_layout_key = pipeline_layouts.get_key(
+            gpu,
+            bind_group_layouts,
+            PipelineLayoutCacheKey::new(vec![self.bind_group_layout_key]),
+        )?;
+        Ok(VARIANT_KEYS
+            .iter()
+            .map(|v| build_pipeline_cache_key(shader_key, pipeline_layout_key, formats, *v))
+            .collect())
+    }
+
     /// Folds resolved pipeline keys back into the typed `LinePipelines`.
     pub(super) fn from_resolved(
         descs: LinePipelinesDescriptors,

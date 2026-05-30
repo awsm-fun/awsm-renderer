@@ -615,6 +615,16 @@ pub struct Meshes {
     /// saving a full-screen Depth32/Depth24 attachment on builds
     /// that never use HUD overlays (the library / game default).
     has_seen_hud: bool,
+    /// Monotonic counter bumped every time a mesh enters the HUD render
+    /// group (post-insert `set_mesh_hud(true)` or insert-with-`hud`).
+    /// The per-frame transparent/HUD pipeline-resolve kick in `render()`
+    /// folds this into its dirty signal so a freshly-inserted HUD
+    /// overlay (editor gizmo, in-game HUD primitive) gets its transparent
+    /// pipeline variant resolved on the next frame — even when the
+    /// texture-pool shape hasn't changed. Stays at 0 for builds that
+    /// never use HUD, so the resolve kick early-outs and they pay
+    /// nothing.
+    hud_revision: u64,
 }
 impl Meshes {
     // Initial sizes assume ~1000 vertices per mesh
@@ -708,6 +718,7 @@ impl Meshes {
             skin_zero_coverage_grace: SecondaryMap::new(),
             skin_consumers_scratch: HashMap::new(),
             has_seen_hud: false,
+            hud_revision: 0,
         })
     }
 
@@ -720,12 +731,22 @@ impl Meshes {
         self.has_seen_hud
     }
 
-    /// Internal: stickily mark that HUD rendering is now in use.
+    /// Revision counter that bumps whenever a mesh enters the HUD render
+    /// group. The `render()` transparent/HUD resolve kick watches this
+    /// (together with the texture-pool shape) to decide when to
+    /// re-resolve HUD meshes' transparent pipeline variants.
+    pub fn hud_revision(&self) -> u64 {
+        self.hud_revision
+    }
+
+    /// Internal: stickily mark that HUD rendering is now in use, and
+    /// bump the HUD revision so the per-frame resolve kick re-checks.
     /// Called from the public `set_mesh_hud(.., true)` and any other
     /// insertion path that places a mesh into the HUD group from
     /// scratch.
     pub(crate) fn mark_hud_used(&mut self) {
         self.has_seen_hud = true;
+        self.hud_revision = self.hud_revision.wrapping_add(1);
     }
 
     /// Walk every mesh with a `cheap_material_key` authored and patch
@@ -1138,6 +1159,7 @@ impl Meshes {
         // depth attachment lands by the next render frame.
         if mesh.hud {
             self.has_seen_hud = true;
+            self.hud_revision = self.hud_revision.wrapping_add(1);
         }
         let mesh_key = self.list.insert(mesh.clone());
         self.mesh_to_resource.insert(mesh_key, resource_key);
