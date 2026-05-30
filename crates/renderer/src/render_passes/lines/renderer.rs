@@ -1,19 +1,42 @@
+use std::future::Future;
+use std::pin::Pin;
+
 use awsm_renderer_core::renderer::AwsmRendererWebGpu;
 use slotmap::SlotMap;
+use wasm_bindgen::JsValue;
 
 use crate::{
     bind_group_layout::BindGroupLayouts,
     error::Result,
     pipeline_layouts::PipelineLayouts,
     pipeline_scheduler::warn_pipeline_not_compiled,
-    pipelines::{render_pipeline::RenderPipelineKey, Pipelines},
+    pipelines::{
+        render_pipeline::{RenderPipelineKey, RenderPipelines, RenderPipelinesPrep},
+        Pipelines,
+    },
     render::RenderContext,
     render_textures::RenderTextureFormats,
     shaders::Shaders,
 };
 
 use super::pipelines::{LinePipelines, LinePipelinesDescriptors, LineVariantKey};
+use super::shader::cache_key::ShaderCacheKeyLine;
 use super::types::{GpuLineSegment, LineEntry, LineKey, LINE_UNIFORM_BYTES};
+
+/// In-flight lazy compile of the 4 line pipeline variants (Block B.3,
+/// now auto-driven). Issued by [`LineRenderer::kick_compile`] (sync,
+/// non-blocking `createRenderPipelineAsync`) and installed by
+/// [`LineRenderer::poll_compile`] once the promises resolve. The future
+/// is `'static` — it only awaits the GPU promises — so the borrow-free
+/// issue / poll / install split mirrors the material scheduler's
+/// `inflight_compile` pump.
+struct LineInflightCompile {
+    prep: RenderPipelinesPrep,
+    #[allow(clippy::type_complexity)]
+    joined: Pin<
+        Box<dyn Future<Output = Vec<std::result::Result<web_sys::GpuRenderPipeline, JsValue>>>>,
+    >,
+}
 
 /// Renderer-side state owning the four line pipelines and every registered line strip.
 pub struct LineRenderer {
@@ -34,6 +57,13 @@ pub struct LineRenderer {
     /// compile via `ensure_pipelines_compiled`. Dispatch silently
     /// warn-skips between the request and the compile.
     pub(super) pipelines_compile_requested: bool,
+    /// Block B.3 (auto-drive): the in-flight pipeline compile, present
+    /// between `kick_compile` issuing the `createRenderPipelineAsync`
+    /// promises and `poll_compile` installing the resolved pipelines.
+    /// `None` in the steady state (and for the entire lifetime of any
+    /// renderer that never registers a line — zero cost for non-line
+    /// projects).
+    inflight: Option<LineInflightCompile>,
 }
 
 /// Pre-resolved layouts + 4 pipeline cache keys for the line renderer.
@@ -99,6 +129,7 @@ impl LineRenderer {
             entries: SlotMap::with_key(),
             pack_buf: Vec::new(),
             pipelines_compile_requested: false,
+            inflight: None,
         })
     }
 
@@ -153,6 +184,83 @@ impl LineRenderer {
         self.pipelines_compile_requested
     }
 
+    /// Auto-drive step 1 (sync, non-blocking): if a line primitive has
+    /// been registered but the pipelines aren't compiled and no compile
+    /// is already in flight, issue the 4 `createRenderPipelineAsync`
+    /// promises and stash the in-flight futures. Idempotent + cheap: a
+    /// single boolean check when there's nothing to do, so a renderer
+    /// that never registers a line pays effectively nothing.
+    ///
+    /// Pairs with [`Self::poll_compile`]; both are called from the
+    /// renderer's per-frame `render()` pre-amble, mirroring how the
+    /// material scheduler's `poll_pipeline_scheduler` drives compute
+    /// pipeline compiles. This removes the previous footgun where a
+    /// consumer had to manually call `wait_for_pipelines_ready` after
+    /// registering a line for it to ever draw.
+    pub fn kick_compile(
+        &mut self,
+        gpu: &AwsmRendererWebGpu,
+        shaders: &Shaders,
+        bind_group_layouts: &mut BindGroupLayouts,
+        pipeline_layouts: &mut PipelineLayouts,
+        formats: &RenderTextureFormats,
+    ) -> Result<()> {
+        if !self.pipelines_compile_requested
+            || self.pipelines.variants.is_some()
+            || self.inflight.is_some()
+        {
+            return Ok(());
+        }
+        // The line shader is pre-warmed at boot (`RenderPasses::new`), so
+        // this sync cache peek hits. If it somehow misses (a line
+        // registered before boot shaders finished), bail and retry next
+        // frame — never block or compile a shader on the render path.
+        let Some(shader_key) = shaders.get_cached_key(ShaderCacheKeyLine) else {
+            return Ok(());
+        };
+        let cache_keys = self.pipelines.build_cache_keys_sync(
+            gpu,
+            bind_group_layouts,
+            pipeline_layouts,
+            shader_key,
+            formats,
+        )?;
+        let mut prepped =
+            RenderPipelines::ensure_keys_prepare(gpu, shaders, pipeline_layouts, cache_keys)?;
+        let promises = std::mem::take(&mut prepped.promises);
+        let joined = Box::pin(futures::future::join_all(promises));
+        self.inflight = Some(LineInflightCompile {
+            prep: prepped.prep,
+            joined,
+        });
+        Ok(())
+    }
+
+    /// Auto-drive step 2 (sync, non-blocking): poll the in-flight compile
+    /// future once with a no-op waker (`now_or_never`). When every
+    /// `createRenderPipelineAsync` promise has resolved (which happens on
+    /// the JS event loop between frames), install the resolved pipelines
+    /// into the cross-pass pool + populate `variants`. Until then it's a
+    /// no-op. No-op when nothing is in flight.
+    pub fn poll_compile(&mut self, render_pipelines: &mut RenderPipelines) -> Result<()> {
+        use futures::FutureExt;
+        let ready = match self.inflight.as_mut() {
+            Some(inflight) => inflight.joined.as_mut().now_or_never(),
+            None => return Ok(()),
+        };
+        let Some(results) = ready else {
+            return Ok(());
+        };
+        let inflight = self
+            .inflight
+            .take()
+            .expect("inflight present (just polled Some)");
+        let keys = render_pipelines.ensure_keys_install(inflight.prep, results)?;
+        self.pipelines.install_resolved(keys);
+        self.pipelines_compile_requested = false;
+        Ok(())
+    }
+
     /// Builds layouts + 4 pipeline cache keys. Cache-hit on the line
     /// shader (pre-warmed by `RenderPasses::new`); otherwise sync.
     pub async fn build_descriptors(
@@ -180,6 +288,7 @@ impl LineRenderer {
             entries: SlotMap::with_key(),
             pack_buf: Vec::new(),
             pipelines_compile_requested: false,
+            inflight: None,
         }
     }
 

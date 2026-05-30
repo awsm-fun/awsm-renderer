@@ -285,6 +285,12 @@ pub struct AwsmRenderer {
     /// [`crate::picker::PickResult::Disabled`].
     pub picker: Option<Picker>,
     pub lines: LineRenderer,
+    /// Auto-drive state for re-resolving HUD meshes' transparent
+    /// pipeline variants when a HUD mesh appears or the texture-pool /
+    /// MSAA shape changes. `None`-cost for builds that never insert a
+    /// HUD mesh (gated on `Meshes::has_seen_hud`). See
+    /// [`crate::render`]'s `kick_hud_resolve` / `poll_hud_resolve`.
+    pub(crate) hud_resolve: crate::render::HudResolveState,
     /// Per-frame mipmap generator for the opaque RT — only dispatched
     /// when the visible material set contains a transmissive material.
     pub opaque_mipgen: opaque_mipgen::OpaqueMipgen,
@@ -2126,6 +2132,7 @@ impl AwsmRendererBuilder {
             frames_in_current_mode: u32::MAX / 2,
             default_cheap_material_pixel_threshold: 64,
             renderable_pool: crate::renderable::RenderablePool::default(),
+            hud_resolve: crate::render::HudResolveState::default(),
             pipeline_scheduler: crate::pipeline_scheduler::PipelineScheduler::new(),
             // Flipped to true at end of build(). Used by config-change
             // APIs to enforce the race policy from the architecture doc.

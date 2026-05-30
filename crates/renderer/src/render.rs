@@ -74,6 +74,37 @@ impl AwsmRenderer {
         // scheduler's apply_resolution path — see
         // pipeline_scheduler/mod.rs for the wiring.
 
+        // Fat-line pipelines are render pipelines, not compute, so they
+        // sit outside the scheduler's `poll_pipeline_scheduler` pump
+        // above. Drive their lazy compile here on the same per-frame
+        // cadence: `kick_compile` issues the `createRenderPipelineAsync`
+        // promises the first frame after a line is registered (sync,
+        // non-blocking); `poll_compile` installs them once resolved.
+        // Both are ~free no-ops when no line primitive exists, so
+        // projects that never use lines pay nothing.
+        self.lines.kick_compile(
+            &self.gpu,
+            &self.shaders,
+            &mut self.bind_group_layouts,
+            &mut self.pipeline_layouts,
+            &self.render_textures.formats,
+        )?;
+        self.lines.poll_compile(&mut self.pipelines.render)?;
+
+        // HUD meshes (editor gizmos, in-game HUD primitives) draw
+        // through the transparent pipeline, which is per-mesh and
+        // texture-pool-shape-coupled. Unlike world transparents — whose
+        // keys are resolved on the scene-load path (gltf populate /
+        // texture finalize) — HUD overlays are inserted live, *after*
+        // boot's one-shot prewarm, so without this they'd reference no
+        // (or a stale) pipeline and fall back to the grey error pipeline.
+        // `kick_hud_resolve` re-resolves only `mesh.hud` meshes whenever
+        // a HUD mesh appears or the texture-pool / MSAA shape changes;
+        // `poll_hud_resolve` installs the resolved variants. Both
+        // early-out on `!has_seen_hud()`, so non-HUD projects pay nothing.
+        self.kick_hud_resolve()?;
+        self.poll_hud_resolve()?;
+
         if let Some(hook) = hooks.and_then(|h| h.pre_render.as_ref()) {
             {
                 let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
@@ -1469,6 +1500,250 @@ impl AwsmRenderer {
 
         Ok(())
     }
+
+    /// Auto-drive step 1 (sync, non-blocking) for HUD transparent
+    /// pipelines. When a HUD mesh exists and the resolve signature
+    /// (texture-pool array/sampler counts × MSAA × HUD revision) has
+    /// changed since the last completed resolve, (re)resolve every
+    /// `mesh.hud` mesh's transparent pipeline variant:
+    ///
+    ///  1. Issue the per-mesh transparent shaders synchronously
+    ///     (skip-validate — errors resurface as pipeline-creation
+    ///     rejections), so the cache keys can be built without awaiting.
+    ///  2. Build the per-mesh pipeline cache keys (now a sync cache hit
+    ///     via `now_or_never`).
+    ///  3. Install already-cached variants immediately; for genuine
+    ///     misses, issue the `createRenderPipelineAsync` promises and
+    ///     stash them for [`Self::poll_hud_resolve`] to install.
+    ///
+    /// Early-outs to a single bool check when no HUD mesh has ever been
+    /// inserted (`has_seen_hud`), so non-HUD builds pay nothing. Skips
+    /// while a previous resolve is still in flight (one batch at a time).
+    fn kick_hud_resolve(&mut self) -> Result<()> {
+        use crate::pipelines::render_pipeline::{RenderPipelineCacheKey, RenderPipelines};
+        use crate::render_passes::material_transparent::pipeline::{
+            MaterialTransparentPipelines, TransparentMeshPipelineRequest,
+        };
+        use crate::shaders::ShaderCacheKey;
+        use futures::FutureExt;
+        use std::collections::HashMap;
+
+        if !self.meshes.has_seen_hud() || self.hud_resolve.inflight.is_some() {
+            return Ok(());
+        }
+
+        let bind_groups = &self.render_passes.material_transparent.bind_groups;
+        let sig = HudResolveSig {
+            pool_arrays_len: bind_groups.texture_pool_arrays_len,
+            pool_samplers_len: bind_groups.texture_pool_sampler_keys.len(),
+            msaa: self.anti_aliasing.msaa_sample_count,
+            hud_revision: self.meshes.hud_revision(),
+        };
+        if self.hud_resolve.last_sig == Some(sig) {
+            return Ok(());
+        }
+
+        // Collect the HUD meshes. Only `mesh.hud` meshes are touched —
+        // world transparents are resolved on the scene-load path, so we
+        // neither duplicate that work nor risk re-resolving the world.
+        let mut requests: Vec<TransparentMeshPipelineRequest> = Vec::new();
+        for (mesh_key, mesh) in self.meshes.iter() {
+            if !mesh.hud {
+                continue;
+            }
+            let buffer_info_key = self.meshes.buffer_info_key(mesh_key)?;
+            let has_transmission = self.materials.has_transmission(mesh.material_key);
+            requests.push(TransparentMeshPipelineRequest {
+                mesh,
+                mesh_key,
+                buffer_info_key,
+                has_transmission,
+            });
+        }
+        if requests.is_empty() {
+            self.hud_resolve.last_sig = Some(sig);
+            return Ok(());
+        }
+
+        // Step 1: issue the shaders synchronously (skip validate).
+        let shader_cache_keys = MaterialTransparentPipelines::shader_cache_keys_for_requests(
+            &requests,
+            bind_groups,
+            &self.meshes.buffer_infos,
+            &self.anti_aliasing,
+        )?;
+        self.shaders.ensure_keys_sync_skip_validate(
+            &self.gpu,
+            shader_cache_keys.into_iter().map(ShaderCacheKey::from),
+        )?;
+
+        // Step 2: build per-mesh pipeline cache keys. Every `get_key`
+        // inside is a cache hit (shaders just issued above), so the
+        // future resolves in a single `now_or_never` poll. If it
+        // somehow doesn't (a shader cache miss slipped through), bail
+        // without updating `last_sig` so the next frame retries — never
+        // block or error on the render path.
+        let cache_keys: Vec<RenderPipelineCacheKey> = match self
+            .render_passes
+            .material_transparent
+            .pipelines
+            .pipeline_cache_keys_for_requests(
+                &self.gpu,
+                &requests,
+                &mut self.shaders,
+                &self.render_passes.material_transparent.bind_groups,
+                &self.meshes.buffer_infos,
+                &self.anti_aliasing,
+                &self.render_textures.formats,
+            )
+            .now_or_never()
+        {
+            Some(result) => result?,
+            None => return Ok(()),
+        };
+
+        let mesh_keys: Vec<crate::meshes::MeshKey> = requests.iter().map(|r| r.mesh_key).collect();
+        drop(requests);
+
+        // Step 3: split cache hits (install now) from misses (compile).
+        // Misses are deduped by cache key — many HUD meshes share one.
+        let mut hit_mesh_keys: Vec<crate::meshes::MeshKey> = Vec::new();
+        let mut hit_pipeline_keys: Vec<crate::pipelines::render_pipeline::RenderPipelineKey> =
+            Vec::new();
+        let mut unique_miss_keys: Vec<RenderPipelineCacheKey> = Vec::new();
+        let mut miss_mesh_keys: Vec<Vec<crate::meshes::MeshKey>> = Vec::new();
+        let mut idx_for_key: HashMap<RenderPipelineCacheKey, usize> = HashMap::new();
+        for (mesh_key, cache_key) in mesh_keys.into_iter().zip(cache_keys) {
+            if let Some(pipeline_key) = self.pipelines.render.get_cached_key(&cache_key) {
+                hit_mesh_keys.push(mesh_key);
+                hit_pipeline_keys.push(pipeline_key);
+            } else if let Some(&u) = idx_for_key.get(&cache_key) {
+                miss_mesh_keys[u].push(mesh_key);
+            } else {
+                let u = unique_miss_keys.len();
+                idx_for_key.insert(cache_key.clone(), u);
+                unique_miss_keys.push(cache_key);
+                miss_mesh_keys.push(vec![mesh_key]);
+            }
+        }
+
+        if !hit_mesh_keys.is_empty() {
+            self.render_passes
+                .material_transparent
+                .pipelines
+                .install_per_mesh_keys(hit_mesh_keys, hit_pipeline_keys);
+        }
+
+        if unique_miss_keys.is_empty() {
+            // Everything was cache-hit — fully resolved this frame.
+            self.hud_resolve.last_sig = Some(sig);
+            return Ok(());
+        }
+
+        let mut prepped = RenderPipelines::ensure_keys_prepare(
+            &self.gpu,
+            &self.shaders,
+            &self.pipeline_layouts,
+            unique_miss_keys,
+        )?;
+        let promises = std::mem::take(&mut prepped.promises);
+        let joined = Box::pin(futures::future::join_all(promises));
+        self.hud_resolve.inflight = Some(HudResolveInflight {
+            prep: prepped.prep,
+            joined,
+            miss_mesh_keys,
+            sig,
+        });
+        Ok(())
+    }
+
+    /// Auto-drive step 2 (sync, non-blocking) for HUD transparent
+    /// pipelines: poll the in-flight compile once with a no-op waker.
+    /// Once every `createRenderPipelineAsync` promise resolves, install
+    /// the pipelines into the cross-pass pool and fan each resolved key
+    /// out to the HUD meshes that requested it. No-op when nothing is in
+    /// flight.
+    fn poll_hud_resolve(&mut self) -> Result<()> {
+        use futures::FutureExt;
+
+        let ready = match self.hud_resolve.inflight.as_mut() {
+            Some(inflight) => inflight.joined.as_mut().now_or_never(),
+            None => return Ok(()),
+        };
+        let Some(results) = ready else {
+            return Ok(());
+        };
+        let inflight = self
+            .hud_resolve
+            .inflight
+            .take()
+            .expect("inflight present (just polled Some)");
+
+        // Resolved keys come back in `unique_miss_keys` (== prep input)
+        // order, which is parallel to `miss_mesh_keys`.
+        let resolved = self
+            .pipelines
+            .render
+            .ensure_keys_install(inflight.prep, results)?;
+        for (mesh_keys, pipeline_key) in inflight.miss_mesh_keys.into_iter().zip(resolved) {
+            let count = mesh_keys.len();
+            self.render_passes
+                .material_transparent
+                .pipelines
+                .install_per_mesh_keys(mesh_keys, std::iter::repeat(pipeline_key).take(count));
+        }
+        self.hud_resolve.last_sig = Some(inflight.sig);
+        Ok(())
+    }
+}
+
+/// Resolve-signature for the HUD transparent pipeline auto-drive. A
+/// change in any axis means previously-resolved HUD pipeline variants
+/// are stale: the texture-pool array/sampler counts and MSAA sample
+/// count are baked into the transparent shader + pipeline cache keys,
+/// and `hud_revision` bumps when a new HUD mesh appears.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct HudResolveSig {
+    pool_arrays_len: u32,
+    pool_samplers_len: usize,
+    msaa: Option<u32>,
+    hud_revision: u64,
+}
+
+/// In-flight HUD transparent pipeline compile, held between
+/// [`AwsmRenderer::kick_hud_resolve`] issuing the
+/// `createRenderPipelineAsync` promises and
+/// [`AwsmRenderer::poll_hud_resolve`] installing them. The `joined`
+/// future is `'static` (it only awaits the GPU promises), so the
+/// borrow-free issue / poll / install split mirrors the line + material
+/// schedulers.
+struct HudResolveInflight {
+    prep: crate::pipelines::render_pipeline::RenderPipelinesPrep,
+    #[allow(clippy::type_complexity)]
+    joined: std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                Output = Vec<
+                    std::result::Result<web_sys::GpuRenderPipeline, wasm_bindgen::JsValue>,
+                >,
+            >,
+        >,
+    >,
+    /// Per-unique-miss (parallel to the prep inputs) list of HUD mesh
+    /// keys whose pipeline key should be set to that resolved variant.
+    miss_mesh_keys: Vec<Vec<crate::meshes::MeshKey>>,
+    /// The signature this batch resolves; written to `last_sig` on
+    /// install so a sig change *during* the compile re-triggers.
+    sig: HudResolveSig,
+}
+
+/// Auto-drive state for HUD transparent pipeline resolution. `Default`
+/// is the zero-cost idle state held by every renderer (including those
+/// that never use HUD).
+#[derive(Default)]
+pub(crate) struct HudResolveState {
+    last_sig: Option<HudResolveSig>,
+    inflight: Option<HudResolveInflight>,
 }
 
 /// Context passed to render passes during a frame.

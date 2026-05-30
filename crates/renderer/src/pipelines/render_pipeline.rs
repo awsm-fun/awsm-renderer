@@ -344,6 +344,14 @@ impl RenderPipelines {
         Ok(slot.into_iter().map(Option::unwrap).collect())
     }
 
+    /// Sync cache peek: returns the already-resolved key for a cache
+    /// key, or `None` if it was never compiled. Used by the per-frame
+    /// HUD-resolve kick to install already-cached variants immediately
+    /// and only issue `createRenderPipelineAsync` for genuine misses.
+    pub fn get_cached_key(&self, cache_key: &RenderPipelineCacheKey) -> Option<RenderPipelineKey> {
+        self.cache.get(cache_key).copied()
+    }
+
     /// Returns a render pipeline for a key.
     pub fn get(&self, key: RenderPipelineKey) -> Result<&web_sys::GpuRenderPipeline> {
         self.lookup
