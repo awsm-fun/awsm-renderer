@@ -90,6 +90,13 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     /// mismatch so a full-screen dispatch is correct even before
     /// classify+indirect lands.
     pub shader_id: MaterialShaderId,
+    /// PBR feature set this specialized pipeline is compiled for
+    /// (Phase B.2). The compute template + `material_color_calc.wgsl`
+    /// gate per-feature code behind `{% if pbr_features.<x> %}`, so an
+    /// unused feature (no clearcoat in the scene, etc.) emits no code.
+    /// `PbrFeatures::all()` for non-PBR ids / the uber config — inert
+    /// there since the `{% if shader_id == PBR %}` arm isn't emitted.
+    pub pbr_features: awsm_materials::pbr::PbrFeatures,
     /// For dynamic shader ids: the auto-generated `struct
     /// MaterialData { ... }` declaration emitted above the author's
     /// WGSL fragment. Empty string for first-party ids.
@@ -180,6 +187,7 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
                 shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
                 shader_id: value.shader_id,
+                pbr_features: awsm_materials::pbr::PbrFeatures::from_bits(value.pbr_features),
                 dynamic_struct_decl: value
                     .dynamic_shader
                     .as_ref()
@@ -430,6 +438,7 @@ mod empty_registry_tests {
             msaa_sample_count: msaa,
             mipmaps: true,
             shader_id,
+            pbr_features: awsm_materials::pbr::PbrFeatures::all().bits(),
             dispatch_hash: 0,
             dynamic_shader: None,
             bucket_entries: crate::dynamic_materials::first_party_bucket_entries(),

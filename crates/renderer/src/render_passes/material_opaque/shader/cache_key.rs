@@ -20,6 +20,14 @@ pub struct ShaderCacheKeyMaterialOpaque {
     pub msaa_sample_count: Option<u32>,
     pub mipmaps: bool,
     pub shader_id: MaterialShaderId,
+    /// Opaque PBR feature mask ([`awsm_materials::pbr::PbrFeatures::bits`])
+    /// the specialized PBR shader is compiled for (Phase B.2). Two PBR
+    /// pipelines with different feature masks are distinct entries, so a
+    /// scene that uses no clearcoat compiles a clearcoat-free shader.
+    /// Only meaningful when `shader_id == PBR`; carried as
+    /// `PbrFeatures::all().bits()` (the uber config) for every other
+    /// shader_id, where it's inert.
+    pub pbr_features: u32,
     /// Stable hash over the currently-registered dynamic-material set
     /// (sorted by shader_id, then `(name, layout_hash, wgsl_hash)` per
     /// entry).

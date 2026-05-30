@@ -274,6 +274,7 @@ impl MaterialOpaquePipelines {
                         msaa_sample_count: active_msaa,
                         mipmaps: active_mipmaps,
                         shader_id,
+                        pbr_features: awsm_materials::pbr::PbrFeatures::all().bits(),
                         // Builder-time prewarm — no dynamic materials
                         // can be registered before `build()` returns,
                         // so the stable empty-state sentinel applies.

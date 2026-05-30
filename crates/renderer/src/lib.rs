@@ -779,6 +779,10 @@ impl AwsmRenderer {
                         msaa_sample_count: msaa,
                         mipmaps,
                         shader_id,
+                        // Phase B.2 step C will fold the scene-union of
+                        // PbrFeatures here; until then the uber config
+                        // (all features) keeps the WGSL identical.
+                        pbr_features: awsm_materials::pbr::PbrFeatures::all().bits(),
                         dispatch_hash,
                         dynamic_shader: dynamic_shader.clone(),
                         bucket_entries: entries.clone(),
