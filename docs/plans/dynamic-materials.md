@@ -16,25 +16,55 @@ remains. Branch is green (renderer suite 153 pass, clippy clean).
 | B.4 extensible bucket cap (`MAX_BUCKET_WORDS`) | ✅ done | `45932d0` | real Chrome: n_words 1≡baseline, 2 renders clean |
 | D.1 transactional `register_materials` + `validate_batch` | ✅ done | `4c5e1da` | 6 native tests pass |
 | A.2 `compile_progress()` aggregate (pull half) | ✅ partial | `a01fcd9` | compiles; native |
+| B.2 layer 1: `PbrFeatures` derive + feature-hash | ✅ done | `c1c37d2` | 5 native tests |
+| B.2 step A: thread `pbr_features` through opaque cache key + template | ✅ done | `3916324` | renders identical (no-op at `all()`) |
 | A.1 compile-engine unification | ⬜ todo | — | — |
 | A.2 phase-tagged `StatusEvent`s (push half) | ⬜ todo | — | — |
 | D.2 transaction boundary (one final-layout reconcile) | ⬜ todo | — | — |
 | D.3 `compile_materials(set).await` warmup | ⬜ todo | — | — |
-| B.1/B.2/B.3 on-demand + PBR/Toon templatize + feature buckets | ⬜ todo | — | the indivisible architectural core |
+| B.2 step B: gate the PBR WGSL on `pbr_features` | ⬜ todo | — | **verification-blocked** (see below) |
+| B.2 step C: pass the scene feature-union | ⬜ todo | — | depends on step B |
+| B.1/B.3 on-demand + per-feature-set buckets + routing | ⬜ todo | — | the architectural core |
 | C GLTF auto-minimize + `AWSM_material_none` | ⬜ todo | — | depends on B |
 | E transparency uber wiring | ⬜ todo | — | depends on B.2 |
 | F.1/F.2/F.3 benchmarks + re-measure + extension dropdown | ⬜ todo | — | after B/C/E |
 
-**Why the core (B.2/B.3) is not yet done**: it can't be split into
-safe incremental commits. Templatizing PBR per-feature (B.2) has no
-driver for its `{% if %}` flags until the per-feature-set bucket
-machinery (B.3) exists, and B.3's pixel routing + on-demand
-feature-hash→shader_id registration must land together. It's one large
-GPU-coupled change whose correctness can only be established by
-rendering — a supervised effort, not an unattended one. The foundational
-pieces above (cap widening, batch API, progress query, tests, baseline)
-were deliberately sequenced first so that core work starts from a green,
-measured, test-locked base.
+**Where B.2 stopped, and why it's a genuine block (not timidity):**
+Layers 1 (`PbrFeatures`) and step A (cache-key + template plumbing,
+`pbr_features` defaulting to `all()`) are landed, tested, and render
+identically. The next step — gating the actual WGSL — is blocked on
+*verification*, not on writing the code:
+
+1. **The meaningful GPU win lives in the shared `brdf.wgsl`** (the
+   per-extension lighting lobes: clearcoat, sheen, transmission,
+   anisotropy, iridescence…). That file is `{% include %}`d into THREE
+   templates (opaque compute, opaque edge-resolve, transparent), so
+   gating it means threading `pbr_features` through all three (= `all()`
+   for edge + transparent per Decision 10). Intricate, and a wrong gate
+   silently breaks lighting.
+2. **The win is invisible to the current instrumentation.**
+   `read_render_pass_timings` is CPU-span wall-clock (`performance.measure`)
+   — it measures CPU *encode* time, NOT GPU shading time (the renderer
+   has the `GpuQuerySet` primitives in `renderer-core` but does NOT wire
+   timestamp queries into render passes). Specialization reduces GPU
+   shading work, which these timings cannot show. So the before/after on
+   `tuning-50-materials` primarily validates that **bucket-fanout CPU
+   overhead stays small** (the regression check) — the shading *win*
+   needs GPU-timestamp instrumentation (a Workstream F prerequisite) or
+   a GPU-bound FPS test.
+3. **KHR-path correctness can't be exercised by `tuning-50-materials`**
+   (its inline materials have no KHR extensions). Verifying the gated
+   lobes render correctly *when enabled* needs the model-viewer's KHR
+   sample models (F.3) — a second frontend + supervised check.
+
+So B.2 step B onward + B.3 is a supervised effort that should (a) first
+wire GPU-timestamp render-pass timing so the win is measurable, then (b)
+gate `brdf.wgsl` + `material_color_calc.wgsl` across the three templates,
+verifying both `tuning-50-materials` (KHR stripped → identical) AND a KHR
+model (uber → identical) in real Chrome.
+
+The foundational pieces above were deliberately sequenced first so the
+core work starts from a green, measured, test-locked base.
 
 **Thesis**: our biggest performance advantage is the visibility-buffer +
 per-bucket classify/shade architecture, which makes *many small opaque
@@ -554,6 +584,16 @@ regression from increased bucket fanout (~3→~25 active buckets).
 
 ### F.2 — In-browser per-frame timing (real Chrome, per `DEBUGGING-PREVIEW.md`)
 
+- [ ] **Prerequisite — wire GPU-timestamp render-pass timing.**
+      `read_render_pass_timings` is CPU-span (`performance.measure`) and
+      measures CPU *encode* time, not GPU shading. PBR specialization's
+      win is GPU-side, so it is invisible to the current numbers. The
+      `GpuQuerySet` primitives already exist in `renderer-core`
+      (`create_query_set`, `resolve_query_set`); wire a timestamp query
+      pair around the opaque pass (and others) and surface it next to the
+      CPU spans so the *shading* before/after is actually measurable.
+      Without this, F.2 only validates that bucket-fanout CPU overhead
+      stays small (the regression check), not the win.
 - [ ] Build custom scene-editor scenes (alongside
       [`assets/world/`](../../assets/world/) tuning scenes) exercising the
       matrix; capture per-frame GPU cost in **real Chrome via the
