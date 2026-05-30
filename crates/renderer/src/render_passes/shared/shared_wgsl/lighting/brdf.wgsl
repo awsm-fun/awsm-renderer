@@ -538,12 +538,21 @@ fn brdf_direct(color: PbrMaterialColor, light_brdf: LightBrdf, surface_to_camera
         }
     }
 
-    // Sheen contribution (cloth-like rim highlight)
+    // Sheen contribution (cloth-like rim highlight). Unlike most
+    // extensions this lobe is NOT runtime-guarded, so B.2 strips it at
+    // compile time for feature-sets without sheen. Skipping the block ==
+    // the sheen-absent result (sheen contributes 0, sheen_scaling == 1).
+    {% if pbr_features.sheen %}
     let sheen = sheen_brdf_direct(color.sheen_color, color.sheen_roughness, n, v, l);
     let sheen_scaling = sheen_albedo_scaling(color.sheen_color, color.sheen_roughness, n_dot_v);
     result = result * sheen_scaling + sheen * light_brdf.radiance * n_dot_l * color.occlusion;
+    {% endif %}
 
-    // Clearcoat contribution (additional specular layer)
+    // Clearcoat contribution (additional specular layer). Also not
+    // runtime-guarded in the direct path — B.2 strips it when the
+    // feature-set has no clearcoat. Skipping == clearcoat-absent
+    // (clearcoat_spec 0, cc_fresnel 0 → `result * 1 + 0`).
+    {% if pbr_features.clearcoat %}
     let clearcoat_spec = clearcoat_brdf_direct(
         color.clearcoat,
         color.clearcoat_roughness,
@@ -554,6 +563,7 @@ fn brdf_direct(color: PbrMaterialColor, light_brdf: LightBrdf, surface_to_camera
     let cc_fresnel = clearcoat_fresnel(color.clearcoat, v_dot_h);
     // Attenuate base layer by clearcoat Fresnel, then add clearcoat specular
     result = result * (1.0 - cc_fresnel) + clearcoat_spec * light_brdf.radiance * n_dot_l;
+    {% endif %}
 
     return result;
 }
@@ -696,7 +706,10 @@ fn brdf_ibl_with_transmission(
     // Apply occlusion to specular with reduced strength to avoid over-darkening reflections
     let specular = prefiltered * (F0 * brdf_lut.x + vec3<f32>(f90) * brdf_lut.y) * mix(1.0, color.occlusion, 0.5);
 
-    // Sheen contribution for IBL (approximate using diffuse irradiance)
+    // Sheen contribution for IBL (approximate using diffuse irradiance).
+    // B.2 strips it for sheen-free feature-sets; the else keeps the
+    // unscaled base (sheen-absent scaling == 1).
+    {% if pbr_features.sheen %}
     let sheen_scaling = sheen_albedo_scaling(color.sheen_color, color.sheen_roughness, n_dot_v);
     var base_with_sheen = base_contribution * sheen_scaling;
 
@@ -710,10 +723,15 @@ fn brdf_ibl_with_transmission(
         let sheen_contrib = color.sheen_color * irradiance_sheen * alpha * fresnel_sheen * color.occlusion;
         base_with_sheen += sheen_contrib;
     }
+    {% else %}
+    let base_with_sheen = base_contribution;
+    {% endif %}
 
     var result = base_with_sheen + specular + color.emissive;
 
-    // Clearcoat IBL layer
+    // Clearcoat IBL layer (already runtime-guarded; B.2 also strips it
+    // at compile time for clearcoat-free feature-sets).
+    {% if pbr_features.clearcoat %}
     if (color.clearcoat > 0.0) {
         let cc_n = safe_normalize(color.clearcoat_normal);
         let cc_n_dot_v = saturate(dot(cc_n, v));
@@ -733,6 +751,7 @@ fn brdf_ibl_with_transmission(
         // Final: attenuated base + clearcoat
         result = result * (1.0 - cc_fresnel) + color.clearcoat * cc_specular;
     }
+    {% endif %}
 
     return result;
 }

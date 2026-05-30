@@ -83,6 +83,12 @@ pub struct ShaderTemplateMaterialEdgeResolveCompute {
     pub debug:
         crate::render_passes::material_opaque::shader::template::ShaderTemplateMaterialOpaqueDebug,
     pub bucket_entries: Vec<BucketEntry>,
+    /// PBR feature mask for the shared `brdf.wgsl` include's
+    /// `{% if pbr_features.<x> %}` gating. Edge-resolve re-shades the
+    /// same samples as the opaque pass; until B.3 narrows it per
+    /// shader_id it carries the uber config (`all()`), so every lobe is
+    /// emitted, identical to before B.2.
+    pub pbr_features: awsm_materials::pbr::PbrFeatures,
 }
 
 impl ShaderTemplateMaterialEdgeResolveCompute {
@@ -172,6 +178,7 @@ impl TryFrom<&ShaderCacheKeyMaterialEdgeResolve> for ShaderTemplateMaterialEdgeR
                 bucket_sample_list_base,
                 debug: crate::render_passes::material_opaque::shader::template::ShaderTemplateMaterialOpaqueDebug::new(),
                 bucket_entries: bucket_entries.clone(),
+                pbr_features: awsm_materials::pbr::PbrFeatures::all(),
             },
         })
     }
