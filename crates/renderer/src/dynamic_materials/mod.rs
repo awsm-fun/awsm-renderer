@@ -954,3 +954,178 @@ impl crate::AwsmRenderer {
         Ok((shader_id, material_id))
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// Phase 1 (D.5) — regression tests for the registry's pure (non-GPU)
+// bucket-layout mutation behaviour. These run natively via
+// `cargo test --all-features` and lock the contract before the
+// batch-registration / transaction-boundary refactor (Phases 2-3) and
+// the feature-hash bucketing (Phase 6) reshape it.
+//
+// Cap-exceeded (`BucketCapExceeded`), MSAA edge-buffer resize, and
+// Pending/Ready transitions are enforced one level up in
+// `AwsmRenderer::register_material` (which needs a live GPU) — those are
+// covered by the GPU/browser path, not here. What's tested here is the
+// GPU-free `DynamicMaterials` surface the refactor must preserve.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reg(name: &str, layout_hash: u64, wgsl_hash: u64) -> MaterialRegistration {
+        MaterialRegistration {
+            name: name.to_string(),
+            alpha_mode: MaterialAlphaMode::Opaque,
+            double_sided: false,
+            layout: MaterialLayout::default(),
+            layout_hash,
+            wgsl_hash,
+            wgsl_fragment: String::new(),
+            buffer_defaults: Vec::new(),
+            uniform_defaults: Vec::new(),
+        }
+    }
+
+    fn first_party_len() -> usize {
+        first_party_bucket_entries().len()
+    }
+
+    #[test]
+    fn register_grows_bucket_count_by_one_per_distinct_material() {
+        let mut dm = DynamicMaterials::new();
+        let fp = first_party_len();
+        assert_eq!(dm.bucket_entries_cached().len(), fp);
+        assert!(dm.is_empty());
+
+        dm.insert(reg("a", 1, 1)).unwrap();
+        assert_eq!(dm.len(), 1);
+        assert_eq!(dm.bucket_entries_cached().len(), fp + 1);
+
+        dm.insert(reg("b", 2, 2)).unwrap();
+        assert_eq!(dm.len(), 2);
+        assert_eq!(dm.bucket_entries_cached().len(), fp + 2);
+    }
+
+    #[test]
+    fn reregister_identical_is_idempotent() {
+        let mut dm = DynamicMaterials::new();
+        let id1 = dm.insert(reg("a", 1, 1)).unwrap();
+        let hash_after_first = dm.dispatch_hash_cached();
+
+        // Same (name, layout_hash, wgsl_hash) → same id, no growth, no
+        // dispatch_hash change.
+        let id2 = dm.insert(reg("a", 1, 1)).unwrap();
+        assert_eq!(id1, id2);
+        assert_eq!(dm.len(), 1);
+        assert_eq!(dm.bucket_entries_cached().len(), first_party_len() + 1);
+        assert_eq!(dm.dispatch_hash_cached(), hash_after_first);
+        assert!(dm.would_be_idempotent(&reg("a", 1, 1)));
+    }
+
+    #[test]
+    fn duplicate_name_different_hash_errors() {
+        let mut dm = DynamicMaterials::new();
+        dm.insert(reg("a", 1, 1)).unwrap();
+        let err = dm.insert(reg("a", 1, 2)).unwrap_err();
+        matches!(err, AwsmDynamicMaterialError::DuplicateName(_))
+            .then_some(())
+            .expect("same name + different wgsl_hash must be a DuplicateName error");
+        // The failed insert must not have grown the registry.
+        assert_eq!(dm.len(), 1);
+        assert!(!dm.would_be_idempotent(&reg("a", 1, 2)));
+    }
+
+    #[test]
+    fn dispatch_hash_zero_when_empty_nonzero_when_registered_resets_on_empty() {
+        let mut dm = DynamicMaterials::new();
+        assert_eq!(dm.dispatch_hash(), 0);
+        assert_eq!(dm.dispatch_hash_cached(), 0);
+
+        let id = dm.insert(reg("a", 1, 1)).unwrap();
+        assert_ne!(dm.dispatch_hash(), 0);
+        assert_eq!(dm.dispatch_hash_cached(), dm.dispatch_hash());
+
+        dm.remove(id).unwrap();
+        assert!(dm.is_empty());
+        assert_eq!(dm.dispatch_hash(), 0);
+        assert_eq!(dm.dispatch_hash_cached(), 0);
+    }
+
+    #[test]
+    fn dispatch_hash_changes_when_a_distinct_material_is_added() {
+        let mut dm = DynamicMaterials::new();
+        dm.insert(reg("a", 1, 1)).unwrap();
+        let h1 = dm.dispatch_hash_cached();
+        dm.insert(reg("b", 2, 2)).unwrap();
+        let h2 = dm.dispatch_hash_cached();
+        assert_ne!(h1, h2, "adding a distinct material must change dispatch_hash");
+    }
+
+    #[test]
+    fn unregister_refreshes_caches_back_to_first_party() {
+        let mut dm = DynamicMaterials::new();
+        let fp = first_party_len();
+        let id = dm.insert(reg("a", 1, 1)).unwrap();
+        assert_eq!(dm.bucket_entries_cached().len(), fp + 1);
+
+        dm.remove(id).unwrap();
+        assert_eq!(dm.len(), 0);
+        assert_eq!(dm.bucket_entries_cached().len(), fp);
+        assert_eq!(dm.dispatch_hash_cached(), 0);
+    }
+
+    #[test]
+    fn remove_unknown_or_non_dynamic_errors() {
+        let mut dm = DynamicMaterials::new();
+        // Never-registered dynamic id.
+        let unknown = MaterialShaderId::from_dynamic_raw(MaterialShaderId::DYNAMIC_START + 42);
+        matches!(
+            dm.remove(unknown).unwrap_err(),
+            AwsmDynamicMaterialError::UnknownShaderId(_)
+        )
+        .then_some(())
+        .expect("removing an unregistered dynamic id must error");
+        // A first-party (non-dynamic) id is rejected before the map lookup.
+        matches!(
+            dm.remove(MaterialShaderId::PBR).unwrap_err(),
+            AwsmDynamicMaterialError::UnknownShaderId(_)
+        )
+        .then_some(())
+        .expect("removing a non-dynamic id must error");
+    }
+
+    #[test]
+    fn bucket_entries_first_party_prefix_then_sorted_dynamic_suffix() {
+        let mut dm = DynamicMaterials::new();
+        let fp = first_party_len();
+        // Insert in a non-sorted-by-future-id order; ids are allocated
+        // ascending, and the suffix must come out ascending by shader_id.
+        let id_a = dm.insert(reg("a", 1, 1)).unwrap();
+        let id_b = dm.insert(reg("b", 2, 2)).unwrap();
+        let id_c = dm.insert(reg("c", 3, 3)).unwrap();
+        assert!(id_a.as_u32() < id_b.as_u32() && id_b.as_u32() < id_c.as_u32());
+
+        let entries = dm.bucket_entries_cached();
+        assert_eq!(entries.len(), fp + 3);
+        // First-party prefix is unchanged.
+        let fp_entries = first_party_bucket_entries();
+        assert_eq!(&entries[..fp], &fp_entries[..]);
+        // Dynamic suffix sorted ascending by shader_id.
+        let suffix_ids: Vec<u32> = entries[fp..].iter().map(|e| e.shader_id.as_u32()).collect();
+        let mut sorted = suffix_ids.clone();
+        sorted.sort_unstable();
+        assert_eq!(suffix_ids, sorted);
+    }
+
+    #[test]
+    fn reregister_after_removal_allocates_fresh_id_no_reuse() {
+        let mut dm = DynamicMaterials::new();
+        let id1 = dm.insert(reg("a", 1, 1)).unwrap();
+        dm.remove(id1).unwrap();
+        // A fresh registration (even same name/hashes) after removal gets
+        // a new id — ids are monotonic, never reused, so stale pipeline
+        // keys from the removed id can't collide with the new one.
+        let id2 = dm.insert(reg("a", 1, 1)).unwrap();
+        assert_ne!(id1, id2);
+        assert!(id2.as_u32() > id1.as_u32());
+    }
+}
