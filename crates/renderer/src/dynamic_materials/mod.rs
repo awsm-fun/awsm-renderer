@@ -453,6 +453,63 @@ impl DynamicMaterials {
         hasher.finish()
     }
 
+    /// Validates a whole batch against the **final** bucket layout
+    /// before any registration side effects run, so
+    /// [`crate::AwsmRenderer::register_materials`] is all-or-nothing
+    /// (Decision 12 in `docs/plans/dynamic-materials.md`). Pure — no
+    /// mutation, no GPU — so it's unit-testable natively.
+    ///
+    /// Rejects when:
+    /// - two entries (within the batch, or a batch entry vs. an existing
+    ///   registration) share a `name` but differ in
+    ///   `(layout_hash, wgsl_hash)` → [`AwsmDynamicMaterialError::DuplicateName`];
+    /// - the count of genuinely-new buckets (entries not idempotent
+    ///   against the current registry, deduped within the batch) plus
+    ///   the current bucket count would exceed [`MAX_BUCKET_ENTRIES`] →
+    ///   [`AwsmDynamicMaterialError::BucketCapExceeded`]. The check is
+    ///   against the FINAL count, not per-insert, so a batch that fits
+    ///   as a whole is never rejected for a transient intermediate
+    ///   overflow.
+    ///
+    /// Idempotent entries (same `name` + same hashes as something
+    /// already present, or repeated within the batch) do not count
+    /// toward the cap — they resolve to an existing/earlier shader_id.
+    pub fn validate_batch(
+        &self,
+        registrations: &[MaterialRegistration],
+    ) -> Result<(), AwsmDynamicMaterialError> {
+        // name -> (layout_hash, wgsl_hash) for everything already
+        // registered plus everything accepted earlier in this batch.
+        let mut seen: HashMap<String, (u64, u64)> =
+            HashMap::with_capacity(self.registrations.len() + registrations.len());
+        for reg in self.registrations.values() {
+            seen.insert(reg.name.clone(), (reg.layout_hash, reg.wgsl_hash));
+        }
+        let mut new_buckets = 0usize;
+        for reg in registrations {
+            match seen.get(&reg.name) {
+                Some(&(lh, wh)) => {
+                    if lh != reg.layout_hash || wh != reg.wgsl_hash {
+                        return Err(AwsmDynamicMaterialError::DuplicateName(reg.name.clone()));
+                    }
+                    // Idempotent — reuses an existing/earlier id, no new bucket.
+                }
+                None => {
+                    seen.insert(reg.name.clone(), (reg.layout_hash, reg.wgsl_hash));
+                    new_buckets += 1;
+                }
+            }
+        }
+        let final_count = self.bucket_entries_cache.len() + new_buckets;
+        if final_count > MAX_BUCKET_ENTRIES {
+            return Err(AwsmDynamicMaterialError::BucketCapExceeded {
+                would_be: final_count,
+                max: MAX_BUCKET_ENTRIES,
+            });
+        }
+        Ok(())
+    }
+
     /// Allocates the next dynamic shader id and inserts the registration.
     /// Returns [`AwsmDynamicMaterialError::DuplicateName`] if a registration
     /// with the same `name` already exists at a different id.
@@ -553,6 +610,48 @@ pub struct MaterialRegistration {
 }
 
 impl crate::AwsmRenderer {
+    /// Batch-registers custom materials (Decision 11/12 in
+    /// `docs/plans/dynamic-materials.md`).
+    ///
+    /// **Transactional / all-or-nothing**: the entire batch is validated
+    /// against the *final* bucket layout
+    /// ([`DynamicMaterials::validate_batch`]) before any registration
+    /// side effects run. If any entry would collide on a name or push
+    /// the batch past [`MAX_BUCKET_ENTRIES`], the call returns an error
+    /// and **nothing** is registered. On success, returns the assigned
+    /// [`MaterialShaderId`]s in input order (idempotent entries resolve
+    /// to their existing id).
+    ///
+    /// Validation up front means the per-item cap re-check inside
+    /// [`Self::register_material`] never fires mid-batch, so the loop
+    /// can't leave the registry partially grown.
+    ///
+    /// **Phase 3 follow-up (D.2 transaction boundary)**: this still
+    /// reconciles derived GPU state (classify/edge buffer resizes,
+    /// scheduler relaunches) once *per accepted entry* rather than once
+    /// for the final layout. Collapsing those into a single
+    /// final-layout pass is the remaining optimization; the public
+    /// contract (one validated, all-or-nothing batch returning ids in
+    /// order) is already in place.
+    pub fn register_materials(
+        &mut self,
+        registrations: Vec<MaterialRegistration>,
+    ) -> Result<Vec<MaterialShaderId>, AwsmDynamicMaterialError> {
+        // All-or-nothing: validate the whole batch BEFORE mutating
+        // anything. A failure here means zero side effects.
+        self.dynamic_materials.validate_batch(&registrations)?;
+        let mut ids = Vec::with_capacity(registrations.len());
+        for registration in registrations {
+            // Cannot fail the cap check (validate_batch already proved
+            // the final layout fits) nor on a name collision (validated
+            // above); a DuplicateName here would only mean the batch
+            // itself was internally inconsistent, which validate_batch
+            // also rejects.
+            ids.push(self.register_material(registration)?);
+        }
+        Ok(ids)
+    }
+
     /// Registers a custom material.
     ///
     /// Returns an opaque [`MaterialShaderId`] in the dynamic range
@@ -1140,5 +1239,92 @@ mod tests {
         let id2 = dm.insert(reg("a", 1, 1)).unwrap();
         assert_ne!(id1, id2);
         assert!(id2.as_u32() > id1.as_u32());
+    }
+
+    // ── Phase 3 (D.1): batch-registration validation ──────────────────
+
+    #[test]
+    fn validate_batch_accepts_distinct_new_materials() {
+        let dm = DynamicMaterials::new();
+        let batch = vec![reg("a", 1, 1), reg("b", 2, 2), reg("c", 3, 3)];
+        dm.validate_batch(&batch).expect("distinct names within budget must validate");
+    }
+
+    #[test]
+    fn validate_batch_empty_is_ok() {
+        let dm = DynamicMaterials::new();
+        dm.validate_batch(&[]).unwrap();
+    }
+
+    #[test]
+    fn validate_batch_rejects_internal_name_collision_with_different_hash() {
+        let dm = DynamicMaterials::new();
+        // Same name, different hashes, within one batch → DuplicateName.
+        let batch = vec![reg("dup", 1, 1), reg("dup", 9, 9)];
+        matches!(
+            dm.validate_batch(&batch).unwrap_err(),
+            AwsmDynamicMaterialError::DuplicateName(_)
+        )
+        .then_some(())
+        .expect("name collision with differing hashes must be DuplicateName");
+    }
+
+    #[test]
+    fn validate_batch_allows_idempotent_repeat_within_batch() {
+        let dm = DynamicMaterials::new();
+        // Same name AND same hashes repeated → idempotent, one bucket.
+        let batch = vec![reg("a", 1, 1), reg("a", 1, 1)];
+        dm.validate_batch(&batch)
+            .expect("byte-identical repeat in a batch is idempotent, not a conflict");
+    }
+
+    #[test]
+    fn validate_batch_counts_only_new_buckets_against_cap() {
+        let mut dm = DynamicMaterials::new();
+        let fp = first_party_len();
+        // Fill to exactly the cap with distinct dynamic materials.
+        let dynamic_slots = MAX_BUCKET_ENTRIES - fp;
+        for i in 0..dynamic_slots {
+            dm.insert(reg(&format!("m{i}"), i as u64, i as u64)).unwrap();
+        }
+        assert_eq!(dm.bucket_entries_cached().len(), MAX_BUCKET_ENTRIES);
+
+        // A batch of purely idempotent re-registrations adds no buckets
+        // → must validate even at saturation.
+        let idempotent = vec![reg("m0", 0, 0), reg("m1", 1, 1)];
+        dm.validate_batch(&idempotent)
+            .expect("idempotent re-registrations must validate even at the cap");
+
+        // A single genuinely-new material at saturation → cap exceeded.
+        let overflow = vec![reg("brand_new", 999, 999)];
+        matches!(
+            dm.validate_batch(&overflow).unwrap_err(),
+            AwsmDynamicMaterialError::BucketCapExceeded { .. }
+        )
+        .then_some(())
+        .expect("a new bucket past the cap must be BucketCapExceeded");
+    }
+
+    #[test]
+    fn validate_batch_checks_final_count_not_per_insert() {
+        let mut dm = DynamicMaterials::new();
+        let fp = first_party_len();
+        // Leave room for exactly 2 more buckets.
+        let dynamic_slots = MAX_BUCKET_ENTRIES - fp - 2;
+        for i in 0..dynamic_slots {
+            dm.insert(reg(&format!("m{i}"), i as u64, i as u64)).unwrap();
+        }
+        // A batch of exactly 2 new materials fits the final layout.
+        let fits = vec![reg("x", 100, 100), reg("y", 101, 101)];
+        dm.validate_batch(&fits).expect("batch that fits the final count must pass");
+        // 3 new would overflow by one.
+        let over = vec![reg("x", 100, 100), reg("y", 101, 101), reg("z", 102, 102)];
+        matches!(
+            dm.validate_batch(&over).unwrap_err(),
+            AwsmDynamicMaterialError::BucketCapExceeded { would_be, .. }
+                if would_be == MAX_BUCKET_ENTRIES + 1
+        )
+        .then_some(())
+        .expect("over-budget batch must report would_be = cap + 1");
     }
 }
