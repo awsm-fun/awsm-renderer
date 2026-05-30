@@ -174,6 +174,40 @@ pub struct StatusEvent {
     pub status: PipelineGroupStatus,
 }
 
+/// Aggregate compile-progress snapshot (the pull half of Decision 14 in
+/// `docs/plans/dynamic-materials.md`). Lets a frontend drive a loading
+/// bar / "compiling N materials…" UI without re-deriving counts from the
+/// raw [`StatusEvent`] stream. Cheap to compute (a linear scan of the
+/// material table); call it once per frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CompileProgress {
+    /// Submitted materials still compiling (`status == Pending`).
+    pub materials_pending: usize,
+    /// Materials whose full pipeline set has resolved (`status == Ready`).
+    pub materials_ready: usize,
+    /// Materials whose compile failed (`status == Failed`).
+    pub materials_failed: usize,
+    /// Total in-flight sub-pipeline compiles summed across pending
+    /// materials — the granular "N pipelines left" number behind a
+    /// progress bar (each material fans out to several opaque / classify
+    /// / edge sub-pipelines).
+    pub in_flight_subcompiles: u32,
+}
+
+impl CompileProgress {
+    /// True when nothing is compiling: no pending materials and no
+    /// in-flight sub-pipeline compiles. Every submitted material is then
+    /// `Ready` or `Failed`.
+    pub fn is_idle(&self) -> bool {
+        self.materials_pending == 0 && self.in_flight_subcompiles == 0
+    }
+
+    /// Total materials the scheduler knows about (pending + ready + failed).
+    pub fn materials_total(&self) -> usize {
+        self.materials_pending + self.materials_ready + self.materials_failed
+    }
+}
+
 /// Pipeline-readiness scheduler.
 ///
 /// Owns:
@@ -551,6 +585,22 @@ impl PipelineScheduler {
             PipelineGroupId::Material(mid) => self.materials.get(mid).map(|s| &s.status),
             PipelineGroupId::Pass(kind) => self.passes.get(&kind).map(|s| &s.status),
         }
+    }
+
+    /// Aggregate compile-progress snapshot over the material table —
+    /// material status counts plus the total in-flight sub-pipeline
+    /// compiles. See [`CompileProgress`].
+    pub fn compile_progress(&self) -> CompileProgress {
+        let mut progress = CompileProgress::default();
+        for state in self.materials.values() {
+            match &state.status {
+                PipelineGroupStatus::Pending => progress.materials_pending += 1,
+                PipelineGroupStatus::Ready => progress.materials_ready += 1,
+                PipelineGroupStatus::Failed { .. } => progress.materials_failed += 1,
+            }
+        }
+        progress.in_flight_subcompiles = self.pending_subcompiles.values().copied().sum();
+        progress
     }
 
     /// Drain pending status events. Frontends call this from their

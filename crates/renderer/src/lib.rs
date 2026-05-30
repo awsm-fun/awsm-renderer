@@ -2304,6 +2304,15 @@ impl AwsmRenderer {
         self.pipeline_scheduler.drain_status_events()
     }
 
+    /// Aggregate compile-progress snapshot for a loading bar / "compiling
+    /// N materials…" UI (Decision 14, pull half). Counts pending / ready
+    /// / failed materials plus the total in-flight sub-pipeline compiles.
+    /// Cheap; safe to call every frame. See
+    /// [`crate::pipeline_scheduler::CompileProgress`].
+    pub fn compile_progress(&self) -> crate::pipeline_scheduler::CompileProgress {
+        self.pipeline_scheduler.compile_progress()
+    }
+
     /// Drop a material group. No-op if the id isn't in the scheduler.
     pub fn drop_material_group(&mut self, id: crate::pipeline_scheduler::MaterialId) {
         self.pipeline_scheduler.drop_material_group(id);
