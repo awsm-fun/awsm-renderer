@@ -148,11 +148,11 @@ impl PbrFeatures {
     }
 
     /// Every feature on — the canonical all-features config. Used as the
-    /// `pbr_specialization=false` compat path, the canonical first-party
-    /// bucket id, and the cap-guard fallback. Rendering with this is
-    /// behaviourally identical to the pre-specialization (always-all-
-    /// extensions) PBR shader, which is what made the B.2 templatization
-    /// landable as a no-op first.
+    /// canonical first-party bucket id and the cap-guard fallback (a scene
+    /// exceeding the bucket budget degrades to this bucket rather than
+    /// crashing). Rendering with this is behaviourally identical to the
+    /// pre-specialization (always-all-extensions) PBR shader, which is what
+    /// made the B.2 templatization landable as a no-op first.
     pub fn all() -> Self {
         Self {
             base_color_tex: true,

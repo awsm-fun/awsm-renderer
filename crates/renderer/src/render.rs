@@ -268,17 +268,8 @@ impl AwsmRenderer {
         // material GPU write (so the resolved variant id lands in the
         // payload's first u32 in this same frame) and before classify
         // dispatch (which routes on it). Cheap no-op once the material set
-        // settles.
-        //
-        // Gated behind the runtime `pbr_specialization` switch on
-        // `Materials` (default on; off = the canonical all-features config,
-        // pixel-identical to the pre-overhaul single-PBR-bucket baseline).
-        // Toggle via `AwsmRenderer::set_pbr_specialization` (exposed to the
-        // scene-editor as the `set_pbr_specialization` wasm export for
-        // A/B pixel verification).
-        if self.materials.pbr_specialization_enabled() {
-            self.reconcile_material_variants()?;
-        }
+        // settles (gated internally on `variants_dirty`).
+        self.reconcile_material_variants()?;
 
         self.transforms
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
