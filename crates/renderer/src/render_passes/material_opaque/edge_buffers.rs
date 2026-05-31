@@ -42,7 +42,7 @@ use awsm_renderer_core::{
 };
 
 // ─────────────────────────────────────────────────────────────────
-// MAX_EDGE_BUDGET overflow diagnostics (Stage 3.8 / Block C.2 — MVP).
+// MAX_EDGE_BUDGET overflow diagnostics (MVP).
 //
 // The classify pass atomically allocates a compact `edge_pixel_id` per
 // edge pixel. If the counter saturates at `MAX_EDGE_BUDGET`, subsequent
@@ -82,7 +82,7 @@ fn note_edge_budget_initialized(bucket_count: u32, max_edge_budget: u32) {
                 "MAX_EDGE_BUDGET initialized — edges beyond this count saturate the counter \
                  (edge_overflow_count atomicAdd) and skip edge_resolve; affected pixels render \
                  with the primary-sample shading. Full atomic-add overflow fallback is parked \
-                 (see https://github.com/dakom/awsm-renderer/pull/99 Block C.2)."
+                 (see https://github.com/dakom/awsm-renderer/pull/99)."
             );
         }
     }
@@ -112,7 +112,7 @@ pub fn note_edge_overflow_observed(overflow_count: u32, max_edge_budget: u32) {
                 "MAX_EDGE_BUDGET exceeded — edge_overflow_count={overflow_count} edges past \
                  budget {max_edge_budget} were dropped this frame; those pixels rendered with \
                  primary-sample shading instead of full MSAA resolve. Raise the budget or \
-                 lower edge density; the atomic-add overflow fallback (Block C.2 full fix) \
+                 lower edge density; the atomic-add overflow fallback \
                  is not yet wired in.",
             );
         }
@@ -476,7 +476,7 @@ impl MaterialEdgeBuffers {
         Ok(true)
     }
 
-    /// Block C.2 full: grow `max_edge_budget` to `new_budget` at
+    /// Grow `max_edge_budget` to `new_budget` at
     /// runtime (or shrink, if the caller is reclaiming memory after
     /// a scene change). Recreates `args_buffer` + `data_buffer` at
     /// the new size; the caller is responsible for marking

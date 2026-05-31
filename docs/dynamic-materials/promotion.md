@@ -55,7 +55,7 @@ change:
 
 ## Worked example: promoting `scanline`
 
-The Phase 4 `scanline` material was authored as:
+The `scanline` material was authored as:
 
 ```
 scanline/

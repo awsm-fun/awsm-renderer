@@ -160,7 +160,7 @@ impl MaterialOpaquePipelines {
         ctx: &mut RenderPassInitContext<'_>,
         bind_groups: &MaterialOpaqueBindGroups,
     ) -> Result<Vec<OpaqueShaderDesc>> {
-        // Block D.1 PART 2 first-party extension: the eager-batch
+        // First-party extension: the eager-batch
         // path (called from `AwsmRendererBuilder::build`) emits ONLY
         // the empty-opaque pipeline. First-party material opaque
         // pipelines (PBR / UNLIT / TOON / FLIPBOOK) defer until
@@ -209,7 +209,7 @@ impl MaterialOpaquePipelines {
         )
     }
 
-    /// Block D.1 PART 2 extension to first-party materials: emit
+    /// Extension to first-party materials: emit
     /// shader descriptors with the OPAQUE_SHADER_IDS iteration
     /// gated by `include_first_party`. When `false`, only the
     /// empty-opaque pipeline is emitted — first-party pipelines

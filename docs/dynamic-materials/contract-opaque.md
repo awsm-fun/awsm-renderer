@@ -14,6 +14,30 @@ For transparent materials (`alpha_mode = Blend`) see
 
 ---
 
+## Specialization & the bucket cap
+
+The renderer is **specialize-only**: every shader is gated at compile time
+to exactly the features it needs (there is no shared "uber" shader). Each
+registered custom material compiles into its **own pipeline** — a "bucket",
+keyed by its registry-assigned `shader_id`. (First-party PBR materials
+instead share a bucket per *feature-set*; custom materials are never
+deduped — one registration is always one bucket.)
+
+The total number of buckets across the whole renderer (first-party PBR
+feature-sets + every custom registration) is capped at
+`MAX_BUCKET_ENTRIES` = `MAX_BUCKET_WORDS × 32` (default **32** — the
+classify pass packs one bucket bit per `u32` of its tile mask). Registering
+a material that would push past the cap is a **hard error**
+(`AwsmDynamicMaterialError::BucketCapExceeded`) — there is no silent
+fallback. To allow more, raise `MAX_BUCKET_WORDS` in
+`crates/renderer/src/dynamic_materials/mod.rs` and rebuild.
+
+Registration is **transactional**: you submit a batch, and if any entry is
+invalid (duplicate name, reserved field name, WGSL compile failure, or cap
+overflow) the whole batch is rejected and nothing is registered.
+
+---
+
 ## How your fragment is injected
 
 Your `shader.wgsl` is wrapped at template-emission time into:
@@ -54,10 +78,9 @@ shading at MSAA boundary pixels — see
 `crates/renderer/src/render_passes/material_opaque/edge_pipeline.rs`
 and `…/shader/edge_template.rs`). The same `custom_shade_dynamic` body is
 emitted into both; the wrapper supplies the right `OpaqueShadingInput`
-in each context (full pixel vs. masked sub-sample). The Stage 3 work
-deleted the old PBR `msaa_resolve_samples` fallback, so cross-material
-MSAA edges that previously fell back to PBR shading for dynamic
-materials now render with your exact shading code. Write one fragment;
+in each context (full pixel vs. masked sub-sample). There is no PBR
+`msaa_resolve_samples` fallback — cross-material MSAA edges render with
+your exact shading code, not a generic substitute. Write one fragment;
 keep it free of state that assumes a particular call-site, and both
 contexts work without any extra opt-in.
 
@@ -226,7 +249,7 @@ walk), `unlit.wgsl` (`compute_unlit_output`).
 already loaded your `MaterialData` for you, so direct calls to these are
 rarely needed.
 
-### `shared_wgsl/extras.wgsl` (Phase 6+)
+### `shared_wgsl/extras.wgsl`
 
 ```wgsl
 extras_load_u32(index)         // raw u32 word from the extras pool
@@ -335,5 +358,6 @@ let color = base + overlay;
 return OpaqueShadingOutput(color, 1.0);
 ```
 
-(Phase 4 of the dynamic-materials plan lands this exact material as the
-first end-to-end opaque test case.)
+This is the worked example promoted to first-party in
+[promotion.md](promotion.md); see also
+[`crates/materials/src/scanline.rs`](../../crates/materials/src/scanline.rs).

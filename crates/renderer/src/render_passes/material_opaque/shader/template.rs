@@ -737,7 +737,7 @@ mod brdf_gate_tests {
     #[test]
     fn no_feature_runtime_guards_anywhere() {
         // Even the all-features shader must have NO per-feature runtime
-        // guards — the specialize-only pivot moved all feature branching
+        // guards — the specialize-only design moved all feature branching
         // to compile time. (Lighting-geometry guards like n_dot_l_back
         // remain; those aren't feature guards.)
         let w = render_nows(PbrFeatures::all());

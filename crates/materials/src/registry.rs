@@ -90,7 +90,7 @@ pub fn build_shader_id_consts() -> String {
         // `enabled_materials()` returns only first-party entries, all of
         // which have a canonical WGSL const name. The dynamic-material
         // registry emits its own consts via a separate code path (see
-        // `MaterialRegistry::build_shader_id_consts` in Phase 3).
+        // `MaterialRegistry::build_shader_id_consts`).
         let const_name = entry.shader_id.wgsl_const_name().unwrap_or_else(|| {
             panic!(
                 "[awsm-materials] first-party material {} (id {}) is missing a canonical WGSL const name",

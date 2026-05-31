@@ -397,7 +397,7 @@ impl MaterialOpaqueBindGroups {
         // binding so the opaque pass's per-mesh and per-pixel-froxel
         // paths can read from one binding without doubling the
         // storage-buffer count (the merge replaces what was
-        // `mesh_light_indices` before Phase 2).
+        // `mesh_light_indices`).
         entries.push(BindGroupEntry::new(
             entries.len() as u32,
             BindGroupResource::Buffer(BufferBinding::new(

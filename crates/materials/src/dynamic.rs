@@ -6,10 +6,10 @@
 //! the interpreter looks the registration up at write-time rather than
 //! carrying a `Box<dyn MaterialShader>` per instance.
 //!
-//! Phase 2 wires the trait methods up to the [`crate::dynamic_layout`] packer for
+//! The trait methods drive the [`crate::dynamic_layout`] packer for
 //! the uniform-tail + texture-tail + buffer-tail writes. The
-//! buffer-tail's `(offset, length)` pairs are stub-zeros for now — Phase 6
-//! stands up the extras-pool allocator that assigns them per instance.
+//! buffer-tail's `(offset, length)` pairs come from the context's
+//! extras-pool slice lookup; a slot with no assigned slice packs `(0, 0)`.
 
 use crate::{
     dynamic_layout::{
@@ -28,7 +28,7 @@ use crate::{
 /// and buffer-slot data; the renderer's registry owns the layout + WGSL.
 ///
 /// Construct via [`DynamicMaterial::new`] when the consumer can plumb the
-/// registry through. For Phase 0 / 2 testing the public fields make
+/// registry through. For testing, the public fields make
 /// hand-construction possible without dragging the registry into every
 /// caller.
 #[derive(Clone, Debug)]
@@ -62,8 +62,9 @@ pub struct DynamicMaterial {
     /// Per-instance buffer-slot data. Each entry is a `Vec<u32>` of raw
     /// little-endian words — the same shape the renderer's extras-pool
     /// allocator slices into. `None` falls back to the registration
-    /// default at upload time. Phase 6 wires the extras pool; Phase 2
-    /// writes `(0, 0)` for every slot.
+    /// default at upload time. The buffer-tail `(offset, length)` come
+    /// from the context's extras-pool slice lookup; a slot with no
+    /// assigned slice packs `(0, 0)`.
     pub buffers: Vec<Option<Vec<u32>>>,
 }
 
@@ -116,8 +117,7 @@ impl DynamicMaterial {
 ///
 /// Carries the renderer-side dynamic registry's view of the material's
 /// layout (so the packer knows the field order) and the per-instance
-/// extras-pool slice assignments (so the buffer-slot tail can be written
-/// — Phase 6).
+/// extras-pool slice assignments (so the buffer-slot tail can be written).
 ///
 /// Implemented by the renderer's `DynamicMaterials` facade so
 /// `awsm-materials` stays decoupled from the renderer crate.
@@ -140,8 +140,7 @@ pub trait DynamicMaterialContext {
 
     /// Returns the extras-pool slice currently assigned to
     /// `(shader_id, buffer_slot_index)`. `None` means no slice
-    /// assigned (Phase 6 stub returns `None` always; the packer
-    /// writes `(0, 0)` for those).
+    /// assigned, in which case the packer writes `(0, 0)` for that slot.
     fn buffer_slice(
         &self,
         shader_id: MaterialShaderId,
@@ -195,11 +194,11 @@ impl MaterialShader for DynamicMaterial {
         // Writes the shader_id prefix then defers to
         // `write_uniform_buffer_with_layout` once the caller has plumbed
         // the layout context. The plain `TextureContext`-only signature
-        // can't reach the layout — Phase 4 + Phase 5's renderer-side
-        // bridge calls `write_uniform_buffer_with_layout` directly
-        // (passing the `DynamicMaterialContext` view).
+        // can't reach the layout — the renderer-side bridge calls
+        // `write_uniform_buffer_with_layout` directly (passing the
+        // `DynamicMaterialContext` view).
         //
-        // For Phase 2 / 3 callers that hit this path through
+        // For callers that hit this path through
         // `Material::uniform_buffer_data`, we panic so the missed
         // wiring surfaces loudly rather than producing garbage bytes.
         // The renderer's `Material::Custom` arm in `uniform_buffer_data`
@@ -265,8 +264,8 @@ impl DynamicMaterial {
             .collect();
         pack_texture_indices(layout, &texture_indices, out);
 
-        // 5. Buffer (offset, length) pairs. Phase 2 stub: ctx returns
-        //    None for every slot; we write (0, 0).
+        // 5. Buffer (offset, length) pairs. The ctx returns the
+        //    extras-pool slice per slot; unassigned slots write (0, 0).
         let buffer_pairs: Vec<(u32, u32)> = (0..layout.buffers.len())
             .map(|i| ctx.buffer_slice(self.shader_id, i).unwrap_or((0, 0)))
             .collect();

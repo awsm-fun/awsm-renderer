@@ -266,7 +266,7 @@ pub struct Materials {
     uploader: crate::buffer::mapped_uploader::MappedUploader,
     /// Sticky: set to true the first time a material implementing
     /// `KHR_materials_transmission` enters the registry, and never
-    /// reset. Drives the T2.5 lazy-allocation of the opaque
+    /// reset. Drives the lazy-allocation of the opaque
     /// render-texture mip chain — when this is `false`, the opaque
     /// texture is allocated with `mip_level_count = 1` (the only
     /// mip the opaque pass actually writes), saving ~33% of its
@@ -339,7 +339,7 @@ impl Materials {
         extras_pool: &crate::dynamic_materials::extras_pool::ExtrasPool,
     ) -> MaterialKey {
         let is_transparency_pass = material.is_transparency_pass();
-        // T2.5: track first transmissive-material registration so the
+        // Track first transmissive-material registration so the
         // opaque texture's mip chain grows on demand instead of being
         // allocated up-front. Sticky — flipped once, never reset.
         if material.has_transmission() {
@@ -454,7 +454,7 @@ impl Materials {
                     self.transparency_pass_keys.remove(key);
                 }
             }
-            // T2.5: a previously-non-transmissive material can become
+            // A previously-non-transmissive material can become
             // transmissive via `update_material` (e.g. authoring
             // pipeline that constructs the material first, then
             // edits in `KHR_materials_transmission` later). Sticky-true

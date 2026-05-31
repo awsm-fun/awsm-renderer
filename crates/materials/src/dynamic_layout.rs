@@ -42,7 +42,7 @@
 //! the kernel's `materials[]` read indices line up byte-for-byte with the
 //! generated struct's field offsets.
 //!
-//! ## Phase 2 status
+//! ## Status
 //!
 //! This module ships the helpers + unit tests. Wiring the helpers into
 //! `DynamicMaterial::write_uniform_buffer` and the renderer-side
@@ -629,7 +629,7 @@ fn align_buffer_to(out: &mut Vec<u8>, align: usize, struct_start: usize) {
 
 /// The byte offset where the current layout's struct started in `out`.
 ///
-/// In Phase 2 the struct always starts at the *beginning* of `out` —
+/// The struct always starts at the *beginning* of `out` —
 /// the renderer's `write_uniform_buffer` will hand us a fresh
 /// `Vec<u8>` (after writing the shader_id + alignment prefix) and we
 /// pack from offset 0. We compute it from a known invariant rather

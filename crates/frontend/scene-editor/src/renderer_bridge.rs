@@ -141,8 +141,8 @@ fn render_one_frame() {
     }
 
     if let Some(renderer) = renderer.as_mut() {
-        // Block A.4: drain pipeline scheduler status events into the
-        // shared compile-status state so the floating modal can read
+        // Drain pipeline scheduler status events into the shared
+        // compile-status state so the floating modal can read
         // it as a dominator signal. Pending → +1, Ready/Failed →
         // -1 (saturating). Failed events also publish their error
         // string to `compile_last_error`. Cleared on the leading edge
@@ -171,7 +171,7 @@ fn render_one_frame() {
         // Drive the compile-progress modal from the scheduler's
         // AUTHORITATIVE pending count (A.2 pull query) rather than an
         // event-accumulated tally. The push tally leaked once the
-        // specialize-only pivot's bucket-growth relaunch began re-marking
+        // specialize-only design's bucket-growth relaunch began re-marking
         // already-pending materials `Pending` (more +1s than -1s) — the
         // modal then never closed. `materials_pending` is recomputed from
         // scheduler state each frame, so it's self-correcting and drains

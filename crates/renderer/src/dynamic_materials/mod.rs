@@ -415,10 +415,9 @@ pub fn sanitize_wgsl_name(name: &str) -> String {
 
 /// Renderer-side state for runtime-registered dynamic materials.
 ///
-/// Phase 0 ships this as a placeholder — a `HashMap<MaterialShaderId, MaterialRegistration>`
-/// holding registered entries plus the next-id counter. Phase 3 replaces the
-/// inline map with `awsm_materials::registry::MaterialRegistry` and wires the
-/// [`dispatch_hash`](Self::dispatch_hash) into per-shader-id pipeline cache
+/// Backed by a `HashMap<MaterialShaderId, MaterialRegistration>` holding
+/// registered entries plus the next-id counter. The
+/// [`dispatch_hash`](Self::dispatch_hash) feeds per-shader-id pipeline cache
 /// keys.
 #[derive(Default)]
 pub struct DynamicMaterials {
@@ -825,7 +824,7 @@ pub struct MaterialRegistration {
     pub wgsl_fragment: String,
     /// Default buffer-slot data, one `Vec<u32>` per `BufferSlot` in
     /// declaration order. Passed at registration time to the extras
-    /// pool's bump allocator; per-instance overrides (Phase 5's
+    /// pool's bump allocator; per-instance overrides (the per-instance
     /// `CustomMaterialInstance::buffer_overrides`) can also override.
     /// Empty Vec for slots without a registration default.
     pub buffer_defaults: Vec<Vec<u32>>,
@@ -856,7 +855,7 @@ impl crate::AwsmRenderer {
     /// [`Self::register_material`] never fires mid-batch, so the loop
     /// can't leave the registry partially grown.
     ///
-    /// **Phase 3 follow-up (D.2 transaction boundary)**: this still
+    /// **Transaction-boundary follow-up**: this still
     /// reconciles derived GPU state (classify/edge buffer resizes,
     /// scheduler relaunches) once *per accepted entry* rather than once
     /// for the final layout. Collapsing those into a single
@@ -892,7 +891,7 @@ impl crate::AwsmRenderer {
     /// Idempotent on `(name, layout_hash, wgsl_hash)`: re-registering the
     /// same material returns the same id without recompiling.
     ///
-    /// **Readiness contract (Block D.1 PART 2 + edge-resolve push):**
+    /// **Readiness contract (edge-resolve push):**
     /// every pipeline the new material needs to render correctly —
     /// primary opaque (4 MSAA × mipmaps variants), classify
     /// (2 MSAA variants), per-shader `edge_resolve` for the new
@@ -937,7 +936,7 @@ impl crate::AwsmRenderer {
         let id = self.dynamic_materials.insert(registration)?;
         // Assign extras-pool slices for any buffer-slot defaults
         // declared on the registration. Per-instance overrides
-        // (Phase 5's CustomMaterialInstance.buffer_overrides) can
+        // (the per-instance CustomMaterialInstance.buffer_overrides) can
         // overwrite these per instance — the bridge calls
         // `extras_pool.assign_or_update` directly for those.
         for (slot_index, data) in buffer_defaults.iter().enumerate() {
@@ -1021,7 +1020,7 @@ impl crate::AwsmRenderer {
                 }
             }
         }
-        // Block A.1 bridge: also submit the material to the
+        // Scheduler bridge: also submit the material to the
         // pipeline-readiness scheduler so its lifecycle is observable
         // via the status stream / pipeline_group_status. The
         // returned MaterialId is intentionally discarded — callers
@@ -1039,7 +1038,7 @@ impl crate::AwsmRenderer {
                 id, e
             );
         }
-        // Block D.1 PART 2 literal-future launch: kick off the
+        // Literal-future launch: kick off the
         // sub-pipeline compile promises sync-now, push them into
         // PipelineScheduler::inflight_compile. The renderer's
         // poll_pipeline_scheduler drains + installs them per-frame.
@@ -1408,8 +1407,8 @@ impl crate::AwsmRenderer {
 
     /// Removes a previously-registered dynamic material.
     ///
-    /// Phase 0 stub: the registration is dropped from the registry but
-    /// pipeline-cache invalidation lands in Phase 3. Returns
+    /// Note: the registration is dropped from the registry but the
+    /// pipeline cache is not currently invalidated. Returns
     /// [`AwsmDynamicMaterialError::UnknownShaderId`] if the id was never
     /// registered or has already been removed.
     ///
@@ -1464,7 +1463,7 @@ impl crate::AwsmRenderer {
     ///
     /// **Readiness flow**: `register_material` pushes real compile
     /// futures into the scheduler's `inflight_compile` set via
-    /// [`Self::launch_dynamic_material_compile`] (Block D.1 PART 2 +
+    /// [`Self::launch_dynamic_material_compile`] (with the
     /// edge-resolve extension). The promise set covers every
     /// pipeline the material needs to render correctly — opaque,
     /// classify, per-shader edge_resolve, skybox edge_resolve,
@@ -1481,7 +1480,7 @@ impl crate::AwsmRenderer {
     /// for the new material on the next render after Ready.
     ///
     /// [`Self::prewarm_pipelines`] still exists as the lower-level
-    /// compile-drive surface; the A.1 bridge inside it now marks
+    /// compile-drive surface; the scheduler bridge inside it marks
     /// the scheduler entries Ready when its `ensure_keys` resolves,
     /// so the two surfaces are interchangeable for the
     /// readiness-state contract.
@@ -1490,8 +1489,8 @@ impl crate::AwsmRenderer {
         registration: MaterialRegistration,
     ) -> Result<(MaterialShaderId, crate::pipeline_scheduler::MaterialId), crate::error::AwsmError>
     {
-        // `register_material` now bridges the scheduler internally
-        // (Block A.1). After it returns, we just look up the
+        // `register_material` bridges the scheduler internally.
+        // After it returns, we just look up the
         // scheduler-side MaterialId that was allocated for this
         // shader_id and return it alongside.
         let shader_id = self.register_material(registration)?;
@@ -1508,11 +1507,11 @@ impl crate::AwsmRenderer {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Phase 1 (D.5) — regression tests for the registry's pure (non-GPU)
+// Regression tests for the registry's pure (non-GPU)
 // bucket-layout mutation behaviour. These run natively via
-// `cargo test --all-features` and lock the contract before the
-// batch-registration / transaction-boundary refactor (Phases 2-3) and
-// the feature-hash bucketing (Phase 6) reshape it.
+// `cargo test --all-features` and lock the contract for the
+// batch-registration / transaction-boundary behaviour and
+// the feature-hash bucketing.
 //
 // Cap-exceeded (`BucketCapExceeded`), MSAA edge-buffer resize, and
 // Pending/Ready transitions are enforced one level up in
@@ -1684,7 +1683,7 @@ mod tests {
         assert!(id2.as_u32() > id1.as_u32());
     }
 
-    // ── Phase 3 (D.1): batch-registration validation ──────────────────
+    // ── batch-registration validation ──────────────────
 
     // ── First-party feature-set variant allocation ──────────────────────────
 
