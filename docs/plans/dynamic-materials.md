@@ -35,9 +35,19 @@
 >   skybox). Fixed a black-screen bug: `is_empty()` ignored variants → the
 >   classify pass used the stale eager 4-bucket pipeline.
 >
-> **The routing WORKS + is GPU-VERIFIED CORRECT**, gated behind the
-> runtime `Materials::pbr_specialization` flag (default off → tree is
-> pixel-identical to baseline 3948677115). Toggle for A/B via the
+> **✅ SHIPPED: opaque PBR feature-set specialization is ON by default**
+> (`Materials::pbr_specialization` default true = Decision 9 Auto;
+> `set_pbr_specialization(false)` is the ForceUber escape). GPU-verified on
+> a clean load: full scene renders, all buckets compile to Ready, the
+> compile-progress modal drains + closes (A.2 fix), pixel-equivalent within
+> ≤2/255. Applies to BOTH scene-editor inline materials AND glTF-loaded
+> materials (the glTF mapper already emits minimal `PbrMaterial`s → the
+> reconcile auto-specializes them → Workstream C "auto-minimize" is
+> satisfied for free). The black-screen `is_empty` bug + the stuck-modal
+> A.2 counter were found + fixed. Remaining = OPTIONAL follow-ups below.
+>
+> (Detail retained:) **Routing is GPU-VERIFIED CORRECT** behind the runtime
+> `Materials::pbr_specialization` flag. Toggle for A/B via the
 > scene-editor wasm exports `set_pbr_specialization(bool)` /
 > `set_msaa(bool)` (added this session). Full A/B matrix verified in real
 > Chrome on tuning-50-materials (36 PBR / 23 feature-set masks; adjacent
@@ -54,19 +64,31 @@
 >   silhouette edges (expected — bucketing now anti-aliases inter-material
 >   edges the single-bucket baseline merged).
 >
-> So #15/#16 are functionally + visually CORRECT. They stay gated off by
-> default only because of **compile-time** rough edges, not steady-state
-> bugs:
-> **NEXT STEPS to flip the default on:** (1) Workstream A.1 — the
-> bucket-growth relaunch currently clears + recompiles ALL buckets and
-> briefly leaves `final_blend` uncompiled → a transient
-> "edge_resolve(final_blend) — skipping" frame during load; batch-compile-
-> against-the-final-layout fixes this and the heavy churn. (2) A.2 — the
-> compile-progress modal counter doesn't drain to 0. (3) F.3 — per-KHR-
-> extension model-viewer pass. (4) raise `MAX_BUCKET_WORDS` if the cap is
-> hit (tuning-50 fans to ~27 buckets, under 32). THEN flip
-> `pbr_specialization` default → true; #17 transparent specialize → #18
-> Toon (`ToonFeatures`) → #19 workstreams A/C/D/F → delete this file.
+> **REMAINING (optional follow-ups; #14/#15/#16 + A.2 + C-auto-minimize +
+> the cap-guard are DONE):**
+> - **#17 transparent specialize** — the transparent fragment is still the
+>   uber runtime-branched path. It WORKS (correct); specializing it is an
+>   occupancy optimization, not a fix. Mirror the opaque `base`+features
+>   decoupling onto the transparent cache key/template + gate the fragment.
+>   Verify in model-viewer (transmission/blend models).
+> - **#18 Toon** — Toon's opaque shader doesn't sample its textures yet (no
+>   gateable opaque code paths) so it's correctly single-bucket. To
+>   specialize: first add Toon base_color/emissive texture sampling, THEN
+>   `ToonFeatures` + flip `ShadingBase::Toon.is_feature_specialized()` +
+>   add Toon to the reconcile match.
+> - **C `AWSM_material_none`** — the per-material skip-PBR glTF extension →
+>   shared flat/unlit bucket (zero PBR compiles). (Auto-minimize already
+>   works.) Verify in model-viewer.
+> - **A.1 batch engine / A.3 warmup-await** — the bucket-growth relaunch
+>   recompiles all buckets (the reconcile already does it ONCE against the
+>   final layout, so no N× churn, but a heavy cold-load compile + a one-
+>   frame `final_blend`-skip). `compile_materials(set).await` during
+>   load_scene would hide the transient. Perf/UX polish, not correctness.
+> - **F.2/F.3 benchmarks + GPU-timestamp timing + per-extension pass**;
+>   **D.4** honest cost-model docs. **B.4**: raise `MAX_BUCKET_WORDS` past
+>   1 only when a scene needs >32 buckets (overflow currently degrades
+>   gracefully to the uber PBR bucket with a logged warning).
+> Then delete this file.
 
 **Status**: in implementation. Every open design question is resolved
 (see **Locked decisions**, as amended by the ARCHITECTURE PIVOT). This
