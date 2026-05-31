@@ -259,7 +259,10 @@ pub struct Materials {
     /// variant enters or is edited; cleared by the renderer's reconcile
     /// pass. Starts `true` so the first frame reconciles.
     variants_dirty: bool,
-    _is_transparency_pass: SecondaryMap<MaterialKey, ()>,
+    /// Membership set of the material keys that render in the transparency
+    /// pass (Blend/Mask/transmission), kept in sync on insert/update/remove.
+    /// Read by [`Self::is_transparency_pass`].
+    transparency_pass_keys: SecondaryMap<MaterialKey, ()>,
     uploader: crate::buffer::mapped_uploader::MappedUploader,
     /// Sticky: set to true the first time a material implementing
     /// `KHR_materials_transmission` enters the registry, and never
@@ -289,7 +292,7 @@ impl Materials {
             gpu_dirty: true,
             resolved_shader_id: SecondaryMap::new(),
             variants_dirty: true,
-            _is_transparency_pass: SecondaryMap::new(),
+            transparency_pass_keys: SecondaryMap::new(),
             uploader: crate::buffer::mapped_uploader::MappedUploader::new("Materials"),
             has_seen_transmission: false,
         })
@@ -345,7 +348,7 @@ impl Materials {
 
         let key = self.lookup.insert(material);
         if is_transparency_pass {
-            self._is_transparency_pass.insert(key, ());
+            self.transparency_pass_keys.insert(key, ());
         }
         // A newly-inserted material may need routing to a feature-set
         // variant bucket — flag the renderer's reconcile pass.
@@ -395,7 +398,7 @@ impl Materials {
     pub fn remove(&mut self, key: MaterialKey) -> bool {
         let removed = self.lookup.remove(key).is_some();
         if removed {
-            self._is_transparency_pass.remove(key);
+            self.transparency_pass_keys.remove(key);
             self.resolved_shader_id.remove(key);
             self.buffer.remove(key);
             self.gpu_dirty = true;
@@ -441,14 +444,14 @@ impl Materials {
         mut f: impl FnMut(&mut Material),
     ) {
         if let Some(material) = self.lookup.get_mut(key) {
-            let old_is_transparency_pass = material.is_transparency_pass();
+            let was_transparent = material.is_transparency_pass();
             f(material);
-            let new_is_transparency_pass = material.is_transparency_pass();
-            if old_is_transparency_pass != new_is_transparency_pass {
-                if new_is_transparency_pass {
-                    self._is_transparency_pass.insert(key, ());
+            let is_transparent = material.is_transparency_pass();
+            if was_transparent != is_transparent {
+                if is_transparent {
+                    self.transparency_pass_keys.insert(key, ());
                 } else {
-                    self._is_transparency_pass.remove(key);
+                    self.transparency_pass_keys.remove(key);
                 }
             }
             // T2.5: a previously-non-transmissive material can become
@@ -499,7 +502,7 @@ impl Materials {
 
     /// Returns true if the material uses the transparency pass.
     pub fn is_transparency_pass(&self, key: MaterialKey) -> bool {
-        self._is_transparency_pass.contains_key(key)
+        self.transparency_pass_keys.contains_key(key)
     }
 
     /// Returns the material's `MaterialShaderId` (PBR / Unlit / Toon).
