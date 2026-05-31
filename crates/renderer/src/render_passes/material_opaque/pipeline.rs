@@ -275,6 +275,7 @@ impl MaterialOpaquePipelines {
                         mipmaps: active_mipmaps,
                         shader_id,
                         base: crate::dynamic_materials::ShadingBase::for_shader_id(shader_id),
+                        owns_skybox: shader_id == MaterialShaderId::PBR,
                         pbr_features: awsm_materials::pbr::PbrFeatures::all().bits(),
                         // Builder-time prewarm — no dynamic materials
                         // can be registered before `build()` returns,

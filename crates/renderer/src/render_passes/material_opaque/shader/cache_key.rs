@@ -26,6 +26,14 @@ pub struct ShaderCacheKeyMaterialOpaque {
     /// (id in the dynamic range) still selects the PBR body. See
     /// [`ShadingBase`].
     pub base: ShadingBase,
+    /// True for exactly one bucket — the canonical PBR bucket
+    /// (`MaterialShaderId::PBR`, index 0) — which writes the skybox on
+    /// skybox/uncovered pixels. classify routes skybox pixels to bit 0,
+    /// so only that bucket's dispatch covers skybox-only tiles. Every
+    /// other bucket (incl. specialized PBR variants, all `base == Pbr`)
+    /// leaves `false` and returns without writing on skybox pixels, so a
+    /// mixed tile's skybox pixels aren't double-written / raced.
+    pub owns_skybox: bool,
     /// Opaque PBR feature mask ([`awsm_materials::pbr::PbrFeatures::bits`])
     /// the specialized PBR shader is compiled for (Phase B.2). Two PBR
     /// pipelines with different feature masks are distinct entries, so a

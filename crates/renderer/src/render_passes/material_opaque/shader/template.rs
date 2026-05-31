@@ -97,6 +97,9 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     /// dynamic range still emits the PBR path. The per-pixel guard uses
     /// the numeric `shader_id` regardless of `base`.
     pub base: crate::dynamic_materials::ShadingBase,
+    /// Whether this pipeline owns the skybox write (only the canonical
+    /// PBR bucket; see [`ShaderCacheKeyMaterialOpaque::owns_skybox`]).
+    pub owns_skybox: bool,
     /// PBR feature set this specialized pipeline is compiled for
     /// (Phase B.2). The compute template + `material_color_calc.wgsl`
     /// gate per-feature code behind `{% if pbr_features.<x> %}`, so an
@@ -195,6 +198,7 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
                 shader_id: value.shader_id,
                 base: value.base,
+                owns_skybox: value.owns_skybox,
                 pbr_features: awsm_materials::pbr::PbrFeatures::from_bits(value.pbr_features),
                 dynamic_struct_decl: value
                     .dynamic_shader
@@ -447,6 +451,7 @@ mod empty_registry_tests {
             mipmaps: true,
             shader_id,
             base: crate::dynamic_materials::ShadingBase::for_shader_id(shader_id),
+            owns_skybox: shader_id == MaterialShaderId::PBR,
             pbr_features: awsm_materials::pbr::PbrFeatures::all().bits(),
             dispatch_hash: 0,
             dynamic_shader: None,

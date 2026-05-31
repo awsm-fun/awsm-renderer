@@ -220,8 +220,8 @@ fn main(
         }
 
         if (!any_sample_hit) {
-            {% if base == ShadingBase::Pbr %}
-                // PBR pipeline owns skybox-only pixels.
+            {% if owns_skybox %}
+                // Canonical PBR bucket owns skybox-only pixels.
                 let color = sample_skybox(coords, screen_dims_f32, camera, skybox_tex, skybox_sampler);
                 textureStore(opaque_tex, coords, color);
             {% else %}
@@ -233,7 +233,7 @@ fn main(
         }
     {% else %}
         if (triangle_index == U32_MAX) {
-            {% if base == ShadingBase::Pbr %}
+            {% if owns_skybox %}
                 let color = sample_skybox(coords, screen_dims_f32, camera, skybox_tex, skybox_sampler);
                 textureStore(opaque_tex, coords, color);
             {% endif %}
@@ -248,7 +248,7 @@ fn main(
     // any sample-mask happens to be zero (defensive).
     {% if multisampled_geometry %}
         if (triangle_index == U32_MAX) {
-            {% if base == ShadingBase::Pbr %}
+            {% if owns_skybox %}
                 let color = sample_skybox(coords, screen_dims_f32, camera, skybox_tex, skybox_sampler);
                 textureStore(opaque_tex, coords, color);
             {% endif %}

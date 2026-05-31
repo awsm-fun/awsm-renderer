@@ -148,11 +148,16 @@ impl crate::AwsmRenderer {
         // via `.get()`. Take a short-lived borrow + clone for the
         // shader-info build (the registration's WGSL fragment is
         // captured by the dynamic_shader info below).
-        let reg = match self.dynamic_materials.get(shader_id) {
-            Some(r) => r.clone(),
-            None => return Ok(()),
-        };
-        let dynamic_shader = Some(DynamicShaderInfo {
+        // `reg` is `Some` only for a custom author material; a first-party
+        // feature-set variant has a dynamic-range id but no registration —
+        // it compiles the built-in PBR/Toon body (no `DynamicShaderInfo`).
+        let reg = self.dynamic_materials.get(shader_id).cloned();
+        // Neither a custom registration nor a known first-party variant →
+        // nothing to compile (id was removed between submit and launch).
+        if reg.is_none() && self.dynamic_materials.first_party_variant_of(shader_id).is_none() {
+            return Ok(());
+        }
+        let dynamic_shader = reg.as_ref().map(|reg| DynamicShaderInfo {
             struct_decl: awsm_materials::dynamic_layout::generate_wgsl_struct(
                 "MaterialData",
                 &reg.layout,
@@ -164,6 +169,9 @@ impl crate::AwsmRenderer {
             ),
             wgsl_fragment: reg.wgsl_fragment.clone(),
         });
+        // Shading family + feature mask + skybox ownership from the bucket
+        // entry (Custom for a registration; Pbr/Toon for a variant).
+        let (base, pbr_features, owns_skybox) = opaque_variant_params(&entries, shader_id);
 
         let mut shader_jobs: Vec<crate::shaders::ShaderCacheKey> = Vec::new();
         let mut slots: Vec<LaunchSlot> = Vec::new();
@@ -194,8 +202,9 @@ impl crate::AwsmRenderer {
                     msaa_sample_count: msaa,
                     mipmaps,
                     shader_id,
-                    base: crate::dynamic_materials::ShadingBase::for_shader_id(shader_id),
-                    pbr_features: awsm_materials::pbr::PbrFeatures::all().bits(),
+                    base,
+                    owns_skybox,
+                    pbr_features,
                     dispatch_hash,
                     dynamic_shader: dynamic_shader.clone(),
                     bucket_entries: entries.clone(),
@@ -206,7 +215,7 @@ impl crate::AwsmRenderer {
         }
         // Transparent stubs handled by the legacy prewarm path (per-mesh,
         // depends on buffer_info — not part of this launch).
-        if reg.alpha_mode == MaterialAlphaMode::Blend {
+        if reg.as_ref().map(|r| r.alpha_mode) == Some(MaterialAlphaMode::Blend) {
             tracing::debug!(
                 target: "awsm_renderer::pipeline_readiness",
                 "launch_dynamic_material_compile: Blend material — transparent pipeline stays on prewarm path",
@@ -406,8 +415,14 @@ impl crate::AwsmRenderer {
         &mut self,
         shader_id: MaterialShaderId,
     ) -> Result<(), crate::error::AwsmError> {
+        // Every dynamic-range id (custom author material OR a first-party
+        // feature-set variant) routes through the dynamic launch: it
+        // pushes the classify recompile that a bucket-list change needs.
+        // The dynamic launch reads each bucket's `base`/`features` off its
+        // registry entry and only attaches a `DynamicShaderInfo` for the
+        // custom case (variants compile the built-in body). Canonical
+        // first-party ids (PBR/UNLIT/TOON/FLIPBOOK) stay on this path.
         if shader_id.is_dynamic() {
-            // Dynamic shader_ids route through launch_dynamic_material_compile.
             return self.launch_dynamic_material_compile(shader_id);
         }
         let Some(mid) = self
@@ -464,6 +479,13 @@ impl crate::AwsmRenderer {
         let mut shader_jobs: Vec<crate::shaders::ShaderCacheKey> = Vec::new();
         let mut slots: Vec<LaunchSlot> = Vec::new();
 
+        // Read this bucket's shading family + specialized feature mask off
+        // its registry bucket entry. For a per-feature-set PBR/Toon
+        // variant this is `(Pbr|Toon, that variant's features)`; for a
+        // canonical first-party id it's `(family, all())`. The opaque
+        // template gates per-feature WGSL on these features (#16).
+        let (base, pbr_features, owns_skybox) = opaque_variant_params(&entries, shader_id);
+
         for &(msaa, mipmaps) in &[
             (Some(4u32), true),
             (Some(4u32), false),
@@ -477,8 +499,9 @@ impl crate::AwsmRenderer {
                     msaa_sample_count: msaa,
                     mipmaps,
                     shader_id,
-                    base: crate::dynamic_materials::ShadingBase::for_shader_id(shader_id),
-                    pbr_features: awsm_materials::pbr::PbrFeatures::all().bits(),
+                    base,
+                    owns_skybox,
+                    pbr_features,
                     dispatch_hash,
                     dynamic_shader: None,
                     bucket_entries: entries.clone(),
@@ -962,6 +985,28 @@ impl crate::AwsmRenderer {
             self.pipeline_scheduler.note_subcompile_complete(waiter_mid);
         }
     }
+}
+
+/// Resolve a first-party bucket's `(base, pbr_features, owns_skybox)` for
+/// the opaque cache key from its registry bucket entry. A per-feature-set
+/// PBR/Toon variant reports its specialized family + feature mask; a
+/// canonical first-party id reports `(family, all())`. Only the canonical
+/// `MaterialShaderId::PBR` bucket owns the skybox write (classify routes
+/// skybox pixels to bit 0 / index 0 → that bucket), so every specialized
+/// PBR variant gets `owns_skybox = false`.
+fn opaque_variant_params(
+    entries: &[crate::dynamic_materials::BucketEntry],
+    shader_id: MaterialShaderId,
+) -> (crate::dynamic_materials::ShadingBase, u32, bool) {
+    let entry = entries.iter().find(|e| e.shader_id == shader_id);
+    let base = entry
+        .map(|e| e.base)
+        .unwrap_or_else(|| crate::dynamic_materials::ShadingBase::for_shader_id(shader_id));
+    let pbr_features = entry
+        .map(|e| e.pbr_features)
+        .unwrap_or_else(|| awsm_materials::pbr::PbrFeatures::all().bits());
+    let owns_skybox = shader_id == MaterialShaderId::PBR;
+    (base, pbr_features, owns_skybox)
 }
 
 #[derive(Clone)]

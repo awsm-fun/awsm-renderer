@@ -263,6 +263,29 @@ impl AwsmRenderer {
             self.default_cheap_material_pixel_threshold,
         )?;
 
+        // Specialize-only pivot: route opaque PBR/Toon materials to their
+        // per-feature-set variant buckets BEFORE the material GPU write
+        // (so the resolved variant id lands in the payload's first u32 in
+        // this same frame) and before classify dispatch (which routes on
+        // it). Cheap no-op once the material set settles.
+        //
+        // GATED OFF by default while the bucketed render is brought to
+        // pixel-equivalence. The end-to-end routing works (full scene
+        // renders, all pipelines compile, the classify `is_empty` bug is
+        // fixed), but a bucketed scene is NOT yet pixel-identical to the
+        // single-PBR-bucket baseline: splitting PBR across feature-set
+        // buckets changes MSAA edge classification (adjacent meshes with
+        // different feature-sets now form classify silhouette edges), and
+        // the per-feature `{% if pbr_features %}` gating is not yet
+        // verified pixel-equivalent per KHR extension (needs the
+        // model-viewer per-extension pass, F.3). Flip to `true` to
+        // activate once those are verified. See
+        // docs/plans/dynamic-materials.md "RESUME HERE".
+        const PBR_VARIANT_SPECIALIZATION: bool = false;
+        if PBR_VARIANT_SPECIALIZATION {
+            self.reconcile_material_variants()?;
+        }
+
         self.transforms
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
         self.materials

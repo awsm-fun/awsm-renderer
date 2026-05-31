@@ -72,6 +72,10 @@ impl AwsmRenderer {
             &self.extras_pool,
             f,
         );
+        // A user edit may have changed the material's derived feature-set
+        // (e.g. added a normal map) → its variant bucket may differ. Flag
+        // the reconcile pass to re-resolve on the next frame.
+        self.materials.mark_variants_dirty();
     }
 
     /// Removes a material and frees its slot in the materials storage
@@ -239,6 +243,22 @@ pub struct Materials {
     lookup: SlotMap<MaterialKey, Material>,
     buffer: DynamicStorageBuffer<MaterialKey>,
     gpu_dirty: bool,
+    /// Per-material override for the payload's first u32 (the
+    /// `shader_id`). The specialize-only pivot routes an opaque PBR/Toon
+    /// material to a per-feature-set *variant* bucket whose id is
+    /// registry-allocated; that variant id — not the canonical
+    /// `Material::shader_id()` — is what `material_classify` routes on and
+    /// what the variant's opaque pipeline guards against. The
+    /// `AwsmRenderer` variant-reconcile pass resolves each material's
+    /// variant and records it here; [`Self::update`] patches the first 4
+    /// payload bytes with it, and [`Self::shader_id`] returns it for
+    /// pipeline selection. Absent → the material uses its canonical id
+    /// (Unlit/Flipbook/Custom/unreconciled).
+    resolved_shader_id: SecondaryMap<MaterialKey, MaterialShaderId>,
+    /// Set when a material that may need (re)routing to a feature-set
+    /// variant enters or is edited; cleared by the renderer's reconcile
+    /// pass. Starts `true` so the first frame reconciles.
+    variants_dirty: bool,
     _is_transparency_pass: SecondaryMap<MaterialKey, ()>,
     uploader: crate::buffer::mapped_uploader::MappedUploader,
     /// Sticky: set to true the first time a material implementing
@@ -267,6 +287,8 @@ impl Materials {
             gpu_buffer,
             buffer,
             gpu_dirty: true,
+            resolved_shader_id: SecondaryMap::new(),
+            variants_dirty: true,
             _is_transparency_pass: SecondaryMap::new(),
             uploader: crate::buffer::mapped_uploader::MappedUploader::new("Materials"),
             has_seen_transmission: false,
@@ -325,10 +347,47 @@ impl Materials {
         if is_transparency_pass {
             self._is_transparency_pass.insert(key, ());
         }
+        // A newly-inserted material may need routing to a feature-set
+        // variant bucket — flag the renderer's reconcile pass.
+        self.variants_dirty = true;
 
         self.update(key, textures, dynamic_materials, extras_pool, |_| {});
 
         key
+    }
+
+    /// Returns and clears the "materials may need variant (re)routing"
+    /// flag. Called once per frame by the renderer's reconcile pass.
+    pub fn take_variants_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.variants_dirty)
+    }
+
+    /// Marks that a material was edited in a way that may change its
+    /// derived feature-set (and thus its variant bucket). Drives the
+    /// renderer's reconcile pass on the next frame.
+    pub fn mark_variants_dirty(&mut self) {
+        self.variants_dirty = true;
+    }
+
+    /// Records the resolved feature-set variant id for a material and
+    /// re-packs its payload so the first u32 carries it. Called by the
+    /// renderer's reconcile pass; does NOT re-flag `variants_dirty` (it
+    /// is the reconcile, not a user edit).
+    pub fn set_resolved_shader_id(
+        &mut self,
+        key: MaterialKey,
+        resolved: MaterialShaderId,
+        textures: &Textures,
+        dynamic_materials: &crate::dynamic_materials::DynamicMaterials,
+        extras_pool: &crate::dynamic_materials::extras_pool::ExtrasPool,
+    ) {
+        if self.resolved_shader_id.get(key) == Some(&resolved) {
+            return; // unchanged — no re-pack
+        }
+        self.resolved_shader_id.insert(key, resolved);
+        // Re-pack with the new override (the closure is a no-op; the
+        // override is applied inside `update`).
+        self.update(key, textures, dynamic_materials, extras_pool, |_| {});
     }
 
     /// Removes a material from the slotmap + storage buffer. Returns
@@ -337,6 +396,7 @@ impl Materials {
         let removed = self.lookup.remove(key).is_some();
         if removed {
             self._is_transparency_pass.remove(key);
+            self.resolved_shader_id.remove(key);
             self.buffer.remove(key);
             self.gpu_dirty = true;
         }
@@ -410,7 +470,18 @@ impl Materials {
                 crate::dynamic_materials::DynamicMaterialPackContext::new(dynamic_materials)
                     .with_textures(textures)
                     .with_extras(extras_pool);
-            let data = material.uniform_buffer_data(textures, &dynamic_ctx);
+            let mut data = material.uniform_buffer_data(textures, &dynamic_ctx);
+            // Patch the payload's first u32 (the shader_id) with the
+            // resolved variant id when the reconcile pass has routed this
+            // material to a feature-set bucket. `write_uniform_buffer`
+            // writes `Material::shader_id()` (the canonical id) there in
+            // little-endian; the classify pass + the variant's opaque
+            // pipeline both key on this word, so it must be the variant id.
+            if let Some(resolved) = self.resolved_shader_id.get(key) {
+                if data.len() >= 4 {
+                    data[0..4].copy_from_slice(&resolved.as_u32().to_le_bytes());
+                }
+            }
             match self.buffer.update(key, &data) {
                 Ok(_) => {
                     self.gpu_dirty = true;
@@ -442,10 +513,25 @@ impl Materials {
     /// should never hit this path because the key came from a `Mesh`
     /// already validated against `Materials::insert`.
     pub fn shader_id(&self, key: MaterialKey) -> MaterialShaderId {
+        // A resolved feature-set variant id (set by the reconcile pass)
+        // wins over the material's canonical id — it's what classify
+        // routes on and what the specialized opaque pipeline guards.
+        if let Some(resolved) = self.resolved_shader_id.get(key) {
+            return *resolved;
+        }
         self.lookup
             .get(key)
             .map(|m| m.shader_id())
             .unwrap_or(MaterialShaderId::PBR)
+    }
+
+    /// Iterates `(key, &Material)` for materials that may route to a
+    /// first-party feature-set variant (opaque PBR/Toon). Used by the
+    /// renderer's reconcile pass to derive each one's feature mask.
+    pub fn iter_for_variant_reconcile(&self) -> impl Iterator<Item = (MaterialKey, &Material)> {
+        self.lookup
+            .iter()
+            .filter(|(_, m)| !m.is_transparency_pass())
     }
 
     /// Returns true if the material implements

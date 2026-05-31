@@ -547,20 +547,7 @@ impl DynamicMaterials {
         self.bucket_entries_cache = entries;
 
         // dispatch_hash: identical algorithm to `Self::dispatch_hash`.
-        if self.registrations.is_empty() {
-            self.dispatch_hash_cache = 0;
-        } else {
-            let mut entries: Vec<_> = self.registrations.iter().collect();
-            entries.sort_by_key(|(id, _)| id.as_u32());
-            let mut hasher = DefaultHasher::new();
-            for (id, reg) in entries {
-                id.as_u32().hash(&mut hasher);
-                reg.name.hash(&mut hasher);
-                reg.layout_hash.hash(&mut hasher);
-                reg.wgsl_hash.hash(&mut hasher);
-            }
-            self.dispatch_hash_cache = hasher.finish();
-        }
+        self.dispatch_hash_cache = self.dispatch_hash();
     }
 
     /// Iterates over `(shader_id, registration)` pairs in unspecified order.
@@ -592,13 +579,19 @@ impl DynamicMaterials {
         self.registrations.len()
     }
 
-    /// Returns true if no dynamic materials are registered. When this is the
-    /// case, [`Self::dispatch_hash`] returns a stable constant identical to
-    /// today's implicit "no dynamic materials" value, and first-party
-    /// per-shader-id pipelines' compiled WGSL is bit-identical to the
-    /// pre-feature build.
+    /// Returns true when the registry holds **no extra buckets** beyond
+    /// the canonical first-party defaults — i.e. no custom registrations
+    /// AND no first-party feature-set variants. In that state
+    /// [`Self::dispatch_hash`] is the stable `0` sentinel and the eager
+    /// first-party classify / opaque pipelines (compiled against the
+    /// 4-bucket default layout) are correct. The moment a feature-set
+    /// variant is allocated the bucket layout grows, so this returns
+    /// `false` and the classify pass must use its dynamic
+    /// (`dispatch_hash`-keyed) pipeline instead of the eager one —
+    /// otherwise it would route against the stale 4-bucket layout and
+    /// drop every variant's pixels (a near-black render).
     pub fn is_empty(&self) -> bool {
-        self.registrations.is_empty()
+        self.registrations.is_empty() && self.fp_variant_meta.is_empty()
     }
 
     /// Stable hash over the current registry's
@@ -610,17 +603,33 @@ impl DynamicMaterials {
     /// empty so first-party-only builds compile bit-identical WGSL to the
     /// pre-feature baseline.
     pub fn dispatch_hash(&self) -> u64 {
-        if self.registrations.is_empty() {
+        // Stable empty-state sentinel: no custom registrations AND no
+        // first-party feature-set variants → 0, so a first-party-only
+        // (uber-default) build compiles bit-identical WGSL to the
+        // pre-overhaul baseline. Either set being non-empty changes the
+        // bucket layout, which the classify + opaque + edge pipelines all
+        // template against, so it must invalidate their cache keys.
+        if self.registrations.is_empty() && self.fp_variant_meta.is_empty() {
             return 0;
         }
+        let mut hasher = DefaultHasher::new();
         let mut entries: Vec<_> = self.registrations.iter().collect();
         entries.sort_by_key(|(id, _)| id.as_u32());
-        let mut hasher = DefaultHasher::new();
         for (id, reg) in entries {
             id.as_u32().hash(&mut hasher);
             reg.name.hash(&mut hasher);
             reg.layout_hash.hash(&mut hasher);
             reg.wgsl_hash.hash(&mut hasher);
+        }
+        // Fold the first-party feature-set variants so adding/removing a
+        // variant bucket invalidates the classify pipeline (which is keyed
+        // on dispatch_hash, NOT on the full bucket list).
+        let mut variants: Vec<_> = self.fp_variant_meta.iter().collect();
+        variants.sort_by_key(|(id, _)| id.as_u32());
+        for (id, (base, features)) in variants {
+            id.as_u32().hash(&mut hasher);
+            (*base as u32).hash(&mut hasher);
+            features.hash(&mut hasher);
         }
         hasher.finish()
     }
@@ -1083,6 +1092,172 @@ impl crate::AwsmRenderer {
         Ok(id)
     }
 
+    /// Per-frame reconcile (specialize-only pivot #15/#16): route each
+    /// opaque PBR material to its per-feature-set *variant* bucket,
+    /// allocating + compiling new variants and re-laying-out the
+    /// bucket-dependent GPU state when the set grows.
+    ///
+    /// Called from the render preamble; a cheap no-op when the
+    /// `variants_dirty` flag is clear (every frame after the scene's
+    /// material set settles). On the frame a material enters / its
+    /// feature-set changes, it:
+    /// 1. derives `PbrFeatures` for every opaque PBR material,
+    /// 2. resolves each to a variant `shader_id` (deduped; allocates a
+    ///    new bucket on first sight of a feature-set),
+    /// 3. stamps the resolved id into the material payload's first u32
+    ///    (so classify routes those pixels to the variant bucket and the
+    ///    variant's specialized opaque pipeline shades them), and
+    /// 4. when the bucket list grew, re-lays-out classify/edge buffers
+    ///    and relaunches **every** bucket's pipeline against the final
+    ///    layout (the templated `ClassifyBuckets` struct depends on the
+    ///    full list, so a grow invalidates all of them).
+    ///
+    /// Toon routing lands in #18; until then Toon keeps its canonical
+    /// single-bucket id. The canonical PBR bucket (`MaterialShaderId::PBR`,
+    /// index 0) always stays present as the skybox owner even when every
+    /// PBR material routes to a specialized variant.
+    pub(crate) fn reconcile_material_variants(
+        &mut self,
+    ) -> Result<(), crate::error::AwsmError> {
+        if !self.materials.take_variants_dirty() {
+            return Ok(());
+        }
+        use awsm_materials::pbr::PbrFeatures;
+
+        // 1. Derive the desired (base, features) for every opaque material
+        //    that specializes (PBR today; Toon in #18).
+        let mut wants: Vec<(crate::materials::MaterialKey, ShadingBase, u32)> = Vec::new();
+        for (key, mat) in self.materials.iter_for_variant_reconcile() {
+            if let crate::materials::Material::Pbr(m) = mat {
+                wants.push((key, ShadingBase::Pbr, PbrFeatures::from_material(m).bits()));
+            }
+        }
+        if wants.is_empty() {
+            return Ok(());
+        }
+
+        // 2. Resolve to variant ids (allocates new buckets on first sight).
+        let before = self.dynamic_materials.bucket_entries_cached().len();
+        let mut resolved: Vec<(crate::materials::MaterialKey, MaterialShaderId)> =
+            Vec::with_capacity(wants.len());
+        for (key, base, features) in wants {
+            let id = self
+                .dynamic_materials
+                .resolve_first_party_variant(base, features);
+            resolved.push((key, id));
+        }
+        let grew = self.dynamic_materials.bucket_entries_cached().len() != before;
+
+        // 3. Stamp the resolved id into each material's payload (re-packs
+        //    only when the id actually changed).
+        for (key, id) in &resolved {
+            self.materials.set_resolved_shader_id(
+                *key,
+                *id,
+                &self.textures,
+                &self.dynamic_materials,
+                &self.extras_pool,
+            );
+        }
+
+        // 4. A bucket-list change invalidates every bucket's templated
+        //    pipelines — re-lay-out + relaunch them all against the final
+        //    layout.
+        if grew {
+            self.relaunch_all_buckets_after_layout_change()?;
+        }
+        Ok(())
+    }
+
+    /// Re-lays-out the bucket-dependent GPU state (classify + edge
+    /// buffers, edge-layout uniform) for the current bucket count, clears
+    /// the layout-dependent pipeline caches, then submits + relaunches
+    /// every bucket (canonical first-party, feature-set variants, custom)
+    /// so each recompiles against the final bucket layout.
+    ///
+    /// Mirrors [`Self::register_material`]'s post-insert reconcile tail,
+    /// generalized from "one new custom bucket" to "the whole bucket set
+    /// changed". Used by [`Self::reconcile_material_variants`] when a new
+    /// PBR/Toon feature-set variant grows the bucket list.
+    fn relaunch_all_buckets_after_layout_change(
+        &mut self,
+    ) -> Result<(), crate::error::AwsmError> {
+        let new_count = self.dynamic_materials.bucket_entries_cached().len() as u32;
+
+        // Classify buffers (per-bucket indirect args + tile lists).
+        if self
+            .material_classify_buffers
+            .ensure_bucket_count(&self.gpu, new_count)?
+        {
+            self.bind_groups
+                .mark_create(crate::bind_groups::BindGroupCreate::MaterialClassifyBuffersResize);
+        }
+        // Edge buffers + edge-layout uniform (MSAA only).
+        if let Some(edge_buffers) = self.material_edge_buffers.as_mut() {
+            if edge_buffers.ensure_bucket_count(&self.gpu, new_count)? {
+                self.bind_groups.mark_create(
+                    crate::bind_groups::BindGroupCreate::MaterialClassifyBuffersResize,
+                );
+                let max_edge_budget = edge_buffers.max_edge_budget;
+                if let Ok((uniform, _bytes)) =
+                    crate::render_passes::material_opaque::edge_buffers::build_edge_layout_uniform(
+                        &self.gpu,
+                        new_count,
+                        max_edge_budget,
+                    )
+                {
+                    self.material_edge_layout_uniform = Some(uniform);
+                }
+            }
+        }
+
+        // Clear layout-dependent typed pipeline caches (opaque `main` +
+        // edge). classify's cache is self-invalidating via dispatch_hash.
+        self.render_passes
+            .material_opaque
+            .pipelines
+            .clear_dynamic_pipelines();
+        self.render_passes
+            .material_opaque
+            .edge_pipelines
+            .clear_dynamic_pipelines();
+
+        // Ensure every bucket (incl. canonical first-party + the new
+        // variants) has a scheduler entry, then relaunch them all so they
+        // recompile against the final bucket layout.
+        let bucket_ids: Vec<MaterialShaderId> = self
+            .dynamic_materials
+            .bucket_entries_cached()
+            .iter()
+            .map(|e| e.shader_id)
+            .collect();
+        for id in &bucket_ids {
+            if let Err(e) = self.submit_to_scheduler_for_shader_id(*id) {
+                tracing::warn!(
+                    target: "awsm_renderer::pipeline_readiness",
+                    "variant reconcile: submit_to_scheduler({:?}) failed: {:?}", id, e
+                );
+            }
+        }
+        let registered = self.pipeline_scheduler.registered_material_shader_ids();
+        for shader_id in &registered {
+            if let Some(mid) = self.pipeline_scheduler.find_material_by_shader_id(*shader_id) {
+                self.pipeline_scheduler.mark_material_pending_for_relaunch(
+                    crate::pipeline_scheduler::PipelineGroupId::Material(mid),
+                );
+            }
+        }
+        for shader_id in registered {
+            if let Err(e) = self.launch_first_party_material_compile(shader_id) {
+                tracing::warn!(
+                    target: "awsm_renderer::pipeline_readiness",
+                    "variant reconcile relaunch of material({:?}) failed: {:?}", shader_id, e
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// Internal helper: build a `MaterialDef` for a freshly-registered
     /// dynamic material and submit it to the scheduler. Idempotent —
     /// a duplicate submit for the same shader_id just adds a second
@@ -1108,12 +1283,6 @@ impl crate::AwsmRenderer {
         {
             return Ok(());
         }
-        // We need the registration to snapshot its alpha_mode +
-        // double_sided + boxed kind. The registry just inserted it.
-        let registration = match self.dynamic_materials.get(shader_id) {
-            Some(r) => r.clone(),
-            None => return Ok(()), // shouldn't happen, but bail quietly
-        };
         let snapshot = PipelineConfigSnapshot {
             msaa: self.anti_aliasing.clone(),
             mipmap: if self.anti_aliasing.mipmap {
@@ -1126,12 +1295,40 @@ impl crate::AwsmRenderer {
             debug_bitmask: 0,
             default_cull_mode: awsm_renderer_core::pipeline::primitive::CullMode::Back,
         };
-        let def = MaterialDef {
-            shader_id,
-            alpha_mode: registration.alpha_mode,
-            double_sided: registration.double_sided,
-            kind: MaterialDefKind::Dynamic(Box::new(registration)),
-            config_snapshot: snapshot,
+        // FirstParty if it's a canonical first-party id (PBR/UNLIT/TOON/
+        // FLIPBOOK, NOT dynamic-range) OR a first-party feature-set
+        // variant (dynamic-range, but registered in `fp_variant_meta`).
+        // Both compile the built-in body with params in the material_meta
+        // buffer. Only a custom author registration is Dynamic.
+        //
+        // Submitting the canonical first-party ids matters because the
+        // variant reconcile clears `main` (all opaque pipelines) on a
+        // bucket-list change and relaunches only scheduler-registered
+        // materials — without an entry, the canonical PBR skybox-owner +
+        // the Unlit/Toon/Flipbook buckets would never recompile (black).
+        let is_first_party = !shader_id.is_dynamic()
+            || self.dynamic_materials.first_party_variant_of(shader_id).is_some();
+        let def = if is_first_party {
+            MaterialDef {
+                shader_id,
+                alpha_mode: MaterialAlphaMode::Opaque,
+                double_sided: false,
+                kind: MaterialDefKind::FirstParty,
+                config_snapshot: snapshot,
+            }
+        } else {
+            // Custom author material — snapshot its registration.
+            let registration = match self.dynamic_materials.get(shader_id) {
+                Some(r) => r.clone(),
+                None => return Ok(()), // shouldn't happen, but bail quietly
+            };
+            MaterialDef {
+                shader_id,
+                alpha_mode: registration.alpha_mode,
+                double_sided: registration.double_sided,
+                kind: MaterialDefKind::Dynamic(Box::new(registration)),
+                config_snapshot: snapshot,
+            }
         };
         self.pipeline_scheduler
             .submit_pipeline_group_batch(vec![PipelineGroupDef::Material(def)]);
