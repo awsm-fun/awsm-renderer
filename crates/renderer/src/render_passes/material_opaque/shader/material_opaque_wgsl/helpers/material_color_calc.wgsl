@@ -388,10 +388,17 @@ fn _pbr_material_base_color{{ mipmap.suffix() }}(
     {% if mipmap.is_gradient() %}uv_derivs: UvDerivs,{% endif %}
 ) -> vec4<f32> {
     var color = material.base_color_factor;
+    // Compile-time feature gate (B.2 / criterion 4): a feature-set without
+    // a base-color texture emits NO sampler load here, so the whole
+    // sample → multiply chain dead-code-eliminates (lower register
+    // pressure → higher occupancy). Pixel-equivalent: a material lacking
+    // the slot has `.exists == false` anyway.
+    {% if pbr_features.base_color_tex %}
     if material.base_color_tex_info.exists {
         let tex_sample = {{ mipmap.sample_fn() }}(material.base_color_tex_info, attribute_uv{% if mipmap.is_gradient() %}, uv_derivs{% endif %});
         color *= tex_sample;
     }
+    {% endif %}
     // compute pass only deals with fully opaque
     // mask and blend are handled in the fragment shader
     color.a = 1.0;
@@ -405,11 +412,13 @@ fn _pbr_material_metallic_roughness_color{{ mipmap.suffix() }}(
     {% if mipmap.is_gradient() %}uv_derivs: UvDerivs,{% endif %}
 ) -> vec2<f32> {
     var color = vec2<f32>(material.metallic_factor, material.roughness_factor);
+    {% if pbr_features.metallic_roughness_tex %}
     if material.metallic_roughness_tex_info.exists {
         let tex = {{ mipmap.sample_fn() }}(material.metallic_roughness_tex_info, attribute_uv{% if mipmap.is_gradient() %}, uv_derivs{% endif %});
         // glTF uses B channel for metallic, G channel for roughness
         color *= vec2<f32>(tex.b, tex.g);
     }
+    {% endif %}
     return color;
 }
 
@@ -421,21 +430,25 @@ fn _pbr_normal_color{{ mipmap.suffix() }}(
     {% if mipmap.is_gradient() %}uv_derivs: UvDerivs,{% endif %}
     geometry_tbn: TBN,
 ) -> vec3<f32> {
-    if !material.normal_tex_info.exists {
-        return geometry_tbn.N;
+    // Compile-time gate: a feature-set without a normal map emits none of
+    // the sampler load / TBN transform — it just returns the geometry
+    // normal. Equivalent to the absent-texture runtime path.
+    {% if pbr_features.normal_tex %}
+    if material.normal_tex_info.exists {
+        // Sample normal map and unpack from [0,1] to [-1,1] range
+        let tex = {{ mipmap.sample_fn() }}(material.normal_tex_info, attribute_uv{% if mipmap.is_gradient() %}, uv_derivs{% endif %});
+        let tangent_normal = vec3<f32>(
+            (tex.r * 2.0 - 1.0) * material.normal_scale,
+            (tex.g * 2.0 - 1.0) * material.normal_scale,
+            tex.b * 2.0 - 1.0,
+        );
+
+        // Transform the tangent-space normal to world space using the TBN matrix from geometry pass
+        let tbn_matrix = mat3x3<f32>(geometry_tbn.T, geometry_tbn.B, geometry_tbn.N);
+        return normalize(tbn_matrix * tangent_normal);
     }
-
-    // Sample normal map and unpack from [0,1] to [-1,1] range
-    let tex = {{ mipmap.sample_fn() }}(material.normal_tex_info, attribute_uv{% if mipmap.is_gradient() %}, uv_derivs{% endif %});
-    let tangent_normal = vec3<f32>(
-        (tex.r * 2.0 - 1.0) * material.normal_scale,
-        (tex.g * 2.0 - 1.0) * material.normal_scale,
-        tex.b * 2.0 - 1.0,
-    );
-
-    // Transform the tangent-space normal to world space using the TBN matrix from geometry pass
-    let tbn_matrix = mat3x3<f32>(geometry_tbn.T, geometry_tbn.B, geometry_tbn.N);
-    return normalize(tbn_matrix * tangent_normal);
+    {% endif %}
+    return geometry_tbn.N;
 }
 
 // Occlusion
@@ -445,10 +458,12 @@ fn _pbr_occlusion_color{{ mipmap.suffix() }}(
     {% if mipmap.is_gradient() %}uv_derivs: UvDerivs,{% endif %}
 ) -> f32 {
     var occlusion = 1.0;
+    {% if pbr_features.occlusion_tex %}
     if material.occlusion_tex_info.exists {
         let tex = {{ mipmap.sample_fn() }}(material.occlusion_tex_info, attribute_uv{% if mipmap.is_gradient() %}, uv_derivs{% endif %});
         occlusion = mix(1.0, tex.r, material.occlusion_strength);
     }
+    {% endif %}
     return occlusion;
 }
 
@@ -460,9 +475,11 @@ fn _pbr_material_emissive_color{{ mipmap.suffix() }}(
     {% if mipmap.is_gradient() %}uv_derivs: UvDerivs,{% endif %}
 ) -> vec3<f32> {
     var color = material.emissive_factor;
+    {% if pbr_features.emissive_tex %}
     if material.emissive_tex_info.exists {
         color *= {{ mipmap.sample_fn() }}(material.emissive_tex_info, attribute_uv{% if mipmap.is_gradient() %}, uv_derivs{% endif %}).rgb;
     }
+    {% endif %}
     color *= emissive_strength;
     return color;
 }
