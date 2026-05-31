@@ -623,6 +623,8 @@ return TransparentShadingOutput(vec4<f32>(color, alpha));
             texture_pool_samplers_len: 1,
             msaa_sample_count: None,
             mipmaps: true,
+            base: crate::dynamic_materials::ShadingBase::Custom,
+            pbr_features: awsm_materials::pbr::PbrFeatures::all().bits(),
             dispatch_hash: 0,
             dynamic_shader_id: Some(dyn_id),
             dynamic_shader: Some(dyn_info),
@@ -635,7 +637,10 @@ return TransparentShadingOutput(vec4<f32>(color, alpha));
             .into_source()
             .expect("transparent template must render without errors");
 
-        // Structural assertions on the emitted source:
+        // Structural assertions on the emitted source. The specialize-only
+        // transparent fragment selects the body at COMPILE time on
+        // `base == Custom` (no runtime `shader_id ==` dispatch arm), so the
+        // wrapper + its call must be present.
         assert!(
             source.contains("fn custom_shade_transparent_dynamic"),
             "transparent template missing custom_shade_transparent_dynamic wrapper"
@@ -648,14 +653,7 @@ return TransparentShadingOutput(vec4<f32>(color, alpha));
             source.contains("struct MaterialData"),
             "transparent template missing auto-generated MaterialData struct"
         );
-        // The dispatch arm must mention the dynamic shader_id explicitly
-        // so the runtime branch routes correctly.
-        let expected_dispatch = format!("== {}u", dyn_id.as_u32());
-        assert!(
-            source.contains(&expected_dispatch),
-            "transparent template missing dispatch arm for shader_id {} — searched for `{expected_dispatch}`",
-            dyn_id.as_u32()
-        );
+        let _ = dyn_id;
     }
 
     #[test]
@@ -671,6 +669,8 @@ return TransparentShadingOutput(vec4<f32>(color, alpha));
             texture_pool_samplers_len: 1,
             msaa_sample_count: None,
             mipmaps: true,
+            base: crate::dynamic_materials::ShadingBase::Pbr,
+            pbr_features: awsm_materials::pbr::PbrFeatures::all().bits(),
             dispatch_hash: 0,
             dynamic_shader_id: None,
             dynamic_shader: None,

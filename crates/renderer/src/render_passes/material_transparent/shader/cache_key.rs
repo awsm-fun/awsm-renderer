@@ -3,6 +3,7 @@
 use awsm_materials::MaterialShaderId;
 
 use crate::{
+    dynamic_materials::ShadingBase,
     render_passes::{
         material_opaque::shader::cache_key::DynamicShaderInfo,
         shader_cache_key::ShaderCacheKeyRenderPass,
@@ -32,6 +33,19 @@ pub struct ShaderCacheKeyMaterialTransparent {
     pub texture_pool_samplers_len: u32,
     pub msaa_sample_count: Option<u32>,
     pub mipmaps: bool,
+    /// Which built-in shading family this transparent material is — the
+    /// fragment selects its body at COMPILE time (`{% if base == … %}`),
+    /// not via a runtime `shader_id ==` branch. Each distinct
+    /// `(base, pbr_features)` is its own specialized transparent pipeline
+    /// (transparent is drawn per-mesh / one material per draw, so it's
+    /// already material-homogeneous — no uber fragment, per the
+    /// specialize-only pivot). `Custom` for a dynamic author material.
+    pub base: ShadingBase,
+    /// PBR feature mask ([`awsm_materials::pbr::PbrFeatures::bits`]) this
+    /// transparent PBR pipeline is specialized for — drives the compile-
+    /// time `{% if pbr_features.<x> %}` gating in the shared brdf /
+    /// material_color_calc includes. Inert for non-PBR bases.
+    pub pbr_features: u32,
     /// Stable hash over the currently-registered dynamic-material set
     /// (sorted by shader_id). `0` when none registered — pre-feature
     /// WGSL is bit-identical.

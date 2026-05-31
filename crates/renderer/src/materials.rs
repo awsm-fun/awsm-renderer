@@ -567,6 +567,32 @@ impl Materials {
             .filter(|(_, m)| !m.is_transparency_pass())
     }
 
+    /// Returns the `(ShadingBase, pbr_features)` for a material — the
+    /// compile-time specialization key for its TRANSPARENT pipeline (the
+    /// transparent fragment selects its body on `base` and gates PBR
+    /// features, instead of a runtime `shader_id ==` uber branch). Unknown
+    /// keys / non-PBR families report an inert all-features mask. PBR's
+    /// mask is derived from the material's actual Option fields.
+    pub fn transparent_variant(
+        &self,
+        key: MaterialKey,
+    ) -> (crate::dynamic_materials::ShadingBase, u32) {
+        use crate::dynamic_materials::ShadingBase;
+        match self.lookup.get(key) {
+            Some(Material::Pbr(m)) => (
+                ShadingBase::Pbr,
+                awsm_materials::pbr::PbrFeatures::from_material(m).bits(),
+            ),
+            Some(Material::Toon(_)) => (ShadingBase::Toon, 0),
+            Some(Material::Unlit(_)) => (ShadingBase::Unlit, 0),
+            Some(Material::FlipBook(_)) => (ShadingBase::Flipbook, 0),
+            Some(Material::Custom(_)) | None => (
+                ShadingBase::Custom,
+                awsm_materials::pbr::PbrFeatures::all().bits(),
+            ),
+        }
+    }
+
     /// Returns true if the material implements
     /// `KHR_materials_transmission`. See [`Material::has_transmission`]
     /// for why the transparent pipeline branches depth-write on this.

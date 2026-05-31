@@ -1569,11 +1569,14 @@ impl AwsmRenderer {
             }
             let buffer_info_key = self.meshes.buffer_info_key(mesh_key)?;
             let has_transmission = self.materials.has_transmission(mesh.material_key);
+            let (base, pbr_features) = self.materials.transparent_variant(mesh.material_key);
             requests.push(TransparentMeshPipelineRequest {
                 mesh,
                 mesh_key,
                 buffer_info_key,
                 has_transmission,
+                base,
+                pbr_features,
             });
         }
         if requests.is_empty() {

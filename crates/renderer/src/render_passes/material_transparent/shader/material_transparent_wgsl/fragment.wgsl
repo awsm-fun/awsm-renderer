@@ -133,7 +133,7 @@ fn sample_transmission_background_for_ior(
     return textureLoad(opaque_tex, mip_coord, mip_i).rgb;
 }
 
-{% if shader_id_dynamic != 0 %}
+{% if base == ShadingBase::Custom %}
 /*************** START dynamic-material wrapper ******************/
 // Auto-generated per the registered transparent material's layout.
 // See docs/dynamic-materials/contract-transparent.md for the
@@ -197,20 +197,23 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
         is_orthographic
     );
 
-    // Get shader_id to determine material type
     let material_offset = material_mesh_meta.material_offset;
-    let shader_id = material_load_shader_id(material_offset);
 
     var color: vec3<f32>;
     var base_alpha: f32;
 
-    if (shader_id == SHADER_ID_UNLIT) {
+    // Specialize-only: the transparent body is selected at COMPILE time on
+    // `base` (each transparent material gets its own pipeline — transparent
+    // is drawn per-mesh, one material per draw), NOT a runtime `shader_id ==`
+    // uber branch. The shared brdf / material_color_calc includes are gated
+    // to exactly this material's `pbr_features`.
+    {% if base == ShadingBase::Unlit %}
         // Unlit material path
         let unlit_material = unlit_get_material(material_offset);
         let unlit_color = unlit_get_material_color(unlit_material, input);
         color = compute_unlit_output(unlit_color);
         base_alpha = unlit_color.base.a;
-    } else if (shader_id == SHADER_ID_FLIPBOOK) {
+    {% else if base == ShadingBase::Flipbook %}
         // FlipBook (sprite-sheet) material — samples a single cell from
         // a grid-uniform atlas based on `frame_globals.time + time_offset`.
         let fb = flipbook_get_material(material_offset);
@@ -235,7 +238,7 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
         // For mask materials past the cutoff, force alpha = 1 (we
         // already passed the discard above).
         base_alpha = select(fb_result.a, 1.0, fb.alpha_mode == ALPHA_MODE_MASK);
-    } else if (shader_id == SHADER_ID_TOON) {
+    {% else if base == ShadingBase::Toon %}
         // Toon material path
         let toon_material = toon_get_material(material_offset);
         let lights_info = get_lights_info();
@@ -247,8 +250,7 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
             lights_info,
         );
         base_alpha = toon_material.base_color_factor.a;
-{% if shader_id_dynamic != 0 %}
-    } else if (shader_id == {{ shader_id_dynamic }}u) {
+    {% else if base == ShadingBase::Custom %}
         // Dynamic custom transparent material — wrapped fragment lives above.
         let dyn_material = material_data_load(material_offset);
         let dyn_input = TransparentShadingInput(
@@ -263,8 +265,7 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
         let dyn_out = custom_shade_transparent_dynamic(dyn_input);
         out.color = dyn_out.color;
         return out;
-{% endif %}
-    } else {
+    {% else %}
         // PBR material path (default)
         let material = pbr_get_material(material_offset);
 
@@ -327,7 +328,7 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
         }
 
         base_alpha = material_color.base.a;
-    }
+    {% endif %}
 
     // Apply per-instance tint (Stage-3b — mirrors the opaque non-MSAA path).
     if (input.instance_id != INSTANCE_ATTR_NONE) {

@@ -598,12 +598,15 @@ impl AwsmRenderer {
         for (mesh_key, mesh) in self.meshes.iter() {
             let buffer_info_key = self.meshes.buffer_info_key(mesh_key)?;
             let has_transmission = self.materials.has_transmission(mesh.material_key);
+            let (base, pbr_features) = self.materials.transparent_variant(mesh.material_key);
             requests.push(
                 crate::render_passes::material_transparent::pipeline::TransparentMeshPipelineRequest {
                     mesh,
                     mesh_key,
                     buffer_info_key,
                     has_transmission,
+                    base,
+                    pbr_features,
                 },
             );
         }
@@ -804,6 +807,10 @@ impl AwsmRenderer {
                             texture_pool_samplers_len,
                             msaa_sample_count: msaa,
                             mipmaps,
+                            // Custom author transparent material — the
+                            // fragment emits the dynamic wrapper body.
+                            base: crate::dynamic_materials::ShadingBase::Custom,
+                            pbr_features: awsm_materials::pbr::PbrFeatures::all().bits(),
                             dispatch_hash,
                             dynamic_shader_id: Some(shader_id),
                             dynamic_shader: dynamic_shader.clone(),
