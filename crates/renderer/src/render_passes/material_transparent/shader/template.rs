@@ -53,6 +53,9 @@ pub struct ShaderTemplateTransparentMaterialIncludes {
     /// uber config (`all()`) per Decision 10 — it never specializes —
     /// so every lobe is emitted, identical to before B.2.
     pub pbr_features: awsm_materials::pbr::PbrFeatures,
+    /// Transparent is ALWAYS uber (Decision 10) → always runtime-gated.
+    /// See `ShaderTemplateMaterialOpaqueCompute::pbr_runtime_gated`.
+    pub pbr_runtime_gated: bool,
 }
 impl ShaderTemplateTransparentMaterialIncludes {
     /// Creates include template data from the cache key.
@@ -72,6 +75,7 @@ impl ShaderTemplateTransparentMaterialIncludes {
             materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
             shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
             pbr_features: awsm_materials::pbr::PbrFeatures::all(),
+            pbr_runtime_gated: true,
         }
     }
 
