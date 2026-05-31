@@ -154,7 +154,12 @@ impl crate::AwsmRenderer {
         let reg = self.dynamic_materials.get(shader_id).cloned();
         // Neither a custom registration nor a known first-party variant →
         // nothing to compile (id was removed between submit and launch).
-        if reg.is_none() && self.dynamic_materials.first_party_variant_of(shader_id).is_none() {
+        if reg.is_none()
+            && self
+                .dynamic_materials
+                .first_party_variant_of(shader_id)
+                .is_none()
+        {
             return Ok(());
         }
         let dynamic_shader = reg.as_ref().map(|reg| DynamicShaderInfo {

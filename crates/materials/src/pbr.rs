@@ -179,23 +179,57 @@ impl PbrFeatures {
     /// keying a feature-set to its opaque bucket (B.3).
     pub fn bits(&self) -> u32 {
         let mut b = 0u32;
-        if self.base_color_tex { b |= Self::BIT_BASE_COLOR_TEX; }
-        if self.metallic_roughness_tex { b |= Self::BIT_METALLIC_ROUGHNESS_TEX; }
-        if self.normal_tex { b |= Self::BIT_NORMAL_TEX; }
-        if self.occlusion_tex { b |= Self::BIT_OCCLUSION_TEX; }
-        if self.emissive_tex { b |= Self::BIT_EMISSIVE_TEX; }
-        if self.vertex_color { b |= Self::BIT_VERTEX_COLOR; }
-        if self.emissive_strength { b |= Self::BIT_EMISSIVE_STRENGTH; }
-        if self.ior { b |= Self::BIT_IOR; }
-        if self.specular { b |= Self::BIT_SPECULAR; }
-        if self.transmission { b |= Self::BIT_TRANSMISSION; }
-        if self.diffuse_transmission { b |= Self::BIT_DIFFUSE_TRANSMISSION; }
-        if self.volume { b |= Self::BIT_VOLUME; }
-        if self.clearcoat { b |= Self::BIT_CLEARCOAT; }
-        if self.sheen { b |= Self::BIT_SHEEN; }
-        if self.dispersion { b |= Self::BIT_DISPERSION; }
-        if self.anisotropy { b |= Self::BIT_ANISOTROPY; }
-        if self.iridescence { b |= Self::BIT_IRIDESCENCE; }
+        if self.base_color_tex {
+            b |= Self::BIT_BASE_COLOR_TEX;
+        }
+        if self.metallic_roughness_tex {
+            b |= Self::BIT_METALLIC_ROUGHNESS_TEX;
+        }
+        if self.normal_tex {
+            b |= Self::BIT_NORMAL_TEX;
+        }
+        if self.occlusion_tex {
+            b |= Self::BIT_OCCLUSION_TEX;
+        }
+        if self.emissive_tex {
+            b |= Self::BIT_EMISSIVE_TEX;
+        }
+        if self.vertex_color {
+            b |= Self::BIT_VERTEX_COLOR;
+        }
+        if self.emissive_strength {
+            b |= Self::BIT_EMISSIVE_STRENGTH;
+        }
+        if self.ior {
+            b |= Self::BIT_IOR;
+        }
+        if self.specular {
+            b |= Self::BIT_SPECULAR;
+        }
+        if self.transmission {
+            b |= Self::BIT_TRANSMISSION;
+        }
+        if self.diffuse_transmission {
+            b |= Self::BIT_DIFFUSE_TRANSMISSION;
+        }
+        if self.volume {
+            b |= Self::BIT_VOLUME;
+        }
+        if self.clearcoat {
+            b |= Self::BIT_CLEARCOAT;
+        }
+        if self.sheen {
+            b |= Self::BIT_SHEEN;
+        }
+        if self.dispersion {
+            b |= Self::BIT_DISPERSION;
+        }
+        if self.anisotropy {
+            b |= Self::BIT_ANISOTROPY;
+        }
+        if self.iridescence {
+            b |= Self::BIT_IRIDESCENCE;
+        }
         b
     }
 
@@ -679,7 +713,11 @@ mod pbr_features_tests {
         let m = PbrMaterial::new(MaterialAlphaMode::Opaque, false);
         let f = PbrFeatures::from_material(&m);
         assert_eq!(f, PbrFeatures::default());
-        assert_eq!(f.bits(), 0, "a no-texture, no-extension PBR material is the smallest feature-set");
+        assert_eq!(
+            f.bits(),
+            0,
+            "a no-texture, no-extension PBR material is the smallest feature-set"
+        );
     }
 
     #[test]
@@ -699,7 +737,12 @@ mod pbr_features_tests {
         assert!(f.ior && f.clearcoat && f.emissive_strength);
         assert!(!f.sheen && !f.transmission);
         // Only the three set extensions show up in the hash.
-        let expect = PbrFeatures { ior: true, clearcoat: true, emissive_strength: true, ..Default::default() };
+        let expect = PbrFeatures {
+            ior: true,
+            clearcoat: true,
+            emissive_strength: true,
+            ..Default::default()
+        };
         assert_eq!(f.bits(), expect.bits());
     }
 
@@ -722,8 +765,16 @@ mod pbr_features_tests {
 
     #[test]
     fn bits_round_trip_for_all_and_arbitrary() {
-        for f in [PbrFeatures::default(), PbrFeatures::all(),
-                  PbrFeatures { normal_tex: true, occlusion_tex: true, sheen: true, ..Default::default() }] {
+        for f in [
+            PbrFeatures::default(),
+            PbrFeatures::all(),
+            PbrFeatures {
+                normal_tex: true,
+                occlusion_tex: true,
+                sheen: true,
+                ..Default::default()
+            },
+        ] {
             assert_eq!(PbrFeatures::from_bits(f.bits()), f);
         }
     }
@@ -731,6 +782,6 @@ mod pbr_features_tests {
     #[test]
     fn all_features_set_exactly_count_bits() {
         assert_eq!(PbrFeatures::all().bits().count_ones(), PbrFeatures::COUNT);
-        assert!(PbrFeatures::COUNT <= 32, "bits() must fit a u32");
+        const { assert!(PbrFeatures::COUNT <= 32, "bits() must fit a u32") };
     }
 }

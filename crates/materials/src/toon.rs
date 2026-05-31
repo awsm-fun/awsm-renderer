@@ -199,7 +199,11 @@ mod tests {
     fn toon_features_bits_round_trip() {
         for mask in 0u32..(1 << ToonFeatures::COUNT) {
             let f = ToonFeatures::from_bits(mask);
-            assert_eq!(f.bits(), mask, "from_bits→bits must round-trip for {mask:#b}");
+            assert_eq!(
+                f.bits(),
+                mask,
+                "from_bits→bits must round-trip for {mask:#b}"
+            );
         }
     }
 
@@ -210,7 +214,11 @@ mod tests {
         let m = ToonMaterial::new(MaterialAlphaMode::Opaque, false);
         let f = ToonFeatures::from_material(&m);
         assert!(!f.base_color_tex && !f.emissive_tex);
-        assert_eq!(f.bits(), 0, "a textureless toon material is the empty feature-set");
+        assert_eq!(
+            f.bits(),
+            0,
+            "a textureless toon material is the empty feature-set"
+        );
         assert_eq!(ToonFeatures::all().bits(), 0b11);
     }
 }

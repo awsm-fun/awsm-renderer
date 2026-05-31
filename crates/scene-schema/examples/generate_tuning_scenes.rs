@@ -965,7 +965,9 @@ fn scene_50_materials() -> EditorProject {
         prim_node(
             "transp_glass_clear",
             [-6.0, 0.8, -0.6],
-            PrimitiveShape::Box { dims: [1.1, 1.1, 1.1] },
+            PrimitiveShape::Box {
+                dims: [1.1, 1.1, 1.1],
+            },
             MaterialDef {
                 base_color: [0.80, 0.90, 1.0, 0.35],
                 metallic: 0.0,
@@ -978,7 +980,11 @@ fn scene_50_materials() -> EditorProject {
         prim_node(
             "transp_glass_green",
             [-2.0, 0.8, -0.6],
-            PrimitiveShape::Sphere { radius: 0.7, segments_long: 24, segments_lat: 16 },
+            PrimitiveShape::Sphere {
+                radius: 0.7,
+                segments_long: 24,
+                segments_lat: 16,
+            },
             MaterialDef {
                 base_color: [0.45, 1.0, 0.55, 0.50],
                 metallic: 0.0,
@@ -991,7 +997,9 @@ fn scene_50_materials() -> EditorProject {
         prim_node(
             "transp_glass_amber",
             [2.0, 0.8, -0.6],
-            PrimitiveShape::Box { dims: [1.1, 1.1, 1.1] },
+            PrimitiveShape::Box {
+                dims: [1.1, 1.1, 1.1],
+            },
             MaterialDef {
                 base_color: [1.0, 0.70, 0.20, 0.55],
                 metallic: 0.0,
@@ -1004,7 +1012,11 @@ fn scene_50_materials() -> EditorProject {
         prim_node(
             "transp_glass_textured",
             [6.0, 0.8, -0.6],
-            PrimitiveShape::Sphere { radius: 0.7, segments_long: 24, segments_lat: 16 },
+            PrimitiveShape::Sphere {
+                radius: 0.7,
+                segments_long: 24,
+                segments_lat: 16,
+            },
             MaterialDef {
                 base_color: [1.0, 1.0, 1.0, 0.60],
                 base_color_texture: Some(tex),

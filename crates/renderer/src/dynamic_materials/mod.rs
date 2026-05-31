@@ -379,11 +379,7 @@ pub fn bucket_entries(dynamic: &DynamicMaterials) -> Vec<BucketEntry> {
 /// Builds the [`BucketEntry`] for a first-party feature-set variant.
 /// The WGSL-safe name is `<family>_<id>` (e.g. `pbr_10000`) — stable for
 /// a given id within a build and guaranteed unique (ids are monotonic).
-fn fp_variant_bucket_entry(
-    id: MaterialShaderId,
-    base: ShadingBase,
-    features: u32,
-) -> BucketEntry {
+fn fp_variant_bucket_entry(id: MaterialShaderId, base: ShadingBase, features: u32) -> BucketEntry {
     BucketEntry {
         shader_id: id,
         base,
@@ -1175,9 +1171,7 @@ impl crate::AwsmRenderer {
     /// single-bucket id. The canonical PBR bucket (`MaterialShaderId::PBR`,
     /// index 0) always stays present as the skybox owner even when every
     /// PBR material routes to a specialized variant.
-    pub(crate) fn reconcile_material_variants(
-        &mut self,
-    ) -> Result<(), crate::error::AwsmError> {
+    pub(crate) fn reconcile_material_variants(&mut self) -> Result<(), crate::error::AwsmError> {
         if !self.materials.take_variants_dirty() {
             return Ok(());
         }
@@ -1201,9 +1195,11 @@ impl crate::AwsmRenderer {
             Vec::with_capacity(wants.len());
         let mut overflowed = 0usize;
         for (key, base, features) in wants {
-            let (id, overflow) = self
-                .dynamic_materials
-                .resolve_first_party_variant_capped(base, features, MAX_BUCKET_ENTRIES);
+            let (id, overflow) = self.dynamic_materials.resolve_first_party_variant_capped(
+                base,
+                features,
+                MAX_BUCKET_ENTRIES,
+            );
             if overflow {
                 overflowed += 1;
             }
@@ -1266,9 +1262,7 @@ impl crate::AwsmRenderer {
     /// generalized from "one new custom bucket" to "the whole bucket set
     /// changed". Used by [`Self::reconcile_material_variants`] when a new
     /// PBR/Toon feature-set variant grows the bucket list.
-    fn relaunch_all_buckets_after_layout_change(
-        &mut self,
-    ) -> Result<(), crate::error::AwsmError> {
+    fn relaunch_all_buckets_after_layout_change(&mut self) -> Result<(), crate::error::AwsmError> {
         let new_count = self.dynamic_materials.bucket_entries_cached().len() as u32;
 
         // Classify buffers (per-bucket indirect args + tile lists).
@@ -1328,7 +1322,10 @@ impl crate::AwsmRenderer {
         }
         let registered = self.pipeline_scheduler.registered_material_shader_ids();
         for shader_id in &registered {
-            if let Some(mid) = self.pipeline_scheduler.find_material_by_shader_id(*shader_id) {
+            if let Some(mid) = self
+                .pipeline_scheduler
+                .find_material_by_shader_id(*shader_id)
+            {
                 self.pipeline_scheduler.mark_material_pending_for_relaunch(
                     crate::pipeline_scheduler::PipelineGroupId::Material(mid),
                 );
@@ -1394,7 +1391,10 @@ impl crate::AwsmRenderer {
         // materials — without an entry, the canonical PBR skybox-owner +
         // the Unlit/Toon/Flipbook buckets would never recompile (black).
         let is_first_party = !shader_id.is_dynamic()
-            || self.dynamic_materials.first_party_variant_of(shader_id).is_some();
+            || self
+                .dynamic_materials
+                .first_party_variant_of(shader_id)
+                .is_some();
         let def = if is_first_party {
             MaterialDef {
                 shader_id,
@@ -1625,7 +1625,10 @@ mod tests {
         let h1 = dm.dispatch_hash_cached();
         dm.insert(reg("b", 2, 2)).unwrap();
         let h2 = dm.dispatch_hash_cached();
-        assert_ne!(h1, h2, "adding a distinct material must change dispatch_hash");
+        assert_ne!(
+            h1, h2,
+            "adding a distinct material must change dispatch_hash"
+        );
     }
 
     #[test]
@@ -1761,7 +1764,10 @@ mod tests {
     fn first_party_variant_meta_round_trips() {
         let mut dm = DynamicMaterials::new();
         let id = dm.resolve_first_party_variant(ShadingBase::Pbr, 0b101);
-        assert_eq!(dm.first_party_variant_of(id), Some((ShadingBase::Pbr, 0b101)));
+        assert_eq!(
+            dm.first_party_variant_of(id),
+            Some((ShadingBase::Pbr, 0b101))
+        );
         // Canonical first-party + never-allocated ids return None.
         assert_eq!(dm.first_party_variant_of(MaterialShaderId::PBR), None);
     }
@@ -1791,7 +1797,8 @@ mod tests {
     fn validate_batch_accepts_distinct_new_materials() {
         let dm = DynamicMaterials::new();
         let batch = vec![reg("a", 1, 1), reg("b", 2, 2), reg("c", 3, 3)];
-        dm.validate_batch(&batch).expect("distinct names within budget must validate");
+        dm.validate_batch(&batch)
+            .expect("distinct names within budget must validate");
     }
 
     #[test]
@@ -1829,7 +1836,8 @@ mod tests {
         // Fill to exactly the cap with distinct dynamic materials.
         let dynamic_slots = MAX_BUCKET_ENTRIES - fp;
         for i in 0..dynamic_slots {
-            dm.insert(reg(&format!("m{i}"), i as u64, i as u64)).unwrap();
+            dm.insert(reg(&format!("m{i}"), i as u64, i as u64))
+                .unwrap();
         }
         assert_eq!(dm.bucket_entries_cached().len(), MAX_BUCKET_ENTRIES);
 
@@ -1856,11 +1864,13 @@ mod tests {
         // Leave room for exactly 2 more buckets.
         let dynamic_slots = MAX_BUCKET_ENTRIES - fp - 2;
         for i in 0..dynamic_slots {
-            dm.insert(reg(&format!("m{i}"), i as u64, i as u64)).unwrap();
+            dm.insert(reg(&format!("m{i}"), i as u64, i as u64))
+                .unwrap();
         }
         // A batch of exactly 2 new materials fits the final layout.
         let fits = vec![reg("x", 100, 100), reg("y", 101, 101)];
-        dm.validate_batch(&fits).expect("batch that fits the final count must pass");
+        dm.validate_batch(&fits)
+            .expect("batch that fits the final count must pass");
         // 3 new would overflow by one.
         let over = vec![reg("x", 100, 100), reg("y", 101, 101), reg("z", 102, 102)];
         matches!(

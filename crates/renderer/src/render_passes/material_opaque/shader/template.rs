@@ -738,8 +738,14 @@ mod brdf_gate_tests {
         // to compile time. (Lighting-geometry guards like n_dot_l_back
         // remain; those aren't feature guards.)
         let w = render_nows(PbrFeatures::all());
-        assert!(!w.contains("color.clearcoat>0"), "no clearcoat runtime guard");
-        assert!(!w.contains("color.iridescence>0"), "no iridescence runtime guard");
+        assert!(
+            !w.contains("color.clearcoat>0"),
+            "no clearcoat runtime guard"
+        );
+        assert!(
+            !w.contains("color.iridescence>0"),
+            "no iridescence runtime guard"
+        );
         assert!(
             !w.contains("color.anisotropy_strength!=0"),
             "no anisotropy runtime guard"
@@ -758,8 +764,14 @@ mod brdf_gate_tests {
         f.clearcoat = false;
         f.sheen = false;
         let w = render_nows(f);
-        assert!(!w.contains("cc_fresnel"), "absent clearcoat is compile-time stripped");
-        assert!(!w.contains("sheen_scaling"), "absent sheen is compile-time stripped");
+        assert!(
+            !w.contains("cc_fresnel"),
+            "absent clearcoat is compile-time stripped"
+        );
+        assert!(
+            !w.contains("sheen_scaling"),
+            "absent sheen is compile-time stripped"
+        );
         assert!(w.contains("iri_f0"), "present iridescence is kept");
     }
 
