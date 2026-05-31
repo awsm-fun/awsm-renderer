@@ -49,16 +49,15 @@ impl crate::AwsmRenderer {
     /// resulting material entry stays `Pending` until every
     /// sub-pipeline resolves.
     ///
-    /// **MSAA-edge integration**: the edge-resolve pipelines (per-
-    /// shader for this material's shader_id + the global
-    /// skybox_edge_resolve + final_blend) are pushed alongside the
-    /// opaque/classify pipelines via [`Self::launch_edge_resolve_compile`],
-    /// so the material flips Pending → Ready only when the **whole**
-    /// MSAA chain is GPU-resident. `render_edge_resolve`'s all-or-
-    /// nothing readiness gate (Stage 3.5 / C.5) sees the new
-    /// shader_id appear in `bucket_entries_cached()` and the matching
-    /// per-shader edge_resolve pipeline at the same time, so the
-    /// chain stays consistent across registrations.
+    /// **MSAA-edge integration**: this still pushes the per-shader +
+    /// global skybox + final_blend edge-resolve promises alongside the
+    /// opaque/classify pipelines, but they are NO LONGER the authoritative
+    /// installer. `render_edge_resolve` is now per-bucket-independent (no
+    /// all-or-nothing gate), and the reliable edge rebuild happens at the
+    /// LAYOUT level via `MaterialEdgePipelines::ensure_compiled` (driven
+    /// from `prewarm_pipelines` / `compile_material_variants`). The
+    /// scheduler promises here are a best-effort per-frame fast path; any
+    /// that the stale-generation gate drops are backfilled by that rebuild.
     ///
     /// Idempotent on cache hits: cache-hit pipelines bypass the
     /// scheduler's sub-compile counter entirely (they're installed
@@ -383,7 +382,7 @@ impl crate::AwsmRenderer {
         // Idempotent + cache-hit-aware (see method rustdoc).
         // `generation` is the one captured at the top of this
         // function — no need to re-look it up.
-        self.launch_edge_resolve_compile(group_id, generation)?;
+        self.launch_edge_resolve_compile(group_id, generation, Some(shader_id))?;
 
         // If both launches were full cache hits, no promise pushed
         // → subcompile counter stayed at 0 → Ready never auto-fires
@@ -629,7 +628,7 @@ impl crate::AwsmRenderer {
         // first-party register triggers a recompile of the global
         // skybox + final_blend (their cache keys depend on
         // `bucket_entries`). `generation` captured at function top.
-        self.launch_edge_resolve_compile(group_id, generation)?;
+        self.launch_edge_resolve_compile(group_id, generation, Some(shader_id))?;
 
         // If both launches were full cache hits, mark Ready inline.
         // Otherwise note_subcompile_complete will fire it when the
@@ -674,6 +673,7 @@ impl crate::AwsmRenderer {
         &mut self,
         group_id: PipelineGroupId,
         generation: u32,
+        only_shader_id: Option<MaterialShaderId>,
     ) -> Result<(), crate::error::AwsmError> {
         if self.anti_aliasing.msaa_sample_count.is_none()
             || !crate::edge_resolve_supported(&self.gpu)
@@ -728,6 +728,23 @@ impl crate::AwsmRenderer {
                 edge_slot,
                 ComputePipelineCacheKey::new(shader_key, layout_key),
             ));
+        }
+
+        // A Material launch promises only ITS OWN per-shader edge slot, so
+        // that pipeline is owned by this material's launch/generation and
+        // can't be discarded when a *different* material relaunches (the
+        // waiter-skip used to leave a variant bucket's per-shader edge
+        // pipeline owned by another material's generation → discarded on
+        // that material's relaunch → never installed → the all-or-nothing
+        // gate then killed ALL MSAA). The global skybox + final_blend (whose
+        // cache keys depend on `bucket_entries`, so every launch must keep
+        // them current) always pass through. `None` = the layout-scoped
+        // path (eager build) which keeps everything.
+        if let Some(only) = only_shader_id {
+            compute_jobs.retain(|(slot, _)| match slot.0 {
+                EdgePipelineSlot::PerShader(id) => id.shader_id == only,
+                EdgePipelineSlot::Skybox | EdgePipelineSlot::FinalBlend => true,
+            });
         }
 
         // Cache-hit + cross-call waiter dedup. The edge-chain

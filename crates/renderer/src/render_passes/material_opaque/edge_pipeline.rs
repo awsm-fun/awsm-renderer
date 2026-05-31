@@ -246,32 +246,45 @@ impl MaterialEdgePipelines {
         let mut pipeline_layout_keys: Vec<PipelineLayoutKey> = Vec::new();
 
         for (bucket_index, entry) in bucket_entries.iter().enumerate() {
-            // Dynamic shader_ids need their `DynamicShaderInfo` triple
-            // (struct_decl / loader_decl / wgsl_fragment) templated into
-            // the edge_resolve shader. Look up the registration in the
-            // dynamic registry; without it, skip (no shading body to
-            // template — dispatch site falls through via
-            // `warn_pipeline_not_compiled`).
+            // A dynamic-range shader_id is one of TWO things:
+            //   1. A genuine author registration (`Custom` base) — needs
+            //      its `DynamicShaderInfo` triple (struct_decl /
+            //      loader_decl / wgsl_fragment) templated into the
+            //      edge_resolve shader.
+            //   2. A first-party feature-set VARIANT (e.g. a specialized
+            //      PBR bucket) — has a dynamic-range id but NO custom
+            //      registration. It compiles the built-in PBR/Toon body
+            //      (`dynamic_shader = None`, `dispatch_hash = 0`), exactly
+            //      like a canonical bucket and mirroring
+            //      `launch_first_party_material_compile`. Skipping it here
+            //      (the old `registry.get(...).else { continue }`) left the
+            //      variant's per-shader edge pipeline unbuilt → dead MSAA
+            //      for every mesh using a specialized first-party material.
+            // Only a dynamic id that is NEITHER (removed between submit and
+            // build) is skipped.
             let (dispatch_hash, dynamic_shader) = if entry.shader_id.is_dynamic() {
                 let Some(registry) = dynamic_registry else {
                     continue;
                 };
-                let Some(reg) = registry.get(entry.shader_id) else {
-                    continue;
-                };
-                let info = DynamicShaderInfo {
-                    struct_decl: awsm_materials::dynamic_layout::generate_wgsl_struct(
-                        "MaterialData",
-                        &reg.layout,
-                    ),
-                    loader_decl: awsm_materials::dynamic_layout::generate_wgsl_loader(
-                        "MaterialData",
-                        "material_data_load",
-                        &reg.layout,
-                    ),
-                    wgsl_fragment: reg.wgsl_fragment.clone(),
-                };
-                (registry.dispatch_hash_cached(), Some(info))
+                match registry.get(entry.shader_id) {
+                    Some(reg) => {
+                        let info = DynamicShaderInfo {
+                            struct_decl: awsm_materials::dynamic_layout::generate_wgsl_struct(
+                                "MaterialData",
+                                &reg.layout,
+                            ),
+                            loader_decl: awsm_materials::dynamic_layout::generate_wgsl_loader(
+                                "MaterialData",
+                                "material_data_load",
+                                &reg.layout,
+                            ),
+                            wgsl_fragment: reg.wgsl_fragment.clone(),
+                        };
+                        (registry.dispatch_hash_cached(), Some(info))
+                    }
+                    None if registry.first_party_variant_of(entry.shader_id).is_some() => (0, None),
+                    None => continue,
+                }
             } else {
                 (0, None)
             };

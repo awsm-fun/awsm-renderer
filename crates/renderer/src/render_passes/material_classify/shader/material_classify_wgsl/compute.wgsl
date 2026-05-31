@@ -485,6 +485,20 @@ fn cs_main(
                     | ((seen_3 & 0xFFu) << 24u);
                 atomicStore(&edge_data[edge_layout.edge_slot_map_base + edge_id], slot_map);
 
+                // Clear this edge pixel's 4 accumulator slots (4 vec4<f32>
+                // = 16 u32 words) so a bucket whose per-shader edge_resolve
+                // pipeline isn't resident this frame leaves count==0 — which
+                // final_blend skips — instead of reading a stale value left
+                // at the same slot index by a previous frame's edge pixel.
+                // This is what makes the resolve per-bucket-independent
+                // (render_pass.rs dropped the all-or-nothing gate). Bounded
+                // by the live edge count: only freshly-allocated edge pixels
+                // are cleared, never the full MAX_EDGE_BUDGET accumulator.
+                let accum_clear_base = edge_layout.accumulator_base + edge_id * 16u;
+                for (var ci: u32 = 0u; ci < 16u; ci = ci + 1u) {
+                    atomicStore(&edge_data[accum_clear_base + ci], 0u);
+                }
+
                 // For each per-shader sample mask: append (edge_id,
                 // sample_mask) to that bucket's sample list. Skybox
                 // samples route to the skybox sample list (separate

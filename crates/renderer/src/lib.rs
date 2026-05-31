@@ -549,40 +549,48 @@ impl AwsmRenderer {
         // each registered dynamic material.
         if !self.dynamic_materials.is_empty() {
             self.prewarm_dynamic_pipelines().await?;
+        }
 
-            // After dynamic shader/pipeline caches are warm, also
-            // compile the per-shader-id edge_resolve pipelines for the
-            // updated bucket list — Block C.1 wiring so newly-registered
-            // dynamic shader_ids get their cross-material MSAA edge
-            // contribution instead of falling through to
-            // `warn_pipeline_not_compiled`.
-            if self.anti_aliasing.msaa_sample_count.is_some() && edge_resolve_supported(&self.gpu) {
-                let color_wgsl = awsm_renderer_core::texture::texture_format_to_wgsl_storage(
-                    self.render_textures.formats.color,
-                )?;
-                let bucket_entries = self.dynamic_materials.bucket_entries_cached().to_vec();
-                let crate::pipelines::Pipelines {
-                    render: _render_pipelines,
-                    compute: compute_pipelines,
-                } = &mut self.pipelines;
-                self.render_passes
-                    .material_opaque
-                    .edge_pipelines
-                    .ensure_compiled(
-                        &self.gpu,
-                        &mut self.shaders,
-                        compute_pipelines,
-                        &mut self.pipeline_layouts,
-                        &mut self.bind_group_layouts,
-                        &self.render_passes.material_opaque.bind_groups,
-                        &self.render_passes.material_opaque.edge_bind_group_layouts,
-                        &bucket_entries,
-                        &self.anti_aliasing,
-                        color_wgsl,
-                        Some(&self.dynamic_materials),
-                    )
-                    .await?;
-            }
+        // Edge-resolve pipelines are a LAYOUT-level concern: rebuild the
+        // whole bucket set's per-shader edge pipelines (+ the global skybox
+        // + final_blend) via the reliable await path whenever pipelines are
+        // driven to readiness (`wait_for_pipelines_ready` /
+        // `compile_material_variants`). This is the AUTHORITATIVE installer
+        // — the per-material scheduler-promise launch can silently drop a
+        // variant bucket's edge pipeline via its stale-generation gate, so
+        // MSAA correctness depends on this rebuild. Runs MSAA-gated for any
+        // bucket layout (first-party-only, feature-set variants, custom),
+        // not only when the custom registry is non-empty (a first-party
+        // PBR feature-set variant lives in `bucket_entries` even with an
+        // empty custom registry — that's the case the previous
+        // `!is_empty()` guard skipped, leaving the variant's edge pipeline
+        // unbuilt → dead MSAA). Idempotent on a warm cache.
+        if self.anti_aliasing.msaa_sample_count.is_some() && edge_resolve_supported(&self.gpu) {
+            let color_wgsl = awsm_renderer_core::texture::texture_format_to_wgsl_storage(
+                self.render_textures.formats.color,
+            )?;
+            let bucket_entries = self.dynamic_materials.bucket_entries_cached().to_vec();
+            let crate::pipelines::Pipelines {
+                render: _render_pipelines,
+                compute: compute_pipelines,
+            } = &mut self.pipelines;
+            self.render_passes
+                .material_opaque
+                .edge_pipelines
+                .ensure_compiled(
+                    &self.gpu,
+                    &mut self.shaders,
+                    compute_pipelines,
+                    &mut self.pipeline_layouts,
+                    &mut self.bind_group_layouts,
+                    &self.render_passes.material_opaque.bind_groups,
+                    &self.render_passes.material_opaque.edge_bind_group_layouts,
+                    &bucket_entries,
+                    &self.anti_aliasing,
+                    color_wgsl,
+                    Some(&self.dynamic_materials),
+                )
+                .await?;
         }
 
         // Build one request per mesh. `ensure_keys` on both caches
