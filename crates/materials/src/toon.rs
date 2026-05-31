@@ -78,6 +78,75 @@ impl ToonMaterial {
     }
 }
 
+/// Feature set for the Toon shading family — the Toon analogue of
+/// [`crate::pbr::PbrFeatures`], over [`ToonMaterial`]'s optional fields.
+///
+/// **Status (specialize-only pivot):** Toon's v1 shading
+/// (`compute_toon_lit_color`) does NOT sample its optional textures —
+/// `base_color_tex` / `emissive_tex` are written to the payload but unused
+/// by the shader. So Toon currently has **no compile-gateable shading
+/// paths**, and the unified variant registry correctly resolves it to a
+/// **single bucket** (its one empty feature-set), which is the optimal
+/// specialization outcome for a family with no per-feature variation
+/// (`ShadingBase::Toon.is_feature_specialized()` stays `false`).
+///
+/// This struct is the ready-to-use contract for when Toon gains texture
+/// sampling: at that point, gate the toon shading on `{% if
+/// toon_features.<x> %}` (move the shading into an Askama-processed
+/// include, mirroring PBR's `material_color_calc.wgsl`), flip
+/// `is_feature_specialized`, and add `Material::Toon` to the renderer's
+/// variant reconcile — the registry + routing already handle any
+/// `FirstParty` base generically.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct ToonFeatures {
+    pub base_color_tex: bool,
+    pub emissive_tex: bool,
+}
+
+impl ToonFeatures {
+    const BIT_BASE_COLOR_TEX: u32 = 1 << 0;
+    const BIT_EMISSIVE_TEX: u32 = 1 << 1;
+
+    /// Number of distinct feature bits.
+    pub const COUNT: u32 = 2;
+
+    /// Derives the feature set from a material's present `Option` fields.
+    pub fn from_material(m: &ToonMaterial) -> Self {
+        Self {
+            base_color_tex: m.base_color_tex.is_some(),
+            emissive_tex: m.emissive_tex.is_some(),
+        }
+    }
+
+    /// Every feature on — the uber config.
+    pub fn all() -> Self {
+        Self {
+            base_color_tex: true,
+            emissive_tex: true,
+        }
+    }
+
+    /// Stable one-bit-per-feature packing (the feature-hash). Append-only.
+    pub fn bits(&self) -> u32 {
+        let mut b = 0u32;
+        if self.base_color_tex {
+            b |= Self::BIT_BASE_COLOR_TEX;
+        }
+        if self.emissive_tex {
+            b |= Self::BIT_EMISSIVE_TEX;
+        }
+        b
+    }
+
+    /// Inverse of [`Self::bits`].
+    pub fn from_bits(b: u32) -> Self {
+        Self {
+            base_color_tex: b & Self::BIT_BASE_COLOR_TEX != 0,
+            emissive_tex: b & Self::BIT_EMISSIVE_TEX != 0,
+        }
+    }
+}
+
 impl MaterialShader for ToonMaterial {
     fn shader_id(&self) -> MaterialShaderId {
         MaterialShaderId::TOON
@@ -118,5 +187,30 @@ impl MaterialShader for ToonMaterial {
         write(data, self.shininess.into());
         write(data, self.rim_strength.into());
         write(data, self.rim_power.into());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::MaterialAlphaMode;
+
+    #[test]
+    fn toon_features_bits_round_trip() {
+        for mask in 0u32..(1 << ToonFeatures::COUNT) {
+            let f = ToonFeatures::from_bits(mask);
+            assert_eq!(f.bits(), mask, "from_bits→bits must round-trip for {mask:#b}");
+        }
+    }
+
+    #[test]
+    fn toon_features_from_material_derives_optional_fields() {
+        // Default toon material has no textures → empty feature-set →
+        // single bucket (the correct specialization outcome).
+        let m = ToonMaterial::new(MaterialAlphaMode::Opaque, false);
+        let f = ToonFeatures::from_material(&m);
+        assert!(!f.base_color_tex && !f.emissive_tex);
+        assert_eq!(f.bits(), 0, "a textureless toon material is the empty feature-set");
+        assert_eq!(ToonFeatures::all().bits(), 0b11);
     }
 }
