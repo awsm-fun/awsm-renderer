@@ -3,6 +3,7 @@
 use askama::Template;
 use awsm_materials::MaterialShaderId;
 
+use crate::dynamic_materials::ShadingBase;
 use crate::{
     render_passes::material_opaque::shader::cache_key::{
         ShaderCacheKeyMaterialOpaque, ShaderCacheKeyMaterialOpaqueEmpty,
@@ -90,6 +91,12 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     /// mismatch so a full-screen dispatch is correct even before
     /// classify+indirect lands.
     pub shader_id: MaterialShaderId,
+    /// Which built-in shading family's body this pipeline emits
+    /// (`{% if base == ShadingBase::Pbr %}` etc.). Decoupled from
+    /// `shader_id` so a per-feature-set PBR variant whose id is in the
+    /// dynamic range still emits the PBR path. The per-pixel guard uses
+    /// the numeric `shader_id` regardless of `base`.
+    pub base: crate::dynamic_materials::ShadingBase,
     /// PBR feature set this specialized pipeline is compiled for
     /// (Phase B.2). The compute template + `material_color_calc.wgsl`
     /// gate per-feature code behind `{% if pbr_features.<x> %}`, so an
@@ -187,6 +194,7 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
                 shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
                 shader_id: value.shader_id,
+                base: value.base,
                 pbr_features: awsm_materials::pbr::PbrFeatures::from_bits(value.pbr_features),
                 dynamic_struct_decl: value
                     .dynamic_shader
@@ -438,6 +446,7 @@ mod empty_registry_tests {
             msaa_sample_count: msaa,
             mipmaps: true,
             shader_id,
+            base: crate::dynamic_materials::ShadingBase::for_shader_id(shader_id),
             pbr_features: awsm_materials::pbr::PbrFeatures::all().bits(),
             dispatch_hash: 0,
             dynamic_shader: None,

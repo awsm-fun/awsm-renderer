@@ -3,7 +3,8 @@
 use awsm_materials::MaterialShaderId;
 
 use crate::{
-    dynamic_materials::BucketEntry, render_passes::shader_cache_key::ShaderCacheKeyRenderPass,
+    dynamic_materials::{BucketEntry, ShadingBase},
+    render_passes::shader_cache_key::ShaderCacheKeyRenderPass,
     shaders::ShaderCacheKey,
 };
 
@@ -20,6 +21,11 @@ pub struct ShaderCacheKeyMaterialOpaque {
     pub msaa_sample_count: Option<u32>,
     pub mipmaps: bool,
     pub shader_id: MaterialShaderId,
+    /// Which built-in shading family this bucket's template body comes
+    /// from. Decoupled from `shader_id` so a per-feature-set PBR variant
+    /// (id in the dynamic range) still selects the PBR body. See
+    /// [`ShadingBase`].
+    pub base: ShadingBase,
     /// Opaque PBR feature mask ([`awsm_materials::pbr::PbrFeatures::bits`])
     /// the specialized PBR shader is compiled for (Phase B.2). Two PBR
     /// pipelines with different feature masks are distinct entries, so a

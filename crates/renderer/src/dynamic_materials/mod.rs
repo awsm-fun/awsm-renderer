@@ -176,6 +176,56 @@ pub const MAX_BUCKET_WORDS: u32 = 1;
 /// model of raising it.
 pub const MAX_BUCKET_ENTRIES: usize = MAX_BUCKET_WORDS as usize * 32;
 
+/// Which built-in shading family a bucket's opaque / edge / transparent
+/// template body is emitted from.
+///
+/// **Decouples template body-selection from the numeric
+/// [`MaterialShaderId`].** Pre-pivot the opaque/edge/transparent
+/// templates picked a material body with `{% if shader_id ==
+/// MaterialShaderId::PBR %}` — i.e. body-selection was welded to the
+/// fixed first-party id. The specialize-only pivot routes a PBR
+/// material to a *per-feature-set* bucket whose id is registry-allocated
+/// (in the dynamic range), so "which body" can no longer be read off the
+/// id. The templates now branch on this `base` (which shading family)
+/// while the per-pixel/per-sample `shader_id` guard uses the allocated
+/// numeric id. A specialized PBR bucket carries `base = Pbr` with an
+/// id `>= DYNAMIC_START`; a custom author material carries
+/// `base = Custom`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ShadingBase {
+    Pbr,
+    Unlit,
+    Toon,
+    Flipbook,
+    /// Author-registered custom fragment (the dynamic-material wrapper
+    /// path). Distinct from a registry-allocated *first-party* variant,
+    /// which keeps its first-party `base`.
+    Custom,
+}
+
+impl ShadingBase {
+    /// Maps a shader id to its shading family. First-party ids map to
+    /// their family; any dynamic-range id maps to [`ShadingBase::Custom`].
+    ///
+    /// Transitional helper for call sites that only know a `shader_id`
+    /// (before per-feature first-party variants exist). Specialized
+    /// first-party variant launch sites pass their `base` explicitly
+    /// instead of deriving it here.
+    pub fn for_shader_id(shader_id: MaterialShaderId) -> Self {
+        if shader_id == MaterialShaderId::PBR {
+            ShadingBase::Pbr
+        } else if shader_id == MaterialShaderId::UNLIT {
+            ShadingBase::Unlit
+        } else if shader_id == MaterialShaderId::TOON {
+            ShadingBase::Toon
+        } else if shader_id == MaterialShaderId::FLIPBOOK {
+            ShadingBase::Flipbook
+        } else {
+            ShadingBase::Custom
+        }
+    }
+}
+
 /// One bucket entry — the template-rendering view of a single registered
 /// material (first-party OR dynamic). Returned by [`bucket_entries`].
 ///
