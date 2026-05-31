@@ -6,7 +6,7 @@ use askama::Template;
 use awsm_materials::MaterialShaderId;
 
 use crate::{
-    dynamic_materials::BucketEntry,
+    dynamic_materials::{BucketEntry, ShadingBase},
     render_passes::material_opaque::shader::{
         cache_key::DynamicShaderInfo,
         edge_cache_key::{
@@ -67,6 +67,10 @@ pub struct ShaderTemplateMaterialEdgeResolveCompute {
     pub materials_wgsl: String,
     pub shader_id_consts: String,
     pub shader_id: MaterialShaderId,
+    /// Which built-in shading family's body this edge_resolve pipeline
+    /// emits (decoupled from `shader_id`; see [`ShadingBase`]). The
+    /// per-sample guard uses the numeric `shader_id`.
+    pub base: ShadingBase,
     pub dynamic_struct_decl: String,
     pub dynamic_loader_decl: String,
     pub dynamic_wgsl_fragment: String,
@@ -158,6 +162,7 @@ impl TryFrom<&ShaderCacheKeyMaterialEdgeResolve> for ShaderTemplateMaterialEdgeR
                 materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
                 shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
                 shader_id: value.shader_id,
+                base: value.base,
                 dynamic_struct_decl: value
                     .dynamic_shader
                     .as_ref()

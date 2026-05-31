@@ -112,7 +112,7 @@
 {% include "material_opaque_wgsl/helpers/material_shading.wgsl" %}
 /*************** END material_shading.wgsl ******************/
 
-{% if shader_id.is_dynamic() %}
+{% if base == ShadingBase::Custom %}
 /*************** START dynamic-material wrapper ******************/
 {{ dynamic_struct_decl|safe }}
 {{ dynamic_loader_decl|safe }}
@@ -198,22 +198,13 @@ fn shade_sample(
     // guard catches any registry drift between classify + this
     // pipeline.
     let sample_shader_id = material_load_shader_id(sample_mat_offset);
-    {% if shader_id == MaterialShaderId::PBR %}
-        if (sample_shader_id != SHADER_ID_PBR) { return vec4<f32>(0.0); }
-    {% else if shader_id == MaterialShaderId::UNLIT %}
-        if (sample_shader_id != SHADER_ID_UNLIT) { return vec4<f32>(0.0); }
-    {% else if shader_id == MaterialShaderId::TOON %}
-        if (sample_shader_id != SHADER_ID_TOON) { return vec4<f32>(0.0); }
-    {% else if shader_id == MaterialShaderId::FLIPBOOK %}
-        if (sample_shader_id != SHADER_ID_FLIPBOOK) { return vec4<f32>(0.0); }
-    {% else if shader_id.is_dynamic() %}
-        if (sample_shader_id != {{ shader_id.as_u32() }}u) { return vec4<f32>(0.0); }
-    {% endif %}
+    // Guard on the numeric (registry-allocated) id regardless of `base`.
+    if (sample_shader_id != {{ shader_id.as_u32() }}u) { return vec4<f32>(0.0); }
 
     var color: vec3<f32>;
     var base_alpha: f32;
 
-    {% if shader_id == MaterialShaderId::UNLIT %}
+    {% if base == ShadingBase::Unlit %}
         let unlit_material = unlit_get_material(sample_mat_offset);
         {% match mipmap %}
             {% when MipmapMode::Gradient %}
@@ -240,7 +231,7 @@ fn shade_sample(
         {% endmatch %}
         color = compute_unlit_output(unlit_color);
         base_alpha = unlit_color.base.a;
-    {% else if shader_id == MaterialShaderId::TOON %}
+    {% else if base == ShadingBase::Toon %}
         let toon_material = toon_get_material(sample_mat_offset);
         color = compute_toon_lit_color(
             toon_material,
@@ -250,7 +241,7 @@ fn shade_sample(
             lights_info,
         );
         base_alpha = toon_material.base_color_factor.a;
-    {% else if shader_id == MaterialShaderId::PBR %}
+    {% else if base == ShadingBase::Pbr %}
         let pbr_material = pbr_get_material(sample_mat_offset);
         {% match mipmap %}
             {% when MipmapMode::Gradient %}
@@ -301,7 +292,7 @@ fn shade_sample(
             );
         {% endif %}
         base_alpha = material_color.base.a;
-    {% else if shader_id == MaterialShaderId::FLIPBOOK %}
+    {% else if base == ShadingBase::Flipbook %}
         let flipbook_material = flipbook_get_material(sample_mat_offset);
         var flipbook_sampled: vec4<f32> = vec4<f32>(1.0);
         if flipbook_material.atlas_tex_info.exists {
@@ -342,7 +333,7 @@ fn shade_sample(
         );
         color = flipbook_result.rgb;
         base_alpha = flipbook_result.a;
-    {% else if shader_id.is_dynamic() %}
+    {% else if base == ShadingBase::Custom %}
         let dyn_material = material_data_load(sample_mat_offset);
         let dyn_input = OpaqueShadingInput(
             coords,

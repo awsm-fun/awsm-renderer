@@ -5,7 +5,7 @@
 use awsm_materials::MaterialShaderId;
 
 use crate::{
-    dynamic_materials::BucketEntry,
+    dynamic_materials::{BucketEntry, ShadingBase},
     render_passes::{
         material_opaque::shader::cache_key::DynamicShaderInfo,
         shader_cache_key::ShaderCacheKeyRenderPass,
@@ -26,6 +26,9 @@ pub struct ShaderCacheKeyMaterialEdgeResolve {
     pub texture_pool_samplers_len: u32,
     pub mipmaps: bool,
     pub shader_id: MaterialShaderId,
+    /// Which built-in shading family this bucket's edge_resolve body
+    /// comes from (decoupled from `shader_id`; see [`ShadingBase`]).
+    pub base: ShadingBase,
     /// Same `dispatch_hash` semantics as the primary opaque cache
     /// key — stable empty-state sentinel of `0`.
     pub dispatch_hash: u64,
