@@ -280,7 +280,7 @@ impl MaterialEdgePipelines {
                 texture_pool_samplers_len,
                 mipmaps,
                 shader_id: entry.shader_id,
-                base: crate::dynamic_materials::ShadingBase::for_shader_id(entry.shader_id),
+                base: entry.base,
                 dispatch_hash,
                 dynamic_shader,
                 bucket_entries: bucket_entries.to_vec(),

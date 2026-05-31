@@ -241,6 +241,20 @@ impl ShadingBase {
 pub struct BucketEntry {
     /// Stable per-build shader id for this bucket.
     pub shader_id: MaterialShaderId,
+    /// Which built-in shading family this bucket's templates emit
+    /// (`Custom` for an author-registered fragment). A bucket *is* a
+    /// registry variant: `(base, pbr_features)` for first-party,
+    /// `(Custom, _)` keyed on the registration for dynamic. Carried on
+    /// the entry so the opaque / edge launch + templates read it
+    /// directly instead of re-deriving from the (now possibly
+    /// dynamic-range) `shader_id`.
+    pub base: ShadingBase,
+    /// PBR (or Toon) feature mask this bucket is specialized for
+    /// ([`awsm_materials::pbr::PbrFeatures::bits`]). Distinguishes two
+    /// PBR variants that differ only by feature-set. `all().bits()` for
+    /// the uber/transitional config and inert for `Unlit`/`Flipbook`/
+    /// `Custom`.
+    pub pbr_features: u32,
     /// WGSL-safe identifier suffix used for `args_<name>` /
     /// `<name>_offset` / `BUCKET_BIT_<NAME>` / `SHADER_ID_<NAME>`. For
     /// first-party materials this is the canonical
@@ -285,18 +299,15 @@ impl BucketEntry {
 /// side (which holds `DynamicMaterials`) and from any caller with only
 /// a `&MaterialRegistry`-shaped view.
 pub fn bucket_entries(dynamic: &DynamicMaterials) -> Vec<BucketEntry> {
-    let mut entries = Vec::with_capacity(4 + dynamic.len());
-    for first_party in awsm_materials::registry::enabled_materials() {
-        entries.push(BucketEntry {
-            shader_id: first_party.shader_id,
-            name: first_party.name.to_string(),
-        });
-    }
+    let mut entries = first_party_bucket_entries();
+    entries.reserve(dynamic.len());
     let mut dynamics: Vec<_> = dynamic.iter().collect();
     dynamics.sort_by_key(|(id, _)| id.as_u32());
     for (shader_id, reg) in dynamics {
         entries.push(BucketEntry {
             shader_id,
+            base: ShadingBase::Custom,
+            pbr_features: awsm_materials::pbr::PbrFeatures::all().bits(),
             name: sanitize_wgsl_name(&reg.name),
         });
     }
@@ -313,6 +324,11 @@ pub fn first_party_bucket_entries() -> Vec<BucketEntry> {
         .iter()
         .map(|e| BucketEntry {
             shader_id: e.shader_id,
+            base: ShadingBase::for_shader_id(e.shader_id),
+            // Transitional uber config — the per-feature-set routing
+            // (#15) replaces a base material's single bucket with one
+            // bucket per derived feature-set. Inert for Unlit/Flipbook.
+            pbr_features: awsm_materials::pbr::PbrFeatures::all().bits(),
             name: e.name.to_string(),
         })
         .collect()
@@ -419,6 +435,8 @@ impl DynamicMaterials {
         for (shader_id, reg) in dynamics {
             entries.push(BucketEntry {
                 shader_id: *shader_id,
+                base: ShadingBase::Custom,
+                pbr_features: awsm_materials::pbr::PbrFeatures::all().bits(),
                 name: sanitize_wgsl_name(&reg.name),
             });
         }
