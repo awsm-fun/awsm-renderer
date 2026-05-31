@@ -25,10 +25,12 @@
 //! registration) invalidates + relaunches every bucket's layout-dependent
 //! pipelines once against the final layout (the templated `ClassifyBuckets`
 //! struct depends on the full list) — a one-time cold-compile, not per-frame.
-//! Exceeding the [`MAX_BUCKET_ENTRIES`] cap is a hard error on the batch
-//! `register_materials` path ([`DynamicMaterials::validate_batch`]); the
-//! render-loop variant reconcile degrades gracefully to the canonical uber
-//! bucket with a logged warning ([`DynamicMaterials::resolve_first_party_variant_capped`]).
+//! Exceeding the [`MAX_BUCKET_ENTRIES`] cap is a hard error on BOTH the
+//! batch `register_materials` path ([`DynamicMaterials::validate_batch`])
+//! AND the render-loop variant reconcile
+//! ([`DynamicMaterials::resolve_first_party_variant_or_cap_err`]) — there
+//! is no silent fallback; a material rendered with the wrong bucket is far
+//! harder to debug than a loud, actionable failure (raise [`MAX_BUCKET_WORDS`]).
 //! Also owns the extras-pool storage buffer + allocator backing `BufferSlot`
 //! data.
 
@@ -265,21 +267,6 @@ impl ShadingBase {
     pub fn is_feature_specialized(self) -> bool {
         matches!(self, ShadingBase::Pbr)
     }
-
-    /// The canonical (single-bucket) first-party `shader_id` for this
-    /// family. Used as the graceful-degradation target when allocating a
-    /// new feature-set variant would exceed the bucket cap — the canonical
-    /// PBR/Toon bucket renders the full (uber) shader, which is correct,
-    /// just unspecialized. `Custom` has no canonical id (maps to PBR
-    /// defensively; never hit in practice).
-    pub fn canonical_shader_id(self) -> MaterialShaderId {
-        match self {
-            ShadingBase::Pbr | ShadingBase::Custom => MaterialShaderId::PBR,
-            ShadingBase::Unlit => MaterialShaderId::UNLIT,
-            ShadingBase::Toon => MaterialShaderId::TOON,
-            ShadingBase::Flipbook => MaterialShaderId::FLIPBOOK,
-        }
-    }
 }
 
 /// One bucket entry — the template-rendering view of a single registered
@@ -399,10 +386,10 @@ pub fn first_party_bucket_entries() -> Vec<BucketEntry> {
         .map(|e| BucketEntry {
             shader_id: e.shader_id,
             base: ShadingBase::for_shader_id(e.shader_id),
-            // Canonical (all-features) config for each first-party family.
-            // The render-loop reconcile ADDS per-feature-set variant
-            // buckets on top of these; this canonical entry is also the
-            // cap-guard fallback target. Inert for Unlit/Flipbook.
+            // Canonical (all-features) config for each first-party family —
+            // the always-present base bucket (e.g. PBR index 0 is the skybox
+            // owner). The render-loop reconcile ADDS per-feature-set variant
+            // buckets on top of these. Inert for Unlit/Flipbook.
             pbr_features: awsm_materials::pbr::PbrFeatures::all().bits(),
             name: e.name.to_string(),
         })
@@ -529,26 +516,30 @@ impl DynamicMaterials {
     }
 
     /// Cap-aware variant resolution (the render-loop reconcile path).
-    /// Like [`Self::resolve_first_party_variant`] but, when allocating a
-    /// *new* bucket would push the total past `max_buckets`, returns the
-    /// canonical (uber) first-party id instead of bit-aliasing past the
-    /// classify `tile_mask` width. Returns `(id, overflowed)` so the
-    /// caller can log the degradation. Existing variants always resolve
-    /// (idempotent), so a saturated scene still routes its already-known
-    /// feature-sets correctly.
-    pub fn resolve_first_party_variant_capped(
+    /// Like [`Self::resolve_first_party_variant`], but allocating a *new*
+    /// bucket that would push the total past `max_buckets` is a HARD ERROR
+    /// ([`AwsmDynamicMaterialError::BucketCapExceeded`]) rather than a
+    /// silent fallback — a wrong-but-not-crashing render is far harder to
+    /// debug than a loud, actionable failure (raise [`MAX_BUCKET_WORDS`]).
+    /// Existing variants always resolve (idempotent), so this only errors
+    /// on the *first* genuinely-new feature-set that overflows the cap.
+    pub fn resolve_first_party_variant_or_cap_err(
         &mut self,
         base: ShadingBase,
         features: u32,
         max_buckets: usize,
-    ) -> (MaterialShaderId, bool) {
+    ) -> std::result::Result<MaterialShaderId, AwsmDynamicMaterialError> {
         if let Some(&id) = self.first_party_variants.get(&(base, features)) {
-            return (id, false);
+            return Ok(id);
         }
-        if self.bucket_entries_cache.len() >= max_buckets {
-            return (base.canonical_shader_id(), true);
+        let would_be = self.bucket_entries_cache.len() + 1;
+        if would_be > max_buckets {
+            return Err(AwsmDynamicMaterialError::BucketCapExceeded {
+                would_be,
+                max: max_buckets,
+            });
         }
-        (self.resolve_first_party_variant(base, features), false)
+        Ok(self.resolve_first_party_variant(base, features))
     }
 
     /// Returns the cached bucket-entries slice (first-party prefix +
@@ -1190,28 +1181,18 @@ impl crate::AwsmRenderer {
         }
 
         // 2. Resolve to variant ids (allocates new buckets on first sight).
+        //    Exceeding the bucket cap is a HARD ERROR (no silent fallback):
+        //    a material rendered with the wrong bucket is far harder to
+        //    debug than a loud failure. The error names the cap + the fix
+        //    (raise MAX_BUCKET_WORDS) and propagates out of the render loop.
         let before = self.dynamic_materials.bucket_entries_cached().len();
         let mut resolved: Vec<(crate::materials::MaterialKey, MaterialShaderId)> =
             Vec::with_capacity(wants.len());
-        let mut overflowed = 0usize;
         for (key, base, features) in wants {
-            let (id, overflow) = self.dynamic_materials.resolve_first_party_variant_capped(
-                base,
-                features,
-                MAX_BUCKET_ENTRIES,
-            );
-            if overflow {
-                overflowed += 1;
-            }
+            let id = self
+                .dynamic_materials
+                .resolve_first_party_variant_or_cap_err(base, features, MAX_BUCKET_ENTRIES)?;
             resolved.push((key, id));
-        }
-        if overflowed > 0 {
-            tracing::warn!(
-                target: "awsm_renderer::dynamic_materials",
-                "variant reconcile: {overflowed} material(s) exceeded the {MAX_BUCKET_ENTRIES}-bucket \
-                 cap and fell back to the canonical (uber) first-party bucket — raise MAX_BUCKET_WORDS \
-                 to specialize them",
-            );
         }
         let grew = self.dynamic_materials.bucket_entries_cached().len() != before;
 
@@ -1728,36 +1709,36 @@ mod tests {
     }
 
     #[test]
-    fn resolve_first_party_variant_capped_falls_back_at_cap() {
+    fn resolve_first_party_variant_hard_errors_at_cap() {
         let mut dm = DynamicMaterials::new();
-        let fp = first_party_len();
         // Fill to exactly the cap with distinct PBR feature-set variants.
         let mut i = 0u32;
         while dm.bucket_entries_cached().len() < MAX_BUCKET_ENTRIES {
-            let (id, overflow) =
-                dm.resolve_first_party_variant_capped(ShadingBase::Pbr, i, MAX_BUCKET_ENTRIES);
-            assert!(!overflow, "should not overflow before the cap");
+            let id = dm
+                .resolve_first_party_variant_or_cap_err(ShadingBase::Pbr, i, MAX_BUCKET_ENTRIES)
+                .expect("should resolve below the cap");
             assert!(id.is_dynamic());
             i += 1;
         }
         assert_eq!(dm.bucket_entries_cached().len(), MAX_BUCKET_ENTRIES);
 
         // An already-known feature-set still resolves (idempotent) even at
-        // saturation — no overflow, returns the existing variant id.
-        let (existing, overflow) =
-            dm.resolve_first_party_variant_capped(ShadingBase::Pbr, 0, MAX_BUCKET_ENTRIES);
-        assert!(!overflow);
+        // saturation — returns the existing variant id, no allocation.
+        let existing = dm
+            .resolve_first_party_variant_or_cap_err(ShadingBase::Pbr, 0, MAX_BUCKET_ENTRIES)
+            .expect("existing feature-set must resolve at saturation");
         assert!(existing.is_dynamic());
 
-        // A brand-new feature-set past the cap gracefully falls back to the
-        // canonical (uber) PBR bucket instead of allocating + bit-aliasing.
-        let (fallback, overflow) =
-            dm.resolve_first_party_variant_capped(ShadingBase::Pbr, 999_999, MAX_BUCKET_ENTRIES);
-        assert!(overflow, "a new variant past the cap must report overflow");
-        assert_eq!(fallback, MaterialShaderId::PBR);
-        // The fallback did NOT grow the bucket list.
+        // A brand-new feature-set past the cap is a HARD ERROR — no silent
+        // fallback to the canonical bucket — and does NOT grow the list.
+        let err = dm
+            .resolve_first_party_variant_or_cap_err(ShadingBase::Pbr, 999_999, MAX_BUCKET_ENTRIES)
+            .expect_err("a new variant past the cap must error");
+        assert!(matches!(
+            err,
+            AwsmDynamicMaterialError::BucketCapExceeded { .. }
+        ));
         assert_eq!(dm.bucket_entries_cached().len(), MAX_BUCKET_ENTRIES);
-        let _ = fp;
     }
 
     #[test]
