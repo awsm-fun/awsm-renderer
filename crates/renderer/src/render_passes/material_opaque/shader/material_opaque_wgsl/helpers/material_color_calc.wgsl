@@ -41,8 +41,14 @@ fn pbr_get_material_color{{ mipmap.suffix() }}(
     {% if mipmap.is_gradient() %}gradients: PbrMaterialGradients,{% endif %}
     geometry_tbn: TBN,
 ) -> PbrMaterialColor {
-    // Load extension data on-demand from indices
+    // Load extension data on-demand from indices. Each is gated so a
+    // feature-set without the extension never computes it — the dead
+    // local then DCE-cascades up through its sampler + this load (B.2).
+    {% if pbr_features.emissive_strength %}
     let emissive_strength = pbr_material_load_emissive_strength(material.emissive_strength_index);
+    {% else %}
+    let emissive_strength = 1.0;
+    {% endif %}
     let ior = pbr_material_load_ior(material.ior_index);
     let specular = pbr_material_load_specular(material.specular_index);
     let transmission = pbr_material_load_transmission(material.transmission_index);
@@ -67,7 +73,10 @@ fn pbr_get_material_color{{ mipmap.suffix() }}(
         {% if mipmap.is_gradient() %}gradients.base_color,{% endif %}
     );
 
-    // Multiply base color by vertex color if present (index 0 means absent)
+    // Multiply base color by vertex color if present (index 0 means absent).
+    // Compile-time gated so feature-sets without vertex colors emit none
+    // of this (B.2).
+    {% if pbr_features.vertex_color %}
     if (material.vertex_color_info_index != 0u) {
         let vertex_color_info = pbr_material_load_vertex_color_info(material.vertex_color_info_index);
         base *= vertex_color(
@@ -78,6 +87,7 @@ fn pbr_get_material_color{{ mipmap.suffix() }}(
             vertex_attribute_stride,
         );
     }
+    {% endif %}
 
     let metallic_roughness = _pbr_material_metallic_roughness_color{{ mipmap.suffix() }}(
         material,
@@ -322,39 +332,52 @@ fn pbr_get_material_color{{ mipmap.suffix() }}(
         {% if mipmap.is_gradient() %}gradients.iridescence_thickness,{% endif %}
     );
 
+    // Per-feature gating (B.2): an off feature emits a compile-time
+    // CONSTANT here instead of its computed local. The local (and its
+    // sampler + extension load above) then become dead code the compiler
+    // eliminates — the win is the dropped register pressure, not just
+    // skipped ALU. `ior`/`specular` feed the base F0 unconditionally, so
+    // their off-defaults are the glTF-absent values (ior 1.5, specular
+    // 1.0, specular_color 1). The additive lobes get 0; their brdf
+    // contribution is either explicitly gated (sheen/clearcoat) or
+    // const-folds away via the existing `if (color.x > 0)` runtime guard.
     return PbrMaterialColor(
         base,
         metallic_roughness,
         normal,
         occlusion,
         emissive,
-        specular_factor,
-        specular_color_factor,
-        ior,
-        transmission_factor,
-        volume_thickness,
-        volume.attenuation_distance,
-        volume.attenuation_color,
+        // KHR_materials_specular (feeds base F0)
+        {% if pbr_features.specular %}specular_factor{% else %}1.0{% endif %},
+        {% if pbr_features.specular %}specular_color_factor{% else %}vec3<f32>(1.0){% endif %},
+        // KHR_materials_ior (feeds base F0)
+        {% if pbr_features.ior %}ior{% else %}1.5{% endif %},
+        // KHR_materials_transmission
+        {% if pbr_features.transmission %}transmission_factor{% else %}0.0{% endif %},
+        // KHR_materials_volume
+        {% if pbr_features.volume %}volume_thickness{% else %}0.0{% endif %},
+        {% if pbr_features.volume %}volume.attenuation_distance{% else %}0.0{% endif %},
+        {% if pbr_features.volume %}volume.attenuation_color{% else %}vec3<f32>(1.0){% endif %},
         // Clearcoat
-        clearcoat_factor,
-        clearcoat_roughness_factor,
-        clearcoat_normal_value,
+        {% if pbr_features.clearcoat %}clearcoat_factor{% else %}0.0{% endif %},
+        {% if pbr_features.clearcoat %}clearcoat_roughness_factor{% else %}0.0{% endif %},
+        {% if pbr_features.clearcoat %}clearcoat_normal_value{% else %}geometry_tbn.N{% endif %},
         // Sheen
-        sheen_color_factor,
-        sheen_roughness_factor,
+        {% if pbr_features.sheen %}sheen_color_factor{% else %}vec3<f32>(0.0){% endif %},
+        {% if pbr_features.sheen %}sheen_roughness_factor{% else %}0.0{% endif %},
         // Dispersion
-        dispersion,
+        {% if pbr_features.dispersion %}dispersion{% else %}0.0{% endif %},
         // Diffuse transmission
-        diffuse_trans_factor,
-        diffuse_trans_color,
+        {% if pbr_features.diffuse_transmission %}diffuse_trans_factor{% else %}0.0{% endif %},
+        {% if pbr_features.diffuse_transmission %}diffuse_trans_color{% else %}vec3<f32>(0.0){% endif %},
         // Anisotropy
-        aniso_basis.t,
-        aniso_basis.b,
-        aniso_basis.strength,
+        {% if pbr_features.anisotropy %}aniso_basis.t{% else %}geometry_tbn.T{% endif %},
+        {% if pbr_features.anisotropy %}aniso_basis.b{% else %}geometry_tbn.B{% endif %},
+        {% if pbr_features.anisotropy %}aniso_basis.strength{% else %}0.0{% endif %},
         // Iridescence
-        iridescence_factor,
-        iridescence.ior,
-        iridescence_thickness,
+        {% if pbr_features.iridescence %}iridescence_factor{% else %}0.0{% endif %},
+        {% if pbr_features.iridescence %}iridescence.ior{% else %}1.3{% endif %},
+        {% if pbr_features.iridescence %}iridescence_thickness{% else %}0.0{% endif %},
     );
 }
 
