@@ -538,8 +538,9 @@ impl Materials {
     /// compile-time specialization key for its TRANSPARENT pipeline (the
     /// transparent fragment selects its body on `base` and gates PBR
     /// features, instead of a runtime `shader_id ==` uber branch). Unknown
-    /// keys / non-PBR families report an inert all-features mask. PBR's
-    /// mask is derived from the material's actual Option fields.
+    /// keys / non-PBR families report an inert empty mask (their bodies
+    /// don't read `pbr_features`). PBR's mask is derived from the
+    /// material's actual Option fields.
     pub fn transparent_variant(
         &self,
         key: MaterialKey,
@@ -553,10 +554,7 @@ impl Materials {
             Some(Material::Toon(_)) => (ShadingBase::Toon, 0),
             Some(Material::Unlit(_)) => (ShadingBase::Unlit, 0),
             Some(Material::FlipBook(_)) => (ShadingBase::Flipbook, 0),
-            Some(Material::Custom(_)) | None => (
-                ShadingBase::Custom,
-                awsm_materials::pbr::PbrFeatures::all().bits(),
-            ),
+            Some(Material::Custom(_)) | None => (ShadingBase::Custom, 0),
         }
     }
 

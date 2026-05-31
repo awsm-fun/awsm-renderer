@@ -38,9 +38,10 @@ pub struct ShaderCacheKeyMaterialOpaque {
     /// the specialized PBR shader is compiled for (Phase B.2). Two PBR
     /// pipelines with different feature masks are distinct entries, so a
     /// scene that uses no clearcoat compiles a clearcoat-free shader.
-    /// Only meaningful when `shader_id == PBR`; carried as
-    /// `PbrFeatures::all().bits()` (the uber config) for every other
-    /// shader_id, where it's inert.
+    /// Only meaningful for PBR-family buckets; the empty set for non-PBR
+    /// ids (inert — their body doesn't read it) and for the canonical
+    /// PBR skybox-owner bucket (the minimal shader). Never the full
+    /// "uber" set — specialize-only compiles no all-features shader.
     pub pbr_features: u32,
     /// Stable hash over the currently-registered dynamic-material set
     /// (sorted by shader_id, then `(name, layout_hash, wgsl_hash)` per

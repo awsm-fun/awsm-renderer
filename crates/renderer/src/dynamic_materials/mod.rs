@@ -356,7 +356,7 @@ pub fn bucket_entries(dynamic: &DynamicMaterials) -> Vec<BucketEntry> {
         entries.push(BucketEntry {
             shader_id,
             base: ShadingBase::Custom,
-            pbr_features: awsm_materials::pbr::PbrFeatures::all().bits(),
+            pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(), // inert for Custom (own WGSL); never the uber set
             name: sanitize_wgsl_name(&reg.name),
         });
     }
@@ -386,11 +386,16 @@ pub fn first_party_bucket_entries() -> Vec<BucketEntry> {
         .map(|e| BucketEntry {
             shader_id: e.shader_id,
             base: ShadingBase::for_shader_id(e.shader_id),
-            // Canonical (all-features) config for each first-party family —
-            // the always-present base bucket (e.g. PBR index 0 is the skybox
-            // owner). The render-loop reconcile ADDS per-feature-set variant
-            // buckets on top of these. Inert for Unlit/Flipbook.
-            pbr_features: awsm_materials::pbr::PbrFeatures::all().bits(),
+            // EMPTY feature-set for the canonical base bucket. The canonical
+            // PBR bucket (index 0) is only ever the skybox owner — every real
+            // PBR material routes to its own per-feature-set variant bucket,
+            // so nothing shades here but `sample_skybox` (gated by
+            // `owns_skybox`, independent of `pbr_features`). Compiling it with
+            // the full feature set would be an "uber" shader that never runs —
+            // exactly what specialize-only eliminates; the empty set compiles
+            // the minimal shader instead. Inert anyway for Unlit/Flipbook
+            // (their bodies don't read `pbr_features`).
+            pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
             name: e.name.to_string(),
         })
         .collect()
@@ -588,7 +593,7 @@ impl DynamicMaterials {
             entries.push(BucketEntry {
                 shader_id: *shader_id,
                 base: ShadingBase::Custom,
-                pbr_features: awsm_materials::pbr::PbrFeatures::all().bits(),
+                pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(), // inert for Custom (own WGSL); never the uber set
                 name: sanitize_wgsl_name(&reg.name),
             });
         }

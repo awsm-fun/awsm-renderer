@@ -88,10 +88,10 @@ pub struct ShaderTemplateMaterialEdgeResolveCompute {
         crate::render_passes::material_opaque::shader::template::ShaderTemplateMaterialOpaqueDebug,
     pub bucket_entries: Vec<BucketEntry>,
     /// PBR feature mask for the shared `brdf.wgsl` include's
-    /// `{% if pbr_features.<x> %}` gating. Edge-resolve re-shades the
-    /// same samples as the opaque pass; until B.3 narrows it per
-    /// shader_id it carries the uber config (`all()`), so every lobe is
-    /// emitted, identical to before B.2.
+    /// `{% if pbr_features.<x> %}` gating. Edge-resolve re-shades the same
+    /// samples as the opaque pass, so it carries THIS bucket's exact
+    /// feature-set (from its bucket entry) — specialized identically to the
+    /// opaque pipeline, never the full "uber" set.
     pub pbr_features: awsm_materials::pbr::PbrFeatures,
 }
 
@@ -183,7 +183,13 @@ impl TryFrom<&ShaderCacheKeyMaterialEdgeResolve> for ShaderTemplateMaterialEdgeR
                 bucket_sample_list_base,
                 debug: crate::render_passes::material_opaque::shader::template::ShaderTemplateMaterialOpaqueDebug::new(),
                 bucket_entries: bucket_entries.clone(),
-                pbr_features: awsm_materials::pbr::PbrFeatures::all(),
+                // Per-bucket feature-set (NOT the uber `all()`): edge-resolve
+                // re-shades the same samples as the opaque pass, so it must
+                // gate `brdf.wgsl` to exactly this bucket's features — same
+                // specialization, no uber path. Keyed by `bucket_entries` +
+                // `bucket_index` in the cache key, so feature-distinct buckets
+                // get distinct edge pipelines.
+                pbr_features: awsm_materials::pbr::PbrFeatures::from_bits(entry.pbr_features),
             },
         })
     }

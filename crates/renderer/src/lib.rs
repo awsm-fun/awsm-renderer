@@ -787,10 +787,10 @@ impl AwsmRenderer {
                         // This prewarm loop only iterates CUSTOM (dynamic)
                         // registrations — first-party PBR feature variants
                         // are compiled per-feature-set by the render-loop
-                        // reconcile. A custom material's WGSL is its own;
-                        // the PBR feature gates are inert for it, so `all()`
-                        // is just a placeholder here.
-                        pbr_features: awsm_materials::pbr::PbrFeatures::all().bits(),
+                        // reconcile. A custom material's WGSL is its own; the
+                        // PBR feature gates are inert for it, so this is the
+                        // empty set (never the "uber" all-features one).
+                        pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
                         dispatch_hash,
                         dynamic_shader: dynamic_shader.clone(),
                         bucket_entries: entries.clone(),
@@ -811,9 +811,11 @@ impl AwsmRenderer {
                             msaa_sample_count: msaa,
                             mipmaps,
                             // Custom author transparent material — the
-                            // fragment emits the dynamic wrapper body.
+                            // fragment emits the dynamic wrapper body; the PBR
+                            // feature gates are inert here, so the empty set
+                            // (never the "uber" all-features one).
                             base: crate::dynamic_materials::ShadingBase::Custom,
-                            pbr_features: awsm_materials::pbr::PbrFeatures::all().bits(),
+                            pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
                             dispatch_hash,
                             dynamic_shader_id: Some(shader_id),
                             dynamic_shader: dynamic_shader.clone(),

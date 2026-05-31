@@ -104,8 +104,9 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     /// (Phase B.2). The compute template + `material_color_calc.wgsl`
     /// gate per-feature code behind `{% if pbr_features.<x> %}`, so an
     /// unused feature (no clearcoat in the scene, etc.) emits no code.
-    /// `PbrFeatures::all()` for non-PBR ids / the uber config — inert
-    /// there since the `{% if shader_id == PBR %}` arm isn't emitted.
+    /// The empty set for non-PBR ids and the canonical PBR (skybox-owner)
+    /// bucket — inert for the former (their body doesn't read it) and the
+    /// minimal shader for the latter. Never the full "uber" set.
     pub pbr_features: awsm_materials::pbr::PbrFeatures,
     /// For dynamic shader ids: the auto-generated `struct
     /// MaterialData { ... }` declaration emitted above the author's
@@ -452,7 +453,9 @@ mod empty_registry_tests {
             shader_id,
             base: crate::dynamic_materials::ShadingBase::for_shader_id(shader_id),
             owns_skybox: shader_id == MaterialShaderId::PBR,
-            pbr_features: awsm_materials::pbr::PbrFeatures::all().bits(),
+            // Canonical first-party buckets carry the empty feature-set
+            // (the minimal shader, never the uber `all()`).
+            pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
             dispatch_hash: 0,
             dynamic_shader: None,
             bucket_entries: crate::dynamic_materials::first_party_bucket_entries(),
@@ -624,7 +627,7 @@ return TransparentShadingOutput(vec4<f32>(color, alpha));
             msaa_sample_count: None,
             mipmaps: true,
             base: crate::dynamic_materials::ShadingBase::Custom,
-            pbr_features: awsm_materials::pbr::PbrFeatures::all().bits(),
+            pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
             dispatch_hash: 0,
             dynamic_shader_id: Some(dyn_id),
             dynamic_shader: Some(dyn_info),
@@ -670,7 +673,7 @@ return TransparentShadingOutput(vec4<f32>(color, alpha));
             msaa_sample_count: None,
             mipmaps: true,
             base: crate::dynamic_materials::ShadingBase::Pbr,
-            pbr_features: awsm_materials::pbr::PbrFeatures::all().bits(),
+            pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
             dispatch_hash: 0,
             dynamic_shader_id: None,
             dynamic_shader: None,

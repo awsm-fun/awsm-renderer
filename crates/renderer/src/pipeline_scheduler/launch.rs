@@ -994,11 +994,13 @@ impl crate::AwsmRenderer {
 
 /// Resolve a first-party bucket's `(base, pbr_features, owns_skybox)` for
 /// the opaque cache key from its registry bucket entry. A per-feature-set
-/// PBR/Toon variant reports its specialized family + feature mask; a
-/// canonical first-party id reports `(family, all())`. Only the canonical
-/// `MaterialShaderId::PBR` bucket owns the skybox write (classify routes
-/// skybox pixels to bit 0 / index 0 → that bucket), so every specialized
-/// PBR variant gets `owns_skybox = false`.
+/// PBR/Toon variant reports its specialized family + feature mask; the
+/// canonical first-party buckets carry the EMPTY feature-set (the canonical
+/// PBR bucket is the skybox owner — it shades no material geometry, so it
+/// compiles the minimal shader, never an "uber" all-features one). Only the
+/// canonical `MaterialShaderId::PBR` bucket owns the skybox write (classify
+/// routes skybox pixels to bit 0 / index 0 → that bucket), so every
+/// specialized PBR variant gets `owns_skybox = false`.
 fn opaque_variant_params(
     entries: &[crate::dynamic_materials::BucketEntry],
     shader_id: MaterialShaderId,
@@ -1007,9 +1009,13 @@ fn opaque_variant_params(
     let base = entry
         .map(|e| e.base)
         .unwrap_or_else(|| crate::dynamic_materials::ShadingBase::for_shader_id(shader_id));
+    // Missing entry → empty feature-set (the minimal shader), never the
+    // full "uber" set. A missing entry is a defensive fallback that
+    // shouldn't happen; if it does we'd rather under-shade than silently
+    // compile + run the uber path.
     let pbr_features = entry
         .map(|e| e.pbr_features)
-        .unwrap_or_else(|| awsm_materials::pbr::PbrFeatures::all().bits());
+        .unwrap_or_else(|| awsm_materials::pbr::PbrFeatures::default().bits());
     let owns_skybox = shader_id == MaterialShaderId::PBR;
     (base, pbr_features, owns_skybox)
 }

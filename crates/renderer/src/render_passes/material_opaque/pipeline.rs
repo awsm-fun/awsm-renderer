@@ -276,7 +276,15 @@ impl MaterialOpaquePipelines {
                         shader_id,
                         base: crate::dynamic_materials::ShadingBase::for_shader_id(shader_id),
                         owns_skybox: shader_id == MaterialShaderId::PBR,
-                        pbr_features: awsm_materials::pbr::PbrFeatures::all().bits(),
+                        // Per-bucket feature-set from the bucket entry (never
+                        // the full "uber" set). At build() only the canonical
+                        // buckets exist, so this is the empty set for PBR /
+                        // inert for the rest.
+                        pbr_features: bucket_entries
+                            .iter()
+                            .find(|e| e.shader_id == shader_id)
+                            .map(|e| e.pbr_features)
+                            .unwrap_or_else(|| awsm_materials::pbr::PbrFeatures::default().bits()),
                         // Builder-time prewarm — no dynamic materials
                         // can be registered before `build()` returns,
                         // so the stable empty-state sentinel applies.
