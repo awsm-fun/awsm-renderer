@@ -1,8 +1,24 @@
 # Materials system overhaul — many small opaque materials, first-class
 
+> ## ▶ RESUME HERE (fresh session)
+> Branch `dynamic-materials-plan`, green at the latest commit. The
+> architecture is **specialize-only, NO uber** — read the
+> **⭐ ARCHITECTURE PIVOT** section below first; it supersedes any
+> conflicting "Locked decision". Done so far: pivot + the shader-level
+> uber strip (compile-time-only `{% if pbr_features %}` gating, tested).
+> **Start the next phase at the UNIFIED VARIANT REGISTRY**, then routing →
+> opaque per-variant compile → transparent specialize → Toon → workstreams
+> A/C/D/F. Scope = the whole overhaul to completion. Break things freely;
+> land green at the end. Verify GPU/rendering in **real Chrome via the
+> Claude-in-Chrome plugin** per `docs/DEBUGGING-PREVIEW.md` (load scene
+> with `window.wasmBindings.load_scene_by_path("tuning-50-materials")`;
+> correctness via `getImageData` pixel checksum; perf via rAF FPS on a
+> GPU-bound scene). Your memory has the full decision log + exact next
+> steps.
+
 **Status**: in implementation. Every open design question is resolved
-(see **Locked decisions**). This file is the operational handoff +
-live tracker.
+(see **Locked decisions**, as amended by the ARCHITECTURE PIVOT). This
+file is the operational handoff + live tracker.
 
 ### Implementation status (2026-05-30, branch `dynamic-materials-plan`)
 
