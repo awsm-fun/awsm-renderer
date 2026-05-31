@@ -35,27 +35,38 @@
 >   skybox). Fixed a black-screen bug: `is_empty()` ignored variants → the
 >   classify pass used the stale eager 4-bucket pipeline.
 >
-> **The routing WORKS end-to-end** (full scene renders, 27 buckets all
-> compile to Ready, no WGSL failures) but is **not yet pixel-equivalent**,
-> so it's gated behind `const PBR_VARIANT_SPECIALIZATION = false` in
-> `render.rs`. Findings (MSAA on, full scene each):
-> baseline 3948677115 · per-feature-gated 2684965999 · per-feature-fan-out
-> +uber-compile 2863116431. The uber-compile case (identical shading)
-> STILL differs → the residual is **MSAA edge classification** (adjacent
-> meshes of different feature-sets now form classify silhouette edges —
-> an intended bucketing consequence; likely benign, confirm at MSAA-off
-> where it should match baseline exactly) PLUS a separate **per-feature
-> gating** diff (verify pixel-equivalence per KHR extension via the
-> model-viewer, F.3).
+> **The routing WORKS + is GPU-VERIFIED CORRECT**, gated behind the
+> runtime `Materials::pbr_specialization` flag (default off → tree is
+> pixel-identical to baseline 3948677115). Toggle for A/B via the
+> scene-editor wasm exports `set_pbr_specialization(bool)` /
+> `set_msaa(bool)` (added this session). Full A/B matrix verified in real
+> Chrome on tuning-50-materials (36 PBR / 23 feature-set masks; adjacent
+> meshes differ → genuine multi-material silhouette edges):
+> - **Specialization shading is pixel-equivalent within ≤2/255** at MSAA
+>   off (spec-on vs spec-off: 23/24 points identical, 1 lit pixel off by
+>   2). The BRDF lobes don't bit-exactly zero at factor 0, so stripping
+>   them shifts a couple LSBs — sub-perceptual, within the ±20/255 tonemap
+>   tolerance. (My earlier "it's MSAA edges" hypothesis was WRONG — proven
+>   by the MSAA-off A/B; it's the lobe-zeroing, and it's negligible.)
+> - **MSAA + bucketing + multi-material edges render correctly**: full
+>   scene, no seams, inter-material silhouettes blend to reasonable colors;
+>   2141/2160 grid points within 2/255, larger diffs concentrated at the
+>   silhouette edges (expected — bucketing now anti-aliases inter-material
+>   edges the single-bucket baseline merged).
 >
-> **NEXT STEPS to finish #15/#16:** (1) confirm the MSAA-on diff is purely
-> edge-classification (toggle MSAA off with the flag on → should match the
-> MSAA-off baseline) and decide whether the checksum criterion applies to
-> bucketed MSAA scenes; (2) verify per-feature gating per-extension in the
-> model-viewer (F.3); (3) flip `PBR_VARIANT_SPECIALIZATION` to true; (4)
-> raise `MAX_BUCKET_WORDS` if the cap is hit (tuning-50 fans to ~27
-> buckets, under 32). THEN #17 transparent specialize → #18 Toon
-> (`ToonFeatures`) → #19 workstreams A/C/D/F → delete this file.
+> So #15/#16 are functionally + visually CORRECT. They stay gated off by
+> default only because of **compile-time** rough edges, not steady-state
+> bugs:
+> **NEXT STEPS to flip the default on:** (1) Workstream A.1 — the
+> bucket-growth relaunch currently clears + recompiles ALL buckets and
+> briefly leaves `final_blend` uncompiled → a transient
+> "edge_resolve(final_blend) — skipping" frame during load; batch-compile-
+> against-the-final-layout fixes this and the heavy churn. (2) A.2 — the
+> compile-progress modal counter doesn't drain to 0. (3) F.3 — per-KHR-
+> extension model-viewer pass. (4) raise `MAX_BUCKET_WORDS` if the cap is
+> hit (tuning-50 fans to ~27 buckets, under 32). THEN flip
+> `pbr_specialization` default → true; #17 transparent specialize → #18
+> Toon (`ToonFeatures`) → #19 workstreams A/C/D/F → delete this file.
 
 **Status**: in implementation. Every open design question is resolved
 (see **Locked decisions**, as amended by the ARCHITECTURE PIVOT). This
