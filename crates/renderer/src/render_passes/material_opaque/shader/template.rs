@@ -100,10 +100,10 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     /// Whether this pipeline owns the skybox write (only the canonical
     /// PBR bucket; see [`ShaderCacheKeyMaterialOpaque::owns_skybox`]).
     pub owns_skybox: bool,
-    /// PBR feature set this specialized pipeline is compiled for
-    /// (Phase B.2). The compute template + `material_color_calc.wgsl`
-    /// gate per-feature code behind `{% if pbr_features.<x> %}`, so an
-    /// unused feature (no clearcoat in the scene, etc.) emits no code.
+    /// PBR feature set this specialized pipeline is compiled for. The
+    /// compute template + `material_color_calc.wgsl` gate per-feature code
+    /// behind `{% if pbr_features.<x> %}`, so an unused feature (no
+    /// clearcoat in the scene, etc.) emits no code.
     /// The empty set for non-PBR ids and the canonical PBR (skybox-owner)
     /// bucket — inert for the former (their body doesn't read it) and the
     /// minimal shader for the latter. Never the full "uber" set.
@@ -696,11 +696,11 @@ return TransparentShadingOutput(vec4<f32>(color, alpha));
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Phase 5 (B.2) — "test both gate modes" for the unified brdf.wgsl PBR
-// feature gating. Renders the shared lobe template standalone (it only
-// references only `pbr_features`) and asserts the specialize-only
-// contract: feature presence is purely compile-time, and NO feature
-// runtime guards (`if (color.x > 0)`) survive in any configuration.
+// brdf.wgsl PBR feature-gating tests. Render the shared lobe template
+// standalone (it only references `pbr_features`) and assert the
+// specialize-only contract: feature presence is purely compile-time, and
+// NO feature runtime guards (`if (color.x > 0)`) survive in any
+// configuration.
 // Call-site-unique tokens (cc_fresnel / sheen_scaling / iri_f0) are used
 // because the lobe *functions* are defined in brdf.wgsl and would always
 // match by name.

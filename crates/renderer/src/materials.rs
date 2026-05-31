@@ -244,7 +244,7 @@ pub struct Materials {
     buffer: DynamicStorageBuffer<MaterialKey>,
     gpu_dirty: bool,
     /// Per-material override for the payload's first u32 (the
-    /// `shader_id`). The specialize-only pivot routes an opaque PBR/Toon
+    /// `shader_id`). The specialize-only design routes an opaque PBR/Toon
     /// material to a per-feature-set *variant* bucket whose id is
     /// registry-allocated; that variant id — not the canonical
     /// `Material::shader_id()` — is what `material_classify` routes on and

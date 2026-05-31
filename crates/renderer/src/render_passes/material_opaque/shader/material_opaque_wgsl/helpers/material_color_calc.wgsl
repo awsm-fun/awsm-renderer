@@ -43,7 +43,7 @@ fn pbr_get_material_color{{ mipmap.suffix() }}(
 ) -> PbrMaterialColor {
     // Load extension data on-demand from indices. Each is gated so a
     // feature-set without the extension never computes it — the dead
-    // local then DCE-cascades up through its sampler + this load (B.2).
+    // local then DCE-cascades up through its sampler + this load.
     {% if pbr_features.emissive_strength %}
     let emissive_strength = pbr_material_load_emissive_strength(material.emissive_strength_index);
     {% else %}
@@ -75,7 +75,7 @@ fn pbr_get_material_color{{ mipmap.suffix() }}(
 
     // Multiply base color by vertex color if present (index 0 means absent).
     // Compile-time gated so feature-sets without vertex colors emit none
-    // of this (B.2).
+    // of this.
     {% if pbr_features.vertex_color %}
     if (material.vertex_color_info_index != 0u) {
         let vertex_color_info = pbr_material_load_vertex_color_info(material.vertex_color_info_index);
@@ -332,7 +332,7 @@ fn pbr_get_material_color{{ mipmap.suffix() }}(
         {% if mipmap.is_gradient() %}gradients.iridescence_thickness,{% endif %}
     );
 
-    // Per-feature gating (B.2): an off feature emits a compile-time
+    // Per-feature gating: an off feature emits a compile-time
     // CONSTANT here instead of its computed local. The local (and its
     // sampler + extension load above) then become dead code the compiler
     // eliminates — the win is the dropped register pressure, not just
@@ -388,7 +388,7 @@ fn _pbr_material_base_color{{ mipmap.suffix() }}(
     {% if mipmap.is_gradient() %}uv_derivs: UvDerivs,{% endif %}
 ) -> vec4<f32> {
     var color = material.base_color_factor;
-    // Compile-time feature gate (B.2 / criterion 4): a feature-set without
+    // Compile-time feature gate (criterion 4): a feature-set without
     // a base-color texture emits NO sampler load here, so the whole
     // sample → multiply chain dead-code-eliminates (lower register
     // pressure → higher occupancy). Pixel-equivalent: a material lacking

@@ -81,22 +81,18 @@ impl ToonMaterial {
 /// Feature set for the Toon shading family — the Toon analogue of
 /// [`crate::pbr::PbrFeatures`], over [`ToonMaterial`]'s optional fields.
 ///
-/// **Status (specialize-only pivot):** Toon's v1 shading
-/// (`compute_toon_lit_color`) does NOT sample its optional textures —
-/// `base_color_tex` / `emissive_tex` are written to the payload but unused
-/// by the shader. So Toon currently has **no compile-gateable shading
-/// paths**, and the unified variant registry correctly resolves it to a
-/// **single bucket** (its one empty feature-set), which is the optimal
-/// specialization outcome for a family with no per-feature variation
-/// (`ShadingBase::Toon.is_feature_specialized()` stays `false`).
+/// **Status:** Toon's v1 shading (`compute_toon_lit_color`) does NOT sample
+/// its optional textures — `base_color_tex` / `emissive_tex` are written to
+/// the payload but unused by the shader. So Toon has **no compile-gateable
+/// shading paths** and renders as a **single canonical bucket** (no
+/// per-feature variants); only PBR specializes per feature-set.
 ///
 /// This struct is the ready-to-use contract for when Toon gains texture
 /// sampling: at that point, gate the toon shading on `{% if
-/// toon_features.<x> %}` (move the shading into an Askama-processed
-/// include, mirroring PBR's `material_color_calc.wgsl`), flip
-/// `is_feature_specialized`, and add `Material::Toon` to the renderer's
-/// variant reconcile — the registry + routing already handle any
-/// `FirstParty` base generically.
+/// toon_features.<x> %}` (move the shading into an Askama-processed include,
+/// mirroring PBR's `material_color_calc.wgsl`) and route `Material::Toon`
+/// through the renderer's variant reconcile — the registry + routing already
+/// handle any `FirstParty` base generically.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct ToonFeatures {
     pub base_color_tex: bool,

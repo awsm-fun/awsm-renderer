@@ -39,7 +39,7 @@ pub struct ShaderCacheKeyMaterialTransparent {
     /// `(base, pbr_features)` is its own specialized transparent pipeline
     /// (transparent is drawn per-mesh / one material per draw, so it's
     /// already material-homogeneous — no uber fragment, per the
-    /// specialize-only pivot). `Custom` for a dynamic author material.
+    /// specialize-only design). `Custom` for a dynamic author material.
     pub base: ShadingBase,
     /// PBR feature mask ([`awsm_materials::pbr::PbrFeatures::bits`]) this
     /// transparent PBR pipeline is specialized for — drives the compile-

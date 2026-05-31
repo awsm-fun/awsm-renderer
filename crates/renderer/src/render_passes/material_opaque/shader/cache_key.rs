@@ -35,7 +35,7 @@ pub struct ShaderCacheKeyMaterialOpaque {
     /// mixed tile's skybox pixels aren't double-written / raced.
     pub owns_skybox: bool,
     /// Opaque PBR feature mask ([`awsm_materials::pbr::PbrFeatures::bits`])
-    /// the specialized PBR shader is compiled for (Phase B.2). Two PBR
+    /// the specialized PBR shader is compiled for. Two PBR
     /// pipelines with different feature masks are distinct entries, so a
     /// scene that uses no clearcoat compiles a clearcoat-free shader.
     /// Only meaningful for PBR-family buckets; the empty set for non-PBR

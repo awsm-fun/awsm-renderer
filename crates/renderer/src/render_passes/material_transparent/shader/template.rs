@@ -50,8 +50,8 @@ pub struct ShaderTemplateTransparentMaterialIncludes {
     /// `awsm_materials::registry::build_shader_id_consts`.
     pub shader_id_consts: String,
     /// PBR feature mask for the shared `brdf.wgsl` include's compile-time
-    /// `{% if pbr_features.<x> %}` gating. Set per transparent variant
-    /// (B.3); `all()` until routing narrows it.
+    /// `{% if pbr_features.<x> %}` gating — the transparent material's exact
+    /// feature-set (each transparent material compiles its own pipeline).
     pub pbr_features: awsm_materials::pbr::PbrFeatures,
 }
 impl ShaderTemplateTransparentMaterialIncludes {

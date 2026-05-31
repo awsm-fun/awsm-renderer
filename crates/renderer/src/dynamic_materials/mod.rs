@@ -1,4 +1,4 @@
-//! Unified material variant registry (the specialize-only pivot).
+//! Unified material variant registry (the specialize-only design).
 //!
 //! Every render bucket — first-party AND author-registered — is a registry
 //! *variant* deduped by key and addressed by an in-memory [`MaterialShaderId`]:
@@ -6,9 +6,10 @@
 //! - **First-party feature-set variant** `(ShadingBase, features)` — the
 //!   built-in PBR/Toon/Unlit/Flipbook shader templated (Askama, compile-time)
 //!   from its [`ShadingBase`] + feature mask. PBR fans out one bucket per
-//!   distinct [`awsm_materials::pbr::PbrFeatures`] set
-//!   ([`Self::resolve_first_party_variant`]); Toon/Unlit/Flipbook have no
-//!   compile-gateable shading paths today, so they stay single-bucket.
+//!   distinct [`awsm_materials::pbr::PbrFeatures`] set (allocated via
+//!   [`DynamicMaterials::resolve_first_party_variant_or_cap_err`]);
+//!   Toon/Unlit/Flipbook have no compile-gateable shading paths today, so
+//!   they stay single-bucket.
 //! - **Custom variant** — the author's WGSL fragment + layout
 //!   ([`MaterialRegistration`]), deduped by `(name, layout_hash, wgsl_hash)`.
 //!
@@ -206,7 +207,7 @@ pub const MAX_BUCKET_ENTRIES: usize = MAX_BUCKET_WORDS as usize * 32;
 /// [`MaterialShaderId`].** Pre-pivot the opaque/edge/transparent
 /// templates picked a material body with `{% if shader_id ==
 /// MaterialShaderId::PBR %}` — i.e. body-selection was welded to the
-/// fixed first-party id. The specialize-only pivot routes a PBR
+/// fixed first-party id. The specialize-only design routes a PBR
 /// material to a *per-feature-set* bucket whose id is registry-allocated
 /// (in the dynamic range), so "which body" can no longer be read off the
 /// id. The templates now branch on this `base` (which shading family)
@@ -258,14 +259,6 @@ impl ShadingBase {
             ShadingBase::Flipbook => "flipbook",
             ShadingBase::Custom => "custom",
         }
-    }
-
-    /// True for the families that specialize per feature-set. Currently
-    /// `Pbr` only — Toon's opaque shader doesn't yet sample its textures
-    /// (no gateable opaque code paths), so it stays single-bucket until it
-    /// does (then add `ToonFeatures` + flip this).
-    pub fn is_feature_specialized(self) -> bool {
-        matches!(self, ShadingBase::Pbr)
     }
 }
 
@@ -430,7 +423,7 @@ pub fn sanitize_wgsl_name(name: &str) -> String {
 #[derive(Default)]
 pub struct DynamicMaterials {
     registrations: HashMap<MaterialShaderId, MaterialRegistration>,
-    /// First-party feature-set variants (the specialize-only pivot).
+    /// First-party feature-set variants (the specialize-only design).
     /// A PBR/Toon material derives its [`awsm_materials::pbr::PbrFeatures`]
     /// mask and resolves it here to a per-feature-set bucket `shader_id`,
     /// deduped by `(base, features)`: the same family+feature-set always
@@ -493,7 +486,12 @@ impl DynamicMaterials {
     /// allocated id; the caller is responsible for launching its pipeline
     /// compile + reconciling bucket-dependent GPU state (the
     /// `AwsmRenderer` reconcile pass).
-    pub fn resolve_first_party_variant(
+    ///
+    /// Private: the bucket cap can only be enforced if every allocation
+    /// goes through [`Self::resolve_first_party_variant_or_cap_err`], so
+    /// that's the only public entry point. This raw allocator is the
+    /// (cap-unaware) primitive it wraps.
+    fn resolve_first_party_variant(
         &mut self,
         base: ShadingBase,
         features: u32,
@@ -1143,10 +1141,9 @@ impl crate::AwsmRenderer {
         Ok(id)
     }
 
-    /// Per-frame reconcile (specialize-only pivot #15/#16): route each
-    /// opaque PBR material to its per-feature-set *variant* bucket,
-    /// allocating + compiling new variants and re-laying-out the
-    /// bucket-dependent GPU state when the set grows.
+    /// Per-frame reconcile: route each opaque PBR material to its
+    /// per-feature-set *variant* bucket, allocating + compiling new variants
+    /// and re-laying-out the bucket-dependent GPU state when the set grows.
     ///
     /// Called from the render preamble; a cheap no-op when the
     /// `variants_dirty` flag is clear (every frame after the scene's
@@ -1163,18 +1160,19 @@ impl crate::AwsmRenderer {
     ///    layout (the templated `ClassifyBuckets` struct depends on the
     ///    full list, so a grow invalidates all of them).
     ///
-    /// Toon routing lands in #18; until then Toon keeps its canonical
-    /// single-bucket id. The canonical PBR bucket (`MaterialShaderId::PBR`,
-    /// index 0) always stays present as the skybox owner even when every
-    /// PBR material routes to a specialized variant.
+    /// Only PBR specializes per feature-set; Toon/Unlit/Flipbook render as
+    /// single canonical buckets (no compile-gateable shading paths today).
+    /// The canonical PBR bucket (`MaterialShaderId::PBR`, index 0) always
+    /// stays present as the skybox owner even when every PBR material routes
+    /// to a specialized variant.
     pub(crate) fn reconcile_material_variants(&mut self) -> Result<(), crate::error::AwsmError> {
         if !self.materials.take_variants_dirty() {
             return Ok(());
         }
         use awsm_materials::pbr::PbrFeatures;
 
-        // 1. Derive the desired (base, features) for every opaque material
-        //    that specializes (PBR today; Toon in #18).
+        // 1. Derive the desired (base, features) for every PBR material
+        //    (the only family that specializes per feature-set).
         let mut wants: Vec<(crate::materials::MaterialKey, ShadingBase, u32)> = Vec::new();
         for (key, mat) in self.materials.iter_for_variant_reconcile() {
             if let crate::materials::Material::Pbr(m) = mat {
@@ -1222,9 +1220,9 @@ impl crate::AwsmRenderer {
         Ok(())
     }
 
-    /// A.3 / Decision 13 — scene-load warmup-await
-    /// (`compile_materials(set).await`). Resolves every opaque PBR
-    /// material's feature-set variant, launches the per-variant pipeline
+    /// Scene-load warmup-await (`compile_materials(set).await`). Resolves
+    /// every opaque PBR material's feature-set variant, launches the
+    /// per-variant pipeline
     /// compiles, and resolves only when they're ALL GPU-resident. A
     /// frontend calls this once after inserting a scene's materials so the
     /// **first rendered frame is already fully specialized** — no
@@ -1688,7 +1686,7 @@ mod tests {
 
     // ── Phase 3 (D.1): batch-registration validation ──────────────────
 
-    // ── First-party feature-set variant allocation (#14/#15) ──────────
+    // ── First-party feature-set variant allocation ──────────────────────────
 
     #[test]
     fn resolve_first_party_variant_dedups_by_base_and_features() {

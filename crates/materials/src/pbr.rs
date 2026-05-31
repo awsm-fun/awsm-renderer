@@ -63,13 +63,12 @@ pub struct PbrMaterial {
 /// present texture slots + extensions (the `Option` fields). This is the
 /// input to:
 ///
-/// 1. **B.2** — the Askama `{% if features.<x> %}` gating in the PBR
-///    shader (opaque compute + transparent fragment), so a material with
-///    (say) no normal map compiles no normal-map code.
-/// 2. **B.3** — the per-feature-set bucket id: [`Self::bits`] is the
-///    stable feature-hash that maps a feature-set to its own `shader_id`
-///    / bucket, so two materials with the same feature-set share one
-///    specialized pipeline.
+/// 1. **Compile-time gating** — the Askama `{% if features.<x> %}` checks
+///    in the PBR shader (opaque compute + transparent fragment), so a
+///    material with (say) no normal map compiles no normal-map code.
+/// 2. **Bucket identity** — [`Self::bits`] is the stable feature-hash that
+///    maps a feature-set to its own `shader_id` / bucket, so two materials
+///    with the same feature-set share one specialized pipeline.
 ///
 /// `double_sided` and `alpha_mode` are deliberately NOT here — the former
 /// is raster state (a pipeline-variant dimension, not shader code), and
@@ -147,11 +146,10 @@ impl PbrFeatures {
         }
     }
 
-    /// Every feature on — the canonical all-features config. Used as the
-    /// canonical first-party bucket id (the always-present base bucket, e.g.
-    /// the PBR skybox owner). Rendering with this is behaviourally identical
-    /// to the pre-specialization (always-all-extensions) PBR shader, which
-    /// is what made the B.2 templatization landable as a no-op first.
+    /// Every feature on. Behaviourally identical to a non-specialized
+    /// (always-all-extensions) PBR shader. NOT used by the render pipeline
+    /// — every bucket compiles a real per-feature-set mask, never this — it
+    /// exists only as a test fixture for the feature-gating tests.
     pub fn all() -> Self {
         Self {
             base_color_tex: true,
@@ -175,7 +173,7 @@ impl PbrFeatures {
     }
 
     /// Stable one-bit-per-feature packing. Doubles as the feature-hash
-    /// keying a feature-set to its opaque bucket (B.3).
+    /// keying a feature-set to its opaque bucket.
     pub fn bits(&self) -> u32 {
         let mut b = 0u32;
         if self.base_color_tex {
