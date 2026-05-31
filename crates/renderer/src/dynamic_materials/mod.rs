@@ -224,6 +224,25 @@ impl ShadingBase {
             ShadingBase::Custom
         }
     }
+
+    /// WGSL-safe lowercase family name, used as the bucket-name prefix
+    /// for a first-party variant (`pbr` → `pbr_10000`).
+    pub fn wgsl_name(self) -> &'static str {
+        match self {
+            ShadingBase::Pbr => "pbr",
+            ShadingBase::Unlit => "unlit",
+            ShadingBase::Toon => "toon",
+            ShadingBase::Flipbook => "flipbook",
+            ShadingBase::Custom => "custom",
+        }
+    }
+
+    /// True for the families that specialize per feature-set
+    /// (`PbrFeatures` / `ToonFeatures`). Unlit / Flipbook stay
+    /// single-bucket; Custom carries an author fragment.
+    pub fn is_feature_specialized(self) -> bool {
+        matches!(self, ShadingBase::Pbr | ShadingBase::Toon)
+    }
 }
 
 /// One bucket entry — the template-rendering view of a single registered
@@ -300,7 +319,13 @@ impl BucketEntry {
 /// a `&MaterialRegistry`-shaped view.
 pub fn bucket_entries(dynamic: &DynamicMaterials) -> Vec<BucketEntry> {
     let mut entries = first_party_bucket_entries();
-    entries.reserve(dynamic.len());
+    entries.reserve(dynamic.first_party_variants.len() + dynamic.len());
+    // First-party feature-set variants (sorted by id for a stable layout).
+    let mut fp: Vec<_> = dynamic.fp_variant_meta.iter().collect();
+    fp.sort_by_key(|(id, _)| id.as_u32());
+    for (id, (base, features)) in fp {
+        entries.push(fp_variant_bucket_entry(*id, *base, *features));
+    }
     let mut dynamics: Vec<_> = dynamic.iter().collect();
     dynamics.sort_by_key(|(id, _)| id.as_u32());
     for (shader_id, reg) in dynamics {
@@ -312,6 +337,22 @@ pub fn bucket_entries(dynamic: &DynamicMaterials) -> Vec<BucketEntry> {
         });
     }
     entries
+}
+
+/// Builds the [`BucketEntry`] for a first-party feature-set variant.
+/// The WGSL-safe name is `<family>_<id>` (e.g. `pbr_10000`) — stable for
+/// a given id within a build and guaranteed unique (ids are monotonic).
+fn fp_variant_bucket_entry(
+    id: MaterialShaderId,
+    base: ShadingBase,
+    features: u32,
+) -> BucketEntry {
+    BucketEntry {
+        shader_id: id,
+        base,
+        pbr_features: features,
+        name: format!("{}_{}", base.wgsl_name(), id.as_u32()),
+    }
 }
 
 /// Returns the first-party-only bucket list — the `bucket_entries` value
@@ -363,6 +404,19 @@ pub fn sanitize_wgsl_name(name: &str) -> String {
 #[derive(Default)]
 pub struct DynamicMaterials {
     registrations: HashMap<MaterialShaderId, MaterialRegistration>,
+    /// First-party feature-set variants (the specialize-only pivot).
+    /// A PBR/Toon material derives its [`awsm_materials::pbr::PbrFeatures`]
+    /// mask and resolves it here to a per-feature-set bucket `shader_id`,
+    /// deduped by `(base, features)`: the same family+feature-set always
+    /// maps to the same id within a build. These ids share the
+    /// `next_dynamic_id` allocation range with custom registrations (all
+    /// registry ids are globally unique). Reverse lookup in
+    /// [`Self::fp_variant_meta`].
+    first_party_variants: HashMap<(ShadingBase, u32), MaterialShaderId>,
+    /// Reverse of [`Self::first_party_variants`]: id → `(base, features)`.
+    /// Lets the launch path + payload writer recover a variant's family +
+    /// feature mask from its (dynamic-range) id.
+    fp_variant_meta: HashMap<MaterialShaderId, (ShadingBase, u32)>,
     next_dynamic_id: u32,
     /// Cached `bucket_entries` view of the registry, refreshed on
     /// every register / unregister. The opaque + classify render
@@ -393,10 +447,51 @@ impl DynamicMaterials {
         // registry is empty — the slice itself is correct.
         Self {
             registrations: HashMap::new(),
+            first_party_variants: HashMap::new(),
+            fp_variant_meta: HashMap::new(),
             next_dynamic_id: MaterialShaderId::DYNAMIC_START,
             bucket_entries_cache: first_party_bucket_entries(),
             dispatch_hash_cache: 0,
         }
+    }
+
+    /// Resolve a first-party feature-set to its bucket `shader_id`,
+    /// allocating a fresh registry id on first sight (deduped by
+    /// `(base, features)`). The returned id is written as the first u32
+    /// of every material payload that uses this family+feature-set, and
+    /// the classify pass routes those pixels to this bucket.
+    ///
+    /// Only `Pbr`/`Toon` are feature-specialized; calling with another
+    /// base is a programming error (debug-asserted) — Unlit/Flipbook stay
+    /// single-bucket at their canonical first-party ids. Returns the
+    /// allocated id; the caller is responsible for launching its pipeline
+    /// compile + reconciling bucket-dependent GPU state (the
+    /// `AwsmRenderer` reconcile pass).
+    pub fn resolve_first_party_variant(
+        &mut self,
+        base: ShadingBase,
+        features: u32,
+    ) -> MaterialShaderId {
+        debug_assert!(
+            base.is_feature_specialized(),
+            "resolve_first_party_variant called with non-specialized base {base:?}"
+        );
+        if let Some(&id) = self.first_party_variants.get(&(base, features)) {
+            return id;
+        }
+        let id = MaterialShaderId::from_dynamic_raw(self.next_dynamic_id);
+        self.next_dynamic_id = self.next_dynamic_id.saturating_add(1);
+        self.first_party_variants.insert((base, features), id);
+        self.fp_variant_meta.insert(id, (base, features));
+        self.refresh_caches();
+        id
+    }
+
+    /// Returns the `(base, features)` a first-party variant id was
+    /// allocated for, or `None` if `id` isn't a registered first-party
+    /// variant (a custom registration or a canonical first-party id).
+    pub fn first_party_variant_of(&self, id: MaterialShaderId) -> Option<(ShadingBase, u32)> {
+        self.fp_variant_meta.get(&id).copied()
     }
 
     /// Returns the cached bucket-entries slice (first-party prefix +
@@ -424,11 +519,20 @@ impl DynamicMaterials {
     /// `remove` after they mutate the registry — never by external
     /// code on the hot path.
     fn refresh_caches(&mut self) {
-        // bucket_entries: first-party prefix + sorted dynamic.
-        let mut entries: Vec<BucketEntry> =
-            Vec::with_capacity(first_party_bucket_entries().len() + self.registrations.len());
+        // bucket_entries: first-party defaults + first-party feature-set
+        // variants (sorted by id) + sorted custom registrations.
+        let mut entries: Vec<BucketEntry> = Vec::with_capacity(
+            first_party_bucket_entries().len()
+                + self.first_party_variants.len()
+                + self.registrations.len(),
+        );
         for fp in first_party_bucket_entries() {
             entries.push(fp);
+        }
+        let mut fp_variants: Vec<_> = self.fp_variant_meta.iter().collect();
+        fp_variants.sort_by_key(|(id, _)| id.as_u32());
+        for (id, (base, features)) in fp_variants {
+            entries.push(fp_variant_bucket_entry(*id, *base, *features));
         }
         let mut dynamics: Vec<_> = self.registrations.iter().collect();
         dynamics.sort_by_key(|(id, _)| id.as_u32());
@@ -1310,6 +1414,61 @@ mod tests {
     }
 
     // ── Phase 3 (D.1): batch-registration validation ──────────────────
+
+    // ── First-party feature-set variant allocation (#14/#15) ──────────
+
+    #[test]
+    fn resolve_first_party_variant_dedups_by_base_and_features() {
+        let mut dm = DynamicMaterials::new();
+        let fp = first_party_len();
+
+        let a = dm.resolve_first_party_variant(ShadingBase::Pbr, 0b001);
+        let b = dm.resolve_first_party_variant(ShadingBase::Pbr, 0b001);
+        assert_eq!(a, b, "same (base, features) must dedup to the same id");
+        assert!(a.is_dynamic(), "variant ids live in the dynamic range");
+        assert_eq!(dm.bucket_entries_cached().len(), fp + 1);
+
+        // Different feature mask → distinct bucket.
+        let c = dm.resolve_first_party_variant(ShadingBase::Pbr, 0b010);
+        assert_ne!(a, c);
+        assert_eq!(dm.bucket_entries_cached().len(), fp + 2);
+
+        // Same feature mask, different base → distinct bucket.
+        let d = dm.resolve_first_party_variant(ShadingBase::Toon, 0b001);
+        assert_ne!(a, d);
+        assert_ne!(c, d);
+        assert_eq!(dm.bucket_entries_cached().len(), fp + 3);
+    }
+
+    #[test]
+    fn first_party_variant_meta_round_trips() {
+        let mut dm = DynamicMaterials::new();
+        let id = dm.resolve_first_party_variant(ShadingBase::Pbr, 0b101);
+        assert_eq!(dm.first_party_variant_of(id), Some((ShadingBase::Pbr, 0b101)));
+        // Canonical first-party + never-allocated ids return None.
+        assert_eq!(dm.first_party_variant_of(MaterialShaderId::PBR), None);
+    }
+
+    #[test]
+    fn fp_variant_buckets_appear_after_defaults_before_custom() {
+        let mut dm = DynamicMaterials::new();
+        let fp = first_party_len();
+        let var = dm.resolve_first_party_variant(ShadingBase::Pbr, 0b001);
+        let cust = dm.insert(reg("c", 1, 1)).unwrap();
+
+        let entries = dm.bucket_entries_cached();
+        assert_eq!(entries.len(), fp + 2);
+        // Index 0 stays the canonical PBR bucket (classify routes skybox
+        // to bit 0 → it must remain the PBR skybox-owner).
+        assert_eq!(entries[0].shader_id, MaterialShaderId::PBR);
+        assert_eq!(entries[0].base, ShadingBase::Pbr);
+        // The fp variant comes after the defaults, the custom last.
+        assert_eq!(entries[fp].shader_id, var);
+        assert_eq!(entries[fp].base, ShadingBase::Pbr);
+        assert!(entries[fp].name.starts_with("pbr_"));
+        assert_eq!(entries[fp + 1].shader_id, cust);
+        assert_eq!(entries[fp + 1].base, ShadingBase::Custom);
+    }
 
     #[test]
     fn validate_batch_accepts_distinct_new_materials() {
