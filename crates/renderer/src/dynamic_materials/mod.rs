@@ -1689,6 +1689,39 @@ mod tests {
     }
 
     #[test]
+    fn resolve_first_party_variant_capped_falls_back_at_cap() {
+        let mut dm = DynamicMaterials::new();
+        let fp = first_party_len();
+        // Fill to exactly the cap with distinct PBR feature-set variants.
+        let mut i = 0u32;
+        while dm.bucket_entries_cached().len() < MAX_BUCKET_ENTRIES {
+            let (id, overflow) =
+                dm.resolve_first_party_variant_capped(ShadingBase::Pbr, i, MAX_BUCKET_ENTRIES);
+            assert!(!overflow, "should not overflow before the cap");
+            assert!(id.is_dynamic());
+            i += 1;
+        }
+        assert_eq!(dm.bucket_entries_cached().len(), MAX_BUCKET_ENTRIES);
+
+        // An already-known feature-set still resolves (idempotent) even at
+        // saturation — no overflow, returns the existing variant id.
+        let (existing, overflow) =
+            dm.resolve_first_party_variant_capped(ShadingBase::Pbr, 0, MAX_BUCKET_ENTRIES);
+        assert!(!overflow);
+        assert!(existing.is_dynamic());
+
+        // A brand-new feature-set past the cap gracefully falls back to the
+        // canonical (uber) PBR bucket instead of allocating + bit-aliasing.
+        let (fallback, overflow) =
+            dm.resolve_first_party_variant_capped(ShadingBase::Pbr, 999_999, MAX_BUCKET_ENTRIES);
+        assert!(overflow, "a new variant past the cap must report overflow");
+        assert_eq!(fallback, MaterialShaderId::PBR);
+        // The fallback did NOT grow the bucket list.
+        assert_eq!(dm.bucket_entries_cached().len(), MAX_BUCKET_ENTRIES);
+        let _ = fp;
+    }
+
+    #[test]
     fn first_party_variant_meta_round_trips() {
         let mut dm = DynamicMaterials::new();
         let id = dm.resolve_first_party_variant(ShadingBase::Pbr, 0b101);
