@@ -136,6 +136,18 @@ pub async fn load_scene_by_path(scene_name: String) -> Result<(), JsValue> {
         )));
     }
 
+    // A.3 warmup-await: now that every material exists on the GPU, resolve
+    // their opaque feature-set variants + drive the per-variant pipeline
+    // compiles to completion BEFORE returning, so the first rendered frame
+    // is already fully specialized (no compile-in-progress transient).
+    {
+        let handle = crate::context::renderer_handle();
+        let mut renderer = handle.lock().await;
+        if let Err(err) = renderer.compile_material_variants().await {
+            tracing::warn!("compile_material_variants warmup failed: {err:?}");
+        }
+    }
+
     tracing::info!("measurement: scene {scene_name} loaded + materialised");
     Ok(())
 }
@@ -1100,4 +1112,25 @@ pub fn debug_gizmo_mesh_keys() -> String {
             .unwrap_or_else(|| "null".to_string()),
         keys
     )
+}
+
+/// Dev-only: set MSAA on (4×) or off (1×) at runtime, keeping mipmaps,
+/// for the MSAA-edge A/B pixel verification. Mirrors `view::toggle_msaa`
+/// but deterministic. Recompiles the affected pipelines.
+#[wasm_bindgen]
+pub async fn set_msaa(enabled: bool) -> Result<(), JsValue> {
+    let state = app_state();
+    let aa = {
+        let mut lock = state.anti_aliasing.lock_mut();
+        lock.msaa_sample_count = if enabled { Some(4) } else { None };
+        lock.clone()
+    };
+    let handle = crate::context::renderer_handle();
+    let mut renderer = handle.lock().await;
+    renderer
+        .set_anti_aliasing(aa)
+        .await
+        .map_err(|e| JsValue::from_str(&format!("set_anti_aliasing: {e:?}")))?;
+    tracing::info!("measurement: set_msaa({enabled})");
+    Ok(())
 }

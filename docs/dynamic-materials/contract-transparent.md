@@ -34,6 +34,18 @@ items must be declared above the function body; the function ends with
 
 ---
 
+## Specialization & the bucket cap
+
+Transparent materials specialize the same way opaque ones do — each
+registered custom material compiles its **own** pipeline, gated at compile
+time to exactly its feature-set (there is no shared "uber" transparent
+fragment). First-party transparent PBR likewise specializes per
+feature-set. Each transparent material is one bucket and counts against the
+same `MAX_BUCKET_ENTRIES` cap; overflow is the same hard error. See
+[contract-opaque.md § Specialization & the bucket cap](contract-opaque.md#specialization--the-bucket-cap).
+
+---
+
 ## Input — `TransparentShadingInput`
 
 ```wgsl
@@ -107,10 +119,12 @@ with these differences:
 - **No `frame_globals` mesh-light slice path** — the per-mesh light list
   is opaque-only. Transparents iterate the full punctual-light set via
   `get_lights_info()`.
-- **`opaque_background` is bound on the transparent pass** so you can
-  sample the pre-blit opaque render target for refraction / transmission.
-  PBR's `sample_transmission_background` helper is the prior art —
-  reuse it via `let bg = sample_transmission_background(uv, ...);`.
+- **`opaque_background` is bound on the transparent pass** (the pre-blit
+  opaque render target). Note that the PBR `sample_transmission_background`
+  helper needs `frag_pos` + the camera struct, which `TransparentShadingInput`
+  does not expose — so screen-space refraction isn't readily available to
+  custom transparents (promote to first-party PBR for true transmission;
+  see the example below).
 
 ---
 
@@ -180,14 +194,12 @@ return TransparentShadingOutput(vec4<f32>(color, alpha));
 ```
 
 **Why this example doesn't sample the opaque background directly:**
-the dynamic-material wrapper intentionally doesn't bind the
-opaque-target texture on `TransparentShadingInput`. The renderer's
-PBR transmission code calls `sample_transmission_background(...)`
-from `material_transparent_wgsl/fragment.wgsl`, but that helper
-needs `frag_pos: vec4<f32>` + the camera struct, neither of which
-the wrapper exposes today. Materials that need refractive sampling
-(true glass, dispersion, etc.) should promote to first-party PBR
-with `KHR_materials_transmission` rather than fight the dynamic
-schema's intentionally-minimal surface. For pure colour-tinted
-soft-glass effects, alpha-blending against the framebuffer's
-existing contents is enough — which is what this example does.
+the `opaque_background` target is bound on the transparent pass, but the
+renderer's `sample_transmission_background(...)` helper needs `frag_pos`
++ the camera struct, which `TransparentShadingInput` deliberately does not
+expose (the per-pixel surface is kept minimal to avoid per-fragment
+materialization cost). So custom transparents can do standard alpha
+blending against the framebuffer (what this example does), but true
+refractive sampling (glass, dispersion) should **promote to first-party
+PBR with `KHR_materials_transmission`** rather than work around the
+minimal dynamic surface.

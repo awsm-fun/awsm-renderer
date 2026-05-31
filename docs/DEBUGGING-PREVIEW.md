@@ -554,6 +554,81 @@ close zoom — that asymmetry was a major factor in earlier misdiagnoses.
 
 ---
 
+## Scene-editor: load a tuning scene + read timings non-interactively
+
+The **scene-editor** loads projects through a native directory picker
+(File System Access) — there is **no `?project=` URL route**. But for
+automated measurement there is a dev-only `#[wasm_bindgen]` export that
+loads a scene from `assets/world/<name>/` over HTTP, **bypassing the
+picker entirely**:
+
+```js
+// debug builds only (gated on cfg(debug_assertions))
+await window.wasmBindings.load_scene_by_path("tuning-50-materials")
+```
+
+It fetches `assets/world/<name>/project.json` (Trunk copies
+`assets/world` into the dist, see scene-editor `index.html`), drops
+prior renderer caches, applies the snapshot, hydrates raster-texture
+assets over HTTP, and resolves once every node has materialised on the
+GPU. Implemented in
+`crates/frontend/scene-editor/src/actions/measurement.rs::load_scene_by_path`.
+
+> **Limitation — custom/dynamic materials don't load this way.** The
+> loader only hydrates raster textures, and the editor's live
+> materialization path (`renderer_bridge/node_sync.rs`) does not yet
+> consume a primitive's `custom_material` field at all. Scenes that
+> rely on registered custom-material folders need the interactive
+> import flow; tuning scenes use only inline (PBR/Toon/Unlit) materials.
+
+### Reading per-pass timings
+
+Render-pass timing spans route through `tracing-web`'s performance
+layer into the browser Performance API. Enable the sub-frame tier with
+`?trace=sub-frame`, then read aggregated stats via another dev-only
+export:
+
+```js
+// returns JSON: { "<span name>": {count, mean_ms, p50_ms, p95_ms, max_ms, total_ms}, ... }
+JSON.parse(window.wasmBindings.read_render_pass_timings(30))
+```
+
+(`read_render_pass_timings(min_count)` groups
+`performance.getEntriesByType('measure')` by base span name and drops
+spans that fired fewer than `min_count` times — pass e.g. `30` to keep
+only spans that ran across a steady ~30+ frame window.) The span names
+match the per-pass spans in `render.rs`: `"Render"`, `"Geometry
+RenderPass"`, `"Material Classify RenderPass"`, `"Material Opaque
+RenderPass"`, `"Material Transparent RenderPass"`, etc.
+
+### Full non-interactive capture recipe (real Chrome)
+
+```
+1. Start the dev server (background), trace tier on by default in debug:
+     task scene-editor:dev   # serves http://localhost:9081
+   Wait for "applying new distribution" in the log.
+2. list_connected_browsers → select_browser → tabs_context_mcp.
+3. navigate the (foreground, visible) tab to
+     http://localhost:9081/?trace=sub-frame
+   ⚠ The tab MUST be the foreground active tab of a non-minimized
+     window or rAF pauses and NO timing measures accumulate (see the
+     visibility gotcha at the top of this doc).
+4. await window.wasmBindings.load_scene_by_path("tuning-50-materials")
+5. Let it render ~3-5 s to accumulate frames (clear stale measures
+     first if comparing: performance.clearMeasures()).
+6. JSON.parse(window.wasmBindings.read_render_pass_timings(30))
+7. Record mean_ms for Render + Material Opaque + Material Classify +
+     Geometry. For before/after, repeat on each branch with the SAME
+     scene + camera + canvas size.
+```
+
+Timing is **CPU wall-clock around the span**, not GPU timestamp
+queries (there are none) — so it includes JS↔wasm + submit overhead and
+is noisy frame-to-frame. Use `mean_ms`/`p50_ms` over a multi-second
+window and keep the canvas size identical between captures.
+
+---
+
 ## Methodology checklist
 
 When you sit down to debug a rendering issue, follow this in order. No

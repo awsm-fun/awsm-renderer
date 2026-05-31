@@ -78,6 +78,14 @@ impl ToonMaterial {
     }
 }
 
+// NOTE: Toon renders as a single canonical bucket — it does NOT specialize
+// per feature-set. Its v1 shading (`compute_toon_lit_color`) doesn't sample
+// its optional textures, so there are no compile-gateable paths to vary on.
+// If Toon ever gains texture sampling, add a `ToonFeatures` (mirroring
+// `PbrFeatures`), gate the WGSL on it, and route `Material::Toon` through the
+// renderer's variant reconcile — the registry handles any `FirstParty` base
+// generically.
+
 impl MaterialShader for ToonMaterial {
     fn shader_id(&self) -> MaterialShaderId {
         MaterialShaderId::TOON

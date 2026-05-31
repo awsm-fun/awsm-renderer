@@ -6,7 +6,7 @@
 //! reads via `extras_load_f32(material.<slot>_offset + i)` /
 //! `extras_load_u32(...)`.
 //!
-//! ## Phase 6 status
+//! ## Status
 //!
 //! Ships a bump allocator + per-slice `(offset, length)` tracking.
 //! Compaction + free-list re-use of removed slices is parked as a

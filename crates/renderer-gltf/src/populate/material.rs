@@ -34,6 +34,21 @@ pub(super) async fn pbr_material_mapper(
     primitive_buffer_info: &MeshBufferInfoWithOffset,
     gltf_material: gltf::Material<'_>,
 ) -> Result<Material> {
+    // `AWSM_material_none` (per-material extension, Decision 7): a
+    // geometry-only primitive that opts out of PBR shading entirely. Route
+    // it to the shared flat/Unlit bucket (Decision 8) — visible + cheap,
+    // and crucially it builds NO PbrMaterial, so a load made only of
+    // material-none primitives fires ZERO PBR shader compiles (criterion
+    // 6). Checked BEFORE `pbr_material_mapper_core` so none of the PBR
+    // texture / extension work runs.
+    if gltf_material
+        .extension_value("AWSM_material_none")
+        .is_some()
+    {
+        let unlit = UnlitMaterial::new(MaterialAlphaMode::Opaque, gltf_material.double_sided());
+        return Ok(Material::Unlit(unlit));
+    }
+
     let mut pbr_material = pbr_material_mapper_core(renderer, ctx, &gltf_material).await?;
 
     if gltf_material.unlit() {

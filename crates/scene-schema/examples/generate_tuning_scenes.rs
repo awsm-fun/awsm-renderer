@@ -22,10 +22,10 @@
 use std::{fs, path::PathBuf};
 
 use awsm_scene_schema::{
-    AssetTable, CubeFaceUpdateRate, EditorNode, EditorProject, EnvironmentConfig, EvsmCutoff,
-    FarCascadeUpdateRate, LightConfig, LightShadowConfig, LightShadowHardness, MaterialAlphaMode,
-    MaterialDef, MaterialShading, MeshShadowConfig, NodeId, NodeKind, PrimitiveShape,
-    ShadowsConfig, Trs,
+    AssetEntry, AssetId, AssetSource, AssetTable, CubeFaceUpdateRate, EditorNode, EditorProject,
+    EnvironmentConfig, EvsmCutoff, FarCascadeUpdateRate, LightConfig, LightShadowConfig,
+    LightShadowHardness, MaterialAlphaMode, MaterialDef, MaterialShading, MeshShadowConfig, NodeId,
+    NodeKind, PrimitiveShape, ShadowsConfig, TextureDef, TextureRef, Trs,
 };
 
 fn main() -> std::io::Result<()> {
@@ -43,6 +43,7 @@ fn main() -> std::io::Result<()> {
         ("tuning-importance-tiers", scene_importance_tiers()),
         ("tuning-1024-lights", scene_1024_lights()),
         ("tuning-cull-debug", scene_cull_debug()),
+        ("tuning-50-materials", scene_50_materials()),
     ] {
         let dir = out_root.join(name);
         fs::create_dir_all(&dir)?;
@@ -726,6 +727,334 @@ fn scene_10k_meshes() -> EditorProject {
         4.0,
         shadow_high(),
     ));
+    project
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Scene — 50 materials. Fixture for the materials-system specialization.
+// A 50-mesh opaque grid (each with its own material) exercising the "many
+// small opaque materials" path, plus a small transparent group:
+//   - 36 PBR meshes spanning distinct feature-sets (varying texture-slot
+//     presence + vertex colors). Each distinct feature-set resolves to
+//     its own specialized opaque bucket.
+//   - 8 Toon meshes (Toon is specialized too).
+//   - 6 Unlit meshes.
+//   - 4 transparent (Blend) PBR meshes in a separate group — exercise the
+//     specialized transparent forward path (each feature-set → its own
+//     transparent pipeline). NOT counted in the 50-material grid assert.
+//
+// The 50-mesh opaque grid is the perf-measurement subject (its opaque /
+// classify pass timings are the before/after specialization comparison);
+// the transparent group renders through a separate forward pass and is a
+// correctness fixture, not part of the opaque timing baseline.
+//
+// NOTE: custom/dynamic materials are intentionally NOT in this scene.
+// The scene-editor's live materialization path (renderer_bridge/
+// node_sync.rs) does not yet consume a Primitive's `custom_material`
+// field — per-mesh custom materials are unimplemented in the editor's
+// render path (the `build_custom_instance` bridge exists but is not
+// wired into materialization). A custom-material mesh would render with
+// its inline fallback, not its shader, so including them here would
+// measure nothing. Dynamic-material registration/compile batching is
+// validated separately (material-editor + native tests). The PBR
+// feature-sets are where the opaque-specialization delta actually lives.
+//
+// A single tiny placeholder texture is referenced in *varying slot
+// combinations* — the feature-hash keys on slot presence, not content,
+// so one PNG fans out to many feature-sets.
+//
+// Loaded non-interactively for measurement via
+//   window.wasmBindings.load_scene_by_path("tuning-50-materials")
+// (debug builds only). See docs/DEBUGGING-PREVIEW.md.
+// ─────────────────────────────────────────────────────────────────────
+
+/// SHA-256 of `assets/world/tuning-50-materials/assets/<hash>.png` — the
+/// placeholder texture's content-hash-addressed filename. Must match the
+/// file on disk (the loader fetches by this path).
+const PLACEHOLDER_TEX_HASH: &str =
+    "7310c0157395b5732c24711abbbc644ae273587de38077045470c9c7ea129bdb";
+
+fn fifty_materials_pos(idx: i32) -> [f32; 3] {
+    // 10×5 grid, centered on X, receding in +Z.
+    let cols = 10;
+    let r = idx / cols;
+    let c = idx % cols;
+    let spacing = 2.5_f32;
+    [
+        (c as f32 - (cols as f32 - 1.0) * 0.5) * spacing,
+        0.7,
+        2.0 + r as f32 * spacing,
+    ]
+}
+
+fn prim_node(name: &str, pos: [f32; 3], shape: PrimitiveShape, inline: MaterialDef) -> EditorNode {
+    EditorNode {
+        id: NodeId::new(),
+        name: name.to_string(),
+        transform: Trs {
+            translation: pos,
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0, 1.0, 1.0],
+        },
+        kind: NodeKind::Primitive {
+            shape,
+            material: None,
+            inline_material: inline,
+            custom_material: None,
+            shadow: MeshShadowConfig::default(),
+        },
+        locked: false,
+        visible: true,
+        prefab: false,
+        children: Vec::new(),
+    }
+}
+
+fn alt_shape(idx: i32) -> PrimitiveShape {
+    if idx % 2 == 0 {
+        PrimitiveShape::Box {
+            dims: [1.0, 1.0, 1.0],
+        }
+    } else {
+        PrimitiveShape::Sphere {
+            radius: 0.6,
+            segments_long: 24,
+            segments_lat: 16,
+        }
+    }
+}
+
+/// Build a PBR material from a texture-slot presence bitmask:
+/// bit0=base_color, bit1=metallic_roughness, bit2=normal, bit3=occlusion,
+/// bit4=emissive.
+fn pbr_from_mask(tex: TextureRef, mask: u32, vcolor: bool, color: [f32; 4]) -> MaterialDef {
+    MaterialDef {
+        base_color: color,
+        base_color_texture: (mask & 1 != 0).then_some(tex),
+        metallic_roughness_texture: (mask & 2 != 0).then_some(tex),
+        normal_texture: (mask & 4 != 0).then_some(tex),
+        occlusion_texture: (mask & 8 != 0).then_some(tex),
+        emissive_texture: (mask & 16 != 0).then_some(tex),
+        emissive: if mask & 16 != 0 {
+            [0.4, 0.25, 0.1]
+        } else {
+            [0.0, 0.0, 0.0]
+        },
+        metallic: 0.2,
+        roughness: 0.55,
+        vertex_colors_enabled: vcolor,
+        shading: MaterialShading::Pbr,
+        ..MaterialDef::default()
+    }
+}
+
+fn scene_50_materials() -> EditorProject {
+    let mut project = empty_project("tuning-50-materials");
+
+    // Register the single placeholder texture asset (content-hash
+    // addressed; the file lives at assets/<hash>.png next to project.json).
+    let tex = {
+        let entry = AssetEntry::new_with_hash(
+            AssetSource::Texture(TextureDef::Raster {
+                display_name: "placeholder.png".to_string(),
+            }),
+            PLACEHOLDER_TEX_HASH.to_string(),
+        );
+        let id = AssetId::new();
+        project.assets.entries.insert(id, entry);
+        TextureRef(id)
+    };
+
+    let mut meshes: Vec<EditorNode> = Vec::with_capacity(50);
+    let mut idx = 0i32;
+
+    // ── 30 PBR meshes across 16 distinct feature-sets ──────────────────
+    // First 16 are distinct (one per feature-set); the remaining 14
+    // re-use earlier feature-sets so the after-overhaul dedup (same
+    // feature-set → same bucket) is exercised too.
+    let pbr_masks: [u32; 16] = [
+        0b00000, // base-color factor only — the smallest PBR shader
+        0b00001, // +base_color texture
+        0b00011, // +metallic_roughness texture
+        0b00111, // +normal
+        0b01111, // +occlusion
+        0b11111, // all 5 texture slots
+        0b00100, // normal only
+        0b00101, // base + normal
+        0b00110, // mr + normal
+        0b01000, // occlusion only
+        0b10000, // emissive texture only
+        0b10001, // base + emissive
+        0b10101, // base + normal + emissive
+        0b01010, // mr + occlusion
+        0b11010, // mr + occlusion + emissive
+        0b01101, // base + normal + occlusion
+    ];
+    for i in 0..36 {
+        let mask = pbr_masks[(i as usize) % pbr_masks.len()];
+        let vcolor = i % 5 == 3; // a few with vertex colors → distinct sets
+        let hue = i as f32 / 30.0;
+        let mat = pbr_from_mask(tex, mask, vcolor, hsv_to_rgba(hue, 0.5, 0.9));
+        meshes.push(prim_node(
+            &format!(
+                "pbr_{i:02}_mask{mask:05b}{}",
+                if vcolor { "_vc" } else { "" }
+            ),
+            fifty_materials_pos(idx),
+            alt_shape(idx),
+            mat,
+        ));
+        idx += 1;
+    }
+
+    // ── 8 Toon meshes — varied bands/rim + some textured ───────────────
+    for i in 0..8 {
+        let bands = 2 + (i % 4) as u32; // 2..5
+        let rim = 0.2 + (i % 3) as f32 * 0.3;
+        let textured = i % 2 == 0;
+        let mat = MaterialDef {
+            base_color: hsv_to_rgba(0.55 + i as f32 * 0.03, 0.6, 0.9),
+            base_color_texture: textured.then_some(tex),
+            shading: MaterialShading::Toon {
+                diffuse_bands: bands,
+                rim_strength: rim,
+            },
+            ..MaterialDef::default()
+        };
+        meshes.push(prim_node(
+            &format!("toon_{i}_b{bands}"),
+            fifty_materials_pos(idx),
+            alt_shape(idx),
+            mat,
+        ));
+        idx += 1;
+    }
+
+    // ── 6 Unlit meshes — some textured ─────────────────────────────────
+    for i in 0..6 {
+        let textured = i % 2 == 0;
+        let mat = MaterialDef {
+            base_color: hsv_to_rgba(0.05 + i as f32 * 0.04, 0.7, 0.95),
+            base_color_texture: textured.then_some(tex),
+            shading: MaterialShading::Unlit,
+            ..MaterialDef::default()
+        };
+        meshes.push(prim_node(
+            &format!("unlit_{i}"),
+            fifty_materials_pos(idx),
+            alt_shape(idx),
+            mat,
+        ));
+        idx += 1;
+    }
+
+    debug_assert_eq!(meshes.len(), 50, "scene must have exactly 50 meshes");
+    project.nodes.push(root_group("meshes", meshes));
+
+    // ── Transparent materials ──────────────────────────────────────────
+    // A handful of Blend (alpha < 1) PBR meshes parked IN FRONT of the
+    // opaque grid (smaller z = nearer the camera) so they blend over the
+    // opaque meshes + floor — the visible transparent-path test. Each has
+    // a distinct feature-set so it compiles its OWN specialized transparent
+    // pipeline (transparent specializes per feature-set too — #17): three
+    // untextured (the smallest transparent variant) plus one with a
+    // base-color texture (a different variant, exercising the transparent
+    // texture-slot gate). Kept in a separate group so the 50-material grid
+    // assert above stays exact.
+    let transparent: Vec<EditorNode> = vec![
+        prim_node(
+            "transp_glass_clear",
+            [-6.0, 0.8, -0.6],
+            PrimitiveShape::Box {
+                dims: [1.1, 1.1, 1.1],
+            },
+            MaterialDef {
+                base_color: [0.80, 0.90, 1.0, 0.35],
+                metallic: 0.0,
+                roughness: 0.10,
+                alpha_mode: MaterialAlphaMode::Blend,
+                shading: MaterialShading::Pbr,
+                ..MaterialDef::default()
+            },
+        ),
+        prim_node(
+            "transp_glass_green",
+            [-2.0, 0.8, -0.6],
+            PrimitiveShape::Sphere {
+                radius: 0.7,
+                segments_long: 24,
+                segments_lat: 16,
+            },
+            MaterialDef {
+                base_color: [0.45, 1.0, 0.55, 0.50],
+                metallic: 0.0,
+                roughness: 0.30,
+                alpha_mode: MaterialAlphaMode::Blend,
+                shading: MaterialShading::Pbr,
+                ..MaterialDef::default()
+            },
+        ),
+        prim_node(
+            "transp_glass_amber",
+            [2.0, 0.8, -0.6],
+            PrimitiveShape::Box {
+                dims: [1.1, 1.1, 1.1],
+            },
+            MaterialDef {
+                base_color: [1.0, 0.70, 0.20, 0.55],
+                metallic: 0.0,
+                roughness: 0.20,
+                alpha_mode: MaterialAlphaMode::Blend,
+                shading: MaterialShading::Pbr,
+                ..MaterialDef::default()
+            },
+        ),
+        prim_node(
+            "transp_glass_textured",
+            [6.0, 0.8, -0.6],
+            PrimitiveShape::Sphere {
+                radius: 0.7,
+                segments_long: 24,
+                segments_lat: 16,
+            },
+            MaterialDef {
+                base_color: [1.0, 1.0, 1.0, 0.60],
+                base_color_texture: Some(tex),
+                metallic: 0.0,
+                roughness: 0.40,
+                alpha_mode: MaterialAlphaMode::Blend,
+                shading: MaterialShading::Pbr,
+                ..MaterialDef::default()
+            },
+        ),
+    ];
+    project.nodes.push(root_group("transparent", transparent));
+
+    // Floor + lights so the opaque meshes are lit (the custom screen-space
+    // materials ignore lighting, but PBR/Toon need it).
+    project.nodes.push(plane_node(
+        "floor",
+        [0.0, -0.01, 0.0],
+        60.0,
+        60.0,
+        [0.28, 0.28, 0.3, 1.0],
+    ));
+    project.nodes.push(directional_light(
+        "sun",
+        [0.3826834, 0.0, 0.0, 0.9238795],
+        [1.0, 0.96, 0.9],
+        4.0,
+        shadow_medium(),
+    ));
+    project.nodes.push(point_light(
+        "fill",
+        [0.0, 8.0, 8.0],
+        [0.8, 0.85, 1.0],
+        30.0,
+        40.0,
+        shadow_off(),
+    ));
+
     project
 }
 

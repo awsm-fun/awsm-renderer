@@ -4,6 +4,56 @@ WebGPU visibility-buffer deferred renderer for the AWSM engine. Library
 crate — applications drive it through the `AwsmRenderer` struct and its
 subsystems (`lights`, `meshes`, `materials`, `shadows`, etc).
 
+## Materials & specialization
+
+There are two ways to get a material onto a mesh:
+
+1. **First-party materials** — `PbrMaterial`, `ToonMaterial`,
+   `UnlitMaterial`, `FlipBookMaterial`. You just set fields (base color,
+   textures, KHR extensions, …); no shader authoring. This is what most
+   apps and the glTF loader use.
+2. **Custom materials** — you register your own WGSL shading body at
+   runtime and reference it from `Material::Custom`. See the
+   [quick start](#dynamic-materials-quick-start) below.
+
+### Specialize-only (compile-time feature gating)
+
+The renderer is **specialize-only**: every shader is gated *at compile
+time* (Askama `{% if pbr_features.X %}`) to exactly the features the
+material uses. There is **no "uber" shader** — a material with no normal
+map compiles no normal-map code, a scene with no clearcoat compiles no
+clearcoat code, etc. The only runtime branches are logically necessary
+ones (lighting geometry, light loops).
+
+Concretely:
+
+- **PBR** specializes per *feature-set* — the set of present texture
+  slots + KHR extensions (`PbrFeatures`). Each distinct feature-set gets
+  its own compiled pipeline (a "bucket"); two PBR materials with the same
+  feature-set **share** one pipeline. Transparent PBR specializes the
+  same way (each transparent material compiles its own pipeline), as does
+  the MSAA edge-resolve pass.
+- **Toon / Unlit / FlipBook** render as a single canonical bucket each
+  (their shaders have no feature-gateable paths today).
+- **Custom** materials get one bucket per registration (no feature-set
+  deduping).
+
+This is automatic — feature-sets are derived from the material and
+resolved to pipelines during the render preamble. You don't configure it
+and there is no on/off switch; specialization is unconditional.
+
+### Bucket cap
+
+The total number of distinct buckets (first-party feature-sets + custom
+registrations) is capped at `MAX_BUCKET_ENTRIES` = `MAX_BUCKET_WORDS × 32`
+(default `MAX_BUCKET_WORDS = 1`, i.e. **32 buckets** — the classify pass
+packs one bucket bit per `u32` of its tile mask). **Exceeding the cap is a
+hard error** (`AwsmDynamicMaterialError::BucketCapExceeded`), on both the
+custom-material registration path and the first-party render-loop
+reconcile — there is no silent fallback to a wrong/generic shader. To
+allow more buckets, raise `MAX_BUCKET_WORDS` in
+`crates/renderer/src/dynamic_materials/mod.rs` and rebuild.
+
 ## Dynamic materials quick start
 
 Register your own WGSL fragment at runtime, get back a
@@ -64,6 +114,18 @@ renderer.render(None)?;
 // be paint-complete before the first render, drain the scheduler:
 renderer.wait_for_pipelines_ready().await?;
 ```
+
+### Registration is transactional
+
+`register_material` (above) is a single-item wrapper around
+`register_materials(Vec<MaterialRegistration>)`, which is **all-or-nothing**:
+the whole batch is validated against the *final* bucket layout before any
+side effects, so if one entry fails — duplicate `name`, a reserved field
+name, a WGSL compile error, or exceeding the [bucket cap](#bucket-cap) —
+the entire batch is rejected with the relevant
+`AwsmDynamicMaterialError` and nothing is registered. Fix the offending
+entry and re-submit. Re-registering an identical `(name, layout, wgsl)`
+is idempotent (returns the existing `shader_id`).
 
 The full author-facing WGSL contract — what symbols are in scope, what
 `OpaqueShadingInput` / `OpaqueShadingOutput` look like, how to read

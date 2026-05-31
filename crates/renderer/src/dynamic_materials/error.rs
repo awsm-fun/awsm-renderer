@@ -59,12 +59,12 @@ pub enum AwsmDynamicMaterialError {
     /// typically resolves to `0` on Dawn, silently dropping the
     /// bucket from classification. See [`crate::dynamic_materials::MAX_BUCKET_ENTRIES`]
     /// for the full encoding inventory.
-    #[error("[dynamic-material] bucket-id cap exceeded: would push bucket_entries.len() to {would_be}, max is {max} (tile_mask is u32 → BUCKET_BIT fits at most 32 indices)")]
+    #[error("[dynamic-material] bucket-id cap exceeded: would push bucket_entries.len() to {would_be}, max is {max} (each classify tile_mask word holds 32 bucket bits). Raise MAX_BUCKET_WORDS to widen the cap.")]
     BucketCapExceeded {
-        /// What `bucket_entries.len()` would become if this
+        /// What `bucket_entries.len()` would become if this material /
         /// registration were accepted.
         would_be: usize,
-        /// The hard cap (currently 254).
+        /// The hard cap (`MAX_BUCKET_ENTRIES` = `MAX_BUCKET_WORDS` × 32).
         max: usize,
     },
 }

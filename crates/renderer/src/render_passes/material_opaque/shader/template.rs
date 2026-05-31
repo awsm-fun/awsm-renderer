@@ -3,6 +3,7 @@
 use askama::Template;
 use awsm_materials::MaterialShaderId;
 
+use crate::dynamic_materials::ShadingBase;
 use crate::{
     render_passes::material_opaque::shader::cache_key::{
         ShaderCacheKeyMaterialOpaque, ShaderCacheKeyMaterialOpaqueEmpty,
@@ -90,6 +91,23 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     /// mismatch so a full-screen dispatch is correct even before
     /// classify+indirect lands.
     pub shader_id: MaterialShaderId,
+    /// Which built-in shading family's body this pipeline emits
+    /// (`{% if base == ShadingBase::Pbr %}` etc.). Decoupled from
+    /// `shader_id` so a per-feature-set PBR variant whose id is in the
+    /// dynamic range still emits the PBR path. The per-pixel guard uses
+    /// the numeric `shader_id` regardless of `base`.
+    pub base: crate::dynamic_materials::ShadingBase,
+    /// Whether this pipeline owns the skybox write (only the canonical
+    /// PBR bucket; see [`ShaderCacheKeyMaterialOpaque::owns_skybox`]).
+    pub owns_skybox: bool,
+    /// PBR feature set this specialized pipeline is compiled for. The
+    /// compute template + `material_color_calc.wgsl` gate per-feature code
+    /// behind `{% if pbr_features.<x> %}`, so an unused feature (no
+    /// clearcoat in the scene, etc.) emits no code.
+    /// The empty set for non-PBR ids and the canonical PBR (skybox-owner)
+    /// bucket — inert for the former (their body doesn't read it) and the
+    /// minimal shader for the latter. Never the full "uber" set.
+    pub pbr_features: awsm_materials::pbr::PbrFeatures,
     /// For dynamic shader ids: the auto-generated `struct
     /// MaterialData { ... }` declaration emitted above the author's
     /// WGSL fragment. Empty string for first-party ids.
@@ -180,6 +198,9 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
                 shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
                 shader_id: value.shader_id,
+                base: value.base,
+                owns_skybox: value.owns_skybox,
+                pbr_features: awsm_materials::pbr::PbrFeatures::from_bits(value.pbr_features),
                 dynamic_struct_decl: value
                     .dynamic_shader
                     .as_ref()
@@ -430,6 +451,11 @@ mod empty_registry_tests {
             msaa_sample_count: msaa,
             mipmaps: true,
             shader_id,
+            base: crate::dynamic_materials::ShadingBase::for_shader_id(shader_id),
+            owns_skybox: shader_id == MaterialShaderId::PBR,
+            // Canonical first-party buckets carry the empty feature-set
+            // (the minimal shader, never the uber `all()`).
+            pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
             dispatch_hash: 0,
             dynamic_shader: None,
             bucket_entries: crate::dynamic_materials::first_party_bucket_entries(),
@@ -600,6 +626,8 @@ return TransparentShadingOutput(vec4<f32>(color, alpha));
             texture_pool_samplers_len: 1,
             msaa_sample_count: None,
             mipmaps: true,
+            base: crate::dynamic_materials::ShadingBase::Custom,
+            pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
             dispatch_hash: 0,
             dynamic_shader_id: Some(dyn_id),
             dynamic_shader: Some(dyn_info),
@@ -612,7 +640,10 @@ return TransparentShadingOutput(vec4<f32>(color, alpha));
             .into_source()
             .expect("transparent template must render without errors");
 
-        // Structural assertions on the emitted source:
+        // Structural assertions on the emitted source. The specialize-only
+        // transparent fragment selects the body at COMPILE time on
+        // `base == Custom` (no runtime `shader_id ==` dispatch arm), so the
+        // wrapper + its call must be present.
         assert!(
             source.contains("fn custom_shade_transparent_dynamic"),
             "transparent template missing custom_shade_transparent_dynamic wrapper"
@@ -625,14 +656,7 @@ return TransparentShadingOutput(vec4<f32>(color, alpha));
             source.contains("struct MaterialData"),
             "transparent template missing auto-generated MaterialData struct"
         );
-        // The dispatch arm must mention the dynamic shader_id explicitly
-        // so the runtime branch routes correctly.
-        let expected_dispatch = format!("== {}u", dyn_id.as_u32());
-        assert!(
-            source.contains(&expected_dispatch),
-            "transparent template missing dispatch arm for shader_id {} — searched for `{expected_dispatch}`",
-            dyn_id.as_u32()
-        );
+        let _ = dyn_id;
     }
 
     #[test]
@@ -648,6 +672,8 @@ return TransparentShadingOutput(vec4<f32>(color, alpha));
             texture_pool_samplers_len: 1,
             msaa_sample_count: None,
             mipmaps: true,
+            base: crate::dynamic_materials::ShadingBase::Pbr,
+            pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
             dispatch_hash: 0,
             dynamic_shader_id: None,
             dynamic_shader: None,
@@ -666,5 +692,102 @@ return TransparentShadingOutput(vec4<f32>(color, alpha));
             !source.contains("material_data_load"),
             "first-party transparent pipeline accidentally emits the dynamic loader"
         );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// brdf.wgsl PBR feature-gating tests. Render the shared lobe template
+// standalone (it only references `pbr_features`) and assert the
+// specialize-only contract: feature presence is purely compile-time, and
+// NO feature runtime guards (`if (color.x > 0)`) survive in any
+// configuration.
+// Call-site-unique tokens (cc_fresnel / sheen_scaling / iri_f0) are used
+// because the lobe *functions* are defined in brdf.wgsl and would always
+// match by name.
+#[cfg(test)]
+mod brdf_gate_tests {
+    use askama::Template;
+    use awsm_materials::pbr::PbrFeatures;
+
+    #[derive(Template)]
+    #[template(path = "shared_wgsl/lighting/brdf.wgsl")]
+    struct BrdfGateTest {
+        pbr_features: PbrFeatures,
+    }
+
+    /// Rendered brdf with `//` line comments removed (so marker tokens
+    /// that appear in comments outside the gates don't pollute matches)
+    /// and all whitespace stripped (spacing-robust token matching).
+    fn render_nows(pbr_features: PbrFeatures) -> String {
+        let raw = BrdfGateTest { pbr_features }
+            .render()
+            .expect("brdf.wgsl renders");
+        raw.lines()
+            .map(|l| match l.find("//") {
+                Some(i) => &l[..i],
+                None => l,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect()
+    }
+
+    #[test]
+    fn no_feature_runtime_guards_anywhere() {
+        // Even the all-features shader must have NO per-feature runtime
+        // guards — the specialize-only design moved all feature branching
+        // to compile time. (Lighting-geometry guards like n_dot_l_back
+        // remain; those aren't feature guards.)
+        let w = render_nows(PbrFeatures::all());
+        assert!(
+            !w.contains("color.clearcoat>0"),
+            "no clearcoat runtime guard"
+        );
+        assert!(
+            !w.contains("color.iridescence>0"),
+            "no iridescence runtime guard"
+        );
+        assert!(
+            !w.contains("color.anisotropy_strength!=0"),
+            "no anisotropy runtime guard"
+        );
+        assert!(
+            !w.contains("color.diffuse_transmission>0"),
+            "no diffuse-transmission runtime guard"
+        );
+        // ...but every lobe is still present at all().
+        assert!(w.contains("cc_fresnel") && w.contains("sheen_scaling") && w.contains("iri_f0"));
+    }
+
+    #[test]
+    fn specialized_strips_absent_lobes() {
+        let mut f = PbrFeatures::all();
+        f.clearcoat = false;
+        f.sheen = false;
+        let w = render_nows(f);
+        assert!(
+            !w.contains("cc_fresnel"),
+            "absent clearcoat is compile-time stripped"
+        );
+        assert!(
+            !w.contains("sheen_scaling"),
+            "absent sheen is compile-time stripped"
+        );
+        assert!(w.contains("iri_f0"), "present iridescence is kept");
+    }
+
+    #[test]
+    fn specialized_keeps_only_present_lobes() {
+        let f = PbrFeatures {
+            clearcoat: true,
+            iridescence: true,
+            ..PbrFeatures::default()
+        };
+        let w = render_nows(f);
+        assert!(w.contains("cc_fresnel"), "present clearcoat emitted");
+        assert!(w.contains("iri_f0"), "present iridescence emitted");
+        assert!(!w.contains("sheen_scaling"), "absent sheen stripped");
     }
 }

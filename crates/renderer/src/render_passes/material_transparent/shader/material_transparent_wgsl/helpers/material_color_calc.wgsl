@@ -128,10 +128,12 @@ fn pbr_material_base_color(
     fragment_input: FragmentInput
 ) -> vec4<f32> {
     var color = material.base_color_factor;
+    {% if pbr_features.base_color_tex %}
     if material.base_color_tex_info.exists {
         let uv = texture_uv(material.base_color_tex_info, fragment_input);
         color *= texture_pool_sample(material.base_color_tex_info, uv);
     }
+    {% endif %}
     return color;
 }
 
@@ -142,11 +144,13 @@ fn pbr_material_metallic_roughness(
     fragment_input: FragmentInput
 ) -> vec2<f32> {
     var color = vec2<f32>(material.metallic_factor, material.roughness_factor);
+    {% if pbr_features.metallic_roughness_tex %}
     if material.metallic_roughness_tex_info.exists {
         let uv = texture_uv(material.metallic_roughness_tex_info, fragment_input);
         let tex = texture_pool_sample(material.metallic_roughness_tex_info, uv);
         color *= vec2<f32>(tex.b, tex.g);
     }
+    {% endif %}
     return color;
 }
 
@@ -158,27 +162,28 @@ fn pbr_normal(
     world_tangent: vec4<f32>,  // w = handedness (+1 or -1)
     fragment_input: FragmentInput
 ) -> vec3<f32> {
-    if !material.normal_tex_info.exists {
-        return normalize(world_normal);
+    {% if pbr_features.normal_tex %}
+    if material.normal_tex_info.exists {
+        // Sample normal map and unpack from [0,1] to [-1,1] range
+        let uv = texture_uv(material.normal_tex_info, fragment_input);
+        let tex = texture_pool_sample(material.normal_tex_info, uv);
+        let tangent_normal = vec3<f32>(
+            (tex.r * 2.0 - 1.0) * material.normal_scale,
+            (tex.g * 2.0 - 1.0) * material.normal_scale,
+            tex.b * 2.0 - 1.0,
+        );
+
+        // Build TBN matrix from interpolated vertex data
+        let N = normalize(world_normal);
+        let T = orthonormal_tangent_from_vertex(N, world_tangent.xyz);
+        let B = cross(N, T) * world_tangent.w;
+        let tbn = mat3x3<f32>(T, B, N);
+
+        // Transform tangent-space normal to world space
+        return normalize(tbn * tangent_normal);
     }
-
-    // Sample normal map and unpack from [0,1] to [-1,1] range
-    let uv = texture_uv(material.normal_tex_info, fragment_input);
-    let tex = texture_pool_sample(material.normal_tex_info, uv);
-    let tangent_normal = vec3<f32>(
-        (tex.r * 2.0 - 1.0) * material.normal_scale,
-        (tex.g * 2.0 - 1.0) * material.normal_scale,
-        tex.b * 2.0 - 1.0,
-    );
-
-    // Build TBN matrix from interpolated vertex data
-    let N = normalize(world_normal);
-    let T = orthonormal_tangent_from_vertex(N, world_tangent.xyz);
-    let B = cross(N, T) * world_tangent.w;
-    let tbn = mat3x3<f32>(T, B, N);
-
-    // Transform tangent-space normal to world space
-    return normalize(tbn * tangent_normal);
+    {% endif %}
+    return normalize(world_normal);
 }
 
 // Sample occlusion texture and apply strength factor
@@ -187,11 +192,13 @@ fn pbr_occlusion(
     fragment_input: FragmentInput
 ) -> f32 {
     var occlusion = 1.0;
+    {% if pbr_features.occlusion_tex %}
     if material.occlusion_tex_info.exists {
         let uv = texture_uv(material.occlusion_tex_info, fragment_input);
         let tex = texture_pool_sample(material.occlusion_tex_info, uv);
         occlusion = mix(1.0, tex.r, material.occlusion_strength);
     }
+    {% endif %}
     return occlusion;
 }
 
@@ -202,10 +209,12 @@ fn pbr_emissive(
     fragment_input: FragmentInput
 ) -> vec3<f32> {
     var color = material.emissive_factor;
+    {% if pbr_features.emissive_tex %}
     if material.emissive_tex_info.exists {
         let uv = texture_uv(material.emissive_tex_info, fragment_input);
         color *= texture_pool_sample(material.emissive_tex_info, uv).rgb;
     }
+    {% endif %}
     color *= emissive_strength;
     return color;
 }

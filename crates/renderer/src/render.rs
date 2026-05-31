@@ -263,6 +263,14 @@ impl AwsmRenderer {
             self.default_cheap_material_pixel_threshold,
         )?;
 
+        // Specialize-only pivot: route PBR/Toon materials (opaque and
+        // transparent) to their per-feature-set variant buckets BEFORE the
+        // material GPU write (so the resolved variant id lands in the
+        // payload's first u32 in this same frame) and before classify
+        // dispatch (which routes on it). Cheap no-op once the material set
+        // settles (gated internally on `variants_dirty`).
+        self.reconcile_material_variants()?;
+
         self.transforms
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
         self.materials
@@ -1553,11 +1561,14 @@ impl AwsmRenderer {
             }
             let buffer_info_key = self.meshes.buffer_info_key(mesh_key)?;
             let has_transmission = self.materials.has_transmission(mesh.material_key);
+            let (base, pbr_features) = self.materials.transparent_variant(mesh.material_key);
             requests.push(TransparentMeshPipelineRequest {
                 mesh,
                 mesh_key,
                 buffer_info_key,
                 has_transmission,
+                base,
+                pbr_features,
             });
         }
         if requests.is_empty() {

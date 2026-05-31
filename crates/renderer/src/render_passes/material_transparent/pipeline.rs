@@ -103,6 +103,8 @@ impl MaterialTransparentPipelines {
         textures: &Textures,
         render_texture_formats: &RenderTextureFormats,
         material_has_transmission: bool,
+        material_base: crate::dynamic_materials::ShadingBase,
+        material_pbr_features: u32,
     ) -> Result<RenderPipelineKey> {
         let keys = self
             .set_render_pipeline_keys_batched(
@@ -112,6 +114,8 @@ impl MaterialTransparentPipelines {
                     mesh_key,
                     buffer_info_key,
                     has_transmission: material_has_transmission,
+                    base: material_base,
+                    pbr_features: material_pbr_features,
                 }),
                 shaders,
                 pipelines,
@@ -172,6 +176,8 @@ impl MaterialTransparentPipelines {
                 texture_pool_samplers_len,
                 msaa_sample_count: anti_aliasing.msaa_sample_count,
                 mipmaps: anti_aliasing.mipmap,
+                base: req.base,
+                pbr_features: req.pbr_features,
                 dispatch_hash: 0,
                 dynamic_shader_id: None,
                 dynamic_shader: None,
@@ -227,6 +233,8 @@ impl MaterialTransparentPipelines {
                 texture_pool_samplers_len,
                 msaa_sample_count: anti_aliasing.msaa_sample_count,
                 mipmaps: anti_aliasing.mipmap,
+                base: req.base,
+                pbr_features: req.pbr_features,
                 dispatch_hash: 0,
                 dynamic_shader_id: None,
                 dynamic_shader: None,
@@ -315,6 +323,8 @@ impl MaterialTransparentPipelines {
                 texture_pool_samplers_len,
                 msaa_sample_count: anti_aliasing.msaa_sample_count,
                 mipmaps: anti_aliasing.mipmap,
+                base: req.base,
+                pbr_features: req.pbr_features,
                 dispatch_hash: 0,
                 dynamic_shader_id: None,
                 dynamic_shader: None,
@@ -473,6 +483,13 @@ pub struct TransparentMeshPipelineRequest<'a> {
     pub mesh_key: MeshKey,
     pub buffer_info_key: MeshBufferInfoKey,
     pub has_transmission: bool,
+    /// Shading family of this mesh's material — the transparent fragment
+    /// specializes its body at compile time on it (no uber runtime
+    /// branch). Derive via `Materials::transparent_variant`.
+    pub base: crate::dynamic_materials::ShadingBase,
+    /// PBR feature mask this transparent PBR pipeline is specialized for
+    /// (`PbrFeatures::from_material(..).bits()`); inert for non-PBR.
+    pub pbr_features: u32,
 }
 
 fn vertex_buffer_layouts(mesh: &Mesh, buffer_info: &MeshBufferInfo) -> Vec<VertexBufferLayout> {

@@ -341,6 +341,7 @@ impl AwsmRenderer {
 
         let mesh = self.meshes.get(mesh_key)?;
         let has_transmission = self.materials.has_transmission(mesh.material_key);
+        let (mat_base, mat_pbr_features) = self.materials.transparent_variant(mesh.material_key);
         self.render_passes
             .material_transparent
             .pipelines
@@ -358,6 +359,8 @@ impl AwsmRenderer {
                 &self.textures,
                 &self.render_textures.formats,
                 has_transmission,
+                mat_base,
+                mat_pbr_features,
             )
             .await?;
 

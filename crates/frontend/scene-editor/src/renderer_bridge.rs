@@ -141,8 +141,8 @@ fn render_one_frame() {
     }
 
     if let Some(renderer) = renderer.as_mut() {
-        // Block A.4: drain pipeline scheduler status events into the
-        // shared compile-status state so the floating modal can read
+        // Drain pipeline scheduler status events into the shared
+        // compile-status state so the floating modal can read
         // it as a dominator signal. Pending → +1, Ready/Failed →
         // -1 (saturating). Failed events also publish their error
         // string to `compile_last_error`. Cleared on the leading edge
@@ -151,49 +151,39 @@ fn render_one_frame() {
         let events = renderer.drain_pipeline_status_events();
         if !events.is_empty() {
             use awsm_renderer::pipeline_scheduler::PipelineGroupStatus;
-            let pending_handle = compile_pending_handle();
             let last_err_handle = compile_last_error_handle();
-            let prev_pending = pending_handle.get();
-            let mut pending = prev_pending;
+            // Surface the latest failure detail (the event carries a
+            // placeholder; the real error lives on scheduler state).
             let mut latest_err: Option<String> = None;
-            let mut opened_new_batch = false;
             for ev in events {
-                match ev.status {
-                    PipelineGroupStatus::Pending => {
-                        if pending == 0 {
-                            opened_new_batch = true;
-                        }
-                        pending = pending.saturating_add(1);
-                    }
-                    PipelineGroupStatus::Ready => {
-                        pending = pending.saturating_sub(1);
-                    }
-                    PipelineGroupStatus::Failed { error: _ } => {
-                        // The event's `error` is intentionally a
-                        // placeholder (`PipelineVariantNotCompiled
-                        // ("see scheduler state")`) — the real
-                        // failure detail lives on the scheduler's
-                        // material/pass state. Query it back via
-                        // `pipeline_group_status`. Falls back to the
-                        // event's placeholder only if the entry's
-                        // already been dropped (shouldn't happen
-                        // mid-batch, but defensive).
-                        pending = pending.saturating_sub(1);
-                        let err_msg = match renderer.pipeline_group_status(ev.id) {
-                            Some(PipelineGroupStatus::Failed { error: real }) => {
-                                format!("{real}")
-                            }
-                            _ => "compile failed (status no longer queryable)".to_string(),
-                        };
-                        latest_err = Some(err_msg);
-                    }
+                if let PipelineGroupStatus::Failed { error: _ } = ev.status {
+                    let err_msg = match renderer.pipeline_group_status(ev.id) {
+                        Some(PipelineGroupStatus::Failed { error: real }) => format!("{real}"),
+                        _ => "compile failed (status no longer queryable)".to_string(),
+                    };
+                    latest_err = Some(err_msg);
                 }
             }
-            pending_handle.set(pending);
             if let Some(msg) = latest_err {
                 last_err_handle.set(Some(msg));
-            } else if opened_new_batch && prev_pending == 0 {
-                last_err_handle.set(None);
+            }
+        }
+        // Drive the compile-progress modal from the scheduler's
+        // AUTHORITATIVE pending count (A.2 pull query) rather than an
+        // event-accumulated tally. The push tally leaked once the
+        // specialize-only design's bucket-growth relaunch began re-marking
+        // already-pending materials `Pending` (more +1s than -1s) — the
+        // modal then never closed. `materials_pending` is recomputed from
+        // scheduler state each frame, so it's self-correcting and drains
+        // to 0 exactly when every material is Ready/Failed.
+        {
+            let pending = renderer.compile_progress().materials_pending;
+            let pending_handle = compile_pending_handle();
+            if pending_handle.get() != pending {
+                pending_handle.set(pending);
+                if pending == 0 {
+                    compile_last_error_handle().set(None);
+                }
             }
         }
 

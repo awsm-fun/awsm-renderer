@@ -6,7 +6,7 @@ use askama::Template;
 use awsm_materials::MaterialShaderId;
 
 use crate::{
-    dynamic_materials::BucketEntry,
+    dynamic_materials::{BucketEntry, ShadingBase},
     render_passes::material_opaque::shader::{
         cache_key::DynamicShaderInfo,
         edge_cache_key::{
@@ -67,6 +67,10 @@ pub struct ShaderTemplateMaterialEdgeResolveCompute {
     pub materials_wgsl: String,
     pub shader_id_consts: String,
     pub shader_id: MaterialShaderId,
+    /// Which built-in shading family's body this edge_resolve pipeline
+    /// emits (decoupled from `shader_id`; see [`ShadingBase`]). The
+    /// per-sample guard uses the numeric `shader_id`.
+    pub base: ShadingBase,
     pub dynamic_struct_decl: String,
     pub dynamic_loader_decl: String,
     pub dynamic_wgsl_fragment: String,
@@ -83,6 +87,12 @@ pub struct ShaderTemplateMaterialEdgeResolveCompute {
     pub debug:
         crate::render_passes::material_opaque::shader::template::ShaderTemplateMaterialOpaqueDebug,
     pub bucket_entries: Vec<BucketEntry>,
+    /// PBR feature mask for the shared `brdf.wgsl` include's
+    /// `{% if pbr_features.<x> %}` gating. Edge-resolve re-shades the same
+    /// samples as the opaque pass, so it carries THIS bucket's exact
+    /// feature-set (from its bucket entry) — specialized identically to the
+    /// opaque pipeline, never the full "uber" set.
+    pub pbr_features: awsm_materials::pbr::PbrFeatures,
 }
 
 impl ShaderTemplateMaterialEdgeResolveCompute {
@@ -152,6 +162,7 @@ impl TryFrom<&ShaderCacheKeyMaterialEdgeResolve> for ShaderTemplateMaterialEdgeR
                 materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
                 shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
                 shader_id: value.shader_id,
+                base: value.base,
                 dynamic_struct_decl: value
                     .dynamic_shader
                     .as_ref()
@@ -172,6 +183,13 @@ impl TryFrom<&ShaderCacheKeyMaterialEdgeResolve> for ShaderTemplateMaterialEdgeR
                 bucket_sample_list_base,
                 debug: crate::render_passes::material_opaque::shader::template::ShaderTemplateMaterialOpaqueDebug::new(),
                 bucket_entries: bucket_entries.clone(),
+                // Per-bucket feature-set (NOT the uber `all()`): edge-resolve
+                // re-shades the same samples as the opaque pass, so it must
+                // gate `brdf.wgsl` to exactly this bucket's features — same
+                // specialization, no uber path. Keyed by `bucket_entries` +
+                // `bucket_index` in the cache key, so feature-distinct buckets
+                // get distinct edge pipelines.
+                pbr_features: awsm_materials::pbr::PbrFeatures::from_bits(entry.pbr_features),
             },
         })
     }

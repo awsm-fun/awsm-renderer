@@ -101,7 +101,7 @@
 {% include "material_opaque_wgsl/helpers/material_shading.wgsl" %}
 /*************** END material_shading.wgsl ******************/
 
-{% if shader_id.is_dynamic() %}
+{% if base == ShadingBase::Custom %}
 /*************** START dynamic-material wrapper ******************/
 // Auto-generated per the registered material's layout. See
 // docs/dynamic-materials/contract-opaque.md for the
@@ -220,8 +220,8 @@ fn main(
         }
 
         if (!any_sample_hit) {
-            {% if shader_id == MaterialShaderId::PBR %}
-                // PBR pipeline owns skybox-only pixels.
+            {% if owns_skybox %}
+                // Canonical PBR bucket owns skybox-only pixels.
                 let color = sample_skybox(coords, screen_dims_f32, camera, skybox_tex, skybox_sampler);
                 textureStore(opaque_tex, coords, color);
             {% else %}
@@ -233,7 +233,7 @@ fn main(
         }
     {% else %}
         if (triangle_index == U32_MAX) {
-            {% if shader_id == MaterialShaderId::PBR %}
+            {% if owns_skybox %}
                 let color = sample_skybox(coords, screen_dims_f32, camera, skybox_tex, skybox_sampler);
                 textureStore(opaque_tex, coords, color);
             {% endif %}
@@ -248,7 +248,7 @@ fn main(
     // any sample-mask happens to be zero (defensive).
     {% if multisampled_geometry %}
         if (triangle_index == U32_MAX) {
-            {% if shader_id == MaterialShaderId::PBR %}
+            {% if owns_skybox %}
                 let color = sample_skybox(coords, screen_dims_f32, camera, skybox_tex, skybox_sampler);
                 textureStore(opaque_tex, coords, color);
             {% endif %}
@@ -281,18 +281,10 @@ fn main(
     // Per-pixel `shader_id` guard. The material classify pass already
     // scopes our dispatch to tiles containing our specialized
     // `shader_id`, so the guard rejects only pixels of a *different*
-    // shader_id that share a mixed-material tile with ours.
-    {% if shader_id == MaterialShaderId::PBR %}
-        if (shader_id != SHADER_ID_PBR) { return; }
-    {% else if shader_id == MaterialShaderId::UNLIT %}
-        if (shader_id != SHADER_ID_UNLIT) { return; }
-    {% else if shader_id == MaterialShaderId::TOON %}
-        if (shader_id != SHADER_ID_TOON) { return; }
-    {% else if shader_id == MaterialShaderId::FLIPBOOK %}
-        if (shader_id != SHADER_ID_FLIPBOOK) { return; }
-    {% else if shader_id.is_dynamic() %}
-        if (shader_id != {{ shader_id.as_u32() }}u) { return; }
-    {% endif %}
+    // shader_id that share a mixed-material tile with ours. The guard
+    // is on the numeric (registry-allocated) id regardless of `base`:
+    // a specialized PBR variant routes only its own id's pixels here.
+    if (shader_id != {{ shader_id.as_u32() }}u) { return; }
 
     let vertex_attribute_stride = material_mesh_meta.vertex_attribute_stride / 4; // 4 bytes per float
     let attribute_indices_offset = material_mesh_meta.vertex_attribute_indices_offset / 4;
@@ -324,7 +316,7 @@ fn main(
     var color: vec3<f32>;
     var base_alpha: f32;
 
-    {% if shader_id == MaterialShaderId::UNLIT %}
+    {% if base == ShadingBase::Unlit %}
         // Unlit material path
         let unlit_material = unlit_get_material(material_offset);
         {% match mipmap %}
@@ -353,7 +345,7 @@ fn main(
         {% endmatch %}
         color = compute_unlit_output(unlit_color);
         base_alpha = unlit_color.base.a;
-    {% else if shader_id == MaterialShaderId::TOON %}
+    {% else if base == ShadingBase::Toon %}
         // Toon material path — banded N·L + stepped Blinn-Phong + rim.
         // Reads world position from the standard coordinates the surrounding
         // code already computes; doesn't sample textures (v1).
@@ -366,7 +358,7 @@ fn main(
             lights_info,
         );
         base_alpha = toon_material.base_color_factor.a;
-    {% else if shader_id == MaterialShaderId::PBR %}
+    {% else if base == ShadingBase::Pbr %}
         // PBR material path (default)
         let pbr_material = pbr_get_material(material_offset);
 
@@ -431,7 +423,7 @@ fn main(
             );
         {% endif %}
         base_alpha = material_color.base.a;
-    {% else if shader_id == MaterialShaderId::FLIPBOOK %}
+    {% else if base == ShadingBase::Flipbook %}
         // FlipBook: grid-uniform sprite-sheet, sampled per
         // `frame_globals.time + time_offset`. Tints by `material.tint`.
         let flipbook_material = flipbook_get_material(material_offset);
@@ -477,7 +469,7 @@ fn main(
         );
         color = flipbook_result.rgb;
         base_alpha = flipbook_result.a;
-    {% else if shader_id.is_dynamic() %}
+    {% else if base == ShadingBase::Custom %}
         // Dynamic custom material — wrapped fragment lives above.
         let dyn_material = material_data_load(material_offset);
         let dyn_input = OpaqueShadingInput(

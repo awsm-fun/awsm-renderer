@@ -160,7 +160,7 @@ impl MaterialOpaquePipelines {
         ctx: &mut RenderPassInitContext<'_>,
         bind_groups: &MaterialOpaqueBindGroups,
     ) -> Result<Vec<OpaqueShaderDesc>> {
-        // Block D.1 PART 2 first-party extension: the eager-batch
+        // First-party extension: the eager-batch
         // path (called from `AwsmRendererBuilder::build`) emits ONLY
         // the empty-opaque pipeline. First-party material opaque
         // pipelines (PBR / UNLIT / TOON / FLIPBOOK) defer until
@@ -209,7 +209,7 @@ impl MaterialOpaquePipelines {
         )
     }
 
-    /// Block D.1 PART 2 extension to first-party materials: emit
+    /// Extension to first-party materials: emit
     /// shader descriptors with the OPAQUE_SHADER_IDS iteration
     /// gated by `include_first_party`. When `false`, only the
     /// empty-opaque pipeline is emitted — first-party pipelines
@@ -274,6 +274,17 @@ impl MaterialOpaquePipelines {
                         msaa_sample_count: active_msaa,
                         mipmaps: active_mipmaps,
                         shader_id,
+                        base: crate::dynamic_materials::ShadingBase::for_shader_id(shader_id),
+                        owns_skybox: shader_id == MaterialShaderId::PBR,
+                        // Per-bucket feature-set from the bucket entry (never
+                        // the full "uber" set). At build() only the canonical
+                        // buckets exist, so this is the empty set for PBR /
+                        // inert for the rest.
+                        pbr_features: bucket_entries
+                            .iter()
+                            .find(|e| e.shader_id == shader_id)
+                            .map(|e| e.pbr_features)
+                            .unwrap_or_else(|| awsm_materials::pbr::PbrFeatures::default().bits()),
                         // Builder-time prewarm — no dynamic materials
                         // can be registered before `build()` returns,
                         // so the stable empty-state sentinel applies.

@@ -474,10 +474,12 @@ fn brdf_direct(color: PbrMaterialColor, light_brdf: LightBrdf, surface_to_camera
     let f90 = mix(color.specular, 1.0, metallic);
 
     // KHR_materials_iridescence: thin-film interference modulates F0.
-    if (color.iridescence > 0.0) {
-        let iri_f0 = iridescence_fresnel(n_dot_v, color.iridescence_ior, color.iridescence_thickness, F0);
-        F0 = mix(F0, iri_f0, color.iridescence);
-    }
+    // Compile-time gated: stripped entirely from a specialized bucket that
+    // lacks the extension (the all-features config keeps it).
+    {% if pbr_features.iridescence %}
+    let iri_f0 = iridescence_fresnel(n_dot_v, color.iridescence_ior, color.iridescence_thickness, F0);
+    F0 = mix(F0, iri_f0, color.iridescence);
+    {% endif %}
 
     // Cook-Torrance specular BRDF: DFG / (4 * N·L * N·V)
     // When V and L are antiparallel, H is undefined. Treat that as zero specular
@@ -488,30 +490,31 @@ fn brdf_direct(color: PbrMaterialColor, light_brdf: LightBrdf, surface_to_camera
         has_half
     );
 
-    // KHR_materials_anisotropy: switch to anisotropic GGX when there is a
-    // non-trivial strength to apply. We keep the isotropic path for the
-    // fast majority of materials so we don't pay for tangent math on every
-    // shading point.
     var specular = vec3<f32>(0.0);
     if (has_half) {
-        if (color.anisotropy_strength != 0.0) {
-            let a = anisotropic_alpha(roughness, color.anisotropy_strength);
-            let t = safe_normalize(color.anisotropy_t);
-            let b = safe_normalize(color.anisotropy_b);
-            let t_dot_l = dot(t, l);
-            let t_dot_v = dot(t, v);
-            let b_dot_l = dot(b, l);
-            let b_dot_v = dot(b, v);
-            let t_dot_h = dot(t, h);
-            let b_dot_h = dot(b, h);
-            let D = distribution_ggx_anisotropic(t_dot_h, b_dot_h, n_dot_h, a.x, a.y);
-            let V = visibility_anisotropic(n_dot_l, n_dot_v, t_dot_l, t_dot_v, b_dot_l, b_dot_v, a.x, a.y);
-            specular = F * D * V;
-        } else {
-            let D = distribution_ggx(n_dot_h, alpha);
-            let G = geometry_smith(n, v, l, alpha);
-            specular = F * (D * G) / max(4.0 * n_dot_l * n_dot_v, EPSILON);
-        }
+        // Isotropic Cook-Torrance specular — the base path, written once.
+        let D = distribution_ggx(n_dot_h, alpha);
+        let G = geometry_smith(n, v, l, alpha);
+        specular = F * (D * G) / max(4.0 * n_dot_l * n_dot_v, EPSILON);
+
+        // KHR_materials_anisotropy: an anisotropy bucket overrides the
+        // isotropic base above with anisotropic GGX (the iso compute is
+        // then dead → DCE). Compile-time gated; no runtime strength check
+        // (strength 0 → anisotropic == isotropic anyway).
+        {% if pbr_features.anisotropy %}
+        let a = anisotropic_alpha(roughness, color.anisotropy_strength);
+        let t = safe_normalize(color.anisotropy_t);
+        let b = safe_normalize(color.anisotropy_b);
+        let t_dot_l = dot(t, l);
+        let t_dot_v = dot(t, v);
+        let b_dot_l = dot(b, l);
+        let b_dot_v = dot(b, v);
+        let t_dot_h = dot(t, h);
+        let b_dot_h = dot(b, h);
+        let aD = distribution_ggx_anisotropic(t_dot_h, b_dot_h, n_dot_h, a.x, a.y);
+        let aV = visibility_anisotropic(n_dot_l, n_dot_v, t_dot_l, t_dot_v, b_dot_l, b_dot_v, a.x, a.y);
+        specular = F * aD * aV;
+        {% endif %}
     }
 
     // Lambertian diffuse (energy-conserving: scaled by (1-F_max) and non-metallic portion)
@@ -525,25 +528,30 @@ fn brdf_direct(color: PbrMaterialColor, light_brdf: LightBrdf, surface_to_camera
     var result = (diffuse + specular) * light_brdf.radiance * n_dot_l * color.occlusion;
 
     // KHR_materials_diffuse_transmission: back-side Lambertian contribution
-    // computed against the flipped normal. Only contributes when light is
-    // actually behind the surface.
-    if (color.diffuse_transmission > 0.0) {
-        let n_dot_l_back = max(dot(-n, l), 0.0);
-        if (n_dot_l_back > 0.0) {
-            let transmitted = (1.0 - F_max) * (1.0 - metallic)
-                * color.diffuse_transmission
-                * color.diffuse_transmission_color
-                * base_color * (1.0 / PI);
-            result += transmitted * light_brdf.radiance * n_dot_l_back * color.occlusion;
-        }
+    // computed against the flipped normal. (Inner n_dot_l_back guard is
+    // lighting geometry, always kept; outer is the unified feature gate.)
+    {% if pbr_features.diffuse_transmission %}
+    // Inner n_dot_l_back guard is lighting geometry (light behind surface) —
+    // logically necessary, kept.
+    let n_dot_l_back = max(dot(-n, l), 0.0);
+    if (n_dot_l_back > 0.0) {
+        let transmitted = (1.0 - F_max) * (1.0 - metallic)
+            * color.diffuse_transmission
+            * color.diffuse_transmission_color
+            * base_color * (1.0 / PI);
+        result += transmitted * light_brdf.radiance * n_dot_l_back * color.occlusion;
     }
+    {% endif %}
 
-    // Sheen contribution (cloth-like rim highlight)
+    // Sheen contribution (cloth-like rim highlight) — compile-time gated.
+    {% if pbr_features.sheen %}
     let sheen = sheen_brdf_direct(color.sheen_color, color.sheen_roughness, n, v, l);
     let sheen_scaling = sheen_albedo_scaling(color.sheen_color, color.sheen_roughness, n_dot_v);
     result = result * sheen_scaling + sheen * light_brdf.radiance * n_dot_l * color.occlusion;
+    {% endif %}
 
-    // Clearcoat contribution (additional specular layer)
+    // Clearcoat contribution (additional specular layer) — compile-time gated.
+    {% if pbr_features.clearcoat %}
     let clearcoat_spec = clearcoat_brdf_direct(
         color.clearcoat,
         color.clearcoat_roughness,
@@ -554,6 +562,7 @@ fn brdf_direct(color: PbrMaterialColor, light_brdf: LightBrdf, surface_to_camera
     let cc_fresnel = clearcoat_fresnel(color.clearcoat, v_dot_h);
     // Attenuate base layer by clearcoat Fresnel, then add clearcoat specular
     result = result * (1.0 - cc_fresnel) + clearcoat_spec * light_brdf.radiance * n_dot_l;
+    {% endif %}
 
     return result;
 }
@@ -598,10 +607,10 @@ fn brdf_ibl_with_transmission(
     let f90 = mix(color.specular, 1.0, metallic);
 
     // KHR_materials_iridescence: thin-film modulates F0 before Fresnel.
-    if (color.iridescence > 0.0) {
-        let iri_f0 = iridescence_fresnel(n_dot_v, color.iridescence_ior, color.iridescence_thickness, F0);
-        F0 = mix(F0, iri_f0, color.iridescence);
-    }
+    {% if pbr_features.iridescence %}
+    let iri_f0 = iridescence_fresnel(n_dot_v, color.iridescence_ior, color.iridescence_thickness, F0);
+    F0 = mix(F0, iri_f0, color.iridescence);
+    {% endif %}
 
     // Fresnel at view direction
     let F_view = fresnel_schlick_f90(n_dot_v, F0, f90);
@@ -652,17 +661,16 @@ fn brdf_ibl_with_transmission(
     // KHR_materials_diffuse_transmission: light incoming on the back side
     // adds a Lambertian transmitted term. Use the irradiance sampled in
     // the opposite direction as a cheap "behind the surface" estimate.
-    if (color.diffuse_transmission > 0.0) {
-        let back_irradiance = sampleIrradiance(-n, ibl_irradiance_tex, ibl_irradiance_sampler);
-        let transmitted = (1.0 - F_view_max) * (1.0 - metallic)
-            * color.diffuse_transmission
-            * color.diffuse_transmission_color
-            * base_color * (1.0 / PI) * back_irradiance;
-        // Energy conservation: take some of what the front diffuse would
-        // have contributed and route it to the back side.
-        let dt = color.diffuse_transmission;
-        base_contribution = base_contribution * (1.0 - dt) + transmitted * color.occlusion;
-    }
+    {% if pbr_features.diffuse_transmission %}
+    let back_irradiance = sampleIrradiance(-n, ibl_irradiance_tex, ibl_irradiance_sampler);
+    let dt_transmitted = (1.0 - F_view_max) * (1.0 - metallic)
+        * color.diffuse_transmission
+        * color.diffuse_transmission_color
+        * base_color * (1.0 / PI) * back_irradiance;
+    // Energy conservation: route some front-diffuse energy to the back side.
+    let dt = color.diffuse_transmission;
+    base_contribution = base_contribution * (1.0 - dt) + dt_transmitted * color.occlusion;
+    {% endif %}
 
     // Specular IBL: prefiltered environment * (F0 * scale + f90 * bias) from BRDF LUT
     // KHR_materials_anisotropy: bend the reflection direction and stretch the
@@ -676,7 +684,8 @@ fn brdf_ibl_with_transmission(
     // its own work item.
     var R = reflect(-v, n);
     var ibl_roughness = roughness;
-    if (color.anisotropy_strength != 0.0) {
+    {% if pbr_features.anisotropy %}
+    {
         let t = safe_normalize(color.anisotropy_t);
         let b = safe_normalize(color.anisotropy_b);
         let aniso_strength = clamp(abs(color.anisotropy_strength), 0.0, 1.0);
@@ -691,48 +700,44 @@ fn brdf_ibl_with_transmission(
         R = reflect(-v, bent_normal);
         ibl_roughness = mix(roughness, 1.0, aniso_strength * aniso_strength * (1.0 - n_dot_v));
     }
+    {% endif %}
     let prefiltered = samplePrefilteredEnv(R, ibl_roughness, ibl_filtered_env_tex, ibl_filtered_env_sampler, ibl_info);
     let brdf_lut = sampleBRDFLUT(n_dot_v, roughness, brdf_lut_tex, brdf_lut_sampler);
     // Apply occlusion to specular with reduced strength to avoid over-darkening reflections
     let specular = prefiltered * (F0 * brdf_lut.x + vec3<f32>(f90) * brdf_lut.y) * mix(1.0, color.occlusion, 0.5);
 
-    // Sheen contribution for IBL (approximate using diffuse irradiance)
+    // Sheen contribution for IBL (approximate) — compile-time gated; the
+    // else keeps the unscaled base (sheen-absent scaling == 1).
+    {% if pbr_features.sheen %}
     let sheen_scaling = sheen_albedo_scaling(color.sheen_color, color.sheen_roughness, n_dot_v);
     var base_with_sheen = base_contribution * sheen_scaling;
-
-    // Add sheen IBL (approximate: sheen color * irradiance for rim effect)
-    if (any(color.sheen_color > vec3<f32>(0.0))) {
-        let irradiance_sheen = sampleIrradiance(n, ibl_irradiance_tex, ibl_irradiance_sampler);
-        // Sheen is strongest at grazing angles, scaled by roughness
-        // Using a gentler approximation that factors in roughness
-        let alpha = color.sheen_roughness * color.sheen_roughness;
-        let fresnel_sheen = pow(1.0 - n_dot_v, 3.0); // Softer falloff
-        let sheen_contrib = color.sheen_color * irradiance_sheen * alpha * fresnel_sheen * color.occlusion;
-        base_with_sheen += sheen_contrib;
-    }
+    let irradiance_sheen = sampleIrradiance(n, ibl_irradiance_tex, ibl_irradiance_sampler);
+    let sheen_alpha = color.sheen_roughness * color.sheen_roughness;
+    let fresnel_sheen = pow(1.0 - n_dot_v, 3.0); // Softer falloff
+    let sheen_contrib = color.sheen_color * irradiance_sheen * sheen_alpha * fresnel_sheen * color.occlusion;
+    base_with_sheen += sheen_contrib;
+    {% else %}
+    let base_with_sheen = base_contribution;
+    {% endif %}
 
     var result = base_with_sheen + specular + color.emissive;
 
-    // Clearcoat IBL layer
-    if (color.clearcoat > 0.0) {
-        let cc_n = safe_normalize(color.clearcoat_normal);
-        let cc_n_dot_v = saturate(dot(cc_n, v));
-        let cc_R = reflect(-v, cc_n);
-        let cc_roughness = max(color.clearcoat_roughness, 0.04);
-
-        // Sample prefiltered environment for clearcoat reflection
-        let cc_prefiltered = samplePrefilteredEnv(cc_R, cc_roughness, ibl_filtered_env_tex, ibl_filtered_env_sampler, ibl_info);
-        let cc_brdf_lut = sampleBRDFLUT(cc_n_dot_v, cc_roughness, brdf_lut_tex, brdf_lut_sampler);
-
-        // Clearcoat specular (F0 = 0.04 for dielectric)
-        let cc_specular = cc_prefiltered * (CLEARCOAT_F0 * cc_brdf_lut.x + cc_brdf_lut.y);
-
-        // Clearcoat Fresnel attenuation
-        let cc_fresnel = clearcoat_fresnel(color.clearcoat, n_dot_v);
-
-        // Final: attenuated base + clearcoat
-        result = result * (1.0 - cc_fresnel) + color.clearcoat * cc_specular;
-    }
+    // Clearcoat IBL layer — compile-time gated.
+    {% if pbr_features.clearcoat %}
+    let cc_n = safe_normalize(color.clearcoat_normal);
+    let cc_n_dot_v = saturate(dot(cc_n, v));
+    let cc_R = reflect(-v, cc_n);
+    let cc_roughness = max(color.clearcoat_roughness, 0.04);
+    // Sample prefiltered environment for clearcoat reflection
+    let cc_prefiltered = samplePrefilteredEnv(cc_R, cc_roughness, ibl_filtered_env_tex, ibl_filtered_env_sampler, ibl_info);
+    let cc_brdf_lut = sampleBRDFLUT(cc_n_dot_v, cc_roughness, brdf_lut_tex, brdf_lut_sampler);
+    // Clearcoat specular (F0 = 0.04 for dielectric)
+    let cc_specular = cc_prefiltered * (CLEARCOAT_F0 * cc_brdf_lut.x + cc_brdf_lut.y);
+    // Clearcoat Fresnel attenuation
+    let cc_fresnel = clearcoat_fresnel(color.clearcoat, n_dot_v);
+    // Final: attenuated base + clearcoat
+    result = result * (1.0 - cc_fresnel) + color.clearcoat * cc_specular;
+    {% endif %}
 
     return result;
 }

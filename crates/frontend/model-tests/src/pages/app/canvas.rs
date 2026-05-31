@@ -226,6 +226,12 @@ impl AppCanvas {
 
                         scene.populate().await;
 
+                        // Gate the reveal on the variant + MSAA edge-resolve
+                        // pipeline compiles so the first shown frame is fully
+                        // specialized and anti-aliased (no black / aliased
+                        // transient while pipelines warm up).
+                        scene.compile_materials().await;
+
                         if let Err(err) = scene.setup_all().await {
                             tracing::error!("{:?}", err);
                             return;

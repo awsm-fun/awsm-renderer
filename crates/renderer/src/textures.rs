@@ -184,11 +184,14 @@ impl AwsmRenderer {
         for (mesh_key, mesh) in self.meshes.iter() {
             let buffer_info_key = self.meshes.buffer_info_key(mesh_key)?;
             let has_transmission = self.materials.has_transmission(mesh.material_key);
+            let (base, pbr_features) = self.materials.transparent_variant(mesh.material_key);
             transparent_requests.push(TransparentMeshPipelineRequest {
                 mesh,
                 mesh_key,
                 buffer_info_key,
                 has_transmission,
+                base,
+                pbr_features,
             });
         }
 
@@ -399,17 +402,12 @@ impl AwsmRenderer {
         // re-populates the typed cache with fresh keys keyed to the
         // new bind-group layouts. `launch_first_party_material_compile`
         // routes dynamic shader_ids to `launch_dynamic_material_compile`
-        // automatically, so a single iteration covers both. It also
-        // calls `launch_edge_resolve_compile` internally, which is
-        // why this method no longer separately awaits
-        // `edge_pipelines.ensure_compiled` — the scheduler's
-        // cross-call waiter dedup (see
-        // `PipelineScheduler::register_compute_compile_waiter`)
-        // ensures the global edge chain (per-shader edges + skybox +
-        // final_blend) is compiled once for the whole loop rather
-        // than once per registered material, and a separate
-        // `ensure_compiled` await would duplicate that work without
-        // the scheduler's in-flight guard catching it.
+        // automatically, so a single iteration covers both. This launches
+        // only the per-material opaque/classify pipelines — the MSAA
+        // edge-resolve pipelines are a LAYOUT-level concern (their cache
+        // keys embed the texture-pool sizes that just changed), rebuilt
+        // once via the awaited `ensure_compiled` below, mirroring
+        // `anti_alias.rs`'s MSAA-change handler.
         for shader_id in registered_shader_ids {
             if let Err(e) = self.launch_first_party_material_compile(shader_id) {
                 tracing::warn!(
@@ -421,18 +419,13 @@ impl AwsmRenderer {
             }
         }
 
-        // No-materials fallback: with no registered materials, the
-        // launch loop above iterated zero times, so the global edge
-        // chain wasn't compiled. Do it synchronously here for the
-        // first-party-only case (e.g. a scene with first-party
-        // gltf meshes but no submitted scheduler entries yet).
-        // Gated on MSAA + device support, same as the loop's
-        // internal `launch_edge_resolve_compile`.
-        if self
-            .pipeline_scheduler
-            .registered_material_shader_ids()
-            .is_empty()
-            && self.anti_aliasing.msaa_sample_count.is_some()
+        // Rebuild the full edge-resolve set against the new texture-pool
+        // layout (its cache keys embed `texture_pool_arrays_len` /
+        // `texture_pool_samplers_len`). This handler is async, so it uses
+        // the authoritative awaited `ensure_compiled` — the same path the
+        // MSAA-change + cold-boot/load paths use — for ALL cases (with or
+        // without registered materials), not just the no-materials one.
+        if self.anti_aliasing.msaa_sample_count.is_some()
             && crate::edge_resolve_supported(&self.gpu)
         {
             let color_wgsl = awsm_renderer_core::texture::texture_format_to_wgsl_storage(

@@ -29,7 +29,9 @@
 use awsm_materials::{MaterialAlphaMode, MaterialShaderId};
 use wasm_bindgen::JsValue;
 
-use crate::pipeline_scheduler::{CompileInstallTarget, PipelineCompileResolution, PipelineGroupId};
+use crate::pipeline_scheduler::{
+    CompileInstallTarget, PassKind, PipelineCompileResolution, PipelineGroupId,
+};
 use crate::pipelines::compute_pipeline::ComputePipelineCacheKey;
 use crate::render_passes::material_classify::shader::cache_key::ShaderCacheKeyMaterialClassify;
 use crate::render_passes::material_opaque::edge_pipeline::{
@@ -42,23 +44,19 @@ use crate::render_passes::material_opaque::shader::cache_key::{
 impl crate::AwsmRenderer {
     /// Block D.1 PART 2 — kick off real-future compile for the
     /// scheduler entry corresponding to `shader_id`. Synchronously
-    /// builds + issues every classify, opaque-compute,
-    /// per-shader-id `edge_resolve`, global `skybox_edge_resolve`,
-    /// and global `final_blend` pipeline promise; pushes each to
-    /// the scheduler's `inflight_compile`. Returns immediately; the
-    /// resulting material entry stays `Pending` until every
-    /// sub-pipeline resolves.
+    /// builds + issues this material's classify + opaque-compute
+    /// pipeline promises; pushes each to the scheduler's
+    /// `inflight_compile`. Returns immediately; the resulting material
+    /// entry stays `Pending` until every sub-pipeline resolves.
     ///
-    /// **MSAA-edge integration**: the edge-resolve pipelines (per-
-    /// shader for this material's shader_id + the global
-    /// skybox_edge_resolve + final_blend) are pushed alongside the
-    /// opaque/classify pipelines via [`Self::launch_edge_resolve_compile`],
-    /// so the material flips Pending → Ready only when the **whole**
-    /// MSAA chain is GPU-resident. `render_edge_resolve`'s all-or-
-    /// nothing readiness gate (Stage 3.5 / C.5) sees the new
-    /// shader_id appear in `bucket_entries_cached()` and the matching
-    /// per-shader edge_resolve pipeline at the same time, so the
-    /// chain stays consistent across registrations.
+    /// **MSAA-edge integration**: this method does NOT launch edge-resolve
+    /// pipelines. Edge resolve is a LAYOUT-level concern (its cache keys
+    /// embed the whole `bucket_entries`), so it is rebuilt ONCE per layout
+    /// change by [`Self::launch_edge_resolve_compile`] from the relaunch
+    /// sites — not once per material. `render_edge_resolve` is
+    /// per-bucket-independent (no all-or-nothing gate); a bucket whose edge
+    /// pipeline isn't resident yet simply keeps primary-pass shading for
+    /// the frame.
     ///
     /// Idempotent on cache hits: cache-hit pipelines bypass the
     /// scheduler's sub-compile counter entirely (they're installed
@@ -148,11 +146,21 @@ impl crate::AwsmRenderer {
         // via `.get()`. Take a short-lived borrow + clone for the
         // shader-info build (the registration's WGSL fragment is
         // captured by the dynamic_shader info below).
-        let reg = match self.dynamic_materials.get(shader_id) {
-            Some(r) => r.clone(),
-            None => return Ok(()),
-        };
-        let dynamic_shader = Some(DynamicShaderInfo {
+        // `reg` is `Some` only for a custom author material; a first-party
+        // feature-set variant has a dynamic-range id but no registration —
+        // it compiles the built-in PBR/Toon body (no `DynamicShaderInfo`).
+        let reg = self.dynamic_materials.get(shader_id).cloned();
+        // Neither a custom registration nor a known first-party variant →
+        // nothing to compile (id was removed between submit and launch).
+        if reg.is_none()
+            && self
+                .dynamic_materials
+                .first_party_variant_of(shader_id)
+                .is_none()
+        {
+            return Ok(());
+        }
+        let dynamic_shader = reg.as_ref().map(|reg| DynamicShaderInfo {
             struct_decl: awsm_materials::dynamic_layout::generate_wgsl_struct(
                 "MaterialData",
                 &reg.layout,
@@ -164,6 +172,9 @@ impl crate::AwsmRenderer {
             ),
             wgsl_fragment: reg.wgsl_fragment.clone(),
         });
+        // Shading family + feature mask + skybox ownership from the bucket
+        // entry (Custom for a registration; Pbr/Toon for a variant).
+        let (base, pbr_features, owns_skybox) = opaque_variant_params(&entries, shader_id);
 
         let mut shader_jobs: Vec<crate::shaders::ShaderCacheKey> = Vec::new();
         let mut slots: Vec<LaunchSlot> = Vec::new();
@@ -194,6 +205,9 @@ impl crate::AwsmRenderer {
                     msaa_sample_count: msaa,
                     mipmaps,
                     shader_id,
+                    base,
+                    owns_skybox,
+                    pbr_features,
                     dispatch_hash,
                     dynamic_shader: dynamic_shader.clone(),
                     bucket_entries: entries.clone(),
@@ -204,7 +218,7 @@ impl crate::AwsmRenderer {
         }
         // Transparent stubs handled by the legacy prewarm path (per-mesh,
         // depends on buffer_info — not part of this launch).
-        if reg.alpha_mode == MaterialAlphaMode::Blend {
+        if reg.as_ref().map(|r| r.alpha_mode) == Some(MaterialAlphaMode::Blend) {
             tracing::debug!(
                 target: "awsm_renderer::pipeline_readiness",
                 "launch_dynamic_material_compile: Blend material — transparent pipeline stays on prewarm path",
@@ -360,14 +374,11 @@ impl crate::AwsmRenderer {
             );
         }
 
-        // Edge resolve (per-shader + skybox + final_blend) — pushed
-        // into the scheduler's same inflight_compile queue + charged
-        // to this material's subcompile counter, so the material
-        // stays `Pending` until ALL of opaque/classify/edge resolve.
-        // Idempotent + cache-hit-aware (see method rustdoc).
-        // `generation` is the one captured at the top of this
-        // function — no need to re-look it up.
-        self.launch_edge_resolve_compile(group_id, generation)?;
+        // NOTE: edge-resolve pipelines are NOT launched here. They are a
+        // layout-level concern (their cache keys embed the whole
+        // bucket_entries), rebuilt ONCE per layout change by
+        // `launch_edge_resolve_compile` from the relaunch sites — not once
+        // per material. See that method's rustdoc.
 
         // If both launches were full cache hits, no promise pushed
         // → subcompile counter stayed at 0 → Ready never auto-fires
@@ -404,8 +415,14 @@ impl crate::AwsmRenderer {
         &mut self,
         shader_id: MaterialShaderId,
     ) -> Result<(), crate::error::AwsmError> {
+        // Every dynamic-range id (custom author material OR a first-party
+        // feature-set variant) routes through the dynamic launch: it
+        // pushes the classify recompile that a bucket-list change needs.
+        // The dynamic launch reads each bucket's `base`/`features` off its
+        // registry entry and only attaches a `DynamicShaderInfo` for the
+        // custom case (variants compile the built-in body). Canonical
+        // first-party ids (PBR/UNLIT/TOON/FLIPBOOK) stay on this path.
         if shader_id.is_dynamic() {
-            // Dynamic shader_ids route through launch_dynamic_material_compile.
             return self.launch_dynamic_material_compile(shader_id);
         }
         let Some(mid) = self
@@ -462,6 +479,13 @@ impl crate::AwsmRenderer {
         let mut shader_jobs: Vec<crate::shaders::ShaderCacheKey> = Vec::new();
         let mut slots: Vec<LaunchSlot> = Vec::new();
 
+        // Read this bucket's shading family + specialized feature mask off
+        // its registry bucket entry. For a per-feature-set PBR/Toon
+        // variant this is `(Pbr|Toon, that variant's features)`; for a
+        // canonical first-party id it's `(family, all())`. The opaque
+        // template gates per-feature WGSL on these features (#16).
+        let (base, pbr_features, owns_skybox) = opaque_variant_params(&entries, shader_id);
+
         for &(msaa, mipmaps) in &[
             (Some(4u32), true),
             (Some(4u32), false),
@@ -475,6 +499,9 @@ impl crate::AwsmRenderer {
                     msaa_sample_count: msaa,
                     mipmaps,
                     shader_id,
+                    base,
+                    owns_skybox,
+                    pbr_features,
                     dispatch_hash,
                     dynamic_shader: None,
                     bucket_entries: entries.clone(),
@@ -588,16 +615,10 @@ impl crate::AwsmRenderer {
             );
         }
 
-        // Edge resolve (per-shader for THIS shader_id + skybox +
-        // final_blend) — pushed into the scheduler's same
-        // inflight_compile queue + charged to this material's
-        // subcompile counter, so the material stays `Pending` until
-        // ALL of opaque/edge resolve. See
-        // `launch_edge_resolve_compile`'s rustdoc for why every
-        // first-party register triggers a recompile of the global
-        // skybox + final_blend (their cache keys depend on
-        // `bucket_entries`). `generation` captured at function top.
-        self.launch_edge_resolve_compile(group_id, generation)?;
+        // NOTE: edge-resolve pipelines are NOT launched here — they are a
+        // layout-level concern rebuilt once per layout change by
+        // `launch_edge_resolve_compile` from the relaunch sites (see that
+        // method's rustdoc).
 
         // If both launches were full cache hits, mark Ready inline.
         // Otherwise note_subcompile_complete will fire it when the
@@ -608,41 +629,60 @@ impl crate::AwsmRenderer {
         Ok(())
     }
 
-    /// Push the MSAA edge-resolve compile promises (per-shader-id
-    /// `edge_resolve` for each bucket + global `skybox_edge_resolve` +
-    /// global `final_blend`) into the scheduler's `inflight_compile`
-    /// queue, charged to `group_id`'s subcompile counter.
+    /// Rebuild the MSAA edge-resolve pipelines for the CURRENT bucket
+    /// layout — the per-shader-id `edge_resolve` for **every** bucket +
+    /// the global `skybox_edge_resolve` + global `final_blend` — by
+    /// pushing their compile promises into the scheduler's
+    /// `inflight_compile` queue.
     ///
-    /// Called from both [`Self::launch_dynamic_material_compile`] and
-    /// [`Self::launch_first_party_material_compile`] after they push
-    /// their opaque + classify pipelines. Effect: the scheduler
-    /// material entry doesn't flip Pending → Ready until **all**
-    /// pipelines it needs to render correctly — opaque, classify,
-    /// per-shader edge_resolve, skybox edge_resolve, final_blend —
-    /// are GPU-resident. Frontends watching
-    /// `drain_pipeline_status_events` correctly see Ready only after
-    /// MSAA edges work end-to-end for the new material.
+    /// **Scope: this is about COMPILING the edge pipelines, NOT about how
+    /// they're dispatched at render time.** The render-time scatter+gather
+    /// is unchanged: `render_edge_resolve` still issues one indirect
+    /// compute dispatch PER BUCKET, each consuming only that bucket's edge
+    /// pixels (`per_shader_args_offset(bucket_index)`) and atomic-adding
+    /// into the accumulator, then `final_blend`. That per-bucket-with-edges
+    /// parallelism is untouched here.
     ///
-    /// Idempotent on cache hits: descriptors that map to
-    /// already-compiled `(shader_cache_key, pipeline_layout_key)`
-    /// tuples are installed inline (no promise push), so a register
-    /// that doesn't actually change the bucket list pays nothing.
-    /// When `bucket_entries` does change (which every register
-    /// causes — see `ShaderCacheKeyMaterialFinalBlend.bucket_entries`
-    /// and `ShaderCacheKeyMaterialSkyboxEdgeResolve.bucket_entries`),
-    /// every existing per-shader edge_resolve + skybox + final_blend
-    /// pipeline is invalidated and recompiled with the new bucket
-    /// list. This is correct: the templated bucket constants in the
-    /// shaders have to match what the classify pass writes into the
-    /// edge buffers.
+    /// **What IS layout-level is the compilation.** Every edge shader's
+    /// cache key embeds the full `bucket_entries` (the per-shader shaders
+    /// template the bucket index / sample-list offsets; skybox +
+    /// final_blend iterate every bucket), so a bucket-layout change
+    /// invalidates ALL of the edge pipelines at once. We therefore COMPILE
+    /// the whole set ONCE per layout change (from the two sync relaunch
+    /// sites — `register_material`'s tail and
+    /// `relaunch_all_buckets_after_layout_change`), building the descriptor
+    /// set a single time (O(N) buckets). The old code instead re-ran this
+    /// compile-launch once per material (each rebuilding the whole N-entry
+    /// descriptor set, then filtering to one slot via an `only_shader_id`
+    /// arg) = O(N²) descriptor builds per layout change, and made each
+    /// per-shader pipeline's *install* hostage to a *different* material's
+    /// generation. Same N pipelines, same per-bucket dispatch consuming
+    /// them — just compiled in one batch instead of N overlapping ones.
     ///
-    /// No-op when MSAA is off (no edges to resolve) or
-    /// `edge_resolve_supported` returns false for the device.
-    fn launch_edge_resolve_compile(
-        &mut self,
-        group_id: PipelineGroupId,
-        generation: u32,
-    ) -> Result<(), crate::error::AwsmError> {
+    /// **Ownership / staleness — NO material, NO PBR.** Edge pipelines
+    /// belong to the bucket LAYOUT, not to any material (a scene may have
+    /// no PBR material at all — `AWSM_material_none` / unlit-only / custom-
+    /// only — so there is no canonical material to anchor on). The promises
+    /// are charged to the single non-material `PassKind::MaterialEdgeResolve`
+    /// group, and their install is validated purely by LAYOUT-CONTENT: this
+    /// call records the current layout's full edge key set via
+    /// `MaterialEdgePipelines::set_desired_edge_keys`, and
+    /// `apply_compile_resolution_inline` installs a resolved edge pipeline
+    /// iff its key is still in that set (`is_edge_key_desired`) — otherwise
+    /// the layout moved on and the resolution is dropped. No material
+    /// generation is consulted. The async await paths
+    /// (`MaterialEdgePipelines::ensure_compiled` from build / prewarm / AA +
+    /// texture-pool changes) ALSO update the desired set and share
+    /// `build_descriptors`, so the two paths can never diverge on which
+    /// buckets get an edge pipeline.
+    ///
+    /// Idempotent: already-compiled keys install inline (cache hit) and
+    /// already-in-flight keys are skipped (`edge_key_in_flight`), so a
+    /// relaunch whose layout didn't actually change pays nothing and never
+    /// double-compiles.
+    ///
+    /// No-op when MSAA is off or `edge_resolve_supported` is false.
+    pub(crate) fn launch_edge_resolve_compile(&mut self) -> Result<(), crate::error::AwsmError> {
         if self.anti_aliasing.msaa_sample_count.is_none()
             || !crate::edge_resolve_supported(&self.gpu)
         {
@@ -698,76 +738,61 @@ impl crate::AwsmRenderer {
             ));
         }
 
-        // Cache-hit + cross-call waiter dedup. The edge-chain
-        // descriptors iterate over EVERY bucket entry plus skybox +
-        // final_blend globals — see the matching block in
-        // `launch_dynamic_material_compile` for the full rationale
-        // and the "defer waiter registration until after prep
-        // succeeds" ordering.
-        let mid_for_waiter = match group_id {
-            PipelineGroupId::Material(m) => Some(m),
-            PipelineGroupId::Pass(_) => None,
-        };
+        // Record what THIS layout wants — the authoritative install-validity
+        // signal for resolved edge compiles. A promise that resolves later
+        // installs iff its key is still in this set (i.e. its layout is still
+        // current); otherwise it's dropped. Replaces any prior layout's set.
+        self.render_passes
+            .material_opaque
+            .edge_pipelines
+            .set_desired_edge_keys(compute_jobs.iter().map(|(_, k)| k.clone()));
+
+        // Per key: already compiled → install inline (cache hit); already
+        // in flight (an earlier layout-change launch this window) → skip;
+        // else → schedule a compile promise. No material owner / waiter
+        // bookkeeping — edge pipelines are layout-level, deduped here by the
+        // edge cache itself + the in-flight set.
         let mut promise_jobs: Vec<(EdgeLaunchSlot, ComputePipelineCacheKey)> = Vec::new();
-        let mut skip_keys: Vec<ComputePipelineCacheKey> = Vec::new();
         for (slot, cache_key) in &compute_jobs {
             if let Some(existing_key) = self.pipelines.compute.cache_lookup(cache_key).copied() {
                 install_edge_per_pass(self, &slot.0, existing_key);
-            } else if mid_for_waiter.is_some()
-                && self
-                    .pipeline_scheduler
-                    .has_compute_compile_waiter(cache_key)
+            } else if self
+                .render_passes
+                .material_opaque
+                .edge_pipelines
+                .edge_key_in_flight(cache_key)
             {
-                skip_keys.push(cache_key.clone());
+                // A prior launch this window already has this compile in
+                // flight; its single resolution installs for the layout.
             } else {
                 promise_jobs.push((slot.clone(), cache_key.clone()));
             }
         }
 
-        if promise_jobs.is_empty() && skip_keys.is_empty() {
-            // Every variant was a cache hit; no promises pushed and
-            // no waiter state to commit.
+        if promise_jobs.is_empty() {
+            // Every pipeline was a cache hit or already in flight.
             return Ok(());
         }
 
-        // Sync prep before any waiter registration so a prep error
-        // doesn't leak counter / waiter-map state.
-        let prepped_opt = if !promise_jobs.is_empty() {
-            let cache_keys_only: Vec<ComputePipelineCacheKey> =
-                promise_jobs.iter().map(|(_, k)| k.clone()).collect();
-            Some(
-                crate::pipelines::compute_pipeline::ComputePipelines::ensure_keys_prepare(
-                    &self.gpu,
-                    &self.shaders,
-                    &self.pipeline_layouts,
-                    cache_keys_only,
-                )?,
-            )
-        } else {
-            None
-        };
-
-        // Prep succeeded — commit waiter registrations. Only the
-        // material-id path uses waiters; the pass-id path skips
-        // (no material to charge subcompiles to).
-        if let Some(mid) = mid_for_waiter {
-            for key in &skip_keys {
-                self.pipeline_scheduler
-                    .register_compute_compile_waiter(key.clone(), mid);
-            }
-            for (_, key) in &promise_jobs {
-                self.pipeline_scheduler
-                    .register_compute_compile_waiter(key.clone(), mid);
-            }
-        }
-
-        let Some(mut prepped) = prepped_opt else {
-            return Ok(());
-        };
+        // Sync prep (issues the create-pipeline promises). Done before we
+        // record in-flight markers so a prep error can't leak state.
+        let cache_keys_only: Vec<ComputePipelineCacheKey> =
+            promise_jobs.iter().map(|(_, k)| k.clone()).collect();
+        let mut prepped =
+            crate::pipelines::compute_pipeline::ComputePipelines::ensure_keys_prepare(
+                &self.gpu,
+                &self.shaders,
+                &self.pipeline_layouts,
+                cache_keys_only,
+            )?;
         let promise_jobs_count = promise_jobs.len();
         let promises = std::mem::take(&mut prepped.promises);
 
         for ((slot, cache_key), promise) in promise_jobs.into_iter().zip(promises) {
+            self.render_passes
+                .material_opaque
+                .edge_pipelines
+                .mark_edge_key_in_flight(cache_key.clone());
             let target = match slot.0 {
                 EdgePipelineSlot::PerShader(id) => CompileInstallTarget::EdgeResolvePerShader {
                     shader_id: id.shader_id,
@@ -776,7 +801,13 @@ impl crate::AwsmRenderer {
                 EdgePipelineSlot::Skybox => CompileInstallTarget::EdgeResolveSkybox,
                 EdgePipelineSlot::FinalBlend => CompileInstallTarget::EdgeResolveFinalBlend,
             };
-            let id = group_id;
+            // Layout-level, not owned by any material: charge to the single
+            // non-material MaterialEdgeResolve group. `apply_compile_
+            // resolution_inline` validates edge installs by layout-content
+            // (`is_edge_key_desired`), so `id` / `generation` are not
+            // consulted for edge targets — they're carried only for logging.
+            let id = PipelineGroupId::Pass(PassKind::MaterialEdgeResolve);
+            let generation = 0u32;
             let fut: std::pin::Pin<
                 Box<dyn std::future::Future<Output = PipelineCompileResolution>>,
             > = Box::pin(async move {
@@ -794,9 +825,8 @@ impl crate::AwsmRenderer {
         }
         tracing::info!(
             target: "awsm_renderer::pipeline_readiness",
-            "launch_edge_resolve_compile: {:?} sub-pipelines pushed for {:?}",
+            "launch_edge_resolve_compile: {} layout-level edge sub-pipelines pushed",
             promise_jobs_count,
-            group_id,
         );
         Ok(())
     }
@@ -832,6 +862,50 @@ impl crate::AwsmRenderer {
             cache_key,
             result,
         } = resolution;
+
+        // Edge-resolve pipelines are LAYOUT-level: they're charged to no
+        // material, and their install validity is by layout-content, not by
+        // any material's generation. Handle them before the material-id /
+        // waiter machinery. Install iff the resolved key is still one the
+        // CURRENT layout wants (`is_edge_key_desired`) — otherwise the
+        // bucket layout moved on while this compiled, so drop it. (`id` is
+        // `PassKind::MaterialEdgeResolve`, `generation` is unused here.)
+        match &target {
+            CompileInstallTarget::EdgeResolvePerShader { .. }
+            | CompileInstallTarget::EdgeResolveSkybox
+            | CompileInstallTarget::EdgeResolveFinalBlend => {
+                self.render_passes
+                    .material_opaque
+                    .edge_pipelines
+                    .clear_edge_key_in_flight(&cache_key);
+                if !self
+                    .render_passes
+                    .material_opaque
+                    .edge_pipelines
+                    .is_edge_key_desired(&cache_key)
+                {
+                    return;
+                }
+                match result {
+                    Ok(pipeline) => {
+                        let pipeline_key = self
+                            .pipelines
+                            .compute
+                            .install_resolved_pipeline(pipeline, cache_key);
+                        install_edge_per_pass(self, &edge_slot_from_target(&target), pipeline_key);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "awsm_renderer::pipeline_readiness",
+                            "apply_compile_resolution: edge pipeline compile failed: {:?}", e
+                        );
+                    }
+                }
+                return;
+            }
+            CompileInstallTarget::ClassifyDynamic { .. }
+            | CompileInstallTarget::OpaqueDynamic { .. } => {}
+        }
 
         // Take the full waiter list — every material that registered
         // an interest in this cache key (the original launcher + every
@@ -923,22 +997,16 @@ impl crate::AwsmRenderer {
             }
         };
 
-        // Install: slotmap + cache + per-pass. Edge resolve targets
-        // route to the edge_pipelines cache via the edge install
-        // helper; the opaque/classify targets go through the
-        // `LaunchSlot`-shaped install path. The per-pass install is
-        // GLOBAL (keyed by shader_id / msaa / mipmaps), so the
-        // single install covers every waiter material.
+        // Install: slotmap + cache + per-pass. Only opaque/classify targets
+        // reach here — edge-resolve targets are handled by the layout-level
+        // early-return branch at the top of this fn. The per-pass install is
+        // GLOBAL (keyed by shader_id / msaa / mipmaps), so the single
+        // install covers every waiter material.
         let pipeline_key = self
             .pipelines
             .compute
             .install_resolved_pipeline(pipeline, cache_key);
         match &target {
-            CompileInstallTarget::EdgeResolvePerShader { .. }
-            | CompileInstallTarget::EdgeResolveSkybox
-            | CompileInstallTarget::EdgeResolveFinalBlend => {
-                install_edge_per_pass(self, &edge_slot_from_target(&target), pipeline_key);
-            }
             CompileInstallTarget::ClassifyDynamic { .. }
             | CompileInstallTarget::OpaqueDynamic { .. } => {
                 install_per_pass(
@@ -949,6 +1017,11 @@ impl crate::AwsmRenderer {
                     pipeline_key,
                 );
             }
+            CompileInstallTarget::EdgeResolvePerShader { .. }
+            | CompileInstallTarget::EdgeResolveSkybox
+            | CompileInstallTarget::EdgeResolveFinalBlend => {
+                unreachable!("edge-resolve targets are installed by the layout-level branch")
+            }
         }
 
         // Decrement every waiter's subcompile counter. Materials
@@ -958,6 +1031,34 @@ impl crate::AwsmRenderer {
             self.pipeline_scheduler.note_subcompile_complete(waiter_mid);
         }
     }
+}
+
+/// Resolve a first-party bucket's `(base, pbr_features, owns_skybox)` for
+/// the opaque cache key from its registry bucket entry. A per-feature-set
+/// PBR/Toon variant reports its specialized family + feature mask; the
+/// canonical first-party buckets carry the EMPTY feature-set (the canonical
+/// PBR bucket is the skybox owner — it shades no material geometry, so it
+/// compiles the minimal shader, never an "uber" all-features one). Only the
+/// canonical `MaterialShaderId::PBR` bucket owns the skybox write (classify
+/// routes skybox pixels to bit 0 / index 0 → that bucket), so every
+/// specialized PBR variant gets `owns_skybox = false`.
+fn opaque_variant_params(
+    entries: &[crate::dynamic_materials::BucketEntry],
+    shader_id: MaterialShaderId,
+) -> (crate::dynamic_materials::ShadingBase, u32, bool) {
+    let entry = entries.iter().find(|e| e.shader_id == shader_id);
+    let base = entry
+        .map(|e| e.base)
+        .unwrap_or_else(|| crate::dynamic_materials::ShadingBase::for_shader_id(shader_id));
+    // Missing entry → empty feature-set (the minimal shader), never the
+    // full "uber" set. A missing entry is a defensive fallback that
+    // shouldn't happen; if it does we'd rather under-shade than silently
+    // compile + run the uber path.
+    let pbr_features = entry
+        .map(|e| e.pbr_features)
+        .unwrap_or_else(|| awsm_materials::pbr::PbrFeatures::default().bits());
+    let owns_skybox = shader_id == MaterialShaderId::PBR;
+    (base, pbr_features, owns_skybox)
 }
 
 #[derive(Clone)]

@@ -100,16 +100,20 @@ fn load_msaa_sample(coords: vec2<i32>, s: u32) -> vec4<f32> {
 
 ## MSAA Processing Patterns
 
-> **Material authors note**: as of the Stage 3 architecture (see
+> **Material authors note**: MSAA is a separate dispatch chain decoupled
+> from materials (see
 > [`PERFORMANCE.md` §1a](PERFORMANCE.md#1a-msaa-as-a-separate-dispatch-chain-decoupled-from-materials)),
-> opaque material authors **do not write MSAA code**. You author a
+> so opaque material authors **do not write MSAA code**. You author a
 > single-sample shading function; the framework's per-shader-id
 > `edge_resolve` pipeline drives the per-sample loop around your code
-> at edge pixels. The dynamic-material `contract-opaque.md` codifies
-> this dual-context invariant. The patterns below apply to **framework
-> code** that does need to handle samples directly — `material_classify`,
-> the per-shader `edge_resolve` template, `skybox_edge_resolve`,
-> `final_blend` — not to your custom material's shading body.
+> at edge pixels — specialized to the same feature-set as the primary
+> pass (see
+> [`contract-opaque.md` § Specialization](dynamic-materials/contract-opaque.md#specialization--the-bucket-cap)),
+> which also codifies this dual-context invariant. The patterns below
+> apply to **framework code** that handles samples directly —
+> `material_classify`, the per-shader `edge_resolve` template,
+> `skybox_edge_resolve`, `final_blend` — not to your custom material's
+> shading body.
 
 ### Shared vs Per-Sample Data
 

@@ -9,8 +9,9 @@
 //! teardown path cleans them up on the next variant change.
 //!
 //! Coverage:
-//! - `Primitive` → opaque mesh through `add_raw_mesh`; material resolves
-//!   via `material_cache` (asset-ref → cache key, else inline def).
+//! - `Primitive` → mesh through `add_raw_mesh` (opaque) or
+//!   `add_raw_mesh_transparent` (Blend/Mask); material resolves via
+//!   `material_cache` (asset-ref → cache key, else inline def).
 //! - `Sprite` → quad mesh through `add_raw_mesh` + `set_mesh_billboard_mode`.
 //! - `Line` → fat-line registration through `add_line_strip` (B-2).
 //! - `SweepAlongCurve` + `InstancesAlongCurve` → both look up the
@@ -728,41 +729,60 @@ async fn upload_and_track_returning(
     material_ref: Option<MaterialRef>,
     inline: MaterialDef,
 ) -> Option<MeshKey> {
-    let entry_for_track = entry.clone();
-    with_renderer_mut(move |r: &mut AwsmRenderer| {
-        let scene = app_state().scene.clone();
-        let resolved = super::material_cache::resolve(r, &scene, material_ref, &inline);
-        let material_key = resolved.key();
-        // Spawn a sub-transform under the node's transform so the
-        // procedural mesh is positioned by the editor's transform rather
-        // than identity. This matches how `instance_template` parents
-        // sub-meshes under the model's transform.
-        let tk = r.transforms.insert(Transform::IDENTITY, Some(parent_tk));
-        match r.add_raw_mesh(raw, tk, material_key) {
-            Ok(mk) => {
-                entry_for_track.model_meshes.lock().unwrap().push(mk);
-                entry_for_track.model_transforms.lock().unwrap().push(tk);
-                // Inline materials are owned by this node — park the key
-                // so `clear_model_instance` / `remove_node` can free it.
-                // Shared (asset-cache) keys are kept alive by the cache.
-                if let super::material_cache::ResolvedMaterial::Owned(k) = resolved {
-                    entry_for_track.material_keys.lock().unwrap().push(k);
-                }
-                Some(mk)
+    // The whole thing runs under one held renderer lock so the transparent
+    // branch can `.await` `add_raw_mesh_transparent` (which builds + caches
+    // the per-mesh transparent pipeline). Opaque still uses the sync
+    // `add_raw_mesh` — that path errors on transparency-pass materials, so
+    // a Blend/Mask primitive MUST take the transparent fork (mirrors the
+    // flipbook-sprite path in `spawn_flipbook_sprite`).
+    let handle = renderer_handle();
+    let mut r = handle.lock().await;
+    let scene = app_state().scene.clone();
+    let resolved = super::material_cache::resolve(&mut r, &scene, material_ref, &inline);
+    let material_key = resolved.key();
+    let is_transparent = r.materials.is_transparency_pass(material_key);
+    // Spawn a sub-transform under the node's transform so the procedural
+    // mesh is positioned by the editor's transform rather than identity.
+    // This matches how `instance_template` parents sub-meshes under the
+    // model's transform.
+    let tk = r.transforms.insert(Transform::IDENTITY, Some(parent_tk));
+    let add_result = if is_transparent {
+        r.add_raw_mesh_transparent(raw, tk, material_key).await
+    } else {
+        r.add_raw_mesh(raw, tk, material_key)
+    };
+    match add_result {
+        Ok(mk) => {
+            entry.model_meshes.lock().unwrap().push(mk);
+            entry.model_transforms.lock().unwrap().push(tk);
+            // Inline materials are owned by this node — park the key so
+            // `clear_model_instance` / `remove_node` can free it. Shared
+            // (asset-cache) keys are kept alive by the cache.
+            if let super::material_cache::ResolvedMaterial::Owned(k) = resolved {
+                entry.material_keys.lock().unwrap().push(k);
             }
-            Err(err) => {
-                tracing::warn!("procedural_sync: add_raw_mesh failed: {err}");
-                // Mesh insert failed — free the just-inserted owned
-                // material so we don't leak on the error path.
-                if let super::material_cache::ResolvedMaterial::Owned(k) = resolved {
-                    r.remove_material(k);
+            // Make any freshly-uploaded textures visible to the transparent
+            // pipeline's bind groups (the sync opaque path is finalized by
+            // the materialize batch; the transparent pipeline we just built
+            // needs it now).
+            if is_transparent {
+                if let Err(err) = r.finalize_gpu_textures().await {
+                    tracing::warn!("procedural_sync: finalize_gpu_textures failed: {err}");
                 }
-                r.transforms.remove(tk);
-                None
             }
+            Some(mk)
         }
-    })
-    .await
+        Err(err) => {
+            tracing::warn!("procedural_sync: add_raw_mesh failed: {err}");
+            // Mesh insert failed — free the just-inserted owned material so
+            // we don't leak on the error path.
+            if let super::material_cache::ResolvedMaterial::Owned(k) = resolved {
+                r.remove_material(k);
+            }
+            r.transforms.remove(tk);
+            None
+        }
+    }
 }
 
 /// Snapshot the current mesh-producing geometry for a `NodeKind` into

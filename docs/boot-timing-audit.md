@@ -51,16 +51,36 @@ Plus subsequent batches as the Fox model's transparent meshes resolve their per-
 
 - Via `MaterialEdgePipelines::ensure_compiled` in `AwsmRendererBuilder::build`.
 
-Per the doc, these should be scheduler-managed (lazy on first material insertion). The migration would:
+> **Update (PR #105) — edge_resolve compile model reworked.** The
+> migration sketched below was **superseded** by a different (and better)
+> design. Edge resolve is now treated as a **layout-level** concern, not a
+> per-material one: the full edge set (per-shader × N + skybox +
+> final_blend) is compiled **once per bucket-layout change** via
+> `launch_edge_resolve_compile` (the two sync relaunch sites:
+> `register_material`'s tail + `relaunch_all_buckets_after_layout_change`),
+> NOT pushed per material. Its scheduler promises are charged to a single
+> non-material group, `PassKind::MaterialEdgeResolve` (≈ the `Pass(EdgeChain)`
+> idea in step 3), and their **install validity is keyed on layout-content**
+> — a resolved edge pipeline installs iff its cache key is still one the
+> current layout wants (`MaterialEdgePipelines::{set_desired_edge_keys,
+> is_edge_key_desired}`) — so it depends on **no material's generation and no
+> canonical-PBR assumption** (a PBR-absent scene has no anchor material). The
+> eager `MaterialEdgePipelines::ensure_compiled` in `build()` / `prewarm` was
+> **kept on purpose** as the awaited "ready NOW for the first shown frame"
+> installer; it shares `build_descriptors` + `desired_keys` with the
+> scheduler path, so the two never diverge. So step 1 (strip eager) was *not*
+> taken, and step 2 (per-material push) was *reversed*. See PR #105 and
+> `pipeline_scheduler/launch.rs::launch_edge_resolve_compile`.
+
+The original (now-superseded) sketch, for history — per the doc these
+"should be" scheduler-managed (lazy on first material insertion):
 
 1. Strip the eager `MaterialEdgePipelines::ensure_compiled` call from `lib.rs:build()`.
 2. Have `launch_first_party_material_compile` / `launch_dynamic_material_compile` also push the edge_resolve variant for the registered shader_id (the per-shader edge_resolve pipeline is shader-id-keyed in the same way the primary opaque pipeline is).
 3. Keep the skybox_edge_resolve + final_blend compile eager (or lift them into a `Pass(EdgeChain)` scheduler entry — they're material-agnostic).
 
-That migration is non-trivial (the existing eager flow runs after the bind groups are constructed and before the first render). Parked under the same "Block D literal push-futures" follow-up that Block D.1's `ensure_keys` factor was the foundation for.
-
 ## What the audit means in practice
 
 The Block B migrations (EVSM / ShadowGen / Line / Picker) took effect cleanly — those subsystems compile 0 pipelines at boot. Block D.1 PART 2 extended this to first-party material opaque pipelines (PBR / UNLIT / TOON / FLIPBOOK), which now also compile lazily on the gltf-populate path's first per-`shader_id` registration. The cold-boot cost reduced from "compile every pipeline the scene could ever need" to "compile only the active default pipelines + the edge_resolve set when MSAA is on". For an Android device booting an empty scene with no shadow casters / no lines / no picker, the savings are substantial (the EVSM + ShadowGen + Line + Picker pipelines were the bulk of the SPIR-V bloat that wasn't already addressed by Stage 3).
 
-The edge_resolve eager set remaining is a deliberate trade-off: those pipelines are small (the Stage 3 SPIR-V split made them tractable on Android) and they're needed before the first material renders with MSAA edge resolution. A future PR can explore frame-1-only with eager skybox + final_blend and per-shader-id edge_resolve lazy with the primary opaque pipeline.
+The edge_resolve eager set remaining is a deliberate trade-off: those pipelines are small (the Stage 3 SPIR-V split made them tractable on Android) and they're needed before the first material renders with MSAA edge resolution. (PR #105 update: the eager set is retained as the "first-frame-ready" installer; the *runtime* edge rebuild is now layout-level + content-validated rather than per-material — see the "Update (PR #105)" note above.)

@@ -69,6 +69,15 @@ pub struct ShaderTemplateMaterialClassifyCompute {
     /// (per-pixel 4-sample shader_id scan + edge_pixel_id allocation +
     /// edge_to_xy / edge_slot_map / per-shader sample list writes).
     pub emit_edge_data: bool,
+    /// Number of `atomic<u32>` words in the workgroup `tile_mask`
+    /// array (= [`crate::dynamic_materials::MAX_BUCKET_WORDS`]). The
+    /// mask is sized to the *max* bucket budget, not the live bucket
+    /// count, so it's a compile-time constant. At `1` the generated
+    /// WGSL is equivalent to the original single-`atomic<u32>` form.
+    pub n_words: u32,
+    /// `0..n_words` — iterated by the template to zero + load each
+    /// mask word.
+    pub words_iter: Vec<u32>,
 }
 
 /// Returns the number of trailing `u32` padding words the templated
@@ -116,6 +125,8 @@ impl TryFrom<&ShaderCacheKeyMaterialClassify> for ShaderTemplateMaterialClassify
                 shader_id_consts,
                 bucket_entries,
                 emit_edge_data: key.emit_edge_data,
+                n_words: crate::dynamic_materials::MAX_BUCKET_WORDS,
+                words_iter: (0..crate::dynamic_materials::MAX_BUCKET_WORDS).collect(),
             },
         })
     }

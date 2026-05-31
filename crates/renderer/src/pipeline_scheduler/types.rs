@@ -266,6 +266,14 @@ pub enum PassKind {
     EdgeResolveSkybox,
     /// MSAA-edge-resolve helper for transparent (Blend) materials.
     EdgeResolveBlend,
+    /// Layout-level owner for the opaque MSAA edge-resolve pipeline set
+    /// (per-shader + skybox + final_blend). These pipelines belong to the
+    /// bucket LAYOUT, not to any material, so their scheduler compile
+    /// promises are charged to this single non-material group instead of a
+    /// material id — their install is validated by layout-content
+    /// (`MaterialEdgePipelines::is_edge_key_desired`), not material
+    /// generation. See `launch_edge_resolve_compile`.
+    MaterialEdgeResolve,
 }
 
 impl PassDef {

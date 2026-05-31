@@ -41,8 +41,14 @@ fn pbr_get_material_color{{ mipmap.suffix() }}(
     {% if mipmap.is_gradient() %}gradients: PbrMaterialGradients,{% endif %}
     geometry_tbn: TBN,
 ) -> PbrMaterialColor {
-    // Load extension data on-demand from indices
+    // Load extension data on-demand from indices. Each is gated so a
+    // feature-set without the extension never computes it — the dead
+    // local then DCE-cascades up through its sampler + this load.
+    {% if pbr_features.emissive_strength %}
     let emissive_strength = pbr_material_load_emissive_strength(material.emissive_strength_index);
+    {% else %}
+    let emissive_strength = 1.0;
+    {% endif %}
     let ior = pbr_material_load_ior(material.ior_index);
     let specular = pbr_material_load_specular(material.specular_index);
     let transmission = pbr_material_load_transmission(material.transmission_index);
@@ -67,7 +73,10 @@ fn pbr_get_material_color{{ mipmap.suffix() }}(
         {% if mipmap.is_gradient() %}gradients.base_color,{% endif %}
     );
 
-    // Multiply base color by vertex color if present (index 0 means absent)
+    // Multiply base color by vertex color if present (index 0 means absent).
+    // Compile-time gated so feature-sets without vertex colors emit none
+    // of this.
+    {% if pbr_features.vertex_color %}
     if (material.vertex_color_info_index != 0u) {
         let vertex_color_info = pbr_material_load_vertex_color_info(material.vertex_color_info_index);
         base *= vertex_color(
@@ -78,6 +87,7 @@ fn pbr_get_material_color{{ mipmap.suffix() }}(
             vertex_attribute_stride,
         );
     }
+    {% endif %}
 
     let metallic_roughness = _pbr_material_metallic_roughness_color{{ mipmap.suffix() }}(
         material,
@@ -322,39 +332,52 @@ fn pbr_get_material_color{{ mipmap.suffix() }}(
         {% if mipmap.is_gradient() %}gradients.iridescence_thickness,{% endif %}
     );
 
+    // Per-feature gating: an off feature emits a compile-time
+    // CONSTANT here instead of its computed local. The local (and its
+    // sampler + extension load above) then become dead code the compiler
+    // eliminates — the win is the dropped register pressure, not just
+    // skipped ALU. `ior`/`specular` feed the base F0 unconditionally, so
+    // their off-defaults are the glTF-absent values (ior 1.5, specular
+    // 1.0, specular_color 1). The additive lobes get 0; their brdf
+    // contribution is either explicitly gated (sheen/clearcoat) or
+    // const-folds away via the existing `if (color.x > 0)` runtime guard.
     return PbrMaterialColor(
         base,
         metallic_roughness,
         normal,
         occlusion,
         emissive,
-        specular_factor,
-        specular_color_factor,
-        ior,
-        transmission_factor,
-        volume_thickness,
-        volume.attenuation_distance,
-        volume.attenuation_color,
+        // KHR_materials_specular (feeds base F0)
+        {% if pbr_features.specular %}specular_factor{% else %}1.0{% endif %},
+        {% if pbr_features.specular %}specular_color_factor{% else %}vec3<f32>(1.0){% endif %},
+        // KHR_materials_ior (feeds base F0)
+        {% if pbr_features.ior %}ior{% else %}1.5{% endif %},
+        // KHR_materials_transmission
+        {% if pbr_features.transmission %}transmission_factor{% else %}0.0{% endif %},
+        // KHR_materials_volume
+        {% if pbr_features.volume %}volume_thickness{% else %}0.0{% endif %},
+        {% if pbr_features.volume %}volume.attenuation_distance{% else %}0.0{% endif %},
+        {% if pbr_features.volume %}volume.attenuation_color{% else %}vec3<f32>(1.0){% endif %},
         // Clearcoat
-        clearcoat_factor,
-        clearcoat_roughness_factor,
-        clearcoat_normal_value,
+        {% if pbr_features.clearcoat %}clearcoat_factor{% else %}0.0{% endif %},
+        {% if pbr_features.clearcoat %}clearcoat_roughness_factor{% else %}0.0{% endif %},
+        {% if pbr_features.clearcoat %}clearcoat_normal_value{% else %}geometry_tbn.N{% endif %},
         // Sheen
-        sheen_color_factor,
-        sheen_roughness_factor,
+        {% if pbr_features.sheen %}sheen_color_factor{% else %}vec3<f32>(0.0){% endif %},
+        {% if pbr_features.sheen %}sheen_roughness_factor{% else %}0.0{% endif %},
         // Dispersion
-        dispersion,
+        {% if pbr_features.dispersion %}dispersion{% else %}0.0{% endif %},
         // Diffuse transmission
-        diffuse_trans_factor,
-        diffuse_trans_color,
+        {% if pbr_features.diffuse_transmission %}diffuse_trans_factor{% else %}0.0{% endif %},
+        {% if pbr_features.diffuse_transmission %}diffuse_trans_color{% else %}vec3<f32>(0.0){% endif %},
         // Anisotropy
-        aniso_basis.t,
-        aniso_basis.b,
-        aniso_basis.strength,
+        {% if pbr_features.anisotropy %}aniso_basis.t{% else %}geometry_tbn.T{% endif %},
+        {% if pbr_features.anisotropy %}aniso_basis.b{% else %}geometry_tbn.B{% endif %},
+        {% if pbr_features.anisotropy %}aniso_basis.strength{% else %}0.0{% endif %},
         // Iridescence
-        iridescence_factor,
-        iridescence.ior,
-        iridescence_thickness,
+        {% if pbr_features.iridescence %}iridescence_factor{% else %}0.0{% endif %},
+        {% if pbr_features.iridescence %}iridescence.ior{% else %}1.3{% endif %},
+        {% if pbr_features.iridescence %}iridescence_thickness{% else %}0.0{% endif %},
     );
 }
 
@@ -365,10 +388,17 @@ fn _pbr_material_base_color{{ mipmap.suffix() }}(
     {% if mipmap.is_gradient() %}uv_derivs: UvDerivs,{% endif %}
 ) -> vec4<f32> {
     var color = material.base_color_factor;
+    // Compile-time feature gate (criterion 4): a feature-set without
+    // a base-color texture emits NO sampler load here, so the whole
+    // sample → multiply chain dead-code-eliminates (lower register
+    // pressure → higher occupancy). Pixel-equivalent: a material lacking
+    // the slot has `.exists == false` anyway.
+    {% if pbr_features.base_color_tex %}
     if material.base_color_tex_info.exists {
         let tex_sample = {{ mipmap.sample_fn() }}(material.base_color_tex_info, attribute_uv{% if mipmap.is_gradient() %}, uv_derivs{% endif %});
         color *= tex_sample;
     }
+    {% endif %}
     // compute pass only deals with fully opaque
     // mask and blend are handled in the fragment shader
     color.a = 1.0;
@@ -382,11 +412,13 @@ fn _pbr_material_metallic_roughness_color{{ mipmap.suffix() }}(
     {% if mipmap.is_gradient() %}uv_derivs: UvDerivs,{% endif %}
 ) -> vec2<f32> {
     var color = vec2<f32>(material.metallic_factor, material.roughness_factor);
+    {% if pbr_features.metallic_roughness_tex %}
     if material.metallic_roughness_tex_info.exists {
         let tex = {{ mipmap.sample_fn() }}(material.metallic_roughness_tex_info, attribute_uv{% if mipmap.is_gradient() %}, uv_derivs{% endif %});
         // glTF uses B channel for metallic, G channel for roughness
         color *= vec2<f32>(tex.b, tex.g);
     }
+    {% endif %}
     return color;
 }
 
@@ -398,21 +430,25 @@ fn _pbr_normal_color{{ mipmap.suffix() }}(
     {% if mipmap.is_gradient() %}uv_derivs: UvDerivs,{% endif %}
     geometry_tbn: TBN,
 ) -> vec3<f32> {
-    if !material.normal_tex_info.exists {
-        return geometry_tbn.N;
+    // Compile-time gate: a feature-set without a normal map emits none of
+    // the sampler load / TBN transform — it just returns the geometry
+    // normal. Equivalent to the absent-texture runtime path.
+    {% if pbr_features.normal_tex %}
+    if material.normal_tex_info.exists {
+        // Sample normal map and unpack from [0,1] to [-1,1] range
+        let tex = {{ mipmap.sample_fn() }}(material.normal_tex_info, attribute_uv{% if mipmap.is_gradient() %}, uv_derivs{% endif %});
+        let tangent_normal = vec3<f32>(
+            (tex.r * 2.0 - 1.0) * material.normal_scale,
+            (tex.g * 2.0 - 1.0) * material.normal_scale,
+            tex.b * 2.0 - 1.0,
+        );
+
+        // Transform the tangent-space normal to world space using the TBN matrix from geometry pass
+        let tbn_matrix = mat3x3<f32>(geometry_tbn.T, geometry_tbn.B, geometry_tbn.N);
+        return normalize(tbn_matrix * tangent_normal);
     }
-
-    // Sample normal map and unpack from [0,1] to [-1,1] range
-    let tex = {{ mipmap.sample_fn() }}(material.normal_tex_info, attribute_uv{% if mipmap.is_gradient() %}, uv_derivs{% endif %});
-    let tangent_normal = vec3<f32>(
-        (tex.r * 2.0 - 1.0) * material.normal_scale,
-        (tex.g * 2.0 - 1.0) * material.normal_scale,
-        tex.b * 2.0 - 1.0,
-    );
-
-    // Transform the tangent-space normal to world space using the TBN matrix from geometry pass
-    let tbn_matrix = mat3x3<f32>(geometry_tbn.T, geometry_tbn.B, geometry_tbn.N);
-    return normalize(tbn_matrix * tangent_normal);
+    {% endif %}
+    return geometry_tbn.N;
 }
 
 // Occlusion
@@ -422,10 +458,12 @@ fn _pbr_occlusion_color{{ mipmap.suffix() }}(
     {% if mipmap.is_gradient() %}uv_derivs: UvDerivs,{% endif %}
 ) -> f32 {
     var occlusion = 1.0;
+    {% if pbr_features.occlusion_tex %}
     if material.occlusion_tex_info.exists {
         let tex = {{ mipmap.sample_fn() }}(material.occlusion_tex_info, attribute_uv{% if mipmap.is_gradient() %}, uv_derivs{% endif %});
         occlusion = mix(1.0, tex.r, material.occlusion_strength);
     }
+    {% endif %}
     return occlusion;
 }
 
@@ -437,9 +475,11 @@ fn _pbr_material_emissive_color{{ mipmap.suffix() }}(
     {% if mipmap.is_gradient() %}uv_derivs: UvDerivs,{% endif %}
 ) -> vec3<f32> {
     var color = material.emissive_factor;
+    {% if pbr_features.emissive_tex %}
     if material.emissive_tex_info.exists {
         color *= {{ mipmap.sample_fn() }}(material.emissive_tex_info, attribute_uv{% if mipmap.is_gradient() %}, uv_derivs{% endif %}).rgb;
     }
+    {% endif %}
     color *= emissive_strength;
     return color;
 }

@@ -309,24 +309,21 @@ impl AppScene {
         let state = self;
         let mut renderer = state.renderer.lock().await;
 
-        // Surface background pipeline-scheduler compiles (post-`Ready`
-        // per-material / per-pass) in the loading overlay so a frame that
-        // is still compiling never reads as a black hang. Pending → +1,
-        // Ready/Failed → -1 (saturating). Drained every frame.
-        let events = renderer.drain_pipeline_status_events();
-        if !events.is_empty() {
-            use awsm_renderer::pipeline_scheduler::PipelineGroupStatus;
-            let mut status = state.ctx.loading_status.lock_mut();
-            for ev in events {
-                match ev.status {
-                    PipelineGroupStatus::Pending => {
-                        status.compile_pending = status.compile_pending.saturating_add(1);
-                    }
-                    PipelineGroupStatus::Ready | PipelineGroupStatus::Failed { .. } => {
-                        status.compile_pending = status.compile_pending.saturating_sub(1);
-                    }
-                }
-            }
+        // Surface background pipeline-scheduler compiles in the loading
+        // overlay so a frame that is still compiling never reads as a black
+        // hang. Drive the count from the scheduler's AUTHORITATIVE
+        // `materials_pending` rather than a +1/-1 event tally: the push
+        // tally leaked once the specialize-only relaunch began re-marking
+        // already-pending materials `Pending` (more +1s than -1s), so the
+        // "N remaining" banner never reached 0. The authoritative count is
+        // recomputed from scheduler state each frame, so it self-corrects
+        // and drains to 0 exactly when every material is Ready/Failed.
+        // (Mirrors the scene-editor renderer_bridge fix.) The event queue
+        // is still drained so it stays bounded.
+        let _ = renderer.drain_pipeline_status_events();
+        let pending = renderer.compile_progress().materials_pending;
+        if state.ctx.loading_status.lock_ref().compile_pending != pending {
+            state.ctx.loading_status.lock_mut().compile_pending = pending;
         }
 
         let editor_guard = state.editor.lock().unwrap();
@@ -704,6 +701,26 @@ impl AppScene {
             return;
         }
         self.ctx.loading_status.lock_mut().populate_finalize = Ok(false);
+    }
+
+    /// Force the variant reconcile + per-bucket pipeline compiles
+    /// (opaque / classify / MSAA edge-resolve) to fully resolve BEFORE the
+    /// first frame is shown, so the scene never reveals with half-compiled
+    /// pipelines — a black frame, or (the MSAA edge-resolve bug) a frame
+    /// with the anti-aliasing edge pass skipped. Routes through
+    /// `compile_material_variants().await`, which reconciles the feature-set
+    /// variants and then awaits `wait_for_pipelines_ready` — the awaited
+    /// path that drives the reliable layout-level edge-pipeline rebuild.
+    /// Gated in the loading overlay via `shader_prewarm`.
+    pub async fn compile_materials(self: &Arc<Self>) {
+        self.ctx.loading_status.lock_mut().shader_prewarm = Ok(true);
+        {
+            let mut renderer = self.renderer.lock().await;
+            if let Err(err) = renderer.compile_material_variants().await {
+                tracing::error!("compile_material_variants failed: {:?}", err);
+            }
+        }
+        self.ctx.loading_status.lock_mut().shader_prewarm = Ok(false);
     }
 
     pub async fn reset_punctual_lights(self: &Arc<Self>) -> Result<()> {

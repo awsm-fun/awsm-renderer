@@ -3,7 +3,8 @@
 use awsm_materials::MaterialShaderId;
 
 use crate::{
-    dynamic_materials::BucketEntry, render_passes::shader_cache_key::ShaderCacheKeyRenderPass,
+    dynamic_materials::{BucketEntry, ShadingBase},
+    render_passes::shader_cache_key::ShaderCacheKeyRenderPass,
     shaders::ShaderCacheKey,
 };
 
@@ -20,6 +21,28 @@ pub struct ShaderCacheKeyMaterialOpaque {
     pub msaa_sample_count: Option<u32>,
     pub mipmaps: bool,
     pub shader_id: MaterialShaderId,
+    /// Which built-in shading family this bucket's template body comes
+    /// from. Decoupled from `shader_id` so a per-feature-set PBR variant
+    /// (id in the dynamic range) still selects the PBR body. See
+    /// [`ShadingBase`].
+    pub base: ShadingBase,
+    /// True for exactly one bucket — the canonical PBR bucket
+    /// (`MaterialShaderId::PBR`, index 0) — which writes the skybox on
+    /// skybox/uncovered pixels. classify routes skybox pixels to bit 0,
+    /// so only that bucket's dispatch covers skybox-only tiles. Every
+    /// other bucket (incl. specialized PBR variants, all `base == Pbr`)
+    /// leaves `false` and returns without writing on skybox pixels, so a
+    /// mixed tile's skybox pixels aren't double-written / raced.
+    pub owns_skybox: bool,
+    /// Opaque PBR feature mask ([`awsm_materials::pbr::PbrFeatures::bits`])
+    /// the specialized PBR shader is compiled for. Two PBR
+    /// pipelines with different feature masks are distinct entries, so a
+    /// scene that uses no clearcoat compiles a clearcoat-free shader.
+    /// Only meaningful for PBR-family buckets; the empty set for non-PBR
+    /// ids (inert — their body doesn't read it) and for the canonical
+    /// PBR skybox-owner bucket (the minimal shader). Never the full
+    /// "uber" set — specialize-only compiles no all-features shader.
+    pub pbr_features: u32,
     /// Stable hash over the currently-registered dynamic-material set
     /// (sorted by shader_id, then `(name, layout_hash, wgsl_hash)` per
     /// entry).

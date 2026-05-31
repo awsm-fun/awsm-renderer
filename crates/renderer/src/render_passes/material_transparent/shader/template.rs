@@ -3,6 +3,7 @@
 use askama::Template;
 
 use crate::{
+    dynamic_materials::ShadingBase,
     render_passes::material_transparent::shader::cache_key::ShaderCacheKeyMaterialTransparent,
     shaders::{AwsmShaderError, Result},
 };
@@ -48,6 +49,10 @@ pub struct ShaderTemplateTransparentMaterialIncludes {
     /// Generated `const SHADER_ID_X: u32 = N;` lines — see
     /// `awsm_materials::registry::build_shader_id_consts`.
     pub shader_id_consts: String,
+    /// PBR feature mask for the shared `brdf.wgsl` include's compile-time
+    /// `{% if pbr_features.<x> %}` gating — the transparent material's exact
+    /// feature-set (each transparent material compiles its own pipeline).
+    pub pbr_features: awsm_materials::pbr::PbrFeatures,
 }
 impl ShaderTemplateTransparentMaterialIncludes {
     /// Creates include template data from the cache key.
@@ -66,6 +71,10 @@ impl ShaderTemplateTransparentMaterialIncludes {
             froxel_slice_count: cache_key.froxel_slice_count,
             materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
             shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
+            // Per-material specialization: the shared brdf /
+            // material_color_calc includes gate on exactly this transparent
+            // material's feature-set (no uber all()).
+            pbr_features: awsm_materials::pbr::PbrFeatures::from_bits(cache_key.pbr_features),
         }
     }
 
@@ -182,11 +191,13 @@ pub struct ShaderTemplateTransparentMaterialFragment {
     pub texture_pool_arrays_len: u32,
     pub texture_pool_samplers_len: u32,
     pub debug: ShaderTemplateMaterialTransparentDebug,
-    /// Per-mesh dynamic-material shader_id (`u32`). `0` when no
-    /// dynamic transparent material is in play; the fragment template
-    /// emits the wrapper + dispatch arm only when non-zero. The
-    /// `is_dynamic` guard in the template checks `shader_id_dynamic
-    /// != 0u`.
+    /// Which built-in shading family this transparent pipeline emits — the
+    /// fragment selects its body at compile time on `base == ShadingBase::X`
+    /// (specialize-only; no runtime `shader_id ==` uber branch).
+    pub base: ShadingBase,
+    /// Per-mesh dynamic-material shader_id (`u32`), `0` when not a custom
+    /// material. Only meaningful when `base == Custom`; retained for the
+    /// wrapper's debug labelling.
     pub shader_id_dynamic: u32,
     /// For dynamic transparent shaders: the auto-generated
     /// `struct MaterialData { ... }` declaration. Empty when not in use.
@@ -218,6 +229,7 @@ impl ShaderTemplateTransparentMaterialFragment {
             texture_pool_arrays_len: cache_key.texture_pool_arrays_len,
             texture_pool_samplers_len: cache_key.texture_pool_samplers_len,
             debug: ShaderTemplateMaterialTransparentDebug::new(),
+            base: cache_key.base,
             shader_id_dynamic: cache_key
                 .dynamic_shader_id
                 .map(|id| id.as_u32())
