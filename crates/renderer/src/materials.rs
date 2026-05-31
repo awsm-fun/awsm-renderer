@@ -78,6 +78,14 @@ impl AwsmRenderer {
         self.materials.mark_variants_dirty();
     }
 
+    /// Enables/disables opaque PBR/Toon feature-set specialization (the
+    /// specialize-only pivot). Default off. When toggled on, the next
+    /// render's reconcile pass routes opaque PBR materials to per-feature-
+    /// set variant buckets. Exposed for A/B pixel verification.
+    pub fn set_pbr_specialization(&mut self, enabled: bool) {
+        self.materials.set_pbr_specialization(enabled);
+    }
+
     /// Removes a material and frees its slot in the materials storage
     /// buffer. Callers must ensure no live mesh still references `key`
     /// (e.g. tear down meshes first). Returns `true` if the material
@@ -259,6 +267,15 @@ pub struct Materials {
     /// variant enters or is edited; cleared by the renderer's reconcile
     /// pass. Starts `true` so the first frame reconciles.
     variants_dirty: bool,
+    /// Master switch for the opaque PBR/Toon feature-set specialization
+    /// (the specialize-only pivot). `false` (default) = current single-
+    /// bucket-per-family behavior (pixel-identical to the pre-overhaul
+    /// baseline); `true` = `reconcile_material_variants` routes each
+    /// opaque PBR material to a per-feature-set variant bucket. Held here
+    /// (rather than a compile-time const) so it can be toggled at runtime
+    /// for A/B pixel verification. Mirrors the plan's
+    /// `pbr_specialization: Auto | ForceUber` config knob.
+    pbr_specialization: bool,
     _is_transparency_pass: SecondaryMap<MaterialKey, ()>,
     uploader: crate::buffer::mapped_uploader::MappedUploader,
     /// Sticky: set to true the first time a material implementing
@@ -289,6 +306,7 @@ impl Materials {
             gpu_dirty: true,
             resolved_shader_id: SecondaryMap::new(),
             variants_dirty: true,
+            pbr_specialization: false,
             _is_transparency_pass: SecondaryMap::new(),
             uploader: crate::buffer::mapped_uploader::MappedUploader::new("Materials"),
             has_seen_transmission: false,
@@ -360,6 +378,21 @@ impl Materials {
     /// flag. Called once per frame by the renderer's reconcile pass.
     pub fn take_variants_dirty(&mut self) -> bool {
         std::mem::take(&mut self.variants_dirty)
+    }
+
+    /// Whether opaque PBR/Toon feature-set specialization is active.
+    pub fn pbr_specialization_enabled(&self) -> bool {
+        self.pbr_specialization
+    }
+
+    /// Enables/disables the feature-set specialization at runtime. Flags
+    /// `variants_dirty` so the next frame's reconcile pass picks it up
+    /// (routes materials to variants when enabled).
+    pub fn set_pbr_specialization(&mut self, enabled: bool) {
+        if self.pbr_specialization != enabled {
+            self.pbr_specialization = enabled;
+            self.variants_dirty = true;
+        }
     }
 
     /// Marks that a material was edited in a way that may change its

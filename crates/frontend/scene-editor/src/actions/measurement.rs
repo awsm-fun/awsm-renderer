@@ -1101,3 +1101,36 @@ pub fn debug_gizmo_mesh_keys() -> String {
         keys
     )
 }
+
+/// Dev-only: enable/disable opaque PBR feature-set specialization (the
+/// specialize-only pivot) at runtime, for A/B pixel verification against
+/// the single-PBR-bucket baseline. Takes effect on the next render
+/// (the reconcile pass routes materials to variant buckets when on).
+#[wasm_bindgen]
+pub async fn set_pbr_specialization(enabled: bool) {
+    let handle = crate::context::renderer_handle();
+    let mut renderer = handle.lock().await;
+    renderer.set_pbr_specialization(enabled);
+    tracing::info!("measurement: set_pbr_specialization({enabled})");
+}
+
+/// Dev-only: set MSAA on (4×) or off (1×) at runtime, keeping mipmaps,
+/// for the MSAA-edge A/B pixel verification. Mirrors `view::toggle_msaa`
+/// but deterministic. Recompiles the affected pipelines.
+#[wasm_bindgen]
+pub async fn set_msaa(enabled: bool) -> Result<(), JsValue> {
+    let state = app_state();
+    let aa = {
+        let mut lock = state.anti_aliasing.lock_mut();
+        lock.msaa_sample_count = if enabled { Some(4) } else { None };
+        lock.clone()
+    };
+    let handle = crate::context::renderer_handle();
+    let mut renderer = handle.lock().await;
+    renderer
+        .set_anti_aliasing(aa)
+        .await
+        .map_err(|e| JsValue::from_str(&format!("set_anti_aliasing: {e:?}")))?;
+    tracing::info!("measurement: set_msaa({enabled})");
+    Ok(())
+}

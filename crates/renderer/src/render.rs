@@ -269,20 +269,13 @@ impl AwsmRenderer {
         // this same frame) and before classify dispatch (which routes on
         // it). Cheap no-op once the material set settles.
         //
-        // GATED OFF by default while the bucketed render is brought to
-        // pixel-equivalence. The end-to-end routing works (full scene
-        // renders, all pipelines compile, the classify `is_empty` bug is
-        // fixed), but a bucketed scene is NOT yet pixel-identical to the
-        // single-PBR-bucket baseline: splitting PBR across feature-set
-        // buckets changes MSAA edge classification (adjacent meshes with
-        // different feature-sets now form classify silhouette edges), and
-        // the per-feature `{% if pbr_features %}` gating is not yet
-        // verified pixel-equivalent per KHR extension (needs the
-        // model-viewer per-extension pass, F.3). Flip to `true` to
-        // activate once those are verified. See
-        // docs/plans/dynamic-materials.md "RESUME HERE".
-        const PBR_VARIANT_SPECIALIZATION: bool = false;
-        if PBR_VARIANT_SPECIALIZATION {
+        // Gated behind the runtime `pbr_specialization` switch on
+        // `Materials` (default off = pixel-identical to the pre-overhaul
+        // single-PBR-bucket baseline). Toggle via
+        // `AwsmRenderer::set_pbr_specialization` (exposed to the
+        // scene-editor as the `set_pbr_specialization` wasm export for
+        // A/B pixel verification). See docs/plans/dynamic-materials.md.
+        if self.materials.pbr_specialization_enabled() {
             self.reconcile_material_variants()?;
         }
 
