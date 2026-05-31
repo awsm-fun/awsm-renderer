@@ -809,12 +809,32 @@ CPU-span wall-clock (not GPU timestamps; noisy — compare means):
 | Shadow Generation | 0.128 | 0.1 | 0.3 |
 | Light Culling | 0.039 | 0.0 | 0.1 |
 
+**After (AFTER)** — specialization ON (this overhaul), same scene /
+camera / canvas (1308×759), CPU-span wall-clock, ~1700 frames, real
+Chrome 2026-05-31:
+
+| Pass | mean ms (after) | (baseline) | Δ |
+|---|---|---|---|
+| Render (total) | **1.423** | 2.249 | −0.83 |
+| Geometry | 0.102 | 0.178 | −0.08 |
+| Material Classify | 0.024 | 0.035 | **−0.01 (no fanout regression)** |
+| **Material Opaque** | **0.070** | 0.107 | **−0.035 (−35%)** |
+| Material Transparent | 0.020 | 0.026 | −0.01 |
+| Shadow Generation | 0.084 | 0.128 | −0.04 |
+| Light Culling | 0.026 | 0.039 | −0.01 |
+
+**Result: the headline is a clear win.** Material Opaque drops ~35%
+(specialized shaders skip the unused-extension + absent-texture code the
+uber shader carried), total Render drops, and — the key risk — **Material
+Classify does NOT regress** despite the active-bucket fanout (~3 → ~25):
+0.035 → 0.024. So per-feature bucketing pays for itself. (CPU-span
+caveat: wall-clock around the span, noisy + includes JS↔wasm/submit
+overhead across a different session — treat the *relative* story, not the
+absolute deltas, as the signal; GPU-timestamp timing is the F.2 follow-up
+for the precise shading delta.)
+
 The **Material Opaque** mean + total **Render** are the headline
-before/after signal. After the overhaul, re-measure with **identical
-settings/camera/canvas** (Phase 9). Expectation: not a large regression,
-likely an opaque-pass improvement (specialized PBR shaders skip the
-unused-extension code the uber shader carries). Watch for a Classify
-regression from increased bucket fanout (~3→~25 active buckets).
+before/after signal.
 
 > **AA caveat**: baseline was captured at the editor's default AA state.
 > The after-measurement MUST use the same AA state (toggle MSAA off↔4×
