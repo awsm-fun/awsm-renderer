@@ -21,7 +21,7 @@
 //! See [§ Pipeline count and packaging](../../../../https://github.com/dakom/awsm-renderer/pull/99#pipeline-count-and-packaging)
 //! for the cost model.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use awsm_materials::MaterialShaderId;
 
@@ -105,6 +105,24 @@ pub struct MaterialEdgePipelines {
     pub skybox_edge_resolve_layout_key: Option<PipelineLayoutKey>,
     /// Cached pipeline layout for final blend.
     pub final_blend_layout_key: Option<PipelineLayoutKey>,
+    /// The set of compute-pipeline cache keys the CURRENT bucket layout
+    /// wants for its edge chain (every per-shader + skybox + final_blend).
+    /// Replaced wholesale each time the edge set is (re)built for a layout
+    /// (`build_descriptors` consumers: `ensure_compiled` + the scheduler
+    /// `launch_edge_resolve_compile`). This is the authoritative
+    /// "is-this-edge-pipeline-still-valid?" signal: a background edge
+    /// compile that resolves is installed iff its key is still in this set
+    /// (i.e. the layout it was built for is still current), and dropped
+    /// otherwise. Edge resolve is a property of the LAYOUT, so its install
+    /// validity is keyed on layout-content — NOT on any material's
+    /// generation (which is why the install path needs no material owner /
+    /// no canonical-PBR assumption; see `apply_compile_resolution_inline`).
+    desired_keys: HashSet<ComputePipelineCacheKey>,
+    /// Edge cache keys with a scheduler compile promise currently in flight.
+    /// Cross-call dedup so two layout-change launches in the same window
+    /// don't double-compile the same pipeline. Entries are cleared when the
+    /// promise resolves (installed or dropped).
+    in_flight_keys: HashSet<ComputePipelineCacheKey>,
 }
 
 impl Default for MaterialEdgePipelines {
@@ -124,7 +142,43 @@ impl MaterialEdgePipelines {
             edge_resolve_layout_key: None,
             skybox_edge_resolve_layout_key: None,
             final_blend_layout_key: None,
+            desired_keys: HashSet::new(),
+            in_flight_keys: HashSet::new(),
         }
+    }
+
+    /// Replace the set of edge compute-pipeline cache keys the current
+    /// bucket layout wants. Called whenever the full edge set is (re)built
+    /// for a layout. A resolved scheduler edge compile installs iff its key
+    /// is in this set (see [`Self::is_edge_key_desired`]).
+    pub(crate) fn set_desired_edge_keys(
+        &mut self,
+        keys: impl IntoIterator<Item = ComputePipelineCacheKey>,
+    ) {
+        self.desired_keys = keys.into_iter().collect();
+    }
+
+    /// True if `key` is one the current layout still wants — i.e. a
+    /// resolved edge compile with this key is safe to install (not built
+    /// against a superseded layout).
+    pub(crate) fn is_edge_key_desired(&self, key: &ComputePipelineCacheKey) -> bool {
+        self.desired_keys.contains(key)
+    }
+
+    /// True if a scheduler compile promise for `key` is already in flight.
+    pub(crate) fn edge_key_in_flight(&self, key: &ComputePipelineCacheKey) -> bool {
+        self.in_flight_keys.contains(key)
+    }
+
+    /// Mark `key` as having an in-flight scheduler compile promise.
+    pub(crate) fn mark_edge_key_in_flight(&mut self, key: ComputePipelineCacheKey) {
+        self.in_flight_keys.insert(key);
+    }
+
+    /// Clear `key`'s in-flight marker (its promise resolved — installed or
+    /// dropped).
+    pub(crate) fn clear_edge_key_in_flight(&mut self, key: &ComputePipelineCacheKey) {
+        self.in_flight_keys.remove(key);
     }
 
     /// Returns the per-shader-id edge_resolve pipeline for the given
@@ -392,6 +446,10 @@ impl MaterialEdgePipelines {
             .zip(descs.pipeline_layout_keys.iter())
             .map(|(sk, lk)| ComputePipelineCacheKey::new(*sk, *lk))
             .collect();
+        // Record this layout's edge key set as the authoritative "desired"
+        // set, so any still-in-flight scheduler edge compile built against a
+        // PRIOR layout is dropped on resolve (its key won't be in this set).
+        self.set_desired_edge_keys(pipeline_cache_keys.iter().cloned());
         let pipeline_keys = compute_pipelines
             .ensure_keys(gpu, shaders, pipeline_layouts, pipeline_cache_keys)
             .await?;

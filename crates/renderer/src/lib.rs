@@ -551,20 +551,21 @@ impl AwsmRenderer {
             self.prewarm_dynamic_pipelines().await?;
         }
 
-        // Edge-resolve pipelines are a LAYOUT-level concern: rebuild the
-        // whole bucket set's per-shader edge pipelines (+ the global skybox
-        // + final_blend) via the reliable await path whenever pipelines are
-        // driven to readiness (`wait_for_pipelines_ready` /
-        // `compile_material_variants`). This is the AUTHORITATIVE installer
-        // — the per-material scheduler-promise launch can silently drop a
-        // variant bucket's edge pipeline via its stale-generation gate, so
-        // MSAA correctness depends on this rebuild. Runs MSAA-gated for any
-        // bucket layout (first-party-only, feature-set variants, custom),
-        // not only when the custom registry is non-empty (a first-party
-        // PBR feature-set variant lives in `bucket_entries` even with an
-        // empty custom registry — that's the case the previous
-        // `!is_empty()` guard skipped, leaving the variant's edge pipeline
-        // unbuilt → dead MSAA). Idempotent on a warm cache.
+        // Edge-resolve pipelines are a LAYOUT-level concern: build the whole
+        // bucket set's per-shader edge pipelines (+ the global skybox +
+        // final_blend) here, on the awaited readiness path
+        // (`wait_for_pipelines_ready` / `compile_material_variants`). This is
+        // the "ready NOW for the first shown frame" installer: it compiles
+        // synchronously (await) so the first rendered frame is already fully
+        // anti-aliased. The sync per-frame relaunch sites instead schedule
+        // these via `launch_edge_resolve_compile` (background promises). Both
+        // build the identical set through `MaterialEdgePipelines::
+        // build_descriptors` and record the same `desired_keys`, so they
+        // never diverge. Runs MSAA-gated for any bucket layout (first-party-
+        // only, feature-set variants, custom) — a first-party PBR feature-set
+        // variant lives in `bucket_entries` even with an empty custom
+        // registry, which is the case the previous `!is_empty()` guard
+        // skipped (→ dead MSAA). Idempotent on a warm cache.
         if self.anti_aliasing.msaa_sample_count.is_some() && edge_resolve_supported(&self.gpu) {
             let color_wgsl = awsm_renderer_core::texture::texture_format_to_wgsl_storage(
                 self.render_textures.formats.color,
