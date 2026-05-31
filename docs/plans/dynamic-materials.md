@@ -19,7 +19,8 @@ remains. Branch is green (renderer suite 153 pass, clippy clean).
 | B.2 layer 1: `PbrFeatures` derive + feature-hash | ✅ done | `c1c37d2` | 5 native tests |
 | B.2 step A: thread `pbr_features` through opaque cache key + template | ✅ done | `3916324` | renders identical (no-op at `all()`) |
 | B.2 step B: gate sheen+clearcoat brdf lobes (opaque/edge/transparent) | ✅ done | `d21ff92` | **pixel-identical** at `all()` (checksum `2985139072`) |
-| B.2 step C: pass scene feature-union to activate stripping | ⬜ todo | — | needs consistent union across 4 PBR cache-key sites |
+| B.2 gate `material_color_calc` (loads/samplers/struct → DCE) | ✅ done | `bc92e26` | **pixel-identical** at `all()` — full feature data-flow now gateable |
+| B.2 step C: activate (pass feature-union per pipeline) | ⬜ todo | — | **needs a recompile trigger** — see below |
 | A.1 compile-engine unification | ⬜ todo | — | — |
 | A.2 phase-tagged `StatusEvent`s (push half) | ⬜ todo | — | — |
 | D.2 transaction boundary (one final-layout reconcile) | ⬜ todo | — | — |
@@ -67,6 +68,49 @@ the occupancy win; `material_color_calc` gating (+ ideally conditional
 `PbrMaterialColor` fields) is still required. The magnitude is real but
 scene-dependent (occupancy-bound scenes benefit most) — confirm with the
 GPU-bound FPS test, but **B.3 is worth pursuing**; do not deprioritize it.
+
+#### Activating the gating (step C / B.3) — the exact remaining work
+
+The B.2 *mechanism* is in + verified (gates render identically at
+`all()`). To make features actually strip, the PBR opaque pipeline must
+be compiled with a narrower `pbr_features` than `all()`. Two findings
+pin down how:
+
+1. **Dispatch looks up pipelines by `PipelineKeyId { msaa, mipmaps,
+   shader_id }` — NOT the full shader cache key** (which is what carries
+   `pbr_features`). So `pbr_features` only selects *which WGSL compiles*;
+   reinstalling a differently-gated pipeline at the same `PipelineKeyId`
+   is transparent to dispatch. No dispatch-side change needed for the
+   *scene-union* approach.
+2. **`launch_first_party_material_compile` compiles PBR once per
+   `shader_id` and does NOT recompile for later same-`shader_id`
+   materials** (launch.rs:396). So a scene-union computed lazily would be
+   built from whatever materials existed at first-compile and then go
+   stale — later materials' features would be wrongly stripped.
+
+So the **scene-union (one PBR bucket) path** needs: compute the union
+over all opaque `Material::Pbr` (`self.materials.lookup`, filter
+`!is_transparency_pass`, fold `PbrFeatures::from_material`); cache it;
+and on material add/remove/edit, if the union grew, **invalidate +
+relaunch the PBR opaque pipeline** (clear its `PipelineKeyId` entry so
+it recompiles with the wider union). Pass the cached union as
+`pbr_features` for `shader_id == PBR` at the four cache-key sites
+(`all().bits()` for every other id).
+
+The **per-feature-set bucket path (B.3)** sidesteps the union/stale
+problem entirely and is the locked design: derive each opaque PBR
+material's `shader_id` from its `PbrFeatures::bits()` feature-hash
+(deterministic, reuse the dynamic registry), write that id into the
+material payload, add it to `bucket_entries`, and compile its pipeline
+with exactly that feature-set. No union, no invalidation race — each
+material routes to its exact specialized pipeline, and warps are
+feature-coherent (the divergence win). Bigger change, cleaner result.
+Recommended over the union halfway-house.
+
+**Measurement gate**: either way, the FPS win only shows on a GPU-bound
+scene. Make a stress variant of `tuning-50-materials` (≫ resolution or
+≫ instance count) so it drops below 60 fps, then compare rAF FPS
+before/after with identical settings.
 
 **What landed + how it was verified.** `PbrFeatures` (layer 1), the
 cache-key/template plumbing (step A), and the sheen+clearcoat brdf gating
