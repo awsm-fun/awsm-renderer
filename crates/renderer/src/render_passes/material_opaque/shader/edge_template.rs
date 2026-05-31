@@ -89,9 +89,6 @@ pub struct ShaderTemplateMaterialEdgeResolveCompute {
     /// shader_id it carries the uber config (`all()`), so every lobe is
     /// emitted, identical to before B.2.
     pub pbr_features: awsm_materials::pbr::PbrFeatures,
-    /// See `ShaderTemplateMaterialOpaqueCompute::pbr_runtime_gated`.
-    /// Edge-resolve mirrors the opaque gate mode (uber until B.3).
-    pub pbr_runtime_gated: bool,
 }
 
 impl ShaderTemplateMaterialEdgeResolveCompute {
@@ -182,7 +179,6 @@ impl TryFrom<&ShaderCacheKeyMaterialEdgeResolve> for ShaderTemplateMaterialEdgeR
                 debug: crate::render_passes::material_opaque::shader::template::ShaderTemplateMaterialOpaqueDebug::new(),
                 bucket_entries: bucket_entries.clone(),
                 pbr_features: awsm_materials::pbr::PbrFeatures::all(),
-                pbr_runtime_gated: true,
             },
         })
     }

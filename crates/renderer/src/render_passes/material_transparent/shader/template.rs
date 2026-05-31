@@ -48,14 +48,10 @@ pub struct ShaderTemplateTransparentMaterialIncludes {
     /// Generated `const SHADER_ID_X: u32 = N;` lines — see
     /// `awsm_materials::registry::build_shader_id_consts`.
     pub shader_id_consts: String,
-    /// PBR feature mask for the shared `brdf.wgsl` include's
-    /// `{% if pbr_features.<x> %}` gating. Transparent is always the
-    /// uber config (`all()`) per Decision 10 — it never specializes —
-    /// so every lobe is emitted, identical to before B.2.
+    /// PBR feature mask for the shared `brdf.wgsl` include's compile-time
+    /// `{% if pbr_features.<x> %}` gating. Set per transparent variant
+    /// (B.3); `all()` until routing narrows it.
     pub pbr_features: awsm_materials::pbr::PbrFeatures,
-    /// Transparent is ALWAYS uber (Decision 10) → always runtime-gated.
-    /// See `ShaderTemplateMaterialOpaqueCompute::pbr_runtime_gated`.
-    pub pbr_runtime_gated: bool,
 }
 impl ShaderTemplateTransparentMaterialIncludes {
     /// Creates include template data from the cache key.
@@ -75,7 +71,6 @@ impl ShaderTemplateTransparentMaterialIncludes {
             materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
             shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
             pbr_features: awsm_materials::pbr::PbrFeatures::all(),
-            pbr_runtime_gated: true,
         }
     }
 

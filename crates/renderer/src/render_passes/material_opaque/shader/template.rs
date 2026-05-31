@@ -97,14 +97,6 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     /// `PbrFeatures::all()` for non-PBR ids / the uber config — inert
     /// there since the `{% if shader_id == PBR %}` arm isn't emitted.
     pub pbr_features: awsm_materials::pbr::PbrFeatures,
-    /// Gate mode for PBR features in the shared shaders (see
-    /// `brdf.wgsl`). `false` = **specialized**: each `pbr_features` flag
-    /// is a compile-time `{% if %}`; present features run unconditionally,
-    /// absent ones emit no code (the B.3 per-feature-set bucket case).
-    /// `true` = **uber**: every feature is emitted and gated by a runtime
-    /// `if (color.x > 0)` (transparent always; opaque until B.3 narrows
-    /// `pbr_features` per bucket). One feature body, two gate modes.
-    pub pbr_runtime_gated: bool,
     /// For dynamic shader ids: the auto-generated `struct
     /// MaterialData { ... }` declaration emitted above the author's
     /// WGSL fragment. Empty string for first-party ids.
@@ -196,9 +188,6 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
                 shader_id: value.shader_id,
                 pbr_features: awsm_materials::pbr::PbrFeatures::from_bits(value.pbr_features),
-                // Uber until B.3 narrows pbr_features per opaque bucket;
-                // then this flips to `false` (specialized, compile-time only).
-                pbr_runtime_gated: true,
                 dynamic_struct_decl: value
                     .dynamic_shader
                     .as_ref()
@@ -692,11 +681,9 @@ return TransparentShadingOutput(vec4<f32>(color, alpha));
 // ─────────────────────────────────────────────────────────────────────
 // Phase 5 (B.2) — "test both gate modes" for the unified brdf.wgsl PBR
 // feature gating. Renders the shared lobe template standalone (it only
-// references `pbr_features` + `pbr_runtime_gated`) and asserts:
-//   - uber  (runtime_gated=true)  → every lobe emitted WITH a runtime
-//     `if (color.x > 0)` guard,
-//   - specialized (runtime_gated=false) → absent features emit NO code,
-//     present features emit code with NO runtime guard (folded `if(true)`).
+// references only `pbr_features`) and asserts the specialize-only
+// contract: feature presence is purely compile-time, and NO feature
+// runtime guards (`if (color.x > 0)`) survive in any configuration.
 // Call-site-unique tokens (cc_fresnel / sheen_scaling / iri_f0) are used
 // because the lobe *functions* are defined in brdf.wgsl and would always
 // match by name.
@@ -709,14 +696,13 @@ mod brdf_gate_tests {
     #[template(path = "shared_wgsl/lighting/brdf.wgsl")]
     struct BrdfGateTest {
         pbr_features: PbrFeatures,
-        pbr_runtime_gated: bool,
     }
 
     /// Rendered brdf with `//` line comments removed (so marker tokens
     /// that appear in comments outside the gates don't pollute matches)
     /// and all whitespace stripped (spacing-robust token matching).
-    fn render_nows(pbr_features: PbrFeatures, pbr_runtime_gated: bool) -> String {
-        let raw = BrdfGateTest { pbr_features, pbr_runtime_gated }
+    fn render_nows(pbr_features: PbrFeatures) -> String {
+        let raw = BrdfGateTest { pbr_features }
             .render()
             .expect("brdf.wgsl renders");
         raw.lines()
@@ -732,19 +718,24 @@ mod brdf_gate_tests {
     }
 
     #[test]
-    fn uber_emits_all_lobes_with_runtime_guards() {
-        let w = render_nows(PbrFeatures::all(), true);
-        // call sites present
-        assert!(w.contains("cc_fresnel"), "uber keeps clearcoat lobe");
-        assert!(w.contains("sheen_scaling"), "uber keeps sheen lobe");
-        assert!(w.contains("iri_f0"), "uber keeps iridescence lobe");
-        // per-material runtime guards present (because it serves all materials)
-        assert!(w.contains("color.clearcoat>0"), "uber clearcoat is runtime-gated");
-        assert!(w.contains("color.iridescence>0"), "uber iridescence is runtime-gated");
+    fn no_feature_runtime_guards_anywhere() {
+        // Even the all-features shader must have NO per-feature runtime
+        // guards — the specialize-only pivot moved all feature branching
+        // to compile time. (Lighting-geometry guards like n_dot_l_back
+        // remain; those aren't feature guards.)
+        let w = render_nows(PbrFeatures::all());
+        assert!(!w.contains("color.clearcoat>0"), "no clearcoat runtime guard");
+        assert!(!w.contains("color.iridescence>0"), "no iridescence runtime guard");
         assert!(
-            w.contains("color.anisotropy_strength!=0"),
-            "uber anisotropy is runtime-gated"
+            !w.contains("color.anisotropy_strength!=0"),
+            "no anisotropy runtime guard"
         );
+        assert!(
+            !w.contains("color.diffuse_transmission>0"),
+            "no diffuse-transmission runtime guard"
+        );
+        // ...but every lobe is still present at all().
+        assert!(w.contains("cc_fresnel") && w.contains("sheen_scaling") && w.contains("iri_f0"));
     }
 
     #[test]
@@ -752,33 +743,22 @@ mod brdf_gate_tests {
         let mut f = PbrFeatures::all();
         f.clearcoat = false;
         f.sheen = false;
-        let w = render_nows(f, false);
+        let w = render_nows(f);
         assert!(!w.contains("cc_fresnel"), "absent clearcoat is compile-time stripped");
         assert!(!w.contains("sheen_scaling"), "absent sheen is compile-time stripped");
         assert!(w.contains("iri_f0"), "present iridescence is kept");
     }
 
     #[test]
-    fn specialized_present_lobes_have_no_runtime_guard() {
+    fn specialized_keeps_only_present_lobes() {
         let f = PbrFeatures {
             clearcoat: true,
             iridescence: true,
             ..PbrFeatures::default()
         };
-        let w = render_nows(f, false);
-        // present features emit their lobe...
+        let w = render_nows(f);
         assert!(w.contains("cc_fresnel"), "present clearcoat emitted");
         assert!(w.contains("iri_f0"), "present iridescence emitted");
-        // ...but with NO per-material runtime guard (compile-time only).
-        assert!(
-            !w.contains("color.clearcoat>0"),
-            "specialized clearcoat runs unconditionally (no runtime guard)"
-        );
-        assert!(
-            !w.contains("color.iridescence>0"),
-            "specialized iridescence runs unconditionally (no runtime guard)"
-        );
-        // absent features still stripped
         assert!(!w.contains("sheen_scaling"), "absent sheen stripped");
     }
 }
