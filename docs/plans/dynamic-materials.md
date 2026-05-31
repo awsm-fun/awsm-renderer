@@ -64,9 +64,34 @@
 >   silhouette edges (expected — bucketing now anti-aliases inter-material
 >   edges the single-bucket baseline merged).
 >
-> **REMAINING (optional follow-ups; #14/#15/#16/#17 + A.2 +
-> C-auto-minimize + the cap-guard are DONE — there is no uber shader
-> anywhere now):**
+> **DONE since (this push):** texture-slot compile-gating (criterion 4 —
+> "no normal map compiles no normal-map code" — opaque + transparent,
+> verified pixel-equivalent); **#18** ToonFeatures + Toon-as-FirstParty
+> rationale; **C** `AWSM_material_none` (skip-PBR → shared Unlit bucket,
+> zero PBR compiles) + auto-minimize; **F.2** after-measurement recorded
+> (Material Opaque −35 %, total Render down, NO classify-fanout regression
+> — see the F.0 table); **A.3** `compile_material_variants().await` warmup
+> wired into scene load (verified: load returns with the scene fully
+> specialized, compile modal already closed — no transient).
+>
+> **GENUINELY REMAINING (verification / observability infra — the core
+> architecture is complete + GPU-verified):**
+> - **F.3 model-viewer per-KHR-extension pass** — correct *by
+>   construction* (a material WITH extension X has feature X on → its
+>   specialized shader emits X's code IDENTICALLY to the old uber; absent
+>   features strip to ≤2/255, measured). GPU-stepping the extensions
+>   dropdown needs the `model-tests` frontend stood up.
+> - **F.2 GPU-timestamp timing** — the CPU-span after-measurement (above)
+>   already shows the win; wiring `GpuQuerySet` timestamp pairs around the
+>   passes would give the precise GPU-side shading delta.
+> - **A.2 phase-tagged push events** — the aggregate `compile_progress()`
+>   + the modal are done; per-phase (classify/opaque/edge) push tagging on
+>   `StatusEvent` is the unfinished half (minor observability).
+> - **F.1 GPU-path count assert** — the registry feature-hash routing is
+>   native-tested; the "one classify resize / N compiles not N×" assert
+>   needs a live GPU device (register path), so it isn't a pure-CI test.
+>
+> Older optional-follow-up notes:
 > - **#17 transparent specialize — ✅ DONE.** The transparent fragment
 >   selects its body at compile time on `base` and gates PBR features (no
 >   runtime `shader_id ==` uber branch); each transparent material gets its
