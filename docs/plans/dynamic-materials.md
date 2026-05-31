@@ -1,20 +1,61 @@
 # Materials system overhaul — many small opaque materials, first-class
 
 > ## ▶ RESUME HERE (fresh session)
-> Branch `dynamic-materials-plan`, green at the latest commit. The
-> architecture is **specialize-only, NO uber** — read the
-> **⭐ ARCHITECTURE PIVOT** section below first; it supersedes any
-> conflicting "Locked decision". Done so far: pivot + the shader-level
-> uber strip (compile-time-only `{% if pbr_features %}` gating, tested).
-> **Start the next phase at the UNIFIED VARIANT REGISTRY**, then routing →
-> opaque per-variant compile → transparent specialize → Toon → workstreams
-> A/C/D/F. Scope = the whole overhaul to completion. Break things freely;
-> land green at the end. Verify GPU/rendering in **real Chrome via the
-> Claude-in-Chrome plugin** per `docs/DEBUGGING-PREVIEW.md` (load scene
-> with `window.wasmBindings.load_scene_by_path("tuning-50-materials")`;
-> correctness via `getImageData` pixel checksum; perf via rAF FPS on a
-> GPU-bound scene). Your memory has the full decision log + exact next
-> steps.
+> Branch `dynamic-materials-plan`, green at the latest commit (159
+> renderer tests; full workspace green). Architecture = **specialize-only,
+> NO uber** (read **⭐ ARCHITECTURE PIVOT** below; supersedes conflicting
+> "Locked decision"s).
+>
+> **GPU baseline checksum for `tuning-50-materials` = `3948677115`** (my
+> 48×30-grid FNV-1a, two-frame-stable; the old `2985139072` used a
+> different unsaved algorithm — not comparable). A pixel-equivalent change
+> must reproduce 3948677115. Verification loop is live + working (see
+> `[[materials-overhaul-verification]]` memory): dev server `task
+> scene-editor:dev` @ 9081 (trunk watches the renderer crate; grep
+> `/tmp/scratch/dev.log` for `applying new distribution`), real Chrome via
+> Claude-in-Chrome, **foreground visible tab** (do NOT open a new tab — it
+> steals focus), `await
+> window.wasmBindings.load_scene_by_path("tuning-50-materials")`.
+>
+> **DONE this session (commits 855097b → 4900123):**
+> - #14 foundation: `ShadingBase` decouples opaque + edge body-selection
+>   from the numeric id; per-pixel/sample guard is numeric; `BucketEntry`
+>   carries the variant identity `(base, pbr_features)`; the hard-coded
+>   `enabled_materials()` prefix is gone (built from seeded variants).
+> - #14 registry: `resolve_first_party_variant(base, features)` allocates
+>   + dedups per-feature-set variant ids (dynamic range), exposed as
+>   bucket entries; `dispatch_hash` + `is_empty()` now fold `fp_variants`.
+> - #15/#16 routing (IMPLEMENTED, **gated OFF**): `Materials`
+>   `resolved_shader_id` payload override + `variants_dirty`;
+>   `reconcile_material_variants` (render preamble) derives features →
+>   resolves variant → stamps payload → relaunches all buckets on growth;
+>   launch reads `base`/`features`/`owns_skybox` from the bucket entry;
+>   variants route through `launch_dynamic_material_compile`
+>   (`dynamic_shader=None`); `owns_skybox` (only canonical PBR id=1 writes
+>   skybox). Fixed a black-screen bug: `is_empty()` ignored variants → the
+>   classify pass used the stale eager 4-bucket pipeline.
+>
+> **The routing WORKS end-to-end** (full scene renders, 27 buckets all
+> compile to Ready, no WGSL failures) but is **not yet pixel-equivalent**,
+> so it's gated behind `const PBR_VARIANT_SPECIALIZATION = false` in
+> `render.rs`. Findings (MSAA on, full scene each):
+> baseline 3948677115 · per-feature-gated 2684965999 · per-feature-fan-out
+> +uber-compile 2863116431. The uber-compile case (identical shading)
+> STILL differs → the residual is **MSAA edge classification** (adjacent
+> meshes of different feature-sets now form classify silhouette edges —
+> an intended bucketing consequence; likely benign, confirm at MSAA-off
+> where it should match baseline exactly) PLUS a separate **per-feature
+> gating** diff (verify pixel-equivalence per KHR extension via the
+> model-viewer, F.3).
+>
+> **NEXT STEPS to finish #15/#16:** (1) confirm the MSAA-on diff is purely
+> edge-classification (toggle MSAA off with the flag on → should match the
+> MSAA-off baseline) and decide whether the checksum criterion applies to
+> bucketed MSAA scenes; (2) verify per-feature gating per-extension in the
+> model-viewer (F.3); (3) flip `PBR_VARIANT_SPECIALIZATION` to true; (4)
+> raise `MAX_BUCKET_WORDS` if the cap is hit (tuning-50 fans to ~27
+> buckets, under 32). THEN #17 transparent specialize → #18 Toon
+> (`ToonFeatures`) → #19 workstreams A/C/D/F → delete this file.
 
 **Status**: in implementation. Every open design question is resolved
 (see **Locked decisions**, as amended by the ARCHITECTURE PIVOT). This
