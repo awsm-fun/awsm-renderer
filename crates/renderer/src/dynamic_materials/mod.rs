@@ -1128,6 +1128,19 @@ impl crate::AwsmRenderer {
                 );
             }
         }
+        // Edge-resolve pipelines are layout-level (their cache keys embed
+        // the whole bucket_entries). Rebuild the full set ONCE for the new
+        // layout — not once per material. Charged to the canonical PBR
+        // material; runs BEFORE the per-material relaunch loop so its edge
+        // subcompiles are registered before PBR's own
+        // `launch_first_party_material_compile` can mark it Ready. See
+        // `launch_edge_resolve_compile`.
+        if let Err(e) = self.launch_edge_resolve_compile() {
+            tracing::warn!(
+                target: "awsm_renderer::pipeline_readiness",
+                "post-register_material edge-resolve relaunch failed: {:?}", e
+            );
+        }
         for shader_id in registered_shader_ids {
             if let Err(e) = self.launch_first_party_material_compile(shader_id) {
                 tracing::warn!(
@@ -1313,6 +1326,19 @@ impl crate::AwsmRenderer {
                     crate::pipeline_scheduler::PipelineGroupId::Material(mid),
                 );
             }
+        }
+        // Edge-resolve pipelines are layout-level (their cache keys embed
+        // the whole bucket_entries). Rebuild the full set ONCE for the new
+        // layout — not once per material. Charged to the canonical PBR
+        // material; runs BEFORE the per-material relaunch loop so PBR (just
+        // marked pending above) has its edge subcompiles registered before
+        // its own `launch_first_party_material_compile` can mark it Ready.
+        // See `launch_edge_resolve_compile`.
+        if let Err(e) = self.launch_edge_resolve_compile() {
+            tracing::warn!(
+                target: "awsm_renderer::pipeline_readiness",
+                "variant reconcile edge-resolve relaunch failed: {:?}", e
+            );
         }
         for shader_id in registered {
             if let Err(e) = self.launch_first_party_material_compile(shader_id) {

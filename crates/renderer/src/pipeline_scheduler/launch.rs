@@ -42,22 +42,19 @@ use crate::render_passes::material_opaque::shader::cache_key::{
 impl crate::AwsmRenderer {
     /// Block D.1 PART 2 — kick off real-future compile for the
     /// scheduler entry corresponding to `shader_id`. Synchronously
-    /// builds + issues every classify, opaque-compute,
-    /// per-shader-id `edge_resolve`, global `skybox_edge_resolve`,
-    /// and global `final_blend` pipeline promise; pushes each to
-    /// the scheduler's `inflight_compile`. Returns immediately; the
-    /// resulting material entry stays `Pending` until every
-    /// sub-pipeline resolves.
+    /// builds + issues this material's classify + opaque-compute
+    /// pipeline promises; pushes each to the scheduler's
+    /// `inflight_compile`. Returns immediately; the resulting material
+    /// entry stays `Pending` until every sub-pipeline resolves.
     ///
-    /// **MSAA-edge integration**: this still pushes the per-shader +
-    /// global skybox + final_blend edge-resolve promises alongside the
-    /// opaque/classify pipelines, but they are NO LONGER the authoritative
-    /// installer. `render_edge_resolve` is now per-bucket-independent (no
-    /// all-or-nothing gate), and the reliable edge rebuild happens at the
-    /// LAYOUT level via `MaterialEdgePipelines::ensure_compiled` (driven
-    /// from `prewarm_pipelines` / `compile_material_variants`). The
-    /// scheduler promises here are a best-effort per-frame fast path; any
-    /// that the stale-generation gate drops are backfilled by that rebuild.
+    /// **MSAA-edge integration**: this method does NOT launch edge-resolve
+    /// pipelines. Edge resolve is a LAYOUT-level concern (its cache keys
+    /// embed the whole `bucket_entries`), so it is rebuilt ONCE per layout
+    /// change by [`Self::launch_edge_resolve_compile`] from the relaunch
+    /// sites — not once per material. `render_edge_resolve` is
+    /// per-bucket-independent (no all-or-nothing gate); a bucket whose edge
+    /// pipeline isn't resident yet simply keeps primary-pass shading for
+    /// the frame.
     ///
     /// Idempotent on cache hits: cache-hit pipelines bypass the
     /// scheduler's sub-compile counter entirely (they're installed
@@ -375,14 +372,11 @@ impl crate::AwsmRenderer {
             );
         }
 
-        // Edge resolve (per-shader + skybox + final_blend) — pushed
-        // into the scheduler's same inflight_compile queue + charged
-        // to this material's subcompile counter, so the material
-        // stays `Pending` until ALL of opaque/classify/edge resolve.
-        // Idempotent + cache-hit-aware (see method rustdoc).
-        // `generation` is the one captured at the top of this
-        // function — no need to re-look it up.
-        self.launch_edge_resolve_compile(group_id, generation, Some(shader_id))?;
+        // NOTE: edge-resolve pipelines are NOT launched here. They are a
+        // layout-level concern (their cache keys embed the whole
+        // bucket_entries), rebuilt ONCE per layout change by
+        // `launch_edge_resolve_compile` from the relaunch sites — not once
+        // per material. See that method's rustdoc.
 
         // If both launches were full cache hits, no promise pushed
         // → subcompile counter stayed at 0 → Ready never auto-fires
@@ -619,16 +613,10 @@ impl crate::AwsmRenderer {
             );
         }
 
-        // Edge resolve (per-shader for THIS shader_id + skybox +
-        // final_blend) — pushed into the scheduler's same
-        // inflight_compile queue + charged to this material's
-        // subcompile counter, so the material stays `Pending` until
-        // ALL of opaque/edge resolve. See
-        // `launch_edge_resolve_compile`'s rustdoc for why every
-        // first-party register triggers a recompile of the global
-        // skybox + final_blend (their cache keys depend on
-        // `bucket_entries`). `generation` captured at function top.
-        self.launch_edge_resolve_compile(group_id, generation, Some(shader_id))?;
+        // NOTE: edge-resolve pipelines are NOT launched here — they are a
+        // layout-level concern rebuilt once per layout change by
+        // `launch_edge_resolve_compile` from the relaunch sites (see that
+        // method's rustdoc).
 
         // If both launches were full cache hits, mark Ready inline.
         // Otherwise note_subcompile_complete will fire it when the
@@ -639,47 +627,78 @@ impl crate::AwsmRenderer {
         Ok(())
     }
 
-    /// Push the MSAA edge-resolve compile promises (per-shader-id
-    /// `edge_resolve` for each bucket + global `skybox_edge_resolve` +
-    /// global `final_blend`) into the scheduler's `inflight_compile`
-    /// queue, charged to `group_id`'s subcompile counter.
+    /// Rebuild the MSAA edge-resolve pipelines for the CURRENT bucket
+    /// layout — the per-shader-id `edge_resolve` for **every** bucket +
+    /// the global `skybox_edge_resolve` + global `final_blend` — by
+    /// pushing their compile promises into the scheduler's
+    /// `inflight_compile` queue.
     ///
-    /// Called from both [`Self::launch_dynamic_material_compile`] and
-    /// [`Self::launch_first_party_material_compile`] after they push
-    /// their opaque + classify pipelines. Effect: the scheduler
-    /// material entry doesn't flip Pending → Ready until **all**
-    /// pipelines it needs to render correctly — opaque, classify,
-    /// per-shader edge_resolve, skybox edge_resolve, final_blend —
-    /// are GPU-resident. Frontends watching
-    /// `drain_pipeline_status_events` correctly see Ready only after
-    /// MSAA edges work end-to-end for the new material.
+    /// **Scope: this is about COMPILING the edge pipelines, NOT about how
+    /// they're dispatched at render time.** The render-time scatter+gather
+    /// is unchanged: `render_edge_resolve` still issues one indirect
+    /// compute dispatch PER BUCKET, each consuming only that bucket's edge
+    /// pixels (`per_shader_args_offset(bucket_index)`) and atomic-adding
+    /// into the accumulator, then `final_blend`. That per-bucket-with-edges
+    /// parallelism is untouched here.
     ///
-    /// Idempotent on cache hits: descriptors that map to
-    /// already-compiled `(shader_cache_key, pipeline_layout_key)`
-    /// tuples are installed inline (no promise push), so a register
-    /// that doesn't actually change the bucket list pays nothing.
-    /// When `bucket_entries` does change (which every register
-    /// causes — see `ShaderCacheKeyMaterialFinalBlend.bucket_entries`
-    /// and `ShaderCacheKeyMaterialSkyboxEdgeResolve.bucket_entries`),
-    /// every existing per-shader edge_resolve + skybox + final_blend
-    /// pipeline is invalidated and recompiled with the new bucket
-    /// list. This is correct: the templated bucket constants in the
-    /// shaders have to match what the classify pass writes into the
-    /// edge buffers.
+    /// **What IS layout-level is the compilation.** Every edge shader's
+    /// cache key embeds the full `bucket_entries` (the per-shader shaders
+    /// template the bucket index / sample-list offsets; skybox +
+    /// final_blend iterate every bucket), so a bucket-layout change
+    /// invalidates ALL of the edge pipelines at once. We therefore COMPILE
+    /// the whole set ONCE per layout change (from the two sync relaunch
+    /// sites — `register_material`'s tail and
+    /// `relaunch_all_buckets_after_layout_change`), building the descriptor
+    /// set a single time (O(N) buckets). The old code instead re-ran this
+    /// compile-launch once per material (each rebuilding the whole N-entry
+    /// descriptor set, then filtering to one slot via an `only_shader_id`
+    /// arg) = O(N²) descriptor builds per layout change, and made each
+    /// per-shader pipeline's *install* hostage to a *different* material's
+    /// generation. Same N pipelines, same per-bucket dispatch consuming
+    /// them — just compiled in one batch instead of N overlapping ones.
     ///
-    /// No-op when MSAA is off (no edges to resolve) or
-    /// `edge_resolve_supported` returns false for the device.
-    fn launch_edge_resolve_compile(
-        &mut self,
-        group_id: PipelineGroupId,
-        generation: u32,
-        only_shader_id: Option<MaterialShaderId>,
-    ) -> Result<(), crate::error::AwsmError> {
+    /// **Ownership / staleness.** The promises are charged to the
+    /// canonical `MaterialShaderId::PBR` material — always present (bucket
+    /// 0, the skybox owner) and whose generation is bumped together with
+    /// every other bucket by the relaunch site's
+    /// `mark_material_pending_for_relaunch` loop *before* this runs. So the
+    /// scheduler's generation gate in `apply_compile_resolution_inline`
+    /// does exactly the right thing: a resolution compiled against a stale
+    /// (superseded) layout is dropped, and the latest layout's set
+    /// installs. The async await paths (`MaterialEdgePipelines::
+    /// ensure_compiled` from build / prewarm / AA + texture-pool changes)
+    /// remain the "need it ready NOW" installer; both share
+    /// `build_descriptors`, so they can never diverge on which buckets get
+    /// an edge pipeline.
+    ///
+    /// Idempotent on cache hits: descriptors that map to already-compiled
+    /// `(shader_cache_key, pipeline_layout_key)` tuples install inline (no
+    /// promise push), so a relaunch whose layout didn't actually change
+    /// pays nothing.
+    ///
+    /// No-op when MSAA is off, `edge_resolve_supported` is false, or no
+    /// canonical PBR bucket is registered yet (cold boot — the eager
+    /// `ensure_compiled` path covers the build-time first-party set).
+    pub(crate) fn launch_edge_resolve_compile(&mut self) -> Result<(), crate::error::AwsmError> {
         if self.anti_aliasing.msaa_sample_count.is_none()
             || !crate::edge_resolve_supported(&self.gpu)
         {
             return Ok(());
         }
+
+        // Layout-level ownership: charge the full edge set to the canonical
+        // PBR material at its current generation (see method rustdoc).
+        let Some(pbr_mid) = self
+            .pipeline_scheduler
+            .find_material_by_shader_id(MaterialShaderId::PBR)
+        else {
+            return Ok(());
+        };
+        let group_id = PipelineGroupId::Material(pbr_mid);
+        let generation = self
+            .pipeline_scheduler
+            .material_generation(pbr_mid)
+            .unwrap_or(0);
 
         let color_wgsl = awsm_renderer_core::texture::texture_format_to_wgsl_storage(
             self.render_textures.formats.color,
@@ -728,23 +747,6 @@ impl crate::AwsmRenderer {
                 edge_slot,
                 ComputePipelineCacheKey::new(shader_key, layout_key),
             ));
-        }
-
-        // A Material launch promises only ITS OWN per-shader edge slot, so
-        // that pipeline is owned by this material's launch/generation and
-        // can't be discarded when a *different* material relaunches (the
-        // waiter-skip used to leave a variant bucket's per-shader edge
-        // pipeline owned by another material's generation → discarded on
-        // that material's relaunch → never installed → the all-or-nothing
-        // gate then killed ALL MSAA). The global skybox + final_blend (whose
-        // cache keys depend on `bucket_entries`, so every launch must keep
-        // them current) always pass through. `None` = the layout-scoped
-        // path (eager build) which keeps everything.
-        if let Some(only) = only_shader_id {
-            compute_jobs.retain(|(slot, _)| match slot.0 {
-                EdgePipelineSlot::PerShader(id) => id.shader_id == only,
-                EdgePipelineSlot::Skybox | EdgePipelineSlot::FinalBlend => true,
-            });
         }
 
         // Cache-hit + cross-call waiter dedup. The edge-chain
