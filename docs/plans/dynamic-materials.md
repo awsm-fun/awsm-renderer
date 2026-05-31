@@ -64,13 +64,18 @@
 >   silhouette edges (expected — bucketing now anti-aliases inter-material
 >   edges the single-bucket baseline merged).
 >
-> **REMAINING (optional follow-ups; #14/#15/#16 + A.2 + C-auto-minimize +
-> the cap-guard are DONE):**
-> - **#17 transparent specialize** — the transparent fragment is still the
->   uber runtime-branched path. It WORKS (correct); specializing it is an
->   occupancy optimization, not a fix. Mirror the opaque `base`+features
->   decoupling onto the transparent cache key/template + gate the fragment.
->   Verify in model-viewer (transmission/blend models).
+> **REMAINING (optional follow-ups; #14/#15/#16/#17 + A.2 +
+> C-auto-minimize + the cap-guard are DONE — there is no uber shader
+> anywhere now):**
+> - **#17 transparent specialize — ✅ DONE.** The transparent fragment
+>   selects its body at compile time on `base` and gates PBR features (no
+>   runtime `shader_id ==` uber branch); each transparent material gets its
+>   own specialized pipeline. GPU-verified: the specialized transparent
+>   WGSL compiles `ok` (no naga errors) and opaque is unaffected
+>   (checksum 2684965999 unchanged). Full transparent PIXEL verification
+>   still wants the model-viewer — the scene-editor doesn't materialize
+>   transparent *world* meshes (pre-existing; why the tuning scenes are
+>   all-opaque).
 > - **#18 Toon** — Toon's opaque shader doesn't sample its textures yet (no
 >   gateable opaque code paths) so it's correctly single-bucket. To
 >   specialize: first add Toon base_color/emissive texture sampling, THEN
