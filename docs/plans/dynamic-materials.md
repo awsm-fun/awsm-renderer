@@ -187,6 +187,55 @@ once shipped.
 
 ---
 
+## ⭐ ARCHITECTURE PIVOT — specialize-only, no uber (supersedes the uber decisions below)
+
+Decided with the owner after implementing B.2. **There is no "uber"
+shading mode anywhere.** Reasoning: runtime feature-gating only earns its
+keep when one shader invocation must serve *multiple* feature-sets — but
+every dispatch is already material-homogeneous (opaque pixels are split
+by `shader_id` in the classify pass; transparent is drawn per-mesh, one
+material per draw). So a compile-time-specialized shader is always
+correct, and it wins on every per-pixel axis (register pressure →
+occupancy, instruction cache, divergence). Uber only ever bounded
+pipeline *count* (a warmup/memory concern the batched compiler handles)
+and transparent pipeline-*switch* count (tiny, per-mesh, and mitigable by
+sorting — never by a fat shader). And the per-pixel runtime guards it
+used were pure perf, never correctness (every gated lobe contributes
+mathematically zero when its value is zero), so deleting them is *also*
+likely faster (no branch, lower registers, uniform execution).
+
+**This supersedes Decisions 4 (partially), 9, 10, 15 below.** Concretely:
+
+1. **One shading mode: specialized.** Every PBR/Toon material compiles a
+   shader gated *only* at compile time (`{% if pbr_features.<x> %}`).
+   The only runtime branches left are logically-necessary ones (lighting
+   geometry, light loops) — never feature presence.
+2. **Transparent specializes too.** No shared uber transparent fragment
+   shader; each transparent material gets a pipeline for its feature-set.
+3. **No `pbr_runtime_gated` flag, no force-uber config, no scene-union
+   "step C".** Those were uber/transition scaffolding — removed.
+4. **Unified variant registry — static and dynamic go through the EXACT
+   same mechanism.** `shader_id` is an in-memory id allocated by the
+   registry; there's no cross-session meaning, so no deterministic
+   encoding. Every bucket is a registry *variant* with an allocated id,
+   deduped by its key:
+   - **FirstParty `{ base: PBR|TOON, features: FeatureSet }`** — WGSL is
+     the built-in shader templated from `features` (gets Askama's
+     compile-time guarantees). Deduped by `(base, feature_hash)`.
+   - **Custom `{ registration }`** — WGSL is the author's fragment.
+     Deduped by content hash (as today).
+
+   The hard-coded first-party `bucket_entries` prefix goes away; PBR/Toon
+   buckets are registry variants like everything else (PBR's empty
+   feature-set = the smallest PBR variant). Unlit + Flipbook stay
+   single-bucket (negligible optional features).
+5. **B.3 is mandatory, not a fallback** (no uber to fall back to). The
+   bucket-budget cap is a hard error (Decision 5, unchanged); raise
+   `N_WORDS` (B.4) to lift it.
+
+The "Locked decisions" below are kept for history; where they conflict
+with this pivot, **this pivot wins.**
+
 ## Locked decisions
 
 Resolved with the project owner. These are **not** open questions —
