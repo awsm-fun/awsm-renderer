@@ -20,7 +20,8 @@ remains. Branch is green (renderer suite 153 pass, clippy clean).
 | B.2 step A: thread `pbr_features` through opaque cache key + template | ✅ done | `3916324` | renders identical (no-op at `all()`) |
 | B.2 step B: gate sheen+clearcoat brdf lobes (opaque/edge/transparent) | ✅ done | `d21ff92` | **pixel-identical** at `all()` (checksum `2985139072`) |
 | B.2 gate `material_color_calc` (loads/samplers/struct → DCE) | ✅ done | `bc92e26` | **pixel-identical** at `all()` — full feature data-flow now gateable |
-| B.2 step C: activate (pass feature-union per pipeline) | ⬜ todo | — | **needs a recompile trigger** — see below |
+| B.2 **unify** lobe gating — one body, 2 gate modes (`pbr_runtime_gated`) | ✅ done | `958f55f` | uber pixel-identical; **both modes tested** (3 native `brdf_gate_tests`) |
+| B.2 step C: activate (pass feature-union / `pbr_runtime_gated=false`) | ⬜ todo | — | **needs a recompile trigger** — see below |
 | A.1 compile-engine unification | ⬜ todo | — | — |
 | A.2 phase-tagged `StatusEvent`s (push half) | ⬜ todo | — | — |
 | D.2 transaction boundary (one final-layout reconcile) | ⬜ todo | — | — |
@@ -111,6 +112,44 @@ Recommended over the union halfway-house.
 scene. Make a stress variant of `tuning-50-materials` (≫ resolution or
 ≫ instance count) so it drops below 60 fps, then compare rAF FPS
 before/after with identical settings.
+
+#### Unified PBR feature gating (DRY — one body, two gate modes)
+
+To avoid maintaining the gating logic twice, each PBR feature's shading
+body in `brdf.wgsl` is written **once** and wrapped by a single scheme
+driven by the template flag `pbr_runtime_gated`:
+
+```wgsl
+{% if pbr_features.<feat> %}                  {# compile-time presence #}
+if ({% if pbr_runtime_gated %}<runtime_cond>{% else %}true{% endif %}) {
+    <feature body — written once>
+}
+{% endif %}
+```
+
+- **Specialized** (opaque per-bucket, post-B.3): `pbr_runtime_gated=false`,
+  narrow `pbr_features`. Absent features emit nothing; present features
+  run unconditionally (`if (true)` folds away) — **compile-time only**.
+- **Uber** (transparent always; opaque until B.3): `pbr_runtime_gated=true`,
+  `pbr_features=all()`. Everything emitted, gated by the runtime
+  `if (color.x > 0)` — because one shader serves heterogeneous materials.
+
+`pbr_runtime_gated` is a field on all three `brdf.wgsl` includers
+(opaque/edge/transparent), currently `true` everywhere; B.3 flips the
+opaque path to `false` per specialized bucket. `material_color_calc.wgsl`
+needs no runtime flag — its `{% if pbr_features %}` field-computation
+gate already serves both (uber=all→computes all for the runtime guards;
+specialized→present computed, absent constant → DCE).
+
+**Both modes are tested** natively (`brdf_gate_tests`): uber emits the
+runtime guards; specialized strips absent lobes and emits present lobes
+with no runtime guard. (They caught a real omission — an un-gated IBL
+iridescence block — on first run.) Anisotropy is handled by writing the
+isotropic base once and letting the anisotropy feature *override* it
+(no macro, no duplication). Remaining mechanical follow-up:
+transmission/volume/dispersion IBL still use their original runtime
+guards (correct at uber; convert to the same scheme for reliable
+specialized stripping).
 
 **What landed + how it was verified.** `PbrFeatures` (layer 1), the
 cache-key/template plumbing (step A), and the sheen+clearcoat brdf gating
