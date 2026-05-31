@@ -1,15 +1,36 @@
-//! Runtime-registered dynamic materials.
+//! Unified material variant registry (the specialize-only pivot).
 //!
-//! Provides the renderer-side facade over `awsm_materials::registry::MaterialRegistry`,
-//! the cache-key extension that invalidates per-shader-id pipelines when the
-//! registry's [`awsm_materials::MaterialShaderId`] set
-//! changes, and (Phase 6+) the extras-pool storage buffer + allocator that
-//! backs `BufferSlot` data.
+//! Every render bucket — first-party AND author-registered — is a registry
+//! *variant* deduped by key and addressed by an in-memory [`MaterialShaderId`]:
 //!
-//! Phase 0 ships the skeleton — empty [`DynamicMaterials`] struct and the
-//! stub `register_material` / `unregister_material` plumbing on
-//! [`AwsmRenderer`](crate::AwsmRenderer). Subsequent phases fill in the
-//! registry, the template substitutions, and the extras pool.
+//! - **First-party feature-set variant** `(ShadingBase, features)` — the
+//!   built-in PBR/Toon/Unlit/Flipbook shader templated (Askama, compile-time)
+//!   from its [`ShadingBase`] + feature mask. PBR fans out one bucket per
+//!   distinct [`awsm_materials::pbr::PbrFeatures`] set
+//!   ([`Self::resolve_first_party_variant`]); Toon/Unlit/Flipbook have no
+//!   compile-gateable shading paths today, so they stay single-bucket.
+//! - **Custom variant** — the author's WGSL fragment + layout
+//!   ([`MaterialRegistration`]), deduped by `(name, layout_hash, wgsl_hash)`.
+//!
+//! [`bucket_entries`] is the single source of truth the classify + opaque +
+//! edge + transparent templates all walk. There is **no uber shader** — every
+//! bucket compiles only the code its `(base, features)` needs; absent
+//! features/textures emit nothing (DCE → lower register pressure → higher
+//! occupancy). See [`ShadingBase`].
+//!
+//! **Cost model (honest):** steady-state cost scales with the
+//! *active-in-view* bucket fanout (one classify extract arm + one opaque
+//! dispatch + (MSAA) one edge-resolve per active bucket), NOT the total
+//! registered count. A bucket-set change (a new feature-set variant or a
+//! registration) invalidates + relaunches every bucket's layout-dependent
+//! pipelines once against the final layout (the templated `ClassifyBuckets`
+//! struct depends on the full list) — a one-time cold-compile, not per-frame.
+//! Exceeding the [`MAX_BUCKET_ENTRIES`] cap is a hard error on the batch
+//! `register_materials` path ([`DynamicMaterials::validate_batch`]); the
+//! render-loop variant reconcile degrades gracefully to the canonical uber
+//! bucket with a logged warning ([`DynamicMaterials::resolve_first_party_variant_capped`]).
+//! Also owns the extras-pool storage buffer + allocator backing `BufferSlot`
+//! data.
 
 pub mod error;
 pub mod extras_pool;
@@ -1217,6 +1238,22 @@ impl crate::AwsmRenderer {
         if grew {
             self.relaunch_all_buckets_after_layout_change()?;
         }
+        Ok(())
+    }
+
+    /// A.3 / Decision 13 — scene-load warmup-await
+    /// (`compile_materials(set).await`). Resolves every opaque PBR
+    /// material's feature-set variant, launches the per-variant pipeline
+    /// compiles, and resolves only when they're ALL GPU-resident. A
+    /// frontend calls this once after inserting a scene's materials so the
+    /// **first rendered frame is already fully specialized** — no
+    /// compile-in-progress transient (the per-frame reconcile would
+    /// otherwise trigger the relaunch on the first render, briefly leaving
+    /// `final_blend` / opaque pipelines uncompiled). Built on the same
+    /// [`Self::reconcile_material_variants`] + [`Self::wait_for_pipelines_ready`].
+    pub async fn compile_material_variants(&mut self) -> Result<(), crate::error::AwsmError> {
+        self.reconcile_material_variants()?;
+        self.wait_for_pipelines_ready().await?;
         Ok(())
     }
 

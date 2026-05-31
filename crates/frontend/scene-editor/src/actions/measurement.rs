@@ -136,6 +136,18 @@ pub async fn load_scene_by_path(scene_name: String) -> Result<(), JsValue> {
         )));
     }
 
+    // A.3 warmup-await: now that every material exists on the GPU, resolve
+    // their opaque feature-set variants + drive the per-variant pipeline
+    // compiles to completion BEFORE returning, so the first rendered frame
+    // is already fully specialized (no compile-in-progress transient).
+    {
+        let handle = crate::context::renderer_handle();
+        let mut renderer = handle.lock().await;
+        if let Err(err) = renderer.compile_material_variants().await {
+            tracing::warn!("compile_material_variants warmup failed: {err:?}");
+        }
+    }
+
     tracing::info!("measurement: scene {scene_name} loaded + materialised");
     Ok(())
 }
