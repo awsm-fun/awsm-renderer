@@ -263,18 +263,19 @@ impl AwsmRenderer {
             self.default_cheap_material_pixel_threshold,
         )?;
 
-        // Specialize-only pivot: route opaque PBR/Toon materials to their
-        // per-feature-set variant buckets BEFORE the material GPU write
-        // (so the resolved variant id lands in the payload's first u32 in
-        // this same frame) and before classify dispatch (which routes on
-        // it). Cheap no-op once the material set settles.
+        // Specialize-only pivot: route PBR/Toon materials (opaque and
+        // transparent) to their per-feature-set variant buckets BEFORE the
+        // material GPU write (so the resolved variant id lands in the
+        // payload's first u32 in this same frame) and before classify
+        // dispatch (which routes on it). Cheap no-op once the material set
+        // settles.
         //
         // Gated behind the runtime `pbr_specialization` switch on
-        // `Materials` (default off = pixel-identical to the pre-overhaul
-        // single-PBR-bucket baseline). Toggle via
-        // `AwsmRenderer::set_pbr_specialization` (exposed to the
+        // `Materials` (default on; off = the canonical all-features config,
+        // pixel-identical to the pre-overhaul single-PBR-bucket baseline).
+        // Toggle via `AwsmRenderer::set_pbr_specialization` (exposed to the
         // scene-editor as the `set_pbr_specialization` wasm export for
-        // A/B pixel verification). See docs/plans/dynamic-materials.md.
+        // A/B pixel verification).
         if self.materials.pbr_specialization_enabled() {
             self.reconcile_material_variants()?;
         }

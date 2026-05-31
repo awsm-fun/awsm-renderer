@@ -308,8 +308,8 @@ pub struct BucketEntry {
     /// PBR (or Toon) feature mask this bucket is specialized for
     /// ([`awsm_materials::pbr::PbrFeatures::bits`]). Distinguishes two
     /// PBR variants that differ only by feature-set. `all().bits()` for
-    /// the uber/transitional config and inert for `Unlit`/`Flipbook`/
-    /// `Custom`.
+    /// the canonical all-features config and inert for
+    /// `Unlit`/`Flipbook`/`Custom`.
     pub pbr_features: u32,
     /// WGSL-safe identifier suffix used for `args_<name>` /
     /// `<name>_offset` / `BUCKET_BIT_<NAME>` / `SHADER_ID_<NAME>`. For
@@ -403,9 +403,10 @@ pub fn first_party_bucket_entries() -> Vec<BucketEntry> {
         .map(|e| BucketEntry {
             shader_id: e.shader_id,
             base: ShadingBase::for_shader_id(e.shader_id),
-            // Transitional uber config — the per-feature-set routing
-            // (#15) replaces a base material's single bucket with one
-            // bucket per derived feature-set. Inert for Unlit/Flipbook.
+            // Canonical (all-features) config for each first-party family.
+            // The render-loop reconcile ADDS per-feature-set variant
+            // buckets on top of these; this canonical entry is also the
+            // cap-guard fallback target. Inert for Unlit/Flipbook.
             pbr_features: awsm_materials::pbr::PbrFeatures::all().bits(),
             name: e.name.to_string(),
         })
@@ -664,8 +665,8 @@ impl DynamicMaterials {
     /// pre-feature baseline.
     pub fn dispatch_hash(&self) -> u64 {
         // Stable empty-state sentinel: no custom registrations AND no
-        // first-party feature-set variants → 0, so a first-party-only
-        // (uber-default) build compiles bit-identical WGSL to the
+        // first-party feature-set variants → 0, so a canonical-only
+        // build (all-features config) compiles bit-identical WGSL to the
         // pre-overhaul baseline. Either set being non-empty changes the
         // bucket layout, which the classify + opaque + edge pipelines all
         // template against, so it must invalidate their cache keys.
@@ -696,9 +697,8 @@ impl DynamicMaterials {
 
     /// Validates a whole batch against the **final** bucket layout
     /// before any registration side effects run, so
-    /// [`crate::AwsmRenderer::register_materials`] is all-or-nothing
-    /// (Decision 12 in `docs/plans/dynamic-materials.md`). Pure — no
-    /// mutation, no GPU — so it's unit-testable natively.
+    /// [`crate::AwsmRenderer::register_materials`] is all-or-nothing. Pure
+    /// — no mutation, no GPU — so it's unit-testable natively.
     ///
     /// Rejects when:
     /// - two entries (within the batch, or a batch entry vs. an existing
@@ -851,8 +851,7 @@ pub struct MaterialRegistration {
 }
 
 impl crate::AwsmRenderer {
-    /// Batch-registers custom materials (Decision 11/12 in
-    /// `docs/plans/dynamic-materials.md`).
+    /// Batch-registers custom materials.
     ///
     /// **Transactional / all-or-nothing**: the entire batch is validated
     /// against the *final* bucket layout

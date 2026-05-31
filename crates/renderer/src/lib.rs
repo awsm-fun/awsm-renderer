@@ -784,9 +784,12 @@ impl AwsmRenderer {
                         shader_id,
                         base: crate::dynamic_materials::ShadingBase::for_shader_id(shader_id),
                         owns_skybox: shader_id == awsm_materials::MaterialShaderId::PBR,
-                        // Phase B.2 step C will fold the scene-union of
-                        // PbrFeatures here; until then the uber config
-                        // (all features) keeps the WGSL identical.
+                        // This prewarm loop only iterates CUSTOM (dynamic)
+                        // registrations — first-party PBR feature variants
+                        // are compiled per-feature-set by the render-loop
+                        // reconcile. A custom material's WGSL is its own;
+                        // the PBR feature gates are inert for it, so `all()`
+                        // is just a placeholder here.
                         pbr_features: awsm_materials::pbr::PbrFeatures::all().bits(),
                         dispatch_hash,
                         dynamic_shader: dynamic_shader.clone(),

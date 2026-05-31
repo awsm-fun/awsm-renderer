@@ -59,22 +59,23 @@ pub struct PbrMaterial {
 }
 
 /// Compile-time feature set of a PBR material: which optional code paths
-/// its specialized opaque shader actually needs. Derived from a
-/// [`PbrMaterial`]'s present texture slots + extensions (the `Option`
-/// fields). This is the input to:
+/// its specialized shader actually needs. Derived from a [`PbrMaterial`]'s
+/// present texture slots + extensions (the `Option` fields). This is the
+/// input to:
 ///
-/// 1. **B.2** — the Askama `{% if features.<x> %}` gating in the opaque
-///    PBR shader, so a material with (say) no normal map compiles no
-///    normal-map code.
+/// 1. **B.2** — the Askama `{% if features.<x> %}` gating in the PBR
+///    shader (opaque compute + transparent fragment), so a material with
+///    (say) no normal map compiles no normal-map code.
 /// 2. **B.3** — the per-feature-set bucket id: [`Self::bits`] is the
 ///    stable feature-hash that maps a feature-set to its own `shader_id`
-///    / opaque bucket, so two materials with the same feature-set share
-///    one specialized pipeline.
+///    / bucket, so two materials with the same feature-set share one
+///    specialized pipeline.
 ///
 /// `double_sided` and `alpha_mode` are deliberately NOT here — the former
 /// is raster state (a pipeline-variant dimension, not shader code), and
-/// the latter routes opaque → specialized bucket vs. transparent → uber
-/// (Decision 10), so it's a routing decision, not a feature bit.
+/// the latter routes opaque → visibility-buffer compute bucket vs.
+/// transparent → forward per-mesh pipeline (both specialized per
+/// feature-set), so it's a routing decision, not a feature bit.
 ///
 /// Bit layout (see [`Self::bits`]) is stable and append-only: never
 /// renumber an existing bit (it would silently remap every persisted /
@@ -146,10 +147,12 @@ impl PbrFeatures {
         }
     }
 
-    /// Every feature on — the uber / force-uber / transparent-pass
-    /// configuration. Rendering with this is behaviourally identical to
-    /// the pre-specialization (always-all-extensions) PBR shader, which
-    /// is what makes the B.2 templatization landable as a no-op first.
+    /// Every feature on — the canonical all-features config. Used as the
+    /// `pbr_specialization=false` compat path, the canonical first-party
+    /// bucket id, and the cap-guard fallback. Rendering with this is
+    /// behaviourally identical to the pre-specialization (always-all-
+    /// extensions) PBR shader, which is what made the B.2 templatization
+    /// landable as a no-op first.
     pub fn all() -> Self {
         Self {
             base_color_tex: true,

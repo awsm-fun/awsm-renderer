@@ -474,9 +474,8 @@ fn brdf_direct(color: PbrMaterialColor, light_brdf: LightBrdf, surface_to_camera
     let f90 = mix(color.specular, 1.0, metallic);
 
     // KHR_materials_iridescence: thin-film interference modulates F0.
-    // Unified gate: the compile-time pbr_features check strips it from a
-    // specialized bucket that lacks it; the runtime `if` is emitted only
-    // for the uber pipeline (`if (true)` folds away when specialized).
+    // Compile-time gated: stripped entirely from a specialized bucket that
+    // lacks the extension (the all-features config keeps it).
     {% if pbr_features.iridescence %}
     let iri_f0 = iridescence_fresnel(n_dot_v, color.iridescence_ior, color.iridescence_thickness, F0);
     F0 = mix(F0, iri_f0, color.iridescence);

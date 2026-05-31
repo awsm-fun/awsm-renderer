@@ -174,11 +174,11 @@ pub struct StatusEvent {
     pub status: PipelineGroupStatus,
 }
 
-/// Aggregate compile-progress snapshot (the pull half of Decision 14 in
-/// `docs/plans/dynamic-materials.md`). Lets a frontend drive a loading
-/// bar / "compiling N materials…" UI without re-deriving counts from the
-/// raw [`StatusEvent`] stream. Cheap to compute (a linear scan of the
-/// material table); call it once per frame.
+/// Aggregate compile-progress snapshot (the pull-based counterpart to the
+/// push [`StatusEvent`] stream). Lets a frontend drive a loading bar /
+/// "compiling N materials…" UI without re-deriving counts from the raw
+/// event stream. Cheap to compute (a linear scan of the material table);
+/// call it once per frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CompileProgress {
     /// Submitted materials still compiling (`status == Pending`).

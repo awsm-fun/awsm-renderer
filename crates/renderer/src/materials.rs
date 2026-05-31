@@ -78,10 +78,12 @@ impl AwsmRenderer {
         self.materials.mark_variants_dirty();
     }
 
-    /// Enables/disables opaque PBR/Toon feature-set specialization (the
-    /// specialize-only pivot). Default off. When toggled on, the next
-    /// render's reconcile pass routes opaque PBR materials to per-feature-
-    /// set variant buckets. Exposed for A/B pixel verification.
+    /// Enables/disables PBR/Toon feature-set specialization (the
+    /// specialize-only pivot). Default on. When on, the render's reconcile
+    /// pass routes PBR materials to per-feature-set variant buckets; when
+    /// off, materials fall back to the canonical all-features config
+    /// (behaviourally identical to the pre-overhaul shader). Exposed for
+    /// A/B pixel verification.
     pub fn set_pbr_specialization(&mut self, enabled: bool) {
         self.materials.set_pbr_specialization(enabled);
     }
@@ -267,14 +269,14 @@ pub struct Materials {
     /// variant enters or is edited; cleared by the renderer's reconcile
     /// pass. Starts `true` so the first frame reconciles.
     variants_dirty: bool,
-    /// Master switch for the opaque PBR feature-set specialization (the
-    /// specialize-only pivot — Decision 9 `pbr_specialization: Auto`).
-    /// `true` (default = Auto) = `reconcile_material_variants` routes each
-    /// opaque PBR material to a per-feature-set variant bucket (compile-
-    /// time-gated shader). `false` (= ForceUber compat escape) = the
-    /// pre-overhaul single-bucket-per-family behavior. GPU-verified pixel-
-    /// equivalent within ≤2/255. Runtime-toggleable for A/B verification
-    /// via `AwsmRenderer::set_pbr_specialization`.
+    /// Master switch for PBR feature-set specialization (the specialize-only
+    /// pivot — Decision 9 `pbr_specialization: Auto`). `true` (default =
+    /// Auto) = `reconcile_material_variants` routes each PBR material
+    /// (opaque and transparent) to a per-feature-set variant bucket
+    /// (compile-time-gated shader). `false` = the canonical all-features
+    /// config (behaviourally identical to the pre-overhaul shader). GPU-
+    /// verified pixel-equivalent within ≤2/255. Runtime-toggleable for A/B
+    /// verification via `AwsmRenderer::set_pbr_specialization`.
     pbr_specialization: bool,
     _is_transparency_pass: SecondaryMap<MaterialKey, ()>,
     uploader: crate::buffer::mapped_uploader::MappedUploader,

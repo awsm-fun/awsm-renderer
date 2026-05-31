@@ -731,14 +731,13 @@ fn scene_10k_meshes() -> EditorProject {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Scene — 50 materials. Baseline fixture for the materials-system
-// overhaul (docs/plans/dynamic-materials.md). 50 meshes, each with its
-// own material, exercising the "many small opaque materials" path:
+// Scene — 50 materials. Fixture for the materials-system specialization.
+// 50 meshes, each with its own material, exercising the "many small
+// opaque materials" path:
 //   - 30 PBR meshes spanning distinct feature-sets (varying texture-slot
-//     presence + vertex colors). Today these all collapse to one PBR
-//     bucket; after the overhaul each distinct feature-set is its own
-//     specialized opaque bucket. The before/after delta lives here.
-//   - 8 Toon meshes (Toon is also specialized post-overhaul).
+//     presence + vertex colors). Each distinct feature-set resolves to
+//     its own specialized opaque bucket.
+//   - 8 Toon meshes (Toon is specialized too).
 //   - 6 Unlit meshes.
 //
 // NOTE: custom/dynamic materials are intentionally NOT in this scene.
@@ -749,9 +748,8 @@ fn scene_10k_meshes() -> EditorProject {
 // wired into materialization). A custom-material mesh would render with
 // its inline fallback, not its shader, so including them here would
 // measure nothing. Dynamic-material registration/compile batching is
-// validated separately (material-editor + the native D.5 tests in the
-// plan). The 36 PBR feature-sets are where the opaque-specialization
-// before/after delta actually lives.
+// validated separately (material-editor + native tests). The PBR
+// feature-sets are where the opaque-specialization delta actually lives.
 //
 // A single tiny placeholder texture is referenced in *varying slot
 // combinations* — the feature-hash keys on slot presence, not content,
