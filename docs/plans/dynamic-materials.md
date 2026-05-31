@@ -31,31 +31,42 @@ remains. Branch is green (renderer suite 153 pass, clippy clean).
 | E transparency uber wiring | ⬜ todo | — | depends on B.2 |
 | F.1/F.2/F.3 benchmarks + re-measure + extension dropdown | ⬜ todo | — | after B/C/E |
 
-### ⚠️ KEY FINDING — the uber PBR shader already runtime-guards almost everything
+### Note — runtime guards vs compile-time specialization (corrected)
 
-While implementing B.2 the actual `brdf.wgsl` was read end-to-end. The
-result reshapes the expected payoff of the whole opaque-specialization
-effort:
+While implementing B.2 the actual `brdf.wgsl` was read end-to-end. An
+earlier draft of this note wrongly concluded specialization "buys little"
+because the uber shader already runtime-guards most extensions
+(iridescence `if color.iridescence > 0.0`, anisotropy, diffuse_transmission,
+clearcoat-IBL, sheen-IBL; `material_color_calc` samplers all `if exists`;
+only **sheen + clearcoat direct** run unconditionally). That conclusion
+was **wrong** — corrected here:
 
-**The uber PBR shader already self-optimizes via runtime `if` guards for
-nearly every extension** — iridescence (`if color.iridescence > 0.0`),
-anisotropy (`if color.anisotropy_strength != 0.0`, with an explicit "we
-don't pay for tangent math on every shading point" comment),
-diffuse_transmission, clearcoat-IBL, and the expensive part of sheen-IBL
-all skip themselves when the feature is absent. The `material_color_calc`
-texture samplers likewise all `if exists` guard. **The ONLY extension
-lobes that run unconditionally per shading point are sheen + clearcoat in
-the *direct* lighting path.**
+**Compile-time specialization wins over runtime guards in ways the guards
+cannot, and these are the point of B.3:**
 
-Consequence: **per-feature compile-time specialization buys far less
-per-frame GPU time than the "skip all unused extension code" framing
-assumed** — the runtime guards already capture most of it. The genuine
-per-frame win is (a) the sheen+clearcoat direct lobes (now gateable, see
-B.2 step B), and (b) shader binary size / compile time. The broader
-"many small buckets" value is the visibility-buffer batching + compile
-parallelism, **not** dramatically cheaper per-pixel shading. Re-weight
-B.3's cost/benefit accordingly before committing to the full
-per-feature-set bucket routing.
+1. **Register pressure → occupancy (dominant).** `PbrMaterialColor`
+   carries ~25 extension fields and `material_color_calc` computes them
+   because the runtime `if` still *reads* them → they're **live** across
+   the lighting loop → high register count → low GPU occupancy. A
+   compile-time `{% if %}` that's false means the field is never read, so
+   the compiler **dead-code-eliminates** the whole compute→store→load
+   chain → far fewer registers → higher occupancy → higher FPS on
+   GPU-bound scenes. **Runtime guards cannot DCE; compile-time gating
+   can.** This is the main win.
+2. **Guard overhead** — the per-pixel-per-light load+compare+branch ×
+   ~17 extensions, gone.
+3. **Divergence** — today all PBR is one bucket, so a warp spans mixed
+   feature-sets and the guards *diverge* (both paths execute, masked).
+   B.3's per-feature-set buckets make each warp coherent → no divergence.
+
+**Implication for the implementation**: the occupancy win requires gating
+**both** `material_color_calc.wgsl` (so the field computation DCEs) **and**
+`brdf.wgsl` (the lobes), so the feature's data flow drops end-to-end.
+B.2 step B gated only `brdf.wgsl` — necessary but **not sufficient** for
+the occupancy win; `material_color_calc` gating (+ ideally conditional
+`PbrMaterialColor` fields) is still required. The magnitude is real but
+scene-dependent (occupancy-bound scenes benefit most) — confirm with the
+GPU-bound FPS test, but **B.3 is worth pursuing**; do not deprioritize it.
 
 **What landed + how it was verified.** `PbrFeatures` (layer 1), the
 cache-key/template plumbing (step A), and the sheen+clearcoat brdf gating
