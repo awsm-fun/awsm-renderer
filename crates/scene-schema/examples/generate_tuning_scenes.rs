@@ -732,13 +732,21 @@ fn scene_10k_meshes() -> EditorProject {
 
 // ─────────────────────────────────────────────────────────────────────
 // Scene — 50 materials. Fixture for the materials-system specialization.
-// 50 meshes, each with its own material, exercising the "many small
-// opaque materials" path:
-//   - 30 PBR meshes spanning distinct feature-sets (varying texture-slot
+// A 50-mesh opaque grid (each with its own material) exercising the "many
+// small opaque materials" path, plus a small transparent group:
+//   - 36 PBR meshes spanning distinct feature-sets (varying texture-slot
 //     presence + vertex colors). Each distinct feature-set resolves to
 //     its own specialized opaque bucket.
 //   - 8 Toon meshes (Toon is specialized too).
 //   - 6 Unlit meshes.
+//   - 4 transparent (Blend) PBR meshes in a separate group — exercise the
+//     specialized transparent forward path (each feature-set → its own
+//     transparent pipeline). NOT counted in the 50-material grid assert.
+//
+// The 50-mesh opaque grid is the perf-measurement subject (its opaque /
+// classify pass timings are the before/after specialization comparison);
+// the transparent group renders through a separate forward pass and is a
+// correctness fixture, not part of the opaque timing baseline.
 //
 // NOTE: custom/dynamic materials are intentionally NOT in this scene.
 // The scene-editor's live materialization path (renderer_bridge/
@@ -942,6 +950,73 @@ fn scene_50_materials() -> EditorProject {
 
     debug_assert_eq!(meshes.len(), 50, "scene must have exactly 50 meshes");
     project.nodes.push(root_group("meshes", meshes));
+
+    // ── Transparent materials ──────────────────────────────────────────
+    // A handful of Blend (alpha < 1) PBR meshes parked IN FRONT of the
+    // opaque grid (smaller z = nearer the camera) so they blend over the
+    // opaque meshes + floor — the visible transparent-path test. Each has
+    // a distinct feature-set so it compiles its OWN specialized transparent
+    // pipeline (transparent specializes per feature-set too — #17): three
+    // untextured (the smallest transparent variant) plus one with a
+    // base-color texture (a different variant, exercising the transparent
+    // texture-slot gate). Kept in a separate group so the 50-material grid
+    // assert above stays exact.
+    let transparent: Vec<EditorNode> = vec![
+        prim_node(
+            "transp_glass_clear",
+            [-6.0, 0.8, -0.6],
+            PrimitiveShape::Box { dims: [1.1, 1.1, 1.1] },
+            MaterialDef {
+                base_color: [0.80, 0.90, 1.0, 0.35],
+                metallic: 0.0,
+                roughness: 0.10,
+                alpha_mode: MaterialAlphaMode::Blend,
+                shading: MaterialShading::Pbr,
+                ..MaterialDef::default()
+            },
+        ),
+        prim_node(
+            "transp_glass_green",
+            [-2.0, 0.8, -0.6],
+            PrimitiveShape::Sphere { radius: 0.7, segments_long: 24, segments_lat: 16 },
+            MaterialDef {
+                base_color: [0.45, 1.0, 0.55, 0.50],
+                metallic: 0.0,
+                roughness: 0.30,
+                alpha_mode: MaterialAlphaMode::Blend,
+                shading: MaterialShading::Pbr,
+                ..MaterialDef::default()
+            },
+        ),
+        prim_node(
+            "transp_glass_amber",
+            [2.0, 0.8, -0.6],
+            PrimitiveShape::Box { dims: [1.1, 1.1, 1.1] },
+            MaterialDef {
+                base_color: [1.0, 0.70, 0.20, 0.55],
+                metallic: 0.0,
+                roughness: 0.20,
+                alpha_mode: MaterialAlphaMode::Blend,
+                shading: MaterialShading::Pbr,
+                ..MaterialDef::default()
+            },
+        ),
+        prim_node(
+            "transp_glass_textured",
+            [6.0, 0.8, -0.6],
+            PrimitiveShape::Sphere { radius: 0.7, segments_long: 24, segments_lat: 16 },
+            MaterialDef {
+                base_color: [1.0, 1.0, 1.0, 0.60],
+                base_color_texture: Some(tex),
+                metallic: 0.0,
+                roughness: 0.40,
+                alpha_mode: MaterialAlphaMode::Blend,
+                shading: MaterialShading::Pbr,
+                ..MaterialDef::default()
+            },
+        ),
+    ];
+    project.nodes.push(root_group("transparent", transparent));
 
     // Floor + lights so the opaque meshes are lit (the custom screen-space
     // materials ignore lighting, but PBR/Toon need it).

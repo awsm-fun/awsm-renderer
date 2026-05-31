@@ -16,7 +16,7 @@
     "debug_cascade_colors": false
   },
   "assets": {
-    "be677a4f-5e94-4de2-bb4e-f5552e75ad5f": {
+    "393217fc-865b-4bfa-b3eb-e9d2127adf58": {
       "source": {
         "texture": {
           "raster": {
@@ -32,7 +32,7 @@
   "custom_materials": [],
   "nodes": [
     {
-      "id": "e73abcd3-b17a-4366-bebf-a842f8a7b6fe",
+      "id": "8599152d-be25-4f73-93e1-3e27cefc674a",
       "name": "meshes",
       "transform": {
         "translation": [
@@ -58,7 +58,7 @@
       "prefab": false,
       "children": [
         {
-          "id": "64c2a35c-9ab7-4443-a4d9-4ad7de6bc4e3",
+          "id": "158fd831-3ab9-4a82-90bb-21a291b790e3",
           "name": "pbr_00_mask00000",
           "transform": {
             "translation": [
@@ -128,7 +128,7 @@
           "children": []
         },
         {
-          "id": "22564fa3-fd3a-4c32-9e77-48cc7f4a79ca",
+          "id": "9497baa1-8c70-41fc-add0-4d6e498e75d8",
           "name": "pbr_01_mask00001",
           "transform": {
             "translation": [
@@ -166,7 +166,7 @@
                   0.45,
                   1.0
                 ],
-                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "base_color_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "metallic": 0.2,
                 "roughness": 0.55,
                 "metallic_roughness_texture": null,
@@ -196,7 +196,7 @@
           "children": []
         },
         {
-          "id": "042fb007-bc46-454c-a55d-ebe3a1acecec",
+          "id": "a54c1617-b50a-46d7-8b65-840d8b78dc9a",
           "name": "pbr_02_mask00011",
           "transform": {
             "translation": [
@@ -236,10 +236,10 @@
                   0.45,
                   1.0
                 ],
-                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "base_color_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "metallic": 0.2,
                 "roughness": 0.55,
-                "metallic_roughness_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic_roughness_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "emissive": [
                   0.0,
                   0.0,
@@ -266,7 +266,7 @@
           "children": []
         },
         {
-          "id": "c3763bd2-2549-4670-a5b8-ea52d7524c68",
+          "id": "2f89b2af-0de6-4d89-9d85-cbf8c1f8d76d",
           "name": "pbr_03_mask00111_vc",
           "transform": {
             "translation": [
@@ -304,17 +304,17 @@
                   0.45,
                   1.0
                 ],
-                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "base_color_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "metallic": 0.2,
                 "roughness": 0.55,
-                "metallic_roughness_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic_roughness_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "emissive": [
                   0.0,
                   0.0,
                   0.0
                 ],
                 "emissive_texture": null,
-                "normal_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "normal_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "occlusion_texture": null,
                 "double_sided": false,
                 "vertex_colors_enabled": true,
@@ -334,7 +334,7 @@
           "children": []
         },
         {
-          "id": "04ddeb6a-a1bf-4891-ae3c-2e1ce0c922d8",
+          "id": "be740508-b889-4fe6-9891-19c70e8bf88c",
           "name": "pbr_04_mask01111",
           "transform": {
             "translation": [
@@ -374,18 +374,18 @@
                   0.45,
                   1.0
                 ],
-                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "base_color_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "metallic": 0.2,
                 "roughness": 0.55,
-                "metallic_roughness_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic_roughness_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "emissive": [
                   0.0,
                   0.0,
                   0.0
                 ],
                 "emissive_texture": null,
-                "normal_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
-                "occlusion_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "normal_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
+                "occlusion_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "double_sided": false,
                 "vertex_colors_enabled": false,
                 "alpha_mode": "opaque",
@@ -404,7 +404,7 @@
           "children": []
         },
         {
-          "id": "bbaa89bd-8cf0-471d-a253-718067103015",
+          "id": "29d16020-99a5-4f57-87d0-8f98923c7c59",
           "name": "pbr_05_mask11111",
           "transform": {
             "translation": [
@@ -442,18 +442,18 @@
                   0.45,
                   1.0
                 ],
-                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "base_color_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "metallic": 0.2,
                 "roughness": 0.55,
-                "metallic_roughness_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic_roughness_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "emissive": [
                   0.4,
                   0.25,
                   0.1
                 ],
-                "emissive_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
-                "normal_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
-                "occlusion_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "emissive_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
+                "normal_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
+                "occlusion_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "double_sided": false,
                 "vertex_colors_enabled": false,
                 "alpha_mode": "opaque",
@@ -472,7 +472,7 @@
           "children": []
         },
         {
-          "id": "8893a117-b204-4005-98cf-902cb8ac8fd8",
+          "id": "7688df5c-2ae7-4c53-a1d2-2ce9a9e91b26",
           "name": "pbr_06_mask00100",
           "transform": {
             "translation": [
@@ -522,7 +522,7 @@
                   0.0
                 ],
                 "emissive_texture": null,
-                "normal_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "normal_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "occlusion_texture": null,
                 "double_sided": false,
                 "vertex_colors_enabled": false,
@@ -542,7 +542,7 @@
           "children": []
         },
         {
-          "id": "b53bb581-be9a-41a7-8b27-fe93daa255b5",
+          "id": "fc996cc3-828e-4976-b94f-11763980184a",
           "name": "pbr_07_mask00101",
           "transform": {
             "translation": [
@@ -580,7 +580,7 @@
                   0.45,
                   1.0
                 ],
-                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "base_color_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "metallic": 0.2,
                 "roughness": 0.55,
                 "metallic_roughness_texture": null,
@@ -590,7 +590,7 @@
                   0.0
                 ],
                 "emissive_texture": null,
-                "normal_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "normal_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "occlusion_texture": null,
                 "double_sided": false,
                 "vertex_colors_enabled": false,
@@ -610,7 +610,7 @@
           "children": []
         },
         {
-          "id": "9d55e501-f53c-4ed8-b281-d7a9ae6b46ae",
+          "id": "32bdf041-093d-49ff-9ac7-c0a33e377930",
           "name": "pbr_08_mask00110_vc",
           "transform": {
             "translation": [
@@ -653,14 +653,14 @@
                 "base_color_texture": null,
                 "metallic": 0.2,
                 "roughness": 0.55,
-                "metallic_roughness_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic_roughness_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "emissive": [
                   0.0,
                   0.0,
                   0.0
                 ],
                 "emissive_texture": null,
-                "normal_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "normal_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "occlusion_texture": null,
                 "double_sided": false,
                 "vertex_colors_enabled": true,
@@ -680,7 +680,7 @@
           "children": []
         },
         {
-          "id": "4944d598-a187-4bb1-a347-d652a2015542",
+          "id": "28d23e48-1d57-43b5-b50d-2427d3675af5",
           "name": "pbr_09_mask01000",
           "transform": {
             "translation": [
@@ -729,7 +729,7 @@
                 ],
                 "emissive_texture": null,
                 "normal_texture": null,
-                "occlusion_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "occlusion_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "double_sided": false,
                 "vertex_colors_enabled": false,
                 "alpha_mode": "opaque",
@@ -748,7 +748,7 @@
           "children": []
         },
         {
-          "id": "b755b565-4bdd-4d2b-a300-28bb426f96a7",
+          "id": "b39bc949-45e2-4390-b517-9dc94e2908fc",
           "name": "pbr_10_mask10000",
           "transform": {
             "translation": [
@@ -797,7 +797,7 @@
                   0.25,
                   0.1
                 ],
-                "emissive_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "emissive_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "normal_texture": null,
                 "occlusion_texture": null,
                 "double_sided": false,
@@ -818,7 +818,7 @@
           "children": []
         },
         {
-          "id": "e3f8a65d-ce8e-489d-bedb-afeaca91a742",
+          "id": "ca390c6d-261f-4643-bed0-0f685f44f2a7",
           "name": "pbr_11_mask10001",
           "transform": {
             "translation": [
@@ -856,7 +856,7 @@
                   0.54,
                   1.0
                 ],
-                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "base_color_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "metallic": 0.2,
                 "roughness": 0.55,
                 "metallic_roughness_texture": null,
@@ -865,7 +865,7 @@
                   0.25,
                   0.1
                 ],
-                "emissive_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "emissive_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "normal_texture": null,
                 "occlusion_texture": null,
                 "double_sided": false,
@@ -886,7 +886,7 @@
           "children": []
         },
         {
-          "id": "4bcc770c-250b-468e-b921-1d8252736a08",
+          "id": "058dbecc-e382-4d63-86a1-d3823b5b5aa8",
           "name": "pbr_12_mask10101",
           "transform": {
             "translation": [
@@ -926,7 +926,7 @@
                   0.63000005,
                   1.0
                 ],
-                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "base_color_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "metallic": 0.2,
                 "roughness": 0.55,
                 "metallic_roughness_texture": null,
@@ -935,8 +935,8 @@
                   0.25,
                   0.1
                 ],
-                "emissive_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
-                "normal_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "emissive_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
+                "normal_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "occlusion_texture": null,
                 "double_sided": false,
                 "vertex_colors_enabled": false,
@@ -956,7 +956,7 @@
           "children": []
         },
         {
-          "id": "857ea492-bcbd-4a50-8a56-cc54ad940865",
+          "id": "e0ec18cd-223b-4af4-a419-d7c0f6c3835d",
           "name": "pbr_13_mask01010_vc",
           "transform": {
             "translation": [
@@ -997,7 +997,7 @@
                 "base_color_texture": null,
                 "metallic": 0.2,
                 "roughness": 0.55,
-                "metallic_roughness_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic_roughness_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "emissive": [
                   0.0,
                   0.0,
@@ -1005,7 +1005,7 @@
                 ],
                 "emissive_texture": null,
                 "normal_texture": null,
-                "occlusion_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "occlusion_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "double_sided": false,
                 "vertex_colors_enabled": true,
                 "alpha_mode": "opaque",
@@ -1024,7 +1024,7 @@
           "children": []
         },
         {
-          "id": "bf2945b5-db35-41cf-ad89-fdc724c9b18d",
+          "id": "4aed5a25-49e3-4b43-83f5-867001b8ccd2",
           "name": "pbr_14_mask11010",
           "transform": {
             "translation": [
@@ -1067,15 +1067,15 @@
                 "base_color_texture": null,
                 "metallic": 0.2,
                 "roughness": 0.55,
-                "metallic_roughness_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic_roughness_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "emissive": [
                   0.4,
                   0.25,
                   0.1
                 ],
-                "emissive_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "emissive_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "normal_texture": null,
-                "occlusion_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "occlusion_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "double_sided": false,
                 "vertex_colors_enabled": false,
                 "alpha_mode": "opaque",
@@ -1094,7 +1094,7 @@
           "children": []
         },
         {
-          "id": "bedf3604-5e03-4c9c-98ed-a1f7ea2610ad",
+          "id": "98cfeb3f-0a15-49a4-989c-5e5f09de7cb3",
           "name": "pbr_15_mask01101",
           "transform": {
             "translation": [
@@ -1132,7 +1132,7 @@
                   0.9,
                   1.0
                 ],
-                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "base_color_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "metallic": 0.2,
                 "roughness": 0.55,
                 "metallic_roughness_texture": null,
@@ -1142,8 +1142,8 @@
                   0.0
                 ],
                 "emissive_texture": null,
-                "normal_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
-                "occlusion_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "normal_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
+                "occlusion_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "double_sided": false,
                 "vertex_colors_enabled": false,
                 "alpha_mode": "opaque",
@@ -1162,7 +1162,7 @@
           "children": []
         },
         {
-          "id": "b99fda54-f021-4947-8328-f429254a5002",
+          "id": "0f1979a3-03ce-433e-95ad-a17c70580275",
           "name": "pbr_16_mask00000",
           "transform": {
             "translation": [
@@ -1232,7 +1232,7 @@
           "children": []
         },
         {
-          "id": "e66af8b7-a146-41b4-a4a2-b56ffeea0b35",
+          "id": "bbfb8565-b57b-44d2-ab15-05976341ede4",
           "name": "pbr_17_mask00001",
           "transform": {
             "translation": [
@@ -1270,7 +1270,7 @@
                   0.9,
                   1.0
                 ],
-                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "base_color_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "metallic": 0.2,
                 "roughness": 0.55,
                 "metallic_roughness_texture": null,
@@ -1300,7 +1300,7 @@
           "children": []
         },
         {
-          "id": "bdabdd20-e24a-4b75-a92d-6a275175ba29",
+          "id": "3e57d135-a43b-4daa-8fd3-7b3e0f945dec",
           "name": "pbr_18_mask00011_vc",
           "transform": {
             "translation": [
@@ -1340,10 +1340,10 @@
                   0.9,
                   1.0
                 ],
-                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "base_color_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "metallic": 0.2,
                 "roughness": 0.55,
-                "metallic_roughness_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic_roughness_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "emissive": [
                   0.0,
                   0.0,
@@ -1370,7 +1370,7 @@
           "children": []
         },
         {
-          "id": "c47fbbc2-8435-4ce6-9605-ad53c66211c8",
+          "id": "2ffb462e-e794-4f96-99f7-56a845cec97a",
           "name": "pbr_19_mask00111",
           "transform": {
             "translation": [
@@ -1408,17 +1408,17 @@
                   0.9,
                   1.0
                 ],
-                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "base_color_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "metallic": 0.2,
                 "roughness": 0.55,
-                "metallic_roughness_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic_roughness_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "emissive": [
                   0.0,
                   0.0,
                   0.0
                 ],
                 "emissive_texture": null,
-                "normal_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "normal_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "occlusion_texture": null,
                 "double_sided": false,
                 "vertex_colors_enabled": false,
@@ -1438,7 +1438,7 @@
           "children": []
         },
         {
-          "id": "a867f732-1392-4b9d-a4db-fad97c7435b6",
+          "id": "9d004ba9-a317-41f9-bf54-8964b946bb8e",
           "name": "pbr_20_mask01111",
           "transform": {
             "translation": [
@@ -1478,18 +1478,18 @@
                   0.9,
                   1.0
                 ],
-                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "base_color_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "metallic": 0.2,
                 "roughness": 0.55,
-                "metallic_roughness_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic_roughness_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "emissive": [
                   0.0,
                   0.0,
                   0.0
                 ],
                 "emissive_texture": null,
-                "normal_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
-                "occlusion_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "normal_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
+                "occlusion_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "double_sided": false,
                 "vertex_colors_enabled": false,
                 "alpha_mode": "opaque",
@@ -1508,7 +1508,7 @@
           "children": []
         },
         {
-          "id": "b6ea250b-e1b3-4d7e-a7d9-f4aa644f5a95",
+          "id": "3c58a511-883f-4bd3-89f4-861fc9e3eb58",
           "name": "pbr_21_mask11111",
           "transform": {
             "translation": [
@@ -1546,18 +1546,18 @@
                   0.9,
                   1.0
                 ],
-                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "base_color_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "metallic": 0.2,
                 "roughness": 0.55,
-                "metallic_roughness_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic_roughness_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "emissive": [
                   0.4,
                   0.25,
                   0.1
                 ],
-                "emissive_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
-                "normal_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
-                "occlusion_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "emissive_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
+                "normal_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
+                "occlusion_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "double_sided": false,
                 "vertex_colors_enabled": false,
                 "alpha_mode": "opaque",
@@ -1576,7 +1576,7 @@
           "children": []
         },
         {
-          "id": "db84ca58-78aa-4f79-b8a6-bc859d332951",
+          "id": "374f970e-e625-472f-8539-94cb51962ba5",
           "name": "pbr_22_mask00100",
           "transform": {
             "translation": [
@@ -1626,7 +1626,7 @@
                   0.0
                 ],
                 "emissive_texture": null,
-                "normal_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "normal_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "occlusion_texture": null,
                 "double_sided": false,
                 "vertex_colors_enabled": false,
@@ -1646,7 +1646,7 @@
           "children": []
         },
         {
-          "id": "f015727d-3ccc-4445-b69a-57ae978b38f2",
+          "id": "86d5ff17-1da0-4126-b4ff-06a65ae2f12c",
           "name": "pbr_23_mask00101_vc",
           "transform": {
             "translation": [
@@ -1684,7 +1684,7 @@
                   0.9,
                   1.0
                 ],
-                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "base_color_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "metallic": 0.2,
                 "roughness": 0.55,
                 "metallic_roughness_texture": null,
@@ -1694,7 +1694,7 @@
                   0.0
                 ],
                 "emissive_texture": null,
-                "normal_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "normal_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "occlusion_texture": null,
                 "double_sided": false,
                 "vertex_colors_enabled": true,
@@ -1714,7 +1714,7 @@
           "children": []
         },
         {
-          "id": "b6d4fcba-00a1-4782-bf01-e73c8c74e3ba",
+          "id": "a802e90e-3801-4656-bccd-b3ce57b82f20",
           "name": "pbr_24_mask00110",
           "transform": {
             "translation": [
@@ -1757,14 +1757,14 @@
                 "base_color_texture": null,
                 "metallic": 0.2,
                 "roughness": 0.55,
-                "metallic_roughness_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic_roughness_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "emissive": [
                   0.0,
                   0.0,
                   0.0
                 ],
                 "emissive_texture": null,
-                "normal_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "normal_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "occlusion_texture": null,
                 "double_sided": false,
                 "vertex_colors_enabled": false,
@@ -1784,7 +1784,7 @@
           "children": []
         },
         {
-          "id": "1fd4f374-a59c-409b-b234-f351c2c028e3",
+          "id": "051870a7-2317-421d-a1e6-3a92cf3b7ed2",
           "name": "pbr_25_mask01000",
           "transform": {
             "translation": [
@@ -1833,7 +1833,7 @@
                 ],
                 "emissive_texture": null,
                 "normal_texture": null,
-                "occlusion_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "occlusion_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "double_sided": false,
                 "vertex_colors_enabled": false,
                 "alpha_mode": "opaque",
@@ -1852,7 +1852,7 @@
           "children": []
         },
         {
-          "id": "f0d29315-f050-4ce7-b430-791b021af1b5",
+          "id": "3e46ae8c-05cb-41cc-9112-01c0e19d5dc6",
           "name": "pbr_26_mask10000",
           "transform": {
             "translation": [
@@ -1901,7 +1901,7 @@
                   0.25,
                   0.1
                 ],
-                "emissive_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "emissive_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "normal_texture": null,
                 "occlusion_texture": null,
                 "double_sided": false,
@@ -1922,7 +1922,7 @@
           "children": []
         },
         {
-          "id": "4b42fe0a-b57f-4b1b-baa4-77117324023a",
+          "id": "df4f0649-5391-4fff-900f-468becb41f37",
           "name": "pbr_27_mask10001",
           "transform": {
             "translation": [
@@ -1960,7 +1960,7 @@
                   0.72000015,
                   1.0
                 ],
-                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "base_color_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "metallic": 0.2,
                 "roughness": 0.55,
                 "metallic_roughness_texture": null,
@@ -1969,7 +1969,7 @@
                   0.25,
                   0.1
                 ],
-                "emissive_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "emissive_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "normal_texture": null,
                 "occlusion_texture": null,
                 "double_sided": false,
@@ -1990,7 +1990,7 @@
           "children": []
         },
         {
-          "id": "ca993850-7104-473a-95cd-41129b6ce043",
+          "id": "bb404b68-dd13-4d9e-97c0-a8ad5b7a6d21",
           "name": "pbr_28_mask10101_vc",
           "transform": {
             "translation": [
@@ -2030,7 +2030,7 @@
                   0.63000005,
                   1.0
                 ],
-                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "base_color_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "metallic": 0.2,
                 "roughness": 0.55,
                 "metallic_roughness_texture": null,
@@ -2039,8 +2039,8 @@
                   0.25,
                   0.1
                 ],
-                "emissive_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
-                "normal_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "emissive_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
+                "normal_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "occlusion_texture": null,
                 "double_sided": false,
                 "vertex_colors_enabled": true,
@@ -2060,7 +2060,7 @@
           "children": []
         },
         {
-          "id": "17d9020e-12b9-4cff-8e42-42578173a3d1",
+          "id": "c6185dcc-c88b-4bce-8abe-55627c6e42e3",
           "name": "pbr_29_mask01010",
           "transform": {
             "translation": [
@@ -2101,7 +2101,7 @@
                 "base_color_texture": null,
                 "metallic": 0.2,
                 "roughness": 0.55,
-                "metallic_roughness_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic_roughness_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "emissive": [
                   0.0,
                   0.0,
@@ -2109,7 +2109,7 @@
                 ],
                 "emissive_texture": null,
                 "normal_texture": null,
-                "occlusion_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "occlusion_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "double_sided": false,
                 "vertex_colors_enabled": false,
                 "alpha_mode": "opaque",
@@ -2128,7 +2128,7 @@
           "children": []
         },
         {
-          "id": "16db3fd0-5abf-444a-acdb-13f050cd5d41",
+          "id": "33afdbc9-42fb-4b41-ad54-2a4632d8b6a6",
           "name": "pbr_30_mask11010",
           "transform": {
             "translation": [
@@ -2171,15 +2171,15 @@
                 "base_color_texture": null,
                 "metallic": 0.2,
                 "roughness": 0.55,
-                "metallic_roughness_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic_roughness_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "emissive": [
                   0.4,
                   0.25,
                   0.1
                 ],
-                "emissive_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "emissive_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "normal_texture": null,
-                "occlusion_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "occlusion_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "double_sided": false,
                 "vertex_colors_enabled": false,
                 "alpha_mode": "opaque",
@@ -2198,7 +2198,7 @@
           "children": []
         },
         {
-          "id": "32ed5987-742e-455a-b74f-7dd36b97efb8",
+          "id": "82045e5d-9f5b-4f6b-a9cc-09419c23b6e2",
           "name": "pbr_31_mask01101",
           "transform": {
             "translation": [
@@ -2236,7 +2236,7 @@
                   0.45,
                   1.0
                 ],
-                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "base_color_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "metallic": 0.2,
                 "roughness": 0.55,
                 "metallic_roughness_texture": null,
@@ -2246,8 +2246,8 @@
                   0.0
                 ],
                 "emissive_texture": null,
-                "normal_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
-                "occlusion_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "normal_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
+                "occlusion_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "double_sided": false,
                 "vertex_colors_enabled": false,
                 "alpha_mode": "opaque",
@@ -2266,7 +2266,7 @@
           "children": []
         },
         {
-          "id": "c042ffd7-e169-474a-bc97-44ba9ad30d14",
+          "id": "8524716e-300f-473e-b941-72b7267a8ddc",
           "name": "pbr_32_mask00000",
           "transform": {
             "translation": [
@@ -2336,7 +2336,7 @@
           "children": []
         },
         {
-          "id": "4cd997bd-e36e-445e-83c4-540d2bb3bdf1",
+          "id": "5f7e1ead-4aa2-4d6d-84e8-f9ff8364337e",
           "name": "pbr_33_mask00001_vc",
           "transform": {
             "translation": [
@@ -2374,7 +2374,7 @@
                   0.45,
                   1.0
                 ],
-                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "base_color_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "metallic": 0.2,
                 "roughness": 0.55,
                 "metallic_roughness_texture": null,
@@ -2404,7 +2404,7 @@
           "children": []
         },
         {
-          "id": "896b89a8-d236-4b28-b804-bd415859e478",
+          "id": "2569afc1-1dba-45d9-9148-33e5d96fd117",
           "name": "pbr_34_mask00011",
           "transform": {
             "translation": [
@@ -2444,10 +2444,10 @@
                   0.45,
                   1.0
                 ],
-                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "base_color_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "metallic": 0.2,
                 "roughness": 0.55,
-                "metallic_roughness_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic_roughness_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "emissive": [
                   0.0,
                   0.0,
@@ -2474,7 +2474,7 @@
           "children": []
         },
         {
-          "id": "534a0114-d565-4ef3-aff3-bdffdaf4411c",
+          "id": "63e62416-8886-4452-9848-3bd2057e0510",
           "name": "pbr_35_mask00111",
           "transform": {
             "translation": [
@@ -2512,17 +2512,17 @@
                   0.45,
                   1.0
                 ],
-                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "base_color_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "metallic": 0.2,
                 "roughness": 0.55,
-                "metallic_roughness_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "metallic_roughness_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "emissive": [
                   0.0,
                   0.0,
                   0.0
                 ],
                 "emissive_texture": null,
-                "normal_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "normal_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "occlusion_texture": null,
                 "double_sided": false,
                 "vertex_colors_enabled": false,
@@ -2542,7 +2542,7 @@
           "children": []
         },
         {
-          "id": "7feef582-f550-4f5c-8740-2200c72dde32",
+          "id": "6fa834e4-b157-458c-b176-fde8b38c973c",
           "name": "toon_0_b2",
           "transform": {
             "translation": [
@@ -2582,7 +2582,7 @@
                   0.9,
                   1.0
                 ],
-                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "base_color_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "metallic": 0.0,
                 "roughness": 0.7,
                 "metallic_roughness_texture": null,
@@ -2617,7 +2617,7 @@
           "children": []
         },
         {
-          "id": "6b22f54b-f204-4682-b53c-383a79423ef9",
+          "id": "dbb0f1f8-e07d-4def-b435-39f154beb0df",
           "name": "toon_1_b3",
           "transform": {
             "translation": [
@@ -2690,7 +2690,7 @@
           "children": []
         },
         {
-          "id": "93735761-5ffc-482f-bb08-7ad3014d92ba",
+          "id": "a8a83e43-1f78-45e0-a96d-4acda30bfa8c",
           "name": "toon_2_b4",
           "transform": {
             "translation": [
@@ -2730,7 +2730,7 @@
                   0.9,
                   1.0
                 ],
-                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "base_color_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "metallic": 0.0,
                 "roughness": 0.7,
                 "metallic_roughness_texture": null,
@@ -2765,7 +2765,7 @@
           "children": []
         },
         {
-          "id": "c04c9251-6f5a-4414-9d30-e458391b461a",
+          "id": "4e8e8b16-31c9-4c95-a972-ea64107044d6",
           "name": "toon_3_b5",
           "transform": {
             "translation": [
@@ -2838,7 +2838,7 @@
           "children": []
         },
         {
-          "id": "c5c14c87-aaa7-4396-96b0-6071aa6a2a9d",
+          "id": "adf226dd-2daa-403d-aab2-cc3b102ce7ba",
           "name": "toon_4_b2",
           "transform": {
             "translation": [
@@ -2878,7 +2878,7 @@
                   0.9,
                   1.0
                 ],
-                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "base_color_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "metallic": 0.0,
                 "roughness": 0.7,
                 "metallic_roughness_texture": null,
@@ -2913,7 +2913,7 @@
           "children": []
         },
         {
-          "id": "e55c763e-edb8-4994-9e58-1a4c9544d23a",
+          "id": "5df701e9-f7cc-41cb-a992-0c3fac3a6583",
           "name": "toon_5_b3",
           "transform": {
             "translation": [
@@ -2986,7 +2986,7 @@
           "children": []
         },
         {
-          "id": "7ba95f6c-d641-4e5c-b8a6-e8ea52418c42",
+          "id": "1f1d6d5a-c5fa-4318-b3a2-906df48e91f7",
           "name": "toon_6_b4",
           "transform": {
             "translation": [
@@ -3026,7 +3026,7 @@
                   0.9,
                   1.0
                 ],
-                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "base_color_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "metallic": 0.0,
                 "roughness": 0.7,
                 "metallic_roughness_texture": null,
@@ -3061,7 +3061,7 @@
           "children": []
         },
         {
-          "id": "0b0a33f9-fda2-40f8-9151-f8271c74089f",
+          "id": "326aa6ca-049e-4a49-81c4-ca6eaca6c44b",
           "name": "toon_7_b5",
           "transform": {
             "translation": [
@@ -3134,7 +3134,7 @@
           "children": []
         },
         {
-          "id": "ea8f0561-4965-4c2e-8b6d-23a3e64e80e0",
+          "id": "110a4cdb-c048-4786-8d46-5f3f90a44d4f",
           "name": "unlit_0",
           "transform": {
             "translation": [
@@ -3174,7 +3174,7 @@
                   0.285,
                   1.0
                 ],
-                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "base_color_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "metallic": 0.0,
                 "roughness": 0.7,
                 "metallic_roughness_texture": null,
@@ -3204,7 +3204,7 @@
           "children": []
         },
         {
-          "id": "16c5bb87-59d4-4fec-8fe7-fb94c9b8c6ec",
+          "id": "3b56fb19-45c9-414a-a8bb-02bf41643c22",
           "name": "unlit_1",
           "transform": {
             "translation": [
@@ -3272,7 +3272,7 @@
           "children": []
         },
         {
-          "id": "1cae299c-7216-4328-8b01-abbe62ce9cd5",
+          "id": "151af6c8-2783-4169-a6a9-c534365860fe",
           "name": "unlit_2",
           "transform": {
             "translation": [
@@ -3312,7 +3312,7 @@
                   0.285,
                   1.0
                 ],
-                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "base_color_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "metallic": 0.0,
                 "roughness": 0.7,
                 "metallic_roughness_texture": null,
@@ -3342,7 +3342,7 @@
           "children": []
         },
         {
-          "id": "bf226909-6ac8-41e0-8fbe-406139f99eab",
+          "id": "9bf6dcc9-ae05-49b5-9bfc-1ef1d9e4343c",
           "name": "unlit_3",
           "transform": {
             "translation": [
@@ -3410,7 +3410,7 @@
           "children": []
         },
         {
-          "id": "98c2158d-c2ac-44da-8891-d7906e9f7bdf",
+          "id": "a1568317-c9cc-4fb6-9d84-41ad5467e28d",
           "name": "unlit_4",
           "transform": {
             "translation": [
@@ -3450,7 +3450,7 @@
                   0.285,
                   1.0
                 ],
-                "base_color_texture": "be677a4f-5e94-4de2-bb4e-f5552e75ad5f",
+                "base_color_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
                 "metallic": 0.0,
                 "roughness": 0.7,
                 "metallic_roughness_texture": null,
@@ -3480,7 +3480,7 @@
           "children": []
         },
         {
-          "id": "1bc5073e-cf8c-4bab-be5c-e42b8e930187",
+          "id": "5d921ca7-369f-4f98-90c9-5095019725d2",
           "name": "unlit_5",
           "transform": {
             "translation": [
@@ -3550,7 +3550,311 @@
       ]
     },
     {
-      "id": "0ea9a981-5463-427b-b24f-311803e3db06",
+      "id": "dd7272dc-2ba8-4549-a0b9-64e3d0308416",
+      "name": "transparent",
+      "transform": {
+        "translation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "kind": "group",
+      "locked": false,
+      "visible": true,
+      "prefab": false,
+      "children": [
+        {
+          "id": "177e0434-5174-4f8d-8ada-b86c66ed5293",
+          "name": "transp_glass_clear",
+          "transform": {
+            "translation": [
+              -6.0,
+              0.8,
+              -0.6
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    1.1,
+                    1.1,
+                    1.1
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.8,
+                  0.9,
+                  1.0,
+                  0.35
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.1,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "blend",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "077ffa44-4da5-4136-92a3-4e207a79d1a6",
+          "name": "transp_glass_green",
+          "transform": {
+            "translation": [
+              -2.0,
+              0.8,
+              -0.6
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "sphere": {
+                  "radius": 0.7,
+                  "segments_long": 24,
+                  "segments_lat": 16
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  0.45,
+                  1.0,
+                  0.55,
+                  0.5
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.3,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "blend",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "e7365127-d773-44ce-8a91-cae4574fa162",
+          "name": "transp_glass_amber",
+          "transform": {
+            "translation": [
+              2.0,
+              0.8,
+              -0.6
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "box": {
+                  "dims": [
+                    1.1,
+                    1.1,
+                    1.1
+                  ]
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  1.0,
+                  0.7,
+                  0.2,
+                  0.55
+                ],
+                "base_color_texture": null,
+                "metallic": 0.0,
+                "roughness": 0.2,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "blend",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        },
+        {
+          "id": "1d8626be-078a-4c43-ae06-f0e5c196d28a",
+          "name": "transp_glass_textured",
+          "transform": {
+            "translation": [
+              6.0,
+              0.8,
+              -0.6
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "kind": {
+            "primitive": {
+              "shape": {
+                "sphere": {
+                  "radius": 0.7,
+                  "segments_long": 24,
+                  "segments_lat": 16
+                }
+              },
+              "material": null,
+              "inline_material": {
+                "label": "",
+                "base_color": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  0.6
+                ],
+                "base_color_texture": "393217fc-865b-4bfa-b3eb-e9d2127adf58",
+                "metallic": 0.0,
+                "roughness": 0.4,
+                "metallic_roughness_texture": null,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "emissive_texture": null,
+                "normal_texture": null,
+                "occlusion_texture": null,
+                "double_sided": false,
+                "vertex_colors_enabled": false,
+                "alpha_mode": "blend",
+                "shading": "pbr"
+              },
+              "custom_material": null,
+              "shadow": {
+                "cast": true,
+                "receive": true
+              }
+            }
+          },
+          "locked": false,
+          "visible": true,
+          "prefab": false,
+          "children": []
+        }
+      ]
+    },
+    {
+      "id": "5b984275-685f-441e-b45e-24a2e232f8bc",
       "name": "floor",
       "transform": {
         "translation": [
@@ -3619,7 +3923,7 @@
       "children": []
     },
     {
-      "id": "256e23b3-0151-4ea4-9691-32f3bd0b283d",
+      "id": "666f73f7-5091-42b0-a84c-6d2618a8a554",
       "name": "sun",
       "transform": {
         "translation": [
@@ -3671,7 +3975,7 @@
       "children": []
     },
     {
-      "id": "611783ac-b0b9-4a74-b6b9-15602c518a4f",
+      "id": "5bdfc7e6-ab92-4659-90d4-1469165ffb0f",
       "name": "fill",
       "transform": {
         "translation": [
