@@ -237,11 +237,27 @@ impl ShadingBase {
         }
     }
 
-    /// True for the families that specialize per feature-set
-    /// (`PbrFeatures` / `ToonFeatures`). Unlit / Flipbook stay
-    /// single-bucket; Custom carries an author fragment.
+    /// True for the families that specialize per feature-set. Currently
+    /// `Pbr` only — Toon's opaque shader doesn't yet sample its textures
+    /// (no gateable opaque code paths), so it stays single-bucket until it
+    /// does (then add `ToonFeatures` + flip this).
     pub fn is_feature_specialized(self) -> bool {
-        matches!(self, ShadingBase::Pbr | ShadingBase::Toon)
+        matches!(self, ShadingBase::Pbr)
+    }
+
+    /// The canonical (single-bucket) first-party `shader_id` for this
+    /// family. Used as the graceful-degradation target when allocating a
+    /// new feature-set variant would exceed the bucket cap — the canonical
+    /// PBR/Toon bucket renders the full (uber) shader, which is correct,
+    /// just unspecialized. `Custom` has no canonical id (maps to PBR
+    /// defensively; never hit in practice).
+    pub fn canonical_shader_id(self) -> MaterialShaderId {
+        match self {
+            ShadingBase::Pbr | ShadingBase::Custom => MaterialShaderId::PBR,
+            ShadingBase::Unlit => MaterialShaderId::UNLIT,
+            ShadingBase::Toon => MaterialShaderId::TOON,
+            ShadingBase::Flipbook => MaterialShaderId::FLIPBOOK,
+        }
     }
 }
 
@@ -473,8 +489,8 @@ impl DynamicMaterials {
         features: u32,
     ) -> MaterialShaderId {
         debug_assert!(
-            base.is_feature_specialized(),
-            "resolve_first_party_variant called with non-specialized base {base:?}"
+            !matches!(base, ShadingBase::Custom),
+            "resolve_first_party_variant is for first-party families; Custom uses registrations"
         );
         if let Some(&id) = self.first_party_variants.get(&(base, features)) {
             return id;
@@ -492,6 +508,29 @@ impl DynamicMaterials {
     /// variant (a custom registration or a canonical first-party id).
     pub fn first_party_variant_of(&self, id: MaterialShaderId) -> Option<(ShadingBase, u32)> {
         self.fp_variant_meta.get(&id).copied()
+    }
+
+    /// Cap-aware variant resolution (the render-loop reconcile path).
+    /// Like [`Self::resolve_first_party_variant`] but, when allocating a
+    /// *new* bucket would push the total past `max_buckets`, returns the
+    /// canonical (uber) first-party id instead of bit-aliasing past the
+    /// classify `tile_mask` width. Returns `(id, overflowed)` so the
+    /// caller can log the degradation. Existing variants always resolve
+    /// (idempotent), so a saturated scene still routes its already-known
+    /// feature-sets correctly.
+    pub fn resolve_first_party_variant_capped(
+        &mut self,
+        base: ShadingBase,
+        features: u32,
+        max_buckets: usize,
+    ) -> (MaterialShaderId, bool) {
+        if let Some(&id) = self.first_party_variants.get(&(base, features)) {
+            return (id, false);
+        }
+        if self.bucket_entries_cache.len() >= max_buckets {
+            return (base.canonical_shader_id(), true);
+        }
+        (self.resolve_first_party_variant(base, features), false)
     }
 
     /// Returns the cached bucket-entries slice (first-party prefix +
@@ -1140,11 +1179,23 @@ impl crate::AwsmRenderer {
         let before = self.dynamic_materials.bucket_entries_cached().len();
         let mut resolved: Vec<(crate::materials::MaterialKey, MaterialShaderId)> =
             Vec::with_capacity(wants.len());
+        let mut overflowed = 0usize;
         for (key, base, features) in wants {
-            let id = self
+            let (id, overflow) = self
                 .dynamic_materials
-                .resolve_first_party_variant(base, features);
+                .resolve_first_party_variant_capped(base, features, MAX_BUCKET_ENTRIES);
+            if overflow {
+                overflowed += 1;
+            }
             resolved.push((key, id));
+        }
+        if overflowed > 0 {
+            tracing::warn!(
+                target: "awsm_renderer::dynamic_materials",
+                "variant reconcile: {overflowed} material(s) exceeded the {MAX_BUCKET_ENTRIES}-bucket \
+                 cap and fell back to the canonical (uber) first-party bucket — raise MAX_BUCKET_WORDS \
+                 to specialize them",
+            );
         }
         let grew = self.dynamic_materials.bucket_entries_cached().len() != before;
 

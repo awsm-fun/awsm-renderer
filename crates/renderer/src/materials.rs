@@ -267,14 +267,14 @@ pub struct Materials {
     /// variant enters or is edited; cleared by the renderer's reconcile
     /// pass. Starts `true` so the first frame reconciles.
     variants_dirty: bool,
-    /// Master switch for the opaque PBR/Toon feature-set specialization
-    /// (the specialize-only pivot). `false` (default) = current single-
-    /// bucket-per-family behavior (pixel-identical to the pre-overhaul
-    /// baseline); `true` = `reconcile_material_variants` routes each
-    /// opaque PBR material to a per-feature-set variant bucket. Held here
-    /// (rather than a compile-time const) so it can be toggled at runtime
-    /// for A/B pixel verification. Mirrors the plan's
-    /// `pbr_specialization: Auto | ForceUber` config knob.
+    /// Master switch for the opaque PBR feature-set specialization (the
+    /// specialize-only pivot — Decision 9 `pbr_specialization: Auto`).
+    /// `true` (default = Auto) = `reconcile_material_variants` routes each
+    /// opaque PBR material to a per-feature-set variant bucket (compile-
+    /// time-gated shader). `false` (= ForceUber compat escape) = the
+    /// pre-overhaul single-bucket-per-family behavior. GPU-verified pixel-
+    /// equivalent within ≤2/255. Runtime-toggleable for A/B verification
+    /// via `AwsmRenderer::set_pbr_specialization`.
     pbr_specialization: bool,
     _is_transparency_pass: SecondaryMap<MaterialKey, ()>,
     uploader: crate::buffer::mapped_uploader::MappedUploader,
@@ -306,7 +306,7 @@ impl Materials {
             gpu_dirty: true,
             resolved_shader_id: SecondaryMap::new(),
             variants_dirty: true,
-            pbr_specialization: false,
+            pbr_specialization: true,
             _is_transparency_pass: SecondaryMap::new(),
             uploader: crate::buffer::mapped_uploader::MappedUploader::new("Materials"),
             has_seen_transmission: false,
