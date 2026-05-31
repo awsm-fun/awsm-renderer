@@ -8,7 +8,6 @@ use std::hash::{Hash, Hasher};
 
 use awsm_materials::{MaterialAlphaMode, MaterialShaderId};
 
-
 use awsm_materials::dynamic::{DynamicMaterialContext, DynamicTextureBinding};
 use awsm_materials::dynamic_layout::MaterialLayout;
 use awsm_materials::TextureContext;
