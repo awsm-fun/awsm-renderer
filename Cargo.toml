@@ -116,9 +116,11 @@ reqwest = {version = "0.13.4", features = ["json"]}
 
 
 # Media
-# https://github.com/gltf-rs/gltf/issues/465
-# Note: clearcoat/sheen features require git version until gltf releases them.
-# Those features are enabled in frontend/Cargo.toml for local dev only.
+# Git dep (vs crates.io 1.4.1) is still required for the unreleased
+# `NormalTexture`/`OcclusionTexture::texture_transform()` accessors used in
+# `renderer-gltf`. clearcoat/sheen (also unreleased — gltf-rs/gltf#465) used
+# to need it too, but are now parsed from the raw extensions JSON, so no
+# per-build `clearcoat`/`sheen` Cargo feature is needed anymore.
 gltf = {version = "1.4.1", git = "https://github.com/gltf-rs/gltf.git", features = [
     "extensions",
     "KHR_lights_punctual",

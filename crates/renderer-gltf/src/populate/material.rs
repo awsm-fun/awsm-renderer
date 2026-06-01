@@ -459,176 +459,88 @@ impl LocalPbrMaterialExtensions {
             });
         }
 
-        #[cfg(feature = "clearcoat")]
-        if let Some(clearcoat) = gltf_material.clearcoat() {
-            let tex =
-                if let Some(tex_info) = clearcoat.clearcoat_texture().map(GltfTextureInfo::from) {
-                    let GLtfMaterialCacheKey {
-                        uv_index,
-                        texture_key,
-                        sampler_key,
-                        texture_transform_key,
-                    } = tex_info
-                        .create_material_cache_key(
-                            renderer,
-                            ctx,
-                            TextureColorInfo {
-                                mipmap_kind: MipmapTextureKind::Albedo,
-                                srgb_to_linear: false,
-                                premultiplied_alpha: None,
-                            },
-                        )
-                        .await?;
-
-                    Some(MaterialTexture {
-                        key: texture_key,
-                        sampler_key: Some(sampler_key),
-                        uv_index: Some(uv_index as u32),
-                        transform_key: texture_transform_key,
-                    })
-                } else {
-                    None
-                };
-
-            let roughness_tex = if let Some(tex_info) = clearcoat
-                .clearcoat_roughness_texture()
-                .map(GltfTextureInfo::from)
-            {
-                let GLtfMaterialCacheKey {
-                    uv_index,
-                    texture_key,
-                    sampler_key,
-                    texture_transform_key,
-                } = tex_info
-                    .create_material_cache_key(
-                        renderer,
-                        ctx,
-                        TextureColorInfo {
-                            mipmap_kind: MipmapTextureKind::MetallicRoughness,
-                            srgb_to_linear: false,
-                            premultiplied_alpha: None,
-                        },
-                    )
-                    .await?;
-
-                Some(MaterialTexture {
-                    key: texture_key,
-                    sampler_key: Some(sampler_key),
-                    uv_index: Some(uv_index as u32),
-                    transform_key: texture_transform_key,
-                })
-            } else {
-                None
-            };
-
-            let normal_tex = if let Some(tex_info) = clearcoat
-                .clearcoat_normal_texture()
-                .map(GltfTextureInfo::from)
-            {
-                let GLtfMaterialCacheKey {
-                    uv_index,
-                    texture_key,
-                    sampler_key,
-                    texture_transform_key,
-                } = tex_info
-                    .create_material_cache_key(
-                        renderer,
-                        ctx,
-                        TextureColorInfo {
-                            mipmap_kind: MipmapTextureKind::Normal,
-                            srgb_to_linear: false,
-                            premultiplied_alpha: None,
-                        },
-                    )
-                    .await?;
-
-                Some(MaterialTexture {
-                    key: texture_key,
-                    sampler_key: Some(sampler_key),
-                    uv_index: Some(uv_index as u32),
-                    transform_key: texture_transform_key,
-                })
-            } else {
-                None
-            };
+        // KHR_materials_clearcoat / KHR_materials_sheen are parsed from the
+        // raw extensions JSON (like the others below) rather than the `gltf`
+        // crate's typed accessors, which are unreleased on crates.io. Going
+        // through `load_json_texture` also routes the clearcoat normal map
+        // through the same texture path as every other extension.
+        if let Some(value) = gltf_material.extension_value("KHR_materials_clearcoat") {
+            let tex = load_json_texture(
+                renderer,
+                ctx,
+                value.get("clearcoatTexture"),
+                TextureColorInfo {
+                    mipmap_kind: MipmapTextureKind::Albedo,
+                    srgb_to_linear: false,
+                    premultiplied_alpha: None,
+                },
+            )
+            .await?;
+            let roughness_tex = load_json_texture(
+                renderer,
+                ctx,
+                value.get("clearcoatRoughnessTexture"),
+                TextureColorInfo {
+                    mipmap_kind: MipmapTextureKind::MetallicRoughness,
+                    srgb_to_linear: false,
+                    premultiplied_alpha: None,
+                },
+            )
+            .await?;
+            let normal_tex = load_json_texture(
+                renderer,
+                ctx,
+                value.get("clearcoatNormalTexture"),
+                TextureColorInfo {
+                    mipmap_kind: MipmapTextureKind::Normal,
+                    srgb_to_linear: false,
+                    premultiplied_alpha: None,
+                },
+            )
+            .await?;
+            // `scale` lives on the normal textureInfo object (default 1.0).
+            let normal_scale = value
+                .get("clearcoatNormalTexture")
+                .map(|t| read_f32(t, "scale", 1.0))
+                .unwrap_or(1.0);
 
             extensions.clearcoat = Some(PbrMaterialClearCoat {
                 tex,
-                factor: clearcoat.clearcoat_factor(),
+                factor: read_f32(value, "clearcoatFactor", 0.0),
                 roughness_tex,
-                roughness_factor: clearcoat.clearcoat_roughness_factor(),
+                roughness_factor: read_f32(value, "clearcoatRoughnessFactor", 0.0),
                 normal_tex,
-                normal_scale: clearcoat
-                    .clearcoat_normal_texture()
-                    .map(|n| n.scale())
-                    .unwrap_or(1.0),
+                normal_scale,
             });
         }
 
-        #[cfg(feature = "sheen")]
-        if let Some(sheen) = gltf_material.sheen() {
-            let color_tex =
-                if let Some(tex_info) = sheen.sheen_color_texture().map(GltfTextureInfo::from) {
-                    let GLtfMaterialCacheKey {
-                        uv_index,
-                        texture_key,
-                        sampler_key,
-                        texture_transform_key,
-                    } = tex_info
-                        .create_material_cache_key(
-                            renderer,
-                            ctx,
-                            TextureColorInfo {
-                                mipmap_kind: MipmapTextureKind::Specular,
-                                srgb_to_linear: true,
-                                premultiplied_alpha: None,
-                            },
-                        )
-                        .await?;
-
-                    Some(MaterialTexture {
-                        key: texture_key,
-                        sampler_key: Some(sampler_key),
-                        uv_index: Some(uv_index as u32),
-                        transform_key: texture_transform_key,
-                    })
-                } else {
-                    None
-                };
-
-            let roughness_tex = if let Some(tex_info) =
-                sheen.sheen_roughness_texture().map(GltfTextureInfo::from)
-            {
-                let GLtfMaterialCacheKey {
-                    uv_index,
-                    texture_key,
-                    sampler_key,
-                    texture_transform_key,
-                } = tex_info
-                    .create_material_cache_key(
-                        renderer,
-                        ctx,
-                        TextureColorInfo {
-                            mipmap_kind: MipmapTextureKind::MetallicRoughness,
-                            srgb_to_linear: false,
-                            premultiplied_alpha: None,
-                        },
-                    )
-                    .await?;
-
-                Some(MaterialTexture {
-                    key: texture_key,
-                    sampler_key: Some(sampler_key),
-                    uv_index: Some(uv_index as u32),
-                    transform_key: texture_transform_key,
-                })
-            } else {
-                None
-            };
+        if let Some(value) = gltf_material.extension_value("KHR_materials_sheen") {
+            let color_tex = load_json_texture(
+                renderer,
+                ctx,
+                value.get("sheenColorTexture"),
+                TextureColorInfo {
+                    mipmap_kind: MipmapTextureKind::Specular,
+                    srgb_to_linear: true,
+                    premultiplied_alpha: None,
+                },
+            )
+            .await?;
+            let roughness_tex = load_json_texture(
+                renderer,
+                ctx,
+                value.get("sheenRoughnessTexture"),
+                TextureColorInfo {
+                    mipmap_kind: MipmapTextureKind::MetallicRoughness,
+                    srgb_to_linear: false,
+                    premultiplied_alpha: None,
+                },
+            )
+            .await?;
 
             extensions.sheen = Some(PbrMaterialSheen {
-                color_factor: sheen.sheen_color_factor(),
-                roughness_factor: sheen.sheen_roughness_factor(),
+                color_factor: read_color3(value, "sheenColorFactor", [0.0, 0.0, 0.0]),
+                roughness_factor: read_f32(value, "sheenRoughnessFactor", 0.0),
                 roughness_tex,
                 color_tex,
             });

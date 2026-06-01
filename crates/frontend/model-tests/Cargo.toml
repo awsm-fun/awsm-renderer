@@ -9,7 +9,7 @@ rust-version.workspace = true
 
 [dependencies]
 awsm-renderer = { path = "../../renderer", features = ["texture-export", "ktx", "serde"] }
-awsm-renderer-gltf = { path = "../../renderer-gltf", features = ["clearcoat", "sheen"] }
+awsm-renderer-gltf = { path = "../../renderer-gltf" }
 awsm-renderer-editor = { path = "../../editor" }
 awsm-web-shared = { path = "../../web-shared" }
 serde = {workspace = true}
@@ -26,8 +26,7 @@ wasm-bindgen = {workspace = true}
 js-sys = {workspace = true}
 wasm-bindgen-futures = {workspace = true}
 glam = {workspace = true}
-# Enable clearcoat/sheen features for local dev (only available via git dep)
-gltf = {workspace = true, features = ["KHR_materials_clearcoat", "KHR_materials_sheen"]}
+gltf = {workspace = true}
 
 # frontend-only, so let's not confuse things, keep 'em here
 serde-wasm-bindgen = "0.6.5"
