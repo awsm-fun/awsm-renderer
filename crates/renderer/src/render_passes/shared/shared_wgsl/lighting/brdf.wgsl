@@ -214,7 +214,9 @@ fn distribution_charlie(n_dot_h: f32, roughness: f32) -> f32 {
 
 // Visibility function for sheen (Ashikhmin)
 fn visibility_ashikhmin(n_dot_v: f32, n_dot_l: f32) -> f32 {
-    return 1.0 / (4.0 * (n_dot_l + n_dot_v - n_dot_l * n_dot_v));
+    // Guard the denominator: it → 0 when both cosines → 0, which would
+    // produce inf/NaN. EPSILON floor keeps it finite at grazing angles.
+    return 1.0 / max(4.0 * (n_dot_l + n_dot_v - n_dot_l * n_dot_v), EPSILON);
 }
 
 // Compute sheen contribution for direct lighting
@@ -431,10 +433,19 @@ fn iridescence_fresnel(
     let phase = 2.0 * PI * opd / wavelengths;
     let cos_phase = cos(phase);
 
-    // Two-beam interference (simplified Fabry-Perot, ignoring higher orders).
-    // R = r12 + r23 + 2*amp1*amp2*cos(phi); the cross term is what produces
-    // the chromatic fringes.
-    let interference = vec3<f32>(r12) + r23 + 2.0 * vec3<f32>(amp1) * amp2 * cos_phase;
+    // Two-beam Airy reflectance (Fabry-Perot, ignoring higher orders), in
+    // terms of the amplitude coefficients ρ12=amp1, ρ23=amp2:
+    //   R = |ρ12 + ρ23·e^{iφ}|² / |1 + ρ12·ρ23·e^{iφ}|²
+    //     = (r12 + r23 + 2·amp1·amp2·cosφ) / (1 + r12·r23 + 2·amp1·amp2·cosφ)
+    // The previous code used only the numerator, which peaks at
+    // (√r12+√r23)² > max(r12,r23) — energy non-conserving, just clamped to
+    // 1. The denominator (Airy normalization) keeps R ≤ 1 and physical. Its
+    // minimum is (1-amp1·amp2)² ≥ 0 (=0 only at total reflection, already
+    // returned above), so a tiny floor guards the division.
+    let cross = 2.0 * vec3<f32>(amp1) * amp2 * cos_phase;
+    let numerator = vec3<f32>(r12) + r23 + cross;
+    let denominator = vec3<f32>(1.0) + vec3<f32>(r12) * r23 + cross;
+    let interference = numerator / max(denominator, vec3<f32>(1e-4));
     return clamp(interference, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
@@ -544,35 +555,47 @@ fn brdf_direct(color: PbrMaterialColor, light_brdf: LightBrdf, surface_to_camera
     let k_d = (1.0 - F_max) * (1.0 - metallic);
     let diffuse = k_d * base_color * (1.0 / PI);
 
-    // Base layer contribution.
+    // `result` accumulates the FRONT (camera-side) layer — reflective
+    // diffuse + specular — which the sheen albedo-scaling and clearcoat
+    // Fresnel attenuate below. The diffuse-transmission BACK lobe is held
+    // separately in `transmit_back` and added at the very end: it is on the
+    // far side of the surface, so those front-layer energy factors must not
+    // touch it.
+    var transmit_back = vec3<f32>(0.0);
     {% if pbr_features.diffuse_transmission %}
-    // KHR_materials_diffuse_transmission: the diffuse layer is a mix of a
-    // reflective lobe (front-facing `n_dot_l`, tinted by base color) and a
-    // transmissive lobe (back-facing `n_dot_l_back`, tinted by
-    // *diffuseTransmissionColor* only — NOT base color), weighted by
-    // diffuseTransmissionFactor. At factor=1 the reflective lobe vanishes
-    // and a back-lit surface shows purely transmitted light, matching the
-    // KHR reference. Specular is unaffected (it's not part of the diffuse
-    // split).
+    // KHR_materials_diffuse_transmission: split the diffuse layer into a
+    // reflective lobe (front `n_dot_l`, base color) scaled by (1-dt) and a
+    // transmissive lobe (back `n_dot_l_back`, diffuseTransmissionColor) at
+    // weight dt. At dt=1 the reflective lobe vanishes and a back-lit
+    // surface shows purely transmitted light. Specular is not part of the
+    // diffuse split.
     let dt = color.diffuse_transmission;
     let n_dot_l_back = max(dot(-n, l), 0.0);
-    let diffuse_reflect = diffuse * n_dot_l;
-    let diffuse_transmit = k_d * color.diffuse_transmission_color * (1.0 / PI) * n_dot_l_back;
-    let diffuse_layer = mix(diffuse_reflect, diffuse_transmit, dt);
-    var result = (diffuse_layer + specular * n_dot_l) * light_brdf.radiance * color.occlusion;
+    let diffuse_reflect = diffuse * n_dot_l * (1.0 - dt);
+    transmit_back = (k_d * color.diffuse_transmission_color * (1.0 / PI) * n_dot_l_back) * dt
+        * light_brdf.radiance * color.occlusion;
+    var result = (diffuse_reflect + specular * n_dot_l) * light_brdf.radiance * color.occlusion;
     {% else %}
-    var result = (diffuse + specular) * light_brdf.radiance * n_dot_l * color.occlusion;
+    var result = (diffuse + specular) * n_dot_l * light_brdf.radiance * color.occlusion;
     {% endif %}
 
     // Sheen contribution (cloth-like rim highlight) — compile-time gated.
+    // `sheen_scaling` is energy taken from the FRONT diffuse, so it only
+    // attenuates `result`, never the back-transmission lobe.
     {% if pbr_features.sheen %}
     let sheen = sheen_brdf_direct(color.sheen_color, color.sheen_roughness, n, v, l);
     let sheen_scaling = sheen_albedo_scaling(color.sheen_color, color.sheen_roughness, n_dot_v);
     result = result * sheen_scaling + sheen * light_brdf.radiance * n_dot_l * color.occlusion;
     {% endif %}
 
-    // Clearcoat contribution (additional specular layer) — compile-time gated.
+    // Clearcoat contribution (additional specular layer) — compile-time
+    // gated. The base is attenuated by the clearcoat Fresnel (evaluated at
+    // the half-angle `v_dot_h`, which is normal-independent). The clearcoat
+    // specular is added weighted by the CLEARCOAT normal's cosine
+    // `cc_n_dot_l` (not the base `n_dot_l`) — these differ when a clearcoat
+    // normal map is present.
     {% if pbr_features.clearcoat %}
+    let cc_n_dot_l = max(dot(safe_normalize(color.clearcoat_normal), l), 0.0);
     let clearcoat_spec = clearcoat_brdf_direct(
         color.clearcoat,
         color.clearcoat_roughness,
@@ -581,11 +604,10 @@ fn brdf_direct(color: PbrMaterialColor, light_brdf: LightBrdf, surface_to_camera
         l,
     );
     let cc_fresnel = clearcoat_fresnel(color.clearcoat, v_dot_h);
-    // Attenuate base layer by clearcoat Fresnel, then add clearcoat specular
-    result = result * (1.0 - cc_fresnel) + clearcoat_spec * light_brdf.radiance * n_dot_l;
+    result = result * (1.0 - cc_fresnel) + clearcoat_spec * light_brdf.radiance * cc_n_dot_l;
     {% endif %}
 
-    return result;
+    return result + transmit_back;
 }
 
 // -------------------------------------------------------------
@@ -679,22 +701,22 @@ fn brdf_ibl_with_transmission(
     let k_d = (1.0 - F_view_max) * (1.0 - metallic);
     var base_contribution = k_d * base_layer * color.occlusion;
 
-    // KHR_materials_diffuse_transmission: light incoming on the back side
-    // adds a Lambertian transmitted term. Use the irradiance sampled in
-    // the opposite direction as a cheap "behind the surface" estimate.
+    // KHR_materials_diffuse_transmission back-side lobe, kept SEPARATE from
+    // `base_contribution` so the front-layer sheen/clearcoat factors below
+    // don't attenuate it (it's on the far side of the surface). The diffuse
+    // layer is a mix of a reflective lobe (front, base color) and a
+    // transmissive lobe (back, *diffuseTransmissionColor* only — NOT base
+    // color); at factor=1 the reflection vanishes and the surface shows
+    // purely the transmitted environment in the transmission tint.
+    var transmit_back = vec3<f32>(0.0);
     {% if pbr_features.diffuse_transmission %}
-    // KHR_materials_diffuse_transmission: the diffuse layer is a mix of a
-    // reflective lobe (front-facing, tinted by base color) and a
-    // transmissive lobe (back-facing, tinted by *diffuseTransmissionColor*
-    // only — NOT base color). At factor=1 the reflection vanishes and the
-    // surface shows purely the transmitted environment in the transmission
-    // tint, matching the KHR reference.
     let back_irradiance = sampleIrradiance(-n, ibl_irradiance_tex, ibl_irradiance_sampler);
     let dt_transmitted = (1.0 - F_view_max) * (1.0 - metallic)
         * color.diffuse_transmission_color
         * (1.0 / PI) * back_irradiance;
     let dt = color.diffuse_transmission;
-    base_contribution = base_contribution * (1.0 - dt) + dt * dt_transmitted * color.occlusion;
+    base_contribution = base_contribution * (1.0 - dt);
+    transmit_back = dt * dt_transmitted * color.occlusion;
     {% endif %}
 
     // Specular IBL: prefiltered environment * (F0 * scale + f90 * bias) from BRDF LUT
@@ -758,13 +780,17 @@ fn brdf_ibl_with_transmission(
     let cc_brdf_lut = sampleBRDFLUT(cc_n_dot_v, cc_roughness, brdf_lut_tex, brdf_lut_sampler);
     // Clearcoat specular (F0 = 0.04 for dielectric)
     let cc_specular = cc_prefiltered * (CLEARCOAT_F0 * cc_brdf_lut.x + cc_brdf_lut.y);
-    // Clearcoat Fresnel attenuation
-    let cc_fresnel = clearcoat_fresnel(color.clearcoat, n_dot_v);
+    // Clearcoat Fresnel attenuation — evaluated at the CLEARCOAT normal's
+    // view cosine `cc_n_dot_v` (differs from base `n_dot_v` when a clearcoat
+    // normal map is present).
+    let cc_fresnel = clearcoat_fresnel(color.clearcoat, cc_n_dot_v);
     // Final: attenuated base + clearcoat
     result = result * (1.0 - cc_fresnel) + color.clearcoat * cc_specular;
     {% endif %}
 
-    return result;
+    // Back-side diffuse transmission, added last so neither the sheen
+    // albedo-scaling nor the clearcoat Fresnel attenuated it.
+    return result + transmit_back;
 }
 
 // Standard IBL without explicit transmission background (uses IBL for transmission)
