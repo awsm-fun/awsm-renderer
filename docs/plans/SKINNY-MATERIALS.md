@@ -1,9 +1,57 @@
 # Skinny Materials — per-material shader compilation
 
-> Status: **planning spec** (branch `skinny-materials`). No code yet.
-> Owner decisions captured inline as ✅.
+> Status: **in progress** (branch `skinny-materials`). Core mechanism landed; see
+> "Progress" below. Owner decisions captured inline as ✅.
 > This lives in `docs/plans/` — a temporary working file (vs. `docs/*.md`, which
 > is permanent reference). Delete it once the work lands.
+
+## Progress (as of this writing)
+
+**Landed (committed, compiles, NOT yet GPU-verified — per §0/§11 verify at the end):**
+- ✅ **ShaderIncludes + FragmentInputs infra** (`crates/materials/src/shader_includes.rs`):
+  bit-sets + per-module direct-dep table + transitive-closure resolver + unit tests.
+  `MaterialShader::shader_includes()/fragment_inputs()`; per-material module consts
+  (PBR full; toon = light_access+textures+camera; unlit/flipbook/scanline =
+  textures+color_space; dynamic = conservative `all()`). Registry carries them +
+  `declarations_for_shader_id()`.
+- ✅ **lights.wgsl split** → `light_access.wgsl` (toon+pbr) + `apply_lighting.wgsl`
+  (pbr-only → brdf). All 4 hosts include both. Pure reorg.
+- ✅ **brdf + apply_lighting gating** wired into the renderer (`resolved_includes_for_base`
+  + `ShaderIncludeFlags` in `dynamic_materials`; `inc` field on the opaque-compute,
+  edge-resolve, and transparent-includes templates). Hosts gate `brdf.wgsl` (889) +
+  `apply_lighting.wgsl` (375) behind `{% if inc.brdf/apply_lighting %}`. PBR keeps
+  both (byte-identical); **unlit/toon/flipbook drop ~1264 lines** of BRDF/lighting.
+
+**Key implementation findings (for whoever continues):**
+- `material_color_calc.wgsl` is **shared** — it defines BOTH `compute_material_color`
+  (PBR) *and* `compute_unlit_material_color` (unlit, ~line 739). It **cannot** be gated
+  wholesale; to gate the PBR half it must be split, or its PBR fns wrapped in
+  `{% if %}` (they're also referenced by `material_shading.wgsl`'s `compute_material_color`
+  and `mipmap.wgsl`'s `pbr_get_gradients` — gate those PBR fns together).
+- `debug_to_copy.wgsl` references `brdf_*` but is **dead** (included nowhere) — ignore it.
+- `light_access.wgsl` is called by the **pass scaffolding** (`get_lights_info()` at
+  compute.wgsl:309) *before* the shade dispatch, so gating it requires also gating that
+  call behind `FragmentInputs::LIGHTS` (the §5 input-gating work). Left unconditional
+  for now.
+- WGSL allows module-scope **forward references**, so include order doesn't matter and
+  every *referenced* symbol (even in uncalled fns) must still be defined — that's what
+  drives the cascade gating above.
+- `ShadingBase` has no `Scanline` variant; scanline → `Custom` → conservative `all()`.
+- Whitespace from `{% if %}` wrappers is harmless (templates use `whitespace="minimize"`);
+  GPU pixels are byte-identical for PBR regardless.
+
+**Remaining (suggested order, see §10 — reorder freely):**
+- Filter `materials_wgsl` to the pipeline's own base (drops other materials' bodies,
+  incl. the big PBR fragment from non-PBR pipelines). Mind the dynamic/Custom path
+  (`dynamic_wgsl_fragment` is separate).
+- Split/gate `material_color_calc.wgsl` PBR half (+ `material_shading`/`mipmap` PBR fns).
+- Fragment-input gating (gate `get_lights_info()` + TBN unpack by declared inputs) — this
+  also unlocks gating `light_access` for unlit.
+- Gate the remaining hosts (`empty.wgsl`).
+- Dedicated skybox writer (A1) — §7.1.
+- Per-extension PBR lobe gating — §7.4.
+- **Then** the §11 verification pass (capture PBR baselines from the base commit
+  `c567ef5`, diff for max-abs 0; confirm unlit/toon render identically; measure shrink).
 
 ## 0. How to work on this ✅
 
