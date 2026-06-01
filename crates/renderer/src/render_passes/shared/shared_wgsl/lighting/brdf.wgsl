@@ -451,9 +451,22 @@ fn brdf_direct(color: PbrMaterialColor, light_brdf: LightBrdf, surface_to_camera
     // bin dozens of lights (the cull bounds them to the froxel volume, which
     // is large in the distance), but only a handful actually reach any given
     // pixel — the rest are culled here for the cost of a dot product.
+    {% if pbr_features.diffuse_transmission %}
+    // EXCEPTION: a diffuse-transmissive surface also receives a back-side
+    // (transmitted) contribution from a light BEHIND it — n·l ≤ 0 but
+    // dot(-n, l) > 0. Skipping on n·l ≤ 0 alone would drop that entirely
+    // (so a firefly behind a leaf, or any back-light, would never show the
+    // red transmission). Only skip when the light reaches NEITHER side.
+    let nl_back_cull = dot(-safe_normalize(light_brdf.normal), safe_normalize(light_brdf.light_dir));
+    if ((light_brdf.n_dot_l <= 0.0 && nl_back_cull <= 0.0)
+        || dot(light_brdf.radiance, light_brdf.radiance) <= 0.0) {
+        return vec3<f32>(0.0);
+    }
+    {% else %}
     if (light_brdf.n_dot_l <= 0.0 || dot(light_brdf.radiance, light_brdf.radiance) <= 0.0) {
         return vec3<f32>(0.0);
     }
+    {% endif %}
     let n = safe_normalize(light_brdf.normal);
     let v = safe_normalize(surface_to_camera);
     let l = safe_normalize(light_brdf.light_dir);
