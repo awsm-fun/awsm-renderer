@@ -172,6 +172,19 @@ impl MaterialShader for DynamicMaterial {
         )
     }
 
+    fn shader_includes(&self) -> crate::ShaderIncludes {
+        // Conservative: author-supplied WGSL may reference any shared symbol,
+        // so until the dynamic-registration API carries a per-material
+        // declaration, dynamic materials opt into the full optional surface
+        // (same as the pre-skinny behaviour). The renderer's dynamic shader
+        // cache key is the future home for a tighter, author-declared set.
+        crate::ShaderIncludes::all()
+    }
+
+    fn fragment_inputs(&self) -> crate::FragmentInputs {
+        crate::FragmentInputs::all()
+    }
+
     fn alpha_mode(&self) -> MaterialAlphaMode {
         // The renderer-side dispatch never asks a `DynamicMaterial` for
         // its alpha mode directly — it calls

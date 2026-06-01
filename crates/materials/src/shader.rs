@@ -2,7 +2,12 @@
 //!
 //! See `README.md` for the contract overview.
 
-use crate::{alpha_mode::MaterialAlphaMode, shader_id::MaterialShaderId, TextureContext};
+use crate::{
+    alpha_mode::MaterialAlphaMode,
+    shader_id::MaterialShaderId,
+    shader_includes::{FragmentInputs, ShaderIncludes},
+    TextureContext,
+};
 
 /// Material shading contract.
 ///
@@ -19,6 +24,18 @@ pub trait MaterialShader {
     /// Stable per-build shader id. Written as the first u32 of the material's
     /// uniform buffer payload.
     fn shader_id(&self) -> MaterialShaderId;
+
+    /// The shared shader modules this material's shading body uses. The renderer
+    /// compiles the transitive closure (see [`ShaderIncludes::resolve`]) and
+    /// emits only those `{% include %}`s — nothing is force-added. A material
+    /// that returns [`ShaderIncludes::empty`] (e.g. a solid-color debug view)
+    /// pulls no shared shading code at all. See `docs/plans/SKINNY-MATERIALS.md`.
+    fn shader_includes(&self) -> ShaderIncludes;
+
+    /// The pre-shade fragment inputs this material's shading body consumes. The
+    /// pass scaffolding only unpacks/computes the declared ones (a material that
+    /// returns [`FragmentInputs::empty`] skips TBN unpack, the lights read, …).
+    fn fragment_inputs(&self) -> FragmentInputs;
 
     /// WGSL helper module for this material. The renderer concatenates every
     /// enabled material's fragment and feeds the result to the shader

@@ -444,6 +444,28 @@ impl PbrMaterial {
     }
 }
 
+/// Shared modules the PBR shading chain uses (closure pulls MATH/CAMERA). The
+/// full set — PBR is the heavy path the skinny work exists to keep *off* simpler
+/// materials. See [`MaterialShader::shader_includes`].
+pub const SHADER_INCLUDES: crate::ShaderIncludes = crate::ShaderIncludes::MATERIAL_COLOR_CALC
+    .union(crate::ShaderIncludes::APPLY_LIGHTING)
+    .union(crate::ShaderIncludes::LIGHT_ACCESS)
+    .union(crate::ShaderIncludes::BRDF)
+    .union(crate::ShaderIncludes::TEXTURES)
+    .union(crate::ShaderIncludes::CAMERA)
+    .union(crate::ShaderIncludes::COLOR_SPACE)
+    .union(crate::ShaderIncludes::SHADOWS)
+    .union(crate::ShaderIncludes::EXTRAS)
+    .union(crate::ShaderIncludes::VERTEX_COLOR);
+
+/// Pre-shade inputs the PBR body consumes.
+pub const FRAGMENT_INPUTS: crate::FragmentInputs = crate::FragmentInputs::NORMALS
+    .union(crate::FragmentInputs::TANGENTS)
+    .union(crate::FragmentInputs::UV)
+    .union(crate::FragmentInputs::LIGHTS)
+    .union(crate::FragmentInputs::VIEW_DIR)
+    .union(crate::FragmentInputs::VERTEX_COLOR);
+
 impl MaterialShader for PbrMaterial {
     fn shader_id(&self) -> MaterialShaderId {
         MaterialShaderId::PBR
@@ -451,6 +473,14 @@ impl MaterialShader for PbrMaterial {
 
     fn wgsl_fragment(&self) -> &'static str {
         WGSL_FRAGMENT
+    }
+
+    fn shader_includes(&self) -> crate::ShaderIncludes {
+        SHADER_INCLUDES
+    }
+
+    fn fragment_inputs(&self) -> crate::FragmentInputs {
+        FRAGMENT_INPUTS
     }
 
     fn alpha_mode(&self) -> MaterialAlphaMode {

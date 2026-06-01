@@ -61,6 +61,15 @@ impl UnlitMaterial {
     }
 }
 
+/// Shared modules unlit uses: sample base color (TEXTURES), the unlit output
+/// helper, color-space conversion. No lighting, no BRDF.
+pub const SHADER_INCLUDES: crate::ShaderIncludes = crate::ShaderIncludes::TEXTURES
+    .union(crate::ShaderIncludes::UNLIT_HELPER)
+    .union(crate::ShaderIncludes::COLOR_SPACE);
+
+/// Unlit only needs UVs to sample its base color.
+pub const FRAGMENT_INPUTS: crate::FragmentInputs = crate::FragmentInputs::UV;
+
 impl MaterialShader for UnlitMaterial {
     fn shader_id(&self) -> MaterialShaderId {
         MaterialShaderId::UNLIT
@@ -68,6 +77,14 @@ impl MaterialShader for UnlitMaterial {
 
     fn wgsl_fragment(&self) -> &'static str {
         WGSL_FRAGMENT
+    }
+
+    fn shader_includes(&self) -> crate::ShaderIncludes {
+        SHADER_INCLUDES
+    }
+
+    fn fragment_inputs(&self) -> crate::FragmentInputs {
+        FRAGMENT_INPUTS
     }
 
     fn alpha_mode(&self) -> MaterialAlphaMode {

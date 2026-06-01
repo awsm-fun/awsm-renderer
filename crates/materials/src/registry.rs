@@ -10,7 +10,7 @@
 //! material is one new module + one feature entry + one `MaterialEntry`
 //! push in `enabled_materials()` — no edits anywhere else.
 
-use crate::MaterialShaderId;
+use crate::{FragmentInputs, MaterialShaderId, ShaderIncludes};
 
 /// Static descriptor of a registered material.
 pub struct MaterialEntry {
@@ -20,6 +20,11 @@ pub struct MaterialEntry {
     pub wgsl_fragment: &'static str,
     /// Human-readable name used in generated WGSL comments / debug labels.
     pub name: &'static str,
+    /// Shared shader modules this material declares (un-resolved — call
+    /// [`ShaderIncludes::resolve`] for the closure the renderer emits).
+    pub includes: ShaderIncludes,
+    /// Pre-shade fragment inputs this material declares.
+    pub inputs: FragmentInputs,
 }
 
 /// Returns the list of materials enabled in this build.
@@ -30,32 +35,54 @@ pub fn enabled_materials() -> Vec<MaterialEntry> {
             shader_id: MaterialShaderId::PBR,
             wgsl_fragment: crate::pbr::WGSL_FRAGMENT,
             name: "pbr",
+            includes: crate::pbr::SHADER_INCLUDES,
+            inputs: crate::pbr::FRAGMENT_INPUTS,
         },
         #[cfg(feature = "unlit")]
         MaterialEntry {
             shader_id: MaterialShaderId::UNLIT,
             wgsl_fragment: crate::unlit::WGSL_FRAGMENT,
             name: "unlit",
+            includes: crate::unlit::SHADER_INCLUDES,
+            inputs: crate::unlit::FRAGMENT_INPUTS,
         },
         #[cfg(feature = "toon")]
         MaterialEntry {
             shader_id: MaterialShaderId::TOON,
             wgsl_fragment: crate::toon::WGSL_FRAGMENT,
             name: "toon",
+            includes: crate::toon::SHADER_INCLUDES,
+            inputs: crate::toon::FRAGMENT_INPUTS,
         },
         #[cfg(feature = "flipbook")]
         MaterialEntry {
             shader_id: MaterialShaderId::FLIPBOOK,
             wgsl_fragment: crate::flipbook::WGSL_FRAGMENT,
             name: "flipbook",
+            includes: crate::flipbook::SHADER_INCLUDES,
+            inputs: crate::flipbook::FRAGMENT_INPUTS,
         },
         #[cfg(feature = "scanline")]
         MaterialEntry {
             shader_id: MaterialShaderId::SCANLINE,
             wgsl_fragment: crate::scanline::WGSL_FRAGMENT,
             name: "scanline",
+            includes: crate::scanline::SHADER_INCLUDES,
+            inputs: crate::scanline::FRAGMENT_INPUTS,
         },
     ]
+}
+
+/// Look up the declared (un-resolved) include + input sets for a first-party
+/// `shader_id`. Returns `None` for ids not in the enabled set (e.g. dynamic
+/// ids, which carry their own declaration in the renderer's dynamic registry).
+pub fn declarations_for_shader_id(
+    shader_id: MaterialShaderId,
+) -> Option<(ShaderIncludes, FragmentInputs)> {
+    enabled_materials()
+        .into_iter()
+        .find(|e| e.shader_id == shader_id)
+        .map(|e| (e.includes, e.inputs))
 }
 
 /// Builds the `{{ materials_wgsl }}` substitution: the concatenation of
