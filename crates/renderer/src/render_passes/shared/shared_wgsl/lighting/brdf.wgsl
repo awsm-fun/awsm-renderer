@@ -518,29 +518,28 @@ fn brdf_direct(color: PbrMaterialColor, light_brdf: LightBrdf, surface_to_camera
     }
 
     // Lambertian diffuse (energy-conserving: scaled by (1-F_max) and non-metallic portion)
-    // Note: transmission modifies diffuse in brdf_ibl, but for direct lighting we keep
-    // standard diffuse since punctual lights don't transmit through surfaces
     let F_max = max(max(F.r, F.g), F.b);
     let k_d = (1.0 - F_max) * (1.0 - metallic);
     let diffuse = k_d * base_color * (1.0 / PI);
 
-    // Base layer contribution
-    var result = (diffuse + specular) * light_brdf.radiance * n_dot_l * color.occlusion;
-
-    // KHR_materials_diffuse_transmission: back-side Lambertian contribution
-    // computed against the flipped normal. (Inner n_dot_l_back guard is
-    // lighting geometry, always kept; outer is the unified feature gate.)
+    // Base layer contribution.
     {% if pbr_features.diffuse_transmission %}
-    // Inner n_dot_l_back guard is lighting geometry (light behind surface) —
-    // logically necessary, kept.
+    // KHR_materials_diffuse_transmission: the diffuse layer is a mix of a
+    // reflective lobe (front-facing `n_dot_l`, tinted by base color) and a
+    // transmissive lobe (back-facing `n_dot_l_back`, tinted by
+    // *diffuseTransmissionColor* only — NOT base color), weighted by
+    // diffuseTransmissionFactor. At factor=1 the reflective lobe vanishes
+    // and a back-lit surface shows purely transmitted light, matching the
+    // KHR reference. Specular is unaffected (it's not part of the diffuse
+    // split).
+    let dt = color.diffuse_transmission;
     let n_dot_l_back = max(dot(-n, l), 0.0);
-    if (n_dot_l_back > 0.0) {
-        let transmitted = (1.0 - F_max) * (1.0 - metallic)
-            * color.diffuse_transmission
-            * color.diffuse_transmission_color
-            * base_color * (1.0 / PI);
-        result += transmitted * light_brdf.radiance * n_dot_l_back * color.occlusion;
-    }
+    let diffuse_reflect = diffuse * n_dot_l;
+    let diffuse_transmit = k_d * color.diffuse_transmission_color * (1.0 / PI) * n_dot_l_back;
+    let diffuse_layer = mix(diffuse_reflect, diffuse_transmit, dt);
+    var result = (diffuse_layer + specular * n_dot_l) * light_brdf.radiance * color.occlusion;
+    {% else %}
+    var result = (diffuse + specular) * light_brdf.radiance * n_dot_l * color.occlusion;
     {% endif %}
 
     // Sheen contribution (cloth-like rim highlight) — compile-time gated.
@@ -662,14 +661,18 @@ fn brdf_ibl_with_transmission(
     // adds a Lambertian transmitted term. Use the irradiance sampled in
     // the opposite direction as a cheap "behind the surface" estimate.
     {% if pbr_features.diffuse_transmission %}
+    // KHR_materials_diffuse_transmission: the diffuse layer is a mix of a
+    // reflective lobe (front-facing, tinted by base color) and a
+    // transmissive lobe (back-facing, tinted by *diffuseTransmissionColor*
+    // only — NOT base color). At factor=1 the reflection vanishes and the
+    // surface shows purely the transmitted environment in the transmission
+    // tint, matching the KHR reference.
     let back_irradiance = sampleIrradiance(-n, ibl_irradiance_tex, ibl_irradiance_sampler);
     let dt_transmitted = (1.0 - F_view_max) * (1.0 - metallic)
-        * color.diffuse_transmission
         * color.diffuse_transmission_color
-        * base_color * (1.0 / PI) * back_irradiance;
-    // Energy conservation: route some front-diffuse energy to the back side.
+        * (1.0 / PI) * back_irradiance;
     let dt = color.diffuse_transmission;
-    base_contribution = base_contribution * (1.0 - dt) + dt_transmitted * color.occlusion;
+    base_contribution = base_contribution * (1.0 - dt) + dt * dt_transmitted * color.occlusion;
     {% endif %}
 
     // Specular IBL: prefiltered environment * (F0 * scale + f90 * bias) from BRDF LUT
