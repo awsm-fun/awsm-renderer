@@ -136,9 +136,13 @@ struct OpaqueShadingOutput {
 }
 ```
 
-There is no `discard` path on the compute side. If your material wants
-"don't write this pixel", early-return from the wrapper without writing
-(returning by value is allowed). Skybox / uncovered pixels
+There is no `discard` on the compute side, and the kernel **always**
+`textureStore`s whatever your wrapper returns — a material cannot skip the
+write by early-returning (the returned value is written regardless). To
+represent a dropped / cut-out fragment, return `alpha = 0.0` (with
+`alpha_mode: Mask`): the kernel passes your alpha through to `opaque_tex`
+and downstream passes treat `alpha < 1.0` as transparent in the alpha-aware
+sort (see `OpaqueShadingOutput.alpha` above). Skybox / uncovered pixels
 (`triangle_index == U32_MAX`) are not your concern — a dedicated skybox
 pipeline (`skybox_primary.wgsl`) writes them in a separate pass.
 
