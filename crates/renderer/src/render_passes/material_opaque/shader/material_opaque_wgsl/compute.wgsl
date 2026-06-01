@@ -264,6 +264,13 @@ fn main(
         }
     {% endif %}
 
+    {# Skinny skybox-owner (#13): the canonical skybox-owner bucket only ever
+       receives skybox/uncovered pixels — they all early-return with the skybox
+       write above. So its material-shading body is dead. Gate it (and its
+       brdf/apply_lighting/material_color_calc includes + material body, set
+       empty in the template for owns_skybox) so an unlit+skybox scene compiles
+       a tiny skybox-only pipeline instead of the full PBR machinery. #}
+    {% if !owns_skybox %}
     // If we've reached this point, the main sample hit geometry.
     let material_mesh_meta = material_mesh_metas[material_meta_offset / META_SIZE_IN_BYTES];
 
@@ -523,6 +530,7 @@ fn main(
 
     // Write to output texture for non-edge pixel
     textureStore(opaque_tex, coords, vec4<f32>(color, base_alpha));
+    {% endif %}{# end !owns_skybox (skinny skybox-owner) #}
 }
 
 fn get_triangle_indices(attribute_indices_offset: u32, triangle_index: u32) -> vec3<u32> {

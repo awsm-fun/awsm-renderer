@@ -202,14 +202,24 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
                 // Skinny materials: emit only this pipeline's base material body
                 // (the dispatch references only that base's fragment). Custom
-                // (None) emits all — covers scanline + dynamic dispatch.
-                materials_wgsl: awsm_materials::registry::build_materials_wgsl_filtered(
-                    value.base.canonical_shader_id(),
-                ),
+                // (None) emits all — covers scanline + dynamic dispatch. The
+                // skybox-owner shades nothing (its body is gated out, #13), so
+                // it carries no material fragment + no PBR shading includes.
+                materials_wgsl: if value.owns_skybox {
+                    String::new()
+                } else {
+                    awsm_materials::registry::build_materials_wgsl_filtered(
+                        value.base.canonical_shader_id(),
+                    )
+                },
                 shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
                 shader_id: value.shader_id,
                 base: value.base,
-                inc: crate::dynamic_materials::ShaderIncludeFlags::for_base(value.base),
+                inc: if value.owns_skybox {
+                    crate::dynamic_materials::ShaderIncludeFlags::skybox_only()
+                } else {
+                    crate::dynamic_materials::ShaderIncludeFlags::for_base(value.base)
+                },
                 owns_skybox: value.owns_skybox,
                 pbr_features: awsm_materials::pbr::PbrFeatures::from_bits(value.pbr_features),
                 dynamic_struct_decl: value

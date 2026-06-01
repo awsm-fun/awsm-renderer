@@ -274,6 +274,17 @@ impl ShaderIncludeFlags {
             material_color_calc: i.contains(S::MATERIAL_COLOR_CALC),
         }
     }
+
+    /// The canonical skybox-owner bucket (#13): it only writes the skybox on
+    /// skybox/uncovered pixels — its material-shading body is gated out — so it
+    /// needs none of the PBR shading modules even though its `base` is `Pbr`.
+    pub fn skybox_only() -> Self {
+        Self {
+            brdf: false,
+            apply_lighting: false,
+            material_color_calc: false,
+        }
+    }
 }
 
 /// One bucket entry — the template-rendering view of a single registered
