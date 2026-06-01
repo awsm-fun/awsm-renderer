@@ -89,9 +89,22 @@ pub fn declarations_for_shader_id(
 /// every enabled material's `wgsl_fragment()`, wrapped in human-readable
 /// `START/END` comment fences for debugging the generated shader.
 pub fn build_materials_wgsl() -> String {
+    build_materials_wgsl_filtered(None)
+}
+
+/// Like [`build_materials_wgsl`] but emits only the fragment for `only`
+/// (skinny materials — a pipeline specialized to one base only references that
+/// base's material fragment). `None` emits every fragment (the conservative
+/// path for the `Custom` base, which covers scanline + dynamic dispatch).
+pub fn build_materials_wgsl_filtered(only: Option<MaterialShaderId>) -> String {
     let entries = enabled_materials();
     let mut out = String::new();
     for entry in &entries {
+        if let Some(only) = only {
+            if entry.shader_id != only {
+                continue;
+            }
+        }
         out.push_str(&format!(
             "/*************** START {name}_material.wgsl ******************/\n",
             name = entry.name
