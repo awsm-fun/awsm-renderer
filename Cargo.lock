@@ -212,7 +212,7 @@ dependencies = [
  "gloo-net",
  "gloo-render",
  "gloo-timers",
- "gltf 1.4.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "gltf",
  "js-sys",
  "serde",
  "serde-wasm-bindgen",
@@ -333,7 +333,7 @@ dependencies = [
  "futures",
  "glam 0.32.1",
  "gloo-net",
- "gltf 1.4.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "gltf",
  "indexmap",
  "ordered-float",
  "serde",
@@ -372,7 +372,7 @@ dependencies = [
  "gloo-net",
  "gloo-render",
  "gloo-timers",
- "gltf 1.4.1 (git+https://github.com/gltf-rs/gltf.git)",
+ "gltf",
  "image",
  "indexmap",
  "js-sys",
@@ -1143,22 +1143,9 @@ checksum = "e3ce1918195723ce6ac74e80542c5a96a40c2b26162c1957a5cd70799b8cacf7"
 dependencies = [
  "base64 0.13.1",
  "byteorder",
- "gltf-json 1.4.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "gltf-json",
  "image",
  "lazy_static",
- "serde_json",
- "urlencoding",
-]
-
-[[package]]
-name = "gltf"
-version = "1.4.1"
-source = "git+https://github.com/gltf-rs/gltf.git#3def30c9caf96f2dbc85238179ea5a6152c5cf22"
-dependencies = [
- "base64 0.13.1",
- "byteorder",
- "gltf-json 1.4.1 (git+https://github.com/gltf-rs/gltf.git)",
- "image",
  "serde_json",
  "urlencoding",
 ]
@@ -1176,34 +1163,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "gltf-derive"
-version = "1.4.1"
-source = "git+https://github.com/gltf-rs/gltf.git#3def30c9caf96f2dbc85238179ea5a6152c5cf22"
-dependencies = [
- "inflections",
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "gltf-json"
 version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6176f9d60a7eab0a877e8e96548605dedbde9190a7ae1e80bbcc1c9af03ab14"
 dependencies = [
- "gltf-derive 1.4.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "serde",
- "serde_derive",
- "serde_json",
-]
-
-[[package]]
-name = "gltf-json"
-version = "1.4.1"
-source = "git+https://github.com/gltf-rs/gltf.git#3def30c9caf96f2dbc85238179ea5a6152c5cf22"
-dependencies = [
- "gltf-derive 1.4.1 (git+https://github.com/gltf-rs/gltf.git)",
+ "gltf-derive",
  "serde",
  "serde_derive",
  "serde_json",
