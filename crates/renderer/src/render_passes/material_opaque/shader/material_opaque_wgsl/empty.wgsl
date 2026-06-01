@@ -34,13 +34,15 @@
 {% include "shared_wgsl/vertex_color.wgsl" %}
 /*************** END vertex_color.wgsl ******************/
 
+// `light_access.wgsl` stays: it defines the `LightsInfoPacked` / `LightPacked`
+// structs that `bind_groups.wgsl` declares the group(1) light bindings with
+// (binding ABI — always present). `apply_lighting.wgsl` is deliberately NOT
+// included: this kernel only writes the skybox and never calls any lighting
+// orchestration, so pulling the punctual walk (which references `brdf_*`)
+// would be dead code.
 /*************** START light_access.wgsl ******************/
 {% include "shared_wgsl/lighting/light_access.wgsl" %}
 /*************** END light_access.wgsl ******************/
-
-/*************** START apply_lighting.wgsl ******************/
-{% include "shared_wgsl/lighting/apply_lighting.wgsl" %}
-/*************** END apply_lighting.wgsl ******************/
 
 
 @compute @workgroup_size(8, 8)
