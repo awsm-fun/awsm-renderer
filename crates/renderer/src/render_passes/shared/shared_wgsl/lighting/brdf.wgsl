@@ -273,13 +273,22 @@ fn sheen_albedo_scaling(sheen_color: vec3<f32>, sheen_roughness: f32, n_dot_v: f
 // IBL Sampling Functions
 // -------------------------------------------------------------
 
-// Sample pre-convolved irradiance map for diffuse IBL
+// Sample the irradiance map for diffuse IBL.
+//
+// The irradiance cubemaps store (sampled/blurred) environment *radiance* L,
+// not the cosine-integrated irradiance E = ∫ L cosθ dω (for a uniform
+// environment, E = π·L). The diffuse BRDF applies `base_color/PI *
+// irradiance`, which assumes the latter — so without the π the diffuse IBL
+// comes out π× too dim (a Lambertian surface under a uniform white env
+// should read albedo·L but read albedo·L/π). Restore the missing factor
+// here so every diffuse-IBL consumer is corrected in one place; specular
+// IBL samples the prefiltered env separately and is unaffected.
 fn sampleIrradiance(
     n: vec3<f32>,
     irradiance_tex: texture_cube<f32>,
     irradiance_sampler: sampler
 ) -> vec3<f32> {
-    return textureSampleLevel(irradiance_tex, irradiance_sampler, n, 0.0).rgb;
+    return textureSampleLevel(irradiance_tex, irradiance_sampler, n, 0.0).rgb * PI;
 }
 
 // Sample prefiltered environment map for specular IBL (split-sum approximation)
