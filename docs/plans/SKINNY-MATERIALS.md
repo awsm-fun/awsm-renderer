@@ -21,6 +21,25 @@
   edge-resolve, and transparent-includes templates). Hosts gate `brdf.wgsl` (889) +
   `apply_lighting.wgsl` (375) behind `{% if inc.brdf/apply_lighting %}`. PBR keeps
   both (byte-identical); **unlit/toon/flipbook drop ~1264 lines** of BRDF/lighting.
+- ✅ **PBR material-color builder gating** (`inc.material_color_calc`): the `_pbr_*`
+  helpers in `material_color_calc.wgsl` (~700) + their callers (`compute_material_color`
+  in material_shading, `pbr_get_gradients` in mipmap) gated. Unlit builder stays ungated.
+- ⏪ **materials_wgsl filtering — IMPLEMENTED THEN REVERTED** (`b33ee8d` → `60eda69`).
+  Filtering to the base's fragment broke non-base pipelines: ungated helpers reference
+  filtered-out material *types* (`compute_unlit_material_color` → `UnlitMaterial`; the
+  transparent `material_color_calc` PBR refs → `PbrMaterial`). Fixing needs per-type
+  base-gating of those helpers in BOTH passes (transparent `includes` template lacks a
+  `base` field — would need one added). Deferred. The include gating above is independent
+  and stands.
+
+**✅ VERIFIED (in-browser GPU, the real check):**
+- PBR **byte-identical**: AlphaBlendMode (IBL+skybox+alpha) max-abs **0**; AnisotropyBarnLamp
+  (anisotropy+clearcoat) max-abs **0** — vs same-renderer baselines.
+- UnlitTest renders correctly with its skinny pipeline (no brdf/apply_lighting/PBR-builder).
+- The GPU check earlier CAUGHT the materials_wgsl-filter breakage (unresolved `UnlitMaterial`),
+  which is why filtering was reverted. Verification works; the dev server DOES rebuild on
+  renderer `.wgsl` changes (must `cargo build -p awsm-renderer` first to avoid trunk lock
+  contention, then `touch model-tests/src/main.rs`).
 
 **Key implementation findings (for whoever continues):**
 - `material_color_calc.wgsl` is **shared** — it defines BOTH `compute_material_color`
