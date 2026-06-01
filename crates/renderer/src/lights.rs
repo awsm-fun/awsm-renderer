@@ -751,9 +751,17 @@ impl Light {
                 position,
                 range,
             } => {
-                // row 1
+                // row 1. Pack the *effective* influence radius, not the raw
+                // glTF range: an unlimited-range light (`range <= 0`) would
+                // otherwise upload a 0 here, collapsing the GPU froxel
+                // light-culling sphere to a point so the light only lights
+                // the single tile it sits in — a hard-edged quad on nearby
+                // surfaces. The shader's inverse-square keeps near-field
+                // lighting unchanged and just gains a smooth cutoff at the
+                // influence edge.
+                let gpu_range = Self::influence_radius(*intensity, *range);
                 write(position.into());
-                write(range.into());
+                write((&gpu_range).into());
                 // row 2
                 write(Value::SkipN32(4)); // skip direction and inner cone
                                           // row 3
@@ -778,9 +786,11 @@ impl Light {
                 // so pre-compute cos(angle) here instead of storing raw radians.
                 let inner_cos = inner_angle.cos();
                 let outer_cos = outer_angle.cos();
-                // row 1
+                // row 1. Effective influence radius (see the point-light
+                // arm) so unlimited-range spots still cover their froxels.
+                let gpu_range = Self::influence_radius(*intensity, *range);
                 write(position.into());
-                write(range.into());
+                write((&gpu_range).into());
                 // row 2
                 write(direction.into());
                 write((&inner_cos).into());
