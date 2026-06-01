@@ -321,6 +321,16 @@ impl MaterialEdgePipelines {
                     continue;
                 };
                 match registry.get(entry.shader_id) {
+                    // A Blend/Mask dynamic material is transparent-only — it has
+                    // no opaque silhouette to resolve, and its author body
+                    // targets the transparent contract (returns
+                    // `TransparentShadingOutput`, which won't compile in the
+                    // edge-resolve opaque wrapper). Skip it.
+                    Some(reg)
+                        if !matches!(reg.alpha_mode, awsm_materials::MaterialAlphaMode::Opaque) =>
+                    {
+                        continue
+                    }
                     Some(reg) => {
                         let info = DynamicShaderInfo {
                             struct_decl: awsm_materials::dynamic_layout::generate_wgsl_struct(

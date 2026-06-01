@@ -191,30 +191,40 @@ impl crate::AwsmRenderer {
             );
             slots.push(LaunchSlot::Classify { msaa });
         }
-        // Opaque variants for THIS shader_id.
-        for &(msaa, mipmaps) in &[
-            (Some(4u32), true),
-            (Some(4u32), false),
-            (None, true),
-            (None, false),
-        ] {
-            shader_jobs.push(
-                ShaderCacheKeyMaterialOpaque {
-                    texture_pool_arrays_len,
-                    texture_pool_samplers_len,
-                    msaa_sample_count: msaa,
-                    mipmaps,
-                    shader_id,
-                    base,
-                    owns_skybox,
-                    pbr_features,
-                    dispatch_hash,
-                    dynamic_shader: dynamic_shader.clone(),
-                    bucket_entries: entries.clone(),
-                }
-                .into(),
-            );
-            slots.push(LaunchSlot::Opaque { msaa, mipmaps });
+        // Opaque variants for THIS shader_id — only for materials that route
+        // to the opaque pass. A Blend/Mask *dynamic* material's author body
+        // targets the transparent contract (returns `TransparentShadingOutput`),
+        // so compiling it in the opaque wrapper fails; it renders via the
+        // transparent pass instead. First-party variants (no registration)
+        // always build — their built-in body fits both contracts.
+        let build_opaque = reg
+            .as_ref()
+            .map_or(true, |r| matches!(r.alpha_mode, MaterialAlphaMode::Opaque));
+        if build_opaque {
+            for &(msaa, mipmaps) in &[
+                (Some(4u32), true),
+                (Some(4u32), false),
+                (None, true),
+                (None, false),
+            ] {
+                shader_jobs.push(
+                    ShaderCacheKeyMaterialOpaque {
+                        texture_pool_arrays_len,
+                        texture_pool_samplers_len,
+                        msaa_sample_count: msaa,
+                        mipmaps,
+                        shader_id,
+                        base,
+                        owns_skybox,
+                        pbr_features,
+                        dispatch_hash,
+                        dynamic_shader: dynamic_shader.clone(),
+                        bucket_entries: entries.clone(),
+                    }
+                    .into(),
+                );
+                slots.push(LaunchSlot::Opaque { msaa, mipmaps });
+            }
         }
         // Transparent stubs handled by the legacy prewarm path (per-mesh,
         // depends on buffer_info — not part of this launch).
