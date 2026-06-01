@@ -34,9 +34,13 @@
 {% include "shared_wgsl/vertex_color.wgsl" %}
 /*************** END vertex_color.wgsl ******************/
 
-/*************** START lights.wgsl ******************/
-{% include "shared_wgsl/lighting/lights.wgsl" %}
-/*************** END lights.wgsl ******************/
+/*************** START light_access.wgsl ******************/
+{% include "shared_wgsl/lighting/light_access.wgsl" %}
+/*************** END light_access.wgsl ******************/
+
+/*************** START apply_lighting.wgsl ******************/
+{% include "shared_wgsl/lighting/apply_lighting.wgsl" %}
+/*************** END apply_lighting.wgsl ******************/
 
 
 @compute @workgroup_size(8, 8)

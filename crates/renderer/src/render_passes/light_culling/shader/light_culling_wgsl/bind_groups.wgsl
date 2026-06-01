@@ -28,8 +28,8 @@
 /*************** END camera.wgsl ******************/
 
 // LightPacked / LightsInfoPacked — kept in lockstep with
-// `shared_wgsl/lighting/lights.wgsl`. The shared file is full of
-// shading machinery (BRDF, shadow sampling, prefix walks) the cull
+// `shared_wgsl/lighting/light_access.wgsl`. The shared lighting files are
+// full of shading machinery (BRDF, shadow sampling, prefix walks) the cull
 // pass doesn't need; copying just the two struct decls keeps the
 // shader template free of unused template flags
 // (`has_lighting_*` / `shadows_enabled`).

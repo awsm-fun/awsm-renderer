@@ -50,9 +50,13 @@
 {% include "shared_wgsl/material_mesh_meta.wgsl" %}
 /*************** END mesh_meta.wgsl ******************/
 
-/*************** START lights.wgsl ******************/
-{% include "shared_wgsl/lighting/lights.wgsl" %}
-/*************** END lights.wgsl ******************/
+/*************** START light_access.wgsl ******************/
+{% include "shared_wgsl/lighting/light_access.wgsl" %}
+/*************** END light_access.wgsl ******************/
+
+/*************** START apply_lighting.wgsl ******************/
+{% include "shared_wgsl/lighting/apply_lighting.wgsl" %}
+/*************** END apply_lighting.wgsl ******************/
 
 /*************** START brdf.wgsl ******************/
 {% include "shared_wgsl/lighting/brdf.wgsl" %}
