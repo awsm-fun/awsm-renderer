@@ -41,11 +41,14 @@ see below). 13 commits on `c567ef5`.
   body is gated by `!owns_skybox` (it only writes the skybox), with empty materials_wgsl +
   `ShaderIncludeFlags::skybox_only()`. A skybox scene with no PBR materials no longer compiles
   the PBR machinery for the skybox writer. (Lower-risk than the full A1 classify rewrite.)
-- ⏸️ **light_access gating — DEFERRED** (intentionally). Attempted, reverted: the dispatch /
-  edge `shade_sample` entry points take `LightsInfo` for *every* material type, and the local
-  `let lights_info` shadows a global packed binding of the same name — so gating the accessors
-  for unlit causes a `LightsInfoPacked`-vs-`LightsInfo` type mismatch. Only ~150 lines of
-  simple structs/accessors; not worth the coupling. The declarations exist for it.
+- ✅ **light_access stays always-present (deliberate, NOT gated)** — the right call, same
+  rationale as the bindings (§9). The packed structs are bind-group ABI (`bind_groups.wgsl`
+  declares the bindings with them) so they must always exist; the accessors are ~80 lines of
+  trivial unpack/switch code, negligible to compile next to the gated 889-line brdf. Gating
+  them would entangle the per-pixel shade entry points (which take `LightsInfo` for every
+  material) + the `lights_info` local/global name shadowing, for ~zero win. So it's cheap,
+  always-present shared infra — see the header comment in `light_access.wgsl`. (Briefly
+  attempted gating it; reverted on the `LightsInfoPacked`-vs-`LightsInfo` mismatch this causes.)
 
 **✅ VERIFIED (in-browser GPU — every extension path):**
 - PBR **byte-identical** (max-abs **0** vs same-renderer baselines): AlphaBlendMode (base PBR +

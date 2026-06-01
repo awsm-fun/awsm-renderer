@@ -2,6 +2,16 @@
 // (PBR + toon). Split out of the former lights.wgsl so non-PBR materials can
 // walk the light list WITHOUT pulling in apply_lighting + the PBR BRDF.
 // See docs/plans/SKINNY-MATERIALS.md.
+//
+// DELIBERATELY NOT skinny-gated, and included in every opaque pipeline. The
+// packed structs (LightsInfoPacked/LightPacked) are part of the bind-group ABI
+// (bind_groups.wgsl declares the bindings with these types), so — exactly like
+// the bindings themselves — they must always be present. The accessor functions
+// below are ~80 lines of trivial unpack/switch code: their compile cost is
+// negligible next to the gated brdf.wgsl (889 lines of GGX/Fresnel/IBL math),
+// and gating them would only entangle the per-pixel shade entry points (which
+// take `LightsInfo` for every material) for no real win. So this whole file is
+// cheap, always-present shared infrastructure.
 
 // `data`: x = n_lights, y = prefiltered-env mip count, z = irradiance mip
 // count, w = n_directional (count of directional lights this frame, ≤ 8).
