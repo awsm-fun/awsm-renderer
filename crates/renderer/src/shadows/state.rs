@@ -1944,6 +1944,7 @@ impl Shadows {
                     position,
                     direction,
                     range,
+                    intensity,
                     outer_angle,
                     ..
                 } => {
@@ -1980,8 +1981,14 @@ impl Shadows {
                     };
                     let view = glam::Mat4::look_at_rh(pos, pos + dir, up);
                     let fov = (*outer_angle * 2.0).clamp(0.01, std::f32::consts::PI - 0.01);
-                    let near = 0.05_f32.min(*range * 0.01).max(0.005);
-                    let far = (*range).max(near + 0.1);
+                    // Same fix as the point/cube path: an unlimited-range
+                    // (`range <= 0`) spot derives its reach from intensity
+                    // so the projection far plane actually covers the lit
+                    // cone. Raw `range` collapsed `far` to ~0.1 m, clipping
+                    // every receiver out of the shadow frustum → no shadow.
+                    let eff_range = crate::lights::Light::influence_radius(*intensity, *range);
+                    let near = 0.05_f32.min(eff_range * 0.01).max(0.005);
+                    let far = eff_range.max(near + 0.1);
                     let projection = glam::Mat4::perspective_rh(fov, 1.0, near, far);
                     let view_projection = projection * view;
                     // Approximate world-per-texel for the spot cone at
@@ -2053,7 +2060,10 @@ impl Shadows {
                     );
                 }
                 crate::lights::Light::Point {
-                    position, range, ..
+                    position,
+                    range,
+                    intensity,
+                    ..
                 } => {
                     // Point lights need 1 descriptor + 6 view slots
                     // (cube faces). All-or-nothing: partial publish
@@ -2095,7 +2105,15 @@ impl Shadows {
                         .insert(light_key, slot_index as u32);
 
                     let pos = glam::Vec3::from(*position);
-                    let r = (*range).max(0.05);
+                    // Match the lighting/culling reach: an unlimited-range
+                    // (`range <= 0`) point light derives its radius from
+                    // intensity via `influence_radius` — the same value the
+                    // GPU light buffer and culling AABB use. Using the raw
+                    // `range` here collapsed the cube far plane + descriptor
+                    // range to 0.05 m for infinite lights, so the cube
+                    // sampler short-circuited every receiver >5 cm away to
+                    // "fully lit" → no shadow at all.
+                    let r = crate::lights::Light::influence_radius(*intensity, *range).max(0.05);
                     // 90° per face — adjacent faces meet exactly at the
                     // cube edge and the seamless-cubemap filter handles
                     // bilinear comparison across the seam.
