@@ -37,10 +37,15 @@ see below). 13 commits on `c567ef5`.
 - ✅ **per-extension PBR lobe gating** (`f96418c`): the clearcoat/sheen/anisotropy/iridescence
   lobe *definitions* in `brdf.wgsl` (~240 lines) gated by `pbr_features` (the call sites
   already were). The common basic-MR PBR pipeline sheds them.
-- ✅ **skinny skybox-owner** (`4e92086`): the canonical skybox-owner bucket's material-shading
-  body is gated by `!owns_skybox` (it only writes the skybox), with empty materials_wgsl +
-  `ShaderIncludeFlags::skybox_only()`. A skybox scene with no PBR materials no longer compiles
-  the PBR machinery for the skybox writer. (Lower-risk than the full A1 classify rewrite.)
+- ✅ **skybox FULLY decoupled into its own pipeline** (`4e92086` owns_skybox-gating → `89451a2`
+  full decouple). compute.wgsl is now a **pure material kernel** (no skybox writes / owns_skybox
+  branches — skybox pixels just `return`). The shared include/preamble block is factored into
+  `opaque_kernel_includes.wgsl`; a new `skybox_primary.wgsl` is a tiny dedicated skybox writer.
+  The canonical "PBR" bucket (bucket 0) is already the skybox-only bucket, so skybox_primary
+  REUSES its tile list + indirect args + bind groups — **no classify/dispatch change**. The
+  owns_skybox cache key renders skybox_primary (into_source branch) → a pipeline labelled
+  "Material Opaque Skybox" (profiles separately). Single `triangle_index == U32_MAX` check ==
+  the old owns_skybox logic (covers uncovered tiles + MSAA silhouette edges).
 - ✅ **light_access stays always-present (deliberate, NOT gated)** — the right call, same
   rationale as the bindings (§9). The packed structs are bind-group ABI (`bind_groups.wgsl`
   declares the bindings with them) so they must always exist; the accessors are ~80 lines of
