@@ -82,11 +82,11 @@ fn main(
         }
     {% endif %}
 
-    // Sample 0 is skybox but other samples hit geometry — this is a
-    // silhouette edge pixel. Stage 3 edge_resolve owns the per-sample
-    // blend; primary opaque writes the skybox base color so the
-    // edge_resolve / final_blend pass has a clean starting point if
-    // any sample-mask happens to be zero (defensive).
+    // Sample 0 (the primary sample) is skybox but other samples hit
+    // geometry — a silhouette edge pixel. This pure material kernel writes
+    // nothing for it: skybox_primary owns the skybox contribution and
+    // Stage 3 edge_resolve / final_blend own the per-sample blend, so the
+    // kernel just skips the pixel (below) to avoid double-writing.
     {% if multisampled_geometry %}
         if (triangle_index == U32_MAX) {
             // Sample-0 skybox at a silhouette edge — skybox_primary writes the
