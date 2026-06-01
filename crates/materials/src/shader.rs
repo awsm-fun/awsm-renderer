@@ -2,15 +2,21 @@
 //!
 //! See `README.md` for the contract overview.
 
-use crate::{alpha_mode::MaterialAlphaMode, shader_id::MaterialShaderId, TextureContext};
+use crate::{
+    alpha_mode::MaterialAlphaMode,
+    shader_id::MaterialShaderId,
+    shader_includes::{FragmentInputs, ShaderIncludes},
+    TextureContext,
+};
 
 /// Material shading contract.
 ///
 /// Each material in this crate (gated by a Cargo feature) implements this
 /// trait. The renderer walks the enabled set as a registry to:
 ///
-/// - Concatenate `wgsl_fragment()` outputs into the `{{ materials_wgsl }}`
-///   askama variable.
+/// - Emit `wgsl_fragment()` output into the `{{ materials_wgsl }}` askama
+///   variable — filtered to the pipeline's own base in the specialized
+///   opaque/transparent paths, unfiltered only in the no-geometry empty kernel.
 /// - Generate the `if shader_id == X { ... }` dispatch table as the
 ///   `{{ shader_id_dispatch }}` askama variable.
 /// - Dispatch `write_uniform_buffer` per material instance when packing the
@@ -20,9 +26,26 @@ pub trait MaterialShader {
     /// uniform buffer payload.
     fn shader_id(&self) -> MaterialShaderId;
 
-    /// WGSL helper module for this material. The renderer concatenates every
-    /// enabled material's fragment and feeds the result to the shader
-    /// template as `{{ materials_wgsl }}`.
+    /// The shared shader modules this material's shading body uses. The renderer
+    /// compiles the transitive closure (see [`ShaderIncludes::resolve`]) and
+    /// emits only those `{% include %}`s — nothing is force-added. A material
+    /// that returns [`ShaderIncludes::empty`] (e.g. a solid-color debug view)
+    /// pulls no shared shading code at all. See `docs/SHADER_GUIDELINES.md`.
+    fn shader_includes(&self) -> ShaderIncludes;
+
+    /// The pre-shade fragment inputs this material's shading body consumes. The
+    /// pass scaffolding only unpacks/computes the declared ones (a material that
+    /// returns [`FragmentInputs::empty`] skips TBN unpack, the lights read, …).
+    fn fragment_inputs(&self) -> FragmentInputs;
+
+    /// WGSL helper module for this material, fed to the shader template as
+    /// `{{ materials_wgsl }}`. Each opaque/transparent pipeline is specialized
+    /// to one `shader_id` + base, so the renderer typically emits only the
+    /// matching base's fragment(s) — `build_materials_wgsl_filtered` — rather
+    /// than the concat of every enabled material (the unfiltered
+    /// `build_materials_wgsl` is used only by the no-geometry empty kernel).
+    /// A fragment must therefore be self-contained for its own pipeline and
+    /// must not assume any other material's fragment is present.
     ///
     /// The fragment must declare:
     /// - A `*_get_material(byte_offset: u32) -> StructType` accessor that

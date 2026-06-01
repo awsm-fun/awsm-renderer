@@ -222,6 +222,69 @@ impl ShadingBase {
             ShadingBase::Custom => "custom",
         }
     }
+
+    /// The canonical first-party shader id for this base, if any. `Custom`
+    /// (dynamic + scanline) has none — it conservatively gets the full set.
+    pub fn canonical_shader_id(self) -> Option<MaterialShaderId> {
+        match self {
+            ShadingBase::Pbr => Some(MaterialShaderId::PBR),
+            ShadingBase::Unlit => Some(MaterialShaderId::UNLIT),
+            ShadingBase::Toon => Some(MaterialShaderId::TOON),
+            ShadingBase::Flipbook => Some(MaterialShaderId::FLIPBOOK),
+            ShadingBase::Custom => None,
+        }
+    }
+}
+
+/// The closure of shared shader modules a pipeline of this shading base needs
+/// (see `docs/SHADER_GUIDELINES.md`). First-party bases map to their
+/// declared set; `Custom` (dynamic + scanline) conservatively gets the full set
+/// since author WGSL may reference anything.
+pub fn resolved_includes_for_base(base: ShadingBase) -> awsm_materials::ShaderIncludes {
+    base.canonical_shader_id()
+        .and_then(awsm_materials::registry::declarations_for_shader_id)
+        .map(|(inc, _)| inc)
+        .unwrap_or_else(awsm_materials::ShaderIncludes::all)
+        .resolve()
+}
+
+/// Boolean view of [`resolved_includes_for_base`] for askama `{% if inc.x %}`
+/// gating in the shading-host templates. Only the modules the host templates
+/// actually gate are surfaced; add fields here as more modules become gateable.
+#[derive(Clone, Copy, Debug)]
+pub struct ShaderIncludeFlags {
+    /// PBR BRDF lobes + IBL split-sum (`brdf.wgsl`).
+    pub brdf: bool,
+    /// PBR `apply_lighting*` orchestration (`apply_lighting.wgsl`).
+    pub apply_lighting: bool,
+    /// The PBR `PbrMaterialColor` builder — the `_pbr_*` helpers in
+    /// `material_color_calc.wgsl` + their callers (`compute_material_color` in
+    /// `material_shading.wgsl`, `pbr_get_gradients` in `mipmap.wgsl`). The unlit
+    /// builder in the same file stays ungated.
+    pub material_color_calc: bool,
+}
+
+impl ShaderIncludeFlags {
+    pub fn for_base(base: ShadingBase) -> Self {
+        let i = resolved_includes_for_base(base);
+        use awsm_materials::ShaderIncludes as S;
+        Self {
+            brdf: i.contains(S::BRDF),
+            apply_lighting: i.contains(S::APPLY_LIGHTING),
+            material_color_calc: i.contains(S::MATERIAL_COLOR_CALC),
+        }
+    }
+
+    /// The canonical skybox-owner bucket (#13): it only writes the skybox on
+    /// skybox/uncovered pixels — its material-shading body is gated out — so it
+    /// needs none of the PBR shading modules even though its `base` is `Pbr`.
+    pub fn skybox_only() -> Self {
+        Self {
+            brdf: false,
+            apply_lighting: false,
+            material_color_calc: false,
+        }
+    }
 }
 
 /// One bucket entry — the template-rendering view of a single registered

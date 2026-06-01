@@ -430,12 +430,13 @@ Two practical implications shape everything else in this doc:
    classify bucket; the classify shader's bitmask is hard-coded
    for 3 today (PBR, Unlit, Toon).
 
-3. **Skybox ownership rule.** The PBR pipeline handles skybox
-   pixels (`triangle_index == U32_MAX`). Non-PBR pipelines
-   early-return on skybox so a mixed-material tile shaded by
-   Unlit + skybox doesn't double-write the skybox pixels. A new
-   opaque variant either keeps this rule or declares its own
-   dedicated skybox slot.
+3. **Skybox is its own pipeline.** Skybox / uncovered pixels
+   (`triangle_index == U32_MAX`) are written by a dedicated
+   `skybox_primary.wgsl` pass — no material pipeline owns the
+   skybox. Material kernels early-return (no write) on skybox
+   pixels; the skybox pass fills them. A scene that is "unlit +
+   skybox" therefore compiles zero PBR, and a new opaque variant
+   needs no skybox handling at all.
 
 ---
 
@@ -872,10 +873,10 @@ cheap shader can preserve, not raw screen-space size).
 
 ## 5f. Shadow optimisations — coverage gate + PCSS variable taps
 
-Two extensions to the shadow path, both live in [`render_passes/shared/shared_wgsl/shadow/bind_groups.wgsl`][bgw] and the receiver-side WGSL in [`lights.wgsl`][lwgsl]:
+Two extensions to the shadow path, both live in [`render_passes/shared/shared_wgsl/shadow/bind_groups.wgsl`][bgw] and the receiver-side WGSL in [`apply_lighting.wgsl`][lwgsl]:
 
 [bgw]: ../crates/renderer/src/render_passes/shared/shared_wgsl/shadow/bind_groups.wgsl
-[lwgsl]: ../crates/renderer/src/render_passes/shared/shared_wgsl/lighting/lights.wgsl
+[lwgsl]: ../crates/renderer/src/render_passes/shared/shared_wgsl/lighting/apply_lighting.wgsl
 
 ### Coverage-driven shadow-receiver gate
 

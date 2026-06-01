@@ -97,6 +97,11 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     /// dynamic range still emits the PBR path. The per-pixel guard uses
     /// the numeric `shader_id` regardless of `base`.
     pub base: crate::dynamic_materials::ShadingBase,
+    /// Which optional shared modules this pipeline's material declares (skinny
+    /// materials — `docs/SHADER_GUIDELINES.md`). The host gates heavy
+    /// PBR-only includes (brdf / apply_lighting) behind these so non-PBR
+    /// pipelines don't compile them.
+    pub inc: crate::dynamic_materials::ShaderIncludeFlags,
     /// Whether this pipeline owns the skybox write (only the canonical
     /// PBR bucket; see [`ShaderCacheKeyMaterialOpaque::owns_skybox`]).
     pub owns_skybox: bool,
@@ -148,6 +153,85 @@ impl ShaderTemplateMaterialOpaqueCompute {
     }
 }
 
+/// The dedicated skybox-writer kernel for the canonical skybox bucket — renders
+/// `skybox_primary.wgsl` instead of the material `compute.wgsl`. It shares the
+/// exact same fields (the shared `opaque_kernel_includes.wgsl` preamble reads
+/// them), so it's built by moving them out of the material-compute template via
+/// `From` (see [`ShaderTemplateMaterialOpaque::into_source`]).
+#[derive(Template, Debug)]
+#[template(
+    path = "material_opaque_wgsl/skybox_primary.wgsl",
+    whitespace = "minimize"
+)]
+pub struct ShaderTemplateMaterialOpaqueSkyboxPrimary {
+    pub texture_pool_arrays_len: u32,
+    pub texture_pool_samplers_len: u32,
+    pub debug: ShaderTemplateMaterialOpaqueDebug,
+    pub mipmap: MipmapMode,
+    pub multisampled_geometry: bool,
+    pub msaa_sample_count: u32,
+    pub shadows_enabled: bool,
+    pub use_froxel_lights: bool,
+    pub froxel_slice_count: u32,
+    pub materials_wgsl: String,
+    pub shader_id_consts: String,
+    pub shader_id: MaterialShaderId,
+    pub base: crate::dynamic_materials::ShadingBase,
+    pub inc: crate::dynamic_materials::ShaderIncludeFlags,
+    pub owns_skybox: bool,
+    pub pbr_features: awsm_materials::pbr::PbrFeatures,
+    pub dynamic_struct_decl: String,
+    pub dynamic_loader_decl: String,
+    pub dynamic_wgsl_fragment: String,
+    pub bucket_entries: Vec<crate::dynamic_materials::BucketEntry>,
+}
+
+impl ShaderTemplateMaterialOpaqueSkyboxPrimary {
+    /// True if the shader includes IBL lighting (used by the shared preamble's
+    /// lighting/shadow includes). Mirrors the material-compute template.
+    pub fn has_lighting_ibl(&self) -> bool {
+        !matches!(
+            self.debug.lighting,
+            ShaderTemplateMaterialOpaqueDebugLighting::PunctualOnly
+        )
+    }
+
+    /// True if the shader includes punctual lighting. Mirrors the compute template.
+    pub fn has_lighting_punctual(&self) -> bool {
+        !matches!(
+            self.debug.lighting,
+            ShaderTemplateMaterialOpaqueDebugLighting::IblOnly
+        )
+    }
+}
+
+impl From<ShaderTemplateMaterialOpaqueCompute> for ShaderTemplateMaterialOpaqueSkyboxPrimary {
+    fn from(c: ShaderTemplateMaterialOpaqueCompute) -> Self {
+        Self {
+            texture_pool_arrays_len: c.texture_pool_arrays_len,
+            texture_pool_samplers_len: c.texture_pool_samplers_len,
+            debug: c.debug,
+            mipmap: c.mipmap,
+            multisampled_geometry: c.multisampled_geometry,
+            msaa_sample_count: c.msaa_sample_count,
+            shadows_enabled: c.shadows_enabled,
+            use_froxel_lights: c.use_froxel_lights,
+            froxel_slice_count: c.froxel_slice_count,
+            materials_wgsl: c.materials_wgsl,
+            shader_id_consts: c.shader_id_consts,
+            shader_id: c.shader_id,
+            base: c.base,
+            inc: c.inc,
+            owns_skybox: c.owns_skybox,
+            pbr_features: c.pbr_features,
+            dynamic_struct_decl: c.dynamic_struct_decl,
+            dynamic_loader_decl: c.dynamic_loader_decl,
+            dynamic_wgsl_fragment: c.dynamic_wgsl_fragment,
+            bucket_entries: c.bucket_entries,
+        }
+    }
+}
+
 impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
     type Error = AwsmShaderError;
 
@@ -195,10 +279,26 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 // `apply_lighting_per_froxel*` helpers when this is `true`.
                 use_froxel_lights: true,
                 froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
-                materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
+                // Skinny materials: emit only this pipeline's base material body
+                // (the dispatch references only that base's fragment). Custom
+                // (None) emits all — covers scanline + dynamic dispatch. The
+                // skybox-owner shades nothing (its body is gated out, #13), so
+                // it carries no material fragment + no PBR shading includes.
+                materials_wgsl: if value.owns_skybox {
+                    String::new()
+                } else {
+                    awsm_materials::registry::build_materials_wgsl_filtered(
+                        value.base.canonical_shader_id(),
+                    )
+                },
                 shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
                 shader_id: value.shader_id,
                 base: value.base,
+                inc: if value.owns_skybox {
+                    crate::dynamic_materials::ShaderIncludeFlags::skybox_only()
+                } else {
+                    crate::dynamic_materials::ShaderIncludeFlags::for_base(value.base)
+                },
                 owns_skybox: value.owns_skybox,
                 pbr_features: awsm_materials::pbr::PbrFeatures::from_bits(value.pbr_features),
                 dynamic_struct_decl: value
@@ -301,7 +401,14 @@ impl ShaderTemplateMaterialOpaque {
     /// Renders the opaque material shader into WGSL.
     pub fn into_source(self) -> Result<String> {
         let bind_groups_source = self.bind_groups.render()?;
-        let compute_source = self.compute.render()?;
+        // The canonical skybox bucket renders the dedicated skybox writer
+        // (skybox_primary.wgsl) instead of the material kernel — same bind
+        // groups + bucket dispatch, but skybox-only. See skybox_primary.wgsl.
+        let compute_source = if self.compute.owns_skybox {
+            ShaderTemplateMaterialOpaqueSkyboxPrimary::from(self.compute).render()?
+        } else {
+            self.compute.render()?
+        };
 
         let source = format!("{}\n{}", bind_groups_source, compute_source);
         // print_shader_source(&source, true);
@@ -313,7 +420,11 @@ impl ShaderTemplateMaterialOpaque {
 
     /// Returns an optional debug label for shader compilation.
     pub fn debug_label(&self) -> Option<&str> {
-        Some("Material Opaque")
+        if self.compute.owns_skybox {
+            Some("Material Opaque Skybox")
+        } else {
+            Some("Material Opaque")
+        }
     }
 }
 

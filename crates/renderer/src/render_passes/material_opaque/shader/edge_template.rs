@@ -71,6 +71,9 @@ pub struct ShaderTemplateMaterialEdgeResolveCompute {
     /// emits (decoupled from `shader_id`; see [`ShadingBase`]). The
     /// per-sample guard uses the numeric `shader_id`.
     pub base: ShadingBase,
+    /// Skinny-materials include gating (brdf / apply_lighting) — see the opaque
+    /// compute template + `docs/SHADER_GUIDELINES.md`.
+    pub inc: crate::dynamic_materials::ShaderIncludeFlags,
     pub dynamic_struct_decl: String,
     pub dynamic_loader_decl: String,
     pub dynamic_wgsl_fragment: String,
@@ -159,10 +162,13 @@ impl TryFrom<&ShaderCacheKeyMaterialEdgeResolve> for ShaderTemplateMaterialEdgeR
                 use_froxel_lights: true,
                 froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
                 shadows_enabled: true,
-                materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
+                materials_wgsl: awsm_materials::registry::build_materials_wgsl_filtered(
+                    value.base.canonical_shader_id(),
+                ),
                 shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
                 shader_id: value.shader_id,
                 base: value.base,
+                inc: crate::dynamic_materials::ShaderIncludeFlags::for_base(value.base),
                 dynamic_struct_decl: value
                     .dynamic_shader
                     .as_ref()

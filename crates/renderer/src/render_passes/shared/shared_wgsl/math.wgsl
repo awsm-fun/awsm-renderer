@@ -122,3 +122,41 @@ fn unpack_normal_tangent(rgba: vec4<f32>) -> TBN {
 fn abs_index(base_index: u32, relative_index: u32) -> u32 {
     return select(0u, base_index + relative_index, relative_index != 0u);
 }
+
+// -------------------------------------------------------------
+// IOR and Refraction Utilities
+// -------------------------------------------------------------
+// Moved here from brdf.wgsl so they're always available: the transparent pass's
+// transmission helpers (sample_transmission_background_for_ior) use them even on
+// non-PBR pipelines where brdf.wgsl is gated out. They're generic utilities, not
+// BRDF lobes. See docs/SHADER_GUIDELINES.md.
+
+// Get effective IOR value, defaulting to 1.5 when invalid (< 1.0).
+// IOR = 1.0 is valid (air, no refraction), IOR < 1.0 is physically invalid.
+fn effective_ior(ior: f32) -> f32 {
+    return select(ior, 1.5, ior < 1.0);
+}
+
+// Convert index of refraction to F0 (reflectance at normal incidence).
+// Default IOR of 1.5 yields F0 = 0.04 (standard dielectric).
+fn ior_to_f0(ior: f32) -> f32 {
+    let ior_val = effective_ior(ior);
+    let ratio = (ior_val - 1.0) / (ior_val + 1.0);
+    return ratio * ratio;
+}
+
+// Calculate refracted direction using Snell's law.
+// Returns vec3(0) if total internal reflection occurs.
+fn refract_direction(incident: vec3<f32>, normal: vec3<f32>, eta: f32) -> vec3<f32> {
+    // Optimization: no refraction when eta ≈ 1.0 (same medium)
+    if (abs(eta - 1.0) < 0.001) {
+        return incident;
+    }
+    let cos_i = -dot(incident, normal);
+    let sin_t2 = eta * eta * (1.0 - cos_i * cos_i);
+    if (sin_t2 > 1.0) {
+        return vec3<f32>(0.0);  // Signal TIR to caller
+    }
+    let cos_t = sqrt(1.0 - sin_t2);
+    return eta * incident + (eta * cos_i - cos_t) * normal;
+}

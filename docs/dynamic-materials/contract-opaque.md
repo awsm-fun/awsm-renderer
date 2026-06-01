@@ -136,10 +136,15 @@ struct OpaqueShadingOutput {
 }
 ```
 
-There is no `discard` path on the compute side. If your material wants
-"don't write this pixel", short-circuit by returning the
-already-written-by-PBR skybox color (early-return is allowed inside the
-wrapper since the function returns by value).
+There is no `discard` on the compute side, and the kernel **always**
+`textureStore`s whatever your wrapper returns — a material cannot skip the
+write by early-returning (the returned value is written regardless). To
+represent a dropped / cut-out fragment, return `alpha = 0.0` (with
+`alpha_mode: Mask`): the kernel passes your alpha through to `opaque_tex`
+and downstream passes treat `alpha < 1.0` as transparent in the alpha-aware
+sort (see `OpaqueShadingOutput.alpha` above). Skybox / uncovered pixels
+(`triangle_index == U32_MAX`) are not your concern — a dedicated skybox
+pipeline (`skybox_primary.wgsl`) writes them in a separate pass.
 
 ---
 
@@ -239,8 +244,13 @@ For convenience, the kernel exposes the per-pixel barycentric UV via
 
 ### `shared_wgsl/lighting/`
 
-`brdf.wgsl` (Schlick / Lambert / GGX), `lights.wgsl` (the punctual-light
-walk), `unlit.wgsl` (`compute_unlit_output`).
+`brdf.wgsl` (Schlick / Lambert / GGX), `light_access.wgsl` (light unpack
+/ `get_light` / `LightsInfo`), `apply_lighting.wgsl` (the punctual-light
+walk → `brdf`). (`lights.wgsl` was split into `light_access.wgsl` +
+`apply_lighting.wgsl` — see the specialize-only materials notes in
+`docs/SHADER_GUIDELINES.md`.) The unlit output helper `compute_unlit_output`
+is **not** a shared module — it lives in the unlit material fragment
+(`crates/materials/src/wgsl/unlit_material.wgsl`).
 
 ### `shared_wgsl/material.wgsl`
 
@@ -272,8 +282,9 @@ let cell = extras_load_vec4_f32(base);
 Shadow-sampling helpers are bound on the opaque pass. The kernel
 already weaves them into PBR / Unlit / Toon's lighting calls; custom
 materials wanting shadow reception should call `apply_lighting(...)` or
-`apply_lighting_per_mesh(...)` from `lighting/lights.wgsl` and forward
-the `receive_shadows` mask from `input.material_offset`'s mesh meta.
+`apply_lighting_per_froxel(...)` from `lighting/apply_lighting.wgsl` and
+forward the `receive_shadows` mask from `input.material_offset`'s mesh
+meta.
 
 ---
 
@@ -290,16 +301,15 @@ with `MaterialFolderError::ReservedName`.
 
 ---
 
-## Skybox ownership
+## Skybox
 
-The PBR pipeline retains the skybox-fallback `textureStore` for pixels
-with `triangle_index == U32_MAX`. **Non-PBR pipelines (including custom
-materials) early-return on skybox without writing** — a mixed-material
-tile shaded by your custom material AND skybox doesn't double-write the
-skybox pixels.
-
-A custom material genuinely needing to own skybox tiles is out of scope.
-Promote to first-party if you need that.
+Skybox / uncovered pixels (`triangle_index == U32_MAX`) are written by a
+dedicated `skybox_primary.wgsl` pipeline in its own pass — **no** material
+pipeline (PBR, built-in, or custom) owns the skybox anymore. Your material
+kernel simply early-returns (no write) on skybox pixels; the skybox pass
+fills them. A mixed-material tile is therefore safe: your material writes
+its covered pixels, the skybox pass writes the uncovered ones, with no
+double-write and no per-material skybox cost.
 
 ---
 

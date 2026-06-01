@@ -169,6 +169,13 @@ pub fn apply_mode_for_test(frame_f: f32, count: u32, mode: FlipBookMode) -> u32 
     }
 }
 
+/// Unlit animated-texture sampler — no lighting.
+pub const SHADER_INCLUDES: crate::ShaderIncludes =
+    crate::ShaderIncludes::TEXTURES.union(crate::ShaderIncludes::COLOR_SPACE);
+
+/// Just UVs (cell UV is derived from them).
+pub const FRAGMENT_INPUTS: crate::FragmentInputs = crate::FragmentInputs::UV;
+
 impl MaterialShader for FlipBookMaterial {
     fn shader_id(&self) -> MaterialShaderId {
         MaterialShaderId::FLIPBOOK
@@ -176,6 +183,14 @@ impl MaterialShader for FlipBookMaterial {
 
     fn wgsl_fragment(&self) -> &'static str {
         WGSL_FRAGMENT
+    }
+
+    fn shader_includes(&self) -> crate::ShaderIncludes {
+        SHADER_INCLUDES
+    }
+
+    fn fragment_inputs(&self) -> crate::FragmentInputs {
+        FRAGMENT_INPUTS
     }
 
     fn alpha_mode(&self) -> MaterialAlphaMode {

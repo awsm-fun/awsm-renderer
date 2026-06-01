@@ -91,6 +91,13 @@ impl ScanlineMaterial {
     }
 }
 
+/// Unlit scanline overlay — no lighting.
+pub const SHADER_INCLUDES: crate::ShaderIncludes =
+    crate::ShaderIncludes::TEXTURES.union(crate::ShaderIncludes::COLOR_SPACE);
+
+/// Just UVs.
+pub const FRAGMENT_INPUTS: crate::FragmentInputs = crate::FragmentInputs::UV;
+
 impl MaterialShader for ScanlineMaterial {
     fn shader_id(&self) -> MaterialShaderId {
         MaterialShaderId::SCANLINE
@@ -98,6 +105,14 @@ impl MaterialShader for ScanlineMaterial {
 
     fn wgsl_fragment(&self) -> &'static str {
         WGSL_FRAGMENT
+    }
+
+    fn shader_includes(&self) -> crate::ShaderIncludes {
+        SHADER_INCLUDES
+    }
+
+    fn fragment_inputs(&self) -> crate::FragmentInputs {
+        FRAGMENT_INPUTS
     }
 
     fn alpha_mode(&self) -> MaterialAlphaMode {

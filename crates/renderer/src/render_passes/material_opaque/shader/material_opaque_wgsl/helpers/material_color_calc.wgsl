@@ -1,4 +1,9 @@
 
+{# Skinny materials: the PBR PbrMaterialColor builder. Gated so non-PBR
+   pipelines (which call compute_unlit_material_color below instead) don't
+   compile ~700 lines of PBR texture/extension sampling. See
+   docs/SHADER_GUIDELINES.md. The unlit builder further down is ungated. #}
+{% if inc.material_color_calc %}
 {% if mipmap.is_gradient() %}
 struct PbrMaterialGradients {
     base_color: UvDerivs,
@@ -730,11 +735,16 @@ fn _pbr_iridescence_thickness{{ mipmap.suffix() }}(
     }
     return iri.thickness_max;
 }
+{% endif %}{# end inc.material_color_calc (PBR builder) #}
 
 // ============================================================================
 // Unlit Material Color Computation
 // ============================================================================
 
+{# Skinny materials: gated by base==Unlit. References the UnlitMaterial type
+   (defined in the unlit fragment, which materials_wgsl only emits for the Unlit
+   base), and is only called from the base==Unlit dispatch branch. #}
+{% if base == ShadingBase::Unlit %}
 // Compute unlit material color
 fn compute_unlit_material_color(
     triangle_indices: vec3<u32>,
@@ -812,6 +822,7 @@ fn compute_unlit_material_color(
 
     return UnlitMaterialColor(base, emissive);
 }
+{% endif %}{# end base==Unlit (compute_unlit_material_color) #}
 
 // ============================================================================
 // Tangent Helpers

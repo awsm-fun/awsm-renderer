@@ -580,7 +580,7 @@ impl Light {
     /// light still gets bucketed onto the meshes it actually reaches —
     /// otherwise a zero `range` collapses the AABB to a point and the
     /// light is culled from (almost) everything.
-    fn influence_radius(intensity: f32, range: f32) -> f32 {
+    pub(crate) fn influence_radius(intensity: f32, range: f32) -> f32 {
         if range > 0.0 {
             range
         } else {

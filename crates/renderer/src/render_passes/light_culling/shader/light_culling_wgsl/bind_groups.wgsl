@@ -28,8 +28,8 @@
 /*************** END camera.wgsl ******************/
 
 // LightPacked / LightsInfoPacked — kept in lockstep with
-// `shared_wgsl/lighting/lights.wgsl`. The shared file is full of
-// shading machinery (BRDF, shadow sampling, prefix walks) the cull
+// `shared_wgsl/lighting/light_access.wgsl`. The shared lighting files are
+// full of shading machinery (BRDF, shadow sampling, prefix walks) the cull
 // pass doesn't need; copying just the two struct decls keeps the
 // shader template free of unused template flags
 // (`has_lighting_*` / `shadows_enabled`).
@@ -40,7 +40,7 @@ struct LightPacked {
     kind_outer_pad: vec4<f32>,    // .x = kind (1=Dir, 2=Point, 3=Spot), .y = outer-cone cos, .z = shadow_index (bitcast u32), .w = pad
 };
 
-// Layout kept in lockstep with the shared `lights.wgsl` definition (the
+// Layout kept in lockstep with the shared `light_access.wgsl` definition (the
 // shading passes read the `directional` indices; the cull only needs
 // `data.x`, but the struct must match the 48-byte uniform buffer).
 struct LightsInfoPacked {

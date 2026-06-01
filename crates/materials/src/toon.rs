@@ -86,6 +86,20 @@ impl ToonMaterial {
 // renderer's variant reconcile — the registry handles any `FirstParty` base
 // generically.
 
+/// Toon does its own banded lighting loop over `light_access` — NO BRDF,
+/// NO apply_lighting, NO material_color_calc. Needs CAMERA for the view-dir
+/// rim/specular terms and TEXTURES for its base color.
+pub const SHADER_INCLUDES: crate::ShaderIncludes = crate::ShaderIncludes::LIGHT_ACCESS
+    .union(crate::ShaderIncludes::TEXTURES)
+    .union(crate::ShaderIncludes::CAMERA)
+    .union(crate::ShaderIncludes::COLOR_SPACE);
+
+/// Toon reads normals + the light list + the view dir + UVs.
+pub const FRAGMENT_INPUTS: crate::FragmentInputs = crate::FragmentInputs::NORMALS
+    .union(crate::FragmentInputs::LIGHTS)
+    .union(crate::FragmentInputs::VIEW_DIR)
+    .union(crate::FragmentInputs::UV);
+
 impl MaterialShader for ToonMaterial {
     fn shader_id(&self) -> MaterialShaderId {
         MaterialShaderId::TOON
@@ -93,6 +107,14 @@ impl MaterialShader for ToonMaterial {
 
     fn wgsl_fragment(&self) -> &'static str {
         WGSL_FRAGMENT
+    }
+
+    fn shader_includes(&self) -> crate::ShaderIncludes {
+        SHADER_INCLUDES
+    }
+
+    fn fragment_inputs(&self) -> crate::FragmentInputs {
+        FRAGMENT_INPUTS
     }
 
     fn alpha_mode(&self) -> MaterialAlphaMode {
