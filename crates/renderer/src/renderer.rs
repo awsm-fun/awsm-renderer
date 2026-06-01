@@ -563,9 +563,19 @@ impl AwsmRenderer {
             crate::render_passes::material_transparent::pipeline::TransparentMeshPipelineRequest,
         > = Vec::new();
         for (mesh_key, mesh) in self.meshes.iter() {
+            // Only warm transparent pipelines for transparent-pass meshes — an
+            // opaque (incl. opaque-dynamic) material can't compile against the
+            // transparent fragment contract.
+            if !self.materials.is_transparency_pass(mesh.material_key) {
+                continue;
+            }
             let buffer_info_key = self.meshes.buffer_info_key(mesh_key)?;
             let writes_depth = self.materials.transparent_writes_depth(mesh.material_key);
             let (base, pbr_features) = self.materials.transparent_variant(mesh.material_key);
+            let dynamic_shader_id = matches!(base, crate::dynamic_materials::ShadingBase::Custom)
+                .then(|| self.materials.shader_id(mesh.material_key));
+            let dynamic_shader =
+                dynamic_shader_id.and_then(|id| self.dynamic_materials.shader_info_for(id));
             requests.push(
                 crate::render_passes::material_transparent::pipeline::TransparentMeshPipelineRequest {
                     mesh,
@@ -574,6 +584,8 @@ impl AwsmRenderer {
                     writes_depth,
                     base,
                     pbr_features,
+                    dynamic_shader_id,
+                    dynamic_shader,
                 },
             );
         }

@@ -635,6 +635,35 @@ impl DynamicMaterials {
         self.registrations.get(&shader_id)
     }
 
+    /// Builds the [`DynamicShaderInfo`] (the `MaterialData` struct decl +
+    /// `material_data_load` accessor + author fragment) for a registered
+    /// dynamic material, or `None` for a first-party / unregistered id.
+    ///
+    /// The per-mesh transparent pipeline path needs this so a `Custom`-base
+    /// transparent mesh emits the same dynamic-material wrapper the opaque
+    /// prewarm does — without it the transparent fragment references
+    /// `MaterialData` but never defines it (WGSL "unresolved type").
+    pub fn shader_info_for(
+        &self,
+        shader_id: MaterialShaderId,
+    ) -> Option<crate::render_passes::material_opaque::shader::cache_key::DynamicShaderInfo> {
+        let reg = self.registrations.get(&shader_id)?;
+        Some(
+            crate::render_passes::material_opaque::shader::cache_key::DynamicShaderInfo {
+                struct_decl: awsm_materials::dynamic_layout::generate_wgsl_struct(
+                    "MaterialData",
+                    &reg.layout,
+                ),
+                loader_decl: awsm_materials::dynamic_layout::generate_wgsl_loader(
+                    "MaterialData",
+                    "material_data_load",
+                    &reg.layout,
+                ),
+                wgsl_fragment: reg.wgsl_fragment.clone(),
+            },
+        )
+    }
+
     /// Returns the count of currently-registered dynamic materials.
     /// Returns `true` if inserting `registration` would NOT grow the
     /// registry (i.e., it'd be idempotent on an existing
