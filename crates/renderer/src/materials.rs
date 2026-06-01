@@ -571,6 +571,29 @@ impl Materials {
             .unwrap_or(false)
     }
 
+    /// Returns true if a transparent-pass material should write depth.
+    ///
+    /// Two material classes behave *opaquely per pixel* even though they
+    /// render in the transparency pass, and both need depth-write ON:
+    ///
+    ///   - Transmissive (`KHR_materials_transmission`) — a single
+    ///     front-face fragment per pixel (see [`Material::has_transmission`]).
+    ///   - Alpha-masked / cutout (`alphaMode = MASK`) — each fragment is
+    ///     either fully opaque or discarded, so masked surfaces must
+    ///     occlude one another via the depth buffer. Without depth-write,
+    ///     interpenetrating cutout geometry (e.g. double-sided foliage)
+    ///     relies solely on the per-primitive back-to-front sort and the
+    ///     leaves "pop" through each other as the camera orbits.
+    ///
+    /// Pure alpha-*blend* surfaces (smoke, dome panes) deliberately keep
+    /// depth-write OFF so layered transparents compose under the sort.
+    pub fn transparent_writes_depth(&self, key: MaterialKey) -> bool {
+        self.lookup
+            .get(key)
+            .map(|m| m.has_transmission() || m.alpha_mask().is_some())
+            .unwrap_or(false)
+    }
+
     /// Writes material data to the GPU.
     pub fn write_gpu(
         &mut self,

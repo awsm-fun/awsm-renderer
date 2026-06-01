@@ -76,9 +76,9 @@ impl MaterialTransparentPipelines {
 
     /// Creates and caches a render pipeline for a single mesh.
     ///
-    /// `material_has_transmission` is supplied by the caller (computed
-    /// from `Materials::has_transmission(mesh.material_key)`) because
-    /// this function lives in a sub-module that doesn't carry a
+    /// `material_writes_depth` is supplied by the caller (computed
+    /// from `Materials::transparent_writes_depth(mesh.material_key)`)
+    /// because this function lives in a sub-module that doesn't carry a
     /// `&Materials` of its own. It drives the depth-write state — see
     /// `build_transparent_pipeline_cache_key` for the rationale.
     ///
@@ -102,7 +102,7 @@ impl MaterialTransparentPipelines {
         anti_aliasing: &AntiAliasing,
         textures: &Textures,
         render_texture_formats: &RenderTextureFormats,
-        material_has_transmission: bool,
+        material_writes_depth: bool,
         material_base: crate::dynamic_materials::ShadingBase,
         material_pbr_features: u32,
     ) -> Result<RenderPipelineKey> {
@@ -113,7 +113,7 @@ impl MaterialTransparentPipelines {
                     mesh,
                     mesh_key,
                     buffer_info_key,
-                    has_transmission: material_has_transmission,
+                    writes_depth: material_writes_depth,
                     base: material_base,
                     pbr_features: material_pbr_features,
                 }),
@@ -256,7 +256,7 @@ impl MaterialTransparentPipelines {
                 color_targets,
                 anti_aliasing.msaa_sample_count,
                 cull_mode,
-                req.has_transmission,
+                req.writes_depth,
             ));
         }
         Ok(out)
@@ -376,7 +376,7 @@ impl MaterialTransparentPipelines {
                 color_targets,
                 anti_aliasing.msaa_sample_count,
                 cull_mode,
-                req.has_transmission,
+                req.writes_depth,
             ));
         }
 
@@ -427,14 +427,15 @@ fn build_transparent_pipeline_cache_key(
     color_targets: &[ColorTargetState],
     msaa_sample_count: Option<u32>,
     cull_mode: CullMode,
-    has_transmission: bool,
+    writes_depth: bool,
 ) -> RenderPipelineCacheKey {
     let primitive_state = PrimitiveState::new()
         .with_topology(PrimitiveTopology::TriangleList)
         .with_front_face(FrontFace::Ccw)
         .with_cull_mode(cull_mode);
 
-    // Depth-write is *per-material*:
+    // Depth-write is *per-material* (`writes_depth`, computed by
+    // `Materials::transparent_writes_depth`):
     //
     //   - Transmissive (`KHR_materials_transmission`) surfaces want
     //     depth_write ON so a double-sided glass bowl draws only the
@@ -442,6 +443,14 @@ fn build_transparent_pipeline_cache_key(
     //     also draws and its refraction composites over the front
     //     face's, doubling the transmission and wiping the
     //     silhouette.
+    //
+    //   - Alpha-masked / cutout (`alphaMode = MASK`) surfaces want
+    //     depth_write ON too: each fragment is either fully opaque or
+    //     discarded, so masked surfaces must occlude each other via the
+    //     depth buffer. With depth_write OFF, interpenetrating cutout
+    //     geometry (double-sided foliage) relies only on the per-
+    //     primitive back-to-front sort and the leaves "pop" through one
+    //     another as the camera orbits.
     //
     //   - Pure alpha-blend surfaces (smoke, dome panes, sprites)
     //     want depth_write OFF so layered transparents can compose
@@ -453,7 +462,7 @@ fn build_transparent_pipeline_cache_key(
     //     overlapping depths in the SAME emitter or an emitter +
     //     dome combo end up culled instead of composited.
     let depth_stencil = DepthStencilState::new(depth_texture_format)
-        .with_depth_write_enabled(has_transmission)
+        .with_depth_write_enabled(writes_depth)
         .with_depth_compare(CompareFunction::LessEqual);
 
     let mut pipeline_cache_key = RenderPipelineCacheKey::new(shader_key, pipeline_layout_key)
@@ -482,7 +491,12 @@ pub struct TransparentMeshPipelineRequest<'a> {
     pub mesh: &'a Mesh,
     pub mesh_key: MeshKey,
     pub buffer_info_key: MeshBufferInfoKey,
-    pub has_transmission: bool,
+    /// Whether this material writes depth in the transparent pass. ON for
+    /// transmissive and alpha-masked (cutout) materials, OFF for pure
+    /// alpha-blend. Derive via `Materials::transparent_writes_depth`. Part
+    /// of the pipeline cache key so depth-writing and non-depth-writing
+    /// transparents get distinct pipelines.
+    pub writes_depth: bool,
     /// Shading family of this mesh's material — the transparent fragment
     /// specializes its body at compile time on it (no uber runtime
     /// branch). Derive via `Materials::transparent_variant`.
