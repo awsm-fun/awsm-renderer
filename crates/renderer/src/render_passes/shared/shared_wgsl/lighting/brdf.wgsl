@@ -443,6 +443,9 @@ fn iridescence_fresnel(
 // With clearcoat and sheen extensions
 // -------------------------------------------------------------
 fn brdf_direct(color: PbrMaterialColor, light_brdf: LightBrdf, surface_to_camera: vec3<f32>) -> vec3<f32> {
+    let n = safe_normalize(light_brdf.normal);
+    let l = safe_normalize(light_brdf.light_dir);
+
     // Early-out for lights that contribute nothing: out-of-range punctuals
     // have zero radiance (`inverse_square` returns 0 once dist ≥ range) and
     // back-facing surfaces have n·l ≤ 0. Both make the full Cook-Torrance
@@ -457,8 +460,7 @@ fn brdf_direct(color: PbrMaterialColor, light_brdf: LightBrdf, surface_to_camera
     // dot(-n, l) > 0. Skipping on n·l ≤ 0 alone would drop that entirely
     // (so a firefly behind a leaf, or any back-light, would never show the
     // red transmission). Only skip when the light reaches NEITHER side.
-    let nl_back_cull = dot(-safe_normalize(light_brdf.normal), safe_normalize(light_brdf.light_dir));
-    if ((light_brdf.n_dot_l <= 0.0 && nl_back_cull <= 0.0)
+    if ((light_brdf.n_dot_l <= 0.0 && dot(-n, l) <= 0.0)
         || dot(light_brdf.radiance, light_brdf.radiance) <= 0.0) {
         return vec3<f32>(0.0);
     }
@@ -467,9 +469,7 @@ fn brdf_direct(color: PbrMaterialColor, light_brdf: LightBrdf, surface_to_camera
         return vec3<f32>(0.0);
     }
     {% endif %}
-    let n = safe_normalize(light_brdf.normal);
     let v = safe_normalize(surface_to_camera);
-    let l = safe_normalize(light_brdf.light_dir);
     let h = safe_half_vector(v, l);
 
     // Material properties
