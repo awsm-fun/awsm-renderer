@@ -7,7 +7,10 @@
 
 ## Progress (as of this writing)
 
-**Landed (committed, compiles, NOT yet GPU-verified — per §0/§11 verify at the end):**
+**Status: COMPLETE + GPU-verified** (except the marginal light_access gating, deferred —
+see below). 13 commits on `c567ef5`.
+
+**Landed + verified:**
 - ✅ **ShaderIncludes + FragmentInputs infra** (`crates/materials/src/shader_includes.rs`):
   bit-sets + per-module direct-dep table + transitive-closure resolver + unit tests.
   `MaterialShader::shader_includes()/fragment_inputs()`; per-material module consts
@@ -24,22 +27,36 @@
 - ✅ **PBR material-color builder gating** (`inc.material_color_calc`): the `_pbr_*`
   helpers in `material_color_calc.wgsl` (~700) + their callers (`compute_material_color`
   in material_shading, `pbr_get_gradients` in mipmap) gated. Unlit builder stays ungated.
-- ⏪ **materials_wgsl filtering — IMPLEMENTED THEN REVERTED** (`b33ee8d` → `60eda69`).
-  Filtering to the base's fragment broke non-base pipelines: ungated helpers reference
-  filtered-out material *types* (`compute_unlit_material_color` → `UnlitMaterial`; the
-  transparent `material_color_calc` PBR refs → `PbrMaterial`). Fixing needs per-type
-  base-gating of those helpers in BOTH passes (transparent `includes` template lacks a
-  `base` field — would need one added). Deferred. The include gating above is independent
-  and stands.
+- ✅ **materials_wgsl filtering** (`e2f4620`, after a revert+reapply). Each pipeline emits
+  only its base's material fragment (unlit ~73 lines vs the old ~1022). The cascade it
+  exposed is fixed: ungated helpers referencing a filtered-out material *type* are now
+  base-gated — `compute_unlit_material_color` (opaque + transparent) by `base==Unlit`; the
+  transparent `material_color_calc` PBR builder by `inc.material_color_calc` (added a `base`
+  field to the transparent includes template); and the dead `fn unlit(PbrMaterialColor)` in
+  `lighting/unlit.wgsl` deleted.
+- ✅ **per-extension PBR lobe gating** (`f96418c`): the clearcoat/sheen/anisotropy/iridescence
+  lobe *definitions* in `brdf.wgsl` (~240 lines) gated by `pbr_features` (the call sites
+  already were). The common basic-MR PBR pipeline sheds them.
+- ✅ **skinny skybox-owner** (`4e92086`): the canonical skybox-owner bucket's material-shading
+  body is gated by `!owns_skybox` (it only writes the skybox), with empty materials_wgsl +
+  `ShaderIncludeFlags::skybox_only()`. A skybox scene with no PBR materials no longer compiles
+  the PBR machinery for the skybox writer. (Lower-risk than the full A1 classify rewrite.)
+- ⏸️ **light_access gating — DEFERRED** (intentionally). Attempted, reverted: the dispatch /
+  edge `shade_sample` entry points take `LightsInfo` for *every* material type, and the local
+  `let lights_info` shadows a global packed binding of the same name — so gating the accessors
+  for unlit causes a `LightsInfoPacked`-vs-`LightsInfo` type mismatch. Only ~150 lines of
+  simple structs/accessors; not worth the coupling. The declarations exist for it.
 
-**✅ VERIFIED (in-browser GPU, the real check):**
-- PBR **byte-identical**: AlphaBlendMode (IBL+skybox+alpha) max-abs **0**; AnisotropyBarnLamp
-  (anisotropy+clearcoat) max-abs **0** — vs same-renderer baselines.
-- UnlitTest renders correctly with its skinny pipeline (no brdf/apply_lighting/PBR-builder).
-- The GPU check earlier CAUGHT the materials_wgsl-filter breakage (unresolved `UnlitMaterial`),
-  which is why filtering was reverted. Verification works; the dev server DOES rebuild on
-  renderer `.wgsl` changes (must `cargo build -p awsm-renderer` first to avoid trunk lock
-  contention, then `touch model-tests/src/main.rs`).
+**✅ VERIFIED (in-browser GPU — every extension path):**
+- PBR **byte-identical** (max-abs **0** vs same-renderer baselines): AlphaBlendMode (base PBR +
+  IBL + skybox + alpha + **transparent pass** + **skybox-owner**); AnisotropyBarnLamp
+  (anisotropy + clearcoat); CompareSheen (sheen).
+- Renders correctly (no shader error): IridescenceLamp (iridescence lobe); **UnlitTest** with
+  its skinny pipeline (no brdf/apply_lighting/PBR-builder/PBR-fragment).
+- The GPU loop CAUGHT two real cascade bugs mid-flight (unresolved `UnlitMaterial`, then
+  `PbrMaterialColor`) — both fixed. Dev server DOES rebuild on renderer `.wgsl` changes
+  (`cargo build -p awsm-renderer` first to avoid the trunk lock fight, then `touch
+  model-tests/src/main.rs`).
 
 **Key implementation findings (for whoever continues):**
 - `material_color_calc.wgsl` is **shared** — it defines BOTH `compute_material_color`
