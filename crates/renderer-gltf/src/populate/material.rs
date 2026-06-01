@@ -198,7 +198,22 @@ async fn pbr_material_mapper_core(
     pbr_material.metallic_factor = gltf_pbr.metallic_factor();
     pbr_material.roughness_factor = gltf_pbr.roughness_factor();
 
-    if let Some(tex) = gltf_material.normal_texture().map(GltfTextureInfo::from) {
+    // Raw-JSON material node, used below to read KHR_texture_transform for the
+    // normal/occlusion textures (see `normal_occlusion_texture_info`).
+    let mat_json = gltf_material
+        .index()
+        .and_then(|i| ctx.data.doc.as_json().materials.get(i));
+
+    if let Some(tex) = gltf_material.normal_texture().map(|n| {
+        normal_occlusion_texture_info(
+            n.texture().index(),
+            n.tex_coord(),
+            mat_json
+                .and_then(|m| m.normal_texture.as_ref())
+                .and_then(|nt| nt.extensions.as_ref())
+                .and_then(|e| e.others.get("KHR_texture_transform")),
+        )
+    }) {
         let GLtfMaterialCacheKey {
             uv_index,
             texture_key,
@@ -227,7 +242,16 @@ async fn pbr_material_mapper_core(
         pbr_material.normal_scale = normal_tex.scale();
     }
 
-    if let Some(tex) = gltf_material.occlusion_texture().map(GltfTextureInfo::from) {
+    if let Some(tex) = gltf_material.occlusion_texture().map(|o| {
+        normal_occlusion_texture_info(
+            o.texture().index(),
+            o.tex_coord(),
+            mat_json
+                .and_then(|m| m.occlusion_texture.as_ref())
+                .and_then(|ot| ot.extensions.as_ref())
+                .and_then(|e| e.others.get("KHR_texture_transform")),
+        )
+    }) {
         let GLtfMaterialCacheKey {
             uv_index,
             texture_key,
@@ -786,31 +810,46 @@ impl<'a> From<gltf::texture::Info<'a>> for GltfTextureInfo {
     }
 }
 
-impl<'a> From<gltf::material::NormalTexture<'a>> for GltfTextureInfo {
-    fn from(info: gltf::material::NormalTexture<'a>) -> Self {
-        let transform = info.texture_transform();
-        Self {
-            index: info.texture().index(),
-            tex_coord_index: transform
-                .as_ref()
-                .and_then(|t| t.tex_coord())
-                .unwrap_or_else(|| info.tex_coord()) as usize,
-            texture_transform: transform.map(GltfTextureTransform::from),
-        }
-    }
-}
-
-impl<'a> From<gltf::material::OcclusionTexture<'a>> for GltfTextureInfo {
-    fn from(info: gltf::material::OcclusionTexture<'a>) -> Self {
-        let transform = info.texture_transform();
-        Self {
-            index: info.texture().index(),
-            tex_coord_index: transform
-                .as_ref()
-                .and_then(|t| t.tex_coord())
-                .unwrap_or_else(|| info.tex_coord()) as usize,
-            texture_transform: transform.map(GltfTextureTransform::from),
-        }
+/// Builds a `GltfTextureInfo` for a normal/occlusion texture. `index` and
+/// `base_tex_coord` come from the released high-level accessors; the
+/// `transform_json` (KHR_texture_transform) is read from the raw glTF JSON
+/// (`Document::as_json()`) because `NormalTexture`/`OcclusionTexture::
+/// texture_transform()` are *unreleased* gltf-crate accessors (git-only).
+/// Reading the JSON field directly keeps us on crates.io `gltf` 1.4.1.
+fn normal_occlusion_texture_info(
+    index: usize,
+    base_tex_coord: u32,
+    transform_json: Option<&gltf::json::Value>,
+) -> GltfTextureInfo {
+    let read2 = |t: &gltf::json::Value, key: &str, default: f32| {
+        let a = t.get(key).and_then(|v| v.as_array());
+        [
+            OrderedFloat(
+                a.and_then(|x| x.first())
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(default as f64) as f32,
+            ),
+            OrderedFloat(
+                a.and_then(|x| x.get(1))
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(default as f64) as f32,
+            ),
+        ]
+    };
+    let texture_transform = transform_json.map(|t| GltfTextureTransform {
+        offset: read2(t, "offset", 0.0),
+        rotation: OrderedFloat(read_f32(t, "rotation", 0.0)),
+        scale: read2(t, "scale", 1.0),
+    });
+    let tex_coord_index = transform_json
+        .and_then(|t| t.get("texCoord"))
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
+        .unwrap_or(base_tex_coord as usize);
+    GltfTextureInfo {
+        index,
+        tex_coord_index,
+        texture_transform,
     }
 }
 

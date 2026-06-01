@@ -116,12 +116,11 @@ reqwest = {version = "0.13.4", features = ["json"]}
 
 
 # Media
-# Git dep (vs crates.io 1.4.1) is still required for the unreleased
-# `NormalTexture`/`OcclusionTexture::texture_transform()` accessors used in
-# `renderer-gltf`. clearcoat/sheen (also unreleased — gltf-rs/gltf#465) used
-# to need it too, but are now parsed from the raw extensions JSON, so no
-# per-build `clearcoat`/`sheen` Cargo feature is needed anymore.
-gltf = {version = "1.4.1", git = "https://github.com/gltf-rs/gltf.git", features = [
+# Released crates.io gltf (no git dep — required for publishing awsm-renderer).
+# Extensions the gltf typed accessors don't cover (clearcoat/sheen, and the
+# normal/occlusion KHR_texture_transform) are read from the raw extensions
+# JSON in `renderer-gltf` instead. See gltf-rs/gltf#465.
+gltf = {version = "1.4.1", features = [
     "extensions",
     "KHR_lights_punctual",
     "KHR_texture_transform",
