@@ -57,7 +57,7 @@ pub static CONFIG: LazyLock<Config> = LazyLock::new(|| {
         generate_mipmaps: true,
         post_processing_enabled: true,
         initial_ibl: if cfg!(debug_assertions) {
-            IblId::PhotoStudio
+            IblId::SimpleSky
         } else {
             IblId::PhotoStudio
         },
