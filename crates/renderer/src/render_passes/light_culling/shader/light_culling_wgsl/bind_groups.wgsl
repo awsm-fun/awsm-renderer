@@ -40,7 +40,7 @@ struct LightPacked {
     kind_outer_pad: vec4<f32>,    // .x = kind (1=Dir, 2=Point, 3=Spot), .y = outer-cone cos, .z = shadow_index (bitcast u32), .w = pad
 };
 
-// Layout kept in lockstep with the shared `lights.wgsl` definition (the
+// Layout kept in lockstep with the shared `light_access.wgsl` definition (the
 // shading passes read the `directional` indices; the cull only needs
 // `data.x`, but the struct must match the 48-byte uniform buffer).
 struct LightsInfoPacked {

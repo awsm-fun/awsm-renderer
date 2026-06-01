@@ -66,10 +66,6 @@
 /*************** END brdf.wgsl ******************/
 {% endif %}
 
-/*************** START unlit.wgsl ******************/
-{% include "shared_wgsl/lighting/unlit.wgsl" %}
-/*************** END unlit.wgsl ******************/
-
 /*************** START texture_uvs.wgsl ******************/
 {% include "material_transparent_wgsl/helpers/texture_uvs.wgsl" %}
 /*************** END texture_uvs.wgsl ******************/

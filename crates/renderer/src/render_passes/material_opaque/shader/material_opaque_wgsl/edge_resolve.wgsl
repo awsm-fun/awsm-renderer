@@ -72,10 +72,6 @@
 /*************** END brdf.wgsl ******************/
 {% endif %}
 
-/*************** START unlit.wgsl ******************/
-{% include "shared_wgsl/lighting/unlit.wgsl" %}
-/*************** END unlit.wgsl ******************/
-
 /*************** START material.wgsl ******************/
 {% include "shared_wgsl/material.wgsl" %}
 /*************** END material.wgsl ******************/

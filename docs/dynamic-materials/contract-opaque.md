@@ -246,9 +246,11 @@ For convenience, the kernel exposes the per-pixel barycentric UV via
 
 `brdf.wgsl` (Schlick / Lambert / GGX), `light_access.wgsl` (light unpack
 / `get_light` / `LightsInfo`), `apply_lighting.wgsl` (the punctual-light
-walk → `brdf`), `unlit.wgsl` (`compute_unlit_output`). (`lights.wgsl` was
-split into `light_access.wgsl` + `apply_lighting.wgsl` — see the
-specialize-only materials notes in `docs/SHADER_GUIDELINES.md`.)
+walk → `brdf`). (`lights.wgsl` was split into `light_access.wgsl` +
+`apply_lighting.wgsl` — see the specialize-only materials notes in
+`docs/SHADER_GUIDELINES.md`.) The unlit output helper `compute_unlit_output`
+is **not** a shared module — it lives in the unlit material fragment
+(`crates/materials/src/wgsl/unlit_material.wgsl`).
 
 ### `shared_wgsl/material.wgsl`
 

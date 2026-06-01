@@ -33,7 +33,9 @@ impl ShaderIncludes {
     const BIT_APPLY_LIGHTING: u32 = 1 << 6;
     const BIT_BRDF: u32 = 1 << 7;
     const BIT_MATERIAL_COLOR_CALC: u32 = 1 << 8;
-    const BIT_UNLIT_HELPER: u32 = 1 << 9;
+    // bit 9 retired (was BIT_UNLIT_HELPER): the unlit output helper lives in
+    // the unlit material fragment, not a shared module, so there was nothing
+    // to gate. Append-only — don't reuse bit 9.
     const BIT_SHADOWS: u32 = 1 << 10;
     const BIT_SKYBOX: u32 = 1 << 11;
     const BIT_EXTRAS: u32 = 1 << 12;
@@ -59,8 +61,6 @@ impl ShaderIncludes {
     /// The PBR material-color builder (`material_color_calc.wgsl`) that samples
     /// all the PBR textures/extensions into a `PbrMaterialColor`. PBR only.
     pub const MATERIAL_COLOR_CALC: Self = Self(Self::BIT_MATERIAL_COLOR_CALC);
-    /// `lighting/unlit.wgsl` — the shared unlit output helper.
-    pub const UNLIT_HELPER: Self = Self(Self::BIT_UNLIT_HELPER);
     /// Shadow sampling helpers + bindings usage.
     pub const SHADOWS: Self = Self(Self::BIT_SHADOWS);
     /// `skybox.wgsl` — `sample_skybox`. (The dedicated skybox writer pass uses
@@ -85,7 +85,6 @@ impl ShaderIncludes {
                 | Self::BIT_APPLY_LIGHTING
                 | Self::BIT_BRDF
                 | Self::BIT_MATERIAL_COLOR_CALC
-                | Self::BIT_UNLIT_HELPER
                 | Self::BIT_SHADOWS
                 | Self::BIT_SKYBOX
                 | Self::BIT_EXTRAS,
@@ -168,7 +167,6 @@ impl core::fmt::Debug for ShaderIncludes {
             (Self::APPLY_LIGHTING, "APPLY_LIGHTING"),
             (Self::BRDF, "BRDF"),
             (Self::MATERIAL_COLOR_CALC, "MATERIAL_COLOR_CALC"),
-            (Self::UNLIT_HELPER, "UNLIT_HELPER"),
             (Self::SHADOWS, "SHADOWS"),
             (Self::SKYBOX, "SKYBOX"),
             (Self::EXTRAS, "EXTRAS"),
