@@ -17,6 +17,10 @@ fn orthonormal_tangent_from_vertex(normal: vec3<f32>, tangent_xyz: vec3<f32>) ->
     return normalize(cross(fallback_axis, normal));
 }
 
+{# Skinny materials: PBR material-color builder, gated so a thin non-PBR
+   transparent pipeline (materials_wgsl carries only its own fragment) doesn't
+   reference the PbrMaterial type. Only the base==Pbr fragment branch calls it. #}
+{% if inc.material_color_calc %}
 // Main function: Sample all PBR material textures and return combined material properties
 // Returns PbrMaterialColor with perturbed normal (use material_color.normal for lighting!)
 fn pbr_get_material_color(
@@ -482,11 +486,15 @@ fn pbr_iridescence_thickness(
     }
     return iri.thickness_max;
 }
+{% endif %}{# end inc.material_color_calc (transparent PBR builder) #}
 
 // ============================================================================
 // Unlit Material Color Computation
 // ============================================================================
 
+{# Skinny materials: gated by base==Unlit (references UnlitMaterial, only the
+   base==Unlit fragment branch calls it). #}
+{% if base == ShadingBase::Unlit %}
 // Compute unlit material color for fragment shader
 fn unlit_get_material_color(
     material: UnlitMaterial,
@@ -517,3 +525,4 @@ fn unlit_get_material_color(
 
     return UnlitMaterialColor(base, emissive);
 }
+{% endif %}{# end base==Unlit (transparent unlit builder) #}

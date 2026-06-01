@@ -741,6 +741,10 @@ fn _pbr_iridescence_thickness{{ mipmap.suffix() }}(
 // Unlit Material Color Computation
 // ============================================================================
 
+{# Skinny materials: gated by base==Unlit. References the UnlitMaterial type
+   (defined in the unlit fragment, which materials_wgsl only emits for the Unlit
+   base), and is only called from the base==Unlit dispatch branch. #}
+{% if base == ShadingBase::Unlit %}
 // Compute unlit material color
 fn compute_unlit_material_color(
     triangle_indices: vec3<u32>,
@@ -818,6 +822,7 @@ fn compute_unlit_material_color(
 
     return UnlitMaterialColor(base, emissive);
 }
+{% endif %}{# end base==Unlit (compute_unlit_material_color) #}
 
 // ============================================================================
 // Tangent Helpers
