@@ -60,13 +60,17 @@
 {% include "shared_wgsl/lighting/light_access.wgsl" %}
 /*************** END light_access.wgsl ******************/
 
+{% if inc.apply_lighting %}
 /*************** START apply_lighting.wgsl ******************/
 {% include "shared_wgsl/lighting/apply_lighting.wgsl" %}
 /*************** END apply_lighting.wgsl ******************/
+{% endif %}
 
+{% if inc.brdf %}
 /*************** START brdf.wgsl ******************/
 {% include "shared_wgsl/lighting/brdf.wgsl" %}
 /*************** END brdf.wgsl ******************/
+{% endif %}
 
 /*************** START unlit.wgsl ******************/
 {% include "shared_wgsl/lighting/unlit.wgsl" %}

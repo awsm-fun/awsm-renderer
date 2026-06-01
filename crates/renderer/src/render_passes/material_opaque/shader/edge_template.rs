@@ -71,6 +71,9 @@ pub struct ShaderTemplateMaterialEdgeResolveCompute {
     /// emits (decoupled from `shader_id`; see [`ShadingBase`]). The
     /// per-sample guard uses the numeric `shader_id`.
     pub base: ShadingBase,
+    /// Skinny-materials include gating (brdf / apply_lighting) — see the opaque
+    /// compute template + `docs/plans/SKINNY-MATERIALS.md`.
+    pub inc: crate::dynamic_materials::ShaderIncludeFlags,
     pub dynamic_struct_decl: String,
     pub dynamic_loader_decl: String,
     pub dynamic_wgsl_fragment: String,
@@ -163,6 +166,7 @@ impl TryFrom<&ShaderCacheKeyMaterialEdgeResolve> for ShaderTemplateMaterialEdgeR
                 shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
                 shader_id: value.shader_id,
                 base: value.base,
+                inc: crate::dynamic_materials::ShaderIncludeFlags::for_base(value.base),
                 dynamic_struct_decl: value
                     .dynamic_shader
                     .as_ref()

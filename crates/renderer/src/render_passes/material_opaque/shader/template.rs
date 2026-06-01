@@ -97,6 +97,11 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     /// dynamic range still emits the PBR path. The per-pixel guard uses
     /// the numeric `shader_id` regardless of `base`.
     pub base: crate::dynamic_materials::ShadingBase,
+    /// Which optional shared modules this pipeline's material declares (skinny
+    /// materials — `docs/plans/SKINNY-MATERIALS.md`). The host gates heavy
+    /// PBR-only includes (brdf / apply_lighting) behind these so non-PBR
+    /// pipelines don't compile them.
+    pub inc: crate::dynamic_materials::ShaderIncludeFlags,
     /// Whether this pipeline owns the skybox write (only the canonical
     /// PBR bucket; see [`ShaderCacheKeyMaterialOpaque::owns_skybox`]).
     pub owns_skybox: bool,
@@ -199,6 +204,7 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
                 shader_id: value.shader_id,
                 base: value.base,
+                inc: crate::dynamic_materials::ShaderIncludeFlags::for_base(value.base),
                 owns_skybox: value.owns_skybox,
                 pbr_features: awsm_materials::pbr::PbrFeatures::from_bits(value.pbr_features),
                 dynamic_struct_decl: value
