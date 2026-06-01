@@ -257,6 +257,11 @@ pub struct ShaderIncludeFlags {
     pub brdf: bool,
     /// PBR `apply_lighting*` orchestration (`apply_lighting.wgsl`).
     pub apply_lighting: bool,
+    /// The PBR `PbrMaterialColor` builder — the `_pbr_*` helpers in
+    /// `material_color_calc.wgsl` + their callers (`compute_material_color` in
+    /// `material_shading.wgsl`, `pbr_get_gradients` in `mipmap.wgsl`). The unlit
+    /// builder in the same file stays ungated.
+    pub material_color_calc: bool,
 }
 
 impl ShaderIncludeFlags {
@@ -266,6 +271,7 @@ impl ShaderIncludeFlags {
         Self {
             brdf: i.contains(S::BRDF),
             apply_lighting: i.contains(S::APPLY_LIGHTING),
+            material_color_calc: i.contains(S::MATERIAL_COLOR_CALC),
         }
     }
 }

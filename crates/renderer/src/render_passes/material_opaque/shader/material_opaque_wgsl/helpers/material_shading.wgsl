@@ -69,6 +69,10 @@ fn msaa_load_sample_textures(coords: vec2<i32>, sample_index: u32) -> MsaaSample
 
 {% endif %}
 
+{# Skinny materials: compute_material_color is the PBR builder's entry point
+   (calls pbr_get_material_color* + pbr_get_gradients). Only the base==Pbr
+   dispatch calls it, so gate it with the PBR material-color include. #}
+{% if inc.material_color_calc %}
 {% match mipmap %}
     {% when MipmapMode::Gradient %}
         // Compute material color with gradient-based mipmapping
@@ -133,3 +137,4 @@ fn msaa_load_sample_textures(coords: vec2<i32>, sample_index: u32) -> MsaaSample
             );
         }
 {% endmatch %}
+{% endif %}{# end inc.material_color_calc (compute_material_color) #}

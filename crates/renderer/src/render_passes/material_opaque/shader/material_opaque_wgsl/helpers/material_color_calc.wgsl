@@ -1,4 +1,9 @@
 
+{# Skinny materials: the PBR PbrMaterialColor builder. Gated so non-PBR
+   pipelines (which call compute_unlit_material_color below instead) don't
+   compile ~700 lines of PBR texture/extension sampling. See
+   docs/plans/SKINNY-MATERIALS.md. The unlit builder further down is ungated. #}
+{% if inc.material_color_calc %}
 {% if mipmap.is_gradient() %}
 struct PbrMaterialGradients {
     base_color: UvDerivs,
@@ -730,6 +735,7 @@ fn _pbr_iridescence_thickness{{ mipmap.suffix() }}(
     }
     return iri.thickness_max;
 }
+{% endif %}{# end inc.material_color_calc (PBR builder) #}
 
 // ============================================================================
 // Unlit Material Color Computation

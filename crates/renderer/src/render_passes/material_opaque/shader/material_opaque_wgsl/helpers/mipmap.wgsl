@@ -210,6 +210,9 @@ fn get_uv_derivatives(
 
 // Computes UV derivatives for each texture type, which are used with textureSampleGrad
 // This enables hardware anisotropic filtering in compute shaders
+{# Skinny materials: PBR-only (returns PbrMaterialGradients, gated in
+   material_color_calc.wgsl). Only compute_material_color calls it. #}
+{% if inc.material_color_calc %}
 fn pbr_get_gradients(
     barycentric: vec3<f32>,         // (b0, b1, b2)
     bary_derivs: vec4<f32>,         // (db1dx, db1dy, db2dx, db2dy)
@@ -488,6 +491,7 @@ fn pbr_get_gradients(
 
     return out;
 }
+{% endif %}{# end inc.material_color_calc (pbr_get_gradients) #}
 
 // Debug helper: Calculate what mip level would be selected for a given texture
 // This mimics the hardware mip selection algorithm
