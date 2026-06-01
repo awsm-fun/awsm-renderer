@@ -30,18 +30,16 @@ pub(super) fn ensure_tangents<'a>(
         return Ok(attribute_data);
     }
 
-    // Check if this primitive needs tangents (has a normal map)
-    let needs_tangents = primitive.material().normal_texture().is_some() || {
-        #[cfg(feature = "clearcoat")]
-        {
-            primitive
-                .material()
-                .clearcoat()
-                .is_some_and(|cc| cc.clearcoat_normal_texture().is_some())
-        }
-        #[cfg(not(feature = "clearcoat"))]
-        false
-    };
+    // Check if this primitive needs tangents (has a normal map — base or
+    // clearcoat). The clearcoat normal map is read from the raw extensions
+    // JSON (matching the material parser, which no longer uses the gltf
+    // crate's unreleased typed clearcoat accessor).
+    let needs_tangents = primitive.material().normal_texture().is_some()
+        || primitive
+            .material()
+            .extension_value("KHR_materials_clearcoat")
+            .and_then(|cc| cc.get("clearcoatNormalTexture"))
+            .is_some();
 
     if !needs_tangents {
         return Ok(attribute_data);

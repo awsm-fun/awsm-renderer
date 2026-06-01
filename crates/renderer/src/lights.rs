@@ -11,12 +11,13 @@ use awsm_renderer_core::{
     error::AwsmCoreError,
     renderer::AwsmRendererWebGpu,
 };
-use slotmap::{new_key_type, SlotMap};
+use slotmap::{new_key_type, SecondaryMap, SlotMap};
 use thiserror::Error;
 
 use crate::{
     bind_groups::{BindGroupCreate, BindGroups},
     lights::ibl::Ibl,
+    transforms::TransformKey,
     AwsmRenderer, AwsmRendererLogging,
 };
 
@@ -153,6 +154,13 @@ pub struct Lights {
     pub ibl: Ibl,
     pub brdf_lut: BrdfLut,
     lights: SlotMap<LightKey, Light>,
+    // Optional binding from a light to the transform node that drives its
+    // world pose. glTF lights attached to animated nodes (e.g. fireflies)
+    // bake their pose at load, but their node transform keeps animating —
+    // `update_from_transforms` re-derives position/direction each frame for
+    // any light listed here. Lights without an entry (procedural, manually
+    // positioned) are left untouched.
+    node_transforms: SecondaryMap<LightKey, TransformKey>,
     // We do not use DynamicUniformBuffer here because we need dense sequential access in the gpu
     // not stable offsets per-key that DynamicUniformBuffer provides (with holes, etc)
     // instead, we rebuild a fresh Vec<u8> when the gpu is dirty.
@@ -203,6 +211,7 @@ impl Lights {
 
         Ok(Lights {
             lights: SlotMap::with_key(),
+            node_transforms: SecondaryMap::new(),
             ibl,
             brdf_lut,
             punctual_gpu_dirty: true,
@@ -238,6 +247,7 @@ impl Lights {
     /// throttle / params entry in lockstep.
     pub(crate) fn clear(&mut self) {
         self.lights.clear();
+        self.node_transforms.clear();
         self.punctual_gpu_dirty = true;
         self.lighting_info_gpu_dirty = true;
     }
@@ -268,8 +278,49 @@ impl Lights {
     /// don't leak when the underlying light goes away.
     pub(crate) fn remove(&mut self, key: LightKey) {
         self.lights.remove(key);
+        self.node_transforms.remove(key);
         self.punctual_gpu_dirty = true;
         self.lighting_info_gpu_dirty = true;
+    }
+
+    /// Binds a light to the transform node that drives its world pose, so
+    /// [`Self::update_from_transforms`] re-derives the light's position
+    /// (and direction, for spot/directional) whenever that node's world
+    /// matrix changes — e.g. a glTF light parented to an animated node.
+    pub fn bind_transform(&mut self, key: LightKey, transform_key: TransformKey) {
+        if self.lights.contains_key(key) {
+            self.node_transforms.insert(key, transform_key);
+        }
+    }
+
+    /// Re-derives the world pose of every transform-bound light whose node
+    /// moved this frame. `dirty` is the per-frame dirty-transform set from
+    /// [`Transforms::take_dirty_meshes`](crate::transforms::Transforms::take_dirty_meshes),
+    /// mapping each updated `TransformKey` to its fresh world matrix.
+    /// Marks the punctual buffer dirty if any light changed so `write_gpu`
+    /// re-uploads it. Cheap: O(transform-bound lights), and a no-op when
+    /// nothing moved.
+    pub fn update_from_transforms(
+        &mut self,
+        dirty: &std::collections::HashMap<TransformKey, glam::Mat4>,
+    ) {
+        if dirty.is_empty() || self.node_transforms.is_empty() {
+            return;
+        }
+
+        let mut changed = false;
+        for (light_key, transform_key) in self.node_transforms.iter() {
+            if let Some(world) = dirty.get(transform_key) {
+                if let Some(light) = self.lights.get_mut(light_key) {
+                    light.apply_world_transform(world);
+                    changed = true;
+                }
+            }
+        }
+
+        if changed {
+            self.punctual_gpu_dirty = true;
+        }
     }
 
     /// Updates a light in place. **Not safe for `Light` variant
@@ -483,6 +534,60 @@ impl Light {
     /// Packed byte size for a light in the storage buffer.
     pub const BYTE_SIZE: usize = 64;
 
+    /// Re-derives this light's world-space pose from a node world matrix
+    /// (the glTF/transform convention: position is the translation column,
+    /// direction is the local `-Z` axis rotated into world space). Point
+    /// lights only carry a position; directional lights only a direction;
+    /// spot lights carry both. Color / intensity / range / cone angles are
+    /// intrinsic and left untouched.
+    pub fn apply_world_transform(&mut self, world: &glam::Mat4) {
+        use glam::{Vec3, Vec4Swizzles};
+
+        let position = world.w_axis.xyz().to_array();
+        let world_forward = world.transform_vector3(Vec3::new(0.0, 0.0, -1.0));
+        let direction = if world_forward.length_squared() > 1e-12 {
+            world_forward.normalize().to_array()
+        } else {
+            [0.0, 0.0, -1.0]
+        };
+
+        match self {
+            Light::Directional { direction: d, .. } => *d = direction,
+            Light::Point { position: p, .. } => *p = position,
+            Light::Spot {
+                position: p,
+                direction: d,
+                ..
+            } => {
+                *p = position;
+                *d = direction;
+            }
+        }
+    }
+
+    /// Culling radius below which a point/spot light's inverse-square
+    /// contribution is treated as negligible, used to bound the influence
+    /// AABB for *unlimited-range* lights (glTF lights that omit `range`).
+    /// Solving `intensity / d^2 = CUTOFF` for `d` gives the distance at
+    /// which radiance drops under this threshold; the shader itself keeps
+    /// applying pure inverse-square with no cutoff, so this only affects
+    /// the light-bucket overlap test, never the shaded result.
+    const UNLIMITED_RANGE_CUTOFF: f32 = 1e-3;
+
+    /// Influence radius used for the culling AABB. For a finite glTF
+    /// `range` that value is used directly; for an unlimited-range light
+    /// (`range <= 0`) a finite radius is derived from intensity so the
+    /// light still gets bucketed onto the meshes it actually reaches —
+    /// otherwise a zero `range` collapses the AABB to a point and the
+    /// light is culled from (almost) everything.
+    fn influence_radius(intensity: f32, range: f32) -> f32 {
+        if range > 0.0 {
+            range
+        } else {
+            (intensity.max(0.0) / Self::UNLIMITED_RANGE_CUTOFF).sqrt()
+        }
+    }
+
     /// Conservative world-space AABB for this light's influence volume.
     /// Returns `None` for directional lights (they have no bounded
     /// influence — they're applied globally via the directional-prefix
@@ -491,26 +596,34 @@ impl Light {
     /// Point lights: sphere centered at `position` with radius `range`.
     /// Spot lights: sphere centered at `position` with radius `range`
     /// (conservative — the actual spot cone is tighter, but a sphere is
-    /// a cheap correct upper bound for AABB overlap testing).
+    /// a cheap correct upper bound for AABB overlap testing). Lights with
+    /// an unlimited `range` (`<= 0`) derive a finite radius from intensity
+    /// (see [`Self::influence_radius`]).
     pub fn world_aabb(&self) -> Option<crate::bounds::Aabb> {
         use glam::Vec3;
         match self {
             Light::Directional { .. } => None,
             Light::Point {
-                position, range, ..
+                position,
+                range,
+                intensity,
+                ..
             } => {
                 let center = Vec3::from_array(*position);
-                let extent = Vec3::splat(*range);
+                let extent = Vec3::splat(Self::influence_radius(*intensity, *range));
                 Some(crate::bounds::Aabb {
                     min: center - extent,
                     max: center + extent,
                 })
             }
             Light::Spot {
-                position, range, ..
+                position,
+                range,
+                intensity,
+                ..
             } => {
                 let center = Vec3::from_array(*position);
-                let extent = Vec3::splat(*range);
+                let extent = Vec3::splat(Self::influence_radius(*intensity, *range));
                 Some(crate::bounds::Aabb {
                     min: center - extent,
                     max: center + extent,
@@ -638,9 +751,17 @@ impl Light {
                 position,
                 range,
             } => {
-                // row 1
+                // row 1. Pack the *effective* influence radius, not the raw
+                // glTF range: an unlimited-range light (`range <= 0`) would
+                // otherwise upload a 0 here, collapsing the GPU froxel
+                // light-culling sphere to a point so the light only lights
+                // the single tile it sits in — a hard-edged quad on nearby
+                // surfaces. The shader's inverse-square keeps near-field
+                // lighting unchanged and just gains a smooth cutoff at the
+                // influence edge.
+                let gpu_range = Self::influence_radius(*intensity, *range);
                 write(position.into());
-                write(range.into());
+                write((&gpu_range).into());
                 // row 2
                 write(Value::SkipN32(4)); // skip direction and inner cone
                                           // row 3
@@ -665,9 +786,11 @@ impl Light {
                 // so pre-compute cos(angle) here instead of storing raw radians.
                 let inner_cos = inner_angle.cos();
                 let outer_cos = outer_angle.cos();
-                // row 1
+                // row 1. Effective influence radius (see the point-light
+                // arm) so unlimited-range spots still cover their froxels.
+                let gpu_range = Self::influence_radius(*intensity, *range);
                 write(position.into());
-                write(range.into());
+                write((&gpu_range).into());
                 // row 2
                 write(direction.into());
                 write((&inner_cos).into());

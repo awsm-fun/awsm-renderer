@@ -116,10 +116,11 @@ reqwest = {version = "0.13.4", features = ["json"]}
 
 
 # Media
-# https://github.com/gltf-rs/gltf/issues/465
-# Note: clearcoat/sheen features require git version until gltf releases them.
-# Those features are enabled in frontend/Cargo.toml for local dev only.
-gltf = {version = "1.4.1", git = "https://github.com/gltf-rs/gltf.git", features = [
+# Released crates.io gltf (no git dep — required for publishing awsm-renderer).
+# Extensions the gltf typed accessors don't cover (clearcoat/sheen, and the
+# normal/occlusion KHR_texture_transform) are read from the raw extensions
+# JSON in `renderer-gltf` instead. See gltf-rs/gltf#465.
+gltf = {version = "1.4.1", features = [
     "extensions",
     "KHR_lights_punctual",
     "KHR_texture_transform",

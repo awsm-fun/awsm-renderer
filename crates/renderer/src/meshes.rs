@@ -340,7 +340,7 @@ impl AwsmRenderer {
         self.instances.transform_insert(transform_key, transforms)?;
 
         let mesh = self.meshes.get(mesh_key)?;
-        let has_transmission = self.materials.has_transmission(mesh.material_key);
+        let writes_depth = self.materials.transparent_writes_depth(mesh.material_key);
         let (mat_base, mat_pbr_features) = self.materials.transparent_variant(mesh.material_key);
         self.render_passes
             .material_transparent
@@ -358,7 +358,7 @@ impl AwsmRenderer {
                 &self.anti_aliasing,
                 &self.textures,
                 &self.render_textures.formats,
-                has_transmission,
+                writes_depth,
                 mat_base,
                 mat_pbr_features,
             )

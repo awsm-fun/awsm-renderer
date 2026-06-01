@@ -174,7 +174,7 @@ impl AwsmRenderer {
         // pre-existing bug — for mesh sets like (A,M1), (B,M2),
         // (A,M2), (B,M1) it skips the third / fourth pair even
         // though they produce different pipeline cache keys (e.g.
-        // when M1 and M2 differ in `has_transmission`), leaving
+        // when M1 and M2 differ in `writes_depth`), leaving
         // those meshes with stale pipeline-key map entries after
         // the layout change. `Shaders::ensure_keys` and
         // `RenderPipelines::ensure_keys` both dedupe internally by
@@ -183,13 +183,13 @@ impl AwsmRenderer {
         let mut transparent_requests: Vec<TransparentMeshPipelineRequest> = Vec::new();
         for (mesh_key, mesh) in self.meshes.iter() {
             let buffer_info_key = self.meshes.buffer_info_key(mesh_key)?;
-            let has_transmission = self.materials.has_transmission(mesh.material_key);
+            let writes_depth = self.materials.transparent_writes_depth(mesh.material_key);
             let (base, pbr_features) = self.materials.transparent_variant(mesh.material_key);
             transparent_requests.push(TransparentMeshPipelineRequest {
                 mesh,
                 mesh_key,
                 buffer_info_key,
-                has_transmission,
+                writes_depth,
                 base,
                 pbr_features,
             });

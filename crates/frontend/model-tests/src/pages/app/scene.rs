@@ -15,6 +15,7 @@ use awsm_renderer::lights::ibl::Ibl;
 use awsm_renderer::lights::ibl::IblTexture;
 use awsm_renderer::lights::Light;
 use awsm_renderer::lights::LightKey;
+use awsm_renderer::transforms::TransformKey;
 use awsm_renderer_gltf::data::GltfData;
 use awsm_renderer_gltf::loader::GltfLoader;
 use awsm_renderer_gltf::AwsmRendererGltfExt;
@@ -57,6 +58,12 @@ pub struct AppScene {
     /// non-empty, we skip the default directional fill in
     /// `reset_punctual_lights` so the model's own lighting drives the scene.
     gltf_punctual_lights: Mutex<Vec<LightKey>>,
+    /// `glTF node index -> TransformKey` from the last populate, kept so
+    /// `reset_punctual_lights` can re-bind re-inserted lights to their
+    /// animated nodes (the transform tree is stable across light
+    /// re-inserts). Without this, toggling the punctual-lights mode would
+    /// freeze animated lights like the DiffuseTransmissionPlant fireflies.
+    gltf_node_transforms: Mutex<HashMap<usize, TransformKey>>,
     move_action: Cell<Option<MoveAction>>,
     last_size: Cell<(f64, f64)>,
     last_camera_id: Cell<CameraId>,
@@ -92,6 +99,7 @@ impl AppScene {
             move_action: Cell::new(None),
             lights: Mutex::new(None),
             gltf_punctual_lights: Mutex::new(Vec::new()),
+            gltf_node_transforms: Mutex::new(HashMap::new()),
         });
 
         let resize_observer = ResizeObserver::new(
@@ -617,6 +625,14 @@ impl AppScene {
             }
             let populate_ctx = renderer.populate_gltf(data, None).await?;
             *scene.gltf_punctual_lights.lock().unwrap() = populate_ctx.punctual_lights;
+            // Keep the node->transform map so a later light re-insert (the
+            // punctual-lights mode toggle) can re-bind animated lights.
+            *scene.gltf_node_transforms.lock().unwrap() = populate_ctx
+                .key_lookups
+                .lock()
+                .unwrap()
+                .node_index_to_transform
+                .clone();
 
             Ok(())
         }
@@ -725,7 +741,7 @@ impl AppScene {
 
     pub async fn reset_punctual_lights(self: &Arc<Self>) -> Result<()> {
         use crate::pages::app::context::PunctualLightsMode;
-        use awsm_renderer_gltf::populate::lights::populate_lights_from_doc;
+        use awsm_renderer_gltf::populate::lights::populate_lights_from_doc_with_transforms;
 
         let mut renderer = self.renderer.lock().await;
         let mode = self.ctx.punctual_lights.get();
@@ -769,7 +785,15 @@ impl AppScene {
                 .as_ref()
                 .map(|d| d.heavy_clone());
             if let Some(data) = data_clone {
-                let keys = populate_lights_from_doc(&mut renderer, &data)?;
+                // Re-bind to the persisted node->transform map so animated
+                // lights (e.g. the firefly point lights) keep following
+                // their nodes instead of freezing at their load-time pose.
+                let node_transforms = self.gltf_node_transforms.lock().unwrap().clone();
+                let keys = populate_lights_from_doc_with_transforms(
+                    &mut renderer,
+                    &data,
+                    &node_transforms,
+                )?;
                 *self.gltf_punctual_lights.lock().unwrap() = keys;
             }
         }

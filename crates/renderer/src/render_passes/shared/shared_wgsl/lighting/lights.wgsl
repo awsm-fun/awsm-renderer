@@ -127,14 +127,14 @@ fn light_to_brdf(light:Light, normal: vec3<f32>, world_position: vec3<f32>) -> L
             // no light, skip
         }
         case 1u: { // Directional
-            light_dir = normalize(-light.direction); // light -> surface
+            light_dir = normalize(-light.direction); // surface -> light
             radiance = light.color * light.intensity;
             n_dot_l = max(dot(normal, light_dir), 0.0);
         }
         case 2u: { // Point
             let surface_to_light = light.position - world_position;
             let dist = length(surface_to_light);
-            light_dir = surface_to_light / dist; // light -> surface
+            light_dir = surface_to_light / max(dist, 1e-6); // surface -> light (guard dist==0)
             let attenuation = inverse_square(light.range, dist);
             radiance = light.color * light.intensity * attenuation;
             n_dot_l = max(dot(normal, light_dir), 0.0);
@@ -142,7 +142,7 @@ fn light_to_brdf(light:Light, normal: vec3<f32>, world_position: vec3<f32>) -> L
         case 3u: { // Spot
             let surface_to_light = light.position - world_position;
             let dist = length(surface_to_light);
-            light_dir = surface_to_light / dist; // light -> surface
+            light_dir = surface_to_light / max(dist, 1e-6); // surface -> light (guard dist==0)
             let cos_l = dot(light_dir, -normalize(light.direction));
             let spot = spot_falloff(light.inner_cone, light.outer_cone, cos_l);
             let attenuation = inverse_square(light.range, dist) * spot;
@@ -159,6 +159,19 @@ fn light_to_brdf(light:Light, normal: vec3<f32>, world_position: vec3<f32>) -> L
         light_dir,
         radiance,
     );
+}
+
+// Orient the surface normal toward the light for shadow-bias purposes.
+// The shadow normal-offset bias (`world_pos + normal * normal_bias`) assumes
+// the lit side faces the light. For a diffuse-transmissive surface lit from
+// BEHIND (n·l < 0, driving the back-transmission lobe), the front normal
+// would push the sample into self-shadow and extinguish the transmission.
+// Flipping the normal to face the light fixes the bias for that lobe. For
+// every other case this is a no-op: front-lit fragments keep the front
+// normal, and a back-lit *non*-transmissive fragment has `brdf_direct == 0`,
+// so the (changed) visibility multiplies zero — bit-identical result.
+fn shadow_normal_toward_light(surface_normal: vec3<f32>, light_dir: vec3<f32>) -> vec3<f32> {
+    return surface_normal * select(1.0, -1.0, dot(surface_normal, light_dir) < 0.0);
 }
 
 // spot light mask (smooth edge)
@@ -216,91 +229,7 @@ fn apply_lighting(
                     visibility = sample_shadow_directional(
                         light.shadow_index,
                         world_position,
-                        material_color.normal,
-                        view_z_for_shadow,
-                    );
-                    // Contact-shadow refinement: directional lights only,
-                    // since the SSCS ray-march needs a meaningful
-                    // surface-to-light direction. Point/spot already
-                    // sample their own short-range shadow maps so SSCS
-                    // would double-cost them for no win.
-                    if light.kind == 1u && light.shadow_index != SHADOW_INDEX_NONE {
-                        let sscs_dir = normalize(-light.direction);
-                        visibility = visibility * apply_sscs(world_position, sscs_dir);
-                    }
-                }
-                color += direct * visibility;
-            {% else %}
-                color += direct;
-            {% endif %}
-        }
-        {% if shadows_enabled %}
-            // Cascade-debug overlay (uses the dominant directional
-            // light's descriptor base, fetched via light 0's
-            // `shadow_index` — sufficient until phase 4 surfaces a
-            // proper sun-light index).
-            if lights_info.n_lights > 0u {
-                color = debug_cascade_tint(
-                    color,
-                    get_light(0u).shadow_index,
-                    world_position,
-                    view_z_for_shadow,
-                );
-            }
-        {% endif %}
-    {% endif %}
-
-    return color;
-}
-
-// Apply lighting with explicit transmission background (for screen-space transmission)
-fn apply_lighting_with_transmission(
-    material_color: PbrMaterialColor,
-    surface_to_camera: vec3<f32>,
-    world_position: vec3<f32>,
-    lights_info: LightsInfo,
-    transmission_background: vec3<f32>,
-    // See `apply_lighting`.
-    receive_shadows: u32,
-) -> vec3<f32> {
-    var color = vec3<f32>(0.0);
-
-    {% if has_lighting_ibl() %}
-        color = brdf_ibl_with_transmission(
-            material_color,
-            material_color.normal,
-            surface_to_camera,
-            ibl_filtered_env_tex,
-            ibl_filtered_env_sampler,
-            ibl_irradiance_tex,
-            ibl_irradiance_sampler,
-            brdf_lut_tex,
-            brdf_lut_sampler,
-            lights_info.ibl,
-            transmission_background
-        );
-    {% endif %}
-
-    {% if has_lighting_punctual() %}
-        {% if shadows_enabled %}
-            // View-space z (positive forward) for cascade selection.
-            let view_z_for_shadow = -(camera_raw.view * vec4<f32>(world_position, 1.0)).z;
-        {% endif %}
-        for(var i = 0u; i < lights_info.n_lights; i = i + 1u) {
-            let light = get_light(i);
-            let light_brdf = light_to_brdf(light, material_color.normal, world_position);
-            let direct = brdf_direct(material_color, light_brdf, surface_to_camera);
-            {% if shadows_enabled %}
-                // Modulate by shadow visibility (1.0 = lit, 0.0 = fully
-                // shadowed). `shadow_index == SHADOW_INDEX_NONE` short-
-                // circuits to 1.0; the cascade selector walks
-                // descriptors descriptor_base..base+count.
-                var visibility: f32 = 1.0;
-                if receive_shadows != 0u {
-                    visibility = sample_shadow_directional(
-                        light.shadow_index,
-                        world_position,
-                        material_color.normal,
+                        shadow_normal_toward_light(material_color.normal, light_brdf.light_dir),
                         view_z_for_shadow,
                     );
                     // Contact-shadow refinement: directional lights only,
@@ -437,7 +366,7 @@ fn apply_lighting_per_froxel(
                     visibility = sample_shadow_directional(
                         light.shadow_index,
                         world_position,
-                        material_color.normal,
+                        shadow_normal_toward_light(material_color.normal, light_brdf.light_dir),
                         view_z_for_shadow,
                     );
                     if light.shadow_index != SHADOW_INDEX_NONE {
@@ -479,7 +408,7 @@ fn apply_lighting_per_froxel(
                         visibility = sample_shadow_directional(
                             light.shadow_index,
                             world_position,
-                            material_color.normal,
+                            shadow_normal_toward_light(material_color.normal, light_brdf.light_dir),
                             view_z_for_shadow,
                         );
                     }
@@ -557,7 +486,7 @@ fn apply_lighting_per_froxel_with_transmission(
                     visibility = sample_shadow_directional(
                         light.shadow_index,
                         world_position,
-                        material_color.normal,
+                        shadow_normal_toward_light(material_color.normal, light_brdf.light_dir),
                         view_z_for_shadow,
                     );
                     if light.shadow_index != SHADOW_INDEX_NONE {
@@ -597,7 +526,7 @@ fn apply_lighting_per_froxel_with_transmission(
                         visibility = sample_shadow_directional(
                             light.shadow_index,
                             world_position,
-                            material_color.normal,
+                            shadow_normal_toward_light(material_color.normal, light_brdf.light_dir),
                             view_z_for_shadow,
                         );
                     }

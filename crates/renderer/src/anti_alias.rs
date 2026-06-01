@@ -388,14 +388,14 @@ impl AwsmRenderer {
         > = Vec::new();
         for (mesh_key, mesh) in self.meshes.iter() {
             let buffer_info_key = self.meshes.buffer_info_key(mesh_key)?;
-            let has_transmission = self.materials.has_transmission(mesh.material_key);
+            let writes_depth = self.materials.transparent_writes_depth(mesh.material_key);
             let (base, pbr_features) = self.materials.transparent_variant(mesh.material_key);
             requests.push(
                 crate::render_passes::material_transparent::pipeline::TransparentMeshPipelineRequest {
                     mesh,
                     mesh_key,
                     buffer_info_key,
-                    has_transmission,
+                    writes_depth,
                     base,
                     pbr_features,
                 },

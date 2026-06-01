@@ -17,11 +17,6 @@ rustdoc-args = ["--cfg=web_sys_unstable_apis"]
 
 [features]
 default = []
-# Optional glTF material extensions. `gltf`'s `KHR_materials_clearcoat` /
-# `KHR_materials_sheen` are unreleased on crates.io, so they're only
-# available with the git dependency (see workspace Cargo.toml).
-clearcoat = []
-sheen = []
 
 [dependencies]
 awsm-renderer = { path = "../renderer" }
