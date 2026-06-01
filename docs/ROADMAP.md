@@ -7,12 +7,10 @@
   substitution + prewarm wiring, extras-pool storage subsystem, a
   scene-editor Import Material flow + per-mesh Custom picker, a
   standalone `material-editor` frontend with live preview +
-  debounced recompile + contract/errors panes, scanline first-party
-  promotion (byte-identical smoke test), and a Public API
+  debounced recompile + contract/errors panes, and a Public API
   contract surface documented at
   [`docs/dynamic-materials/contract-opaque.md`](dynamic-materials/contract-opaque.md)
-  + [`docs/dynamic-materials/contract-transparent.md`](dynamic-materials/contract-transparent.md)
-  + [`docs/dynamic-materials/promotion.md`](dynamic-materials/promotion.md).
+  + [`docs/dynamic-materials/contract-transparent.md`](dynamic-materials/contract-transparent.md).
   Remaining follow-ups landed across
   [PR #99](https://github.com/dakom/awsm-renderer/pull/99)
   (cold-boot / lazy-pool work) and

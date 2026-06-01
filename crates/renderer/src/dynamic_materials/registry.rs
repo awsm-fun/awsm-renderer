@@ -224,7 +224,7 @@ impl ShadingBase {
     }
 
     /// The canonical first-party shader id for this base, if any. `Custom`
-    /// (dynamic + scanline) has none — it conservatively gets the full set.
+    /// (dynamic materials) has none — it conservatively gets the full set.
     pub fn canonical_shader_id(self) -> Option<MaterialShaderId> {
         match self {
             ShadingBase::Pbr => Some(MaterialShaderId::PBR),
@@ -238,7 +238,7 @@ impl ShadingBase {
 
 /// The closure of shared shader modules a pipeline of this shading base needs
 /// (see `docs/SHADER_GUIDELINES.md`). First-party bases map to their
-/// declared set; `Custom` (dynamic + scanline) conservatively gets the full set
+/// declared set; `Custom` (dynamic materials) conservatively gets the full set
 /// since author WGSL may reference anything.
 pub fn resolved_includes_for_base(base: ShadingBase) -> awsm_materials::ShaderIncludes {
     base.canonical_shader_id()

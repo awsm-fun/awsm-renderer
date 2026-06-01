@@ -281,7 +281,7 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
                 // Skinny materials: emit only this pipeline's base material body
                 // (the dispatch references only that base's fragment). Custom
-                // (None) emits all — covers scanline + dynamic dispatch. The
+                // (None) emits all — covers dynamic-material dispatch. The
                 // skybox-owner shades nothing (its body is gated out, #13), so
                 // it carries no material fragment + no PBR shading includes.
                 materials_wgsl: if value.owns_skybox {

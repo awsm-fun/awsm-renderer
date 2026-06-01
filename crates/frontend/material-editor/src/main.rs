@@ -2,10 +2,8 @@
 //! custom materials.
 //!
 //! The author-facing WGSL contract is in
-//! `docs/dynamic-materials/contract-{opaque,transparent}.md`; the
-//! promotion-to-first-party walkthrough is in
-//! `docs/dynamic-materials/promotion.md`. UI is built with dominator +
-//! futures-signals, mirroring scene-editor.
+//! `docs/dynamic-materials/contract-{opaque,transparent}.md`. UI is
+//! built with dominator + futures-signals, mirroring scene-editor.
 //!
 //! ## Architecture
 //!

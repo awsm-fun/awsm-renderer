@@ -1,11 +1,10 @@
 # Test materials
 
 Procedurally-authored dynamic materials that exercise the renderer's
-`BufferSlot` + extras-pool path, the transparent dispatch routing,
-and the side-by-side dynamic-vs-promoted comparison. **No external
-artwork is required** — each material's shader generates its visual
-output algorithmically from uniforms + (where applicable) the
-extras-pool slice.
+`BufferSlot` + extras-pool path and the transparent dispatch routing.
+**No external artwork is required** — each material's shader generates
+its visual output algorithmically from uniforms + (where applicable)
+the extras-pool slice.
 
 Each subfolder is the on-disk shape a `scene-editor` "Import Material"
 flow or a `material-editor` `?folder=<name>` deep-link expects:
@@ -89,11 +88,3 @@ Use the Custom Materials pane → "Import Material…" three times,
 picking each subfolder in turn. Then place three meshes in the scene
 (sphere is ideal for soft-glass; plane / quad for scanline +
 irregular-atlas) and assign one custom material to each.
-
-## Side-by-side comparison
-
-Once `scanline` is promoted to first-party, the side-by-side scene
-puts the dynamic version next to the promoted version. The expected
-byte-identical render (since the same shader runs through both code
-paths) drives the visual diff test in
-`docs/dynamic-materials/promotion.md`.

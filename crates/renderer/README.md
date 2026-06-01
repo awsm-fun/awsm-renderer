@@ -132,10 +132,7 @@ The full author-facing WGSL contract — what symbols are in scope, what
 `input.material.<field>`, how to sample the texture pool, and how to
 use buffer slots via the extras pool — lives in
 [`docs/dynamic-materials/contract-opaque.md`] and
-[`docs/dynamic-materials/contract-transparent.md`]. The
-"promote-to-first-party" walkthrough (taking a stable dynamic material
-and folding it into the renderer's built-in shader set) is in
-[`docs/dynamic-materials/promotion.md`].
+[`docs/dynamic-materials/contract-transparent.md`].
 
 A fully worked end-to-end example, including buffer slots and a
 per-instance override, is at
@@ -145,7 +142,6 @@ per-instance override, is at
 [`wait_for_pipelines_ready`]: src/pipeline_scheduler/mod.rs
 [`docs/dynamic-materials/contract-opaque.md`]: ../../docs/dynamic-materials/contract-opaque.md
 [`docs/dynamic-materials/contract-transparent.md`]: ../../docs/dynamic-materials/contract-transparent.md
-[`docs/dynamic-materials/promotion.md`]: ../../docs/dynamic-materials/promotion.md
 [`crates/renderer/examples/dynamic_material.rs`]: examples/dynamic_material.rs
 
 ## Shadows quick start

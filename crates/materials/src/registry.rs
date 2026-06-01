@@ -62,14 +62,6 @@ pub fn enabled_materials() -> Vec<MaterialEntry> {
             includes: crate::flipbook::SHADER_INCLUDES,
             inputs: crate::flipbook::FRAGMENT_INPUTS,
         },
-        #[cfg(feature = "scanline")]
-        MaterialEntry {
-            shader_id: MaterialShaderId::SCANLINE,
-            wgsl_fragment: crate::scanline::WGSL_FRAGMENT,
-            name: "scanline",
-            includes: crate::scanline::SHADER_INCLUDES,
-            inputs: crate::scanline::FRAGMENT_INPUTS,
-        },
     ]
 }
 
@@ -95,7 +87,7 @@ pub fn build_materials_wgsl() -> String {
 /// Like [`build_materials_wgsl`] but emits only the fragment for `only`
 /// (skinny materials — a pipeline specialized to one base only references that
 /// base's material fragment). `None` emits every fragment (the conservative
-/// path for the `Custom` base, which covers scanline + dynamic dispatch).
+/// path for the `Custom` base, which covers dynamic-material dispatch).
 pub fn build_materials_wgsl_filtered(only: Option<MaterialShaderId>) -> String {
     let entries = enabled_materials();
     let mut out = String::new();
