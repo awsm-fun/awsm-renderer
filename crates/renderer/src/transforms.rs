@@ -42,6 +42,13 @@ impl AwsmRenderer {
         self.transforms.update_world();
         let dirty_transforms = self.transforms.take_dirty_meshes();
         let dirty_instances = self.instances.take_dirty_transforms();
+
+        // Propagate animated node transforms to any lights bound to them
+        // (e.g. glTF point lights on animated firefly nodes) before the
+        // light-bucket rebuild below reads their world AABBs. Consumes a
+        // borrow of `dirty_transforms`, which is moved into
+        // `meshes.update_world` immediately after.
+        self.lights.update_from_transforms(&dirty_transforms);
         // Build a frustum from the last-known camera matrices so
         // `Meshes::update_world` can run the coverage-driven
         // skin-skip's BVH-visible override. `None` on the very

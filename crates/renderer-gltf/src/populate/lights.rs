@@ -1,10 +1,13 @@
 //! KHR_lights_punctual: walk the scene and create renderer lights for any
 //! glTF nodes that reference a punctual light.
 
+use std::collections::HashMap;
+
 use glam::{Mat4, Vec3, Vec4Swizzles};
 
 use awsm_renderer::{
     lights::{Light, LightKey},
+    transforms::TransformKey,
     AwsmRenderer,
 };
 
@@ -20,7 +23,17 @@ pub(crate) fn populate_gltf_lights(
     renderer: &mut AwsmRenderer,
     ctx: &GltfPopulateContext,
 ) -> Result<Vec<LightKey>> {
-    populate_lights_from_doc(renderer, &ctx.data)
+    // Snapshot the node-index → TransformKey map so each light can be
+    // bound to the transform node that drives its world pose. This lets a
+    // light parented to an animated node (e.g. a firefly) follow that node
+    // each frame instead of staying frozen at its load-time bake.
+    let node_index_to_transform = ctx
+        .key_lookups
+        .lock()
+        .unwrap()
+        .node_index_to_transform
+        .clone();
+    populate_lights_from_doc_inner(renderer, &ctx.data, Some(&node_index_to_transform))
 }
 
 /// Like `populate_gltf_lights`, but driven by a `GltfData` directly so it
@@ -30,6 +43,17 @@ pub(crate) fn populate_gltf_lights(
 pub fn populate_lights_from_doc(
     renderer: &mut AwsmRenderer,
     data: &GltfData,
+) -> Result<Vec<LightKey>> {
+    // No transform-key map available on this path, so lights are baked at
+    // their load-time pose and won't follow node animation (the re-insert
+    // path is only used for static "model only" relighting).
+    populate_lights_from_doc_inner(renderer, data, None)
+}
+
+fn populate_lights_from_doc_inner(
+    renderer: &mut AwsmRenderer,
+    data: &GltfData,
+    node_index_to_transform: Option<&HashMap<usize, TransformKey>>,
 ) -> Result<Vec<LightKey>> {
     let mut keys = Vec::new();
 
@@ -43,7 +67,13 @@ pub fn populate_lights_from_doc(
     };
 
     for node in scene.nodes() {
-        walk_node(renderer, &node, Mat4::IDENTITY, &mut keys)?;
+        walk_node(
+            renderer,
+            &node,
+            Mat4::IDENTITY,
+            &mut keys,
+            node_index_to_transform,
+        )?;
     }
 
     Ok(keys)
@@ -54,6 +84,7 @@ fn walk_node(
     node: &gltf::Node,
     parent_world: Mat4,
     keys: &mut Vec<LightKey>,
+    node_index_to_transform: Option<&HashMap<usize, TransformKey>>,
 ) -> Result<()> {
     let local = match node.transform() {
         gltf::scene::Transform::Matrix { matrix } => Mat4::from_cols_array_2d(&matrix),
@@ -75,12 +106,22 @@ fn walk_node(
             // params unregistered; callers can opt in later via
             // `AwsmRenderer::set_light_shadow_params`.
             let key = renderer.insert_light(light, None)?;
+
+            // Bind the light to its node's transform so it follows node
+            // animation (e.g. firefly point lights orbiting the plant)
+            // instead of staying frozen at the load-time bake.
+            if let Some(transform_key) =
+                node_index_to_transform.and_then(|map| map.get(&node.index()).copied())
+            {
+                renderer.lights.bind_transform(key, transform_key);
+            }
+
             keys.push(key);
         }
     }
 
     for child in node.children() {
-        walk_node(renderer, &child, world, keys)?;
+        walk_node(renderer, &child, world, keys, node_index_to_transform)?;
     }
 
     Ok(())
