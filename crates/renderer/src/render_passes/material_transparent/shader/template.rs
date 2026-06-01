@@ -72,7 +72,9 @@ impl ShaderTemplateTransparentMaterialIncludes {
             shadows_enabled: true,
             use_froxel_lights: true,
             froxel_slice_count: cache_key.froxel_slice_count,
-            materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
+            materials_wgsl: awsm_materials::registry::build_materials_wgsl_filtered(
+                cache_key.base.canonical_shader_id(),
+            ),
             shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
             // Per-material specialization: the shared brdf /
             // material_color_calc includes gate on exactly this transparent

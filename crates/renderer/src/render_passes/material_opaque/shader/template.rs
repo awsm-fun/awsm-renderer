@@ -200,7 +200,12 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 // `apply_lighting_per_froxel*` helpers when this is `true`.
                 use_froxel_lights: true,
                 froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
-                materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
+                // Skinny materials: emit only this pipeline's base material body
+                // (the dispatch references only that base's fragment). Custom
+                // (None) emits all — covers scanline + dynamic dispatch.
+                materials_wgsl: awsm_materials::registry::build_materials_wgsl_filtered(
+                    value.base.canonical_shader_id(),
+                ),
                 shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
                 shader_id: value.shader_id,
                 base: value.base,
