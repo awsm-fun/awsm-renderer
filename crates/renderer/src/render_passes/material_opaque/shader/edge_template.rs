@@ -162,9 +162,7 @@ impl TryFrom<&ShaderCacheKeyMaterialEdgeResolve> for ShaderTemplateMaterialEdgeR
                 use_froxel_lights: true,
                 froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
                 shadows_enabled: true,
-                materials_wgsl: awsm_materials::registry::build_materials_wgsl_filtered(
-                    value.base.canonical_shader_id(),
-                ),
+                materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
                 shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
                 shader_id: value.shader_id,
                 base: value.base,

@@ -225,7 +225,7 @@ impl ShadingBase {
 
     /// The canonical first-party shader id for this base, if any. `Custom`
     /// (dynamic + scanline) has none — it conservatively gets the full set.
-    pub fn canonical_shader_id(self) -> Option<MaterialShaderId> {
+    fn canonical_shader_id(self) -> Option<MaterialShaderId> {
         match self {
             ShadingBase::Pbr => Some(MaterialShaderId::PBR),
             ShadingBase::Unlit => Some(MaterialShaderId::UNLIT),

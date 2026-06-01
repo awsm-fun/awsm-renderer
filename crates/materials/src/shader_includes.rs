@@ -118,7 +118,9 @@ impl ShaderIncludes {
                 .union(Self::CAMERA),
             Self::BIT_BRDF => Self::MATH.union(Self::CAMERA),
             Self::BIT_LIGHT_ACCESS => Self::MATH,
-            Self::BIT_MATERIAL_COLOR_CALC => Self::TEXTURES.union(Self::CAMERA).union(Self::MATH),
+            Self::BIT_MATERIAL_COLOR_CALC => {
+                Self::TEXTURES.union(Self::CAMERA).union(Self::MATH)
+            }
             Self::BIT_SHADOWS => Self::MATH.union(Self::CAMERA),
             Self::BIT_SKYBOX => Self::CAMERA.union(Self::MATH),
             Self::BIT_TEXTURES => Self::MATH,
