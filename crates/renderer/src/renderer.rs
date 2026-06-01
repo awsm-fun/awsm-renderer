@@ -557,7 +557,7 @@ impl AwsmRenderer {
         // dedupe at the request level — and dedup'ing here by
         // `(buffer_info, material)` OR-style (the previous
         // pre-existing pattern) misses pairs like (A,M1)(B,M2)(A,M2)
-        // when M1 and M2 differ in `has_transmission`, which would
+        // when M1 and M2 differ in `writes_depth`, which would
         // leave some meshes with stale pipeline-key map entries.
         let mut requests: Vec<
             crate::render_passes::material_transparent::pipeline::TransparentMeshPipelineRequest,

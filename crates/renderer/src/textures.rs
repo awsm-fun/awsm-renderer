@@ -174,7 +174,7 @@ impl AwsmRenderer {
         // pre-existing bug — for mesh sets like (A,M1), (B,M2),
         // (A,M2), (B,M1) it skips the third / fourth pair even
         // though they produce different pipeline cache keys (e.g.
-        // when M1 and M2 differ in `has_transmission`), leaving
+        // when M1 and M2 differ in `writes_depth`), leaving
         // those meshes with stale pipeline-key map entries after
         // the layout change. `Shaders::ensure_keys` and
         // `RenderPipelines::ensure_keys` both dedupe internally by

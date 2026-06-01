@@ -127,14 +127,14 @@ fn light_to_brdf(light:Light, normal: vec3<f32>, world_position: vec3<f32>) -> L
             // no light, skip
         }
         case 1u: { // Directional
-            light_dir = normalize(-light.direction); // light -> surface
+            light_dir = normalize(-light.direction); // surface -> light
             radiance = light.color * light.intensity;
             n_dot_l = max(dot(normal, light_dir), 0.0);
         }
         case 2u: { // Point
             let surface_to_light = light.position - world_position;
             let dist = length(surface_to_light);
-            light_dir = surface_to_light / max(dist, 1e-6); // light -> surface (guard dist==0)
+            light_dir = surface_to_light / max(dist, 1e-6); // surface -> light (guard dist==0)
             let attenuation = inverse_square(light.range, dist);
             radiance = light.color * light.intensity * attenuation;
             n_dot_l = max(dot(normal, light_dir), 0.0);
@@ -142,7 +142,7 @@ fn light_to_brdf(light:Light, normal: vec3<f32>, world_position: vec3<f32>) -> L
         case 3u: { // Spot
             let surface_to_light = light.position - world_position;
             let dist = length(surface_to_light);
-            light_dir = surface_to_light / max(dist, 1e-6); // light -> surface (guard dist==0)
+            light_dir = surface_to_light / max(dist, 1e-6); // surface -> light (guard dist==0)
             let cos_l = dot(light_dir, -normalize(light.direction));
             let spot = spot_falloff(light.inner_cone, light.outer_cone, cos_l);
             let attenuation = inverse_square(light.range, dist) * spot;
