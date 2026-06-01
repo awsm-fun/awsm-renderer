@@ -150,6 +150,9 @@ fn geometry_smith(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, alpha: f32) -> f32 {
 // Clearcoat BRDF (KHR_materials_clearcoat)
 // -------------------------------------------------------------
 
+{# Skinny: clearcoat lobe defs gated by the feature (the call sites already are),
+   so a PBR variant without clearcoat doesn't compile them. #}
+{% if pbr_features.clearcoat %}
 // Clearcoat uses a fixed F0 of 0.04 (standard dielectric)
 const CLEARCOAT_F0: f32 = 0.04;
 
@@ -195,11 +198,14 @@ fn clearcoat_fresnel(clearcoat: f32, v_dot_h: f32) -> f32 {
     }
     return clearcoat * fresnel_schlick(v_dot_h, vec3<f32>(CLEARCOAT_F0)).r;
 }
+{% endif %}{# end pbr_features.clearcoat (lobe defs) #}
 
 // -------------------------------------------------------------
 // Sheen BRDF (KHR_materials_sheen)
 // Uses Charlie distribution for cloth-like sheen
 // -------------------------------------------------------------
+{# Skinny: sheen lobe defs gated by the feature. #}
+{% if pbr_features.sheen %}
 
 // Charlie distribution function for sheen (inverted Gaussian)
 // This creates a soft, cloth-like highlight at grazing angles
@@ -270,6 +276,7 @@ fn sheen_albedo_scaling(sheen_color: vec3<f32>, sheen_roughness: f32, n_dot_v: f
 
     return 1.0 - sheen_max * E;
 }
+{% endif %}{# end pbr_features.sheen (lobe defs) #}
 
 // -------------------------------------------------------------
 // IBL Sampling Functions
@@ -322,6 +329,8 @@ fn sampleBRDFLUT(
 // -------------------------------------------------------------
 // Anisotropy (KHR_materials_anisotropy)
 // -------------------------------------------------------------
+{# Skinny: anisotropy lobe defs gated by the feature. #}
+{% if pbr_features.anisotropy %}
 
 // Returns a per-direction anisotropic roughness pair `(alpha_t, alpha_b)`.
 // `strength` is the (signed) anisotropy factor — sign flips orient the lobe.
@@ -363,6 +372,7 @@ fn visibility_anisotropic(
     let lambda_l = n_dot_v * length(vec3<f32>(alpha_t * t_dot_l, alpha_b * b_dot_l, n_dot_l));
     return 0.5 / max(lambda_v + lambda_l, EPSILON);
 }
+{% endif %}{# end pbr_features.anisotropy (lobe defs) #}
 
 // -------------------------------------------------------------
 // Iridescence (KHR_materials_iridescence)
@@ -388,7 +398,8 @@ fn visibility_anisotropic(
 // is the LUT-based Belcour-Barla — but it costs a 64x64x64 RGB LUT and
 // noticeably more shader cost.
 // -------------------------------------------------------------
-
+{# Skinny: iridescence lobe defs gated by the feature. #}
+{% if pbr_features.iridescence %}
 fn iridescence_fresnel(
     cos_theta_v: f32,
     eta_thin: f32,
@@ -448,6 +459,7 @@ fn iridescence_fresnel(
     let interference = numerator / max(denominator, vec3<f32>(1e-4));
     return clamp(interference, vec3<f32>(0.0), vec3<f32>(1.0));
 }
+{% endif %}{# end pbr_features.iridescence (lobe defs) #}
 
 // -------------------------------------------------------------
 // Direct Lighting BRDF (Cook-Torrance)
