@@ -50,6 +50,22 @@ pub fn populate_lights_from_doc(
     populate_lights_from_doc_inner(renderer, data, None)
 }
 
+/// Like [`populate_lights_from_doc`], but binds each re-inserted light to
+/// its glTF node's `TransformKey` so animated lights (e.g. fireflies)
+/// keep following their node after a re-insert. The caller supplies the
+/// `node_index -> TransformKey` map captured from the original populate
+/// (the transform tree is stable across light re-inserts, so the keys
+/// stay valid). Without this, toggling the model-tests "punctual lights"
+/// mode off and back on would re-create the lights unbound and freeze
+/// their animation.
+pub fn populate_lights_from_doc_with_transforms(
+    renderer: &mut AwsmRenderer,
+    data: &GltfData,
+    node_index_to_transform: &HashMap<usize, TransformKey>,
+) -> Result<Vec<LightKey>> {
+    populate_lights_from_doc_inner(renderer, data, Some(node_index_to_transform))
+}
+
 fn populate_lights_from_doc_inner(
     renderer: &mut AwsmRenderer,
     data: &GltfData,
