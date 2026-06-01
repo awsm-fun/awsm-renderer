@@ -129,7 +129,7 @@ fn abs_index(base_index: u32, relative_index: u32) -> u32 {
 // Moved here from brdf.wgsl so they're always available: the transparent pass's
 // transmission helpers (sample_transmission_background_for_ior) use them even on
 // non-PBR pipelines where brdf.wgsl is gated out. They're generic utilities, not
-// BRDF lobes. See docs/plans/SKINNY-MATERIALS.md.
+// BRDF lobes. See docs/SHADER_GUIDELINES.md.
 
 // Get effective IOR value, defaulting to 1.5 when invalid (< 1.0).
 // IOR = 1.0 is valid (air, no refraction), IOR < 1.0 is physically invalid.

@@ -111,7 +111,7 @@ with these differences:
 
 - **Shadow sampling is available**, but receive-shadow gating is the
   caller's responsibility — call `apply_lighting(...)` from
-  `shared_wgsl/lighting/lights.wgsl` only when the mesh's
+  `shared_wgsl/lighting/apply_lighting.wgsl` only when the mesh's
   `material_mesh_meta.receive_shadows` bit is set.
 - **No SSCS** (screen-space contact shadows). The transparent pass
   shadow include compiles SSCS to `return 1.0;` — sampling its own

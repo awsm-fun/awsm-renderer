@@ -5,4 +5,4 @@
 // own `compute_unlit_material_color`. It referenced `PbrMaterialColor`, which
 // (after the skinny-materials materials_wgsl filtering) is no longer present in
 // non-PBR pipelines, so a dead reference to it broke unlit/toon compilation.
-// Removed. See docs/plans/SKINNY-MATERIALS.md.
+// Removed. See docs/SHADER_GUIDELINES.md.

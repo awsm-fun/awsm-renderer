@@ -218,6 +218,13 @@ visibility buffer all have their own footprints.
 1. Insert a Point Light.
 2. Position it and set `range` to cover what you want lit. `max_distance`
    gates the receiver-side fade; usually leave equal to `range`.
+   `range = 0` (the glTF "infinite range" convention) is valid and *does*
+   cast shadows — the shadow's cube far plane is then derived from
+   intensity via the same `influence_radius` the lighting and culling
+   paths use, so shadow reach matches lit reach. Caveat: a very bright
+   infinite light yields a large cube far plane (poorer depth precision →
+   possible acne); if that bites, set an explicit `range`. (Spot lights
+   behave the same way.)
 3. **Hardness** — `Soft` is the sweet spot. `Pcss` runs a real
    16-tap blocker search on the cube pool's 2D-array depth view
    before the variable-kernel PCF — slide `pcss_penumbra_scale`

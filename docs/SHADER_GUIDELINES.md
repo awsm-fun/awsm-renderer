@@ -230,6 +230,52 @@ uses this pattern for `sid_0..sid_3`, `seen_0..seen_3`, etc.
 
 ---
 
+## Specialize-only materials (skinny shaders)
+
+Every opaque/transparent material pipeline is specialized to one
+`shader_id` + `ShadingBase`, and compiles **only the WGSL it actually
+uses** — there is no shared "core" pile that every material pays for. The
+key pieces:
+
+- **Each material declares its dependencies.** `MaterialShader` exposes
+  `shader_includes()` (`ShaderIncludes` bitflags over the optional shared
+  modules — `brdf`, `apply_lighting`, `material_color_calc`, `ibl`,
+  `light_access`, …) and `fragment_inputs()` (`FragmentInputs` — the
+  pre-shade work it needs). PBR declares the full set; unlit/toon declare a
+  small subset; a solid-color debug material can declare nothing. Lives in
+  `crates/materials/src/shader_includes.rs`.
+- **The host emits the transitive closure.** Each shared module declares
+  its direct deps; the renderer resolves the closure of `(pass scaffolding
+  ∪ material includes)` once per pipeline cache key and gates each
+  `{% include %}` behind `{% if inc.<module> %}`. `materials_wgsl` is
+  filtered to the pipeline's own base, so a non-PBR pipeline never parses
+  the PBR fragment. Net: unlit/toon shed ~1200+ lines of
+  BRDF/lighting/PBR-builder vs. the old "everything everywhere" build.
+- **Skinny code, stable bindings.** Gating targets function/struct
+  *bodies* (where ~all the compile cost is). The `@group/@binding` surface
+  stays full, fixed, and pass-owned — a binding declaration is ~free to
+  parse, and the dynamic-material ABI relies on stable slot indices. So
+  "no core set" is about *code*, not bindings.
+- **`light_access` vs `apply_lighting`.** The old `lights.wgsl` was split:
+  `light_access.wgsl` (light unpack / `get_light` / `LightsInfo` — cheap,
+  always-present infra, like the bindings) and `apply_lighting.wgsl` (the
+  punctual-light walk that calls `brdf`, gated, PBR-only). Toon can pull
+  `light_access` without dragging in the heavy BRDF.
+- **Skybox is its own pipeline.** Skybox / uncovered pixels
+  (`triangle_index == U32_MAX`) are written by a dedicated
+  `skybox_primary.wgsl` pass — no material pipeline owns the skybox, so a
+  scene that is "unlit + skybox" compiles zero PBR.
+
+When adding a material or shared module, declare its includes/inputs (and a
+module's direct deps) accurately: an over-declaration just compiles dead
+code, but an **under-declaration fails to resolve a referenced symbol**.
+WGSL allows module-scope forward references, so *every referenced symbol —
+even one inside an uncalled function — must still be defined*; that is what
+drives the gating granularity (e.g. a helper that names a PBR type must be
+gated together with the PBR include, not left ungated).
+
+---
+
 ## General Best Practices
 
 1. **Keep functions small and focused** - easier to debug and maintain

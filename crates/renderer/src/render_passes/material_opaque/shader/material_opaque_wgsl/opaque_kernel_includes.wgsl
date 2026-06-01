@@ -3,7 +3,7 @@
 // skybox_primary.wgsl (the dedicated skybox writer for the canonical skybox
 // bucket). Heavy shading includes (brdf/apply_lighting/material_color_calc) gate
 // themselves out via inc.* — so the skybox kernel (inc = skybox_only) gets only
-// the binding-struct + camera/math/skybox scaffolding. See SKINNY-MATERIALS.md.
+// the binding-struct + camera/math/skybox scaffolding. See docs/SHADER_GUIDELINES.md.
 
 /*************** START color_space.wgsl ******************/
 {% include "shared_wgsl/color_space.wgsl" %}

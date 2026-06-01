@@ -54,7 +54,7 @@ pub struct ShaderTemplateTransparentMaterialIncludes {
     /// feature-set (each transparent material compiles its own pipeline).
     pub pbr_features: awsm_materials::pbr::PbrFeatures,
     /// Skinny-materials include gating (brdf / apply_lighting) — see the opaque
-    /// compute template + `docs/plans/SKINNY-MATERIALS.md`.
+    /// compute template + `docs/SHADER_GUIDELINES.md`.
     pub inc: crate::dynamic_materials::ShaderIncludeFlags,
     /// Shading family this transparent pipeline handles — gates the PBR vs unlit
     /// material-color builders in `material_color_calc.wgsl` so a thin non-PBR

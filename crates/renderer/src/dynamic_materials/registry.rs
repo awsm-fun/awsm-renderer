@@ -237,7 +237,7 @@ impl ShadingBase {
 }
 
 /// The closure of shared shader modules a pipeline of this shading base needs
-/// (see `docs/plans/SKINNY-MATERIALS.md`). First-party bases map to their
+/// (see `docs/SHADER_GUIDELINES.md`). First-party bases map to their
 /// declared set; `Custom` (dynamic + scanline) conservatively gets the full set
 /// since author WGSL may reference anything.
 pub fn resolved_includes_for_base(base: ShadingBase) -> awsm_materials::ShaderIncludes {

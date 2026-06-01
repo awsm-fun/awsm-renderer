@@ -29,7 +29,7 @@ pub trait MaterialShader {
     /// compiles the transitive closure (see [`ShaderIncludes::resolve`]) and
     /// emits only those `{% include %}`s — nothing is force-added. A material
     /// that returns [`ShaderIncludes::empty`] (e.g. a solid-color debug view)
-    /// pulls no shared shading code at all. See `docs/plans/SKINNY-MATERIALS.md`.
+    /// pulls no shared shading code at all. See `docs/SHADER_GUIDELINES.md`.
     fn shader_includes(&self) -> ShaderIncludes;
 
     /// The pre-shade fragment inputs this material's shading body consumes. The

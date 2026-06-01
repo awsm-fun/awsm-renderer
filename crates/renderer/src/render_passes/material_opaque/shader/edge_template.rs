@@ -72,7 +72,7 @@ pub struct ShaderTemplateMaterialEdgeResolveCompute {
     /// per-sample guard uses the numeric `shader_id`.
     pub base: ShadingBase,
     /// Skinny-materials include gating (brdf / apply_lighting) — see the opaque
-    /// compute template + `docs/plans/SKINNY-MATERIALS.md`.
+    /// compute template + `docs/SHADER_GUIDELINES.md`.
     pub inc: crate::dynamic_materials::ShaderIncludeFlags,
     pub dynamic_struct_decl: String,
     pub dynamic_loader_decl: String,

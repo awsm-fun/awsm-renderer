@@ -1,7 +1,7 @@
 //! Per-material declaration of which shared shader modules and pre-shade
 //! fragment inputs a shading model needs — the heart of "skinny materials".
 //!
-//! See `docs/plans/SKINNY-MATERIALS.md`. The principle: **no global core set**.
+//! See `docs/SHADER_GUIDELINES.md`. The principle: **no global core set**.
 //! Each material declares the optional shared modules its shading body uses
 //! (possibly none); the renderer compiles the transitive closure of that set
 //! and emits only those `{% include %}`s. The `@group/@binding` surface is *not*

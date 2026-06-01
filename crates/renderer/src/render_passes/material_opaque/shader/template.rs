@@ -98,7 +98,7 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     /// the numeric `shader_id` regardless of `base`.
     pub base: crate::dynamic_materials::ShadingBase,
     /// Which optional shared modules this pipeline's material declares (skinny
-    /// materials — `docs/plans/SKINNY-MATERIALS.md`). The host gates heavy
+    /// materials — `docs/SHADER_GUIDELINES.md`). The host gates heavy
     /// PBR-only includes (brdf / apply_lighting) behind these so non-PBR
     /// pipelines don't compile them.
     pub inc: crate::dynamic_materials::ShaderIncludeFlags,
