@@ -49,10 +49,10 @@ fn main(
 
     // early return if we only hit skybox / no geometry (for all samples if MSAA).
     //
-    // Classify routes skybox-containing tiles into the PBR bucket; Unlit / Toon
-    // pipelines also see the tile if any pixel uses their material, but for
-    // their skybox pixels they must *not* write — PBR owns the skybox sample
-    // so the output isn't double-written.
+    // This is the pure material kernel — it never writes the skybox. The
+    // dedicated skybox_primary.wgsl pipeline (compiled for the canonical skybox
+    // bucket) owns skybox/uncovered pixels; every material pipeline just skips
+    // them here so the output isn't double-written.
     {% if multisampled_geometry %}
         // With MSAA, check if ANY sample hit geometry before early returning
         var any_sample_hit = false;

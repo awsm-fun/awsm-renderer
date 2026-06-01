@@ -7,12 +7,12 @@
 // each bucket bit is set in. The total atomic traffic is ~1 per
 // workgroup-bit, regardless of the 64 threads inside.
 //
-// Skybox pixels (`triangle_index == U32_MAX`) are routed to the PBR
-// bucket — the PBR pipeline retains the skybox-fallback `textureStore`
-// in `material_opaque/.../compute.wgsl` so the existing skybox rendering
-// path keeps working with zero extra plumbing. Non-PBR pipelines
-// (Unlit / Toon / FlipBook / any registered dynamic material)
-// early-return on skybox without writing.
+// Skybox pixels (`triangle_index == U32_MAX`) are routed to bucket 0 (the
+// canonical "PBR" bucket, which in practice is the skybox-only bucket — real
+// PBR materials route to their feature-variant buckets). The dedicated
+// skybox_primary.wgsl pipeline is dispatched over that bucket's tiles and
+// writes the skybox; the material kernels (compute.wgsl) just skip skybox
+// pixels. See material_opaque/.../skybox_primary.wgsl.
 //
 // The bit constants + the shader_id → bit dispatch chain + the
 // per-bucket extract block are all walked from the same
