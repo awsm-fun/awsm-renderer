@@ -53,6 +53,9 @@ pub struct ShaderTemplateTransparentMaterialIncludes {
     /// `{% if pbr_features.<x> %}` gating — the transparent material's exact
     /// feature-set (each transparent material compiles its own pipeline).
     pub pbr_features: awsm_materials::pbr::PbrFeatures,
+    /// Skinny-materials include gating (brdf / apply_lighting) — see the opaque
+    /// compute template + `docs/plans/SKINNY-MATERIALS.md`.
+    pub inc: crate::dynamic_materials::ShaderIncludeFlags,
 }
 impl ShaderTemplateTransparentMaterialIncludes {
     /// Creates include template data from the cache key.
@@ -75,6 +78,7 @@ impl ShaderTemplateTransparentMaterialIncludes {
             // material_color_calc includes gate on exactly this transparent
             // material's feature-set (no uber all()).
             pbr_features: awsm_materials::pbr::PbrFeatures::from_bits(cache_key.pbr_features),
+            inc: crate::dynamic_materials::ShaderIncludeFlags::for_base(cache_key.base),
         }
     }
 
