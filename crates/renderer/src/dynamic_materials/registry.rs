@@ -1509,6 +1509,23 @@ impl crate::AwsmRenderer {
                 "unregister_material({shader_id:?}): reclaimed {dropped} extras-pool slice(s)",
             );
         }
+        // Retire the material's scheduler group. Without this the group
+        // lingers after its registration is gone; the next
+        // `register_material` relaunch marks every still-tracked material
+        // `Pending` and then re-launches it — but a group whose
+        // registration was just removed hits the "nothing to compile"
+        // early-return in `launch_dynamic_material_compile`, so it can
+        // never reach `Ready` and the compile-status modal hangs forever
+        // ("Compiling N pipeline…"). This is exactly the hot-reload
+        // cleanup `drop_material_group` exists for (e.g. a material-editor
+        // starter switch). In-flight compiles for the dropped id resolve
+        // and self-discard via the generation/existence check.
+        if let Some(mid) = self
+            .pipeline_scheduler
+            .find_material_by_shader_id(shader_id)
+        {
+            self.pipeline_scheduler.drop_material_group(mid);
+        }
         self.dynamic_materials.remove(shader_id)
     }
 

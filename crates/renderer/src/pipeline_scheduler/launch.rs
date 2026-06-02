@@ -158,6 +158,19 @@ impl crate::AwsmRenderer {
                 .first_party_variant_of(shader_id)
                 .is_none()
         {
+            // Defense-in-depth: a relaunch may have marked this group
+            // `Pending` before the registration was removed (the normal
+            // path now retires it in `unregister_material`, but other
+            // relaunch sites could still reach here). With nothing to
+            // compile, leaving it Pending would hang the compile-status
+            // modal — mark it Ready so it resolves.
+            if let Some(mid) = self
+                .pipeline_scheduler
+                .find_material_by_shader_id(shader_id)
+            {
+                self.pipeline_scheduler
+                    .mark_ready(PipelineGroupId::Material(mid));
+            }
             return Ok(());
         }
         let dynamic_shader = reg.as_ref().map(|reg| DynamicShaderInfo {
