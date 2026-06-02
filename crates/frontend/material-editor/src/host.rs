@@ -99,7 +99,7 @@ impl RendererHost {
     ///   fresh one. The material key is reused — only the geometry
     ///   changes. (Removing the mesh handles its own transform +
     ///   material cleanup in `AwsmRenderer::remove_mesh`.)
-    pub fn apply_quad_for_current_registration(
+    pub async fn apply_quad_for_current_registration(
         &mut self,
         shader_id: MaterialShaderId,
         reg: &MaterialRegistration,
@@ -111,7 +111,28 @@ impl RendererHost {
             .map(|prev| prev != desired_mesh)
             .unwrap_or(true);
 
-        if !mesh_kind_changed {
+        // The in-place `materials.update` fast-path below only swaps the
+        // material on the *existing* mesh. But a mesh is built with EITHER
+        // opaque visibility geometry OR a transparency vertex pack + a
+        // per-mesh forward pipeline, chosen by the material's pass at
+        // `add_raw_mesh_transparent` time. If the new material flips
+        // transparency-pass-ness (e.g. Opaque → Blend, switching starters),
+        // the existing mesh has the wrong geometry + pipeline and the
+        // transparent pass fails with `TransparencyGeometryBufferNotFound`.
+        // Treat that like a mesh-kind change so the mesh is rebuilt.
+        let is_transp = |m: &awsm_materials::MaterialAlphaMode| {
+            matches!(
+                m,
+                awsm_materials::MaterialAlphaMode::Blend
+                    | awsm_materials::MaterialAlphaMode::Mask { .. }
+            )
+        };
+        let transparency_changed = self
+            .last_registration
+            .as_ref()
+            .is_some_and(|prev| is_transp(&prev.alpha_mode) != is_transp(&reg.alpha_mode));
+
+        if !mesh_kind_changed && !transparency_changed {
             if let Some(key) = self.quad_material {
                 // Steady-state path: same mesh kind, new shader.
                 // Rewrite the material in place.
@@ -155,10 +176,15 @@ impl RendererHost {
             )
         };
 
+        // `add_raw_mesh_transparent` routes by alpha mode: it builds the
+        // forward transparent pipeline for Blend/Mask materials and
+        // delegates to the sync opaque `add_raw_mesh` otherwise — so this
+        // single call correctly handles every preview material.
         let mesh_key = self
             .renderer
-            .add_raw_mesh(raw, transform_key, material_key)
-            .map_err(|e| anyhow::anyhow!("add_raw_mesh failed: {e:?}"))?;
+            .add_raw_mesh_transparent(raw, transform_key, material_key)
+            .await
+            .map_err(|e| anyhow::anyhow!("add_raw_mesh_transparent failed: {e:?}"))?;
 
         self.quad_mesh = Some(mesh_key);
         self.quad_transform = Some(transform_key);
@@ -399,7 +425,25 @@ async fn prewarm_holding_borrow(handle: RendererHandle) {
 }
 
 impl RecompileSink for RendererRecompileSink {
-    fn try_apply(&mut self, reg: MaterialRegistration) -> Result<(), String> {
+    fn try_apply<'a>(
+        &'a mut self,
+        reg: MaterialRegistration,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + 'a>> {
+        Box::pin(self.try_apply_inner(reg))
+    }
+}
+
+impl RendererRecompileSink {
+    /// Inherent async body for [`RecompileSink::try_apply`]. Split out so
+    /// the trait method can box the future (`async fn` in traits isn't
+    /// dyn-compatible). We hold the renderer's `RefCell` borrow across the
+    /// transparent-pipeline compile await inside
+    /// `apply_quad_for_current_registration`; wasm32 is single-threaded so
+    /// the cross-thread `await_holding_refcell_ref` concern is moot, and
+    /// the RAF tick skipping a frame while we compile is desired (same
+    /// rationale as `prewarm_holding_borrow`).
+    #[allow(clippy::await_holding_refcell_ref)]
+    async fn try_apply_inner(&mut self, reg: MaterialRegistration) -> Result<(), String> {
         let mut guard = self.handle.borrow_mut();
         let host = match guard.as_mut() {
             Some(h) => h,
@@ -426,8 +470,9 @@ impl RecompileSink for RendererRecompileSink {
             if let (Some(id), Some(prev_reg)) =
                 (host.current_material, host.last_registration.clone())
             {
-                if let Err(e) =
-                    host.apply_quad_for_current_registration(id, &prev_reg, desired_mesh)
+                if let Err(e) = host
+                    .apply_quad_for_current_registration(id, &prev_reg, desired_mesh)
+                    .await
                 {
                     return Err(format!("apply_quad (mesh-only): {e}"));
                 }
@@ -473,8 +518,9 @@ impl RecompileSink for RendererRecompileSink {
         // Failures here surface back as Err so the editor's errors
         // pane shows them rather than silently rendering a stale
         // shader.
-        if let Err(e) =
-            host.apply_quad_for_current_registration(new_id, &reg_for_quad, desired_mesh)
+        if let Err(e) = host
+            .apply_quad_for_current_registration(new_id, &reg_for_quad, desired_mesh)
+            .await
         {
             return Err(format!("apply_quad: {e}"));
         }

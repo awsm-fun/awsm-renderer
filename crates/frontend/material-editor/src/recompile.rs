@@ -157,7 +157,15 @@ pub trait RecompileSink: 'static {
     /// Apply a fresh registration. Returns an `Err` with a single
     /// formatted message string when the compile fails — the
     /// orchestrator wraps it into a [`CompileError`].
-    fn try_apply(&mut self, reg: MaterialRegistration) -> Result<(), String>;
+    ///
+    /// Async because applying a transparent material builds a per-mesh
+    /// transparent pipeline, which awaits the shader + pipeline compile.
+    /// The future is boxed so the trait stays object-safe (`Box<dyn
+    /// RecompileSink>`); `async fn` in traits isn't dyn-compatible.
+    fn try_apply<'a>(
+        &'a mut self,
+        reg: MaterialRegistration,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + 'a>>;
 }
 
 /// Spawn the debounced-recompile loop. Listens to changes on
@@ -272,7 +280,7 @@ pub fn spawn(state: EditState, sink: Rc<futures_signals::signal::Mutable<Box<dyn
                     }
                     let reg = build_registration(&state);
                     let mut sink = sink.lock_mut();
-                    match sink.try_apply(reg) {
+                    match sink.try_apply(reg).await {
                         Ok(()) => {
                             state.errors.set(Vec::new());
                         }
