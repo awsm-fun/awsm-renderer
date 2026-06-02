@@ -150,14 +150,19 @@ impl crate::AwsmRenderer {
         // feature-set variant has a dynamic-range id but no registration —
         // it compiles the built-in PBR/Toon body (no `DynamicShaderInfo`).
         let reg = self.dynamic_materials.get(shader_id).cloned();
-        // Neither a custom registration nor a known first-party variant →
-        // nothing to compile (id was removed between submit and launch).
-        if reg.is_none()
-            && self
-                .dynamic_materials
-                .first_party_variant_of(shader_id)
-                .is_none()
-        {
+        // Nothing to compile — the id was removed between submit and launch
+        // (an orphan; see `is_launchable_material`). Defense-in-depth: the
+        // relaunch sites retire orphans before they reach here, but mark any
+        // group still `Pending` Ready so a stray caller can't hang the
+        // compile-status surface.
+        if !self.is_launchable_material(shader_id) {
+            if let Some(mid) = self
+                .pipeline_scheduler
+                .find_material_by_shader_id(shader_id)
+            {
+                self.pipeline_scheduler
+                    .mark_ready(PipelineGroupId::Material(mid));
+            }
             return Ok(());
         }
         let dynamic_shader = reg.as_ref().map(|reg| DynamicShaderInfo {
@@ -191,30 +196,40 @@ impl crate::AwsmRenderer {
             );
             slots.push(LaunchSlot::Classify { msaa });
         }
-        // Opaque variants for THIS shader_id.
-        for &(msaa, mipmaps) in &[
-            (Some(4u32), true),
-            (Some(4u32), false),
-            (None, true),
-            (None, false),
-        ] {
-            shader_jobs.push(
-                ShaderCacheKeyMaterialOpaque {
-                    texture_pool_arrays_len,
-                    texture_pool_samplers_len,
-                    msaa_sample_count: msaa,
-                    mipmaps,
-                    shader_id,
-                    base,
-                    owns_skybox,
-                    pbr_features,
-                    dispatch_hash,
-                    dynamic_shader: dynamic_shader.clone(),
-                    bucket_entries: entries.clone(),
-                }
-                .into(),
-            );
-            slots.push(LaunchSlot::Opaque { msaa, mipmaps });
+        // Opaque variants for THIS shader_id — only for materials that route
+        // to the opaque pass. A Blend/Mask *dynamic* material's author body
+        // targets the transparent contract (returns `TransparentShadingOutput`),
+        // so compiling it in the opaque wrapper fails; it renders via the
+        // transparent pass instead. First-party variants (no registration)
+        // always build — their built-in body fits both contracts.
+        let build_opaque = reg
+            .as_ref()
+            .map_or(true, |r| matches!(r.alpha_mode, MaterialAlphaMode::Opaque));
+        if build_opaque {
+            for &(msaa, mipmaps) in &[
+                (Some(4u32), true),
+                (Some(4u32), false),
+                (None, true),
+                (None, false),
+            ] {
+                shader_jobs.push(
+                    ShaderCacheKeyMaterialOpaque {
+                        texture_pool_arrays_len,
+                        texture_pool_samplers_len,
+                        msaa_sample_count: msaa,
+                        mipmaps,
+                        shader_id,
+                        base,
+                        owns_skybox,
+                        pbr_features,
+                        dispatch_hash,
+                        dynamic_shader: dynamic_shader.clone(),
+                        bucket_entries: entries.clone(),
+                    }
+                    .into(),
+                );
+                slots.push(LaunchSlot::Opaque { msaa, mipmaps });
+            }
         }
         // Transparent stubs handled by the legacy prewarm path (per-mesh,
         // depends on buffer_info — not part of this launch).

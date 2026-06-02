@@ -29,6 +29,7 @@ const FILE_NEW_STARTERS: &[Starter] = &[
     Starter::ConstantRed,
     Starter::UnlitBaseline,
     Starter::Scanline,
+    Starter::SoftGlass,
 ];
 
 /// Construct the root DOM element for the material-editor with a

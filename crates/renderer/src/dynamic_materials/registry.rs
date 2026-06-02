@@ -224,7 +224,7 @@ impl ShadingBase {
     }
 
     /// The canonical first-party shader id for this base, if any. `Custom`
-    /// (dynamic + scanline) has none — it conservatively gets the full set.
+    /// (dynamic materials) has none — it conservatively gets the full set.
     pub fn canonical_shader_id(self) -> Option<MaterialShaderId> {
         match self {
             ShadingBase::Pbr => Some(MaterialShaderId::PBR),
@@ -238,7 +238,7 @@ impl ShadingBase {
 
 /// The closure of shared shader modules a pipeline of this shading base needs
 /// (see `docs/SHADER_GUIDELINES.md`). First-party bases map to their
-/// declared set; `Custom` (dynamic + scanline) conservatively gets the full set
+/// declared set; `Custom` (dynamic materials) conservatively gets the full set
 /// since author WGSL may reference anything.
 pub fn resolved_includes_for_base(base: ShadingBase) -> awsm_materials::ShaderIncludes {
     base.canonical_shader_id()
@@ -633,6 +633,35 @@ impl DynamicMaterials {
     /// Returns the registration record for a previously-registered id.
     pub fn get(&self, shader_id: MaterialShaderId) -> Option<&MaterialRegistration> {
         self.registrations.get(&shader_id)
+    }
+
+    /// Builds the [`DynamicShaderInfo`] (the `MaterialData` struct decl +
+    /// `material_data_load` accessor + author fragment) for a registered
+    /// dynamic material, or `None` for a first-party / unregistered id.
+    ///
+    /// The per-mesh transparent pipeline path needs this so a `Custom`-base
+    /// transparent mesh emits the same dynamic-material wrapper the opaque
+    /// prewarm does — without it the transparent fragment references
+    /// `MaterialData` but never defines it (WGSL "unresolved type").
+    pub fn shader_info_for(
+        &self,
+        shader_id: MaterialShaderId,
+    ) -> Option<crate::render_passes::material_opaque::shader::cache_key::DynamicShaderInfo> {
+        let reg = self.registrations.get(&shader_id)?;
+        Some(
+            crate::render_passes::material_opaque::shader::cache_key::DynamicShaderInfo {
+                struct_decl: awsm_materials::dynamic_layout::generate_wgsl_struct(
+                    "MaterialData",
+                    &reg.layout,
+                ),
+                loader_decl: awsm_materials::dynamic_layout::generate_wgsl_loader(
+                    "MaterialData",
+                    "material_data_load",
+                    &reg.layout,
+                ),
+                wgsl_fragment: reg.wgsl_fragment.clone(),
+            },
+        )
     }
 
     /// Returns the count of currently-registered dynamic materials.
@@ -1137,44 +1166,11 @@ impl crate::AwsmRenderer {
         // the apply_compile_resolution stale-generation gate discard
         // old in-flight resolutions (compiled against the previous
         // bucket layout).
-        let registered_shader_ids = self.pipeline_scheduler.registered_material_shader_ids();
-        for shader_id in &registered_shader_ids {
-            if *shader_id == id {
-                // Newly-inserted material: already Pending from
-                // submit. Skip the redundant mark.
-                continue;
-            }
-            if let Some(mid) = self
-                .pipeline_scheduler
-                .find_material_by_shader_id(*shader_id)
-            {
-                self.pipeline_scheduler.mark_material_pending_for_relaunch(
-                    crate::pipeline_scheduler::PipelineGroupId::Material(mid),
-                );
-            }
-        }
-        // Edge-resolve pipelines are layout-level (their cache keys embed
-        // the whole bucket_entries). Rebuild the full set ONCE for the new
-        // layout — not once per material. Charged to the canonical PBR
-        // material; runs BEFORE the per-material relaunch loop so its edge
-        // subcompiles are registered before PBR's own
-        // `launch_first_party_material_compile` can mark it Ready. See
-        // `launch_edge_resolve_compile`.
-        if let Err(e) = self.launch_edge_resolve_compile() {
-            tracing::warn!(
-                target: "awsm_renderer::pipeline_readiness",
-                "post-register_material edge-resolve relaunch failed: {:?}", e
-            );
-        }
-        for shader_id in registered_shader_ids {
-            if let Err(e) = self.launch_first_party_material_compile(shader_id) {
-                tracing::warn!(
-                    target: "awsm_renderer::pipeline_readiness",
-                    "post-register_material relaunch of material({:?}) failed: {:?}",
-                    shader_id, e
-                );
-            }
-        }
+        // Re-mark every still-tracked material `Pending` and relaunch it
+        // against the new bucket layout. The just-inserted `id` is already
+        // Pending from `submit_*`, so it's skipped from the re-mark. See
+        // `relaunch_tracked_materials` for the full rationale.
+        self.relaunch_tracked_materials(Some(id), true);
         Ok(id)
     }
 
@@ -1341,38 +1337,10 @@ impl crate::AwsmRenderer {
                 );
             }
         }
-        let registered = self.pipeline_scheduler.registered_material_shader_ids();
-        for shader_id in &registered {
-            if let Some(mid) = self
-                .pipeline_scheduler
-                .find_material_by_shader_id(*shader_id)
-            {
-                self.pipeline_scheduler.mark_material_pending_for_relaunch(
-                    crate::pipeline_scheduler::PipelineGroupId::Material(mid),
-                );
-            }
-        }
-        // Edge-resolve pipelines are layout-level (their cache keys embed
-        // the whole bucket_entries). Rebuild the full set ONCE for the new
-        // layout — not once per material. Charged to the canonical PBR
-        // material; runs BEFORE the per-material relaunch loop so PBR (just
-        // marked pending above) has its edge subcompiles registered before
-        // its own `launch_first_party_material_compile` can mark it Ready.
-        // See `launch_edge_resolve_compile`.
-        if let Err(e) = self.launch_edge_resolve_compile() {
-            tracing::warn!(
-                target: "awsm_renderer::pipeline_readiness",
-                "variant reconcile edge-resolve relaunch failed: {:?}", e
-            );
-        }
-        for shader_id in registered {
-            if let Err(e) = self.launch_first_party_material_compile(shader_id) {
-                tracing::warn!(
-                    target: "awsm_renderer::pipeline_readiness",
-                    "variant reconcile relaunch of material({:?}) failed: {:?}", shader_id, e
-                );
-            }
-        }
+        // Re-mark + relaunch every still-tracked material against the new
+        // bucket layout (incl. the layout-level edge-resolve set). See
+        // `relaunch_tracked_materials`.
+        self.relaunch_tracked_materials(None, true);
         Ok(())
     }
 
@@ -1480,7 +1448,135 @@ impl crate::AwsmRenderer {
                 "unregister_material({shader_id:?}): reclaimed {dropped} extras-pool slice(s)",
             );
         }
+        // Retire the material's scheduler group. Without this the group
+        // lingers after its registration is gone; the next
+        // `register_material` relaunch marks every still-tracked material
+        // `Pending` and then re-launches it — but a group whose
+        // registration was just removed hits the "nothing to compile"
+        // early-return in `launch_dynamic_material_compile`, so it can
+        // never reach `Ready` and the compile-status modal hangs forever
+        // ("Compiling N pipeline…"). This is exactly the hot-reload
+        // cleanup `drop_material_group` exists for (e.g. a material-editor
+        // starter switch). In-flight compiles for the dropped id resolve
+        // and self-discard via the generation/existence check.
+        if let Some(mid) = self
+            .pipeline_scheduler
+            .find_material_by_shader_id(shader_id)
+        {
+            self.pipeline_scheduler.drop_material_group(mid);
+        }
         self.dynamic_materials.remove(shader_id)
+    }
+
+    /// True if a tracked material can be (re)compiled: a canonical
+    /// first-party id (PBR / Unlit / Toon / Flipbook — never dynamic), a
+    /// live custom registration, or a known first-party feature-set
+    /// variant. A dynamic id matching none of these is an **orphan** — its
+    /// registration was removed but its scheduler group still lingers, and
+    /// `launch_dynamic_material_compile` has nothing to compile for it.
+    ///
+    /// This is the single predicate behind both the relaunch self-heal
+    /// ([`Self::relaunch_tracked_materials`]) and the "nothing to compile"
+    /// early-return in the launch path — keeping them from drifting.
+    pub(crate) fn is_launchable_material(&self, shader_id: MaterialShaderId) -> bool {
+        !shader_id.is_dynamic()
+            || self.dynamic_materials.get(shader_id).is_some()
+            || self
+                .dynamic_materials
+                .first_party_variant_of(shader_id)
+                .is_some()
+    }
+
+    /// Mark every still-tracked material `Pending` and relaunch its compile
+    /// against the current bucket / texture-pool layout. The single shared
+    /// implementation behind the three relaunch sites (new-material
+    /// register, feature-set-variant grow, and texture-pool grow) so they
+    /// can never drift.
+    ///
+    /// **Why mark `Pending` first.** The layout-dependent pipeline caches
+    /// were just cleared; dispatch skips uncompiled buckets via its `Option`
+    /// guards, but `drain_pipeline_status_events` would otherwise keep
+    /// reporting `Ready` while the replacements compile — misleading the
+    /// compile-status UI and any readiness gate. The generation bump inside
+    /// `mark_material_pending_for_relaunch` also makes the
+    /// `apply_compile_resolution` stale-generation gate discard old
+    /// in-flight resolutions compiled against the previous layout.
+    ///
+    /// **Self-heals orphans.** A scheduler group whose registration was
+    /// removed (see [`Self::is_launchable_material`]) can never recompile —
+    /// left alone it would be marked `Pending` and hang there forever,
+    /// freezing the compile-status surface. Such groups are retired here
+    /// (belt-and-suspenders with [`Self::unregister_material`], which also
+    /// retires at the source) so the readiness system can never report a
+    /// stuck compile for a material that no longer exists.
+    ///
+    /// - `skip`: a just-submitted material that is already `Pending` from
+    ///   `submit_*` — excluded from the re-mark, still relaunched.
+    /// - `relaunch_edge`: also rebuild the layout-level MSAA edge-resolve
+    ///   set, ONCE, before the per-material loop. The texture-pool path
+    ///   passes `false` — it rebuilds edge via an awaited `ensure_compiled`
+    ///   keyed to the new pool sizes instead.
+    pub(crate) fn relaunch_tracked_materials(
+        &mut self,
+        skip: Option<MaterialShaderId>,
+        relaunch_edge: bool,
+    ) {
+        let registered = self.pipeline_scheduler.registered_material_shader_ids();
+
+        // Partition launchable vs orphaned; retire orphans up front so they
+        // are neither marked `Pending` nor left blocking the readiness
+        // surface.
+        let mut launchable: Vec<MaterialShaderId> = Vec::with_capacity(registered.len());
+        for shader_id in registered {
+            if self.is_launchable_material(shader_id) {
+                launchable.push(shader_id);
+            } else if let Some(mid) = self
+                .pipeline_scheduler
+                .find_material_by_shader_id(shader_id)
+            {
+                tracing::debug!(
+                    target: "awsm_renderer::pipeline_readiness",
+                    "relaunch: retiring orphaned material({shader_id:?}) — registration gone, nothing to compile",
+                );
+                self.pipeline_scheduler.drop_material_group(mid);
+            }
+        }
+
+        for &shader_id in &launchable {
+            if Some(shader_id) == skip {
+                continue;
+            }
+            if let Some(mid) = self
+                .pipeline_scheduler
+                .find_material_by_shader_id(shader_id)
+            {
+                self.pipeline_scheduler.mark_material_pending_for_relaunch(
+                    crate::pipeline_scheduler::PipelineGroupId::Material(mid),
+                );
+            }
+        }
+
+        if relaunch_edge {
+            // Edge-resolve is layout-level (its cache keys embed the whole
+            // bucket list) — rebuild the whole set ONCE, before the
+            // per-material loop, so the just-marked-`Pending` materials have
+            // their edge subcompiles registered before they can mark `Ready`.
+            if let Err(e) = self.launch_edge_resolve_compile() {
+                tracing::warn!(
+                    target: "awsm_renderer::pipeline_readiness",
+                    "relaunch edge-resolve failed: {e:?}",
+                );
+            }
+        }
+
+        for &shader_id in &launchable {
+            if let Err(e) = self.launch_first_party_material_compile(shader_id) {
+                tracing::warn!(
+                    target: "awsm_renderer::pipeline_readiness",
+                    "relaunch of material({shader_id:?}) failed: {e:?}",
+                );
+            }
+        }
     }
 
     /// Returns the registration record for a previously-registered id.

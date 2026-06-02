@@ -330,7 +330,8 @@ see [contract-transparent.md](contract-transparent.md).
 Custom materials cannot override the alpha-mode-driven routing
 (`is_transparency_pass()` derives from `alpha_mode` directly). If you
 need finer routing (e.g. an opaque material that uses the transparency
-pass for transmission like PBR does), promote to first-party.
+pass for transmission like PBR does), implement it as a built-in
+(first-party) material instead.
 
 ---
 
@@ -368,6 +369,6 @@ let color = base + overlay;
 return OpaqueShadingOutput(color, 1.0);
 ```
 
-This is the worked example promoted to first-party in
-[promotion.md](promotion.md); see also
-[`crates/materials/src/scanline.rs`](../../crates/materials/src/scanline.rs).
+This is the dynamic worked example shipped at
+[`assets/test-materials/scanline/`](../../assets/test-materials/scanline)
+(`material.json` + `shader.wgsl`).

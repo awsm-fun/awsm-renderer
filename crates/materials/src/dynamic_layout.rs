@@ -316,6 +316,16 @@ pub fn generate_wgsl_struct(struct_name: &str, layout: &MaterialLayout) -> Strin
         );
     }
 
+    // A WGSL struct must have at least one member. A material with an
+    // empty layout (no uniforms / textures / buffers — e.g. a fully
+    // procedural shader like the "constant-red" starter) still gets a
+    // `MaterialData` struct emitted by the template even though the body
+    // never reads it, so emit a single padding member to keep the
+    // declaration valid. The loader mirrors this with a literal `0u`.
+    if layout.uniforms.is_empty() && layout.textures.is_empty() && layout.buffers.is_empty() {
+        out.push_str("    _empty: u32,\n");
+    }
+
     out.push_str("}\n");
     out
 }
@@ -462,6 +472,13 @@ pub fn generate_wgsl_loader(struct_name: &str, fn_name: &str, layout: &MaterialL
             FieldType::U32,
             &mut field_byte_offset,
         );
+    }
+
+    // Mirror the `_empty: u32` placeholder that `generate_wgsl_struct`
+    // emits for an empty layout. A literal `0u` (no buffer read) keeps the
+    // struct constructor well-formed without touching the material slot.
+    if layout.uniforms.is_empty() && layout.textures.is_empty() && layout.buffers.is_empty() {
+        out.push_str("        0u, // _empty placeholder\n");
     }
 
     out.push_str("    );\n}\n");
@@ -941,6 +958,24 @@ mod tests {
         assert!(src.contains("    tex_index: u32,"));
         assert!(src.contains("    buf_offset: u32,"));
         assert!(src.contains("    buf_length: u32,"));
+    }
+
+    #[test]
+    fn empty_layout_emits_valid_struct_and_loader() {
+        // A WGSL struct must have ≥1 member. An empty layout (no uniforms /
+        // textures / buffers — e.g. the "constant-red" starter) must still
+        // emit a valid `struct MaterialData { _empty: u32, }` + a loader
+        // whose constructor supplies a matching `0u`, or the shader module
+        // fails with "structures must have at least one member".
+        let layout = MaterialLayout::default();
+        let s = generate_wgsl_struct("MaterialData", &layout);
+        assert!(s.contains("    _empty: u32,"), "struct: {s}");
+        // No real fields snuck in.
+        assert!(!s.contains(": f32,") && !s.contains("_index") && !s.contains("_offset"));
+
+        let l = generate_wgsl_loader("MaterialData", "material_data_load", &layout);
+        assert!(l.contains("0u, // _empty placeholder"), "loader: {l}");
+        assert!(l.contains("return MaterialData("));
     }
 
     #[test]

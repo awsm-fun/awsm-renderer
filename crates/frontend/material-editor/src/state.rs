@@ -164,6 +164,7 @@ impl EditState {
             Starter::Scanline => starter_scanline(),
             Starter::ConstantRed => starter_constant_red(),
             Starter::UnlitBaseline => starter_unlit_baseline(),
+            Starter::SoftGlass => starter_soft_glass(),
         };
         self.definition.set(def);
         self.wgsl_source.set(wgsl);
@@ -190,6 +191,11 @@ pub enum Starter {
     /// Unlit pass-through of a single base color uniform — the
     /// "hello world" for a material that exposes a single tint.
     UnlitBaseline,
+    /// View-angle "soft glass" — the worked **transparent** example
+    /// (`alpha_mode = Blend`). Demonstrates the transparent contract:
+    /// `TransparentShadingInput` (world normal + `surface_to_camera`)
+    /// and a `TransparentShadingOutput(vec4)` with a Schlick-ish alpha.
+    SoftGlass,
 }
 
 impl Starter {
@@ -199,6 +205,7 @@ impl Starter {
             Starter::Scanline => "Scanline (animated)",
             Starter::ConstantRed => "Constant red (minimal)",
             Starter::UnlitBaseline => "Unlit tint (single color)",
+            Starter::SoftGlass => "Soft glass (transparent)",
         }
     }
 }
@@ -270,6 +277,35 @@ fn starter_unlit_baseline() -> (MaterialDefinition, String) {
     (def, UNLIT_BASELINE_WGSL.to_string())
 }
 
+fn starter_soft_glass() -> (MaterialDefinition, String) {
+    let def = MaterialDefinition {
+        name: "soft-glass".into(),
+        version: 1,
+        alpha_mode: MaterialAlphaMode::Blend,
+        double_sided: true,
+        uniforms: vec![
+            UniformField {
+                name: "tint".into(),
+                ty: FieldType::Color3,
+                default: UniformValue::Color3([0.85, 0.92, 1.0]),
+            },
+            UniformField {
+                name: "edge_alpha".into(),
+                ty: FieldType::F32,
+                default: UniformValue::F32(0.85),
+            },
+            UniformField {
+                name: "face_alpha".into(),
+                ty: FieldType::F32,
+                default: UniformValue::F32(0.25),
+            },
+        ],
+        textures: Vec::new(),
+        buffers: Vec::new(),
+    };
+    (def, SOFT_GLASS_WGSL.to_string())
+}
+
 /// Hard-coded WGSL fragment for the scanline material — a minimal
 /// stub that uses only the input fields the current
 /// `OpaqueShadingInput` provides + `frame_globals_raw` (in scope from
@@ -310,4 +346,20 @@ const UNLIT_BASELINE_WGSL: &str = r#"// unlit-tint — single-uniform unlit mate
 // minimum surface area. Add more uniforms in the Definition pane to
 // extend; the wrapper regenerates `MaterialData` on every edit.
 return OpaqueShadingOutput(input.material.tint, 1.0);
+"#;
+
+/// Worked **transparent** example — a view-angle "soft glass". Demonstrates
+/// the transparent contract: `TransparentShadingInput` (world normal +
+/// `surface_to_camera`) and a `TransparentShadingOutput(vec4)` whose alpha
+/// is more opaque at grazing angles. Mirrors
+/// `docs/dynamic-materials/contract-transparent.md` § Example.
+const SOFT_GLASS_WGSL: &str = r#"// soft-glass — the worked transparent material (alpha_mode = Blend).
+// Schlick-ish view-angle alpha: more opaque at grazing angles (edges of
+// curved surfaces), more transparent face-on. The output alpha drives the
+// standard (src.a, 1-src.a) blend; the kernel composites the opaque
+// background behind us automatically.
+let cos_theta = clamp(dot(input.world_normal, input.surface_to_camera), 0.0, 1.0);
+let alpha = mix(input.material.edge_alpha, input.material.face_alpha, cos_theta);
+let color = input.material.tint;
+return TransparentShadingOutput(vec4<f32>(color, alpha));
 "#;

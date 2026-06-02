@@ -509,11 +509,22 @@ impl AwsmRenderer {
         // pass has a draw pipeline for this geometry. Mirrors what
         // `enable_mesh_instancing` does for instanced transparent meshes.
         let mesh_ref = self.meshes.get(mesh_key)?;
+        // Only meshes that route to the transparent pass get a transparent
+        // pipeline. An opaque material — including an opaque dynamic material
+        // whose author WGSL targets the opaque contract (`input.coords`, …) —
+        // must not be compiled against the transparent fragment.
+        if !self.materials.is_transparency_pass(mesh_ref.material_key) {
+            return Ok(mesh_key);
+        }
         let writes_depth = self
             .materials
             .transparent_writes_depth(mesh_ref.material_key);
         let (mat_base, mat_pbr_features) =
             self.materials.transparent_variant(mesh_ref.material_key);
+        let dynamic_shader_id = matches!(mat_base, crate::dynamic_materials::ShadingBase::Custom)
+            .then(|| self.materials.shader_id(mesh_ref.material_key));
+        let dynamic_shader =
+            dynamic_shader_id.and_then(|id| self.dynamic_materials.shader_info_for(id));
         self.render_passes
             .material_transparent
             .pipelines
@@ -533,6 +544,8 @@ impl AwsmRenderer {
                 writes_depth,
                 mat_base,
                 mat_pbr_features,
+                dynamic_shader_id,
+                dynamic_shader,
             )
             .await?;
 

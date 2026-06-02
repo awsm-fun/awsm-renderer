@@ -1,5 +1,6 @@
 //! Transparent material pass pipeline setup.
 
+use awsm_materials::MaterialShaderId;
 use awsm_renderer_core::compare::CompareFunction;
 use awsm_renderer_core::pipeline::depth_stencil::DepthStencilState;
 use awsm_renderer_core::pipeline::fragment::{
@@ -105,6 +106,10 @@ impl MaterialTransparentPipelines {
         material_writes_depth: bool,
         material_base: crate::dynamic_materials::ShadingBase,
         material_pbr_features: u32,
+        dynamic_shader_id: Option<MaterialShaderId>,
+        dynamic_shader: Option<
+            crate::render_passes::material_opaque::shader::cache_key::DynamicShaderInfo,
+        >,
     ) -> Result<RenderPipelineKey> {
         let keys = self
             .set_render_pipeline_keys_batched(
@@ -116,6 +121,8 @@ impl MaterialTransparentPipelines {
                     writes_depth: material_writes_depth,
                     base: material_base,
                     pbr_features: material_pbr_features,
+                    dynamic_shader_id,
+                    dynamic_shader,
                 }),
                 shaders,
                 pipelines,
@@ -179,8 +186,8 @@ impl MaterialTransparentPipelines {
                 base: req.base,
                 pbr_features: req.pbr_features,
                 dispatch_hash: 0,
-                dynamic_shader_id: None,
-                dynamic_shader: None,
+                dynamic_shader_id: req.dynamic_shader_id,
+                dynamic_shader: req.dynamic_shader.clone(),
                 instancing_transforms: req.mesh.instanced,
                 // GPU light-culling consumer-side cache key field
                 // (froxel slice count baked into the z-slice math).
@@ -236,8 +243,8 @@ impl MaterialTransparentPipelines {
                 base: req.base,
                 pbr_features: req.pbr_features,
                 dispatch_hash: 0,
-                dynamic_shader_id: None,
-                dynamic_shader: None,
+                dynamic_shader_id: req.dynamic_shader_id,
+                dynamic_shader: req.dynamic_shader.clone(),
                 instancing_transforms: req.mesh.instanced,
                 froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
             };
@@ -326,8 +333,8 @@ impl MaterialTransparentPipelines {
                 base: req.base,
                 pbr_features: req.pbr_features,
                 dispatch_hash: 0,
-                dynamic_shader_id: None,
-                dynamic_shader: None,
+                dynamic_shader_id: req.dynamic_shader_id,
+                dynamic_shader: req.dynamic_shader.clone(),
                 instancing_transforms: req.mesh.instanced,
                 froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
             });
@@ -504,6 +511,17 @@ pub struct TransparentMeshPipelineRequest<'a> {
     /// PBR feature mask this transparent PBR pipeline is specialized for
     /// (`PbrFeatures::from_material(..).bits()`); inert for non-PBR.
     pub pbr_features: u32,
+    /// For a `Custom`-base (dynamic) mesh: the registered material's
+    /// shader id, else `None`. Mirrors the opaque path so the cache key
+    /// distinguishes per-registration pipelines.
+    pub dynamic_shader_id: Option<MaterialShaderId>,
+    /// For a `Custom`-base (dynamic) mesh: the auto-generated `MaterialData`
+    /// struct decl + loader + author fragment. MUST be `Some` whenever
+    /// `base == Custom` — the transparent fragment references `MaterialData`
+    /// inside the `{% if base == Custom %}` wrapper, so a missing decl is a
+    /// WGSL "unresolved type". Build via `DynamicMaterials::shader_info_for`.
+    pub dynamic_shader:
+        Option<crate::render_passes::material_opaque::shader::cache_key::DynamicShaderInfo>,
 }
 
 fn vertex_buffer_layouts(mesh: &Mesh, buffer_info: &MeshBufferInfo) -> Vec<VertexBufferLayout> {

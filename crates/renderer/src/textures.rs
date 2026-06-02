@@ -182,9 +182,19 @@ impl AwsmRenderer {
         // just a couple of extra hash probes per mesh.
         let mut transparent_requests: Vec<TransparentMeshPipelineRequest> = Vec::new();
         for (mesh_key, mesh) in self.meshes.iter() {
+            // Only transparent-pass meshes get a transparent pipeline — an
+            // opaque (incl. opaque-dynamic) material can't compile against the
+            // transparent fragment contract.
+            if !self.materials.is_transparency_pass(mesh.material_key) {
+                continue;
+            }
             let buffer_info_key = self.meshes.buffer_info_key(mesh_key)?;
             let writes_depth = self.materials.transparent_writes_depth(mesh.material_key);
             let (base, pbr_features) = self.materials.transparent_variant(mesh.material_key);
+            let dynamic_shader_id = matches!(base, crate::dynamic_materials::ShadingBase::Custom)
+                .then(|| self.materials.shader_id(mesh.material_key));
+            let dynamic_shader =
+                dynamic_shader_id.and_then(|id| self.dynamic_materials.shader_info_for(id));
             transparent_requests.push(TransparentMeshPipelineRequest {
                 mesh,
                 mesh_key,
@@ -192,6 +202,8 @@ impl AwsmRenderer {
                 writes_depth,
                 base,
                 pbr_features,
+                dynamic_shader_id,
+                dynamic_shader,
             });
         }
 
@@ -375,49 +387,14 @@ impl AwsmRenderer {
             .edge_pipelines
             .clear_dynamic_pipelines();
 
-        // Mark every registered material `Pending` BEFORE relaunching.
-        // Without this, `pipeline_group_status` /
-        // `drain_pipeline_status_events` report Ready while the typed
-        // cache is empty (dispatch skipping via the Option guard), so
-        // the compile-modal UI is misleading and any
-        // `note_subcompile_complete` from the relaunch's promises
-        // doesn't emit a balancing Pending → Ready event. The
-        // generation bump also makes the apply_compile_resolution
-        // stale-generation gate discard any OLD in-flight resolutions
-        // that haven't yet landed (those were compiled against the
-        // previous pool shape).
-        let registered_shader_ids = self.pipeline_scheduler.registered_material_shader_ids();
-        for shader_id in &registered_shader_ids {
-            if let Some(mid) = self
-                .pipeline_scheduler
-                .find_material_by_shader_id(*shader_id)
-            {
-                self.pipeline_scheduler.mark_material_pending_for_relaunch(
-                    crate::pipeline_scheduler::PipelineGroupId::Material(mid),
-                );
-            }
-        }
-
-        // Re-launching compile for every registered material here
-        // re-populates the typed cache with fresh keys keyed to the
-        // new bind-group layouts. `launch_first_party_material_compile`
-        // routes dynamic shader_ids to `launch_dynamic_material_compile`
-        // automatically, so a single iteration covers both. This launches
-        // only the per-material opaque/classify pipelines — the MSAA
-        // edge-resolve pipelines are a LAYOUT-level concern (their cache
-        // keys embed the texture-pool sizes that just changed), rebuilt
-        // once via the awaited `ensure_compiled` below, mirroring
-        // `anti_alias.rs`'s MSAA-change handler.
-        for shader_id in registered_shader_ids {
-            if let Err(e) = self.launch_first_party_material_compile(shader_id) {
-                tracing::warn!(
-                    target: "awsm_renderer::pipeline_readiness",
-                    "post texture-pool-grow recompile of material({:?}) failed: {:?}",
-                    shader_id,
-                    e
-                );
-            }
-        }
+        // Mark + relaunch every still-tracked material against the new
+        // texture-pool layout (its bind-group layouts just changed). Pass
+        // `relaunch_edge = false`: the layout-level MSAA edge-resolve set
+        // (its cache keys embed the pool sizes that changed) is rebuilt
+        // below via the authoritative awaited `ensure_compiled`, mirroring
+        // `anti_alias.rs`'s MSAA-change handler. See
+        // `relaunch_tracked_materials`.
+        self.relaunch_tracked_materials(None, false);
 
         // Rebuild the full edge-resolve set against the new texture-pool
         // layout (its cache keys embed `texture_pool_arrays_len` /

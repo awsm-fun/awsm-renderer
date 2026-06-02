@@ -563,9 +563,19 @@ impl AwsmRenderer {
             crate::render_passes::material_transparent::pipeline::TransparentMeshPipelineRequest,
         > = Vec::new();
         for (mesh_key, mesh) in self.meshes.iter() {
+            // Only warm transparent pipelines for transparent-pass meshes — an
+            // opaque (incl. opaque-dynamic) material can't compile against the
+            // transparent fragment contract.
+            if !self.materials.is_transparency_pass(mesh.material_key) {
+                continue;
+            }
             let buffer_info_key = self.meshes.buffer_info_key(mesh_key)?;
             let writes_depth = self.materials.transparent_writes_depth(mesh.material_key);
             let (base, pbr_features) = self.materials.transparent_variant(mesh.material_key);
+            let dynamic_shader_id = matches!(base, crate::dynamic_materials::ShadingBase::Custom)
+                .then(|| self.materials.shader_id(mesh.material_key));
+            let dynamic_shader =
+                dynamic_shader_id.and_then(|id| self.dynamic_materials.shader_info_for(id));
             requests.push(
                 crate::render_passes::material_transparent::pipeline::TransparentMeshPipelineRequest {
                     mesh,
@@ -574,6 +584,8 @@ impl AwsmRenderer {
                     writes_depth,
                     base,
                     pbr_features,
+                    dynamic_shader_id,
+                    dynamic_shader,
                 },
             );
         }
@@ -736,12 +748,23 @@ impl AwsmRenderer {
                 wgsl_fragment: reg.wgsl_fragment.clone(),
             });
 
-            for &(msaa, mipmaps) in &[
-                (Some(4u32), true),
-                (Some(4u32), false),
-                (None, true),
-                (None, false),
-            ] {
+            // Opaque variants — only for opaque-routed dynamic materials. A
+            // Blend/Mask material's author body targets the transparent
+            // contract (returns `TransparentShadingOutput`) and can't compile
+            // in the opaque wrapper; it renders via the transparent prewarm
+            // below.
+            let opaque_variants: &[(Option<u32>, bool)] =
+                if reg.alpha_mode == awsm_materials::MaterialAlphaMode::Opaque {
+                    &[
+                        (Some(4u32), true),
+                        (Some(4u32), false),
+                        (None, true),
+                        (None, false),
+                    ]
+                } else {
+                    &[]
+                };
+            for &(msaa, mipmaps) in opaque_variants {
                 shader_jobs.push(
                     ShaderCacheKeyMaterialOpaque {
                         texture_pool_arrays_len,
@@ -767,7 +790,10 @@ impl AwsmRenderer {
                 slots.push(Slot::Opaque(shader_id, msaa, mipmaps));
             }
 
-            if reg.alpha_mode == awsm_materials::MaterialAlphaMode::Blend {
+            // Blend AND Mask route to the transparent pass (see
+            // `Material::is_transparency_pass`), so prewarm the transparent
+            // pipeline for both.
+            if reg.alpha_mode != awsm_materials::MaterialAlphaMode::Opaque {
                 for &(msaa, mipmaps) in &[(Some(4u32), true), (None, true)] {
                     shader_jobs.push(
                         ShaderCacheKeyMaterialTransparent {
