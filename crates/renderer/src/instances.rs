@@ -13,9 +13,24 @@ use thiserror::Error;
 use crate::{
     bind_groups::{AwsmBindGroupError, BindGroupCreate, BindGroups},
     buffer::dynamic_storage::DynamicStorageBuffer,
-    transforms::{Transform, TransformKey, Transforms},
+    transforms::{Transform, TransformKey},
     AwsmRendererLogging,
 };
+
+/// Stride of one entry in the per-instance transform buffer: a single
+/// `mat4x4<f32>` world matrix (16 × f32 = 64 bytes). This MUST equal the
+/// per-instance vertex-buffer `array_stride` bound by the geometry / shadow
+/// / transparent pipelines, which the GPU reads as 4 × `vec4<f32>` rows
+/// (`MeshBufferVertexInfo::INSTANCING_BYTE_SIZE`).
+///
+/// It is deliberately **not** `Transforms::BYTE_SIZE` (112): node transforms
+/// additionally carry a normal matrix, but per-instance entries carry only
+/// the world matrix. Reusing the 112-byte node stride here wrote each
+/// instance 48 bytes too far apart (and read 48 bytes of out-of-bounds
+/// garbage per matrix), so the GPU — reading at 64-byte stride — saw every
+/// instance after the first as a garbage matrix and exploded the geometry.
+const INSTANCE_TRANSFORM_BYTE_SIZE: usize =
+    crate::meshes::buffer_info::MeshBufferVertexInfo::INSTANCING_BYTE_SIZE;
 
 /// Per-instance attributes consumed by the shading pass.
 ///
@@ -92,7 +107,7 @@ pub struct Instances {
 
 impl Instances {
     /// Initial byte size for instance transforms.
-    pub const TRANSFORM_INITIAL_SIZE: usize = Transforms::BYTE_SIZE * 32; // 32 elements is a good starting point
+    pub const TRANSFORM_INITIAL_SIZE: usize = INSTANCE_TRANSFORM_BYTE_SIZE * 32; // 32 elements is a good starting point
     /// Initial byte size for instance attributes.
     pub const ATTRIBUTE_INITIAL_SIZE: usize = InstanceAttr::BYTE_SIZE * 32;
 
@@ -160,13 +175,16 @@ impl Instances {
         }
         self.transform_buffer
             .update_with_unchecked(key, |_, bytes| {
-                let offset = index * Transforms::BYTE_SIZE;
+                let offset = index * INSTANCE_TRANSFORM_BYTE_SIZE;
                 let values = transform.to_matrix().to_cols_array();
                 let values_u8 = unsafe {
-                    std::slice::from_raw_parts(values.as_ptr() as *const u8, Transforms::BYTE_SIZE)
+                    std::slice::from_raw_parts(
+                        values.as_ptr() as *const u8,
+                        INSTANCE_TRANSFORM_BYTE_SIZE,
+                    )
                 };
 
-                let slice = &mut bytes[offset..offset + Transforms::BYTE_SIZE];
+                let slice = &mut bytes[offset..offset + INSTANCE_TRANSFORM_BYTE_SIZE];
                 slice.copy_from_slice(values_u8);
             });
 
@@ -193,7 +211,7 @@ impl Instances {
             let start_index = list.len();
             list.extend_from_slice(transforms);
             let len = list.len();
-            let required_bytes = len * Transforms::BYTE_SIZE;
+            let required_bytes = len * INSTANCE_TRANSFORM_BYTE_SIZE;
             let can_append = allocated_bytes
                 .map(|allocated| required_bytes <= allocated)
                 .unwrap_or(false);
@@ -203,7 +221,7 @@ impl Instances {
 
         if can_append {
             let bytes = Self::transforms_to_bytes(transforms);
-            let offset = start_index * Transforms::BYTE_SIZE;
+            let offset = start_index * INSTANCE_TRANSFORM_BYTE_SIZE;
             self.transform_buffer
                 .update_with_unchecked(key, |_, buffer| {
                     let end = offset + bytes.len();
@@ -371,10 +389,13 @@ impl Instances {
         }
 
         self.transform_buffer.get(key).and_then(|bytes| {
-            let offset = index * Transforms::BYTE_SIZE;
-            let slice = bytes.get(offset..offset + Transforms::BYTE_SIZE)?;
+            let offset = index * INSTANCE_TRANSFORM_BYTE_SIZE;
+            let slice = bytes.get(offset..offset + INSTANCE_TRANSFORM_BYTE_SIZE)?;
             let values_f32 = unsafe {
-                std::slice::from_raw_parts(slice.as_ptr() as *const f32, Transforms::BYTE_SIZE / 4)
+                std::slice::from_raw_parts(
+                    slice.as_ptr() as *const f32,
+                    INSTANCE_TRANSFORM_BYTE_SIZE / 4,
+                )
             };
             let mat = Mat4::from_cols_slice(values_f32);
 
@@ -392,10 +413,13 @@ impl Instances {
         let bytes = self.transform_buffer.get(key)?;
         let mut transforms = Vec::with_capacity(count);
         for index in 0..count {
-            let offset = index * Transforms::BYTE_SIZE;
-            let slice = bytes.get(offset..offset + Transforms::BYTE_SIZE)?;
+            let offset = index * INSTANCE_TRANSFORM_BYTE_SIZE;
+            let slice = bytes.get(offset..offset + INSTANCE_TRANSFORM_BYTE_SIZE)?;
             let values_f32 = unsafe {
-                std::slice::from_raw_parts(slice.as_ptr() as *const f32, Transforms::BYTE_SIZE / 4)
+                std::slice::from_raw_parts(
+                    slice.as_ptr() as *const f32,
+                    INSTANCE_TRANSFORM_BYTE_SIZE / 4,
+                )
             };
             let mat = Mat4::from_cols_slice(values_f32);
             transforms.push(Transform::from(mat));
@@ -494,11 +518,14 @@ impl Instances {
     }
 
     fn transforms_to_bytes(transforms: &[Transform]) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(transforms.len() * Transforms::BYTE_SIZE);
+        let mut bytes = Vec::with_capacity(transforms.len() * INSTANCE_TRANSFORM_BYTE_SIZE);
         for transform in transforms {
             let values = transform.to_matrix().to_cols_array();
             let values_u8 = unsafe {
-                std::slice::from_raw_parts(values.as_ptr() as *const u8, Transforms::BYTE_SIZE)
+                std::slice::from_raw_parts(
+                    values.as_ptr() as *const u8,
+                    INSTANCE_TRANSFORM_BYTE_SIZE,
+                )
             };
             bytes.extend_from_slice(values_u8);
         }
@@ -512,7 +539,7 @@ impl Instances {
             .transform_instance_count(key)
             .ok_or(AwsmInstanceError::TransformNotFound(key))?;
         let desired_count = count + additional;
-        let desired_bytes = desired_count * Transforms::BYTE_SIZE;
+        let desired_bytes = desired_count * INSTANCE_TRANSFORM_BYTE_SIZE;
 
         let allocated = self
             .transform_buffer
@@ -520,7 +547,7 @@ impl Instances {
             .ok_or(AwsmInstanceError::TransformNotFound(key))?;
 
         if desired_bytes <= allocated {
-            return Ok(allocated / Transforms::BYTE_SIZE);
+            return Ok(allocated / INSTANCE_TRANSFORM_BYTE_SIZE);
         }
 
         let mut existing_bytes = if let Some(list) = self.cpu_transforms.get(key) {
