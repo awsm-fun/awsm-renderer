@@ -150,20 +150,12 @@ impl crate::AwsmRenderer {
         // feature-set variant has a dynamic-range id but no registration —
         // it compiles the built-in PBR/Toon body (no `DynamicShaderInfo`).
         let reg = self.dynamic_materials.get(shader_id).cloned();
-        // Neither a custom registration nor a known first-party variant →
-        // nothing to compile (id was removed between submit and launch).
-        if reg.is_none()
-            && self
-                .dynamic_materials
-                .first_party_variant_of(shader_id)
-                .is_none()
-        {
-            // Defense-in-depth: a relaunch may have marked this group
-            // `Pending` before the registration was removed (the normal
-            // path now retires it in `unregister_material`, but other
-            // relaunch sites could still reach here). With nothing to
-            // compile, leaving it Pending would hang the compile-status
-            // modal — mark it Ready so it resolves.
+        // Nothing to compile — the id was removed between submit and launch
+        // (an orphan; see `is_launchable_material`). Defense-in-depth: the
+        // relaunch sites retire orphans before they reach here, but mark any
+        // group still `Pending` Ready so a stray caller can't hang the
+        // compile-status surface.
+        if !self.is_launchable_material(shader_id) {
             if let Some(mid) = self
                 .pipeline_scheduler
                 .find_material_by_shader_id(shader_id)
