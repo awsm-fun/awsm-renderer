@@ -1,19 +1,20 @@
 //! ⌘K command palette. Fuzzy-filterable list of commands — switch mode, open
-//! Settings, insert nodes. Opened by ⌘K (see `keys.rs`) or the top-bar search
-//! button. A skeleton here; the full command set (select any object, open any
-//! material) is filled in at M9.
+//! Settings, toggle the Content Browser, insert nodes, select any scene object,
+//! open any material. Opened by ⌘K (see `keys.rs`) or the top-bar search button.
 
-use crate::{actions, prelude::*, state, state::EditorMode};
+use crate::header::assets::{collect_assets_of_kind, AssetKind};
+use crate::scene::mutate;
+use crate::{actions, prelude::*, state, state::app_state, state::EditorMode};
 
 struct Cmd {
-    label: &'static str,
+    label: String,
     group: &'static str,
     run: Box<dyn Fn()>,
 }
 
 fn insert_cmd(label: &'static str, f: fn()) -> Cmd {
     Cmd {
-        label,
+        label: label.into(),
         group: "Insert",
         run: Box::new(move || {
             // Inserts land in the scene — make sure we're showing it.
@@ -24,21 +25,31 @@ fn insert_cmd(label: &'static str, f: fn()) -> Cmd {
 }
 
 fn commands() -> Vec<Cmd> {
-    vec![
+    let mut cmds = vec![
         Cmd {
-            label: "Switch to Scene mode",
+            label: "Switch to Scene mode".into(),
             group: "Go",
             run: Box::new(|| state::app_state().mode.set_neq(EditorMode::Scene)),
         },
         Cmd {
-            label: "Switch to Material mode",
+            label: "Switch to Material mode".into(),
             group: "Go",
             run: Box::new(|| state::app_state().mode.set_neq(EditorMode::Material)),
         },
         Cmd {
-            label: "Open Settings",
+            label: "Open Settings".into(),
             group: "Go",
             run: Box::new(|| state::app_state().settings_open.set_neq(true)),
+        },
+        Cmd {
+            label: "Toggle Content Browser".into(),
+            group: "Go",
+            run: Box::new(|| {
+                let s = app_state();
+                s.mode.set_neq(EditorMode::Scene);
+                s.content_browser_open
+                    .set_neq(!s.content_browser_open.get());
+            }),
         },
         insert_cmd("Insert Empty", actions::insert::empty),
         insert_cmd("Insert Sphere", actions::insert::primitive_sphere),
@@ -48,7 +59,35 @@ fn commands() -> Vec<Cmd> {
         insert_cmd("Insert Cone", actions::insert::primitive_cone),
         insert_cmd("Insert Torus", actions::insert::primitive_torus),
         insert_cmd("Insert Camera", actions::insert::camera),
-    ]
+    ];
+
+    // Select any object (Scene tree, in visible order).
+    let scene = app_state().scene.clone();
+    for id in mutate::flatten_visible_order(&scene) {
+        if let Some(node) = mutate::find_by_id(&scene, id) {
+            let name = node.name.get_cloned();
+            cmds.push(Cmd {
+                label: format!("Select {name}"),
+                group: "Object",
+                run: Box::new(move || {
+                    let s = app_state();
+                    s.mode.set_neq(EditorMode::Scene);
+                    s.select_only(id);
+                }),
+            });
+        }
+    }
+
+    // Open any material asset → Material mode.
+    for (_id, name) in collect_assets_of_kind(AssetKind::Material) {
+        cmds.push(Cmd {
+            label: format!("Open material: {name}"),
+            group: "Material",
+            run: Box::new(|| app_state().mode.set_neq(EditorMode::Material)),
+        });
+    }
+
+    cmds
 }
 
 fn matches(cmd: &Cmd, q: &str) -> bool {
@@ -181,7 +220,7 @@ fn render_results(q: &str, open: Mutable<bool>) -> Dom {
                 .child(html!("span", {
                     .style("flex", "1 1 0")
                     .style("text-align", "left")
-                    .text(cmd.label)
+                    .text(&cmd.label)
                 }))
                 .child(html!("span", {
                     .class("kicker")
