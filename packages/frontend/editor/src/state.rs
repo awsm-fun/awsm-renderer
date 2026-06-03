@@ -25,6 +25,15 @@ use project::ProjectState;
 use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
 
+/// Top-level editor mode, switched by the segmented control in the top bar.
+/// `Scene` is the 3D authoring workspace; `Material` is the custom-WGSL
+/// material workspace (folded in at M6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditorMode {
+    Scene,
+    Material,
+}
+
 /// How the rotation input is displayed in the properties panel. Storage is
 /// always a quaternion on the node; this only affects the editor UI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,6 +55,10 @@ pub enum PointHandleTarget {
 
 pub struct AppState {
     pub scene: Arc<Scene>,
+
+    /// Active top-level mode (Scene ⇄ Material), driven by the top-bar
+    /// segmented switch.
+    pub mode: Mutable<EditorMode>,
 
     /// Multi-selection as an ordered-insertion-agnostic set. Rows observe
     /// membership via `.signal_ref(|set| set.contains(&id))`.
@@ -181,6 +194,7 @@ impl AppState {
     fn new() -> Self {
         Self {
             scene: Scene::new(),
+            mode: Mutable::new(EditorMode::Scene),
             selected: Mutable::new(HashSet::new()),
             selection_anchor: Mutable::new(None),
             selection_is_explicit: Mutable::new(false),

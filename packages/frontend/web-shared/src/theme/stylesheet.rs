@@ -161,6 +161,11 @@ pub fn init() {
         .style("color", "var(--text-2)")
         .style("user-select", "none")
     });
+    // Generic transition utility (prototype `.t`): background/color are NOT
+    // transitioned so selection/active states update instantly.
+    stylesheet!(".t", {
+        .style("transition", "border-color .12s ease, box-shadow .12s ease, transform .12s ease")
+    });
 
     // h1-h3 keep a sane default for any incidental headings.
     stylesheet!("h1, h2, h3", {

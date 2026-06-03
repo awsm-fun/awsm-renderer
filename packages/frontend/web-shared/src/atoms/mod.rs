@@ -8,6 +8,7 @@ pub mod label;
 pub mod modal;
 pub mod progress_bar;
 pub mod secret_input;
+pub mod segmented;
 pub mod text_area;
 pub mod text_input;
 pub mod toast;

@@ -12,6 +12,7 @@ pub use crate::atoms::label::*;
 pub use crate::atoms::modal::*;
 pub use crate::atoms::progress_bar::*;
 pub use crate::atoms::secret_input::*;
+pub use crate::atoms::segmented::*;
 pub use crate::atoms::text_area::*;
 pub use crate::atoms::text_input::*;
 pub use crate::atoms::toast::*;

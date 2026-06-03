@@ -1,4 +1,4 @@
-use crate::{prelude::*, state};
+use crate::{prelude::*, state, state::EditorMode};
 
 use super::{assets, camera, editor, environment, insert, object, project_label, stats, top};
 
@@ -43,10 +43,20 @@ impl Header {
         let active_section = self.active_section.clone();
         let has_selection = state::app_state().has_selection.clone();
 
+        let mode = state::app_state().mode.clone();
+
         html!("div", {
             .class([&*CONTAINER, ColorText::SidebarHeader.class(), &*USER_SELECT_NONE])
             .child(self.render_top_strip())
-            .child(self.render_action_row())
+            // Scene-mode ribbon (Insert/Object/Environment/Camera action rows).
+            // Hidden in Material mode — that workspace carries its own ribbon (M6).
+            .child_signal(mode.signal().map(clone!(active_section => move |m| {
+                if m == EditorMode::Scene {
+                    Some(Self::render_action_row_for(active_section.clone()))
+                } else {
+                    None
+                }
+            })))
             .child_signal(scene_stats_visible.signal().map(clone!(scene_stats_visible => move |visible| {
                 if visible {
                     Some(stats::render_stats_panel(scene_stats_visible.clone()))
@@ -78,11 +88,70 @@ impl Header {
             }
         });
 
+        let mode = state::app_state().mode.clone();
+
         html!("div", {
             .class(&*STRIP)
-            .child(self.render_section_tabs())
+            .child(Self::render_brand_and_mode())
+            // Scene-mode section tabs — hidden in Material mode.
+            .child(html!("div", {
+                .style("display", "flex")
+                .style("align-items", "stretch")
+                .style("height", "100%")
+                .style_signal("display", mode.signal().map(|m| {
+                    if m == EditorMode::Scene { "flex" } else { "none" }
+                }))
+                .child(self.render_section_tabs())
+            }))
             .child(self.render_project_label())
             .child(self.render_right_cluster())
+        })
+    }
+
+    /// Brand mark + the top-level Scene ⇄ Material segmented switch.
+    fn render_brand_and_mode() -> Dom {
+        let mode = state::app_state().mode.clone();
+        html!("div", {
+            .style("display", "flex")
+            .style("align-items", "center")
+            .style("gap", "12px")
+            .style("padding", "0 14px")
+            .child(html!("div", {
+                .style("display", "flex")
+                .style("align-items", "center")
+                .style("gap", "9px")
+                .child(html!("div", {
+                    .style("width", "26px")
+                    .style("height", "26px")
+                    .style("border-radius", "7px")
+                    .style("flex", "0 0 auto")
+                    .style("background", "linear-gradient(145deg, var(--accent-bright), var(--accent-dim))")
+                    .style("box-shadow", "inset 0 1px 0 oklch(1 0 0 / .25), var(--shadow-1)")
+                }))
+                .child(html!("span", {
+                    .style("font-size", "13px")
+                    .style("font-weight", "680")
+                    .style("letter-spacing", "-0.01em")
+                    .style("color", "var(--text-0)")
+                    .text("Awsm")
+                    .child(html!("span", {
+                        .style("color", "var(--text-2)")
+                        .style("font-weight", "500")
+                        .text("Renderer")
+                    }))
+                }))
+            }))
+            .child(html!("div", {
+                .style("width", "1px")
+                .style("height", "22px")
+                .style("background", "var(--line)")
+            }))
+            .child(
+                Segmented::new(mode)
+                    .option(EditorMode::Scene, "Scene")
+                    .option(EditorMode::Material, "Material")
+                    .render()
+            )
         })
     }
 
@@ -261,7 +330,7 @@ impl Header {
         })
     }
 
-    fn render_action_row(&self) -> Dom {
+    fn render_action_row_for(active_section: Mutable<Section>) -> Dom {
         static ROW: LazyLock<String> = LazyLock::new(|| {
             class! {
                 .style("display", "flex")
@@ -273,8 +342,6 @@ impl Header {
                 .style("box-sizing", "border-box")
             }
         });
-
-        let active_section = self.active_section.clone();
 
         html!("div", {
             .class(&*ROW)
