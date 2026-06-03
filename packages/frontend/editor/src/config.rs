@@ -73,7 +73,9 @@ pub static CONFIG: LazyLock<Config> = LazyLock::new(|| Config {
     // and defaults to empty — the "Open in material-editor" link is replaced by
     // an internal mode switch in M6. Kept here only so the M1-seeded
     // custom-materials pane still compiles during the migration.
-    url_material_editor: option_env!("URL_MATERIAL_EDITOR").unwrap_or_default().to_string(),
+    url_material_editor: option_env!("URL_MATERIAL_EDITOR")
+        .unwrap_or_default()
+        .to_string(),
 });
 
 /// Keyboard shortcut bindings for the editor. Matched against
