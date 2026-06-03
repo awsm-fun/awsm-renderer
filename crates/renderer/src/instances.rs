@@ -611,3 +611,84 @@ pub enum AwsmInstanceError {
     #[error("[instance] buffer capacity overflow: {0}")]
     BufferCapacityOverflow(String),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use glam::{Quat, Vec3};
+
+    /// Regression for the per-instance transform stride bug fixed in
+    /// `5d34e71` (PR #109). The GPU per-instance vertex buffer is bound at a
+    /// 64-byte `mat4x4<f32>` stride; before the fix the offsets used the
+    /// 112-byte node-transform stride (matrix + normal matrix), so every
+    /// instance *after the first* was packed 48 bytes too far apart and the
+    /// GPU read garbage for it — garbling the geometry of any mesh with >1
+    /// instance.
+    ///
+    /// Exercise ≥2 instances (the >1 case is exactly what was broken) and
+    /// confirm each one lands on the 64-byte boundary and round-trips, so the
+    /// stride can never silently regress to the 112-byte node stride again.
+    #[test]
+    fn per_instance_transforms_packed_at_64_byte_stride() {
+        // The stride constant itself: equal to the GPU-bound vertex stride,
+        // and explicitly NOT the 112-byte node stride.
+        assert_eq!(INSTANCE_TRANSFORM_BYTE_SIZE, 64);
+        assert_eq!(
+            INSTANCE_TRANSFORM_BYTE_SIZE,
+            crate::meshes::buffer_info::MeshBufferVertexInfo::INSTANCING_BYTE_SIZE,
+        );
+        assert_ne!(
+            INSTANCE_TRANSFORM_BYTE_SIZE,
+            crate::transforms::Transforms::BYTE_SIZE,
+            "per-instance stride must not be the 112-byte node-transform stride",
+        );
+
+        // Three distinct instances, each with a different translation/scale so
+        // a wrong stride would read a neighbour's bytes and fail the compare.
+        let transforms = vec![
+            Transform {
+                translation: Vec3::new(1.0, 2.0, 3.0),
+                rotation: Quat::IDENTITY,
+                scale: Vec3::splat(1.0),
+            },
+            Transform {
+                translation: Vec3::new(-4.0, 5.0, -6.0),
+                rotation: Quat::from_rotation_y(std::f32::consts::FRAC_PI_3),
+                scale: Vec3::new(2.0, 0.5, 1.5),
+            },
+            Transform {
+                translation: Vec3::new(7.0, -8.0, 9.0),
+                rotation: Quat::from_rotation_x(std::f32::consts::FRAC_PI_4),
+                scale: Vec3::splat(3.0),
+            },
+        ];
+
+        let bytes = Instances::transforms_to_bytes(&transforms);
+        assert_eq!(
+            bytes.len(),
+            transforms.len() * INSTANCE_TRANSFORM_BYTE_SIZE,
+            "packed buffer must be exactly one 64-byte entry per instance",
+        );
+
+        // Read each instance back at the 64-byte stride (the same offset math
+        // the GPU vertex fetch uses) and confirm it round-trips.
+        for (index, expected) in transforms.iter().enumerate() {
+            let offset = index * INSTANCE_TRANSFORM_BYTE_SIZE;
+            let slice = &bytes[offset..offset + INSTANCE_TRANSFORM_BYTE_SIZE];
+            let values_f32 = unsafe {
+                std::slice::from_raw_parts(
+                    slice.as_ptr() as *const f32,
+                    INSTANCE_TRANSFORM_BYTE_SIZE / 4,
+                )
+            };
+            let got = Mat4::from_cols_slice(values_f32).to_cols_array();
+            let want = expected.to_matrix().to_cols_array();
+            for (g, w) in got.iter().zip(want.iter()) {
+                assert!(
+                    (g - w).abs() < 1e-6,
+                    "instance {index} matrix mismatch at the 64-byte stride: got {got:?}, want {want:?}",
+                );
+            }
+        }
+    }
+}
