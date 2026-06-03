@@ -444,7 +444,22 @@ impl RendererRecompileSink {
     /// rationale as `prewarm_holding_borrow`).
     #[allow(clippy::await_holding_refcell_ref)]
     async fn try_apply_inner(&mut self, reg: MaterialRegistration) -> Result<(), String> {
-        let mut guard = self.handle.borrow_mut();
+        // A fire-and-forget `prewarm_holding_borrow` spawned by a *previous*
+        // compile may still be holding the renderer borrow across its own
+        // `wait_for_pipelines_ready().await`. This path is driven by user
+        // keystrokes (debounced recompile), so colliding with that in-flight
+        // prewarm is plausible — a plain `borrow_mut()` would *panic* (single
+        // threaded, so it can't block). Acquire via `try_borrow_mut` instead,
+        // yielding to the event loop until the prewarm releases. Yield-and-
+        // retry rather than skip-this-edit: the user's latest edit must still
+        // apply. The borrow is free in the overwhelmingly common case, so this
+        // loop runs exactly once.
+        let mut guard = loop {
+            match self.handle.try_borrow_mut() {
+                Ok(guard) => break guard,
+                Err(_) => gloo_timers::future::TimeoutFuture::new(0).await,
+            }
+        };
         let host = match guard.as_mut() {
             Some(h) => h,
             None => {
