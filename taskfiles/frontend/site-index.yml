@@ -14,14 +14,13 @@ tasks:
   build:
     desc: "site-index: render index.html with sibling-relative URLs"
     # The deployed Pages artifact is a single tree with the
-    # model-tests + scene-editor builds copied into matching subdirs
+    # model-tests + editor builds copied into matching subdirs
     # next to this index.html, so relative URLs work whatever subpath
     # the site is served at (dakom.github.io/awsm-renderer/ in our
     # case; could also be a fork or PR preview without rebuilds).
     env:
       URL_MODEL_TESTS: "model-tests"
-      URL_SCENE_EDITOR: "scene-editor"
-      URL_MATERIAL_EDITOR: "material-editor"
+      URL_EDITOR: "editor"
     cmds:
       - mkdir -p {{.PATH_DIST}}
       - envsubst < {{joinPath .PATH_CRATE "index.template.html"}} > {{.PATH_DIST}}/index.html
@@ -33,8 +32,7 @@ tasks:
     # subpath, so the dev landing keeps absolute localhost URLs.
     env:
       URL_MODEL_TESTS: "{{.URL_DEV_MODEL_TESTS}}"
-      URL_SCENE_EDITOR: "{{.URL_DEV_SCENE_EDITOR}}"
-      URL_MATERIAL_EDITOR: "{{.URL_DEV_MATERIAL_EDITOR}}"
+      URL_EDITOR: "{{.URL_DEV_EDITOR}}"
     cmds:
       - mkdir -p {{.PATH_DIST_LOCAL}}
       - envsubst < {{joinPath .PATH_CRATE "index.template.html"}} > {{.PATH_DIST_LOCAL}}/index.html

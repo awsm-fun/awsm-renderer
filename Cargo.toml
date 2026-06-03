@@ -11,9 +11,7 @@ members = [
     "packages/crates/scene-schema",
     "packages/frontend/web-shared",
     "packages/frontend/editor",
-    "packages/frontend/material-editor",
     "packages/frontend/model-tests",
-    "packages/frontend/scene-editor",
     "packages/examples/render-worker",
     "packages/debugging",
 ]
@@ -64,7 +62,7 @@ opt-level = 1
 [profile.dev.package."awsm-model-tests"]
 opt-level = 1
 
-[profile.dev.package."awsm-scene-editor"]
+[profile.dev.package."awsm-editor"]
 opt-level = 1
 
 ### Dependencies

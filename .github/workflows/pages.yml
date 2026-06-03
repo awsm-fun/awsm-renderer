@@ -49,7 +49,7 @@ jobs:
         run: sudo apt-get install -y --no-install-recommends gettext-base
 
       - name: Build every frontend
-        # `task build` fans out to model-tests:build + scene-editor:build
+        # `task build` fans out to editor:build + model-tests:build
         # + site-index:build, writing each into .build-artifacts/<name>/.
         # The trunk builds embed `--public-url
         # https://dakom.github.io/awsm-renderer/<frontend>/` so assets
@@ -62,9 +62,9 @@ jobs:
         # The deployed site is a single tree:
         #   pages/index.html         (site-index landing)
         #   pages/model-tests/...    (model-tests trunk dist)
-        #   pages/scene-editor/...   (scene-editor trunk dist)
+        #   pages/editor/...         (unified editor trunk dist)
         # site-index uses sibling-relative URLs (`model-tests/`,
-        # `scene-editor/`) so the same tree deploys cleanly at any
+        # `editor/`) so the same tree deploys cleanly at any
         # Pages subpath without rebuilding.
         run: |
           set -euo pipefail
@@ -72,7 +72,7 @@ jobs:
           mkdir -p .build-artifacts/pages
           cp -r .build-artifacts/site-index/. .build-artifacts/pages/
           cp -r .build-artifacts/model-tests  .build-artifacts/pages/model-tests
-          cp -r .build-artifacts/scene-editor .build-artifacts/pages/scene-editor
+          cp -r .build-artifacts/editor       .build-artifacts/pages/editor
           # GitHub Pages serves 404.html for unknown paths; each
           # trunk frontend already gets one, but the site-index
           # itself wants one too so a typo at the root surfaces the

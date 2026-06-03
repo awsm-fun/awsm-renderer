@@ -10,12 +10,8 @@ includes:
     flatten: true
   editor:
     taskfile: ./taskfiles/frontend/editor.yml
-  material-editor:
-    taskfile: ./taskfiles/frontend/material-editor.yml
   model-tests:
     taskfile: ./taskfiles/frontend/model-tests.yml
-  scene-editor:
-    taskfile: ./taskfiles/frontend/scene-editor.yml
   site-index:
     taskfile: ./taskfiles/frontend/site-index.yml
   debug-mobile:
@@ -30,9 +26,8 @@ tasks:
   dev:
     desc: "Run every frontend dev server in parallel plus the media servers"
     deps:
-      - material-editor:dev
+      - editor:dev
       - model-tests:dev
-      - scene-editor:dev
       - site-index:dev
       - media-local
       - media-additional-assets
@@ -44,13 +39,6 @@ tasks:
       - media-local
       - media-additional-assets
 
-  material-editor-dev:
-    desc: "Run material-editor dev server in parallel plus the media servers"
-    deps:
-      - material-editor:dev
-      - media-local
-      - media-additional-assets
-
   model-tests-dev:
     desc: "Run model-tests dev server in parallel plus the media servers"
     deps:
@@ -58,27 +46,18 @@ tasks:
       - media-local
       - media-additional-assets
 
-  scene-editor-dev:
-    desc: "Run model-tests dev server in parallel plus the media servers"
-    deps:
-      - scene-editor:dev
-      - media-local
-      - media-additional-assets
-
   build:
     desc: "Build every frontend for production into .build-artifacts/"
     cmds:
-      - task: material-editor:build
+      - task: editor:build
       - task: model-tests:build
-      - task: scene-editor:build
       - task: site-index:build
 
   clean:
     desc: "Remove every frontend's dist + .build-artifacts output"
     cmds:
-      - task: material-editor:clean
+      - task: editor:clean
       - task: model-tests:clean
-      - task: scene-editor:clean
       - task: site-index:clean
 
   media-local:

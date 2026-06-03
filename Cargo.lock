@@ -187,34 +187,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "awsm-material-editor"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "awsm-materials",
- "awsm-meshgen",
- "awsm-renderer",
- "awsm-renderer-core",
- "awsm-scene-schema",
- "awsm-web-shared",
- "dominator",
- "futures",
- "futures-signals",
- "glam 0.32.1",
- "gloo-render",
- "gloo-timers",
- "js-sys",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tracing",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
- "xutex",
-]
-
-[[package]]
 name = "awsm-materials"
 version = "0.2.0"
 dependencies = [
@@ -372,47 +344,6 @@ dependencies = [
  "tracing",
  "wasm-bindgen",
  "web-sys",
-]
-
-[[package]]
-name = "awsm-scene-editor"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "awsm-curves",
- "awsm-materials",
- "awsm-meshgen",
- "awsm-particles",
- "awsm-renderer",
- "awsm-renderer-core",
- "awsm-renderer-gltf",
- "awsm-scene-schema",
- "awsm-web-shared",
- "awsm_web 0.45.0",
- "bitcode",
- "dominator",
- "futures",
- "futures-signals",
- "glam 0.32.1",
- "gloo-events 0.2.0",
- "gloo-net",
- "gloo-render",
- "gloo-timers",
- "gltf",
- "image",
- "indexmap",
- "js-sys",
- "serde",
- "serde-wasm-bindgen",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
- "tracing",
- "uuid",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
- "xutex",
 ]
 
 [[package]]
