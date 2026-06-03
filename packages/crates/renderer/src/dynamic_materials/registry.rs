@@ -266,7 +266,15 @@ pub struct ShaderIncludeFlags {
 
 impl ShaderIncludeFlags {
     pub fn for_base(base: ShadingBase) -> Self {
-        let i = resolved_includes_for_base(base);
+        Self::from_includes(resolved_includes_for_base(base))
+    }
+
+    /// Build the gate flags from an explicit (resolved or unresolved) include
+    /// set. Used for `Custom`-base dynamic materials, which carry their own
+    /// author-declared [`awsm_materials::ShaderIncludes`] per registration
+    /// rather than sharing the base's canonical set.
+    pub fn from_includes(includes: awsm_materials::ShaderIncludes) -> Self {
+        let i = includes.resolve();
         use awsm_materials::ShaderIncludes as S;
         Self {
             brdf: i.contains(S::BRDF),
@@ -650,6 +658,7 @@ impl DynamicMaterials {
         let reg = self.registrations.get(&shader_id)?;
         Some(
             crate::render_passes::material_opaque::shader::cache_key::DynamicShaderInfo {
+                shader_includes: reg.shader_includes.resolve(),
                 struct_decl: awsm_materials::dynamic_layout::generate_wgsl_struct(
                     "MaterialData",
                     &reg.layout,
@@ -724,6 +733,11 @@ impl DynamicMaterials {
             reg.name.hash(&mut hasher);
             reg.layout_hash.hash(&mut hasher);
             reg.wgsl_hash.hash(&mut hasher);
+            // Author-declared skinny-material declarations: changing them
+            // re-specializes the Custom host shader's gated includes, so they
+            // must invalidate the per-shader-id pipeline cache.
+            reg.shader_includes.bits().hash(&mut hasher);
+            reg.fragment_inputs.bits().hash(&mut hasher);
         }
         // Fold the first-party feature-set variants so adding/removing a
         // variant bucket invalidates the classify pipeline (which is keyed
@@ -891,6 +905,19 @@ pub struct MaterialRegistration {
     /// the consumer falls back to the zero default for any
     /// missing entry.
     pub uniform_defaults: Vec<awsm_materials::dynamic_layout::UniformValue>,
+    /// Author-declared optional shared shader modules this material's WGSL
+    /// uses ("skinny materials" — see [`awsm_materials::ShaderIncludes`]).
+    /// The renderer compiles the transitive closure and gates the shared
+    /// shading modules (BRDF / apply_lighting / material_color_calc) on it,
+    /// so a custom material that declares less gets a leaner Custom host
+    /// shader. Defaults to [`ShaderIncludes::all`] — i.e. the pre-skinny
+    /// "may reference anything" behaviour — until the author narrows it via
+    /// the material editor's Pass Dependencies UI.
+    pub shader_includes: awsm_materials::ShaderIncludes,
+    /// Author-declared pre-shade fragment inputs this material consumes
+    /// ([`awsm_materials::FragmentInputs`]). Carried for the cache key +
+    /// future scaffolding gating; defaults to `all()`.
+    pub fragment_inputs: awsm_materials::FragmentInputs,
 }
 
 impl crate::AwsmRenderer {
@@ -1680,6 +1707,8 @@ mod tests {
             wgsl_fragment: String::new(),
             buffer_defaults: Vec::new(),
             uniform_defaults: Vec::new(),
+            shader_includes: awsm_materials::ShaderIncludes::all(),
+            fragment_inputs: awsm_materials::FragmentInputs::all(),
         }
     }
 
@@ -1717,6 +1746,49 @@ mod tests {
         assert_eq!(dm.bucket_entries_cached().len(), first_party_len() + 1);
         assert_eq!(dm.dispatch_hash_cached(), hash_after_first);
         assert!(dm.would_be_idempotent(&reg("a", 1, 1)));
+    }
+
+    #[test]
+    fn shader_include_flags_from_declared_set() {
+        use awsm_materials::ShaderIncludes as S;
+        // A textures-only custom material pulls in none of the PBR shading
+        // modules — a genuinely skinnier Custom host shader.
+        let f = ShaderIncludeFlags::from_includes(S::TEXTURES);
+        assert!(!f.brdf);
+        assert!(!f.apply_lighting);
+        assert!(!f.material_color_calc);
+        // Declaring the PBR material-color builder turns that gate on.
+        let f = ShaderIncludeFlags::from_includes(S::MATERIAL_COLOR_CALC);
+        assert!(f.material_color_calc);
+        // APPLY_LIGHTING transitively resolves to BRDF.
+        let f = ShaderIncludeFlags::from_includes(S::APPLY_LIGHTING);
+        assert!(f.brdf);
+        assert!(f.apply_lighting);
+        // The conservative all() set lights every gate (pre-skinny behaviour).
+        let f = ShaderIncludeFlags::from_includes(S::all());
+        assert!(f.brdf && f.apply_lighting && f.material_color_calc);
+    }
+
+    #[test]
+    fn dispatch_hash_reacts_to_declared_includes() {
+        // Two registries with the same single material but different declared
+        // include sets must produce different dispatch hashes, so narrowing a
+        // material's Pass Dependencies re-keys (re-specializes) its pipeline.
+        let mut full = DynamicMaterials::new();
+        let mut r1 = reg("a", 1, 1);
+        r1.shader_includes = awsm_materials::ShaderIncludes::all();
+        full.insert(r1).unwrap();
+
+        let mut skinny = DynamicMaterials::new();
+        let mut r2 = reg("a", 1, 1);
+        r2.shader_includes = awsm_materials::ShaderIncludes::TEXTURES;
+        skinny.insert(r2).unwrap();
+
+        assert_ne!(
+            full.dispatch_hash_cached(),
+            skinny.dispatch_hash_cached(),
+            "narrowing a custom material's declared includes must re-key its pipeline cache"
+        );
     }
 
     #[test]

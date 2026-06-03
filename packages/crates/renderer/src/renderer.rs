@@ -736,6 +736,7 @@ impl AwsmRenderer {
         // Opaque variants + transparent stubs.
         for (shader_id, reg) in self.dynamic_materials.iter() {
             let dynamic_shader = Some(DynamicShaderInfo {
+                shader_includes: reg.shader_includes.resolve(),
                 struct_decl: awsm_materials::dynamic_layout::generate_wgsl_struct(
                     "MaterialData",
                     &reg.layout,

@@ -168,7 +168,11 @@ impl TryFrom<&ShaderCacheKeyMaterialEdgeResolve> for ShaderTemplateMaterialEdgeR
                 shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
                 shader_id: value.shader_id,
                 base: value.base,
-                inc: crate::dynamic_materials::ShaderIncludeFlags::for_base(value.base),
+                inc: if let Some(d) = value.dynamic_shader.as_ref() {
+                    crate::dynamic_materials::ShaderIncludeFlags::from_includes(d.shader_includes)
+                } else {
+                    crate::dynamic_materials::ShaderIncludeFlags::for_base(value.base)
+                },
                 dynamic_struct_decl: value
                     .dynamic_shader
                     .as_ref()

@@ -19,7 +19,7 @@
 /// style). Pass *scaffolding* modules (frame globals, mesh-meta routing, the
 /// `materials_wgsl` host, etc.) are **not** represented here — those are emitted
 /// unconditionally by each pass, independent of any material.
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub struct ShaderIncludes(u32);
 
 impl ShaderIncludes {
@@ -183,7 +183,7 @@ impl core::fmt::Debug for ShaderIncludes {
 /// Abstract identities of the pre-shade fragment inputs a material's shading
 /// body consumes. The pass scaffolding computes/unpacks only the declared ones
 /// (a solid-color material needs none, so it skips TBN unpack, lights read, …).
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Hash, Debug)]
 pub struct FragmentInputs(u32);
 
 impl FragmentInputs {

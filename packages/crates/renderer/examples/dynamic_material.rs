@@ -98,6 +98,10 @@ return OpaqueShadingOutput(overlay + vec3<f32>(0.5), 1.0);
         wgsl_fragment,
         buffer_defaults: Vec::new(),
         uniform_defaults: Vec::new(),
+        // Conservative default: this author fragment may reference any shared
+        // module / fragment input (the pre-skinny behaviour).
+        shader_includes: awsm_materials::ShaderIncludes::all(),
+        fragment_inputs: awsm_materials::FragmentInputs::all(),
     }
 }
 

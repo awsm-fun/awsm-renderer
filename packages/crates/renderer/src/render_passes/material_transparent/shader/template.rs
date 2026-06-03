@@ -85,7 +85,11 @@ impl ShaderTemplateTransparentMaterialIncludes {
             // material_color_calc includes gate on exactly this transparent
             // material's feature-set (no uber all()).
             pbr_features: awsm_materials::pbr::PbrFeatures::from_bits(cache_key.pbr_features),
-            inc: crate::dynamic_materials::ShaderIncludeFlags::for_base(cache_key.base),
+            inc: if let Some(d) = cache_key.dynamic_shader.as_ref() {
+                crate::dynamic_materials::ShaderIncludeFlags::from_includes(d.shader_includes)
+            } else {
+                crate::dynamic_materials::ShaderIncludeFlags::for_base(cache_key.base)
+            },
             base: cache_key.base,
         }
     }

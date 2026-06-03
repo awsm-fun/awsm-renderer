@@ -121,6 +121,10 @@ pub fn register_loaded_folder(
         wgsl_fragment: folder.wgsl_source.clone(),
         buffer_defaults,
         uniform_defaults,
+        // Skinny-material declarations: default to the conservative all() set
+        // until the Pass Dependencies UI lets the author narrow them (M8).
+        shader_includes: awsm_materials::ShaderIncludes::all(),
+        fragment_inputs: awsm_materials::FragmentInputs::all(),
     };
     let id = renderer.register_material(reg)?;
     map.register(&definition.name, id);

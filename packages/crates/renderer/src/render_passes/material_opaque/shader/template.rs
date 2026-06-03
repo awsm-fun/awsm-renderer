@@ -294,8 +294,14 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
                 shader_id: value.shader_id,
                 base: value.base,
+                // Custom (dynamic) materials carry their own author-declared
+                // include set; first-party bases use the canonical set. Skinny
+                // materials: a custom material that declares fewer modules gets
+                // a leaner Custom host shader.
                 inc: if value.owns_skybox {
                     crate::dynamic_materials::ShaderIncludeFlags::skybox_only()
+                } else if let Some(d) = value.dynamic_shader.as_ref() {
+                    crate::dynamic_materials::ShaderIncludeFlags::from_includes(d.shader_includes)
                 } else {
                     crate::dynamic_materials::ShaderIncludeFlags::for_base(value.base)
                 },
@@ -724,6 +730,7 @@ return TransparentShadingOutput(vec4<f32>(color, alpha));
         .to_string();
 
         let dyn_info = DynamicShaderInfo {
+            shader_includes: awsm_materials::ShaderIncludes::all(),
             struct_decl,
             loader_decl,
             wgsl_fragment,

@@ -128,6 +128,10 @@ pub fn build_registration(state: &EditState) -> MaterialRegistration {
         wgsl_fragment: wgsl,
         buffer_defaults,
         uniform_defaults,
+        // Default to the conservative all() set; the Pass Dependencies UI
+        // (in the unified editor) narrows these.
+        shader_includes: awsm_materials::ShaderIncludes::all(),
+        fragment_inputs: awsm_materials::FragmentInputs::all(),
     }
 }
 
