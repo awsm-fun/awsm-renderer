@@ -49,7 +49,7 @@ pub(super) fn render_assets_row() -> Dom {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum AssetKind {
+pub(crate) enum AssetKind {
     Material,
     Texture,
     Mesh,
@@ -243,7 +243,7 @@ fn render_asset_row(open: Mutable<bool>, id: crate::scene::AssetId, label: Strin
     })
 }
 
-fn collect_assets_of_kind(kind: AssetKind) -> Vec<(crate::scene::AssetId, String)> {
+pub(crate) fn collect_assets_of_kind(kind: AssetKind) -> Vec<(crate::scene::AssetId, String)> {
     use awsm_scene_schema::AssetSource;
     let scene = state::app_state().scene.clone();
     let table = scene.assets.lock().unwrap();

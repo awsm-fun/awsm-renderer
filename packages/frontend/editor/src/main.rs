@@ -4,6 +4,7 @@ mod collider_wireframe;
 mod command_palette;
 mod compile_modal;
 mod config;
+mod content_browser;
 mod content_hash;
 mod context;
 mod error;
@@ -189,25 +190,34 @@ fn render_initialized() -> Dom {
         // Scene workspace. Kept mounted in both modes (display-toggled rather
         // than unmounted) so the WebGPU canvas isn't reparented out of the DOM
         // when switching to Material mode and the render loop keeps ticking.
+        // Column: the body row (outliner · viewport · inspector) over the
+        // collapsible Content Browser drawer.
         .child(dominator::html!("div", {
-            .class(&*BODY_ROW_CLASS)
+            .style("flex", "1 1 0")
+            .style("min-height", "0")
+            .style("min-width", "0")
+            .style("flex-direction", "column")
             .style_signal("display", mode.signal().map(|m| {
                 if m == state::EditorMode::Scene { "flex" } else { "none" }
             }))
-            .child(SidebarLeft::new(tree::render).render())
             .child(dominator::html!("div", {
-                .class(&*CANVAS_SLOT_CLASS)
-                .after_inserted(|elem| {
-                    with_canvas(|canvas| {
-                        if let Err(err) = elem.append_child(canvas) {
-                            Modal::error(format!("Failed to append canvas to main layout: {err:?}"));
-                        } else {
-                            tracing::info!("Reparented canvas!");
-                        }
-                    });
-                })
+                .class(&*BODY_ROW_CLASS)
+                .child(SidebarLeft::new(tree::render).render())
+                .child(dominator::html!("div", {
+                    .class(&*CANVAS_SLOT_CLASS)
+                    .after_inserted(|elem| {
+                        with_canvas(|canvas| {
+                            if let Err(err) = elem.append_child(canvas) {
+                                Modal::error(format!("Failed to append canvas to main layout: {err:?}"));
+                            } else {
+                                tracing::info!("Reparented canvas!");
+                            }
+                        });
+                    })
+                }))
+                .child(SidebarRight::new(properties::render).render())
             }))
-            .child(SidebarRight::new(properties::render).render())
+            .child(content_browser::render())
         }))
         // Material workspace (folded-in material-editor). Kept mounted so its
         // preview canvas + renderer persist across mode switches; display

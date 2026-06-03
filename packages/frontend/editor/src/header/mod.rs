@@ -14,7 +14,7 @@
 //! Per-section layout lives in sibling submodules so each section
 //! file stays scannable.
 
-mod assets;
+pub(crate) mod assets;
 mod camera;
 mod environment;
 #[allow(clippy::module_inception)]
