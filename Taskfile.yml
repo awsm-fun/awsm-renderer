@@ -8,6 +8,8 @@ includes:
   config:
     taskfile: ./taskfiles/config.yml
     flatten: true
+  editor:
+    taskfile: ./taskfiles/frontend/editor.yml
   material-editor:
     taskfile: ./taskfiles/frontend/material-editor.yml
   model-tests:
@@ -32,6 +34,13 @@ tasks:
       - model-tests:dev
       - scene-editor:dev
       - site-index:dev
+      - media-local
+      - media-additional-assets
+
+  editor-dev:
+    desc: "Run the unified editor dev server in parallel plus the media servers"
+    deps:
+      - editor:dev
       - media-local
       - media-additional-assets
 

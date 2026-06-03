@@ -138,6 +138,47 @@ dependencies = [
 ]
 
 [[package]]
+name = "awsm-editor"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "awsm-curves",
+ "awsm-materials",
+ "awsm-meshgen",
+ "awsm-particles",
+ "awsm-renderer",
+ "awsm-renderer-core",
+ "awsm-renderer-gltf",
+ "awsm-scene-schema",
+ "awsm-web-shared",
+ "awsm_web 0.45.0",
+ "bitcode",
+ "dominator",
+ "futures",
+ "futures-signals",
+ "glam 0.32.1",
+ "gloo-events 0.2.0",
+ "gloo-net",
+ "gloo-render",
+ "gloo-timers",
+ "gltf",
+ "image",
+ "indexmap",
+ "js-sys",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "tracing",
+ "uuid",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "xutex",
+]
+
+[[package]]
 name = "awsm-geometry"
 version = "0.2.0"
 dependencies = [
@@ -198,7 +239,6 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "awsm-renderer",
- "awsm-renderer-editor",
  "awsm-renderer-gltf",
  "awsm-web-shared",
  "awsm_web 0.45.0",
@@ -309,19 +349,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "awsm-renderer-editor"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "awsm-meshgen",
- "awsm-renderer",
- "awsm-renderer-gltf",
- "glam 0.32.1",
- "tracing",
- "web-sys",
-]
-
-[[package]]
 name = "awsm-renderer-gltf"
 version = "0.2.0"
 dependencies = [
@@ -358,7 +385,6 @@ dependencies = [
  "awsm-particles",
  "awsm-renderer",
  "awsm-renderer-core",
- "awsm-renderer-editor",
  "awsm-renderer-gltf",
  "awsm-scene-schema",
  "awsm-web-shared",
@@ -405,7 +431,10 @@ dependencies = [
 name = "awsm-web-shared"
 version = "0.2.0"
 dependencies = [
+ "anyhow",
+ "awsm-meshgen",
  "awsm-renderer",
+ "awsm-renderer-gltf",
  "dominator",
  "futures",
  "futures-signals",

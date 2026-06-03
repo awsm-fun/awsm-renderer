@@ -22,7 +22,7 @@ use awsm_renderer::{
 };
 use glam::{Quat, Vec3};
 
-use crate::transform_controller::ray_plane_intersection;
+use crate::viewport3d::transform_controller::ray_plane_intersection;
 
 /// Visual radius of each handle in world units (scaled per-frame to track
 /// a fixed pixel size — see [`PointHandleSet::zoom_handles`]).

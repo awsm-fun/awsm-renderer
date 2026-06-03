@@ -1,7 +1,6 @@
 [workspace]
 members = [
     "packages/crates/curves",
-    "packages/crates/editor",
     "packages/crates/geometry",
     "packages/crates/materials",
     "packages/crates/meshgen",
@@ -11,6 +10,7 @@ members = [
     "packages/crates/renderer-gltf",
     "packages/crates/scene-schema",
     "packages/frontend/web-shared",
+    "packages/frontend/editor",
     "packages/frontend/material-editor",
     "packages/frontend/model-tests",
     "packages/frontend/scene-editor",
@@ -84,7 +84,6 @@ awsm-particles = { path = "packages/crates/particles", version = "0.2.0" }
 awsm-materials = { path = "packages/crates/materials", version = "0.2.0" }
 awsm-renderer = { path = "packages/crates/renderer", version = "0.2.0" }
 awsm-renderer-gltf = { path = "packages/crates/renderer-gltf", version = "0.2.0" }
-awsm-renderer-editor = { path = "packages/crates/editor", version = "0.2.0" }
 # Frontend-only (not published); workspace dep keeps consumers path-agnostic.
 awsm-web-shared = { path = "packages/frontend/web-shared", version = "0.2.0" }
 

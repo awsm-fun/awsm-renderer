@@ -28,7 +28,6 @@ tasks:
         --watch "{{.PATH_CRATE}}"
         --watch "{{.PATH_CRATE_RENDERER}}"
         --watch "{{.PATH_CRATE_RENDERER_CORE}}"
-        --watch "{{.PATH_CRATE_EDITOR}}"
         --watch "{{.PATH_CRATE_SCENE_SCHEMA}}"
         --watch "{{.PATH_CRATE_WEB_SHARED}}"
 

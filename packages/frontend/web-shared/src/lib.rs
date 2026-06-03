@@ -10,3 +10,4 @@ pub mod perf;
 pub mod prelude;
 pub mod theme;
 pub mod util;
+pub mod viewport3d;
