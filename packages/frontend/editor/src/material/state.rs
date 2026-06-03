@@ -89,6 +89,16 @@ pub struct EditState {
     /// Last error from a deep-link load attempt, surfaced as a tooltip
     /// / inline message in the banner. Cleared on the next attempt.
     pub deep_link_error: Arc<Mutable<Option<String>>>,
+    /// Author-declared optional shared shader modules this material's WGSL
+    /// uses ("skinny materials" — see [`awsm_materials::ShaderIncludes`]).
+    /// The Pass Dependencies section toggles these; they flow into the
+    /// `MaterialRegistration` so the renderer compiles a leaner Custom host
+    /// shader. Defaults to `all()` (the pre-skinny behaviour). Not yet
+    /// persisted to `material.json` (a scene-schema change — follow-up).
+    pub shader_includes: Arc<Mutable<awsm_materials::ShaderIncludes>>,
+    /// Author-declared pre-shade fragment inputs ([`awsm_materials::FragmentInputs`]).
+    /// Companion to [`Self::shader_includes`]; defaults to `all()`.
+    pub fragment_inputs: Arc<Mutable<awsm_materials::FragmentInputs>>,
 }
 
 /// Preview-canvas mesh shape selectable from the Preview pane header.
@@ -150,6 +160,8 @@ impl EditState {
             converter_open_for_slot: Arc::new(Mutable::new(None)),
             deep_link_folder: Arc::new(Mutable::new(None)),
             deep_link_error: Arc::new(Mutable::new(None)),
+            shader_includes: Arc::new(Mutable::new(awsm_materials::ShaderIncludes::all())),
+            fragment_inputs: Arc::new(Mutable::new(awsm_materials::FragmentInputs::all())),
         }
     }
 

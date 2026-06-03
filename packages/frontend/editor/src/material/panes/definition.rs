@@ -21,13 +21,14 @@ pub fn render(state: &EditState) -> Dom {
     let definition = state.definition.clone();
     html!("div", {
         .style("padding", "12px")
-        .style("border-right", "1px solid #333")
+        .style("border-right", "1px solid var(--line)")
         .style("overflow", "auto")
-        .style("background", "#1a1a1a")
-        .style("color", "#ddd")
+        .style("background", "var(--bg-1)")
+        .style("color", "var(--text-1)")
         .style("font-size", "12px")
         .child(html!("h3", { .text("Definition") }))
         .child(render_render_state(&definition))
+        .child(render_pass_dependencies(state))
         .child(html!("h4", { .text("Uniforms") }))
         .child(render_uniform_table(&definition))
         .child(html!("button", {
@@ -70,6 +71,170 @@ pub fn render(state: &EditState) -> Dom {
                     default: None,
                 });
             }))
+        }))
+    })
+}
+
+/// All gateable shared-module identities, in declaration order.
+const SHADER_INCLUDE_FLAGS: &[(awsm_materials::ShaderIncludes, &str)] = {
+    use awsm_materials::ShaderIncludes as S;
+    &[
+        (S::MATH, "math"),
+        (S::CAMERA, "camera"),
+        (S::COLOR_SPACE, "color_space"),
+        (S::TEXTURES, "textures"),
+        (S::VERTEX_COLOR, "vertex_color"),
+        (S::LIGHT_ACCESS, "light_access"),
+        (S::APPLY_LIGHTING, "apply_lighting"),
+        (S::BRDF, "brdf"),
+        (S::MATERIAL_COLOR_CALC, "material_color_calc"),
+        (S::SHADOWS, "shadows"),
+        (S::SKYBOX, "skybox"),
+        (S::EXTRAS, "extras"),
+    ]
+};
+
+const FRAGMENT_INPUT_FLAGS: &[(awsm_materials::FragmentInputs, &str)] = {
+    use awsm_materials::FragmentInputs as F;
+    &[
+        (F::NORMALS, "normals"),
+        (F::TANGENTS, "tangents"),
+        (F::UV, "uv"),
+        (F::LIGHTS, "lights"),
+        (F::VIEW_DIR, "view_dir"),
+        (F::VERTEX_COLOR, "vertex_color"),
+    ]
+};
+
+/// "Pass Dependencies" — author-declared skinny-material surface. Chips toggle
+/// which optional shared shader modules + fragment inputs the material uses;
+/// flags pulled in transitively by `resolve()` show as derived (locked-looking)
+/// so the author sees the real compiled closure. Drives `EditState`, which the
+/// recompile loop threads into the registration (M7 backend).
+fn render_pass_dependencies(state: &EditState) -> Dom {
+    let includes = state.shader_includes.clone();
+    let inputs = state.fragment_inputs.clone();
+    html!("div", {
+        .style("margin-top", "14px")
+        .child(html!("h4", { .text("Pass Dependencies") }))
+        .child(html!("div", {
+            .style("font-size", "11px")
+            .style("color", "var(--text-2)")
+            .style("line-height", "1.5")
+            .style("margin", "2px 0 8px")
+            .text("Declare only what your WGSL uses — the renderer compiles the closure. Declaring less yields a leaner pipeline. Dimmed chips are pulled in automatically.")
+        }))
+        .child(html!("div", {
+            .class("kicker")
+            .style("font-size", "9.5px")
+            .style("margin-bottom", "4px")
+            .text("Shader includes")
+        }))
+        .child(html!("div", {
+            .style("display", "flex")
+            .style("flex-wrap", "wrap")
+            .style("gap", "5px")
+            .children(SHADER_INCLUDE_FLAGS.iter().map(clone!(includes => move |&(flag, name)| {
+                include_chip(includes.clone(), flag, name)
+            })))
+        }))
+        .child(html!("div", {
+            .class("kicker")
+            .style("font-size", "9.5px")
+            .style("margin", "10px 0 4px")
+            .text("Fragment inputs")
+        }))
+        .child(html!("div", {
+            .style("display", "flex")
+            .style("flex-wrap", "wrap")
+            .style("gap", "5px")
+            .children(FRAGMENT_INPUT_FLAGS.iter().map(clone!(inputs => move |&(flag, name)| {
+                input_chip(inputs.clone(), flag, name)
+            })))
+        }))
+    })
+}
+
+/// A single ShaderIncludes chip: selected (author-declared), derived (pulled by
+/// the transitive closure), or off. Click toggles the author-declared bit.
+fn include_chip(
+    includes: std::sync::Arc<Mutable<awsm_materials::ShaderIncludes>>,
+    flag: awsm_materials::ShaderIncludes,
+    name: &'static str,
+) -> Dom {
+    html!("button", {
+        .class("t")
+        .style("font-size", "10.5px")
+        .style("font-family", "var(--mono)")
+        .style("padding", "2px 8px")
+        .style("border-radius", "999px")
+        .style("cursor", "pointer")
+        .style("border", "1px solid var(--line-soft)")
+        .style_signal("background", includes.signal().map(move |cur| {
+            if cur.contains(flag) { "var(--accent-dim)" }
+            else if cur.resolve().contains(flag) { "var(--bg-3)" }
+            else { "transparent" }
+        }))
+        .style_signal("color", includes.signal().map(move |cur| {
+            if cur.contains(flag) { "var(--text-0)" }
+            else if cur.resolve().contains(flag) { "var(--text-3)" }
+            else { "var(--text-2)" }
+        }))
+        .style_signal("border-color", includes.signal().map(move |cur| {
+            if cur.contains(flag) { "var(--accent-line)" } else { "var(--line-soft)" }
+        }))
+        .attr_signal("title", includes.signal().map(move |cur| {
+            if !cur.contains(flag) && cur.resolve().contains(flag) {
+                "required transitively by another declared module"
+            } else {
+                "click to toggle"
+            }
+        }))
+        .text(name)
+        .event(clone!(includes => move |_: events::Click| {
+            let cur = includes.get();
+            let next = if cur.contains(flag) {
+                awsm_materials::ShaderIncludes::from_bits(cur.bits() & !flag.bits())
+            } else {
+                cur.union(flag)
+            };
+            includes.set_neq(next);
+        }))
+    })
+}
+
+/// A single FragmentInputs chip (no transitive closure — inputs are flat).
+fn input_chip(
+    inputs: std::sync::Arc<Mutable<awsm_materials::FragmentInputs>>,
+    flag: awsm_materials::FragmentInputs,
+    name: &'static str,
+) -> Dom {
+    html!("button", {
+        .class("t")
+        .style("font-size", "10.5px")
+        .style("font-family", "var(--mono)")
+        .style("padding", "2px 8px")
+        .style("border-radius", "999px")
+        .style("cursor", "pointer")
+        .style("border", "1px solid var(--line-soft)")
+        .style_signal("background", inputs.signal().map(move |cur| {
+            if cur.contains(flag) { "var(--accent-dim)" } else { "transparent" }
+        }))
+        .style_signal("color", inputs.signal().map(move |cur| {
+            if cur.contains(flag) { "var(--text-0)" } else { "var(--text-2)" }
+        }))
+        .style_signal("border-color", inputs.signal().map(move |cur| {
+            if cur.contains(flag) { "var(--accent-line)" } else { "var(--line-soft)" }
+        }))
+        .text(name)
+        .event(clone!(inputs => move |_: events::Click| {
+            let cur = inputs.get();
+            let next = if cur.contains(flag) {
+                awsm_materials::FragmentInputs::from_bits(cur.bits() & !flag.bits())
+            } else {
+                cur.union(flag)
+            };
+            inputs.set_neq(next);
         }))
     })
 }

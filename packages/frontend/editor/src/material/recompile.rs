@@ -128,10 +128,9 @@ pub fn build_registration(state: &EditState) -> MaterialRegistration {
         wgsl_fragment: wgsl,
         buffer_defaults,
         uniform_defaults,
-        // Default to the conservative all() set; the Pass Dependencies UI
-        // (in the unified editor) narrows these.
-        shader_includes: awsm_materials::ShaderIncludes::all(),
-        fragment_inputs: awsm_materials::FragmentInputs::all(),
+        // Author-declared via the Definition rail's Pass Dependencies section.
+        shader_includes: state.shader_includes.get(),
+        fragment_inputs: state.fragment_inputs.get(),
     }
 }
 
@@ -252,6 +251,34 @@ pub fn spawn(state: EditState, sink: Rc<futures_signals::signal::Mutable<Box<dyn
                         let next = trigger.get() + 1;
                         trigger.set(next);
                     }
+                })
+                .await;
+        });
+    }
+    // Pass Dependencies (skinny-material declarations): toggling a chip
+    // re-registers so the renderer re-specializes the Custom host shader.
+    {
+        let trigger = trigger.clone();
+        let shader_includes = state.shader_includes.clone();
+        spawn_local(async move {
+            shader_includes
+                .signal()
+                .for_each(move |_| {
+                    let trigger = trigger.clone();
+                    async move { trigger.set(trigger.get() + 1) }
+                })
+                .await;
+        });
+    }
+    {
+        let trigger = trigger.clone();
+        let fragment_inputs = state.fragment_inputs.clone();
+        spawn_local(async move {
+            fragment_inputs
+                .signal()
+                .for_each(move |_| {
+                    let trigger = trigger.clone();
+                    async move { trigger.set(trigger.get() + 1) }
                 })
                 .await;
         });
