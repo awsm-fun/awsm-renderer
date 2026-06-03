@@ -1,7 +1,7 @@
 [package]
 name = "awsm-renderer-gltf"
 description = "glTF ingestion for awsm-renderer"
-readme = "../../README.md"
+readme = "../../../README.md"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
@@ -19,9 +19,9 @@ rustdoc-args = ["--cfg=web_sys_unstable_apis"]
 default = []
 
 [dependencies]
-awsm-renderer = { path = "../renderer" }
-awsm-renderer-core = { path = "../renderer-core", features = ["texture-pool", "image"] }
-awsm-materials = { path = "../materials" }
+awsm-renderer = { workspace = true }
+awsm-renderer-core = { workspace = true, features = ["texture-pool", "image"] }
+awsm-materials = { workspace = true }
 gltf = { workspace = true }
 gloo-net = { workspace = true }
 web-sys = { workspace = true }

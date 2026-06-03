@@ -1,6 +1,6 @@
 [package]
-name = "awsm-particles"
-description = "Pure CPU particle simulator (struct-of-arrays, GPU-shape compatible)"
+name = "awsm-meshgen"
+description = "Pure CPU mesh generators (primitives + sweep + procedural textures)"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
@@ -11,10 +11,10 @@ homepage.workspace = true
 
 [features]
 default = []
-serde = ["dep:serde", "awsm-curves/serde"]
+serde = ["dep:serde", "awsm-curves/serde", "awsm-geometry/serde"]
 
 [dependencies]
-awsm-curves = { path = "../curves" }
-awsm-geometry = { path = "../geometry" }
+awsm-curves = { workspace = true }
+awsm-geometry = { workspace = true }
 glam = {workspace = true}
 serde = {workspace = true, optional = true}

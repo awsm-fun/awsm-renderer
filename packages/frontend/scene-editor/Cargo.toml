@@ -1,5 +1,6 @@
 [package]
 name = "awsm-scene-editor"
+publish = false  # frontend app, not released to crates.io
 description = "Interactive 3D scene authoring tool for awsm-renderer."
 edition.workspace = true
 version.workspace = true
@@ -8,16 +9,16 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-awsm-curves = { path = "../../curves", features = ["serde"] }
-awsm-meshgen = { path = "../../meshgen", features = ["serde"] }
-awsm-materials = { path = "../../materials" }
-awsm-particles = { path = "../../particles", features = ["serde"] }
-awsm-renderer = { path = "../../renderer", features = ["ktx", "serde"] }
-awsm-renderer-core = { path = "../../renderer-core" }
-awsm-renderer-editor = { path = "../../editor" }
-awsm-renderer-gltf = { path = "../../renderer-gltf" }
-awsm-scene-schema = { path = "../../scene-schema" }
-awsm-web-shared = { path = "../../web-shared" }
+awsm-curves = { workspace = true, features = ["serde"] }
+awsm-meshgen = { workspace = true, features = ["serde"] }
+awsm-materials = { workspace = true }
+awsm-particles = { workspace = true, features = ["serde"] }
+awsm-renderer = { workspace = true, features = ["ktx", "serde"] }
+awsm-renderer-core = { workspace = true }
+awsm-renderer-editor = { workspace = true }
+awsm-renderer-gltf = { workspace = true }
+awsm-scene-schema = { workspace = true }
+awsm-web-shared = { workspace = true }
 
 anyhow = { workspace = true }
 glam = { workspace = true, features = ["serde"] }

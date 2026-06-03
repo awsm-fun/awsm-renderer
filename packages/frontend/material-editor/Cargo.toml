@@ -1,5 +1,6 @@
 [package]
 name = "awsm-material-editor"
+publish = false  # frontend app, not released to crates.io
 description = "Standalone editor for authoring runtime-registered awsm-renderer custom materials."
 edition.workspace = true
 version.workspace = true
@@ -8,12 +9,12 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-awsm-materials = { path = "../../materials" }
-awsm-meshgen = { path = "../../meshgen" }
-awsm-renderer = { path = "../../renderer", features = ["ktx", "serde"] }
-awsm-renderer-core = { path = "../../renderer-core" }
-awsm-scene-schema = { path = "../../scene-schema" }
-awsm-web-shared = { path = "../../web-shared" }
+awsm-materials = { workspace = true }
+awsm-meshgen = { workspace = true }
+awsm-renderer = { workspace = true, features = ["ktx", "serde"] }
+awsm-renderer-core = { workspace = true }
+awsm-scene-schema = { workspace = true }
+awsm-web-shared = { workspace = true }
 
 glam = { workspace = true }
 

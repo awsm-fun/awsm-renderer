@@ -1,28 +1,28 @@
 [workspace]
 members = [
-    "crates/curves",
-    "crates/editor",
-    "crates/geometry",
-    "crates/materials",
-    "crates/meshgen",
-    "crates/particles",
-    "crates/renderer",
-    "crates/renderer-core",
-    "crates/renderer-gltf",
-    "crates/scene-schema",
-    "crates/web-shared",
-    "crates/frontend/material-editor",
-    "crates/frontend/model-tests",
-    "crates/frontend/scene-editor",
-    "crates/examples/render-worker",
-    "crates/debugging",
+    "packages/crates/curves",
+    "packages/crates/editor",
+    "packages/crates/geometry",
+    "packages/crates/materials",
+    "packages/crates/meshgen",
+    "packages/crates/particles",
+    "packages/crates/renderer",
+    "packages/crates/renderer-core",
+    "packages/crates/renderer-gltf",
+    "packages/crates/scene-schema",
+    "packages/frontend/web-shared",
+    "packages/frontend/material-editor",
+    "packages/frontend/model-tests",
+    "packages/frontend/scene-editor",
+    "packages/examples/render-worker",
+    "packages/debugging",
 ]
 resolver = "2"
 
 [workspace.package]
 description = "awsm renderer"
 edition = "2021"
-version = "0.1.7"
+version = "0.2.0"
 license = "MIT"
 authors = ["David Komer"]
 rust-version = "1.80.0"
@@ -70,6 +70,23 @@ opt-level = 1
 ### Dependencies
 
 [workspace.dependencies]
+
+# Internal awsm-* crates. Version is kept in lockstep with
+# `workspace.package.version` so the published crates carry concrete
+# version requirements on each other (crates.io rejects path-only deps).
+# Bump this block together with the version above on every release.
+awsm-curves = { path = "packages/crates/curves", version = "0.2.0" }
+awsm-geometry = { path = "packages/crates/geometry", version = "0.2.0" }
+awsm-scene-schema = { path = "packages/crates/scene-schema", version = "0.2.0" }
+awsm-renderer-core = { path = "packages/crates/renderer-core", version = "0.2.0" }
+awsm-meshgen = { path = "packages/crates/meshgen", version = "0.2.0" }
+awsm-particles = { path = "packages/crates/particles", version = "0.2.0" }
+awsm-materials = { path = "packages/crates/materials", version = "0.2.0" }
+awsm-renderer = { path = "packages/crates/renderer", version = "0.2.0" }
+awsm-renderer-gltf = { path = "packages/crates/renderer-gltf", version = "0.2.0" }
+awsm-renderer-editor = { path = "packages/crates/editor", version = "0.2.0" }
+# Frontend-only (not published); workspace dep keeps consumers path-agnostic.
+awsm-web-shared = { path = "packages/frontend/web-shared", version = "0.2.0" }
 
 # Misc
 cfg-if = "1.0.4"

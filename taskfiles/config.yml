@@ -5,13 +5,14 @@ vars:
   PATH_REPO_ROOT:
     sh: git rev-parse --show-toplevel
   PATH_BUILD_ARTIFACTS: '{{joinPath .PATH_REPO_ROOT ".build-artifacts"}}'
-  PATH_CRATES: '{{joinPath .PATH_REPO_ROOT "crates"}}'
-  PATH_FRONTENDS: '{{joinPath .PATH_CRATES "frontend"}}'
+  PATH_PACKAGES: '{{joinPath .PATH_REPO_ROOT "packages"}}'
+  PATH_CRATES: '{{joinPath .PATH_PACKAGES "crates"}}'
+  PATH_FRONTENDS: '{{joinPath .PATH_PACKAGES "frontend"}}'
   PATH_CRATE_RENDERER: '{{joinPath .PATH_CRATES "renderer"}}'
   PATH_CRATE_RENDERER_CORE: '{{joinPath .PATH_CRATES "renderer-core"}}'
   PATH_CRATE_EDITOR: '{{joinPath .PATH_CRATES "editor"}}'
   PATH_CRATE_SCENE_SCHEMA: '{{joinPath .PATH_CRATES "scene-schema"}}'
-  PATH_CRATE_WEB_SHARED: '{{joinPath .PATH_CRATES "web-shared"}}'
+  PATH_CRATE_WEB_SHARED: '{{joinPath .PATH_FRONTENDS "web-shared"}}'
   PATH_MEDIA_LOCAL: '{{joinPath .PATH_REPO_ROOT "media"}}'
   PATH_MEDIA_ADDITIONAL_ASSETS: '{{joinPath .PATH_REPO_ROOT ".." "awsm-renderer-assets"}}'
 

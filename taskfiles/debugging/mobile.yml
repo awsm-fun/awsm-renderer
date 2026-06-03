@@ -32,4 +32,4 @@ tasks:
       PORT: "{{.PORT_MODEL_TESTS_DEV}}"
       WAIT_MS: "60000"
     cmds:
-      - crates/debugging/src/bin/android_chrome_check.sh
+      - packages/debugging/src/bin/android_chrome_check.sh
