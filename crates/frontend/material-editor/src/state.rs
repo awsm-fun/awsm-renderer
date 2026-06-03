@@ -194,7 +194,7 @@ pub enum Starter {
     /// View-angle "soft glass" — the worked **transparent** example
     /// (`alpha_mode = Blend`). Demonstrates the transparent contract:
     /// `TransparentShadingInput` (world normal + `surface_to_camera`)
-    /// and a `TransparentShadingOutput(vec4)` with a Schlick-ish alpha.
+    /// and a `TransparentShadingOutput(vec4)` with a linear view-angle alpha.
     SoftGlass,
 }
 
@@ -354,8 +354,9 @@ return OpaqueShadingOutput(input.material.tint, 1.0);
 /// is more opaque at grazing angles. Mirrors
 /// `docs/dynamic-materials/contract-transparent.md` § Example.
 const SOFT_GLASS_WGSL: &str = r#"// soft-glass — the worked transparent material (alpha_mode = Blend).
-// Schlick-ish view-angle alpha: more opaque at grazing angles (edges of
-// curved surfaces), more transparent face-on. The output alpha drives the
+// Linear view-angle alpha: more opaque at grazing angles (edges of
+// curved surfaces), more transparent face-on — a straight `mix` on
+// `cos_theta`, not a Schlick `pow(1 - cos_theta, 5)` term. The output alpha drives the
 // standard (src.a, 1-src.a) blend; the kernel composites the opaque
 // background behind us automatically.
 let cos_theta = clamp(dot(input.world_normal, input.surface_to_camera), 0.0, 1.0);
