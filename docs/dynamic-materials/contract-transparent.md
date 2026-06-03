@@ -180,8 +180,9 @@ Same list as opaque — see
 //
 // alpha_mode: Blend, double_sided: true
 
-// Schlick-ish view-angle alpha — more opaque at grazing angles
-// (edges of curved surfaces), more transparent face-on. The output
+// Linear view-angle alpha — more opaque at grazing angles
+// (edges of curved surfaces), more transparent face-on. A straight
+// `mix` on `cos_theta`, not a Schlick `pow(1 - cos_theta, 5)` term. The output
 // alpha drives the standard (src.a, 1-src.a) blend the transparent
 // pass uses; the kernel composites the dst (opaque background)
 // behind us automatically, so the dynamic shader doesn't have to
