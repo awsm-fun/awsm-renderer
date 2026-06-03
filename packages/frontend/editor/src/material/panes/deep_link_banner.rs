@@ -53,7 +53,7 @@ fn banner_body(folder_name: String, state: &EditState) -> Dom {
         }))
         .child(html!("button", {
             .style("background", "#3a5a7a")
-            .style("color", "#fff")
+            .style("color", "var(--text-0)")
             .style("border", "1px solid #4c7298")
             .style("padding", "4px 12px")
             .style("border-radius", "3px")
@@ -84,7 +84,7 @@ fn banner_body(folder_name: String, state: &EditState) -> Dom {
         }))
         .child_signal(error.signal_cloned().map(|err| {
             err.map(|msg| html!("span", {
-                .style("color", "#fcc")
+                .style("color", "var(--danger-bright)")
                 .style("font-size", "12px")
                 .style("margin-left", "6px")
                 .text(&msg)

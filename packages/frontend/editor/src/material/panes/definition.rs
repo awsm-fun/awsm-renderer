@@ -266,7 +266,7 @@ fn render_buffer_table(state: &EditState) -> Dom {
                             .text(&name)
                         }))
                         .child(html!("span", {
-                            .style("color", "#888")
+                            .style("color", "var(--text-2)")
                             .style("font-size", "11px")
                             .text_signal(buffer_defaults.signal_cloned().map(move |defs| {
                                 defs.get(&name_for_count)
@@ -399,9 +399,9 @@ fn render_uniform_row(
                     .attr("type", "text")
                     .attr("value", &current_name)
                     .style("width", "100%")
-                    .style("background", "#0b0b0b")
+                    .style("background", "var(--bg-3)")
                     .style("color", "#cce")
-                    .style("border", "1px solid #333")
+                    .style("border", "1px solid var(--line)")
                     .with_node!(_elem => {
                         .event(clone!(definition => move |e: events::Change| {
                             if let Some(target) = e.target() {
@@ -485,7 +485,7 @@ fn header_cell(label: &str) -> Dom {
     html!("th", {
         .style("text-align", "left")
         .style("padding", "2px 4px")
-        .style("border-bottom", "1px solid #333")
+        .style("border-bottom", "1px solid var(--line)")
         .text(label)
     })
 }

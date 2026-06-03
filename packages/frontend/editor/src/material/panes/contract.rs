@@ -22,9 +22,9 @@ pub fn render(state: &EditState) -> Dom {
     let definition = state.definition.clone();
     html!("div", {
         .style("padding", "12px")
-        .style("border-left", "1px solid #333")
-        .style("background", "#1a1a1a")
-        .style("color", "#ddd")
+        .style("border-left", "1px solid var(--line)")
+        .style("background", "var(--bg-1)")
+        .style("color", "var(--text-1)")
         .style("overflow", "auto")
         .style("font-size", "11px")
         .child(html!("h3", { .text("Contract") }))

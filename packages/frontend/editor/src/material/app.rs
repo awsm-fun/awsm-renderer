@@ -50,8 +50,8 @@ pub fn root_with_state(state: EditState) -> Dom {
                 html!("div", {
                     .style("grid-column", "1 / span 3")
                     .style("padding", "8px")
-                    .style("background", "#222")
-                    .style("color", "#eee")
+                    .style("background", "var(--bg-2)")
+                    .style("color", "var(--text-0)")
                     .style("display", "flex")
                     .style("align-items", "center")
                     .style("gap", "12px")
@@ -67,14 +67,14 @@ pub fn root_with_state(state: EditState) -> Dom {
                     // loop picks the new wgsl + definition up on its
                     // next tick.
                     .child(html!("label", {
-                        .style("color", "#aaa")
+                        .style("color", "var(--text-2)")
                         .style("font-size", "12px")
                         .text("File:")
                     }))
                     .child(html!("select" => web_sys::HtmlSelectElement, {
-                        .style("background", "#111")
-                        .style("color", "#eee")
-                        .style("border", "1px solid #444")
+                        .style("background", "var(--bg-3)")
+                        .style("color", "var(--text-0)")
+                        .style("border", "1px solid var(--line)")
                         .style("padding", "2px 6px")
                         .style("font-size", "12px")
                         .child(html!("option", {
@@ -113,7 +113,7 @@ pub fn root_with_state(state: EditState) -> Dom {
                 // Bottom: preview (left half of last row) + errors (right).
                 html!("div", {
                     .style("grid-column", "1 / span 2")
-                    .style("border-top", "1px solid #333")
+                    .style("border-top", "1px solid var(--line)")
                     .child(panes::preview::render(&state))
                 }),
                 panes::errors::render(&state),

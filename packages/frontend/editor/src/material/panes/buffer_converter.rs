@@ -91,9 +91,9 @@ fn modal_body(
             open_for.set(None);
         }))
         .child(html!("div", {
-            .style("background", "#1a1a1a")
-            .style("color", "#ddd")
-            .style("border", "1px solid #444")
+            .style("background", "var(--bg-1)")
+            .style("color", "var(--text-1)")
+            .style("border", "1px solid var(--line)")
             .style("border-radius", "4px")
             .style("padding", "16px")
             .style("min-width", "420px")
@@ -107,22 +107,22 @@ fn modal_body(
                 .text(&format!("Buffer data — {slot_name}"))
             }))
             .child(html!("p", {
-                .style("color", "#999")
+                .style("color", "var(--text-2)")
                 .style("line-height", "1.4")
                 .text(HELP_TEXT)
             }))
             .child(file_picker(slot_name.clone(), pending.clone(), status.clone()))
             .child(html!("h4", {
                 .style("margin-top", "12px")
-                .style("color", "#aaa")
+                .style("color", "var(--text-2)")
                 .text("…or paste JSON")
             }))
             .child(json_textarea(pending.clone(), status.clone()))
             .child(html!("div", {
                 .style("margin-top", "12px")
                 .style("padding", "8px")
-                .style("background", "#111")
-                .style("border", "1px solid #333")
+                .style("background", "var(--bg-3)")
+                .style("border", "1px solid var(--line)")
                 .style("border-radius", "3px")
                 .style("color", "#cce")
                 .text_signal(status.signal_cloned())
@@ -140,8 +140,8 @@ fn modal_body(
                 }))
                 .child(html!("button", {
                     .style("background", "#2a4")
-                    .style("color", "#fff")
-                    .style("border", "1px solid #2a4")
+                    .style("color", "var(--text-0)")
+                    .style("border", "1px solid var(--line)")
                     .style("padding", "4px 10px")
                     .style("border-radius", "3px")
                     .text("Apply")
@@ -175,7 +175,7 @@ fn file_picker(
         .attr("type", "file")
         .attr("accept", ".bin,.json,application/octet-stream,application/json")
         .style("margin-top", "8px")
-        .style("color", "#ddd")
+        .style("color", "var(--text-1)")
         .with_node!(elem => {
             .event(clone!(elem, pending, status => move |_: events::Change| {
                 let Some(files) = elem.files() else { return; };
@@ -255,9 +255,9 @@ fn json_textarea(pending: Arc<Mutable<Option<Vec<u32>>>>, status: Arc<Mutable<St
         .attr("placeholder", "[0.0, 1.0, 0.5, 0.25, …]")
         .style("width", "100%")
         .style("min-height", "72px")
-        .style("background", "#0b0b0b")
+        .style("background", "var(--bg-3)")
         .style("color", "#cce")
-        .style("border", "1px solid #333")
+        .style("border", "1px solid var(--line)")
         .style("padding", "6px")
         .style("font-family", "monospace")
         .style("font-size", "12px")

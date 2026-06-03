@@ -14,13 +14,13 @@ pub fn render(state: &EditState) -> Dom {
     let errors = state.errors.clone();
     html!("div", {
         .style("padding", "12px")
-        .style("border-top", "1px solid #333")
-        .style("border-left", "1px solid #333")
+        .style("border-top", "1px solid var(--line)")
+        .style("border-left", "1px solid var(--line)")
         .style("background", "#1a1010")
-        .style("color", "#fcc")
+        .style("color", "var(--danger-bright)")
         .style("overflow", "auto")
         .child(html!("h3", {
-            .style("color", "#fcc")
+            .style("color", "var(--danger-bright)")
             .text("Errors")
         }))
         .child_signal(errors.signal_cloned().map(|errs| {
