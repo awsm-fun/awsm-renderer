@@ -24,6 +24,6 @@ toon = []
 flipbook = []
 
 [dependencies]
-awsm-renderer-core = { path = "../renderer-core", features = ["texture-pool"] }
+awsm-renderer-core = { workspace = true, features = ["texture-pool"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }

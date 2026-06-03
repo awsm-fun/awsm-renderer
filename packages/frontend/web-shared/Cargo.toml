@@ -1,5 +1,6 @@
 [package]
 name = "awsm-web-shared"
+publish = false  # frontend-only glue crate, not released to crates.io
 description = "Web-frontend primitives (widgets, theme, utilities) shared across awsm-renderer's frontends."
 edition.workspace = true
 version.workspace = true
@@ -8,7 +9,7 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-awsm-renderer = { path = "../renderer" }
+awsm-renderer = { workspace = true }
 
 futures = { workspace = true }
 glam = { workspace = true }

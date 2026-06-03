@@ -95,16 +95,27 @@ tasks:
       - cargo clippy --all --all-features --tests -- -D warnings
 
   publish:
-    desc: "Publish library crates to crates.io (must be run in order: renderer-core, then renderer, then editor)"
+    desc: "Publish all awsm library crates to crates.io"
     cmds:
-      - echo "Publishing awsm-renderer-core..."
-      - cd {{.PATH_CRATE_RENDERER_CORE}} && cargo publish --target wasm32-unknown-unknown
-      - echo "Waiting for crates.io to index awsm-renderer-core..."
-      - sleep 5
-      - echo "Publishing awsm-renderer..."
-      - cd {{.PATH_CRATE_RENDERER}} && cargo publish --target wasm32-unknown-unknown
-      - echo "Waiting for crates.io to index awsm-renderer..."
-      - sleep 5
-      - echo "Publishing awsm-renderer-editor..."
-      - cd {{.PATH_CRATE_EDITOR}} && cargo publish --target wasm32-unknown-unknown
-      - echo "All crates published!"
+      - task: _publish
+        vars:
+          PUBLISH_ARGS: ""
+
+  publish-dry-run:
+    desc: "Dry-run the crates.io publish — packages + verifies every crate, uploads nothing"
+    cmds:
+      - task: _publish
+        vars:
+          # --allow-dirty tolerates an uncommitted working tree during the dry run.
+          PUBLISH_ARGS: "--dry-run --allow-dirty"
+
+  _publish:
+    internal: true
+    # Single code path for `publish` and `publish-dry-run`; PUBLISH_ARGS is the
+    # only difference. `--workspace` publishes every member in dependency order,
+    # resolving the inter-crate version requirements against the sibling crates
+    # in this same run (so unpublished deps don't break the dry run), and skips
+    # the `publish = false` members (frontends, examples, debugging, web-shared).
+    # Crates target wasm32 (WebGPU via web-sys), hence --target on the verify build.
+    cmds:
+      - cargo publish --workspace {{.PUBLISH_ARGS}} --target wasm32-unknown-unknown
