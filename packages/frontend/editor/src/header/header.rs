@@ -1,6 +1,8 @@
 use crate::{prelude::*, state, state::EditorMode};
 
-use super::{assets, camera, editor, environment, insert, object, project_label, stats, top};
+use super::{
+    assets, camera, environment, insert, object, project_label, settings_drawer, stats, top,
+};
 
 /// Which tab is showing in the action row (the second header row).
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -10,7 +12,6 @@ enum Section {
     Assets,
     Environment,
     Camera,
-    Editor,
 }
 
 pub struct Header {
@@ -74,6 +75,9 @@ impl Header {
                     async {}
                 }).await;
             }))
+            // Settings drawer overlay (opened by the ⚙ button); renders
+            // nothing until open.
+            .child(settings_drawer::render())
         })
     }
 
@@ -152,6 +156,35 @@ impl Header {
                     .option(EditorMode::Material, "Material")
                     .render()
             )
+            .child(Self::render_settings_button())
+        })
+    }
+
+    /// ⚙ button next to the mode switch — toggles the Settings drawer.
+    fn render_settings_button() -> Dom {
+        let settings_open = state::app_state().settings_open.clone();
+        html!("button", {
+            .class("t")
+            .style("display", "inline-flex")
+            .style("align-items", "center")
+            .style("justify-content", "center")
+            .style("width", "28px")
+            .style("height", "28px")
+            .style("border-radius", "var(--r2)")
+            .style("cursor", "pointer")
+            .style("font-size", "15px")
+            .style("line-height", "1")
+            .style_signal("color", settings_open.signal().map(|o| {
+                if o { "var(--text-0)" } else { "var(--text-2)" }
+            }))
+            .style_signal("background", settings_open.signal().map(|o| {
+                if o { "var(--bg-active)" } else { "transparent" }
+            }))
+            .attr("title", "Settings")
+            .text("⚙")
+            .event(clone!(settings_open => move |_: events::Click| {
+                settings_open.set_neq(!settings_open.get());
+            }))
         })
     }
 
@@ -176,7 +209,6 @@ impl Header {
             .child(self.render_section_tab(Section::Assets, "Assets"))
             .child(self.render_section_tab(Section::Environment, "Environment"))
             .child(self.render_section_tab(Section::Camera, "Camera"))
-            .child(self.render_section_tab(Section::Editor, "Editor"))
         })
     }
 
@@ -350,7 +382,6 @@ impl Header {
                     Section::Insert => insert::render_insert_row(),
                     Section::Object => object::render_object_row(),
                     Section::Assets => assets::render_assets_row(),
-                    Section::Editor => editor::render_editor_row(),
                     Section::Environment => environment::render_environment_row(),
                     Section::Camera => camera::render_camera_row(),
                 })

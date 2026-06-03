@@ -16,7 +16,6 @@
 
 mod assets;
 mod camera;
-mod editor;
 mod environment;
 #[allow(clippy::module_inception)]
 mod header;
@@ -24,6 +23,7 @@ mod insert;
 mod menu;
 mod object;
 mod project_label;
+pub(crate) mod settings_drawer;
 pub(crate) mod shadows_config;
 mod stats;
 mod top;

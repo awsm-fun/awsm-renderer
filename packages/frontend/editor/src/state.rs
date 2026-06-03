@@ -59,6 +59,9 @@ pub struct AppState {
     /// Active top-level mode (Scene ⇄ Material), driven by the top-bar
     /// segmented switch.
     pub mode: Mutable<EditorMode>,
+    /// Whether the Settings drawer (right slide-out) is open. Opened by the
+    /// ⚙ button in the top bar; replaces the old "Editor" ribbon tab.
+    pub settings_open: Mutable<bool>,
 
     /// Multi-selection as an ordered-insertion-agnostic set. Rows observe
     /// membership via `.signal_ref(|set| set.contains(&id))`.
@@ -195,6 +198,7 @@ impl AppState {
         Self {
             scene: Scene::new(),
             mode: Mutable::new(EditorMode::Scene),
+            settings_open: Mutable::new(false),
             selected: Mutable::new(HashSet::new()),
             selection_anchor: Mutable::new(None),
             selection_is_explicit: Mutable::new(false),
