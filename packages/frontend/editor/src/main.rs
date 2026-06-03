@@ -11,6 +11,7 @@ mod fs;
 mod header;
 mod keys;
 mod loading_modal;
+mod material;
 mod prelude;
 mod properties;
 mod renderer_bridge;
@@ -208,14 +209,17 @@ fn render_initialized() -> Dom {
             }))
             .child(SidebarRight::new(properties::render).render())
         }))
-        // Material workspace placeholder — the full Library / Definition /
-        // Preview / Code layout is folded in at M6.
-        .child_signal(mode.signal().map(|m| {
-            if m == state::EditorMode::Material {
-                Some(render_material_placeholder())
-            } else {
-                None
-            }
+        // Material workspace (folded-in material-editor). Kept mounted so its
+        // preview canvas + renderer persist across mode switches; display
+        // toggles with the mode.
+        .child(dominator::html!("div", {
+            .style("flex", "1 1 0")
+            .style("min-height", "0")
+            .style("min-width", "0")
+            .style_signal("display", mode.signal().map(|m| {
+                if m == state::EditorMode::Material { "flex" } else { "none" }
+            }))
+            .child(material::render_workspace())
         }))
         // Block A.4: floating overlay that auto-shows whenever the
         // renderer's pipeline scheduler has any group `Pending`.
@@ -224,31 +228,5 @@ fn render_initialized() -> Dom {
         .child(compile_modal::render())
         // ⌘K command palette overlay (renders nothing until opened).
         .child(command_palette::render())
-    })
-}
-
-/// Placeholder body shown in Material mode until the real material workspace
-/// (Library / Definition / Preview / Code) is folded in at M6.
-fn render_material_placeholder() -> Dom {
-    dominator::html!("div", {
-        .style("flex", "1 1 0")
-        .style("display", "flex")
-        .style("flex-direction", "column")
-        .style("align-items", "center")
-        .style("justify-content", "center")
-        .style("gap", "10px")
-        .style("min-height", "0")
-        .style("background", "var(--bg-0)")
-        .style("color", "var(--text-2)")
-        .child(dominator::html!("div", {
-            .style("font-size", "15px")
-            .style("font-weight", "600")
-            .style("color", "var(--text-1)")
-            .text("Material mode")
-        }))
-        .child(dominator::html!("div", {
-            .style("font-size", "12.5px")
-            .text("The custom-material workspace lands in M6.")
-        }))
     })
 }
