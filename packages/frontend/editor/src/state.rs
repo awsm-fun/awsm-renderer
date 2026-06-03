@@ -64,6 +64,9 @@ pub struct AppState {
     pub settings_open: Mutable<bool>,
     /// Whether the ⌘K command palette is open.
     pub cmdk_open: Mutable<bool>,
+    /// Outliner filter text. Leaf rows whose name doesn't contain this
+    /// (case-insensitive) are hidden; group rows always stay visible.
+    pub tree_filter: Mutable<String>,
 
     /// Multi-selection as an ordered-insertion-agnostic set. Rows observe
     /// membership via `.signal_ref(|set| set.contains(&id))`.
@@ -202,6 +205,7 @@ impl AppState {
             mode: Mutable::new(EditorMode::Scene),
             settings_open: Mutable::new(false),
             cmdk_open: Mutable::new(false),
+            tree_filter: Mutable::new(String::new()),
             selected: Mutable::new(HashSet::new()),
             selection_anchor: Mutable::new(None),
             selection_is_explicit: Mutable::new(false),

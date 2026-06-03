@@ -73,6 +73,22 @@ fn render_row(node: Arc<Node>, depth: usize) -> Dom {
                 "transparent"
             }
         }))
+        // Outliner filter: hide leaf rows whose name doesn't match. Group
+        // rows (children > 0) always stay so the hierarchy holds.
+        .style_signal("display", map_ref! {
+            let filter = app_state().tree_filter.signal_cloned(),
+            let name = node.name.signal_cloned(),
+            let child_len = node.children.signal_vec_cloned().len() => {
+                if filter.is_empty()
+                    || *child_len > 0
+                    || name.to_ascii_lowercase().contains(&filter.to_ascii_lowercase())
+                {
+                    "flex"
+                } else {
+                    "none"
+                }
+            }
+        })
         .child(html!("div", {
             .style("flex", "0 0 auto")
             .style("width", &format!("{}px", depth as f64 * TREE_INDENT_PX))
