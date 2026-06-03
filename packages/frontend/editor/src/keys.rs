@@ -15,6 +15,15 @@ pub fn install() {
     };
 
     let closure = Closure::wrap(Box::new(move |event: KeyboardEvent| {
+        // ⌘K / Ctrl+K toggles the command palette — handled before the
+        // text-input guard so it works even while a field is focused.
+        if event.key().eq_ignore_ascii_case("k") && (event.ctrl_key() || event.meta_key()) {
+            event.prevent_default();
+            let open = &app_state().cmdk_open;
+            open.set_neq(!open.get());
+            return;
+        }
+
         if is_in_text_input(&event) {
             return;
         }

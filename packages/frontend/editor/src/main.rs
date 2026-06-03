@@ -1,6 +1,7 @@
 mod actions;
 mod canvas;
 mod collider_wireframe;
+mod command_palette;
 mod compile_modal;
 mod config;
 mod content_hash;
@@ -221,6 +222,8 @@ fn render_initialized() -> Dom {
         // Non-blocking — the user can keep editing while pipelines
         // compile in the background.
         .child(compile_modal::render())
+        // ⌘K command palette overlay (renders nothing until opened).
+        .child(command_palette::render())
     })
 }
 

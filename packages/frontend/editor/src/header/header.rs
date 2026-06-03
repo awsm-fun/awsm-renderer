@@ -157,6 +157,42 @@ impl Header {
                     .render()
             )
             .child(Self::render_settings_button())
+            .child(Self::render_cmdk_button())
+        })
+    }
+
+    /// ⌘K search button — opens the command palette.
+    fn render_cmdk_button() -> Dom {
+        let cmdk_open = state::app_state().cmdk_open.clone();
+        html!("button", {
+            .class("t")
+            .style("display", "flex")
+            .style("align-items", "center")
+            .style("gap", "8px")
+            .style("height", "28px")
+            .style("padding", "0 9px 0 11px")
+            .style("cursor", "pointer")
+            .style("border", "1px solid var(--line-soft)")
+            .style("border-radius", "var(--r2)")
+            .style("background", "var(--bg-3)")
+            .style("color", "var(--text-2)")
+            .style("font-size", "12px")
+            .child(html!("span", { .style("color", "var(--text-3)").text("⌕") }))
+            .child(html!("span", {
+                .style("min-width", "60px")
+                .style("text-align", "left")
+                .text("Search…")
+            }))
+            .child(html!("span", {
+                .class("mono")
+                .style("font-size", "10px")
+                .style("color", "var(--text-3)")
+                .style("border", "1px solid var(--line)")
+                .style("border-radius", "4px")
+                .style("padding", "1px 5px")
+                .text("⌘K")
+            }))
+            .event(clone!(cmdk_open => move |_: events::Click| cmdk_open.set_neq(true)))
         })
     }
 
