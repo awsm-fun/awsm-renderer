@@ -243,6 +243,9 @@ async fn teardown(entry: &Arc<RendererNode>) {
     let materials: Vec<_> = entry.material_keys.lock().unwrap().drain(..).collect();
     let light = entry.light_key.lock().unwrap().take();
     let node_id = entry.node_id;
+    for mk in &meshes {
+        bridge().unregister_mesh(*mk);
+    }
     with_renderer_mut(move |r| {
         for mk in meshes {
             r.remove_mesh(mk);
@@ -312,6 +315,7 @@ async fn materialize_primitive(
             entry.model_meshes.lock().unwrap().push(mk);
             entry.model_transforms.lock().unwrap().push(sub_tk);
             entry.material_keys.lock().unwrap().push(mat_key);
+            bridge().register_mesh(mk, entry.node_id);
         }
         Err(e) => {
             r.transforms.remove(sub_tk);

@@ -63,6 +63,8 @@ pub struct Bridge {
     /// Ordered child ids per parent (root = `None`) — maps a `RemoveAt` index
     /// back to the node id to tear down.
     pub child_order: Mutex<HashMap<Option<NodeId>, Vec<NodeId>>>,
+    /// Reverse map for GPU picking: a hit `MeshKey` → the owning scene node.
+    pub mesh_to_node: Mutex<HashMap<MeshKey, NodeId>>,
 }
 
 impl Bridge {
@@ -71,7 +73,20 @@ impl Bridge {
             nodes: Mutex::new(HashMap::new()),
             light_node_ids: Mutex::new(HashSet::new()),
             child_order: Mutex::new(HashMap::new()),
+            mesh_to_node: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Register a materialized mesh so a GPU pick can resolve it to its node.
+    pub fn register_mesh(&self, mesh: MeshKey, node: NodeId) {
+        self.mesh_to_node.lock().unwrap().insert(mesh, node);
+    }
+    pub fn unregister_mesh(&self, mesh: MeshKey) {
+        self.mesh_to_node.lock().unwrap().remove(&mesh);
+    }
+    /// The scene node owning a picked mesh, if any.
+    pub fn node_for_mesh(&self, mesh: MeshKey) -> Option<NodeId> {
+        self.mesh_to_node.lock().unwrap().get(&mesh).copied()
     }
 }
 
