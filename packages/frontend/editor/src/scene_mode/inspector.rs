@@ -1341,12 +1341,46 @@ fn material_editor(node: &Arc<Node>, mat: &MaterialDef, _has_custom: bool) -> Do
     // and edited in the Material pane, not here.
     let mut sec = Section::new("Material").child(material_picker(node));
 
-    // Base-color texture map (per-mesh binding; "— none —" leaves it untextured).
+    // Per-mesh texture maps (binding one is a variant change; "— none —" clears).
     sec = sec.child(texture_picker_row(
         node,
         "Base color map",
         mat.base_color_texture,
-        |d, t| d.base_color_texture = t,
+        |d, t| {
+            d.base_color_texture = t;
+        },
+    ));
+    sec = sec.child(texture_picker_row(
+        node,
+        "Metal/rough map",
+        mat.metallic_roughness_texture,
+        |d, t| {
+            d.metallic_roughness_texture = t;
+        },
+    ));
+    sec = sec.child(texture_picker_row(
+        node,
+        "Normal map",
+        mat.normal_texture,
+        |d, t| {
+            d.normal_texture = t;
+        },
+    ));
+    sec = sec.child(texture_picker_row(
+        node,
+        "Occlusion map",
+        mat.occlusion_texture,
+        |d, t| {
+            d.occlusion_texture = t;
+        },
+    ));
+    sec = sec.child(texture_picker_row(
+        node,
+        "Emissive map",
+        mat.emissive_texture,
+        |d, t| {
+            d.emissive_texture = t;
+        },
     ));
 
     // Base color (RGB swatch) + alpha.
