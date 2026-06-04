@@ -223,15 +223,58 @@ fn object_row() -> Dom {
 }
 
 fn environment_row() -> Dom {
+    use crate::engine::environment::{self, EnvPreset};
     html!("div", {
         .style("display", "flex").style("align-items", "center").style("gap", "8px")
-        .child(Btn::new().label("Skybox\u{2026}").icon("env").variant(BtnVariant::Ghost).size(BtnSize::Sm)
-            .on_click(|| Toast::info("Environment wiring lands in M6")).render())
-        .child(Btn::new().label("IBL\u{2026}").icon("sphere").variant(BtnVariant::Ghost).size(BtnSize::Sm)
-            .on_click(|| Toast::info("IBL wiring lands in M6")).render())
-        .child(Btn::new().label("Shadows\u{2026}").icon("layers").variant(BtnVariant::Ghost).size(BtnSize::Sm)
-            .on_click(|| Toast::info("Shadows wiring lands in M6")).render())
+        .child(DropButton::new().label("Environment\u{2026}").icon("env").size(BtnSize::Sm)
+            .items(move |close: Close| {
+                let presets: Vec<(&'static str, EnvPreset)> = vec![
+                    ("Simple Sky", EnvPreset::SimpleSky),
+                    ("Studio White", EnvPreset::StudioWhite),
+                    ("Neutral Grey", EnvPreset::NeutralGrey),
+                ];
+                presets.into_iter().map(|(label, preset)| {
+                    let close = close.clone();
+                    MenuItem::new(label)
+                        .on_click(move || {
+                            environment::apply(preset.clone());
+                            (close.borrow_mut())();
+                        })
+                        .render()
+                }).collect()
+            }).render())
+        .child(Btn::new().label("HDR set\u{2026}").icon("sphere").variant(BtnVariant::Ghost).size(BtnSize::Sm)
+            .on_click(open_hdr_modal).render())
     })
+}
+
+/// Photoreal HDR environment: a base-URL field → loads
+/// `<base>/{env,irradiance,skybox}.ktx2` into the IBL + skybox.
+fn open_hdr_modal() {
+    use crate::engine::environment::{self, EnvPreset};
+    Modal::open(|| {
+        let url = Mutable::new(String::new());
+        ModalCard::new("Load HDR environment")
+            .width(520.0)
+            .child(html!("div", {
+                .style("display", "flex").style("flex-direction", "column").style("gap", "8px")
+                .child(html!("span", { .style("font-size", "12.5px").style("color", "var(--text-2)").style("line-height", "1.5")
+                    .text("Base URL of a cubemap set served as env.ktx2 / irradiance.ktx2 / skybox.ktx2.") }))
+                .child(TextInput::new(url.clone()).placeholder("https://\u{2026}/my_env").render())
+            }))
+            .footer(html!("div", {
+                .style("display", "flex").style("gap", "8px")
+                .child(Btn::new().label("Cancel").variant(BtnVariant::Ghost).on_click(Modal::close).render())
+                .child(Btn::new().label("Load").icon("sphere").variant(BtnVariant::Primary)
+                    .on_click(clone!(url => move || {
+                        let u = url.get_cloned();
+                        if u.trim().is_empty() { return; }
+                        environment::apply(EnvPreset::Hdr { base_url: u });
+                        Modal::close();
+                    })).render())
+            }))
+            .render()
+    });
 }
 
 fn camera_row() -> Dom {
