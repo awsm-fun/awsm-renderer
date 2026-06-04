@@ -18,6 +18,31 @@ pub fn render() -> Dom {
     // switch which gizmo handles show).
     let tool = gizmo_mode();
     let shading = Mutable::new("material".to_string());
+    // Drive the renderer view mode from the shading toggle: material = normal
+    // lit, solid = unlit/flat, wire = wireframe overlay.
+    spawn_local(clone!(shading => async move {
+        let mut first = true;
+        shading.signal_cloned().for_each(move |s| {
+            let skip = first;
+            first = false;
+            async move {
+                if skip {
+                    return;
+                }
+                let (view_mode, wireframe) = match s.as_str() {
+                    "solid" => (1u32, false),
+                    "wire" => (0u32, true),
+                    _ => (0u32, false),
+                };
+                crate::engine::context::with_renderer_mut(move |r| {
+                    r.set_view_mode(view_mode);
+                    r.set_wireframe(wireframe);
+                })
+                .await;
+            }
+        })
+        .await;
+    }));
 
     html!("div", {
         .style("position", "absolute")

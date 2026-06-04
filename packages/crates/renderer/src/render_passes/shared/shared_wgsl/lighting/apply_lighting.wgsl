@@ -16,6 +16,11 @@ fn apply_lighting(
 ) -> vec3<f32> {
     var color = vec3<f32>(0.0);
 
+    // Global unlit/flat view mode — emit the base color, skip all lighting.
+    if (cull_params.view_mode == 1u) {
+        return material_color.base.rgb;
+    }
+
     {% if has_lighting_ibl() %}
         color = brdf_ibl(
             material_color,
@@ -145,6 +150,11 @@ fn apply_lighting_per_froxel(
 ) -> vec3<f32> {
     var color = vec3<f32>(0.0);
 
+    // Global unlit/flat view mode — emit the base color, skip all lighting.
+    if (cull_params.view_mode == 1u) {
+        return material_color.base.rgb;
+    }
+
     {% if has_lighting_ibl() %}
         color = brdf_ibl(
             material_color,
@@ -265,6 +275,11 @@ fn apply_lighting_per_froxel_with_transmission(
     pixel_xy: vec2<f32>,
 ) -> vec3<f32> {
     var color = vec3<f32>(0.0);
+
+    // Global unlit/flat view mode — emit the base color, skip all lighting.
+    if (cull_params.view_mode == 1u) {
+        return material_color.base.rgb;
+    }
 
     {% if has_lighting_ibl() %}
         color = brdf_ibl_with_transmission(

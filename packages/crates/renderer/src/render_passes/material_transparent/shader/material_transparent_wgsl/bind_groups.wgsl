@@ -62,7 +62,11 @@ struct CullParams {
     z_far: f32,
     log_far_over_near: f32,
     debug_light_heatmap: u32,           // 0 = normal; 1 = applied-light-count heatmap
-    _pad2: f32,
+    view_mode: u32,                     // 0 = normal lit; 1 = unlit/flat (base color only)
+    wireframe: u32,                     // 0 = off; 1 = triangle-edge overlay
+    _pad2: u32,
+    _pad3: u32,
+    _pad4: u32,
 };
 @group(0) @binding(20) var<uniform> cull_params: CullParams;
 @group(0) @binding(21) var<storage, read> lights_storage: array<u32>;

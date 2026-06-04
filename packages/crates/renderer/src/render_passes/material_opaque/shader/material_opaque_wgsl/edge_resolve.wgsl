@@ -364,6 +364,14 @@ fn shade_sample(
         base_alpha = base_alpha * tint.a * attr.alpha;
     }
 
+    // Global wireframe overlay — mirror the compute kernel (uses this pass's
+    // per-sample barycentric).
+    if (cull_params.wireframe == 1u) {
+        let wire_edge = min(min(sample_bary.x, sample_bary.y), sample_bary.z);
+        let wire = 1.0 - smoothstep(0.0, 0.02, wire_edge);
+        color = mix(color, vec3<f32>(0.02, 0.02, 0.03), wire);
+    }
+
     return vec4<f32>(color, base_alpha);
 }
 
