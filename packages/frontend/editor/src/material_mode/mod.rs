@@ -57,12 +57,47 @@ pub fn render() -> Dom {
 
 // ── Library (material-mode.jsx MaterialLibrary) ───────────────────────────────
 
+/// Menu rows for "New material" — pick a dynamic WGSL material or a built-in
+/// (PBR / Unlit / Toon) shading type. Built-ins carry shared variant settings;
+/// their uniform values are set per-mesh.
+fn new_material_items(close: Close) -> Vec<Dom> {
+    use awsm_scene_schema::MaterialShading;
+    let mk = |label: &str, shading: Option<MaterialShading>, close: Close| {
+        MenuItem::new(label)
+            .on_click(move || {
+                match shading {
+                    Some(s) => dispatch(EditorCommand::AddBuiltinMaterial { shading: s }),
+                    None => dispatch(EditorCommand::AddCustomMaterial),
+                }
+                (close.borrow_mut())();
+            })
+            .render()
+    };
+    vec![
+        mk("Dynamic (WGSL)", None, close.clone()),
+        mk("Built-in: PBR", Some(MaterialShading::Pbr), close.clone()),
+        mk(
+            "Built-in: Unlit",
+            Some(MaterialShading::Unlit),
+            close.clone(),
+        ),
+        mk(
+            "Built-in: Toon",
+            Some(MaterialShading::Toon {
+                diffuse_bands: 3,
+                rim_strength: 0.4,
+            }),
+            close,
+        ),
+    ]
+}
+
 fn library() -> Dom {
     html!("div", {
         .style("display", "flex").style("flex-direction", "column").style("height", "100%").style("background", "var(--bg-1)")
         .child(panel_header("Material Assets", Some(
-            IconBtn::new("plus").title("New material").size(15.0)
-                .on_click(|| dispatch(EditorCommand::AddCustomMaterial)).render(),
+            DropButton::new().icon("plus").variant(BtnVariant::Quiet).chevron(false)
+                .items(new_material_items).render(),
         )))
         .child(html!("div", {
             .style("flex", "1").style("overflow-y", "auto").style("padding", "8px")
@@ -79,8 +114,8 @@ fn library() -> Dom {
         }))
         .child(html!("div", {
             .style("padding", "10px").style("border-top", "1px solid var(--line-soft)")
-            .child(Btn::new().label("New material").icon("plus").variant(BtnVariant::Solid).full(true)
-                .on_click(|| dispatch(EditorCommand::AddCustomMaterial)).render())
+            .child(DropButton::new().label("New material").icon("plus").variant(BtnVariant::Solid)
+                .items(new_material_items).render())
         }))
     })
 }
@@ -142,6 +177,125 @@ fn status_badge(wgsl: &str, registered: bool) -> Dom {
 
 // ── Definition rail (material-mode.jsx DefinitionPanel) ────────────────────────
 
+/// Mutate the inner `MaterialDef` of a built-in library material + flag dirty.
+/// The `spawn_builtin_resync` observer re-materializes assigned meshes.
+fn edit_builtin(mat: &Arc<CustomMaterial>, f: impl FnOnce(&mut awsm_scene_schema::MaterialDef)) {
+    let mut def = mat.builtin.get_cloned().unwrap_or_default();
+    f(&mut def);
+    mat.builtin.set(Some(def));
+    controller().dirty.set_neq(true);
+}
+
+/// A toggle row bound to a built-in material's variant `MaterialDef`.
+fn builtin_toggle_row(
+    mat: &Arc<CustomMaterial>,
+    label: &str,
+    value: bool,
+    set: impl Fn(&mut awsm_scene_schema::MaterialDef, bool) + 'static,
+) -> Dom {
+    use futures_signals::signal::SignalExt;
+    let state = Mutable::new(value);
+    let mat = mat.clone();
+    let set = std::rc::Rc::new(set);
+    spawn_local({
+        let state = state.clone();
+        async move {
+            let mut first = true;
+            state
+                .signal()
+                .for_each(move |on| {
+                    let fire = !first;
+                    first = false;
+                    let mat = mat.clone();
+                    let set = set.clone();
+                    async move {
+                        if fire {
+                            edit_builtin(&mat, |d| set(d, on));
+                        }
+                    }
+                })
+                .await;
+        }
+    });
+    row(label, toggle(state))
+}
+
+/// The Definition rail for a **built-in** material: its shared variant settings
+/// (shading type + alpha / double-sided / vertex-colors). Uniform values + texture
+/// bindings are set per-mesh, so they don't appear here.
+fn builtin_definition(mat: &Arc<CustomMaterial>) -> Dom {
+    use awsm_scene_schema::{MaterialAlphaMode, MaterialShading};
+    let def = mat.builtin.get_cloned().unwrap_or_default();
+    let shading_label = match def.shading {
+        MaterialShading::Pbr => "PBR (physically based)",
+        MaterialShading::Unlit => "Unlit (emissive only)",
+        MaterialShading::Toon { .. } => "Toon (cel-shaded)",
+    };
+    // Alpha mode select.
+    let alpha = Mutable::new(
+        match def.alpha_mode {
+            MaterialAlphaMode::Opaque => "opaque",
+            MaterialAlphaMode::Mask { .. } => "mask",
+            MaterialAlphaMode::Blend => "blend",
+        }
+        .to_string(),
+    );
+    spawn_local({
+        use futures_signals::signal::SignalExt;
+        let alpha = alpha.clone();
+        let mat = mat.clone();
+        async move {
+            let mut first = true;
+            alpha
+                .signal_cloned()
+                .for_each(move |v| {
+                    let fire = !first;
+                    first = false;
+                    let mat = mat.clone();
+                    async move {
+                        if fire {
+                            edit_builtin(&mat, |d| {
+                                d.alpha_mode = match v.as_str() {
+                                    "mask" => MaterialAlphaMode::Mask { cutoff: 0.5 },
+                                    "blend" => MaterialAlphaMode::Blend,
+                                    _ => MaterialAlphaMode::Opaque,
+                                };
+                            });
+                        }
+                    }
+                })
+                .await;
+        }
+    });
+
+    html!("div", {
+        .style("display", "flex").style("flex-direction", "column").style("height", "100%").style("background", "var(--bg-1)")
+        .child(panel_header("Definition", None))
+        .child(html!("div", {
+            .style("flex", "1").style("overflow-y", "auto")
+            .child(name_section(mat))
+            .child(Section::new("Variant")
+                .child(row("Shading", html!("span", {
+                    .style("font-size", "12.5px").style("color", "var(--text-1)").text(shading_label)
+                })))
+                .child(row("Alpha", select(alpha, vec![
+                    ("opaque".into(), "Opaque".into()),
+                    ("mask".into(), "Mask".into()),
+                    ("blend".into(), "Blend".into()),
+                ])))
+                .child(builtin_toggle_row(mat, "Double-sided", def.double_sided, |d, on| d.double_sided = on))
+                .child(builtin_toggle_row(mat, "Vertex colors", def.vertex_colors_enabled, |d, on| d.vertex_colors_enabled = on))
+                .render())
+            .child(html!("div", {
+                .style("margin", "11px 12px").style("padding", "8px 10px")
+                .style("background", "var(--bg-2)").style("border", "1px solid var(--line-soft)").style("border-radius", "var(--r2)")
+                .style("font-size", "11px").style("color", "var(--text-2)").style("line-height", "1.5")
+                .text("Built-in. Uniform values (base color, metallic, roughness, emissive\u{2026}) and texture bindings are set per-mesh in the scene inspector when this material is assigned.")
+            }))
+        }))
+    })
+}
+
 fn definition(id: Option<AssetId>) -> Dom {
     let Some(mat) = id.and_then(|id| {
         crate::controller::custom_material::find_material(&controller().custom_materials, id)
@@ -153,6 +307,10 @@ fn definition(id: Option<AssetId>) -> Dom {
                 .text("Select or create a material in the Library to edit its definition.") }))
         });
     };
+
+    if mat.is_builtin() {
+        return builtin_definition(&mat);
+    }
 
     html!("div", {
         .style("display", "flex").style("flex-direction", "column").style("height", "100%").style("background", "var(--bg-1)")
@@ -511,6 +669,24 @@ fn main_pane(id: Option<AssetId>, help: Mutable<bool>) -> Dom {
             .text("Create a material to start authoring.")
         });
     };
+    // Built-in materials have no shader graph — the whole authoring area is an
+    // informational panel; their look is set per-mesh + via the variant rail.
+    if mat.is_builtin() {
+        return html!("div", {
+            .style("height", "100%").style("display", "flex").style("flex-direction", "column")
+            .style("align-items", "center").style("justify-content", "center").style("gap", "12px").style("padding", "24px")
+            .style("text-align", "center")
+            .child(Icon::new("material").size(40.0).color("var(--text-3)").render())
+            .child(html!("div", {
+                .style("font-size", "15px").style("font-weight", "600").style("color", "var(--text-1)")
+                .text("Built-in materials can't be edited here")
+            }))
+            .child(html!("div", {
+                .style("font-size", "12.5px").style("color", "var(--text-3)").style("line-height", "1.6").style("max-width", "420px")
+                .text("Built-ins have no shader code or texture slots to author. Change their shared variant settings in the Definition rail on the left; set per-mesh colors and values in the scene inspector when this material is assigned. Rename, duplicate, and assign work just like dynamic materials.")
+            }))
+        });
+    }
     html!("div", {
         .style("display", "flex").style("flex-direction", "column").style("height", "100%").style("min-width", "0").style("min-height", "0")
         .child(html!("div", { .style("flex", "1 1 56%").style("min-height", "0").style("border-bottom", "1px solid var(--line)").child(preview_pane(&mat)) }))
@@ -650,17 +826,16 @@ fn register_bar(mat: &Arc<CustomMaterial>) -> Dom {
         .style("padding", "8px 12px").style("border-top", "1px solid var(--line-soft)").style("background", "var(--bg-2)")
         .child(html!("span", {
             .style("font-size", "11px")
+            // Auto-registered: compiles on edit (debounced). Shows live / errors.
             .child_signal(mat.registered.signal().map(|r| Some(if r {
-                html!("span", { .style("color", "var(--ok)").text("registered") })
+                html!("span", { .style("color", "var(--ok)").text("\u{25cf} live \u{2014} compiles on edit") })
             } else {
-                html!("span", { .style("color", "var(--warn)").text("draft \u{2014} not registered") })
+                html!("span", { .style("color", "var(--warn)").text("\u{25cf} fix errors to go live") })
             })))
         }))
         .child(html!("div", { .style("flex", "1") }))
         .child(Btn::new().label("Assign to selection").icon("link").variant(BtnVariant::Ghost).size(BtnSize::Sm)
             .on_click(move || assign_to_selection(id)).render())
-        .child(Btn::new().label("Register").icon("check").variant(BtnVariant::Primary).size(BtnSize::Sm)
-            .on_click(move || dispatch(EditorCommand::RegisterMaterial { id })).render())
     })
 }
 

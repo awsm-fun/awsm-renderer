@@ -1110,17 +1110,39 @@ fn build_material_select(node: &Arc<Node>) -> Option<Dom> {
     Some(row("Material", select(sel, options)))
 }
 
-fn material_editor(node: &Arc<Node>, mat: &MaterialDef, has_custom: bool) -> Dom {
-    // A custom (Studio) material overrides the built-in palette — surface a
-    // link to Material mode rather than the built-in knobs (decision 3).
-    if has_custom {
+/// What library material (if any) a mesh has assigned.
+enum Assigned {
+    None,
+    Builtin,
+    Dynamic,
+}
+
+fn assigned_material(node: &Arc<Node>) -> Assigned {
+    let id = match node.kind.get_cloned() {
+        NodeKind::Primitive {
+            custom_material: Some(inst),
+            ..
+        } => inst.material,
+        _ => return Assigned::None,
+    };
+    match crate::controller::custom_material::find_material(&controller().custom_materials, id) {
+        Some(m) if m.is_builtin() => Assigned::Builtin,
+        Some(_) => Assigned::Dynamic,
+        None => Assigned::None,
+    }
+}
+
+fn material_editor(node: &Arc<Node>, mat: &MaterialDef, _has_custom: bool) -> Dom {
+    // A dynamic (Studio) material drives the whole look — link to Material mode
+    // rather than showing the built-in palette.
+    if matches!(assigned_material(node), Assigned::Dynamic) {
         return Section::new("Material")
             .child(material_picker(node))
             .child(html!("div", {
                 .style("display", "flex").style("flex-direction", "column").style("gap", "8px").style("margin-top", "8px")
                 .child(html!("div", {
                     .style("font-size", "12px").style("color", "var(--text-2)").style("line-height", "1.5")
-                    .text("Driven by a custom Studio material. Edit its graph in Material mode.")
+                    .text("Driven by a dynamic Studio material. Edit its graph in Material mode.")
                 }))
                 .child(Btn::new().label("Open in Material mode").icon("edit").variant(BtnVariant::Ghost).full(true)
                     .on_click(|| spawn_local(async {
@@ -1130,50 +1152,11 @@ fn material_editor(node: &Arc<Node>, mat: &MaterialDef, has_custom: bool) -> Dom
             .render();
     }
 
+    // Built-in assignment or unassigned → the per-mesh *uniform* values. The
+    // shading model + variant settings come from the assigned library material
+    // (or default PBR when unassigned); they're chosen via the single dropdown
+    // and edited in the Material pane, not here.
     let mut sec = Section::new("Material").child(material_picker(node));
-
-    // Shading model (PBR / Unlit / Toon).
-    let shading_key = match mat.shading {
-        MaterialShading::Pbr => "pbr",
-        MaterialShading::Unlit => "unlit",
-        MaterialShading::Toon { .. } => "toon",
-    };
-    let shading = Mutable::new(shading_key.to_string());
-    spawn_local(clone!(shading, node => async move {
-        let mut first = true;
-        shading.signal_cloned().for_each(move |s| {
-            let fire = !first;
-            first = false;
-            clone!(node => async move {
-                if !fire { return; }
-                let Some(cur) = current_primitive_material(&node) else { return; };
-                let shading = match s.as_str() {
-                    "unlit" => MaterialShading::Unlit,
-                    "toon" => match cur.shading {
-                        MaterialShading::Toon { .. } => cur.shading,
-                        _ => MaterialShading::Toon { diffuse_bands: 4, rim_strength: 0.5 },
-                    },
-                    _ => MaterialShading::Pbr,
-                };
-                if shading != cur.shading {
-                    set_inline_material(&node, MaterialDef { shading, ..cur });
-                }
-            })
-        }).await;
-    }));
-    sec = sec.child(row(
-        "Shading",
-        segmented(
-            shading,
-            vec![
-                SegOption::new("pbr", "PBR"),
-                SegOption::new("unlit", "Unlit"),
-                SegOption::new("toon", "Toon"),
-            ],
-            true,
-            true,
-        ),
-    ));
 
     // Base color (RGB swatch) + alpha.
     let col = Mutable::new(rgb_to_hex([
