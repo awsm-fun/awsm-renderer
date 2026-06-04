@@ -8,6 +8,7 @@ pub mod collider_wire;
 pub mod dynamic;
 pub mod gltf;
 pub mod material;
+pub mod mesh_cache;
 pub mod node_sync;
 pub mod particles;
 

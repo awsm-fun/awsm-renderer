@@ -300,11 +300,18 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
         } => materialize_sweep(entry.clone(), def, inline_material).await,
         NodeKind::InstancesAlongCurve(def) => materialize_instances(entry.clone(), def).await,
         NodeKind::ParticleEmitter(def) => materialize_particle(entry.clone(), def).await,
-        NodeKind::Mesh { mesh, .. } => {
-            // A captured procedural mesh asset — needs the "capture mesh as
-            // asset" flow (not built); without it there's nothing to load.
-            tracing::warn!("NodeKind::Mesh {mesh:?}: capture-mesh-asset flow not built; renders empty");
-        }
+        NodeKind::Mesh {
+            mesh,
+            inline_material,
+            ..
+        } => match super::mesh_cache::get_raw(mesh.0) {
+            Some(raw) => {
+                upload_simple_mesh(entry.clone(), raw, inline_material).await;
+            }
+            None => {
+                tracing::warn!("NodeKind::Mesh {mesh:?}: not in the capture cache; renders empty")
+            }
+        },
         // Group / Camera / Model: no procedural geometry.
         _ => {}
     }
@@ -822,7 +829,7 @@ fn light_from_config(
     }
 }
 
-fn primitive_to_mesh(shape: &PrimitiveShape) -> MeshData {
+pub fn primitive_to_mesh(shape: &PrimitiveShape) -> MeshData {
     match shape {
         PrimitiveShape::Plane {
             width,

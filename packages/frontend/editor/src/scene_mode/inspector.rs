@@ -12,10 +12,11 @@ use crate::engine::scene::{
     AssetId, CameraConfig, CameraProjection, ColliderShape, LightConfig, Node, NodeId, NodeKind,
     Trs,
 };
+use crate::controller::NodeSpec;
 use crate::prelude::*;
 use awsm_scene_schema::{
-    AssetSource, MaterialAlphaMode, MaterialDef, MaterialShading, MeshShadowConfig, PrimitiveShape,
-    ProceduralTextureDef, TextureDef,
+    AssetSource, MaterialAlphaMode, MaterialDef, MaterialShading, MeshRef, MeshShadowConfig,
+    PrimitiveShape, ProceduralTextureDef, TextureDef,
 };
 
 /// The right rail shows the **Asset Inspector** when an asset is selected in the
@@ -158,6 +159,7 @@ fn kind_editor(node: &Arc<Node>) -> Dom {
             .child(geometry_editor(node, &shape))
             .child(material_editor(node, &inline_material, custom_material.is_some()))
             .child(mesh_shadow_editor(node, shadow))
+            .child(capture_mesh_button(shape))
         }),
         NodeKind::SweepAlongCurve { .. } => sweep_editor(node),
         NodeKind::InstancesAlongCurve(_) => instances_editor(node),
@@ -224,6 +226,52 @@ fn ref_picker(
             .await;
     }));
     row(label, select(sel, options))
+}
+
+/// "Capture as Mesh asset": freeze this primitive's geometry into a captured
+/// mesh + spawn a `Mesh` node referencing it (shared, reusable geometry).
+fn capture_mesh_button(shape: PrimitiveShape) -> Dom {
+    html!("div", {
+        .style("margin-top", "10px")
+        .child(Btn::new()
+            .label("Capture as Mesh asset")
+            .icon("mesh")
+            .variant(BtnVariant::Solid)
+            .full(true)
+            .on_click(move || {
+                let mesh = crate::engine::bridge::node_sync::primitive_to_mesh(&shape);
+                let id = crate::engine::bridge::mesh_cache::store(
+                    crate::engine::bridge::mesh_cache::from_mesh_data(mesh),
+                );
+                let node = NodeSpec {
+                    id: NodeId::new(),
+                    name: "Captured Mesh".to_string(),
+                    transform: Trs::default(),
+                    kind: NodeKind::Mesh {
+                        mesh: MeshRef(id),
+                        material: None,
+                        inline_material: MaterialDef::default(),
+                        custom_material: None,
+                        shadow: MeshShadowConfig::default(),
+                    },
+                    locked: false,
+                    visible: true,
+                    prefab: false,
+                    children: Vec::new(),
+                };
+                spawn_local(async move {
+                    let _ = controller()
+                        .dispatch(EditorCommand::InsertTree {
+                            node: Box::new(node),
+                            parent: None,
+                            index: None,
+                        })
+                        .await;
+                    Toast::info("Captured mesh \u{2192} new Mesh node");
+                });
+            })
+            .render())
+    })
 }
 
 fn sweep_editor(node: &Arc<Node>) -> Dom {
