@@ -37,17 +37,50 @@ pub fn render() -> Dom {
     })
 }
 
-/// Save the live project to a downloaded `project.toml` (the directory-handle FS
-/// Access writer is the follow-on; this gets the bytes out today + marks clean).
+/// Save the live project into a picked directory (File System Access): writes
+/// `project.toml` + the per-material side files (decision 4).
 fn save_project() {
-    match crate::controller::persistence::project_to_toml(&controller()) {
-        Ok(toml) => {
-            download_text("project.toml", &toml);
-            controller().dirty.set_neq(false);
-            Toast::info("Saved project.toml");
+    spawn_local(async {
+        match crate::fs::ProjectDir::pick().await {
+            Ok(dir) => match crate::controller::persistence::save_to_dir(&controller(), &dir).await
+            {
+                Ok(()) => {
+                    controller().project_name.set(dir.name());
+                    controller().dirty.set_neq(false);
+                    Toast::info(format!("Saved to {}/", dir.name()));
+                }
+                Err(e) => Toast::error(format!("Save failed: {e}")),
+            },
+            Err(crate::fs::FsError::Cancelled) => {}
+            Err(crate::fs::FsError::Unsupported) => {
+                // No directory picker (e.g. Firefox/Safari): fall back to a download.
+                if let Ok(toml) = crate::controller::persistence::project_to_toml(&controller()) {
+                    download_text("project.toml", &toml);
+                    Toast::info("Saved project.toml (download)");
+                }
+            }
+            Err(e) => Toast::error(format!("Save: {e}")),
         }
-        Err(e) => Toast::error(format!("Save failed: {e}")),
-    }
+    });
+}
+
+/// Open a project directory (File System Access) + load `project.toml`.
+fn open_project() {
+    spawn_local(async {
+        match crate::fs::ProjectDir::pick().await {
+            Ok(dir) => {
+                match crate::controller::persistence::load_from_dir(&controller(), &dir).await {
+                    Ok(()) => {
+                        controller().project_name.set(dir.name());
+                        Toast::info(format!("Opened {}/", dir.name()));
+                    }
+                    Err(e) => Toast::error(format!("Open failed: {e}")),
+                }
+            }
+            Err(crate::fs::FsError::Cancelled) => {}
+            Err(e) => Toast::error(format!("Open: {e}")),
+        }
+    });
 }
 
 /// Trigger a browser download of `content` as `filename`.
@@ -374,9 +407,9 @@ fn top_bar(ctrl: &EditorController) -> Dom {
             .style("display", "flex")
             .style("align-items", "center")
             .style("gap", "2px")
-            .child(IconBtn::new("folder").title("New")
-                .on_click(|| spawn_local(async { let _ = controller().dispatch(EditorCommand::NewProject).await; })).render())
-            .child(IconBtn::new("save").title("Save project.toml")
+            .child(IconBtn::new("folder").title("Open project directory")
+                .on_click(open_project).render())
+            .child(IconBtn::new("save").title("Save project to directory")
                 .on_click(save_project).render())
             .child(IconBtn::new("undo").title("Undo")
                 .on_click(|| spawn_local(async { controller().undo().await; })).render())

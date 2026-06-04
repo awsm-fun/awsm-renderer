@@ -10,6 +10,7 @@ mod command_palette;
 mod controller;
 mod engine;
 mod error;
+mod fs;
 mod material_mode;
 mod prelude;
 mod scene_mode;

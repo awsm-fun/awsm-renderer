@@ -103,6 +103,39 @@ pub fn apply_project(ctrl: &EditorController, project: EditorProject) {
     // the scene tree + assets + env round-trip here.
 }
 
+/// Save the project to a picked directory (File System Access): writes
+/// `project.toml` + each custom material's `material-<slug>.{toml,wgsl}` side
+/// files. The directory layout is decision 4's flat project directory.
+pub async fn save_to_dir(ctrl: &EditorController, dir: &crate::fs::ProjectDir) -> EditorResult<()> {
+    dir.write_text("project.toml", &project_to_toml(ctrl)?)
+        .await
+        .map_err(|e| EditorError::Msg(e.to_string()))?;
+    for (name, content) in material_files(ctrl) {
+        dir.write_text(&name, &content)
+            .await
+            .map_err(|e| EditorError::Msg(e.to_string()))?;
+    }
+    Ok(())
+}
+
+/// Load a project from a picked directory: reads `project.toml` + rebuilds the
+/// live scene. (Reloading custom-material bodies into the Studio is the follow-on.)
+pub async fn load_from_dir(
+    ctrl: &EditorController,
+    dir: &crate::fs::ProjectDir,
+) -> EditorResult<()> {
+    let body = dir
+        .read_text("project.toml")
+        .await
+        .map_err(|e| EditorError::Msg(e.to_string()))?;
+    let project: EditorProject =
+        toml::from_str(&body).map_err(|e| EditorError::Msg(format!("parse project.toml: {e}")))?;
+    apply_project(ctrl, project);
+    ctrl.reset_history();
+    ctrl.dirty.set_neq(false);
+    Ok(())
+}
+
 /// Fetch + parse a `project.toml` from `<base_url>/project.toml`.
 pub async fn load_project_from_url(ctrl: &EditorController, base_url: &str) -> EditorResult<()> {
     let base = base_url.trim_end_matches('/');

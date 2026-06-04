@@ -568,6 +568,14 @@ impl EditorController {
         self.can_redo.set_neq(!self.redo.borrow().is_empty());
     }
 
+    /// Clear the undo/redo log (after a project load — the prior history doesn't
+    /// apply to the freshly-loaded scene).
+    pub fn reset_history(&self) {
+        self.undo.borrow_mut().clear();
+        self.redo.borrow_mut().clear();
+        self.refresh_history_signals();
+    }
+
     /// A fresh, unique-ish display label for a new asset (`"{kind} N"`), counting
     /// existing material assets so the Content Browser doesn't show duplicates.
     fn next_asset_label(&self, kind: &str) -> String {
