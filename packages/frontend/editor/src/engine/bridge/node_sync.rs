@@ -285,8 +285,18 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
             shape,
             inline_material,
             custom_material,
+            shadow,
             ..
-        } => materialize_primitive(entry.clone(), shape, inline_material, custom_material).await,
+        } => {
+            materialize_primitive(
+                entry.clone(),
+                shape,
+                inline_material,
+                custom_material,
+                shadow,
+            )
+            .await
+        }
         NodeKind::Light(cfg) => apply_light(entry.clone(), cfg).await,
         NodeKind::Line(def) => materialize_line(entry.clone(), def).await,
         NodeKind::Curve(def) => materialize_curve_viz(entry.clone(), def).await,
@@ -324,6 +334,7 @@ async fn materialize_primitive(
     shape: PrimitiveShape,
     inline: awsm_scene_schema::MaterialDef,
     custom_material: Option<awsm_scene_schema::dynamic_material::CustomMaterialInstance>,
+    shadow: awsm_scene_schema::MeshShadowConfig,
 ) {
     let mesh = primitive_to_mesh(&shape);
     let raw = RawMeshData {
@@ -356,6 +367,7 @@ async fn materialize_primitive(
             if let Err(e) = r.finalize_gpu_textures().await {
                 tracing::warn!("finalize_gpu_textures: {e}");
             }
+            let _ = r.set_mesh_shadow_flags(mk, mesh_shadow_flags_from_config(&shadow));
             drop(r);
             entry.model_meshes.lock().unwrap().push(mk);
             entry.model_transforms.lock().unwrap().push(sub_tk);
@@ -800,14 +812,74 @@ async fn apply_light(entry: Arc<RendererNode>, cfg: LightConfig) {
     let light = light_from_config(&cfg, pos, dir);
     let node_id = entry.node_id;
 
-    // M4-C: no shadows (None) — shadow wiring lands in M6.
-    let key = with_renderer_mut(move |r| r.insert_light(light, None)).await;
+    let shadow_params = light_shadow_params_from_config(cfg.shadow());
+    let casts = shadow_params.cast;
+    let key = with_renderer_mut(move |r| r.insert_light(light, Some(shadow_params))).await;
+    // Lazily compile the shadow pipelines when a casting light first lands so the
+    // next frame can draw shadows (no-op once compiled / when nothing casts).
+    if casts {
+        let handle = renderer_handle();
+        let mut r = handle.lock().await;
+        if let Err(e) = r.ensure_shadow_pipelines_compiled().await {
+            tracing::warn!("ensure_shadow_pipelines_compiled: {e:?}");
+        }
+    }
     match key {
         Ok(k) => {
             *entry.light_key.lock().unwrap() = Some(k);
             bridge().light_node_ids.lock().unwrap().insert(node_id);
         }
         Err(e) => tracing::error!("insert_light failed: {e:?}"),
+    }
+}
+
+/// Schema → runtime light shadow params.
+fn light_shadow_params_from_config(
+    cfg: &awsm_scene_schema::LightShadowConfig,
+) -> awsm_renderer::shadows::LightShadowParams {
+    use awsm_renderer::shadows as r;
+    use awsm_scene_schema as s;
+    r::LightShadowParams {
+        cast: cfg.cast,
+        depth_bias: cfg.depth_bias,
+        normal_bias: cfg.normal_bias,
+        resolution: cfg.resolution,
+        hardness: match cfg.hardness {
+            s::LightShadowHardness::Hard => r::LightShadowHardness::Hard,
+            s::LightShadowHardness::Soft => r::LightShadowHardness::Soft,
+            s::LightShadowHardness::Pcss => r::LightShadowHardness::Pcss,
+        },
+        pcss_penumbra_scale: cfg.pcss_penumbra_scale,
+        max_distance: cfg.max_distance,
+        cascade_count: cfg.cascade_count,
+        cascade_split_lambda: cfg.cascade_split_lambda,
+        evsm_cutoff: match cfg.evsm_cutoff {
+            s::EvsmCutoff::Off => r::EvsmCutoff::Off,
+            s::EvsmCutoff::LastCascade => r::EvsmCutoff::LastCascade,
+            s::EvsmCutoff::LastTwoCascades => r::EvsmCutoff::LastTwoCascades,
+        },
+        far_cascade_update_rate: match cfg.far_cascade_update_rate {
+            s::FarCascadeUpdateRate::EveryFrame => r::FarCascadeUpdateRate::EveryFrame,
+            s::FarCascadeUpdateRate::Every2Frames => r::FarCascadeUpdateRate::Every2Frames,
+            s::FarCascadeUpdateRate::Every4Frames => r::FarCascadeUpdateRate::Every4Frames,
+            s::FarCascadeUpdateRate::Every8Frames => r::FarCascadeUpdateRate::Every8Frames,
+        },
+        cube_face_update_rate: match cfg.cube_face_update_rate {
+            s::CubeFaceUpdateRate::EveryFrame => r::CubeFaceUpdateRate::EveryFrame,
+            s::CubeFaceUpdateRate::Every2Frames => r::CubeFaceUpdateRate::Every2Frames,
+            s::CubeFaceUpdateRate::Every4Frames => r::CubeFaceUpdateRate::Every4Frames,
+            s::CubeFaceUpdateRate::Every8Frames => r::CubeFaceUpdateRate::Every8Frames,
+        },
+    }
+}
+
+/// Schema → runtime per-mesh shadow cast/receive flags.
+fn mesh_shadow_flags_from_config(
+    cfg: &awsm_scene_schema::MeshShadowConfig,
+) -> awsm_renderer::shadows::MeshShadowFlags {
+    awsm_renderer::shadows::MeshShadowFlags {
+        cast: cfg.cast,
+        receive: cfg.receive,
     }
 }
 
