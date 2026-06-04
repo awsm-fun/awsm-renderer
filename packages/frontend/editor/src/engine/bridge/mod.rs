@@ -13,6 +13,7 @@ pub mod node_sync;
 use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
 
+use awsm_renderer::decals::DecalKey;
 use awsm_renderer::lights::LightKey;
 use awsm_renderer::materials::MaterialKey;
 use awsm_renderer::meshes::MeshKey;
@@ -39,6 +40,8 @@ pub struct RendererNode {
     pub light_key: Mutex<Option<LightKey>>,
     /// Fat-line strips this node owns (Line / Curve viz / collider wireframe).
     pub line_keys: Mutex<Vec<LineKey>>,
+    /// Projection decals this node owns.
+    pub decal_keys: Mutex<Vec<DecalKey>>,
     /// Last kind materialized (identity fast-path / teardown gating).
     pub last_kind: Mutex<Option<NodeKind>>,
     /// Per-node observer tasks; dropping cancels them (on node removal).
@@ -56,6 +59,7 @@ impl RendererNode {
             material_keys: Mutex::new(Vec::new()),
             light_key: Mutex::new(None),
             line_keys: Mutex::new(Vec::new()),
+            decal_keys: Mutex::new(Vec::new()),
             last_kind: Mutex::new(None),
             loaders: Mutex::new(Vec::new()),
         })

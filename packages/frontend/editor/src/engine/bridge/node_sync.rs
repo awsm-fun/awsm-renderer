@@ -242,6 +242,7 @@ async fn teardown(entry: &Arc<RendererNode>) {
     let transforms: Vec<_> = entry.model_transforms.lock().unwrap().drain(..).collect();
     let materials: Vec<_> = entry.material_keys.lock().unwrap().drain(..).collect();
     let lines: Vec<_> = entry.line_keys.lock().unwrap().drain(..).collect();
+    let decals: Vec<_> = entry.decal_keys.lock().unwrap().drain(..).collect();
     let light = entry.light_key.lock().unwrap().take();
     let node_id = entry.node_id;
     for mk in &meshes {
@@ -259,6 +260,9 @@ async fn teardown(entry: &Arc<RendererNode>) {
         }
         for lk in lines {
             r.remove_line(lk);
+        }
+        for dk in decals {
+            r.remove_decal(dk);
         }
         if let Some(lk) = light {
             r.remove_light(lk);
@@ -285,8 +289,9 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
         NodeKind::Curve(def) => materialize_curve_viz(entry.clone(), def).await,
         NodeKind::Sprite(def) => materialize_sprite(entry.clone(), def).await,
         NodeKind::Collider(shape) => materialize_collider(entry.clone(), shape).await,
+        NodeKind::Decal(cfg) => materialize_decal(entry.clone(), cfg).await,
         // Group / Camera / Model: no procedural geometry. Mesh / Sweep /
-        // Instances / Particle / Decal: deeper materialization is the follow-on.
+        // Instances / Particle: deeper materialization is the follow-on.
         _ => {}
     }
 
@@ -505,6 +510,38 @@ async fn materialize_collider(entry: Arc<RendererNode>, shape: awsm_scene_schema
     if let Some(key) = line_key {
         entry2.line_keys.lock().unwrap().push(key);
     }
+}
+
+/// Projection decal (`NodeKind::Decal`) → inserts the renderer decal (inert
+/// until a texture is assigned) plus a unit-cube volume wireframe so the decal
+/// is placeable/visible in the editor (the projection volume).
+async fn materialize_decal(entry: Arc<RendererNode>, cfg: awsm_scene_schema::DecalConfig) {
+    let parent_tk = entry.transform_key;
+    let entry2 = entry.clone();
+    let alpha = cfg.alpha;
+    with_renderer_mut(move |r| {
+        let world = r
+            .transforms
+            .get_world(parent_tk)
+            .copied()
+            .unwrap_or(glam::Mat4::IDENTITY);
+        match r.insert_decal(world, 0, alpha) {
+            Ok(key) => entry2.decal_keys.lock().unwrap().push(key),
+            Err(err) => tracing::warn!("insert_decal: {err:?}"),
+        }
+        let (positions, colors) = super::collider_wire::build(
+            &awsm_scene_schema::ColliderShape::Box {
+                half_extents: [0.5, 0.5, 0.5],
+            },
+            &world,
+        );
+        if !positions.is_empty() {
+            if let Ok(Some(lk)) = r.add_line_segments(&positions, &colors, 1.5, false) {
+                entry2.line_keys.lock().unwrap().push(lk);
+            }
+        }
+    })
+    .await;
 }
 
 async fn apply_light(entry: Arc<RendererNode>, cfg: LightConfig) {
