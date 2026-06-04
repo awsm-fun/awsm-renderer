@@ -89,6 +89,8 @@ pub struct EditorController {
     pub custom_materials: MutableVec<Arc<CM>>,
     /// The material the Studio is currently editing.
     pub current_material: Mutable<Option<AssetId>>,
+    /// Whether the ⌘K command palette is open (view state).
+    pub cmdk_open: Mutable<bool>,
     /// Inverses of applied commands, newest last (the undo log).
     undo: Rc<RefCell<Vec<EditorCommand>>>,
     /// Inverses popped by undo, re-appliable by redo.
@@ -111,6 +113,7 @@ impl EditorController {
             asset_selection: Mutable::new(None),
             custom_materials: MutableVec::new(),
             current_material: Mutable::new(None),
+            cmdk_open: Mutable::new(false),
             undo: Rc::new(RefCell::new(Vec::new())),
             redo: Rc::new(RefCell::new(Vec::new())),
         }

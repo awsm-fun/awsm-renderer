@@ -6,6 +6,7 @@
 //! installed before any UI so every panel dispatches through it.
 
 mod app;
+mod command_palette;
 mod controller;
 mod engine;
 mod error;

@@ -20,8 +20,18 @@ pub fn render() -> Dom {
         .style("font-size", "13px")
         .style("background-color", "var(--bg-0)")
         .style("color", "var(--text-0)")
+        // ⌘K / Ctrl-K toggles the command palette from anywhere.
+        .global_event(|e: events::KeyDown| {
+            // `ctrl_key()` here already covers ⌘ (it OR's meta_key).
+            if e.key() == "k" && e.ctrl_key() {
+                e.prevent_default();
+                let o = controller().cmdk_open.clone();
+                o.set_neq(!o.get());
+            }
+        })
         .child(top_bar(&ctrl))
         .child(workspace(&ctrl))
+        .child(crate::command_palette::render())
     })
 }
 
@@ -86,7 +96,7 @@ fn cmdk_button() -> Dom {
         .style("background", "var(--bg-3)")
         .style("color", "var(--text-2)")
         .style("font-size", "12px")
-        .event(|_: events::Click| Toast::info("Command palette — lands in M11"))
+        .event(|_: events::Click| crate::command_palette::set_open(true))
         .child(Icon::new("search").size(14.0).render())
         .child(html!("span", { .style("min-width", "60px").style("text-align", "left").text("Search\u{2026}") }))
         .child(html!("span", {
