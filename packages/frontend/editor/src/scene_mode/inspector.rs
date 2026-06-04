@@ -10,6 +10,7 @@ use glam::{EulerRot, Quat};
 use crate::engine::scene::mutate::find_by_id;
 use crate::engine::scene::{LightConfig, Node, NodeId, NodeKind, Trs};
 use crate::prelude::*;
+use awsm_scene_schema::PrimitiveShape;
 
 pub fn render() -> Dom {
     let ctrl = controller();
@@ -22,12 +23,10 @@ pub fn render() -> Dom {
         .child(html!("div", {
             .style("flex", "1")
             .style("overflow-y", "auto")
-            .child_signal(map_ref! {
-                let _rev = ctrl.scene.revision.signal(),
-                let sel = ctrl.selected.signal_cloned() => move {
-                    Some(content(sel))
-                }
-            })
+            // Rebuild on selection change ONLY (not every revision) so a
+            // drag-scrub of a field isn't torn out mid-drag by its own
+            // dispatched edits. External changes (undo) refresh on reselect.
+            .child_signal(ctrl.selected.signal_cloned().map(|sel| Some(content(&sel))))
         }))
     })
 }
@@ -118,6 +117,7 @@ fn single_node(node: Arc<Node>) -> Dom {
 fn kind_editor(node: &Arc<Node>) -> Dom {
     match node.kind.get_cloned() {
         NodeKind::Light(cfg) => light_editor(node, &cfg),
+        NodeKind::Primitive { shape, .. } => geometry_editor(node, &shape),
         other => Section::new(kind_label(&other))
             .dense(true)
             .child(html!("div", {
@@ -310,6 +310,381 @@ fn with_range(cfg: LightConfig, range: f32) -> LightConfig {
             shadow,
         },
         other => other,
+    }
+}
+
+fn geometry_editor(node: &Arc<Node>, shape: &PrimitiveShape) -> Dom {
+    let mut sec = Section::new("Geometry");
+    let num = |label: &str, val: f64, step: f64, min: f64, on_change: Box<dyn FnMut(f64)>| -> Dom {
+        row(
+            label,
+            NumField::new(val)
+                .step(step)
+                .min(min)
+                .on_change(on_change)
+                .render(),
+        )
+    };
+    match shape {
+        PrimitiveShape::Plane { width, depth, .. } => {
+            let n = node.clone();
+            sec = sec.child(num(
+                "Width",
+                *width as f64,
+                0.1,
+                0.01,
+                Box::new(move |v| {
+                    if let Some(PrimitiveShape::Plane {
+                        depth,
+                        segments_x,
+                        segments_z,
+                        ..
+                    }) = current_shape(&n)
+                    {
+                        set_shape(
+                            &n,
+                            PrimitiveShape::Plane {
+                                width: v as f32,
+                                depth,
+                                segments_x,
+                                segments_z,
+                            },
+                        );
+                    }
+                }),
+            ));
+            let n = node.clone();
+            sec = sec.child(num(
+                "Depth",
+                *depth as f64,
+                0.1,
+                0.01,
+                Box::new(move |v| {
+                    if let Some(PrimitiveShape::Plane {
+                        width,
+                        segments_x,
+                        segments_z,
+                        ..
+                    }) = current_shape(&n)
+                    {
+                        set_shape(
+                            &n,
+                            PrimitiveShape::Plane {
+                                width,
+                                depth: v as f32,
+                                segments_x,
+                                segments_z,
+                            },
+                        );
+                    }
+                }),
+            ));
+        }
+        PrimitiveShape::Box { dims } => {
+            for (i, axis) in ["Width", "Height", "Depth"].iter().enumerate() {
+                let n = node.clone();
+                sec = sec.child(num(
+                    axis,
+                    dims[i] as f64,
+                    0.1,
+                    0.01,
+                    Box::new(move |v| {
+                        if let Some(PrimitiveShape::Box { mut dims }) = current_shape(&n) {
+                            dims[i] = v as f32;
+                            set_shape(&n, PrimitiveShape::Box { dims });
+                        }
+                    }),
+                ));
+            }
+        }
+        PrimitiveShape::Sphere {
+            radius,
+            segments_long,
+            segments_lat,
+        } => {
+            let n = node.clone();
+            sec = sec.child(num(
+                "Radius",
+                *radius as f64,
+                0.05,
+                0.01,
+                Box::new(move |v| {
+                    if let Some(PrimitiveShape::Sphere {
+                        segments_long,
+                        segments_lat,
+                        ..
+                    }) = current_shape(&n)
+                    {
+                        set_shape(
+                            &n,
+                            PrimitiveShape::Sphere {
+                                radius: v as f32,
+                                segments_long,
+                                segments_lat,
+                            },
+                        );
+                    }
+                }),
+            ));
+            let n = node.clone();
+            sec = sec.child(num(
+                "Segments (long)",
+                *segments_long as f64,
+                1.0,
+                3.0,
+                Box::new(move |v| {
+                    if let Some(PrimitiveShape::Sphere {
+                        radius,
+                        segments_lat,
+                        ..
+                    }) = current_shape(&n)
+                    {
+                        set_shape(
+                            &n,
+                            PrimitiveShape::Sphere {
+                                radius,
+                                segments_long: (v.round() as u32).max(3),
+                                segments_lat,
+                            },
+                        );
+                    }
+                }),
+            ));
+            let n = node.clone();
+            sec = sec.child(num(
+                "Segments (lat)",
+                *segments_lat as f64,
+                1.0,
+                2.0,
+                Box::new(move |v| {
+                    if let Some(PrimitiveShape::Sphere {
+                        radius,
+                        segments_long,
+                        ..
+                    }) = current_shape(&n)
+                    {
+                        set_shape(
+                            &n,
+                            PrimitiveShape::Sphere {
+                                radius,
+                                segments_long,
+                                segments_lat: (v.round() as u32).max(2),
+                            },
+                        );
+                    }
+                }),
+            ));
+        }
+        PrimitiveShape::Cylinder {
+            radius,
+            height,
+            radial_segments,
+        } => {
+            let n = node.clone();
+            sec = sec.child(num(
+                "Radius",
+                *radius as f64,
+                0.05,
+                0.01,
+                Box::new(move |v| {
+                    if let Some(PrimitiveShape::Cylinder {
+                        height,
+                        radial_segments,
+                        ..
+                    }) = current_shape(&n)
+                    {
+                        set_shape(
+                            &n,
+                            PrimitiveShape::Cylinder {
+                                radius: v as f32,
+                                height,
+                                radial_segments,
+                            },
+                        );
+                    }
+                }),
+            ));
+            let n = node.clone();
+            sec = sec.child(num(
+                "Height",
+                *height as f64,
+                0.1,
+                0.01,
+                Box::new(move |v| {
+                    if let Some(PrimitiveShape::Cylinder {
+                        radius,
+                        radial_segments,
+                        ..
+                    }) = current_shape(&n)
+                    {
+                        set_shape(
+                            &n,
+                            PrimitiveShape::Cylinder {
+                                radius,
+                                height: v as f32,
+                                radial_segments,
+                            },
+                        );
+                    }
+                }),
+            ));
+            let n = node.clone();
+            sec = sec.child(num(
+                "Segments",
+                *radial_segments as f64,
+                1.0,
+                3.0,
+                Box::new(move |v| {
+                    if let Some(PrimitiveShape::Cylinder { radius, height, .. }) = current_shape(&n)
+                    {
+                        set_shape(
+                            &n,
+                            PrimitiveShape::Cylinder {
+                                radius,
+                                height,
+                                radial_segments: (v.round() as u32).max(3),
+                            },
+                        );
+                    }
+                }),
+            ));
+        }
+        PrimitiveShape::Cone { radius, height, .. } => {
+            let n = node.clone();
+            sec = sec.child(num(
+                "Radius",
+                *radius as f64,
+                0.05,
+                0.01,
+                Box::new(move |v| {
+                    if let Some(PrimitiveShape::Cone {
+                        height,
+                        radial_segments,
+                        ..
+                    }) = current_shape(&n)
+                    {
+                        set_shape(
+                            &n,
+                            PrimitiveShape::Cone {
+                                radius: v as f32,
+                                height,
+                                radial_segments,
+                            },
+                        );
+                    }
+                }),
+            ));
+            let n = node.clone();
+            sec = sec.child(num(
+                "Height",
+                *height as f64,
+                0.1,
+                0.01,
+                Box::new(move |v| {
+                    if let Some(PrimitiveShape::Cone {
+                        radius,
+                        radial_segments,
+                        ..
+                    }) = current_shape(&n)
+                    {
+                        set_shape(
+                            &n,
+                            PrimitiveShape::Cone {
+                                radius,
+                                height: v as f32,
+                                radial_segments,
+                            },
+                        );
+                    }
+                }),
+            ));
+        }
+        PrimitiveShape::Torus {
+            radius, thickness, ..
+        } => {
+            let n = node.clone();
+            sec = sec.child(num(
+                "Radius",
+                *radius as f64,
+                0.05,
+                0.01,
+                Box::new(move |v| {
+                    if let Some(PrimitiveShape::Torus {
+                        thickness,
+                        segments_major,
+                        segments_minor,
+                        ..
+                    }) = current_shape(&n)
+                    {
+                        set_shape(
+                            &n,
+                            PrimitiveShape::Torus {
+                                radius: v as f32,
+                                thickness,
+                                segments_major,
+                                segments_minor,
+                            },
+                        );
+                    }
+                }),
+            ));
+            let n = node.clone();
+            sec = sec.child(num(
+                "Thickness",
+                *thickness as f64,
+                0.02,
+                0.005,
+                Box::new(move |v| {
+                    if let Some(PrimitiveShape::Torus {
+                        radius,
+                        segments_major,
+                        segments_minor,
+                        ..
+                    }) = current_shape(&n)
+                    {
+                        set_shape(
+                            &n,
+                            PrimitiveShape::Torus {
+                                radius,
+                                thickness: v as f32,
+                                segments_major,
+                                segments_minor,
+                            },
+                        );
+                    }
+                }),
+            ));
+        }
+    }
+    sec.render()
+}
+
+fn current_shape(node: &Arc<Node>) -> Option<PrimitiveShape> {
+    match node.kind.get_cloned() {
+        NodeKind::Primitive { shape, .. } => Some(shape),
+        _ => None,
+    }
+}
+
+fn set_shape(node: &Arc<Node>, shape: PrimitiveShape) {
+    if let NodeKind::Primitive {
+        material,
+        inline_material,
+        custom_material,
+        shadow,
+        ..
+    } = node.kind.get_cloned()
+    {
+        dispatch_kind(
+            node.id,
+            NodeKind::Primitive {
+                shape,
+                material,
+                inline_material,
+                custom_material,
+                shadow,
+            },
+        );
     }
 }
 
