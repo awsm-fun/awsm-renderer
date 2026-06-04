@@ -92,6 +92,8 @@ pub fn main() {
                             engine::grid::init();
                             // Transform gizmo (loads gizmo.glb, anchors on selection).
                             engine::gizmo::init();
+                            // Push view settings (MSAA / light-heatmap) to the renderer.
+                            engine::settings_sync::start();
                             ctx_ready.set(true);
                             awsm_web_shared::util::window::remove_boot_loader();
                         }

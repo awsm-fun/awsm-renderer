@@ -6,22 +6,16 @@
 //! M6-A: the chrome + view-state (active tool / shading). Picking + gizmo drag
 //! + shading→renderer-debug wiring layer in next.
 
+use crate::engine::gizmo::{gizmo_mode, GizmoMode};
 use crate::prelude::*;
-
-/// Active transform tool (view-chrome state).
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Tool {
-    Select,
-    Move,
-    Rotate,
-    Scale,
-}
 
 const PANEL_BG: &str = "oklch(0.18 0.006 255 / 0.78)";
 const CHIP_BG: &str = "oklch(0.13 0.006 255 / 0.85)";
 
 pub fn render() -> Dom {
-    let tool = Mutable::new(Tool::Move);
+    // The palette drives the shared gizmo mode (so Move/Rotate/Scale actually
+    // switch which gizmo handles show).
+    let tool = gizmo_mode();
     let shading = Mutable::new("material".to_string());
 
     html!("div", {
@@ -69,8 +63,8 @@ pub fn render() -> Dom {
     })
 }
 
-fn tool_palette(tool: &Mutable<Tool>) -> Dom {
-    let entry = |t: Tool, icon: &str, title: &str, tool: &Mutable<Tool>| -> Dom {
+fn tool_palette(tool: &Mutable<GizmoMode>) -> Dom {
+    let entry = |t: GizmoMode, icon: &str, title: &str, tool: &Mutable<GizmoMode>| -> Dom {
         let active = tool.signal().map(move |cur| cur == t);
         html!("button", {
             .class("t")
@@ -104,10 +98,10 @@ fn tool_palette(tool: &Mutable<Tool>) -> Dom {
         .style("border", "1px solid var(--line)")
         .style("border-radius", "var(--r3)")
         .style("box-shadow", "var(--shadow-2)")
-        .child(entry(Tool::Select, "select", "Select · Q", tool))
-        .child(entry(Tool::Move, "move", "Move · W", tool))
-        .child(entry(Tool::Rotate, "rotate", "Rotate · E", tool))
-        .child(entry(Tool::Scale, "scale", "Scale · R", tool))
+        .child(entry(GizmoMode::Select, "select", "Select · Q", tool))
+        .child(entry(GizmoMode::Move, "move", "Move · W", tool))
+        .child(entry(GizmoMode::Rotate, "rotate", "Rotate · E", tool))
+        .child(entry(GizmoMode::Scale, "scale", "Scale · R", tool))
     })
 }
 

@@ -108,6 +108,7 @@ pub fn render_canvas(on_ready: impl FnOnce(web_sys::HtmlCanvasElement) + 'static
                     }
                     if grabbed {
                         action.set(Some(MoveAction::Gizmo));
+                        gizmo::begin_drag();
                     } else {
                         action.set(Some(MoveAction::Camera));
                         with_camera_mut(|c| c.on_pointer_down());
@@ -160,8 +161,9 @@ pub fn render_canvas(on_ready: impl FnOnce(web_sys::HtmlCanvasElement) + 'static
                 action.set(None);
                 let was = drag.replace(None);
                 if was_gizmo {
-                    // Final transform sync so the Inspector lands on the exact value.
-                    gizmo::sync_scene_transform_from_renderer();
+                    // Commit the net move as a SetTransform command (undoable +
+                    // MCP-drivable); lands the Inspector on the exact final value.
+                    gizmo::commit_drag();
                 } else if let Some((_, _, false)) = was {
                     // A click (no significant drag) runs a GPU pick → select.
                     let (px, py) = canvas_coords(&canvas, event.x(), event.y());

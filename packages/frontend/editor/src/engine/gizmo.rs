@@ -30,6 +30,36 @@ thread_local! {
     static GIZMO: RefCell<Option<TransformController>> = const { RefCell::new(None) };
 }
 
+/// Active manipulation tool — which gizmo handle set is shown. `Select` shows no
+/// handles (click-to-select only). Driven by the viewport's tool palette; read
+/// each frame by [`per_frame_update`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GizmoMode {
+    Select,
+    Move,
+    Rotate,
+    Scale,
+}
+
+thread_local! {
+    static GIZMO_MODE: Mutable<GizmoMode> = Mutable::new(GizmoMode::Move);
+}
+
+/// The shared gizmo-mode handle (the palette sets it; the gizmo observes it).
+pub fn gizmo_mode() -> Mutable<GizmoMode> {
+    GIZMO_MODE.with(|m| m.clone())
+}
+
+/// `(translation_hidden, rotation_hidden, scale_hidden)` for a mode.
+fn hidden_for_mode(mode: GizmoMode) -> (bool, bool, bool) {
+    match mode {
+        GizmoMode::Select => (true, true, true),
+        GizmoMode::Move => (false, true, true),
+        GizmoMode::Rotate => (true, false, true),
+        GizmoMode::Scale => (true, true, false),
+    }
+}
+
 /// Initialise the gizmo. Call once after the renderer + bridge are ready.
 pub fn init() {
     spawn_local(async {
@@ -130,8 +160,12 @@ async fn sync_gizmo_selection(id: Option<NodeId>) {
                     key,
                     instance: None,
                 });
-                let hidden = !gizmo_enabled;
-                let _ = controller.set_hidden(&mut renderer, hidden, hidden, hidden);
+                if gizmo_enabled {
+                    let (th, rh, sh) = hidden_for_mode(gizmo_mode().get());
+                    let _ = controller.set_hidden(&mut renderer, th, rh, sh);
+                } else {
+                    let _ = controller.set_hidden(&mut renderer, true, true, true);
+                }
             }
             None => {
                 controller.selected_object = None;
@@ -156,10 +190,13 @@ pub fn per_frame_update(renderer: &mut AwsmRenderer) {
         };
         let has_selection = controller.selected_object.is_some();
         let force_hidden = !has_selection || !controller_gizmo_enabled();
-        let _ = controller.set_hidden(renderer, force_hidden, force_hidden, force_hidden);
         if force_hidden {
+            let _ = controller.set_hidden(renderer, true, true, true);
             return;
         }
+        // Show only the active tool's handle set (Select shows none).
+        let (th, rh, sh) = hidden_for_mode(gizmo_mode().get());
+        let _ = controller.set_hidden(renderer, th, rh, sh);
         let Some(matrices) = renderer.camera.last_matrices.as_ref().cloned() else {
             return;
         };
@@ -211,6 +248,82 @@ fn node_for_transform_key(transform_key: TransformKey) -> Option<NodeId> {
         }
     }
     None
+}
+
+thread_local! {
+    /// The selected node + its transform at the start of a gizmo drag, so the
+    /// pointer-up commit can record the correct undo inverse.
+    static DRAG_START: RefCell<Option<(NodeId, crate::engine::scene::types::Trs)>> =
+        const { RefCell::new(None) };
+}
+
+/// Capture the selected node's transform at the start of a gizmo drag.
+pub fn begin_drag() {
+    let selected = GIZMO.with(|g| g.borrow().as_ref().and_then(|c| c.selected_object));
+    let Some(sel) = selected else {
+        return;
+    };
+    let Some(node_id) = node_for_transform_key(sel.key) else {
+        return;
+    };
+    let trs = bridge()
+        .nodes
+        .lock()
+        .unwrap()
+        .get(&node_id)
+        .map(|n| n.node.transform.get());
+    if let Some(trs) = trs {
+        DRAG_START.with(|d| *d.borrow_mut() = Some((node_id, trs)));
+    }
+}
+
+/// On gizmo-drag release: dispatch the net move as a single `SetTransform`
+/// command so it flows through the `EditorController` (undoable + MCP-drivable).
+/// Reads the renderer's final local transform, resets the node to the drag-start
+/// value (so the controller captures the correct inverse), then dispatches the
+/// final value.
+pub fn commit_drag() {
+    let start = DRAG_START.with(|d| d.borrow_mut().take());
+    let selected = GIZMO.with(|g| g.borrow().as_ref().and_then(|c| c.selected_object));
+    let (Some((node_id, start_trs)), Some(sel)) = (start, selected) else {
+        // No captured drag — fall back to the plain live sync.
+        sync_scene_transform_from_renderer();
+        return;
+    };
+    spawn_local(async move {
+        let local = {
+            let handle = renderer_handle();
+            let renderer = handle.lock().await;
+            renderer.transforms.get_local(sel.key).cloned().ok()
+        };
+        let Some(local) = local else {
+            return;
+        };
+        let final_trs = crate::engine::scene::types::Trs {
+            translation: local.translation.to_array(),
+            rotation: local.rotation.to_array(),
+            scale: local.scale.to_array(),
+        };
+        if final_trs == start_trs {
+            return;
+        }
+        // Reset the node to the start value so the controller records start→final.
+        if let Some(node) = bridge()
+            .nodes
+            .lock()
+            .unwrap()
+            .get(&node_id)
+            .map(|n| n.node.clone())
+        {
+            node.transform.set(start_trs);
+        }
+        let _ = controller()
+            .dispatch(EditorCommand::SetTransform {
+                id: node_id,
+                transform: final_trs,
+            })
+            .await;
+    });
 }
 
 /// Write the dragged node's renderer-side local transform back into its scene
