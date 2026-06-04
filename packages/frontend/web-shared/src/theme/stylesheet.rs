@@ -58,6 +58,15 @@ pub fn init() {
         .style("--axis-y", "oklch(0.720 0.170 145)")
         .style("--axis-z", "oklch(0.660 0.150 250)")
 
+        // density (driven by the Settings drawer: 0..1 -> control scale).
+        // row-h/pad-x/gap/section-gap derive from it so a single slider
+        // retunes the whole inspector's compactness, exactly as the prototype.
+        .style("--density", "0.55")
+        .style("--row-h", "calc(24px + 8px * (1 - var(--density)))")   // ~28px default
+        .style("--pad-x", "calc(8px + 6px * (1 - var(--density)))")
+        .style("--gap", "calc(6px + 5px * (1 - var(--density)))")
+        .style("--section-gap", "calc(12px + 10px * (1 - var(--density)))")
+
         // radii
         .style("--r1", "4px")
         .style("--r2", "6px")
@@ -165,6 +174,13 @@ pub fn init() {
     // transitioned so selection/active states update instantly.
     stylesheet!(".t", {
         .style("transition", "border-color .12s ease, box-shadow .12s ease, transform .12s ease")
+    });
+    // Keyboard-only focus ring (prototype `.focusring`): a double box-shadow
+    // (bg-1 spacer + accent ring) shown for :focus-visible only, so mouse
+    // clicks don't paint a ring but tab-navigation does.
+    stylesheet!(".focusring:focus-visible", {
+        .style("outline", "none")
+        .style("box-shadow", "0 0 0 1.5px var(--bg-1), 0 0 0 3px var(--accent-line)")
     });
 
     // h1-h3 keep a sane default for any incidental headings.

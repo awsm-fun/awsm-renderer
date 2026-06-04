@@ -3,18 +3,23 @@
 //! wasm-bindgen helpers every UI file needs. Lockstep-specific
 //! reexports live in `lockstep_frontend_shared::prelude`.
 
-pub use crate::atoms::buttons::*;
-pub use crate::atoms::checkbox::*;
-pub use crate::atoms::dropdown::*;
+// Prototype atom set (ui.jsx / ui-extra.jsx).
+pub use crate::atoms::button::*;
+pub use crate::atoms::controls::*;
+pub use crate::atoms::field::*;
+pub use crate::atoms::icon::*;
+pub use crate::atoms::num_field::*;
+pub use crate::atoms::overlay::*;
+pub use crate::atoms::section::*;
+// Infra atoms kept from v1.
+pub use crate::atoms::dynamic_svg::close_x::ButtonSize;
 pub use crate::atoms::file_picker::*;
 pub use crate::atoms::icons::*;
 pub use crate::atoms::label::*;
 pub use crate::atoms::modal::*;
 pub use crate::atoms::progress_bar::*;
 pub use crate::atoms::secret_input::*;
-pub use crate::atoms::segmented::*;
 pub use crate::atoms::text_area::*;
-pub use crate::atoms::text_input::*;
 pub use crate::atoms::toast::*;
 pub use crate::error::*;
 pub use crate::theme::{chrome::*, color::*, misc::*, typography::*, z_index::*};
