@@ -5,7 +5,8 @@
 use std::sync::Arc;
 
 use awsm_meshgen::{
-    box_mesh, cone_mesh, cylinder_mesh, plane_mesh, sphere_mesh, torus_mesh, MeshData,
+    box_mesh, cone_mesh, cylinder_mesh, plane_mesh, sphere_mesh, sweep_along_curve, torus_mesh,
+    CrossSection, MeshData, SweepOpts, UvMode,
 };
 use awsm_renderer::raw_mesh::RawMeshData;
 use awsm_renderer::transforms::{Transform, TransformKey};
@@ -290,8 +291,19 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
         NodeKind::Sprite(def) => materialize_sprite(entry.clone(), def).await,
         NodeKind::Collider(shape) => materialize_collider(entry.clone(), shape).await,
         NodeKind::Decal(cfg) => materialize_decal(entry.clone(), cfg).await,
-        // Group / Camera / Model: no procedural geometry. Mesh / Sweep /
-        // Instances / Particle: deeper materialization is the follow-on.
+        NodeKind::SweepAlongCurve {
+            def,
+            inline_material,
+            ..
+        } => materialize_sweep(entry.clone(), def, inline_material).await,
+        NodeKind::InstancesAlongCurve(def) => materialize_instances(entry.clone(), def).await,
+        NodeKind::Mesh { mesh, .. } => {
+            // A captured procedural mesh asset — needs the "capture mesh as
+            // asset" flow (not built); without it there's nothing to load.
+            tracing::warn!("NodeKind::Mesh {mesh:?}: capture-mesh-asset flow not built; renders empty");
+        }
+        // Group / Camera / Model: no procedural geometry. ParticleEmitter:
+        // per-frame CPU-sim subsystem is the follow-on.
         _ => {}
     }
 
@@ -542,6 +554,192 @@ async fn materialize_decal(entry: Arc<RendererNode>, cfg: awsm_scene_schema::Dec
         }
     })
     .await;
+}
+
+/// The single curve node referenced by a sweep/instances node, if it exists and
+/// is a `Curve`.
+fn lookup_curve_def(node_id: NodeId) -> Option<awsm_scene_schema::CurveDef> {
+    let b = bridge();
+    let entry = b.nodes.lock().unwrap().get(&node_id).cloned()?;
+    match entry.node.kind.get_cloned() {
+        NodeKind::Curve(c) => Some(c),
+        _ => None,
+    }
+}
+
+/// Insert an inline-material mesh + track it on the node (the shared path for
+/// procedural geometry that isn't a primitive: sweeps, instances, shared mesh).
+async fn upload_simple_mesh(
+    entry: Arc<RendererNode>,
+    raw: RawMeshData,
+    inline: awsm_scene_schema::MaterialDef,
+) -> Option<awsm_renderer::meshes::MeshKey> {
+    let parent_tk = entry.transform_key;
+    let handle = renderer_handle();
+    let mut r = handle.lock().await;
+    let mat_key = material::insert_material(&mut r, &inline);
+    let sub_tk = r.transforms.insert(Transform::IDENTITY, Some(parent_tk));
+    match r.add_raw_mesh(raw, sub_tk, mat_key) {
+        Ok(mk) => {
+            if let Err(e) = r.finalize_gpu_textures().await {
+                tracing::warn!("upload_simple_mesh finalize: {e}");
+            }
+            drop(r);
+            entry.model_meshes.lock().unwrap().push(mk);
+            entry.model_transforms.lock().unwrap().push(sub_tk);
+            entry.material_keys.lock().unwrap().push(mat_key);
+            bridge().register_mesh(mk, entry.node_id);
+            Some(mk)
+        }
+        Err(e) => {
+            r.transforms.remove(sub_tk);
+            r.remove_material(mat_key);
+            tracing::error!("upload_simple_mesh failed: {e}");
+            None
+        }
+    }
+}
+
+/// Sweep a cross-section along the referenced curve (`NodeKind::SweepAlongCurve`)
+/// → solid geometry. Renders only once its `curve_node` points at a real Curve.
+async fn materialize_sweep(
+    entry: Arc<RendererNode>,
+    def: awsm_scene_schema::SweepAlongCurveDef,
+    inline: awsm_scene_schema::MaterialDef,
+) {
+    use awsm_curves::CatmullRomCurve;
+    use awsm_scene_schema::{CrossSectionDef, SweepUvMode};
+
+    let Some(curve_def) = lookup_curve_def(def.curve_node) else {
+        tracing::warn!("SweepAlongCurve references missing/!curve node");
+        return;
+    };
+    let curve = CatmullRomCurve::new(
+        curve_def.control_points.iter().map(|p| Vec3::from_array(*p)).collect(),
+        curve_def.closed,
+    );
+    let cs = match def.cross_section {
+        CrossSectionDef::Strip { width, y_offset } => CrossSection::Strip { width, y_offset },
+        CrossSectionDef::Tube {
+            radius,
+            radial_segments,
+        } => CrossSection::Tube {
+            radius,
+            radial_segments,
+        },
+        CrossSectionDef::Wall { width, height } => CrossSection::Wall { width, height },
+        CrossSectionDef::Profile { points, closed } => CrossSection::Profile { points, closed },
+    };
+    let opts = SweepOpts {
+        samples: def.samples,
+        uv_mode: match def.uv_mode {
+            SweepUvMode::StretchOnce => UvMode::StretchOnce,
+            SweepUvMode::RepeatByLength {
+                u_repeat,
+                v_repeat_per_unit,
+            } => UvMode::RepeatByLength {
+                u_repeat,
+                v_repeat_per_unit,
+            },
+        },
+        up_hint: def.up_hint,
+    };
+    let mesh = sweep_along_curve(&curve, &cs, &opts);
+    let raw = RawMeshData {
+        positions: mesh.positions,
+        normals: mesh.normals,
+        uvs: mesh.uvs,
+        colors: mesh.colors,
+        indices: mesh.indices,
+    };
+    upload_simple_mesh(entry, raw, inline).await;
+}
+
+/// Place copies of a source primitive along the referenced curve
+/// (`NodeKind::InstancesAlongCurve`) via GPU instancing. Renders once both its
+/// `curve_node` (a Curve) and `source_node` (a Primitive) point at real nodes.
+async fn materialize_instances(
+    entry: Arc<RendererNode>,
+    def: awsm_scene_schema::InstancesAlongCurveDef,
+) {
+    use awsm_curves::{CatmullRomCurve, Curve3, FrameSequence};
+    use awsm_renderer::instances::InstanceAttr;
+
+    let Some(curve_def) = lookup_curve_def(def.curve_node) else {
+        tracing::warn!("InstancesAlongCurve references missing curve node");
+        return;
+    };
+    let shape = {
+        let b = bridge();
+        let src = b.nodes.lock().unwrap().get(&def.source_node).cloned();
+        match src.map(|e| e.node.kind.get_cloned()) {
+            Some(NodeKind::Primitive { shape, .. }) => shape,
+            _ => {
+                tracing::warn!("InstancesAlongCurve source node is missing/not a Primitive");
+                return;
+            }
+        }
+    };
+
+    let curve = CatmullRomCurve::new(
+        curve_def.control_points.iter().map(|p| Vec3::from_array(*p)).collect(),
+        curve_def.closed,
+    );
+    let total_len = curve.total_length(curve_def.sample_count.max(8) as usize);
+    let spacing = def.spacing.max(0.05);
+    let count = ((total_len / spacing).floor() as usize).max(1);
+    let frames = FrameSequence::parallel_transport(&curve, count.max(2), Vec3::Y);
+
+    let has_colors = !def.per_instance_colors.is_empty();
+    let mut transforms = Vec::with_capacity(count);
+    let mut attrs = Vec::with_capacity(count);
+    for (i, frame) in frames.frames.iter().enumerate() {
+        let mut translation = frame.position;
+        if def.side_offset.abs() > 1.0e-4 {
+            translation += frame.binormal * def.side_offset;
+        }
+        let rotation = if def.orient_to_tangent {
+            frame.rotation()
+        } else {
+            Quat::IDENTITY
+        };
+        transforms.push(Transform {
+            translation,
+            rotation,
+            scale: Vec3::ONE,
+        });
+        let rgba = if has_colors {
+            def.per_instance_colors[i.min(def.per_instance_colors.len() - 1)]
+        } else {
+            [1.0, 1.0, 1.0, 1.0]
+        };
+        attrs.push(InstanceAttr::from_rgba_alpha_size(rgba, 1.0, 1.0));
+    }
+
+    let mesh = primitive_to_mesh(&shape);
+    let raw = RawMeshData {
+        positions: mesh.positions,
+        normals: mesh.normals,
+        uvs: mesh.uvs,
+        colors: mesh.colors,
+        indices: mesh.indices,
+    };
+    let mesh_key = upload_simple_mesh(entry, raw, awsm_scene_schema::MaterialDef::default()).await;
+    if let Some(mk) = mesh_key {
+        with_renderer_mut(move |r| {
+            if let Err(err) = r.enable_mesh_instancing_opaque(mk, &transforms) {
+                tracing::warn!("enable_mesh_instancing_opaque failed: {err}");
+            }
+            if has_colors {
+                if let Ok(tk) = r.meshes.get(mk).map(|m| m.transform_key) {
+                    if let Err(err) = r.set_mesh_instance_attrs(tk, &attrs) {
+                        tracing::warn!("set_mesh_instance_attrs failed: {err}");
+                    }
+                }
+            }
+        })
+        .await;
+    }
 }
 
 async fn apply_light(entry: Arc<RendererNode>, cfg: LightConfig) {
