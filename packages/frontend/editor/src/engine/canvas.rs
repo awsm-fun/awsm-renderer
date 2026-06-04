@@ -75,15 +75,34 @@ pub fn render_canvas(on_ready: impl FnOnce(web_sys::HtmlCanvasElement) + 'static
                 let (px, py) = canvas_coords(&canvas, event.x(), event.y());
                 spawn_local(clone!(action => async move {
                     let handle = renderer_handle();
-                    let grabbed = {
-                        let mut r = handle.lock().await;
-                        match r.pick(px, py).await {
-                            Ok(PickResult::Hit(mesh_key)) => {
-                                gizmo::try_start_pick(&mut r, mesh_key, px, py)
+                    // Retry across a few frames while the picker (re)compiles —
+                    // the gizmo load invalidates it so it rebuilds with the HUD,
+                    // and the first pick after that returns Initializing. Release
+                    // the lock between attempts so the render loop keeps running.
+                    let mut grabbed = false;
+                    for attempt in 0..12 {
+                        let res = {
+                            let mut r = handle.lock().await;
+                            match r.pick(px, py).await {
+                                Ok(PickResult::Hit(mesh_key)) => {
+                                    Some(gizmo::try_start_pick(&mut r, mesh_key, px, py))
+                                }
+                                Ok(PickResult::Initializing) | Ok(PickResult::InFlight) => None,
+                                _ => Some(false),
                             }
-                            _ => false,
+                        };
+                        match res {
+                            Some(g) => {
+                                grabbed = g;
+                                break;
+                            }
+                            None => {
+                                if attempt < 11 {
+                                    TimeoutFuture::new(16).await;
+                                }
+                            }
                         }
-                    };
+                    }
                     if grabbed {
                         action.set(Some(MoveAction::Gizmo));
                     } else {

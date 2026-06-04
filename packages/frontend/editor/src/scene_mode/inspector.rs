@@ -1422,52 +1422,69 @@ fn hex_to_rgb(hex: &str) -> Option<[f32; 3]> {
     Some([r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0])
 }
 
+thread_local! {
+    /// Rotation display mode — "euler" (degrees) or "quat" (x,y,z,w). A pure
+    /// display preference (not a command); persists across selections so the
+    /// toggle doesn't reset every time you pick a different node.
+    static ROT_MODE: Mutable<String> = Mutable::new("euler".to_string());
+}
+
 fn transform_section(node: &Arc<Node>) -> Dom {
     let id = node.id;
-    let t = node.transform.get();
 
-    // Position
+    // Position — the field values track `node.transform` live, so a gizmo drag
+    // (or any other source) updates them in real time; user edits still commit
+    // via `on_change` and aren't clobbered while focused/scrubbed.
     let n_pos = node.clone();
     let pos = row(
         "Position",
-        vec3(f3(t.translation), 0.1, move |v| {
+        vec3_signal(node.transform.signal_ref(|t| f3(t.translation)), 0.1, move |v| {
             let mut t = n_pos.transform.get();
             t.translation = [v[0] as f32, v[1] as f32, v[2] as f32];
             dispatch_transform(id, t);
         }),
     );
 
-    // Rotation (Euler degrees)
-    let (ex, ey, ez) = Quat::from_array(t.rotation).to_euler(EulerRot::XYZ);
-    let n_rot = node.clone();
-    let rot = row(
-        "Rotation",
-        vec3(
-            [
-                ex.to_degrees() as f64,
-                ey.to_degrees() as f64,
-                ez.to_degrees() as f64,
-            ],
-            1.0,
-            move |v| {
-                let mut t = n_rot.transform.get();
-                t.rotation = Quat::from_euler(
-                    EulerRot::XYZ,
-                    (v[0] as f32).to_radians(),
-                    (v[1] as f32).to_radians(),
-                    (v[2] as f32).to_radians(),
-                )
-                .to_array();
-                dispatch_transform(id, t);
-            },
-        ),
-    );
+    // Rotation — two lines: "Rotation" + an Euler/Quat toggle, then the fields
+    // (3 Euler degrees, or 4 quaternion components), both live-tracking.
+    let rot_mode = ROT_MODE.with(|m| m.clone());
+    let rot_header = html!("div", {
+        .style("display", "flex")
+        .style("align-items", "center")
+        .style("justify-content", "space-between")
+        .style("min-height", "var(--row-h)")
+        .child(html!("span", {
+            .style("font-size", "12px")
+            .style("color", "var(--text-1)")
+            .text("Rotation")
+        }))
+        .child(segmented(
+            rot_mode.clone(),
+            vec![SegOption::new("euler", "Euler"), SegOption::new("quat", "Quat")],
+            true,
+            false,
+        ))
+    });
+    let rot = html!("div", {
+        .style("margin-bottom", "var(--gap)")
+        .child(rot_header)
+        .child(html!("div", {
+            .style("margin-top", "5px")
+            .child_signal(rot_mode.signal_cloned().map(clone!(node => move |mode| {
+                Some(if mode == "quat" {
+                    quat_fields(node.clone(), id)
+                } else {
+                    euler_fields(node.clone(), id)
+                })
+            })))
+        }))
+    });
 
     // Scale
     let n_scale = node.clone();
     let scale = row(
         "Scale",
-        vec3(f3(t.scale), 0.1, move |v| {
+        vec3_signal(node.transform.signal_ref(|t| f3(t.scale)), 0.1, move |v| {
             let mut t = n_scale.transform.get();
             t.scale = [v[0] as f32, v[1] as f32, v[2] as f32];
             dispatch_transform(id, t);
@@ -1479,6 +1496,53 @@ fn transform_section(node: &Arc<Node>) -> Dom {
         .child(rot)
         .child(scale)
         .render()
+}
+
+/// Euler-degree rotation fields (XYZ), live-tracking `node.transform`.
+fn euler_fields(node: Arc<Node>, id: NodeId) -> Dom {
+    let n = node.clone();
+    vec3_signal(
+        node.transform.signal_ref(|t| {
+            let (ex, ey, ez) = Quat::from_array(t.rotation).to_euler(EulerRot::XYZ);
+            [ex.to_degrees() as f64, ey.to_degrees() as f64, ez.to_degrees() as f64]
+        }),
+        1.0,
+        move |v| {
+            let mut t = n.transform.get();
+            t.rotation = Quat::from_euler(
+                EulerRot::XYZ,
+                (v[0] as f32).to_radians(),
+                (v[1] as f32).to_radians(),
+                (v[2] as f32).to_radians(),
+            )
+            .to_array();
+            dispatch_transform(id, t);
+        },
+    )
+}
+
+/// Quaternion rotation fields (XYZW), live-tracking `node.transform`. Edits are
+/// re-normalized so the quaternion stays unit-length.
+fn quat_fields(node: Arc<Node>, id: NodeId) -> Dom {
+    let n = node.clone();
+    vec4_signal(
+        node.transform.signal_ref(|t| {
+            [
+                t.rotation[0] as f64,
+                t.rotation[1] as f64,
+                t.rotation[2] as f64,
+                t.rotation[3] as f64,
+            ]
+        }),
+        0.01,
+        move |v| {
+            let mut t = n.transform.get();
+            t.rotation = Quat::from_xyzw(v[0] as f32, v[1] as f32, v[2] as f32, v[3] as f32)
+                .normalize()
+                .to_array();
+            dispatch_transform(id, t);
+        },
+    )
 }
 
 fn dispatch_transform(id: NodeId, transform: Trs) {

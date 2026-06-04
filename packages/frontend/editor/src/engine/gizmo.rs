@@ -62,6 +62,12 @@ async fn init_inner() -> Result<(), String> {
 
     // Hide every handle until a selection appears.
     let _ = controller.set_hidden(&mut renderer, true, true, true);
+    // The picker was prewarmed at boot — before this HUD model existed — so its
+    // id-buffer setup predates the gizmo. Drop it so the next `pick()` rebuilds
+    // against the now-present HUD (the canvas pointer handler retries through the
+    // recompile). Non-destructive: no GPU work here, just clears the cached
+    // picker; the rebuild happens lazily inside the next `pick()`.
+    renderer.invalidate_picker();
     drop(renderer);
 
     GIZMO.with(|g| *g.borrow_mut() = Some(controller));

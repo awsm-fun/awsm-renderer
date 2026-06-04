@@ -11,11 +11,13 @@ use std::rc::Rc;
 use crate::prelude::*;
 
 /// Which transform axis a [`NumField`] represents (drives the tint + chip).
+/// `W` is the quaternion scalar component (neutral tint).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Axis {
     X,
     Y,
     Z,
+    W,
 }
 
 impl Axis {
@@ -24,6 +26,7 @@ impl Axis {
             Axis::X => "var(--axis-x)",
             Axis::Y => "var(--axis-y)",
             Axis::Z => "var(--axis-z)",
+            Axis::W => "var(--text-3)",
         }
     }
     fn label(self) -> &'static str {
@@ -31,6 +34,7 @@ impl Axis {
             Axis::X => "X",
             Axis::Y => "Y",
             Axis::Z => "Z",
+            Axis::W => "W",
         }
     }
 }
@@ -83,6 +87,10 @@ pub struct NumField {
     min: Option<f64>,
     max: Option<f64>,
     on_change: Option<Box<dyn FnMut(f64)>>,
+    /// External value source (e.g. a gizmo drag) — updates the displayed value
+    /// live, but only while the field is neither focused (mid-edit) nor being
+    /// scrubbed, so user input is never clobbered.
+    value_signal: Option<std::pin::Pin<Box<dyn Signal<Item = f64>>>>,
 }
 
 impl NumField {
@@ -95,6 +103,7 @@ impl NumField {
             min: None,
             max: None,
             on_change: None,
+            value_signal: None,
         }
     }
     pub fn step(mut self, step: f64) -> Self {
@@ -121,6 +130,12 @@ impl NumField {
         self.on_change = Some(Box::new(f));
         self
     }
+    /// Drive the displayed value from an external signal (e.g. a live gizmo
+    /// drag). Ignored while the field is focused or being scrubbed.
+    pub fn value_signal(mut self, sig: impl Signal<Item = f64> + 'static) -> Self {
+        self.value_signal = Some(Box::pin(sig));
+        self
+    }
 
     pub fn render(self) -> Dom {
         let display = Mutable::new(fmt(self.value));
@@ -131,6 +146,20 @@ impl NumField {
         let (min, max) = (self.min, self.max);
         // (startX, startVal) while scrubbing, else None.
         let drag: Rc<Cell<Option<(f64, f64)>>> = Rc::new(Cell::new(None));
+
+        // External value source → live-update the display, but never while the
+        // user is focused (editing) or scrubbing the field.
+        if let Some(sig) = self.value_signal {
+            wasm_bindgen_futures::spawn_local(clone!(display, foc, drag => async move {
+                sig.for_each(move |v| {
+                    if !foc.get() && drag.get().is_none() {
+                        display.set_neq(fmt(v));
+                    }
+                    async {}
+                })
+                .await;
+            }));
+        }
         let has_axis = self.axis.is_some();
         let pad = if has_axis { "0 7px" } else { "0 8px" };
 
@@ -238,6 +267,85 @@ impl NumField {
             .children(children)
         })
     }
+}
+
+/// Like [`vec3`] but the displayed values track an external signal (e.g. a live
+/// gizmo drag), fanned out to the three fields. Each field still commits user
+/// edits via `on_change`, and ignores the signal while focused/scrubbed. The
+/// un-edited axes are filled from the latest signalled value.
+pub fn vec3_signal(
+    value_signal: impl Signal<Item = [f64; 3]> + 'static,
+    step: f64,
+    on_change: impl FnMut([f64; 3]) + 'static,
+) -> Dom {
+    use futures_signals::signal::Broadcaster;
+    let axes = [Axis::X, Axis::Y, Axis::Z];
+    let on_change = Rc::new(RefCell::new(on_change));
+    // Shared latest value: feeds each field's display + fills un-edited axes.
+    let current = Mutable::new([0.0_f64; 3]);
+    let bc = Rc::new(Broadcaster::new(value_signal));
+    wasm_bindgen_futures::spawn_local(clone!(current, bc => async move {
+        bc.signal().for_each(move |v| { current.set_neq(v); async {} }).await;
+    }));
+
+    html!("div", {
+        .style("display", "grid")
+        .style("grid-template-columns", "1fr 1fr 1fr")
+        .style("gap", "5px")
+        .children((0..3).map(clone!(bc, current, on_change => move |i| {
+            let on_change = on_change.clone();
+            let current = current.clone();
+            NumField::new(current.get()[i])
+                .axis(axes[i])
+                .step(step)
+                .value_signal(bc.signal().map(move |v| v[i]))
+                .on_change(move |n| {
+                    let mut v = current.get();
+                    v[i] = n;
+                    current.set(v);
+                    (on_change.borrow_mut())(v);
+                })
+                .render()
+        })))
+    })
+}
+
+/// Like [`vec3_signal`] but 4 fields (X/Y/Z/W) for a quaternion. The displayed
+/// values track the external signal; user edits commit the full `[x,y,z,w]`.
+pub fn vec4_signal(
+    value_signal: impl Signal<Item = [f64; 4]> + 'static,
+    step: f64,
+    on_change: impl FnMut([f64; 4]) + 'static,
+) -> Dom {
+    use futures_signals::signal::Broadcaster;
+    let axes = [Axis::X, Axis::Y, Axis::Z, Axis::W];
+    let on_change = Rc::new(RefCell::new(on_change));
+    let current = Mutable::new([0.0_f64; 4]);
+    let bc = Rc::new(Broadcaster::new(value_signal));
+    wasm_bindgen_futures::spawn_local(clone!(current, bc => async move {
+        bc.signal().for_each(move |v| { current.set_neq(v); async {} }).await;
+    }));
+
+    html!("div", {
+        .style("display", "grid")
+        .style("grid-template-columns", "1fr 1fr 1fr 1fr")
+        .style("gap", "5px")
+        .children((0..4).map(clone!(bc, current, on_change => move |i| {
+            let on_change = on_change.clone();
+            let current = current.clone();
+            NumField::new(current.get()[i])
+                .axis(axes[i])
+                .step(step)
+                .value_signal(bc.signal().map(move |v| v[i]))
+                .on_change(move |n| {
+                    let mut v = current.get();
+                    v[i] = n;
+                    current.set(v);
+                    (on_change.borrow_mut())(v);
+                })
+                .render()
+        })))
+    })
 }
 
 /// Three axis-tinted [`NumField`]s in a row for a `[x, y, z]` vector.
