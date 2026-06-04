@@ -3,23 +3,167 @@
 //! shader-generation choice) actually renders. Texture binding resolution is the
 //! follow-on; factors/alpha/double-sided/vertex-colors are wired here.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+
 use awsm_renderer::materials::pbr::PbrMaterial;
 use awsm_renderer::materials::toon::ToonMaterial;
 use awsm_renderer::materials::unlit::UnlitMaterial;
-use awsm_renderer::materials::{Material, MaterialAlphaMode, MaterialKey};
+use awsm_renderer::materials::{Material, MaterialAlphaMode, MaterialKey, MaterialTexture};
+use awsm_renderer::textures::{SamplerCacheKey, SamplerKey, TextureKey};
 use awsm_renderer::AwsmRenderer;
-use awsm_scene_schema::{MaterialDef, MaterialShading};
+use awsm_renderer_core::sampler::{AddressMode, FilterMode, MipmapFilterMode};
+use awsm_renderer_core::texture::mipmap::MipmapTextureKind;
+use awsm_renderer_core::texture::texture_pool::TextureColorInfo;
+use awsm_scene_schema::{
+    AssetSource, MaterialDef, MaterialShading, ProceduralTextureDef, TextureDef, TextureRef,
+};
+
+use crate::engine::scene::AssetId;
+
+thread_local! {
+    /// Maps a texture-asset id → its uploaded renderer `TextureKey`, so a texture
+    /// is generated + uploaded once and reused across every mesh/material that
+    /// binds it (and across re-materializations). Session-scoped — a full page
+    /// reload rebuilds it (acceptable; project reset within a session is rare).
+    static TEXTURE_KEYS: RefCell<HashMap<AssetId, TextureKey>> = RefCell::new(HashMap::new());
+}
 
 /// Wrap an authored `MaterialDef` into the renderer's `Material` enum + insert
-/// it, returning the `MaterialKey`.
+/// it, returning the `MaterialKey`. For the PBR path this also resolves the
+/// material's texture refs (procedural → uploaded once, cached) and binds them —
+/// each bound slot flips a `PbrFeatures` bit, so a textured material specializes
+/// to its own shader. The caller commits the uploads via `finalize_gpu_textures`.
 pub fn insert_material(renderer: &mut AwsmRenderer, def: &MaterialDef) -> MaterialKey {
-    let material = material_to_renderer(def);
+    let material = match def.shading {
+        MaterialShading::Pbr => {
+            let alpha_mode = alpha_mode_of(def);
+            let mut pbr = material_to_pbr(def, alpha_mode);
+            apply_textures(renderer, &mut pbr, def);
+            Material::Pbr(Box::new(pbr))
+        }
+        // Unlit / Toon don't carry texture slots in the editor yet.
+        _ => material_to_renderer(def),
+    };
     renderer.materials.insert(
         material,
         &renderer.textures,
         &renderer.dynamic_materials,
         &renderer.extras_pool,
     )
+}
+
+/// Resolve + bind each enabled standard PBR texture slot onto `pbr`.
+fn apply_textures(r: &mut AwsmRenderer, pbr: &mut PbrMaterial, def: &MaterialDef) {
+    if let Some(t) = &def.base_color_texture {
+        pbr.base_color_tex = resolve_texture(r, t, true, MipmapTextureKind::Albedo);
+    }
+    if let Some(t) = &def.metallic_roughness_texture {
+        pbr.metallic_roughness_tex =
+            resolve_texture(r, t, false, MipmapTextureKind::MetallicRoughness);
+    }
+    if let Some(t) = &def.normal_texture {
+        pbr.normal_tex = resolve_texture(r, t, false, MipmapTextureKind::Normal);
+    }
+    if let Some(t) = &def.occlusion_texture {
+        pbr.occlusion_tex = resolve_texture(r, t, false, MipmapTextureKind::Occlusion);
+    }
+    if let Some(t) = &def.emissive_texture {
+        pbr.emissive_tex = resolve_texture(r, t, true, MipmapTextureKind::Emissive);
+    }
+}
+
+/// Resolve a texture ref → a renderer `MaterialTexture`, uploading the procedural
+/// image once (cached by asset id). Raster/file textures are deferred (need the
+/// import pipeline) — those refs resolve to `None` (slot stays empty).
+fn resolve_texture(
+    r: &mut AwsmRenderer,
+    tref: &TextureRef,
+    srgb: bool,
+    kind: MipmapTextureKind,
+) -> Option<MaterialTexture> {
+    let asset_id = tref.0;
+    let sampler_key = material_sampler(r)?;
+    let mk = |key: TextureKey| MaterialTexture {
+        key,
+        sampler_key: Some(sampler_key),
+        uv_index: Some(0),
+        transform_key: None,
+    };
+    if let Some(key) = TEXTURE_KEYS.with(|c| c.borrow().get(&asset_id).copied()) {
+        return Some(mk(key));
+    }
+    // Look up the texture asset; only procedural textures are materializable today.
+    let proc = {
+        let ctrl = crate::controller::controller();
+        let assets = ctrl.scene.assets.lock().unwrap();
+        match assets.entries.get(&asset_id).map(|e| &e.source) {
+            Some(AssetSource::Texture(TextureDef::Procedural(p))) => Some(p.clone()),
+            _ => None,
+        }
+    }?;
+    let (rgba, w, h) = procedural_rgba(&proc);
+    let color = TextureColorInfo {
+        mipmap_kind: kind,
+        srgb_to_linear: srgb,
+        premultiplied_alpha: None,
+    };
+    let key = r
+        .textures
+        .add_image_rgba_raw(&rgba, w, h, sampler_key, color)
+        .ok()?;
+    TEXTURE_KEYS.with(|c| c.borrow_mut().insert(asset_id, key));
+    Some(mk(key))
+}
+
+/// A shared linear-filtered, repeat-wrapped sampler for material textures.
+fn material_sampler(r: &mut AwsmRenderer) -> Option<SamplerKey> {
+    let key = SamplerCacheKey {
+        address_mode_u: Some(AddressMode::Repeat),
+        address_mode_v: Some(AddressMode::Repeat),
+        address_mode_w: Some(AddressMode::Repeat),
+        mag_filter: Some(FilterMode::Linear),
+        min_filter: Some(FilterMode::Linear),
+        mipmap_filter: Some(MipmapFilterMode::Linear),
+        ..Default::default()
+    };
+    r.textures.get_sampler_key(&r.gpu, key).ok()
+}
+
+/// Generate RGBA8 bytes for a procedural texture def (delegates to meshgen).
+fn procedural_rgba(p: &ProceduralTextureDef) -> (Vec<u8>, u32, u32) {
+    use awsm_meshgen::procedural_texture::{checker_rgba, gradient_rgba, noise_rgba};
+    match *p {
+        ProceduralTextureDef::Checker {
+            width,
+            height,
+            cells_x,
+            cells_y,
+            color_a,
+            color_b,
+        } => (
+            checker_rgba(width, height, cells_x, cells_y, color_a, color_b),
+            width,
+            height,
+        ),
+        ProceduralTextureDef::Gradient {
+            width,
+            height,
+            color_a,
+            color_b,
+            horizontal,
+        } => (
+            gradient_rgba(width, height, color_a, color_b, horizontal),
+            width,
+            height,
+        ),
+        ProceduralTextureDef::Noise {
+            width,
+            height,
+            seed,
+            scale,
+        } => (noise_rgba(width, height, seed, scale), width, height),
+    }
 }
 
 /// Resolve the authored alpha mode, preserving the legacy "base_color.a < 1 ⇒

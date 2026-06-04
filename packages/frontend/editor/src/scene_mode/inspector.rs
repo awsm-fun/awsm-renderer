@@ -1240,6 +1240,81 @@ fn assigned_material(node: &Arc<Node>) -> Assigned {
     }
 }
 
+/// Every texture asset in the project, as `(id, label)` for a picker.
+fn collect_texture_assets() -> Vec<(AssetId, String)> {
+    let ctrl = controller();
+    let assets = ctrl.scene.assets.lock().unwrap();
+    assets
+        .entries
+        .iter()
+        .filter_map(|(id, e)| match &e.source {
+            awsm_scene_schema::AssetSource::Texture(def) => {
+                let label = match def {
+                    awsm_scene_schema::TextureDef::Procedural(p) => match p {
+                        awsm_scene_schema::ProceduralTextureDef::Checker { .. } => "Checker",
+                        awsm_scene_schema::ProceduralTextureDef::Gradient { .. } => "Gradient",
+                        awsm_scene_schema::ProceduralTextureDef::Noise { .. } => "Noise",
+                    }
+                    .to_string(),
+                    awsm_scene_schema::TextureDef::Raster { display_name } => display_name.clone(),
+                };
+                Some((*id, label))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// A per-mesh texture-slot picker: "— none —" + every texture asset. Selecting one
+/// sets the slot on the mesh's inline material (binding it is a variant change —
+/// the bridge uploads the texture + recompiles the specialized shader). `set`
+/// writes the chosen `Option<TextureRef>` onto a `MaterialDef`.
+fn texture_picker_row(
+    node: &Arc<Node>,
+    label: &str,
+    current: Option<awsm_scene_schema::TextureRef>,
+    set: impl Fn(&mut MaterialDef, Option<awsm_scene_schema::TextureRef>) + 'static,
+) -> Dom {
+    use awsm_scene_schema::TextureRef;
+    let textures = collect_texture_assets();
+    let mut options: Vec<(String, String)> = vec![("__none__".into(), "— none —".into())];
+    options.extend(
+        textures
+            .iter()
+            .map(|(id, name)| (id.to_string(), name.clone())),
+    );
+    let lookup: Vec<(String, AssetId)> = textures
+        .iter()
+        .map(|(id, _)| (id.to_string(), *id))
+        .collect();
+    let sel = Mutable::new(
+        current
+            .map(|t| t.0.to_string())
+            .unwrap_or_else(|| "__none__".into()),
+    );
+    let node = node.clone();
+    let set = std::rc::Rc::new(set);
+    spawn_local(clone!(sel => async move {
+        let mut first = true;
+        sel.signal_cloned().for_each(move |val| {
+            let fire = !first;
+            first = false;
+            let picked = lookup.iter().find(|(s, _)| *s == val).map(|(_, id)| TextureRef(*id));
+            let node = node.clone();
+            let set = set.clone();
+            async move {
+                if fire {
+                    if let Some(mut cur) = current_primitive_material(&node) {
+                        set(&mut cur, picked);
+                        set_inline_material(&node, cur);
+                    }
+                }
+            }
+        }).await;
+    }));
+    row(label, select(sel, options))
+}
+
 fn material_editor(node: &Arc<Node>, mat: &MaterialDef, _has_custom: bool) -> Dom {
     // A dynamic (Studio) material drives the whole look — link to Material mode
     // rather than showing the built-in palette.
@@ -1265,6 +1340,14 @@ fn material_editor(node: &Arc<Node>, mat: &MaterialDef, _has_custom: bool) -> Do
     // (or default PBR when unassigned); they're chosen via the single dropdown
     // and edited in the Material pane, not here.
     let mut sec = Section::new("Material").child(material_picker(node));
+
+    // Base-color texture map (per-mesh binding; "— none —" leaves it untextured).
+    sec = sec.child(texture_picker_row(
+        node,
+        "Base color map",
+        mat.base_color_texture,
+        |d, t| d.base_color_texture = t,
+    ));
 
     // Base color (RGB swatch) + alpha.
     let col = Mutable::new(rgb_to_hex([
