@@ -284,9 +284,9 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
         NodeKind::Line(def) => materialize_line(entry.clone(), def).await,
         NodeKind::Curve(def) => materialize_curve_viz(entry.clone(), def).await,
         NodeKind::Sprite(def) => materialize_sprite(entry.clone(), def).await,
+        NodeKind::Collider(shape) => materialize_collider(entry.clone(), shape).await,
         // Group / Camera / Model: no procedural geometry. Mesh / Sweep /
-        // Instances / Particle / Decal / Collider: deeper materialization is the
-        // follow-on.
+        // Instances / Particle / Decal: deeper materialization is the follow-on.
         _ => {}
     }
 
@@ -474,6 +474,36 @@ async fn materialize_sprite(entry: Arc<RendererNode>, def: awsm_scene_schema::Sp
             r.remove_material(mat_key);
             tracing::error!("materialize sprite failed: {e}");
         }
+    }
+}
+
+/// Collider (`NodeKind::Collider`) → an editor-overlay wireframe of the shape,
+/// drawn as a world-baked fat-line segment list (one-shot; re-materializes on
+/// shape/transform change via the kind observer).
+async fn materialize_collider(entry: Arc<RendererNode>, shape: awsm_scene_schema::ColliderShape) {
+    let parent_tk = entry.transform_key;
+    let entry2 = entry.clone();
+    let line_key = with_renderer_mut(move |r| {
+        let world = r
+            .transforms
+            .get_world(parent_tk)
+            .copied()
+            .unwrap_or(glam::Mat4::IDENTITY);
+        let (positions, colors) = super::collider_wire::build(&shape, &world);
+        if positions.is_empty() {
+            return None;
+        }
+        match r.add_line_segments(&positions, &colors, 1.5, false) {
+            Ok(key) => key,
+            Err(err) => {
+                tracing::warn!("materialize_collider: add_line_segments failed: {err}");
+                None
+            }
+        }
+    })
+    .await;
+    if let Some(key) = line_key {
+        entry2.line_keys.lock().unwrap().push(key);
     }
 }
 
