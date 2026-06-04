@@ -12,7 +12,7 @@ use awsm_renderer::transforms::{Transform, TransformKey};
 use awsm_scene_schema::PrimitiveShape;
 use futures_signals::signal::SignalExt;
 use futures_signals::signal_vec::{SignalVecExt, VecDiff};
-use glam::{Quat, Vec3};
+use glam::{Quat, Vec3, Vec4};
 
 use super::{bridge, material, RendererNode};
 use crate::engine::context::{renderer_handle, with_renderer_mut};
@@ -241,6 +241,7 @@ async fn teardown(entry: &Arc<RendererNode>) {
     let meshes: Vec<_> = entry.model_meshes.lock().unwrap().drain(..).collect();
     let transforms: Vec<_> = entry.model_transforms.lock().unwrap().drain(..).collect();
     let materials: Vec<_> = entry.material_keys.lock().unwrap().drain(..).collect();
+    let lines: Vec<_> = entry.line_keys.lock().unwrap().drain(..).collect();
     let light = entry.light_key.lock().unwrap().take();
     let node_id = entry.node_id;
     for mk in &meshes {
@@ -255,6 +256,9 @@ async fn teardown(entry: &Arc<RendererNode>) {
         }
         for mat in materials {
             r.remove_material(mat);
+        }
+        for lk in lines {
+            r.remove_line(lk);
         }
         if let Some(lk) = light {
             r.remove_light(lk);
@@ -277,8 +281,11 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
             ..
         } => materialize_primitive(entry.clone(), shape, inline_material, custom_material).await,
         NodeKind::Light(cfg) => apply_light(entry.clone(), cfg).await,
-        // Group / Camera / Collider / Mesh / Model / Curve / Sweep / Instances /
-        // Line / Sprite / Particle / Decal: no GPU mesh in M4-C.
+        NodeKind::Line(def) => materialize_line(entry.clone(), def).await,
+        NodeKind::Curve(def) => materialize_curve_viz(entry.clone(), def).await,
+        // Group / Camera / Model: no procedural geometry. Mesh / Sprite / Sweep /
+        // Instances / Particle / Decal / Collider: deeper materialization is the
+        // follow-on.
         _ => {}
     }
 
@@ -333,6 +340,85 @@ async fn materialize_primitive(
             r.remove_material(mat_key);
             tracing::error!("materialize primitive failed: {e}");
         }
+    }
+}
+
+/// Authored polyline (`NodeKind::Line`) → fat-line strip. The fat-line pipeline
+/// reads world-space positions, so the node transform is baked in CPU-side.
+async fn materialize_line(entry: Arc<RendererNode>, def: awsm_scene_schema::LineDef) {
+    if def.points.len() < 2 {
+        return;
+    }
+    let parent_tk = entry.transform_key;
+    let positions: Vec<Vec3> = def.points.iter().map(|p| Vec3::from_array(p.pos)).collect();
+    let colors: Vec<Vec4> = def.points.iter().map(|p| Vec4::from_array(p.color)).collect();
+    let entry2 = entry.clone();
+    let line_key = with_renderer_mut(move |r| {
+        let world = r
+            .transforms
+            .get_world(parent_tk)
+            .copied()
+            .unwrap_or(glam::Mat4::IDENTITY);
+        let positions_world: Vec<Vec3> = positions.iter().map(|p| world.transform_point3(*p)).collect();
+        match r.add_line_strip(&positions_world, &colors, def.width_px, def.depth_test_always) {
+            Ok(key) => key,
+            Err(err) => {
+                tracing::warn!("materialize_line: add_line_strip failed: {err}");
+                None
+            }
+        }
+    })
+    .await;
+    if let Some(key) = line_key {
+        entry2.line_keys.lock().unwrap().push(key);
+    }
+}
+
+/// Curve viz (`NodeKind::Curve`) → a sampled Catmull-Rom polyline drawn as a
+/// magenta fat-line (the curve itself emits no game geometry; sweeps/instances
+/// consume it). World-space, parent transform baked in.
+async fn materialize_curve_viz(entry: Arc<RendererNode>, def: awsm_scene_schema::CurveDef) {
+    if def.control_points.len() < 2 {
+        return;
+    }
+    let parent_tk = entry.transform_key;
+    let entry2 = entry.clone();
+    let line_key = with_renderer_mut(move |r| {
+        use awsm_curves::{CatmullRomCurve, Curve3};
+        let curve = CatmullRomCurve::new(
+            def.control_points.iter().map(|p| Vec3::from_array(*p)).collect(),
+            def.closed,
+        );
+        let samples = def.sample_count.max(2) as usize;
+        let mut positions = curve.get_spaced_points(samples);
+        if positions.is_empty() {
+            return None;
+        }
+        let world = r
+            .transforms
+            .get_world(parent_tk)
+            .copied()
+            .unwrap_or(glam::Mat4::IDENTITY);
+        for p in positions.iter_mut() {
+            *p = world.transform_point3(*p);
+        }
+        if def.closed {
+            if let Some(first) = positions.first().copied() {
+                positions.push(first);
+            }
+        }
+        let colors: Vec<Vec4> = vec![Vec4::new(1.0, 0.45, 0.85, 0.95); positions.len()];
+        match r.add_line_strip(&positions, &colors, 1.5, false) {
+            Ok(key) => key,
+            Err(err) => {
+                tracing::warn!("materialize_curve_viz: add_line_strip failed: {err}");
+                None
+            }
+        }
+    })
+    .await;
+    if let Some(key) = line_key {
+        entry2.line_keys.lock().unwrap().push(key);
     }
 }
 

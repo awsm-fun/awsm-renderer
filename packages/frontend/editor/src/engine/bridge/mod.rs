@@ -15,6 +15,7 @@ use std::collections::{HashMap, HashSet};
 use awsm_renderer::lights::LightKey;
 use awsm_renderer::materials::MaterialKey;
 use awsm_renderer::meshes::MeshKey;
+use awsm_renderer::render_passes::lines::LineKey;
 use awsm_renderer::transforms::TransformKey;
 use awsm_web_shared::prelude::AsyncLoader;
 
@@ -35,6 +36,8 @@ pub struct RendererNode {
     pub material_keys: Mutex<Vec<MaterialKey>>,
     /// The renderer light, if this node is a Light.
     pub light_key: Mutex<Option<LightKey>>,
+    /// Fat-line strips this node owns (Line / Curve viz / collider wireframe).
+    pub line_keys: Mutex<Vec<LineKey>>,
     /// Last kind materialized (identity fast-path / teardown gating).
     pub last_kind: Mutex<Option<NodeKind>>,
     /// Per-node observer tasks; dropping cancels them (on node removal).
@@ -51,6 +54,7 @@ impl RendererNode {
             model_transforms: Mutex::new(Vec::new()),
             material_keys: Mutex::new(Vec::new()),
             light_key: Mutex::new(None),
+            line_keys: Mutex::new(Vec::new()),
             last_kind: Mutex::new(None),
             loaders: Mutex::new(Vec::new()),
         })
