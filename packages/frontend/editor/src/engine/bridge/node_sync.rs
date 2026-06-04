@@ -814,7 +814,19 @@ async fn apply_light(entry: Arc<RendererNode>, cfg: LightConfig) {
 
     let shadow_params = light_shadow_params_from_config(cfg.shadow());
     let casts = shadow_params.cast;
-    let key = with_renderer_mut(move |r| r.insert_light(light, Some(shadow_params))).await;
+    let parent_tk = entry.transform_key;
+    let key = with_renderer_mut(move |r| {
+        let key = r.insert_light(light, Some(shadow_params));
+        // Bind the light to its node transform so the per-frame
+        // `update_from_transforms` re-derives position/direction whenever the
+        // light node moves/rotates — without this a directional light's
+        // direction is frozen at materialize time and casts no useful shadow.
+        if let Ok(k) = key {
+            r.lights.bind_transform(k, parent_tk);
+        }
+        key
+    })
+    .await;
     // Lazily compile the shadow pipelines when a casting light first lands so the
     // next frame can draw shadows (no-op once compiled / when nothing casts).
     if casts {
