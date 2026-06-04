@@ -4,3 +4,4 @@
 
 pub mod outliner;
 pub mod ribbon;
+pub mod viewport;

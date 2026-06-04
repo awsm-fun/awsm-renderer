@@ -256,7 +256,7 @@ fn workspace(ctrl: &EditorController) -> Dom {
                     .style("min-width", "0")
                     .style("min-height", "0")
                     .style("position", "relative")
-                    .child(viewport_slot())
+                    .child(crate::scene_mode::viewport::render())
                 }))
             }))
         }))
@@ -266,23 +266,6 @@ fn workspace(ctrl: &EditorController) -> Dom {
             .style_signal("display", ctrl.mode.signal().map(|m| if m == EditorMode::Material { "block" } else { "none" }))
             .child(placeholder("Material workspace", "the Studio lands in M9\u{2013}M10"))
         }))
-    })
-}
-
-/// The viewport slot — reparents the live WebGPU canvas (created at boot,
-/// stored in the engine context) into itself once mounted.
-fn viewport_slot() -> Dom {
-    html!("div", {
-        .style("position", "absolute")
-        .style("inset", "0")
-        .style("overflow", "hidden")
-        .after_inserted(|elem| {
-            crate::engine::context::with_canvas(|canvas| {
-                if let Err(err) = elem.append_child(canvas) {
-                    Modal::error(format!("Failed to mount viewport canvas: {err:?}"));
-                }
-            });
-        })
     })
 }
 
