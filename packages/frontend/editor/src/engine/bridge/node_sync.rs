@@ -676,6 +676,10 @@ async fn materialize_sweep(
     use awsm_curves::CatmullRomCurve;
     use awsm_scene_schema::{CrossSectionDef, SweepUvMode};
 
+    // Nil curve ref = "not wired up yet"; render empty quietly until the user picks one.
+    if def.curve_node.is_nil() {
+        return;
+    }
     let Some(curve_def) = lookup_curve_def(def.curve_node) else {
         tracing::warn!("SweepAlongCurve references missing/!curve node");
         return;
@@ -735,6 +739,11 @@ async fn materialize_instances(
     use awsm_curves::{CatmullRomCurve, Curve3, FrameSequence};
     use awsm_renderer::instances::InstanceAttr;
 
+    // Both refs are optional; a nil sentinel just means "not wired up yet" — the
+    // node renders empty until the user picks a curve + a source primitive.
+    if def.curve_node.is_nil() || def.source_node.is_nil() {
+        return;
+    }
     let Some(curve_def) = lookup_curve_def(def.curve_node) else {
         tracing::warn!("InstancesAlongCurve references missing curve node");
         return;

@@ -209,8 +209,10 @@ fn ref_picker(
     current: NodeId,
     on_pick: impl Fn(NodeId) + 'static,
 ) -> Dom {
-    let mut options: Vec<(String, String)> =
-        vec![(NodeId::default().to_string(), "— none —".into())];
+    // The "— none —" entry uses the stable nil sentinel (all-zeros), NOT
+    // `NodeId::default()` — that mints a *fresh random* id each call, so it could
+    // never round-trip as a real "unset" marker (and picking it wrote garbage).
+    let mut options: Vec<(String, String)> = vec![(NodeId::nil().to_string(), "— none —".into())];
     options.extend(
         eligible
             .iter()
@@ -231,7 +233,7 @@ fn ref_picker(
                     .iter()
                     .find(|(s, _)| *s == val)
                     .map(|(_, id)| *id)
-                    .unwrap_or_default();
+                    .unwrap_or(NodeId::nil());
                 if fire {
                     on_pick(picked);
                 }
@@ -292,7 +294,7 @@ fn sweep_editor(node: &Arc<Node>) -> Dom {
     let id = node.id;
     let curve_node = match node.kind.get_cloned() {
         NodeKind::SweepAlongCurve { def, .. } => def.curve_node,
-        _ => NodeId::default(),
+        _ => NodeId::nil(),
     };
     let curves = collect_kind_nodes(|k| matches!(k, NodeKind::Curve(_)));
     let n = node.clone();

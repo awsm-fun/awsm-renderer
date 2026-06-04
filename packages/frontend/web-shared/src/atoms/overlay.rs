@@ -601,42 +601,49 @@ pub fn select(selected: Mutable<String>, options: Vec<(String, String)>) -> Dom 
         }
     };
 
+    // Outer container holds the clickable *trigger* and the popup as **siblings**.
+    // The click handler lives on the trigger only — so a menu-item click (which
+    // bubbles up to this container, not the trigger) can't re-toggle the popup and
+    // swallow the selection.
     html!("div", {
-        .class("t")
         .style("position", "relative")
-        .style("display", "flex")
-        .style("align-items", "center")
-        .style("height", "var(--row-h)")
-        .style("background", "var(--bg-3)")
-        .style("cursor", "pointer")
-        .style("border-radius", "var(--r1)")
-        .style("border-style", "solid")
-        .style("border-width", "1px")
-        .style("padding", "0 8px 0 9px")
         .style("min-width", "0")
-        .style_signal("border-color", rect.signal().map(|r| if r.is_some() { "var(--accent-line)" } else { "var(--line-soft)" }))
-        .style_signal("box-shadow", rect.signal().map(|r| if r.is_some() { "0 0 0 2px var(--accent-ghost)" } else { "none" }))
-        .with_node!(elem => {
-            .event(clone!(rect => move |_: events::Click| {
-                if rect.get().is_some() {
-                    rect.set(None);
-                } else {
-                    let r = elem.get_bounding_client_rect();
-                    rect.set(Some(AnchorRect::from_dom_rect(&r)));
-                }
-            }))
-        })
-        .child(html!("span", {
-            .style("flex", "1")
+        .child(html!("div", {
+            .class("t")
+            .style("display", "flex")
+            .style("align-items", "center")
+            .style("height", "var(--row-h)")
+            .style("background", "var(--bg-3)")
+            .style("cursor", "pointer")
+            .style("border-radius", "var(--r1)")
+            .style("border-style", "solid")
+            .style("border-width", "1px")
+            .style("padding", "0 8px 0 9px")
             .style("min-width", "0")
-            .style("font-size", "12.5px")
-            .style("color", "var(--text-0)")
-            .style("white-space", "nowrap")
-            .style("overflow", "hidden")
-            .style("text-overflow", "ellipsis")
-            .text_signal(selected.signal_cloned().map(clone!(label_for => move |v| label_for(&v))))
+            .style_signal("border-color", rect.signal().map(|r| if r.is_some() { "var(--accent-line)" } else { "var(--line-soft)" }))
+            .style_signal("box-shadow", rect.signal().map(|r| if r.is_some() { "0 0 0 2px var(--accent-ghost)" } else { "none" }))
+            .with_node!(elem => {
+                .event(clone!(rect => move |_: events::Click| {
+                    if rect.get().is_some() {
+                        rect.set(None);
+                    } else {
+                        let r = elem.get_bounding_client_rect();
+                        rect.set(Some(AnchorRect::from_dom_rect(&r)));
+                    }
+                }))
+            })
+            .child(html!("span", {
+                .style("flex", "1")
+                .style("min-width", "0")
+                .style("font-size", "12.5px")
+                .style("color", "var(--text-0)")
+                .style("white-space", "nowrap")
+                .style("overflow", "hidden")
+                .style("text-overflow", "ellipsis")
+                .text_signal(selected.signal_cloned().map(clone!(label_for => move |v| label_for(&v))))
+            }))
+            .child(Icon::new("chevdown").size(13.0).color("var(--text-3)").style("flex-shrink", "0").style("margin-left", "4px").render())
         }))
-        .child(Icon::new("chevdown").size(13.0).color("var(--text-3)").style("flex-shrink", "0").style("margin-left", "4px").render())
         .child_signal(rect.signal().map(move |maybe| {
             maybe.map(|anchor| {
                 let width = anchor.width.max(150.0);
