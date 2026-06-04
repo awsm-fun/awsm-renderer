@@ -90,12 +90,18 @@ impl EditorController {
     /// async because some commands await the renderer / FS / network.
     pub async fn dispatch(&self, cmd: EditorCommand) -> EditorResult<()> {
         let transient = cmd.is_transient();
+        // Coalesce consecutive continuous edits on the same node (transform
+        // drag-scrub, name typing) into one undo step.
+        let key = coalesce_key(&cmd);
         let inverse = self.apply(cmd).await?;
         if !transient {
             if let Some(inv) = inverse {
-                self.undo.borrow_mut().push(inv);
-                self.redo.borrow_mut().clear();
-                self.refresh_history_signals();
+                let skip = key.is_some() && self.undo.borrow().last().and_then(coalesce_key) == key;
+                if !skip {
+                    self.undo.borrow_mut().push(inv);
+                    self.redo.borrow_mut().clear();
+                    self.refresh_history_signals();
+                }
             }
             self.dirty.set_neq(true);
         }
@@ -114,6 +120,20 @@ impl EditorController {
             EditorCommand::SetSelection { ids } => {
                 self.selected.set(ids);
                 Ok(None)
+            }
+            EditorCommand::SetTransform { id, transform } => {
+                match mutate::find_by_id(&self.scene, id) {
+                    Some(node) => {
+                        let prev = node.transform.get();
+                        node.transform.set(transform);
+                        self.scene.bump_revision();
+                        Ok(Some(EditorCommand::SetTransform {
+                            id,
+                            transform: prev,
+                        }))
+                    }
+                    None => Ok(None),
+                }
             }
             EditorCommand::Rename { id, name } => match mutate::find_by_id(&self.scene, id) {
                 Some(node) => {
@@ -329,6 +349,16 @@ impl EditorController {
     /// return). Used by headless tests + the future external transport.
     pub fn snapshot_json(&self) -> String {
         serde_json::to_string(&self.snapshot()).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+    }
+}
+
+/// A coalescing key for continuous edits — consecutive commands with the same
+/// key collapse into one undo step. `None` = never coalesce.
+fn coalesce_key(cmd: &EditorCommand) -> Option<(u8, NodeId)> {
+    match cmd {
+        EditorCommand::SetTransform { id, .. } => Some((0, *id)),
+        EditorCommand::Rename { id, .. } => Some((1, *id)),
+        _ => None,
     }
 }
 

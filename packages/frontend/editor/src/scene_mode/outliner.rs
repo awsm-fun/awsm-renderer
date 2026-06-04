@@ -395,7 +395,7 @@ fn select_node(id: NodeId, additive: bool, range: bool) {
     });
 }
 
-fn kind_icon(kind: &NodeKind) -> &'static str {
+pub fn kind_icon(kind: &NodeKind) -> &'static str {
     match kind {
         NodeKind::Group => "empty",
         NodeKind::Model(_) => "cube",

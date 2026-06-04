@@ -258,6 +258,13 @@ fn workspace(ctrl: &EditorController) -> Dom {
                     .style("position", "relative")
                     .child(crate::scene_mode::viewport::render())
                 }))
+                .child(html!("div", {
+                    .style("width", "288px")
+                    .style("flex", "0 0 auto")
+                    .style("border-left", "1px solid var(--line)")
+                    .style("min-height", "0")
+                    .child(crate::scene_mode::inspector::render())
+                }))
             }))
         }))
         .child(html!("div", {

@@ -12,6 +12,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::node_spec::{InsertSpec, NodeSpec};
+use crate::engine::scene::types::Trs;
 use crate::engine::scene::NodeId;
 
 /// Top-level workspace mode (the Scene/Material switch in the top bar).
@@ -35,6 +36,11 @@ pub enum EditorCommand {
     /// — the UI computes single/ctrl-toggle/shift-range and dispatches the
     /// resulting set.
     SetSelection { ids: Vec<NodeId> },
+
+    /// Set a node's local transform (TRS). Inverse: restore the prior transform.
+    /// Consecutive `SetTransform`s on the same node coalesce into one undo step
+    /// (so a drag-scrub is a single undo).
+    SetTransform { id: NodeId, transform: Trs },
 
     /// Rename a node. Inverse: rename back to the prior name.
     Rename { id: NodeId, name: String },
@@ -117,6 +123,7 @@ impl EditorCommand {
             EditorCommand::NewProject => "New project",
             EditorCommand::Insert { .. } | EditorCommand::InsertTree { .. } => "Insert node",
             EditorCommand::Delete { .. } => "Delete node",
+            EditorCommand::SetTransform { .. } => "Transform",
             EditorCommand::Rename { .. } => "Rename",
             EditorCommand::SetVisible { .. } => "Toggle visibility",
             EditorCommand::SetLocked { .. } => "Toggle lock",
