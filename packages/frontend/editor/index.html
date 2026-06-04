@@ -49,6 +49,12 @@
             }
             @keyframes boot-spin { to { transform: rotate(360deg); } }
         </style>
+        <!--
+            Editor-bundled assets (e.g. gizmo.glb). Trunk copies the crate-local
+            `assets/` directory into the dist so the editor fetches
+            `assets/gizmo.glb` at a path relative to its own origin.
+        -->
+        <link data-trunk rel="copy-dir" href="assets" data-target-path="assets" />
     </head>
     <body>
         <div id="boot-loader">

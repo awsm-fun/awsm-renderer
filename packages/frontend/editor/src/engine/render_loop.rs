@@ -34,6 +34,9 @@ fn render_one_frame() {
         if let Err(err) = renderer.update_camera(matrices) {
             tracing::error!("update_camera failed: {err}");
         }
+        // Keep the gizmo screen-constant + anchored under the selection, and
+        // enforce its visibility against the selection + toggle.
+        super::gizmo::per_frame_update(renderer);
         renderer.update_transforms();
         let hooks = context::render_hooks_handle();
         let hooks = hooks.read().unwrap();

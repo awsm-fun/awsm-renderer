@@ -38,6 +38,10 @@ pub fn render() -> Dom {
                         Modal::error(format!("Failed to mount viewport canvas: {err:?}"));
                     }
                 });
+                // Size the surface to this slot now — the ResizeObserver doesn't
+                // reliably fire its first callback on the reparent, which would
+                // leave the render at 300×150 and break click/gizmo picking.
+                crate::engine::context::sync_canvas_size();
             })
         }))
         // Overlay chrome (sits above the canvas).

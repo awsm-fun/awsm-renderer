@@ -1,6 +1,11 @@
-//! The WebGPU canvas. Pointer handling distinguishes a **drag** (camera orbit /
-//! pan) from a **click** (a GPU pick → select the hit node, or deselect on a
-//! miss). The transform gizmo drag layers in next (M6).
+//! The WebGPU canvas. Pointer handling distinguishes a **gizmo drag** (a handle
+//! grab → translate/rotate/scale the selection), a **camera drag** (orbit / pan),
+//! and a **click** (a GPU pick → select the hit node, or deselect on a miss).
+//!
+//! On press, if a single node is selected with the gizmo enabled, we GPU-pick to
+//! see whether a gizmo handle was grabbed; that decision (async, ~1 frame) routes
+//! the gesture to the gizmo or the camera. Otherwise the camera starts
+//! immediately (the fast path for empty-space / no-selection navigation).
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -11,15 +16,35 @@ use gloo_timers::future::TimeoutFuture;
 use wasm_bindgen_futures::spawn_local;
 
 use super::context::{renderer_handle, try_with_camera_mut, with_camera_mut};
+use super::gizmo;
 use crate::controller::{controller, EditorCommand};
 use crate::engine::bridge::bridge;
 
 /// Pixels of movement before a pointer-down is treated as a drag (not a click).
 const DRAG_THRESHOLD: f64 = 4.0;
 
+/// Which kind of pointer drag won the press. `None` while the gizmo-vs-camera
+/// pick is still in flight.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MoveAction {
+    Camera,
+    Gizmo,
+}
+
+/// Canvas-local coordinates for a client point — the space the GPU picker +
+/// gizmo ray expect. The renderer configures its WebGPU surface in CSS pixels,
+/// so this is a plain rect-relative offset (matching the selection pick path);
+/// no device-pixel scaling.
+fn canvas_coords(canvas: &web_sys::HtmlCanvasElement, client_x: f64, client_y: f64) -> (i32, i32) {
+    let rect = canvas.get_bounding_client_rect();
+    ((client_x - rect.left()) as i32, (client_y - rect.top()) as i32)
+}
+
 pub fn render_canvas(on_ready: impl FnOnce(web_sys::HtmlCanvasElement) + 'static) -> Dom {
     // (down position, moved-past-threshold). `None` = no pointer down.
     let drag: Rc<Cell<Option<(f64, f64, bool)>>> = Rc::new(Cell::new(None));
+    // Which drag won this press (None until the gizmo pick resolves).
+    let action: Rc<Cell<Option<MoveAction>>> = Rc::new(Cell::new(None));
 
     html!("canvas" => web_sys::HtmlCanvasElement, {
         .style("width", "100%")
@@ -28,44 +53,102 @@ pub fn render_canvas(on_ready: impl FnOnce(web_sys::HtmlCanvasElement) + 'static
         .style("touch-action", "none")
         .after_inserted(on_ready)
         .with_node!(canvas => {
-            .event(clone!(canvas, drag => move |event: events::PointerDown| {
+            .event(clone!(canvas, drag, action => move |event: events::PointerDown| {
                 if event.button() != events::MouseButton::Left {
                     return;
                 }
                 let _ = canvas.set_pointer_capture(event.pointer_id());
                 drag.set(Some((event.x(), event.y(), false)));
-                with_camera_mut(|c| c.on_pointer_down());
+
+                // Only probe for a gizmo grab when one is actually on screen
+                // (single selection + toggle on); otherwise start the camera
+                // immediately so navigation stays crisp.
+                let gizmo_possible = controller().settings.gizmo.get()
+                    && controller().selected.lock_ref().len() == 1;
+                if !gizmo_possible {
+                    action.set(Some(MoveAction::Camera));
+                    with_camera_mut(|c| c.on_pointer_down());
+                    return;
+                }
+
+                action.set(None);
+                let (px, py) = canvas_coords(&canvas, event.x(), event.y());
+                spawn_local(clone!(action => async move {
+                    let handle = renderer_handle();
+                    let grabbed = {
+                        let mut r = handle.lock().await;
+                        match r.pick(px, py).await {
+                            Ok(PickResult::Hit(mesh_key)) => {
+                                gizmo::try_start_pick(&mut r, mesh_key, px, py)
+                            }
+                            _ => false,
+                        }
+                    };
+                    if grabbed {
+                        action.set(Some(MoveAction::Gizmo));
+                    } else {
+                        action.set(Some(MoveAction::Camera));
+                        with_camera_mut(|c| c.on_pointer_down());
+                    }
+                }));
             }))
-            .event(clone!(drag => move |event: events::PointerMove| {
+            .event(clone!(drag, action => move |event: events::PointerMove| {
                 let dx = event.movement_x();
                 let dy = event.movement_y();
                 if dx == 0 && dy == 0 {
                     return;
                 }
-                if let Some((sx, sy, moved)) = drag.get() {
-                    let moved = moved
-                        || (event.x() - sx).abs() > DRAG_THRESHOLD
-                        || (event.y() - sy).abs() > DRAG_THRESHOLD;
-                    drag.set(Some((sx, sy, moved)));
-                    if moved {
-                        let panning = event.shift_key() || event.alt_key();
-                        try_with_camera_mut(|c| c.on_pointer_move(dx, dy, panning));
+                match action.get() {
+                    Some(MoveAction::Gizmo) => {
+                        spawn_local(async move {
+                            {
+                                let handle = renderer_handle();
+                                let mut r = handle.lock().await;
+                                gizmo::drag(&mut r, dx, dy);
+                            }
+                            gizmo::sync_scene_transform_from_renderer();
+                        });
+                    }
+                    Some(MoveAction::Camera) => {
+                        if let Some((sx, sy, moved)) = drag.get() {
+                            let moved = moved
+                                || (event.x() - sx).abs() > DRAG_THRESHOLD
+                                || (event.y() - sy).abs() > DRAG_THRESHOLD;
+                            drag.set(Some((sx, sy, moved)));
+                            if moved {
+                                let panning = event.shift_key() || event.alt_key();
+                                try_with_camera_mut(|c| c.on_pointer_move(dx, dy, panning));
+                            }
+                        }
+                    }
+                    // Gizmo pick still pending — just remember it became a drag.
+                    None => {
+                        if let Some((sx, sy, moved)) = drag.get() {
+                            let moved = moved
+                                || (event.x() - sx).abs() > DRAG_THRESHOLD
+                                || (event.y() - sy).abs() > DRAG_THRESHOLD;
+                            drag.set(Some((sx, sy, moved)));
+                        }
                     }
                 }
             }))
-            .event(clone!(canvas, drag => move |event: events::PointerUp| {
+            .event(clone!(canvas, drag, action => move |event: events::PointerUp| {
                 try_with_camera_mut(|c| c.on_pointer_up());
+                let was_gizmo = action.get() == Some(MoveAction::Gizmo);
+                action.set(None);
                 let was = drag.replace(None);
-                // A click (no significant drag) runs a GPU pick → select.
-                if let Some((_, _, false)) = was {
-                    let rect = canvas.get_bounding_client_rect();
-                    let lx = (event.x() - rect.left()) as i32;
-                    let ly = (event.y() - rect.top()) as i32;
-                    pick_and_select(lx, ly);
+                if was_gizmo {
+                    // Final transform sync so the Inspector lands on the exact value.
+                    gizmo::sync_scene_transform_from_renderer();
+                } else if let Some((_, _, false)) = was {
+                    // A click (no significant drag) runs a GPU pick → select.
+                    let (px, py) = canvas_coords(&canvas, event.x(), event.y());
+                    pick_and_select(px, py);
                 }
             }))
-            .event(clone!(drag => move |_: events::PointerCancel| {
+            .event(clone!(drag, action => move |_: events::PointerCancel| {
                 try_with_camera_mut(|c| c.on_pointer_up());
+                action.set(None);
                 drag.set(None);
             }))
             .event(move |event: events::Wheel| {

@@ -306,6 +306,52 @@ fn create_resize_observer(
     resize_observer
 }
 
+/// Explicitly size the WebGPU surface to the canvas's current client box.
+///
+/// The `ResizeObserver` does not reliably deliver an initial callback when the
+/// canvas is reparented into the viewport slot *after* layout, so on first mount
+/// the surface would otherwise stay at the default 300×150 — a low-res, upscaled
+/// render *and* a GPU pick id-buffer too small for CSS-space click coordinates
+/// (every pick clamps + misses). The viewport calls this once on mount; it polls
+/// a few frames for the slot to acquire a real size, then applies the same
+/// resize the observer would.
+pub fn sync_canvas_size() {
+    thread_local! {
+        // Guards against the viewport's `after_inserted` firing more than once
+        // (DOM rebuilds on signal changes): concurrent resizes racing each
+        // other's render-texture recreation produce "destroyed texture in
+        // submit" GPU errors. Only the first mount runs the initial resize.
+        static DONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    if DONE.with(|d| d.replace(true)) {
+        return;
+    }
+    wasm_bindgen_futures::spawn_local(async move {
+        for _ in 0..30 {
+            let (cw, ch) = with_canvas(|c| (c.client_width(), c.client_height()));
+            if cw > 0 && ch > 0 {
+                let (width, height) = (cw as u32, ch as u32);
+                let renderer_handle = renderer_handle();
+                let camera_handle = camera_handle();
+                let renderer = renderer_handle.lock().await;
+                renderer.gpu.canvas().set_width(width);
+                renderer.gpu.canvas().set_height(height);
+                renderer.gpu.sync_canvas_buffer_with_css();
+                // The RAF loop renders every frame + pushes the camera, so we
+                // only set the aspect here and let the next frame draw — no
+                // manual render (which would race the loop's in-flight submit
+                // around the texture recreation).
+                camera_handle
+                    .lock()
+                    .unwrap()
+                    .set_aspect(width as f32 / height as f32);
+                return;
+            }
+            gloo_timers::future::TimeoutFuture::new(16).await;
+        }
+    });
+}
+
 struct AppContextDropTracker;
 
 impl Drop for AppContextDropTracker {

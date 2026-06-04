@@ -88,6 +88,10 @@ pub fn main() {
                             // Compile the GPU picker in the background so the
                             // first viewport click selects without a warm-up miss.
                             engine::canvas::prewarm_picker();
+                            // Viewport ground grid (toggled by Settings → Show grid).
+                            engine::grid::init();
+                            // Transform gizmo (loads gizmo.glb, anchors on selection).
+                            engine::gizmo::init();
                             ctx_ready.set(true);
                             awsm_web_shared::util::window::remove_boot_loader();
                         }
