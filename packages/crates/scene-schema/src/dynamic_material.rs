@@ -30,6 +30,7 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
+use crate::assets::AssetId;
 use crate::material::MaterialAlphaMode;
 
 const DEFAULT_VERSION: u32 = 1;
@@ -259,8 +260,10 @@ pub struct CustomMaterialRef {
 #[derive(Clone, Debug, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct CustomMaterialInstance {
-    /// Matches [`CustomMaterialRef::name`].
-    pub material: String,
+    /// Stable id of the assigned custom material (an entry in the editor's
+    /// custom-material list). Id-keyed (not name-keyed) so renaming a material
+    /// never orphans the meshes assigned to it.
+    pub material: AssetId,
     /// Per-instance uniform overrides. Keys must match a
     /// [`UniformField::name`] on the registered material's layout; values
     /// must satisfy the corresponding [`FieldType`].

@@ -104,14 +104,14 @@ impl Bridge {
     }
 }
 
-/// Re-materialize every mesh that references custom material `name` — called
+/// Re-materialize every mesh that references custom material `id` — called
 /// after it's (re)registered so assigned meshes pick up the now-live shader.
 /// Re-triggers each affected node's kind observer (a same-value `set` fires it).
-pub fn rematerialize_for_material(name: &str) {
+pub fn rematerialize_for_material(id: crate::engine::scene::AssetId) {
     use crate::engine::scene::node::Node;
-    use crate::engine::scene::NodeKind;
+    use crate::engine::scene::{AssetId, NodeKind};
 
-    fn walk(nodes: &[Arc<Node>], name: &str) {
+    fn walk(nodes: &[Arc<Node>], id: AssetId) {
         for node in nodes {
             let kind = node.kind.get_cloned();
             if let NodeKind::Primitive {
@@ -119,17 +119,17 @@ pub fn rematerialize_for_material(name: &str) {
                 ..
             } = &kind
             {
-                if inst.material == name {
+                if inst.material == id {
                     node.kind.set(kind.clone());
                 }
             }
-            walk(&node.children.lock_ref(), name);
+            walk(&node.children.lock_ref(), id);
         }
     }
 
     let ctrl = crate::controller::controller();
     let roots: Vec<Arc<Node>> = ctrl.scene.nodes.lock_ref().iter().cloned().collect();
-    walk(&roots, name);
+    walk(&roots, id);
 }
 
 thread_local! {

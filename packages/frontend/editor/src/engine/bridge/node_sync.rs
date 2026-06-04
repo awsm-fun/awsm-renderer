@@ -352,11 +352,11 @@ async fn materialize_primitive(
     let handle = renderer_handle();
     let mut r = handle.lock().await;
     // A registered custom WGSL material (decision 3) wins over the inline PBR.
-    // Falls back to inline when the assigned material isn't registered yet.
-    let custom_name = custom_material.as_ref().map(|i| i.material.clone());
-    let mat_key = match custom_name
-        .as_deref()
-        .and_then(|n| super::dynamic::insert_custom(&mut r, n))
+    // The instance references the material by stable id, which is the renderer
+    // registry key. Falls back to inline when the material isn't registered yet.
+    let mat_key = match custom_material
+        .as_ref()
+        .and_then(|i| super::dynamic::insert_custom(&mut r, i.material))
     {
         Some(k) => k,
         None => material::insert_material(&mut r, &inline),

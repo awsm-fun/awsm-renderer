@@ -159,6 +159,7 @@ fn definition(id: Option<AssetId>) -> Dom {
         .child(panel_header("Definition", None))
         .child(html!("div", {
             .style("flex", "1").style("overflow-y", "auto")
+            .child(name_section(&mat))
             .child(surface_section(&mat))
             .child(html!("div", {
                 .style("margin", "11px 12px 2px").style("display", "flex").style("gap", "8px").style("align-items", "flex-start")
@@ -174,6 +175,21 @@ fn definition(id: Option<AssetId>) -> Dom {
             .child(pass_deps_section(&mat))
         }))
     })
+}
+
+/// Editable material name. Rename is cosmetic — the renderer registry and mesh
+/// assignments are keyed by the material's stable id, so renaming never breaks
+/// an assigned mesh or requires re-registration.
+fn name_section(mat: &Arc<CustomMaterial>) -> Dom {
+    Section::new("Name")
+        .dense(true)
+        .child(
+            TextInput::new(mat.name.clone())
+                .placeholder("Material name")
+                .on_change(|_| controller().dirty.set_neq(true))
+                .render(),
+        )
+        .render()
 }
 
 /// Pass Dependencies (the v1 "skinny materials" win): declare which
@@ -200,14 +216,46 @@ fn dep_group(
     field: Mutable<Vec<String>>,
     mat: &Arc<CustomMaterial>,
 ) -> Dom {
+    // One bool per key, shared by the row checkbox + the All/None buttons (each
+    // bool is two-way synced with `field`), so a bulk toggle updates both the
+    // checkboxes and the underlying include list.
+    let states: Vec<Mutable<bool>> = keys
+        .iter()
+        .map(|&k| Mutable::new(field.lock_ref().iter().any(|x| x == k)))
+        .collect();
+    let all = states.clone();
+    let none = states.clone();
     html!("div", {
-        .child(html!("div", { .class("kicker").style("font-size", "9.5px").style("text-transform", "uppercase").style("letter-spacing", ".06em").style("color", "var(--text-3)").style("margin-bottom", "5px").text(title) }))
-        .children(keys.iter().map(move |&key| dep_row(key, field.clone(), mat)))
+        .child(html!("div", {
+            .style("display", "flex").style("align-items", "center").style("justify-content", "space-between").style("margin-bottom", "5px")
+            .child(html!("div", { .class("kicker").style("font-size", "9.5px").style("text-transform", "uppercase").style("letter-spacing", ".06em").style("color", "var(--text-3)").text(title) }))
+            .child(html!("div", {
+                .style("display", "flex").style("gap", "10px")
+                .child(dep_bulk_btn("All", move || { for s in all.iter() { s.set_neq(true); } }))
+                .child(dep_bulk_btn("None", move || { for s in none.iter() { s.set_neq(false); } }))
+            }))
+        }))
+        .children(keys.iter().zip(states).map(clone!(field, mat => move |(&key, on)| dep_row(key, on, field.clone(), &mat))))
     })
 }
 
-fn dep_row(key: &'static str, field: Mutable<Vec<String>>, mat: &Arc<CustomMaterial>) -> Dom {
-    let on = Mutable::new(field.lock_ref().iter().any(|k| k == key));
+/// A tiny inline text button ("All" / "None") for the dep-group header.
+fn dep_bulk_btn(label: &str, on_click: impl Fn() + 'static) -> Dom {
+    html!("button", {
+        .class("focusring")
+        .style("font-size", "10px").style("color", "var(--text-2)").style("cursor", "pointer")
+        .style("background", "transparent").style("border-style", "none").style("padding", "0")
+        .text(label)
+        .event(move |_: events::Click| on_click())
+    })
+}
+
+fn dep_row(
+    key: &'static str,
+    on: Mutable<bool>,
+    field: Mutable<Vec<String>>,
+    mat: &Arc<CustomMaterial>,
+) -> Dom {
     let f = field.clone();
     let m = mat.clone();
     spawn_local(clone!(on => async move {

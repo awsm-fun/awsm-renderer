@@ -21,35 +21,39 @@ use awsm_renderer::AwsmRenderer;
 
 use crate::controller::{AlphaMode, CustomMaterial};
 use crate::engine::context::renderer_handle;
+use crate::engine::scene::AssetId;
 
 thread_local! {
-    /// `material name → registered shader id`, populated by [`register`].
-    static REGISTRY: RefCell<HashMap<String, MaterialShaderId>> = RefCell::new(HashMap::new());
+    /// `material id → registered shader id`, populated by [`register`]. Keyed by
+    /// the material's **stable id** (not its display name) so renaming a material
+    /// never orphans an assigned mesh's resolution.
+    static REGISTRY: RefCell<HashMap<AssetId, MaterialShaderId>> = RefCell::new(HashMap::new());
 }
 
-fn registered_shader_id(name: &str) -> Option<MaterialShaderId> {
-    REGISTRY.with(|r| r.borrow().get(name).copied())
+fn registered_shader_id(id: AssetId) -> Option<MaterialShaderId> {
+    REGISTRY.with(|r| r.borrow().get(&id).copied())
 }
 
 /// Register a custom material with the renderer (locks it, finalizes textures).
 /// Returns the assigned shader id, or an error string on failure.
 pub async fn register(mat: &CustomMaterial) -> Result<MaterialShaderId, String> {
     let reg = build_registration(mat);
-    let name = mat.name.get_cloned();
+    let mat_id = mat.id;
     let handle = renderer_handle();
     let mut r = handle.lock().await;
-    // Recompile: the renderer rejects re-registering a name whose content
-    // changed, so drop the previous registration of this name first (this is the
-    // editor's edit→re-register cycle the renderer's unregister_material expects).
-    if let Some(old) = REGISTRY.with(|reg| reg.borrow().get(&name).copied()) {
+    // Recompile: the renderer rejects re-registering a key whose content changed,
+    // so drop this material's previous registration first (the editor's
+    // edit→re-register cycle `unregister_material` expects). Keyed by id, so a
+    // rename is just a display change — the registration key is unaffected.
+    if let Some(old) = REGISTRY.with(|reg| reg.borrow().get(&mat_id).copied()) {
         let _ = r.unregister_material(old);
     }
-    let id = r.register_material(reg).map_err(|e| format!("{e}"))?;
+    let shader_id = r.register_material(reg).map_err(|e| format!("{e}"))?;
     if let Err(e) = r.finalize_gpu_textures().await {
         tracing::warn!("finalize after register: {e}");
     }
-    REGISTRY.with(|reg| reg.borrow_mut().insert(name, id));
-    Ok(id)
+    REGISTRY.with(|reg| reg.borrow_mut().insert(mat_id, shader_id));
+    Ok(shader_id)
 }
 
 /// Build + insert a `Material::Custom` for an assigned custom material `name`,
@@ -58,9 +62,9 @@ pub async fn register(mat: &CustomMaterial) -> Result<MaterialShaderId, String> 
 /// disjoint-field borrow so it composes with the renderer lock.
 pub fn insert_custom(
     renderer: &mut AwsmRenderer,
-    name: &str,
+    id: AssetId,
 ) -> Option<awsm_renderer::materials::MaterialKey> {
-    let material = build_custom(renderer, name)?;
+    let material = build_custom(renderer, id)?;
     Some(renderer.materials.insert(
         material,
         &renderer.textures,
@@ -69,11 +73,11 @@ pub fn insert_custom(
     ))
 }
 
-/// Build a per-mesh `Material::Custom` for an assigned custom material `name`,
-/// using the registration's authored defaults. `None` if `name` isn't registered.
+/// Build a per-mesh `Material::Custom` for an assigned custom material `id`,
+/// using the registration's authored defaults. `None` if `id` isn't registered.
 /// Per-instance uniform/texture overrides are the follow-on.
-fn build_custom(renderer: &AwsmRenderer, name: &str) -> Option<Material> {
-    build_custom_for_shader(renderer, registered_shader_id(name)?)
+fn build_custom(renderer: &AwsmRenderer, id: AssetId) -> Option<Material> {
+    build_custom_for_shader(renderer, registered_shader_id(id)?)
 }
 
 /// Like [`build_custom`] but for an explicit `shader_id` (used by the 2nd-renderer
@@ -142,7 +146,10 @@ pub fn build_registration(mat: &CustomMaterial) -> MaterialRegistration {
     let buffer_defaults: Vec<Vec<u32>> = buffers.iter().map(|_| Vec::new()).collect();
 
     MaterialRegistration {
-        name: mat.name.get_cloned(),
+        // The renderer-internal registration key is the material's stable id
+        // (the display name is UI-only); keeps the registry rename-proof and
+        // free of duplicate-display-name collisions.
+        name: mat.id.to_string(),
         alpha_mode: convert_alpha(mat.alpha.get(), mat.cutoff.get() as f32),
         double_sided: mat.double_sided.get(),
         layout,

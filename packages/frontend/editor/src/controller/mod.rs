@@ -453,7 +453,7 @@ impl EditorController {
                         match crate::engine::bridge::dynamic::register(&mat).await {
                             Ok(_) => {
                                 mat.registered.set_neq(true);
-                                crate::engine::bridge::rematerialize_for_material(&name);
+                                crate::engine::bridge::rematerialize_for_material(mat.id);
                                 Toast::info(if was {
                                     format!("Recompiled \u{201c}{name}\u{201d} \u{2014} bucket refreshed.")
                                 } else {
@@ -480,10 +480,13 @@ impl EditorController {
                         else {
                             return Ok(None);
                         };
+                        // Id-keyed assignment: store the material's stable id (so
+                        // renaming it never orphans this mesh). Validate the id
+                        // exists in the custom-material list.
                         let instance = material
-                            .and_then(|id| find_material(&self.custom_materials, id))
-                            .map(|m| awsm_scene_schema::CustomMaterialInstance {
-                                material: m.name.get_cloned(),
+                            .filter(|id| find_material(&self.custom_materials, *id).is_some())
+                            .map(|id| awsm_scene_schema::CustomMaterialInstance {
+                                material: id,
                                 uniform_overrides: Default::default(),
                                 texture_overrides: Default::default(),
                                 buffer_overrides: Default::default(),

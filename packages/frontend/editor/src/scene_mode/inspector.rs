@@ -693,13 +693,66 @@ fn set_inline_material(node: &Arc<Node>, mat: MaterialDef) {
     }
 }
 
+/// A picker to assign one of the registered custom (Studio) materials to this
+/// mesh — or "Built-in (inline)" to clear it back to the inline PBR knobs.
+/// Dispatches `AssignMaterial` (id-keyed). Shown only when custom materials
+/// exist (or one is already assigned).
+fn material_picker(node: &Arc<Node>) -> Option<Dom> {
+    let ctrl = controller();
+    let mats: Vec<(AssetId, String)> = ctrl
+        .custom_materials
+        .lock_ref()
+        .iter()
+        .map(|m| (m.id, m.name.get_cloned()))
+        .collect();
+    let current = match node.kind.get_cloned() {
+        NodeKind::Primitive {
+            custom_material: Some(inst),
+            ..
+        } => inst.material,
+        _ => AssetId::default(),
+    };
+    if mats.is_empty() && current == AssetId::default() {
+        return None;
+    }
+    let mut options: Vec<(String, String)> =
+        vec![(AssetId::default().to_string(), "Built-in (inline)".into())];
+    options.extend(mats.iter().map(|(id, name)| (id.to_string(), name.clone())));
+    let sel = Mutable::new(current.to_string());
+    let lookup: Vec<(String, AssetId)> = mats.iter().map(|(id, _)| (id.to_string(), *id)).collect();
+    let node_id = node.id;
+    spawn_local(clone!(sel => async move {
+        let mut first = true;
+        sel.signal_cloned()
+            .for_each(move |val| {
+                let fire = !first;
+                first = false;
+                let picked = lookup.iter().find(|(s, _)| *s == val).map(|(_, id)| *id);
+                if fire {
+                    spawn_local(async move {
+                        let _ = controller()
+                            .dispatch(EditorCommand::AssignMaterial { node: node_id, material: picked })
+                            .await;
+                    });
+                }
+                async {}
+            })
+            .await;
+    }));
+    Some(row("Custom material", select(sel, options)))
+}
+
 fn material_editor(node: &Arc<Node>, mat: &MaterialDef, has_custom: bool) -> Dom {
     // A custom (Studio) material overrides the built-in palette — surface a
     // link to Material mode rather than the built-in knobs (decision 3).
     if has_custom {
-        return Section::new("Material")
+        let mut sec = Section::new("Material");
+        if let Some(p) = material_picker(node) {
+            sec = sec.child(p);
+        }
+        return sec
             .child(html!("div", {
-                .style("display", "flex").style("flex-direction", "column").style("gap", "8px")
+                .style("display", "flex").style("flex-direction", "column").style("gap", "8px").style("margin-top", "8px")
                 .child(html!("div", {
                     .style("font-size", "12px").style("color", "var(--text-2)").style("line-height", "1.5")
                     .text("Driven by a custom Studio material. Edit its graph in Material mode.")
@@ -713,6 +766,9 @@ fn material_editor(node: &Arc<Node>, mat: &MaterialDef, has_custom: bool) -> Dom
     }
 
     let mut sec = Section::new("Material");
+    if let Some(p) = material_picker(node) {
+        sec = sec.child(p);
+    }
 
     // Shading model (PBR / Unlit / Toon).
     let shading_key = match mat.shading {

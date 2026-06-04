@@ -100,9 +100,9 @@ pub struct CustomMaterial {
     pub registered: Mutable<bool>,
     /// Declared **pass dependencies** (the v1 "skinny materials" win): which
     /// `ShaderIncludes` this material's WGSL needs. Stored as the include keys;
-    /// mapped to `awsm_materials::ShaderIncludes` bits at registration (M10). The
-    /// default is everything (behavior-preserving) — pare it down for a leaner,
-    /// faster-compiling bucket.
+    /// mapped to `awsm_materials::ShaderIncludes` bits at registration. The
+    /// default is **none** (opt in only what the WGSL uses, for the leanest,
+    /// fastest-compiling bucket) — the Definition rail's select-all adds them.
     pub shader_includes: Mutable<Vec<String>>,
     /// Declared `FragmentInputs` (interpolants the fragment reads).
     pub fragment_inputs: Mutable<Vec<String>>,
@@ -152,12 +152,10 @@ impl CustomMaterial {
             textures: Mutable::new(Vec::new()),
             buffers: Mutable::new(Vec::new()),
             registered: Mutable::new(false),
-            shader_includes: Mutable::new(
-                SHADER_INCLUDE_KEYS.iter().map(|s| s.to_string()).collect(),
-            ),
-            fragment_inputs: Mutable::new(
-                FRAGMENT_INPUT_KEYS.iter().map(|s| s.to_string()).collect(),
-            ),
+            // Default to none selected — opt in only what the material's WGSL
+            // actually references (select-all is one click in the Definition rail).
+            shader_includes: Mutable::new(Vec::new()),
+            fragment_inputs: Mutable::new(Vec::new()),
         })
     }
 }
