@@ -52,13 +52,21 @@ fn clamp_round(mut n: f64, step: f64, min: Option<f64>, max: Option<f64>, round:
     n
 }
 
-/// Format a value for display — integers without a trailing `.0`.
+/// Format a value for display — integers without a trailing `.0`, fractionals
+/// rounded to 5 decimals so f32→f64 representation fuzz (`0.30000001192…`,
+/// `0.69999999…`) renders as `0.3` / `0.7` rather than a noisy tail.
 fn fmt(n: f64) -> String {
     if n == n.trunc() && n.abs() < 1e15 {
-        format!("{}", n as i64)
-    } else {
-        format!("{n}")
+        return format!("{}", n as i64);
     }
+    let mut s = format!("{n:.5}");
+    while s.ends_with('0') {
+        s.pop();
+    }
+    if s.ends_with('.') {
+        s.pop();
+    }
+    s
 }
 
 fn call(cb: &ChangeCb, n: f64) {

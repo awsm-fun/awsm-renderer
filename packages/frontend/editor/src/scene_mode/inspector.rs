@@ -9,7 +9,7 @@ use glam::{EulerRot, Quat};
 
 use crate::engine::scene::mutate::find_by_id;
 use crate::engine::scene::{
-    CameraConfig, CameraProjection, LightConfig, Node, NodeId, NodeKind, Trs,
+    CameraConfig, CameraProjection, ColliderShape, LightConfig, Node, NodeId, NodeKind, Trs,
 };
 use crate::prelude::*;
 use awsm_scene_schema::{
@@ -129,6 +129,7 @@ fn kind_editor(node: &Arc<Node>) -> Dom {
     match node.kind.get_cloned() {
         NodeKind::Light(cfg) => light_editor(node, &cfg),
         NodeKind::Camera(cfg) => camera_editor(node, &cfg),
+        NodeKind::Collider(shape) => collider_editor(node, &shape),
         NodeKind::Primitive {
             shape,
             inline_material,
@@ -295,6 +296,170 @@ fn camera_editor(node: &Arc<Node>, cfg: &CameraConfig) -> Dom {
             .render(),
     ));
 
+    sec.render()
+}
+
+// ── Collider ──────────────────────────────────────────────────────────────────
+
+fn set_collider(node: &Arc<Node>, shape: ColliderShape) {
+    dispatch_kind(node.id, NodeKind::Collider(shape));
+}
+
+/// The two `(half_height, radius)` shapes (Capsule/Cylinder/Cone) share an
+/// identical editor — `read` extracts the live pair, `make` rebuilds the variant.
+/// Reading fresh inside each closure keeps an edit of one field from resetting the
+/// other to a stale captured value.
+fn hr_rows(
+    sec: Section,
+    node: &Arc<Node>,
+    half_height: f32,
+    radius: f32,
+    make: fn(f32, f32) -> ColliderShape,
+    read: fn(&ColliderShape) -> Option<(f32, f32)>,
+) -> Section {
+    let n = node.clone();
+    let sec = sec.child(row(
+        "Half height",
+        NumField::new(half_height as f64)
+            .min(0.0)
+            .step(0.05)
+            .on_change(move |v| {
+                if let NodeKind::Collider(s) = n.kind.get_cloned() {
+                    if let Some((_, r)) = read(&s) {
+                        set_collider(&n, make(v as f32, r));
+                    }
+                }
+            })
+            .render(),
+    ));
+    let n = node.clone();
+    sec.child(row(
+        "Radius",
+        NumField::new(radius as f64)
+            .min(0.01)
+            .step(0.05)
+            .on_change(move |v| {
+                if let NodeKind::Collider(s) = n.kind.get_cloned() {
+                    if let Some((h, _)) = read(&s) {
+                        set_collider(&n, make(h, v as f32));
+                    }
+                }
+            })
+            .render(),
+    ))
+}
+
+fn collider_editor(node: &Arc<Node>, shape: &ColliderShape) -> Dom {
+    let mut sec = Section::new("Collider");
+    match shape {
+        ColliderShape::Box { half_extents } => {
+            let n = node.clone();
+            sec = sec.child(row(
+                "Half extents",
+                vec3(f3(*half_extents), 0.05, move |v| {
+                    set_collider(
+                        &n,
+                        ColliderShape::Box {
+                            half_extents: [v[0] as f32, v[1] as f32, v[2] as f32],
+                        },
+                    );
+                }),
+            ));
+        }
+        ColliderShape::Ellipsoid { half_extents } => {
+            let n = node.clone();
+            sec = sec.child(row(
+                "Half extents",
+                vec3(f3(*half_extents), 0.05, move |v| {
+                    set_collider(
+                        &n,
+                        ColliderShape::Ellipsoid {
+                            half_extents: [v[0] as f32, v[1] as f32, v[2] as f32],
+                        },
+                    );
+                }),
+            ));
+        }
+        ColliderShape::Sphere { radius } => {
+            let n = node.clone();
+            sec = sec.child(row(
+                "Radius",
+                NumField::new(*radius as f64)
+                    .min(0.01)
+                    .step(0.05)
+                    .on_change(move |v| {
+                        set_collider(&n, ColliderShape::Sphere { radius: v as f32 });
+                    })
+                    .render(),
+            ));
+        }
+        ColliderShape::Capsule {
+            half_height,
+            radius,
+        } => {
+            sec = hr_rows(
+                sec,
+                node,
+                *half_height,
+                *radius,
+                |h, r| ColliderShape::Capsule {
+                    half_height: h,
+                    radius: r,
+                },
+                |s| match s {
+                    ColliderShape::Capsule {
+                        half_height,
+                        radius,
+                    } => Some((*half_height, *radius)),
+                    _ => None,
+                },
+            );
+        }
+        ColliderShape::Cylinder {
+            half_height,
+            radius,
+        } => {
+            sec = hr_rows(
+                sec,
+                node,
+                *half_height,
+                *radius,
+                |h, r| ColliderShape::Cylinder {
+                    half_height: h,
+                    radius: r,
+                },
+                |s| match s {
+                    ColliderShape::Cylinder {
+                        half_height,
+                        radius,
+                    } => Some((*half_height, *radius)),
+                    _ => None,
+                },
+            );
+        }
+        ColliderShape::Cone {
+            half_height,
+            radius,
+        } => {
+            sec = hr_rows(
+                sec,
+                node,
+                *half_height,
+                *radius,
+                |h, r| ColliderShape::Cone {
+                    half_height: h,
+                    radius: r,
+                },
+                |s| match s {
+                    ColliderShape::Cone {
+                        half_height,
+                        radius,
+                    } => Some((*half_height, *radius)),
+                    _ => None,
+                },
+            );
+        }
+    }
     sec.render()
 }
 
