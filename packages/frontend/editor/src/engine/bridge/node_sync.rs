@@ -273,8 +273,9 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
         NodeKind::Primitive {
             shape,
             inline_material,
+            custom_material,
             ..
-        } => materialize_primitive(entry.clone(), shape, inline_material).await,
+        } => materialize_primitive(entry.clone(), shape, inline_material, custom_material).await,
         NodeKind::Light(cfg) => apply_light(entry.clone(), cfg).await,
         // Group / Camera / Collider / Mesh / Model / Curve / Sweep / Instances /
         // Line / Sprite / Particle / Decal: no GPU mesh in M4-C.
@@ -288,6 +289,7 @@ async fn materialize_primitive(
     entry: Arc<RendererNode>,
     shape: PrimitiveShape,
     inline: awsm_scene_schema::MaterialDef,
+    custom_material: Option<awsm_scene_schema::dynamic_material::CustomMaterialInstance>,
 ) {
     let mesh = primitive_to_mesh(&shape);
     let raw = RawMeshData {
@@ -304,7 +306,16 @@ async fn materialize_primitive(
     // actually draws — the archived editor batched this in instance_batcher).
     let handle = renderer_handle();
     let mut r = handle.lock().await;
-    let mat_key = material::insert_material(&mut r, &inline);
+    // A registered custom WGSL material (decision 3) wins over the inline PBR.
+    // Falls back to inline when the assigned material isn't registered yet.
+    let custom_name = custom_material.as_ref().map(|i| i.material.clone());
+    let mat_key = match custom_name
+        .as_deref()
+        .and_then(|n| super::dynamic::insert_custom(&mut r, n))
+    {
+        Some(k) => k,
+        None => material::insert_material(&mut r, &inline),
+    };
     let sub_tk = r.transforms.insert(Transform::IDENTITY, Some(parent_tk));
     match r.add_raw_mesh(raw, sub_tk, mat_key) {
         Ok(mk) => {

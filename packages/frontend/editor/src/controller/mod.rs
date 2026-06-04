@@ -439,20 +439,29 @@ impl EditorController {
             EditorCommand::RegisterMaterial { id } => {
                 if let Some(mat) = find_material(&self.custom_materials, id) {
                     let errs = compile_wgsl(&mat.wgsl.get_cloned());
-                    if errs.is_empty() {
-                        let was = mat.registered.get();
-                        mat.registered.set_neq(true);
-                        let name = mat.name.get_cloned();
-                        Toast::info(if was {
-                            format!("Recompiled \u{201c}{name}\u{201d} \u{2014} bucket refreshed.")
-                        } else {
-                            format!("Registered \u{201c}{name}\u{201d}.")
-                        });
-                    } else {
+                    if !errs.is_empty() {
                         Toast::error(format!(
                             "Can't register \u{2014} {} compile error(s).",
                             errs.len()
                         ));
+                    } else {
+                        let was = mat.registered.get();
+                        let name = mat.name.get_cloned();
+                        // Real GPU registration: compile the material into a
+                        // renderer bucket. On success flag it registered + re-
+                        // materialize any mesh it's assigned to so it renders.
+                        match crate::engine::bridge::dynamic::register(&mat).await {
+                            Ok(_) => {
+                                mat.registered.set_neq(true);
+                                crate::engine::bridge::rematerialize_for_material(&name);
+                                Toast::info(if was {
+                                    format!("Recompiled \u{201c}{name}\u{201d} \u{2014} bucket refreshed.")
+                                } else {
+                                    format!("Registered \u{201c}{name}\u{201d}.")
+                                });
+                            }
+                            Err(e) => Toast::error(format!("Register failed: {e}")),
+                        }
                     }
                 }
                 Ok(None)

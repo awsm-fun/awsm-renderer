@@ -4,6 +4,7 @@
 //! as the node's kind/transform/visibility change. M4-C handles primitives +
 //! lights + passive kinds; models/curves/particles/decals/etc. layer in later.
 
+pub mod dynamic;
 pub mod gltf;
 pub mod material;
 pub mod node_sync;
@@ -89,6 +90,34 @@ impl Bridge {
     pub fn node_for_mesh(&self, mesh: MeshKey) -> Option<NodeId> {
         self.mesh_to_node.lock().unwrap().get(&mesh).copied()
     }
+}
+
+/// Re-materialize every mesh that references custom material `name` — called
+/// after it's (re)registered so assigned meshes pick up the now-live shader.
+/// Re-triggers each affected node's kind observer (a same-value `set` fires it).
+pub fn rematerialize_for_material(name: &str) {
+    use crate::engine::scene::node::Node;
+    use crate::engine::scene::NodeKind;
+
+    fn walk(nodes: &[Arc<Node>], name: &str) {
+        for node in nodes {
+            let kind = node.kind.get_cloned();
+            if let NodeKind::Primitive {
+                custom_material: Some(inst),
+                ..
+            } = &kind
+            {
+                if inst.material == name {
+                    node.kind.set(kind.clone());
+                }
+            }
+            walk(&node.children.lock_ref(), name);
+        }
+    }
+
+    let ctrl = crate::controller::controller();
+    let roots: Vec<Arc<Node>> = ctrl.scene.nodes.lock_ref().iter().cloned().collect();
+    walk(&roots, name);
 }
 
 thread_local! {
