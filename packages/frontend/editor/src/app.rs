@@ -37,6 +37,42 @@ pub fn render() -> Dom {
     })
 }
 
+/// Save the live project to a downloaded `project.toml` (the directory-handle FS
+/// Access writer is the follow-on; this gets the bytes out today + marks clean).
+fn save_project() {
+    match crate::controller::persistence::project_to_toml(&controller()) {
+        Ok(toml) => {
+            download_text("project.toml", &toml);
+            controller().dirty.set_neq(false);
+            Toast::info("Saved project.toml");
+        }
+        Err(e) => Toast::error(format!("Save failed: {e}")),
+    }
+}
+
+/// Trigger a browser download of `content` as `filename`.
+fn download_text(filename: &str, content: &str) {
+    use wasm_bindgen::JsCast;
+    let arr = js_sys::Array::new();
+    arr.push(&wasm_bindgen::JsValue::from_str(content));
+    let Ok(blob) = web_sys::Blob::new_with_str_sequence(&arr) else {
+        return;
+    };
+    let Ok(url) = web_sys::Url::create_object_url_with_blob(&blob) else {
+        return;
+    };
+    if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+        if let Ok(a) = doc.create_element("a") {
+            if let Ok(a) = a.dyn_into::<web_sys::HtmlAnchorElement>() {
+                a.set_href(&url);
+                a.set_download(filename);
+                a.click();
+            }
+        }
+    }
+    let _ = web_sys::Url::revoke_object_url(&url);
+}
+
 fn settings_drawer() -> Dom {
     let s = controller().settings.clone();
     RightDrawer::new("Settings")
@@ -340,8 +376,8 @@ fn top_bar(ctrl: &EditorController) -> Dom {
             .style("gap", "2px")
             .child(IconBtn::new("folder").title("New")
                 .on_click(|| spawn_local(async { let _ = controller().dispatch(EditorCommand::NewProject).await; })).render())
-            .child(IconBtn::new("save").title("Save")
-                .on_click(|| Toast::info("Save — lands in M11")).render())
+            .child(IconBtn::new("save").title("Save project.toml")
+                .on_click(save_project).render())
             .child(IconBtn::new("undo").title("Undo")
                 .on_click(|| spawn_local(async { controller().undo().await; })).render())
             .child(IconBtn::new("redo").title("Redo")

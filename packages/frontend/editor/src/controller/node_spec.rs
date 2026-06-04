@@ -131,6 +131,35 @@ impl NodeSpec {
         })
     }
 
+    /// Convert to the scene-schema's serializable [`EditorNode`] (project.toml
+    /// persistence). The two are field-identical; this is a structural map.
+    pub fn to_editor_node(&self) -> awsm_scene_schema::EditorNode {
+        awsm_scene_schema::EditorNode {
+            id: self.id,
+            name: self.name.clone(),
+            transform: self.transform,
+            kind: self.kind.clone(),
+            locked: self.locked,
+            visible: self.visible,
+            prefab: self.prefab,
+            children: self.children.iter().map(|c| c.to_editor_node()).collect(),
+        }
+    }
+
+    /// Build a `NodeSpec` from a persisted [`EditorNode`].
+    pub fn from_editor_node(node: &awsm_scene_schema::EditorNode) -> Self {
+        Self {
+            id: node.id,
+            name: node.name.clone(),
+            transform: node.transform,
+            kind: node.kind.clone(),
+            locked: node.locked,
+            visible: node.visible,
+            prefab: node.prefab,
+            children: node.children.iter().map(Self::from_editor_node).collect(),
+        }
+    }
+
     /// A lightweight projection for the query snapshot (no transform payload).
     pub fn to_query(&self) -> NodeQuery {
         NodeQuery {

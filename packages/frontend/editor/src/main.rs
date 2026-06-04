@@ -116,6 +116,14 @@ pub fn editor_snapshot_json() -> String {
 /// (decode command → dispatch); built now only as the seam + for scriptable,
 /// gesture-free testing. Returns `"ok"` on a valid decode (dispatch is async and
 /// spawned) or a decode error.
+/// Serialize the live project to `project.toml` (the persistence seam — used by
+/// the Save writer + headless round-trip tests).
+#[wasm_bindgen]
+pub fn editor_project_toml() -> String {
+    controller::persistence::project_to_toml(&controller::controller())
+        .unwrap_or_else(|e| format!("# error: {e}"))
+}
+
 #[wasm_bindgen]
 pub fn editor_dispatch_json(cmd_json: &str) -> String {
     match serde_json::from_str::<controller::EditorCommand>(cmd_json) {

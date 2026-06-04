@@ -13,6 +13,7 @@
 mod command;
 pub mod custom_material;
 mod node_spec;
+pub mod persistence;
 mod query;
 mod source;
 
@@ -495,8 +496,16 @@ impl EditorController {
                 }
             }
             EditorCommand::LoadProjectFromUrl { base_url } => {
-                // Seam present; the fetch + TOML deserialize lands in M11.
-                Toast::info(format!("Load project from {base_url} — lands in M11"));
+                match persistence::load_project_from_url(self, &base_url).await {
+                    Ok(()) => {
+                        self.undo.borrow_mut().clear();
+                        self.redo.borrow_mut().clear();
+                        self.refresh_history_signals();
+                        self.dirty.set_neq(false);
+                        Toast::info("Project loaded");
+                    }
+                    Err(e) => Toast::error(format!("Load failed: {e}")),
+                }
                 Ok(None)
             }
             EditorCommand::ImportModelFromUrl { url } => {
