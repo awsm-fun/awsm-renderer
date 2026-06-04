@@ -171,7 +171,63 @@ fn definition(id: Option<AssetId>) -> Dom {
             .child(slot_list(&mat, SlotKind::Uniform))
             .child(slot_list(&mat, SlotKind::Texture))
             .child(slot_list(&mat, SlotKind::Buffer))
+            .child(pass_deps_section(&mat))
         }))
+    })
+}
+
+/// Pass Dependencies (the v1 "skinny materials" win): declare which
+/// `ShaderIncludes` + `FragmentInputs` this material's WGSL actually needs, so
+/// registration compiles a leaner bucket. Default is everything (behavior-
+/// preserving); unchecking pares the emitted shader down.
+fn pass_deps_section(mat: &Arc<CustomMaterial>) -> Dom {
+    use crate::controller::custom_material::{FRAGMENT_INPUT_KEYS, SHADER_INCLUDE_KEYS};
+    Section::new("Pass Dependencies")
+        .dense(true)
+        .child(html!("div", {
+            .style("font-size", "11px").style("color", "var(--text-3)").style("line-height", "1.45").style("margin-bottom", "8px")
+            .text("Which shader includes + interpolants the WGSL needs. Fewer = leaner bucket.")
+        }))
+        .child(dep_group("Shader includes", SHADER_INCLUDE_KEYS, mat.shader_includes.clone(), mat))
+        .child(html!("div", { .style("height", "8px") }))
+        .child(dep_group("Fragment inputs", FRAGMENT_INPUT_KEYS, mat.fragment_inputs.clone(), mat))
+        .render()
+}
+
+fn dep_group(
+    title: &str,
+    keys: &'static [&'static str],
+    field: Mutable<Vec<String>>,
+    mat: &Arc<CustomMaterial>,
+) -> Dom {
+    html!("div", {
+        .child(html!("div", { .class("kicker").style("font-size", "9.5px").style("text-transform", "uppercase").style("letter-spacing", ".06em").style("color", "var(--text-3)").style("margin-bottom", "5px").text(title) }))
+        .children(keys.iter().map(move |&key| dep_row(key, field.clone(), mat)))
+    })
+}
+
+fn dep_row(key: &'static str, field: Mutable<Vec<String>>, mat: &Arc<CustomMaterial>) -> Dom {
+    let on = Mutable::new(field.lock_ref().iter().any(|k| k == key));
+    let f = field.clone();
+    let m = mat.clone();
+    spawn_local(clone!(on => async move {
+        let mut first = true;
+        on.signal().for_each(move |checked| {
+            let fire = !first; first = false;
+            clone!(f, m => async move {
+                if fire {
+                    let mut v = f.get_cloned();
+                    let has = v.iter().any(|k| k == key);
+                    if checked && !has { v.push(key.to_string()); f.set(v); draft(&m); }
+                    else if !checked && has { v.retain(|k| k != key); f.set(v); draft(&m); }
+                }
+            })
+        }).await;
+    }));
+    html!("label", {
+        .style("display", "flex").style("align-items", "center").style("gap", "8px").style("padding", "2px 0").style("cursor", "pointer")
+        .child(check(on))
+        .child(html!("span", { .class("mono").style("font-size", "11px").style("color", "var(--text-1)").text(key) }))
     })
 }
 

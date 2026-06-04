@@ -98,7 +98,41 @@ pub struct CustomMaterial {
     /// Whether the material has been registered (compiled to a renderer bucket).
     /// A content edit after registration flips this back to `false` (draft).
     pub registered: Mutable<bool>,
+    /// Declared **pass dependencies** (the v1 "skinny materials" win): which
+    /// `ShaderIncludes` this material's WGSL needs. Stored as the include keys;
+    /// mapped to `awsm_materials::ShaderIncludes` bits at registration (M10). The
+    /// default is everything (behavior-preserving) — pare it down for a leaner,
+    /// faster-compiling bucket.
+    pub shader_includes: Mutable<Vec<String>>,
+    /// Declared `FragmentInputs` (interpolants the fragment reads).
+    pub fragment_inputs: Mutable<Vec<String>>,
 }
+
+/// Every `ShaderIncludes` flag, by key (order = display order).
+pub const SHADER_INCLUDE_KEYS: &[&str] = &[
+    "math",
+    "camera",
+    "color_space",
+    "textures",
+    "vertex_color",
+    "light_access",
+    "apply_lighting",
+    "brdf",
+    "material_color_calc",
+    "shadows",
+    "skybox",
+    "extras",
+];
+
+/// Every `FragmentInputs` flag, by key.
+pub const FRAGMENT_INPUT_KEYS: &[&str] = &[
+    "normals",
+    "tangents",
+    "uv",
+    "lights",
+    "view_dir",
+    "vertex_color",
+];
 
 /// The default WGSL body for a fresh opaque material (matches the prototype).
 pub const NEW_MATERIAL_WGSL: &str =
@@ -118,6 +152,12 @@ impl CustomMaterial {
             textures: Mutable::new(Vec::new()),
             buffers: Mutable::new(Vec::new()),
             registered: Mutable::new(false),
+            shader_includes: Mutable::new(
+                SHADER_INCLUDE_KEYS.iter().map(|s| s.to_string()).collect(),
+            ),
+            fragment_inputs: Mutable::new(
+                FRAGMENT_INPUT_KEYS.iter().map(|s| s.to_string()).collect(),
+            ),
         })
     }
 }
