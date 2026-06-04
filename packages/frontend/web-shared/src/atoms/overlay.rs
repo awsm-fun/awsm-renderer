@@ -430,7 +430,11 @@ impl ModalCard {
                 .child(html!("div", {
                     .style("padding", "0 18px")
                     .style("overflow-y", "auto")
-                    .style("flex", "1")
+                    // `flex-basis: auto` (not `1`/0%) so the body sizes to its
+                    // content in a content-height card; `min-height: 0` still lets
+                    // it shrink + scroll when the card hits its max-height.
+                    .style("flex", "1 1 auto")
+                    .style("min-height", "0")
                     .children(self.body)
                 }))
                 .apply(move |b| if has_footer {

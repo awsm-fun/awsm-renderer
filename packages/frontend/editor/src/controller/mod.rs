@@ -504,6 +504,12 @@ impl EditorController {
                     None => Ok(None),
                 }
             }
+            EditorCommand::SetEnvironment { env } => {
+                let prev = self.scene.environment.get_cloned();
+                self.scene.environment.set(env);
+                self.scene.bump_revision();
+                Ok(Some(EditorCommand::SetEnvironment { env: prev }))
+            }
             EditorCommand::LoadProjectFromUrl { base_url } => {
                 match persistence::load_project_from_url(self, &base_url).await {
                     Ok(()) => {

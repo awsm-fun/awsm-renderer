@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use super::node_spec::{InsertSpec, NodeSpec};
 use crate::engine::scene::types::Trs;
-use crate::engine::scene::{AssetId, NodeId, NodeKind};
+use crate::engine::scene::{AssetId, EnvironmentConfig, NodeId, NodeKind};
 use awsm_scene_schema::{AssetEntry, MaterialShading};
 
 /// A procedural texture generator the Content Browser can author (decision 3 /
@@ -155,6 +155,11 @@ pub enum EditorCommand {
     /// registration + bucket accounting lands in M10.
     RegisterMaterial { id: AssetId },
 
+    /// Set the scene environment (skybox + IBL). Stored in `scene.environment`
+    /// (serialized to TOML); the `env_sync` bridge uploads the cubemaps as a
+    /// side effect. Inverse: restore the prior environment.
+    SetEnvironment { env: EnvironmentConfig },
+
     /// Assign a custom WGSL material (by id) to a scene node's mesh, or clear it
     /// (`material: None`). Sets the node's `custom_material` reference. Inverse:
     /// restore the node's prior kind (a `SetKind`). The bridge renders the
@@ -211,6 +216,7 @@ impl EditorCommand {
             EditorCommand::SetCurrentMaterial { .. } => "Select material",
             EditorCommand::RegisterMaterial { .. } => "Register material",
             EditorCommand::AssignMaterial { .. } => "Assign material",
+            EditorCommand::SetEnvironment { .. } => "Set environment",
         }
     }
 }

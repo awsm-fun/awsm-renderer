@@ -6,6 +6,7 @@
 
 pub mod collider_wire;
 pub mod dynamic;
+pub mod env_sync;
 pub mod gltf;
 pub mod material;
 pub mod mesh_cache;
@@ -144,4 +145,7 @@ pub fn bridge() -> Arc<Bridge> {
 /// the renderer context is ready.
 pub fn init() {
     node_sync::start();
+    // Drives the renderer skybox + IBL from `scene.environment`; its first
+    // emission applies the default Simple Sky so the editor never boots black.
+    env_sync::start();
 }

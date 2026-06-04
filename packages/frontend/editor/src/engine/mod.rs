@@ -7,7 +7,6 @@ pub mod bridge;
 pub mod canvas;
 pub mod config;
 pub mod context;
-pub mod environment;
 pub mod gizmo;
 pub mod grid;
 pub mod preview;

@@ -1,0 +1,229 @@
+//! Scene `EnvironmentConfig` → renderer sync (skybox + IBL).
+//!
+//! Observes `controller().scene.environment`; whenever it changes (from a
+//! `SetEnvironment` command or a project Load), pushes the matching Skybox /
+//! IBL state into the renderer. This is the single place the environment
+//! reaches the GPU — the ribbon never touches the renderer directly, so the
+//! environment is fully driven by `EditorController` (serialized into the
+//! scene, undoable, MCP-drivable).
+//!
+//! `BuiltInDefault` generates a `CubemapSkyGradient` ("Simple Sky") for both
+//! skybox and IBL — and because the observer fires on its first emission, the
+//! editor boots with that default applied (no black void). `Ktx` variants
+//! resolve their `AssetId` against the scene asset table, reading bytes from
+//! the in-memory HDR stash (populated by the ribbon's 3-file picker) and
+//! blob-loading them through the existing `load_url_ktx`.
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+
+use awsm_renderer::environment::Skybox;
+use awsm_renderer::lights::ibl::{Ibl, IblTexture};
+use awsm_renderer::AwsmRenderer;
+use awsm_renderer_core::cubemap::images::CubemapSkyGradient;
+use awsm_renderer_core::cubemap::CubemapImage;
+
+use crate::controller::controller;
+use crate::engine::context::renderer_handle;
+use crate::engine::scene::{AssetId, AssetSource, EnvironmentConfig, IblConfig, SkyboxConfig};
+use crate::prelude::*;
+
+thread_local! {
+    /// In-memory KTX bytes for HDR assets picked this session, keyed by the
+    /// `AssetId` recorded in the scene asset table. The `EnvironmentConfig`
+    /// (which ids) round-trips through TOML; writing the *bytes* to the project
+    /// directory on save (so HDR survives reload) is the follow-on.
+    static KTX_BYTES: RefCell<HashMap<AssetId, Vec<u8>>> = RefCell::new(HashMap::new());
+}
+
+/// Stash raw KTX bytes for a freshly-picked HDR asset so `env_sync` can resolve
+/// it when the `SetEnvironment` command lands.
+pub fn stash_ktx(id: AssetId, bytes: Vec<u8>) {
+    KTX_BYTES.with(|m| m.borrow_mut().insert(id, bytes));
+}
+
+fn stashed_ktx(id: AssetId) -> Option<Vec<u8>> {
+    KTX_BYTES.with(|m| m.borrow().get(&id).cloned())
+}
+
+/// Begin mirroring `scene.environment` onto the renderer. Call once at boot
+/// (after the renderer is ready); the first emission applies the default sky.
+pub fn start() {
+    let signal = controller().scene.environment.signal_cloned();
+    spawn_local(async move {
+        let mut previous: Option<EnvironmentConfig> = None;
+        signal
+            .for_each(move |env| {
+                let sky_changed = previous
+                    .as_ref()
+                    .map(|p| p.skybox != env.skybox)
+                    .unwrap_or(true);
+                let ibl_changed = previous.as_ref().map(|p| p.ibl != env.ibl).unwrap_or(true);
+                previous = Some(env.clone());
+                async move {
+                    if sky_changed {
+                        if let Err(err) = apply_skybox(&env.skybox).await {
+                            tracing::error!("skybox apply failed: {err}");
+                            Toast::error(format!("Skybox failed: {err}"));
+                        }
+                    }
+                    if ibl_changed {
+                        if let Err(err) = apply_ibl(&env.ibl).await {
+                            tracing::error!("ibl apply failed: {err}");
+                            Toast::error(format!("IBL failed: {err}"));
+                        }
+                    }
+                }
+            })
+            .await;
+    });
+}
+
+async fn apply_skybox(cfg: &SkyboxConfig) -> anyhow::Result<()> {
+    let image = match cfg {
+        SkyboxConfig::BuiltInDefault => {
+            CubemapImage::new_sky_gradient(CubemapSkyGradient::default(), 1024, 1024)
+                .await
+                .map_err(|e| anyhow::anyhow!("sky gradient: {e}"))?
+        }
+        SkyboxConfig::Ktx { asset_id } => load_ktx_by_id(*asset_id).await?,
+    };
+    let handle = renderer_handle();
+    let mut renderer = handle.lock().await;
+    set_skybox_on_renderer(&mut renderer, image).await
+}
+
+async fn apply_ibl(cfg: &IblConfig) -> anyhow::Result<()> {
+    let (prefiltered, irradiance) = match cfg {
+        IblConfig::BuiltInDefault => {
+            let gradient = CubemapSkyGradient::default();
+            let p = CubemapImage::new_sky_gradient(gradient.clone(), 1024, 1024)
+                .await
+                .map_err(|e| anyhow::anyhow!("prefiltered: {e}"))?;
+            let i = CubemapImage::new_sky_gradient(gradient, 32, 32)
+                .await
+                .map_err(|e| anyhow::anyhow!("irradiance: {e}"))?;
+            (p, i)
+        }
+        IblConfig::Ktx {
+            prefiltered_asset_id,
+            irradiance_asset_id,
+        } => {
+            let p = load_ktx_by_id(*prefiltered_asset_id).await?;
+            let i = load_ktx_by_id(*irradiance_asset_id).await?;
+            (p, i)
+        }
+    };
+    let handle = renderer_handle();
+    let mut renderer = handle.lock().await;
+    set_ibl_on_renderer(&mut renderer, prefiltered, irradiance).await
+}
+
+/// Resolve a KTX cubemap by `AssetId`: the scene asset table gives the source,
+/// then bytes come from the in-memory HDR stash (picked files) or a URL fetch.
+async fn load_ktx_by_id(asset_id: AssetId) -> anyhow::Result<CubemapImage> {
+    let entry = controller()
+        .scene
+        .assets
+        .lock()
+        .unwrap()
+        .entries
+        .get(&asset_id)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("asset id {asset_id} not in the project asset table"))?;
+
+    let (label, bytes) = match &entry.source {
+        AssetSource::Filename(name) => {
+            let bytes = stashed_ktx(asset_id).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "KTX '{name}' bytes aren't in memory (re-pick the HDR set; on-disk \
+                     persistence of HDR assets is a follow-on)"
+                )
+            })?;
+            (name.clone(), bytes)
+        }
+        AssetSource::Url(url) => {
+            let bytes = gloo_net::http::Request::get(url)
+                .send()
+                .await
+                .map_err(|e| anyhow::anyhow!("fetch {url}: {e}"))?
+                .binary()
+                .await
+                .map_err(|e| anyhow::anyhow!("fetch {url} body: {e}"))?;
+            (url.clone(), bytes)
+        }
+        _ => anyhow::bail!("KTX skybox / IBL must reference a Filename or Url asset"),
+    };
+
+    let array = js_sys::Uint8Array::from(bytes.as_slice());
+    let parts = js_sys::Array::new();
+    parts.push(&array);
+    let options = web_sys::BlobPropertyBag::new();
+    options.set_type("application/octet-stream");
+    let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &options)
+        .map_err(|e| anyhow::anyhow!("blob: {e:?}"))?;
+    let url_for_loader = web_sys::Url::create_object_url_with_blob(&blob)
+        .map_err(|e| anyhow::anyhow!("object url: {e:?}"))?;
+    let result = CubemapImage::load_url_ktx(&url_for_loader)
+        .await
+        .map_err(|e| anyhow::anyhow!("load_url_ktx {label}: {e}"));
+    let _ = web_sys::Url::revoke_object_url(&url_for_loader);
+    result
+}
+
+async fn set_skybox_on_renderer(
+    renderer: &mut AwsmRenderer,
+    image: CubemapImage,
+) -> anyhow::Result<()> {
+    let (texture, view, mip_count) = image
+        .create_texture_and_view(&renderer.gpu, Some("Skybox"))
+        .await
+        .map_err(|e| anyhow::anyhow!("create texture: {e}"))?;
+    let texture_key = renderer.textures.insert_cubemap(texture);
+    let sampler_key = renderer
+        .textures
+        .get_sampler_key(&renderer.gpu, Skybox::sampler_cache_key())
+        .map_err(|e| anyhow::anyhow!("sampler: {e}"))?;
+    let sampler = renderer
+        .textures
+        .get_sampler(sampler_key)
+        .map_err(|e| anyhow::anyhow!("get sampler: {e}"))?
+        .clone();
+    renderer.set_skybox(Skybox::new(texture_key, view, sampler, mip_count));
+    Ok(())
+}
+
+async fn set_ibl_on_renderer(
+    renderer: &mut AwsmRenderer,
+    prefiltered: CubemapImage,
+    irradiance: CubemapImage,
+) -> anyhow::Result<()> {
+    let prefiltered_texture =
+        cubemap_to_ibl_texture(renderer, prefiltered, "IBL Prefiltered Env Cubemap").await?;
+    let irradiance_texture =
+        cubemap_to_ibl_texture(renderer, irradiance, "IBL Irradiance Cubemap").await?;
+    renderer.set_ibl(Ibl::new(prefiltered_texture, irradiance_texture));
+    Ok(())
+}
+
+async fn cubemap_to_ibl_texture(
+    renderer: &mut AwsmRenderer,
+    image: CubemapImage,
+    label: &str,
+) -> anyhow::Result<IblTexture> {
+    let (texture, view, mip_count) = image
+        .create_texture_and_view(&renderer.gpu, Some(label))
+        .await
+        .map_err(|e| anyhow::anyhow!("create {label}: {e}"))?;
+    let texture_key = renderer.textures.insert_cubemap(texture);
+    let sampler_key = renderer
+        .textures
+        .get_sampler_key(&renderer.gpu, IblTexture::sampler_cache_key())
+        .map_err(|e| anyhow::anyhow!("sampler: {e}"))?;
+    let sampler = renderer
+        .textures
+        .get_sampler(sampler_key)
+        .map_err(|e| anyhow::anyhow!("get sampler: {e}"))?
+        .clone();
+    Ok(IblTexture::new(texture_key, view, sampler, mip_count))
+}

@@ -7,6 +7,7 @@
 use awsm_scene_schema::{LightKind, PrimitiveShape};
 
 use crate::controller::InsertSpec;
+use crate::engine::scene::{EnvironmentConfig, IblConfig, SkyboxConfig};
 use crate::prelude::*;
 
 /// Dispatch an insert of `spec` at the scene root.
@@ -223,58 +224,135 @@ fn object_row() -> Dom {
 }
 
 fn environment_row() -> Dom {
-    use crate::engine::environment::{self, EnvPreset};
     html!("div", {
         .style("display", "flex").style("align-items", "center").style("gap", "8px")
         .child(DropButton::new().label("Environment\u{2026}").icon("env").size(BtnSize::Sm)
             .items(move |close: Close| {
-                let presets: Vec<(&'static str, EnvPreset)> = vec![
-                    ("Simple Sky", EnvPreset::SimpleSky),
-                    ("Studio White", EnvPreset::StudioWhite),
-                    ("Neutral Grey", EnvPreset::NeutralGrey),
-                ];
-                presets.into_iter().map(|(label, preset)| {
-                    let close = close.clone();
-                    MenuItem::new(label)
-                        .on_click(move || {
-                            environment::apply(preset.clone());
+                vec![
+                    MenuItem::new("Simple Sky")
+                        .on_click(clone!(close => move || {
+                            // Default = BuiltInDefault skybox + IBL (the procedural sky gradient).
+                            set_environment(EnvironmentConfig::default());
                             (close.borrow_mut())();
-                        })
-                        .render()
-                }).collect()
+                        }))
+                        .render(),
+                ]
             }).render())
         .child(Btn::new().label("HDR set\u{2026}").icon("sphere").variant(BtnVariant::Ghost).size(BtnSize::Sm)
             .on_click(open_hdr_modal).render())
     })
 }
 
-/// Photoreal HDR environment: a base-URL field → loads
-/// `<base>/{env,irradiance,skybox}.ktx2` into the IBL + skybox.
+/// Dispatch a `SetEnvironment` command — the only path to the renderer skybox/IBL
+/// (so the environment is serialized into the scene, undoable, and MCP-drivable).
+fn set_environment(env: EnvironmentConfig) {
+    spawn_local(async move {
+        if let Err(err) = controller()
+            .dispatch(EditorCommand::SetEnvironment { env })
+            .await
+        {
+            tracing::error!("ribbon: SetEnvironment failed: {err}");
+        }
+    });
+}
+
+async fn read_file_bytes(file: &web_sys::File) -> Result<Vec<u8>, String> {
+    let buf = wasm_bindgen_futures::JsFuture::from(file.array_buffer())
+        .await
+        .map_err(|e| format!("read {}: {e:?}", file.name()))?;
+    Ok(js_sys::Uint8Array::new(&buf).to_vec())
+}
+
+/// Photoreal HDR environment: three KTX2 file pickers (skybox + prefiltered env
+/// + irradiance) → stashed as assets → a `SetEnvironment` command.
 fn open_hdr_modal() {
-    use crate::engine::environment::{self, EnvPreset};
     Modal::open(|| {
-        let url = Mutable::new(String::new());
+        let skybox: Mutable<Option<web_sys::File>> = Mutable::new(None);
+        let env: Mutable<Option<web_sys::File>> = Mutable::new(None);
+        let irr: Mutable<Option<web_sys::File>> = Mutable::new(None);
         ModalCard::new("Load HDR environment")
-            .width(520.0)
+            .width(560.0)
             .child(html!("div", {
-                .style("display", "flex").style("flex-direction", "column").style("gap", "8px")
+                .style("display", "flex").style("flex-direction", "column").style("gap", "10px")
                 .child(html!("span", { .style("font-size", "12.5px").style("color", "var(--text-2)").style("line-height", "1.5")
-                    .text("Base URL of a cubemap set served as env.ktx2 / irradiance.ktx2 / skybox.ktx2.") }))
-                .child(TextInput::new(url.clone()).placeholder("https://\u{2026}/my_env").render())
+                    .text("Pick the three KTX2 cubemaps for this environment.") }))
+                .child(hdr_file_row("Skybox (.ktx2)", skybox.clone()))
+                .child(hdr_file_row("Prefiltered env (.ktx2)", env.clone()))
+                .child(hdr_file_row("Irradiance (.ktx2)", irr.clone()))
             }))
             .footer(html!("div", {
                 .style("display", "flex").style("gap", "8px")
                 .child(Btn::new().label("Cancel").variant(BtnVariant::Ghost).on_click(Modal::close).render())
                 .child(Btn::new().label("Load").icon("sphere").variant(BtnVariant::Primary)
-                    .on_click(clone!(url => move || {
-                        let u = url.get_cloned();
-                        if u.trim().is_empty() { return; }
-                        environment::apply(EnvPreset::Hdr { base_url: u });
-                        Modal::close();
+                    .on_click(clone!(skybox, env, irr => move || {
+                        let (Some(sky), Some(envf), Some(irrf)) =
+                            (skybox.get_cloned(), env.get_cloned(), irr.get_cloned())
+                        else {
+                            Toast::error("Pick all three .ktx2 files.");
+                            return;
+                        };
+                        spawn_local(async move {
+                            match load_hdr(sky, envf, irrf).await {
+                                Ok(cfg) => { set_environment(cfg); Modal::close(); }
+                                Err(e) => Toast::error(format!("HDR load failed: {e}")),
+                            }
+                        });
                     })).render())
             }))
             .render()
     });
+}
+
+fn hdr_file_row(label: &str, slot: Mutable<Option<web_sys::File>>) -> Dom {
+    html!("div", {
+        .style("display", "flex").style("align-items", "center").style("gap", "8px")
+        .child(html!("span", { .style("font-size", "12.5px").style("color", "var(--text-2)").style("min-width", "150px").text(label) }))
+        .child(html!("input" => web_sys::HtmlInputElement, {
+            .attr("type", "file").attr("accept", ".ktx2,.ktx")
+            .with_node!(el => {
+                .event(clone!(slot => move |_: events::Change| {
+                    slot.set(el.files().and_then(|f| f.get(0)));
+                }))
+            })
+        }))
+    })
+}
+
+/// Read the three picked KTX files, stash their bytes + register asset entries,
+/// and build the `EnvironmentConfig` that references them by id.
+async fn load_hdr(
+    skybox: web_sys::File,
+    env: web_sys::File,
+    irr: web_sys::File,
+) -> Result<EnvironmentConfig, String> {
+    use crate::engine::bridge::env_sync::stash_ktx;
+    use crate::engine::scene::{AssetId, AssetSource};
+    use awsm_scene_schema::AssetEntry;
+
+    async fn stash(file: web_sys::File) -> Result<AssetId, String> {
+        let bytes = read_file_bytes(&file).await?;
+        let id = AssetId::new();
+        controller()
+            .scene
+            .assets
+            .lock()
+            .unwrap()
+            .entries
+            .insert(id, AssetEntry::new(AssetSource::Filename(file.name())));
+        stash_ktx(id, bytes);
+        Ok(id)
+    }
+
+    let sky_id = stash(skybox).await?;
+    let env_id = stash(env).await?;
+    let irr_id = stash(irr).await?;
+    Ok(EnvironmentConfig {
+        skybox: SkyboxConfig::Ktx { asset_id: sky_id },
+        ibl: IblConfig::Ktx {
+            prefiltered_asset_id: env_id,
+            irradiance_asset_id: irr_id,
+        },
+    })
 }
 
 fn camera_row() -> Dom {
