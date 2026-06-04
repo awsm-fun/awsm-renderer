@@ -169,14 +169,36 @@ fn kind_editor(node: &Arc<Node>) -> Dom {
         NodeKind::Line(def) => line_editor(node, &def),
         NodeKind::Decal(cfg) => decal_editor(node, &cfg),
         NodeKind::ParticleEmitter(def) => particle_editor(node, &def),
-        other => Section::new(kind_label(&other))
-            .dense(true)
-            .child(html!("div", {
-                .style("font-size", "12px").style("color", "var(--text-3)").style("line-height", "1.5")
-                .text("Properties for this kind land here.")
-            }))
-            .render(),
+        // A captured-geometry Mesh shares the Primitive's per-mesh surface:
+        // material (built-in/dynamic + per-mesh uniforms) + shadow flags.
+        NodeKind::Mesh {
+            inline_material,
+            custom_material,
+            shadow,
+            ..
+        } => html!("div", {
+            .child(material_editor(node, &inline_material, custom_material.is_some()))
+            .child(mesh_shadow_editor(node, shadow))
+        }),
+        // A Group is purely an organisational transform parent — name + transform
+        // (above) are its full property set.
+        NodeKind::Group => info_section("Group", "An organizational parent. Its children inherit this node's transform; it has no geometry of its own."),
+        // A Model references an imported glTF/glb; the per-node material/instancing
+        // binding is a follow-on, so surface what it points at.
+        NodeKind::Model(_) => info_section("Model", "An imported glTF/glb model. It renders from the import; per-node material overrides land in a later pass."),
     }
+}
+
+/// A small read-only info Section (used for kinds whose only settable properties
+/// are the universal name/transform/visibility above).
+fn info_section(title: &str, body: &str) -> Dom {
+    Section::new(title)
+        .dense(true)
+        .child(html!("div", {
+            .style("font-size", "12px").style("color", "var(--text-3)").style("line-height", "1.5")
+            .text(body)
+        }))
+        .render()
 }
 
 // ── Sweep / Instances curve-reference pickers ───────────────────────────────
@@ -2490,23 +2512,4 @@ fn asset_swatch_css(source: &AssetSource) -> String {
 fn rgba_css(c: [f32; 4]) -> String {
     let b = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
     format!("rgb({}, {}, {})", b(c[0]), b(c[1]), b(c[2]))
-}
-
-fn kind_label(kind: &NodeKind) -> &'static str {
-    match kind {
-        NodeKind::Group => "Group",
-        NodeKind::Model(_) => "Model",
-        NodeKind::Light(_) => "Light",
-        NodeKind::Collider(_) => "Collider",
-        NodeKind::Camera(_) => "Camera",
-        NodeKind::Primitive { .. } => "Geometry",
-        NodeKind::Mesh { .. } => "Mesh",
-        NodeKind::Curve(_) => "Curve",
-        NodeKind::SweepAlongCurve { .. } => "Sweep",
-        NodeKind::InstancesAlongCurve(_) => "Instances",
-        NodeKind::Line(_) => "Line",
-        NodeKind::Sprite(_) => "Sprite",
-        NodeKind::ParticleEmitter(_) => "Particle Emitter",
-        NodeKind::Decal(_) => "Decal",
-    }
 }
