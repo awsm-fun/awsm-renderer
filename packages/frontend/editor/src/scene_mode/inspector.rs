@@ -1073,20 +1073,27 @@ fn build_material_select(node: &Arc<Node>) -> Option<Dom> {
         .iter()
         .map(|m| (m.id, m.name.get_cloned()))
         .collect();
-    let current = match node.kind.get_cloned() {
+    let current: Option<AssetId> = match node.kind.get_cloned() {
         NodeKind::Primitive {
             custom_material: Some(inst),
             ..
-        } => inst.material,
-        _ => AssetId::default(),
+        } => Some(inst.material),
+        _ => None,
     };
-    if mats.is_empty() && current == AssetId::default() {
+    if mats.is_empty() && current.is_none() {
         return None;
     }
-    let mut options: Vec<(String, String)> =
-        vec![(AssetId::default().to_string(), "Built-in (inline)".into())];
+    // Stable sentinel for the unassigned "Built-in (inline)" option — `AssetId`
+    // has no stable nil (its `Default` mints a fresh random UUID), so we key the
+    // dropdown options with a fixed string instead.
+    const NONE: &str = "__none__";
+    let mut options: Vec<(String, String)> = vec![(NONE.to_string(), "Built-in (inline)".into())];
     options.extend(mats.iter().map(|(id, name)| (id.to_string(), name.clone())));
-    let sel = Mutable::new(current.to_string());
+    let sel = Mutable::new(
+        current
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| NONE.to_string()),
+    );
     let lookup: Vec<(String, AssetId)> = mats.iter().map(|(id, _)| (id.to_string(), *id)).collect();
     let node_id = node.id;
     spawn_local(clone!(sel => async move {
