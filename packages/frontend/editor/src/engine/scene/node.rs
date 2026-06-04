@@ -69,7 +69,18 @@ impl Node {
             LightKind::Point => "Point Light",
             LightKind::Spot => "Spot Light",
         };
-        Self::new_inner(label, NodeKind::Light(LightConfig::default_for(kind)))
+        let node = Self::new_inner(label, NodeKind::Light(LightConfig::default_for(kind)));
+        // Identity rotation aims a directional/spot beam straight along -Z
+        // (horizontal), which grazes a ground plane and casts no visible
+        // shadow. Tilt new directional/spot lights down ~50° so they light and
+        // shadow the scene out of the box — the convention for a key light from
+        // above. Point lights are omnidirectional, so they're left untouched.
+        if matches!(kind, LightKind::Directional | LightKind::Spot) {
+            let mut trs = node.transform.get();
+            trs.rotation = glam::Quat::from_rotation_x(-50f32.to_radians()).to_array();
+            node.transform.set(trs);
+        }
+        node
     }
 
     pub fn new_collision_box(name: impl Into<String>) -> Arc<Self> {
