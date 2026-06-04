@@ -101,3 +101,23 @@ pub fn main() {
 pub fn editor_snapshot_json() -> String {
     controller::controller().snapshot_json()
 }
+
+/// External-dispatch seam (§5.5): decode a JSON `EditorCommand` and dispatch it
+/// through the controller. This is the write half of the future MCP transport
+/// (decode command → dispatch); built now only as the seam + for scriptable,
+/// gesture-free testing. Returns `"ok"` on a valid decode (dispatch is async and
+/// spawned) or a decode error.
+#[wasm_bindgen]
+pub fn editor_dispatch_json(cmd_json: &str) -> String {
+    match serde_json::from_str::<controller::EditorCommand>(cmd_json) {
+        Ok(cmd) => {
+            spawn_local(async move {
+                if let Err(err) = controller::controller().dispatch(cmd).await {
+                    tracing::error!("dispatch failed: {err}");
+                }
+            });
+            "ok".to_string()
+        }
+        Err(err) => format!("decode error: {err}"),
+    }
+}

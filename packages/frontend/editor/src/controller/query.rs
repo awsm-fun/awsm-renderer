@@ -9,15 +9,18 @@
 use serde::{Deserialize, Serialize};
 
 use super::command::EditorMode;
+use super::node_spec::NodeQuery;
 
 /// A serializable snapshot of editor state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EditorSnapshot {
     pub mode: EditorMode,
     pub project: ProjectSnapshot,
+    /// The scene tree (id / name / kind / children), top-level first.
+    pub scene_tree: Vec<NodeQuery>,
     pub undo_depth: usize,
     pub redo_depth: usize,
-    // scene_tree / selection / materials / compile_errors land in M4+.
+    // selection / materials / compile_errors land as those models arrive.
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -11,10 +11,15 @@
 //! built now.
 
 mod command;
+mod node_spec;
 mod query;
 mod source;
 
 pub use command::{EditorCommand, EditorMode};
+// InsertSpec is dispatched by the ribbon (M4); NodeQuery is the snapshot
+// projection — re-exported now for those consumers.
+#[allow(unused_imports)]
+pub use node_spec::{InsertSpec, NodeQuery, NodeSpec};
 pub use query::{EditorSnapshot, ProjectSnapshot};
 // The source/sink seam is wired into the loader/saver in M11; re-export now so
 // the contract is reachable + documented.
@@ -26,7 +31,9 @@ use std::rc::Rc;
 
 use awsm_web_shared::prelude::{Mutable, Toast};
 
+use crate::engine::scene::{mutate, NodeId, Scene};
 use crate::error::EditorResult;
+use std::sync::Arc;
 
 thread_local! {
     static CONTROLLER: OnceCell<EditorController> = const { OnceCell::new() };
@@ -47,6 +54,8 @@ pub fn controller() -> EditorController {
 /// The command/query authority. Clone is cheap — every field is a shared handle.
 #[derive(Clone)]
 pub struct EditorController {
+    /// The live, reactive scene tree (the canonical scene state).
+    pub scene: Arc<Scene>,
     pub mode: Mutable<EditorMode>,
     pub project_name: Mutable<String>,
     pub dirty: Mutable<bool>,
@@ -62,6 +71,7 @@ pub struct EditorController {
 impl EditorController {
     fn new() -> Self {
         Self {
+            scene: Scene::new(),
             mode: Mutable::new(EditorMode::default()),
             project_name: Mutable::new("untitled.awsm".to_string()),
             dirty: Mutable::new(false),
@@ -99,8 +109,9 @@ impl EditorController {
                 Ok(None)
             }
             EditorCommand::NewProject => {
-                // Project-level reset. Full scene-clear + undo-restore lands with
-                // the project model (M11); for now reset the label/flags.
+                // Project-level reset (clears the undo log — not itself undoable).
+                self.scene.nodes.lock_mut().clear();
+                self.scene.bump_revision();
                 self.project_name.set("untitled.awsm".to_string());
                 self.missing_assets.set(Vec::new());
                 self.dirty.set_neq(false);
@@ -109,6 +120,66 @@ impl EditorController {
                 self.refresh_history_signals();
                 Toast::info("New project");
                 Ok(None)
+            }
+            EditorCommand::Insert { spec, parent } => {
+                let node = spec.build();
+                let id = node.id;
+                if mutate::insert_under(&self.scene, parent, node) {
+                    self.scene.bump_revision();
+                    Ok(Some(EditorCommand::Delete { id }))
+                } else {
+                    Ok(None)
+                }
+            }
+            EditorCommand::InsertTree {
+                node,
+                parent,
+                index,
+            } => {
+                let arc = node.to_node();
+                let id = arc.id;
+                // Insert at the captured position so undo lands the subtree back
+                // where it was; fall back to append if the slot is gone.
+                let ok = match (parent, index) {
+                    (None, Some(idx)) => {
+                        let mut nodes = self.scene.nodes.lock_mut();
+                        let idx = idx.min(nodes.len());
+                        nodes.insert_cloned(idx, arc);
+                        true
+                    }
+                    (Some(pid), Some(idx)) => match mutate::find_by_id(&self.scene, pid) {
+                        Some(p) => {
+                            let mut children = p.children.lock_mut();
+                            let idx = idx.min(children.len());
+                            children.insert_cloned(idx, arc);
+                            true
+                        }
+                        None => false,
+                    },
+                    (parent, None) => mutate::insert_under(&self.scene, parent, arc),
+                };
+                if ok {
+                    self.scene.bump_revision();
+                    Ok(Some(EditorCommand::Delete { id }))
+                } else {
+                    Ok(None)
+                }
+            }
+            EditorCommand::Delete { id } => {
+                let parent = mutate::find_parent(&self.scene, id).map(|p| p.id);
+                let index = node_index(&self.scene, id, parent);
+                match mutate::remove_by_id(&self.scene, id) {
+                    Some(node) => {
+                        let spec = NodeSpec::from_node(&node);
+                        self.scene.bump_revision();
+                        Ok(Some(EditorCommand::InsertTree {
+                            node: Box::new(spec),
+                            parent,
+                            index,
+                        }))
+                    }
+                    None => Ok(None),
+                }
             }
             EditorCommand::LoadProjectFromUrl { base_url } => {
                 // Seam present; the fetch + TOML deserialize lands in M11.
@@ -155,6 +226,13 @@ impl EditorController {
 
     /// A serializable read of editor state (§5.5) for external inspection.
     pub fn snapshot(&self) -> EditorSnapshot {
+        let scene_tree = self
+            .scene
+            .nodes
+            .lock_ref()
+            .iter()
+            .map(|n| NodeSpec::from_node(n).to_query())
+            .collect();
         EditorSnapshot {
             mode: self.mode.get(),
             project: ProjectSnapshot {
@@ -162,6 +240,7 @@ impl EditorController {
                 dirty: self.dirty.get(),
                 missing_assets: self.missing_assets.get_cloned(),
             },
+            scene_tree,
             undo_depth: self.undo.borrow().len(),
             redo_depth: self.redo.borrow().len(),
         }
@@ -171,5 +250,16 @@ impl EditorController {
     /// return). Used by headless tests + the future external transport.
     pub fn snapshot_json(&self) -> String {
         serde_json::to_string(&self.snapshot()).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+    }
+}
+
+/// Index of `id` within its parent's children (or the scene root when `parent`
+/// is `None`). Used to capture a node's position before deletion so undo can
+/// restore it in place.
+fn node_index(scene: &Scene, id: NodeId, parent: Option<NodeId>) -> Option<usize> {
+    match parent {
+        None => scene.nodes.lock_ref().iter().position(|n| n.id == id),
+        Some(pid) => mutate::find_by_id(scene, pid)
+            .and_then(|p| p.children.lock_ref().iter().position(|n| n.id == id)),
     }
 }

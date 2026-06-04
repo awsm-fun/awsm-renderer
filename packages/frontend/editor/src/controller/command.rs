@@ -11,6 +11,9 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::node_spec::{InsertSpec, NodeSpec};
+use crate::engine::scene::NodeId;
+
 /// Top-level workspace mode (the Scene/Material switch in the top bar).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -30,6 +33,26 @@ pub enum EditorCommand {
 
     /// Start a fresh, empty project.
     NewProject,
+
+    /// Insert a fresh node (from a ribbon Insert action) under `parent` (root
+    /// when `None`). Inverse: `Delete` of the new node.
+    Insert {
+        spec: InsertSpec,
+        parent: Option<NodeId>,
+    },
+
+    /// Re-insert a captured node subtree at `index` under `parent` (preserving
+    /// ids). This is the inverse of `Delete` — undoing a delete restores the
+    /// exact subtree. `node` is boxed (it's the largest variant payload).
+    InsertTree {
+        node: Box<NodeSpec>,
+        parent: Option<NodeId>,
+        index: Option<usize>,
+    },
+
+    /// Remove the node with `id` (and its subtree). Inverse: `InsertTree` of the
+    /// captured subtree at its original position.
+    Delete { id: NodeId },
 
     /// Load a project from a base URL (gesture-free; fetches `<base>/project.toml`
     /// and the referenced material/asset files). The external/MCP + headless-test
@@ -59,6 +82,8 @@ impl EditorCommand {
         match self {
             EditorCommand::SwitchMode { .. } => "Switch mode",
             EditorCommand::NewProject => "New project",
+            EditorCommand::Insert { .. } | EditorCommand::InsertTree { .. } => "Insert node",
+            EditorCommand::Delete { .. } => "Delete node",
             EditorCommand::LoadProjectFromUrl { .. } => "Load project",
             EditorCommand::ImportModelFromUrl { .. } => "Import model",
             EditorCommand::ImportTextureFromUrl { .. } => "Import texture",

@@ -7,3 +7,4 @@ pub mod canvas;
 pub mod config;
 pub mod context;
 pub mod render_loop;
+pub mod scene;
