@@ -10,6 +10,7 @@ mod controller;
 mod engine;
 mod error;
 mod prelude;
+mod scene_mode;
 
 use awsm_web_shared::{logger, prelude::*, theme};
 use dominator::stylesheet;

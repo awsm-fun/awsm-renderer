@@ -15,7 +15,9 @@ use crate::atoms::button::{Btn, BtnSize, BtnVariant};
 use crate::atoms::icon::Icon;
 use crate::prelude::*;
 
-type Close = Rc<RefCell<Box<dyn FnMut()>>>;
+/// A dismiss callback handed to popup/menu builders so an item can close the
+/// overlay before running its action.
+pub type Close = Rc<RefCell<Box<dyn FnMut()>>>;
 
 fn make_close(f: impl FnMut() + 'static) -> Close {
     Rc::new(RefCell::new(Box::new(f)))
@@ -95,7 +97,6 @@ pub fn popup(
             .style("border-radius", "var(--r3)")
             .style("box-shadow", "var(--shadow-3)")
             .style("padding", "5px")
-            .event(|e: events::Click| e.stop_propagation())
             .children(children)
         }))
     })
@@ -238,8 +239,9 @@ pub struct DropButton {
     variant: BtnVariant,
     size: BtnSize,
     chevron: bool,
-    // Builder receives a "close" callback; returns the menu rows + separators.
-    items: Option<Box<dyn FnOnce(Close) -> Vec<Dom>>>,
+    // Builds the menu rows on each open (handed a `Close` callback). `Fn` (not
+    // `FnOnce`) so reopening the dropdown rebuilds fresh rows.
+    items: Option<Rc<dyn Fn(Close) -> Vec<Dom>>>,
 }
 
 impl DropButton {
@@ -273,17 +275,16 @@ impl DropButton {
         self.chevron = chevron;
         self
     }
-    /// `items` builds the menu rows; it is handed a `Close` it can call inside
-    /// any item to dismiss the popup.
-    pub fn items(mut self, f: impl FnOnce(Close) -> Vec<Dom> + 'static) -> Self {
-        self.items = Some(Box::new(f));
+    /// `items` builds the menu rows on each open; it is handed a `Close` it can
+    /// call inside any item to dismiss the popup.
+    pub fn items(mut self, f: impl Fn(Close) -> Vec<Dom> + 'static) -> Self {
+        self.items = Some(Rc::new(f));
         self
     }
 
     pub fn render(self) -> Dom {
         let rect: Mutable<Option<AnchorRect>> = Mutable::new(None);
         let items = self.items;
-        let items_cell = Rc::new(RefCell::new(items));
 
         let mut trigger = Btn::new().variant(self.variant).size(self.size);
         if let Some(l) = self.label {
@@ -311,16 +312,19 @@ impl DropButton {
                     rect.set(Some(AnchorRect::from_dom_rect(&r)));
                 })).render())
             })
-            .child_signal(rect.signal().map(move |maybe| {
-                maybe.map(|anchor| {
+            .child_signal(rect.signal().map(clone!(rect, items => move |maybe| {
+                maybe.map(clone!(rect, items => move |anchor| {
                     let close = {
                         let rect = rect.clone();
                         make_close(move || rect.set(None))
                     };
-                    let rows = items_cell.borrow_mut().take().map(|f| f(close.clone())).unwrap_or_default();
+                    let rows = match &items {
+                        Some(f) => f(close.clone()),
+                        None => Vec::new(),
+                    };
                     popup(anchor, Align::Left, None, 360.0, clone!(rect => move || rect.set(None)), rows)
-                })
-            }))
+                }))
+            })))
         })
     }
 }
@@ -566,7 +570,6 @@ pub fn context_menu(x: f64, y: f64, on_close: impl FnMut() + 'static, rows: Vec<
             .style("border-radius", "var(--r3)")
             .style("box-shadow", "var(--shadow-3)")
             .style("padding", "5px")
-            .event(|e: events::Click| e.stop_propagation())
             .children(rows)
         }))
     })

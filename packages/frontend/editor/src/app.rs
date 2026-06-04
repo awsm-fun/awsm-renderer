@@ -234,10 +234,18 @@ fn workspace(ctrl: &EditorController) -> Dom {
         .child(html!("div", {
             .style("position", "absolute")
             .style("inset", "0")
-            .style_signal("display", ctrl.mode.signal().map(|m| if m == EditorMode::Scene { "block" } else { "none" }))
-            // M3: the Scene workspace is the bare viewport. Outliner + inspector
-            // chrome wrap it in M5–M7.
-            .child(viewport_slot())
+            .style("display", "flex")
+            .style("flex-direction", "column")
+            .style_signal("display", ctrl.mode.signal().map(|m| if m == EditorMode::Scene { "flex" } else { "none" }))
+            // M4: ribbon over the viewport. Outliner + inspector chrome wrap the
+            // viewport row in M5–M7.
+            .child(crate::scene_mode::ribbon::render())
+            .child(html!("div", {
+                .style("flex", "1")
+                .style("min-height", "0")
+                .style("position", "relative")
+                .child(viewport_slot())
+            }))
         }))
         .child(html!("div", {
             .style("position", "absolute")
