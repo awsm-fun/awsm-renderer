@@ -2,7 +2,7 @@
 
 #[cfg(feature = "texture-export")]
 use std::sync::LazyLock;
-use std::{borrow::Cow, cell::RefCell};
+use std::{borrow::Cow, cell::RefCell, collections::HashMap};
 
 use crate::error::{AwsmCoreError, Result};
 use crate::texture::mega_texture::mipmap::{generate_mipmaps, TileInfo};
@@ -12,7 +12,7 @@ use crate::{
     bind_groups::{BindGroupDescriptor, BindGroupEntry, BindGroupResource},
     buffers::{BufferBinding, BufferDescriptor, BufferUsage},
     command::compute_pass::ComputePassDescriptor,
-    renderer::AwsmRendererWebGpu,
+    renderer::{AwsmRendererWebGpu, DeviceId},
     texture::{
         mega_texture::{
             pipeline::get_atlas_pipeline, MegaTexture, MegaTextureAtlas, MegaTextureLayer,
@@ -22,9 +22,10 @@ use crate::{
     },
 };
 
+// Per-device staging uniform buffer: a GpuBuffer is device-bound, so each
+// renderer's device keys into its own slot (see `DeviceId`).
 thread_local! {
-    // key is TextureFormat as u32
-    static UNIFORM_BUFFER: RefCell<Option<web_sys::GpuBuffer>> = const { RefCell::new(None) };
+    static UNIFORM_BUFFER: RefCell<HashMap<DeviceId, web_sys::GpuBuffer>> = RefCell::new(HashMap::new());
 }
 
 impl<ID> MegaTexture<ID> {
@@ -189,7 +190,9 @@ impl<ID> MegaTextureLayer<ID> {
                 &ComputePassDescriptor::new(Some("Atlas Compute Pass")).into(),
             ));
 
-            let needs_create = UNIFORM_BUFFER.with(|buffer_cell| buffer_cell.borrow().is_none());
+            let device = gpu.device_id();
+            let needs_create =
+                UNIFORM_BUFFER.with(|buffer_cell| !buffer_cell.borrow().contains_key(&device));
 
             if needs_create {
                 let uniform_buffer = gpu.create_buffer(
@@ -202,12 +205,12 @@ impl<ID> MegaTextureLayer<ID> {
                 )?;
 
                 UNIFORM_BUFFER.with(move |buffer_cell| {
-                    *buffer_cell.borrow_mut() = Some(uniform_buffer);
+                    buffer_cell.borrow_mut().insert(device, uniform_buffer);
                 });
             }
 
             let uniform_buffer =
-                UNIFORM_BUFFER.with(|buffer_cell| buffer_cell.borrow().clone().unwrap());
+                UNIFORM_BUFFER.with(|buffer_cell| buffer_cell.borrow().get(&device).cloned().unwrap());
 
             let entry_data = [
                 entry.pixel_offset[0],

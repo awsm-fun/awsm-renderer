@@ -14,7 +14,7 @@ use crate::{
         layout::{PipelineLayoutDescriptor, PipelineLayoutKind},
         ComputePipelineDescriptor, ProgrammableStage,
     },
-    renderer::AwsmRendererWebGpu,
+    renderer::{AwsmRendererWebGpu, DeviceId},
     shaders::{ShaderModuleDescriptor, ShaderModuleExt},
     texture::{
         texture_format_to_wgsl_storage, TextureFormat, TextureFormatKey, TextureSampleType,
@@ -88,6 +88,8 @@ thread_local! {
 
 #[derive(Hash, Debug, Eq, PartialEq)]
 struct LookupKey {
+    // Scopes the device-bound compute pipeline per-device (see `DeviceId`).
+    pub device: DeviceId,
     pub texture_format: TextureFormatKey,
     pub is_array: bool,
 }
@@ -365,6 +367,7 @@ async fn get_pipeline(
     is_array: bool,
 ) -> Result<MipmapPipeline> {
     let key = LookupKey {
+        device: gpu.device_id(),
         texture_format: format.into(),
         is_array,
     };

@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 
 use crate::bind_groups::{
     BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindGroupLayoutResource, BufferBindingLayout,
@@ -7,14 +8,15 @@ use crate::bind_groups::{
 use crate::error::Result;
 use crate::pipeline::layout::{PipelineLayoutDescriptor, PipelineLayoutKind};
 use crate::pipeline::{ComputePipelineDescriptor, ProgrammableStage};
-use crate::renderer::AwsmRendererWebGpu;
+use crate::renderer::{AwsmRendererWebGpu, DeviceId};
 use crate::shaders::{ShaderModuleDescriptor, ShaderModuleExt};
 use crate::texture::{TextureFormat, TextureSampleType, TextureViewDimension};
 
+// Per-device: the atlas compute pipeline + its shader module are device-bound,
+// so each renderer's device keys into its own slot (see `DeviceId`).
 thread_local! {
-    // key is TextureFormat as u32
-    static ATLAS_PIPELINE: RefCell<Option<AtlasPipeline>> = const { RefCell::new(None) };
-    static ATLAS_SHADER_MODULE: RefCell<Option<web_sys::GpuShaderModule>> = const { RefCell::new(None) };
+    static ATLAS_PIPELINE: RefCell<HashMap<DeviceId, AtlasPipeline>> = RefCell::new(HashMap::new());
+    static ATLAS_SHADER_MODULE: RefCell<HashMap<DeviceId, web_sys::GpuShaderModule>> = RefCell::new(HashMap::new());
 }
 
 #[derive(Clone)]
@@ -24,13 +26,15 @@ pub(super) struct AtlasPipeline {
 }
 
 pub(super) async fn get_atlas_pipeline(gpu: &AwsmRendererWebGpu) -> Result<AtlasPipeline> {
-    let pipeline = ATLAS_PIPELINE.with(|pipeline_cell| pipeline_cell.borrow().clone());
+    let device = gpu.device_id();
+    let pipeline = ATLAS_PIPELINE.with(|pipeline_cell| pipeline_cell.borrow().get(&device).cloned());
 
     if let Some(pipeline) = pipeline {
         return Ok(pipeline);
     }
 
-    let shader_module = ATLAS_SHADER_MODULE.with(|shader_module| shader_module.borrow().clone());
+    let shader_module =
+        ATLAS_SHADER_MODULE.with(|shader_module| shader_module.borrow().get(&device).cloned());
 
     let shader_module = match shader_module {
         Some(module) => module,
@@ -43,7 +47,9 @@ pub(super) async fn get_atlas_pipeline(gpu: &AwsmRendererWebGpu) -> Result<Atlas
             shader_module.validate_shader().await?;
 
             ATLAS_SHADER_MODULE.with(|shader_module_rc| {
-                *shader_module_rc.borrow_mut() = Some(shader_module.clone());
+                shader_module_rc
+                    .borrow_mut()
+                    .insert(device, shader_module.clone());
             });
 
             shader_module
@@ -106,7 +112,7 @@ pub(super) async fn get_atlas_pipeline(gpu: &AwsmRendererWebGpu) -> Result<Atlas
             compute_pipeline: pipeline,
             bind_group_layout,
         };
-        *pipeline_cell.borrow_mut() = Some(pipeline.clone());
+        pipeline_cell.borrow_mut().insert(device, pipeline.clone());
         Ok(pipeline)
     })
 }

@@ -23,7 +23,7 @@ use crate::{
         vertex::VertexState,
         RenderPipelineDescriptor,
     },
-    renderer::AwsmRendererWebGpu,
+    renderer::{AwsmRendererWebGpu, DeviceId},
     shaders::{ShaderModuleDescriptor, ShaderModuleExt},
     texture::{TextureFormat, TextureFormatKey, TextureSampleType, TextureViewDimension},
 };
@@ -37,6 +37,9 @@ pub struct BlitPipeline {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct BlitPipelineCacheKey {
+    // Scopes the cache per-device so a second renderer (different device)
+    // never reuses device-A's pipeline. See `DeviceId`.
+    device: DeviceId,
     dst_format: TextureFormatKey,
     dst_sample_count: Option<u32>,
 }
@@ -155,6 +158,7 @@ pub async fn blit_get_pipeline(
     dst_sample_count: Option<u32>,
 ) -> Result<BlitPipeline> {
     let key = BlitPipelineCacheKey {
+        device: gpu.device_id(),
         dst_format: dst_format.into(),
         dst_sample_count,
     };

@@ -303,6 +303,34 @@ preview mesh + edited material + env) to a preview canvas driven by the one scen
 renderer (swap what it draws by mode), instead of a second instance. Less
 general (no multi-renderer games yet) but no renderer-core churn.
 
+### 6.5 M1 RESULT (decided — SHIP the refactor; fallback NOT taken)
+Audited all 7 device-bound `thread_local!` GPU caches (§6.1) + the
+`AwsmRendererWebGpu` device wrapper. Finding: no device-identity mechanism
+existed; all caches keyed on semantic props only (format/MSAA) → a 2nd renderer
+with a different device reused device-A objects → cross-device validation errors.
+
+**Refactor shipped:** added a `DeviceId` newtype (monotonic counter assigned once
+in `AwsmRendererWebGpuBuilder::build()`, stored on `AwsmRendererWebGpu`, exposed
+via `device_id()`). All 7 caches now key by `DeviceId`: blit / mipmap / mega-
+texture-mipmap / convert-srgb gained a `device` field in their `HashMap` key;
+the singleton BRDF-LUT pipeline+sampler, atlas pipeline+shader-module, and
+mega-texture staging buffer went `RefCell<Option<T>>` → `RefCell<HashMap<DeviceId,T>>`.
+The `edge_buffers` `Mutex<bool>` are log-once guards (left as-is); `scheduler.rs`
+has no offending statics.
+
+**Perf gate (§6.3) — PASS.** The refactor changes only cache *keys*, never any
+GPU-object creation path, so for a single device the behaviour is bit-identical
+by construction (one id, same objects, same O(1) lookups — no per-frame cost; the
+one extra per-device BRDF-LUT generation is the intended creation-time cost).
+Empirically confirmed: `model-tests` renders the Fox in a full IBL environment
+(reflective metal = BRDF-LUT, mipmapped surfaces, HDR skybox = blit) with **zero
+console / GPU-validation errors** in real Chrome after the change. `task lint`
+green. (No automated golden-image/checksum harness exists in-repo — the audit
+confirmed the tuning scenes are manual-inspection fixtures — so the "bit-identical"
+claim rests on the keys-only nature of the change + the clean render, not a
+numeric diff.) Multi-instance is now supported by construction; the M10 Material
+preview will be the first second-instance.
+
 ---
 
 ## 7. Scene mode (100% prototype fidelity)

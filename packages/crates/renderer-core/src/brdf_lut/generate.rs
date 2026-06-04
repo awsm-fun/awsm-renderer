@@ -1,6 +1,7 @@
 //! BRDF LUT generation utilities.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 
 use crate::bind_groups::BindGroupLayoutDescriptor;
 use crate::command::render_pass::{ColorAttachment, RenderPassDescriptor};
@@ -10,14 +11,18 @@ use crate::pipeline::fragment::{ColorTargetState, FragmentState};
 use crate::pipeline::layout::{PipelineLayoutDescriptor, PipelineLayoutKind};
 use crate::pipeline::vertex::VertexState;
 use crate::pipeline::RenderPipelineDescriptor;
-use crate::renderer::AwsmRendererWebGpu;
+use crate::renderer::{AwsmRendererWebGpu, DeviceId};
 use crate::sampler::{AddressMode, FilterMode, MipmapFilterMode, SamplerDescriptor};
 use crate::shaders::{ShaderModuleDescriptor, ShaderModuleExt};
 use crate::texture::{Extent3d, TextureDescriptor, TextureFormat, TextureUsage};
 
+// Per-device caches: the BRDF-LUT pipeline + sampler are device-bound GPU
+// objects, so a second renderer (different device) keys into its own slot
+// rather than reusing the first device's pipeline (which would throw a
+// cross-device validation error). See `DeviceId`.
 thread_local! {
-    static BRDF_LUT_PIPELINE: RefCell<Option<web_sys::GpuRenderPipeline>> = const { RefCell::new(None) };
-    static BRDF_SAMPLER: RefCell<Option<web_sys::GpuSampler>> = const { RefCell::new(None) };
+    static BRDF_LUT_PIPELINE: RefCell<HashMap<DeviceId, web_sys::GpuRenderPipeline>> = RefCell::new(HashMap::new());
+    static BRDF_SAMPLER: RefCell<HashMap<DeviceId, web_sys::GpuSampler>> = RefCell::new(HashMap::new());
 }
 
 /// Generated BRDF lookup texture and sampler.
@@ -107,7 +112,10 @@ impl BrdfLut {
 }
 
 async fn get_pipeline(gpu: &AwsmRendererWebGpu) -> Result<web_sys::GpuRenderPipeline> {
-    if let Some(pipeline) = BRDF_LUT_PIPELINE.with(|pipeline_cell| pipeline_cell.borrow().clone()) {
+    let device = gpu.device_id();
+    if let Some(pipeline) =
+        BRDF_LUT_PIPELINE.with(|pipeline_cell| pipeline_cell.borrow().get(&device).cloned())
+    {
         return Ok(pipeline);
     }
 
@@ -149,13 +157,18 @@ async fn get_pipeline(gpu: &AwsmRendererWebGpu) -> Result<web_sys::GpuRenderPipe
         .await?;
 
     BRDF_LUT_PIPELINE.with(|pipeline_cell| {
-        *pipeline_cell.borrow_mut() = Some(render_pipeline.clone());
+        pipeline_cell
+            .borrow_mut()
+            .insert(device, render_pipeline.clone());
         Ok(render_pipeline)
     })
 }
 
 async fn get_sampler(gpu: &AwsmRendererWebGpu) -> Result<web_sys::GpuSampler> {
-    if let Some(sampler) = BRDF_SAMPLER.with(|sampler_cell| sampler_cell.borrow().clone()) {
+    let device = gpu.device_id();
+    if let Some(sampler) =
+        BRDF_SAMPLER.with(|sampler_cell| sampler_cell.borrow().get(&device).cloned())
+    {
         return Ok(sampler);
     }
 
@@ -175,7 +188,7 @@ async fn get_sampler(gpu: &AwsmRendererWebGpu) -> Result<web_sys::GpuSampler> {
     ));
 
     BRDF_SAMPLER.with(|sampler_cell| {
-        *sampler_cell.borrow_mut() = Some(sampler.clone());
+        sampler_cell.borrow_mut().insert(device, sampler.clone());
         Ok(sampler)
     })
 }

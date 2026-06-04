@@ -14,7 +14,7 @@ use crate::{
         layout::{PipelineLayoutDescriptor, PipelineLayoutKind},
         ComputePipelineDescriptor, ProgrammableStage,
     },
-    renderer::AwsmRendererWebGpu,
+    renderer::{AwsmRendererWebGpu, DeviceId},
     shaders::{ShaderModuleDescriptor, ShaderModuleExt},
     texture::{
         texture_format_to_wgsl_storage, TextureFormat, TextureFormatKey, TextureSampleType,
@@ -28,8 +28,10 @@ struct ConvertSrgbPipeline {
     pub bind_group_layout: web_sys::GpuBindGroupLayout,
 }
 
+// Per-device: the compute pipeline is device-bound, so the cache keys on
+// `(DeviceId, format)` rather than format alone (see `DeviceId`).
 thread_local! {
-    static CONVERT_SRGB_PIPELINE: RefCell<HashMap<TextureFormatKey, ConvertSrgbPipeline>> = RefCell::new(HashMap::new());
+    static CONVERT_SRGB_PIPELINE: RefCell<HashMap<(DeviceId, TextureFormatKey), ConvertSrgbPipeline>> = RefCell::new(HashMap::new());
 }
 
 // sRGB to linear conversion shader
@@ -171,7 +173,7 @@ async fn get_pipeline(
     gpu: &AwsmRendererWebGpu,
     format: TextureFormat,
 ) -> Result<ConvertSrgbPipeline> {
-    let key: TextureFormatKey = format.into();
+    let key: (DeviceId, TextureFormatKey) = (gpu.device_id(), format.into());
 
     if let Some(pipeline) =
         CONVERT_SRGB_PIPELINE.with(|pipeline_cell| pipeline_cell.borrow().get(&key).cloned())
