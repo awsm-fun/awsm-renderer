@@ -71,4 +71,7 @@ features = [
     "FileSystemRemoveOptions",
     "FileSystemCreateWritableOptions",
     "KeyboardEvent",
+    "Blob",
+    "File",
+    "Url",
 ]

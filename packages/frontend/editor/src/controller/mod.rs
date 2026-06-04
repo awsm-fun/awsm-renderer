@@ -615,26 +615,37 @@ impl EditorController {
                 Ok(None)
             }
             EditorCommand::ImportModelFromUrl { url } => {
-                match crate::engine::bridge::gltf::import(&url).await {
-                    Ok(name) => {
-                        // A tracking node so the import appears in the Outliner.
-                        // (The node⇄mesh binding + teardown is the follow-on; the
-                        // glTF renders directly from populate today.)
-                        let node =
-                            crate::engine::scene::node::Node::new_group(format!("Model: {name}"));
-                        mutate::insert_under(&self.scene, None, node);
-                        self.scene.bump_revision();
-                        self.dirty.set_neq(true);
-                        Toast::info(format!("Imported {name}"));
-                    }
-                    Err(e) => Toast::error(format!("Import failed: {e}")),
-                }
+                self.finish_model_import(crate::engine::bridge::gltf::import(&url).await);
+                Ok(None)
+            }
+            EditorCommand::ImportModelFromFile { name, url } => {
+                let result = crate::engine::bridge::gltf::import_file(&name, &url).await;
+                // The blob: object URL was minted just for this load; release it.
+                let _ = web_sys::Url::revoke_object_url(&url);
+                self.finish_model_import(result);
                 Ok(None)
             }
             EditorCommand::ImportTextureFromUrl { url } => {
                 Toast::info(format!("Import texture from {url} — lands in M11"));
                 Ok(None)
             }
+        }
+    }
+
+    /// Shared tail for the two model-import commands: on success, add a tracking
+    /// Group node so the import appears in the Outliner (the glTF renders directly
+    /// from `populate`; the node⇄mesh binding + teardown is the follow-on) and
+    /// toast; on failure, surface the error.
+    fn finish_model_import(&self, result: Result<String, String>) {
+        match result {
+            Ok(name) => {
+                let node = crate::engine::scene::node::Node::new_group(format!("Model: {name}"));
+                mutate::insert_under(&self.scene, None, node);
+                self.scene.bump_revision();
+                self.dirty.set_neq(true);
+                Toast::info(format!("Imported {name}"));
+            }
+            Err(e) => Toast::error(format!("Import failed: {e}")),
         }
     }
 

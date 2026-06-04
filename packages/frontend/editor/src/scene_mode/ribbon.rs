@@ -101,24 +101,62 @@ fn tab_strip(tab: &Mutable<String>) -> Dom {
 // Returns a reusable `Fn` (the dropdown rebuilds its rows on each open). Clones
 // the entries each call; InsertSpec isn't Copy (Primitive carries a struct
 // variant), so the per-item closure also clones its spec on each click.
-/// Open the glTF import modal — a URL field + Import action that dispatches
-/// `ImportModelFromUrl` (the gesture-free, source-abstracted path; a File picker
-/// variant is the follow-on).
+/// Open the glTF import modal — either paste a URL (gesture-free, source-
+/// abstracted `ImportModelFromUrl`) **or** pick a local `.glb`/`.gltf` file
+/// (`ImportModelFromFile`, via a `blob:` object URL so the existing loader path
+/// is reused). The file picker is the one users reach for to load their own
+/// local models.
 fn open_import_model() {
     Modal::open(|| {
         let url = Mutable::new(String::new());
+        let picked: Mutable<Option<web_sys::File>> = Mutable::new(None);
+        let pick_err: Mutable<Option<String>> = Mutable::new(None);
+
+        // When the user picks a local file, mint a blob: object URL from it and
+        // import straight away (no extra click) — then dismiss the modal. The
+        // controller revokes the URL once the load completes.
+        spawn_local(clone!(picked => async move {
+            let mut first = true;
+            picked.signal_cloned().for_each(move |maybe| {
+                let fire = !first;
+                first = false;
+                async move {
+                    if !fire { return; }
+                    if let Some(file) = maybe {
+                        let name = file.name();
+                        if let Ok(obj_url) = web_sys::Url::create_object_url_with_blob(&file) {
+                            spawn_local(async move {
+                                let _ = controller()
+                                    .dispatch(EditorCommand::ImportModelFromFile { name, url: obj_url })
+                                    .await;
+                            });
+                            Modal::close();
+                        }
+                    }
+                }
+            }).await;
+        }));
+
         ModalCard::new("Import glTF model")
             .width(520.0)
             .child(html!("div", {
-                .style("display", "flex").style("flex-direction", "column").style("gap", "8px")
+                .style("display", "flex").style("flex-direction", "column").style("gap", "10px")
                 .child(html!("span", { .style("font-size", "12.5px").style("color", "var(--text-2)").style("line-height", "1.5")
-                    .text("Paste a URL to a .glb / .gltf model. It loads into the scene and renders.") }))
+                    .text("Load a .glb / .gltf model into the scene — paste a URL, or pick a local file below.") }))
                 .child(TextInput::new(url.clone()).placeholder("https://\u{2026}/model.glb").render())
+                .child(FilePicker::new()
+                    .with_accept(".glb,.gltf")
+                    .with_placeholder("Drag & drop a .glb / .gltf model, or click to browse")
+                    .render(picked.clone(), pick_err.clone()))
+                .child_signal(pick_err.signal_cloned().map(|e| e.map(|msg| html!("span", {
+                    .style("font-size", "12px").style("color", "var(--danger, #e06c75)")
+                    .text(&msg)
+                }))))
             }))
             .footer(html!("div", {
                 .style("display", "flex").style("gap", "8px")
                 .child(Btn::new().label("Cancel").variant(BtnVariant::Ghost).on_click(Modal::close).render())
-                .child(Btn::new().label("Import").icon("cube").variant(BtnVariant::Primary)
+                .child(Btn::new().label("Import URL").icon("cube").variant(BtnVariant::Primary)
                     .on_click(clone!(url => move || {
                         let u = url.get_cloned();
                         if u.trim().is_empty() { return; }

@@ -128,6 +128,13 @@ pub enum EditorCommand {
     /// variant `ImportModelFromFile` (added with the ribbon in M4).
     ImportModelFromUrl { url: String },
 
+    /// Import a glTF model from a locally-picked file. `url` is a `blob:` object
+    /// URL minted from the picked `File`; `name` is the real filename (used for
+    /// `.glb`/`.gltf` type inference — blob URLs have no extension — and the
+    /// Outliner label). Not serialized into project history (the blob URL is
+    /// session-local); treated as transient for undo.
+    ImportModelFromFile { name: String, url: String },
+
     /// Import a texture from a URL (gesture-free).
     ImportTextureFromUrl { url: String },
 
@@ -238,6 +245,7 @@ impl EditorCommand {
             EditorCommand::Reparent { .. } => "Reparent",
             EditorCommand::LoadProjectFromUrl { .. } => "Load project",
             EditorCommand::ImportModelFromUrl { .. } => "Import model",
+            EditorCommand::ImportModelFromFile { .. } => "Import model",
             EditorCommand::ImportTextureFromUrl { .. } => "Import texture",
             EditorCommand::AddMaterialAsset { .. } => "Add material",
             EditorCommand::AddTextureAsset { .. } => "Add texture",
