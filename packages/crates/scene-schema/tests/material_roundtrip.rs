@@ -33,6 +33,9 @@ fn material_asset(_id: AssetId) -> AssetEntry {
         shading: MaterialShading::Toon {
             diffuse_bands: 7,
             rim_strength: 0.42,
+            specular_steps: 3,
+            shininess: 48.0,
+            rim_power: 1.5,
         },
         ..MaterialDef::default()
     }))
@@ -67,9 +70,15 @@ fn material_json_roundtrip() {
             MaterialShading::Toon {
                 diffuse_bands,
                 rim_strength,
+                specular_steps,
+                shininess,
+                rim_power,
             } => {
                 assert_eq!(diffuse_bands, 7);
                 assert!((rim_strength - 0.42).abs() < 1.0e-6);
+                assert_eq!(specular_steps, 3);
+                assert!((shininess - 48.0).abs() < 1.0e-6);
+                assert!((rim_power - 1.5).abs() < 1.0e-6);
             }
             other => panic!("expected Toon shading, got {other:?}"),
         },

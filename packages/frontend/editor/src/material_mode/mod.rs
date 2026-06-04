@@ -86,6 +86,9 @@ fn new_material_items(close: Close) -> Vec<Dom> {
             Some(MaterialShading::Toon {
                 diffuse_bands: 3,
                 rim_strength: 0.4,
+                specular_steps: 2,
+                shininess: 32.0,
+                rim_power: 2.0,
             }),
             close,
         ),

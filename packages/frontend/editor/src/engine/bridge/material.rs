@@ -52,12 +52,18 @@ fn material_to_renderer(def: &MaterialDef) -> Material {
         MaterialShading::Toon {
             diffuse_bands,
             rim_strength,
+            specular_steps,
+            shininess,
+            rim_power,
         } => {
             let mut m = ToonMaterial::new(alpha_mode, def.double_sided);
             m.base_color_factor = def.base_color;
             m.emissive_factor = def.emissive;
             m.diffuse_bands = diffuse_bands.max(1);
             m.rim_strength = rim_strength;
+            m.specular_steps = specular_steps.max(1);
+            m.shininess = shininess;
+            m.rim_power = rim_power;
             Material::Toon(Box::new(m))
         }
         MaterialShading::Pbr => Material::Pbr(Box::new(material_to_pbr(def, alpha_mode))),

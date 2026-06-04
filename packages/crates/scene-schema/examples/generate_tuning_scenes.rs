@@ -918,6 +918,9 @@ fn scene_50_materials() -> EditorProject {
             shading: MaterialShading::Toon {
                 diffuse_bands: bands,
                 rim_strength: rim,
+                specular_steps: 2,
+                shininess: 32.0,
+                rim_power: 2.0,
             },
             ..MaterialDef::default()
         };

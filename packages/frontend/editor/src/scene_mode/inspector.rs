@@ -1038,26 +1038,30 @@ fn collider_editor(node: &Arc<Node>, shape: &ColliderShape) -> Dom {
 
 // ── Material (built-in inline_material) ───────────────────────────────────────
 
+/// The per-mesh inline material of a Primitive **or** a captured Mesh node (both
+/// share the same material surface in the inspector).
 fn current_primitive_material(node: &Arc<Node>) -> Option<MaterialDef> {
     match node.kind.get_cloned() {
         NodeKind::Primitive {
+            inline_material, ..
+        }
+        | NodeKind::Mesh {
             inline_material, ..
         } => Some(inline_material),
         _ => None,
     }
 }
 
-/// Replace a Primitive's `inline_material`, preserving shape/material/custom/shadow.
+/// Replace a Primitive's or Mesh's `inline_material`, preserving the rest of the kind.
 fn set_inline_material(node: &Arc<Node>, mat: MaterialDef) {
-    if let NodeKind::Primitive {
-        shape,
-        material,
-        custom_material,
-        shadow,
-        ..
-    } = node.kind.get_cloned()
-    {
-        dispatch_kind(
+    match node.kind.get_cloned() {
+        NodeKind::Primitive {
+            shape,
+            material,
+            custom_material,
+            shadow,
+            ..
+        } => dispatch_kind(
             node.id,
             NodeKind::Primitive {
                 shape,
@@ -1066,8 +1070,56 @@ fn set_inline_material(node: &Arc<Node>, mat: MaterialDef) {
                 custom_material,
                 shadow,
             },
-        );
+        ),
+        NodeKind::Mesh {
+            mesh,
+            material,
+            custom_material,
+            shadow,
+            ..
+        } => dispatch_kind(
+            node.id,
+            NodeKind::Mesh {
+                mesh,
+                material,
+                inline_material: mat,
+                custom_material,
+                shadow,
+            },
+        ),
+        _ => {}
     }
+}
+
+/// One Toon knob row: a `NumField` that re-reads the node's current Toon shading,
+/// applies `mutate` to the live `MaterialShading`, and writes it back — so each
+/// knob preserves the other four.
+fn toon_knob_row(
+    node: &Arc<Node>,
+    label: &'static str,
+    value: f64,
+    min: f64,
+    max: f64,
+    step: f64,
+    mutate: impl Fn(&mut MaterialShading, f64) + 'static,
+) -> Dom {
+    let n = node.clone();
+    row(
+        label,
+        NumField::new(value)
+            .min(min)
+            .max(max)
+            .step(step)
+            .on_change(move |v| {
+                if let Some(mut cur) = current_primitive_material(&n) {
+                    if matches!(cur.shading, MaterialShading::Toon { .. }) {
+                        mutate(&mut cur.shading, v);
+                        set_inline_material(&n, cur);
+                    }
+                }
+            })
+            .render(),
+    )
 }
 
 /// Reactive material-assignment dropdown — rebuilds whenever the custom-material
@@ -1310,60 +1362,81 @@ fn material_editor(node: &Arc<Node>, mat: &MaterialDef, _has_custom: bool) -> Do
         ));
     }
 
-    // Toon-only knobs.
+    // Toon-only knobs (all five map 1:1 to the renderer's ToonMaterial).
     if let MaterialShading::Toon {
         diffuse_bands,
         rim_strength,
+        specular_steps,
+        shininess,
+        rim_power,
     } = mat.shading
     {
-        let n = node.clone();
-        sec = sec.child(row(
+        // Each knob re-reads the current shading and rewrites just its own field,
+        // preserving the other four (the material may have changed since render).
+        sec = sec.child(toon_knob_row(
+            node,
             "Diffuse bands",
-            NumField::new(diffuse_bands as f64)
-                .min(1.0)
-                .step(1.0)
-                .on_change(move |v| {
-                    if let Some(cur) = current_primitive_material(&n) {
-                        if let MaterialShading::Toon { rim_strength, .. } = cur.shading {
-                            set_inline_material(
-                                &n,
-                                MaterialDef {
-                                    shading: MaterialShading::Toon {
-                                        diffuse_bands: (v.round() as u32).max(1),
-                                        rim_strength,
-                                    },
-                                    ..cur
-                                },
-                            );
-                        }
-                    }
-                })
-                .render(),
+            diffuse_bands as f64,
+            1.0,
+            16.0,
+            1.0,
+            |s, v| {
+                if let MaterialShading::Toon { diffuse_bands, .. } = s {
+                    *diffuse_bands = (v.round() as u32).max(1);
+                }
+            },
         ));
-        let n = node.clone();
-        sec = sec.child(row(
+        sec = sec.child(toon_knob_row(
+            node,
+            "Specular steps",
+            specular_steps as f64,
+            1.0,
+            8.0,
+            1.0,
+            |s, v| {
+                if let MaterialShading::Toon { specular_steps, .. } = s {
+                    *specular_steps = (v.round() as u32).max(1);
+                }
+            },
+        ));
+        sec = sec.child(toon_knob_row(
+            node,
+            "Shininess",
+            shininess as f64,
+            1.0,
+            256.0,
+            1.0,
+            |s, v| {
+                if let MaterialShading::Toon { shininess, .. } = s {
+                    *shininess = v as f32;
+                }
+            },
+        ));
+        sec = sec.child(toon_knob_row(
+            node,
             "Rim strength",
-            NumField::new(rim_strength as f64)
-                .min(0.0)
-                .max(2.0)
-                .step(0.05)
-                .on_change(move |v| {
-                    if let Some(cur) = current_primitive_material(&n) {
-                        if let MaterialShading::Toon { diffuse_bands, .. } = cur.shading {
-                            set_inline_material(
-                                &n,
-                                MaterialDef {
-                                    shading: MaterialShading::Toon {
-                                        diffuse_bands,
-                                        rim_strength: v as f32,
-                                    },
-                                    ..cur
-                                },
-                            );
-                        }
-                    }
-                })
-                .render(),
+            rim_strength as f64,
+            0.0,
+            2.0,
+            0.05,
+            |s, v| {
+                if let MaterialShading::Toon { rim_strength, .. } = s {
+                    *rim_strength = v as f32;
+                }
+            },
+        ));
+        sec = sec.child(toon_knob_row(
+            node,
+            "Rim power",
+            rim_power as f64,
+            0.0,
+            8.0,
+            0.1,
+            |s, v| {
+                if let MaterialShading::Toon { rim_power, .. } = s {
+                    *rim_power = v as f32;
+                }
+            },
         ));
     }
 

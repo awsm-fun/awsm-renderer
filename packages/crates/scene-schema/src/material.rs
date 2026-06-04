@@ -99,10 +99,29 @@ pub enum MaterialShading {
     Unlit,
     /// Banded diffuse + stepped Blinn-Phong specular + rim light.
     /// Requires the `toon` feature on `awsm-renderer` at build time.
+    /// All five knobs map 1:1 to the renderer's `ToonMaterial`. The three added
+    /// later carry serde defaults so older `Toon { diffuse_bands, rim_strength }`
+    /// projects deserialize unchanged.
     Toon {
         diffuse_bands: u32,
         rim_strength: f32,
+        #[serde(default = "default_specular_steps")]
+        specular_steps: u32,
+        #[serde(default = "default_shininess")]
+        shininess: f32,
+        #[serde(default = "default_rim_power")]
+        rim_power: f32,
     },
+}
+
+fn default_specular_steps() -> u32 {
+    2
+}
+fn default_shininess() -> f32 {
+    32.0
+}
+fn default_rim_power() -> f32 {
+    2.0
 }
 
 /// Procedural texture parameters. The renderer materializes these into a real
