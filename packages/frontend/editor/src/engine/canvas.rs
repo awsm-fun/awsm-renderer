@@ -7,6 +7,7 @@ use std::rc::Rc;
 
 use awsm_renderer::picker::PickResult;
 use awsm_web_shared::prelude::*;
+use gloo_timers::future::TimeoutFuture;
 use wasm_bindgen_futures::spawn_local;
 
 use super::context::{renderer_handle, try_with_camera_mut, with_camera_mut};
@@ -79,10 +80,25 @@ pub fn render_canvas(on_ready: impl FnOnce(web_sys::HtmlCanvasElement) + 'static
 fn pick_and_select(x: i32, y: i32) {
     spawn_local(async move {
         let handle = renderer_handle();
-        let result = {
-            let mut r = handle.lock().await;
-            r.pick(x, y).await
-        };
+        // The GPU picker subsystem compiles lazily on first use — `pick()`
+        // returns `Initializing` until the pipeline/bind-group are ready (and
+        // `InFlight` while a prior pick drains). Retry across a few frames so the
+        // user's *first* viewport click selects rather than silently no-opping.
+        let mut result = Ok(PickResult::Initializing);
+        for attempt in 0..12 {
+            result = {
+                let mut r = handle.lock().await;
+                r.pick(x, y).await
+            };
+            match result {
+                Ok(PickResult::Initializing) | Ok(PickResult::InFlight) => {
+                    if attempt < 11 {
+                        TimeoutFuture::new(16).await;
+                    }
+                }
+                _ => break,
+            }
+        }
         match result {
             Ok(PickResult::Hit(mesh_key)) => {
                 if let Some(node_id) = bridge().node_for_mesh(mesh_key) {
