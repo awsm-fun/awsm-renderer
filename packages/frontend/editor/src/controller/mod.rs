@@ -518,6 +518,10 @@ impl EditorController {
                             custom_material: instance,
                             shadow,
                         });
+                        // The material section's structure changes (built-in
+                        // knobs ↔ dynamic link ↔ none), so refresh the inspector.
+                        self.structure_rev
+                            .set(self.structure_rev.get().wrapping_add(1));
                         self.scene.bump_revision();
                         Ok(Some(EditorCommand::SetKind {
                             id: node,
