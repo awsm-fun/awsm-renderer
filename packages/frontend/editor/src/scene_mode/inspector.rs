@@ -159,6 +159,8 @@ fn kind_editor(node: &Arc<Node>) -> Dom {
             .child(material_editor(node, &inline_material, custom_material.is_some()))
             .child(mesh_shadow_editor(node, shadow))
         }),
+        NodeKind::SweepAlongCurve { .. } => sweep_editor(node),
+        NodeKind::InstancesAlongCurve(_) => instances_editor(node),
         other => Section::new(kind_label(&other))
             .dense(true)
             .child(html!("div", {
@@ -167,6 +169,121 @@ fn kind_editor(node: &Arc<Node>) -> Dom {
             }))
             .render(),
     }
+}
+
+// ── Sweep / Instances curve-reference pickers ───────────────────────────────
+
+/// Collect `(id, name)` of every scene node whose kind matches `pred`, for a
+/// reference dropdown.
+fn collect_kind_nodes(pred: impl Fn(&NodeKind) -> bool) -> Vec<(NodeId, String)> {
+    fn walk(
+        nodes: &[Arc<Node>],
+        pred: &dyn Fn(&NodeKind) -> bool,
+        out: &mut Vec<(NodeId, String)>,
+    ) {
+        for n in nodes {
+            if pred(&n.kind.get_cloned()) {
+                out.push((n.id, n.name.get_cloned()));
+            }
+            walk(&n.children.lock_ref(), pred, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(&controller().scene.nodes.lock_ref(), &pred, &mut out);
+    out
+}
+
+/// A labelled node-reference dropdown: options are the eligible nodes (plus a
+/// "— none —" entry); selecting one runs `on_pick(node_id)`.
+fn ref_picker(
+    label: &str,
+    eligible: Vec<(NodeId, String)>,
+    current: NodeId,
+    on_pick: impl Fn(NodeId) + 'static,
+) -> Dom {
+    let mut options: Vec<(String, String)> = vec![(NodeId::default().to_string(), "— none —".into())];
+    options.extend(eligible.iter().map(|(id, name)| (id.to_string(), name.clone())));
+    let sel = Mutable::new(current.to_string());
+    let lookup: Vec<(String, NodeId)> = eligible.iter().map(|(id, _)| (id.to_string(), *id)).collect();
+    spawn_local(clone!(sel => async move {
+        let mut first = true;
+        sel.signal_cloned()
+            .for_each(move |val| {
+                let fire = !first;
+                first = false;
+                let picked = lookup
+                    .iter()
+                    .find(|(s, _)| *s == val)
+                    .map(|(_, id)| *id)
+                    .unwrap_or_default();
+                if fire {
+                    on_pick(picked);
+                }
+                async {}
+            })
+            .await;
+    }));
+    row(label, select(sel, options))
+}
+
+fn sweep_editor(node: &Arc<Node>) -> Dom {
+    let id = node.id;
+    let curve_node = match node.kind.get_cloned() {
+        NodeKind::SweepAlongCurve { def, .. } => def.curve_node,
+        _ => NodeId::default(),
+    };
+    let curves = collect_kind_nodes(|k| matches!(k, NodeKind::Curve(_)));
+    let n = node.clone();
+    Section::new("Sweep")
+        .child(ref_picker("Curve", curves, curve_node, move |picked| {
+            if let NodeKind::SweepAlongCurve {
+                mut def,
+                material,
+                inline_material,
+                custom_material,
+                shadow,
+            } = n.kind.get_cloned()
+            {
+                def.curve_node = picked;
+                dispatch_kind(
+                    id,
+                    NodeKind::SweepAlongCurve {
+                        def,
+                        material,
+                        inline_material,
+                        custom_material,
+                        shadow,
+                    },
+                );
+            }
+        }))
+        .render()
+}
+
+fn instances_editor(node: &Arc<Node>) -> Dom {
+    let id = node.id;
+    let def = match node.kind.get_cloned() {
+        NodeKind::InstancesAlongCurve(def) => def,
+        _ => return html!("div", {}),
+    };
+    let curves = collect_kind_nodes(|k| matches!(k, NodeKind::Curve(_)));
+    let sources = collect_kind_nodes(|k| matches!(k, NodeKind::Primitive { .. }));
+    let n_curve = node.clone();
+    let n_src = node.clone();
+    Section::new("Instances")
+        .child(ref_picker("Curve", curves, def.curve_node, move |picked| {
+            if let NodeKind::InstancesAlongCurve(mut def) = n_curve.kind.get_cloned() {
+                def.curve_node = picked;
+                dispatch_kind(id, NodeKind::InstancesAlongCurve(def));
+            }
+        }))
+        .child(ref_picker("Source", sources, def.source_node, move |picked| {
+            if let NodeKind::InstancesAlongCurve(mut def) = n_src.kind.get_cloned() {
+                def.source_node = picked;
+                dispatch_kind(id, NodeKind::InstancesAlongCurve(def));
+            }
+        }))
+        .render()
 }
 
 // ── Camera ──────────────────────────────────────────────────────────────────
