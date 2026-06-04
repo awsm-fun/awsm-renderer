@@ -31,7 +31,7 @@ use std::rc::Rc;
 
 use awsm_web_shared::prelude::{Mutable, Toast};
 
-use crate::engine::scene::{mutate, NodeId, Scene};
+use crate::engine::scene::{mutate, NodeId, NodeKind, Scene};
 use crate::error::EditorResult;
 use std::sync::Arc;
 
@@ -64,6 +64,12 @@ pub struct EditorController {
     pub missing_assets: Mutable<Vec<String>>,
     pub can_undo: Mutable<bool>,
     pub can_redo: Mutable<bool>,
+    /// Bumps only when a `SetKind` changes a node's **structural** shape (the
+    /// shape/shading/projection/light *variant*, not a numeric value). The
+    /// inspector rebuilds on this so a discrete toggle (PBR↔Unlit, Persp↔Ortho)
+    /// refreshes which rows exist — while a continuous numeric scrub, which
+    /// keeps the structure key constant, never tears out the field being dragged.
+    pub structure_rev: Mutable<u64>,
     /// Inverses of applied commands, newest last (the undo log).
     undo: Rc<RefCell<Vec<EditorCommand>>>,
     /// Inverses popped by undo, re-appliable by redo.
@@ -81,6 +87,7 @@ impl EditorController {
             missing_assets: Mutable::new(Vec::new()),
             can_undo: Mutable::new(false),
             can_redo: Mutable::new(false),
+            structure_rev: Mutable::new(0),
             undo: Rc::new(RefCell::new(Vec::new())),
             redo: Rc::new(RefCell::new(Vec::new())),
         }
@@ -124,6 +131,10 @@ impl EditorController {
             EditorCommand::SetKind { id, kind } => match mutate::find_by_id(&self.scene, id) {
                 Some(node) => {
                     let prev = node.kind.get_cloned();
+                    if structure_key(&prev) != structure_key(&kind) {
+                        self.structure_rev
+                            .set(self.structure_rev.get().wrapping_add(1));
+                    }
                     node.kind.set(*kind);
                     self.scene.bump_revision();
                     Ok(Some(EditorCommand::SetKind {
@@ -361,6 +372,48 @@ impl EditorController {
     /// return). Used by headless tests + the future external transport.
     pub fn snapshot_json(&self) -> String {
         serde_json::to_string(&self.snapshot()).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+    }
+}
+
+/// The **structural** identity of a kind — what determines which inspector rows
+/// exist. Changes on shape/shading/projection/light *variant* (and custom-
+/// material presence), but is invariant under numeric edits (radius, fov, …).
+/// Drives `structure_rev` so the inspector rebuilds on a discrete toggle but not
+/// on a continuous scrub.
+fn structure_key(kind: &NodeKind) -> String {
+    use awsm_scene_schema::{CameraProjection, LightConfig, MaterialShading, PrimitiveShape};
+    match kind {
+        NodeKind::Primitive {
+            shape,
+            inline_material,
+            custom_material,
+            ..
+        } => {
+            let shp = match shape {
+                PrimitiveShape::Plane { .. } => "plane",
+                PrimitiveShape::Box { .. } => "box",
+                PrimitiveShape::Sphere { .. } => "sphere",
+                PrimitiveShape::Cylinder { .. } => "cylinder",
+                PrimitiveShape::Cone { .. } => "cone",
+                PrimitiveShape::Torus { .. } => "torus",
+            };
+            let shading = match inline_material.shading {
+                MaterialShading::Pbr => "pbr",
+                MaterialShading::Unlit => "unlit",
+                MaterialShading::Toon { .. } => "toon",
+            };
+            format!("prim/{shp}/{shading}/{}", custom_material.is_some())
+        }
+        NodeKind::Camera(c) => match c.projection {
+            CameraProjection::Perspective { .. } => "cam/persp".into(),
+            CameraProjection::Orthographic { .. } => "cam/ortho".into(),
+        },
+        NodeKind::Light(l) => match l {
+            LightConfig::Directional { .. } => "light/dir".into(),
+            LightConfig::Point { .. } => "light/point".into(),
+            LightConfig::Spot { .. } => "light/spot".into(),
+        },
+        other => other.label().to_string(),
     }
 }
 

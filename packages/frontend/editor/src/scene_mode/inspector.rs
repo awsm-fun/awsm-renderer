@@ -8,9 +8,13 @@ use std::sync::Arc;
 use glam::{EulerRot, Quat};
 
 use crate::engine::scene::mutate::find_by_id;
-use crate::engine::scene::{LightConfig, Node, NodeId, NodeKind, Trs};
+use crate::engine::scene::{
+    CameraConfig, CameraProjection, LightConfig, Node, NodeId, NodeKind, Trs,
+};
 use crate::prelude::*;
-use awsm_scene_schema::PrimitiveShape;
+use awsm_scene_schema::{
+    MaterialAlphaMode, MaterialDef, MaterialShading, MeshShadowConfig, PrimitiveShape,
+};
 
 pub fn render() -> Dom {
     let ctrl = controller();
@@ -23,10 +27,16 @@ pub fn render() -> Dom {
         .child(html!("div", {
             .style("flex", "1")
             .style("overflow-y", "auto")
-            // Rebuild on selection change ONLY (not every revision) so a
-            // drag-scrub of a field isn't torn out mid-drag by its own
-            // dispatched edits. External changes (undo) refresh on reselect.
-            .child_signal(ctrl.selected.signal_cloned().map(|sel| Some(content(&sel))))
+            // Rebuild on selection change OR a *structural* kind change
+            // (`structure_rev` — a discrete PBR↔Unlit / Persp↔Ortho toggle that
+            // changes which rows exist). A continuous numeric scrub keeps the
+            // structure key constant, so the field being dragged is never torn
+            // out mid-drag by its own dispatched edits.
+            .child_signal(map_ref! {
+                let sel = ctrl.selected.signal_cloned(),
+                let _rev = ctrl.structure_rev.signal() =>
+                Some(content(sel))
+            })
         }))
     })
 }
@@ -112,20 +122,535 @@ fn single_node(node: Arc<Node>) -> Dom {
     })
 }
 
-/// Per-kind property editor (the kind-specific Section). M7 wires Light fully;
-/// Geometry/Camera/Material/Shadows extend here.
+/// Per-kind property editor (the kind-specific Sections). Light, Camera, and
+/// Primitive (Geometry + Material + Shadows) are wired; other kinds show a
+/// placeholder until their panels land.
 fn kind_editor(node: &Arc<Node>) -> Dom {
     match node.kind.get_cloned() {
         NodeKind::Light(cfg) => light_editor(node, &cfg),
-        NodeKind::Primitive { shape, .. } => geometry_editor(node, &shape),
+        NodeKind::Camera(cfg) => camera_editor(node, &cfg),
+        NodeKind::Primitive {
+            shape,
+            inline_material,
+            custom_material,
+            shadow,
+            ..
+        } => html!("div", {
+            .child(geometry_editor(node, &shape))
+            .child(material_editor(node, &inline_material, custom_material.is_some()))
+            .child(mesh_shadow_editor(node, shadow))
+        }),
         other => Section::new(kind_label(&other))
             .dense(true)
             .child(html!("div", {
                 .style("font-size", "12px").style("color", "var(--text-3)").style("line-height", "1.5")
-                .text("Properties for this kind land here (geometry · camera · material · shadows).")
+                .text("Properties for this kind land here.")
             }))
             .render(),
     }
+}
+
+// ── Camera ──────────────────────────────────────────────────────────────────
+
+fn current_camera(node: &Arc<Node>) -> Option<CameraConfig> {
+    match node.kind.get_cloned() {
+        NodeKind::Camera(cfg) => Some(cfg),
+        _ => None,
+    }
+}
+
+fn camera_editor(node: &Arc<Node>, cfg: &CameraConfig) -> Dom {
+    let is_persp = matches!(cfg.projection, CameraProjection::Perspective { .. });
+
+    // Projection segmented toggle (Persp / Ortho).
+    let proj = Mutable::new(
+        if is_persp {
+            "perspective"
+        } else {
+            "orthographic"
+        }
+        .to_string(),
+    );
+    spawn_local(clone!(proj, node => async move {
+        let mut first = true;
+        proj.signal_cloned().for_each(move |p| {
+            let fire = !first;
+            first = false;
+            clone!(node => async move {
+                if !fire { return; }
+                let Some(cur) = current_camera(&node) else { return; };
+                let want_persp = p == "perspective";
+                if want_persp == matches!(cur.projection, CameraProjection::Perspective { .. }) {
+                    return; // no variant change
+                }
+                let projection = if want_persp {
+                    CameraProjection::Perspective { fov_y_rad: std::f32::consts::FRAC_PI_3 }
+                } else {
+                    CameraProjection::Orthographic { half_height: 5.0 }
+                };
+                dispatch_kind(node.id, NodeKind::Camera(CameraConfig { projection, ..cur }));
+            })
+        }).await;
+    }));
+
+    let mut sec = Section::new("Camera").child(row(
+        "Projection",
+        segmented(
+            proj,
+            vec![
+                SegOption::new("perspective", "Persp"),
+                SegOption::new("orthographic", "Ortho"),
+            ],
+            true,
+            true,
+        ),
+    ));
+
+    match cfg.projection {
+        CameraProjection::Perspective { fov_y_rad } => {
+            let n = node.clone();
+            sec = sec.child(row(
+                "FOV (deg)",
+                NumField::new(fov_y_rad.to_degrees() as f64)
+                    .min(1.0)
+                    .max(179.0)
+                    .step(1.0)
+                    .on_change(move |v| {
+                        if let Some(cur) = current_camera(&n) {
+                            dispatch_kind(
+                                n.id,
+                                NodeKind::Camera(CameraConfig {
+                                    projection: CameraProjection::Perspective {
+                                        fov_y_rad: (v as f32).to_radians(),
+                                    },
+                                    ..cur
+                                }),
+                            );
+                        }
+                    })
+                    .render(),
+            ));
+        }
+        CameraProjection::Orthographic { half_height } => {
+            let n = node.clone();
+            sec = sec.child(row(
+                "Half height",
+                NumField::new(half_height as f64)
+                    .min(0.01)
+                    .step(0.1)
+                    .on_change(move |v| {
+                        if let Some(cur) = current_camera(&n) {
+                            dispatch_kind(
+                                n.id,
+                                NodeKind::Camera(CameraConfig {
+                                    projection: CameraProjection::Orthographic {
+                                        half_height: v as f32,
+                                    },
+                                    ..cur
+                                }),
+                            );
+                        }
+                    })
+                    .render(),
+            ));
+        }
+    }
+
+    let n = node.clone();
+    sec = sec.child(row(
+        "Near",
+        NumField::new(cfg.near as f64)
+            .min(0.001)
+            .step(0.05)
+            .on_change(move |v| {
+                if let Some(cur) = current_camera(&n) {
+                    dispatch_kind(
+                        n.id,
+                        NodeKind::Camera(CameraConfig {
+                            near: v as f32,
+                            ..cur
+                        }),
+                    );
+                }
+            })
+            .render(),
+    ));
+    let n = node.clone();
+    sec = sec.child(row(
+        "Far",
+        NumField::new(cfg.far as f64)
+            .min(0.1)
+            .step(1.0)
+            .on_change(move |v| {
+                if let Some(cur) = current_camera(&n) {
+                    dispatch_kind(
+                        n.id,
+                        NodeKind::Camera(CameraConfig {
+                            far: v as f32,
+                            ..cur
+                        }),
+                    );
+                }
+            })
+            .render(),
+    ));
+
+    sec.render()
+}
+
+// ── Material (built-in inline_material) ───────────────────────────────────────
+
+fn current_primitive_material(node: &Arc<Node>) -> Option<MaterialDef> {
+    match node.kind.get_cloned() {
+        NodeKind::Primitive {
+            inline_material, ..
+        } => Some(inline_material),
+        _ => None,
+    }
+}
+
+/// Replace a Primitive's `inline_material`, preserving shape/material/custom/shadow.
+fn set_inline_material(node: &Arc<Node>, mat: MaterialDef) {
+    if let NodeKind::Primitive {
+        shape,
+        material,
+        custom_material,
+        shadow,
+        ..
+    } = node.kind.get_cloned()
+    {
+        dispatch_kind(
+            node.id,
+            NodeKind::Primitive {
+                shape,
+                material,
+                inline_material: mat,
+                custom_material,
+                shadow,
+            },
+        );
+    }
+}
+
+fn material_editor(node: &Arc<Node>, mat: &MaterialDef, has_custom: bool) -> Dom {
+    // A custom (Studio) material overrides the built-in palette — surface a
+    // link to Material mode rather than the built-in knobs (decision 3).
+    if has_custom {
+        return Section::new("Material")
+            .child(html!("div", {
+                .style("display", "flex").style("flex-direction", "column").style("gap", "8px")
+                .child(html!("div", {
+                    .style("font-size", "12px").style("color", "var(--text-2)").style("line-height", "1.5")
+                    .text("Driven by a custom Studio material. Edit its graph in Material mode.")
+                }))
+                .child(Btn::new().label("Open in Material mode").icon("edit").variant(BtnVariant::Ghost).full(true)
+                    .on_click(|| spawn_local(async {
+                        let _ = controller().dispatch(EditorCommand::SwitchMode { mode: EditorMode::Material }).await;
+                    })).render())
+            }))
+            .render();
+    }
+
+    let mut sec = Section::new("Material");
+
+    // Shading model (PBR / Unlit / Toon).
+    let shading_key = match mat.shading {
+        MaterialShading::Pbr => "pbr",
+        MaterialShading::Unlit => "unlit",
+        MaterialShading::Toon { .. } => "toon",
+    };
+    let shading = Mutable::new(shading_key.to_string());
+    spawn_local(clone!(shading, node => async move {
+        let mut first = true;
+        shading.signal_cloned().for_each(move |s| {
+            let fire = !first;
+            first = false;
+            clone!(node => async move {
+                if !fire { return; }
+                let Some(cur) = current_primitive_material(&node) else { return; };
+                let shading = match s.as_str() {
+                    "unlit" => MaterialShading::Unlit,
+                    "toon" => match cur.shading {
+                        MaterialShading::Toon { .. } => cur.shading,
+                        _ => MaterialShading::Toon { diffuse_bands: 4, rim_strength: 0.5 },
+                    },
+                    _ => MaterialShading::Pbr,
+                };
+                if shading != cur.shading {
+                    set_inline_material(&node, MaterialDef { shading, ..cur });
+                }
+            })
+        }).await;
+    }));
+    sec = sec.child(row(
+        "Shading",
+        segmented(
+            shading,
+            vec![
+                SegOption::new("pbr", "PBR"),
+                SegOption::new("unlit", "Unlit"),
+                SegOption::new("toon", "Toon"),
+            ],
+            true,
+            true,
+        ),
+    ));
+
+    // Base color (RGB swatch) + alpha.
+    let col = Mutable::new(rgb_to_hex([
+        mat.base_color[0],
+        mat.base_color[1],
+        mat.base_color[2],
+    ]));
+    spawn_local(clone!(col, node => async move {
+        let mut first = true;
+        col.signal_cloned().for_each(move |hex| {
+            let fire = !first;
+            first = false;
+            clone!(node => async move {
+                if !fire { return; }
+                if let (Some(rgb), Some(cur)) = (hex_to_rgb(&hex), current_primitive_material(&node)) {
+                    let base_color = [rgb[0], rgb[1], rgb[2], cur.base_color[3]];
+                    set_inline_material(&node, MaterialDef { base_color, ..cur });
+                }
+            })
+        }).await;
+    }));
+    sec = sec.child(row("Base color", swatch(col, 22.0)));
+
+    let n = node.clone();
+    sec = sec.child(row(
+        "Opacity",
+        NumField::new(mat.base_color[3] as f64)
+            .min(0.0)
+            .max(1.0)
+            .step(0.05)
+            .on_change(move |v| {
+                if let Some(cur) = current_primitive_material(&n) {
+                    let mut base_color = cur.base_color;
+                    base_color[3] = v as f32;
+                    // Opacity < 1 implies a blended material.
+                    let alpha_mode = if v < 1.0 {
+                        MaterialAlphaMode::Blend
+                    } else {
+                        MaterialAlphaMode::Opaque
+                    };
+                    set_inline_material(
+                        &n,
+                        MaterialDef {
+                            base_color,
+                            alpha_mode,
+                            ..cur
+                        },
+                    );
+                }
+            })
+            .render(),
+    ));
+
+    // PBR-only knobs.
+    if matches!(mat.shading, MaterialShading::Pbr) {
+        let n = node.clone();
+        sec = sec.child(row(
+            "Metallic",
+            NumField::new(mat.metallic as f64)
+                .min(0.0)
+                .max(1.0)
+                .step(0.05)
+                .on_change(move |v| {
+                    if let Some(cur) = current_primitive_material(&n) {
+                        set_inline_material(
+                            &n,
+                            MaterialDef {
+                                metallic: v as f32,
+                                ..cur
+                            },
+                        );
+                    }
+                })
+                .render(),
+        ));
+        let n = node.clone();
+        sec = sec.child(row(
+            "Roughness",
+            NumField::new(mat.roughness as f64)
+                .min(0.0)
+                .max(1.0)
+                .step(0.05)
+                .on_change(move |v| {
+                    if let Some(cur) = current_primitive_material(&n) {
+                        set_inline_material(
+                            &n,
+                            MaterialDef {
+                                roughness: v as f32,
+                                ..cur
+                            },
+                        );
+                    }
+                })
+                .render(),
+        ));
+    }
+
+    // Toon-only knobs.
+    if let MaterialShading::Toon {
+        diffuse_bands,
+        rim_strength,
+    } = mat.shading
+    {
+        let n = node.clone();
+        sec = sec.child(row(
+            "Diffuse bands",
+            NumField::new(diffuse_bands as f64)
+                .min(1.0)
+                .step(1.0)
+                .on_change(move |v| {
+                    if let Some(cur) = current_primitive_material(&n) {
+                        if let MaterialShading::Toon { rim_strength, .. } = cur.shading {
+                            set_inline_material(
+                                &n,
+                                MaterialDef {
+                                    shading: MaterialShading::Toon {
+                                        diffuse_bands: (v.round() as u32).max(1),
+                                        rim_strength,
+                                    },
+                                    ..cur
+                                },
+                            );
+                        }
+                    }
+                })
+                .render(),
+        ));
+        let n = node.clone();
+        sec = sec.child(row(
+            "Rim strength",
+            NumField::new(rim_strength as f64)
+                .min(0.0)
+                .max(2.0)
+                .step(0.05)
+                .on_change(move |v| {
+                    if let Some(cur) = current_primitive_material(&n) {
+                        if let MaterialShading::Toon { diffuse_bands, .. } = cur.shading {
+                            set_inline_material(
+                                &n,
+                                MaterialDef {
+                                    shading: MaterialShading::Toon {
+                                        diffuse_bands,
+                                        rim_strength: v as f32,
+                                    },
+                                    ..cur
+                                },
+                            );
+                        }
+                    }
+                })
+                .render(),
+        ));
+    }
+
+    // Emissive color.
+    let emi = Mutable::new(rgb_to_hex(mat.emissive));
+    spawn_local(clone!(emi, node => async move {
+        let mut first = true;
+        emi.signal_cloned().for_each(move |hex| {
+            let fire = !first;
+            first = false;
+            clone!(node => async move {
+                if !fire { return; }
+                if let (Some(rgb), Some(cur)) = (hex_to_rgb(&hex), current_primitive_material(&node)) {
+                    set_inline_material(&node, MaterialDef { emissive: rgb, ..cur });
+                }
+            })
+        }).await;
+    }));
+    sec = sec.child(row("Emissive", swatch(emi, 22.0)));
+
+    // Double-sided toggle.
+    let ds = Mutable::new(mat.double_sided);
+    spawn_local(clone!(ds, node => async move {
+        let mut first = true;
+        ds.signal().for_each(move |on| {
+            let fire = !first;
+            first = false;
+            clone!(node => async move {
+                if !fire { return; }
+                if let Some(cur) = current_primitive_material(&node) {
+                    if cur.double_sided != on {
+                        set_inline_material(&node, MaterialDef { double_sided: on, ..cur });
+                    }
+                }
+            })
+        }).await;
+    }));
+    sec = sec.child(row("Double-sided", check(ds)));
+
+    sec.render()
+}
+
+// ── Shadows (per-mesh cast / receive) ─────────────────────────────────────────
+
+/// Replace a Primitive's `shadow`, preserving the rest of the kind.
+fn set_mesh_shadow(node: &Arc<Node>, shadow: MeshShadowConfig) {
+    if let NodeKind::Primitive {
+        shape,
+        material,
+        inline_material,
+        custom_material,
+        ..
+    } = node.kind.get_cloned()
+    {
+        dispatch_kind(
+            node.id,
+            NodeKind::Primitive {
+                shape,
+                material,
+                inline_material,
+                custom_material,
+                shadow,
+            },
+        );
+    }
+}
+
+fn mesh_shadow_editor(node: &Arc<Node>, shadow: MeshShadowConfig) -> Dom {
+    let cast = Mutable::new(shadow.cast);
+    spawn_local(clone!(cast, node => async move {
+        let mut first = true;
+        cast.signal().for_each(move |on| {
+            let fire = !first;
+            first = false;
+            clone!(node => async move {
+                if !fire { return; }
+                if let NodeKind::Primitive { shadow, .. } = node.kind.get_cloned() {
+                    if shadow.cast != on {
+                        set_mesh_shadow(&node, MeshShadowConfig { cast: on, ..shadow });
+                    }
+                }
+            })
+        }).await;
+    }));
+    let receive = Mutable::new(shadow.receive);
+    spawn_local(clone!(receive, node => async move {
+        let mut first = true;
+        receive.signal().for_each(move |on| {
+            let fire = !first;
+            first = false;
+            clone!(node => async move {
+                if !fire { return; }
+                if let NodeKind::Primitive { shadow, .. } = node.kind.get_cloned() {
+                    if shadow.receive != on {
+                        set_mesh_shadow(&node, MeshShadowConfig { receive: on, ..shadow });
+                    }
+                }
+            })
+        }).await;
+    }));
+
+    Section::new("Shadows")
+        .child(row("Cast", toggle(cast)))
+        .child(row("Receive", toggle(receive)))
+        .render()
 }
 
 fn light_editor(node: &Arc<Node>, cfg: &LightConfig) -> Dom {
