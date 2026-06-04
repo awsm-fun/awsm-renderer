@@ -18,9 +18,11 @@ pub struct EditorSnapshot {
     pub project: ProjectSnapshot,
     /// The scene tree (id / name / kind / children), top-level first.
     pub scene_tree: Vec<NodeQuery>,
+    /// Selected node ids (ordered; last = primary).
+    pub selection: Vec<String>,
     pub undo_depth: usize,
     pub redo_depth: usize,
-    // selection / materials / compile_errors land as those models arrive.
+    // materials / compile_errors land as those models arrive.
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

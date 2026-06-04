@@ -237,14 +237,27 @@ fn workspace(ctrl: &EditorController) -> Dom {
             .style("display", "flex")
             .style("flex-direction", "column")
             .style_signal("display", ctrl.mode.signal().map(|m| if m == EditorMode::Scene { "flex" } else { "none" }))
-            // M4: ribbon over the viewport. Outliner + inspector chrome wrap the
-            // viewport row in M5–M7.
+            // M5: ribbon over [outliner · viewport]. Inspector (right) lands in M7.
             .child(crate::scene_mode::ribbon::render())
             .child(html!("div", {
                 .style("flex", "1")
                 .style("min-height", "0")
-                .style("position", "relative")
-                .child(viewport_slot())
+                .style("display", "flex")
+                .style("flex-direction", "row")
+                .child(html!("div", {
+                    .style("width", "240px")
+                    .style("flex", "0 0 auto")
+                    .style("border-right", "1px solid var(--line)")
+                    .style("min-height", "0")
+                    .child(crate::scene_mode::outliner::render())
+                }))
+                .child(html!("div", {
+                    .style("flex", "1")
+                    .style("min-width", "0")
+                    .style("min-height", "0")
+                    .style("position", "relative")
+                    .child(viewport_slot())
+                }))
             }))
         }))
         .child(html!("div", {

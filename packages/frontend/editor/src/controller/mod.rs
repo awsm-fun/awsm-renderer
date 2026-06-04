@@ -56,6 +56,8 @@ pub fn controller() -> EditorController {
 pub struct EditorController {
     /// The live, reactive scene tree (the canonical scene state).
     pub scene: Arc<Scene>,
+    /// Ordered selection (last = primary/anchor). Set via `SetSelection`.
+    pub selected: Mutable<Vec<NodeId>>,
     pub mode: Mutable<EditorMode>,
     pub project_name: Mutable<String>,
     pub dirty: Mutable<bool>,
@@ -72,6 +74,7 @@ impl EditorController {
     fn new() -> Self {
         Self {
             scene: Scene::new(),
+            selected: Mutable::new(Vec::new()),
             mode: Mutable::new(EditorMode::default()),
             project_name: Mutable::new("untitled.awsm".to_string()),
             dirty: Mutable::new(false),
@@ -108,9 +111,78 @@ impl EditorController {
                 self.mode.set_neq(mode);
                 Ok(None)
             }
+            EditorCommand::SetSelection { ids } => {
+                self.selected.set(ids);
+                Ok(None)
+            }
+            EditorCommand::Rename { id, name } => match mutate::find_by_id(&self.scene, id) {
+                Some(node) => {
+                    let prev = node.name.get_cloned();
+                    node.name.set(name);
+                    self.scene.bump_revision();
+                    Ok(Some(EditorCommand::Rename { id, name: prev }))
+                }
+                None => Ok(None),
+            },
+            EditorCommand::SetVisible { id, visible } => {
+                match mutate::find_by_id(&self.scene, id) {
+                    Some(node) => {
+                        let prev = node.visible.get();
+                        node.visible.set_neq(visible);
+                        self.scene.bump_revision();
+                        Ok(Some(EditorCommand::SetVisible { id, visible: prev }))
+                    }
+                    None => Ok(None),
+                }
+            }
+            EditorCommand::SetLocked { id, locked } => match mutate::find_by_id(&self.scene, id) {
+                Some(node) => {
+                    let prev = node.locked.get();
+                    node.locked.set_neq(locked);
+                    self.scene.bump_revision();
+                    Ok(Some(EditorCommand::SetLocked { id, locked: prev }))
+                }
+                None => Ok(None),
+            },
+            EditorCommand::SetPrefab { id, prefab } => match mutate::find_by_id(&self.scene, id) {
+                Some(node) => {
+                    let prev = node.prefab.get();
+                    node.prefab.set_neq(prefab);
+                    self.scene.bump_revision();
+                    Ok(Some(EditorCommand::SetPrefab { id, prefab: prev }))
+                }
+                None => Ok(None),
+            },
+            EditorCommand::Duplicate { id } => match mutate::duplicate_by_id(&self.scene, id) {
+                Some(new_id) => {
+                    self.scene.bump_revision();
+                    self.selected.set(vec![new_id]);
+                    Ok(Some(EditorCommand::Delete { id: new_id }))
+                }
+                None => Ok(None),
+            },
+            EditorCommand::Reparent {
+                id,
+                new_parent,
+                index,
+            } => {
+                let old_parent = mutate::find_parent(&self.scene, id).map(|p| p.id);
+                let old_index = node_index(&self.scene, id, old_parent);
+                if mutate::reparent(&self.scene, id, new_parent, index) {
+                    self.scene.bump_revision();
+                    Ok(Some(EditorCommand::Reparent {
+                        id,
+                        new_parent: old_parent,
+                        index: old_index,
+                    }))
+                } else {
+                    Ok(None)
+                }
+            }
             EditorCommand::NewProject => {
                 // Project-level reset (clears the undo log — not itself undoable).
                 self.scene.nodes.lock_mut().clear();
+                self.selected.set(Vec::new());
                 self.scene.bump_revision();
                 self.project_name.set("untitled.awsm".to_string());
                 self.missing_assets.set(Vec::new());
@@ -171,6 +243,7 @@ impl EditorController {
                 match mutate::remove_by_id(&self.scene, id) {
                     Some(node) => {
                         let spec = NodeSpec::from_node(&node);
+                        self.selected.lock_mut().retain(|x| *x != id);
                         self.scene.bump_revision();
                         Ok(Some(EditorCommand::InsertTree {
                             node: Box::new(spec),
@@ -241,6 +314,12 @@ impl EditorController {
                 missing_assets: self.missing_assets.get_cloned(),
             },
             scene_tree,
+            selection: self
+                .selected
+                .get_cloned()
+                .iter()
+                .map(|id| id.to_string())
+                .collect(),
             undo_depth: self.undo.borrow().len(),
             redo_depth: self.redo.borrow().len(),
         }

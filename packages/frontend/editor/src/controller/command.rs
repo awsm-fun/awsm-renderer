@@ -31,6 +31,35 @@ pub enum EditorCommand {
     /// the undo log.
     SwitchMode { mode: EditorMode },
 
+    /// Set the current selection (ordered; last = primary/anchor). **Transient**
+    /// — the UI computes single/ctrl-toggle/shift-range and dispatches the
+    /// resulting set.
+    SetSelection { ids: Vec<NodeId> },
+
+    /// Rename a node. Inverse: rename back to the prior name.
+    Rename { id: NodeId, name: String },
+
+    /// Set a node's visibility (eye toggle). Inverse: restore prior value.
+    SetVisible { id: NodeId, visible: bool },
+
+    /// Set a node's locked flag. Inverse: restore prior value.
+    SetLocked { id: NodeId, locked: bool },
+
+    /// Set a node's prefab-root flag. Inverse: restore prior value.
+    SetPrefab { id: NodeId, prefab: bool },
+
+    /// Duplicate a node (deep clone, fresh ids) as a following sibling. Inverse:
+    /// delete the clone.
+    Duplicate { id: NodeId },
+
+    /// Reparent a node under `new_parent` at `index` (root when `None`).
+    /// Inverse: reparent back to its prior parent + index.
+    Reparent {
+        id: NodeId,
+        new_parent: Option<NodeId>,
+        index: Option<usize>,
+    },
+
     /// Start a fresh, empty project.
     NewProject,
 
@@ -72,7 +101,10 @@ impl EditorCommand {
     /// (mode switches, selection, camera orbit, panel toggles). Everything else
     /// records its inverse and participates in undo/redo.
     pub fn is_transient(&self) -> bool {
-        matches!(self, EditorCommand::SwitchMode { .. })
+        matches!(
+            self,
+            EditorCommand::SwitchMode { .. } | EditorCommand::SetSelection { .. }
+        )
     }
 
     /// A short human-readable label (used in toasts / telemetry / the eventual
@@ -81,9 +113,16 @@ impl EditorCommand {
     pub fn label(&self) -> &'static str {
         match self {
             EditorCommand::SwitchMode { .. } => "Switch mode",
+            EditorCommand::SetSelection { .. } => "Select",
             EditorCommand::NewProject => "New project",
             EditorCommand::Insert { .. } | EditorCommand::InsertTree { .. } => "Insert node",
             EditorCommand::Delete { .. } => "Delete node",
+            EditorCommand::Rename { .. } => "Rename",
+            EditorCommand::SetVisible { .. } => "Toggle visibility",
+            EditorCommand::SetLocked { .. } => "Toggle lock",
+            EditorCommand::SetPrefab { .. } => "Toggle prefab",
+            EditorCommand::Duplicate { .. } => "Duplicate",
+            EditorCommand::Reparent { .. } => "Reparent",
             EditorCommand::LoadProjectFromUrl { .. } => "Load project",
             EditorCommand::ImportModelFromUrl { .. } => "Import model",
             EditorCommand::ImportTextureFromUrl { .. } => "Import texture",
