@@ -152,10 +152,14 @@ pub enum EditorCommand {
     /// Inspector). **Transient** — `None` clears back to the node inspector.
     SetAssetSelection { id: Option<AssetId> },
 
-    /// Create a fresh custom WGSL material (Material-mode "New material" / Content
-    /// Browser "+ Material") and make it the current Studio material. The Studio
-    /// edits its body/slots live; lifecycle is not recorded in the scene undo log.
+    /// Create a fresh custom WGSL (dynamic) material and make it the current
+    /// Studio material. Auto-registers on create + on edit (no manual Register).
     AddCustomMaterial,
+
+    /// Create a fresh **built-in** library material (PBR / Unlit / Toon) and make
+    /// it current. Carries shared variant settings; per-mesh uniform values are
+    /// set on each assigned mesh. Needs no compile.
+    AddBuiltinMaterial { shading: MaterialShading },
 
     /// Delete a custom WGSL material.
     DeleteCustomMaterial { id: AssetId },
@@ -235,6 +239,7 @@ impl EditorCommand {
             }
             EditorCommand::SetAssetSelection { .. } => "Select asset",
             EditorCommand::AddCustomMaterial => "New material",
+            EditorCommand::AddBuiltinMaterial { .. } => "New material",
             EditorCommand::DeleteCustomMaterial { .. } => "Delete material",
             EditorCommand::SetCurrentMaterial { .. } => "Select material",
             EditorCommand::RegisterMaterial { .. } => "Register material",

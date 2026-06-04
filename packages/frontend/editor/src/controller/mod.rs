@@ -33,6 +33,7 @@ use std::cell::{OnceCell, RefCell};
 use std::rc::Rc;
 
 use awsm_web_shared::prelude::{Mutable, MutableVec, Toast};
+use wasm_bindgen_futures::spawn_local;
 
 use self::custom_material::{find_material, CustomMaterial as CM};
 use crate::engine::scene::{mutate, AssetId, NodeId, NodeKind, Scene};
@@ -416,8 +417,27 @@ impl EditorController {
                 let id = AssetId::new();
                 let n = self.custom_materials.lock_ref().len() + 1;
                 let mat = CM::new(id, format!("New Material {n}"));
-                self.custom_materials.lock_mut().push_cloned(mat);
+                self.custom_materials.lock_mut().push_cloned(mat.clone());
                 self.current_material.set(Some(id));
+                // Usable immediately — compile now + recompile (debounced) on edit.
+                spawn_auto_register(mat);
+                self.scene.bump_revision();
+                self.dirty.set_neq(true);
+                Ok(None)
+            }
+            EditorCommand::AddBuiltinMaterial { shading } => {
+                let id = AssetId::new();
+                let n = self.custom_materials.lock_ref().len() + 1;
+                let label = match shading {
+                    awsm_scene_schema::MaterialShading::Pbr => "PBR",
+                    awsm_scene_schema::MaterialShading::Unlit => "Unlit",
+                    awsm_scene_schema::MaterialShading::Toon { .. } => "Toon",
+                };
+                let mat = CM::new_builtin(id, format!("{label} Material {n}"), shading);
+                self.custom_materials.lock_mut().push_cloned(mat.clone());
+                self.current_material.set(Some(id));
+                // Re-materialize assigned meshes when its variant settings change.
+                spawn_builtin_resync(mat);
                 self.scene.bump_revision();
                 self.dirty.set_neq(true);
                 Ok(None)
@@ -653,6 +673,83 @@ impl EditorController {
     pub fn snapshot_json(&self) -> String {
         serde_json::to_string(&self.snapshot()).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
     }
+}
+
+/// Compile + register a dynamic material into a renderer bucket, then
+/// re-materialize meshes using it. Returns true on success; leaves
+/// `registered = false` on a compile error (the code pane surfaces the problems).
+async fn register_material(mat: &Arc<CM>) -> bool {
+    if !compile_wgsl(&mat.wgsl.get_cloned()).is_empty() {
+        mat.registered.set_neq(false);
+        return false;
+    }
+    match crate::engine::bridge::dynamic::register(mat).await {
+        Ok(_) => {
+            mat.registered.set_neq(true);
+            crate::engine::bridge::rematerialize_for_material(mat.id);
+            true
+        }
+        Err(e) => {
+            Toast::error(format!("Material compile failed: {e}"));
+            mat.registered.set_neq(false);
+            false
+        }
+    }
+}
+
+/// Auto-register a dynamic material: compile it now, then re-compile (debounced
+/// ~400 ms) on any WGSL edit — so it's always live without a manual Register step.
+fn spawn_auto_register(mat: Arc<CM>) {
+    use futures_signals::signal::SignalExt;
+    let first_mat = mat.clone();
+    spawn_local(async move {
+        let _ = register_material(&first_mat).await;
+    });
+    spawn_local(async move {
+        let gen = std::rc::Rc::new(std::cell::Cell::new(0u64));
+        let sig = mat.wgsl.signal_cloned();
+        let mut first = true;
+        sig.for_each(move |_| {
+            let fire = !first;
+            first = false;
+            let g = gen.get().wrapping_add(1);
+            gen.set(g);
+            let mat = mat.clone();
+            let gen = gen.clone();
+            async move {
+                if !fire {
+                    return; // the initial value was already registered above
+                }
+                gloo_timers::future::TimeoutFuture::new(400).await;
+                if gen.get() == g {
+                    let _ = register_material(&mat).await;
+                }
+            }
+        })
+        .await;
+    });
+}
+
+/// Re-materialize meshes using a **built-in** material whenever its shared
+/// variant settings change (node_sync re-merges the variant with each mesh's
+/// per-mesh uniforms).
+fn spawn_builtin_resync(mat: Arc<CM>) {
+    use futures_signals::signal::SignalExt;
+    let id = mat.id;
+    spawn_local(async move {
+        let sig = mat.builtin.signal_cloned();
+        let mut first = true;
+        sig.for_each(move |_| {
+            let fire = !first;
+            first = false;
+            async move {
+                if fire {
+                    crate::engine::bridge::rematerialize_for_material(id);
+                }
+            }
+        })
+        .await;
+    });
 }
 
 /// Default parameters for a freshly-created procedural texture asset, one per
