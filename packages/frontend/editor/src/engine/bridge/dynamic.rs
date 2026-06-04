@@ -73,7 +73,15 @@ pub fn insert_custom(
 /// using the registration's authored defaults. `None` if `name` isn't registered.
 /// Per-instance uniform/texture overrides are the follow-on.
 fn build_custom(renderer: &AwsmRenderer, name: &str) -> Option<Material> {
-    let shader_id = registered_shader_id(name)?;
+    build_custom_for_shader(renderer, registered_shader_id(name)?)
+}
+
+/// Like [`build_custom`] but for an explicit `shader_id` (used by the 2nd-renderer
+/// preview, whose ids live in its own registry, not the main thread-local one).
+pub fn build_custom_for_shader(
+    renderer: &AwsmRenderer,
+    shader_id: MaterialShaderId,
+) -> Option<Material> {
     let reg = renderer.dynamic_material_registration(shader_id)?;
     let values: Vec<UniformValue> = reg
         .layout
@@ -100,7 +108,7 @@ fn build_custom(renderer: &AwsmRenderer, name: &str) -> Option<Material> {
 
 // ── registration construction ─────────────────────────────────────────────────
 
-fn build_registration(mat: &CustomMaterial) -> MaterialRegistration {
+pub fn build_registration(mat: &CustomMaterial) -> MaterialRegistration {
     let uniforms = mat.uniforms.get_cloned();
     let textures = mat.textures.get_cloned();
     let buffers = mat.buffers.get_cloned();

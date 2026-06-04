@@ -471,20 +471,45 @@ fn main_pane(id: Option<AssetId>, help: Mutable<bool>) -> Dom {
 }
 
 fn preview_pane(mat: &Arc<CustomMaterial>) -> Dom {
+    // Re-shade the live preview when this material's body changes — debounced
+    // (250ms idle) so a half-typed shader never reaches the GPU compiler
+    // mid-keystroke, and only when the WGSL is well-formed.
+    let m = mat.clone();
+    spawn_local(clone!(m => async move {
+        let generation = std::rc::Rc::new(std::cell::Cell::new(0u64));
+        let mut first = true;
+        m.wgsl.signal_cloned().for_each(clone!(m, generation => move |wgsl| {
+            let skip = first; first = false;
+            let g = generation.get().wrapping_add(1);
+            generation.set(g);
+            clone!(m, generation => {
+                if !skip {
+                    spawn_local(async move {
+                        gloo_timers::future::TimeoutFuture::new(250).await;
+                        // Only the latest edit fires, and only if it compiles.
+                        if generation.get() == g && crate::controller::compile_wgsl(&wgsl).is_empty() {
+                            crate::engine::preview::set_material(m.clone());
+                        }
+                    });
+                }
+                async {}
+            })
+        })).await;
+    }));
+
     html!("div", {
-        .style("position", "relative").style("height", "100%").style("display", "flex")
-        .style("align-items", "center").style("justify-content", "center").style("overflow", "hidden")
+        .style("position", "relative").style("height", "100%").style("overflow", "hidden")
         .style("background", "radial-gradient(120% 120% at 50% 30%, oklch(0.26 0.01 255), oklch(0.16 0.008 255))")
-        // A debug-colored sphere stand-in; the live 2nd-renderer preview lands in M10.
-        .child(html!("div", {
-            .style("width", "120px").style("height", "120px").style("border-radius", "50%")
-            .style("box-shadow", "inset -18px -22px 40px oklch(0 0 0 / .55), inset 10px 12px 26px oklch(1 0 0 / .12)")
-            .style_signal("background", mat.color.signal_cloned().map(|c| format!("radial-gradient(circle at 36% 30%, oklch(1 0 0 / .35), {c} 60%)")))
+        // The live 2nd-renderer preview canvas (decision 5 / M1 device-scoping).
+        .child(html!("canvas" => web_sys::HtmlCanvasElement, {
+            .style("width", "100%").style("height", "100%").style("display", "block")
+            .after_inserted(crate::engine::preview::mount)
+            .after_removed(|_| crate::engine::preview::unmount())
         }))
         .child(html!("div", {
             .style("position", "absolute").style("left", "12px").style("bottom", "10px")
             .class("mono").style("font-size", "10.5px").style("color", "var(--text-3)")
-            .text("preview · live render lands in M10")
+            .text("preview \u{00b7} live")
         }))
     })
 }
