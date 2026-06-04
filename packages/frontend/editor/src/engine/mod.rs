@@ -3,6 +3,7 @@
 //! *implementations*, not driven directly by the UI. The scene model + renderer
 //! bridge + actions land here as the panels that need them arrive (M4+).
 
+pub mod bridge;
 pub mod canvas;
 pub mod config;
 pub mod context;

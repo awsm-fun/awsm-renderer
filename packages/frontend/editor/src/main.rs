@@ -78,6 +78,9 @@ pub fn main() {
                                     tracing::warn!("wait_for_pipelines_ready: {err}");
                                 }
                             }
+                            // Mirror the scene onto the renderer (materializes
+                            // any already-present nodes + every future insert).
+                            engine::bridge::init();
                             engine::render_loop::start();
                             ctx_ready.set(true);
                             awsm_web_shared::util::window::remove_boot_loader();
