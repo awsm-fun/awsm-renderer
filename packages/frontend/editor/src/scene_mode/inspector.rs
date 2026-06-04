@@ -9,20 +9,38 @@ use glam::{EulerRot, Quat};
 
 use crate::engine::scene::mutate::find_by_id;
 use crate::engine::scene::{
-    CameraConfig, CameraProjection, ColliderShape, LightConfig, Node, NodeId, NodeKind, Trs,
+    AssetId, CameraConfig, CameraProjection, ColliderShape, LightConfig, Node, NodeId, NodeKind,
+    Trs,
 };
 use crate::prelude::*;
 use awsm_scene_schema::{
-    MaterialAlphaMode, MaterialDef, MaterialShading, MeshShadowConfig, PrimitiveShape,
+    AssetSource, MaterialAlphaMode, MaterialDef, MaterialShading, MeshShadowConfig, PrimitiveShape,
+    ProceduralTextureDef, TextureDef,
 };
 
+/// The right rail shows the **Asset Inspector** when an asset is selected in the
+/// Content Browser (priority asset > node), else the node inspector.
 pub fn render() -> Dom {
-    let ctrl = controller();
     html!("div", {
         .style("display", "flex")
         .style("flex-direction", "column")
         .style("height", "100%")
         .style("background", "var(--bg-1)")
+        .child_signal(controller().asset_selection.signal().map(|asset| {
+            Some(match asset {
+                Some(id) => asset_panel(id),
+                None => node_panel(),
+            })
+        }))
+    })
+}
+
+fn node_panel() -> Dom {
+    let ctrl = controller();
+    html!("div", {
+        .style("display", "flex")
+        .style("flex-direction", "column")
+        .style("height", "100%")
         .child(panel_header())
         .child(html!("div", {
             .style("flex", "1")
@@ -1501,6 +1519,292 @@ fn for_each_selected(make: fn(NodeId) -> EditorCommand) {
             let _ = controller().dispatch(make(id)).await;
         }
     });
+}
+
+// ── Asset Inspector (content-browser.jsx AssetInspector) ──────────────────────
+
+fn close_asset() {
+    spawn_local(async {
+        let _ = controller()
+            .dispatch(EditorCommand::SetAssetSelection { id: None })
+            .await;
+    });
+}
+
+/// The right-rail inspector for a Content Browser asset selection. Reads the
+/// project [`AssetTable`] entry for `id`; if it's gone (e.g. just deleted), the
+/// selection is cleared back to the node inspector.
+fn asset_panel(id: AssetId) -> Dom {
+    let ctrl = controller();
+    let source = ctrl
+        .scene
+        .assets
+        .lock()
+        .unwrap()
+        .get(id)
+        .map(|e| e.source.clone());
+    let Some(source) = source else {
+        close_asset();
+        return node_panel();
+    };
+
+    let (kind_label, icon) = match &source {
+        AssetSource::Material(_) => ("Material", "material"),
+        AssetSource::Texture(_) => ("Texture", "texture"),
+        AssetSource::Mesh(_) => ("Mesh", "cube"),
+        _ => ("Asset", "folder"),
+    };
+
+    html!("div", {
+        .style("display", "flex").style("flex-direction", "column").style("height", "100%")
+        // Header: kind icon + "{Kind} Asset" + back-to-Properties.
+        .child(html!("div", {
+            .style("display", "flex").style("align-items", "center").style("gap", "8px")
+            .style("height", "38px").style("padding", "0 8px 0 14px")
+            .style("border-bottom", "1px solid var(--line-soft)").style("flex", "0 0 auto")
+            .child(Icon::new(icon).size(15.0).color("var(--accent-bright)").render())
+            .child(html!("span", { .style("font-size", "12.5px").style("font-weight", "620").text(&format!("{kind_label} Asset")) }))
+            .child(html!("button", {
+                .class("t").style("margin-left", "auto")
+                .style("display", "flex").style("align-items", "center").style("gap", "4px")
+                .style("background", "transparent").style("border-style", "none").style("cursor", "pointer")
+                .style("color", "var(--text-2)").style("font-size", "11.5px")
+                .attr("title", "Back to node properties")
+                .child(Icon::new("chevron").size(13.0).render())
+                .child(html!("span", { .text("Properties") }))
+                .event(|_: events::Click| close_asset())
+            }))
+        }))
+        // Body.
+        .child(html!("div", {
+            .style("flex", "1").style("overflow-y", "auto")
+            .child(html!("div", {
+                .style("padding", "14px")
+                .child(html!("div", {
+                    .style("height", "110px").style("border-radius", "var(--r3)")
+                    .style("background", &asset_swatch_css(&source))
+                    .style("border", "1px solid var(--line-strong)")
+                    .style("box-shadow", "inset 0 0 0 1px oklch(1 0 0 / .08)")
+                }))
+            }))
+            .child(asset_identity(id, &source))
+            .apply(|b| match &source {
+                AssetSource::Material(_) => b.child(asset_authoring()),
+                AssetSource::Texture(TextureDef::Procedural(p)) => b.child(asset_procedural(p)),
+                _ => b,
+            })
+        }))
+        // Footer: delete.
+        .child(html!("div", {
+            .style("padding", "10px").style("border-top", "1px solid var(--line-soft)")
+            .style("display", "flex").style("gap", "8px")
+            .child(Btn::new().label("Delete asset").icon("trash").variant(BtnVariant::Ghost).full(true)
+                .on_click(move || {
+                    spawn_local(async move {
+                        let _ = controller().dispatch(EditorCommand::DeleteAsset { id }).await;
+                    });
+                }).render())
+        }))
+    })
+}
+
+fn asset_identity(id: AssetId, source: &AssetSource) -> Dom {
+    let name = asset_name(id, source);
+    let mut sec =
+        Section::new("Identity").child(row("Name", TextInput::new(Mutable::new(name)).render()));
+    match source {
+        AssetSource::Material(def) => {
+            let (label, tone) = material_badge(def);
+            let alpha = match def.alpha_mode {
+                MaterialAlphaMode::Opaque => "Opaque",
+                MaterialAlphaMode::Mask { .. } => "Mask",
+                MaterialAlphaMode::Blend => "Blend",
+            };
+            sec = sec.child(row(
+                "Status",
+                html!("div", {
+                    .style("display", "flex").style("gap", "6px").style("align-items", "center")
+                    .child(badge(label, tone))
+                    .child(badge(alpha, Tone::Neutral))
+                }),
+            ));
+        }
+        AssetSource::Texture(def) => {
+            let kind = match def {
+                TextureDef::Raster { .. } => "raster",
+                TextureDef::Procedural(ProceduralTextureDef::Checker { .. }) => "checker",
+                TextureDef::Procedural(ProceduralTextureDef::Gradient { .. }) => "gradient",
+                TextureDef::Procedural(ProceduralTextureDef::Noise { .. }) => "noise",
+            };
+            sec = sec.child(row("Kind", badge(kind, Tone::Neutral)));
+            if let Some((w, h)) = texture_size(def) {
+                sec = sec.child(row(
+                    "Size",
+                    html!("span", { .class("mono").style("font-size", "12px").style("color", "var(--text-1)")
+                        .text(&format!("{w} \u{00d7} {h}")) }),
+                ));
+            }
+        }
+        _ => {}
+    }
+    sec.child(row(
+        "Used by",
+        html!("span", { .style("font-size", "12px").style("color", "var(--text-3)").text("0 objects") }),
+    ))
+    .render()
+}
+
+fn asset_authoring() -> Dom {
+    Section::new("Authoring")
+        .child(
+            Btn::new()
+                .label("Edit in Material editor")
+                .icon("code")
+                .variant(BtnVariant::Primary)
+                .full(true)
+                .on_click(|| {
+                    spawn_local(async {
+                        let _ = controller()
+                            .dispatch(EditorCommand::SwitchMode {
+                                mode: EditorMode::Material,
+                            })
+                            .await;
+                    });
+                })
+                .render(),
+        )
+        .child(html!("div", {
+            .style("font-size", "11px").style("color", "var(--text-3)").style("line-height", "1.45").style("margin-top", "4px")
+            .text("Opens this asset in the Material workspace \u{2014} WGSL, uniforms, preview & registration.")
+        }))
+        .render()
+}
+
+fn asset_procedural(p: &ProceduralTextureDef) -> Dom {
+    let (title, rows): (String, Vec<Dom>) = match p {
+        ProceduralTextureDef::Checker {
+            cells_x, cells_y, ..
+        } => (
+            "Procedural \u{00b7} checker".to_string(),
+            vec![ro_row("Cells", &format!("{cells_x} \u{00d7} {cells_y}"))],
+        ),
+        ProceduralTextureDef::Gradient { horizontal, .. } => (
+            "Procedural \u{00b7} gradient".to_string(),
+            vec![ro_row(
+                "Direction",
+                if *horizontal {
+                    "horizontal"
+                } else {
+                    "vertical"
+                },
+            )],
+        ),
+        ProceduralTextureDef::Noise { seed, scale, .. } => (
+            "Procedural \u{00b7} noise".to_string(),
+            vec![
+                ro_row("Seed", &seed.to_string()),
+                ro_row("Scale", &fmt_num(*scale as f64)),
+            ],
+        ),
+    };
+    let mut sec = Section::new(title);
+    for r in rows {
+        sec = sec.child(r);
+    }
+    sec.render()
+}
+
+/// A read-only labelled value row for the asset inspector's procedural params.
+fn ro_row(label: &str, value: &str) -> Dom {
+    row(
+        label,
+        html!("span", { .class("mono").style("font-size", "12px").style("color", "var(--text-1)").text(value) }),
+    )
+}
+
+fn fmt_num(n: f64) -> String {
+    if n == n.trunc() {
+        format!("{}", n as i64)
+    } else {
+        format!("{n}")
+    }
+}
+
+fn asset_name(id: AssetId, source: &AssetSource) -> String {
+    match source {
+        AssetSource::Material(def) if !def.label.is_empty() => def.label.clone(),
+        AssetSource::Material(_) => "Material".to_string(),
+        AssetSource::Mesh(def) if !def.label.is_empty() => def.label.clone(),
+        AssetSource::Mesh(_) => "Mesh".to_string(),
+        AssetSource::Texture(TextureDef::Raster { display_name }) => display_name.clone(),
+        AssetSource::Texture(TextureDef::Procedural(ProceduralTextureDef::Checker { .. })) => {
+            "Checker".to_string()
+        }
+        AssetSource::Texture(TextureDef::Procedural(ProceduralTextureDef::Gradient { .. })) => {
+            "Gradient".to_string()
+        }
+        AssetSource::Texture(TextureDef::Procedural(ProceduralTextureDef::Noise { .. })) => {
+            "Noise".to_string()
+        }
+        _ => format!("Asset {}", &id.to_string()[..8]),
+    }
+}
+
+fn material_badge(def: &MaterialDef) -> (String, Tone) {
+    match def.shading {
+        MaterialShading::Pbr => ("PBR".to_string(), Tone::Accent),
+        MaterialShading::Unlit => ("Unlit".to_string(), Tone::Warn),
+        MaterialShading::Toon { .. } => ("Toon".to_string(), Tone::Ok),
+    }
+}
+
+fn texture_size(def: &TextureDef) -> Option<(u32, u32)> {
+    match def {
+        TextureDef::Procedural(ProceduralTextureDef::Checker { width, height, .. })
+        | TextureDef::Procedural(ProceduralTextureDef::Gradient { width, height, .. })
+        | TextureDef::Procedural(ProceduralTextureDef::Noise { width, height, .. }) => {
+            Some((*width, *height))
+        }
+        TextureDef::Raster { .. } => None,
+    }
+}
+
+fn asset_swatch_css(source: &AssetSource) -> String {
+    match source {
+        AssetSource::Material(def) => {
+            let c = def.base_color;
+            let b = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+            format!("rgb({}, {}, {})", b(c[0]), b(c[1]), b(c[2]))
+        }
+        AssetSource::Texture(TextureDef::Procedural(ProceduralTextureDef::Checker {
+            color_a,
+            color_b,
+            ..
+        })) => format!(
+            "repeating-conic-gradient({} 0% 25%, {} 0% 50%) 50% / 26px 26px",
+            rgba_css(*color_a),
+            rgba_css(*color_b)
+        ),
+        AssetSource::Texture(TextureDef::Procedural(ProceduralTextureDef::Gradient {
+            color_a,
+            color_b,
+            ..
+        })) => format!(
+            "linear-gradient(135deg, {}, {})",
+            rgba_css(*color_a),
+            rgba_css(*color_b)
+        ),
+        AssetSource::Texture(TextureDef::Procedural(ProceduralTextureDef::Noise { .. })) => {
+            "repeating-linear-gradient(45deg, oklch(0.5 0 0) 0 3px, oklch(0.3 0 0) 3px 6px)"
+                .to_string()
+        }
+        _ => "linear-gradient(135deg, oklch(0.35 0.01 255), oklch(0.22 0.01 255))".to_string(),
+    }
+}
+
+fn rgba_css(c: [f32; 4]) -> String {
+    let b = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    format!("rgb({}, {}, {})", b(c[0]), b(c[1]), b(c[2]))
 }
 
 fn kind_label(kind: &NodeKind) -> &'static str {
