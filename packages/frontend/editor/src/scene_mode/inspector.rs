@@ -7,12 +7,12 @@ use std::sync::Arc;
 
 use glam::{EulerRot, Quat};
 
+use crate::controller::NodeSpec;
 use crate::engine::scene::mutate::find_by_id;
 use crate::engine::scene::{
     AssetId, CameraConfig, CameraProjection, ColliderShape, LightConfig, Node, NodeId, NodeKind,
     Trs,
 };
-use crate::controller::NodeSpec;
 use crate::prelude::*;
 use awsm_scene_schema::{
     AssetSource, MaterialAlphaMode, MaterialDef, MaterialShading, MeshRef, MeshShadowConfig,
@@ -203,10 +203,18 @@ fn ref_picker(
     current: NodeId,
     on_pick: impl Fn(NodeId) + 'static,
 ) -> Dom {
-    let mut options: Vec<(String, String)> = vec![(NodeId::default().to_string(), "— none —".into())];
-    options.extend(eligible.iter().map(|(id, name)| (id.to_string(), name.clone())));
+    let mut options: Vec<(String, String)> =
+        vec![(NodeId::default().to_string(), "— none —".into())];
+    options.extend(
+        eligible
+            .iter()
+            .map(|(id, name)| (id.to_string(), name.clone())),
+    );
     let sel = Mutable::new(current.to_string());
-    let lookup: Vec<(String, NodeId)> = eligible.iter().map(|(id, _)| (id.to_string(), *id)).collect();
+    let lookup: Vec<(String, NodeId)> = eligible
+        .iter()
+        .map(|(id, _)| (id.to_string(), *id))
+        .collect();
     spawn_local(clone!(sel => async move {
         let mut first = true;
         sel.signal_cloned()
@@ -325,12 +333,17 @@ fn instances_editor(node: &Arc<Node>) -> Dom {
                 dispatch_kind(id, NodeKind::InstancesAlongCurve(def));
             }
         }))
-        .child(ref_picker("Source", sources, def.source_node, move |picked| {
-            if let NodeKind::InstancesAlongCurve(mut def) = n_src.kind.get_cloned() {
-                def.source_node = picked;
-                dispatch_kind(id, NodeKind::InstancesAlongCurve(def));
-            }
-        }))
+        .child(ref_picker(
+            "Source",
+            sources,
+            def.source_node,
+            move |picked| {
+                if let NodeKind::InstancesAlongCurve(mut def) = n_src.kind.get_cloned() {
+                    def.source_node = picked;
+                    dispatch_kind(id, NodeKind::InstancesAlongCurve(def));
+                }
+            },
+        ))
         .render()
 }
 
@@ -1603,11 +1616,15 @@ fn transform_section(node: &Arc<Node>) -> Dom {
     let n_pos = node.clone();
     let pos = row(
         "Position",
-        vec3_signal(node.transform.signal_ref(|t| f3(t.translation)), 0.1, move |v| {
-            let mut t = n_pos.transform.get();
-            t.translation = [v[0] as f32, v[1] as f32, v[2] as f32];
-            dispatch_transform(id, t);
-        }),
+        vec3_signal(
+            node.transform.signal_ref(|t| f3(t.translation)),
+            0.1,
+            move |v| {
+                let mut t = n_pos.transform.get();
+                t.translation = [v[0] as f32, v[1] as f32, v[2] as f32];
+                dispatch_transform(id, t);
+            },
+        ),
     );
 
     // Rotation — two lines: "Rotation" + an Euler/Quat toggle, then the fields
@@ -1669,7 +1686,11 @@ fn euler_fields(node: Arc<Node>, id: NodeId) -> Dom {
     vec3_signal(
         node.transform.signal_ref(|t| {
             let (ex, ey, ez) = Quat::from_array(t.rotation).to_euler(EulerRot::XYZ);
-            [ex.to_degrees() as f64, ey.to_degrees() as f64, ez.to_degrees() as f64]
+            [
+                ex.to_degrees() as f64,
+                ey.to_degrees() as f64,
+                ez.to_degrees() as f64,
+            ]
         }),
         1.0,
         move |v| {

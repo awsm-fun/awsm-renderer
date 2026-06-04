@@ -81,13 +81,16 @@ async fn init_inner() -> Result<(), String> {
 /// entry materializes re-syncs once the entry (and its transform key) appears.
 fn start_selection_observer() {
     spawn_local(async move {
-        let selected_id = controller().selected.signal_ref(|ids| {
-            if ids.len() == 1 {
-                Some(ids[0])
-            } else {
-                None
-            }
-        });
+        let selected_id =
+            controller().selected.signal_ref(
+                |ids| {
+                    if ids.len() == 1 {
+                        Some(ids[0])
+                    } else {
+                        None
+                    }
+                },
+            );
         map_ref! {
             let id = selected_id,
             let _rev = controller().scene.revision.signal() => *id

@@ -90,15 +90,25 @@ fn push_box(buf: &mut WireBuf, world: &Mat4, half_extents: &[f32; 3], color: &[f
     ];
     let c = rgb_to_vec4(color);
     for &(a, b) in &edges {
-        buf.push_segment(world.transform_point3(corners[a]), world.transform_point3(corners[b]), c);
+        buf.push_segment(
+            world.transform_point3(corners[a]),
+            world.transform_point3(corners[b]),
+            c,
+        );
     }
 }
 
 fn push_sphere(buf: &mut WireBuf, world: &Mat4, radius: f32, color: &[f32; 3]) {
     let n = SPHERE_SEGMENTS;
-    push_circle(buf, world, radius, color, n, |a| Vec3::new(a.cos(), a.sin(), 0.0));
-    push_circle(buf, world, radius, color, n, |a| Vec3::new(a.cos(), 0.0, a.sin()));
-    push_circle(buf, world, radius, color, n, |a| Vec3::new(0.0, a.cos(), a.sin()));
+    push_circle(buf, world, radius, color, n, |a| {
+        Vec3::new(a.cos(), a.sin(), 0.0)
+    });
+    push_circle(buf, world, radius, color, n, |a| {
+        Vec3::new(a.cos(), 0.0, a.sin())
+    });
+    push_circle(buf, world, radius, color, n, |a| {
+        Vec3::new(0.0, a.cos(), a.sin())
+    });
 }
 
 fn push_circle(
@@ -170,12 +180,24 @@ fn push_capsule(buf: &mut WireBuf, world: &Mat4, half_height: f32, radius: f32, 
     let top = Vec3::new(0.0, half_height, 0.0);
     let bot = Vec3::new(0.0, -half_height, 0.0);
     let c = rgb_to_vec4(color);
-    push_half_circle(buf, world, top, radius, color, |t| Vec3::new(t.cos(), t.sin(), 0.0));
-    push_half_circle(buf, world, top, radius, color, |t| Vec3::new(0.0, t.sin(), t.cos()));
-    push_half_circle(buf, world, bot, radius, color, |t| Vec3::new(t.cos(), -t.sin(), 0.0));
-    push_half_circle(buf, world, bot, radius, color, |t| Vec3::new(0.0, -t.sin(), t.cos()));
-    push_circle_offset(buf, world, top, radius, color, CAP_SEGMENTS, |t| Vec3::new(t.cos(), 0.0, t.sin()));
-    push_circle_offset(buf, world, bot, radius, color, CAP_SEGMENTS, |t| Vec3::new(t.cos(), 0.0, t.sin()));
+    push_half_circle(buf, world, top, radius, color, |t| {
+        Vec3::new(t.cos(), t.sin(), 0.0)
+    });
+    push_half_circle(buf, world, top, radius, color, |t| {
+        Vec3::new(0.0, t.sin(), t.cos())
+    });
+    push_half_circle(buf, world, bot, radius, color, |t| {
+        Vec3::new(t.cos(), -t.sin(), 0.0)
+    });
+    push_half_circle(buf, world, bot, radius, color, |t| {
+        Vec3::new(0.0, -t.sin(), t.cos())
+    });
+    push_circle_offset(buf, world, top, radius, color, CAP_SEGMENTS, |t| {
+        Vec3::new(t.cos(), 0.0, t.sin())
+    });
+    push_circle_offset(buf, world, bot, radius, color, CAP_SEGMENTS, |t| {
+        Vec3::new(t.cos(), 0.0, t.sin())
+    });
     for (dx, dz) in &[(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
         let a = Vec3::new(radius * dx, half_height, radius * dz);
         let b = Vec3::new(radius * dx, -half_height, radius * dz);
@@ -186,8 +208,12 @@ fn push_capsule(buf: &mut WireBuf, world: &Mat4, half_height: f32, radius: f32, 
 fn push_cylinder(buf: &mut WireBuf, world: &Mat4, half_height: f32, radius: f32, color: &[f32; 3]) {
     let top = Vec3::new(0.0, half_height, 0.0);
     let bot = Vec3::new(0.0, -half_height, 0.0);
-    push_circle_offset(buf, world, top, radius, color, CAP_SEGMENTS, |t| Vec3::new(t.cos(), 0.0, t.sin()));
-    push_circle_offset(buf, world, bot, radius, color, CAP_SEGMENTS, |t| Vec3::new(t.cos(), 0.0, t.sin()));
+    push_circle_offset(buf, world, top, radius, color, CAP_SEGMENTS, |t| {
+        Vec3::new(t.cos(), 0.0, t.sin())
+    });
+    push_circle_offset(buf, world, bot, radius, color, CAP_SEGMENTS, |t| {
+        Vec3::new(t.cos(), 0.0, t.sin())
+    });
     let c = rgb_to_vec4(color);
     for (dx, dz) in &[(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
         let a = Vec3::new(radius * dx, half_height, radius * dz);
@@ -199,7 +225,9 @@ fn push_cylinder(buf: &mut WireBuf, world: &Mat4, half_height: f32, radius: f32,
 fn push_cone(buf: &mut WireBuf, world: &Mat4, half_height: f32, radius: f32, color: &[f32; 3]) {
     let apex = Vec3::new(0.0, half_height, 0.0);
     let base = Vec3::new(0.0, -half_height, 0.0);
-    push_circle_offset(buf, world, base, radius, color, CAP_SEGMENTS, |t| Vec3::new(t.cos(), 0.0, t.sin()));
+    push_circle_offset(buf, world, base, radius, color, CAP_SEGMENTS, |t| {
+        Vec3::new(t.cos(), 0.0, t.sin())
+    });
     let c = rgb_to_vec4(color);
     for (dx, dz) in &[(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
         let b = Vec3::new(radius * dx, -half_height, radius * dz);

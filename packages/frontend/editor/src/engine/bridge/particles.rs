@@ -113,7 +113,11 @@ fn build_runtime(
     pbr.base_color_factor = [1.0, 1.0, 1.0, 1.0];
     pbr.metallic_factor = 0.0;
     pbr.roughness_factor = 1.0;
-    pbr.emissive_factor = [base_color[0] * 1.6, base_color[1] * 1.6, base_color[2] * 1.6];
+    pbr.emissive_factor = [
+        base_color[0] * 1.6,
+        base_color[1] * 1.6,
+        base_color[2] * 1.6,
+    ];
     let material_key = renderer.materials.insert(
         Material::Pbr(Box::new(pbr)),
         &renderer.textures,
@@ -129,7 +133,9 @@ fn build_runtime(
         colors: m.colors,
         indices: m.indices,
     };
-    let transform_key = renderer.transforms.insert(Transform::IDENTITY, Some(instance_parent));
+    let transform_key = renderer
+        .transforms
+        .insert(Transform::IDENTITY, Some(instance_parent));
     let mesh_key = match renderer.add_raw_mesh(raw, transform_key, material_key) {
         Ok(k) => k,
         Err(err) => {
@@ -225,7 +231,9 @@ pub fn tick_all(renderer: &mut AwsmRenderer) {
                     let p = &live[i];
                     let translation = match runtime.emitter.space {
                         EmitterSpace::World => Vec3::from_array(p.position),
-                        EmitterSpace::Local => Vec3::from_array(p.position) - runtime.base_world_pos,
+                        EmitterSpace::Local => {
+                            Vec3::from_array(p.position) - runtime.base_world_pos
+                        }
                     };
                     runtime.transforms_buf[i] = Transform {
                         translation,

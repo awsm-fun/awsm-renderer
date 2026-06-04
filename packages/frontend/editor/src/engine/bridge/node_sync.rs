@@ -378,7 +378,11 @@ async fn materialize_line(entry: Arc<RendererNode>, def: awsm_scene_schema::Line
     }
     let parent_tk = entry.transform_key;
     let positions: Vec<Vec3> = def.points.iter().map(|p| Vec3::from_array(p.pos)).collect();
-    let colors: Vec<Vec4> = def.points.iter().map(|p| Vec4::from_array(p.color)).collect();
+    let colors: Vec<Vec4> = def
+        .points
+        .iter()
+        .map(|p| Vec4::from_array(p.color))
+        .collect();
     let entry2 = entry.clone();
     let line_key = with_renderer_mut(move |r| {
         let world = r
@@ -386,8 +390,16 @@ async fn materialize_line(entry: Arc<RendererNode>, def: awsm_scene_schema::Line
             .get_world(parent_tk)
             .copied()
             .unwrap_or(glam::Mat4::IDENTITY);
-        let positions_world: Vec<Vec3> = positions.iter().map(|p| world.transform_point3(*p)).collect();
-        match r.add_line_strip(&positions_world, &colors, def.width_px, def.depth_test_always) {
+        let positions_world: Vec<Vec3> = positions
+            .iter()
+            .map(|p| world.transform_point3(*p))
+            .collect();
+        match r.add_line_strip(
+            &positions_world,
+            &colors,
+            def.width_px,
+            def.depth_test_always,
+        ) {
             Ok(key) => key,
             Err(err) => {
                 tracing::warn!("materialize_line: add_line_strip failed: {err}");
@@ -413,7 +425,10 @@ async fn materialize_curve_viz(entry: Arc<RendererNode>, def: awsm_scene_schema:
     let line_key = with_renderer_mut(move |r| {
         use awsm_curves::{CatmullRomCurve, Curve3};
         let curve = CatmullRomCurve::new(
-            def.control_points.iter().map(|p| Vec3::from_array(*p)).collect(),
+            def.control_points
+                .iter()
+                .map(|p| Vec3::from_array(*p))
+                .collect(),
             def.closed,
         );
         let samples = def.sample_count.max(2) as usize;
@@ -624,7 +639,11 @@ async fn materialize_sweep(
         return;
     };
     let curve = CatmullRomCurve::new(
-        curve_def.control_points.iter().map(|p| Vec3::from_array(*p)).collect(),
+        curve_def
+            .control_points
+            .iter()
+            .map(|p| Vec3::from_array(*p))
+            .collect(),
         curve_def.closed,
     );
     let cs = match def.cross_section {
@@ -691,7 +710,11 @@ async fn materialize_instances(
     };
 
     let curve = CatmullRomCurve::new(
-        curve_def.control_points.iter().map(|p| Vec3::from_array(*p)).collect(),
+        curve_def
+            .control_points
+            .iter()
+            .map(|p| Vec3::from_array(*p))
+            .collect(),
         curve_def.closed,
     );
     let total_len = curve.total_length(curve_def.sample_count.max(8) as usize);
@@ -753,7 +776,10 @@ async fn materialize_instances(
 
 /// Particle emitter (`NodeKind::ParticleEmitter`) → an auto-playing simulator +
 /// instanced billboard quad, ticked each frame by the render loop.
-async fn materialize_particle(entry: Arc<RendererNode>, def: awsm_scene_schema::ParticleEmitterDef) {
+async fn materialize_particle(
+    entry: Arc<RendererNode>,
+    def: awsm_scene_schema::ParticleEmitterDef,
+) {
     let parent_tk = entry.transform_key;
     let node_id = entry.node_id;
     with_renderer_mut(move |r| {

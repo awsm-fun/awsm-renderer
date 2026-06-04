@@ -37,7 +37,10 @@ enum MoveAction {
 /// no device-pixel scaling.
 fn canvas_coords(canvas: &web_sys::HtmlCanvasElement, client_x: f64, client_y: f64) -> (i32, i32) {
     let rect = canvas.get_bounding_client_rect();
-    ((client_x - rect.left()) as i32, (client_y - rect.top()) as i32)
+    (
+        (client_x - rect.left()) as i32,
+        (client_y - rect.top()) as i32,
+    )
 }
 
 pub fn render_canvas(on_ready: impl FnOnce(web_sys::HtmlCanvasElement) + 'static) -> Dom {
