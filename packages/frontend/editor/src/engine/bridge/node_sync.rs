@@ -283,7 +283,8 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
         NodeKind::Light(cfg) => apply_light(entry.clone(), cfg).await,
         NodeKind::Line(def) => materialize_line(entry.clone(), def).await,
         NodeKind::Curve(def) => materialize_curve_viz(entry.clone(), def).await,
-        // Group / Camera / Model: no procedural geometry. Mesh / Sprite / Sweep /
+        NodeKind::Sprite(def) => materialize_sprite(entry.clone(), def).await,
+        // Group / Camera / Model: no procedural geometry. Mesh / Sweep /
         // Instances / Particle / Decal / Collider: deeper materialization is the
         // follow-on.
         _ => {}
@@ -419,6 +420,60 @@ async fn materialize_curve_viz(entry: Arc<RendererNode>, def: awsm_scene_schema:
     .await;
     if let Some(key) = line_key {
         entry2.line_keys.lock().unwrap().push(key);
+    }
+}
+
+/// Textured/tinted quad (`NodeKind::Sprite`) → a `sprite_quad` mesh with the
+/// renderer's billboard mode. Single-cell unlit-ish quad (the flipbook-animated
+/// variant is the follow-on); sprites don't cast/receive shadows.
+async fn materialize_sprite(entry: Arc<RendererNode>, def: awsm_scene_schema::SpriteDef) {
+    use awsm_meshgen::sprite_quad;
+    use awsm_renderer::meshes::mesh::BillboardMode;
+
+    let mesh = sprite_quad(def.size[0], def.size[1]);
+    let raw = RawMeshData {
+        positions: mesh.positions,
+        normals: mesh.normals,
+        uvs: mesh.uvs,
+        colors: mesh.colors,
+        indices: mesh.indices,
+    };
+    let sprite_mat = awsm_scene_schema::MaterialDef {
+        base_color: def.tint,
+        metallic: 0.0,
+        roughness: 1.0,
+        emissive: [def.tint[0] * 1.8, def.tint[1] * 1.8, def.tint[2] * 1.8],
+        double_sided: true,
+        ..awsm_scene_schema::MaterialDef::default()
+    };
+    let mode = match def.billboard {
+        awsm_scene_schema::BillboardMode::None => BillboardMode::None,
+        awsm_scene_schema::BillboardMode::YAxis => BillboardMode::YAxis,
+        awsm_scene_schema::BillboardMode::Full => BillboardMode::Full,
+    };
+    let parent_tk = entry.transform_key;
+
+    let handle = renderer_handle();
+    let mut r = handle.lock().await;
+    let mat_key = material::insert_material(&mut r, &sprite_mat);
+    let sub_tk = r.transforms.insert(Transform::IDENTITY, Some(parent_tk));
+    match r.add_raw_mesh(raw, sub_tk, mat_key) {
+        Ok(mk) => {
+            if let Err(e) = r.finalize_gpu_textures().await {
+                tracing::warn!("sprite finalize_gpu_textures: {e}");
+            }
+            let _ = r.set_mesh_billboard_mode(mk, mode);
+            drop(r);
+            entry.model_meshes.lock().unwrap().push(mk);
+            entry.model_transforms.lock().unwrap().push(sub_tk);
+            entry.material_keys.lock().unwrap().push(mat_key);
+            bridge().register_mesh(mk, entry.node_id);
+        }
+        Err(e) => {
+            r.transforms.remove(sub_tk);
+            r.remove_material(mat_key);
+            tracing::error!("materialize sprite failed: {e}");
+        }
     }
 }
 
