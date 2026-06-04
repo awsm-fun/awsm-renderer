@@ -223,6 +223,125 @@ fn builtin_toggle_row(
     row(label, toggle(state))
 }
 
+/// A `NumField` row bound to a built-in material's variant `MaterialDef` (factor
+/// edits — no recompile, just a uniform change once the per-mesh path exists; for
+/// now they live on the shared variant material).
+fn builtin_num_row(
+    mat: &Arc<CustomMaterial>,
+    label: &str,
+    value: f64,
+    min: f64,
+    max: f64,
+    step: f64,
+    set: impl Fn(&mut awsm_scene_schema::MaterialDef, f64) + 'static,
+) -> Dom {
+    let mat = mat.clone();
+    row(
+        label,
+        NumField::new(value)
+            .min(min)
+            .max(max)
+            .step(step)
+            .on_change(move |v| edit_builtin(&mat, |d| set(d, v)))
+            .render(),
+    )
+}
+
+/// The KHR-extensions panel for a built-in **PBR** material. Each extension has
+/// an enable toggle (flipping it is a *variant* change → assigned meshes recompile
+/// to a distinct shader) and, when enabled, its scalar factor knob(s). Reactive on
+/// the material's `builtin` signal so toggling reveals/hides the factor rows.
+/// Color factors default to white and are edited once the texture/color picker
+/// pass lands; the primary scalar of every extension is authorable here now.
+fn extensions_section(mat: &Arc<CustomMaterial>) -> Dom {
+    use awsm_scene_schema::MaterialShading;
+    use futures_signals::signal::SignalExt;
+    let mat = mat.clone();
+    html!("div", {
+        .child_signal(mat.builtin.signal_cloned().map(clone!(mat => move |b| {
+            let def = b.unwrap_or_default();
+            // Extensions only affect the PBR path.
+            if !matches!(def.shading, MaterialShading::Pbr) {
+                return None;
+            }
+            let e = def.extensions;
+            let mut sec = Section::new("PBR extensions");
+
+            // (enable toggle, [optional factor rows]) for each of the 11.
+            macro_rules! toggle {
+                ($label:literal, $is:expr, $set:expr) => {
+                    sec = sec.child(builtin_toggle_row(&mat, $label, $is, $set));
+                };
+            }
+            toggle!("Emissive strength", e.emissive_strength.is_some(),
+                |d, on| d.extensions.emissive_strength = on.then(<_>::default));
+            if let Some(x) = e.emissive_strength {
+                sec = sec.child(builtin_num_row(&mat, "  Strength", x.strength as f64, 0.0, 100.0, 0.1,
+                    |d, v| { if let Some(ref mut a) = d.extensions.emissive_strength { a.strength = v as f32; } }));
+            }
+            toggle!("IOR", e.ior.is_some(), |d, on| d.extensions.ior = on.then(<_>::default));
+            if let Some(x) = e.ior {
+                sec = sec.child(builtin_num_row(&mat, "  Index", x.ior as f64, 1.0, 3.0, 0.01,
+                    |d, v| { if let Some(ref mut a) = d.extensions.ior { a.ior = v as f32; } }));
+            }
+            toggle!("Specular", e.specular.is_some(), |d, on| d.extensions.specular = on.then(<_>::default));
+            if let Some(x) = e.specular {
+                sec = sec.child(builtin_num_row(&mat, "  Factor", x.factor as f64, 0.0, 1.0, 0.01,
+                    |d, v| { if let Some(ref mut a) = d.extensions.specular { a.factor = v as f32; } }));
+            }
+            toggle!("Transmission", e.transmission.is_some(), |d, on| d.extensions.transmission = on.then(<_>::default));
+            if let Some(x) = e.transmission {
+                sec = sec.child(builtin_num_row(&mat, "  Factor", x.factor as f64, 0.0, 1.0, 0.01,
+                    |d, v| { if let Some(ref mut a) = d.extensions.transmission { a.factor = v as f32; } }));
+            }
+            toggle!("Diffuse transmission", e.diffuse_transmission.is_some(), |d, on| d.extensions.diffuse_transmission = on.then(<_>::default));
+            if let Some(x) = e.diffuse_transmission {
+                sec = sec.child(builtin_num_row(&mat, "  Factor", x.factor as f64, 0.0, 1.0, 0.01,
+                    |d, v| { if let Some(ref mut a) = d.extensions.diffuse_transmission { a.factor = v as f32; } }));
+            }
+            toggle!("Volume", e.volume.is_some(), |d, on| d.extensions.volume = on.then(<_>::default));
+            if let Some(x) = e.volume {
+                sec = sec.child(builtin_num_row(&mat, "  Thickness", x.thickness_factor as f64, 0.0, 10.0, 0.05,
+                    |d, v| { if let Some(ref mut a) = d.extensions.volume { a.thickness_factor = v as f32; } }));
+                sec = sec.child(builtin_num_row(&mat, "  Attenuation dist", x.attenuation_distance as f64, 0.0, 100.0, 0.1,
+                    |d, v| { if let Some(ref mut a) = d.extensions.volume { a.attenuation_distance = v as f32; } }));
+            }
+            toggle!("Clearcoat", e.clearcoat.is_some(), |d, on| d.extensions.clearcoat = on.then(<_>::default));
+            if let Some(x) = e.clearcoat {
+                sec = sec.child(builtin_num_row(&mat, "  Factor", x.factor as f64, 0.0, 1.0, 0.01,
+                    |d, v| { if let Some(ref mut a) = d.extensions.clearcoat { a.factor = v as f32; } }));
+                sec = sec.child(builtin_num_row(&mat, "  Roughness", x.roughness_factor as f64, 0.0, 1.0, 0.01,
+                    |d, v| { if let Some(ref mut a) = d.extensions.clearcoat { a.roughness_factor = v as f32; } }));
+            }
+            toggle!("Sheen", e.sheen.is_some(), |d, on| d.extensions.sheen = on.then(<_>::default));
+            if let Some(x) = e.sheen {
+                sec = sec.child(builtin_num_row(&mat, "  Roughness", x.roughness_factor as f64, 0.0, 1.0, 0.01,
+                    |d, v| { if let Some(ref mut a) = d.extensions.sheen { a.roughness_factor = v as f32; } }));
+            }
+            toggle!("Dispersion", e.dispersion.is_some(), |d, on| d.extensions.dispersion = on.then(<_>::default));
+            if let Some(x) = e.dispersion {
+                sec = sec.child(builtin_num_row(&mat, "  Amount", x.dispersion as f64, 0.0, 1.0, 0.005,
+                    |d, v| { if let Some(ref mut a) = d.extensions.dispersion { a.dispersion = v as f32; } }));
+            }
+            toggle!("Anisotropy", e.anisotropy.is_some(), |d, on| d.extensions.anisotropy = on.then(<_>::default));
+            if let Some(x) = e.anisotropy {
+                sec = sec.child(builtin_num_row(&mat, "  Strength", x.strength as f64, 0.0, 1.0, 0.01,
+                    |d, v| { if let Some(ref mut a) = d.extensions.anisotropy { a.strength = v as f32; } }));
+                sec = sec.child(builtin_num_row(&mat, "  Rotation", x.rotation as f64, 0.0, 6.2832, 0.01,
+                    |d, v| { if let Some(ref mut a) = d.extensions.anisotropy { a.rotation = v as f32; } }));
+            }
+            toggle!("Iridescence", e.iridescence.is_some(), |d, on| d.extensions.iridescence = on.then(<_>::default));
+            if let Some(x) = e.iridescence {
+                sec = sec.child(builtin_num_row(&mat, "  Factor", x.factor as f64, 0.0, 1.0, 0.01,
+                    |d, v| { if let Some(ref mut a) = d.extensions.iridescence { a.factor = v as f32; } }));
+                sec = sec.child(builtin_num_row(&mat, "  IOR", x.ior as f64, 1.0, 3.0, 0.01,
+                    |d, v| { if let Some(ref mut a) = d.extensions.iridescence { a.ior = v as f32; } }));
+            }
+            Some(sec.render())
+        })))
+    })
+}
+
 /// The Definition rail for a **built-in** material: its shared variant settings
 /// (shading type + alpha / double-sided / vertex-colors). Uniform values + texture
 /// bindings are set per-mesh, so they don't appear here.
@@ -289,6 +408,7 @@ fn builtin_definition(mat: &Arc<CustomMaterial>) -> Dom {
                 .child(builtin_toggle_row(mat, "Double-sided", def.double_sided, |d, on| d.double_sided = on))
                 .child(builtin_toggle_row(mat, "Vertex colors", def.vertex_colors_enabled, |d, on| d.vertex_colors_enabled = on))
                 .render())
+            .child(extensions_section(mat))
             .child(html!("div", {
                 .style("margin", "11px 12px").style("padding", "8px 10px")
                 .style("background", "var(--bg-2)").style("border", "1px solid var(--line-soft)").style("border-radius", "var(--r2)")

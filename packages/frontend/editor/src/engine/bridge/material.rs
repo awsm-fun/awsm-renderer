@@ -80,5 +80,92 @@ fn material_to_pbr(def: &MaterialDef, alpha_mode: MaterialAlphaMode) -> PbrMater
         pbr.vertex_color_info =
             Some(awsm_renderer::materials::pbr::PbrMaterialVertexColorInfo { set_index: 0 });
     }
+    apply_extensions(&mut pbr, &def.extensions);
     pbr
+}
+
+/// Translate each enabled authored KHR extension onto the renderer's `PbrMaterial`
+/// `Option<…Extension>` fields. Presence = the variant bit (a distinct compiled
+/// shader); the scalar/color factors are the uniform values. Texture slots within
+/// each extension stay `None` until the texture-asset picker lands.
+fn apply_extensions(pbr: &mut PbrMaterial, ext: &awsm_scene_schema::PbrExtensions) {
+    use awsm_renderer::materials::pbr as r;
+    if let Some(e) = ext.emissive_strength {
+        pbr.emissive_strength = Some(r::PbrMaterialEmissiveStrength {
+            strength: e.strength,
+        });
+    }
+    if let Some(e) = ext.ior {
+        pbr.ior = Some(r::PbrMaterialIor { ior: e.ior });
+    }
+    if let Some(e) = ext.specular {
+        pbr.specular = Some(r::PbrMaterialSpecular {
+            tex: None,
+            factor: e.factor,
+            color_tex: None,
+            color_factor: e.color_factor,
+        });
+    }
+    if let Some(e) = ext.transmission {
+        pbr.transmission = Some(r::PbrMaterialTransmission {
+            tex: None,
+            factor: e.factor,
+        });
+    }
+    if let Some(e) = ext.diffuse_transmission {
+        pbr.diffuse_transmission = Some(r::PbrMaterialDiffuseTransmission {
+            tex: None,
+            factor: e.factor,
+            color_tex: None,
+            color_factor: e.color_factor,
+        });
+    }
+    if let Some(e) = ext.volume {
+        pbr.volume = Some(r::PbrMaterialVolume {
+            thickness_tex: None,
+            thickness_factor: e.thickness_factor,
+            attenuation_distance: e.attenuation_distance,
+            attenuation_color: e.attenuation_color,
+        });
+    }
+    if let Some(e) = ext.clearcoat {
+        pbr.clearcoat = Some(r::PbrMaterialClearCoat {
+            tex: None,
+            factor: e.factor,
+            roughness_tex: None,
+            roughness_factor: e.roughness_factor,
+            normal_tex: None,
+            normal_scale: 1.0,
+        });
+    }
+    if let Some(e) = ext.sheen {
+        pbr.sheen = Some(r::PbrMaterialSheen {
+            roughness_tex: None,
+            roughness_factor: e.roughness_factor,
+            color_tex: None,
+            color_factor: e.color_factor,
+        });
+    }
+    if let Some(e) = ext.dispersion {
+        pbr.dispersion = Some(r::PbrMaterialDispersion {
+            dispersion: e.dispersion,
+        });
+    }
+    if let Some(e) = ext.anisotropy {
+        pbr.anisotropy = Some(r::PbrMaterialAnisotropy {
+            tex: None,
+            strength: e.strength,
+            rotation: e.rotation,
+        });
+    }
+    if let Some(e) = ext.iridescence {
+        pbr.iridescence = Some(r::PbrMaterialIridescence {
+            tex: None,
+            factor: e.factor,
+            ior: e.ior,
+            thickness_tex: None,
+            thickness_min: e.thickness_min,
+            thickness_max: e.thickness_max,
+        });
+    }
 }
