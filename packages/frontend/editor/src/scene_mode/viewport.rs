@@ -44,6 +44,23 @@ pub fn render() -> Dom {
                 crate::engine::context::sync_canvas_size();
             })
         }))
+        // Screen-space selection box (orange rect around the selected object,
+        // recomputed each frame by the render loop).
+        .child_signal(crate::engine::selection_box::rect_signal().map(|rect| {
+            rect.map(|[x, y, w, h]| {
+                html!("div", {
+                    .style("position", "absolute")
+                    .style("pointer-events", "none")
+                    .style("left", format!("{x}px"))
+                    .style("top", format!("{y}px"))
+                    .style("width", format!("{w}px"))
+                    .style("height", format!("{h}px"))
+                    .style("border", "1.5px solid #f0973a")
+                    .style("border-radius", "2px")
+                    .style("box-shadow", "0 0 0 1px rgba(240,151,58,0.25)")
+                })
+            })
+        }))
         // Overlay chrome (sits above the canvas).
         .child(nav_cube())
         .child(tool_palette(&tool))

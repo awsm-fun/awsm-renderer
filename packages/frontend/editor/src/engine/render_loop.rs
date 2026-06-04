@@ -31,7 +31,7 @@ fn render_one_frame() {
     // local (declared after `handle`) so it drops before `handle`.
     let mut guard = handle.try_lock();
     if let Some(renderer) = guard.as_mut() {
-        if let Err(err) = renderer.update_camera(matrices) {
+        if let Err(err) = renderer.update_camera(matrices.clone()) {
             tracing::error!("update_camera failed: {err}");
         }
         // Keep the gizmo screen-constant + anchored under the selection, and
@@ -43,5 +43,7 @@ fn render_one_frame() {
         if let Err(err) = renderer.render(hooks.as_ref()) {
             tracing::error!("render failed: {err}");
         }
+        // Renderables are now collected — update the screen-space selection box.
+        super::selection_box::update(renderer, &matrices);
     }
 }
