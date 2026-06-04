@@ -421,6 +421,44 @@ impl EditorController {
                 }
                 Ok(None)
             }
+            EditorCommand::AssignMaterial { node, material } => {
+                match mutate::find_by_id(&self.scene, node) {
+                    Some(n) => {
+                        let prev = n.kind.get_cloned();
+                        let NodeKind::Primitive {
+                            shape,
+                            material: mref,
+                            inline_material,
+                            shadow,
+                            ..
+                        } = prev.clone()
+                        else {
+                            return Ok(None);
+                        };
+                        let instance = material
+                            .and_then(|id| find_material(&self.custom_materials, id))
+                            .map(|m| awsm_scene_schema::CustomMaterialInstance {
+                                material: m.name.get_cloned(),
+                                uniform_overrides: Default::default(),
+                                texture_overrides: Default::default(),
+                                buffer_overrides: Default::default(),
+                            });
+                        n.kind.set(NodeKind::Primitive {
+                            shape,
+                            material: mref,
+                            inline_material,
+                            custom_material: instance,
+                            shadow,
+                        });
+                        self.scene.bump_revision();
+                        Ok(Some(EditorCommand::SetKind {
+                            id: node,
+                            kind: Box::new(prev),
+                        }))
+                    }
+                    None => Ok(None),
+                }
+            }
             EditorCommand::LoadProjectFromUrl { base_url } => {
                 // Seam present; the fetch + TOML deserialize lands in M11.
                 Toast::info(format!("Load project from {base_url} — lands in M11"));

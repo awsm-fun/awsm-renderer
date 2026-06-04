@@ -584,9 +584,49 @@ fn register_bar(mat: &Arc<CustomMaterial>) -> Dom {
             })))
         }))
         .child(html!("div", { .style("flex", "1") }))
+        .child(Btn::new().label("Assign to selection").icon("link").variant(BtnVariant::Ghost).size(BtnSize::Sm)
+            .on_click(move || assign_to_selection(id)).render())
         .child(Btn::new().label("Register").icon("check").variant(BtnVariant::Primary).size(BtnSize::Sm)
             .on_click(move || dispatch(EditorCommand::RegisterMaterial { id })).render())
     })
+}
+
+/// Assign `material` to the primary scene selection if it's a mesh primitive.
+fn assign_to_selection(material: AssetId) {
+    spawn_local(async move {
+        let ctrl = controller();
+        let Some(node) = ctrl.selected.get_cloned().last().copied() else {
+            Toast::warning("Select a mesh in the Scene to assign this material to.");
+            return;
+        };
+        let is_primitive = crate::engine::scene::mutate::find_by_id(&ctrl.scene, node)
+            .map(|n| {
+                matches!(
+                    n.kind.get_cloned(),
+                    crate::engine::scene::NodeKind::Primitive { .. }
+                )
+            })
+            .unwrap_or(false);
+        if !is_primitive {
+            Toast::warning("Select a mesh primitive to assign this material.");
+            return;
+        }
+        let registered =
+            crate::controller::custom_material::find_material(&ctrl.custom_materials, material)
+                .map(|m| m.registered.get())
+                .unwrap_or(false);
+        if !registered {
+            Toast::warning("Register the material before assigning it.");
+            return;
+        }
+        let _ = ctrl
+            .dispatch(EditorCommand::AssignMaterial {
+                node,
+                material: Some(material),
+            })
+            .await;
+        Toast::info("Material assigned to selection.");
+    });
 }
 
 // ── Contract drawer (material-shell.jsx HelpDrawer) ────────────────────────────

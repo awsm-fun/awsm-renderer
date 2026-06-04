@@ -154,6 +154,15 @@ pub enum EditorCommand {
     /// validates the WGSL and flips the `registered` flag; the real GPU
     /// registration + bucket accounting lands in M10.
     RegisterMaterial { id: AssetId },
+
+    /// Assign a custom WGSL material (by id) to a scene node's mesh, or clear it
+    /// (`material: None`). Sets the node's `custom_material` reference. Inverse:
+    /// restore the node's prior kind (a `SetKind`). The bridge renders the
+    /// assigned material once it's registered with the renderer.
+    AssignMaterial {
+        node: NodeId,
+        material: Option<AssetId>,
+    },
 }
 
 impl EditorCommand {
@@ -201,6 +210,7 @@ impl EditorCommand {
             EditorCommand::DeleteCustomMaterial { .. } => "Delete material",
             EditorCommand::SetCurrentMaterial { .. } => "Select material",
             EditorCommand::RegisterMaterial { .. } => "Register material",
+            EditorCommand::AssignMaterial { .. } => "Assign material",
         }
     }
 }
