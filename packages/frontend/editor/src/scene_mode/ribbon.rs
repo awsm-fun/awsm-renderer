@@ -200,8 +200,6 @@ fn insert_row() -> Dom {
                 ("Decal", InsertSpec::Decal),
                 ("Shared Mesh", InsertSpec::Mesh),
             ])).render())
-        .child(Btn::new().label("+ Material Asset").icon("material").variant(BtnVariant::Ghost).size(BtnSize::Sm)
-            .on_click(|| Toast::info("Custom materials are authored in Material mode (M9)")).render())
     })
 }
 

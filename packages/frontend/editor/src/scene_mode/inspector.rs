@@ -1046,11 +1046,26 @@ fn set_inline_material(node: &Arc<Node>, mat: MaterialDef) {
     }
 }
 
-/// A picker to assign one of the registered custom (Studio) materials to this
-/// mesh — or "Built-in (inline)" to clear it back to the inline PBR knobs.
-/// Dispatches `AssignMaterial` (id-keyed). Shown only when custom materials
-/// exist (or one is already assigned).
-fn material_picker(node: &Arc<Node>) -> Option<Dom> {
+/// Reactive material-assignment dropdown — rebuilds whenever the custom-material
+/// library changes, so a material created *after* this mesh was selected appears
+/// immediately (previously the picker snapshotted the list once and went stale).
+fn material_picker(node: &Arc<Node>) -> Dom {
+    let node = node.clone();
+    let sig = controller()
+        .custom_materials
+        .signal_vec_cloned()
+        .to_signal_cloned()
+        .map(move |_mats| build_material_select(&node));
+    html!("div", {
+        .child_signal(sig)
+    })
+}
+
+/// Build the assignment dropdown from the current library snapshot — "Built-in
+/// (inline)" plus each custom (Studio) material. Dispatches `AssignMaterial`
+/// (id-keyed). Returns `None` when there are no custom materials and none is
+/// assigned (nothing to pick).
+fn build_material_select(node: &Arc<Node>) -> Option<Dom> {
     let ctrl = controller();
     let mats: Vec<(AssetId, String)> = ctrl
         .custom_materials
@@ -1092,18 +1107,15 @@ fn material_picker(node: &Arc<Node>) -> Option<Dom> {
             })
             .await;
     }));
-    Some(row("Custom material", select(sel, options)))
+    Some(row("Material", select(sel, options)))
 }
 
 fn material_editor(node: &Arc<Node>, mat: &MaterialDef, has_custom: bool) -> Dom {
     // A custom (Studio) material overrides the built-in palette — surface a
     // link to Material mode rather than the built-in knobs (decision 3).
     if has_custom {
-        let mut sec = Section::new("Material");
-        if let Some(p) = material_picker(node) {
-            sec = sec.child(p);
-        }
-        return sec
+        return Section::new("Material")
+            .child(material_picker(node))
             .child(html!("div", {
                 .style("display", "flex").style("flex-direction", "column").style("gap", "8px").style("margin-top", "8px")
                 .child(html!("div", {
@@ -1118,10 +1130,7 @@ fn material_editor(node: &Arc<Node>, mat: &MaterialDef, has_custom: bool) -> Dom
             .render();
     }
 
-    let mut sec = Section::new("Material");
-    if let Some(p) = material_picker(node) {
-        sec = sec.child(p);
-    }
+    let mut sec = Section::new("Material").child(material_picker(node));
 
     // Shading model (PBR / Unlit / Toon).
     let shading_key = match mat.shading {
