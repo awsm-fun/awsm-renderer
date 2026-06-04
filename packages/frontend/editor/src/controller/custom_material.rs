@@ -9,6 +9,7 @@
 //! TOML serializer (M11) snapshots these fields into `material-<id>.{toml,wgsl}`.
 
 use crate::engine::scene::AssetId;
+use awsm_scene_schema::{MaterialDef, MaterialShading};
 use awsm_web_shared::prelude::{Mutable, MutableVec};
 use std::sync::Arc;
 
@@ -82,10 +83,20 @@ impl Slot {
     }
 }
 
-/// A live, reactive custom material. Held in `EditorController::custom_materials`.
+/// A live, reactive material in the library (`EditorController::custom_materials`).
+///
+/// Two kinds share this struct: a **dynamic** WGSL material (`builtin == None` —
+/// authored via the Studio's code/slots/includes) and a **built-in** material
+/// (`builtin == Some(def)` — PBR/Unlit/Toon whose shared *variant* settings are
+/// the `MaterialDef`; its `wgsl`/`uniforms`/`includes` fields are unused, and per
+/// the model its uniform *values* are set per-mesh). Both are assignable, renamable,
+/// and deletable; only dynamics carry editable shader code.
 pub struct CustomMaterial {
     pub id: AssetId,
     pub name: Mutable<String>,
+    /// `Some` ⇒ this is a built-in material carrying shared variant settings.
+    /// `None` ⇒ a dynamic WGSL material.
+    pub builtin: Mutable<Option<MaterialDef>>,
     pub wgsl: Mutable<String>,
     pub alpha: Mutable<AlphaMode>,
     pub cutoff: Mutable<f64>,
@@ -143,6 +154,7 @@ impl CustomMaterial {
         Arc::new(Self {
             id,
             name: Mutable::new(name.into()),
+            builtin: Mutable::new(None),
             wgsl: Mutable::new(NEW_MATERIAL_WGSL.to_string()),
             alpha: Mutable::new(AlphaMode::Opaque),
             cutoff: Mutable::new(0.5),
@@ -157,6 +169,28 @@ impl CustomMaterial {
             shader_includes: Mutable::new(Vec::new()),
             fragment_inputs: Mutable::new(Vec::new()),
         })
+    }
+
+    /// A fresh **built-in** library material of the given shading. Carries the
+    /// shared variant settings as a `MaterialDef`; needs no compile, so it's
+    /// immediately registered/usable.
+    pub fn new_builtin(
+        id: AssetId,
+        name: impl Into<String>,
+        shading: MaterialShading,
+    ) -> Arc<Self> {
+        let mat = Self::new(id, name);
+        mat.builtin.set(Some(MaterialDef {
+            shading,
+            ..MaterialDef::default()
+        }));
+        mat.registered.set_neq(true);
+        mat
+    }
+
+    /// Whether this is a built-in (PBR/Unlit/Toon) rather than a dynamic WGSL material.
+    pub fn is_builtin(&self) -> bool {
+        self.builtin.lock_ref().is_some()
     }
 }
 

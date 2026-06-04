@@ -329,6 +329,30 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
     *entry.last_kind.lock().unwrap() = Some(entry.node.kind.get_cloned());
 }
 
+/// If `id` names a **built-in** library material, merge its shared variant
+/// settings (shading / alpha / double-sided / vertex-colors / texture-enables)
+/// with this mesh's per-mesh uniform values (`inline`: base color / metallic /
+/// roughness / emissive) into a final `MaterialDef`. Returns `None` for a dynamic
+/// material or an unknown id (callers then try the dynamic path / inline).
+fn builtin_merged(
+    id: awsm_scene_schema::AssetId,
+    inline: &awsm_scene_schema::MaterialDef,
+) -> Option<awsm_scene_schema::MaterialDef> {
+    let ctrl = crate::controller::controller();
+    let mat = crate::controller::custom_material::find_material(&ctrl.custom_materials, id)?;
+    let variant = mat.builtin.get_cloned()?;
+    Some(awsm_scene_schema::MaterialDef {
+        // Per-mesh uniform values come from the mesh's inline material …
+        base_color: inline.base_color,
+        metallic: inline.metallic,
+        roughness: inline.roughness,
+        emissive: inline.emissive,
+        // … everything else (shading / alpha / double-sided / vertex-colors /
+        // texture slots / label) is the shared variant from the library material.
+        ..variant
+    })
+}
+
 async fn materialize_primitive(
     entry: Arc<RendererNode>,
     shape: PrimitiveShape,
@@ -351,15 +375,21 @@ async fn materialize_primitive(
     // actually draws — the archived editor batched this in instance_batcher).
     let handle = renderer_handle();
     let mut r = handle.lock().await;
-    // A registered custom WGSL material (decision 3) wins over the inline PBR.
-    // The instance references the material by stable id, which is the renderer
-    // registry key. Falls back to inline when the material isn't registered yet.
-    let mat_key = match custom_material
-        .as_ref()
-        .and_then(|i| super::dynamic::insert_custom(&mut r, i.material))
-    {
-        Some(k) => k,
-        None => material::insert_material(&mut r, &inline),
+    // Resolve the assigned library material (by stable id):
+    //   • a built-in → merge its shared *variant* settings with this mesh's
+    //     per-mesh *uniform* values (`inline`) → one Material::Pbr/Unlit/Toon;
+    //   • a registered dynamic WGSL material → its registered bucket;
+    //   • otherwise (unassigned / not-yet-registered) → the mesh's inline material.
+    let mat_key = if let Some(inst) = custom_material.as_ref() {
+        if let Some(merged) = builtin_merged(inst.material, &inline) {
+            material::insert_material(&mut r, &merged)
+        } else if let Some(k) = super::dynamic::insert_custom(&mut r, inst.material) {
+            k
+        } else {
+            material::insert_material(&mut r, &inline)
+        }
+    } else {
+        material::insert_material(&mut r, &inline)
     };
     let sub_tk = r.transforms.insert(Transform::IDENTITY, Some(parent_tk));
     match r.add_raw_mesh(raw, sub_tk, mat_key) {
