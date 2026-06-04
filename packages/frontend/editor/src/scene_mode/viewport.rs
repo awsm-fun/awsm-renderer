@@ -6,6 +6,7 @@
 //! M6-A: the chrome + view-state (active tool / shading). Picking + gizmo drag
 //! + shading→renderer-debug wiring layer in next.
 
+use crate::controller::CameraAxis;
 use crate::engine::gizmo::{gizmo_mode, GizmoMode};
 use crate::prelude::*;
 
@@ -203,8 +204,27 @@ fn chip_text(text: &str) -> Dom {
     })
 }
 
-/// The view-orientation nav cube (top-right). Static for now — live orientation
-/// from the camera is a polish item (plan §13: "stub the purely-visual").
+/// Dispatch a camera axis-snap (through the controller, so it's MCP-drivable).
+fn snap_camera(axis: CameraAxis) {
+    spawn_local(async move {
+        let _ = controller()
+            .dispatch(EditorCommand::SnapCameraToAxis { axis })
+            .await;
+    });
+}
+
+/// A clickable nav-cube axis dot: snaps the camera to that axis on click.
+fn axis_dot(cx: &str, cy: &str, color: &str, axis: CameraAxis, title: &str) -> Dom {
+    svg!("circle", {
+        .attr("cx", cx).attr("cy", cy).attr("r", "6").attr("fill", color)
+        .attr("style", "cursor:pointer")
+        .attr("title", title)
+        .event(move |_: events::Click| snap_camera(axis))
+    })
+}
+
+/// The view-orientation nav cube (top-right). Clicking an axis dot snaps the
+/// camera to look down that axis (X / Y / Z).
 fn nav_cube() -> Dom {
     html!("div", {
         .style("position", "absolute")
@@ -217,17 +237,17 @@ fn nav_cube() -> Dom {
         .style("border", "1px solid var(--line)")
         .style("border-radius", "50%")
         .style("box-shadow", "var(--shadow-1)")
-        .attr("title", "View orientation")
+        .attr("title", "Click an axis to snap the view")
         .child(svg!("svg", {
             .attr("width", "58")
             .attr("height", "58")
             .attr("viewBox", "0 0 58 58")
             .child(svg!("line", { .attr("x1", "29").attr("y1", "29").attr("x2", "29").attr("y2", "9").attr("stroke", "var(--axis-y)").attr("stroke-width", "2") }))
-            .child(svg!("circle", { .attr("cx", "29").attr("cy", "8").attr("r", "5").attr("fill", "var(--axis-y)") }))
+            .child(axis_dot("29", "8", "var(--axis-y)", CameraAxis::PosY, "Top (Y)"))
             .child(svg!("line", { .attr("x1", "29").attr("y1", "29").attr("x2", "46").attr("y2", "37").attr("stroke", "var(--axis-x)").attr("stroke-width", "2") }))
-            .child(svg!("circle", { .attr("cx", "48").attr("cy", "38").attr("r", "5").attr("fill", "var(--axis-x)") }))
+            .child(axis_dot("48", "38", "var(--axis-x)", CameraAxis::PosX, "Right (X)"))
             .child(svg!("line", { .attr("x1", "29").attr("y1", "29").attr("x2", "14").attr("y2", "38").attr("stroke", "var(--axis-z)").attr("stroke-width", "2") }))
-            .child(svg!("circle", { .attr("cx", "12").attr("cy", "39").attr("r", "5").attr("fill", "var(--axis-z)") }))
+            .child(axis_dot("12", "39", "var(--axis-z)", CameraAxis::PosZ, "Front (Z)"))
         }))
     })
 }

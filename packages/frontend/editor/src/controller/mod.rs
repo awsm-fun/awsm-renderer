@@ -17,7 +17,7 @@ pub mod persistence;
 mod query;
 mod source;
 
-pub use command::{EditorCommand, EditorMode, ProceduralKind};
+pub use command::{CameraAxis, EditorCommand, EditorMode, ProceduralKind};
 pub use custom_material::{compile_wgsl, AlphaMode, CustomMaterial, Slot};
 // InsertSpec is dispatched by the ribbon (M4); NodeQuery is the snapshot
 // projection — re-exported now for those consumers.
@@ -512,6 +512,21 @@ impl EditorController {
                 self.scene.environment.set(env);
                 self.scene.bump_revision();
                 Ok(Some(EditorCommand::SetEnvironment { env: prev }))
+            }
+            EditorCommand::SnapCameraToAxis { axis } => {
+                use std::f32::consts::PI;
+                // Just under ±90° for top/bottom to dodge the look-at gimbal.
+                let top = PI / 2.0 - 0.001;
+                let (yaw, pitch) = match axis {
+                    CameraAxis::PosZ => (0.0, 0.0),
+                    CameraAxis::NegZ => (PI, 0.0),
+                    CameraAxis::PosX => (PI / 2.0, 0.0),
+                    CameraAxis::NegX => (-PI / 2.0, 0.0),
+                    CameraAxis::PosY => (0.0, top),
+                    CameraAxis::NegY => (0.0, -top),
+                };
+                crate::engine::context::try_with_camera_mut(|c| c.snap_to(yaw, pitch));
+                Ok(None)
             }
             EditorCommand::LoadProjectFromUrl { base_url } => {
                 match persistence::load_project_from_url(self, &base_url).await {

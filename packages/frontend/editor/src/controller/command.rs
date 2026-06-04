@@ -26,6 +26,19 @@ pub enum ProceduralKind {
     Noise,
 }
 
+/// A world axis to snap the viewport camera to (the nav-cube directions). The
+/// camera ends up on that axis looking back at the orbit target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CameraAxis {
+    PosX,
+    NegX,
+    PosY,
+    NegY,
+    PosZ,
+    NegZ,
+}
+
 /// Top-level workspace mode (the Scene/Material switch in the top bar).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -160,6 +173,10 @@ pub enum EditorCommand {
     /// side effect. Inverse: restore the prior environment.
     SetEnvironment { env: EnvironmentConfig },
 
+    /// Snap the viewport camera to a world axis (the nav-cube directions).
+    /// **Transient** — camera/view state, not recorded in the undo log.
+    SnapCameraToAxis { axis: CameraAxis },
+
     /// Assign a custom WGSL material (by id) to a scene node's mesh, or clear it
     /// (`material: None`). Sets the node's `custom_material` reference. Inverse:
     /// restore the node's prior kind (a `SetKind`). The bridge renders the
@@ -181,6 +198,7 @@ impl EditorCommand {
                 | EditorCommand::SetSelection { .. }
                 | EditorCommand::SetAssetSelection { .. }
                 | EditorCommand::SetCurrentMaterial { .. }
+                | EditorCommand::SnapCameraToAxis { .. }
         )
     }
 
@@ -217,6 +235,7 @@ impl EditorCommand {
             EditorCommand::RegisterMaterial { .. } => "Register material",
             EditorCommand::AssignMaterial { .. } => "Assign material",
             EditorCommand::SetEnvironment { .. } => "Set environment",
+            EditorCommand::SnapCameraToAxis { .. } => "Snap camera",
         }
     }
 }
