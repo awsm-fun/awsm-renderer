@@ -35,13 +35,20 @@ fn registered_shader_id(name: &str) -> Option<MaterialShaderId> {
 /// Returns the assigned shader id, or an error string on failure.
 pub async fn register(mat: &CustomMaterial) -> Result<MaterialShaderId, String> {
     let reg = build_registration(mat);
+    let name = mat.name.get_cloned();
     let handle = renderer_handle();
     let mut r = handle.lock().await;
+    // Recompile: the renderer rejects re-registering a name whose content
+    // changed, so drop the previous registration of this name first (this is the
+    // editor's edit→re-register cycle the renderer's unregister_material expects).
+    if let Some(old) = REGISTRY.with(|reg| reg.borrow().get(&name).copied()) {
+        let _ = r.unregister_material(old);
+    }
     let id = r.register_material(reg).map_err(|e| format!("{e}"))?;
     if let Err(e) = r.finalize_gpu_textures().await {
         tracing::warn!("finalize after register: {e}");
     }
-    REGISTRY.with(|reg| reg.borrow_mut().insert(mat.name.get_cloned(), id));
+    REGISTRY.with(|reg| reg.borrow_mut().insert(name, id));
     Ok(id)
 }
 
