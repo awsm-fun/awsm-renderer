@@ -531,6 +531,51 @@ impl EditorController {
                     None => Ok(None),
                 }
             }
+            EditorCommand::CopyMaterialInstance { from, to } => {
+                let (Some(src), Some(dst)) = (
+                    mutate::find_by_id(&self.scene, from),
+                    mutate::find_by_id(&self.scene, to),
+                ) else {
+                    return Ok(None);
+                };
+                let NodeKind::Primitive {
+                    inline_material: src_inline,
+                    custom_material: src_cm,
+                    ..
+                } = src.kind.get_cloned()
+                else {
+                    return Ok(None);
+                };
+                let prev = dst.kind.get_cloned();
+                let NodeKind::Primitive {
+                    shape,
+                    material,
+                    custom_material: dst_cm,
+                    shadow,
+                    ..
+                } = prev.clone()
+                else {
+                    return Ok(None);
+                };
+                // Only copy between meshes that reference the same material.
+                if src_cm.as_ref().map(|i| i.material) != dst_cm.as_ref().map(|i| i.material) {
+                    return Ok(None);
+                }
+                dst.kind.set(NodeKind::Primitive {
+                    shape,
+                    material,
+                    inline_material: src_inline,
+                    custom_material: dst_cm,
+                    shadow,
+                });
+                self.structure_rev
+                    .set(self.structure_rev.get().wrapping_add(1));
+                self.scene.bump_revision();
+                Ok(Some(EditorCommand::SetKind {
+                    id: to,
+                    kind: Box::new(prev),
+                }))
+            }
             EditorCommand::SetEnvironment { env } => {
                 let prev = self.scene.environment.get_cloned();
                 self.scene.environment.set(env);

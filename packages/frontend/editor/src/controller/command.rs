@@ -193,6 +193,13 @@ pub enum EditorCommand {
         node: NodeId,
         material: Option<AssetId>,
     },
+
+    /// Copy a mesh's per-mesh material *instance* (its inline uniform values:
+    /// base color / metallic / roughness / emissive / …) onto another mesh that
+    /// references the **same** assigned material. Controller-only (no UI) — the
+    /// MCP path for "paste these material settings onto that mesh". No-op when the
+    /// two meshes don't share the same material. Inverse: restore `to`'s prior kind.
+    CopyMaterialInstance { from: NodeId, to: NodeId },
 }
 
 impl EditorCommand {
@@ -244,6 +251,7 @@ impl EditorCommand {
             EditorCommand::SetCurrentMaterial { .. } => "Select material",
             EditorCommand::RegisterMaterial { .. } => "Register material",
             EditorCommand::AssignMaterial { .. } => "Assign material",
+            EditorCommand::CopyMaterialInstance { .. } => "Copy material settings",
             EditorCommand::SetEnvironment { .. } => "Set environment",
             EditorCommand::SnapCameraToAxis { .. } => "Snap camera",
             EditorCommand::ResetCamera => "Reset view",
