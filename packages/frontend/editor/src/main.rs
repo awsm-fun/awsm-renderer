@@ -82,6 +82,9 @@ pub fn main() {
                             // any already-present nodes + every future insert).
                             engine::bridge::init();
                             engine::render_loop::start();
+                            // Compile the GPU picker in the background so the
+                            // first viewport click selects without a warm-up miss.
+                            engine::canvas::prewarm_picker();
                             ctx_ready.set(true);
                             awsm_web_shared::util::window::remove_boot_loader();
                         }

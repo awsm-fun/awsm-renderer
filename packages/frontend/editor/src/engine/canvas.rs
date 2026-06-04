@@ -76,14 +76,36 @@ pub fn render_canvas(on_ready: impl FnOnce(web_sys::HtmlCanvasElement) + 'static
     })
 }
 
+/// Compile the GPU picker subsystem in the background shortly after boot, so the
+/// user's *first* viewport click selects immediately. The picker compiles lazily
+/// on the first `pick()` and its id-attachment only carries hits on a frame
+/// rendered *after* that compile — so a cold first click would otherwise read an
+/// empty id-buffer and miss. A few throwaway picks across early frames force the
+/// compile + prime the attachment before any real click arrives.
+pub fn prewarm_picker() {
+    spawn_local(async move {
+        // Let a couple of frames render first so the renderer is settled.
+        TimeoutFuture::new(150).await;
+        let handle = renderer_handle();
+        for _ in 0..3 {
+            {
+                let mut r = handle.lock().await;
+                let _ = r.pick(0, 0).await;
+            }
+            TimeoutFuture::new(32).await;
+        }
+    });
+}
+
 /// Run a GPU pick at canvas-local `(x, y)` and dispatch the resulting selection.
 fn pick_and_select(x: i32, y: i32) {
     spawn_local(async move {
         let handle = renderer_handle();
-        // The GPU picker subsystem compiles lazily on first use — `pick()`
-        // returns `Initializing` until the pipeline/bind-group are ready (and
-        // `InFlight` while a prior pick drains). Retry across a few frames so the
-        // user's *first* viewport click selects rather than silently no-opping.
+        // The GPU picker compiles lazily on first use — `pick()` returns
+        // `Initializing` until the pipeline/bind-group are ready (and `InFlight`
+        // while a prior pick drains). Retry across a few frames so the user's
+        // first click selects rather than silently no-opping. (The picker is also
+        // pre-warmed at boot; see `prewarm_picker`.)
         let mut result = Ok(PickResult::Initializing);
         for attempt in 0..12 {
             result = {
