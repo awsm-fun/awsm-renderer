@@ -265,6 +265,8 @@ async fn teardown(entry: &Arc<RendererNode>) {
         for dk in decals {
             r.remove_decal(dk);
         }
+        // Free any particle-emitter runtime this node owns (no-op otherwise).
+        super::particles::teardown(r, node_id);
         if let Some(lk) = light {
             r.remove_light(lk);
         }
@@ -297,13 +299,13 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
             ..
         } => materialize_sweep(entry.clone(), def, inline_material).await,
         NodeKind::InstancesAlongCurve(def) => materialize_instances(entry.clone(), def).await,
+        NodeKind::ParticleEmitter(def) => materialize_particle(entry.clone(), def).await,
         NodeKind::Mesh { mesh, .. } => {
             // A captured procedural mesh asset — needs the "capture mesh as
             // asset" flow (not built); without it there's nothing to load.
             tracing::warn!("NodeKind::Mesh {mesh:?}: capture-mesh-asset flow not built; renders empty");
         }
-        // Group / Camera / Model: no procedural geometry. ParticleEmitter:
-        // per-frame CPU-sim subsystem is the follow-on.
+        // Group / Camera / Model: no procedural geometry.
         _ => {}
     }
 
@@ -740,6 +742,22 @@ async fn materialize_instances(
         })
         .await;
     }
+}
+
+/// Particle emitter (`NodeKind::ParticleEmitter`) → an auto-playing simulator +
+/// instanced billboard quad, ticked each frame by the render loop.
+async fn materialize_particle(entry: Arc<RendererNode>, def: awsm_scene_schema::ParticleEmitterDef) {
+    let parent_tk = entry.transform_key;
+    let node_id = entry.node_id;
+    with_renderer_mut(move |r| {
+        let world_pos = r
+            .transforms
+            .get_world(parent_tk)
+            .map(|m| m.w_axis.truncate())
+            .unwrap_or(Vec3::ZERO);
+        super::particles::materialize(r, node_id, parent_tk, world_pos, &def);
+    })
+    .await;
 }
 
 async fn apply_light(entry: Arc<RendererNode>, cfg: LightConfig) {

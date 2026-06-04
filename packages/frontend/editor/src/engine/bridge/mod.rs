@@ -9,6 +9,7 @@ pub mod dynamic;
 pub mod gltf;
 pub mod material;
 pub mod node_sync;
+pub mod particles;
 
 use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};

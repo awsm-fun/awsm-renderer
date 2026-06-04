@@ -37,6 +37,8 @@ fn render_one_frame() {
         // Keep the gizmo screen-constant + anchored under the selection, and
         // enforce its visibility against the selection + toggle.
         super::gizmo::per_frame_update(renderer);
+        // Advance any particle emitters + push their live particles to the GPU.
+        super::bridge::particles::tick_all(renderer);
         renderer.update_transforms();
         let hooks = context::render_hooks_handle();
         let hooks = hooks.read().unwrap();
