@@ -15,7 +15,7 @@ mod node_spec;
 mod query;
 mod source;
 
-pub use command::{EditorCommand, EditorMode};
+pub use command::{EditorCommand, EditorMode, ProceduralKind};
 // InsertSpec is dispatched by the ribbon (M4); NodeQuery is the snapshot
 // projection — re-exported now for those consumers.
 #[allow(unused_imports)]
@@ -31,8 +31,11 @@ use std::rc::Rc;
 
 use awsm_web_shared::prelude::{Mutable, Toast};
 
-use crate::engine::scene::{mutate, NodeId, NodeKind, Scene};
+use crate::engine::scene::{mutate, AssetId, NodeId, NodeKind, Scene};
 use crate::error::EditorResult;
+use awsm_scene_schema::{
+    AssetEntry, AssetSource as SceneAssetSource, MaterialDef, ProceduralTextureDef, TextureDef,
+};
 use std::sync::Arc;
 
 thread_local! {
@@ -70,6 +73,14 @@ pub struct EditorController {
     /// refreshes which rows exist — while a continuous numeric scrub, which
     /// keeps the structure key constant, never tears out the field being dragged.
     pub structure_rev: Mutable<u64>,
+    /// Whether the Content Browser bottom drawer is expanded. Pure view state
+    /// (not project/undo state), held here so the ribbon toggle, the drawer, and
+    /// the workspace layout share one source of truth.
+    pub content_browser_open: Mutable<bool>,
+    /// The asset selected in the Content Browser, if any. When `Some`, the right
+    /// rail shows the Asset Inspector instead of the node inspector. Set via the
+    /// transient `SetAssetSelection` command.
+    pub asset_selection: Mutable<Option<AssetId>>,
     /// Inverses of applied commands, newest last (the undo log).
     undo: Rc<RefCell<Vec<EditorCommand>>>,
     /// Inverses popped by undo, re-appliable by redo.
@@ -88,6 +99,8 @@ impl EditorController {
             can_undo: Mutable::new(false),
             can_redo: Mutable::new(false),
             structure_rev: Mutable::new(0),
+            content_browser_open: Mutable::new(false),
+            asset_selection: Mutable::new(None),
             undo: Rc::new(RefCell::new(Vec::new())),
             redo: Rc::new(RefCell::new(Vec::new())),
         }
@@ -297,6 +310,62 @@ impl EditorController {
                     None => Ok(None),
                 }
             }
+            EditorCommand::AddMaterialAsset { shading } => {
+                let id = AssetId::new();
+                let label = self.next_asset_label("Material");
+                let def = MaterialDef {
+                    label,
+                    shading,
+                    ..MaterialDef::default()
+                };
+                self.scene
+                    .assets
+                    .lock()
+                    .unwrap()
+                    .entries
+                    .insert(id, AssetEntry::new(SceneAssetSource::Material(def)));
+                self.scene.bump_revision();
+                self.asset_selection.set(Some(id));
+                Ok(Some(EditorCommand::DeleteAsset { id }))
+            }
+            EditorCommand::AddTextureAsset { proc } => {
+                let id = AssetId::new();
+                let def = TextureDef::Procedural(default_procedural(proc));
+                self.scene
+                    .assets
+                    .lock()
+                    .unwrap()
+                    .entries
+                    .insert(id, AssetEntry::new(SceneAssetSource::Texture(def)));
+                self.scene.bump_revision();
+                self.asset_selection.set(Some(id));
+                Ok(Some(EditorCommand::DeleteAsset { id }))
+            }
+            EditorCommand::DeleteAsset { id } => {
+                let removed = self.scene.assets.lock().unwrap().entries.remove(&id);
+                match removed {
+                    Some(entry) => {
+                        self.scene.bump_revision();
+                        if self.asset_selection.get() == Some(id) {
+                            self.asset_selection.set(None);
+                        }
+                        Ok(Some(EditorCommand::RestoreAsset {
+                            id,
+                            entry: Box::new(entry),
+                        }))
+                    }
+                    None => Ok(None),
+                }
+            }
+            EditorCommand::RestoreAsset { id, entry } => {
+                self.scene.assets.lock().unwrap().entries.insert(id, *entry);
+                self.scene.bump_revision();
+                Ok(Some(EditorCommand::DeleteAsset { id }))
+            }
+            EditorCommand::SetAssetSelection { id } => {
+                self.asset_selection.set(id);
+                Ok(None)
+            }
             EditorCommand::LoadProjectFromUrl { base_url } => {
                 // Seam present; the fetch + TOML deserialize lands in M11.
                 Toast::info(format!("Load project from {base_url} — lands in M11"));
@@ -340,6 +409,22 @@ impl EditorController {
         self.can_redo.set_neq(!self.redo.borrow().is_empty());
     }
 
+    /// A fresh, unique-ish display label for a new asset (`"{kind} N"`), counting
+    /// existing material assets so the Content Browser doesn't show duplicates.
+    fn next_asset_label(&self, kind: &str) -> String {
+        let n = self
+            .scene
+            .assets
+            .lock()
+            .unwrap()
+            .entries
+            .values()
+            .filter(|e| matches!(e.source, SceneAssetSource::Material(_)))
+            .count()
+            + 1;
+        format!("{kind} {n}")
+    }
+
     /// A serializable read of editor state (§5.5) for external inspection.
     pub fn snapshot(&self) -> EditorSnapshot {
         let scene_tree = self
@@ -372,6 +457,34 @@ impl EditorController {
     /// return). Used by headless tests + the future external transport.
     pub fn snapshot_json(&self) -> String {
         serde_json::to_string(&self.snapshot()).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+    }
+}
+
+/// Default parameters for a freshly-created procedural texture asset, one per
+/// generator family the Content Browser offers.
+fn default_procedural(proc: ProceduralKind) -> ProceduralTextureDef {
+    match proc {
+        ProceduralKind::Checker => ProceduralTextureDef::Checker {
+            width: 512,
+            height: 512,
+            cells_x: 8,
+            cells_y: 8,
+            color_a: [0.81, 0.83, 0.85, 1.0],
+            color_b: [0.16, 0.18, 0.20, 1.0],
+        },
+        ProceduralKind::Gradient => ProceduralTextureDef::Gradient {
+            width: 512,
+            height: 512,
+            color_a: [0.10, 0.45, 0.95, 1.0],
+            color_b: [0.02, 0.02, 0.04, 1.0],
+            horizontal: false,
+        },
+        ProceduralKind::Noise => ProceduralTextureDef::Noise {
+            width: 512,
+            height: 512,
+            seed: 1337,
+            scale: 4.0,
+        },
     }
 }
 

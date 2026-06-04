@@ -266,6 +266,8 @@ fn workspace(ctrl: &EditorController) -> Dom {
                     .child(crate::scene_mode::inspector::render())
                 }))
             }))
+            // M8: Content Browser bottom drawer (collapsed bar / expanded grid).
+            .child(crate::scene_mode::content_browser::render())
         }))
         .child(html!("div", {
             .style("position", "absolute")

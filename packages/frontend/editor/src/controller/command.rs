@@ -13,7 +13,18 @@ use serde::{Deserialize, Serialize};
 
 use super::node_spec::{InsertSpec, NodeSpec};
 use crate::engine::scene::types::Trs;
-use crate::engine::scene::{NodeId, NodeKind};
+use crate::engine::scene::{AssetId, NodeId, NodeKind};
+use awsm_scene_schema::{AssetEntry, MaterialShading};
+
+/// A procedural texture generator the Content Browser can author (decision 3 /
+/// §8). Maps to `ProceduralTextureDef` with sensible defaults at apply-time.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProceduralKind {
+    Checker,
+    Gradient,
+    Noise,
+}
 
 /// Top-level workspace mode (the Scene/Material switch in the top bar).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,6 +117,27 @@ pub enum EditorCommand {
 
     /// Import a texture from a URL (gesture-free).
     ImportTextureFromUrl { url: String },
+
+    /// Create a fresh custom material asset (Content Browser "+ Material") of the
+    /// given shading family. Inserts a `MaterialDef` into the project asset table
+    /// and selects it. Inverse: `DeleteAsset` of the new id.
+    AddMaterialAsset { shading: MaterialShading },
+
+    /// Create a fresh procedural texture asset (Content Browser "+ Texture").
+    /// Inverse: `DeleteAsset` of the new id.
+    AddTextureAsset { proc: ProceduralKind },
+
+    /// Remove an asset from the project asset table. Inverse: `RestoreAsset` with
+    /// the captured entry (so undo round-trips the exact asset + id).
+    DeleteAsset { id: AssetId },
+
+    /// Re-insert a captured asset entry at its original id (the inverse of
+    /// `DeleteAsset`). `entry` is boxed — `AssetEntry` is a large payload.
+    RestoreAsset { id: AssetId, entry: Box<AssetEntry> },
+
+    /// Select an asset in the Content Browser (routes the right rail to the Asset
+    /// Inspector). **Transient** — `None` clears back to the node inspector.
+    SetAssetSelection { id: Option<AssetId> },
 }
 
 impl EditorCommand {
@@ -115,7 +147,9 @@ impl EditorCommand {
     pub fn is_transient(&self) -> bool {
         matches!(
             self,
-            EditorCommand::SwitchMode { .. } | EditorCommand::SetSelection { .. }
+            EditorCommand::SwitchMode { .. }
+                | EditorCommand::SetSelection { .. }
+                | EditorCommand::SetAssetSelection { .. }
         )
     }
 
@@ -140,6 +174,12 @@ impl EditorCommand {
             EditorCommand::LoadProjectFromUrl { .. } => "Load project",
             EditorCommand::ImportModelFromUrl { .. } => "Import model",
             EditorCommand::ImportTextureFromUrl { .. } => "Import texture",
+            EditorCommand::AddMaterialAsset { .. } => "Add material",
+            EditorCommand::AddTextureAsset { .. } => "Add texture",
+            EditorCommand::DeleteAsset { .. } | EditorCommand::RestoreAsset { .. } => {
+                "Delete asset"
+            }
+            EditorCommand::SetAssetSelection { .. } => "Select asset",
         }
     }
 }

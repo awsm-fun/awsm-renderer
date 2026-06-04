@@ -92,7 +92,10 @@ fn tab_strip(tab: &Mutable<String>) -> Dom {
         }))
         .child(html!("div", { .style("flex", "1") }))
         .child(Btn::new().label("Assets").icon("folder").variant(BtnVariant::Ghost).size(BtnSize::Sm)
-            .on_click(|| Toast::info("Content Browser drawer lands in M8")).render())
+            .on_click(|| {
+                let open = controller().content_browser_open.clone();
+                open.set_neq(!open.get());
+            }).render())
     })
 }
 
