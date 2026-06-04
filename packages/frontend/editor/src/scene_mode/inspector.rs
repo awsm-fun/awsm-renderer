@@ -15,8 +15,9 @@ use crate::engine::scene::{
 };
 use crate::prelude::*;
 use awsm_scene_schema::{
-    AssetSource, MaterialAlphaMode, MaterialDef, MaterialShading, MeshRef, MeshShadowConfig,
-    PrimitiveShape, ProceduralTextureDef, TextureDef,
+    AssetSource, BillboardMode, CurveDef, DecalConfig, LineDef, MaterialAlphaMode, MaterialDef,
+    MaterialShading, MeshRef, MeshShadowConfig, ParticleEmitterDef, PrimitiveShape,
+    ProceduralTextureDef, SpriteAlphaMode, SpriteDef, TextureDef,
 };
 
 /// The right rail shows the **Asset Inspector** when an asset is selected in the
@@ -163,6 +164,11 @@ fn kind_editor(node: &Arc<Node>) -> Dom {
         }),
         NodeKind::SweepAlongCurve { .. } => sweep_editor(node),
         NodeKind::InstancesAlongCurve(_) => instances_editor(node),
+        NodeKind::Curve(def) => curve_editor(node, &def),
+        NodeKind::Sprite(def) => sprite_editor(node, &def),
+        NodeKind::Line(def) => line_editor(node, &def),
+        NodeKind::Decal(cfg) => decal_editor(node, &cfg),
+        NodeKind::ParticleEmitter(def) => particle_editor(node, &def),
         other => Section::new(kind_label(&other))
             .dense(true)
             .child(html!("div", {
@@ -341,6 +347,353 @@ fn instances_editor(node: &Arc<Node>) -> Dom {
                 if let NodeKind::InstancesAlongCurve(mut def) = n_src.kind.get_cloned() {
                     def.source_node = picked;
                     dispatch_kind(id, NodeKind::InstancesAlongCurve(def));
+                }
+            },
+        ))
+        .render()
+}
+
+// ── Passive-kind editors (Curve / Sprite / Line / Decal / Particle) ──────────
+
+/// A toggle row that dispatches a `SetKind` (rebuilt by `apply`) when flipped.
+fn kind_toggle_row(
+    node: &Arc<Node>,
+    label: &str,
+    value: bool,
+    apply: impl Fn(NodeKind, bool) -> Option<NodeKind> + 'static,
+) -> Dom {
+    let state = Mutable::new(value);
+    let node = node.clone();
+    let apply = std::rc::Rc::new(apply);
+    spawn_local(clone!(state => async move {
+        let mut first = true;
+        state.signal().for_each(move |on| {
+            let fire = !first;
+            first = false;
+            let node = node.clone();
+            let apply = apply.clone();
+            async move {
+                if fire {
+                    if let Some(k) = apply(node.kind.get_cloned(), on) {
+                        dispatch_kind(node.id, k);
+                    }
+                }
+            }
+        }).await;
+    }));
+    row(label, toggle(state))
+}
+
+/// A select row that dispatches a `SetKind` (rebuilt by `apply`) on change.
+fn kind_select_row(
+    node: &Arc<Node>,
+    label: &str,
+    current: &str,
+    options: Vec<(&str, &str)>,
+    apply: impl Fn(NodeKind, &str) -> Option<NodeKind> + 'static,
+) -> Dom {
+    let state = Mutable::new(current.to_string());
+    let node = node.clone();
+    let apply = std::rc::Rc::new(apply);
+    spawn_local(clone!(state => async move {
+        let mut first = true;
+        state.signal_cloned().for_each(move |v| {
+            let fire = !first;
+            first = false;
+            let node = node.clone();
+            let apply = apply.clone();
+            async move {
+                if fire {
+                    if let Some(k) = apply(node.kind.get_cloned(), &v) {
+                        dispatch_kind(node.id, k);
+                    }
+                }
+            }
+        }).await;
+    }));
+    let options = options
+        .into_iter()
+        .map(|(v, l)| (v.to_string(), l.to_string()))
+        .collect();
+    row(label, select(state, options))
+}
+
+/// A read-only informational line (counts / status that aren't directly editable yet).
+fn info_text(text: impl Into<String>) -> Dom {
+    html!("div", {
+        .style("font-size", "11.5px").style("color", "var(--text-3)")
+        .style("line-height", "1.5").style("padding", "2px 0")
+        .text(&text.into())
+    })
+}
+
+fn curve_editor(node: &Arc<Node>, def: &CurveDef) -> Dom {
+    let n = node.clone();
+    let tension = NumField::new(def.tension as f64)
+        .min(0.0)
+        .step(0.05)
+        .on_change(move |v| {
+            if let NodeKind::Curve(mut d) = n.kind.get_cloned() {
+                d.tension = v.clamp(0.0, 1.0) as f32;
+                dispatch_kind(n.id, NodeKind::Curve(d));
+            }
+        })
+        .render();
+    let n = node.clone();
+    let samples = NumField::new(def.sample_count as f64)
+        .min(2.0)
+        .step(1.0)
+        .on_change(move |v| {
+            if let NodeKind::Curve(mut d) = n.kind.get_cloned() {
+                d.sample_count = v.max(2.0) as u32;
+                dispatch_kind(n.id, NodeKind::Curve(d));
+            }
+        })
+        .render();
+    Section::new("Curve")
+        .child(row("Tension", tension))
+        .child(row("Samples", samples))
+        .child(kind_toggle_row(node, "Closed", def.closed, |k, on| {
+            if let NodeKind::Curve(mut d) = k {
+                d.closed = on;
+                Some(NodeKind::Curve(d))
+            } else {
+                None
+            }
+        }))
+        .child(info_text(format!(
+            "{} control points",
+            def.control_points.len()
+        )))
+        .render()
+}
+
+fn line_editor(node: &Arc<Node>, def: &LineDef) -> Dom {
+    let n = node.clone();
+    let width = NumField::new(def.width_px as f64)
+        .min(0.5)
+        .step(0.5)
+        .on_change(move |v| {
+            if let NodeKind::Line(mut d) = n.kind.get_cloned() {
+                d.width_px = v.max(0.5) as f32;
+                dispatch_kind(n.id, NodeKind::Line(d));
+            }
+        })
+        .render();
+    Section::new("Line")
+        .child(row("Width (px)", width))
+        .child(kind_toggle_row(
+            node,
+            "Always on top",
+            def.depth_test_always,
+            |k, on| {
+                if let NodeKind::Line(mut d) = k {
+                    d.depth_test_always = on;
+                    Some(NodeKind::Line(d))
+                } else {
+                    None
+                }
+            },
+        ))
+        .child(info_text(format!("{} points", def.points.len())))
+        .render()
+}
+
+fn sprite_editor(node: &Arc<Node>, def: &SpriteDef) -> Dom {
+    let n = node.clone();
+    let w = NumField::new(def.size[0] as f64)
+        .min(0.001)
+        .step(0.1)
+        .on_change(move |v| {
+            if let NodeKind::Sprite(mut d) = n.kind.get_cloned() {
+                d.size[0] = v as f32;
+                dispatch_kind(n.id, NodeKind::Sprite(d));
+            }
+        })
+        .render();
+    let n = node.clone();
+    let h = NumField::new(def.size[1] as f64)
+        .min(0.001)
+        .step(0.1)
+        .on_change(move |v| {
+            if let NodeKind::Sprite(mut d) = n.kind.get_cloned() {
+                d.size[1] = v as f32;
+                dispatch_kind(n.id, NodeKind::Sprite(d));
+            }
+        })
+        .render();
+    // Tint RGB swatch (alpha edited separately).
+    let col = Mutable::new(rgb_to_hex([def.tint[0], def.tint[1], def.tint[2]]));
+    spawn_local(clone!(col, node => async move {
+        let mut first = true;
+        col.signal_cloned().for_each(move |hex| {
+            let fire = !first;
+            first = false;
+            clone!(node => async move {
+                if fire {
+                    if let (Some(rgb), NodeKind::Sprite(mut d)) = (hex_to_rgb(&hex), node.kind.get_cloned()) {
+                        d.tint = [rgb[0], rgb[1], rgb[2], d.tint[3]];
+                        dispatch_kind(node.id, NodeKind::Sprite(d));
+                    }
+                }
+            })
+        }).await;
+    }));
+    let n = node.clone();
+    let alpha = NumField::new(def.tint[3] as f64)
+        .min(0.0)
+        .step(0.05)
+        .on_change(move |v| {
+            if let NodeKind::Sprite(mut d) = n.kind.get_cloned() {
+                d.tint[3] = v.clamp(0.0, 1.0) as f32;
+                dispatch_kind(n.id, NodeKind::Sprite(d));
+            }
+        })
+        .render();
+    let bb = match def.billboard {
+        BillboardMode::None => "none",
+        BillboardMode::YAxis => "yaxis",
+        BillboardMode::Full => "full",
+    };
+    let am = match def.alpha_mode {
+        SpriteAlphaMode::Opaque => "opaque",
+        SpriteAlphaMode::Mask { .. } => "mask",
+        SpriteAlphaMode::Blend => "blend",
+    };
+    Section::new("Sprite")
+        .child(row("Width", w))
+        .child(row("Height", h))
+        .child(row("Tint", swatch(col, 22.0)))
+        .child(row("Opacity", alpha))
+        .child(kind_select_row(
+            node,
+            "Billboard",
+            bb,
+            vec![("none", "None"), ("yaxis", "Y-axis"), ("full", "Full")],
+            |k, v| {
+                if let NodeKind::Sprite(mut d) = k {
+                    d.billboard = match v {
+                        "none" => BillboardMode::None,
+                        "yaxis" => BillboardMode::YAxis,
+                        _ => BillboardMode::Full,
+                    };
+                    Some(NodeKind::Sprite(d))
+                } else {
+                    None
+                }
+            },
+        ))
+        .child(kind_select_row(
+            node,
+            "Alpha",
+            am,
+            vec![("opaque", "Opaque"), ("mask", "Mask"), ("blend", "Blend")],
+            |k, v| {
+                if let NodeKind::Sprite(mut d) = k {
+                    d.alpha_mode = match v {
+                        "opaque" => SpriteAlphaMode::Opaque,
+                        "mask" => SpriteAlphaMode::Mask { cutoff_x1000: 500 },
+                        _ => SpriteAlphaMode::Blend,
+                    };
+                    Some(NodeKind::Sprite(d))
+                } else {
+                    None
+                }
+            },
+        ))
+        .render()
+}
+
+fn decal_editor(node: &Arc<Node>, cfg: &DecalConfig) -> Dom {
+    let n = node.clone();
+    let alpha = NumField::new(cfg.alpha as f64)
+        .min(0.0)
+        .step(0.05)
+        .on_change(move |v| {
+            if let NodeKind::Decal(mut c) = n.kind.get_cloned() {
+                c.alpha = v.clamp(0.0, 1.0) as f32;
+                dispatch_kind(n.id, NodeKind::Decal(c));
+            }
+        })
+        .render();
+    Section::new("Decal")
+        .child(row("Opacity", alpha))
+        .child(info_text(if cfg.texture.is_some() {
+            "Texture: assigned"
+        } else {
+            "No texture assigned (decal inert until one is wired)"
+        }))
+        .render()
+}
+
+fn particle_editor(node: &Arc<Node>, def: &ParticleEmitterDef) -> Dom {
+    let n = node.clone();
+    let rate = NumField::new(def.spawn_rate as f64)
+        .min(0.0)
+        .step(1.0)
+        .on_change(move |v| {
+            if let NodeKind::ParticleEmitter(mut d) = n.kind.get_cloned() {
+                d.spawn_rate = v.max(0.0) as f32;
+                dispatch_kind(n.id, NodeKind::ParticleEmitter(d));
+            }
+        })
+        .render();
+    let n = node.clone();
+    let max_alive = NumField::new(def.max_alive as f64)
+        .min(1.0)
+        .step(1.0)
+        .on_change(move |v| {
+            if let NodeKind::ParticleEmitter(mut d) = n.kind.get_cloned() {
+                d.max_alive = v.max(1.0) as u32;
+                dispatch_kind(n.id, NodeKind::ParticleEmitter(d));
+            }
+        })
+        .render();
+    let n = node.clone();
+    let life_min = NumField::new(def.lifetime[0] as f64)
+        .min(0.0)
+        .step(0.1)
+        .on_change(move |v| {
+            if let NodeKind::ParticleEmitter(mut d) = n.kind.get_cloned() {
+                d.lifetime[0] = v.max(0.0) as f32;
+                dispatch_kind(n.id, NodeKind::ParticleEmitter(d));
+            }
+        })
+        .render();
+    let n = node.clone();
+    let life_max = NumField::new(def.lifetime[1] as f64)
+        .min(0.0)
+        .step(0.1)
+        .on_change(move |v| {
+            if let NodeKind::ParticleEmitter(mut d) = n.kind.get_cloned() {
+                d.lifetime[1] = v.max(0.0) as f32;
+                dispatch_kind(n.id, NodeKind::ParticleEmitter(d));
+            }
+        })
+        .render();
+    Section::new("Particle Emitter")
+        .child(row("Spawn rate", rate))
+        .child(row("Max alive", max_alive))
+        .child(row("Lifetime min", life_min))
+        .child(row("Lifetime max", life_max))
+        .child(kind_toggle_row(node, "One shot", def.one_shot, |k, on| {
+            if let NodeKind::ParticleEmitter(mut d) = k {
+                d.one_shot = on;
+                Some(NodeKind::ParticleEmitter(d))
+            } else {
+                None
+            }
+        }))
+        .child(kind_toggle_row(
+            node,
+            "Transparent blend",
+            def.blend,
+            |k, on| {
+                if let NodeKind::ParticleEmitter(mut d) = k {
+                    d.blend = on;
+                    Some(NodeKind::ParticleEmitter(d))
+                } else {
+                    None
                 }
             },
         ))
