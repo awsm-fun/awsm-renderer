@@ -11,11 +11,13 @@
 //! built now.
 
 mod command;
+pub mod custom_material;
 mod node_spec;
 mod query;
 mod source;
 
 pub use command::{EditorCommand, EditorMode, ProceduralKind};
+pub use custom_material::{compile_wgsl, AlphaMode, CustomMaterial, Slot};
 // InsertSpec is dispatched by the ribbon (M4); NodeQuery is the snapshot
 // projection — re-exported now for those consumers.
 #[allow(unused_imports)]
@@ -29,8 +31,9 @@ pub use source::{AssetSource, ProjectSink, ProjectSource};
 use std::cell::{OnceCell, RefCell};
 use std::rc::Rc;
 
-use awsm_web_shared::prelude::{Mutable, Toast};
+use awsm_web_shared::prelude::{Mutable, MutableVec, Toast};
 
+use self::custom_material::{find_material, CustomMaterial as CM};
 use crate::engine::scene::{mutate, AssetId, NodeId, NodeKind, Scene};
 use crate::error::EditorResult;
 use awsm_scene_schema::{
@@ -81,6 +84,11 @@ pub struct EditorController {
     /// rail shows the Asset Inspector instead of the node inspector. Set via the
     /// transient `SetAssetSelection` command.
     pub asset_selection: Mutable<Option<AssetId>>,
+    /// The custom WGSL materials authored in the Material-mode Studio (decision
+    /// 3). Reactive — the Studio edits their bodies/slots live.
+    pub custom_materials: MutableVec<Arc<CM>>,
+    /// The material the Studio is currently editing.
+    pub current_material: Mutable<Option<AssetId>>,
     /// Inverses of applied commands, newest last (the undo log).
     undo: Rc<RefCell<Vec<EditorCommand>>>,
     /// Inverses popped by undo, re-appliable by redo.
@@ -101,6 +109,8 @@ impl EditorController {
             structure_rev: Mutable::new(0),
             content_browser_open: Mutable::new(false),
             asset_selection: Mutable::new(None),
+            custom_materials: MutableVec::new(),
+            current_material: Mutable::new(None),
             undo: Rc::new(RefCell::new(Vec::new())),
             redo: Rc::new(RefCell::new(Vec::new())),
         }
@@ -364,6 +374,49 @@ impl EditorController {
             }
             EditorCommand::SetAssetSelection { id } => {
                 self.asset_selection.set(id);
+                Ok(None)
+            }
+            EditorCommand::AddCustomMaterial => {
+                let id = AssetId::new();
+                let n = self.custom_materials.lock_ref().len() + 1;
+                let mat = CM::new(id, format!("New Material {n}"));
+                self.custom_materials.lock_mut().push_cloned(mat);
+                self.current_material.set(Some(id));
+                self.dirty.set_neq(true);
+                Ok(None)
+            }
+            EditorCommand::DeleteCustomMaterial { id } => {
+                self.custom_materials.lock_mut().retain(|m| m.id != id);
+                if self.current_material.get() == Some(id) {
+                    let next = self.custom_materials.lock_ref().first().map(|m| m.id);
+                    self.current_material.set(next);
+                }
+                self.dirty.set_neq(true);
+                Ok(None)
+            }
+            EditorCommand::SetCurrentMaterial { id } => {
+                self.current_material.set(id);
+                Ok(None)
+            }
+            EditorCommand::RegisterMaterial { id } => {
+                if let Some(mat) = find_material(&self.custom_materials, id) {
+                    let errs = compile_wgsl(&mat.wgsl.get_cloned());
+                    if errs.is_empty() {
+                        let was = mat.registered.get();
+                        mat.registered.set_neq(true);
+                        let name = mat.name.get_cloned();
+                        Toast::info(if was {
+                            format!("Recompiled \u{201c}{name}\u{201d} \u{2014} bucket refreshed.")
+                        } else {
+                            format!("Registered \u{201c}{name}\u{201d}.")
+                        });
+                    } else {
+                        Toast::error(format!(
+                            "Can't register \u{2014} {} compile error(s).",
+                            errs.len()
+                        ));
+                    }
+                }
                 Ok(None)
             }
             EditorCommand::LoadProjectFromUrl { base_url } => {

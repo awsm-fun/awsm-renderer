@@ -273,26 +273,7 @@ fn workspace(ctrl: &EditorController) -> Dom {
             .style("position", "absolute")
             .style("inset", "0")
             .style_signal("display", ctrl.mode.signal().map(|m| if m == EditorMode::Material { "block" } else { "none" }))
-            .child(placeholder("Material workspace", "the Studio lands in M9\u{2013}M10"))
-        }))
-    })
-}
-
-fn placeholder(title: &str, sub: &str) -> Dom {
-    html!("div", {
-        .style("position", "absolute")
-        .style("inset", "0")
-        .style("display", "flex")
-        .style("flex-direction", "column")
-        .style("align-items", "center")
-        .style("justify-content", "center")
-        .style("gap", "8px")
-        .style("background", "var(--bg-0)")
-        .child(html!("span", {
-            .style("color", "var(--text-2)").style("font-size", "14px").style("font-weight", "600").text(title)
-        }))
-        .child(html!("span", {
-            .style("color", "var(--text-3)").style("font-size", "12px").text(sub)
+            .child(crate::material_mode::render())
         }))
     })
 }

@@ -138,6 +138,22 @@ pub enum EditorCommand {
     /// Select an asset in the Content Browser (routes the right rail to the Asset
     /// Inspector). **Transient** — `None` clears back to the node inspector.
     SetAssetSelection { id: Option<AssetId> },
+
+    /// Create a fresh custom WGSL material (Material-mode "New material" / Content
+    /// Browser "+ Material") and make it the current Studio material. The Studio
+    /// edits its body/slots live; lifecycle is not recorded in the scene undo log.
+    AddCustomMaterial,
+
+    /// Delete a custom WGSL material.
+    DeleteCustomMaterial { id: AssetId },
+
+    /// Set the material the Studio is editing. **Transient**.
+    SetCurrentMaterial { id: Option<AssetId> },
+
+    /// Register (compile to a renderer bucket) the current custom material. M9
+    /// validates the WGSL and flips the `registered` flag; the real GPU
+    /// registration + bucket accounting lands in M10.
+    RegisterMaterial { id: AssetId },
 }
 
 impl EditorCommand {
@@ -150,6 +166,7 @@ impl EditorCommand {
             EditorCommand::SwitchMode { .. }
                 | EditorCommand::SetSelection { .. }
                 | EditorCommand::SetAssetSelection { .. }
+                | EditorCommand::SetCurrentMaterial { .. }
         )
     }
 
@@ -180,6 +197,10 @@ impl EditorCommand {
                 "Delete asset"
             }
             EditorCommand::SetAssetSelection { .. } => "Select asset",
+            EditorCommand::AddCustomMaterial => "New material",
+            EditorCommand::DeleteCustomMaterial { .. } => "Delete material",
+            EditorCommand::SetCurrentMaterial { .. } => "Select material",
+            EditorCommand::RegisterMaterial { .. } => "Register material",
         }
     }
 }

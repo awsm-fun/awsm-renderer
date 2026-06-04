@@ -9,6 +9,7 @@ mod app;
 mod controller;
 mod engine;
 mod error;
+mod material_mode;
 mod prelude;
 mod scene_mode;
 
