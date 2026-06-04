@@ -327,7 +327,7 @@ fn extensions_section(mat: &Arc<CustomMaterial>) -> Dom {
             if let Some(x) = e.anisotropy {
                 sec = sec.child(builtin_num_row(&mat, "  Strength", x.strength as f64, 0.0, 1.0, 0.01,
                     |d, v| { if let Some(ref mut a) = d.extensions.anisotropy { a.strength = v as f32; } }));
-                sec = sec.child(builtin_num_row(&mat, "  Rotation", x.rotation as f64, 0.0, 6.2832, 0.01,
+                sec = sec.child(builtin_num_row(&mat, "  Rotation", x.rotation as f64, 0.0, std::f64::consts::TAU, 0.01,
                     |d, v| { if let Some(ref mut a) = d.extensions.anisotropy { a.rotation = v as f32; } }));
             }
             toggle!("Iridescence", e.iridescence.is_some(), |d, on| d.extensions.iridescence = on.then(<_>::default));
