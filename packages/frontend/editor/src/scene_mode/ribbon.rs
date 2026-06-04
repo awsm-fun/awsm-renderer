@@ -102,6 +102,37 @@ fn tab_strip(tab: &Mutable<String>) -> Dom {
 // Returns a reusable `Fn` (the dropdown rebuilds its rows on each open). Clones
 // the entries each call; InsertSpec isn't Copy (Primitive carries a struct
 // variant), so the per-item closure also clones its spec on each click.
+/// Open the glTF import modal — a URL field + Import action that dispatches
+/// `ImportModelFromUrl` (the gesture-free, source-abstracted path; a File picker
+/// variant is the follow-on).
+fn open_import_model() {
+    Modal::open(|| {
+        let url = Mutable::new(String::new());
+        ModalCard::new("Import glTF model")
+            .width(520.0)
+            .child(html!("div", {
+                .style("display", "flex").style("flex-direction", "column").style("gap", "8px")
+                .child(html!("span", { .style("font-size", "12.5px").style("color", "var(--text-2)").style("line-height", "1.5")
+                    .text("Paste a URL to a .glb / .gltf model. It loads into the scene and renders.") }))
+                .child(TextInput::new(url.clone()).placeholder("https://\u{2026}/model.glb").render())
+            }))
+            .footer(html!("div", {
+                .style("display", "flex").style("gap", "8px")
+                .child(Btn::new().label("Cancel").variant(BtnVariant::Ghost).on_click(Modal::close).render())
+                .child(Btn::new().label("Import").icon("cube").variant(BtnVariant::Primary)
+                    .on_click(clone!(url => move || {
+                        let u = url.get_cloned();
+                        if u.trim().is_empty() { return; }
+                        spawn_local(async move {
+                            let _ = controller().dispatch(EditorCommand::ImportModelFromUrl { url: u }).await;
+                        });
+                        Modal::close();
+                    })).render())
+            }))
+            .render()
+    });
+}
+
 fn drop_items(entries: Vec<(&'static str, InsertSpec)>) -> impl Fn(Close) -> Vec<Dom> + 'static {
     move |close| {
         entries
@@ -129,7 +160,7 @@ fn insert_row() -> Dom {
         .child(Btn::new().label("Empty").icon("empty").variant(BtnVariant::Ghost).size(BtnSize::Sm)
             .on_click(|| insert(InsertSpec::Empty)).render())
         .child(Btn::new().label("Model\u{2026}").icon("cube").variant(BtnVariant::Ghost).size(BtnSize::Sm)
-            .on_click(|| Toast::info("glTF model import lands in M11")).render())
+            .on_click(open_import_model).render())
         .child(DropButton::new().label("Light\u{2026}").icon("light").size(BtnSize::Sm)
             .items(drop_items(vec![
                 ("Directional", InsertSpec::Light(LightKind::Directional)),

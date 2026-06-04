@@ -509,7 +509,20 @@ impl EditorController {
                 Ok(None)
             }
             EditorCommand::ImportModelFromUrl { url } => {
-                Toast::info(format!("Import model from {url} — lands in M4/M11"));
+                match crate::engine::bridge::gltf::import(&url).await {
+                    Ok(name) => {
+                        // A tracking node so the import appears in the Outliner.
+                        // (The node⇄mesh binding + teardown is the follow-on; the
+                        // glTF renders directly from populate today.)
+                        let node =
+                            crate::engine::scene::node::Node::new_group(format!("Model: {name}"));
+                        mutate::insert_under(&self.scene, None, node);
+                        self.scene.bump_revision();
+                        self.dirty.set_neq(true);
+                        Toast::info(format!("Imported {name}"));
+                    }
+                    Err(e) => Toast::error(format!("Import failed: {e}")),
+                }
                 Ok(None)
             }
             EditorCommand::ImportTextureFromUrl { url } => {

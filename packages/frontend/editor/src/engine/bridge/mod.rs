@@ -4,6 +4,7 @@
 //! as the node's kind/transform/visibility change. M4-C handles primitives +
 //! lights + passive kinds; models/curves/particles/decals/etc. layer in later.
 
+pub mod gltf;
 pub mod material;
 pub mod node_sync;
 
