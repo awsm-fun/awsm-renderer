@@ -3,9 +3,27 @@
 //! mutates editor state directly. The ribbon + the real Scene/Material
 //! workspaces land in M4+ (placeholders for now).
 
+use crate::controller::CameraAxis;
 use crate::prelude::*;
 
 const ACCENT_FG: &str = "oklch(0.18 0.02 255)";
+
+/// A camera-axis snap button for the Settings → Camera grid.
+fn cam_axis_btn(label: &str, axis: CameraAxis) -> Dom {
+    Btn::new()
+        .label(label)
+        .variant(BtnVariant::Ghost)
+        .size(BtnSize::Sm)
+        .full(true)
+        .on_click(move || {
+            spawn_local(async move {
+                let _ = controller()
+                    .dispatch(EditorCommand::SnapCameraToAxis { axis })
+                    .await;
+            })
+        })
+        .render()
+}
 
 pub fn render() -> Dom {
     let ctrl = controller();
@@ -118,6 +136,36 @@ fn settings_drawer() -> Dom {
                 .child(row("Show gizmo", toggle(s.gizmo.clone())))
                 .child(row("MSAA", toggle(s.msaa.clone())))
                 .child(row("Light heatmap", toggle(s.heatmap.clone())))
+                .render(),
+        )
+        .child(
+            DrawerSection::new("Camera")
+                .child(html!("div", {
+                    .style("display", "grid")
+                    .style("grid-template-columns", "repeat(3, 1fr)")
+                    .style("gap", "6px")
+                    .style("padding", "2px 0 8px")
+                    .child(cam_axis_btn("Top", CameraAxis::PosY))
+                    .child(cam_axis_btn("Front", CameraAxis::PosZ))
+                    .child(cam_axis_btn("Right", CameraAxis::PosX))
+                    .child(cam_axis_btn("Bottom", CameraAxis::NegY))
+                    .child(cam_axis_btn("Back", CameraAxis::NegZ))
+                    .child(cam_axis_btn("Left", CameraAxis::NegX))
+                }))
+                .child(
+                    Btn::new()
+                        .label("Reset View")
+                        .icon("reset")
+                        .variant(BtnVariant::Ghost)
+                        .size(BtnSize::Sm)
+                        .full(true)
+                        .on_click(|| {
+                            spawn_local(async {
+                                let _ = controller().dispatch(EditorCommand::ResetCamera).await;
+                            })
+                        })
+                        .render(),
+                )
                 .render(),
         )
         .child(

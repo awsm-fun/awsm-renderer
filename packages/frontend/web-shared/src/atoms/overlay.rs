@@ -67,8 +67,15 @@ pub fn popup(
     let left = match align {
         Align::Right => anchor.right - w,
         Align::Left => anchor.left,
-    }
-    .max(8.0);
+    };
+    // Clamp horizontally so a popup anchored near the right edge (e.g. the
+    // top-right overflow menu) doesn't spill off-screen — keep its right edge
+    // within the viewport, then its left edge ≥ 8px.
+    let viewport_w = web_sys::window()
+        .and_then(|w| w.inner_width().ok())
+        .and_then(|v| v.as_f64())
+        .unwrap_or(1280.0);
+    let left = left.min(viewport_w - w - 8.0).max(8.0);
     let top = anchor.bottom + 4.0;
 
     html!("div", {

@@ -1,8 +1,7 @@
 //! Scene-mode ribbon (ribbon-rows.jsx): a tab strip (Insert · Object ·
-//! Environment · Camera + Assets toggle) over the active tab's action row.
-//! Every Insert action dispatches an `EditorCommand::Insert` through the
-//! controller. Object/Environment/Camera rows wire what the engine exposes
-//! today; the deeper env/camera wiring fills in with M6.
+//! Environment + Assets toggle) over the active tab's action row. Every Insert
+//! action dispatches an `EditorCommand::Insert` through the controller. Camera
+//! ops live in the Settings drawer (a Camera node is inserted from Insert).
 
 use awsm_scene_schema::{LightKind, PrimitiveShape};
 
@@ -43,14 +42,13 @@ pub fn render() -> Dom {
                 "Insert" => insert_row(),
                 "Object" => object_row(),
                 "Environment" => environment_row(),
-                "Camera" => camera_row(),
                 _ => insert_row(),
             })))
         }))
     })
 }
 
-const TABS: &[&str] = &["Insert", "Object", "Environment", "Camera"];
+const TABS: &[&str] = &["Insert", "Object", "Environment"];
 
 fn tab_strip(tab: &Mutable<String>) -> Dom {
     html!("div", {
@@ -352,13 +350,5 @@ async fn load_hdr(
             prefiltered_asset_id: env_id,
             irradiance_asset_id: irr_id,
         },
-    })
-}
-
-fn camera_row() -> Dom {
-    html!("div", {
-        .style("display", "flex").style("align-items", "center").style("gap", "10px")
-        .child(Btn::new().label("Reset View").icon("reset").variant(BtnVariant::Ghost).size(BtnSize::Sm)
-            .on_click(|| Toast::info("Camera ops land in M6")).render())
     })
 }

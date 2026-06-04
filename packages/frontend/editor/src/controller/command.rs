@@ -177,6 +177,10 @@ pub enum EditorCommand {
     /// **Transient** — camera/view state, not recorded in the undo log.
     SnapCameraToAxis { axis: CameraAxis },
 
+    /// Reset the viewport camera to its default framing ("Reset View").
+    /// **Transient** — camera/view state, not recorded in the undo log.
+    ResetCamera,
+
     /// Assign a custom WGSL material (by id) to a scene node's mesh, or clear it
     /// (`material: None`). Sets the node's `custom_material` reference. Inverse:
     /// restore the node's prior kind (a `SetKind`). The bridge renders the
@@ -199,6 +203,7 @@ impl EditorCommand {
                 | EditorCommand::SetAssetSelection { .. }
                 | EditorCommand::SetCurrentMaterial { .. }
                 | EditorCommand::SnapCameraToAxis { .. }
+                | EditorCommand::ResetCamera
         )
     }
 
@@ -236,6 +241,7 @@ impl EditorCommand {
             EditorCommand::AssignMaterial { .. } => "Assign material",
             EditorCommand::SetEnvironment { .. } => "Set environment",
             EditorCommand::SnapCameraToAxis { .. } => "Snap camera",
+            EditorCommand::ResetCamera => "Reset view",
         }
     }
 }

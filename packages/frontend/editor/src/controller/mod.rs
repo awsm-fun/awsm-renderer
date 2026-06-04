@@ -528,6 +528,10 @@ impl EditorController {
                 crate::engine::context::try_with_camera_mut(|c| c.snap_to(yaw, pitch));
                 Ok(None)
             }
+            EditorCommand::ResetCamera => {
+                crate::engine::context::try_with_camera_mut(|c| c.reset_default());
+                Ok(None)
+            }
             EditorCommand::LoadProjectFromUrl { base_url } => {
                 match persistence::load_project_from_url(self, &base_url).await {
                     Ok(()) => {
