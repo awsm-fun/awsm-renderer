@@ -15,6 +15,12 @@ members = [
     "packages/examples/render-worker",
     "packages/debugging",
 ]
+# The v1 editor is archived in-tree as a pure code reference for the v2
+# blank-slate rebuild (see docs/plans/editor-rewrite.md §3). It is NOT a
+# workspace member and is never compiled or linted.
+exclude = [
+    "packages/frontend/bad-editor-whoopsie",
+]
 resolver = "2"
 
 [workspace.package]

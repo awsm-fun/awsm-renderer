@@ -1,448 +1,562 @@
-# Editor Rewrite — unified `frontend/editor`
+# Editor Rewrite v2 — prototype-first, from a blank slate
 
-> **Status:** Planning, ready to execute. This doc folds the external design
-> handoff (`~/Downloads/editor-reference/`, hereafter "the prototype") into the
-> real codebase and the locked decisions. It supersedes the prototype's
-> `HANDOFF.md` and `_src/INVENTORY.md` wherever they conflict.
+> **Status:** Planning, ready to execute via a fresh `/goal`. This **replaces**
+> the v1 plan. v1 seeded the new editor from the old `scene-editor` and reskinned
+> it — which baked the old information architecture in and could never reach the
+> prototype. This plan builds the UI **from scratch** against the reference,
+> using the old code only as a how-to reference for Rust/WASM/dominator + the
+> renderer wiring.
+
+---
 
 ## 0. Execution contract (read first)
 
-This plan is meant to be run **start-to-finish autonomously** from a single
-prompt. An executing agent should:
+Run **start-to-finish autonomously** from a single `/goal`.
 
-- Work on branch **`editor`** (already checked out).
-- Follow milestones **M1 → M10 (§12) in order**. Keep the branch compiling and
-  **`task lint` green** (rustfmt + `clippy --all --all-features --tests -D
-  warnings`) at the end of every milestone.
-- **Do not stop to ask questions** — every fork has a decided default here
-  (§2, §13). If a genuinely new ambiguity appears, pick the most reversible
-  option, note it inline in this doc, and continue.
-- **Verify visually via Chrome MCP** using the prototype-vs-build tab workflow
-  (§11). The static prototype is served at `http://localhost:9090`.
-- After the **backend** change (M7), run the **GPU verification loop** and
-  reconcile materials baselines (memory: "Materials overhaul verification").
-- **Definition of done (§13).** The old crates are gone, `task lint` is green,
-  `task editor-dev` serves a unified editor matching the prototype across all 5
-  screenshots, and custom materials carry author-declared pass dependencies.
+- **Branch:** `editor` (continue on it; the v1 work is archived in-tree, see §3).
 
-## 1. Goal
+- **RUN + DEBUG + VERIFY ONLY IN REAL CHROME, VIA THE CLAUDE-IN-CHROME MCP.**
+  Never use the IDE/internal "Launch preview" panel for verification — it is not
+  the real WebGPU runtime. The workflow is: `mcp__Claude_in_Chrome__tabs_context_mcp`
+  → `…__navigate` → `…__computer`(screenshot) / `…__read_console_messages`. The
+  build is served by `trunk` and loaded as a URL in a real Chrome tab.
+  - Reference: `cd ~/Downloads/editor-reference && http-server --cors --index -p 9090`
+  - Build: `task editor-dev`  → `http://localhost:9085`
+  - Keep **two real-Chrome MCP tabs** open — reference `:9090` and build `:9085`.
+    For every panel: screenshot both, diff layout/spacing/color/type/per-state +
+    interactions, iterate until they match. Check `read_console_messages`
+    (onlyErrors) after each load — zero panics / GPU validation errors.
 
-Replace the two separate frontends — `packages/frontend/scene-editor`
-(`awsm-scene-editor`) and `packages/frontend/material-editor`
-(`awsm-material-editor`) — with **one** new crate
-`packages/frontend/editor` (`awsm-editor`). It exposes both capabilities behind
-a top-bar **Scene ⇄ Material** segmented switch and is linked from `site-index`
-as a single entry.
+- **SANITY-CHECK THE MCP WORKFLOW BEFORE BUILDING (part of M0, hard gate).**
+  Before writing UI code: serve the reference, `navigate` a real Chrome MCP tab
+  to `:9090`, and confirm you can **screenshot it** and **read its console**. If
+  the Claude-in-Chrome MCP is unavailable or can't drive a real tab, **STOP and
+  surface that** — do not proceed building blind against the internal preview.
+  (During planning this was validated: both `:9090` and `:9085` drove cleanly in
+  real Chrome — screenshots + console reads worked.)
 
-The renderer, the scene-graph/`actions::*` logic, and the FS/history/worker
-plumbing are **reused**. What changes is (a) the surrounding chrome/UX, rebuilt
-to the prototype, and (b) the **design system itself** — `web-shared`'s atoms +
-theme are **rewritten** to embody the new look (§4, §6). The prototype is a
-*visual* reference only (React + inline Babel); **do not port JSX**.
+- **Order:** milestones **M0 → M12** in order. Keep the branch compiling and
+  **`task lint` green** (rustfmt + clippy `-D warnings`, all crates) at the end
+  of every milestone.
 
-Two structural changes beyond a straight merge:
-- **Eliminate `packages/crates/editor`** (`awsm-renderer-editor`) by folding its
-  gizmo/grid code into `web-shared` (§5).
-- Add a **Material Pass Dependencies** section (`ShaderIncludes` /
-  `FragmentInputs`) for custom materials — UI **and** backend (§7). This concept
-  post-dates both frontends and appears nowhere in the prototype.
+- **COMPLETION SIGNAL.** When the entire plan is done and the §14 Definition of
+  Done holds (all milestones, lint green, verified in real Chrome, GPU
+  reconciled), end with the literal line on its own:
+  **`FINISHED!!! WOOHOOO!!!`** — and only then. Do not write it early.
+- **Gate at M1.** The multi-renderer-instance refactor is **audited first** (§6).
+  If per-instance device-scoping regresses performance, STOP and switch the
+  Material preview to the single-renderer fallback (§6.4) — note it inline and
+  continue. This is the one place to pause-and-decide; everything else has a
+  decided default (§13).
+- **Don't stop to ask.** Defaults are decided here. If a genuinely new ambiguity
+  appears, pick the most reversible option, note it inline, continue.
+- **Fidelity bar:** the reference is the source of truth for **UX, UI, layout,
+  icons, and interactions** — 100%. Where the real engine and the mock data
+  model diverge, prefer the prototype's UX and adapt the real model.
+
+---
+
+## 1. Why v1 failed + the corrected method
+
+**v1's mistake:** it `cp`'d `scene-editor/src` into the new crate and reskinned
+it. Result — under the graphite paint it's still the old editor: the old
+full-width tab header (not the prototype's compact top bar + ribbon), the old
+`kind_editor` inspector that leaks material internals (shading, vertex colors)
+onto meshes, and the old `material-editor` 4-pane folded in wholesale instead of
+the prototype's Studio layout with a live preview ball. Reskinning can't reach
+the prototype because the prototype's **information architecture** is different,
+not just its colors.
+
+**The method this time:**
+1. **Build the DOM to match the reference**, panel by panel, verified tab-to-tab
+   in real Chrome. UI is written from a blank slate.
+2. **Pull the engine in deliberately, as each feature needs it** — the renderer
+   bootstrap, `renderer_bridge` (GPU↔scene sync), scene-graph model, `actions`,
+   FS, gizmo, picking, worker pool. These are UI-agnostic and correct; they are
+   *referenced/adapted* from the archived old crate, not inherited as a skeleton.
+3. **Keep the three correct non-UI wins from v1** (§3).
+
+---
 
 ## 2. Locked decisions
 
 | # | Decision | Choice |
-|---|----------|--------|
-| 1 | New crate | `packages/frontend/editor`, package `awsm-editor`, `publish = false`. |
-| 2 | Cutover | **Big-bang replace.** Build `editor` to parity, then delete both old crates + taskfiles in the same branch (final milestone). Old crates stay buildable *during* dev for side-by-side comparison; removed last, not incrementally. |
-| 3 | Material-mode scope | **Custom WGSL materials only** (today's `material-editor` scope). First-party PBR/glTF materials stay edited in **Scene mode's** inspector material block, as `scene-editor` does today. |
-| 4 | Pass-dependencies feature | **UI + backend plumbing.** Thread author-declared `ShaderIncludes`/`FragmentInputs` through the dynamic-material registration API + shader cache key, replacing the hardcoded `ShaderIncludes::all()` in `dynamic.rs`. |
-| 5 | Material persistence | **Keep File System Access folders** (`material.json` + `shader.wgsl`). The cross-app `?folder=` deep-link collapses into in-app navigation. |
-| 6 | **`crates/editor`** | **Eliminate it.** Fold `grid` + `transform_controller` + `point_handle` into **`web-shared`** (not the editor binary crate — see §5.2 rationale: `model-tests` also consumes them). Remove `awsm-renderer-editor` from the workspace + publish set. |
-| 7 | **Design system** | **Rewrite `web-shared`'s atoms + theme to the new design.** The prototype's `tokens.css` is the source of truth, re-expressed in the codebase's `class!`/`ColorBackground`/`ChromeFill` idiom. This **supersedes** the HANDOFF's "map onto existing palette, don't fork" guidance. `model-tests` is unaffected (it has its own local atoms/theme; only uses `web-shared::perf`). |
-
-## 3. Terminology map (prototype → real codebase)
-
-| Prototype term | Real codebase | Notes |
 |---|---|---|
-| "bucket" / `MAX_BUCKETS = 32` | `MAX_BUCKET_ENTRIES = 32` (`renderer/src/dynamic_materials/registry.rs:163`) | Real cap; driven by the classify shader's `tile_mask: atomic<u32>`. Exceeding = hard error (`resolve_first_party_variant_or_cap_err`, registry.rs:1230). |
-| "Register material" (transactional) | `AwsmRenderer::register_material` + dynamic registry reconcile | Mirror `AwsmDynamicMaterialError`. `material-editor` `recompile.rs` + `host.rs` (`RendererRecompileSink`) already implement the debounced compile→register loop. |
-| "DEBUG values drive preview only" | Preview renderer's per-instance uniform defaults | A mesh overrides them when the material is assigned in a scene. |
-| Uniforms / Textures / Buffers slots | `MaterialLayout` (`awsm-materials` `dynamic_layout`): `UniformFieldRuntime`, `TextureSlotRuntime`, `BufferSlotRuntime` | Buffers = extras-pool slices. |
-| **"material pass dependencies"** (your term; absent from prototype) | **`ShaderIncludes`** + **`FragmentInputs`** (`materials/src/shader_includes.rs`) | "Heart of skinny materials." See §7. |
-| Material `swatch` gradients | n/a — use real preview-render thumbnails or a solid debug-color swatch | Prototype thumbnails are CSS gradients we don't have. |
+| 1 | Method | **Blank-slate rebuild** of `packages/frontend/editor`; old editor archived as `packages/frontend/bad-editor-whoopsie`, used only as a code reference. |
+| 2 | Scope | **Full functional parity** with the old editor (all node kinds, glTF import, env/skybox/IBL, shadows, save/load), rewired behind the prototype-faithful UI. Nothing regresses. |
+| 3 | Material model | **Two kinds.** (a) **Custom** = reusable registered dynamic-WGSL material *assets* — the only thing editable in Material mode (the Studio), shared across meshes. (b) **Built-in** = a **fixed palette of the four first-party families** (PBR/Unlit/Toon/Flipbook) shown in the Content Browser; assigning one sets an **inline** first-party material on the mesh with per-mesh params (edited in the mesh **Material block**, never opened in the Studio). Built-ins are NOT shared assets and NOT files. The **Material-mode Library is custom-only**; the **Scene Content Browser shows both** (built-ins marked with a distinct outline + family glyph/"built-in" chip). |
+| 4 | Persistence | **A project *directory* of TOML + separate source/binary files** (FS Access *directory* picker), replacing both `.awsm`-single-file and the old per-material FS folders. Layout (flat at root): `project.toml` (scene graph · per-mesh inline built-in material params · refs to custom materials by id · env · camera · settings); `material-<id>.toml` + `material-<id>.wgsl` per **custom** material (alpha/double-sided/base-color/slots/declared pass-deps/debug values + file refs); `assets/textures/<hash>.<ext>`, `assets/buffers/<id>.bin`, `assets/models/<hash>.glb`. TOML via `toml`+serde (wasm-OK). Independent of `scene-schema`'s `project.json` (model-tests/tuning-scenes untouched). |
+| 5 | Renderer instances | **First-class N independent `AwsmRenderer` instances** via per-device-scoped renderer-core caches (§6) — the Material preview is the first second-instance; future multi-renderer games are supported by construction. **Gated on an audit (M1): if it regresses perf, fall back** to single-renderer preview (§6.4). |
+| 6 | Old crate in workspace | **Removed from workspace members + taskfiles** (reference-only; never compiled). |
+| 7 | Inspector | **100% prototype fidelity** — IA, icons, UX, per-kind editors (`kind-editors.jsx`). No material internals on the mesh. |
+| 8 | Controller architecture | **Every editor mutation is a serializable `EditorCommand` dispatched through one `EditorController` singleton; the UI is just one driver.** Commands are **invertible and form the undo/redo log** (command-sourcing — replaces snapshot-based undo). The controller also exposes a serializable **query/snapshot** read API (scene tree · selection · materials · compile errors · mode · project state) so external agents can inspect state. UI event handlers build + dispatch commands; they never mutate editor state directly. A future MCP/websocket transport is a **thin adapter** over the same `dispatch`/`snapshot` — **designed for now, NOT built now** (only the clean seam). Reuse the old `actions::*` as *command implementations*; the old snapshot-history is replaced by the command log. |
 
-## 4. What is reused vs. rewritten
+---
 
-**Reused as-is (logic, no redesign):**
-- The renderer + `actions::*` + scene graph + `renderer_bridge` + FS + history +
-  worker pool from `scene-editor`.
-- `material-editor`'s `EditState` + `recompile` + `host` + FS material load/save.
-- `web-shared` **non-UI** utilities: `perf`, `util/*` (signal/window/storage/
-  mixins/async_loader/config), `logger`, `error`, `free_camera`.
+## 3. Keep / archive / build-fresh
 
-**Rewritten (the new design system, in `web-shared`):**
-- `web-shared/src/theme/*` — port `tokens.css` (graphite/slate OKLCH surfaces,
-  azure accent `#5b8dd6` user-tweakable, amber reserved for viewport selection,
-  radii 4/6/9/13px, JetBrains Mono for code/numerics, system-ui for chrome) into
-  `ColorRaw`/`ColorBackground`/`ColorText`/`ColorBorder`/`ChromeColor`/
-  `ChromeFill`/`ChromeShadow`/`FontSize`/`FontWeight`/`ZIndex`.
-- `web-shared/src/atoms/*` — rewrite the visual layer of existing atoms (`Button`,
-  `Checkbox`, `Modal`, `TextInput`, `TextArea`, `Dropdown`, `FilePicker`,
-  `Label`, `ProgressBar`, `Toast`, `icons`/`dynamic_svg`). **Keep public builder
-  APIs stable where practical** so M1-seeded code keeps compiling; change a
-  call-site only when the new design needs it.
-- **Add the new atoms the prototype needs** (these don't exist yet): `Segmented`
-  (mode switch / alpha mode / layout switch), `Badge` (ready/draft/error tones),
-  `Popup`/`MenuItem`/`MenuSep` (overflow + assign chevron + context menus),
-  `Section`/`Row`/`PanelHeader`/`kicker` (rail sections), `Swatch` (color),
-  `Toggle`, `NumField`, `Segmented`, `IconBtn`, `Tooltip`. Names are guidance;
-  match the prototype's components in `ui.jsx`/`ui-extra.jsx`.
+**Keep as-is (correct, non-UI — do NOT redo):**
+- **M7 pass-deps backend** in `awsm-materials` + `awsm-renderer`: `ShaderIncludes`/
+  `FragmentInputs` on `MaterialRegistration` → `DynamicShaderInfo` → the 3
+  shading-host templates' `inc` gating + `dispatch_hash` (+ tests). Behaviour-
+  preserving; the new editor reuses it.
+- **M1 viewport3d fold** in `web-shared::viewport3d` (grid + transform_controller
+  + point_handle); the old `crates/editor` is already gone.
+- **M2 design tokens** in `web-shared/src/theme` (the `tokens.css` port). The
+  palette is right; it's the *components built on it* that need rebuilding (§5.2).
 
-**Newly homed in `web-shared` (folded from `crates/editor`, §5):** `grid`,
-`transform_controller`, `point_handle` (3D viewport helpers — not UI atoms).
+**Archive (reference only):** the current `packages/frontend/editor` → move to
+`packages/frontend/bad-editor-whoopsie`, drop from `Cargo.toml` members + the
+`editor` taskfile, remove from CI/site-index. It stays in-tree as a grep target
+for engine wiring (bridge, actions, scene model, FS, canvas, context, gizmo).
 
-> `model-tests` keeps working through all of this: it has its own local atoms +
-> theme and only imports `web-shared::perf::resolve_renderer_profile` (stable).
-> Its only required edit is re-pointing its `awsm_renderer_editor::{grid,
-> transform_controller}` imports at `web-shared` (§5.3).
+**Build fresh (the whole UI):** top bar, scene ribbon, outliner, viewport overlay
+chrome, inspector, content browser, command palette, settings drawer + modals,
+toasts, **and the entire Material mode** (Studio layout, library, definition rail
+incl. pass-deps, live preview, code pane, contract drawer, register/assign/
+breadcrumb).
 
-## 5. Eliminating `crates/editor` (`awsm-renderer-editor`)
+---
 
-### 5.1 What it is
-`packages/crates/editor/src/`: `grid/` (`pipelines.rs` `EditorPipelines` +
-`render.rs` `render_grid`), `transform_controller.rs` (TRS gizmo:
-`TransformController`, `TransformObject`, `TransformTarget`, `GizmoKind`,
-`GizmoSpace`, `ray_plane_intersection`), `point_handle.rs` (`PointHandleSet`
-control-point gizmo). Depends on `awsm-renderer`, `awsm-renderer-gltf`,
-`awsm-meshgen`, `glam`, `web-sys`. **No published library depends on it.** It is
-currently published to crates.io only because it lacks a `publish = false` flag.
+## 4. Reference map + component inventory
 
-### 5.2 Fold target = `web-shared` (rationale / deviation note)
-You asked to fold it "into the new frontend editor crate." Doing so literally
-breaks `model-tests`, which **also** imports `transform_controller` + `grid`
-(`model-tests/src/pages/app/scene.rs`, `.../scene/editor.rs`,
-`.../sidebar/editor.rs`). A frontend **binary** crate can't be a clean dependency
-of another frontend, and duplicating gizmo math is worse. **`web-shared` is the
-shared frontend lib both already depend on**, already depends on `awsm-renderer`,
-and is being heavily edited anyway (§4). So fold there. → If you'd rather
-duplicate the gizmo/grid into `model-tests` and put the originals in the editor
-crate, that's the only alternative; say so and I'll flip it.
+`~/Downloads/editor-reference/` (served at `:9090`). **Do not port JSX** — rebuild
+in Rust/dominator. Each file → what it drives:
 
-### 5.3 Mechanics
-1. Move `grid/`, `transform_controller.rs`, `point_handle.rs` into
-   `web-shared/src/` (e.g. under a `viewport3d` module, or top-level `grid` +
-   `gizmo`). Add `awsm-renderer-gltf` + `awsm-meshgen` to `web-shared`'s deps;
-   move the `shaders/grid.wgsl` asset too.
-2. Re-point imports: the new `editor` crate and `model-tests` import
-   `awsm_web_shared::{viewport3d::grid::…, viewport3d::transform_controller::…}`
-   (or chosen path) instead of `awsm_renderer_editor::…`.
-3. Delete `packages/crates/editor/`. Remove it from `[workspace] members` and
-   remove the `awsm-renderer-editor = { path = …, version = "0.2.0" }` entry in
-   root `Cargo.toml` (`[workspace.dependencies]`).
-4. Remove `PATH_CRATE_EDITOR` from `taskfiles/config.yml` and drop the
-   `--watch "{{.PATH_CRATE_EDITOR}}"` lines from `model-tests.yml` (and the new
-   `editor.yml`), adding a `--watch` on `web-shared` instead (already present for
-   the editor; add to `model-tests.yml`).
-5. `cargo publish --workspace` (the `publish`/`_publish` task) now has one fewer
-   member; nothing references it.
+| File | Drives |
+|---|---|
+| `app.jsx` | App shell, top bar, mode switch, ribbon host, `MaterialRibbon` (layout switch · bucket meter · **Assign** split-button · **Register**), `Toasts`, the Scene→Material→Register→Assign flow, ⌘K wiring. The clearest behavior map. |
+| `tokens.css` | The design tokens (already ported to `web-shared` theme). |
+| `ui.jsx` | **Atoms:** `Icon`, `IconBtn`, `Btn`, `Section`, `Row`, `NumField`, `Vec3`, `TextInput`, `Select`, `Toggle`, `Check`, `Segmented`, `Swatch`, `Badge` + the `ICONS` SVG map. |
+| `ui-extra.jsx` | `Popup`, `DropButton`, `MenuItem`, `MenuSep`, `Modal`, `Slider`, `RightDrawer`, `ContextMenu`, `DrawerSection`. |
+| `scene-mode.jsx` | Outliner (tree · multi-select · collapse · drag-reparent · drag-assign · context menu · empty state) + Inspector host + batch panel + Content Browser host. |
+| `kind-editors.jsx` | Per-kind inspector: Light/Camera/Model/Group/Empty + mesh `Geometry` (shape switcher + params) + `MaterialBlock` (asset card + Edit link + Assigned select + base color/metallic/roughness) + `Shadows`. |
+| `viewport.jsx` | Viewport overlay chrome: `MaterialBall` (CSS mock of the rendered ball), `Gizmo`, transform-tool palette (Select/Move/Rotate/Scale · Q/W/E/R), `ViewAxis` nav cube, shading modes (Solid/Material/Wire), object·tris + camera readout chips. |
+| `ribbon-rows.jsx` | `SceneRibbon` tab strip (Insert/Object/Environment/Camera) + `InsertRow`/`ObjectRow`/`EnvironmentRow`/`CameraRow`/`DropFileRow`. |
+| `content-browser.jsx` | `ContentBrowser` (bottom drawer: category tabs+counts · search · add · card grid · drag-assign · dbl-click→Material) + `AssetInspector` (right panel asset editor). |
+| `material-mode.jsx` | `MaterialLibrary` (asset list, ready/draft/error badges, "on {obj}") + `DefinitionPanel` (alpha/double-sided/base-color · **DEBUG** value editors · Uniforms/Textures/Buffers; **add Pass Dependencies here**). |
+| `material-shell.jsx` | `MaterialMode` layout composer (Library 222 · Definition 244 · main; studio/code/split) + `CodePane` (wgsl + problems strip) + `HelpDrawer` (Material Contract). |
+| `material-preview.jsx` | `PreviewPane` — real shaded mesh + mesh switcher (Sphere/Cube/Plane/Cylinder/**Selected object**) + env presets (Studio/Sky/Void) + compile-error dim overlay. |
+| `code-editor.jsx` | `CodeEditor` — WGSL editor (syntax highlight + gutter + error lines). |
+| `extras.jsx` | `CommandPalette` (⌘K, fuzzy, ↑↓/↵/Esc). |
+| `settings-overflow.jsx` | `SettingsDrawer` (was the Editor tab) + `AboutModal`/`ClearAllModal`/`MissingAssetsModal`/`StatsBar`. |
+| `data.jsx` | The mock data model — mirror its *shape* onto the real schema, not 1:1. |
+| `handoff_screenshots/01–05` | Scene · Material · ⌘K · Content Browser · Multiselect-batch. |
+| **Ignore** | `tweaks-panel.jsx` (the prototype's own dev harness), `_src/` (= the old source; the archived crate is canonical). |
 
-## 6. Target architecture
+---
 
-### 6.1 Crate skeleton
-Seed `packages/frontend/editor` from `scene-editor` (the superset), then graft
-`material-editor`'s panes as a mode:
+## 5. Architecture
+
+### 5.1 Crate layout
+Fresh `packages/frontend/editor` (`awsm-editor`). Suggested module shape — built
+DOM-first; engine modules adapted from the archived crate as features need them:
 
 ```
-packages/frontend/editor/
-  Cargo.toml          # package = "awsm-editor"; publish = false; union of both dep lists
-  index.html          # boot-loader + fonts + gizmo asset copy-dir (from scene-editor)
-  src/
-    main.rs           # bootstrap, worker registration, RAF loop, mode router
-    app.rs            # top bar + mode switch + ribbon host + overlays (the App shell)
-    mode.rs           # Mode { Scene, Material } as a Mutable; drives ribbon + workspace
-    context.rs        # RendererHandle(s), camera, compile/error handles, WorkerPool
-    common/           # bootstrap, config, fs, keys, error, content_hash, command_palette,
-                      #   settings_drawer, content_browser, overflow_menu, toasts host
-    scene/            # ← scene-editor: state, scene graph, renderer_bridge, canvas,
-                      #   tree (outliner), properties (inspector), ribbon rows, actions
-    material/         # ← material-editor: EditState, recompile, host, panes
-                      #   (library, definition incl. NEW dependencies section, preview,
-                      #    code/wgsl, contract drawer)
-    prelude.rs
+editor/src/
+  main.rs            # bootstrap: theme, panic hook, worker reg, scene renderer, mount app
+  app.rs             # top bar + mode router + ribbon host + global overlays (toasts/modals/cmdk)
+  theme bridge       # (uses web-shared design system)
+  controller/        # EditorController singleton (§5.5) — the command/query authority
+    command.rs       #   EditorCommand (serde, invertible) — every mutation
+    query.rs         #   EditorQuery / snapshot() (serde) — readable editor state
+    dispatch.rs      #   dispatch(cmd) + the command-based undo/redo log
+  engine/            # adapted from bad-editor-whoopsie (UI-agnostic); the controller
+                     #   calls into these (they're command IMPLEMENTATIONS, not called by UI):
+    context.rs       #   renderer handle(s), camera handles, worker pool
+    bridge/          #   GPU↔scene-graph sync (node_sync, asset_cache, gizmo, env, shadows, …)
+    scene/           #   in-memory scene model + mutate (snapshot history REPLACED by command log)
+    actions/         #   insert/object/camera/view/project ops (invoked by dispatch)
+    fs.rs, keys.rs, content_hash.rs
+    project/         #   TOML project dir serialize/deserialize (§10)
+  scene_mode/        # FRESH UI: ribbon, outliner, viewport-chrome, inspector (kind editors)
+  material_mode/     # FRESH UI: studio layout, library, definition(+pass-deps), preview, code, contract
+    preview/         #   2nd-renderer preview (mesh switcher + env presets)  [or single-renderer fallback]
+  content_browser.rs # FRESH UI
+  command_palette.rs # FRESH UI
+  settings/          # FRESH UI: settings drawer + about/clear/missing modals + stats bar
+  toasts.rs
 ```
 
-`common/` vs `scene/` vs `material/` organization is the implementer's call; the
-constraints are no path/symbol collisions and a clean Scene/Material seam.
+### 5.2 web-shared design system (rebuild the component library)
+Keep the M2 **tokens**. Build the prototype's component set as proper `web-shared`
+atoms (salvage/expand the existing ones): `Icon`(+ the full `ICONS` SVG map),
+`IconBtn`, `Button` (ghost/quiet/primary/solid + sm/md), `Section` (collapsible,
+`right` slot, `dense`), `Row`, `NumField` (axis-tinted, step/min/max/suffix),
+`Vec3`, `TextInput`, `Select`, `Toggle`, `Check`, `Segmented`, `Swatch`, `Badge`
+(neutral/accent/ok/warn/danger), `Popup`, `DropButton`, `MenuItem`/`MenuSep`,
+`Modal`, `Slider`, `RightDrawer`, `ContextMenu`, `DrawerSection`. These are
+generic and shared; editor-specific composites live in the editor crate.
 
-### 6.2 Modes, renderer instances, canvas
-- A single `Mutable<Mode>` (`Scene` | `Material`) drives the ribbon (§9.1) and
-  the workspace body, matching the prototype's `mode` state (`app.jsx:128`).
-- **Two renderer contexts, lazily created** (decided default — lowest risk):
-  Scene mode = the full `AwsmRenderer` (pipelines, picking, gizmo, shadows, env);
-  Material mode = the lightweight preview renderer (preview ball + mesh switcher +
-  env presets). Separate canvases; shared worker pool + `web-shared`.
-- Reuse `scene-editor/canvas.rs` (pointer→pick/gizmo/camera) for the Scene
-  viewport; `material-editor/panes/preview.rs` for the Material preview.
+### 5.3 Project format = a TOML directory (§10)
+The project is a **directory** (picked via the FS Access *directory* picker),
+serialized as **TOML** with sources/binaries as separate on-disk files — no
+single self-contained file, no base64 embedding. The editor's own model
+(`engine::project`) round-trips to/from it. Replaces the old per-material FS
+folders. See §10 for the exact layout.
 
-### 6.3 Scene ↔ Material hand-off
-Mirror `app.jsx` (`materialFrom`, `onEditMaterial`, breadcrumb, post-register
-"Assign to {object}" toast) with real state: Scene inspector "material block" →
-**Edit** sets `material_from: Option<NodeId>` and flips `Mode::Material`, loading
-that material's `EditState`; Material mode shows breadcrumb `‹ Scene ▸ {object} ▸
-{material}` (`material-shell.jsx:145`); **Register** (transactional, blocked on
-compile errors) succeeds → toast **Assign to {object}** flips back and assigns.
+### 5.4 Multiple renderer instances (§6)
+Make N independent `AwsmRenderer` instances coexist by per-device-scoping the
+renderer-core GPU-resource caches. The Material preview is a second instance with
+its own canvas, camera, env, and preview mesh. **Gated on the M1 audit.**
 
-## 7. Material Pass Dependencies (net-new) — decision #4: UI + backend
+### 5.5 EditorController — the command/query authority (decision 8)
+All editor/project state is governed by one `EditorController` (a thread_local
+singleton like `AppState`). **The UI is just one driver of it.**
 
-### 7.1 What it is
-`materials/src/shader_includes.rs`: a material declares the optional shared
-shader modules it uses; the renderer compiles the **transitive closure**
-(`ShaderIncludes::resolve`) and emits only those `{% include %}`s. Bindings stay
-full/pass-owned; only WGSL *code* is gated.
-- **`ShaderIncludes`** (u32 bitset, append-only): `MATH, CAMERA, COLOR_SPACE,
-  TEXTURES, VERTEX_COLOR, LIGHT_ACCESS, APPLY_LIGHTING, BRDF,
-  MATERIAL_COLOR_CALC, SHADOWS, SKYBOX, EXTRAS` (bit 9 retired). One-hop deps in
-  `direct_deps()` (e.g. `APPLY_LIGHTING → BRDF, LIGHT_ACCESS, MATH, CAMERA`).
-- **`FragmentInputs`** (u32 bitset): `NORMALS, TANGENTS, UV, LIGHTS, VIEW_DIR,
-  VERTEX_COLOR`.
-- First-party materials each declare a precise constant (`pbr.rs:450`,
-  `unlit.rs:68`, `toon.rs:92`, `flipbook.rs:173`).
+- **`EditorCommand` (serde).** One enum covering *every* mutation: insert/delete/
+  duplicate/reparent/rename nodes · select/deselect/set-selection · set transform
+  (per-axis TRS) · prefab toggle · per-kind params (geometry shape+params, light,
+  camera, model, collider, curve, particle, decal, line, sprite, …) · assign
+  material (built-in family **or** custom id) · set built-in material params ·
+  create/edit/delete a custom material (alpha · double-sided · base color ·
+  uniforms/textures/buffers slots · declared pass-deps · WGSL) · register/update
+  material · env (skybox/IBL/shadows) · scene-affecting camera ops · settings ·
+  project new/load/save · switch mode. Commands are **data** (no closures), so
+  they serialize.
+- **Invertible — the command log IS undo/redo.** Applying a command records its
+  inverse (captured from current state at apply-time — e.g. `SetTransform` records
+  the prior transform; `DeleteNode` captures the removed subtree; `RegisterMaterial`
+  inverts to unregister / re-register-previous). Undo pops + applies the inverse;
+  redo re-applies. This **replaces** the old snapshot-based history. **Transient**
+  commands (selection, mode switch, camera orbit, panel toggles) are dispatched
+  but NOT recorded in the undo log (or live in a separate lightweight ring).
+- **`EditorController::dispatch(EditorCommand) -> Result<…>`** is the single entry
+  point. Async (some commands await the renderer/FS). UI event handlers translate
+  gestures → commands → `dispatch`; **never mutate editor state directly.**
+- **`snapshot()` / `EditorQuery` (serde):** a serializable read of editor state —
+  scene tree (id/name/kind/transform/parent), selection, material list (custom +
+  the built-in palette), per-custom-material compile status/errors, mode, project
+  dirty/name. For external inspection + headless tests.
+- **URL-driven load + import (gesture-free — build now).** FS file-pickers need a
+  user gesture, which an external transport (and headless tests) can't supply. So
+  the loading/import commands are **source-abstracted** and include URL variants
+  that `fetch` over HTTP — no gesture:
+  - `LoadProjectFromUrl(base_url)` — fetch `<base_url>/project.toml` + the
+    referenced `material-<id>.{toml,wgsl}` + `assets/*` and build the project.
+    (`LoadProjectFromDirectory(handle)` is the FS-picker variant.)
+  - `ImportModelFromUrl(url)` / `ImportTextureFromUrl(url)` — fetch bytes → create
+    the asset. (`…FromFile(file)` are the picker variants.)
+  The project (de)serializer is written over a `ProjectSource` = `Url(base)` |
+  `Directory(handle)`; asset import over `AssetSource` = `Url(url)` | `File(file)`.
+  **Saving** stays a directory handle for now (gesture); the serializer is
+  sink-abstracted so a future server/HTTP-PUT sink (for the MCP path) is a thin
+  add. This URL path is exactly what the future MCP agent uses to drive remote
+  asset imports + project loading.
+- **Dev/testing use:** during the build, the agent can serve a known test project
+  + assets from a second `http-server` and `LoadProjectFromUrl` it — scriptable,
+  gesture-free scene setup for verifying panels (then verify via `snapshot()` +
+  real-Chrome screenshots). Round-trip persistence can be checked by serializing
+  the project to an in-memory TOML tree and reading it back (no disk write needed).
+- **Transport seam (NOT built now).** A future MCP/websocket adapter would
+  `serde`-decode a command → `dispatch` and encode `snapshot()` back. Build only
+  the seam (+ the URL load/import variants above); not the server itself.
+- Pure-UI ephemeral state (hover, which panel is open, the Studio layout toggle)
+  may stay local to components — the controller governs *editor/project* state,
+  not view chrome.
 
-### 7.2 The gap to close
-Custom/dynamic materials opt into everything: `dynamic.rs:175`
-`shader_includes() -> ShaderIncludes::all()` (and `fragment_inputs() -> all()`),
-with the comment *"until the dynamic-registration API carries a per-material
-declaration, dynamic materials opt into the full optional surface."* Every custom
-material is "fat." This feature lets authors declare a tighter set and has the
-renderer honor it.
+---
 
-### 7.3 Backend (renderer + materials)
-1. **Carry it.** Extend the dynamic registration record
-   (`renderer/src/dynamic_materials/registry.rs`) and the `register_material`
-   surface with `shader_includes: ShaderIncludes` + `fragment_inputs:
-   FragmentInputs`.
-2. **Honor it.** `DynamicMaterial::shader_includes()`/`fragment_inputs()` read the
-   registered set (via the registry, as the existing TODO anticipates) instead of
-   `all()`. The renderer already resolves the closure + emits only needed
-   includes — feed it the declared set.
-3. **Cache key.** Fold the declared set into the dynamic shader cache key so same
-   WGSL + different deps don't collide and a change re-specializes. Additive to
-   the `(ShadingBase, features)` first-party variant map (custom = dynamic id
-   range).
-4. **Default-safe.** Absent/empty declaration ⇒ default to `all()` (back-compat).
-   Author narrowing is opt-in. When a narrowed material references an ungated
-   symbol, surface a clear "referenced a module you didn't declare" compile
-   diagnostic.
-5. **Persist.** Add the declared sets to `material.json` (§10), versioned;
-   default `all()` when absent.
+## 6. M1 — Renderer-instance audit + device-scoping (DO THIS FIRST, GATED)
 
-> ⚠️ Steps 1–3 touch `awsm-materials` + `awsm-renderer` and move GPU material
-> baselines (memory "Materials overhaul verification": tuning-50-materials
-> checksum). Run the GPU verification loop after M7 and re-baseline intentionally
-> if outputs shift — do not let the loop silently absorb a regression.
+The prototype's live preview needs a second renderer; v1 proved two same-thread
+`AwsmRenderer`s throw cross-device `GPUValidationError`s because renderer-core
+caches device-bound GPU objects in process-global `thread_local!`s.
 
-### 7.4 UI (Material-mode Definition rail)
-Add a **"Pass Dependencies"** collapsible `Section` to `DefinitionPanel`
-(`material-mode.jsx:133`), with Surface / Uniforms / Textures / Buffers. Two chip
-groups: **Shader includes** (one chip per `ShaderIncludes` flag) and **Fragment
-inputs** (one per `FragmentInputs` flag).
-- Toggling a chip updates the declared set in `EditState`; recompile re-registers
-  (debounced, like WGSL edits).
-- Render the **resolved closure** distinctly: author-picked flags active; flags
-  pulled in by `resolve()` shown derived/locked with a "required by X" tooltip.
-  Drive this from the real `ShaderIncludes` API (call `resolve`/`direct_deps`) —
-  do not reimplement the closure.
-- Short banner explaining skinny materials ("Declare only what your WGSL uses;
-  declaring less = a leaner pipeline").
-- "Auto-detect from WGSL" is **out of scope** — declaration is authoritative.
+### 6.1 The offending surface (audit these)
+Device-bound GPU resources cached in `thread_local!` (re-used across devices →
+the bug):
+- `renderer-core/src/texture/blit.rs` — `BlitPipeline` HashMap cache
+- `renderer-core/src/brdf_lut/generate.rs` — `BRDF_LUT_PIPELINE` + sampler
+- `renderer-core/src/texture/mipmap.rs` — `MipmapPipeline` HashMap cache
+- `renderer-core/src/texture/mega_texture/pipeline.rs` — `AtlasPipeline` + shader
+- `renderer-core/src/texture/mega_texture/mipmap.rs` — `MipmapPipeline` cache
+- `renderer-core/src/texture/mega_texture/writer.rs` — staging `GpuBuffer`
+- `renderer-core/src/texture/convert_srgb.rs` — `ConvertSrgbPipeline` cache
 
-## 8. Scene mode (faithful to prototype + INVENTORY)
+**Not GPU resources (device-agnostic constants — leave):** the many
+`LazyLock<TextureUsage>` / `LazyLock<BufferUsage>` (bitflags), `debug.rs` label
+maps, `workers/entry.rs` dispatch registry, meta `LazyLock<BufferUsage>`,
+`renderer.rs` `CompatibilityRequirements`. Audit `scheduler.rs`'s
+`Option<HashSet>` + `edge_buffers.rs` `Mutex<bool>` init-once flags (likely
+log-once guards — confirm they don't gate per-renderer GPU state).
 
-Three columns + collapsible bottom drawer; a 2-row ribbon above.
+### 6.2 The refactor
+Re-scope each device-bound cache from a single global to **per-device** (key the
+cache by a device identity, or move the cache onto the renderer/device wrapper so
+each `AwsmRenderer` owns its own). GPU resources are inherently device-bound, so
+the resource must be per-device; only its *creation cost* matters.
 
-### 8.1 Ribbon: `Insert | Object | Environment | Camera` + Assets toggle
-(`ribbon-rows.jsx`, `header/*`). "Editor" tab removed (→ Settings drawer §9).
-- **Insert:** Empty · Model… (.glb/.gltf) · Light… (Directional/Point/Spot) ·
-  Collision… (Box/Sphere/Capsule/Cylinder/Cone/Ellipsoid) · Camera · Primitive…
+### 6.3 The perf gate (the user's explicit condition)
+**Audit + measure before committing.** BRDF-LUT integration is the one
+expensive-to-create resource (a compute pass); per-device means one extra
+generation per renderer instance — a creation-time cost, not per-frame. Confirm:
+(a) no per-frame hot-path cost is introduced; (b) per-instance startup cost is
+acceptable for a handful of renderers; (c) the existing single-renderer path's
+GPU output is **bit-identical** (run the GPU verification loop + materials
+baselines — memory "materials-overhaul-verification"). If any of these regress,
+**do not ship the refactor** — take §6.4 instead, and record the finding.
+
+### 6.4 Fallback (if the audit says no)
+Single renderer: in Material mode, render a dedicated preview scene (the chosen
+preview mesh + edited material + env) to a preview canvas driven by the one scene
+renderer (swap what it draws by mode), instead of a second instance. Less
+general (no multi-renderer games yet) but no renderer-core churn.
+
+---
+
+## 7. Scene mode (100% prototype fidelity)
+
+### 7.1 Top bar (`app.jsx`)
+Brand mark · **Scene/Material** `Segmented` · ⚙ Settings · ⌘K search button ·
+spacer · project label (dirty dot · name · `unsaved`) · New/Save/Load/Undo/Redo
+icon buttons · ⋯ overflow (red dot when missing assets). Compact, NOT the old
+full-width tabs.
+
+### 7.2 Ribbon (`ribbon-rows.jsx`) — 2 rows
+Tab strip **Insert | Object | Environment | Camera** + Assets toggle, then the
+active tab's action row:
+- **Insert:** Empty · Model… (.glb/.gltf) · Light… (Dir/Point/Spot) · Collision…
+  (Box/Sphere/Capsule/Cylinder/Cone/Ellipsoid) · Camera · Primitive…
   (Plane/Box/Sphere/Cylinder/Cone/Torus) · Curve… (Curve/Sweep/Instances) ·
-  Visual… (Line/Sprite/Particle Emitter/Decal/Shared Mesh) · + Material Asset.
+  Visual… (Line/Sprite/Particle/Decal/Shared Mesh) · + Material Asset. **All
+  wired to real `actions::insert::*` (full parity).**
 - **Object:** Duplicate · Split (model >1 prim) · Deselect · Delete — disabled
   w/o selection.
-- **Environment:** Skybox… · IBL… · Shadows… (modals).
-- **Camera:** Reset View · Projection · View (Free Fly + authored cameras).
-- **Assets** toggle opens the Content Browser (§9). Wire to real `actions::*`.
+- **Environment:** Skybox… · IBL… · Shadows… (modals; real env wiring).
+- **Camera:** Reset View · Projection · View (Free-Fly + authored cameras).
 
-### 8.2 Left — Outliner (`tree/`, `scene-mode.jsx`)
-Kind icon · name · visibility eye · lock; group collapse; single + **multi-select**
-(ctrl/cmd toggle, shift extends, primary = last); **drag-to-reparent**;
-**drag-to-assign** (drop material card on a row); right-click context menu
-(Rename/Duplicate/Lock/Hide/Mark prefab/Delete); **empty state**; missing-asset
-red glyph; prefab "PF" tag; locked rows refuse select/drag but accept drop +
-context menu.
+### 7.3 Outliner (`scene-mode.jsx`)
+Tree (kind icon · name · eye · lock) · group collapse · single+multi-select
+(ctrl/cmd, shift-range, primary=last) · drag-reparent · drag-assign (material
+card → row) · right-click context menu (Rename/Duplicate/Lock/Hide/Mark
+prefab/Delete) · empty state · missing-asset red glyph · prefab PF tag · locked
+rows refuse select/drag but accept drop + context menu. Header: kicker title +
+add(+). Filter input.
 
-### 8.3 Center — Viewport (`canvas.rs`, `viewport.jsx`)
-Real WebGPU canvas + overlay chrome: transform-tool palette
-(Select/Move/Rotate/Scale + tooltips/shortcuts), nav cube, shading toggles,
-readout chips (object · tris; projection · focal length). Accepts material drops.
+### 7.4 Viewport + overlay chrome (`viewport.jsx`)
+The **real WebGPU canvas** + overlays: transform-tool palette (Select/Move/
+Rotate/Scale · Q/W/E/R · tooltips), `ViewAxis` nav cube (top-right), shading-mode
+toggles (Solid/Material/Wire → real renderer debug modes where available),
+readout chips (object · tris; projection · focal length). Grid + gizmo gated by
+settings; accepts material drops ("Assign to …"). Amber selection bounds.
 
-### 8.4 Right — Inspector (`properties/`, `kind-editors.jsx`)
-Priority: selected asset > node selection. 0 → hint; 1 node → name, prefab
-toggle, Transform (TRS, Euler/Quat, reset) + kind editor + material block +
-shadows; **2+ → batch panel**. Content-browser asset selected → Asset inspector
-with "‹ Properties" return. **Material block** is the entry to Material mode
-(assigned material + quick params + **Edit**); first-party PBR params edited here
-(decision #3).
+### 7.5 Inspector (`kind-editors.jsx`) — priority: asset > node
+- 0 → "Nothing selected" hint.
+- 1 node → name · prefab toggle · **Transform** (TRS, Euler/Quat segmented,
+  reset) · **kind editor** (Light/Camera/Model/Group/Empty / mesh = Geometry
+  shape-switcher+params, **Material block**, Shadows). The Material block is the
+  single place to edit the assigned material's params (decision 3) and is
+  **kind-aware**: a **built-in** material shows its first-party params (PBR →
+  base color/metallic/roughness/extras; Unlit → base color; Toon/Flipbook → their
+  params), stored inline per-mesh; a **custom** material shows its declared
+  uniforms as per-instance overrides + an **Edit→Material** link (WGSL + definition
+  edited in the Studio, not here). The `Assigned` select switches between the
+  built-in families and the custom material assets.
+- 2+ → batch panel (N selected · Duplicate/Deselect/Delete).
+- asset selected (content browser) → `AssetInspector` with a "‹ Properties"
+  return.
 
-## 9. Cross-cutting chrome
+---
 
-- **Top bar** (`app.jsx`): Brand · `Scene/Material` segmented · ⚙ Settings · ⌘K
-  search · project label (dirty dot/name/unsaved) · New/Save/Undo/Redo · ⋯
-  overflow (red dot when missing assets). Wire to `actions::project`/`history`.
-- **Command palette ⌘K** (`extras.jsx`): fuzzy — switch mode, open Settings,
-  toggle Content Browser, insert any kind, select any object, open any material.
-  ↑↓/↵, Esc.
-- **Settings drawer** (`settings-overflow.jsx`): replaces "Editor" tab. Viewport
-  (Grid/Gizmo/MSAA/Heatmap) + Display (units/accent/density); Grid/Gizmo also as
-  viewport overlay toggles.
-- **Content Browser** (`content-browser.jsx`): collapsible bottom drawer. Tabs
-  (All/Materials/Textures/Meshes + counts), search, add buttons, thumbnail grid.
-  Cards draggable (assign) + double-click material → Material mode.
-- **Overflow ⋯:** Scene stats · Missing assets (N) · Clean unused (N) · About ·
-  Clear All. **Toasts** for action feedback.
+## 8. Material mode (100% fidelity — the Studio)
 
-## 10. Material mode (custom WGSL only — decision #3)
+Layout composer (`material-shell.jsx`): grid **Library (222) · Definition (244) ·
+main**, with a Material ribbon (layout switch Studio/Code/Split · Format · bucket
+meter `N/MAX_BUCKET_ENTRIES` · **Assign** split-button · **Register/Update**).
+Breadcrumb `‹ Scene ▸ {obj} ▸ {mat}` when entered from a node.
 
-Library · Definition rail · main (preview + code), Studio/Code/Split layout
-switch (`material-mode.jsx`, `material-shell.jsx`). Backed by `material-editor`'s
-`EditState` + `recompile` + `host`.
-- **Library** (`MaterialLibrary`): custom-material list, ready/draft/error badges,
-  "on {selected object}" marker, New material.
-- **Definition rail** (`DefinitionPanel`): Surface (alpha Opaque/Mask/Blend +
-  Cutoff, Double-sided, Base color) · **Pass Dependencies (NEW §7.4)** ·
-  Uniforms · Textures · Buffers, each slot with its DEBUG preview-value editor +
-  the "debug values drive preview only" banner.
-- **Preview** (`preview.rs`): shaded ball + mesh switcher + env presets; error
-  overlay on WGSL failure.
-- **Code** (`wgsl_editor.rs` / `code-editor.jsx`): `shader.wgsl` editor +
-  highlight + Problems strip + slide-out **Material Contract** drawer.
-- **Material ribbon**: layout switch · Format · **bucket meter**
-  (`bucketsUsed / MAX_BUCKET_ENTRIES`) · **Assign** split-button (quick + chevron
-  → filterable mesh list) · **Register/Update** (transactional; "Can't register"
-  on errors).
+- **Library** (`MaterialLibrary`): custom-material list · ready/draft/error
+  badges · "on {selected obj}" marker · New material. (Custom-WGSL-only, decision 3.)
+- **Definition** (`DefinitionPanel`): alpha Opaque/Mask/Blend (+Cutoff) ·
+  Double-sided · Base color · the "DEBUG values drive preview only" banner ·
+  **Pass Dependencies** (the M7-backed `ShaderIncludes`/`FragmentInputs` chips,
+  closure-aware via `resolve()`) · Uniforms/Textures/Buffers slot editors w/
+  DEBUG value editors.
+- **Preview** (`material-preview.jsx`): the **real rendered material** on a mesh
+  (Sphere/Cube/Plane/Cylinder/**Selected object**) in an env preset
+  (Studio/Sky/Void) · compiled/error badge · dim overlay on compile failure ·
+  floating mesh switcher. (Second renderer instance, or §6.4 fallback.)
+- **Code** (`CodePane` + `CodeEditor`): `shader.wgsl` w/ highlight + gutter +
+  error lines · Problems strip · Format · help button → **Material Contract**
+  slide-out (`HelpDrawer`).
+- **Flows:** transactional **Register** (blocked on compile errors → "Can't
+  register"); bucket count = `MAX_BUCKET_ENTRIES`; post-register toast "Assign to
+  {obj}"; drag-to-assign from the content browser; the Assign split-button's
+  chevron opens a filterable mesh list.
 
-**Persistence (decision #5):** FS-Access folders — `material.json` (alpha,
-double-sided, base color, layout, **declared ShaderIncludes/FragmentInputs**) +
-`shader.wgsl`. Reuse FS load/save + `buffer_converter.rs`. `?folder=`/`?material=`
-kept only as a convenience entry param into the unified app.
+---
 
-## 11. Tooling / build / deploy (big-bang)
+## 9. Cross-cutting UI
+Content Browser (`content-browser.jsx`) — Materials tab lists **custom material
+asset cards + the 4 fixed built-in family palette entries** (PBR/Unlit/Toon/
+Flipbook, marked with a distinct outline + family glyph/"built-in" chip; no user
+count); both are drag-/Assign-able to meshes; double-click a *custom* card →
+Material mode (built-ins don't open the Studio). Textures + Meshes tabs as in the
+prototype. · Command Palette (`extras.jsx`, full
+command set — switch mode, settings, toggle browser, insert any kind, select any
+object, open any material) · Settings drawer (`settings-overflow.jsx`: Viewport
+grid/gizmo/MSAA/heatmap + Display units/accent/density) · About/ClearAll/Missing-
+assets modals · Stats bar · Toasts.
 
-1. **New** `taskfiles/frontend/editor.yml` (model on `scene-editor.yml`): `dev`
-   = `trunk serve --port {{.PORT_EDITOR_DEV}}` watching `editor`, `renderer`,
-   `renderer-core`, `scene-schema`, `web-shared`, `materials` (no more
-   `PATH_CRATE_EDITOR`); `build` mirrors scene-editor's prod build (drop
-   `assets/world`, write `404.html`).
-2. **config.yml:** add `PATH_CRATE_MATERIALS`, `PATH_CRATE_EDITOR_FRONTEND`
-   (`frontend/editor`), `PORT_EDITOR_DEV: 9085` (fresh port — avoids clashing
-   with still-present scene-editor `9081`/material-editor `9084` during dev),
-   `URL_DEV_EDITOR`, `URL_PROD_EDITOR` (`…/editor/`). **Remove** `PATH_CRATE_EDITOR`
-   and the scene/material-editor URL+port entries in the final cleanup (M10).
-3. **Taskfile.yml:** add the `editor` include + `editor-dev` aggregate; in M10
-   replace `material-editor`/`scene-editor` includes and aggregate tasks; keep
-   `model-tests`, `media-*`, `lint`, `publish`.
-4. **site-index:** `index.template.html` + `site-index.yml` — replace
-   `URL_SCENE_EDITOR` + `URL_MATERIAL_EDITOR` with one `URL_EDITOR` (dev
-   `http://localhost:9085`, prod `…/editor/`). `site-index` stays the landing
-   page; `editor` + `model-tests` are its entries.
-5. **Cargo.toml workspace:** add `packages/frontend/editor`; in M10 remove
-   `packages/frontend/material-editor`, `packages/frontend/scene-editor`, and
-   `packages/crates/editor` (the last in M1, §5).
-6. **Delete (M10):** `scene-editor`, `material-editor` crates + their taskfiles;
-   grep the repo for `scene-editor`/`material-editor`/`URL_MATERIAL_EDITOR`/
-   `awsm-scene-editor`/`awsm-material-editor`/`awsm-renderer-editor`/
-   `awsm_renderer_editor` and clean stragglers (CI `.github/workflows`, README,
-   docs, deploy scripts).
+---
 
-## 12. Milestones (one branch `editor`, ordered, each ends `task lint`-green)
+## 10. Persistence (TOML project directory) + import
+The project is a **directory** the user picks via the FS Access *directory*
+picker. All manifests are **TOML**; sources + binaries are separate files. Flat
+layout at the project root:
 
-1. **M1 — Scaffold + eliminate `crates/editor`.** Create
-   `packages/frontend/editor` seeded from `scene-editor`; rename package to
-   `awsm-editor` (`publish = false`); add to workspace + a working `editor.yml`
-   (`PORT_EDITOR_DEV: 9085`). Fold `grid`/`transform_controller`/`point_handle`
-   into `web-shared` (§5); re-point `editor` **and** `model-tests` imports; delete
-   `crates/editor`; update workspace/config/taskfile watch lists.
-   **Verify:** `task editor-dev` serves Scene mode at scene-editor parity (old
-   look) on :9085; `task model-tests-dev` still builds/serves; `task lint` green.
-2. **M2 — New design system** in `web-shared` (§4, §7-decision): port
-   `tokens.css` → theme; rewrite atom visuals (stable APIs); add the new atoms
-   (`Segmented`, `Badge`, `Popup`/`MenuItem`, `Section`/`Row`/`PanelHeader`,
-   `Swatch`, `Toggle`, `NumField`, `IconBtn`, …).
-   **Verify:** editor compiles + reflects the new look where atoms are used;
-   screenshot vs prototype.
-3. **M3 — Shell + mode switch.** Top bar, `Scene/Material` segmented, mode router,
-   toasts host, overflow menu, ⌘K skeleton (Scene commands first).
-4. **M4 — Restyle Scene chrome** to the prototype (`01-scene-mode.png`): ribbon
-   (Insert/Object/Env/Camera), outliner (context menu, group collapse,
-   multi-select, drag), inspector layout, Settings drawer.
-5. **M5 — Content Browser** (`04-content-browser.png`): bottom drawer replacing
-   Assets dropdowns; asset inspector + clean return; drag-to-assign;
-   multi-select/batch (`05-multiselect-batch.png`).
-6. **M6 — Fold in Material mode** (`02-material-mode.png`): bring `material-editor`
-   panes in as the Material workspace (Library/Definition/Preview/Code + layout
-   switch + contract drawer + material ribbon + bucket meter); wire the
-   Scene↔Material hand-off (§6.3). FS-Access persistence reused.
-7. **M7 — Pass Dependencies backend** (§7.3): thread declared sets through
-   registration + emit + cache key; default-safe; persist to `material.json`.
-   **Run the GPU verification loop**; reconcile baselines.
-8. **M8 — Pass Dependencies UI** (§7.4): the Definition-rail section, closure-aware
-   chips driven by the real `ShaderIncludes` API.
-9. **M9 — Command palette completeness** (`03-command-palette.png`: open
-   materials, select objects, insert kinds), shortcuts beyond ⌘K, per-state
-   polish across all 5 screenshots.
-10. **M10 — Cutover/cleanup.** Delete `scene-editor` + `material-editor` crates +
-    taskfiles; update `site-index`, `Taskfile.yml`, `config.yml`, workspace
-    members, CI, README; grep stragglers; `task lint` green; final
-    prototype-vs-build diff across all screenshots.
+```
+my-project/                  ← picked directory = the project
+  project.toml               ← scene graph (nodes · transform · kind cfg · per-mesh INLINE built-in
+                                material params · refs to custom materials by id) · env · camera · settings
+  material-<id>.toml          ← per CUSTOM material only: kind · alpha/double-sided/base-color ·
+                                uniform/texture/buffer slots · declared pass-deps · debug values · file refs
+  material-<id>.wgsl          ← per CUSTOM material: the WGSL source
+  assets/
+    textures/<hash>.<ext>    ← png/jpg/ktx, content-hashed (dedup)
+    buffers/<id>.bin         ← buffer-slot data
+    models/<hash>.glb        ← imported glTF
+```
 
-## 13. Decided defaults + definition of done
+- **Built-in** materials are NOT files — their per-mesh params live inline in the
+  mesh's node in `project.toml`. Only **custom** (dynamic-WGSL) materials get a
+  `material-<id>.toml` + `material-<id>.wgsl` (they're the reusable shared assets).
+- **Load is source-abstracted** (`ProjectSource`, §5.5): from a picked **directory
+  handle** (FS Access, gesture) OR from a **base URL** (`fetch` `project.toml` +
+  referenced files, gesture-free — for the MCP/external path + headless tests).
+  Both build the same in-memory project. Save = write the directory tree (handle).
+  `toml` + serde (wasm-OK). Replaces FS-Access material folders; no single-file `.awsm`.
+- **glTF import** (full parity), also source-abstracted (`AssetSource`): Insert
+  Model… from a **file** (picker) OR from a **URL** (`fetch`, gesture-free). Real
+  `actions::insert::model` + the gltf bridge; the .glb is content-hashed into
+  `assets/models/`. (Imported glTF materials map to inline built-ins, §13.)
+- The renderer/model-tests `scene-schema` `project.json` path is **untouched**
+  (the editor's TOML project is its own format; reuse `scene-schema`/`awsm-materials`
+  *types* where they already model the renderer contract — e.g. dynamic-material
+  definitions — serialized to TOML).
 
-Resolved (no need to ask): two lazy renderer contexts (§6.2); pass-deps default
-to `all()` with opt-in narrowing (§7.3.4); editor dev port `9085` (§11.2);
-`material.json` versioned, default `all()` when the declared sets are absent;
-gizmo/grid fold target = `web-shared` (§5.2); design system rewritten in
-`web-shared`, `model-tests` untouched (§4).
+---
 
-**Out of scope for v1** (flesh out later from existing `_src`/`kind_editor`):
-deep particle/sweep/decal editors, "Format", full per-action undo/redo,
-auto-detect of pass-deps from WGSL.
+## 11. Tooling / cutover
+- **M0:** `git mv packages/frontend/editor packages/frontend/bad-editor-whoopsie`;
+  remove from `Cargo.toml` members + delete its taskfile include + remove from
+  site-index/CI; create a fresh `packages/frontend/editor` (`awsm-editor`,
+  `publish=false`) with the new `index.html` (JetBrains Mono + graphite boot) +
+  `editor.yml` (dev `:9085`). `bad-editor-whoopsie` is NOT in the workspace (won't
+  compile) — pure reference.
+- Editor dev port stays **9085**; reference on **9090**. site-index + pages.yml
+  already point at `editor/` (kept from v1 cutover).
 
-**Definition of done:**
-- `packages/crates/editor`, `packages/frontend/scene-editor`,
-  `packages/frontend/material-editor` are deleted; no workspace/taskfile/CI/
-  README reference survives.
-- `task editor-dev` serves a unified editor on :9085 with both modes; it matches
-  the prototype across `01`–`05` (verified via Chrome MCP tab diff).
-- Custom materials carry author-declared `ShaderIncludes`/`FragmentInputs`,
-  honored by the renderer (not `all()`), persisted in `material.json`; GPU
-  verification reconciled.
-- `task lint` green; `model-tests` still builds + serves.
+---
 
-## 14. Reference index
+## 12. Milestones (each ends `task lint`-green + verified tab-to-tab in real Chrome)
 
-`~/Downloads/editor-reference/` — **visual reference only, do not port JSX:**
-- `app.jsx` — shell/behavior map (state, flows, toasts, register/assign).
-- `scene-mode.jsx`, `kind-editors.jsx`, `ribbon-rows.jsx` — Scene mode.
-- `material-mode.jsx` (DefinitionPanel — home of the NEW deps section),
-  `material-shell.jsx` (code pane + contract drawer + layout composer),
-  `material-preview.jsx`.
-- `content-browser.jsx`, `settings-overflow.jsx`, `extras.jsx` (⌘K),
-  `code-editor.jsx`, `viewport.jsx`.
-- `data.jsx` — mock data model (mirror shape onto the real schema, not 1:1).
-- **`tokens.css` — the source of truth for the new design system (§4, §7); port
-  it into `web-shared` theme.**
-- `ui.jsx` / `ui-extra.jsx` — the atom set to recreate in `web-shared` (§4).
-- `handoff_screenshots/01–05` — Scene, Material, ⌘K, Content Browser,
-  Multiselect/batch.
-- **Ignore** `tweaks-panel.jsx` (the prototype's own dev-tweak harness) and the
-  `_src/` bundle (our *old* source; this repo is canonical).
+- **M0 — MCP sanity-check + archive + scaffold.** FIRST: serve the reference
+  (`http-server --cors --index -p 9090`) and confirm the Claude-in-Chrome MCP can
+  navigate a real tab to `:9090`, screenshot it, and read its console (the §0 hard gate;
+  stop if it can't). Then move old editor → `bad-editor-whoopsie` (out of
+  workspace); create a fresh empty `editor` crate that boots, mounts the
+  design-system stylesheet, and shows an empty app shell on `:9085` — verified in
+  a second real-Chrome MCP tab.
+- **M1 — Renderer-instance audit + device-scoping (GATED, §6).** Audit, refactor
+  renderer-core caches per-device, measure perf + GPU baselines. **Decide:**
+  ship multi-instance, or fall back (§6.4). Record the result.
+- **M2 — web-shared design system.** Build the full atom/molecule set (§5.2) from
+  `ui.jsx`/`ui-extra.jsx`, verified against the prototype.
+- **M3 — App shell + EditorController foundation + top bar + mode router.**
+  Establish the `EditorController` singleton + `EditorCommand` (invertible) +
+  `EditorQuery`/`snapshot()` + the command-based undo/redo log **before any
+  panel**, so every later panel follows the dispatch pattern. Brand · Scene/
+  Material segmented · settings/⌘K buttons · project label · actions · overflow ·
+  toasts host — each wired as a dispatched command. Wire the real scene renderer +
+  canvas. **Cross-cutting rule for M4–M12: every mutation is an `EditorCommand`
+  through the controller; UI never mutates editor state directly; undo/redo comes
+  for free from the command log.**
+- **M4 — Scene ribbon + Insert (full parity).** All Insert/Object/Environment/
+  Camera rows wired to real `actions::*`.
+- **M5 — Outliner.** Tree + multi-select + drag-reparent + context menu + empty
+  state, bound to the real scene model.
+- **M6 — Viewport + overlay chrome.** Real canvas + transform tools + nav cube +
+  shading toggles + readout chips + gizmo + picking + drag-assign.
+- **M7 — Inspector (kind editors, full parity).** Transform + every kind editor +
+  Material block + Shadows, prototype-faithful, no material internals on meshes.
+- **M8 — Content Browser + Asset Inspector.**
+- **M9 — Material mode: Studio layout + Library + Definition + Code + Contract.**
+  Custom-WGSL authoring + recompile/register into a renderer (single renderer,
+  no preview yet).
+- **M10 — Material preview** (second renderer instance from M1, or §6.4 fallback):
+  mesh switcher + env presets + error overlay. Plus Pass Dependencies chips (M7
+  backend reused) + Register/Assign/breadcrumb flow.
+- **M11 — TOML-project persistence + glTF import + Settings/modals/cmd-palette/stats.**
+  Save/Load (directory handle) **and gesture-free `LoadProjectFromUrl` +
+  `ImportModel/TextureFromUrl`** (source-abstracted, §5.5) — exercise the URL path
+  by serving a test project from a second `http-server` and loading it. New, Clear
+  All, missing-assets, About, full ⌘K.
+- **M12 — Polish + parity sweep + DONE.** Pixel-match all 5 screenshots
+  tab-to-tab in real Chrome; finish the deeper Insert kinds (curves/sweep/
+  instances/particles/decals/colliders/line/sprite) to **real runtime parity**;
+  final GPU verification; `task lint` green; confirm §14 Definition of Done in
+  full. **Then, and only then, output the literal final line `FINISHED!!! WOOHOOO!!!`.**
+
+---
+
+## 13. Decided defaults + open items
+
+Decided (no need to ask): live-preview = 2nd renderer pending the M1 audit, else
+§6.4 fallback; inspector follows the prototype IA with live primitive
+regeneration; viewport overlay chrome built in full (wire real, stub the purely-
+visual like the nav cube's live orientation + exact tri counts); env presets are
+real lit environments (gradient/IBL + a key light); "Selected object" preview
+renders the material on a copy of the current selection; web-shared hosts the
+shared atoms, editor hosts composites; the project is a TOML directory (§10) replacing material folders.
+
+**Driver's calls (decided — implement these, don't ask):**
+- **TOML schema:** a fresh `editor::engine::project` model serialized with
+  `toml`+serde; reuse `awsm-materials`/`scene-schema` *types* where they already
+  model the renderer contract (dynamic-material definition, declared pass-deps).
+- **Deeper Insert kinds = real parity, not appear-only.** Decision #2 is full
+  functional parity, so curves/sweep/instances/particles/decals/colliders/line/
+  sprite must actually work (wired to the real engine), finished in M12. They may
+  land incrementally *within* M12, but M12 isn't done until they're functional.
+- **glTF → built-in mapping:** an imported glTF material becomes an **inline
+  built-in** material on its mesh — glTF metallic-roughness PBR → PBR built-in
+  (base-color factor/texture, metallic, roughness, normal/emissive/occlusion);
+  `KHR_materials_unlit` → Unlit built-in. (Imported models never auto-create
+  custom-WGSL assets.)
+- **Env presets (real lighting via the renderer):** Studio = neutral
+  studio IBL/gradient + a key light; Sky = sky-gradient skybox + a sun light;
+  Void = near-black + a subtle rim light. Reuse the real env/IBL/skybox path.
+- **Built-in card treatment:** the family's-accent outline + a small mono
+  `BUILT-IN` chip + the family glyph (instead of a custom-material swatch); no
+  user-count; double-click is a no-op (doesn't open the Studio).
+
+---
+
+## 14. Definition of done
+- `packages/frontend/editor` is a **from-scratch** crate matching the prototype
+  across screenshots 01–05 (verified tab-to-tab in real Chrome); `bad-editor-
+  whoopsie` is archived out of the workspace.
+- Scene mode at **full parity** with the old editor's functionality; Material mode
+  is the **Studio** layout with a **live preview**, custom-WGSL authoring, and the
+  closure-aware **Pass Dependencies** UI (M7 backend).
+- Multiple renderer instances work (or the documented single-renderer fallback is
+  in place, with the audit result recorded).
+- Projects save/load as a **TOML directory** (`project.toml` + `material-<id>.{toml,wgsl}`
+  + on-disk `assets/`); load + asset/glTF import work **both** from an FS directory
+  handle (picker) **and gesture-free from a URL** (`LoadProjectFromUrl` /
+  `ImportModel/TextureFromUrl`, §5.5) — verified by loading a served test project.
+  Built-in materials (PBR/Unlit/Toon/Flipbook) are assignable from the Content
+  Browser; only custom materials open in the Studio.
+- Every editor mutation is a serializable `EditorCommand` dispatched through the
+  `EditorController`; undo/redo is the command log; a serializable `snapshot()`/
+  query surface exists. (No MCP/websocket transport yet — only the documented
+  seam.) UI never mutates editor state directly.
+- Every Scene-mode panel + Material-mode Studio + content browser + ⌘K + settings
+  was **verified in real Chrome via the MCP** (not the internal preview), diffed
+  against the reference until matching.
+- `task lint` green; GPU verification reconciled; `model-tests` still builds.
+- **When all of the above holds, output the literal line `FINISHED!!! WOOHOOO!!!`**
+  as the final message (and not before).
 ```
 

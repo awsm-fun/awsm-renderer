@@ -1,84 +1,26 @@
 [package]
 name = "awsm-editor"
 publish = false  # frontend app, not released to crates.io
-description = "Unified scene + material authoring tool for awsm-renderer."
+description = "Unified scene + material authoring tool for awsm-renderer (v2 rebuild)."
 edition.workspace = true
 version.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 
+# v2 blank-slate rebuild. Dependencies are added back milestone-by-milestone as
+# each feature pulls the engine in deliberately (see docs/plans/editor-rewrite.md
+# §1). M0 only needs the design-system + dominator to mount an empty shell; the
+# renderer / materials / gltf / fs deps return in M1–M3. The archived
+# `bad-editor-whoopsie` crate (out of the workspace) carries the full set as a
+# code reference.
 [dependencies]
-awsm-curves = { workspace = true, features = ["serde"] }
-awsm-meshgen = { workspace = true, features = ["serde"] }
-awsm-materials = { workspace = true }
-awsm-particles = { workspace = true, features = ["serde"] }
-awsm-renderer = { workspace = true, features = ["ktx", "serde"] }
-awsm-renderer-core = { workspace = true }
-awsm-renderer-gltf = { workspace = true }
-awsm-scene-schema = { workspace = true }
 awsm-web-shared = { workspace = true }
 
 anyhow = { workspace = true }
-glam = { workspace = true, features = ["serde"] }
-serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
-thiserror = { workspace = true }
 tracing = { workspace = true }
-uuid = { version = "1.11.0", features = ["v4", "serde", "js"] }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
-js-sys = { workspace = true }
-futures = { workspace = true }
-indexmap = { workspace = true }
 
-# Frontend-only — not in the awsm workspace deps, mirror what
-# `model-tests` and `web-shared` pull directly.
-bitcode = { version = "0.6.9", features = ["serde", "uuid"] }
 dominator = "0.5.38"
 futures-signals = "0.3.34"
-gloo-events = "0.2.0"
-gloo-net = { version = "0.6.0", features = ["http"] }
-gloo-render = "0.2.0"
-gloo-timers = { version = "0.3.0", features = ["futures"] }
-serde-wasm-bindgen = "0.6.5"
-xutex = "0.2.1"
-# Content-hashing for asset dedup + collision-free on-disk paths.
-# Asset bytes (glb, raster images) get SHA-256'd at upload time; the
-# hash is what addresses the file on disk under `assets/<hash>.<ext>`.
-sha2 = "0.10.8"
-awsm_web = { version = "0.45.0", default-features = false, features = ["dom", "file"] }
-# Raster decode for gltf-extracted textures. The workspace dep only
-# enables `png`; add `jpeg` here because glTF embedded textures often
-# arrive as JPEG. No-default-features keeps the binary lean.
-image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
-# Parse glTF documents at editor-import time to extract material
-# parameters + image bytes into editable asset entries. The renderer's
-# own gltf path (awsm-renderer-gltf) still does the renderer-side
-# populate; this is a second, editor-side pass that produces
-# MaterialDef + TextureDef::Raster assets bound to the same gltf.
-gltf = { workspace = true }
-
-# web-sys features additive on top of the awsm workspace baseline.
-# These cover what the editor uses beyond the renderer/web-shared set:
-# the FS Access API (DirectoryPicker + FileSystem* handles), keyboard
-# events, and 2D canvas overlay used by the gizmo / collider wireframe
-# layers.
-[dependencies.web-sys]
-workspace = true
-features = [
-    "CanvasRenderingContext2d",
-    "DirectoryPickerOptions",
-    "FileSystemHandle",
-    "FileSystemHandleKind",
-    "FileSystemPermissionMode",
-    "FileSystemHandlePermissionDescriptor",
-    "FileSystemDirectoryHandle",
-    "FileSystemFileHandle",
-    "FileSystemWritableFileStream",
-    "FileSystemGetDirectoryOptions",
-    "FileSystemGetFileOptions",
-    "FileSystemRemoveOptions",
-    "FileSystemCreateWritableOptions",
-    "KeyboardEvent",
-]
