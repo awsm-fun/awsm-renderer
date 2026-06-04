@@ -1065,6 +1065,14 @@ fn material_picker(node: &Arc<Node>) -> Dom {
 /// (inline)" plus each custom (Studio) material. Dispatches `AssignMaterial`
 /// (id-keyed). Returns `None` when there are no custom materials and none is
 /// assigned (nothing to pick).
+fn dispatch_assign(node: NodeId, material: Option<AssetId>) {
+    spawn_local(async move {
+        let _ = controller()
+            .dispatch(EditorCommand::AssignMaterial { node, material })
+            .await;
+    });
+}
+
 fn build_material_select(node: &Arc<Node>) -> Option<Dom> {
     let ctrl = controller();
     let mats: Vec<(AssetId, String)> = ctrl
@@ -1083,38 +1091,55 @@ fn build_material_select(node: &Arc<Node>) -> Option<Dom> {
     if mats.is_empty() && current.is_none() {
         return None;
     }
-    // Stable sentinel for the unassigned "Built-in (inline)" option — `AssetId`
-    // has no stable nil (its `Default` mints a fresh random UUID), so we key the
-    // dropdown options with a fixed string instead.
-    const NONE: &str = "__none__";
-    let mut options: Vec<(String, String)> = vec![(NONE.to_string(), "Built-in (inline)".into())];
-    options.extend(mats.iter().map(|(id, name)| (id.to_string(), name.clone())));
-    let sel = Mutable::new(
-        current
-            .map(|id| id.to_string())
-            .unwrap_or_else(|| NONE.to_string()),
-    );
-    let lookup: Vec<(String, AssetId)> = mats.iter().map(|(id, _)| (id.to_string(), *id)).collect();
+    // A DropButton whose items dispatch `AssignMaterial` directly on click —
+    // robust against the reactive rebuild (no Mutable-observer race). The button
+    // label reflects the current assignment; the inspector rebuilds on assign.
+    let current_label = match current {
+        None => "Built-in (inline)".to_string(),
+        Some(id) => mats
+            .iter()
+            .find(|(mid, _)| *mid == id)
+            .map(|(_, n)| n.clone())
+            .unwrap_or_else(|| "Built-in (inline)".to_string()),
+    };
     let node_id = node.id;
-    spawn_local(clone!(sel => async move {
-        let mut first = true;
-        sel.signal_cloned()
-            .for_each(move |val| {
-                let fire = !first;
-                first = false;
-                let picked = lookup.iter().find(|(s, _)| *s == val).map(|(_, id)| *id);
-                if fire {
-                    spawn_local(async move {
-                        let _ = controller()
-                            .dispatch(EditorCommand::AssignMaterial { node: node_id, material: picked })
-                            .await;
-                    });
+    let items = move |close: Close| -> Vec<Dom> {
+        let mut rows = vec![MenuItem::new("Built-in (inline)")
+            .checked(current.is_none())
+            .on_click({
+                let close = close.clone();
+                move || {
+                    dispatch_assign(node_id, None);
+                    (close.borrow_mut())();
                 }
-                async {}
             })
-            .await;
-    }));
-    Some(row("Material", select(sel, options)))
+            .render()];
+        for (id, name) in mats.iter() {
+            let id = *id;
+            rows.push(
+                MenuItem::new(name.clone())
+                    .checked(current == Some(id))
+                    .on_click({
+                        let close = close.clone();
+                        move || {
+                            dispatch_assign(node_id, Some(id));
+                            (close.borrow_mut())();
+                        }
+                    })
+                    .render(),
+            );
+        }
+        rows
+    };
+    Some(row(
+        "Material",
+        DropButton::new()
+            .label(current_label)
+            .variant(BtnVariant::Ghost)
+            .size(BtnSize::Sm)
+            .items(items)
+            .render(),
+    ))
 }
 
 /// What library material (if any) a mesh has assigned.
