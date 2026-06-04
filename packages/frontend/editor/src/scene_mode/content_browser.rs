@@ -36,6 +36,9 @@ struct Card {
     badge: Option<(String, Tone)>,
     meta: String,
     builtin: bool,
+    /// A custom WGSL material — clicking opens it in the Material-mode Studio
+    /// rather than the Asset Inspector.
+    custom: bool,
 }
 
 pub fn render() -> Dom {
@@ -88,9 +91,11 @@ fn expanded() -> Dom {
             .style("flex", "1")
             .style("overflow-y", "auto")
             .style("padding", "10px")
-            // Rebuild the grid on scene revision (assets added/removed), tab, or query.
+            // Rebuild the grid on scene revision (assets), custom-material list
+            // changes, tab, or query.
             .child_signal(map_ref! {
                 let _rev = controller().scene.revision.signal(),
+                let _cm = controller().custom_materials.signal_vec_cloned().len(),
                 let c = cat.signal(),
                 let q = query.signal_cloned() =>
                 Some(grid(*c, q))
@@ -119,7 +124,11 @@ fn toolbar(cat: Mutable<Cat>, query: Mutable<String>) -> Dom {
         }))
         .child(html!("div", { .style("flex", "1") }))
         .child(Btn::new().label("Material").icon("plus").variant(BtnVariant::Ghost).size(BtnSize::Sm)
-            .on_click(|| dispatch(EditorCommand::AddMaterialAsset { shading: MaterialShading::Pbr })).render())
+            .on_click(|| {
+                // "+ Material" authors a custom WGSL material in the Studio (decision 3).
+                dispatch(EditorCommand::AddCustomMaterial);
+                dispatch(EditorCommand::SwitchMode { mode: EditorMode::Material });
+            }).render())
         .child(DropButton::new().label("Texture").icon("plus").variant(BtnVariant::Ghost).size(BtnSize::Sm)
             .items(|close| {
                 let proc = |kind: ProceduralKind, label: &str, close: &Close| {
@@ -200,6 +209,7 @@ fn grid(cat: Cat, query: &str) -> Dom {
 fn card(c: Card) -> Dom {
     let id = c.id;
     let builtin = c.builtin;
+    let custom = c.custom;
     let kind_label = match c.cat {
         Cat::Material => "material",
         Cat::Texture => "texture",
@@ -259,15 +269,20 @@ fn card(c: Card) -> Dom {
             }))
         }))
         .event(move |_: events::Click| {
-            match id {
-                Some(id) => dispatch(EditorCommand::SetAssetSelection { id: Some(id) }),
+            match (id, custom) {
+                // A custom WGSL material → open it in the Material-mode Studio.
+                (Some(id), true) => {
+                    dispatch(EditorCommand::SetCurrentMaterial { id: Some(id) });
+                    dispatch(EditorCommand::SwitchMode { mode: EditorMode::Material });
+                }
+                // Any other project asset → route the right rail to the inspector.
+                (Some(id), false) => dispatch(EditorCommand::SetAssetSelection { id: Some(id) }),
                 // Built-in family palette: assigning to a mesh lands in M10.
-                None => Toast::info("Drag a built-in family onto a mesh to assign (M10)"),
+                (None, _) => Toast::info("Drag a built-in family onto a mesh to assign (M10)"),
             }
         })
         .event(move |_: events::DoubleClick| {
-            // Double-clicking a custom material opens it in Material mode (M9).
-            if id.is_some() && !builtin {
+            if id.is_some() && custom {
                 dispatch(EditorCommand::SwitchMode { mode: EditorMode::Material });
             }
         })
@@ -302,6 +317,31 @@ fn collect_cards(cat: Cat, query: &str) -> Vec<Card> {
                     badge: Some((fam.to_string(), Tone::Accent)),
                     meta: "built-in family".to_string(),
                     builtin: true,
+                    custom: false,
+                });
+            }
+        }
+    }
+
+    // Custom WGSL materials (decision 3) — shown in All + Materials.
+    if matches!(cat, Cat::All | Cat::Material) {
+        for mat in controller().custom_materials.lock_ref().iter() {
+            let name = mat.name.get_cloned();
+            if matches(&name) {
+                let status = if mat.registered.get() {
+                    "ready"
+                } else {
+                    "draft"
+                };
+                cards.push(Card {
+                    cat: Cat::Material,
+                    id: Some(mat.id),
+                    name,
+                    swatch: mat.color.get_cloned(),
+                    badge: Some(("WGSL".to_string(), Tone::Accent)),
+                    meta: status.to_string(),
+                    builtin: false,
+                    custom: true,
                 });
             }
         }
@@ -323,6 +363,7 @@ fn collect_cards(cat: Cat, query: &str) -> Vec<Card> {
                         badge: Some(shading_badge(def)),
                         meta: material_meta(def),
                         builtin: false,
+                        custom: false,
                     });
                 }
             }
@@ -337,6 +378,7 @@ fn collect_cards(cat: Cat, query: &str) -> Vec<Card> {
                         badge: None,
                         meta,
                         builtin: false,
+                        custom: false,
                     });
                 }
             }
@@ -357,6 +399,7 @@ fn collect_cards(cat: Cat, query: &str) -> Vec<Card> {
                         badge: None,
                         meta: "captured mesh".to_string(),
                         builtin: false,
+                        custom: false,
                     });
                 }
             }
@@ -449,11 +492,9 @@ fn rgb_css(c: [f32; 4]) -> String {
 
 fn total_count_signal() -> impl Signal<Item = String> {
     controller().scene.revision.signal().map(|_| {
-        let n = controller()
-            .scene
-            .assets
-            .lock()
-            .unwrap()
+        let ctrl = controller();
+        let assets = ctrl.scene.assets.lock().unwrap();
+        let n = assets
             .entries
             .values()
             .filter(|e| {
@@ -462,7 +503,8 @@ fn total_count_signal() -> impl Signal<Item = String> {
                     AssetSource::Material(_) | AssetSource::Texture(_) | AssetSource::Mesh(_)
                 )
             })
-            .count();
+            .count()
+            + ctrl.custom_materials.lock_ref().len();
         n.to_string()
     })
 }
@@ -483,9 +525,9 @@ fn cat_count_signal(cat: Cat) -> impl Signal<Item = String> {
                 )
             })
             .count();
-        // The built-in families count toward the Materials tab.
+        // The built-in families + custom WGSL materials count toward Materials.
         if cat == Cat::Material {
-            n += BUILTINS.len();
+            n += BUILTINS.len() + ctrl.custom_materials.lock_ref().len();
         }
         n.to_string()
     })

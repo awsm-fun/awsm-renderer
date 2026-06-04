@@ -382,6 +382,7 @@ impl EditorController {
                 let mat = CM::new(id, format!("New Material {n}"));
                 self.custom_materials.lock_mut().push_cloned(mat);
                 self.current_material.set(Some(id));
+                self.scene.bump_revision();
                 self.dirty.set_neq(true);
                 Ok(None)
             }
@@ -391,6 +392,7 @@ impl EditorController {
                     let next = self.custom_materials.lock_ref().first().map(|m| m.id);
                     self.current_material.set(next);
                 }
+                self.scene.bump_revision();
                 self.dirty.set_neq(true);
                 Ok(None)
             }
