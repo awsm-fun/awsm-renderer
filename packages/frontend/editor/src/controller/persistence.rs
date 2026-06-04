@@ -11,12 +11,71 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use awsm_scene_schema::{CustomMaterialRef, EditorProject};
+use awsm_scene_schema::{CustomMaterialRef, EditorProject, StoredMaterial, StoredSlot};
+use awsm_web_shared::prelude::Mutable;
 
+use super::custom_material::{AlphaMode, CustomMaterial, Slot};
 use super::node_spec::NodeSpec;
 use super::EditorController;
 use crate::engine::scene::node::Node;
 use crate::error::{EditorError, EditorResult};
+
+/// Snapshot a live custom material into its serializable form.
+fn stored_from_material(m: &CustomMaterial) -> StoredMaterial {
+    let slot = |s: &Slot| StoredSlot {
+        name: s.name.clone(),
+        ty: s.ty.clone(),
+        val: s.val.clone(),
+        debug: s.debug.clone(),
+    };
+    StoredMaterial {
+        id: m.id,
+        name: m.name.get_cloned(),
+        builtin: m.builtin.get_cloned(),
+        wgsl: m.wgsl.get_cloned(),
+        alpha: m.alpha.get().key().to_string(),
+        cutoff: m.cutoff.get() as f32,
+        double_sided: m.double_sided.get(),
+        color: m.color.get_cloned(),
+        uniforms: m.uniforms.get_cloned().iter().map(slot).collect(),
+        textures: m.textures.get_cloned().iter().map(slot).collect(),
+        buffers: m.buffers.get_cloned().iter().map(slot).collect(),
+        registered: m.registered.get(),
+        shader_includes: m.shader_includes.get_cloned(),
+        fragment_inputs: m.fragment_inputs.get_cloned(),
+    }
+}
+
+/// Rebuild a live custom material from its serialized form (same id, so scene
+/// nodes' material refs resolve).
+fn material_from_stored(s: &StoredMaterial) -> Arc<CustomMaterial> {
+    let slot = |x: &StoredSlot| Slot {
+        name: x.name.clone(),
+        ty: x.ty.clone(),
+        val: x.val.clone(),
+        debug: x.debug.clone(),
+    };
+    Arc::new(CustomMaterial {
+        id: s.id,
+        name: Mutable::new(s.name.clone()),
+        builtin: Mutable::new(s.builtin.clone()),
+        wgsl: Mutable::new(s.wgsl.clone()),
+        alpha: Mutable::new(AlphaMode::from_key(&s.alpha)),
+        cutoff: Mutable::new(s.cutoff as f64),
+        double_sided: Mutable::new(s.double_sided),
+        color: Mutable::new(if s.color.is_empty() {
+            "#8aa0b8".to_string()
+        } else {
+            s.color.clone()
+        }),
+        uniforms: Mutable::new(s.uniforms.iter().map(slot).collect()),
+        textures: Mutable::new(s.textures.iter().map(slot).collect()),
+        buffers: Mutable::new(s.buffers.iter().map(slot).collect()),
+        registered: Mutable::new(s.registered),
+        shader_includes: Mutable::new(s.shader_includes.clone()),
+        fragment_inputs: Mutable::new(s.fragment_inputs.clone()),
+    })
+}
 
 /// Build the serializable project from the live editor state.
 pub fn to_editor_project(ctrl: &EditorController) -> EditorProject {
@@ -42,12 +101,20 @@ pub fn to_editor_project(ctrl: &EditorController) -> EditorProject {
         })
         .collect();
 
+    let editor_materials = ctrl
+        .custom_materials
+        .lock_ref()
+        .iter()
+        .map(|m| stored_from_material(m))
+        .collect();
+
     EditorProject {
         name: ctrl.project_name.get_cloned(),
         environment: ctrl.scene.environment.get_cloned(),
         shadows: ctrl.scene.shadows.get_cloned(),
         assets: ctrl.scene.assets.lock().unwrap().clone(),
         custom_materials,
+        editor_materials,
         nodes,
     }
 }
@@ -90,6 +157,26 @@ pub fn apply_project(ctrl: &EditorController, project: EditorProject) {
         ctrl.project_name.set(project.name);
     }
 
+    // Restore the custom-material library FIRST (built-in variant defs + dynamic
+    // WGSL), keyed by stable id, so the nodes that reference them resolve when
+    // they materialize below. Re-arm each material's lifecycle: dynamics compile
+    // (auto-register); built-ins re-sync assigned meshes on later variant edits.
+    let mats: Vec<Arc<CustomMaterial>> = project
+        .editor_materials
+        .iter()
+        .map(material_from_stored)
+        .collect();
+    ctrl.custom_materials
+        .lock_mut()
+        .replace_cloned(mats.clone());
+    for m in mats {
+        if m.is_builtin() {
+            super::spawn_builtin_resync(m);
+        } else {
+            super::spawn_auto_register(m);
+        }
+    }
+
     let new_nodes: Vec<Arc<Node>> = project
         .nodes
         .iter()
@@ -98,9 +185,6 @@ pub fn apply_project(ctrl: &EditorController, project: EditorProject) {
     ctrl.scene.nodes.lock_mut().replace_cloned(new_nodes);
     ctrl.selected.set(Vec::new());
     ctrl.scene.bump_revision();
-    // NOTE: custom-material *bodies* live in their side files; loading those back
-    // into `custom_materials` (so they reappear in the Studio) is the follow-on —
-    // the scene tree + assets + env round-trip here.
 }
 
 /// Save the project to a picked directory (File System Access): writes

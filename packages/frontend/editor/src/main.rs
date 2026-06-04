@@ -96,6 +96,19 @@ pub fn main() {
                             engine::settings_sync::start();
                             ctx_ready.set(true);
                             awsm_web_shared::util::window::remove_boot_loader();
+                            // Gesture-free project load: `?load=<base_url>` auto-loads
+                            // a project on boot. The scriptable / MCP entry point — the
+                            // gesture-free `LoadProjectFromUrl` otherwise has no trigger.
+                            if let Some(base) = boot_load_url() {
+                                spawn_local(async move {
+                                    if let Err(e) = controller::controller()
+                                        .dispatch(controller::EditorCommand::LoadProjectFromUrl { base_url: base })
+                                        .await
+                                    {
+                                        tracing::error!("?load auto-load failed: {e}");
+                                    }
+                                });
+                            }
                         }
                         Err(err) => {
                             awsm_web_shared::util::window::remove_boot_loader();
@@ -107,6 +120,25 @@ pub fn main() {
             .child_signal(ctx_ready.signal().map(|ready| if ready { Some(app::render()) } else { None }))
         }),
     );
+}
+
+/// Read a `?load=<base_url>` query parameter (URL-decoded) for the gesture-free
+/// boot-time project load. Returns `None` when absent.
+fn boot_load_url() -> Option<String> {
+    let search = web_sys::window()?.location().search().ok()?;
+    let q = search.strip_prefix('?').unwrap_or(&search);
+    for pair in q.split('&') {
+        if let Some(val) = pair.strip_prefix("load=") {
+            let decoded = js_sys::decode_uri_component(val)
+                .ok()
+                .and_then(|v| v.as_string())
+                .unwrap_or_else(|| val.to_string());
+            if !decoded.is_empty() {
+                return Some(decoded);
+            }
+        }
+    }
+    None
 }
 
 /// External-inspection seam (§5.5): a JS-callable export returning the

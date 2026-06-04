@@ -121,6 +121,7 @@ fn empty_project(name: &str) -> EditorProject {
         shadows: ShadowsConfig::default(),
         assets: AssetTable::default(),
         custom_materials: Vec::new(),
+        editor_materials: Vec::new(),
         nodes: Vec::new(),
     }
 }
