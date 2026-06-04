@@ -10,16 +10,16 @@ const ACCENT_FG: &str = "oklch(0.18 0.02 255)";
 pub fn render() -> Dom {
     let ctrl = controller();
 
+    // Overlays the root div (which hosts the live canvas + Modal/Toast). The
+    // Scene viewport slot reparents the canvas into itself.
     html!("div", {
-        .style("height", "100vh")
+        .style("position", "absolute")
+        .style("inset", "0")
         .style("display", "flex")
         .style("flex-direction", "column")
         .style("font-size", "13px")
         .style("background-color", "var(--bg-0)")
         .style("color", "var(--text-0)")
-        // Global overlay hosts.
-        .child(Modal::render())
-        .child(Toast::render())
         .child(top_bar(&ctrl))
         .child(workspace(&ctrl))
     })
@@ -224,14 +224,44 @@ fn overflow_button(ctrl: &EditorController) -> Dom {
 }
 
 fn workspace(ctrl: &EditorController) -> Dom {
+    // Both workspaces stay mounted and are display-toggled by mode, so the
+    // WebGPU canvas (reparented into the Scene viewport slot) is never torn out
+    // of the DOM on a mode switch — the render loop keeps ticking.
     html!("div", {
         .style("flex", "1")
         .style("min-height", "0")
         .style("position", "relative")
-        .child_signal(ctrl.mode.signal().map(|m| Some(match m {
-            EditorMode::Scene => placeholder("Scene workspace", "ribbon · outliner · viewport · inspector land in M4\u{2013}M7"),
-            EditorMode::Material => placeholder("Material workspace", "the Studio lands in M9\u{2013}M10"),
-        })))
+        .child(html!("div", {
+            .style("position", "absolute")
+            .style("inset", "0")
+            .style_signal("display", ctrl.mode.signal().map(|m| if m == EditorMode::Scene { "block" } else { "none" }))
+            // M3: the Scene workspace is the bare viewport. Outliner + inspector
+            // chrome wrap it in M5–M7.
+            .child(viewport_slot())
+        }))
+        .child(html!("div", {
+            .style("position", "absolute")
+            .style("inset", "0")
+            .style_signal("display", ctrl.mode.signal().map(|m| if m == EditorMode::Material { "block" } else { "none" }))
+            .child(placeholder("Material workspace", "the Studio lands in M9\u{2013}M10"))
+        }))
+    })
+}
+
+/// The viewport slot — reparents the live WebGPU canvas (created at boot,
+/// stored in the engine context) into itself once mounted.
+fn viewport_slot() -> Dom {
+    html!("div", {
+        .style("position", "absolute")
+        .style("inset", "0")
+        .style("overflow", "hidden")
+        .after_inserted(|elem| {
+            crate::engine::context::with_canvas(|canvas| {
+                if let Err(err) = elem.append_child(canvas) {
+                    Modal::error(format!("Failed to mount viewport canvas: {err:?}"));
+                }
+            });
+        })
     })
 }
 

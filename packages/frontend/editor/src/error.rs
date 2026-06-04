@@ -14,6 +14,8 @@ pub type EditorResult<T> = Result<T, EditorError>;
 pub enum EditorError {
     #[error("{0}")]
     Msg(String),
+    #[error("AwsmRenderer: {0}")]
+    Awsm(#[from] awsm_renderer::error::AwsmError),
     #[error(transparent)]
     Anyhow(#[from] anyhow::Error),
 }
