@@ -8,7 +8,7 @@ use std::sync::Arc;
 use glam::{EulerRot, Quat};
 
 use crate::engine::scene::mutate::find_by_id;
-use crate::engine::scene::{Node, NodeId, NodeKind, Trs};
+use crate::engine::scene::{LightConfig, Node, NodeId, NodeKind, Trs};
 use crate::prelude::*;
 
 pub fn render() -> Dom {
@@ -109,13 +109,234 @@ fn single_node(node: Arc<Node>) -> Dom {
         }))
         .child(row("Prefab root", toggle(prefab)))
         .child(transform_section(&node))
-        .child(Section::new(kind_label(&node.kind.get_cloned())).dense(true)
+        .child(kind_editor(&node))
+    })
+}
+
+/// Per-kind property editor (the kind-specific Section). M7 wires Light fully;
+/// Geometry/Camera/Material/Shadows extend here.
+fn kind_editor(node: &Arc<Node>) -> Dom {
+    match node.kind.get_cloned() {
+        NodeKind::Light(cfg) => light_editor(node, &cfg),
+        other => Section::new(kind_label(&other))
+            .dense(true)
             .child(html!("div", {
                 .style("font-size", "12px").style("color", "var(--text-3)").style("line-height", "1.5")
-                .text("Per-kind properties (geometry · light · camera · material · shadows) land here.")
+                .text("Properties for this kind land here (geometry · camera · material · shadows).")
             }))
-            .render())
-    })
+            .render(),
+    }
+}
+
+fn light_editor(node: &Arc<Node>, cfg: &LightConfig) -> Dom {
+    let color = light_color(cfg);
+    let intensity = light_intensity(cfg);
+
+    // Color swatch — observe the picker's Mutable + dispatch SetKind on change.
+    let col = Mutable::new(rgb_to_hex(color));
+    spawn_local(clone!(col, node => async move {
+        let mut first = true;
+        col.signal_cloned().for_each(move |hex| {
+            let fire = !first;
+            first = false;
+            clone!(node => async move {
+                if fire {
+                    if let (Some(rgb), Some(cur)) = (hex_to_rgb(&hex), current_light(&node)) {
+                        dispatch_kind(node.id, NodeKind::Light(with_color(cur, rgb)));
+                    }
+                }
+            })
+        }).await;
+    }));
+
+    let n_int = node.clone();
+    let intensity_field = NumField::new(intensity as f64)
+        .min(0.0)
+        .step(0.1)
+        .on_change(move |v| {
+            if let Some(cur) = current_light(&n_int) {
+                dispatch_kind(n_int.id, NodeKind::Light(with_intensity(cur, v as f32)));
+            }
+        })
+        .render();
+
+    let mut sec = Section::new("Light")
+        .child(row("Color", swatch(col, 22.0)))
+        .child(row("Intensity", intensity_field));
+
+    if let Some(range) = light_range(cfg) {
+        let n_r = node.clone();
+        sec = sec.child(row(
+            "Range",
+            NumField::new(range as f64)
+                .min(0.0)
+                .step(0.5)
+                .on_change(move |v| {
+                    if let Some(cur) = current_light(&n_r) {
+                        dispatch_kind(n_r.id, NodeKind::Light(with_range(cur, v as f32)));
+                    }
+                })
+                .render(),
+        ));
+    }
+    sec.render()
+}
+
+fn current_light(node: &Arc<Node>) -> Option<LightConfig> {
+    match node.kind.get_cloned() {
+        NodeKind::Light(cfg) => Some(cfg),
+        _ => None,
+    }
+}
+
+fn light_color(cfg: &LightConfig) -> [f32; 3] {
+    match cfg {
+        LightConfig::Directional { color, .. }
+        | LightConfig::Point { color, .. }
+        | LightConfig::Spot { color, .. } => *color,
+    }
+}
+fn light_intensity(cfg: &LightConfig) -> f32 {
+    match cfg {
+        LightConfig::Directional { intensity, .. }
+        | LightConfig::Point { intensity, .. }
+        | LightConfig::Spot { intensity, .. } => *intensity,
+    }
+}
+fn light_range(cfg: &LightConfig) -> Option<f32> {
+    match cfg {
+        LightConfig::Point { range, .. } | LightConfig::Spot { range, .. } => Some(*range),
+        LightConfig::Directional { .. } => None,
+    }
+}
+fn with_color(cfg: LightConfig, color: [f32; 3]) -> LightConfig {
+    match cfg {
+        LightConfig::Directional {
+            intensity, shadow, ..
+        } => LightConfig::Directional {
+            color,
+            intensity,
+            shadow,
+        },
+        LightConfig::Point {
+            intensity,
+            range,
+            shadow,
+            ..
+        } => LightConfig::Point {
+            color,
+            intensity,
+            range,
+            shadow,
+        },
+        LightConfig::Spot {
+            intensity,
+            range,
+            inner_angle,
+            outer_angle,
+            shadow,
+            ..
+        } => LightConfig::Spot {
+            color,
+            intensity,
+            range,
+            inner_angle,
+            outer_angle,
+            shadow,
+        },
+    }
+}
+fn with_intensity(cfg: LightConfig, intensity: f32) -> LightConfig {
+    match cfg {
+        LightConfig::Directional { color, shadow, .. } => LightConfig::Directional {
+            color,
+            intensity,
+            shadow,
+        },
+        LightConfig::Point {
+            color,
+            range,
+            shadow,
+            ..
+        } => LightConfig::Point {
+            color,
+            intensity,
+            range,
+            shadow,
+        },
+        LightConfig::Spot {
+            color,
+            range,
+            inner_angle,
+            outer_angle,
+            shadow,
+            ..
+        } => LightConfig::Spot {
+            color,
+            intensity,
+            range,
+            inner_angle,
+            outer_angle,
+            shadow,
+        },
+    }
+}
+fn with_range(cfg: LightConfig, range: f32) -> LightConfig {
+    match cfg {
+        LightConfig::Point {
+            color,
+            intensity,
+            shadow,
+            ..
+        } => LightConfig::Point {
+            color,
+            intensity,
+            range,
+            shadow,
+        },
+        LightConfig::Spot {
+            color,
+            intensity,
+            inner_angle,
+            outer_angle,
+            shadow,
+            ..
+        } => LightConfig::Spot {
+            color,
+            intensity,
+            range,
+            inner_angle,
+            outer_angle,
+            shadow,
+        },
+        other => other,
+    }
+}
+
+fn dispatch_kind(id: NodeId, kind: NodeKind) {
+    spawn_local(async move {
+        let _ = controller()
+            .dispatch(EditorCommand::SetKind {
+                id,
+                kind: Box::new(kind),
+            })
+            .await;
+    });
+}
+
+fn rgb_to_hex(c: [f32; 3]) -> String {
+    let b = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    format!("#{:02x}{:02x}{:02x}", b(c[0]), b(c[1]), b(c[2]))
+}
+fn hex_to_rgb(hex: &str) -> Option<[f32; 3]> {
+    let h = hex.trim_start_matches('#');
+    if h.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&h[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&h[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&h[4..6], 16).ok()?;
+    Some([r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0])
 }
 
 fn transform_section(node: &Arc<Node>) -> Dom {

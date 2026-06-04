@@ -121,6 +121,18 @@ impl EditorController {
                 self.selected.set(ids);
                 Ok(None)
             }
+            EditorCommand::SetKind { id, kind } => match mutate::find_by_id(&self.scene, id) {
+                Some(node) => {
+                    let prev = node.kind.get_cloned();
+                    node.kind.set(*kind);
+                    self.scene.bump_revision();
+                    Ok(Some(EditorCommand::SetKind {
+                        id,
+                        kind: Box::new(prev),
+                    }))
+                }
+                None => Ok(None),
+            },
             EditorCommand::SetTransform { id, transform } => {
                 match mutate::find_by_id(&self.scene, id) {
                     Some(node) => {
@@ -358,6 +370,7 @@ fn coalesce_key(cmd: &EditorCommand) -> Option<(u8, NodeId)> {
     match cmd {
         EditorCommand::SetTransform { id, .. } => Some((0, *id)),
         EditorCommand::Rename { id, .. } => Some((1, *id)),
+        EditorCommand::SetKind { id, .. } => Some((2, *id)),
         _ => None,
     }
 }

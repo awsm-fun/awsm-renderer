@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use super::node_spec::{InsertSpec, NodeSpec};
 use crate::engine::scene::types::Trs;
-use crate::engine::scene::NodeId;
+use crate::engine::scene::{NodeId, NodeKind};
 
 /// Top-level workspace mode (the Scene/Material switch in the top bar).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,6 +36,12 @@ pub enum EditorCommand {
     /// — the UI computes single/ctrl-toggle/shift-range and dispatches the
     /// resulting set.
     SetSelection { ids: Vec<NodeId> },
+
+    /// Replace a node's kind config (per-kind property edits — light color/
+    /// intensity, geometry params, camera fov, …). The bridge re-materializes on
+    /// kind change, so geometry/material edits update live. Boxed (NodeKind is
+    /// the largest payload). Inverse: restore the prior kind. Coalesces.
+    SetKind { id: NodeId, kind: Box<NodeKind> },
 
     /// Set a node's local transform (TRS). Inverse: restore the prior transform.
     /// Consecutive `SetTransform`s on the same node coalesce into one undo step
@@ -123,6 +129,7 @@ impl EditorCommand {
             EditorCommand::NewProject => "New project",
             EditorCommand::Insert { .. } | EditorCommand::InsertTree { .. } => "Insert node",
             EditorCommand::Delete { .. } => "Delete node",
+            EditorCommand::SetKind { .. } => "Edit properties",
             EditorCommand::SetTransform { .. } => "Transform",
             EditorCommand::Rename { .. } => "Rename",
             EditorCommand::SetVisible { .. } => "Toggle visibility",
