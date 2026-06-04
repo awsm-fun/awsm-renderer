@@ -91,10 +91,40 @@ pub struct EditorController {
     pub current_material: Mutable<Option<AssetId>>,
     /// Whether the ⌘K command palette is open (view state).
     pub cmdk_open: Mutable<bool>,
+    /// Editor (view-only) settings — viewport toggles, units, etc. Not saved
+    /// into the project file.
+    pub settings: Settings,
+    /// Whether the Settings drawer is open.
+    pub settings_open: Mutable<bool>,
     /// Inverses of applied commands, newest last (the undo log).
     undo: Rc<RefCell<Vec<EditorCommand>>>,
     /// Inverses popped by undo, re-appliable by redo.
     redo: Rc<RefCell<Vec<EditorCommand>>>,
+}
+
+/// Editor view-only settings (viewport toggles + units). Reactive; each field is
+/// a shared `Mutable`. Not persisted into the project file.
+#[derive(Clone)]
+pub struct Settings {
+    pub grid: Mutable<bool>,
+    pub gizmo: Mutable<bool>,
+    pub msaa: Mutable<bool>,
+    pub heatmap: Mutable<bool>,
+    pub snap: Mutable<bool>,
+    pub units: Mutable<String>,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            grid: Mutable::new(true),
+            gizmo: Mutable::new(true),
+            msaa: Mutable::new(true),
+            heatmap: Mutable::new(false),
+            snap: Mutable::new(false),
+            units: Mutable::new("meters".to_string()),
+        }
+    }
 }
 
 impl EditorController {
@@ -114,6 +144,8 @@ impl EditorController {
             custom_materials: MutableVec::new(),
             current_material: Mutable::new(None),
             cmdk_open: Mutable::new(false),
+            settings: Settings::default(),
+            settings_open: Mutable::new(false),
             undo: Rc::new(RefCell::new(Vec::new())),
             redo: Rc::new(RefCell::new(Vec::new())),
         }

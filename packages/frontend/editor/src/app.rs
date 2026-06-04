@@ -31,8 +31,151 @@ pub fn render() -> Dom {
         })
         .child(top_bar(&ctrl))
         .child(workspace(&ctrl))
+        .child(stats_bar())
         .child(crate::command_palette::render())
+        .child_signal(ctrl.settings_open.signal().map(|open| if open { Some(settings_drawer()) } else { None }))
     })
+}
+
+fn settings_drawer() -> Dom {
+    let s = controller().settings.clone();
+    RightDrawer::new("Settings")
+        .icon("settings")
+        .width(344.0)
+        .on_close(|| controller().settings_open.set_neq(false))
+        .child(
+            DrawerSection::new("Viewport")
+                .child(row("Show grid", toggle(s.grid.clone())))
+                .child(row("Show gizmo", toggle(s.gizmo.clone())))
+                .child(row("MSAA", toggle(s.msaa.clone())))
+                .child(row("Light heatmap", toggle(s.heatmap.clone())))
+                .render(),
+        )
+        .child(
+            DrawerSection::new("Units & snapping")
+                .child(row(
+                    "Units",
+                    select(
+                        s.units.clone(),
+                        ["meters", "centimeters", "feet"]
+                            .iter()
+                            .map(|u| (u.to_string(), u.to_string()))
+                            .collect(),
+                    ),
+                ))
+                .child(row("Snap to grid", toggle(s.snap.clone())))
+                .render(),
+        )
+        .child(html!("div", {
+            .style("padding", "16px").style("font-size", "11px").style("color", "var(--text-3)").style("line-height", "1.5")
+            .text("Editor settings affect the viewport and chrome only \u{2014} they are not saved into the project file.")
+        }))
+        .render()
+}
+
+fn open_about() {
+    Modal::open(|| {
+        ModalCard::new("About AwsmRenderer")
+            .width(560.0)
+            .child(html!("div", {
+                .style("display", "flex").style("flex-direction", "column").style("gap", "12px")
+                .style("font-size", "13px").style("color", "var(--text-1)").style("line-height", "1.55")
+                .child(html!("p", { .style("margin", "0").text("A WebGPU scene & material editor that runs entirely in your browser. It needs two Chromium-only features, so it works in Chrome, Edge, Arc, or Brave.") }))
+                .child(html!("div", { .style("display", "flex").style("flex-direction", "column").style("gap", "7px")
+                    .child(html!("div", { .child(html!("strong", { .style("color", "var(--text-0)").text("WebGPU") })).child(html!("span", { .text(" \u{2014} renders the 3D scene. Not yet in stable Firefox or Safari.") })) }))
+                    .child(html!("div", { .child(html!("strong", { .style("color", "var(--text-0)").text("File System Access API") })).child(html!("span", { .text(" \u{2014} Load opens a project directory and Save writes the project back alongside your assets.") })) }))
+                }))
+                .child(html!("p", { .style("margin", "0").text("A project is a directory containing one project.toml plus the asset files it references. Nothing is uploaded.") }))
+            }))
+            .footer(Btn::new().label("Close").variant(BtnVariant::Primary).on_click(Modal::close).render())
+            .render()
+    });
+}
+
+fn open_clear_all() {
+    Modal::open(|| {
+        ModalCard::new("Clear scene?")
+            .width(360.0)
+            .child(html!("p", {
+                .style("margin", "0 0 8px").style("font-size", "13px").style("color", "var(--text-1)").style("line-height", "1.5")
+                .text("This removes every node in the scene. You can undo it.")
+            }))
+            .footer(html!("div", {
+                .style("display", "flex").style("gap", "8px")
+                .child(Btn::new().label("Cancel").variant(BtnVariant::Ghost).on_click(Modal::close).render())
+                .child(Btn::new().label("Clear All").variant(BtnVariant::Primary).on_click(|| {
+                    spawn_local(async {
+                        let ids: Vec<_> = controller().scene.nodes.lock_ref().iter().map(|n| n.id).collect();
+                        for id in ids {
+                            let _ = controller().dispatch(EditorCommand::Delete { id }).await;
+                        }
+                    });
+                    Modal::close();
+                }).render())
+            }))
+            .render()
+    });
+}
+
+/// Counts derived from the scene + material list, recomputed on each revision.
+#[derive(Default, Clone, Copy)]
+struct Counts {
+    nodes: usize,
+    meshes: usize,
+    lights: usize,
+}
+
+fn count_nodes(nodes: &[std::sync::Arc<crate::engine::scene::Node>], c: &mut Counts) {
+    use crate::engine::scene::NodeKind;
+    for node in nodes {
+        c.nodes += 1;
+        match node.kind.get_cloned() {
+            NodeKind::Primitive { .. } | NodeKind::Mesh { .. } | NodeKind::Model(_) => {
+                c.meshes += 1
+            }
+            NodeKind::Light(_) => c.lights += 1,
+            _ => {}
+        }
+        count_nodes(&node.children.lock_ref(), c);
+    }
+}
+
+/// The bottom status bar (settings-overflow.jsx StatsBar): live scene + material
+/// counts. A thin always-on strip below the workspace.
+fn stats_bar() -> Dom {
+    html!("div", {
+        .style("display", "flex").style("align-items", "center").style("height", "30px").style("padding", "0 12px")
+        .style("flex", "0 0 auto").style("border-top", "1px solid var(--line-soft)").style("background", "var(--bg-3)")
+        .child(html!("div", {
+            .class("mono").style("font-size", "11px").style("color", "var(--text-2)").style("display", "flex").style("gap", "14px")
+            .child_signal(stats_signal())
+        }))
+    })
+}
+
+fn stats_signal() -> impl Signal<Item = Option<Dom>> {
+    let ctrl = controller();
+    map_ref! {
+        let _rev = ctrl.scene.revision.signal(),
+        let _cm = ctrl.custom_materials.signal_vec_cloned().len() => {
+            let ctrl = controller();
+            let mut c = Counts::default();
+            count_nodes(&ctrl.scene.nodes.lock_ref(), &mut c);
+            let materials = ctrl.custom_materials.lock_ref().len();
+            let buckets = ctrl.custom_materials.lock_ref().iter().filter(|m| m.registered.get()).count();
+            let tris = c.meshes * 1200; // estimate until the renderer reports exact counts
+            let tris_label = if tris >= 1000 { format!("{:.1}k", tris as f64 / 1000.0) } else { tris.to_string() };
+            let span = |t: String| html!("span", { .text(&t) });
+            Some(html!("div", {
+                .style("display", "flex").style("gap", "14px")
+                .child(span(format!("{} nodes", c.nodes)))
+                .child(span(format!("{} meshes", c.meshes)))
+                .child(span(format!("{} lights", c.lights)))
+                .child(span(format!("{tris_label} tris")))
+                .child(span(format!("{materials} materials \u{00b7} {buckets} buckets")))
+            }))
+        }
+    }
 }
 
 fn vdivider() -> Dom {
@@ -186,7 +329,7 @@ fn top_bar(ctrl: &EditorController) -> Dom {
             SegOption::new("material", "Material").icon("material"),
         ], false, false))
         .child(IconBtn::new("settings").title("Settings")
-            .on_click(|| Toast::info("Settings — lands in M11")).render())
+            .on_click(|| controller().settings_open.set_neq(true)).render())
         .child(cmdk_button())
         .child(html!("div", { .style("flex", "1") }))
         .child(project_label(ctrl))
@@ -212,8 +355,12 @@ fn overflow_button(ctrl: &EditorController) -> Dom {
     html!("span", {
         .style("position", "relative")
         .style("display", "inline-flex")
-        .child(IconBtn::new("more").title("More")
-            .on_click(|| Toast::info("More \u{2014} overflow menu lands in M11")).render())
+        .child(DropButton::new().icon("more").variant(BtnVariant::Quiet).chevron(false)
+            .items(|close| vec![
+                MenuItem::new("Settings\u{2026}").icon("settings").on_click(clone!(close => move || { controller().settings_open.set_neq(true); (close.borrow_mut())(); })).render(),
+                MenuItem::new("About AwsmRenderer\u{2026}").icon("help").on_click(clone!(close => move || { open_about(); (close.borrow_mut())(); })).render(),
+                MenuItem::new("Clear scene\u{2026}").icon("trash").danger(true).on_click(clone!(close => move || { open_clear_all(); (close.borrow_mut())(); })).render(),
+            ]).render())
         // Red dot when there are missing assets.
         .child_signal(ctrl.missing_assets.signal_ref(|m| !m.is_empty()).map(|has| if has {
             Some(html!("span", {
