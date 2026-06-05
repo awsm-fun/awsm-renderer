@@ -332,6 +332,10 @@ pub struct AwsmRenderer {
 
     #[cfg(feature = "animation")]
     pub animations: animation::Animations,
+
+    /// Per-camera authorable parameter store (projection, clip planes,
+    /// depth-of-field). Driven by `AnimationTarget::Camera` channels.
+    pub cameras: crate::cameras::Cameras,
 }
 
 /// Compatibility requirements for this renderer.
@@ -2165,6 +2169,7 @@ impl AwsmRendererBuilder {
             build_complete: false,
             #[cfg(feature = "animation")]
             animations,
+            cameras: crate::cameras::Cameras::new(),
         };
 
         // Initial AA + PP state — the effects + display pipelines we

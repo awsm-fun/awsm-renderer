@@ -10,6 +10,9 @@
 
 use slotmap::new_key_type;
 
+use crate::cameras::CameraKey;
+use crate::lights::LightKey;
+use crate::materials::MaterialKey;
 use crate::transforms::TransformKey;
 
 use super::{
@@ -35,6 +38,81 @@ pub enum AnimationTarget {
     Transform(TransformKey),
     /// A mesh morph-weight set (geometry or material).
     Morph(AnimationMorphKey),
+    /// A single uniform slot of a custom (dynamic) material.
+    Uniform {
+        /// The material whose uniform is driven.
+        material: MaterialKey,
+        /// Index into the material's `DynamicMaterial::values`.
+        slot: usize,
+    },
+    /// A built-in PBR-family material factor (base color / metallic / etc).
+    BuiltinParam {
+        /// The material whose built-in factor is driven.
+        material: MaterialKey,
+        /// Which built-in factor to drive.
+        param: BuiltinMaterialParam,
+    },
+    /// A punctual light's parameter.
+    Light {
+        /// The light to drive.
+        light: LightKey,
+        /// Which light parameter to drive.
+        param: LightParam,
+    },
+    /// A camera's parameter.
+    Camera {
+        /// The camera to drive.
+        camera: CameraKey,
+        /// Which camera parameter to drive.
+        param: CameraParam,
+    },
+}
+
+/// Which scalar/color parameter of a [`crate::lights::Light`] an animation
+/// channel drives. Params that don't apply to a given light variant are
+/// silently ignored at apply time (e.g. `Range` on a directional light).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LightParam {
+    /// Light intensity (all variants).
+    Intensity,
+    /// Light color (all variants).
+    Color,
+    /// Falloff range (point / spot).
+    Range,
+    /// Spot inner cone angle (spot only).
+    InnerAngle,
+    /// Spot outer cone angle (spot only).
+    OuterAngle,
+}
+
+/// Which built-in factor of a PBR-family material an animation channel drives.
+/// Params a material kind lacks are silently ignored at apply time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuiltinMaterialParam {
+    /// Base color tint (rgb of `base_color_factor`).
+    BaseColor,
+    /// Metallic factor (PBR only).
+    Metallic,
+    /// Roughness factor (PBR only).
+    Roughness,
+    /// Emissive factor.
+    Emissive,
+}
+
+/// Which parameter of a [`crate::cameras::CameraParams`] an animation channel
+/// drives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CameraParam {
+    /// Vertical field-of-view (perspective only).
+    FovY,
+    /// Near clip plane.
+    Near,
+    /// Far clip plane.
+    Far,
+    /// Depth-of-field aperture.
+    Aperture,
+    /// Depth-of-field focus distance.
+    FocusDistance,
 }
 
 /// One channel of a clip: a sampler that drives a single target.

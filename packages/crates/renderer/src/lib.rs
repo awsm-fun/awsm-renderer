@@ -39,6 +39,7 @@ pub mod bind_groups;
 pub mod bounds;
 pub mod buffer;
 pub mod camera;
+pub mod cameras;
 pub mod coverage;
 pub mod debug;
 pub mod decals;
