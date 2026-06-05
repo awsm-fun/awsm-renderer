@@ -74,15 +74,10 @@ fn new_material_items(close: Close) -> Vec<Dom> {
             .render()
     };
     vec![
-        mk("Dynamic (WGSL)", None, close.clone()),
-        mk("Built-in: PBR", Some(MaterialShading::Pbr), close.clone()),
+        mk("PBR", Some(MaterialShading::Pbr), close.clone()),
+        mk("Unlit", Some(MaterialShading::Unlit), close.clone()),
         mk(
-            "Built-in: Unlit",
-            Some(MaterialShading::Unlit),
-            close.clone(),
-        ),
-        mk(
-            "Built-in: Toon",
+            "Toon",
             Some(MaterialShading::Toon {
                 diffuse_bands: 3,
                 rim_strength: 0.4,
@@ -90,8 +85,9 @@ fn new_material_items(close: Close) -> Vec<Dom> {
                 shininess: 32.0,
                 rim_power: 2.0,
             }),
-            close,
+            close.clone(),
         ),
+        mk("Dynamic (WGSL)", None, close),
     ]
 }
 
@@ -248,6 +244,187 @@ fn builtin_num_row(
             .on_change(move |v| edit_builtin(&mat, |d| set(d, v)))
             .render(),
     )
+}
+
+/// A texture-slot picker bound to a built-in material's variant `MaterialDef`.
+/// Enabling a slot (None↔Some) is a VARIANT change (assigned meshes recompile to a
+/// distinct shader); the texture itself is part of the material (not per-mesh) under
+/// the current model. "— none —" disables the slot.
+fn builtin_texture_row(
+    mat: &Arc<CustomMaterial>,
+    label: &str,
+    current: Option<awsm_scene_schema::TextureRef>,
+    set: impl Fn(&mut awsm_scene_schema::MaterialDef, Option<awsm_scene_schema::TextureRef>) + 'static,
+) -> Dom {
+    use awsm_scene_schema::TextureRef;
+    use futures_signals::signal::SignalExt;
+    let textures = crate::scene_mode::inspector::collect_texture_assets();
+    let mut options: Vec<(String, String)> = vec![("__none__".into(), "— none —".into())];
+    options.extend(
+        textures
+            .iter()
+            .map(|(id, name)| (id.to_string(), name.clone())),
+    );
+    let lookup: Vec<(String, AssetId)> = textures
+        .iter()
+        .map(|(id, _)| (id.to_string(), *id))
+        .collect();
+    let sel = Mutable::new(
+        current
+            .map(|t| t.0.to_string())
+            .unwrap_or_else(|| "__none__".into()),
+    );
+    let mat = mat.clone();
+    let set = std::rc::Rc::new(set);
+    spawn_local(clone!(sel => async move {
+        let mut first = true;
+        sel.signal_cloned().for_each(move |val| {
+            let fire = !first; first = false;
+            let picked = lookup.iter().find(|(s, _)| *s == val).map(|(_, id)| TextureRef(*id));
+            let mat = mat.clone(); let set = set.clone();
+            async move { if fire { edit_builtin(&mat, |d| set(d, picked)); } }
+        }).await;
+    }));
+    row(label, select(sel, options))
+}
+
+/// The material's texture slots (variant: enabling one recompiles assigned meshes).
+/// Base-color + emissive maps apply to every shading model; metallic/roughness,
+/// normal and occlusion maps are PBR-only.
+fn textures_section(mat: &Arc<CustomMaterial>, def: &awsm_scene_schema::MaterialDef) -> Dom {
+    use awsm_scene_schema::MaterialShading;
+    let mut sec = Section::new("Textures");
+    sec = sec.child(builtin_texture_row(
+        mat,
+        "Base color map",
+        def.base_color_texture,
+        |d, t| {
+            d.base_color_texture = t;
+        },
+    ));
+    if matches!(def.shading, MaterialShading::Pbr) {
+        sec = sec.child(builtin_texture_row(
+            mat,
+            "Metal/rough map",
+            def.metallic_roughness_texture,
+            |d, t| {
+                d.metallic_roughness_texture = t;
+            },
+        ));
+        sec = sec.child(builtin_texture_row(
+            mat,
+            "Normal map",
+            def.normal_texture,
+            |d, t| {
+                d.normal_texture = t;
+            },
+        ));
+        sec = sec.child(builtin_texture_row(
+            mat,
+            "Occlusion map",
+            def.occlusion_texture,
+            |d, t| {
+                d.occlusion_texture = t;
+            },
+        ));
+    }
+    sec = sec.child(builtin_texture_row(
+        mat,
+        "Emissive map",
+        def.emissive_texture,
+        |d, t| {
+            d.emissive_texture = t;
+        },
+    ));
+    sec.render()
+}
+
+/// The Toon knobs (uniforms structurally carried on the Toon shading variant, so
+/// they live on the material). Only shown for Toon materials.
+fn toon_section(mat: &Arc<CustomMaterial>, def: &awsm_scene_schema::MaterialDef) -> Dom {
+    use awsm_scene_schema::MaterialShading;
+    let MaterialShading::Toon {
+        diffuse_bands,
+        rim_strength,
+        specular_steps,
+        shininess,
+        rim_power,
+    } = def.shading
+    else {
+        return html!("div", {});
+    };
+    let knob = |label: &str,
+                value: f64,
+                min: f64,
+                max: f64,
+                step: f64,
+                mutate: fn(&mut MaterialShading, f64)| {
+        builtin_num_row(mat, label, value, min, max, step, move |d, v| {
+            mutate(&mut d.shading, v)
+        })
+    };
+    Section::new("Toon")
+        .child(knob(
+            "Diffuse bands",
+            diffuse_bands as f64,
+            1.0,
+            16.0,
+            1.0,
+            |s, v| {
+                if let MaterialShading::Toon { diffuse_bands, .. } = s {
+                    *diffuse_bands = (v.round() as u32).max(1);
+                }
+            },
+        ))
+        .child(knob(
+            "Specular steps",
+            specular_steps as f64,
+            1.0,
+            8.0,
+            1.0,
+            |s, v| {
+                if let MaterialShading::Toon { specular_steps, .. } = s {
+                    *specular_steps = (v.round() as u32).max(1);
+                }
+            },
+        ))
+        .child(knob(
+            "Shininess",
+            shininess as f64,
+            1.0,
+            256.0,
+            1.0,
+            |s, v| {
+                if let MaterialShading::Toon { shininess, .. } = s {
+                    *shininess = v as f32;
+                }
+            },
+        ))
+        .child(knob(
+            "Rim strength",
+            rim_strength as f64,
+            0.0,
+            2.0,
+            0.05,
+            |s, v| {
+                if let MaterialShading::Toon { rim_strength, .. } = s {
+                    *rim_strength = v as f32;
+                }
+            },
+        ))
+        .child(knob(
+            "Rim power",
+            rim_power as f64,
+            0.0,
+            8.0,
+            0.1,
+            |s, v| {
+                if let MaterialShading::Toon { rim_power, .. } = s {
+                    *rim_power = v as f32;
+                }
+            },
+        ))
+        .render()
 }
 
 /// The KHR-extensions panel for a built-in **PBR** material. Each extension has
@@ -411,12 +588,14 @@ fn builtin_definition(mat: &Arc<CustomMaterial>) -> Dom {
                 .child(builtin_toggle_row(mat, "Double-sided", def.double_sided, |d, on| d.double_sided = on))
                 .child(builtin_toggle_row(mat, "Vertex colors", def.vertex_colors_enabled, |d, on| d.vertex_colors_enabled = on))
                 .render())
+            .child(textures_section(mat, &def))
+            .child(toon_section(mat, &def))
             .child(extensions_section(mat))
             .child(html!("div", {
                 .style("margin", "11px 12px").style("padding", "8px 10px")
                 .style("background", "var(--bg-2)").style("border", "1px solid var(--line-soft)").style("border-radius", "var(--r2)")
                 .style("font-size", "11px").style("color", "var(--text-2)").style("line-height", "1.5")
-                .text("Built-in. Uniform values (base color, metallic, roughness, emissive\u{2026}) and texture bindings are set per-mesh in the scene inspector when this material is assigned.")
+                .text("This material's VARIANT (shading, alpha, double-sided, vertex colours, textures, extensions) is edited here. The per-mesh UNIFORM values (base color, metallic, roughness, emissive\u{2026}) are set in the scene inspector when this material is assigned.")
             }))
         }))
     })

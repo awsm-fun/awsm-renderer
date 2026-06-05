@@ -380,16 +380,23 @@ async fn materialize_primitive(
     //     per-mesh *uniform* values (`inline`) → one Material::Pbr/Unlit/Toon;
     //   • a registered dynamic WGSL material → its registered bucket;
     //   • otherwise (unassigned / not-yet-registered) → the mesh's inline material.
-    let mat_key = if let Some(inst) = custom_material.as_ref() {
-        if let Some(merged) = builtin_merged(inst.material, &inline) {
-            material::insert_material(&mut r, &merged)
-        } else if let Some(k) = super::dynamic::insert_custom(&mut r, inst.material) {
-            k
-        } else {
-            material::insert_material(&mut r, &inline)
+    // Material resolution. A mesh with NO assigned material (or an assignment that
+    // can't be resolved yet) renders flat **magenta** — the missing-material
+    // sentinel — NOT a default PBR material. `inline` is purely the per-mesh
+    // *uniform* store for a built-in assignment (base colour / metallic / … — see
+    // the material model note in inspector.rs::material_editor); it never stands in
+    // as a material on its own.
+    let mat_key = match custom_material.as_ref() {
+        Some(inst) => {
+            if let Some(merged) = builtin_merged(inst.material, &inline) {
+                material::insert_material(&mut r, &merged)
+            } else if let Some(k) = super::dynamic::insert_custom(&mut r, inst.material) {
+                k
+            } else {
+                material::insert_magenta(&mut r)
+            }
         }
-    } else {
-        material::insert_material(&mut r, &inline)
+        None => material::insert_magenta(&mut r),
     };
     let sub_tk = r.transforms.insert(Transform::IDENTITY, Some(parent_tk));
     match r.add_raw_mesh(raw, sub_tk, mat_key) {

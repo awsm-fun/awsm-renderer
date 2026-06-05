@@ -29,6 +29,21 @@ thread_local! {
     static TEXTURE_KEYS: RefCell<HashMap<AssetId, TextureKey>> = RefCell::new(HashMap::new());
 }
 
+/// The "missing material" colour: flat, unlit magenta. A mesh with **no** assigned
+/// material renders this (the classic engine sentinel) — it is deliberately NOT a
+/// real material with editable settings (see the material model note in
+/// `inspector.rs::material_editor`).
+pub fn insert_magenta(renderer: &mut AwsmRenderer) -> MaterialKey {
+    let mut m = UnlitMaterial::new(MaterialAlphaMode::Opaque, false);
+    m.base_color_factor = [1.0, 0.0, 1.0, 1.0];
+    renderer.materials.insert(
+        Material::Unlit(m),
+        &renderer.textures,
+        &renderer.dynamic_materials,
+        &renderer.extras_pool,
+    )
+}
+
 /// Wrap an authored `MaterialDef` into the renderer's `Material` enum + insert
 /// it, returning the `MaterialKey`. For the PBR path this also resolves the
 /// material's texture refs (procedural → uploaded once, cached) and binds them —

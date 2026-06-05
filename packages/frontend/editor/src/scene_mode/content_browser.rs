@@ -301,37 +301,14 @@ fn card(c: Card) -> Dom {
 
 // ── data collection ───────────────────────────────────────────────────────────
 
-/// The fixed built-in material family palette (decision 3 / §2). These are not
-/// project assets — assigning one sets an inline first-party material on a mesh.
-const BUILTINS: [(&str, &str); 4] = [
-    ("PBR", "oklch(0.55 0.02 255)"),
-    ("Unlit", "oklch(0.62 0.04 95)"),
-    ("Toon", "oklch(0.58 0.12 25)"),
-    ("Flipbook", "oklch(0.56 0.10 310)"),
-];
-
 fn collect_cards(cat: Cat, query: &str) -> Vec<Card> {
     let ql = query.trim().to_lowercase();
     let matches = |name: &str| ql.is_empty() || name.to_lowercase().contains(&ql);
     let mut cards: Vec<Card> = Vec::new();
 
-    // Built-in material families (shown in All + Materials).
-    if matches!(cat, Cat::All | Cat::Material) {
-        for (fam, col) in BUILTINS {
-            if matches(fam) {
-                cards.push(Card {
-                    cat: Cat::Material,
-                    id: None,
-                    name: fam.to_string(),
-                    swatch: col.to_string(),
-                    badge: Some((fam.to_string(), Tone::Accent)),
-                    meta: "built-in family".to_string(),
-                    builtin: true,
-                    custom: false,
-                });
-            }
-        }
-    }
+    // No fixed "built-in family" palette — the Content Browser holds only materials
+    // the user actually created (via the Material pane) + imported assets. A fresh
+    // project starts empty.
 
     // Custom WGSL materials (decision 3) — shown in All + Materials.
     if matches!(cat, Cat::All | Cat::Material) {
@@ -544,9 +521,9 @@ fn cat_count_signal(cat: Cat) -> impl Signal<Item = String> {
                 )
             })
             .count();
-        // The built-in families + custom WGSL materials count toward Materials.
+        // Custom (user-created) materials count toward Materials.
         if cat == Cat::Material {
-            n += BUILTINS.len() + ctrl.custom_materials.lock_ref().len();
+            n += ctrl.custom_materials.lock_ref().len();
         }
         n.to_string()
     })

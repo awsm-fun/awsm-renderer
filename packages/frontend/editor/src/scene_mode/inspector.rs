@@ -1091,37 +1091,6 @@ fn set_inline_material(node: &Arc<Node>, mat: MaterialDef) {
     }
 }
 
-/// One Toon knob row: a `NumField` that re-reads the node's current Toon shading,
-/// applies `mutate` to the live `MaterialShading`, and writes it back — so each
-/// knob preserves the other four.
-fn toon_knob_row(
-    node: &Arc<Node>,
-    label: &'static str,
-    value: f64,
-    min: f64,
-    max: f64,
-    step: f64,
-    mutate: impl Fn(&mut MaterialShading, f64) + 'static,
-) -> Dom {
-    let n = node.clone();
-    row(
-        label,
-        NumField::new(value)
-            .min(min)
-            .max(max)
-            .step(step)
-            .on_change(move |v| {
-                if let Some(mut cur) = current_primitive_material(&n) {
-                    if matches!(cur.shading, MaterialShading::Toon { .. }) {
-                        mutate(&mut cur.shading, v);
-                        set_inline_material(&n, cur);
-                    }
-                }
-            })
-            .render(),
-    )
-}
-
 /// Reactive material-assignment dropdown — rebuilds whenever the custom-material
 /// library changes, so a material created *after* this mesh was selected appears
 /// immediately (previously the picker snapshotted the list once and went stale).
@@ -1164,23 +1133,21 @@ fn build_material_select(node: &Arc<Node>) -> Option<Dom> {
         } => Some(inst.material),
         _ => None,
     };
-    if mats.is_empty() && current.is_none() {
-        return None;
-    }
     // A DropButton whose items dispatch `AssignMaterial` directly on click —
     // robust against the reactive rebuild (no Mutable-observer race). The button
     // label reflects the current assignment; the inspector rebuilds on assign.
+    // "None" = no material (renders magenta); it is NOT a real material.
     let current_label = match current {
-        None => "Built-in (inline)".to_string(),
+        None => "None".to_string(),
         Some(id) => mats
             .iter()
             .find(|(mid, _)| *mid == id)
             .map(|(_, n)| n.clone())
-            .unwrap_or_else(|| "Built-in (inline)".to_string()),
+            .unwrap_or_else(|| "None".to_string()),
     };
     let node_id = node.id;
     let items = move |close: Close| -> Vec<Dom> {
-        let mut rows = vec![MenuItem::new("Built-in (inline)")
+        let mut rows = vec![MenuItem::new("None")
             .checked(current.is_none())
             .on_click({
                 let close = close.clone();
@@ -1240,8 +1207,26 @@ fn assigned_material(node: &Arc<Node>) -> Assigned {
     }
 }
 
-/// Every texture asset in the project, as `(id, label)` for a picker.
-fn collect_texture_assets() -> Vec<(AssetId, String)> {
+/// The shading model of the **assigned** library material (which decides whether to
+/// show the PBR factor knobs), or `None` when nothing resolvable is assigned. Note:
+/// the *mesh's* `inline_material.shading` is irrelevant — shading is a variant
+/// setting that lives on the material.
+fn assigned_shading(node: &Arc<Node>) -> Option<MaterialShading> {
+    let id = match node.kind.get_cloned() {
+        NodeKind::Primitive {
+            custom_material: Some(inst),
+            ..
+        } => inst.material,
+        _ => return None,
+    };
+    crate::controller::custom_material::find_material(&controller().custom_materials, id)
+        .and_then(|m| m.builtin.get_cloned())
+        .map(|def| def.shading)
+}
+
+/// Every texture asset in the project, as `(id, label)` for a picker. Shared with
+/// the Material pane (material-side texture-slot pickers).
+pub(crate) fn collect_texture_assets() -> Vec<(AssetId, String)> {
     let ctrl = controller();
     let assets = ctrl.scene.assets.lock().unwrap();
     assets
@@ -1265,125 +1250,57 @@ fn collect_texture_assets() -> Vec<(AssetId, String)> {
         .collect()
 }
 
-/// A per-mesh texture-slot picker: "— none —" + every texture asset. Selecting one
-/// sets the slot on the mesh's inline material (binding it is a variant change —
-/// the bridge uploads the texture + recompiles the specialized shader). `set`
-/// writes the chosen `Option<TextureRef>` onto a `MaterialDef`.
-fn texture_picker_row(
-    node: &Arc<Node>,
-    label: &str,
-    current: Option<awsm_scene_schema::TextureRef>,
-    set: impl Fn(&mut MaterialDef, Option<awsm_scene_schema::TextureRef>) + 'static,
-) -> Dom {
-    use awsm_scene_schema::TextureRef;
-    let textures = collect_texture_assets();
-    let mut options: Vec<(String, String)> = vec![("__none__".into(), "— none —".into())];
-    options.extend(
-        textures
-            .iter()
-            .map(|(id, name)| (id.to_string(), name.clone())),
-    );
-    let lookup: Vec<(String, AssetId)> = textures
-        .iter()
-        .map(|(id, _)| (id.to_string(), *id))
-        .collect();
-    let sel = Mutable::new(
-        current
-            .map(|t| t.0.to_string())
-            .unwrap_or_else(|| "__none__".into()),
-    );
-    let node = node.clone();
-    let set = std::rc::Rc::new(set);
-    spawn_local(clone!(sel => async move {
-        let mut first = true;
-        sel.signal_cloned().for_each(move |val| {
-            let fire = !first;
-            first = false;
-            let picked = lookup.iter().find(|(s, _)| *s == val).map(|(_, id)| TextureRef(*id));
-            let node = node.clone();
-            let set = set.clone();
-            async move {
-                if fire {
-                    if let Some(mut cur) = current_primitive_material(&node) {
-                        set(&mut cur, picked);
-                        set_inline_material(&node, cur);
-                    }
-                }
-            }
-        }).await;
-    }));
-    row(label, select(sel, options))
-}
-
+/// Per-mesh material editor.
+///
+/// ── MATERIAL MODEL (keep this split intact) ──────────────────────────────────
+/// See also `material_mode::builtin_definition` (the material-side editor) and
+/// `bridge::node_sync::builtin_merged` (the merge), and the renderer's
+/// `PbrFeatures` doc (`materials/src/pbr.rs`) for which fields are variant bits.
+///
+///  • A mesh with **no** assigned material renders flat MAGENTA — "none" is not a
+///    real material and has no settings.
+///  • VARIANT settings — anything that changes the compiled shader/pipeline:
+///    shading model, alpha mode, double-sided, vertex colours, texture *slots*,
+///    KHR extension *enables*, Toon knobs — live ONLY on the material (Material
+///    pane). They must NOT appear in this per-mesh editor.
+///  • UNIFORM settings — values that don't recompile: base colour, opacity,
+///    metallic, roughness, emissive — are per-mesh and live ONLY here.
 fn material_editor(node: &Arc<Node>, mat: &MaterialDef, _has_custom: bool) -> Dom {
-    // A dynamic (Studio) material drives the whole look — link to Material mode
-    // rather than showing the built-in palette.
-    if matches!(assigned_material(node), Assigned::Dynamic) {
-        return Section::new("Material")
-            .child(material_picker(node))
-            .child(html!("div", {
-                .style("display", "flex").style("flex-direction", "column").style("gap", "8px").style("margin-top", "8px")
-                .child(html!("div", {
-                    .style("font-size", "12px").style("color", "var(--text-2)").style("line-height", "1.5")
-                    .text("Driven by a dynamic Studio material. Edit its graph in Material mode.")
-                }))
-                .child(Btn::new().label("Open in Material mode").icon("edit").variant(BtnVariant::Ghost).full(true)
-                    .on_click(|| spawn_local(async {
-                        let _ = controller().dispatch(EditorCommand::SwitchMode { mode: EditorMode::Material }).await;
-                    })).render())
-            }))
-            .render();
-    }
-
-    // Built-in assignment or unassigned → the per-mesh *uniform* values. The
-    // shading model + variant settings come from the assigned library material
-    // (or default PBR when unassigned); they're chosen via the single dropdown
-    // and edited in the Material pane, not here.
     let mut sec = Section::new("Material").child(material_picker(node));
 
-    // Per-mesh texture maps (binding one is a variant change; "— none —" clears).
-    sec = sec.child(texture_picker_row(
-        node,
-        "Base color map",
-        mat.base_color_texture,
-        |d, t| {
-            d.base_color_texture = t;
-        },
-    ));
-    sec = sec.child(texture_picker_row(
-        node,
-        "Metal/rough map",
-        mat.metallic_roughness_texture,
-        |d, t| {
-            d.metallic_roughness_texture = t;
-        },
-    ));
-    sec = sec.child(texture_picker_row(
-        node,
-        "Normal map",
-        mat.normal_texture,
-        |d, t| {
-            d.normal_texture = t;
-        },
-    ));
-    sec = sec.child(texture_picker_row(
-        node,
-        "Occlusion map",
-        mat.occlusion_texture,
-        |d, t| {
-            d.occlusion_texture = t;
-        },
-    ));
-    sec = sec.child(texture_picker_row(
-        node,
-        "Emissive map",
-        mat.emissive_texture,
-        |d, t| {
-            d.emissive_texture = t;
-        },
-    ));
+    match assigned_material(node) {
+        Assigned::None => {
+            // No material → magenta. No per-mesh settings.
+            return sec
+                .child(html!("div", {
+                    .style("margin-top", "8px").style("font-size", "12px")
+                    .style("color", "var(--text-2)").style("line-height", "1.5")
+                    .text("No material — this mesh renders magenta. Pick a material above, or create one in the Material pane.")
+                }))
+                .render();
+        }
+        Assigned::Dynamic => {
+            // A dynamic Studio material drives the look. Per-mesh uniform/texture
+            // overrides land below once it declares slots; the link edits the graph.
+            return sec
+                .child(dynamic_overrides(node))
+                .child(html!("div", {
+                    .style("display", "flex").style("flex-direction", "column").style("gap", "8px").style("margin-top", "8px")
+                    .child(Btn::new().label("Open in Material mode").icon("edit").variant(BtnVariant::Ghost).full(true)
+                        .on_click(|| spawn_local(async {
+                            let _ = controller().dispatch(EditorCommand::SwitchMode { mode: EditorMode::Material }).await;
+                        })).render())
+                }))
+                .render();
+        }
+        Assigned::Builtin => {}
+    }
 
-    // Base color (RGB swatch) + alpha.
+    // ── Built-in material assigned → per-mesh UNIFORM factors only ───────────────
+    // (Shading comes from the assigned material, NOT the mesh's inline_material.)
+    let shading = assigned_shading(node).unwrap_or(MaterialShading::Pbr);
+
+    // Base color (RGB swatch) + opacity.
     let col = Mutable::new(rgb_to_hex([
         mat.base_color[0],
         mat.base_color[1],
@@ -1416,27 +1333,17 @@ fn material_editor(node: &Arc<Node>, mat: &MaterialDef, _has_custom: bool) -> Do
                 if let Some(cur) = current_primitive_material(&n) {
                     let mut base_color = cur.base_color;
                     base_color[3] = v as f32;
-                    // Opacity < 1 implies a blended material.
-                    let alpha_mode = if v < 1.0 {
-                        MaterialAlphaMode::Blend
-                    } else {
-                        MaterialAlphaMode::Opaque
-                    };
-                    set_inline_material(
-                        &n,
-                        MaterialDef {
-                            base_color,
-                            alpha_mode,
-                            ..cur
-                        },
-                    );
+                    // alpha_MODE (opaque/mask/blend) is a variant setting on the
+                    // material; opacity is just the per-mesh alpha factor. The
+                    // bridge's alpha_mode_of heuristic still blends when a < 1.
+                    set_inline_material(&n, MaterialDef { base_color, ..cur });
                 }
             })
             .render(),
     ));
 
     // PBR-only knobs.
-    if matches!(mat.shading, MaterialShading::Pbr) {
+    if matches!(shading, MaterialShading::Pbr) {
         let n = node.clone();
         sec = sec.child(row(
             "Metallic",
@@ -1479,84 +1386,6 @@ fn material_editor(node: &Arc<Node>, mat: &MaterialDef, _has_custom: bool) -> Do
         ));
     }
 
-    // Toon-only knobs (all five map 1:1 to the renderer's ToonMaterial).
-    if let MaterialShading::Toon {
-        diffuse_bands,
-        rim_strength,
-        specular_steps,
-        shininess,
-        rim_power,
-    } = mat.shading
-    {
-        // Each knob re-reads the current shading and rewrites just its own field,
-        // preserving the other four (the material may have changed since render).
-        sec = sec.child(toon_knob_row(
-            node,
-            "Diffuse bands",
-            diffuse_bands as f64,
-            1.0,
-            16.0,
-            1.0,
-            |s, v| {
-                if let MaterialShading::Toon { diffuse_bands, .. } = s {
-                    *diffuse_bands = (v.round() as u32).max(1);
-                }
-            },
-        ));
-        sec = sec.child(toon_knob_row(
-            node,
-            "Specular steps",
-            specular_steps as f64,
-            1.0,
-            8.0,
-            1.0,
-            |s, v| {
-                if let MaterialShading::Toon { specular_steps, .. } = s {
-                    *specular_steps = (v.round() as u32).max(1);
-                }
-            },
-        ));
-        sec = sec.child(toon_knob_row(
-            node,
-            "Shininess",
-            shininess as f64,
-            1.0,
-            256.0,
-            1.0,
-            |s, v| {
-                if let MaterialShading::Toon { shininess, .. } = s {
-                    *shininess = v as f32;
-                }
-            },
-        ));
-        sec = sec.child(toon_knob_row(
-            node,
-            "Rim strength",
-            rim_strength as f64,
-            0.0,
-            2.0,
-            0.05,
-            |s, v| {
-                if let MaterialShading::Toon { rim_strength, .. } = s {
-                    *rim_strength = v as f32;
-                }
-            },
-        ));
-        sec = sec.child(toon_knob_row(
-            node,
-            "Rim power",
-            rim_power as f64,
-            0.0,
-            8.0,
-            0.1,
-            |s, v| {
-                if let MaterialShading::Toon { rim_power, .. } = s {
-                    *rim_power = v as f32;
-                }
-            },
-        ));
-    }
-
     // Emissive color.
     let emi = Mutable::new(rgb_to_hex(mat.emissive));
     spawn_local(clone!(emi, node => async move {
@@ -1574,26 +1403,17 @@ fn material_editor(node: &Arc<Node>, mat: &MaterialDef, _has_custom: bool) -> Do
     }));
     sec = sec.child(row("Emissive", swatch(emi, 22.0)));
 
-    // Double-sided toggle.
-    let ds = Mutable::new(mat.double_sided);
-    spawn_local(clone!(ds, node => async move {
-        let mut first = true;
-        ds.signal().for_each(move |on| {
-            let fire = !first;
-            first = false;
-            clone!(node => async move {
-                if !fire { return; }
-                if let Some(cur) = current_primitive_material(&node) {
-                    if cur.double_sided != on {
-                        set_inline_material(&node, MaterialDef { double_sided: on, ..cur });
-                    }
-                }
-            })
-        }).await;
-    }));
-    sec = sec.child(row("Double-sided", check(ds)));
+    // NOTE: double-sided, alpha mode, vertex colours, texture slots, Toon knobs and
+    // KHR extensions are VARIANT settings — edited on the material in the Material
+    // pane, never here. See the material-model note at the top of this fn.
 
     sec.render()
+}
+
+/// Per-mesh override editor for an assigned **dynamic** material's declared slots.
+/// Filled out in #4.2 — for now a placeholder so the editor compiles.
+fn dynamic_overrides(_node: &Arc<Node>) -> Dom {
+    html!("div", {})
 }
 
 // ── Shadows (per-mesh cast / receive) ─────────────────────────────────────────
