@@ -29,25 +29,49 @@ pub fn material_png() -> Option<String> {
 }
 
 /// PNG data URL of a **texture asset** by id. Procedural textures are generated
-/// CPU-side and encoded directly; raster (file) textures live only on the GPU
-/// today and would need a readback pass (not yet wired) — those return `Err`.
-pub fn texture_png(id: AssetId) -> Result<String, String> {
-    let proc = {
+/// CPU-side and encoded directly; raster (file/glTF) textures are read back from
+/// the GPU and PNG-encoded by the renderer.
+pub async fn texture_png(id: AssetId) -> Result<String, String> {
+    enum Kind {
+        Procedural(awsm_scene_schema::ProceduralTextureDef),
+        Raster,
+    }
+    let kind = {
         let ctrl = controller();
         let assets = ctrl.scene.assets.lock().unwrap();
         match assets.entries.get(&id).map(|e| &e.source) {
-            Some(AssetSource::Texture(TextureDef::Procedural(p))) => p.clone(),
-            Some(AssetSource::Texture(TextureDef::Raster { .. })) => {
-                return Err("raster/file textures need a GPU readback pass (not yet \
-                            supported); only procedural textures can be snapshotted"
-                    .to_string());
-            }
+            Some(AssetSource::Texture(TextureDef::Procedural(p))) => Kind::Procedural(p.clone()),
+            Some(AssetSource::Texture(TextureDef::Raster { .. })) => Kind::Raster,
             Some(_) => return Err("asset is not a texture".to_string()),
             None => return Err("no such asset".to_string()),
         }
     };
-    let (rgba, w, h) = crate::engine::bridge::material::procedural_rgba(&proc);
-    rgba_to_png_data_url(&rgba, w, h)
+    match kind {
+        Kind::Procedural(p) => {
+            let (rgba, w, h) = crate::engine::bridge::material::procedural_rgba(&p);
+            rgba_to_png_data_url(&rgba, w, h)
+        }
+        Kind::Raster => {
+            let key = crate::engine::bridge::material::texture_key_for(id).ok_or_else(|| {
+                "this texture isn't loaded on the GPU yet (assign it / its model first)".to_string()
+            })?;
+            let png = {
+                let handle = crate::engine::context::renderer_handle();
+                let r = handle.lock().await;
+                r.texture_png_bytes(key).await.map_err(|e| format!("{e}"))?
+            };
+            Ok(format!("data:image/png;base64,{}", base64_encode(&png)))
+        }
+    }
+}
+
+/// Encode bytes to base64 via the browser's `btoa` (a "binary string" where each
+/// char code is one byte). Avoids a native base64 dependency.
+fn base64_encode(bytes: &[u8]) -> String {
+    let bin: String = bytes.iter().map(|&b| b as char).collect();
+    web_sys::window()
+        .and_then(|w| w.btoa(&bin).ok())
+        .unwrap_or_default()
 }
 
 /// Encode RGBA8 pixels to a PNG data URL via an offscreen 2D canvas (no native

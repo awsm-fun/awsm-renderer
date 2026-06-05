@@ -36,6 +36,13 @@ pub(crate) fn resolve_texture_key(r: &mut AwsmRenderer, tref: &TextureRef) -> Op
     resolve_texture(r, tref, true, MipmapTextureKind::Albedo).map(|t| t.key)
 }
 
+/// The renderer [`TextureKey`] a texture asset resolves to, if it's been
+/// materialized/registered this session. Used by the image-query seam to read a
+/// raster/file texture back from the GPU.
+pub(crate) fn texture_key_for(asset_id: AssetId) -> Option<TextureKey> {
+    TEXTURE_KEYS.with(|c| c.borrow().get(&asset_id).copied())
+}
+
 /// Pre-register a texture-asset id against a renderer [`TextureKey`] that's
 /// already uploaded (e.g. one `populate_gltf` baked for an imported model), so
 /// `resolve_texture` returns it on the cache-hit path instead of re-decoding.

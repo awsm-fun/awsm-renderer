@@ -187,12 +187,15 @@ pub fn editor_query_material_png() -> String {
     engine::query::material_png().unwrap_or_default()
 }
 
-/// PNG data URL of a texture asset (by UUID). Returns `"error: …"` if the id is
-/// invalid, the asset isn't a (procedural) texture, or readback isn't supported.
+/// PNG data URL of a texture asset (by UUID) — procedural textures are encoded
+/// directly, raster/file textures are read back from the GPU. Async (the GPU
+/// readback maps a buffer); returns `"error: …"` on failure. Callers `await` it.
 #[wasm_bindgen]
-pub fn editor_query_texture_png(asset_id: &str) -> String {
+pub async fn editor_query_texture_png(asset_id: &str) -> String {
     match engine::query::parse_asset_id(asset_id) {
-        Some(id) => engine::query::texture_png(id).unwrap_or_else(|e| format!("error: {e}")),
+        Some(id) => engine::query::texture_png(id)
+            .await
+            .unwrap_or_else(|e| format!("error: {e}")),
         None => "error: invalid asset id".to_string(),
     }
 }

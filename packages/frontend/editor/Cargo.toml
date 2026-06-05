@@ -13,7 +13,7 @@ awsm-curves = { workspace = true, features = ["serde"] }
 awsm-meshgen = { workspace = true, features = ["serde"] }
 awsm-materials = { workspace = true }
 awsm-particles = { workspace = true, features = ["serde"] }
-awsm-renderer = { workspace = true, features = ["ktx", "serde"] }
+awsm-renderer = { workspace = true, features = ["ktx", "serde", "texture-export"] }
 awsm-renderer-core = { workspace = true }
 awsm-renderer-gltf = { workspace = true }
 awsm-scene-schema = { workspace = true }
