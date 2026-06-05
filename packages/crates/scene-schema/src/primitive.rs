@@ -107,15 +107,20 @@ pub struct TextureRef {
     /// Optional `KHR_texture_transform` (offset / rotation / scale of the UVs).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transform: Option<TextureTransform>,
+    /// Optional sampler settings (wrap modes + filtering). `None` = the glTF
+    /// default (repeat / linear). Imported from the glTF texture's sampler.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampler: Option<TextureSampler>,
 }
 
 impl TextureRef {
-    /// A plain reference (UV set 0, no transform) — the common case.
+    /// A plain reference (UV set 0, no transform, default sampler) — common case.
     pub fn new(asset: AssetId) -> Self {
         Self {
             asset,
             uv_index: 0,
             transform: None,
+            sampler: None,
         }
     }
 }
@@ -139,6 +144,8 @@ impl<'de> serde::Deserialize<'de> for TextureRef {
                 uv_index: u32,
                 #[serde(default)]
                 transform: Option<TextureTransform>,
+                #[serde(default)]
+                sampler: Option<TextureSampler>,
             },
         }
         Ok(match Repr::deserialize(d)? {
@@ -147,10 +154,12 @@ impl<'de> serde::Deserialize<'de> for TextureRef {
                 asset,
                 uv_index,
                 transform,
+                sampler,
             } => TextureRef {
                 asset,
                 uv_index,
                 transform,
+                sampler,
             },
         })
     }
@@ -158,6 +167,43 @@ impl<'de> serde::Deserialize<'de> for TextureRef {
 
 fn is_zero_u32(v: &u32) -> bool {
     *v == 0
+}
+
+/// How a texture's UVs are wrapped outside `[0,1]` (glTF `wrapS`/`wrapT`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TextureWrap {
+    #[default]
+    Repeat,
+    ClampToEdge,
+    MirroredRepeat,
+}
+
+/// Texture filtering mode (glTF mag/min/mipmap filters reduce to nearest/linear).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TextureFilter {
+    #[default]
+    Linear,
+    Nearest,
+}
+
+/// glTF texture sampler settings — wrap modes + filtering. Non-recompiling (a
+/// bind-group resource, not a pipeline variant), so per-mesh overridable. The
+/// `Default` (repeat + linear) matches glTF's defaults.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct TextureSampler {
+    #[serde(default)]
+    pub wrap_u: TextureWrap,
+    #[serde(default)]
+    pub wrap_v: TextureWrap,
+    #[serde(default)]
+    pub mag_filter: TextureFilter,
+    #[serde(default)]
+    pub min_filter: TextureFilter,
+    #[serde(default)]
+    pub mipmap_filter: TextureFilter,
 }
 
 /// glTF `KHR_texture_transform` — an affine transform applied to a texture's UVs

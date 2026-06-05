@@ -1177,6 +1177,7 @@ fn ensure_import_texture(
         asset,
         uv_index: binding.uv_index,
         transform: binding.transform,
+        sampler: binding.sampler,
     };
     if let Some(id) = tex_for_key.get(&key) {
         return Some(mk(*id));

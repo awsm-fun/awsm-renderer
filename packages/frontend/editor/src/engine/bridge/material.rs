@@ -184,7 +184,7 @@ fn resolve_texture(
     kind: MipmapTextureKind,
 ) -> Option<MaterialTexture> {
     let asset_id = tref.asset;
-    let sampler_key = material_sampler(r)?;
+    let sampler_key = sampler_for(r, tref.sampler)?;
     // The sampler must be in the texture pool's sampler set *before* the material
     // is packed — `Materials::insert` immediately writes the material's uniform
     // buffer, and a sampler that isn't pooled makes `sampler_index` return None,
@@ -237,15 +237,35 @@ fn resolve_texture(
     Some(mk(key))
 }
 
-/// A shared linear-filtered, repeat-wrapped sampler for material textures.
-fn material_sampler(r: &mut AwsmRenderer) -> Option<SamplerKey> {
+/// Pool (or fetch) the sampler for a texture binding from its [`TextureSampler`]
+/// settings — wrap modes + filtering imported from the glTF sampler. `None`
+/// defaults to glTF's repeat + linear.
+fn sampler_for(
+    r: &mut AwsmRenderer,
+    sampler: Option<awsm_scene_schema::TextureSampler>,
+) -> Option<SamplerKey> {
+    use awsm_scene_schema::{TextureFilter, TextureWrap};
+    let s = sampler.unwrap_or_default();
+    let addr = |w: TextureWrap| match w {
+        TextureWrap::Repeat => AddressMode::Repeat,
+        TextureWrap::ClampToEdge => AddressMode::ClampToEdge,
+        TextureWrap::MirroredRepeat => AddressMode::MirrorRepeat,
+    };
+    let filt = |f: TextureFilter| match f {
+        TextureFilter::Linear => FilterMode::Linear,
+        TextureFilter::Nearest => FilterMode::Nearest,
+    };
+    let mip = |f: TextureFilter| match f {
+        TextureFilter::Linear => MipmapFilterMode::Linear,
+        TextureFilter::Nearest => MipmapFilterMode::Nearest,
+    };
     let key = SamplerCacheKey {
-        address_mode_u: Some(AddressMode::Repeat),
-        address_mode_v: Some(AddressMode::Repeat),
+        address_mode_u: Some(addr(s.wrap_u)),
+        address_mode_v: Some(addr(s.wrap_v)),
         address_mode_w: Some(AddressMode::Repeat),
-        mag_filter: Some(FilterMode::Linear),
-        min_filter: Some(FilterMode::Linear),
-        mipmap_filter: Some(MipmapFilterMode::Linear),
+        mag_filter: Some(filt(s.mag_filter)),
+        min_filter: Some(filt(s.min_filter)),
+        mipmap_filter: Some(mip(s.mipmap_filter)),
         ..Default::default()
     };
     r.textures.get_sampler_key(&r.gpu, key).ok()

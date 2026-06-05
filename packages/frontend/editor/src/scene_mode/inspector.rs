@@ -1473,13 +1473,14 @@ fn material_editor(node: &Arc<Node>, mat: &MaterialDef, _has_custom: bool) -> Do
     // per-mesh overridable: for each slot the material declares, let this mesh
     // swap which texture fills it (clearing falls back to the material default).
     if let Some(def) = assigned_builtin_def(node) {
-        // Core PBR slots the material declares (default = its shared texture).
-        let core: [(&'static str, &'static str, Option<AssetId>); 5] = [
-            ("base_color_texture", "Base color", def.base_color_texture.map(|t| t.asset)),
-            ("metallic_roughness_texture", "Metal/rough", def.metallic_roughness_texture.map(|t| t.asset)),
-            ("normal_texture", "Normal", def.normal_texture.map(|t| t.asset)),
-            ("occlusion_texture", "Occlusion", def.occlusion_texture.map(|t| t.asset)),
-            ("emissive_texture", "Emissive map", def.emissive_texture.map(|t| t.asset)),
+        // Core PBR slots the material declares (default = its shared TextureRef,
+        // which carries the imported UV set / transform / sampler).
+        let core: [(&'static str, &'static str, Option<awsm_scene_schema::TextureRef>); 5] = [
+            ("base_color_texture", "Base color", def.base_color_texture),
+            ("metallic_roughness_texture", "Metal/rough", def.metallic_roughness_texture),
+            ("normal_texture", "Normal", def.normal_texture),
+            ("occlusion_texture", "Occlusion", def.occlusion_texture),
+            ("emissive_texture", "Emissive map", def.emissive_texture),
         ];
         // KHR-extension texture slots the material declares.
         let ext_slots: [(&'static str, &'static str); 14] = [
@@ -1498,7 +1499,8 @@ fn material_editor(node: &Arc<Node>, mat: &MaterialDef, _has_custom: bool) -> Do
             ("iridescence.tex", "Iridescence"),
             ("iridescence.thickness_tex", "Iridescence thick."),
         ];
-        let mut entries: Vec<(&'static str, &'static str, Option<AssetId>, bool)> = Vec::new();
+        let mut entries: Vec<(&'static str, &'static str, Option<awsm_scene_schema::TextureRef>, bool)> =
+            Vec::new();
         for (slot, label, d) in core {
             if d.is_some() {
                 entries.push((slot, label, d, false));
@@ -1506,14 +1508,14 @@ fn material_editor(node: &Arc<Node>, mat: &MaterialDef, _has_custom: bool) -> Do
         }
         for (slot, label) in ext_slots {
             if let Some(t) = crate::controller::get_ext_texture(&def.extensions, slot) {
-                entries.push((slot, label, Some(t.asset), true));
+                entries.push((slot, label, Some(t), true));
             }
         }
         if !entries.is_empty() {
             sec = sec.child(uniform_subhead("Textures"));
             let assets = collect_texture_assets();
-            for (slot, label, default_id, is_ext) in entries {
-                for r in texture_slot_rows(node, label, slot, default_id, is_ext, &assets) {
+            for (slot, label, default_ref, is_ext) in entries {
+                for r in texture_slot_rows(node, label, slot, default_ref, is_ext, &assets) {
                     sec = sec.child(r);
                 }
             }
@@ -2083,22 +2085,79 @@ fn write_slot(
     }
 }
 
-/// Read-modify-write one slot's `TextureRef` (seeding from `default_asset` if the
-/// mesh has no override yet), so editing UV/transform keeps the image and vice
-/// versa.
+/// Read-modify-write one slot's `TextureRef` (seeding from the material's default
+/// `TextureRef` — full image + UV + transform + sampler — if the mesh has no
+/// override yet), so editing one field keeps every other imported field.
 fn edit_slot(
     node: &Arc<Node>,
     slot: &str,
     is_ext: bool,
-    default_asset: Option<AssetId>,
+    default_ref: Option<awsm_scene_schema::TextureRef>,
     f: impl FnOnce(&mut awsm_scene_schema::TextureRef),
 ) {
-    if let Some(mut tr) =
-        read_slot(node, slot, is_ext).or_else(|| default_asset.map(awsm_scene_schema::TextureRef::new))
-    {
+    if let Some(mut tr) = read_slot(node, slot, is_ext).or(default_ref) {
         f(&mut tr);
         write_slot(node, slot, is_ext, Some(tr));
     }
+}
+
+/// A labelled enum dropdown that fires `on_pick(value)` on change.
+fn enum_select_row(
+    label: &str,
+    current: &str,
+    options: Vec<(String, String)>,
+    on_pick: impl Fn(String) + 'static,
+) -> Dom {
+    let sel = Mutable::new(current.to_string());
+    let on_pick = std::rc::Rc::new(on_pick);
+    spawn_local(clone!(sel => async move {
+        let mut first = true;
+        sel.signal_cloned().for_each(move |val| {
+            let fire = !first;
+            first = false;
+            clone!(on_pick => async move { if fire { on_pick(val); } })
+        }).await;
+    }));
+    row(label, select(sel, options))
+}
+
+fn wrap_str(w: awsm_scene_schema::TextureWrap) -> &'static str {
+    use awsm_scene_schema::TextureWrap as W;
+    match w {
+        W::Repeat => "repeat",
+        W::ClampToEdge => "clamp_to_edge",
+        W::MirroredRepeat => "mirrored_repeat",
+    }
+}
+fn wrap_from(s: &str) -> awsm_scene_schema::TextureWrap {
+    use awsm_scene_schema::TextureWrap as W;
+    match s {
+        "clamp_to_edge" => W::ClampToEdge,
+        "mirrored_repeat" => W::MirroredRepeat,
+        _ => W::Repeat,
+    }
+}
+fn filt_str(f: awsm_scene_schema::TextureFilter) -> &'static str {
+    match f {
+        awsm_scene_schema::TextureFilter::Nearest => "nearest",
+        awsm_scene_schema::TextureFilter::Linear => "linear",
+    }
+}
+fn filt_from(s: &str) -> awsm_scene_schema::TextureFilter {
+    match s {
+        "nearest" => awsm_scene_schema::TextureFilter::Nearest,
+        _ => awsm_scene_schema::TextureFilter::Linear,
+    }
+}
+fn wrap_opts() -> Vec<(String, String)> {
+    vec![
+        ("repeat".into(), "Repeat".into()),
+        ("clamp_to_edge".into(), "Clamp".into()),
+        ("mirrored_repeat".into(), "Mirror".into()),
+    ]
+}
+fn filt_opts() -> Vec<(String, String)> {
+    vec![("linear".into(), "Linear".into()), ("nearest".into(), "Nearest".into())]
 }
 
 /// Build the rows for one texture slot: image picker + UV set + transform.
@@ -2106,13 +2165,15 @@ fn texture_slot_rows(
     node: &Arc<Node>,
     label: &str,
     slot: &'static str,
-    default_asset: Option<AssetId>,
+    default_ref: Option<awsm_scene_schema::TextureRef>,
     is_ext: bool,
     assets: &[(AssetId, String)],
 ) -> Vec<Dom> {
     use awsm_scene_schema::TextureTransform;
-    let cur = read_slot(node, slot, is_ext);
-    let cur_asset = cur.map(|t| t.asset).or(default_asset);
+    // Effective binding = this mesh's override, else the material's imported
+    // default (which carries the UV set / transform / sampler read from glTF).
+    let cur = read_slot(node, slot, is_ext).or(default_ref);
+    let cur_asset = cur.map(|t| t.asset);
     let xf = cur.and_then(|t| t.transform).unwrap_or_default();
     let uv = cur.map(|t| t.uv_index).unwrap_or(0);
     let mut rows: Vec<Dom> = Vec::new();
@@ -2147,7 +2208,7 @@ fn texture_slot_rows(
                         .on_click({
                             let (node, close) = (node.clone(), close.clone());
                             move || {
-                                edit_slot(&node, slot, is_ext, default_asset, |t| t.asset = id);
+                                edit_slot(&node, slot, is_ext, default_ref, |t| t.asset = id);
                                 (close.borrow_mut())();
                             }
                         })
@@ -2174,13 +2235,13 @@ fn texture_slot_rows(
             rows.push(row(
                 "· UV set",
                 NumField::new(uv as f64).min(0.0).max(7.0).step(1.0)
-                    .on_change(move |v| edit_slot(&n, slot, is_ext, default_asset, |t| t.uv_index = v as u32))
+                    .on_change(move |v| edit_slot(&n, slot, is_ext, default_ref, |t| t.uv_index = v as u32))
                     .render(),
             ));
         }
         // A transform component setter that preserves the rest of the transform.
         let set_xf = move |node: &Arc<Node>, g: fn(&mut TextureTransform, f32), v: f32| {
-            edit_slot(node, slot, is_ext, default_asset, |t| {
+            edit_slot(node, slot, is_ext, default_ref, |t| {
                 let mut x = t.transform.unwrap_or_default();
                 g(&mut x, v);
                 t.transform = Some(x);
@@ -2196,6 +2257,42 @@ fn texture_slot_rows(
         rows.push(row("· Rotation", num(xf.rotation as f64, 0.01, node.clone(), |x, v| x.rotation = v)));
         rows.push(row("· Scale X", num(xf.scale[0] as f64, 0.01, node.clone(), |x, v| x.scale[0] = v)));
         rows.push(row("· Scale Y", num(xf.scale[1] as f64, 0.01, node.clone(), |x, v| x.scale[1] = v)));
+
+        // Sampler: wrap modes + filtering (imported from the glTF sampler).
+        let smp = cur.and_then(|t| t.sampler).unwrap_or_default();
+        // Set one sampler field, preserving the rest (seeds a sampler if absent).
+        let set_smp = move |node: &Arc<Node>, g: fn(&mut awsm_scene_schema::TextureSampler, &str), v: String| {
+            edit_slot(node, slot, is_ext, default_ref, move |t| {
+                let mut s = t.sampler.unwrap_or_default();
+                g(&mut s, &v);
+                t.sampler = Some(s);
+            });
+        };
+        {
+            let n = node.clone();
+            rows.push(enum_select_row("· Wrap U", wrap_str(smp.wrap_u), wrap_opts(),
+                move |v| set_smp(&n, |s, x| s.wrap_u = wrap_from(x), v)));
+        }
+        {
+            let n = node.clone();
+            rows.push(enum_select_row("· Wrap V", wrap_str(smp.wrap_v), wrap_opts(),
+                move |v| set_smp(&n, |s, x| s.wrap_v = wrap_from(x), v)));
+        }
+        {
+            let n = node.clone();
+            rows.push(enum_select_row("· Mag filter", filt_str(smp.mag_filter), filt_opts(),
+                move |v| set_smp(&n, |s, x| s.mag_filter = filt_from(x), v)));
+        }
+        {
+            let n = node.clone();
+            rows.push(enum_select_row("· Min filter", filt_str(smp.min_filter), filt_opts(),
+                move |v| set_smp(&n, |s, x| s.min_filter = filt_from(x), v)));
+        }
+        {
+            let n = node.clone();
+            rows.push(enum_select_row("· Mipmap filter", filt_str(smp.mipmap_filter), filt_opts(),
+                move |v| set_smp(&n, |s, x| s.mipmap_filter = filt_from(x), v)));
+        }
     }
     rows
 }

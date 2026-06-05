@@ -49,6 +49,47 @@ pub struct ExtractedMaterial {
 pub struct TexBinding {
     pub uv_index: u32,
     pub transform: Option<awsm_scene_schema::TextureTransform>,
+    pub sampler: Option<awsm_scene_schema::TextureSampler>,
+}
+
+/// Map a glTF texture sampler → the editor's [`TextureSampler`]. Returns `None`
+/// when it's the glTF default (repeat + linear), to keep refs compact.
+fn gltf_sampler(s: gltf::texture::Sampler) -> Option<awsm_scene_schema::TextureSampler> {
+    use awsm_scene_schema::{TextureFilter, TextureSampler, TextureWrap};
+    let wrap = |w: gltf::texture::WrappingMode| match w {
+        gltf::texture::WrappingMode::ClampToEdge => TextureWrap::ClampToEdge,
+        gltf::texture::WrappingMode::MirroredRepeat => TextureWrap::MirroredRepeat,
+        gltf::texture::WrappingMode::Repeat => TextureWrap::Repeat,
+    };
+    let mag = match s.mag_filter() {
+        Some(gltf::texture::MagFilter::Nearest) => TextureFilter::Nearest,
+        _ => TextureFilter::Linear,
+    };
+    // glTF's minFilter packs the min-filter AND mipmap behaviour into one enum.
+    let (min, mip) = match s.min_filter() {
+        Some(gltf::texture::MinFilter::Nearest) => (TextureFilter::Nearest, TextureFilter::Linear),
+        Some(gltf::texture::MinFilter::Linear) => (TextureFilter::Linear, TextureFilter::Linear),
+        Some(gltf::texture::MinFilter::NearestMipmapNearest) => {
+            (TextureFilter::Nearest, TextureFilter::Nearest)
+        }
+        Some(gltf::texture::MinFilter::LinearMipmapNearest) => {
+            (TextureFilter::Linear, TextureFilter::Nearest)
+        }
+        Some(gltf::texture::MinFilter::NearestMipmapLinear) => {
+            (TextureFilter::Nearest, TextureFilter::Linear)
+        }
+        Some(gltf::texture::MinFilter::LinearMipmapLinear) | None => {
+            (TextureFilter::Linear, TextureFilter::Linear)
+        }
+    };
+    let sampler = TextureSampler {
+        wrap_u: wrap(s.wrap_s()),
+        wrap_v: wrap(s.wrap_t()),
+        mag_filter: mag,
+        min_filter: min,
+        mipmap_filter: mip,
+    };
+    (sampler != TextureSampler::default()).then_some(sampler)
 }
 
 /// Baked renderer textures for a material's PBR slots (reused from populate),
@@ -77,7 +118,11 @@ struct MaterialTextureIndices {
 /// (Works for any of `gltf::texture::Info` / `NormalTexture` / `OcclusionTexture`
 /// — they all expose `tex_coord()` + `texture_transform()`.) The transform may
 /// override the texCoord per glTF spec.
-fn tex_binding(tex_coord: u32, xform: Option<gltf::texture::TextureTransform>) -> TexBinding {
+fn tex_binding(
+    tex_coord: u32,
+    xform: Option<gltf::texture::TextureTransform>,
+    sampler: Option<awsm_scene_schema::TextureSampler>,
+) -> TexBinding {
     let uv_index = xform.as_ref().and_then(|x| x.tex_coord()).unwrap_or(tex_coord);
     let transform = xform.map(|x| awsm_scene_schema::TextureTransform {
         offset: x.offset(),
@@ -87,6 +132,7 @@ fn tex_binding(tex_coord: u32, xform: Option<gltf::texture::TextureTransform>) -
     TexBinding {
         uv_index,
         transform,
+        sampler,
     }
 }
 
@@ -179,25 +225,34 @@ fn extract_material_specs(data: &GltfData) -> Vec<MatSpec> {
             };
             let ix = MaterialTextureIndices {
                 base_color: pbr.base_color_texture().map(|t| {
-                    (t.texture().index(), tex_binding(t.tex_coord(), t.texture_transform()))
+                    (t.texture().index(), tex_binding(t.tex_coord(), t.texture_transform(), gltf_sampler(t.texture().sampler())))
                 }),
                 metallic_roughness: pbr.metallic_roughness_texture().map(|t| {
-                    (t.texture().index(), tex_binding(t.tex_coord(), t.texture_transform()))
+                    (t.texture().index(), tex_binding(t.tex_coord(), t.texture_transform(), gltf_sampler(t.texture().sampler())))
                 }),
                 // NormalTexture / OcclusionTexture don't expose the typed
                 // texture_transform() accessor (only the base `Info` does), so
-                // they carry their UV set; a transform on a normal/occlusion map
-                // is rare and left off.
+                // they carry their UV set + sampler; a transform on a normal/
+                // occlusion map is rare and left off.
                 normal: m.normal_texture().map(|t| {
-                    (t.texture().index(), TexBinding { uv_index: t.tex_coord(), transform: None })
+                    (t.texture().index(), TexBinding { uv_index: t.tex_coord(), transform: None, sampler: gltf_sampler(t.texture().sampler()) })
                 }),
                 occlusion: m.occlusion_texture().map(|t| {
-                    (t.texture().index(), TexBinding { uv_index: t.tex_coord(), transform: None })
+                    (t.texture().index(), TexBinding { uv_index: t.tex_coord(), transform: None, sampler: gltf_sampler(t.texture().sampler()) })
                 }),
                 emissive: m.emissive_texture().map(|t| {
-                    (t.texture().index(), tex_binding(t.tex_coord(), t.texture_transform()))
+                    (t.texture().index(), tex_binding(t.tex_coord(), t.texture_transform(), gltf_sampler(t.texture().sampler())))
                 }),
             };
+            // Patch each extension texture's sampler from the glTF texture (the
+            // raw-JSON ext_tex path only had the textureInfo, not the sampler).
+            for (_, (idx, b)) in ext_textures.iter_mut() {
+                b.sampler = data
+                    .doc
+                    .textures()
+                    .nth(*idx)
+                    .and_then(|t| gltf_sampler(t.sampler()));
+            }
             (def, ix, ext_textures)
         })
         .collect()
@@ -381,6 +436,9 @@ fn ext_tex(v: &gltf::json::Value, key: &str) -> Option<(usize, TexBinding)> {
         TexBinding {
             uv_index,
             transform,
+            // Patched from the glTF texture's sampler in extract_material_specs
+            // (this raw-JSON path only sees the textureInfo).
+            sampler: None,
         },
     ))
 }
