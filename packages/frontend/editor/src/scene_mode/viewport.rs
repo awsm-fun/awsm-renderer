@@ -8,6 +8,7 @@
 
 use crate::controller::CameraAxis;
 use crate::engine::gizmo::{gizmo_mode, GizmoMode};
+use crate::engine::scene::NodeId;
 use crate::prelude::*;
 
 const PANEL_BG: &str = "oklch(0.18 0.006 255 / 0.78)";
@@ -187,9 +188,28 @@ fn camera_chip() -> Dom {
     })
 }
 
-/// A reactive object/tris chip bound to the primary selection.
+/// A reactive object/tris chip bound to the primary selection. The triangle
+/// count is the **real** total of the selected node's subtree (its meshes plus
+/// every descendant's), recomputed off the renderer whenever the selection or
+/// the scene changes.
 fn selection_stats() -> Dom {
     let ctrl = controller();
+    let tris: Mutable<u64> = Mutable::new(0);
+    // Recompute the selected subtree's triangle count on selection / scene change.
+    spawn_local(clone!(tris, ctrl => async move {
+        map_ref! {
+            let _rev = ctrl.scene.revision.signal(),
+            let sel = ctrl.selected.signal_cloned() => sel.last().copied()
+        }
+        .for_each(clone!(tris => move |sel_id| clone!(tris => async move {
+            let count = match sel_id {
+                Some(id) => subtree_triangle_count(id).await,
+                None => 0,
+            };
+            tris.set_neq(count);
+        })))
+        .await;
+    }));
     html!("span", {
         .class("mono")
         .style("font-size", "10.5px")
@@ -203,15 +223,66 @@ fn selection_stats() -> Dom {
         .style("border", "1px solid var(--line)")
         .text_signal(map_ref! {
             let _rev = ctrl.scene.revision.signal(),
-            let sel = ctrl.selected.signal_cloned() => {
-                let name = sel.last().and_then(|id| {
-                    crate::engine::scene::mutate::find_by_id(&controller().scene, *id)
-                        .map(|n| n.name.get_cloned())
-                }).unwrap_or_else(|| "\u{2014}".to_string());
-                format!("{name} \u{00b7} 1.2k tris")
+            let sel = ctrl.selected.signal_cloned(),
+            let tris = tris.signal() => {
+                match sel.last() {
+                    None => "\u{2014}".to_string(),
+                    Some(id) => {
+                        let name = crate::engine::scene::mutate::find_by_id(&controller().scene, *id)
+                            .map(|n| n.name.get_cloned())
+                            .unwrap_or_else(|| "\u{2014}".to_string());
+                        format!("{name} \u{00b7} {}", fmt_tris(*tris))
+                    }
+                }
             }
         })
     })
+}
+
+/// Format a triangle count as `"1.2k tris"` / `"342 tris"`.
+fn fmt_tris(n: u64) -> String {
+    if n >= 1000 {
+        format!("{:.1}k tris", n as f64 / 1000.0)
+    } else {
+        format!("{n} tris")
+    }
+}
+
+/// Total triangles in a node's subtree (the node plus all descendants),
+/// summed from the renderer meshes each materialized node owns.
+async fn subtree_triangle_count(root: NodeId) -> u64 {
+    use crate::engine::bridge::bridge;
+    use crate::engine::scene::node::Node;
+
+    fn collect(node: &std::sync::Arc<Node>, out: &mut Vec<NodeId>) {
+        out.push(node.id);
+        for c in node.children.lock_ref().iter() {
+            collect(c, out);
+        }
+    }
+
+    let mut ids = Vec::new();
+    if let Some(node) = crate::engine::scene::mutate::find_by_id(&controller().scene, root) {
+        collect(&node, &mut ids);
+    }
+    let mesh_keys: Vec<_> = {
+        let b = bridge();
+        let nodes = b.nodes.lock().unwrap();
+        ids.iter()
+            .filter_map(|id| nodes.get(id))
+            .flat_map(|n| n.model_meshes.lock().unwrap().clone())
+            .collect()
+    };
+    if mesh_keys.is_empty() {
+        return 0;
+    }
+    crate::engine::context::with_renderer_mut(move |r| {
+        mesh_keys
+            .iter()
+            .filter_map(|mk| r.meshes.mesh_triangle_count(*mk))
+            .sum::<usize>() as u64
+    })
+    .await
 }
 
 fn chip_text(text: &str) -> Dom {

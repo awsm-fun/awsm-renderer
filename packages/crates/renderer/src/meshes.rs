@@ -1785,6 +1785,15 @@ impl Meshes {
             .unwrap_or(false)
     }
 
+    /// The number of triangles in this mesh's geometry, if known. Editor tooling
+    /// uses this to report a selection's real triangle count.
+    pub fn mesh_triangle_count(&self, mesh_key: MeshKey) -> Option<usize> {
+        let resource_key = self.resource_key(mesh_key).ok()?;
+        let resource = self.resources.get(resource_key)?;
+        let buffer_info = self.buffer_infos.get(resource.buffer_info_key).ok()?;
+        Some(buffer_info.triangles.count)
+    }
+
     /// Iterates over all mesh keys.
     pub fn keys(&self) -> impl Iterator<Item = MeshKey> + '_ {
         self.list.keys()
