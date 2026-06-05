@@ -369,7 +369,8 @@ fn builtin_merged(
     use awsm_scene_schema::material::{MaterialAlphaMode, MaterialShading, PbrExtensions};
     use awsm_scene_schema::TextureRef;
     let ctrl = crate::controller::controller();
-    let mat = crate::controller::custom_material::find_material(&ctrl.custom_materials, inst.material)?;
+    let mat =
+        crate::controller::custom_material::find_material(&ctrl.custom_materials, inst.material)?;
     let variant = mat.builtin.get_cloned()?;
 
     // ── The override rule ────────────────────────────────────────────────────
@@ -437,14 +438,14 @@ fn builtin_merged(
         emissive: inline.emissive,
         normal_scale: inline.normal_scale,
         occlusion_strength: inline.occlusion_strength,
-        base_color_texture: tex("base_color_texture", variant.base_color_texture.clone()),
+        base_color_texture: tex("base_color_texture", variant.base_color_texture),
         metallic_roughness_texture: tex(
             "metallic_roughness_texture",
-            variant.metallic_roughness_texture.clone(),
+            variant.metallic_roughness_texture,
         ),
-        normal_texture: tex("normal_texture", variant.normal_texture.clone()),
-        occlusion_texture: tex("occlusion_texture", variant.occlusion_texture.clone()),
-        emissive_texture: tex("emissive_texture", variant.emissive_texture.clone()),
+        normal_texture: tex("normal_texture", variant.normal_texture),
+        occlusion_texture: tex("occlusion_texture", variant.occlusion_texture),
+        emissive_texture: tex("emissive_texture", variant.emissive_texture),
         alpha_mode,
         shading,
         extensions,

@@ -406,21 +406,20 @@ fn collect_cards(cat: Cat, query: &str) -> Vec<Card> {
             }
             // Imported glTF/glb model files — the deconstructed scene tree lives
             // in the Outliner; this is the browsable source-file asset.
-            AssetSource::Filename(name) if matches!(cat, Cat::All | Cat::Model) => {
-                if matches(name) {
-                    cards.push(Card {
-                        cat: Cat::Model,
-                        id: Some(*id),
-                        name: name.clone(),
-                        swatch:
-                            "linear-gradient(135deg, oklch(0.34 0.03 255), oklch(0.20 0.02 255))"
-                                .to_string(),
-                        badge: Some(("MODEL".to_string(), Tone::Accent)),
-                        meta: "glTF/glb".to_string(),
-                        builtin: false,
-                        custom: false,
-                    });
-                }
+            AssetSource::Filename(name)
+                if matches!(cat, Cat::All | Cat::Model) && matches(name) =>
+            {
+                cards.push(Card {
+                    cat: Cat::Model,
+                    id: Some(*id),
+                    name: name.clone(),
+                    swatch: "linear-gradient(135deg, oklch(0.34 0.03 255), oklch(0.20 0.02 255))"
+                        .to_string(),
+                    badge: Some(("MODEL".to_string(), Tone::Accent)),
+                    meta: "glTF/glb".to_string(),
+                    builtin: false,
+                    custom: false,
+                });
             }
             _ => {}
         }

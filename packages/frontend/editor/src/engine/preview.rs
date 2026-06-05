@@ -181,17 +181,12 @@ fn render_frame(ctx: &Arc<PreviewCtx>) {
         // has a real size, and again on any panel resize. Done inside the render
         // lock so the surface/texture recreation can't race an in-flight submit.
         let (cw, ch) = (ctx.canvas.client_width(), ctx.canvas.client_height());
-        if cw > 0
-            && ch > 0
-            && (ctx.canvas.width() != cw as u32 || ctx.canvas.height() != ch as u32)
+        if cw > 0 && ch > 0 && (ctx.canvas.width() != cw as u32 || ctx.canvas.height() != ch as u32)
         {
             ctx.canvas.set_width(cw as u32);
             ctx.canvas.set_height(ch as u32);
             r.gpu.sync_canvas_buffer_with_css();
-            ctx.camera
-                .lock()
-                .unwrap()
-                .set_aspect(cw as f32 / ch as f32);
+            ctx.camera.lock().unwrap().set_aspect(cw as f32 / ch as f32);
         }
         let matrices = {
             let c = ctx.camera.lock().unwrap();

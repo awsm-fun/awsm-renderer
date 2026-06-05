@@ -45,12 +45,11 @@ fn render_one_frame() {
         // a scene camera locks the view to its node's transform + config (and if
         // that node has gone away, we fall back to the free camera).
         let scene_matrices = active.and_then(|id| scene_camera_matrices(renderer, id));
-        let matrices = match scene_matrices
-            .or_else(|| context::try_with_camera_mut(|c| c.matrices()))
-        {
-            Some(m) => m,
-            None => return, // context not ready yet
-        };
+        let matrices =
+            match scene_matrices.or_else(|| context::try_with_camera_mut(|c| c.matrices())) {
+                Some(m) => m,
+                None => return, // context not ready yet
+            };
         if let Err(err) = renderer.update_camera(matrices.clone()) {
             tracing::error!("update_camera failed: {err}");
         }

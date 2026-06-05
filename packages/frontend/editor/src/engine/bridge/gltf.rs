@@ -123,7 +123,10 @@ fn tex_binding(
     xform: Option<gltf::texture::TextureTransform>,
     sampler: Option<awsm_scene_schema::TextureSampler>,
 ) -> TexBinding {
-    let uv_index = xform.as_ref().and_then(|x| x.tex_coord()).unwrap_or(tex_coord);
+    let uv_index = xform
+        .as_ref()
+        .and_then(|x| x.tex_coord())
+        .unwrap_or(tex_coord);
     let transform = xform.map(|x| awsm_scene_schema::TextureTransform {
         offset: x.offset(),
         rotation: x.rotation(),
@@ -225,23 +228,58 @@ fn extract_material_specs(data: &GltfData) -> Vec<MatSpec> {
             };
             let ix = MaterialTextureIndices {
                 base_color: pbr.base_color_texture().map(|t| {
-                    (t.texture().index(), tex_binding(t.tex_coord(), t.texture_transform(), gltf_sampler(t.texture().sampler())))
+                    (
+                        t.texture().index(),
+                        tex_binding(
+                            t.tex_coord(),
+                            t.texture_transform(),
+                            gltf_sampler(t.texture().sampler()),
+                        ),
+                    )
                 }),
                 metallic_roughness: pbr.metallic_roughness_texture().map(|t| {
-                    (t.texture().index(), tex_binding(t.tex_coord(), t.texture_transform(), gltf_sampler(t.texture().sampler())))
+                    (
+                        t.texture().index(),
+                        tex_binding(
+                            t.tex_coord(),
+                            t.texture_transform(),
+                            gltf_sampler(t.texture().sampler()),
+                        ),
+                    )
                 }),
                 // NormalTexture / OcclusionTexture don't expose the typed
                 // texture_transform() accessor (only the base `Info` does), so
                 // they carry their UV set + sampler; a transform on a normal/
                 // occlusion map is rare and left off.
                 normal: m.normal_texture().map(|t| {
-                    (t.texture().index(), TexBinding { uv_index: t.tex_coord(), transform: None, sampler: gltf_sampler(t.texture().sampler()) })
+                    (
+                        t.texture().index(),
+                        TexBinding {
+                            uv_index: t.tex_coord(),
+                            transform: None,
+                            sampler: gltf_sampler(t.texture().sampler()),
+                        },
+                    )
                 }),
                 occlusion: m.occlusion_texture().map(|t| {
-                    (t.texture().index(), TexBinding { uv_index: t.tex_coord(), transform: None, sampler: gltf_sampler(t.texture().sampler()) })
+                    (
+                        t.texture().index(),
+                        TexBinding {
+                            uv_index: t.tex_coord(),
+                            transform: None,
+                            sampler: gltf_sampler(t.texture().sampler()),
+                        },
+                    )
                 }),
                 emissive: m.emissive_texture().map(|t| {
-                    (t.texture().index(), tex_binding(t.tex_coord(), t.texture_transform(), gltf_sampler(t.texture().sampler())))
+                    (
+                        t.texture().index(),
+                        tex_binding(
+                            t.tex_coord(),
+                            t.texture_transform(),
+                            gltf_sampler(t.texture().sampler()),
+                        ),
+                    )
                 }),
             };
             // Patch each extension texture's sampler from the glTF texture (the
@@ -345,7 +383,11 @@ fn extract_extensions(
             ..Default::default()
         });
         grab("diffuse_transmission.tex", v, "diffuseTransmissionTexture");
-        grab("diffuse_transmission.color_tex", v, "diffuseTransmissionColorTexture");
+        grab(
+            "diffuse_transmission.color_tex",
+            v,
+            "diffuseTransmissionColorTexture",
+        );
     }
     if let Some(v) = m.extension_value("KHR_materials_volume") {
         e.volume = Some(VolumeExt {
@@ -401,7 +443,11 @@ fn extract_extensions(
             ..Default::default()
         });
         grab("iridescence.tex", v, "iridescenceTexture");
-        grab("iridescence.thickness_tex", v, "iridescenceThicknessTexture");
+        grab(
+            "iridescence.thickness_tex",
+            v,
+            "iridescenceThicknessTexture",
+        );
     }
     e
 }

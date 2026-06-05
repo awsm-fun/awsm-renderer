@@ -863,7 +863,7 @@ fn scene_50_materials() -> EditorProject {
         );
         let id = AssetId::new();
         project.assets.entries.insert(id, entry);
-        TextureRef(id)
+        TextureRef::new(id)
     };
 
     let mut meshes: Vec<EditorNode> = Vec::with_capacity(50);

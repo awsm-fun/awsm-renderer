@@ -100,9 +100,9 @@ pub fn popup(
             .style("position", "fixed")
             .style("left", &format!("{left}px"))
             .apply(|b| if open_up {
-                b.style("bottom", &format!("{}px", (viewport_h - anchor.top + 4.0).max(8.0)))
+                b.style("bottom", format!("{}px", (viewport_h - anchor.top + 4.0).max(8.0)))
             } else {
-                b.style("top", &format!("{}px", anchor.bottom + 4.0))
+                b.style("top", format!("{}px", anchor.bottom + 4.0))
             })
             .apply(|b| match width {
                 Some(w) => b.style("width", format!("{w}px")),

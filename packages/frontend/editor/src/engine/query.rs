@@ -24,8 +24,7 @@ pub fn scene_png() -> Option<String> {
 /// PNG data URL of the **material-mode preview** (the example sphere). `None`
 /// when the Studio isn't mounted.
 pub fn material_png() -> Option<String> {
-    crate::engine::preview::preview_canvas()
-        .and_then(|c| c.to_data_url_with_type("image/png").ok())
+    crate::engine::preview::preview_canvas().and_then(|c| c.to_data_url_with_type("image/png").ok())
 }
 
 /// PNG data URL of a **texture asset** by id. Procedural textures are generated
@@ -93,9 +92,8 @@ fn rgba_to_png_data_url(rgba: &[u8], w: u32, h: u32) -> Result<String, String> {
         .ok_or("no 2d context")?
         .dyn_into()
         .map_err(|_| "2d context cast")?;
-    let image_data =
-        web_sys::ImageData::new_with_u8_clamped_array_and_sh(Clamped(rgba), w, h)
-            .map_err(|_| "build ImageData")?;
+    let image_data = web_sys::ImageData::new_with_u8_clamped_array_and_sh(Clamped(rgba), w, h)
+        .map_err(|_| "build ImageData")?;
     ctx.put_image_data(&image_data, 0, 0)
         .map_err(|_| "put ImageData")?;
     canvas

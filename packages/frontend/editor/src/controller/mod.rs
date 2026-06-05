@@ -194,8 +194,7 @@ impl EditorController {
     /// seeing it move in another. Undo/redo deliberately don't broadcast (they
     /// call `apply` directly), so a replay isn't mistaken for a fresh edit.
     fn broadcast(&self, cmd: &EditorCommand) {
-        let payload =
-            serde_json::to_string(cmd).unwrap_or_else(|_| format!("{cmd:?}"));
+        let payload = serde_json::to_string(cmd).unwrap_or_else(|_| format!("{cmd:?}"));
         tracing::info!("broadcasting {payload}");
     }
 
@@ -709,8 +708,10 @@ impl EditorController {
         // assets (deduped by baked key) pre-registered to the baked GPU texture.
         use awsm_scene_schema::MaterialShading;
 
-        let mut tex_for_key: std::collections::HashMap<awsm_renderer::textures::TextureKey, AssetId> =
-            std::collections::HashMap::new();
+        let mut tex_for_key: std::collections::HashMap<
+            awsm_renderer::textures::TextureKey,
+            AssetId,
+        > = std::collections::HashMap::new();
         let mut texture_entries: Vec<(AssetId, String)> = Vec::new();
         let mut mat_ids: Vec<AssetId> = Vec::with_capacity(import.materials.len());
 
@@ -795,7 +796,8 @@ impl EditorController {
                 );
             }
             let id = AssetId::new();
-            let mut entry = AssetEntry::new(SceneAssetSource::Filename(import.display_name.clone()));
+            let mut entry =
+                AssetEntry::new(SceneAssetSource::Filename(import.display_name.clone()));
             entry.gltf_material_asset_ids = mat_ids.clone();
             entry.gltf_image_asset_ids = img_ids;
             table.entries.insert(id, entry);
@@ -1287,8 +1289,10 @@ fn build_editor_subtree(
                         .map(|m| m.name.get_cloned())
                     })
                     .unwrap_or_else(|| format!("{name} · part {i}"));
-                group.children.lock_mut().push_cloned(
-                    Node::new_with_transform_and_kind(
+                group
+                    .children
+                    .lock_mut()
+                    .push_cloned(Node::new_with_transform_and_kind(
                         part_label,
                         Trs::IDENTITY,
                         NodeKind::Model(ModelRef {
@@ -1299,8 +1303,7 @@ fn build_editor_subtree(
                             inline_material,
                             shadow: Default::default(),
                         }),
-                    ),
-                );
+                    ));
             }
             group
         }

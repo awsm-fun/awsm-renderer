@@ -103,6 +103,7 @@ fn editor_material_library_roundtrips_through_toml() {
     builtin.extensions.specular = Some(SpecularExt {
         factor: 0.8,
         color_factor: [0.9, 0.8, 1.0],
+        ..Default::default()
     });
 
     let stored = StoredMaterial {
