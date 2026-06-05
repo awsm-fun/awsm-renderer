@@ -136,24 +136,13 @@ pub fn rematerialize_for_material(id: crate::engine::scene::AssetId) {
                 } if inst.material == id => {
                     node.kind.set(kind.clone());
                 }
-                // An imported Model renders through the materials extracted from
-                // its source file; if the edited material is one of them,
-                // re-materialize so the model reflects the edit.
-                NodeKind::Model(model_ref) => {
-                    let uses_override =
-                        model_ref.material.as_ref().map(|i| i.material) == Some(id);
-                    let uses_extracted = crate::controller::controller()
-                        .scene
-                        .assets
-                        .lock()
-                        .unwrap()
-                        .entries
-                        .get(&model_ref.asset_id)
-                        .map(|e| e.gltf_material_asset_ids.contains(&id))
-                        .unwrap_or(false);
-                    if uses_override || uses_extracted {
-                        node.kind.set(kind.clone());
-                    }
+                // A Model node carries one assigned library material (set at
+                // import, swappable in the inspector); if the edited material is
+                // it, re-materialize so the model reflects the edit.
+                NodeKind::Model(model_ref)
+                    if model_ref.material.as_ref().map(|i| i.material) == Some(id) =>
+                {
+                    node.kind.set(kind.clone());
                 }
                 _ => {}
             }

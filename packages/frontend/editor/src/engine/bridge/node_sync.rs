@@ -470,23 +470,9 @@ async fn materialize_model(entry: Arc<RendererNode>, model_ref: awsm_scene_schem
         return;
     }
 
-    // The library material id per glTF material index (the import wired these).
-    let gltf_mat_ids: Vec<crate::engine::scene::AssetId> = {
-        let ctrl = controller();
-        let assets = ctrl.scene.assets.lock().unwrap();
-        assets
-            .entries
-            .get(&model_ref.asset_id)
-            .map(|e| e.gltf_material_asset_ids.clone())
-            .unwrap_or_default()
-    };
-
     let visible = entry.node.visible.get();
     let shadow_flags = mesh_shadow_flags_from_config(&model_ref.shadow);
     let parent_tk = entry.transform_key;
-    // A whole-node material override (chosen in the inspector) wins over each
-    // primitive's glTF-extracted material.
-    let override_id = model_ref.material.as_ref().map(|i| i.material);
 
     let mut created = Vec::new();
     let mut material_keys = Vec::new();
@@ -494,7 +480,20 @@ async fn materialize_model(entry: Arc<RendererNode>, model_ref: awsm_scene_schem
     {
         let handle = renderer_handle();
         let mut r = handle.lock().await;
-        for (mk, skinned, mat_idx) in &triples {
+        // One material per node: the node's assigned library material (set at
+        // import, swappable in the inspector) drives every primitive it renders.
+        // An *unassigned* node renders the flat-magenta missing-material
+        // sentinel — exactly like an unassigned primitive — rather than any
+        // hidden glTF fallback. The instance carries per-node uniform/texture/
+        // buffer overrides (dynamic materials) so one shared library material
+        // can be customized per node. Resolve once, reuse for all primitives.
+        let node_mat_key = model_ref
+            .material
+            .as_ref()
+            .and_then(|inst| resolve_instance_material(&mut r, inst))
+            .unwrap_or_else(|| material::insert_magenta(&mut r));
+        material_keys.push(node_mat_key);
+        for (mk, skinned, _mat_idx) in &triples {
             // Skinned meshes keep rendering in place (their original copy) —
             // duplicating collapses the skin; non-skinned are duplicated under
             // this node's transform so the editor node owns + moves them.
@@ -514,17 +513,7 @@ async fn materialize_model(entry: Arc<RendererNode>, model_ref: awsm_scene_schem
                     }
                 }
             };
-            // Render through the extracted **editable library material** (its
-            // textures reuse the same baked GPU textures), so the model's
-            // materials are editable + swappable like any other mesh's. A
-            // node-level override (if set) replaces every primitive's material.
-            let lib_id = override_id.or_else(|| mat_idx.and_then(|i| gltf_mat_ids.get(i)).copied());
-            if let Some(lib_id) = lib_id {
-                if let Some(key) = build_library_material(&mut r, lib_id) {
-                    let _ = r.set_mesh_material(target, key);
-                    material_keys.push(key);
-                }
-            }
+            let _ = r.set_mesh_material(target, node_mat_key);
             to_register.push(target);
         }
         if let Err(e) = r.finalize_gpu_textures().await {
@@ -541,23 +530,23 @@ async fn materialize_model(entry: Arc<RendererNode>, model_ref: awsm_scene_schem
     entry.material_keys.lock().unwrap().extend(material_keys);
 }
 
-/// Build a renderer material key from an editor **library** material id (a
-/// built-in PBR/Unlit/Toon variant → `material::insert_material`; a dynamic WGSL
-/// material → its registered bucket). `None` if the id isn't a known material.
-fn build_library_material(
+/// Resolve a [`CustomMaterialInstance`] assigned to a model node into a renderer
+/// material key. A built-in PBR/Unlit/Toon library material uses its full def
+/// (the import baked this material's factors into the library entry); a dynamic
+/// WGSL material is built through `insert_custom` so the instance's per-node
+/// uniform / texture / buffer overrides apply. `None` if the id isn't a known
+/// material (the caller then falls back to magenta). Mirrors the primitive
+/// material-resolution path so models and primitives behave identically.
+fn resolve_instance_material(
     r: &mut awsm_renderer::AwsmRenderer,
-    lib_id: crate::engine::scene::AssetId,
+    inst: &awsm_scene_schema::dynamic_material::CustomMaterialInstance,
 ) -> Option<awsm_renderer::materials::MaterialKey> {
     let ctrl = controller();
-    let mat = crate::controller::custom_material::find_material(&ctrl.custom_materials, lib_id)?;
+    let mat = crate::controller::custom_material::find_material(&ctrl.custom_materials, inst.material)?;
     if let Some(def) = mat.builtin.get_cloned() {
         Some(material::insert_material(r, &def))
     } else {
-        let inst = awsm_scene_schema::dynamic_material::CustomMaterialInstance {
-            material: lib_id,
-            ..Default::default()
-        };
-        super::dynamic::insert_custom(r, &inst)
+        super::dynamic::insert_custom(r, inst)
     }
 }
 

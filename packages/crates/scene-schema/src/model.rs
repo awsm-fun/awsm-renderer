@@ -15,10 +15,16 @@ pub struct ModelRef {
     /// onto its own editor node.
     #[serde(default)]
     pub primitive_index: Option<u32>,
-    /// Optional library-material override for this model node. `None` (the
-    /// default) renders every primitive with the material extracted from the
-    /// glTF; `Some` reassigns the whole node to one chosen library material
-    /// (the editor's "change the material on this mesh" for imported models).
+    /// The node's assigned library material — **one material per node**, the
+    /// same model as every other mesh in the editor. Set at import (the glTF
+    /// material is destructured into a shared library material and assigned
+    /// here); `None` means *unassigned* and renders flat magenta — the
+    /// missing-material sentinel — exactly like an unassigned primitive. A glTF
+    /// node whose primitives use *different* materials is split at import into
+    /// one child node per primitive (each with its own `primitive_index` +
+    /// `material`), so this single slot is always sufficient. The instance also
+    /// carries per-node uniform/texture/buffer overrides, so one library
+    /// material can be shared across many nodes and customized per node.
     #[serde(default)]
     pub material: Option<CustomMaterialInstance>,
     /// Per-mesh shadow cast / receive flags.

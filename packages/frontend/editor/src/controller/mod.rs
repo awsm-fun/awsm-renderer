@@ -539,8 +539,9 @@ impl EditorController {
                                 custom_material: instance,
                                 shadow,
                             },
-                            // An imported Model node: override its whole-node
-                            // material (None reverts to the glTF-extracted ones).
+                            // A Model node carries one assigned material (the
+                            // same model as a Primitive); `None` = unassigned →
+                            // magenta.
                             NodeKind::Model(mut r) => {
                                 r.material = instance;
                                 NodeKind::Model(r)
@@ -778,9 +779,11 @@ impl EditorController {
         let template = Arc::new(import.template);
         crate::engine::bridge::bridge().insert_template(asset_id, template.clone());
 
-        // Mirror the glTF hierarchy as editor nodes under the scene root.
+        // Mirror the glTF hierarchy as editor nodes under the scene root. Pass
+        // the per-glTF-material library ids so each mesh node is assigned its
+        // material (one per node; multi-material nodes are destructured).
         for root in &template.roots {
-            let node = build_editor_subtree(root, asset_id, Some(&import.display_name));
+            let node = build_editor_subtree(root, asset_id, &mat_ids, Some(&import.display_name));
             mutate::insert_under(&self.scene, None, node);
         }
         self.scene.bump_revision();
@@ -1026,10 +1029,11 @@ fn ensure_import_texture(
 fn build_editor_subtree(
     tn: &crate::engine::bridge::asset_template::AssetTemplateNode,
     asset_id: AssetId,
+    mat_ids: &[AssetId],
     fallback_name: Option<&str>,
 ) -> Arc<crate::engine::scene::node::Node> {
     use crate::engine::scene::node::Node;
-    use awsm_scene_schema::ModelRef;
+    use awsm_scene_schema::{dynamic_material::CustomMaterialInstance, ModelRef, Trs};
 
     let name = tn.label.clone().unwrap_or_else(|| {
         fallback_name
@@ -1037,25 +1041,78 @@ fn build_editor_subtree(
             .unwrap_or_else(|| format!("Node {}", tn.gltf_node_index))
     });
 
-    let kind = if tn.mesh_keys.is_empty() {
-        NodeKind::Group
-    } else {
-        NodeKind::Model(ModelRef {
-            asset_id,
-            node_index: tn.gltf_node_index,
-            primitive_index: None,
-            material: None,
-            shadow: Default::default(),
+    let trs = crate::engine::bridge::asset_template::transform_to_trs(&tn.local);
+
+    // A glTF material index → an assigned library-material *instance* (one
+    // material per node, derived at import; the instance is shared across every
+    // node that uses this glTF material and can be customized per node). `None`
+    // (no such material) leaves the node unassigned → magenta.
+    let instance_for = |mi: Option<usize>| -> Option<CustomMaterialInstance> {
+        mi.and_then(|i| mat_ids.get(i)).map(|id| CustomMaterialInstance {
+            material: *id,
+            ..Default::default()
         })
     };
 
-    let trs = crate::engine::bridge::asset_template::transform_to_trs(&tn.local);
-    let node = Node::new_with_transform_and_kind(name, trs, kind);
+    let node = if tn.mesh_keys.is_empty() {
+        Node::new_with_transform_and_kind(name, trs, NodeKind::Group)
+    } else {
+        // With one material per node, a node whose primitives all share a
+        // material (the common case) maps 1:1. A node whose primitives use
+        // *different* materials is destructured: a Group keeps the transform +
+        // glTF children, and one Model child per primitive carries its own
+        // `primitive_index` + assigned material.
+        let mat_indices = &tn.mesh_gltf_material_indices;
+        let distinct: std::collections::BTreeSet<Option<usize>> =
+            mat_indices.iter().copied().collect();
+        if distinct.len() <= 1 {
+            Node::new_with_transform_and_kind(
+                name,
+                trs,
+                NodeKind::Model(ModelRef {
+                    asset_id,
+                    node_index: tn.gltf_node_index,
+                    primitive_index: None,
+                    material: instance_for(mat_indices.first().copied().flatten()),
+                    shadow: Default::default(),
+                }),
+            )
+        } else {
+            let group = Node::new_with_transform_and_kind(name.clone(), trs, NodeKind::Group);
+            for (i, mi) in mat_indices.iter().enumerate() {
+                let material = instance_for(*mi);
+                let part_label = material
+                    .as_ref()
+                    .and_then(|inst| {
+                        crate::controller::custom_material::find_material(
+                            &controller().custom_materials,
+                            inst.material,
+                        )
+                        .map(|m| m.name.get_cloned())
+                    })
+                    .unwrap_or_else(|| format!("{name} · part {i}"));
+                group.children.lock_mut().push_cloned(
+                    Node::new_with_transform_and_kind(
+                        part_label,
+                        Trs::IDENTITY,
+                        NodeKind::Model(ModelRef {
+                            asset_id,
+                            node_index: tn.gltf_node_index,
+                            primitive_index: Some(i as u32),
+                            material,
+                            shadow: Default::default(),
+                        }),
+                    ),
+                );
+            }
+            group
+        }
+    };
 
     for child in &tn.children {
         node.children
             .lock_mut()
-            .push_cloned(build_editor_subtree(child, asset_id, None));
+            .push_cloned(build_editor_subtree(child, asset_id, mat_ids, None));
     }
     node
 }
