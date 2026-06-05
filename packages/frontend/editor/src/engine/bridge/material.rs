@@ -183,8 +183,11 @@ fn alpha_mode_of(def: &MaterialDef) -> MaterialAlphaMode {
 }
 
 /// Dispatch on the shading model so Unlit / Toon built-ins render as their real
-/// variant (previously every `MaterialDef` collapsed to PBR).
-fn material_to_renderer(def: &MaterialDef) -> Material {
+/// variant (previously every `MaterialDef` collapsed to PBR). Texture-less (the
+/// texture binding lives in `insert_material`) — which is exactly what the
+/// thumbnail renderer wants (its TextureKeys would differ from the main pool).
+/// `pub(crate)` for the thumbnail renderer.
+pub(crate) fn material_to_renderer(def: &MaterialDef) -> Material {
     let alpha_mode = alpha_mode_of(def);
     match def.shading {
         MaterialShading::Unlit => {

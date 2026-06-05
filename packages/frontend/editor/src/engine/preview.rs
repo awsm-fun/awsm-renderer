@@ -178,7 +178,8 @@ fn render_frame(ctx: &Arc<PreviewCtx>) {
 
 /// Insert a `Material` into a renderer (a real `&mut AwsmRenderer` so the
 /// disjoint field borrows compile — they don't through a lock guard inline).
-fn insert_material_into(r: &mut AwsmRenderer, material: Material) -> MaterialKey {
+/// `pub(super)` so the thumbnail renderer (sibling module) reuses it.
+pub(super) fn insert_material_into(r: &mut AwsmRenderer, material: Material) -> MaterialKey {
     r.materials
         .insert(material, &r.textures, &r.dynamic_materials, &r.extras_pool)
 }
@@ -191,7 +192,7 @@ fn insert_default_material(r: &mut AwsmRenderer) -> MaterialKey {
     insert_material_into(r, Material::Pbr(Box::new(pbr)))
 }
 
-fn preview_sphere() -> RawMeshData {
+pub(super) fn preview_sphere() -> RawMeshData {
     let mesh = sphere_mesh(0.85, 48, 32);
     RawMeshData {
         positions: mesh.positions,
@@ -202,7 +203,9 @@ fn preview_sphere() -> RawMeshData {
     }
 }
 
-async fn build_renderer(canvas: web_sys::HtmlCanvasElement) -> Result<AwsmRenderer, String> {
+pub(super) async fn build_renderer(
+    canvas: web_sys::HtmlCanvasElement,
+) -> Result<AwsmRenderer, String> {
     use awsm_renderer::features::{FeatureToggle, RendererFeatures};
     let gpu = web_sys::window().unwrap().navigator().gpu();
     let gpu_builder = AwsmRendererWebGpuBuilder::new(gpu, canvas)

@@ -239,6 +239,16 @@ fn card(c: Card) -> Dom {
         .child(html!("div", {
             .style("height", "64px").style("position", "relative")
             .style("background", &c.swatch)
+            // Rendered material thumbnail (built-in materials) layers over the flat
+            // swatch once it lands; falls back to the swatch when absent.
+            .style("background-size", "cover")
+            .style("background-position", "center")
+            .apply(|b| match id {
+                Some(mid) => b.style_signal("background-image",
+                    crate::engine::thumbnail::thumbnails().signal_ref(move |m| m.get(&mid).cloned())
+                        .map(|u| u.map(|u| format!("url({u})")).unwrap_or_else(|| "none".to_string()))),
+                None => b,
+            })
             .style("border-bottom", "1px solid var(--line-soft)")
             .apply(|b| match &c.badge {
                 Some((label, tone)) => b.child(html!("span", {
@@ -326,6 +336,8 @@ fn collect_cards(cat: Cat, query: &str) -> Vec<Card> {
     // Custom WGSL materials (decision 3) — shown in All + Materials.
     if matches!(cat, Cat::All | Cat::Material) {
         for mat in controller().custom_materials.lock_ref().iter() {
+            // Queue a rendered thumbnail (built-in materials only; no-op once cached).
+            crate::engine::thumbnail::request(mat.clone());
             let name = mat.name.get_cloned();
             if matches(&name) {
                 let status = if mat.registered.get() {
@@ -333,14 +345,21 @@ fn collect_cards(cat: Cat, query: &str) -> Vec<Card> {
                 } else {
                     "draft"
                 };
+                // Built-in materials show their shading kind; dynamic ones show "WGSL".
+                let badge = match mat.builtin.get_cloned() {
+                    Some(def) => shading_badge(&def),
+                    None => ("WGSL".to_string(), Tone::Accent),
+                };
                 cards.push(Card {
                     cat: Cat::Material,
                     id: Some(mat.id),
                     name,
                     swatch: mat.color.get_cloned(),
-                    badge: Some(("WGSL".to_string(), Tone::Accent)),
+                    badge: Some(badge),
                     meta: status.to_string(),
                     builtin: false,
+                    // Clicking opens the Studio (its Definition rail shows the
+                    // built-in variant panel, or the dynamic shader graph).
                     custom: true,
                 });
             }

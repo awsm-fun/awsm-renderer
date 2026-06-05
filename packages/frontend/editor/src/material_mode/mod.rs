@@ -186,6 +186,9 @@ fn edit_builtin(mat: &Arc<CustomMaterial>, f: impl FnOnce(&mut awsm_scene_schema
     let mut def = mat.builtin.get_cloned().unwrap_or_default();
     f(&mut def);
     mat.builtin.set(Some(def));
+    // The variant changed → refresh its card thumbnail.
+    crate::engine::thumbnail::invalidate(mat.id);
+    crate::engine::thumbnail::request(mat.clone());
     controller().dirty.set_neq(true);
 }
 
