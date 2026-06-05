@@ -751,6 +751,18 @@ impl EditorController {
                 ex.textures.emissive,
                 &format!("{label} · emissive"),
             );
+            // KHR-extension texture slots (clearcoat normal map, specular colour
+            // map, sheen colour map, …): create a texture asset for each + write
+            // the TextureRef onto the matching extension field.
+            for (slot, baked) in &ex.ext_textures {
+                let tref = ensure_import_texture(
+                    &mut tex_for_key,
+                    &mut texture_entries,
+                    Some(*baked),
+                    &format!("{label} · {slot}"),
+                );
+                set_ext_texture(&mut def.extensions, slot, tref);
+            }
 
             // A built-in PBR library material carrying the full variant def.
             let lib_id = AssetId::new();
@@ -1035,6 +1047,89 @@ fn default_procedural(proc: ProceduralKind) -> ProceduralTextureDef {
             seed: 1337,
             scale: 4.0,
         },
+    }
+}
+
+/// Write a resolved extension-texture `TextureRef` onto the matching field of an
+/// enabled extension, keyed by `"<ext>.<field>"`. No-op if the extension isn't
+/// present (it was the variant enable that decided whether the slot exists).
+fn set_ext_texture(
+    ext: &mut awsm_scene_schema::PbrExtensions,
+    slot: &str,
+    tref: Option<awsm_scene_schema::TextureRef>,
+) {
+    match slot {
+        "specular.tex" => {
+            if let Some(e) = &mut ext.specular {
+                e.tex = tref;
+            }
+        }
+        "specular.color_tex" => {
+            if let Some(e) = &mut ext.specular {
+                e.color_tex = tref;
+            }
+        }
+        "transmission.tex" => {
+            if let Some(e) = &mut ext.transmission {
+                e.tex = tref;
+            }
+        }
+        "diffuse_transmission.tex" => {
+            if let Some(e) = &mut ext.diffuse_transmission {
+                e.tex = tref;
+            }
+        }
+        "diffuse_transmission.color_tex" => {
+            if let Some(e) = &mut ext.diffuse_transmission {
+                e.color_tex = tref;
+            }
+        }
+        "volume.thickness_tex" => {
+            if let Some(e) = &mut ext.volume {
+                e.thickness_tex = tref;
+            }
+        }
+        "clearcoat.tex" => {
+            if let Some(e) = &mut ext.clearcoat {
+                e.tex = tref;
+            }
+        }
+        "clearcoat.roughness_tex" => {
+            if let Some(e) = &mut ext.clearcoat {
+                e.roughness_tex = tref;
+            }
+        }
+        "clearcoat.normal_tex" => {
+            if let Some(e) = &mut ext.clearcoat {
+                e.normal_tex = tref;
+            }
+        }
+        "sheen.color_tex" => {
+            if let Some(e) = &mut ext.sheen {
+                e.color_tex = tref;
+            }
+        }
+        "sheen.roughness_tex" => {
+            if let Some(e) = &mut ext.sheen {
+                e.roughness_tex = tref;
+            }
+        }
+        "anisotropy.tex" => {
+            if let Some(e) = &mut ext.anisotropy {
+                e.tex = tref;
+            }
+        }
+        "iridescence.tex" => {
+            if let Some(e) = &mut ext.iridescence {
+                e.tex = tref;
+            }
+        }
+        "iridescence.thickness_tex" => {
+            if let Some(e) = &mut ext.iridescence {
+                e.thickness_tex = tref;
+            }
+        }
+        _ => {}
     }
 }
 

@@ -36,6 +36,10 @@ pub struct GltfImport {
 pub struct ExtractedMaterial {
     pub def: MaterialDef,
     pub textures: MaterialTextureKeys,
+    /// Resolved KHR-extension texture slots, keyed by `"<ext>.<field>"` (e.g.
+    /// `"clearcoat.normal_tex"`). The controller turns each into a `TextureRef`
+    /// on the matching `def.extensions` field once it has minted asset ids.
+    pub ext_textures: Vec<(&'static str, (TextureKey, TexBinding))>,
 }
 
 /// The per-binding sampling metadata for one texture slot: which UV set (glTF
@@ -137,12 +141,20 @@ async fn import_typed(
 }
 
 /// Read each glTF material's editable factors + its slot texture indices.
-fn extract_material_specs(data: &GltfData) -> Vec<(MaterialDef, MaterialTextureIndices)> {
+type MatSpec = (
+    MaterialDef,
+    MaterialTextureIndices,
+    Vec<(&'static str, (usize, TexBinding))>,
+);
+
+fn extract_material_specs(data: &GltfData) -> Vec<MatSpec> {
     data.doc
         .materials()
         .map(|m| {
             let pbr = m.pbr_metallic_roughness();
             let idx = m.index().unwrap_or(0);
+            let mut ext_textures = Vec::new();
+            let extensions = extract_extensions(&m, &mut ext_textures);
             let def = MaterialDef {
                 label: m
                     .name()
@@ -162,7 +174,7 @@ fn extract_material_specs(data: &GltfData) -> Vec<(MaterialDef, MaterialTextureI
                 } else {
                     awsm_scene_schema::MaterialShading::Pbr
                 },
-                extensions: extract_extensions(&m),
+                extensions,
                 ..MaterialDef::default()
             };
             let ix = MaterialTextureIndices {
@@ -186,7 +198,7 @@ fn extract_material_specs(data: &GltfData) -> Vec<(MaterialDef, MaterialTextureI
                     (t.texture().index(), tex_binding(t.tex_coord(), t.texture_transform()))
                 }),
             };
-            (def, ix)
+            (def, ix, ext_textures)
         })
         .collect()
 }
@@ -233,9 +245,18 @@ fn ext_color3(v: &gltf::json::Value, key: &str, default: [f32; 3]) -> [f32; 3] {
 /// extension texture slots). An enabled extension becomes a variant bit on the
 /// imported material; its parameters become the per-mesh overrides this mesh
 /// seeds from.
-fn extract_extensions(m: &gltf::Material) -> awsm_scene_schema::material::PbrExtensions {
+fn extract_extensions(
+    m: &gltf::Material,
+    ext_textures: &mut Vec<(&'static str, (usize, TexBinding))>,
+) -> awsm_scene_schema::material::PbrExtensions {
     use awsm_scene_schema::material::*;
     let mut e = PbrExtensions::default();
+    // Capture an extension texture slot (a glTF `textureInfo` object) by name.
+    let mut grab = |slot: &'static str, v: &gltf::json::Value, json_key: &str| {
+        if let Some(t) = ext_tex(v, json_key) {
+            ext_textures.push((slot, t));
+        }
+    };
     if let Some(v) = m.extension_value("KHR_materials_emissive_strength") {
         e.emissive_strength = Some(EmissiveStrengthExt {
             strength: ext_f32(v, "emissiveStrength", 1.0),
@@ -250,37 +271,58 @@ fn extract_extensions(m: &gltf::Material) -> awsm_scene_schema::material::PbrExt
         e.specular = Some(SpecularExt {
             factor: ext_f32(v, "specularFactor", 1.0),
             color_factor: ext_color3(v, "specularColorFactor", [1.0, 1.0, 1.0]),
+            ..Default::default()
         });
+        grab("specular.tex", v, "specularTexture");
+        grab("specular.color_tex", v, "specularColorTexture");
     }
     if let Some(v) = m.extension_value("KHR_materials_transmission") {
         e.transmission = Some(TransmissionExt {
             factor: ext_f32(v, "transmissionFactor", 0.0),
+            ..Default::default()
         });
+        grab("transmission.tex", v, "transmissionTexture");
     }
     if let Some(v) = m.extension_value("KHR_materials_diffuse_transmission") {
         e.diffuse_transmission = Some(DiffuseTransmissionExt {
             factor: ext_f32(v, "diffuseTransmissionFactor", 0.0),
             color_factor: ext_color3(v, "diffuseTransmissionColorFactor", [1.0, 1.0, 1.0]),
+            ..Default::default()
         });
+        grab("diffuse_transmission.tex", v, "diffuseTransmissionTexture");
+        grab("diffuse_transmission.color_tex", v, "diffuseTransmissionColorTexture");
     }
     if let Some(v) = m.extension_value("KHR_materials_volume") {
         e.volume = Some(VolumeExt {
             thickness_factor: ext_f32(v, "thicknessFactor", 0.0),
             attenuation_distance: ext_f32(v, "attenuationDistance", 1.0),
             attenuation_color: ext_color3(v, "attenuationColor", [1.0, 1.0, 1.0]),
+            ..Default::default()
         });
+        grab("volume.thickness_tex", v, "thicknessTexture");
     }
     if let Some(v) = m.extension_value("KHR_materials_clearcoat") {
         e.clearcoat = Some(ClearcoatExt {
             factor: ext_f32(v, "clearcoatFactor", 0.0),
             roughness_factor: ext_f32(v, "clearcoatRoughnessFactor", 0.0),
+            normal_scale: v
+                .get("clearcoatNormalTexture")
+                .map(|t| ext_f32(t, "scale", 1.0))
+                .unwrap_or(1.0),
+            ..Default::default()
         });
+        grab("clearcoat.tex", v, "clearcoatTexture");
+        grab("clearcoat.roughness_tex", v, "clearcoatRoughnessTexture");
+        grab("clearcoat.normal_tex", v, "clearcoatNormalTexture");
     }
     if let Some(v) = m.extension_value("KHR_materials_sheen") {
         e.sheen = Some(SheenExt {
             roughness_factor: ext_f32(v, "sheenRoughnessFactor", 0.0),
             color_factor: ext_color3(v, "sheenColorFactor", [0.0, 0.0, 0.0]),
+            ..Default::default()
         });
+        grab("sheen.color_tex", v, "sheenColorTexture");
+        grab("sheen.roughness_tex", v, "sheenRoughnessTexture");
     }
     if let Some(v) = m.extension_value("KHR_materials_dispersion") {
         e.dispersion = Some(DispersionExt {
@@ -291,7 +333,9 @@ fn extract_extensions(m: &gltf::Material) -> awsm_scene_schema::material::PbrExt
         e.anisotropy = Some(AnisotropyExt {
             strength: ext_f32(v, "anisotropyStrength", 0.0),
             rotation: ext_f32(v, "anisotropyRotation", 0.0),
+            ..Default::default()
         });
+        grab("anisotropy.tex", v, "anisotropyTexture");
     }
     if let Some(v) = m.extension_value("KHR_materials_iridescence") {
         e.iridescence = Some(IridescenceExt {
@@ -299,18 +343,67 @@ fn extract_extensions(m: &gltf::Material) -> awsm_scene_schema::material::PbrExt
             ior: ext_f32(v, "iridescenceIor", 1.3),
             thickness_min: ext_f32(v, "iridescenceThicknessMinimum", 100.0),
             thickness_max: ext_f32(v, "iridescenceThicknessMaximum", 400.0),
+            ..Default::default()
         });
+        grab("iridescence.tex", v, "iridescenceTexture");
+        grab("iridescence.thickness_tex", v, "iridescenceThicknessTexture");
     }
     e
+}
+
+/// Read an extension `textureInfo` JSON object → (glTF texture index, binding).
+/// Honors the slot's own `texCoord` + an inline `KHR_texture_transform`.
+fn ext_tex(v: &gltf::json::Value, key: &str) -> Option<(usize, TexBinding)> {
+    let info = v.get(key)?;
+    let index = info.get("index").and_then(|x| x.as_u64())? as usize;
+    let tex_coord = info.get("texCoord").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
+    let xform = info
+        .get("extensions")
+        .and_then(|e| e.get("KHR_texture_transform"));
+    let (uv_index, transform) = match xform {
+        Some(t) => {
+            let uv = t
+                .get("texCoord")
+                .and_then(|x| x.as_u64())
+                .map(|x| x as u32)
+                .unwrap_or(tex_coord);
+            let transform = awsm_scene_schema::TextureTransform {
+                offset: read_vec2(t, "offset", [0.0, 0.0]),
+                rotation: ext_f32(t, "rotation", 0.0),
+                scale: read_vec2(t, "scale", [1.0, 1.0]),
+            };
+            (uv, Some(transform))
+        }
+        None => (tex_coord, None),
+    };
+    Some((
+        index,
+        TexBinding {
+            uv_index,
+            transform,
+        },
+    ))
+}
+
+/// Read a 2-component float field off a raw glTF JSON object.
+fn read_vec2(v: &gltf::json::Value, key: &str, default: [f32; 2]) -> [f32; 2] {
+    v.get(key)
+        .and_then(|x| x.as_array())
+        .map(|a| {
+            let c = |i: usize| {
+                a.get(i)
+                    .and_then(|x| x.as_f64())
+                    .unwrap_or(default[i] as f64) as f32
+            };
+            [c(0), c(1)]
+        })
+        .unwrap_or(default)
 }
 
 /// Resolve each material's slot texture indices to the renderer [`TextureKey`]s
 /// the populate pass uploaded (matched by glTF texture index — a texture maps to
 /// one baked key regardless of the colour-space variant used in the lookup key).
-fn resolve_materials(
-    ctx: &GltfPopulateContext,
-    specs: Vec<(MaterialDef, MaterialTextureIndices)>,
-) -> Vec<ExtractedMaterial> {
+fn resolve_materials(ctx: &GltfPopulateContext, specs: Vec<MatSpec>) -> Vec<ExtractedMaterial> {
     let textures = ctx.textures.lock().unwrap();
     // Resolve a (glTF texture index, binding) → (baked TextureKey, binding).
     let find = |slot: Option<(usize, TexBinding)>| -> Option<(TextureKey, TexBinding)> {
@@ -322,15 +415,22 @@ fn resolve_materials(
     };
     specs
         .into_iter()
-        .map(|(def, ix)| ExtractedMaterial {
-            def,
-            textures: MaterialTextureKeys {
-                base_color: find(ix.base_color),
-                metallic_roughness: find(ix.metallic_roughness),
-                normal: find(ix.normal),
-                occlusion: find(ix.occlusion),
-                emissive: find(ix.emissive),
-            },
+        .map(|(def, ix, ext_idx)| {
+            let ext_textures = ext_idx
+                .into_iter()
+                .filter_map(|(slot, (i, b))| find(Some((i, b))).map(|kb| (slot, kb)))
+                .collect();
+            ExtractedMaterial {
+                def,
+                textures: MaterialTextureKeys {
+                    base_color: find(ix.base_color),
+                    metallic_roughness: find(ix.metallic_roughness),
+                    normal: find(ix.normal),
+                    occlusion: find(ix.occlusion),
+                    emissive: find(ix.emissive),
+                },
+                ext_textures,
+            }
         })
         .collect()
 }

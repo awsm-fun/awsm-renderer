@@ -77,6 +77,7 @@ pub fn insert_material(renderer: &mut AwsmRenderer, def: &MaterialDef) -> Materi
             let alpha_mode = alpha_mode_of(def);
             let mut pbr = material_to_pbr(def, alpha_mode);
             apply_textures(renderer, &mut pbr, def);
+            apply_extension_textures(renderer, &mut pbr, def);
             Material::Pbr(Box::new(pbr))
         }
         // Unlit / Toon don't carry texture slots in the editor yet.
@@ -107,6 +108,57 @@ fn apply_textures(r: &mut AwsmRenderer, pbr: &mut PbrMaterial, def: &MaterialDef
     }
     if let Some(t) = &def.emissive_texture {
         pbr.emissive_tex = resolve_texture(r, t, true, MipmapTextureKind::Emissive);
+    }
+}
+
+/// Resolve an optional texture ref (no-op when `None`).
+fn resolve_opt(
+    r: &mut AwsmRenderer,
+    t: &Option<TextureRef>,
+    srgb: bool,
+    kind: MipmapTextureKind,
+) -> Option<MaterialTexture> {
+    t.as_ref().and_then(|t| resolve_texture(r, t, srgb, kind))
+}
+
+/// Resolve + bind each enabled KHR extension's texture slots onto the renderer's
+/// already-populated `PbrMaterial` extension structs. Mirrors `apply_textures`
+/// but for the extension maps (clearcoat normal map, specular colour map, …).
+fn apply_extension_textures(r: &mut AwsmRenderer, pbr: &mut PbrMaterial, def: &MaterialDef) {
+    use MipmapTextureKind as K;
+    let ext = &def.extensions;
+    if let (Some(e), Some(p)) = (ext.specular.as_ref(), pbr.specular.as_mut()) {
+        p.tex = resolve_opt(r, &e.tex, false, K::MetallicRoughness);
+        p.color_tex = resolve_opt(r, &e.color_tex, true, K::Albedo);
+    }
+    if let (Some(e), Some(p)) = (ext.transmission.as_ref(), pbr.transmission.as_mut()) {
+        p.tex = resolve_opt(r, &e.tex, false, K::MetallicRoughness);
+    }
+    if let (Some(e), Some(p)) = (
+        ext.diffuse_transmission.as_ref(),
+        pbr.diffuse_transmission.as_mut(),
+    ) {
+        p.tex = resolve_opt(r, &e.tex, false, K::MetallicRoughness);
+        p.color_tex = resolve_opt(r, &e.color_tex, true, K::Albedo);
+    }
+    if let (Some(e), Some(p)) = (ext.volume.as_ref(), pbr.volume.as_mut()) {
+        p.thickness_tex = resolve_opt(r, &e.thickness_tex, false, K::MetallicRoughness);
+    }
+    if let (Some(e), Some(p)) = (ext.clearcoat.as_ref(), pbr.clearcoat.as_mut()) {
+        p.tex = resolve_opt(r, &e.tex, false, K::MetallicRoughness);
+        p.roughness_tex = resolve_opt(r, &e.roughness_tex, false, K::MetallicRoughness);
+        p.normal_tex = resolve_opt(r, &e.normal_tex, false, K::Normal);
+    }
+    if let (Some(e), Some(p)) = (ext.sheen.as_ref(), pbr.sheen.as_mut()) {
+        p.color_tex = resolve_opt(r, &e.color_tex, true, K::Albedo);
+        p.roughness_tex = resolve_opt(r, &e.roughness_tex, false, K::MetallicRoughness);
+    }
+    if let (Some(e), Some(p)) = (ext.anisotropy.as_ref(), pbr.anisotropy.as_mut()) {
+        p.tex = resolve_opt(r, &e.tex, false, K::Normal);
+    }
+    if let (Some(e), Some(p)) = (ext.iridescence.as_ref(), pbr.iridescence.as_mut()) {
+        p.tex = resolve_opt(r, &e.tex, false, K::MetallicRoughness);
+        p.thickness_tex = resolve_opt(r, &e.thickness_tex, false, K::MetallicRoughness);
     }
 }
 
@@ -341,7 +393,7 @@ fn apply_extensions(pbr: &mut PbrMaterial, ext: &awsm_scene_schema::PbrExtension
             roughness_tex: None,
             roughness_factor: e.roughness_factor,
             normal_tex: None,
-            normal_scale: 1.0,
+            normal_scale: e.normal_scale,
         });
     }
     if let Some(e) = ext.sheen {
