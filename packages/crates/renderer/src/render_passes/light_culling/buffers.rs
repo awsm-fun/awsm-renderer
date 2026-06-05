@@ -81,8 +81,9 @@ pub const MAX_TILE_LIGHT_CAPACITY: u32 = crate::lights::MAX_PUNCTUAL_LIGHTS as u
 /// Layout: 7 u32 (tiles_x, tiles_y, viewport_w, viewport_h,
 /// mesh_indices_capacity_u32, max_per_froxel_capacity, tile_light_capacity)
 /// then 3 f32 (z_near, z_far, log_far_over_near) + debug_light_heatmap u32,
-/// then a view-mode row (view_mode, wireframe, 2×_pad), padded to 64 bytes for
-/// vec4 alignment.
+/// then a debug-view row (debug_view_mode, debug_wireframe, 2×_pad), padded to
+/// 64 bytes for vec4 alignment. The two debug fields are read only by the
+/// `debug-views`-gated shader branches; left zero (and unread) in game builds.
 pub const CULL_PARAMS_BYTE_SIZE: usize = 64;
 
 /// Byte size of a single storage-buffer entry (one `u32`).
@@ -406,8 +407,8 @@ impl LightCullingBuffers {
         z_near: f32,
         z_far: f32,
         debug_light_heatmap: u32,
-        view_mode: u32,
-        wireframe: u32,
+        debug_view_mode: u32,
+        debug_wireframe: u32,
     ) -> Result<(), AwsmCoreError> {
         let tiles_x = self.tiles_x();
         let tiles_y = self.tiles_y();
@@ -424,8 +425,8 @@ impl LightCullingBuffers {
         bytes[32..36].copy_from_slice(&z_far.to_ne_bytes());
         bytes[36..40].copy_from_slice(&log_far_over_near.to_ne_bytes());
         bytes[40..44].copy_from_slice(&debug_light_heatmap.to_ne_bytes());
-        bytes[44..48].copy_from_slice(&view_mode.to_ne_bytes());
-        bytes[48..52].copy_from_slice(&wireframe.to_ne_bytes());
+        bytes[44..48].copy_from_slice(&debug_view_mode.to_ne_bytes());
+        bytes[48..52].copy_from_slice(&debug_wireframe.to_ne_bytes());
         // bytes[52..64] = padding, leave zero.
 
         if self.last_params == Some(bytes) {

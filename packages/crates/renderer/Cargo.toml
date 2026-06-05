@@ -22,6 +22,14 @@ default = ["animation"]
 all = ["animation", "awsm-renderer-core/all", "scene-schema"]
 # specifics
 animation = []
+# Compiles the in-shader debug VIEW overlays — global unlit/flat view mode,
+# wireframe overlay, and the froxel light-count heatmap — into the material
+# shaders. OFF by default so game builds pay nothing: with the feature off the
+# `{% if debug.views %}` template gates collapse and the branches never reach
+# the compiled WGSL (the `CullParams` debug fields are simply left unread). The
+# editor enables this; the per-frame uniform write stays either way (negligible,
+# dedup'd) so the runtime setters keep working when the feature is on.
+debug-views = []
 # Optional features to enable optional parts of awsm-renderer-core
 ktx = ["awsm-renderer-core/ktx"]
 # `serde` is now a required dep (Phase 4.3a worker jobs need it); the

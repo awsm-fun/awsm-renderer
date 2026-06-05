@@ -319,8 +319,8 @@ impl AwsmRenderer {
             z_near_for_cull,
             z_far_for_cull,
             self.light_culling_debug_heatmap,
-            self.view_mode,
-            self.wireframe,
+            self.debug_view_mode,
+            self.debug_wireframe,
         )?;
         self.light_culling_buffers.reset_overflow(&self.gpu)?;
 

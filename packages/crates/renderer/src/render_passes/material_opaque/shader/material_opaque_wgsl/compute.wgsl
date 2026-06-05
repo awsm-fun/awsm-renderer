@@ -352,13 +352,15 @@ fn main(
         base_alpha = base_alpha * tint.a * attr.alpha;
     }
 
+    {% if debug.views %}
     // Global wireframe overlay — darken pixels near a triangle edge (constant
     // barycentric threshold; derivatives aren't available in a compute kernel).
-    if (cull_params.wireframe == 1u) {
+    if (cull_params.debug_wireframe == 1u) {
         let wire_edge = min(min(barycentric.x, barycentric.y), barycentric.z);
         let wire = 1.0 - smoothstep(0.0, 0.02, wire_edge);
         color = mix(color, vec3<f32>(0.02, 0.02, 0.03), wire);
     }
+    {% endif %}
 
     // Write to output texture for non-edge pixel
     textureStore(opaque_tex, coords, vec4<f32>(color, base_alpha));

@@ -140,14 +140,18 @@ pub struct AwsmRenderer {
     /// `write_params`. Owned here (not on `LightCullingBuffers`) so it
     /// survives froxel-buffer recreation on resize / auto-grow.
     pub light_culling_debug_heatmap: u32,
-    /// Global view mode: 0 = normal shading, 1 = unlit/flat (base color only).
-    /// Written into `CullParams.view_mode` each frame via `write_params`; no
-    /// recompile. Owned here (survives froxel-buffer recreation).
-    pub view_mode: u32,
-    /// Global wireframe overlay: 0 = off, 1 = on. Tints pixels near a triangle
-    /// edge (barycentric distance) in the deferred shade. Written into
-    /// `CullParams.wireframe` each frame; no recompile.
-    pub wireframe: u32,
+    /// Global debug view mode: 0 = normal shading, 1 = unlit/flat (base color
+    /// only). Written into `CullParams.debug_view_mode` each frame via
+    /// `write_params`; no recompile. Owned here (survives froxel-buffer
+    /// recreation). The shader branch that reads it is compiled only under the
+    /// `debug-views` cargo feature; in a game build the value is written but
+    /// never read.
+    pub debug_view_mode: u32,
+    /// Global debug wireframe overlay: 0 = off, 1 = on. Tints pixels near a
+    /// triangle edge (barycentric distance) in the deferred shade. Written into
+    /// `CullParams.debug_wireframe` each frame; no recompile. Read only by the
+    /// `debug-views`-gated shader branch.
+    pub debug_wireframe: u32,
     /// MSAA-edge-resolve buffers (Stage 3 / Priority 3 dispatch wiring).
     /// `None` when MSAA is off — there are no edges to resolve. When
     /// MSAA is on, holds the two split GPU buffers carrying:
@@ -2094,8 +2098,8 @@ impl AwsmRendererBuilder {
             material_classify_buffers,
             light_culling_buffers,
             light_culling_debug_heatmap: 0,
-            view_mode: 0,
-            wireframe: 0,
+            debug_view_mode: 0,
+            debug_wireframe: 0,
             material_edge_buffers,
             material_edge_layout_uniform,
             decals,
@@ -2472,19 +2476,22 @@ impl AwsmRenderer {
         self.light_culling_debug_heatmap = u32::from(on);
     }
 
-    /// Global view mode: 0 = normal lit shading, 1 = unlit/flat (base color
-    /// only). Written into `CullParams.view_mode` on the next `write_params`;
-    /// no buffer recreation or shader recompile. Affects PBR materials (the
-    /// common case); already-unlit/Toon/custom materials are unchanged.
-    pub fn set_view_mode(&mut self, mode: u32) {
-        self.view_mode = mode;
+    /// Global debug view mode: 0 = normal lit shading, 1 = unlit/flat (base
+    /// color only). Written into `CullParams.debug_view_mode` on the next
+    /// `write_params`; no buffer recreation or shader recompile. Affects PBR
+    /// materials (the common case); already-unlit/Toon/custom materials are
+    /// unchanged. The shader branch that reads it exists only under the
+    /// `debug-views` cargo feature (the editor enables it); in a game build
+    /// this setter still writes the uniform but nothing reads it.
+    pub fn set_debug_view_mode(&mut self, mode: u32) {
+        self.debug_view_mode = mode;
     }
 
-    /// Toggle the global wireframe overlay (triangle edges tinted in the
-    /// deferred shade). Written into `CullParams.wireframe` each frame; no
-    /// recompile.
-    pub fn set_wireframe(&mut self, on: bool) {
-        self.wireframe = u32::from(on);
+    /// Toggle the global debug wireframe overlay (triangle edges tinted in the
+    /// deferred shade). Written into `CullParams.debug_wireframe` each frame; no
+    /// recompile. Read only by the `debug-views`-gated shader branch.
+    pub fn set_debug_wireframe(&mut self, on: bool) {
+        self.debug_wireframe = u32::from(on);
     }
 
     /// Drive any pending compiles to completion and return when every

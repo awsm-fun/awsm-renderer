@@ -304,12 +304,20 @@ impl TryFrom<&ShaderCacheKeyMaterialTransparent> for ShaderTemplateMaterialTrans
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ShaderTemplateMaterialTransparentDebug {
     lighting: ShaderTemplateMaterialTransparentDebugLighting,
+    /// Gate for the runtime debug VIEW overlays in the shared
+    /// `apply_lighting.wgsl` (unlit/flat view mode + froxel light-count
+    /// heatmap). Follows the `debug-views` cargo feature; `false` for game
+    /// builds collapses the `{% if debug.views %}` gates. `pub` to mirror the
+    /// opaque struct (read by the shared include).
+    pub views: bool,
 }
 
 impl ShaderTemplateMaterialTransparentDebug {
-    /// Creates a default debug configuration.
+    /// Creates a default debug configuration. The view-overlay gate follows the
+    /// `debug-views` cargo feature (off for game builds, on for the editor).
     pub fn new() -> Self {
         Self {
+            views: cfg!(feature = "debug-views"),
             ..Default::default()
         }
     }

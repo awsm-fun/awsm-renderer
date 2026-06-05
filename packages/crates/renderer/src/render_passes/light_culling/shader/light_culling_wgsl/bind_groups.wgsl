@@ -70,8 +70,8 @@ struct CullParams {
     log_far_over_near: f32,             // precomputed log(z_far / z_near)
     debug_light_heatmap: u32,           // 0 = normal shading; 1 = output a per-pixel
                                         // applied-light-count heatmap (debug only)
-    view_mode: u32,                     // 0 = normal lit; 1 = unlit/flat (base color only)
-    wireframe: u32,                     // 0 = off; 1 = triangle-edge overlay
+    debug_view_mode: u32,               // 0 = normal lit; 1 = unlit/flat (base color only)
+    debug_wireframe: u32,               // 0 = off; 1 = triangle-edge overlay
     _pad2: u32,
     _pad3: u32,
     _pad4: u32,

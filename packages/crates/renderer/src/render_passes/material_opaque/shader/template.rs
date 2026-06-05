@@ -371,12 +371,25 @@ pub struct ShaderTemplateMaterialOpaqueDebug {
     irradiance_sample: bool,
     msaa_detect_edges: bool,
     lighting: ShaderTemplateMaterialOpaqueDebugLighting,
+    /// Gate for the runtime debug VIEW overlays (global unlit/flat view mode,
+    /// wireframe overlay, froxel light-count heatmap). Driven purely by the
+    /// `debug-views` cargo feature: `true` compiles the `cull_params`-driven
+    /// branches into the shader (runtime-switchable via the renderer setters),
+    /// `false` (the default game build) collapses every `{% if debug.views %}`
+    /// gate so those branches never reach the WGSL. `pub` because the shared
+    /// `apply_lighting.wgsl` reads it from the cross-module edge-resolve
+    /// template too.
+    pub views: bool,
 }
 
 impl ShaderTemplateMaterialOpaqueDebug {
-    /// Creates a default debug configuration.
+    /// Creates a default debug configuration. The view-overlay gate follows the
+    /// `debug-views` cargo feature (off for game builds, on for the editor).
     pub fn new() -> Self {
-        Self { ..Self::default() }
+        Self {
+            views: cfg!(feature = "debug-views"),
+            ..Self::default()
+        }
     }
     /// Returns true if any debug mode is enabled.
     pub fn any(&self) -> bool {
@@ -659,6 +672,36 @@ mod empty_registry_tests {
                 "first-party {shader_id:?} pipeline emits empty bucket_offset assignment"
             );
         }
+    }
+
+    #[test]
+    fn debug_view_branches_follow_feature_gate() {
+        // The runtime debug-VIEW overlays (unlit/flat view mode, wireframe,
+        // light heatmap) must be compiled out of game builds. The wireframe
+        // overlay lives in compute.wgsl's color-write path, present for any
+        // non-skybox opaque pipeline, so it's the clean signal to assert on.
+        //
+        // Invariant 1: the `CullParams` struct field is ALWAYS declared (the
+        // 64-byte uniform layout the Rust writer fills must not shift between
+        // game and editor builds).
+        //
+        // Invariant 2: the branch that READS it (`cull_params.debug_wireframe`)
+        // is emitted iff the `debug-views` feature is on — i.e. game builds pay
+        // no per-fragment branch. This assertion is symmetric, so it holds
+        // whether the test runs with the feature on (`--all-features`) or off
+        // (a bare `cargo test -p awsm-renderer`).
+        let wgsl = render_first_party_wgsl(MaterialShaderId::TOON, None);
+        assert!(
+            wgsl.contains("debug_wireframe: u32"),
+            "CullParams must always declare debug_wireframe (stable uniform layout)"
+        );
+        assert_eq!(
+            wgsl.contains("cull_params.debug_wireframe"),
+            cfg!(feature = "debug-views"),
+            "wireframe branch presence ({}) must match the debug-views feature ({})",
+            wgsl.contains("cull_params.debug_wireframe"),
+            cfg!(feature = "debug-views"),
+        );
     }
 
     #[test]

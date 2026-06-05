@@ -36,8 +36,8 @@ pub fn render() -> Dom {
                     _ => (0u32, false),
                 };
                 crate::engine::context::with_renderer_mut(move |r| {
-                    r.set_view_mode(view_mode);
-                    r.set_wireframe(wireframe);
+                    r.set_debug_view_mode(view_mode);
+                    r.set_debug_wireframe(wireframe);
                 })
                 .await;
             }
