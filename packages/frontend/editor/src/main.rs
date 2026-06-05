@@ -5,6 +5,7 @@
 //! mounts the app shell once the context is ready. The `EditorController` is
 //! installed before any UI so every panel dispatches through it.
 
+mod animation_mode;
 mod app;
 mod command_palette;
 mod controller;
@@ -184,6 +185,7 @@ pub fn editor_query_mode() -> String {
     match controller::controller().mode.get() {
         controller::EditorMode::Scene => "scene".to_string(),
         controller::EditorMode::Material => "material".to_string(),
+        controller::EditorMode::Animation => "animation".to_string(),
     }
 }
 

@@ -46,6 +46,7 @@ pub enum EditorMode {
     #[default]
     Scene,
     Material,
+    Animation,
 }
 
 /// Every editor mutation, as serializable data.

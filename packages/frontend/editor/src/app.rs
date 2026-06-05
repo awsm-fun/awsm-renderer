@@ -535,6 +535,7 @@ fn top_bar(ctrl: &EditorController) -> Dom {
         .child(segmented(mode_str, vec![
             SegOption::new("scene", "Scene").icon("layers"),
             SegOption::new("material", "Material").icon("material"),
+            SegOption::new("animation", "Animation").icon("curve"),
         ], false, false))
         .child(IconBtn::new("settings").title("Settings")
             .on_click(|| controller().settings_open.set_neq(true)).render())
@@ -640,6 +641,12 @@ fn workspace(ctrl: &EditorController) -> Dom {
             .style_signal("display", ctrl.mode.signal().map(|m| if m == EditorMode::Material { "block" } else { "none" }))
             .child(crate::material_mode::render())
         }))
+        .child(html!("div", {
+            .style("position", "absolute")
+            .style("inset", "0")
+            .style_signal("display", ctrl.mode.signal().map(|m| if m == EditorMode::Animation { "block" } else { "none" }))
+            .child(crate::animation_mode::render())
+        }))
     })
 }
 
@@ -647,12 +654,14 @@ fn mode_to_str(m: EditorMode) -> String {
     match m {
         EditorMode::Scene => "scene".to_string(),
         EditorMode::Material => "material".to_string(),
+        EditorMode::Animation => "animation".to_string(),
     }
 }
 fn str_to_mode(s: &str) -> Option<EditorMode> {
     match s {
         "scene" => Some(EditorMode::Scene),
         "material" => Some(EditorMode::Material),
+        "animation" => Some(EditorMode::Animation),
         _ => None,
     }
 }
