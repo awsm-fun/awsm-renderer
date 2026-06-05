@@ -32,7 +32,7 @@ new_key_type! {
 /// What a single channel of a clip drives. M-R0 covers the two kinds the runtime
 /// already had; M-R1 (§4.3) extends this with `Uniform`, `BuiltinParam`, `Light`,
 /// and `Camera`. Keys are `Copy`, so the whole target is `Copy`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AnimationTarget {
     /// A node's local transform (translation/rotation/scale).
     Transform(TransformKey),
@@ -71,7 +71,7 @@ pub enum AnimationTarget {
 /// Which scalar/color parameter of a [`crate::lights::Light`] an animation
 /// channel drives. Params that don't apply to a given light variant are
 /// silently ignored at apply time (e.g. `Range` on a directional light).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LightParam {
     /// Light intensity (all variants).
     Intensity,
@@ -87,7 +87,7 @@ pub enum LightParam {
 
 /// Which built-in factor of a PBR-family material an animation channel drives.
 /// Params a material kind lacks are silently ignored at apply time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BuiltinMaterialParam {
     /// Base color tint (rgb of `base_color_factor`).
     BaseColor,
@@ -101,7 +101,7 @@ pub enum BuiltinMaterialParam {
 
 /// Which parameter of a [`crate::cameras::CameraParams`] an animation channel
 /// drives.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CameraParam {
     /// Vertical field-of-view (perspective only).
     FovY,

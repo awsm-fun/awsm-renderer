@@ -237,6 +237,26 @@ impl<Key: slotmap::Key, Info: MorphInfo> MorphData<Key, Info> {
             .ok_or_else(|| AwsmMeshError::MorphNotFound(format!("{:?}", key)))
     }
 
+    /// Reads the current morph weights into a freshly-allocated `Vec<f32>`.
+    /// Mirrors the slice layout that [`Self::update_morph_weights_with`]
+    /// writes: the leading `targets_len` count word is skipped, so the
+    /// returned vector holds exactly `targets_len()` weights. Returns the
+    /// morph error if the key is unknown.
+    pub fn read_morph_weights(&self, key: Key) -> Result<Vec<f32>> {
+        let len = self.get_info(key).map(|info| info.targets_len())?;
+
+        let slice_u8 = self
+            .weights
+            .get(key)
+            .ok_or_else(|| AwsmMeshError::MorphNotFound(format!("{:?}", key)))?;
+
+        // The buffer holds [count: f32, weight_0, .. weight_{len-1}] — read the
+        // `len` weights after the leading count word.
+        let weights_f32 =
+            unsafe { std::slice::from_raw_parts(slice_u8.as_ptr() as *const f32, len + 1) };
+        Ok(weights_f32[1..=len].to_vec())
+    }
+
     /// Updates morph weights without writing to the GPU.
     pub fn update_morph_weights_with(
         &mut self,
