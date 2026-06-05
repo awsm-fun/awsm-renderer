@@ -364,6 +364,17 @@ fn shade_sample(
         base_alpha = base_alpha * tint.a * attr.alpha;
     }
 
+    {% if debug.views %}
+    // Global wireframe view — mirror the compute kernel (uses this pass's
+    // per-sample barycentric): uniform clay fill + dark triangle edges, so the
+    // surface reads as a wireframe rather than edges over the shaded material.
+    if (cull_params.debug_wireframe == 1u) {
+        let wire_edge = min(min(sample_bary.x, sample_bary.y), sample_bary.z);
+        let wire = 1.0 - smoothstep(0.0, 0.02, wire_edge);
+        color = mix(vec3<f32>(0.55, 0.57, 0.60), vec3<f32>(0.05, 0.05, 0.07), wire);
+    }
+    {% endif %}
+
     return vec4<f32>(color, base_alpha);
 }
 

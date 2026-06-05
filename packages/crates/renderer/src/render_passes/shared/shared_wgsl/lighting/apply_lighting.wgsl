@@ -16,6 +16,13 @@ fn apply_lighting(
 ) -> vec3<f32> {
     var color = vec3<f32>(0.0);
 
+    {% if debug.views %}
+    // Global unlit/flat view mode — emit the base color, skip all lighting.
+    if (cull_params.debug_view_mode == 1u) {
+        return material_color.base.rgb;
+    }
+    {% endif %}
+
     {% if has_lighting_ibl() %}
         color = brdf_ibl(
             material_color,
@@ -145,6 +152,13 @@ fn apply_lighting_per_froxel(
 ) -> vec3<f32> {
     var color = vec3<f32>(0.0);
 
+    {% if debug.views %}
+    // Global unlit/flat view mode — emit the base color, skip all lighting.
+    if (cull_params.debug_view_mode == 1u) {
+        return material_color.base.rgb;
+    }
+    {% endif %}
+
     {% if has_lighting_ibl() %}
         color = brdf_ibl(
             material_color,
@@ -166,6 +180,7 @@ fn apply_lighting_per_froxel(
             let view_z_for_shadow = view_z;
         {% endif %}
 
+        {% if debug.views %}
         // Debug: visualize this pixel's froxel light count (what the cull
         // binned for this froxel) instead of shading. See `light_count_heatmap`.
         if (cull_params.debug_light_heatmap != 0u) {
@@ -173,6 +188,7 @@ fn apply_lighting_per_froxel(
             let dbg_count = min(lights_storage[dbg_base], cull_params.max_per_froxel_capacity);
             return light_count_heatmap(dbg_count);
         }
+        {% endif %}
 
         // Directional walk — bounded to the directional-light prefix
         // (see get_n_directional / get_directional_light_index).
@@ -266,6 +282,13 @@ fn apply_lighting_per_froxel_with_transmission(
 ) -> vec3<f32> {
     var color = vec3<f32>(0.0);
 
+    {% if debug.views %}
+    // Global unlit/flat view mode — emit the base color, skip all lighting.
+    if (cull_params.debug_view_mode == 1u) {
+        return material_color.base.rgb;
+    }
+    {% endif %}
+
     {% if has_lighting_ibl() %}
         color = brdf_ibl_with_transmission(
             material_color,
@@ -288,6 +311,7 @@ fn apply_lighting_per_froxel_with_transmission(
             let view_z_for_shadow = view_z;
         {% endif %}
 
+        {% if debug.views %}
         // Debug: visualize this pixel's froxel light count (what the cull
         // binned for this froxel) instead of shading. See `light_count_heatmap`.
         if (cull_params.debug_light_heatmap != 0u) {
@@ -295,6 +319,7 @@ fn apply_lighting_per_froxel_with_transmission(
             let dbg_count = min(lights_storage[dbg_base], cull_params.max_per_froxel_capacity);
             return light_count_heatmap(dbg_count);
         }
+        {% endif %}
 
         let n_directional = get_n_directional();
         for(var d = 0u; d < n_directional; d = d + 1u) {

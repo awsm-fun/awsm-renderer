@@ -85,6 +85,14 @@ pub struct ShaderCacheKeyMaterialOpaque {
 /// byte-identical hashes produce the same compiled WGSL.
 #[derive(Hash, Debug, Clone, PartialEq, Eq)]
 pub struct DynamicShaderInfo {
+    /// Author-declared shared-module set (already transitively resolved via
+    /// [`awsm_materials::ShaderIncludes::resolve`]) for this dynamic
+    /// material. The Custom-base shading host gates its optional modules
+    /// (BRDF / apply_lighting / material_color_calc) on this instead of the
+    /// blanket `ShaderIncludes::all()`, so a material that declares less
+    /// compiles a leaner shader. Defaults to the resolved `all()` set when
+    /// the author hasn't narrowed it.
+    pub shader_includes: awsm_materials::ShaderIncludes,
     /// The auto-generated `struct MaterialData` declaration (output
     /// of `dynamic_layout::generate_wgsl_struct`).
     pub struct_decl: String,

@@ -15,6 +15,39 @@ use crate::{
 /// non-zero `firstInstance` values written by the compaction shader.
 const INDIRECT_FIRST_INSTANCE_FEATURE: &str = "indirect-first-instance";
 
+/// A process-stable identity for a `GpuDevice`, used to **scope the
+/// device-bound GPU caches** (blit / BRDF-LUT / mipmap / atlas / sRGB
+/// pipelines + samplers + staging buffers) that renderer-core keeps in
+/// `thread_local!`s.
+///
+/// Those caches store device-bound GPU objects (pipelines, samplers,
+/// buffers). A pipeline created on device A is invalid on device B, so a
+/// second `AwsmRenderer` with a different device must NOT reuse the
+/// first's cached objects (doing so throws cross-device
+/// `GPUValidationError`s). Keying every cache by `DeviceId` lets N
+/// independent renderers coexist on one thread — each device gets its own
+/// cache slot; for a single renderer the behaviour is identical to the
+/// old global cache (one id, same objects).
+///
+/// Identity is a monotonic counter assigned once at device-creation time
+/// (`build()`), so it is `Copy` and cheap to hash. `AwsmRendererWebGpu`
+/// is `Clone`; clones share the underlying device **and** its id, which
+/// is correct (they should hit the same cache slot). Caveat: building two
+/// wrappers from the *same* pre-created device via `with_device` yields
+/// two ids → the per-device resources are created twice (a one-time
+/// creation cost, not a correctness bug). Every renderer in the editor
+/// requests its own device, so this does not arise in practice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DeviceId(u64);
+
+impl DeviceId {
+    fn next() -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        DeviceId(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
 /// WebGPU device and canvas context wrapper.
 /// Relatively cheap to clone.
 #[derive(Clone)]
@@ -22,6 +55,8 @@ pub struct AwsmRendererWebGpu {
     pub gpu: web_sys::Gpu,
     pub adapter: web_sys::GpuAdapter,
     pub device: web_sys::GpuDevice,
+    /// Cache-scoping identity for `device` — see [`DeviceId`].
+    pub device_id: DeviceId,
     pub context: web_sys::GpuCanvasContext,
     /// Whether the renderer is bound to a DOM canvas
     /// (`HtmlCanvasElement`, main-thread mode) or an
@@ -52,6 +87,14 @@ impl AwsmRendererWebGpu {
     /// of calling `canvas()` (which panics in worker mode).
     pub fn canvas_kind(&self) -> &CanvasKind {
         &self.canvas_kind
+    }
+
+    /// The cache-scoping identity of this wrapper's `GpuDevice`. The
+    /// renderer-core device-bound caches key on this so independent
+    /// renderers (distinct devices) never share device-bound GPU
+    /// objects. See [`DeviceId`].
+    pub fn device_id(&self) -> DeviceId {
+        self.device_id
     }
 }
 
@@ -257,6 +300,7 @@ impl AwsmRendererWebGpuBuilder {
             gpu: self.gpu,
             adapter,
             device,
+            device_id: DeviceId::next(),
             context,
             canvas_kind: self.canvas,
         })

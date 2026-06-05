@@ -24,20 +24,20 @@ pub enum ColorBackground {
 impl ColorBackground {
     pub fn value(self) -> &'static str {
         match self {
-            Self::SidebarSelected => ColorRaw::GreyAlt1.value(),
-            Self::Sidebar => ColorRaw::Darkish.value(),
-            Self::GltfContent => ColorRaw::Darkish.value(),
-            Self::ModalContent => ColorRaw::GreyAlt2.value(),
+            Self::SidebarSelected => "var(--bg-active)",
+            Self::Sidebar => "var(--bg-1)",
+            Self::GltfContent => "var(--bg-1)",
+            Self::ModalContent => "var(--bg-2)",
             Self::UnderlinePrimary => ColorRaw::Accent.value(),
             Self::UnderlineSecondary => ColorRaw::MidGrey.value(),
-            Self::ButtonPrimary => ColorRaw::Accent.value(),
-            Self::ButtonPrimaryHover => ColorRaw::AccentLite.value(),
-            Self::ButtonDisabled => ColorRaw::AccentVeryLight.value(),
+            Self::ButtonPrimary => "var(--accent-dim)",
+            Self::ButtonPrimaryHover => ColorRaw::Accent.value(),
+            Self::ButtonDisabled => "var(--bg-active)",
             Self::ButtonRed => ColorRaw::Red.value(),
             Self::ButtonRedHover => ColorRaw::RedLite.value(),
-            Self::Dropdown => ColorRaw::Whiteish.value(),
-            Self::CheckboxDark => ColorRaw::Whiteish.value(),
-            Self::CheckboxLight => ColorRaw::Darkish.value(),
+            Self::Dropdown => "var(--bg-3)",
+            Self::CheckboxDark => "var(--bg-3)",
+            Self::CheckboxLight => "var(--accent)",
             Self::Initial => "initial",
             Self::ModalOverlay => ColorRaw::ModalOverlay.value(),
         }
@@ -199,19 +199,19 @@ impl ColorText {
             Self::ButtonOutlineRedHover => ColorRaw::RedLite.value(),
             Self::ButtonOutlineGreen => ColorRaw::Green.value(),
             Self::ButtonOutlineGreenHover => ColorRaw::GreenLite.value(),
-            Self::Link => ColorRaw::Accent.value(),
-            Self::Header => ColorRaw::Darkest.value(),
+            Self::Link => ColorRaw::AccentLite.value(),
+            Self::Header => "var(--text-0)",
             Self::Byline => ColorRaw::MidGrey.value(),
-            Self::Paragraph => ColorRaw::Darkish.value(),
-            Self::Label => ColorRaw::Darkish.value(),
-            Self::LabelHover => ColorRaw::Accent.value(),
-            Self::Input => ColorRaw::Darkish.value(),
-            Self::InputPlaceholder => ColorRaw::MidGrey.value(),
+            Self::Paragraph => "var(--text-1)",
+            Self::Label => "var(--text-1)",
+            Self::LabelHover => ColorRaw::AccentLite.value(),
+            Self::Input => "var(--text-0)",
+            Self::InputPlaceholder => "var(--text-3)",
             Self::Error => ColorRaw::Red.value(),
             Self::ErrorMuted => ColorRaw::RedLite.value(),
             Self::Success => ColorRaw::Green.value(),
-            Self::CheckboxDark => ColorRaw::Whiteish.value(),
-            Self::CheckboxLight => ColorRaw::Darkish.value(),
+            Self::CheckboxDark => "var(--text-0)",
+            Self::CheckboxLight => "var(--bg-0)",
         }
     }
 
@@ -382,7 +382,7 @@ pub enum ColorLabel {
 impl ColorLabel {
     pub fn value(self) -> &'static str {
         match self {
-            Self::Input => ColorRaw::Darkest.value(),
+            Self::Input => "var(--text-1)",
         }
     }
 
@@ -427,23 +427,23 @@ pub enum ColorBorder {
 impl ColorBorder {
     pub fn value(self) -> &'static str {
         match self {
-            Self::Input => ColorRaw::MidGrey.value(),
+            Self::Input => "var(--line)",
             Self::Warning => ColorRaw::Orange.value(),
             Self::Error => ColorRaw::Red.value(),
             Self::ErrorSubtle => ColorRaw::RedSubtle.value(),
-            Self::Focus => ColorRaw::Focus.value(),
+            Self::Focus => "var(--accent-line)",
             Self::UnderlinePrimary => ColorRaw::Accent.value(),
             Self::UnderlineSecondary => ColorRaw::MidGrey.value(),
-            Self::ButtonOutlinePrimary => ColorRaw::Accent.value(),
-            Self::ButtonOutlinePrimaryHover => ColorRaw::AccentLite.value(),
+            Self::ButtonOutlinePrimary => "var(--accent-line)",
+            Self::ButtonOutlinePrimaryHover => ColorRaw::Accent.value(),
             Self::ButtonOutlineRed => ColorRaw::Red.value(),
             Self::ButtonOutlineRedHover => ColorRaw::RedLite.value(),
             Self::ButtonOutlineGreen => ColorRaw::Green.value(),
             Self::ButtonOutlineGreenHover => ColorRaw::GreenLite.value(),
-            Self::ButtonDisabled => ColorRaw::AccentVeryLight.value(),
+            Self::ButtonDisabled => "var(--line)",
             Self::Initial => "initial",
-            Self::CheckboxDark => ColorRaw::Whiteish.value(),
-            Self::CheckboxLight => ColorRaw::Darkish.value(),
+            Self::CheckboxDark => "var(--line-strong)",
+            Self::CheckboxLight => "var(--accent)",
             Self::ModalContainer => ColorRaw::SurfaceBorder.value(),
             Self::ContentPanel => ColorRaw::PanelBorder.value(),
         }

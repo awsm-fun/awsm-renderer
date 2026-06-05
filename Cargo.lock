@@ -78,7 +78,7 @@ dependencies = [
  "serde",
  "serde_derive",
  "unicode-ident",
- "winnow",
+ "winnow 1.0.2",
 ]
 
 [[package]]
@@ -138,39 +138,53 @@ dependencies = [
 ]
 
 [[package]]
+name = "awsm-editor"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "awsm-curves",
+ "awsm-materials",
+ "awsm-meshgen",
+ "awsm-particles",
+ "awsm-renderer",
+ "awsm-renderer-core",
+ "awsm-renderer-gltf",
+ "awsm-scene-schema",
+ "awsm-web-shared",
+ "awsm_web 0.45.0",
+ "bitcode",
+ "dominator",
+ "futures",
+ "futures-signals",
+ "glam 0.32.1",
+ "gloo-events 0.2.0",
+ "gloo-net",
+ "gloo-render",
+ "gloo-timers",
+ "gltf",
+ "image",
+ "indexmap",
+ "js-sys",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "toml",
+ "tracing",
+ "uuid",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "xutex",
+]
+
+[[package]]
 name = "awsm-geometry"
 version = "0.2.0"
 dependencies = [
  "glam 0.32.1",
  "serde",
-]
-
-[[package]]
-name = "awsm-material-editor"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "awsm-materials",
- "awsm-meshgen",
- "awsm-renderer",
- "awsm-renderer-core",
- "awsm-scene-schema",
- "awsm-web-shared",
- "dominator",
- "futures",
- "futures-signals",
- "glam 0.32.1",
- "gloo-render",
- "gloo-timers",
- "js-sys",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tracing",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
- "xutex",
 ]
 
 [[package]]
@@ -198,7 +212,6 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "awsm-renderer",
- "awsm-renderer-editor",
  "awsm-renderer-gltf",
  "awsm-web-shared",
  "awsm_web 0.45.0",
@@ -309,19 +322,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "awsm-renderer-editor"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "awsm-meshgen",
- "awsm-renderer",
- "awsm-renderer-gltf",
- "glam 0.32.1",
- "tracing",
- "web-sys",
-]
-
-[[package]]
 name = "awsm-renderer-gltf"
 version = "0.2.0"
 dependencies = [
@@ -348,48 +348,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "awsm-scene-editor"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "awsm-curves",
- "awsm-materials",
- "awsm-meshgen",
- "awsm-particles",
- "awsm-renderer",
- "awsm-renderer-core",
- "awsm-renderer-editor",
- "awsm-renderer-gltf",
- "awsm-scene-schema",
- "awsm-web-shared",
- "awsm_web 0.45.0",
- "bitcode",
- "dominator",
- "futures",
- "futures-signals",
- "glam 0.32.1",
- "gloo-events 0.2.0",
- "gloo-net",
- "gloo-render",
- "gloo-timers",
- "gltf",
- "image",
- "indexmap",
- "js-sys",
- "serde",
- "serde-wasm-bindgen",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
- "tracing",
- "uuid",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
- "xutex",
-]
-
-[[package]]
 name = "awsm-scene-schema"
 version = "0.2.0"
 dependencies = [
@@ -398,6 +356,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "toml",
  "uuid",
 ]
 
@@ -405,7 +364,10 @@ dependencies = [
 name = "awsm-web-shared"
 version = "0.2.0"
 dependencies = [
+ "anyhow",
+ "awsm-meshgen",
  "awsm-renderer",
+ "awsm-renderer-gltf",
  "dominator",
  "futures",
  "futures-signals",
@@ -2271,6 +2233,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_spanned"
+version = "0.6.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf41e0cfaf7226dca15e8197172c295a782857fcb97fad1808a166870dee75a3"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "sha1"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2592,6 +2563,47 @@ dependencies = [
  "pin-project-lite",
  "tokio",
 ]
+
+[[package]]
+name = "toml"
+version = "0.8.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc1beb996b9d83529a9e75c17a1686767d148d70663143c7854d8b4a09ced362"
+dependencies = [
+ "serde",
+ "serde_spanned",
+ "toml_datetime",
+ "toml_edit",
+]
+
+[[package]]
+name = "toml_datetime"
+version = "0.6.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22cddaf88f4fbc13c51aebbf5f8eceb5c7c5a9da2ac40a13519eb5b0a0e8f11c"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "toml_edit"
+version = "0.22.27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41fe8c660ae4257887cf66394862d21dbca4a6ddd26f04a3560410406a2f819a"
+dependencies = [
+ "indexmap",
+ "serde",
+ "serde_spanned",
+ "toml_datetime",
+ "toml_write",
+ "winnow 0.7.15",
+]
+
+[[package]]
+name = "toml_write"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
 
 [[package]]
 name = "tower"
@@ -3176,6 +3188,15 @@ name = "windows_x86_64_msvc"
 version = "0.53.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
+
+[[package]]
+name = "winnow"
+version = "0.7.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945"
+dependencies = [
+ "memchr",
+]
 
 [[package]]
 name = "winnow"

@@ -40,6 +40,11 @@ impl std::fmt::Display for AssetId {
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+// `Material(MaterialDef)` is intentionally the large variant (it carries the full
+// authored PBR surface incl. KHR extensions). Boxing it would ripple through every
+// player/editor match site for marginal benefit; assets are not stored in hot,
+// densely-packed arrays.
+#[allow(clippy::large_enum_variant)]
 pub enum AssetSource {
     /// Editor on-disk file (glb / gltf / ktx). The inner String is the
     /// user's original filename, kept for UI labels and to derive the

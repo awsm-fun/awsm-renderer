@@ -33,31 +33,36 @@ pub enum ColorRaw {
 }
 
 impl ColorRaw {
+    /// Resolves to a prototype design token (`tokens.css`, injected at
+    /// `:root` by [`crate::theme::stylesheet::init`]). Variant names are kept
+    /// for backwards source-compat, but the values now follow the graphite/
+    /// slate palette — e.g. `Accent` is the restrained azure, `Whiteish` is the
+    /// brightest text, `Darkish` is a panel surface.
     pub const fn value(self) -> &'static str {
         match self {
-            Self::Darkest => "#05070D",
-            Self::Accent => "#67A8FF",
-            Self::AccentLite => "#72F5FF",
-            Self::AccentVeryLight => "#A8D0FF",
-            Self::Whiteish => "#E9F1FF",
-            Self::Darkish => "#0B1220",
-            Self::MidGrey => "#91A3C0",
-            Self::Focus => "#72F5FF",
-            Self::Red => "#FF4D7A",
-            Self::RedLite => "#FF8FAF",
-            Self::RedSubtle => "rgba(255, 77, 122, 0.35)",
-            Self::Orange => "#FFC16D",
-            Self::Green => "#7DFFA6",
-            Self::GreyAlt1 => "#132037",
-            Self::GreyAlt2 => "#0F1A2D",
-            Self::PureWhite => "#FFFFFF",
-            Self::GreenLite => "#CCFFDF",
-            Self::CyanLite => "#DFFCFF",
-            Self::ModalOverlay => "rgba(3, 10, 20, 0.72)",
-            Self::SurfaceBorder => "rgba(42, 58, 82, 0.45)",
-            Self::PanelBorder => "rgba(117, 166, 232, 0.25)",
-            Self::BlueSilver => "#AFC2DE",
-            Self::BlueIce => "#D7E5F8",
+            Self::Darkest => "var(--bg-0)",
+            Self::Accent => "var(--accent)",
+            Self::AccentLite => "var(--accent-bright)",
+            Self::AccentVeryLight => "var(--accent-bright)",
+            Self::Whiteish => "var(--text-0)",
+            Self::Darkish => "var(--bg-1)",
+            Self::MidGrey => "var(--text-2)",
+            Self::Focus => "var(--accent-bright)",
+            Self::Red => "var(--danger)",
+            Self::RedLite => "var(--danger-bright)",
+            Self::RedSubtle => "var(--danger-soft)",
+            Self::Orange => "var(--warn)",
+            Self::Green => "var(--ok)",
+            Self::GreyAlt1 => "var(--bg-2)",
+            Self::GreyAlt2 => "var(--bg-1)",
+            Self::PureWhite => "#ffffff",
+            Self::GreenLite => "var(--ok)",
+            Self::CyanLite => "var(--accent-bright)",
+            Self::ModalOverlay => "oklch(0 0 0 / 0.55)",
+            Self::SurfaceBorder => "var(--line)",
+            Self::PanelBorder => "var(--line-soft)",
+            Self::BlueSilver => "var(--text-2)",
+            Self::BlueIce => "var(--text-1)",
         }
     }
 }

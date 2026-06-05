@@ -57,6 +57,47 @@ impl AwsmRenderer {
     /// keys. Three awaits total instead of the previous six (per
     /// pass: one shader-batch + one pipeline-batch × three passes),
     /// each running its compiles in parallel through Dawn's pool.
+    /// Read back a pooled texture as PNG bytes (GPU→CPU). Looks up the texture's
+    /// array + layer + dimensions, copies that layer to a mappable buffer, and
+    /// encodes a PNG (sRGB-corrected per the texture's upload colour space).
+    /// Used by the editor's image-query seam to snapshot file/raster textures.
+    #[cfg(feature = "texture-export")]
+    pub async fn texture_png_bytes(
+        &self,
+        key: TextureKey,
+    ) -> std::result::Result<Vec<u8>, AwsmError> {
+        let (array_index, layer_index, srgb) = {
+            let e = self.textures.get_entry(key)?;
+            (e.array_index, e.layer_index, e.color.srgb_to_linear)
+        };
+        let (texture, width, height, format) = {
+            let array = self
+                .textures
+                .pool
+                .array_by_index(array_index)
+                .ok_or(AwsmTextureError::TextureNotFound(key))?;
+            let texture = array
+                .gpu_texture
+                .clone()
+                .ok_or(AwsmTextureError::TextureNotFound(key))?;
+            (texture, array.width, array.height, array.format)
+        };
+        let png = self
+            .gpu
+            .export_texture_as_png(
+                &texture,
+                width,
+                height,
+                layer_index as u32,
+                format,
+                None,
+                false,
+                Some(srgb),
+            )
+            .await?;
+        Ok(png)
+    }
+
     pub async fn finalize_gpu_textures(&mut self) -> std::result::Result<(), AwsmError> {
         // Take the sampler-pool dirty bit *before* the pool write —
         // both bits feed the same rebuild gate below. Without this OR,

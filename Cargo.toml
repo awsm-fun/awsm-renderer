@@ -1,7 +1,6 @@
 [workspace]
 members = [
     "packages/crates/curves",
-    "packages/crates/editor",
     "packages/crates/geometry",
     "packages/crates/materials",
     "packages/crates/meshgen",
@@ -11,11 +10,16 @@ members = [
     "packages/crates/renderer-gltf",
     "packages/crates/scene-schema",
     "packages/frontend/web-shared",
-    "packages/frontend/material-editor",
+    "packages/frontend/editor",
     "packages/frontend/model-tests",
-    "packages/frontend/scene-editor",
     "packages/examples/render-worker",
     "packages/debugging",
+]
+# The v1 editor is archived in-tree as a pure code reference for the v2
+# blank-slate rebuild (see docs/plans/editor-rewrite.md §3). It is NOT a
+# workspace member and is never compiled or linted.
+exclude = [
+    "packages/frontend/bad-editor-whoopsie",
 ]
 resolver = "2"
 
@@ -64,7 +68,7 @@ opt-level = 1
 [profile.dev.package."awsm-model-tests"]
 opt-level = 1
 
-[profile.dev.package."awsm-scene-editor"]
+[profile.dev.package."awsm-editor"]
 opt-level = 1
 
 ### Dependencies
@@ -84,7 +88,6 @@ awsm-particles = { path = "packages/crates/particles", version = "0.2.0" }
 awsm-materials = { path = "packages/crates/materials", version = "0.2.0" }
 awsm-renderer = { path = "packages/crates/renderer", version = "0.2.0" }
 awsm-renderer-gltf = { path = "packages/crates/renderer-gltf", version = "0.2.0" }
-awsm-renderer-editor = { path = "packages/crates/editor", version = "0.2.0" }
 # Frontend-only (not published); workspace dep keeps consumers path-agnostic.
 awsm-web-shared = { path = "packages/frontend/web-shared", version = "0.2.0" }
 

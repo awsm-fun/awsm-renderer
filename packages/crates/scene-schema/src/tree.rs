@@ -64,6 +64,19 @@ impl NodeId {
         Self(Uuid::new_v4())
     }
 
+    /// The stable all-zeros sentinel, meaning "no node referenced / unset". Unlike
+    /// [`NodeId::default`] (which mints a fresh random id), this is a fixed value
+    /// usable as a real "none" marker for optional node references (curve/source
+    /// picks, etc.). Pair with [`NodeId::is_nil`].
+    pub const fn nil() -> Self {
+        Self(Uuid::nil())
+    }
+
+    /// True when this is the [`NodeId::nil`] sentinel (an unset reference).
+    pub fn is_nil(&self) -> bool {
+        self.0.is_nil()
+    }
+
     /// Borrow the NodeId as a 16-byte slice. Used by the player → per-
     /// game-player FFI bridge: `&[u8]` is one of the few zero-config
     /// `wasm-bindgen` parameter types and we want to keep this hot path

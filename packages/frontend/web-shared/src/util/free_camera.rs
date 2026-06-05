@@ -140,6 +140,27 @@ impl FreeCamera {
             .refresh_clip_planes(&self.view, &self.aabb, self.margin);
     }
 
+    /// Snap the orbit to an explicit yaw/pitch (radians), preserving the current
+    /// look-at point + radius. Used by the nav-cube axis-snap (and any external/
+    /// MCP camera drive). Convention: `yaw == 0` looks down `-Z`, `yaw == π/2`
+    /// looks down `-X`, `pitch > 0` raises the camera (looks down).
+    pub fn snap_to(&mut self, yaw: f32, pitch: f32) {
+        self.view = CameraView::new(yaw, pitch, self.view.look_at, self.view.radius);
+    }
+
+    /// Reset the orbit to the default framing (the `new_default_cube` pose) —
+    /// look-at back at the origin, default yaw/pitch + radius — preserving the
+    /// current projection mode and aspect. Backs the "Reset View" action.
+    pub fn reset_default(&mut self) {
+        self.aabb = Aabb::new_cube(40.0, 40.0);
+        self.margin = 1.1;
+        self.view = CameraView::new_aabb(&self.aabb, self.margin);
+        self.perspective
+            .refresh_clip_planes(&self.view, &self.aabb, self.margin);
+        self.orthographic
+            .refresh_clip_planes(&self.view, &self.aabb, self.margin);
+    }
+
     pub fn set_aspect(&mut self, aspect: f32) {
         self.perspective.on_resize(aspect);
         self.orthographic

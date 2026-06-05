@@ -81,6 +81,16 @@ impl AwsmRenderer {
     /// No-op when `features.picking == false` (callers still get
     /// `PickResult::Disabled` from `pick()` itself) or when the
     /// picker is already compiled.
+    /// Drop the compiled picker so the next [`Self::pick`] rebuilds it against
+    /// the current render textures + HUD state. Use when a HUD model (e.g. an
+    /// editor gizmo) is populated *after* the picker was first compiled (a warm
+    /// prewarm pick) — otherwise the picker's id-buffer setup predates the HUD
+    /// and those meshes never become pickable. Cheap: the pipelines stay cached,
+    /// so the recompile only rebuilds the bind group.
+    pub fn invalidate_picker(&mut self) {
+        self.picker = None;
+    }
+
     pub async fn ensure_picker_compiled(&mut self) -> Result<()> {
         if !self.features.picking || self.picker.is_some() {
             return Ok(());

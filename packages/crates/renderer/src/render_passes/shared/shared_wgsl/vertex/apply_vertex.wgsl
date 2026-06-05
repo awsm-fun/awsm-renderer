@@ -58,6 +58,28 @@ fn apply_vertex(vertex_orig: ApplyVertexInput, camera: Camera) -> ApplyVertexOut
         var model_transform = get_model_transform(geometry_mesh_meta.transform_offset);
     {% endif %}
 
+    // Skinned meshes are already in world space: `apply_position_skin` /
+    // `apply_normal_skin` multiply by the joint matrices, each of which is
+    // `jointWorld * inverseBind` and therefore folds in every ancestor of the
+    // joint node — including the glTF Z-up→Y-up root conversion. Per the glTF
+    // spec the skinned mesh node's own transform MUST NOT be applied on top, so
+    // collapse the base model transform to identity (the per-instance transform,
+    // if any, is preserved). Without this, models whose skinned mesh node sits
+    // under a non-identity root (e.g. CesiumMan's `Z_UP`) get that rotation
+    // applied twice and render lying flat.
+    if (geometry_mesh_meta.skin_sets_len != 0u) {
+        {% if instancing_transforms %}
+            model_transform = instance_transform;
+        {% else %}
+            model_transform = mat4x4<f32>(
+                vec4<f32>(1.0, 0.0, 0.0, 0.0),
+                vec4<f32>(0.0, 1.0, 0.0, 0.0),
+                vec4<f32>(0.0, 0.0, 1.0, 0.0),
+                vec4<f32>(0.0, 0.0, 0.0, 1.0),
+            );
+        {% endif %}
+    }
+
     // Camera-facing override. Replaces the rotation portion of the model
     // matrix while preserving translation + per-instance scale (encoded as
     // column lengths). Uniform scale is recovered as `length(col[i].xyz)` so

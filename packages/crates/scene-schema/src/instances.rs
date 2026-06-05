@@ -22,8 +22,8 @@ pub struct InstancesAlongCurveDef {
 impl Default for InstancesAlongCurveDef {
     fn default() -> Self {
         Self {
-            curve_node: NodeId::default(),
-            source_node: NodeId::default(),
+            curve_node: NodeId::nil(),
+            source_node: NodeId::nil(),
             spacing: 1.0,
             side_offset: 0.0,
             orient_to_tangent: true,
@@ -46,7 +46,7 @@ pub struct SweepAlongCurveDef {
 impl Default for SweepAlongCurveDef {
     fn default() -> Self {
         Self {
-            curve_node: NodeId::default(),
+            curve_node: NodeId::nil(),
             cross_section: super::curve::CrossSectionDef::default_tube(),
             uv_mode: super::curve::SweepUvMode::default(),
             up_hint: [0.0, 1.0, 0.0],

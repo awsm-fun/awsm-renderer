@@ -1,7 +1,11 @@
 use crate::prelude::*;
 
-pub const FONT_FAMILY_BODY: &str = r#""Space Grotesk", "Segoe UI", sans-serif"#;
-pub const FONT_FAMILY_DISPLAY: &str = r#""Orbitron", "Space Grotesk", sans-serif"#;
+// Graphite/slate design system (prototype `tokens.css`): system-ui chrome +
+// JetBrains Mono for code and tabular numerics.
+pub const FONT_FAMILY_BODY: &str =
+    r#"ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Helvetica Neue", sans-serif"#;
+pub const FONT_FAMILY_DISPLAY: &str = FONT_FAMILY_BODY;
+pub const FONT_FAMILY_MONO: &str = r#""JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace"#;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TextDirection {

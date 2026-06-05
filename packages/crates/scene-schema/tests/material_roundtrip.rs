@@ -16,7 +16,7 @@
 
 use awsm_scene_schema::{
     AssetEntry, AssetId, AssetSource, AssetTable, EditorProject, EnvironmentConfig, MaterialDef,
-    MaterialShading,
+    MaterialShading, SpecularExt, StoredMaterial,
 };
 
 fn material_asset(_id: AssetId) -> AssetEntry {
@@ -33,6 +33,9 @@ fn material_asset(_id: AssetId) -> AssetEntry {
         shading: MaterialShading::Toon {
             diffuse_bands: 7,
             rim_strength: 0.42,
+            specular_steps: 3,
+            shininess: 48.0,
+            rim_power: 1.5,
         },
         ..MaterialDef::default()
     }))
@@ -47,6 +50,7 @@ fn sample_project_with_material(asset_id: AssetId) -> EditorProject {
         shadows: Default::default(),
         assets,
         custom_materials: Vec::new(),
+        editor_materials: Vec::new(),
         nodes: Vec::new(),
     }
 }
@@ -67,14 +71,84 @@ fn material_json_roundtrip() {
             MaterialShading::Toon {
                 diffuse_bands,
                 rim_strength,
+                specular_steps,
+                shininess,
+                rim_power,
             } => {
                 assert_eq!(diffuse_bands, 7);
                 assert!((rim_strength - 0.42).abs() < 1.0e-6);
+                assert_eq!(specular_steps, 3);
+                assert!((shininess - 48.0).abs() < 1.0e-6);
+                assert!((rim_power - 1.5).abs() < 1.0e-6);
             }
             other => panic!("expected Toon shading, got {other:?}"),
         },
         other => panic!("expected Material source, got {other:?}"),
     }
+}
+
+#[test]
+fn editor_material_library_roundtrips_through_toml() {
+    // A built-in PBR library material with a KHR extension enabled — the exact
+    // thing that must survive Save→Load so the Material pane + assigned meshes
+    // come back. Round-trip the whole EditorProject through TOML (the on-disk
+    // project format) and assert the stored material is byte-for-byte preserved.
+    let id = AssetId::new();
+    let mut builtin = MaterialDef {
+        shading: MaterialShading::Pbr,
+        metallic: 0.3,
+        roughness: 0.55,
+        ..MaterialDef::default()
+    };
+    builtin.extensions.specular = Some(SpecularExt {
+        factor: 0.8,
+        color_factor: [0.9, 0.8, 1.0],
+        ..Default::default()
+    });
+
+    let stored = StoredMaterial {
+        id,
+        name: "Glossy".to_string(),
+        builtin: Some(builtin.clone()),
+        registered: true,
+        ..StoredMaterial {
+            id,
+            name: String::new(),
+            builtin: None,
+            wgsl: String::new(),
+            alpha: "opaque".to_string(),
+            cutoff: 0.5,
+            double_sided: false,
+            color: "#8aa0b8".to_string(),
+            uniforms: Vec::new(),
+            textures: Vec::new(),
+            buffers: Vec::new(),
+            registered: false,
+            shader_includes: Vec::new(),
+            fragment_inputs: Vec::new(),
+        }
+    };
+
+    let project = EditorProject {
+        name: "p".to_string(),
+        environment: EnvironmentConfig::default(),
+        shadows: Default::default(),
+        assets: AssetTable::new(),
+        custom_materials: Vec::new(),
+        editor_materials: vec![stored.clone()],
+        nodes: Vec::new(),
+    };
+
+    let toml_str = toml::to_string_pretty(&project).expect("toml serialize");
+    let back: EditorProject = toml::from_str(&toml_str).expect("toml deserialize");
+    assert_eq!(project, back, "editor_materials drifted through TOML");
+
+    let m = &back.editor_materials[0];
+    assert_eq!(m.id, id);
+    assert_eq!(m.name, "Glossy");
+    let def = m.builtin.as_ref().expect("builtin survived");
+    let spec = def.extensions.specular.expect("specular ext survived");
+    assert!((spec.factor - 0.8).abs() < 1.0e-6);
 }
 
 #[test]

@@ -18,7 +18,7 @@ use crate::{
     bind_groups::{BindGroupDescriptor, BindGroupEntry, BindGroupResource},
     command::compute_pass::ComputePassDescriptor,
     error::AwsmCoreError,
-    renderer::AwsmRendererWebGpu,
+    renderer::{AwsmRendererWebGpu, DeviceId},
     shaders::ShaderModuleDescriptor,
     texture::{TextureViewDescriptor, TextureViewDimension},
 };
@@ -35,6 +35,8 @@ thread_local! {
 
 #[derive(Hash, Debug, Eq, PartialEq)]
 struct LookupKey {
+    // Scopes the device-bound compute pipeline per-device (see `DeviceId`).
+    pub device: DeviceId,
     pub texture_format: TextureFormatKey,
     pub is_array: bool,
 }
@@ -399,6 +401,7 @@ async fn get_tile_aware_mipmap_pipeline(
     is_array: bool,
 ) -> Result<MipmapPipeline> {
     let key = LookupKey {
+        device: gpu.device_id(),
         texture_format: format.into(),
         is_array,
     };

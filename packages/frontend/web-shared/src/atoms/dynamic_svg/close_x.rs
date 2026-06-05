@@ -1,5 +1,15 @@
 use crate::prelude::*;
 
+/// Legacy size token for the login/modal close button. (The prototype atom set
+/// uses [`crate::atoms::button::BtnSize`]; this small enum survives only for the
+/// `CloseX` + `Modal` host chrome.)
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ButtonSize {
+    Sm,
+    Md,
+    Lg,
+}
+
 pub struct CloseX {}
 
 impl CloseX {

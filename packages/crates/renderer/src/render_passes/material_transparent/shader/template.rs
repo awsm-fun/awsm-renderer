@@ -85,7 +85,11 @@ impl ShaderTemplateTransparentMaterialIncludes {
             // material_color_calc includes gate on exactly this transparent
             // material's feature-set (no uber all()).
             pbr_features: awsm_materials::pbr::PbrFeatures::from_bits(cache_key.pbr_features),
-            inc: crate::dynamic_materials::ShaderIncludeFlags::for_base(cache_key.base),
+            inc: if let Some(d) = cache_key.dynamic_shader.as_ref() {
+                crate::dynamic_materials::ShaderIncludeFlags::from_includes(d.shader_includes)
+            } else {
+                crate::dynamic_materials::ShaderIncludeFlags::for_base(cache_key.base)
+            },
             base: cache_key.base,
         }
     }
@@ -300,12 +304,20 @@ impl TryFrom<&ShaderCacheKeyMaterialTransparent> for ShaderTemplateMaterialTrans
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ShaderTemplateMaterialTransparentDebug {
     lighting: ShaderTemplateMaterialTransparentDebugLighting,
+    /// Gate for the runtime debug VIEW overlays in the shared
+    /// `apply_lighting.wgsl` (unlit/flat view mode + froxel light-count
+    /// heatmap). Follows the `debug-views` cargo feature; `false` for game
+    /// builds collapses the `{% if debug.views %}` gates. `pub` to mirror the
+    /// opaque struct (read by the shared include).
+    pub views: bool,
 }
 
 impl ShaderTemplateMaterialTransparentDebug {
-    /// Creates a default debug configuration.
+    /// Creates a default debug configuration. The view-overlay gate follows the
+    /// `debug-views` cargo feature (off for game builds, on for the editor).
     pub fn new() -> Self {
         Self {
+            views: cfg!(feature = "debug-views"),
             ..Default::default()
         }
     }

@@ -121,6 +121,7 @@ fn empty_project(name: &str) -> EditorProject {
         shadows: ShadowsConfig::default(),
         assets: AssetTable::default(),
         custom_materials: Vec::new(),
+        editor_materials: Vec::new(),
         nodes: Vec::new(),
     }
 }
@@ -862,7 +863,7 @@ fn scene_50_materials() -> EditorProject {
         );
         let id = AssetId::new();
         project.assets.entries.insert(id, entry);
-        TextureRef(id)
+        TextureRef::new(id)
     };
 
     let mut meshes: Vec<EditorNode> = Vec::with_capacity(50);
@@ -918,6 +919,9 @@ fn scene_50_materials() -> EditorProject {
             shading: MaterialShading::Toon {
                 diffuse_bands: bands,
                 rim_strength: rim,
+                specular_steps: 2,
+                shininess: 32.0,
+                rim_power: 2.0,
             },
             ..MaterialDef::default()
         };

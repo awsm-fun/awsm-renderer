@@ -166,6 +166,7 @@ impl crate::AwsmRenderer {
             return Ok(());
         }
         let dynamic_shader = reg.as_ref().map(|reg| DynamicShaderInfo {
+            shader_includes: reg.shader_includes.resolve(),
             struct_decl: awsm_materials::dynamic_layout::generate_wgsl_struct(
                 "MaterialData",
                 &reg.layout,

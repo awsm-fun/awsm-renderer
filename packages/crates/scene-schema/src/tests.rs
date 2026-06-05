@@ -22,6 +22,7 @@ fn sample() -> EditorProject {
         shadows: Default::default(),
         assets,
         custom_materials: Vec::new(),
+        editor_materials: Vec::new(),
         nodes: vec![EditorNode {
             id: NodeId::new(),
             name: "root".to_string(),

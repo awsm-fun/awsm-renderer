@@ -33,10 +33,21 @@ pub struct MaterialDef {
     /// perturb the surface normal at shading time.
     #[serde(default)]
     pub normal_texture: Option<TextureRef>,
+    /// Normal-map intensity (glTF `normalTexture.scale`). A per-mesh uniform —
+    /// scales how strongly the normal map perturbs the surface. Only meaningful
+    /// when `normal_texture` is set. Defaults to 1.0 (and round-trips for old
+    /// projects via `default_one`).
+    #[serde(default = "default_one")]
+    pub normal_scale: f32,
     /// Ambient-occlusion mask (R channel). When set, the renderer
     /// multiplies it into the ambient/indirect lighting term.
     #[serde(default)]
     pub occlusion_texture: Option<TextureRef>,
+    /// Occlusion intensity (glTF `occlusionTexture.strength`). A per-mesh uniform
+    /// — lerps the AO term between 1.0 and the sampled value. Only meaningful
+    /// when `occlusion_texture` is set. Defaults to 1.0.
+    #[serde(default = "default_one")]
+    pub occlusion_strength: f32,
     pub double_sided: bool,
     pub vertex_colors_enabled: bool,
     /// glTF-style alpha rendering mode. Defaults to `Opaque` so
@@ -50,6 +61,15 @@ pub struct MaterialDef {
     /// emissive-only path; `Toon` is the new banded-diffuse + stepped-specular
     /// + rim shading model added by this plan.
     pub shading: MaterialShading,
+    /// Optional KHR PBR extensions (only meaningful when `shading == Pbr`). Each
+    /// enabled extension is a variant bit; its factors are per-mesh uniforms.
+    /// `#[serde(default)]` so pre-extension projects round-trip cleanly.
+    #[serde(default)]
+    pub extensions: PbrExtensions,
+}
+
+fn default_one() -> f32 {
+    1.0
 }
 
 impl Default for MaterialDef {
@@ -64,11 +84,14 @@ impl Default for MaterialDef {
             emissive: [0.0, 0.0, 0.0],
             emissive_texture: None,
             normal_texture: None,
+            normal_scale: 1.0,
             occlusion_texture: None,
+            occlusion_strength: 1.0,
             double_sided: false,
             vertex_colors_enabled: false,
             alpha_mode: MaterialAlphaMode::Opaque,
             shading: MaterialShading::Pbr,
+            extensions: PbrExtensions::default(),
         }
     }
 }
@@ -99,11 +122,99 @@ pub enum MaterialShading {
     Unlit,
     /// Banded diffuse + stepped Blinn-Phong specular + rim light.
     /// Requires the `toon` feature on `awsm-renderer` at build time.
+    /// All five knobs map 1:1 to the renderer's `ToonMaterial`. The three added
+    /// later carry serde defaults so older `Toon { diffuse_bands, rim_strength }`
+    /// projects deserialize unchanged.
     Toon {
         diffuse_bands: u32,
         rim_strength: f32,
+        #[serde(default = "default_specular_steps")]
+        specular_steps: u32,
+        #[serde(default = "default_shininess")]
+        shininess: f32,
+        #[serde(default = "default_rim_power")]
+        rim_power: f32,
     },
 }
+
+fn default_specular_steps() -> u32 {
+    2
+}
+fn default_shininess() -> f32 {
+    32.0
+}
+fn default_rim_power() -> f32 {
+    2.0
+}
+
+/// The KHR PBR material extensions, modeled as per-material optionals.
+///
+/// **Each `Some(..)` ENABLES that extension** — flipping the option is a VARIANT
+/// change (it sets a `PbrFeatures` bit, so the assigned meshes recompile to a
+/// distinct specialized shader; "a PBR with dispersion is a different compiled
+/// material"). The scalar / color fields *inside* each struct are per-mesh
+/// UNIFORM factors — editing them is a no-recompile uniform update.
+///
+/// Texture bindings for these extensions (specular color map, clearcoat normal,
+/// …) are deliberately omitted until the texture-asset picker lands; the bridge
+/// leaves those renderer slots `None`. All fields `#[serde(default)]` so existing
+/// projects (which have no `extensions` key) round-trip unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case", default)]
+pub struct PbrExtensions {
+    pub emissive_strength: Option<EmissiveStrengthExt>,
+    pub ior: Option<IorExt>,
+    pub specular: Option<SpecularExt>,
+    pub transmission: Option<TransmissionExt>,
+    pub diffuse_transmission: Option<DiffuseTransmissionExt>,
+    pub volume: Option<VolumeExt>,
+    pub clearcoat: Option<ClearcoatExt>,
+    pub sheen: Option<SheenExt>,
+    pub dispersion: Option<DispersionExt>,
+    pub anisotropy: Option<AnisotropyExt>,
+    pub iridescence: Option<IridescenceExt>,
+}
+
+macro_rules! ext_struct {
+    ($(#[$m:meta])* $name:ident { $($field:ident : $ty:ty = $def:expr),* $(,)? }) => {
+        $(#[$m])*
+        #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        pub struct $name { $(#[serde(default)] pub $field: $ty),* }
+        impl Default for $name {
+            fn default() -> Self { Self { $($field: $def),* } }
+        }
+    };
+}
+
+ext_struct!(/// `KHR_materials_emissive_strength` — multiplies the emissive factor.
+    EmissiveStrengthExt { strength: f32 = 2.0 });
+ext_struct!(/// `KHR_materials_ior` — index of refraction (1.5 ≈ glass/plastic).
+    IorExt { ior: f32 = 1.5 });
+ext_struct!(/// `KHR_materials_specular` — specular reflection strength + tint.
+    SpecularExt { factor: f32 = 1.0, color_factor: [f32; 3] = [1.0, 1.0, 1.0],
+        tex: Option<TextureRef> = None, color_tex: Option<TextureRef> = None });
+ext_struct!(/// `KHR_materials_transmission` — light transmitted through the surface.
+    TransmissionExt { factor: f32 = 1.0, tex: Option<TextureRef> = None });
+ext_struct!(/// `KHR_materials_diffuse_transmission` — diffuse light through thin surfaces.
+    DiffuseTransmissionExt { factor: f32 = 1.0, color_factor: [f32; 3] = [1.0, 1.0, 1.0],
+        tex: Option<TextureRef> = None, color_tex: Option<TextureRef> = None });
+ext_struct!(/// `KHR_materials_volume` — absorption inside a transmissive volume.
+    VolumeExt { thickness_factor: f32 = 1.0, attenuation_distance: f32 = 1.0, attenuation_color: [f32; 3] = [1.0, 1.0, 1.0],
+        thickness_tex: Option<TextureRef> = None });
+ext_struct!(/// `KHR_materials_clearcoat` — a clear lacquer layer.
+    ClearcoatExt { factor: f32 = 1.0, roughness_factor: f32 = 0.0, normal_scale: f32 = 1.0,
+        tex: Option<TextureRef> = None, roughness_tex: Option<TextureRef> = None, normal_tex: Option<TextureRef> = None });
+ext_struct!(/// `KHR_materials_sheen` — retroreflective fuzz (cloth/velvet).
+    SheenExt { roughness_factor: f32 = 0.3, color_factor: [f32; 3] = [1.0, 1.0, 1.0],
+        color_tex: Option<TextureRef> = None, roughness_tex: Option<TextureRef> = None });
+ext_struct!(/// `KHR_materials_dispersion` — wavelength-dependent IOR (prismatic).
+    DispersionExt { dispersion: f32 = 0.1 });
+ext_struct!(/// `KHR_materials_anisotropy` — directional specular (brushed metal).
+    AnisotropyExt { strength: f32 = 1.0, rotation: f32 = 0.0, tex: Option<TextureRef> = None });
+ext_struct!(/// `KHR_materials_iridescence` — thin-film interference (soap bubble).
+    IridescenceExt { factor: f32 = 1.0, ior: f32 = 1.3, thickness_min: f32 = 100.0, thickness_max: f32 = 400.0,
+        tex: Option<TextureRef> = None, thickness_tex: Option<TextureRef> = None });
 
 /// Procedural texture parameters. The renderer materializes these into a real
 /// GPU texture at load time via `awsm-meshgen::procedural_texture::*`.

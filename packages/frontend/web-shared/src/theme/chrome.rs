@@ -1,3 +1,8 @@
+//! "Chrome" surface tokens — panel fills, borders, shadows, filters used by the
+//! editor frame. Re-mapped onto the graphite/slate design tokens
+//! (`tokens.css`, injected at `:root`). The former cyan-neon gradients flatten
+//! to layered graphite surfaces; enum variants are preserved for source-compat.
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ChromeColor {
     Rule,
@@ -17,18 +22,18 @@ pub enum ChromeColor {
 impl ChromeColor {
     pub const fn value(self) -> &'static str {
         match self {
-            Self::Rule => "rgba(112, 185, 255, 0.25)",
-            Self::PanelBorder => "rgba(114, 245, 255, 0.3)",
-            Self::CtaBorder => "rgba(114, 245, 255, 0.5)",
-            Self::CtaBorderHover => "rgba(114, 245, 255, 0.9)",
-            Self::CardBorder => "rgba(114, 245, 255, 0.36)",
-            Self::CardBorderHover => "rgba(114, 245, 255, 0.78)",
-            Self::ButtonCyanBorder => "rgba(112, 185, 255, 0.35)",
-            Self::ButtonCyanBorderHover => "rgba(114, 245, 255, 0.8)",
-            Self::ButtonGreenBorder => "rgba(125, 255, 166, 0.45)",
-            Self::ButtonGreenBorderHover => "rgba(125, 255, 166, 0.85)",
-            Self::FieldBorder => "rgba(112, 185, 255, 0.45)",
-            Self::DangerBorder => "rgba(255, 77, 122, 0.5)",
+            Self::Rule => "var(--line)",
+            Self::PanelBorder => "var(--line-soft)",
+            Self::CtaBorder => "var(--accent-line)",
+            Self::CtaBorderHover => "var(--accent)",
+            Self::CardBorder => "var(--line)",
+            Self::CardBorderHover => "var(--accent-line)",
+            Self::ButtonCyanBorder => "var(--line)",
+            Self::ButtonCyanBorderHover => "var(--accent-line)",
+            Self::ButtonGreenBorder => "color-mix(in oklch, var(--ok) 40%, transparent)",
+            Self::ButtonGreenBorderHover => "var(--ok)",
+            Self::FieldBorder => "var(--line)",
+            Self::DangerBorder => "color-mix(in oklch, var(--danger) 50%, transparent)",
         }
     }
 }
@@ -55,41 +60,21 @@ pub enum ChromeFill {
 impl ChromeFill {
     pub const fn value(self) -> &'static str {
         match self {
-            Self::Frame => {
-                "linear-gradient(180deg, rgba(18, 33, 58, 0.84), rgba(12, 23, 42, 0.78))"
-            }
-            Self::Canvas => {
-                "linear-gradient(180deg, rgba(9, 18, 34, 0.98), rgba(8, 16, 31, 0.99))"
-            }
-            Self::Panel => {
-                "linear-gradient(160deg, rgba(12, 25, 45, 0.78), rgba(8, 17, 31, 0.74))"
-            }
-            Self::ContentPanel => {
-                "linear-gradient(160deg, rgba(16, 29, 53, 0.58), rgba(10, 17, 34, 0.35))"
-            }
-            Self::Selection => "rgba(143, 168, 206, 0.22)",
-            Self::Field => "rgba(7, 14, 27, 0.74)",
-            Self::CtaCyan => {
-                "linear-gradient(120deg, rgba(114, 245, 255, 0.18), rgba(103, 168, 255, 0.14))"
-            }
-            Self::ButtonCyan => {
-                "linear-gradient(120deg, rgba(114, 245, 255, 0.16), rgba(103, 168, 255, 0.1))"
-            }
-            Self::ButtonGreen => {
-                "linear-gradient(120deg, rgba(125, 255, 166, 0.16), rgba(114, 245, 255, 0.1))"
-            }
-            Self::Card => {
-                "linear-gradient(155deg, rgba(12, 24, 46, 0.88), rgba(8, 17, 31, 0.84))"
-            }
-            Self::CardHalo => {
-                "radial-gradient(circle, rgba(114,245,255,0.24) 0%, rgba(114,245,255,0.08) 33%, rgba(114,245,255,0.0) 70%)"
-            }
-            Self::Recessed => "rgba(12, 23, 41, 0.45)",
-            Self::RecessedHover => "rgba(16, 31, 56, 0.62)",
-            Self::RecessedActive => {
-                "linear-gradient(135deg, rgba(16, 31, 56, 0.72), rgba(12, 24, 46, 0.58))"
-            }
-            Self::DangerRecessed => "rgba(56, 16, 28, 0.45)",
+            Self::Frame => "var(--bg-2)",
+            Self::Canvas => "var(--bg-0)",
+            Self::Panel => "var(--bg-1)",
+            Self::ContentPanel => "var(--bg-1)",
+            Self::Selection => "var(--accent-ghost)",
+            Self::Field => "var(--bg-3)",
+            Self::CtaCyan => "var(--accent-ghost)",
+            Self::ButtonCyan => "var(--bg-2)",
+            Self::ButtonGreen => "var(--ok-soft)",
+            Self::Card => "var(--bg-2)",
+            Self::CardHalo => "radial-gradient(circle, var(--accent-ghost) 0%, transparent 70%)",
+            Self::Recessed => "var(--bg-3)",
+            Self::RecessedHover => "var(--bg-hover)",
+            Self::RecessedActive => "var(--bg-active)",
+            Self::DangerRecessed => "var(--danger-soft)",
         }
     }
 }
@@ -112,21 +97,17 @@ pub enum ChromeShadow {
 impl ChromeShadow {
     pub const fn value(self) -> &'static str {
         match self {
-            Self::None => "0 0 0 rgba(0, 0, 0, 0)",
-            Self::FieldInset => "inset 0 1px 0 rgba(255,255,255,0.04)",
-            Self::CtaRest => "0 0 0 rgba(114, 245, 255, 0)",
-            Self::CtaHover => "0 0 20px rgba(114, 245, 255, 0.25)",
-            Self::CardRest => "0 0 0 rgba(114, 245, 255, 0), inset 0 1px 0 rgba(255,255,255,0.06)",
-            Self::CardHover => {
-                "0 14px 32px rgba(4, 18, 40, 0.6), 0 0 28px rgba(114, 245, 255, 0.28), inset 0 1px 0 rgba(255,255,255,0.12)"
-            }
-            Self::ButtonCyanHover => "0 0 24px rgba(114, 245, 255, 0.26)",
-            Self::ButtonGreenHover => "0 0 22px rgba(125, 255, 166, 0.24)",
-            Self::HeroTitle => {
-                "0 0 16px rgba(103, 168, 255, 0.35), 0 0 26px rgba(114, 245, 255, 0.25)"
-            }
-            Self::NavLinkHover => "0 0 12px rgba(103, 168, 255, 0.7)",
-            Self::NavLinkActive => "0 0 12px rgba(114, 245, 255, 0.35)",
+            Self::None => "none",
+            Self::FieldInset => "inset 0 1px 0 oklch(1 0 0 / 0.04)",
+            Self::CtaRest => "var(--shadow-1)",
+            Self::CtaHover => "var(--shadow-2)",
+            Self::CardRest => "var(--shadow-1)",
+            Self::CardHover => "var(--shadow-2)",
+            Self::ButtonCyanHover => "var(--shadow-1)",
+            Self::ButtonGreenHover => "var(--shadow-1)",
+            Self::HeroTitle => "none",
+            Self::NavLinkHover => "none",
+            Self::NavLinkActive => "none",
         }
     }
 }
@@ -141,7 +122,7 @@ impl ChromeFilter {
     pub const fn value(self) -> &'static str {
         match self {
             Self::None => "none",
-            Self::CardIconHover => "drop-shadow(0 0 10px rgba(114, 245, 255, 0.45))",
+            Self::CardIconHover => "none",
         }
     }
 }

@@ -1,7 +1,63 @@
 use super::{
-    assets::AssetTable, dynamic_material::CustomMaterialRef, environment::EnvironmentConfig,
-    shadows::ShadowsConfig, tree::EditorNode,
+    assets::{AssetId, AssetTable},
+    dynamic_material::CustomMaterialRef,
+    environment::EnvironmentConfig,
+    material::MaterialDef,
+    shadows::ShadowsConfig,
+    tree::EditorNode,
 };
+
+/// One declared slot of a stored custom material (uniform / texture / buffer).
+/// Mirrors the editor's `Slot`. Editor-only — the player ignores `editor_materials`.
+#[derive(Clone, Debug, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct StoredSlot {
+    pub name: String,
+    pub ty: String,
+    #[serde(default)]
+    pub val: String,
+    #[serde(default)]
+    pub debug: String,
+}
+
+/// A persisted editor custom material — the full library entry, so that built-in
+/// (PBR/Unlit/Toon variant) **and** dynamic WGSL materials survive save/load and
+/// reappear in the Material library, keyed by their stable `AssetId` (which the
+/// scene nodes reference). Editor-only; `#[serde(default)]` everywhere so a
+/// project without this section still loads, and the player ignores it.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct StoredMaterial {
+    pub id: AssetId,
+    pub name: String,
+    /// `Some` ⇒ built-in (carries the shared variant `MaterialDef`); `None` ⇒ dynamic.
+    #[serde(default)]
+    pub builtin: Option<MaterialDef>,
+    #[serde(default)]
+    pub wgsl: String,
+    /// "opaque" / "mask" / "blend".
+    #[serde(default)]
+    pub alpha: String,
+    #[serde(default)]
+    pub cutoff: f32,
+    #[serde(default)]
+    pub double_sided: bool,
+    /// Debug preview color (`#rrggbb`).
+    #[serde(default)]
+    pub color: String,
+    #[serde(default)]
+    pub uniforms: Vec<StoredSlot>,
+    #[serde(default)]
+    pub textures: Vec<StoredSlot>,
+    #[serde(default)]
+    pub buffers: Vec<StoredSlot>,
+    #[serde(default)]
+    pub registered: bool,
+    #[serde(default)]
+    pub shader_includes: Vec<String>,
+    #[serde(default)]
+    pub fragment_inputs: Vec<String>,
+}
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -36,6 +92,12 @@ pub struct EditorProject {
     /// `#[serde(default)]`.
     #[serde(default)]
     pub custom_materials: Vec<CustomMaterialRef>,
+    /// Full editor custom-material library (built-in variant defs + dynamic WGSL),
+    /// so materials survive save/load and reappear in the Material pane. Editor-only
+    /// (the runtime player uses `custom_materials` refs); `#[serde(default)]` so
+    /// pre-existing projects round-trip.
+    #[serde(default)]
+    pub editor_materials: Vec<StoredMaterial>,
     #[serde(default)]
     pub nodes: Vec<EditorNode>,
 }
