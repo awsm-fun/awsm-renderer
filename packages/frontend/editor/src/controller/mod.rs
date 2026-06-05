@@ -657,14 +657,33 @@ impl EditorController {
             return;
         }
 
-        // Track the source file as an asset + cache its node template.
+        // Track the source file + the materials/textures it brings in (#6.3):
+        // the Content Browser renders `AssetSource::Material` / `Texture` entries
+        // straight from the table, so extracting them here surfaces them. They're
+        // browsable/editable; the model itself keeps rendering from the
+        // renderer-baked materials (so textured imports stay textured).
+        let mat_ids: Vec<AssetId> = import.materials.iter().map(|_| AssetId::new()).collect();
+        let img_ids: Vec<AssetId> = import.image_names.iter().map(|_| AssetId::new()).collect();
         let asset_id = {
             let mut table = self.scene.assets.lock().unwrap();
+            for (id, def) in mat_ids.iter().zip(import.materials.iter()) {
+                table
+                    .entries
+                    .insert(*id, AssetEntry::new(SceneAssetSource::Material(def.clone())));
+            }
+            for (id, name) in img_ids.iter().zip(import.image_names.iter()) {
+                table.entries.insert(
+                    *id,
+                    AssetEntry::new(SceneAssetSource::Texture(TextureDef::Raster {
+                        display_name: name.clone(),
+                    })),
+                );
+            }
             let id = AssetId::new();
-            table.entries.insert(
-                id,
-                AssetEntry::new(SceneAssetSource::Filename(import.display_name.clone())),
-            );
+            let mut entry = AssetEntry::new(SceneAssetSource::Filename(import.display_name.clone()));
+            entry.gltf_material_asset_ids = mat_ids.clone();
+            entry.gltf_image_asset_ids = img_ids.clone();
+            table.entries.insert(id, entry);
             id
         };
         let template = Arc::new(import.template);

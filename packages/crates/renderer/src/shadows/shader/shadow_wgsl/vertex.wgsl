@@ -79,10 +79,27 @@ fn vert_main(
             vertex.instance_transform_row_2,
             vertex.instance_transform_row_3,
         );
-        let model_transform = get_model_transform(geometry_mesh_meta.transform_offset) * instance_transform;
+        var model_transform = get_model_transform(geometry_mesh_meta.transform_offset) * instance_transform;
     {% else %}
-        let model_transform = get_model_transform(geometry_mesh_meta.transform_offset);
+        var model_transform = get_model_transform(geometry_mesh_meta.transform_offset);
     {% endif %}
+
+    // Skinned meshes are already in world space (the joint matrices fold in
+    // every ancestor transform, incl. the Z-up→Y-up root). Drop the base model
+    // transform so it isn't applied twice — matches the geometry pass. See the
+    // note in shared_wgsl/vertex/apply_vertex.wgsl.
+    if (geometry_mesh_meta.skin_sets_len != 0u) {
+        {% if instancing_transforms %}
+            model_transform = instance_transform;
+        {% else %}
+            model_transform = mat4x4<f32>(
+                vec4<f32>(1.0, 0.0, 0.0, 0.0),
+                vec4<f32>(0.0, 1.0, 0.0, 0.0),
+                vec4<f32>(0.0, 0.0, 1.0, 0.0),
+                vec4<f32>(0.0, 0.0, 0.0, 1.0),
+            );
+        {% endif %}
+    }
 
     let world_pos = model_transform * vec4<f32>(vertex.position, 1.0);
     return shadow_view.view_projection * world_pos;
