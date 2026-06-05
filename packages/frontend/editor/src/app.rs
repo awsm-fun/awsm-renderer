@@ -39,13 +39,33 @@ pub fn render() -> Dom {
         .style("background-color", "var(--bg-0)")
         .style("color", "var(--text-0)")
         // ⌘K / Ctrl-K toggles the command palette from anywhere.
+        // Bare Q/W/E/R/T switch the gizmo tool (Select/Move/Rotate/Scale/
+        // Universal) — but only when not typing into a field.
         .global_event(|e: events::KeyDown| {
+            use crate::engine::gizmo::{gizmo_mode, GizmoMode};
             // `ctrl_key()` here already covers ⌘ (it OR's meta_key).
             if e.key() == "k" && e.ctrl_key() {
                 e.prevent_default();
                 let o = controller().cmdk_open.clone();
                 o.set_neq(!o.get());
+                return;
             }
+            // Don't hijack typing: ignore single-letter tool shortcuts while a
+            // text field / editor / contenteditable holds focus, or with any
+            // modifier held.
+            if e.ctrl_key() || e.alt_key() || e.shift_key() || typing_in_field() {
+                return;
+            }
+            let mode = match e.key().as_str() {
+                "q" | "Q" => GizmoMode::Select,
+                "w" | "W" => GizmoMode::Move,
+                "e" | "E" => GizmoMode::Rotate,
+                "r" | "R" => GizmoMode::Scale,
+                "t" | "T" => GizmoMode::Universal,
+                _ => return,
+            };
+            e.prevent_default();
+            gizmo_mode().set_neq(mode);
         })
         .child(top_bar(&ctrl))
         .child(workspace(&ctrl))
@@ -53,6 +73,26 @@ pub fn render() -> Dom {
         .child(crate::command_palette::render())
         .child_signal(ctrl.settings_open.signal().map(|open| if open { Some(settings_drawer()) } else { None }))
     })
+}
+
+/// Whether a text-entry element currently holds focus — used to suppress the
+/// bare-letter gizmo shortcuts so typing into a field (name, WGSL editor,
+/// numeric input, search box, …) doesn't switch tools.
+fn typing_in_field() -> bool {
+    web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.active_element())
+        .map(|el| {
+            let tag = el.tag_name().to_ascii_lowercase();
+            tag == "input"
+                || tag == "textarea"
+                || tag == "select"
+                || el
+                    .get_attribute("contenteditable")
+                    .map(|v| v != "false")
+                    .unwrap_or(false)
+        })
+        .unwrap_or(false)
 }
 
 /// Save the live project into a picked directory (File System Access): writes

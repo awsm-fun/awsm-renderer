@@ -39,6 +39,11 @@ pub enum GizmoMode {
     Move,
     Rotate,
     Scale,
+    /// Show translate + rotate + scale handles all at once. Each handle still
+    /// routes to its own operation (hit-testing keys off the picked handle's
+    /// `GizmoKind`, not the mode), so universal mode is purely additive
+    /// visibility — see `hidden_for_mode`.
+    Universal,
 }
 
 thread_local! {
@@ -57,6 +62,7 @@ fn hidden_for_mode(mode: GizmoMode) -> (bool, bool, bool) {
         GizmoMode::Move => (false, true, true),
         GizmoMode::Rotate => (true, false, true),
         GizmoMode::Scale => (true, true, false),
+        GizmoMode::Universal => (false, false, false),
     }
 }
 

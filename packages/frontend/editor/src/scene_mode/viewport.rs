@@ -128,6 +128,7 @@ fn tool_palette(tool: &Mutable<GizmoMode>) -> Dom {
         .child(entry(GizmoMode::Move, "move", "Move · W", tool))
         .child(entry(GizmoMode::Rotate, "rotate", "Rotate · E", tool))
         .child(entry(GizmoMode::Scale, "scale", "Scale · R", tool))
+        .child(entry(GizmoMode::Universal, "target", "Universal (all handles) · T", tool))
     })
 }
 
