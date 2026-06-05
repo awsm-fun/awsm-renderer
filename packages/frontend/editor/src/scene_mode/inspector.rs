@@ -183,26 +183,15 @@ fn kind_editor(node: &Arc<Node>) -> Dom {
         // A Group is purely an organisational transform parent — name + transform
         // (above) are its full property set.
         NodeKind::Group => info_section("Group", "An organizational parent. Its children inherit this node's transform; it has no geometry of its own."),
-        // A Model references an imported glTF/glb. It renders through the
-        // materials extracted from the file; the picker overrides the whole
-        // node with one chosen library material ("None" reverts to per-primitive).
-        NodeKind::Model(_) => model_material_section(node),
+        // A Model is an imported glTF/glb mesh. It carries one assigned library
+        // material (shared, derived at import) plus the *same* per-mesh editing
+        // surface as a captured Mesh: built-in uniform factors + texture
+        // overrides, or a dynamic material's declared overrides, and shadow flags.
+        NodeKind::Model(r) => html!("div", {
+            .child(material_editor(node, &r.inline_material, r.material.is_some()))
+            .child(mesh_shadow_editor(node, r.shadow))
+        }),
     }
-}
-
-/// Inspector for a Model node: an info line + a whole-node material override
-/// picker. `None` keeps each primitive's glTF-extracted material; choosing a
-/// library material reassigns the entire node to it.
-fn model_material_section(node: &Arc<Node>) -> Dom {
-    let mut sec = Section::new("Model").child(html!("div", {
-        .style("font-size", "12px").style("color", "var(--text-2)").style("line-height", "1.5")
-        .style("margin-bottom", "6px")
-        .text("An imported glTF/glb model. Materials are extracted to the library and editable; pick one below to override the whole node.")
-    }));
-    if let Some(picker) = build_material_select(node) {
-        sec = sec.child(picker);
-    }
-    sec.render()
 }
 
 /// A small read-only info Section (used for kinds whose only settable properties
@@ -1064,6 +1053,7 @@ fn current_primitive_material(node: &Arc<Node>) -> Option<MaterialDef> {
         | NodeKind::Mesh {
             inline_material, ..
         } => Some(inline_material),
+        NodeKind::Model(r) => Some(r.inline_material),
         _ => None,
     }
 }
@@ -1103,6 +1093,10 @@ fn set_inline_material(node: &Arc<Node>, mat: MaterialDef) {
                 shadow,
             },
         ),
+        NodeKind::Model(mut r) => {
+            r.inline_material = mat;
+            dispatch_kind(node.id, NodeKind::Model(r));
+        }
         _ => {}
     }
 }
@@ -1214,7 +1208,15 @@ fn assigned_material(node: &Arc<Node>) -> Assigned {
         NodeKind::Primitive {
             custom_material: Some(inst),
             ..
+        }
+        | NodeKind::Mesh {
+            custom_material: Some(inst),
+            ..
         } => inst.material,
+        NodeKind::Model(r) => match r.material {
+            Some(inst) => inst.material,
+            None => return Assigned::None,
+        },
         _ => return Assigned::None,
     };
     match crate::controller::custom_material::find_material(&controller().custom_materials, id) {
@@ -1233,7 +1235,12 @@ fn assigned_shading(node: &Arc<Node>) -> Option<MaterialShading> {
         NodeKind::Primitive {
             custom_material: Some(inst),
             ..
+        }
+        | NodeKind::Mesh {
+            custom_material: Some(inst),
+            ..
         } => inst.material,
+        NodeKind::Model(r) => r.material?.material,
         _ => return None,
     };
     crate::controller::custom_material::find_material(&controller().custom_materials, id)
@@ -1420,11 +1427,54 @@ fn material_editor(node: &Arc<Node>, mat: &MaterialDef, _has_custom: bool) -> Do
     }));
     sec = sec.child(row("Emissive", swatch(emi, 22.0)));
 
-    // NOTE: double-sided, alpha mode, vertex colours, texture slots, Toon knobs and
-    // KHR extensions are VARIANT settings — edited on the material in the Material
-    // pane, never here. See the material-model note at the top of this fn.
+    // Per-mesh TEXTURE overrides. Slot *presence* (does this material sample a
+    // base-color / normal / … map?) is a variant bit — adding or removing a slot
+    // recompiles, so that stays on the material. But binding a *different* image
+    // to an existing slot does NOT recompile, so per the override rule it's
+    // per-mesh overridable: for each slot the material declares, let this mesh
+    // swap which texture fills it (clearing falls back to the material default).
+    if let (Some(inst), Some(def)) = (current_custom_instance(node), assigned_builtin_def(node)) {
+        let slots: [(&str, &str, Option<AssetId>); 5] = [
+            ("base_color_texture", "Base color", def.base_color_texture.map(|t| t.0)),
+            ("metallic_roughness_texture", "Metal/rough", def.metallic_roughness_texture.map(|t| t.0)),
+            ("normal_texture", "Normal", def.normal_texture.map(|t| t.0)),
+            ("occlusion_texture", "Occlusion", def.occlusion_texture.map(|t| t.0)),
+            ("emissive_texture", "Emissive map", def.emissive_texture.map(|t| t.0)),
+        ];
+        let present: Vec<(&str, &str, Option<AssetId>)> =
+            slots.into_iter().filter(|(_, _, d)| d.is_some()).collect();
+        if !present.is_empty() {
+            sec = sec.child(html!("div", {
+                .style("margin", "10px 0 2px").style("font-size", "11px").style("font-weight", "600")
+                .style("letter-spacing", ".04em").style("text-transform", "uppercase")
+                .style("color", "var(--text-3)")
+                .text("Textures")
+            }));
+            let assets = collect_texture_assets();
+            for (slot, label, default_id) in present {
+                // Show the effective texture (this mesh's override, else the
+                // material default); "None" clears the override → default.
+                let cur = inst.texture_overrides.get(slot).map(|t| t.0).or(default_id);
+                sec = sec.child(row(label, texture_override_picker(node, slot, cur, assets.clone())));
+            }
+        }
+    }
+
+    // NOTE: double-sided, alpha mode, vertex colours, texture *slots* (presence),
+    // Toon knobs and KHR extension *enables* are VARIANT settings — edited on the
+    // material in the Material pane, never here. See the material-model note above.
 
     sec.render()
+}
+
+/// The assigned **built-in** library material's variant [`MaterialDef`] for this
+/// node (its shared defaults — texture slots, shading, factors), or `None` when
+/// the node has no built-in material assigned.
+fn assigned_builtin_def(node: &Arc<Node>) -> Option<MaterialDef> {
+    let inst = current_custom_instance(node)?;
+    crate::controller::custom_material::find_material(&controller().custom_materials, inst.material)?
+        .builtin
+        .get_cloned()
 }
 
 /// Per-mesh override editor for an assigned **dynamic** material's declared
@@ -1704,6 +1754,9 @@ fn current_custom_instance(
         NodeKind::Primitive { custom_material, .. } | NodeKind::Mesh { custom_material, .. } => {
             custom_material
         }
+        // A Model node stores its single assignment (built-in or dynamic) in
+        // `material`; per-mesh texture/uniform/buffer overrides live on it.
+        NodeKind::Model(r) => r.material,
         _ => None,
     }
 }
@@ -1746,6 +1799,10 @@ fn set_custom_instance(
                 shadow,
             },
         ),
+        NodeKind::Model(mut r) => {
+            r.material = Some(inst);
+            dispatch_kind(node.id, NodeKind::Model(r));
+        }
         _ => {}
     }
 }

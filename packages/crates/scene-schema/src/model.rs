@@ -1,4 +1,7 @@
-use super::{assets::AssetId, dynamic_material::CustomMaterialInstance, tree::MeshShadowConfig};
+use super::{
+    assets::AssetId, dynamic_material::CustomMaterialInstance, material::MaterialDef,
+    tree::MeshShadowConfig,
+};
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -27,6 +30,14 @@ pub struct ModelRef {
     /// material can be shared across many nodes and customized per node.
     #[serde(default)]
     pub material: Option<CustomMaterialInstance>,
+    /// Per-mesh **uniform** values for a built-in assigned material (base color /
+    /// opacity / metallic / roughness / emissive) — the same per-mesh store a
+    /// Primitive/Mesh node carries. Seeded at import from the glTF material's
+    /// factors; merged over the assigned material's shared variant by
+    /// `builtin_merged`. Non-recompiling overrides (textures, etc.) live in
+    /// `material`'s override maps.
+    #[serde(default)]
+    pub inline_material: MaterialDef,
     /// Per-mesh shadow cast / receive flags.
     #[serde(default)]
     pub shadow: MeshShadowConfig,

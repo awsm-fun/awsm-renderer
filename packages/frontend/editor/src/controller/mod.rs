@@ -525,6 +525,23 @@ impl EditorController {
                                 texture_overrides: Default::default(),
                                 buffer_overrides: Default::default(),
                             });
+                        // Assigning a material adopts its *default* per-mesh
+                        // uniforms (base color / metallic / roughness / emissive)
+                        // into this mesh's inline store, so the mesh starts
+                        // looking like the material; the user then customizes
+                        // per-mesh from there. (A dynamic material has no built-in
+                        // defaults → keep the existing inline, which it ignores.)
+                        let seeded_inline = instance.as_ref().and_then(|inst| {
+                            find_material(&self.custom_materials, inst.material)
+                                .and_then(|m| m.builtin.get_cloned())
+                                .map(|def| awsm_scene_schema::MaterialDef {
+                                    base_color: def.base_color,
+                                    metallic: def.metallic,
+                                    roughness: def.roughness,
+                                    emissive: def.emissive,
+                                    ..Default::default()
+                                })
+                        });
                         let next = match prev.clone() {
                             NodeKind::Primitive {
                                 shape,
@@ -535,7 +552,7 @@ impl EditorController {
                             } => NodeKind::Primitive {
                                 shape,
                                 material: mref,
-                                inline_material,
+                                inline_material: seeded_inline.unwrap_or(inline_material),
                                 custom_material: instance,
                                 shadow,
                             },
@@ -543,6 +560,9 @@ impl EditorController {
                             // same model as a Primitive); `None` = unassigned →
                             // magenta.
                             NodeKind::Model(mut r) => {
+                                if let Some(inline) = seeded_inline {
+                                    r.inline_material = inline;
+                                }
                                 r.material = instance;
                                 NodeKind::Model(r)
                             }
@@ -1033,7 +1053,7 @@ fn build_editor_subtree(
     fallback_name: Option<&str>,
 ) -> Arc<crate::engine::scene::node::Node> {
     use crate::engine::scene::node::Node;
-    use awsm_scene_schema::{dynamic_material::CustomMaterialInstance, ModelRef, Trs};
+    use awsm_scene_schema::{dynamic_material::CustomMaterialInstance, MaterialDef, ModelRef, Trs};
 
     let name = tn.label.clone().unwrap_or_else(|| {
         fallback_name
@@ -1053,6 +1073,28 @@ fn build_editor_subtree(
             ..Default::default()
         })
     };
+    // The per-mesh inline uniforms (base color / metallic / roughness /
+    // emissive) seeded from the assigned material's defaults — a per-node copy
+    // that `builtin_merged` layers over the shared variant. Editing it in the
+    // inspector customizes this node without touching the shared material.
+    let inline_for = |inst: &Option<CustomMaterialInstance>| -> MaterialDef {
+        inst.as_ref()
+            .and_then(|i| {
+                crate::controller::custom_material::find_material(
+                    &controller().custom_materials,
+                    i.material,
+                )
+            })
+            .and_then(|m| m.builtin.get_cloned())
+            .map(|def| MaterialDef {
+                base_color: def.base_color,
+                metallic: def.metallic,
+                roughness: def.roughness,
+                emissive: def.emissive,
+                ..Default::default()
+            })
+            .unwrap_or_default()
+    };
 
     let node = if tn.mesh_keys.is_empty() {
         Node::new_with_transform_and_kind(name, trs, NodeKind::Group)
@@ -1066,6 +1108,8 @@ fn build_editor_subtree(
         let distinct: std::collections::BTreeSet<Option<usize>> =
             mat_indices.iter().copied().collect();
         if distinct.len() <= 1 {
+            let material = instance_for(mat_indices.first().copied().flatten());
+            let inline_material = inline_for(&material);
             Node::new_with_transform_and_kind(
                 name,
                 trs,
@@ -1073,7 +1117,8 @@ fn build_editor_subtree(
                     asset_id,
                     node_index: tn.gltf_node_index,
                     primitive_index: None,
-                    material: instance_for(mat_indices.first().copied().flatten()),
+                    material,
+                    inline_material,
                     shadow: Default::default(),
                 }),
             )
@@ -1081,6 +1126,7 @@ fn build_editor_subtree(
             let group = Node::new_with_transform_and_kind(name.clone(), trs, NodeKind::Group);
             for (i, mi) in mat_indices.iter().enumerate() {
                 let material = instance_for(*mi);
+                let inline_material = inline_for(&material);
                 let part_label = material
                     .as_ref()
                     .and_then(|inst| {
@@ -1100,6 +1146,7 @@ fn build_editor_subtree(
                             node_index: tn.gltf_node_index,
                             primitive_index: Some(i as u32),
                             material,
+                            inline_material,
                             shadow: Default::default(),
                         }),
                     ),

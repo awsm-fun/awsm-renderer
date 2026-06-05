@@ -336,20 +336,40 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
 /// roughness / emissive) into a final `MaterialDef`. Returns `None` for a dynamic
 /// material or an unknown id (callers then try the dynamic path / inline).
 fn builtin_merged(
-    id: awsm_scene_schema::AssetId,
+    inst: &awsm_scene_schema::dynamic_material::CustomMaterialInstance,
     inline: &awsm_scene_schema::MaterialDef,
 ) -> Option<awsm_scene_schema::MaterialDef> {
+    use awsm_scene_schema::TextureRef;
     let ctrl = crate::controller::controller();
-    let mat = crate::controller::custom_material::find_material(&ctrl.custom_materials, id)?;
+    let mat = crate::controller::custom_material::find_material(&ctrl.custom_materials, inst.material)?;
     let variant = mat.builtin.get_cloned()?;
+    // Per-mesh TEXTURE override: swap which image fills a slot the material
+    // already declares. Slot *presence* is a variant bit (recompiles), so a slot
+    // the material doesn't declare stays absent; an absent override falls back to
+    // the material's default texture. Binding a different image doesn't recompile.
+    let tex = |slot: &str, default: Option<TextureRef>| -> Option<TextureRef> {
+        match default {
+            Some(_) => inst.texture_overrides.get(slot).cloned().or(default),
+            None => None,
+        }
+    };
     Some(awsm_scene_schema::MaterialDef {
         // Per-mesh uniform values come from the mesh's inline material …
         base_color: inline.base_color,
         metallic: inline.metallic,
         roughness: inline.roughness,
         emissive: inline.emissive,
+        // … per-mesh texture overrides swap the bound image per declared slot …
+        base_color_texture: tex("base_color_texture", variant.base_color_texture.clone()),
+        metallic_roughness_texture: tex(
+            "metallic_roughness_texture",
+            variant.metallic_roughness_texture.clone(),
+        ),
+        normal_texture: tex("normal_texture", variant.normal_texture.clone()),
+        occlusion_texture: tex("occlusion_texture", variant.occlusion_texture.clone()),
+        emissive_texture: tex("emissive_texture", variant.emissive_texture.clone()),
         // … everything else (shading / alpha / double-sided / vertex-colors /
-        // texture slots / label) is the shared variant from the library material.
+        // slot presence / KHR enables / label) is the shared variant.
         ..variant
     })
 }
@@ -389,7 +409,7 @@ async fn materialize_primitive(
     // as a material on its own.
     let mat_key = match custom_material.as_ref() {
         Some(inst) => {
-            if let Some(merged) = builtin_merged(inst.material, &inline) {
+            if let Some(merged) = builtin_merged(inst, &inline) {
                 material::insert_material(&mut r, &merged)
             } else if let Some(k) = super::dynamic::insert_custom(&mut r, inst) {
                 k
@@ -482,16 +502,22 @@ async fn materialize_model(entry: Arc<RendererNode>, model_ref: awsm_scene_schem
         let mut r = handle.lock().await;
         // One material per node: the node's assigned library material (set at
         // import, swappable in the inspector) drives every primitive it renders.
-        // An *unassigned* node renders the flat-magenta missing-material
-        // sentinel — exactly like an unassigned primitive — rather than any
-        // hidden glTF fallback. The instance carries per-node uniform/texture/
-        // buffer overrides (dynamic materials) so one shared library material
-        // can be customized per node. Resolve once, reuse for all primitives.
-        let node_mat_key = model_ref
-            .material
-            .as_ref()
-            .and_then(|inst| resolve_instance_material(&mut r, inst))
-            .unwrap_or_else(|| material::insert_magenta(&mut r));
+        // Resolved exactly like a Primitive/Mesh — a built-in merges this node's
+        // per-mesh inline uniforms + texture overrides over the shared variant; a
+        // dynamic material applies its declared overrides; an *unassigned* node
+        // renders the flat-magenta missing-material sentinel. Resolve once, reuse.
+        let node_mat_key = match model_ref.material.as_ref() {
+            Some(inst) => {
+                if let Some(merged) = builtin_merged(inst, &model_ref.inline_material) {
+                    material::insert_material(&mut r, &merged)
+                } else if let Some(k) = super::dynamic::insert_custom(&mut r, inst) {
+                    k
+                } else {
+                    material::insert_magenta(&mut r)
+                }
+            }
+            None => material::insert_magenta(&mut r),
+        };
         material_keys.push(node_mat_key);
         for (mk, skinned, _mat_idx) in &triples {
             // Skinned meshes keep rendering in place (their original copy) —
@@ -528,26 +554,6 @@ async fn materialize_model(entry: Arc<RendererNode>, model_ref: awsm_scene_schem
     // skinned originals belong to the populate pass and stay put.
     entry.model_meshes.lock().unwrap().extend(created);
     entry.material_keys.lock().unwrap().extend(material_keys);
-}
-
-/// Resolve a [`CustomMaterialInstance`] assigned to a model node into a renderer
-/// material key. A built-in PBR/Unlit/Toon library material uses its full def
-/// (the import baked this material's factors into the library entry); a dynamic
-/// WGSL material is built through `insert_custom` so the instance's per-node
-/// uniform / texture / buffer overrides apply. `None` if the id isn't a known
-/// material (the caller then falls back to magenta). Mirrors the primitive
-/// material-resolution path so models and primitives behave identically.
-fn resolve_instance_material(
-    r: &mut awsm_renderer::AwsmRenderer,
-    inst: &awsm_scene_schema::dynamic_material::CustomMaterialInstance,
-) -> Option<awsm_renderer::materials::MaterialKey> {
-    let ctrl = controller();
-    let mat = crate::controller::custom_material::find_material(&ctrl.custom_materials, inst.material)?;
-    if let Some(def) = mat.builtin.get_cloned() {
-        Some(material::insert_material(r, &def))
-    } else {
-        super::dynamic::insert_custom(r, inst)
-    }
 }
 
 /// Authored polyline (`NodeKind::Line`) → fat-line strip. The fat-line pipeline
