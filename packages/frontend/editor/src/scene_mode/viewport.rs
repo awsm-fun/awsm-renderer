@@ -170,9 +170,10 @@ fn shading_and_stats(shading: &Mutable<String>) -> Dom {
             .style("border", "1px solid var(--line)")
             .style("border-radius", "var(--r2)")
             .style("box-shadow", "var(--shadow-1)")
+            // Ordered least→most rendered, left→right: wireframe, solid, shaded.
+            .child(sbtn("wire", "sphere", "Wireframe", shading))
             .child(sbtn("solid", "sphere-solid", "Solid", shading))
             .child(sbtn("material", "material", "Material preview", shading))
-            .child(sbtn("wire", "sphere", "Wireframe", shading))
         }))
         .child(selection_stats())
     })
