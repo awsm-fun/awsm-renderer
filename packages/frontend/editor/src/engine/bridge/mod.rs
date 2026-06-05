@@ -129,14 +129,31 @@ pub fn rematerialize_for_material(id: crate::engine::scene::AssetId) {
     fn walk(nodes: &[Arc<Node>], id: AssetId) {
         for node in nodes {
             let kind = node.kind.get_cloned();
-            if let NodeKind::Primitive {
-                custom_material: Some(inst),
-                ..
-            } = &kind
-            {
-                if inst.material == id {
+            match &kind {
+                NodeKind::Primitive {
+                    custom_material: Some(inst),
+                    ..
+                } if inst.material == id => {
                     node.kind.set(kind.clone());
                 }
+                // An imported Model renders through the materials extracted from
+                // its source file; if the edited material is one of them,
+                // re-materialize so the model reflects the edit.
+                NodeKind::Model(model_ref) => {
+                    let uses = crate::controller::controller()
+                        .scene
+                        .assets
+                        .lock()
+                        .unwrap()
+                        .entries
+                        .get(&model_ref.asset_id)
+                        .map(|e| e.gltf_material_asset_ids.contains(&id))
+                        .unwrap_or(false);
+                    if uses {
+                        node.kind.set(kind.clone());
+                    }
+                }
+                _ => {}
             }
             walk(&node.children.lock_ref(), id);
         }
