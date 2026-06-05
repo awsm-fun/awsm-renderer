@@ -484,6 +484,9 @@ async fn materialize_model(entry: Arc<RendererNode>, model_ref: awsm_scene_schem
     let visible = entry.node.visible.get();
     let shadow_flags = mesh_shadow_flags_from_config(&model_ref.shadow);
     let parent_tk = entry.transform_key;
+    // A whole-node material override (chosen in the inspector) wins over each
+    // primitive's glTF-extracted material.
+    let override_id = model_ref.material.as_ref().map(|i| i.material);
 
     let mut created = Vec::new();
     let mut material_keys = Vec::new();
@@ -513,8 +516,10 @@ async fn materialize_model(entry: Arc<RendererNode>, model_ref: awsm_scene_schem
             };
             // Render through the extracted **editable library material** (its
             // textures reuse the same baked GPU textures), so the model's
-            // materials are editable + swappable like any other mesh's.
-            if let Some(lib_id) = mat_idx.and_then(|i| gltf_mat_ids.get(i)).copied() {
+            // materials are editable + swappable like any other mesh's. A
+            // node-level override (if set) replaces every primitive's material.
+            let lib_id = override_id.or_else(|| mat_idx.and_then(|i| gltf_mat_ids.get(i)).copied());
+            if let Some(lib_id) = lib_id {
                 if let Some(key) = build_library_material(&mut r, lib_id) {
                     let _ = r.set_mesh_material(target, key);
                     material_keys.push(key);

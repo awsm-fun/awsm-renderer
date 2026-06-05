@@ -514,16 +514,6 @@ impl EditorController {
                 match mutate::find_by_id(&self.scene, node) {
                     Some(n) => {
                         let prev = n.kind.get_cloned();
-                        let NodeKind::Primitive {
-                            shape,
-                            material: mref,
-                            inline_material,
-                            shadow,
-                            ..
-                        } = prev.clone()
-                        else {
-                            return Ok(None);
-                        };
                         // Id-keyed assignment: store the material's stable id (so
                         // renaming it never orphans this mesh). Validate the id
                         // exists in the custom-material list.
@@ -535,13 +525,29 @@ impl EditorController {
                                 texture_overrides: Default::default(),
                                 buffer_overrides: Default::default(),
                             });
-                        n.kind.set(NodeKind::Primitive {
-                            shape,
-                            material: mref,
-                            inline_material,
-                            custom_material: instance,
-                            shadow,
-                        });
+                        let next = match prev.clone() {
+                            NodeKind::Primitive {
+                                shape,
+                                material: mref,
+                                inline_material,
+                                shadow,
+                                ..
+                            } => NodeKind::Primitive {
+                                shape,
+                                material: mref,
+                                inline_material,
+                                custom_material: instance,
+                                shadow,
+                            },
+                            // An imported Model node: override its whole-node
+                            // material (None reverts to the glTF-extracted ones).
+                            NodeKind::Model(mut r) => {
+                                r.material = instance;
+                                NodeKind::Model(r)
+                            }
+                            _ => return Ok(None),
+                        };
+                        n.kind.set(next);
                         // The material section's structure changes (built-in
                         // knobs ↔ dynamic link ↔ none), so refresh the inspector.
                         self.structure_rev
@@ -1038,6 +1044,7 @@ fn build_editor_subtree(
             asset_id,
             node_index: tn.gltf_node_index,
             primitive_index: None,
+            material: None,
             shadow: Default::default(),
         })
     };

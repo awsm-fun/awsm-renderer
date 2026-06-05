@@ -140,7 +140,9 @@ pub fn rematerialize_for_material(id: crate::engine::scene::AssetId) {
                 // its source file; if the edited material is one of them,
                 // re-materialize so the model reflects the edit.
                 NodeKind::Model(model_ref) => {
-                    let uses = crate::controller::controller()
+                    let uses_override =
+                        model_ref.material.as_ref().map(|i| i.material) == Some(id);
+                    let uses_extracted = crate::controller::controller()
                         .scene
                         .assets
                         .lock()
@@ -149,7 +151,7 @@ pub fn rematerialize_for_material(id: crate::engine::scene::AssetId) {
                         .get(&model_ref.asset_id)
                         .map(|e| e.gltf_material_asset_ids.contains(&id))
                         .unwrap_or(false);
-                    if uses {
+                    if uses_override || uses_extracted {
                         node.kind.set(kind.clone());
                     }
                 }

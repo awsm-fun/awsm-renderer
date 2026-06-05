@@ -183,10 +183,26 @@ fn kind_editor(node: &Arc<Node>) -> Dom {
         // A Group is purely an organisational transform parent — name + transform
         // (above) are its full property set.
         NodeKind::Group => info_section("Group", "An organizational parent. Its children inherit this node's transform; it has no geometry of its own."),
-        // A Model references an imported glTF/glb; the per-node material/instancing
-        // binding is a follow-on, so surface what it points at.
-        NodeKind::Model(_) => info_section("Model", "An imported glTF/glb model. It renders from the import; per-node material overrides land in a later pass."),
+        // A Model references an imported glTF/glb. It renders through the
+        // materials extracted from the file; the picker overrides the whole
+        // node with one chosen library material ("None" reverts to per-primitive).
+        NodeKind::Model(_) => model_material_section(node),
     }
+}
+
+/// Inspector for a Model node: an info line + a whole-node material override
+/// picker. `None` keeps each primitive's glTF-extracted material; choosing a
+/// library material reassigns the entire node to it.
+fn model_material_section(node: &Arc<Node>) -> Dom {
+    let mut sec = Section::new("Model").child(html!("div", {
+        .style("font-size", "12px").style("color", "var(--text-2)").style("line-height", "1.5")
+        .style("margin-bottom", "6px")
+        .text("An imported glTF/glb model. Materials are extracted to the library and editable; pick one below to override the whole node.")
+    }));
+    if let Some(picker) = build_material_select(node) {
+        sec = sec.child(picker);
+    }
+    sec.render()
 }
 
 /// A small read-only info Section (used for kinds whose only settable properties
@@ -1131,6 +1147,7 @@ fn build_material_select(node: &Arc<Node>) -> Option<Dom> {
             custom_material: Some(inst),
             ..
         } => Some(inst.material),
+        NodeKind::Model(r) => r.material.map(|i| i.material),
         _ => None,
     };
     // A DropButton whose items dispatch `AssignMaterial` directly on click —
