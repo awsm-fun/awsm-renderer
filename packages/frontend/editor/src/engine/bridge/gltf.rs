@@ -125,6 +125,8 @@ fn extract_material_specs(data: &GltfData) -> Vec<(MaterialDef, MaterialTextureI
                 roughness: pbr.roughness_factor(),
                 emissive: m.emissive_factor(),
                 double_sided: m.double_sided(),
+                alpha_mode: extract_alpha_mode(&m),
+                extensions: extract_extensions(&m),
                 ..MaterialDef::default()
             };
             let ix = MaterialTextureIndices {
@@ -137,6 +139,119 @@ fn extract_material_specs(data: &GltfData) -> Vec<(MaterialDef, MaterialTextureI
             (def, ix)
         })
         .collect()
+}
+
+/// glTF `material.alphaMode` (+ cutoff) → the editor's [`MaterialAlphaMode`].
+fn extract_alpha_mode(m: &gltf::Material) -> awsm_scene_schema::MaterialAlphaMode {
+    use awsm_scene_schema::MaterialAlphaMode;
+    match m.alpha_mode() {
+        gltf::material::AlphaMode::Opaque => MaterialAlphaMode::Opaque,
+        gltf::material::AlphaMode::Mask => MaterialAlphaMode::Mask {
+            cutoff: m.alpha_cutoff().unwrap_or(0.5),
+        },
+        gltf::material::AlphaMode::Blend => MaterialAlphaMode::Blend,
+    }
+}
+
+/// Read a scalar field off a raw glTF extension JSON object.
+fn ext_f32(v: &gltf::json::Value, key: &str, default: f32) -> f32 {
+    v.get(key)
+        .and_then(|x| x.as_f64())
+        .map(|x| x as f32)
+        .unwrap_or(default)
+}
+
+/// Read a 3-component colour/vector field off a raw glTF extension JSON object.
+fn ext_color3(v: &gltf::json::Value, key: &str, default: [f32; 3]) -> [f32; 3] {
+    v.get(key)
+        .and_then(|x| x.as_array())
+        .map(|a| {
+            let c = |i: usize| {
+                a.get(i)
+                    .and_then(|x| x.as_f64())
+                    .unwrap_or(default[i] as f64) as f32
+            };
+            [c(0), c(1), c(2)]
+        })
+        .unwrap_or(default)
+}
+
+/// Extract every KHR material extension the editor models into per-mesh
+/// uniforms. Read straight off the raw extensions JSON (uniform across all 11,
+/// and independent of which typed accessors the `gltf` crate version exposes) —
+/// only the *factors* matter here (the editor's `MaterialDef` carries no
+/// extension texture slots). An enabled extension becomes a variant bit on the
+/// imported material; its parameters become the per-mesh overrides this mesh
+/// seeds from.
+fn extract_extensions(m: &gltf::Material) -> awsm_scene_schema::material::PbrExtensions {
+    use awsm_scene_schema::material::*;
+    let mut e = PbrExtensions::default();
+    if let Some(v) = m.extension_value("KHR_materials_emissive_strength") {
+        e.emissive_strength = Some(EmissiveStrengthExt {
+            strength: ext_f32(v, "emissiveStrength", 1.0),
+        });
+    }
+    if let Some(v) = m.extension_value("KHR_materials_ior") {
+        e.ior = Some(IorExt {
+            ior: ext_f32(v, "ior", 1.5),
+        });
+    }
+    if let Some(v) = m.extension_value("KHR_materials_specular") {
+        e.specular = Some(SpecularExt {
+            factor: ext_f32(v, "specularFactor", 1.0),
+            color_factor: ext_color3(v, "specularColorFactor", [1.0, 1.0, 1.0]),
+        });
+    }
+    if let Some(v) = m.extension_value("KHR_materials_transmission") {
+        e.transmission = Some(TransmissionExt {
+            factor: ext_f32(v, "transmissionFactor", 0.0),
+        });
+    }
+    if let Some(v) = m.extension_value("KHR_materials_diffuse_transmission") {
+        e.diffuse_transmission = Some(DiffuseTransmissionExt {
+            factor: ext_f32(v, "diffuseTransmissionFactor", 0.0),
+            color_factor: ext_color3(v, "diffuseTransmissionColorFactor", [1.0, 1.0, 1.0]),
+        });
+    }
+    if let Some(v) = m.extension_value("KHR_materials_volume") {
+        e.volume = Some(VolumeExt {
+            thickness_factor: ext_f32(v, "thicknessFactor", 0.0),
+            attenuation_distance: ext_f32(v, "attenuationDistance", 1.0),
+            attenuation_color: ext_color3(v, "attenuationColor", [1.0, 1.0, 1.0]),
+        });
+    }
+    if let Some(v) = m.extension_value("KHR_materials_clearcoat") {
+        e.clearcoat = Some(ClearcoatExt {
+            factor: ext_f32(v, "clearcoatFactor", 0.0),
+            roughness_factor: ext_f32(v, "clearcoatRoughnessFactor", 0.0),
+        });
+    }
+    if let Some(v) = m.extension_value("KHR_materials_sheen") {
+        e.sheen = Some(SheenExt {
+            roughness_factor: ext_f32(v, "sheenRoughnessFactor", 0.0),
+            color_factor: ext_color3(v, "sheenColorFactor", [0.0, 0.0, 0.0]),
+        });
+    }
+    if let Some(v) = m.extension_value("KHR_materials_dispersion") {
+        e.dispersion = Some(DispersionExt {
+            dispersion: ext_f32(v, "dispersion", 0.0),
+        });
+    }
+    if let Some(v) = m.extension_value("KHR_materials_anisotropy") {
+        e.anisotropy = Some(AnisotropyExt {
+            strength: ext_f32(v, "anisotropyStrength", 0.0),
+            rotation: ext_f32(v, "anisotropyRotation", 0.0),
+        });
+    }
+    if let Some(v) = m.extension_value("KHR_materials_iridescence") {
+        e.iridescence = Some(IridescenceExt {
+            factor: ext_f32(v, "iridescenceFactor", 0.0),
+            ior: ext_f32(v, "iridescenceIor", 1.3),
+            thickness_min: ext_f32(v, "iridescenceThicknessMinimum", 100.0),
+            thickness_max: ext_f32(v, "iridescenceThicknessMaximum", 400.0),
+        });
+    }
+    e
 }
 
 /// Resolve each material's slot texture indices to the renderer [`TextureKey`]s
