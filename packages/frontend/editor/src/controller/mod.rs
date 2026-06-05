@@ -615,10 +615,14 @@ impl EditorController {
                 Ok(None)
             }
             EditorCommand::ImportModelFromUrl { url } => {
+                let _activity =
+                    crate::engine::activity::begin_activity("Inserting model — uploading to GPU…");
                 self.finish_model_import(crate::engine::bridge::gltf::import(&url).await);
                 Ok(None)
             }
             EditorCommand::ImportModelFromFile { name, url } => {
+                let _activity =
+                    crate::engine::activity::begin_activity("Inserting model — uploading to GPU…");
                 let result = crate::engine::bridge::gltf::import_file(&name, &url).await;
                 // The blob: object URL was minted just for this load; release it.
                 let _ = web_sys::Url::revoke_object_url(&url);
@@ -770,6 +774,12 @@ async fn register_material(mat: &Arc<CM>) -> bool {
         mat.registered.set_neq(false);
         return false;
     }
+    // Show "Compiling …" in the activity indicator for the duration of the
+    // (async, pipeline-building) registration — issue #7.
+    let _activity = crate::engine::activity::begin_activity(format!(
+        "Compiling material “{}” — render pipelines…",
+        mat.name.get_cloned()
+    ));
     match crate::engine::bridge::dynamic::register(mat).await {
         Ok(_) => {
             mat.registered.set_neq(true);

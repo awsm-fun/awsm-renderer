@@ -71,7 +71,58 @@ pub fn render() -> Dom {
         .child(workspace(&ctrl))
         .child(stats_bar())
         .child(crate::command_palette::render())
+        .child(activity_indicator())
         .child_signal(ctrl.settings_open.signal().map(|open| if open { Some(settings_drawer()) } else { None }))
+    })
+}
+
+/// Floating pill that surfaces in-progress background work — model import / GPU
+/// upload, material + render-pipeline compilation (issue #7). Driven by the
+/// `engine::activity` indicator list; hidden when nothing is running.
+fn activity_indicator() -> Dom {
+    use crate::engine::activity::activities;
+    html!("div", {
+        .style("position", "fixed")
+        .style("top", "52px")
+        .style("left", "50%")
+        .style("transform", "translateX(-50%)")
+        .style("z-index", "350")
+        .style("pointer-events", "none")
+        .child_signal(activities().signal_ref(|acts| {
+            if acts.is_empty() {
+                return None;
+            }
+            let first = acts[0].1.clone();
+            let extra = acts.len().saturating_sub(1);
+            let label = if extra > 0 {
+                format!("{first}   (+{extra} more)")
+            } else {
+                first
+            };
+            Some(html!("div", {
+                .style("display", "flex")
+                .style("align-items", "center")
+                .style("gap", "9px")
+                .style("padding", "7px 15px 7px 12px")
+                .style("background", "var(--bg-1)")
+                .style("border", "1px solid var(--line)")
+                .style("border-radius", "999px")
+                .style("box-shadow", "var(--shadow-2)")
+                .style("font-size", "12.5px")
+                .style("color", "var(--text-1)")
+                .style("white-space", "nowrap")
+                // Reuse the global `boot-spin` keyframe (index.html).
+                .child(html!("div", {
+                    .style("width", "13px")
+                    .style("height", "13px")
+                    .style("border", "2px solid var(--line)")
+                    .style("border-top-color", "var(--accent)")
+                    .style("border-radius", "50%")
+                    .style("animation", "boot-spin 0.85s linear infinite")
+                }))
+                .child(html!("span", { .text(&label) }))
+            }))
+        }))
     })
 }
 
