@@ -146,7 +146,7 @@ fn material_sampler(r: &mut AwsmRenderer) -> Option<SamplerKey> {
 }
 
 /// Generate RGBA8 bytes for a procedural texture def (delegates to meshgen).
-fn procedural_rgba(p: &ProceduralTextureDef) -> (Vec<u8>, u32, u32) {
+pub(crate) fn procedural_rgba(p: &ProceduralTextureDef) -> (Vec<u8>, u32, u32) {
     use awsm_meshgen::procedural_texture::{checker_rgba, gradient_rgba, noise_rgba};
     match *p {
         ProceduralTextureDef::Checker {

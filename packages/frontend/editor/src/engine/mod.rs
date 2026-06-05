@@ -11,6 +11,7 @@ pub mod context;
 pub mod gizmo;
 pub mod grid;
 pub mod preview;
+pub mod query;
 pub mod render_loop;
 pub mod scene;
 pub mod selection_box;

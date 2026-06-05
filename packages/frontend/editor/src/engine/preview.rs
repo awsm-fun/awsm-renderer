@@ -41,8 +41,16 @@ struct PreviewCtx {
     /// The preview renderer's id for the current material (for unregister on edit).
     shader: Mutex<Option<MaterialShaderId>>,
     raf: Mutex<Option<AnimationFrame>>,
+    /// Kept so a query can snapshot the preview to PNG (the example sphere).
+    canvas: web_sys::HtmlCanvasElement,
 }
 type MeshKeyCell = Mutex<Option<awsm_renderer::meshes::MeshKey>>;
+
+/// The preview canvas (the material-mode example sphere), if the Studio is
+/// mounted. Used by the PNG query seam.
+pub fn preview_canvas() -> Option<web_sys::HtmlCanvasElement> {
+    PREVIEW.with(|p| p.borrow().as_ref().map(|ctx| ctx.canvas.clone()))
+}
 
 /// Mount a preview renderer on `canvas` (idempotent-ish: replaces any prior one).
 pub fn mount(canvas: web_sys::HtmlCanvasElement) {
@@ -79,7 +87,7 @@ async fn build(canvas: web_sys::HtmlCanvasElement) -> Result<(), String> {
     canvas.set_height(h);
     let aspect = w as f32 / h as f32;
 
-    let renderer = build_renderer(canvas).await?;
+    let renderer = build_renderer(canvas.clone()).await?;
     let renderer = Arc::new(xutex::AsyncMutex::new(renderer));
     let camera = Arc::new(Mutex::new(Camera::new_default_cube(aspect)));
 
@@ -113,6 +121,7 @@ async fn build(canvas: web_sys::HtmlCanvasElement) -> Result<(), String> {
         mesh: Mutex::new(Some(mesh)),
         shader: Mutex::new(None),
         raf: Mutex::new(None),
+        canvas,
     });
     PREVIEW.with(|p| *p.borrow_mut() = Some(ctx.clone()));
     start_raf(ctx.clone());
@@ -164,12 +173,30 @@ fn start_raf(ctx: Arc<PreviewCtx>) {
 }
 
 fn render_frame(ctx: &Arc<PreviewCtx>) {
-    let matrices = {
-        let c = ctx.camera.lock().unwrap();
-        c.matrices()
-    };
     let mut guard = ctx.renderer.try_lock();
     if let Some(r) = guard.as_mut() {
+        // Keep the canvas buffer matched to its CSS box. The preview mounts
+        // before material-mode layout settles, so the buffer starts 1×1 (the
+        // sphere would render to a single pixel); this resizes it once the box
+        // has a real size, and again on any panel resize. Done inside the render
+        // lock so the surface/texture recreation can't race an in-flight submit.
+        let (cw, ch) = (ctx.canvas.client_width(), ctx.canvas.client_height());
+        if cw > 0
+            && ch > 0
+            && (ctx.canvas.width() != cw as u32 || ctx.canvas.height() != ch as u32)
+        {
+            ctx.canvas.set_width(cw as u32);
+            ctx.canvas.set_height(ch as u32);
+            r.gpu.sync_canvas_buffer_with_css();
+            ctx.camera
+                .lock()
+                .unwrap()
+                .set_aspect(cw as f32 / ch as f32);
+        }
+        let matrices = {
+            let c = ctx.camera.lock().unwrap();
+            c.matrices()
+        };
         let _ = r.update_camera(matrices);
         r.update_transforms();
         let _ = r.render(None);

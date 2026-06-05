@@ -163,6 +163,40 @@ pub fn editor_project_toml() -> String {
         .unwrap_or_else(|e| format!("# error: {e}"))
 }
 
+/// The current workspace mode (`"scene"` | `"material"`) — lets a driver pick
+/// which image query to take.
+#[wasm_bindgen]
+pub fn editor_query_mode() -> String {
+    match controller::controller().mode.get() {
+        controller::EditorMode::Scene => "scene".to_string(),
+        controller::EditorMode::Material => "material".to_string(),
+    }
+}
+
+/// PNG data URL of the scene viewport (through the active camera). Empty string
+/// if the canvas isn't ready.
+#[wasm_bindgen]
+pub fn editor_query_scene_png() -> String {
+    engine::query::scene_png().unwrap_or_default()
+}
+
+/// PNG data URL of the material-mode preview sphere. Empty string if the Studio
+/// isn't mounted.
+#[wasm_bindgen]
+pub fn editor_query_material_png() -> String {
+    engine::query::material_png().unwrap_or_default()
+}
+
+/// PNG data URL of a texture asset (by UUID). Returns `"error: …"` if the id is
+/// invalid, the asset isn't a (procedural) texture, or readback isn't supported.
+#[wasm_bindgen]
+pub fn editor_query_texture_png(asset_id: &str) -> String {
+    match engine::query::parse_asset_id(asset_id) {
+        Some(id) => engine::query::texture_png(id).unwrap_or_else(|e| format!("error: {e}")),
+        None => "error: invalid asset id".to_string(),
+    }
+}
+
 #[wasm_bindgen]
 pub fn editor_dispatch_json(cmd_json: &str) -> String {
     match serde_json::from_str::<controller::EditorCommand>(cmd_json) {
