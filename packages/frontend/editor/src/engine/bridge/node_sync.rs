@@ -339,27 +339,75 @@ fn builtin_merged(
     inst: &awsm_scene_schema::dynamic_material::CustomMaterialInstance,
     inline: &awsm_scene_schema::MaterialDef,
 ) -> Option<awsm_scene_schema::MaterialDef> {
+    use awsm_scene_schema::material::{MaterialAlphaMode, MaterialShading, PbrExtensions};
     use awsm_scene_schema::TextureRef;
     let ctrl = crate::controller::controller();
     let mat = crate::controller::custom_material::find_material(&ctrl.custom_materials, inst.material)?;
     let variant = mat.builtin.get_cloned()?;
-    // Per-mesh TEXTURE override: swap which image fills a slot the material
-    // already declares. Slot *presence* is a variant bit (recompiles), so a slot
-    // the material doesn't declare stays absent; an absent override falls back to
-    // the material's default texture. Binding a different image doesn't recompile.
+
+    // ── The override rule ────────────────────────────────────────────────────
+    // VARIANT fields (anything in the pipeline cache key — shading model, alpha
+    // *mode*, double-sided cull, vertex-colors, texture-slot *presence*, KHR
+    // extension *enables*) come ONLY from the shared `variant`, so every mesh
+    // using this material shares one pipeline. Everything else — the entire
+    // uniform-buffer surface — is per-mesh: factors + extension *parameters* +
+    // Toon knobs + mask cutoff from `inline`, and the bound *image* per declared
+    // texture slot from `texture_overrides`. None of these recompile.
+
+    // Texture binding: presence gated by the variant; image swapped per mesh.
     let tex = |slot: &str, default: Option<TextureRef>| -> Option<TextureRef> {
         match default {
             Some(_) => inst.texture_overrides.get(slot).cloned().or(default),
             None => None,
         }
     };
+
+    // Extension PARAMS per mesh, ENABLE from the variant: an extension the
+    // material doesn't enable stays off (enabling it would recompile); an enabled
+    // one takes this mesh's parameters (falling back to defaults if unseeded).
+    macro_rules! merge_ext {
+        ($f:ident) => {
+            variant
+                .extensions
+                .$f
+                .map(|_| inline.extensions.$f.unwrap_or_default())
+        };
+    }
+    let extensions = PbrExtensions {
+        emissive_strength: merge_ext!(emissive_strength),
+        ior: merge_ext!(ior),
+        specular: merge_ext!(specular),
+        transmission: merge_ext!(transmission),
+        diffuse_transmission: merge_ext!(diffuse_transmission),
+        volume: merge_ext!(volume),
+        clearcoat: merge_ext!(clearcoat),
+        sheen: merge_ext!(sheen),
+        dispersion: merge_ext!(dispersion),
+        anisotropy: merge_ext!(anisotropy),
+        iridescence: merge_ext!(iridescence),
+    };
+
+    // Alpha MODE (Opaque/Mask/Blend) is variant routing; the Mask *cutoff* value
+    // is a per-mesh uniform compare, so carry it from inline when both are Mask.
+    let alpha_mode = match (&variant.alpha_mode, &inline.alpha_mode) {
+        (MaterialAlphaMode::Mask { .. }, MaterialAlphaMode::Mask { cutoff }) => {
+            MaterialAlphaMode::Mask { cutoff: *cutoff }
+        }
+        _ => variant.alpha_mode.clone(),
+    };
+
+    // Shading MODEL is variant (selects the renderer Material flavour); the Toon
+    // knobs are uniform (one canonical Toon shader_id), so carry them from inline.
+    let shading = match (variant.shading, inline.shading) {
+        (MaterialShading::Toon { .. }, t @ MaterialShading::Toon { .. }) => t,
+        (v, _) => v,
+    };
+
     Some(awsm_scene_schema::MaterialDef {
-        // Per-mesh uniform values come from the mesh's inline material …
         base_color: inline.base_color,
         metallic: inline.metallic,
         roughness: inline.roughness,
         emissive: inline.emissive,
-        // … per-mesh texture overrides swap the bound image per declared slot …
         base_color_texture: tex("base_color_texture", variant.base_color_texture.clone()),
         metallic_roughness_texture: tex(
             "metallic_roughness_texture",
@@ -368,8 +416,10 @@ fn builtin_merged(
         normal_texture: tex("normal_texture", variant.normal_texture.clone()),
         occlusion_texture: tex("occlusion_texture", variant.occlusion_texture.clone()),
         emissive_texture: tex("emissive_texture", variant.emissive_texture.clone()),
-        // … everything else (shading / alpha / double-sided / vertex-colors /
-        // slot presence / KHR enables / label) is the shared variant.
+        alpha_mode,
+        shading,
+        extensions,
+        // variant-only: double_sided, vertex_colors_enabled, label.
         ..variant
     })
 }

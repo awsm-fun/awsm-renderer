@@ -1427,6 +1427,15 @@ fn material_editor(node: &Arc<Node>, mat: &MaterialDef, _has_custom: bool) -> Do
     }));
     sec = sec.child(row("Emissive", swatch(emi, 22.0)));
 
+    // The full uniform long-tail — everything that does NOT recompile is per-mesh
+    // overridable: Toon knobs, mask cutoff, and every enabled KHR extension's
+    // parameters. Read from the mesh's inline store; enablement from the variant.
+    if let Some(variant) = assigned_builtin_def(node) {
+        for extra in builtin_uniform_extras(node, mat, &variant) {
+            sec = sec.child(extra);
+        }
+    }
+
     // Per-mesh TEXTURE overrides. Slot *presence* (does this material sample a
     // base-color / normal / … map?) is a variant bit — adding or removing a slot
     // recompiles, so that stays on the material. But binding a *different* image
@@ -1460,9 +1469,11 @@ fn material_editor(node: &Arc<Node>, mat: &MaterialDef, _has_custom: bool) -> Do
         }
     }
 
-    // NOTE: double-sided, alpha mode, vertex colours, texture *slots* (presence),
-    // Toon knobs and KHR extension *enables* are VARIANT settings — edited on the
-    // material in the Material pane, never here. See the material-model note above.
+    // NOTE: only VARIANT settings stay on the material (Material pane): the
+    // shading-model *choice*, alpha *mode*, double-sided, vertex colours, texture
+    // *slot presence*, and KHR extension *enables*. Everything else — every
+    // uniform-class value, including extension parameters + Toon knobs + the bound
+    // texture per slot — is per-mesh, above.
 
     sec.render()
 }
@@ -1475,6 +1486,247 @@ fn assigned_builtin_def(node: &Arc<Node>) -> Option<MaterialDef> {
     crate::controller::custom_material::find_material(&controller().custom_materials, inst.material)?
         .builtin
         .get_cloned()
+}
+
+/// A small uppercase subsection header row (for grouping uniform overrides).
+fn uniform_subhead(text: &str) -> Dom {
+    html!("div", {
+        .style("margin", "10px 0 2px").style("font-size", "11px").style("font-weight", "600")
+        .style("letter-spacing", ".04em").style("text-transform", "uppercase")
+        .style("color", "var(--text-3)")
+        .text(text)
+    })
+}
+
+/// A numeric per-mesh control for a KHR-extension parameter. Reads the *current*
+/// inline def at change time (so successive edits compose) and seeds the
+/// extension struct if absent before applying.
+fn ext_num_row(
+    node: &Arc<Node>,
+    label: &str,
+    value: f32,
+    min: f64,
+    max: f64,
+    step: f64,
+    apply: impl Fn(&mut awsm_scene_schema::material::PbrExtensions, f32) + 'static,
+) -> Dom {
+    let node = node.clone();
+    row(
+        label,
+        NumField::new(value as f64)
+            .min(min)
+            .max(max)
+            .step(step)
+            .on_change(move |v| {
+                if let Some(mut m) = current_primitive_material(&node) {
+                    apply(&mut m.extensions, v as f32);
+                    set_inline_material(&node, m);
+                }
+            })
+            .render(),
+    )
+}
+
+/// An RGB-swatch per-mesh control for a KHR-extension colour parameter.
+fn ext_color_row(
+    node: &Arc<Node>,
+    label: &str,
+    current: [f32; 3],
+    apply: impl Fn(&mut awsm_scene_schema::material::PbrExtensions, [f32; 3]) + 'static,
+) -> Dom {
+    let m = Mutable::new(rgb_to_hex(current));
+    let apply = std::rc::Rc::new(apply);
+    spawn_local(clone!(m, node => async move {
+        let mut first = true;
+        m.signal_cloned().for_each(move |hex| {
+            let fire = !first;
+            first = false;
+            clone!(node, apply => async move {
+                if !fire { return; }
+                if let (Some(rgb), Some(mut cur)) = (hex_to_rgb(&hex), current_primitive_material(&node)) {
+                    apply(&mut cur.extensions, rgb);
+                    set_inline_material(&node, cur);
+                }
+            })
+        }).await;
+    }));
+    row(label, swatch(m, 22.0))
+}
+
+/// Rebuild this mesh's inline `MaterialShading::Toon` with one knob changed,
+/// reading the current values at change time. No-op if inline isn't Toon.
+fn update_toon(
+    node: &Arc<Node>,
+    f: impl FnOnce(u32, f32, u32, f32, f32) -> MaterialShading,
+) {
+    if let Some(mut m) = current_primitive_material(node) {
+        if let MaterialShading::Toon {
+            diffuse_bands,
+            rim_strength,
+            specular_steps,
+            shininess,
+            rim_power,
+        } = m.shading
+        {
+            m.shading = f(diffuse_bands, rim_strength, specular_steps, shininess, rim_power);
+            set_inline_material(node, m);
+        }
+    }
+}
+
+/// The full per-mesh **uniform long-tail** for a built-in material: Toon knobs,
+/// mask cutoff, and every enabled KHR extension's parameters. `inline` is the
+/// mesh's own store (current values); `variant` is the shared material (decides
+/// which controls appear — Toon vs not, which extensions are enabled). None of
+/// these recompile, so all are per-mesh overridable.
+fn builtin_uniform_extras(node: &Arc<Node>, inline: &MaterialDef, variant: &MaterialDef) -> Vec<Dom> {
+    let mut rows: Vec<Dom> = Vec::new();
+
+    // ── Toon knobs ──
+    if matches!(variant.shading, MaterialShading::Toon { .. }) {
+        let pick = |s: MaterialShading| match s {
+            MaterialShading::Toon {
+                diffuse_bands,
+                rim_strength,
+                specular_steps,
+                shininess,
+                rim_power,
+            } => Some((diffuse_bands, rim_strength, specular_steps, shininess, rim_power)),
+            _ => None,
+        };
+        let (bands, rim, steps, shin, power) =
+            pick(inline.shading).or_else(|| pick(variant.shading)).unwrap_or((3, 0.5, 2, 32.0, 2.0));
+        rows.push(uniform_subhead("Toon"));
+        {
+            let n = node.clone();
+            rows.push(row("Diffuse bands", NumField::new(bands as f64).min(1.0).max(16.0).step(1.0)
+                .on_change(move |v| update_toon(&n, |_b, r, s, sh, p| MaterialShading::Toon { diffuse_bands: (v as u32).max(1), rim_strength: r, specular_steps: s, shininess: sh, rim_power: p })).render()));
+        }
+        {
+            let n = node.clone();
+            rows.push(row("Rim strength", NumField::new(rim as f64).min(0.0).max(4.0).step(0.05)
+                .on_change(move |v| update_toon(&n, |b, _r, s, sh, p| MaterialShading::Toon { diffuse_bands: b, rim_strength: v as f32, specular_steps: s, shininess: sh, rim_power: p })).render()));
+        }
+        {
+            let n = node.clone();
+            rows.push(row("Specular steps", NumField::new(steps as f64).min(1.0).max(16.0).step(1.0)
+                .on_change(move |v| update_toon(&n, |b, r, _s, sh, p| MaterialShading::Toon { diffuse_bands: b, rim_strength: r, specular_steps: (v as u32).max(1), shininess: sh, rim_power: p })).render()));
+        }
+        {
+            let n = node.clone();
+            rows.push(row("Shininess", NumField::new(shin as f64).min(1.0).max(256.0).step(1.0)
+                .on_change(move |v| update_toon(&n, |b, r, s, _sh, p| MaterialShading::Toon { diffuse_bands: b, rim_strength: r, specular_steps: s, shininess: v as f32, rim_power: p })).render()));
+        }
+        {
+            let n = node.clone();
+            rows.push(row("Rim power", NumField::new(power as f64).min(0.1).max(16.0).step(0.1)
+                .on_change(move |v| update_toon(&n, |b, r, s, sh, _p| MaterialShading::Toon { diffuse_bands: b, rim_strength: r, specular_steps: s, shininess: sh, rim_power: v as f32 })).render()));
+        }
+    }
+
+    // ── Mask cutoff ──
+    if matches!(variant.alpha_mode, MaterialAlphaMode::Mask { .. }) {
+        let cutoff = match &inline.alpha_mode {
+            MaterialAlphaMode::Mask { cutoff } => *cutoff,
+            _ => 0.5,
+        };
+        let n = node.clone();
+        rows.push(row("Alpha cutoff", NumField::new(cutoff as f64).min(0.0).max(1.0).step(0.01)
+            .on_change(move |v| {
+                if let Some(mut m) = current_primitive_material(&n) {
+                    m.alpha_mode = MaterialAlphaMode::Mask { cutoff: v as f32 };
+                    set_inline_material(&n, m);
+                }
+            }).render()));
+    }
+
+    // ── KHR extension parameters (per enabled extension) ──
+    let e = &variant.extensions;
+    let ie = &inline.extensions;
+    let any = e.emissive_strength.is_some() || e.ior.is_some() || e.specular.is_some()
+        || e.transmission.is_some() || e.diffuse_transmission.is_some() || e.volume.is_some()
+        || e.clearcoat.is_some() || e.sheen.is_some() || e.dispersion.is_some()
+        || e.anisotropy.is_some() || e.iridescence.is_some();
+    if any {
+        rows.push(uniform_subhead("Extensions"));
+    }
+    if e.emissive_strength.is_some() {
+        let v = ie.emissive_strength.unwrap_or_default();
+        rows.push(ext_num_row(node, "Emissive strength", v.strength, 0.0, 100.0, 0.1,
+            |x, val| x.emissive_strength.get_or_insert_with(Default::default).strength = val));
+    }
+    if e.ior.is_some() {
+        let v = ie.ior.unwrap_or_default();
+        rows.push(ext_num_row(node, "IOR", v.ior, 1.0, 3.0, 0.01,
+            |x, val| x.ior.get_or_insert_with(Default::default).ior = val));
+    }
+    if e.specular.is_some() {
+        let v = ie.specular.unwrap_or_default();
+        rows.push(ext_num_row(node, "Specular", v.factor, 0.0, 1.0, 0.05,
+            |x, val| x.specular.get_or_insert_with(Default::default).factor = val));
+        rows.push(ext_color_row(node, "Specular color", v.color_factor,
+            |x, c| x.specular.get_or_insert_with(Default::default).color_factor = c));
+    }
+    if e.transmission.is_some() {
+        let v = ie.transmission.unwrap_or_default();
+        rows.push(ext_num_row(node, "Transmission", v.factor, 0.0, 1.0, 0.05,
+            |x, val| x.transmission.get_or_insert_with(Default::default).factor = val));
+    }
+    if e.diffuse_transmission.is_some() {
+        let v = ie.diffuse_transmission.unwrap_or_default();
+        rows.push(ext_num_row(node, "Diffuse transmission", v.factor, 0.0, 1.0, 0.05,
+            |x, val| x.diffuse_transmission.get_or_insert_with(Default::default).factor = val));
+        rows.push(ext_color_row(node, "Diffuse trans. color", v.color_factor,
+            |x, c| x.diffuse_transmission.get_or_insert_with(Default::default).color_factor = c));
+    }
+    if e.volume.is_some() {
+        let v = ie.volume.unwrap_or_default();
+        rows.push(ext_num_row(node, "Thickness", v.thickness_factor, 0.0, 10.0, 0.05,
+            |x, val| x.volume.get_or_insert_with(Default::default).thickness_factor = val));
+        rows.push(ext_num_row(node, "Attenuation dist", v.attenuation_distance, 0.0, 100.0, 0.1,
+            |x, val| x.volume.get_or_insert_with(Default::default).attenuation_distance = val));
+        rows.push(ext_color_row(node, "Attenuation color", v.attenuation_color,
+            |x, c| x.volume.get_or_insert_with(Default::default).attenuation_color = c));
+    }
+    if e.clearcoat.is_some() {
+        let v = ie.clearcoat.unwrap_or_default();
+        rows.push(ext_num_row(node, "Clearcoat", v.factor, 0.0, 1.0, 0.05,
+            |x, val| x.clearcoat.get_or_insert_with(Default::default).factor = val));
+        rows.push(ext_num_row(node, "Clearcoat rough", v.roughness_factor, 0.0, 1.0, 0.05,
+            |x, val| x.clearcoat.get_or_insert_with(Default::default).roughness_factor = val));
+    }
+    if e.sheen.is_some() {
+        let v = ie.sheen.unwrap_or_default();
+        rows.push(ext_num_row(node, "Sheen rough", v.roughness_factor, 0.0, 1.0, 0.05,
+            |x, val| x.sheen.get_or_insert_with(Default::default).roughness_factor = val));
+        rows.push(ext_color_row(node, "Sheen color", v.color_factor,
+            |x, c| x.sheen.get_or_insert_with(Default::default).color_factor = c));
+    }
+    if e.dispersion.is_some() {
+        let v = ie.dispersion.unwrap_or_default();
+        rows.push(ext_num_row(node, "Dispersion", v.dispersion, 0.0, 2.0, 0.01,
+            |x, val| x.dispersion.get_or_insert_with(Default::default).dispersion = val));
+    }
+    if e.anisotropy.is_some() {
+        let v = ie.anisotropy.unwrap_or_default();
+        rows.push(ext_num_row(node, "Anisotropy", v.strength, 0.0, 1.0, 0.05,
+            |x, val| x.anisotropy.get_or_insert_with(Default::default).strength = val));
+        rows.push(ext_num_row(node, "Anisotropy rot", v.rotation, -3.1416, 3.1416, 0.01,
+            |x, val| x.anisotropy.get_or_insert_with(Default::default).rotation = val));
+    }
+    if e.iridescence.is_some() {
+        let v = ie.iridescence.unwrap_or_default();
+        rows.push(ext_num_row(node, "Iridescence", v.factor, 0.0, 1.0, 0.05,
+            |x, val| x.iridescence.get_or_insert_with(Default::default).factor = val));
+        rows.push(ext_num_row(node, "Iridescence IOR", v.ior, 1.0, 3.0, 0.01,
+            |x, val| x.iridescence.get_or_insert_with(Default::default).ior = val));
+        rows.push(ext_num_row(node, "Thickness min", v.thickness_min, 0.0, 1000.0, 1.0,
+            |x, val| x.iridescence.get_or_insert_with(Default::default).thickness_min = val));
+        rows.push(ext_num_row(node, "Thickness max", v.thickness_max, 0.0, 2000.0, 1.0,
+            |x, val| x.iridescence.get_or_insert_with(Default::default).thickness_max = val));
+    }
+
+    rows
 }
 
 /// Per-mesh override editor for an assigned **dynamic** material's declared

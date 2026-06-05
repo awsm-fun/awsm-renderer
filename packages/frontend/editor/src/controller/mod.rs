@@ -525,22 +525,15 @@ impl EditorController {
                                 texture_overrides: Default::default(),
                                 buffer_overrides: Default::default(),
                             });
-                        // Assigning a material adopts its *default* per-mesh
-                        // uniforms (base color / metallic / roughness / emissive)
-                        // into this mesh's inline store, so the mesh starts
+                        // Assigning a material adopts its *defaults* (the full
+                        // uniform surface — factors, extension params, Toon knobs,
+                        // cutoff) into this mesh's inline store, so the mesh starts
                         // looking like the material; the user then customizes
                         // per-mesh from there. (A dynamic material has no built-in
                         // defaults → keep the existing inline, which it ignores.)
                         let seeded_inline = instance.as_ref().and_then(|inst| {
                             find_material(&self.custom_materials, inst.material)
                                 .and_then(|m| m.builtin.get_cloned())
-                                .map(|def| awsm_scene_schema::MaterialDef {
-                                    base_color: def.base_color,
-                                    metallic: def.metallic,
-                                    roughness: def.roughness,
-                                    emissive: def.emissive,
-                                    ..Default::default()
-                                })
                         });
                         let next = match prev.clone() {
                             NodeKind::Primitive {
@@ -1073,10 +1066,10 @@ fn build_editor_subtree(
             ..Default::default()
         })
     };
-    // The per-mesh inline uniforms (base color / metallic / roughness /
-    // emissive) seeded from the assigned material's defaults — a per-node copy
-    // that `builtin_merged` layers over the shared variant. Editing it in the
-    // inspector customizes this node without touching the shared material.
+    // The per-mesh inline store, seeded as a *clone of the assigned material's
+    // defaults*. `builtin_merged` then layers its uniform-class fields (factors,
+    // extension params, Toon knobs, mask cutoff) over the shared variant, so
+    // editing it customizes this node without touching the shared material.
     let inline_for = |inst: &Option<CustomMaterialInstance>| -> MaterialDef {
         inst.as_ref()
             .and_then(|i| {
@@ -1086,13 +1079,6 @@ fn build_editor_subtree(
                 )
             })
             .and_then(|m| m.builtin.get_cloned())
-            .map(|def| MaterialDef {
-                base_color: def.base_color,
-                metallic: def.metallic,
-                roughness: def.roughness,
-                emissive: def.emissive,
-                ..Default::default()
-            })
             .unwrap_or_default()
     };
 
