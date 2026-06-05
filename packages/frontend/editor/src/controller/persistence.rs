@@ -11,9 +11,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use awsm_scene_schema::animation::CustomAnimationRef;
 use awsm_scene_schema::{CustomMaterialRef, EditorProject, StoredMaterial, StoredSlot};
 use awsm_web_shared::prelude::Mutable;
 
+use super::animation::{stored_from_live, stored_to_live};
 use super::custom_material::{AlphaMode, CustomMaterial, Slot};
 use super::node_spec::NodeSpec;
 use super::EditorController;
@@ -108,6 +110,27 @@ pub fn to_editor_project(ctrl: &EditorController) -> EditorProject {
         .map(|m| stored_from_material(m))
         .collect();
 
+    // Animation library: refs (name + side-file path) + the full authored model.
+    let custom_animations = ctrl
+        .custom_animations
+        .lock_ref()
+        .iter()
+        .map(|c| {
+            let name = c.name.get_cloned();
+            let slug = slugify(&name);
+            CustomAnimationRef {
+                name,
+                file: PathBuf::from(format!("assets/animations/animation-{slug}.toml")),
+            }
+        })
+        .collect();
+    let editor_animations = ctrl
+        .custom_animations
+        .lock_ref()
+        .iter()
+        .map(|c| stored_from_live(c))
+        .collect();
+
     EditorProject {
         name: ctrl.project_name.get_cloned(),
         environment: ctrl.scene.environment.get_cloned(),
@@ -115,6 +138,9 @@ pub fn to_editor_project(ctrl: &EditorController) -> EditorProject {
         assets: ctrl.scene.assets.lock().unwrap().clone(),
         custom_materials,
         editor_materials,
+        custom_animations,
+        editor_animations,
+        anim_mixer: ctrl.anim_mixer.get_cloned(),
         nodes,
     }
 }
@@ -148,6 +174,22 @@ pub fn material_files(ctrl: &EditorController) -> Vec<(String, String)> {
     out
 }
 
+/// Per-clip animation side files (`animation-<slug>.toml`) — the full authored
+/// model serialized as TOML (mirrors `material_files`). Returned alongside
+/// `project.toml` for the directory-handle Save writer.
+#[allow(dead_code)]
+pub fn animation_files(ctrl: &EditorController) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for c in ctrl.custom_animations.lock_ref().iter() {
+        let slug = slugify(&c.name.get_cloned());
+        let stored = stored_from_live(c);
+        if let Ok(body) = toml::to_string_pretty(&stored) {
+            out.push((format!("animation-{slug}.toml"), body));
+        }
+    }
+    out
+}
+
 /// Rebuild the live scene from a loaded project (replaces the current scene).
 pub fn apply_project(ctrl: &EditorController, project: EditorProject) {
     ctrl.scene.environment.set(project.environment);
@@ -177,6 +219,22 @@ pub fn apply_project(ctrl: &EditorController, project: EditorProject) {
         }
     }
 
+    // Restore the animation library (the full authored model, keyed by stable id)
+    // + the mixer doc. The `animation_sync` bridge re-lowers on the resulting
+    // `custom_animations` change; node/material targets re-resolve as they
+    // materialize (pending-skip in the bridge).
+    let clips: Vec<Arc<super::animation::CustomAnimation>> = project
+        .editor_animations
+        .iter()
+        .map(stored_to_live)
+        .collect();
+    ctrl.custom_animations.lock_mut().replace_cloned(clips);
+    ctrl.anim_mixer.set(project.anim_mixer);
+    ctrl.current_clip
+        .set(ctrl.custom_animations.lock_ref().first().map(|c| c.id));
+    ctrl.playhead.set_neq(0.0);
+    ctrl.playing.set_neq(false);
+
     let new_nodes: Vec<Arc<Node>> = project
         .nodes
         .iter()
@@ -195,6 +253,11 @@ pub async fn save_to_dir(ctrl: &EditorController, dir: &crate::fs::ProjectDir) -
         .await
         .map_err(|e| EditorError::Msg(e.to_string()))?;
     for (name, content) in material_files(ctrl) {
+        dir.write_text(&name, &content)
+            .await
+            .map_err(|e| EditorError::Msg(e.to_string()))?;
+    }
+    for (name, content) in animation_files(ctrl) {
         dir.write_text(&name, &content)
             .await
             .map_err(|e| EditorError::Msg(e.to_string()))?;

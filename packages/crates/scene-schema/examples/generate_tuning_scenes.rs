@@ -122,6 +122,9 @@ fn empty_project(name: &str) -> EditorProject {
         assets: AssetTable::default(),
         custom_materials: Vec::new(),
         editor_materials: Vec::new(),
+        custom_animations: Vec::new(),
+        editor_animations: Vec::new(),
+        anim_mixer: Default::default(),
         nodes: Vec::new(),
     }
 }

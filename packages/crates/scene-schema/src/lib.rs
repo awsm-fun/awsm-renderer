@@ -15,6 +15,7 @@
 //! Coordinate convention: right-handed, Y-up, meters. Rotations are unit
 //! quaternions stored as `[x, y, z, w]`.
 
+pub mod animation;
 pub mod assets;
 pub mod camera;
 pub mod collider;

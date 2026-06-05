@@ -101,6 +101,91 @@ fn rgba_to_png_data_url(rgba: &[u8], w: u32, h: u32) -> Result<String, String> {
         .map_err(|_| "encode PNG".to_string())
 }
 
+/// Draw the live WebGPU `<canvas>` onto an offscreen 2D canvas + return its
+/// `ImageData` (RGBA8) plus dimensions. The §6.8 `CanvasPixels`/`CanvasStats`
+/// path — needs a *rendered* frame (the canvas presents on the RAF loop).
+fn canvas_image_data() -> Result<(Vec<u8>, u32, u32), String> {
+    let document = web_sys::window()
+        .and_then(|w| w.document())
+        .ok_or("no document")?;
+    let (src, w, h) = crate::engine::context::with_canvas(|c| (c.clone(), c.width(), c.height()));
+    if w == 0 || h == 0 {
+        return Err("canvas has zero size".to_string());
+    }
+    let off: web_sys::HtmlCanvasElement = document
+        .create_element("canvas")
+        .map_err(|_| "create canvas")?
+        .dyn_into()
+        .map_err(|_| "canvas cast")?;
+    off.set_width(w);
+    off.set_height(h);
+    let ctx: web_sys::CanvasRenderingContext2d = off
+        .get_context("2d")
+        .map_err(|_| "get 2d context")?
+        .ok_or("no 2d context")?
+        .dyn_into()
+        .map_err(|_| "2d context cast")?;
+    ctx.draw_image_with_html_canvas_element(&src, 0.0, 0.0)
+        .map_err(|_| "drawImage (canvas not presenting / tainted)")?;
+    let image_data = ctx
+        .get_image_data(0, 0, w as i32, h as i32)
+        .map_err(|_| "getImageData")?;
+    Ok((image_data.data().to_vec(), w, h))
+}
+
+/// Exact RGBA (0–255) at each requested canvas coordinate. Out-of-bounds coords
+/// read transparent black.
+pub fn canvas_pixels(coords: &[(u32, u32)]) -> Result<Vec<[u8; 4]>, String> {
+    let (data, w, h) = canvas_image_data()?;
+    let mut out = Vec::with_capacity(coords.len());
+    for &(x, y) in coords {
+        if x >= w || y >= h {
+            out.push([0, 0, 0, 0]);
+            continue;
+        }
+        let i = ((y * w + x) * 4) as usize;
+        out.push([data[i], data[i + 1], data[i + 2], data[i + 3]]);
+    }
+    Ok(out)
+}
+
+/// Mean / min / max luma (Rec. 709) over a region `[x, y, w, h]`, or the whole
+/// canvas when `None`.
+pub fn canvas_stats(
+    region: Option<[u32; 4]>,
+) -> Result<crate::controller::query::StatsResult, String> {
+    let (data, w, h) = canvas_image_data()?;
+    let [rx, ry, rw, rh] = region.unwrap_or([0, 0, w, h]);
+    let x1 = (rx + rw).min(w);
+    let y1 = (ry + rh).min(h);
+    let mut sum = 0.0f64;
+    let mut min = f64::INFINITY;
+    let mut max = f64::NEG_INFINITY;
+    let mut count = 0u64;
+    for y in ry..y1 {
+        for x in rx..x1 {
+            let i = ((y * w + x) * 4) as usize;
+            let r = data[i] as f64;
+            let g = data[i + 1] as f64;
+            let b = data[i + 2] as f64;
+            let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+            sum += luma;
+            min = min.min(luma);
+            max = max.max(luma);
+            count += 1;
+        }
+    }
+    if count == 0 {
+        return Err("empty region".to_string());
+    }
+    Ok(crate::controller::query::StatsResult {
+        mean_luma: sum / count as f64,
+        min_luma: min,
+        max_luma: max,
+        pixel_count: count,
+    })
+}
+
 /// Resolve an asset-id string (a UUID) to an [`AssetId`] for the query seams.
 pub fn parse_asset_id(s: &str) -> Option<AssetId> {
     // `AssetId` is `serde(transparent)` over a UUID, so deserialize a quoted

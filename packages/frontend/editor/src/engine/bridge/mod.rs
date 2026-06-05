@@ -4,6 +4,7 @@
 //! as the node's kind/transform/visibility change. M4-C handles primitives +
 //! lights + passive kinds; models/curves/particles/decals/etc. layer in later.
 
+pub mod animation_sync;
 pub mod asset_template;
 pub mod collider_wire;
 pub mod dynamic;
@@ -171,4 +172,7 @@ pub fn init() {
     // Drives the renderer skybox + IBL from `scene.environment`; its first
     // emission applies the default Simple Sky so the editor never boots black.
     env_sync::start();
+    // Lowers authored animation clips + mixer into the renderer's clip-group
+    // runtime and drives the transport clock (§6.5).
+    animation_sync::start();
 }

@@ -17,12 +17,66 @@ pub fn start() {
     request_frame();
 }
 
+thread_local! {
+    /// The previous rAF timestamp (ms), for computing the per-frame delta the
+    /// animation transport advances by while playing.
+    static LAST_TS: std::cell::Cell<Option<f64>> = const { std::cell::Cell::new(None) };
+}
+
 fn request_frame() {
-    let raf = gloo_render::request_animation_frame(move |_ts| {
+    let raf = gloo_render::request_animation_frame(move |ts| {
+        let dt_ms = LAST_TS.with(|c| {
+            let prev = c.replace(Some(ts));
+            prev.map(|p| (ts - p).max(0.0)).unwrap_or(0.0)
+        });
+        tick_animation_clock(dt_ms);
         render_one_frame();
         request_frame();
     });
     context::set_raf(raf);
+}
+
+/// Advance the animation transport while playing. The editor owns the clock
+/// (§6.5): when playing we advance the controller `playhead` by `dt` (seconds,
+/// scaled by the active clip's speed) and dispatch a transient `SetPlayhead` so
+/// the ruler + synced tabs follow. The pose is *pinned* into the renderer in
+/// `render_one_frame` (under the held guard, before `update_transforms`) via
+/// [`super::bridge::animation_sync::pin_pose`].
+fn tick_animation_clock(dt_ms: f64) {
+    let ctrl = controller();
+    if !ctrl.playing.get() {
+        return;
+    }
+    let dt_s = dt_ms / 1000.0;
+    let (dur, speed, loops) = ctrl
+        .current_clip
+        .get()
+        .and_then(|id| crate::controller::animation::find_clip(&ctrl.custom_animations, id))
+        .map(|c| {
+            (
+                c.duration.get(),
+                c.speed.get(),
+                !matches!(
+                    c.loop_style.get(),
+                    crate::controller::animation::ClipLoop::Once
+                ),
+            )
+        })
+        .unwrap_or((0.0, 1.0, true));
+    let mut next = ctrl.playhead.get() + dt_s * speed;
+    if dur > 0.0 {
+        if next >= dur {
+            next = if loops { next.rem_euclid(dur) } else { dur };
+        }
+    } else {
+        next = 0.0;
+    }
+    // Transient command (broadcasts + syncs tabs, never recorded for undo).
+    crate::prelude::spawn_local(async move {
+        let _ = controller()
+            .dispatch(crate::controller::EditorCommand::SetPlayhead { t: next })
+            .await;
+    });
 }
 
 fn render_one_frame() {
@@ -60,6 +114,9 @@ fn render_one_frame() {
         super::curve_handles::per_frame_update(renderer);
         // Advance any particle emitters + push their live particles to the GPU.
         super::bridge::particles::tick_all(renderer);
+        // Pin the animation pose at the current playhead BEFORE world transforms
+        // are derived (animation writes locals; `update_transforms` derives world).
+        super::bridge::animation_sync::pin_pose(renderer, controller().playhead.get());
         renderer.update_transforms();
         let hooks = context::render_hooks_handle();
         let hooks = hooks.read().unwrap();

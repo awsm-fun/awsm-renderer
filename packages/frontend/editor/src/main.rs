@@ -216,6 +216,15 @@ pub async fn editor_query_texture_png(asset_id: &str) -> String {
     }
 }
 
+/// Animation/verification read seam (§6.8): decode a JSON `EditorQuery`, run it
+/// through `controller().query(...)`, and return the JSON result. Async because
+/// the value/pixel readbacks await the renderer lock (mirrors
+/// `editor_query_texture_png`). The read half of the future MCP transport.
+#[wasm_bindgen]
+pub async fn editor_query_json(query_json: String) -> String {
+    controller::controller().query_json(&query_json).await
+}
+
 #[wasm_bindgen]
 pub fn editor_dispatch_json(cmd_json: &str) -> String {
     match serde_json::from_str::<controller::EditorCommand>(cmd_json) {

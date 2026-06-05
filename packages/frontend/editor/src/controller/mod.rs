@@ -10,13 +10,22 @@
 //! — designed for now (the URL load/import command variants + source seam), not
 //! built now.
 
+pub mod animation;
 mod command;
 pub mod custom_material;
 mod node_spec;
 pub mod persistence;
-mod query;
+pub mod query;
 mod source;
 
+// The animation model + transport/mixer doc types. Several are consumed only by
+// the Animation-mode UI panels (M-A2+); re-exported now so the contract is
+// reachable + the command/query/persistence layers use them.
+#[allow(unused_imports)]
+pub use animation::{
+    AnimSel, AnimView, ClipDirection, ClipLoop, CustomAnimation, Interp, MixerDoc, SamplerKind,
+    StepKind, Track, TrackTarget, TrackValue,
+};
 pub use command::{CameraAxis, EditorCommand, EditorMode, ProceduralKind};
 pub use custom_material::{compile_wgsl, AlphaMode, CustomMaterial, Slot};
 // InsertSpec is dispatched by the ribbon (M4); NodeQuery is the snapshot
@@ -24,6 +33,10 @@ pub use custom_material::{compile_wgsl, AlphaMode, CustomMaterial, Slot};
 #[allow(unused_imports)]
 pub use node_spec::{InsertSpec, NodeQuery, NodeSpec};
 pub use query::{EditorSnapshot, ProjectSnapshot};
+// The query read-surface (§6.8) — consumed by the `editor_query_json` wasm seam
+// + the future MCP transport.
+#[allow(unused_imports)]
+pub use query::{EditorQuery, QueryResult, ReadbackTarget};
 // The source/sink seam is wired into the loader/saver in M11; re-export now so
 // the contract is reachable + documented.
 #[allow(unused_imports)]
@@ -35,6 +48,7 @@ use std::rc::Rc;
 use awsm_web_shared::prelude::{Mutable, MutableVec, Toast};
 use wasm_bindgen_futures::spawn_local;
 
+use self::animation::{find_clip, CustomAnimation as CA};
 use self::custom_material::{find_material, CustomMaterial as CM};
 use crate::engine::scene::{mutate, AssetId, NodeId, NodeKind, Scene};
 use crate::error::EditorResult;
@@ -97,6 +111,25 @@ pub struct EditorController {
     pub custom_materials: MutableVec<Arc<CM>>,
     /// The material the Studio is currently editing.
     pub current_material: Mutable<Option<AssetId>>,
+    /// The animation clips authored in Animation mode (mirrors `custom_materials`).
+    /// Reactive — the studio edits their tracks/keys live.
+    pub custom_animations: MutableVec<Arc<CA>>,
+    /// The clip Animation mode is currently editing/playing.
+    pub current_clip: Mutable<Option<AssetId>>,
+    /// The transport playhead, in **seconds** (shared across synced tabs).
+    pub playhead: Mutable<f64>,
+    /// Whether the transport is playing.
+    pub playing: Mutable<bool>,
+    /// The display frame rate (frames⇄seconds in the ruler).
+    pub anim_fps: Mutable<u32>,
+    /// Solo-subtree focus: only tracks under this node advance (decision #6).
+    pub anim_solo_root: Mutable<Option<NodeId>>,
+    /// The selected timeline element (track / keyframe).
+    pub anim_selection: Mutable<Option<AnimSel>>,
+    /// The NLA mixer document (layers / strips / masks / weights, by clip id).
+    pub anim_mixer: Mutable<MixerDoc>,
+    /// Which timeline editor the dock shows (Dope / Curves / Mixer).
+    pub anim_view: Mutable<AnimView>,
     /// Whether the ⌘K command palette is open (view state).
     pub cmdk_open: Mutable<bool>,
     /// Editor (view-only) settings — viewport toggles, units, etc. Not saved
@@ -152,6 +185,15 @@ impl EditorController {
             asset_selection: Mutable::new(None),
             custom_materials: MutableVec::new(),
             current_material: Mutable::new(None),
+            custom_animations: MutableVec::new(),
+            current_clip: Mutable::new(None),
+            playhead: Mutable::new(0.0),
+            playing: Mutable::new(false),
+            anim_fps: Mutable::new(30),
+            anim_solo_root: Mutable::new(None),
+            anim_selection: Mutable::new(None),
+            anim_mixer: Mutable::new(MixerDoc::default()),
+            anim_view: Mutable::new(AnimView::default()),
             cmdk_open: Mutable::new(false),
             settings: Settings::default(),
             settings_open: Mutable::new(false),
@@ -676,7 +718,643 @@ impl EditorController {
                 Toast::info(format!("Import texture from {url} — lands in M11"));
                 Ok(None)
             }
+            // ───────────────────── Animation: clip lifecycle ─────────────────
+            EditorCommand::AddClip => {
+                let id = AssetId::new();
+                let n = self.custom_animations.lock_ref().len() + 1;
+                let clip = CA::new(id, format!("Clip {n}"));
+                self.custom_animations.lock_mut().push_cloned(clip);
+                self.current_clip.set(Some(id));
+                self.dirty.set_neq(true);
+                Ok(None)
+            }
+            EditorCommand::DeleteClip { id } => {
+                self.custom_animations.lock_mut().retain(|c| c.id != id);
+                if self.current_clip.get() == Some(id) {
+                    let next = self.custom_animations.lock_ref().first().map(|c| c.id);
+                    self.current_clip.set(next);
+                }
+                self.dirty.set_neq(true);
+                Ok(None)
+            }
+            EditorCommand::DuplicateClip { id } => {
+                let src = find_clip(&self.custom_animations, id);
+                if let Some(src) = src {
+                    let new_id = AssetId::new();
+                    let mut stored = animation::stored_from_live(&src);
+                    stored.id = new_id;
+                    stored.name = format!("{} copy", stored.name);
+                    let clone = animation::stored_to_live(&stored);
+                    self.custom_animations.lock_mut().push_cloned(clone);
+                    self.current_clip.set(Some(new_id));
+                    self.dirty.set_neq(true);
+                }
+                Ok(None)
+            }
+            EditorCommand::SetCurrentClip { id } => {
+                self.current_clip.set(id);
+                Ok(None)
+            }
+            // ───────────────────── Animation: clip props ─────────────────────
+            EditorCommand::RenameClip { id, name } => {
+                match find_clip(&self.custom_animations, id) {
+                    Some(c) => {
+                        let prev = c.name.get_cloned();
+                        c.name.set(name);
+                        self.dirty.set_neq(true);
+                        Ok(Some(EditorCommand::RenameClip { id, name: prev }))
+                    }
+                    None => Ok(None),
+                }
+            }
+            EditorCommand::SetClipDuration { id, duration } => {
+                match find_clip(&self.custom_animations, id) {
+                    Some(c) => {
+                        let prev = c.duration.get();
+                        c.duration.set(duration.max(0.0));
+                        self.dirty.set_neq(true);
+                        Ok(Some(EditorCommand::SetClipDuration { id, duration: prev }))
+                    }
+                    None => Ok(None),
+                }
+            }
+            EditorCommand::SetClipLoop { id, loop_style } => {
+                match find_clip(&self.custom_animations, id) {
+                    Some(c) => {
+                        let prev = c.loop_style.get();
+                        c.loop_style.set(loop_style);
+                        self.dirty.set_neq(true);
+                        Ok(Some(EditorCommand::SetClipLoop {
+                            id,
+                            loop_style: prev,
+                        }))
+                    }
+                    None => Ok(None),
+                }
+            }
+            EditorCommand::SetClipSpeed { id, speed } => {
+                match find_clip(&self.custom_animations, id) {
+                    Some(c) => {
+                        let prev = c.speed.get();
+                        c.speed.set(speed);
+                        self.dirty.set_neq(true);
+                        Ok(Some(EditorCommand::SetClipSpeed { id, speed: prev }))
+                    }
+                    None => Ok(None),
+                }
+            }
+            EditorCommand::SetClipDirection { id, direction } => {
+                match find_clip(&self.custom_animations, id) {
+                    Some(c) => {
+                        let prev = c.direction.get();
+                        c.direction.set(direction);
+                        self.dirty.set_neq(true);
+                        Ok(Some(EditorCommand::SetClipDirection {
+                            id,
+                            direction: prev,
+                        }))
+                    }
+                    None => Ok(None),
+                }
+            }
+            EditorCommand::SetClipColor { id, color } => {
+                match find_clip(&self.custom_animations, id) {
+                    Some(c) => {
+                        let prev = c.color.get_cloned();
+                        c.color.set(color);
+                        self.dirty.set_neq(true);
+                        Ok(Some(EditorCommand::SetClipColor { id, color: prev }))
+                    }
+                    None => Ok(None),
+                }
+            }
+            // ───────────────────── Animation: tracks ─────────────────────────
+            EditorCommand::AddTrack { clip, target } => {
+                match find_clip(&self.custom_animations, clip) {
+                    Some(c) => {
+                        let track = animation::Track::new(target);
+                        let index = c.tracks.lock_ref().len();
+                        c.tracks.lock_mut().push_cloned(track);
+                        self.dirty.set_neq(true);
+                        Ok(Some(EditorCommand::DeleteTrack { clip, track: index }))
+                    }
+                    None => Ok(None),
+                }
+            }
+            EditorCommand::DeleteTrack { clip, track } => {
+                match find_clip(&self.custom_animations, clip) {
+                    Some(c) => {
+                        let removed = {
+                            let tracks = c.tracks.lock_ref();
+                            tracks
+                                .get(track)
+                                .map(|t| animation::stored_track_from_live(t))
+                        };
+                        match removed {
+                            Some(st) => {
+                                c.tracks.lock_mut().remove(track);
+                                self.dirty.set_neq(true);
+                                Ok(Some(EditorCommand::RestoreTrack {
+                                    clip,
+                                    index: track,
+                                    track: Box::new(st),
+                                }))
+                            }
+                            None => Ok(None),
+                        }
+                    }
+                    None => Ok(None),
+                }
+            }
+            EditorCommand::RestoreTrack { clip, index, track } => {
+                match find_clip(&self.custom_animations, clip) {
+                    Some(c) => {
+                        let live = animation::stored_track_to_live(&track);
+                        let mut tracks = c.tracks.lock_mut();
+                        let i = index.min(tracks.len());
+                        tracks.insert_cloned(i, live);
+                        drop(tracks);
+                        self.dirty.set_neq(true);
+                        Ok(Some(EditorCommand::DeleteTrack { clip, track: index }))
+                    }
+                    None => Ok(None),
+                }
+            }
+            EditorCommand::SetTrackSampler {
+                clip,
+                track,
+                sampler,
+            } => match find_track(&self.custom_animations, clip, track) {
+                Some(t) => {
+                    let prev = t.sampler.get();
+                    t.sampler.set(sampler);
+                    self.dirty.set_neq(true);
+                    Ok(Some(EditorCommand::SetTrackSampler {
+                        clip,
+                        track,
+                        sampler: prev,
+                    }))
+                }
+                None => Ok(None),
+            },
+            EditorCommand::SetTrackMute { clip, track, mute } => {
+                match find_track(&self.custom_animations, clip, track) {
+                    Some(t) => {
+                        let prev = t.mute.get();
+                        t.mute.set_neq(mute);
+                        self.dirty.set_neq(true);
+                        Ok(Some(EditorCommand::SetTrackMute {
+                            clip,
+                            track,
+                            mute: prev,
+                        }))
+                    }
+                    None => Ok(None),
+                }
+            }
+            EditorCommand::SetTrackSolo { clip, track, solo } => {
+                match find_track(&self.custom_animations, clip, track) {
+                    Some(t) => {
+                        let prev = t.solo.get();
+                        t.solo.set_neq(solo);
+                        self.dirty.set_neq(true);
+                        Ok(Some(EditorCommand::SetTrackSolo {
+                            clip,
+                            track,
+                            solo: prev,
+                        }))
+                    }
+                    None => Ok(None),
+                }
+            }
+            // ───────────────────── Animation: keyframes ──────────────────────
+            EditorCommand::AddKeyframe {
+                clip,
+                track,
+                t,
+                value,
+            } => match find_track(&self.custom_animations, clip, track) {
+                Some(tr) => {
+                    let interp = animation::sampler_to_interp(tr.sampler.get());
+                    let mut times = tr.times.lock_mut();
+                    let mut keys = tr.keys.lock_mut();
+                    // Replace an existing key at (almost) the same time, else insert
+                    // sorted.
+                    if let Some(i) = times.iter().position(|&x| (x - t).abs() < 1.0e-9) {
+                        let prev = keys[i].clone();
+                        keys[i] = animation::new_keyframe(value, interp);
+                        drop(times);
+                        drop(keys);
+                        self.dirty.set_neq(true);
+                        return Ok(Some(EditorCommand::SetKeyframe {
+                            clip,
+                            track,
+                            index: i,
+                            t: None,
+                            value: Some(prev.value),
+                            interp: Some(prev.interp),
+                            in_tangent: Some(prev.in_tangent),
+                            out_tangent: Some(prev.out_tangent),
+                        }));
+                    }
+                    let pos = times.iter().position(|&x| x > t).unwrap_or(times.len());
+                    times.insert(pos, t);
+                    keys.insert(pos, animation::new_keyframe(value, interp));
+                    drop(times);
+                    drop(keys);
+                    self.dirty.set_neq(true);
+                    Ok(Some(EditorCommand::DeleteKeyframe {
+                        clip,
+                        track,
+                        index: pos,
+                    }))
+                }
+                None => Ok(None),
+            },
+            EditorCommand::DeleteKeyframe { clip, track, index } => {
+                match find_track(&self.custom_animations, clip, track) {
+                    Some(tr) => {
+                        let mut times = tr.times.lock_mut();
+                        let mut keys = tr.keys.lock_mut();
+                        if index >= times.len() || index >= keys.len() {
+                            return Ok(None);
+                        }
+                        let t = times.remove(index);
+                        let kf = keys.remove(index);
+                        drop(times);
+                        drop(keys);
+                        self.dirty.set_neq(true);
+                        Ok(Some(EditorCommand::InsertKeyframe {
+                            clip,
+                            track,
+                            index,
+                            t,
+                            key: Box::new(kf),
+                        }))
+                    }
+                    None => Ok(None),
+                }
+            }
+            EditorCommand::InsertKeyframe {
+                clip,
+                track,
+                index,
+                t,
+                key,
+            } => match find_track(&self.custom_animations, clip, track) {
+                Some(tr) => {
+                    let mut times = tr.times.lock_mut();
+                    let mut keys = tr.keys.lock_mut();
+                    let i = index.min(times.len());
+                    times.insert(i, t);
+                    keys.insert(i, *key);
+                    drop(times);
+                    drop(keys);
+                    self.dirty.set_neq(true);
+                    Ok(Some(EditorCommand::DeleteKeyframe { clip, track, index }))
+                }
+                None => Ok(None),
+            },
+            EditorCommand::SetKeyframe {
+                clip,
+                track,
+                index,
+                t,
+                value,
+                interp,
+                in_tangent,
+                out_tangent,
+            } => match find_track(&self.custom_animations, clip, track) {
+                Some(tr) => {
+                    let mut times = tr.times.lock_mut();
+                    let mut keys = tr.keys.lock_mut();
+                    if index >= keys.len() {
+                        return Ok(None);
+                    }
+                    let prev_kf = keys[index].clone();
+                    let prev_t = times.get(index).copied();
+                    if let Some(new_t) = t {
+                        if let Some(slot) = times.get_mut(index) {
+                            *slot = new_t;
+                        }
+                    }
+                    if let Some(v) = value {
+                        keys[index].value = v;
+                    }
+                    if let Some(i) = interp {
+                        keys[index].interp = i;
+                    }
+                    if let Some(it) = in_tangent {
+                        keys[index].in_tangent = it;
+                    }
+                    if let Some(ot) = out_tangent {
+                        keys[index].out_tangent = ot;
+                    }
+                    drop(times);
+                    drop(keys);
+                    self.dirty.set_neq(true);
+                    Ok(Some(EditorCommand::SetKeyframe {
+                        clip,
+                        track,
+                        index,
+                        t: t.and(prev_t),
+                        value: value.map(|_| prev_kf.value),
+                        interp: interp.map(|_| prev_kf.interp),
+                        in_tangent: in_tangent.map(|_| prev_kf.in_tangent),
+                        out_tangent: out_tangent.map(|_| prev_kf.out_tangent),
+                    }))
+                }
+                None => Ok(None),
+            },
+            // ───────────────────── Animation: transport ──────────────────────
+            EditorCommand::SetPlayhead { t } => {
+                self.playhead.set_neq(t.max(0.0));
+                Ok(None)
+            }
+            EditorCommand::SetPlaying { on } => {
+                self.playing.set_neq(on);
+                Ok(None)
+            }
+            EditorCommand::StepPlayhead { kind } => {
+                let dur = self
+                    .current_clip
+                    .get()
+                    .and_then(|id| find_clip(&self.custom_animations, id))
+                    .map(|c| c.duration.get())
+                    .unwrap_or(0.0);
+                let cur = self.playhead.get();
+                let next = match kind {
+                    animation::StepKind::Home => 0.0,
+                    animation::StepKind::End => dur,
+                    animation::StepKind::Prev => self.adjacent_keyframe_time(cur, false),
+                    animation::StepKind::Next => self.adjacent_keyframe_time(cur, true),
+                };
+                self.playhead.set_neq(next.clamp(0.0, dur.max(0.0)));
+                Ok(None)
+            }
+            EditorCommand::SetAnimFps { fps } => {
+                self.anim_fps.set_neq(fps.max(1));
+                Ok(None)
+            }
+            EditorCommand::SetSoloRoot { id } => {
+                self.anim_solo_root.set(id);
+                Ok(None)
+            }
+            EditorCommand::SetAnimSelection { sel } => {
+                self.anim_selection.set(sel);
+                Ok(None)
+            }
+            EditorCommand::SetAnimView { view } => {
+                self.anim_view.set_neq(view);
+                Ok(None)
+            }
+            // ───────────────────── Animation: mixer (NLA) ────────────────────
+            EditorCommand::AddLayer => {
+                let mut doc = self.anim_mixer.get_cloned();
+                let index = doc.layers.len();
+                doc.layers.push(animation::LayerDoc::default());
+                self.anim_mixer.set(doc);
+                self.dirty.set_neq(true);
+                Ok(Some(EditorCommand::DeleteLayer { layer: index }))
+            }
+            EditorCommand::DeleteLayer { layer } => {
+                let mut doc = self.anim_mixer.get_cloned();
+                if layer >= doc.layers.len() {
+                    return Ok(None);
+                }
+                let removed = doc.layers.remove(layer);
+                self.anim_mixer.set(doc);
+                self.dirty.set_neq(true);
+                Ok(Some(EditorCommand::RestoreLayer {
+                    layer,
+                    doc: Box::new(removed),
+                }))
+            }
+            EditorCommand::RestoreLayer { layer, doc } => {
+                let mut mixer = self.anim_mixer.get_cloned();
+                let i = layer.min(mixer.layers.len());
+                mixer.layers.insert(i, *doc);
+                self.anim_mixer.set(mixer);
+                self.dirty.set_neq(true);
+                Ok(Some(EditorCommand::DeleteLayer { layer }))
+            }
+            EditorCommand::SetLayerMode { layer, mode } => {
+                let mut doc = self.anim_mixer.get_cloned();
+                match doc.layers.get_mut(layer) {
+                    Some(l) => {
+                        let prev = l.mode;
+                        l.mode = mode;
+                        self.anim_mixer.set(doc);
+                        self.dirty.set_neq(true);
+                        Ok(Some(EditorCommand::SetLayerMode { layer, mode: prev }))
+                    }
+                    None => Ok(None),
+                }
+            }
+            EditorCommand::SetLayerWeight { layer, weight } => {
+                let mut doc = self.anim_mixer.get_cloned();
+                match doc.layers.get_mut(layer) {
+                    Some(l) => {
+                        let prev = l.weight;
+                        l.weight = weight.clamp(0.0, 1.0);
+                        self.anim_mixer.set(doc);
+                        self.dirty.set_neq(true);
+                        Ok(Some(EditorCommand::SetLayerWeight {
+                            layer,
+                            weight: prev,
+                        }))
+                    }
+                    None => Ok(None),
+                }
+            }
+            EditorCommand::SetLayerMask {
+                layer,
+                nodes,
+                include_descendants,
+            } => {
+                let mut doc = self.anim_mixer.get_cloned();
+                match doc.layers.get_mut(layer) {
+                    Some(l) => {
+                        let prev_nodes = std::mem::replace(&mut l.mask_nodes, nodes);
+                        let prev_inc = l.include_descendants;
+                        l.include_descendants = include_descendants;
+                        self.anim_mixer.set(doc);
+                        self.dirty.set_neq(true);
+                        Ok(Some(EditorCommand::SetLayerMask {
+                            layer,
+                            nodes: prev_nodes,
+                            include_descendants: prev_inc,
+                        }))
+                    }
+                    None => Ok(None),
+                }
+            }
+            EditorCommand::AddStrip {
+                layer,
+                clip,
+                start,
+                len,
+            } => {
+                let mut doc = self.anim_mixer.get_cloned();
+                match doc.layers.get_mut(layer) {
+                    Some(l) => {
+                        let index = l.strips.len();
+                        l.strips.push(animation::StripDoc {
+                            clip,
+                            start,
+                            len,
+                            scale: 1.0,
+                            repeat: false,
+                        });
+                        self.anim_mixer.set(doc);
+                        self.dirty.set_neq(true);
+                        Ok(Some(EditorCommand::DeleteStrip {
+                            layer,
+                            strip: index,
+                        }))
+                    }
+                    None => Ok(None),
+                }
+            }
+            EditorCommand::DeleteStrip { layer, strip } => {
+                let mut doc = self.anim_mixer.get_cloned();
+                match doc.layers.get_mut(layer) {
+                    Some(l) if strip < l.strips.len() => {
+                        let removed = l.strips.remove(strip);
+                        self.anim_mixer.set(doc);
+                        self.dirty.set_neq(true);
+                        Ok(Some(EditorCommand::RestoreStrip {
+                            layer,
+                            strip,
+                            doc: Box::new(removed),
+                        }))
+                    }
+                    _ => Ok(None),
+                }
+            }
+            EditorCommand::RestoreStrip { layer, strip, doc } => {
+                let mut mixer = self.anim_mixer.get_cloned();
+                match mixer.layers.get_mut(layer) {
+                    Some(l) => {
+                        let i = strip.min(l.strips.len());
+                        l.strips.insert(i, *doc);
+                        self.anim_mixer.set(mixer);
+                        self.dirty.set_neq(true);
+                        Ok(Some(EditorCommand::DeleteStrip { layer, strip }))
+                    }
+                    None => Ok(None),
+                }
+            }
+            EditorCommand::MoveStrip {
+                layer,
+                strip,
+                start,
+            } => {
+                let mut doc = self.anim_mixer.get_cloned();
+                match doc
+                    .layers
+                    .get_mut(layer)
+                    .and_then(|l| l.strips.get_mut(strip))
+                {
+                    Some(s) => {
+                        let prev = s.start;
+                        s.start = start;
+                        self.anim_mixer.set(doc);
+                        self.dirty.set_neq(true);
+                        Ok(Some(EditorCommand::MoveStrip {
+                            layer,
+                            strip,
+                            start: prev,
+                        }))
+                    }
+                    None => Ok(None),
+                }
+            }
+            EditorCommand::TrimStrip {
+                layer,
+                strip,
+                start,
+                len,
+            } => {
+                let mut doc = self.anim_mixer.get_cloned();
+                match doc
+                    .layers
+                    .get_mut(layer)
+                    .and_then(|l| l.strips.get_mut(strip))
+                {
+                    Some(s) => {
+                        let (ps, pl) = (s.start, s.len);
+                        s.start = start;
+                        s.len = len.max(0.0);
+                        self.anim_mixer.set(doc);
+                        self.dirty.set_neq(true);
+                        Ok(Some(EditorCommand::TrimStrip {
+                            layer,
+                            strip,
+                            start: ps,
+                            len: pl,
+                        }))
+                    }
+                    None => Ok(None),
+                }
+            }
+            EditorCommand::SetStripRepeat {
+                layer,
+                strip,
+                repeat,
+            } => {
+                let mut doc = self.anim_mixer.get_cloned();
+                match doc
+                    .layers
+                    .get_mut(layer)
+                    .and_then(|l| l.strips.get_mut(strip))
+                {
+                    Some(s) => {
+                        let prev = s.repeat;
+                        s.repeat = repeat;
+                        self.anim_mixer.set(doc);
+                        self.dirty.set_neq(true);
+                        Ok(Some(EditorCommand::SetStripRepeat {
+                            layer,
+                            strip,
+                            repeat: prev,
+                        }))
+                    }
+                    None => Ok(None),
+                }
+            }
         }
+    }
+
+    /// The keyframe time nearest to `from` in `next`/prev direction across all
+    /// tracks of the active clip (for the transport step buttons). Falls back to
+    /// `from` when there's nothing in that direction.
+    fn adjacent_keyframe_time(&self, from: f64, forward: bool) -> f64 {
+        let Some(clip) = self
+            .current_clip
+            .get()
+            .and_then(|id| find_clip(&self.custom_animations, id))
+        else {
+            return from;
+        };
+        let mut best: Option<f64> = None;
+        for track in clip.tracks.lock_ref().iter() {
+            for &t in track.times.lock_ref().iter() {
+                let candidate = if forward {
+                    t > from + 1.0e-9
+                } else {
+                    t < from - 1.0e-9
+                };
+                if candidate {
+                    best = Some(match best {
+                        Some(b) if forward => b.min(t),
+                        Some(b) => b.max(t),
+                        None => t,
+                    });
+                }
+            }
+        }
+        best.unwrap_or(from)
     }
 
     /// Shared tail for the two model-import commands. On success, *deconstruct*
@@ -920,6 +1598,53 @@ impl EditorController {
                 .collect(),
             undo_depth: self.undo.borrow().len(),
             redo_depth: self.redo.borrow().len(),
+            animation: self.animation_snapshot(),
+        }
+    }
+
+    /// The Animation-mode projection of `snapshot()` (§6.2).
+    fn animation_snapshot(&self) -> query::AnimationSnapshot {
+        use crate::controller::animation::TrackTarget;
+        let clips = self
+            .custom_animations
+            .lock_ref()
+            .iter()
+            .map(|c| {
+                let tracks = c
+                    .tracks
+                    .lock_ref()
+                    .iter()
+                    .map(|t| {
+                        let target = match &t.target {
+                            TrackTarget::Transform { prop, .. } => format!("transform:{prop:?}"),
+                            TrackTarget::Morph { index, .. } => format!("morph:{index}"),
+                            TrackTarget::Uniform { name, .. } => format!("uniform:{name}"),
+                            TrackTarget::BuiltinParam { param, .. } => format!("builtin:{param:?}"),
+                            TrackTarget::Light { param, .. } => format!("light:{param:?}"),
+                            TrackTarget::Camera { param, .. } => format!("camera:{param:?}"),
+                        };
+                        query::TrackSnapshot {
+                            target: target.to_lowercase(),
+                            keys: t.keys.lock_ref().len(),
+                        }
+                    })
+                    .collect();
+                query::ClipSnapshot {
+                    id: c.id.to_string(),
+                    name: c.name.get_cloned(),
+                    duration: c.duration.get(),
+                    tracks,
+                }
+            })
+            .collect();
+        query::AnimationSnapshot {
+            clips,
+            current_clip: self.current_clip.get().map(|id| id.to_string()),
+            playhead: self.playhead.get(),
+            playing: self.playing.get(),
+            fps: self.anim_fps.get(),
+            solo_root: self.anim_solo_root.get().map(|id| id.to_string()),
+            mixer_layers: self.anim_mixer.lock_ref().layers.len(),
         }
     }
 
@@ -927,6 +1652,247 @@ impl EditorController {
     /// return). Used by headless tests + the future external transport.
     pub fn snapshot_json(&self) -> String {
         serde_json::to_string(&self.snapshot()).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+    }
+
+    /// Run a read-only [`EditorQuery`] (§6.8) and return a serializable result.
+    /// Read-only: never mutates persisted state, never records undo, never
+    /// broadcasts; the pinning handler saves + restores the transport.
+    pub async fn query(&self, q: query::EditorQuery) -> query::QueryResult {
+        use query::*;
+        match q {
+            EditorQuery::Snapshot => QueryResult::Snapshot(self.snapshot()),
+            EditorQuery::SampleClipTimeseries {
+                clip,
+                times,
+                targets,
+            } => self.sample_clip_timeseries(clip, times, targets).await,
+            EditorQuery::CanvasPixels { coords } => {
+                match crate::engine::query::canvas_pixels(&coords) {
+                    Ok(pixels) => QueryResult::Pixels(PixelsResult { pixels }),
+                    Err(e) => QueryResult::Error { error: e },
+                }
+            }
+            EditorQuery::CanvasStats { region } => {
+                match crate::engine::query::canvas_stats(region) {
+                    Ok(s) => QueryResult::Stats(s),
+                    Err(e) => QueryResult::Error { error: e },
+                }
+            }
+        }
+    }
+
+    /// `SampleClipTimeseries` handler — the workhorse verification query. Snapshot
+    /// the transport, force `playing = false`, then for each `t` pin the renderer
+    /// pose (`set_local_time(t)` + `update_animations(0.0)`) and read every target
+    /// from CPU-side renderer state. Restores the transport. GPU-independent.
+    async fn sample_clip_timeseries(
+        &self,
+        _clip: AssetId,
+        times: Vec<f64>,
+        targets: Vec<query::ReadbackTarget>,
+    ) -> query::QueryResult {
+        use query::*;
+        // Save transport, pause for deterministic pinning.
+        let saved_playing = self.playing.get();
+        let saved_playhead = self.playhead.get();
+        self.playing.set_neq(false);
+
+        // Resolve each readback target → a renderer key descriptor once (so the
+        // per-frame read loop is cheap). Returns the stable key string + a closure
+        // input (the resolved renderer ref) — here we just keep the target and
+        // resolve per-read for simplicity (read counts are small).
+        let target_keys: Vec<String> = targets.iter().map(readback_key).collect();
+
+        let mut frames: Vec<TimeseriesFrame> = Vec::with_capacity(times.len());
+        for &t in &times {
+            let targets_ref = targets.clone();
+            let keys_ref = target_keys.clone();
+            let values = crate::engine::context::with_renderer_mut(move |r| {
+                // Pin the pose at t.
+                crate::engine::bridge::animation_sync::pin_pose(r, t);
+                let mut map = std::collections::BTreeMap::new();
+                for (target, key) in targets_ref.iter().zip(keys_ref.iter()) {
+                    map.insert(key.clone(), read_readback_target(r, target));
+                }
+                map
+            })
+            .await;
+            frames.push(TimeseriesFrame { t, values });
+        }
+
+        // Restore the transport + re-pin the original playhead.
+        self.playing.set_neq(saved_playing);
+        self.playhead.set_neq(saved_playhead);
+        let restore = saved_playhead;
+        crate::engine::context::with_renderer_mut(move |r| {
+            crate::engine::bridge::animation_sync::pin_pose(r, restore);
+        })
+        .await;
+
+        QueryResult::Timeseries(TimeseriesResult {
+            targets: target_keys,
+            frames,
+        })
+    }
+
+    /// `query()` as a JSON string (decode-run-encode for the wasm seam).
+    pub async fn query_json(&self, query_json: &str) -> String {
+        match serde_json::from_str::<query::EditorQuery>(query_json) {
+            Ok(q) => {
+                let result = self.query(q).await;
+                serde_json::to_string(&result).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+            }
+            Err(e) => format!("{{\"error\":\"decode: {e}\"}}"),
+        }
+    }
+}
+
+/// A stable string key for a readback target (the `values` map key).
+fn readback_key(t: &query::ReadbackTarget) -> String {
+    use query::ReadbackTarget as R;
+    match t {
+        R::NodeLocalTrs { node } => format!("local_trs/{node}"),
+        R::NodeWorldMatrix { node } => format!("world/{node}"),
+        R::MorphWeight { node, index } => format!("morph/{node}/{index}"),
+        R::Uniform { material, name } => format!("uniform/{material}/{name}"),
+        R::BuiltinParam { node, param } => format!("builtin/{node}/{param:?}"),
+        R::LightParam { node, param } => format!("light/{node}/{param:?}"),
+        R::CameraParam { node, param } => format!("camera/{node}/{param:?}"),
+    }
+}
+
+/// Read one readback target from CPU-side renderer state → a JSON number / array
+/// (null when unreadable / pending).
+fn read_readback_target(
+    r: &awsm_renderer::AwsmRenderer,
+    t: &query::ReadbackTarget,
+) -> serde_json::Value {
+    use query::ReadbackTarget as R;
+    use serde_json::json;
+
+    let node_tk = |node: NodeId| -> Option<awsm_renderer::transforms::TransformKey> {
+        crate::engine::bridge::bridge()
+            .nodes
+            .lock()
+            .unwrap()
+            .get(&node)
+            .map(|n| n.transform_key)
+    };
+    let node_mat = |node: NodeId| -> Option<awsm_renderer::materials::MaterialKey> {
+        crate::engine::bridge::bridge()
+            .nodes
+            .lock()
+            .unwrap()
+            .get(&node)
+            .and_then(|n| n.material_keys.lock().unwrap().first().copied())
+    };
+    let node_light = |node: NodeId| -> Option<awsm_renderer::lights::LightKey> {
+        crate::engine::bridge::bridge()
+            .nodes
+            .lock()
+            .unwrap()
+            .get(&node)
+            .and_then(|n| *n.light_key.lock().unwrap())
+    };
+
+    match t {
+        R::NodeLocalTrs { node } => {
+            match node_tk(*node).and_then(|tk| r.transforms.get_local(tk).ok()) {
+                Some(tr) => json!({
+                    "translation": [tr.translation.x, tr.translation.y, tr.translation.z],
+                    "rotation": [tr.rotation.x, tr.rotation.y, tr.rotation.z, tr.rotation.w],
+                    "scale": [tr.scale.x, tr.scale.y, tr.scale.z],
+                }),
+                None => serde_json::Value::Null,
+            }
+        }
+        R::NodeWorldMatrix { node } => {
+            match node_tk(*node).and_then(|tk| r.transforms.get_world(tk).ok().copied()) {
+                Some(m) => json!(m.to_cols_array().to_vec()),
+                None => serde_json::Value::Null,
+            }
+        }
+        R::Uniform {
+            material: _,
+            name: _,
+        } => {
+            // Custom-material asset → MaterialKey resolution lands in M-A4; null.
+            serde_json::Value::Null
+        }
+        R::BuiltinParam { node, param } => {
+            use animation::BuiltinParamKind as P;
+            use awsm_renderer::materials::Material;
+            let Some(mk) = node_mat(*node) else {
+                return serde_json::Value::Null;
+            };
+            let Ok(m) = r.materials.get(mk) else {
+                return serde_json::Value::Null;
+            };
+            match param {
+                P::BaseColor => match m {
+                    Material::Pbr(p) => json!(&p.base_color_factor[0..3]),
+                    Material::Unlit(u) => json!(&u.base_color_factor[0..3]),
+                    Material::Toon(t) => json!(&t.base_color_factor[0..3]),
+                    _ => serde_json::Value::Null,
+                },
+                P::Emissive => match m {
+                    Material::Pbr(p) => json!(p.emissive_factor.to_vec()),
+                    Material::Unlit(u) => json!(u.emissive_factor.to_vec()),
+                    Material::Toon(t) => json!(t.emissive_factor.to_vec()),
+                    _ => serde_json::Value::Null,
+                },
+                P::Metallic => match m {
+                    Material::Pbr(p) => json!(p.metallic_factor),
+                    _ => serde_json::Value::Null,
+                },
+                P::Roughness => match m {
+                    Material::Pbr(p) => json!(p.roughness_factor),
+                    _ => serde_json::Value::Null,
+                },
+            }
+        }
+        R::LightParam { node, param } => {
+            use animation::LightParamKind as P;
+            use awsm_renderer::lights::Light;
+            let Some(lk) = node_light(*node) else {
+                return serde_json::Value::Null;
+            };
+            let Some(l) = r.lights.get(lk) else {
+                return serde_json::Value::Null;
+            };
+            match param {
+                P::Color => {
+                    let c = match l {
+                        Light::Directional { color, .. }
+                        | Light::Point { color, .. }
+                        | Light::Spot { color, .. } => *color,
+                    };
+                    json!(c.to_vec())
+                }
+                P::Intensity => {
+                    let i = match l {
+                        Light::Directional { intensity, .. }
+                        | Light::Point { intensity, .. }
+                        | Light::Spot { intensity, .. } => *intensity,
+                    };
+                    json!(i)
+                }
+                P::Range => match l {
+                    Light::Point { range, .. } | Light::Spot { range, .. } => json!(range),
+                    Light::Directional { .. } => serde_json::Value::Null,
+                },
+                P::InnerAngle => match l {
+                    Light::Spot { inner_angle, .. } => json!(inner_angle),
+                    _ => serde_json::Value::Null,
+                },
+                P::OuterAngle => match l {
+                    Light::Spot { outer_angle, .. } => json!(outer_angle),
+                    _ => serde_json::Value::Null,
+                },
+            }
+        }
+        // Morph + Camera readback are deferred (M-A4 / M-A3) — null.
+        R::MorphWeight { .. } | R::CameraParam { .. } => serde_json::Value::Null,
     }
 }
 
@@ -1372,13 +2338,47 @@ fn structure_key(kind: &NodeKind) -> String {
     }
 }
 
+/// Find a track by (clip id, track index) in the live animation library.
+fn find_track(
+    clips: &MutableVec<Arc<CA>>,
+    clip: AssetId,
+    track: usize,
+) -> Option<Arc<animation::Track>> {
+    find_clip(clips, clip).and_then(|c| c.tracks.lock_ref().get(track).map(Arc::clone))
+}
+
 /// A coalescing key for continuous edits — consecutive commands with the same
-/// key collapse into one undo step. `None` = never coalesce.
+/// key collapse into one undo step. `None` = never coalesce. Animation keys use a
+/// disjoint tag space (the `NodeId` slot carries a synthetic id derived from the
+/// clip/track/index so the existing scene-node mechanism still applies).
 fn coalesce_key(cmd: &EditorCommand) -> Option<(u8, NodeId)> {
+    use awsm_scene_schema::AssetId as Aid;
+    // Pack a (clip asset id, small index) into a NodeId so animation edits coalesce
+    // per (clip, track/layer, keyframe/strip) identity without a second key type.
+    let pack = |asset: Aid, a: usize, b: usize| -> NodeId {
+        let mut bytes = asset.0.into_bytes();
+        bytes[0] ^= a as u8;
+        bytes[1] ^= (a >> 8) as u8;
+        bytes[2] ^= b as u8;
+        bytes[3] ^= (b >> 8) as u8;
+        NodeId(uuid::Uuid::from_bytes(bytes))
+    };
     match cmd {
         EditorCommand::SetTransform { id, .. } => Some((0, *id)),
         EditorCommand::Rename { id, .. } => Some((1, *id)),
         EditorCommand::SetKind { id, .. } => Some((2, *id)),
+        EditorCommand::SetClipDuration { id, .. } => Some((3, pack(*id, 0, 0))),
+        EditorCommand::SetClipSpeed { id, .. } => Some((4, pack(*id, 0, 0))),
+        EditorCommand::SetKeyframe {
+            clip, track, index, ..
+        } => Some((5, pack(*clip, *track, *index))),
+        EditorCommand::SetLayerWeight { layer, .. } => {
+            Some((6, pack(Aid(uuid::Uuid::nil()), *layer, 0)))
+        }
+        EditorCommand::MoveStrip { layer, strip, .. }
+        | EditorCommand::TrimStrip { layer, strip, .. } => {
+            Some((7, pack(Aid(uuid::Uuid::nil()), *layer, *strip)))
+        }
         _ => None,
     }
 }
