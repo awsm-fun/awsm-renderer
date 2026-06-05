@@ -21,6 +21,12 @@ use wasm_bindgen_futures::spawn_local;
 /// "finished" beat rather than a sub-frame flash.
 const LINGER_MS: u32 = 450;
 
+/// Reserved id for the live pipeline-compile entry (driven each frame from the
+/// renderer's `compile_progress()`, not by an RAII guard). Distinct from the
+/// monotonic ids handed out by `begin_activity` so it can be upserted/removed
+/// in place without colliding.
+const COMPILE_ID: u64 = u64::MAX;
+
 thread_local! {
     static ACTIVITIES: Mutable<Vec<(u64, String)>> = Mutable::new(Vec::new());
     static NEXT_ID: Cell<u64> = const { Cell::new(0) };
@@ -49,6 +55,49 @@ pub fn begin_activity(label: impl Into<String>) -> Activity {
     });
     ACTIVITIES.with(|a| a.lock_mut().push((id, label.into())));
     Activity { id }
+}
+
+/// Reflect the renderer's live pipeline-compile state into the indicator.
+/// Called every frame from the render loop with the scheduler's authoritative
+/// counts: `materials` still pending and the granular `subcompiles` in flight.
+/// Upserts a single "Compiling N render pipelines…" pill while work is in
+/// flight and removes it the moment the scheduler goes idle — so first-start
+/// editor-pipeline warmup and post-import shader/pipeline compiles both show,
+/// without any caller having to hold a guard across the async GPU work.
+pub fn set_compile_progress(materials: usize, subcompiles: u32) {
+    let busy = materials > 0 || subcompiles > 0;
+    ACTIVITIES.with(|a| {
+        let mut list = a.lock_mut();
+        let pos = list.iter().position(|(i, _)| *i == COMPILE_ID);
+        if busy {
+            // Prefer the granular sub-pipeline count when present (it's the real
+            // "how much is left" number); fall back to the material count.
+            let label = if subcompiles > 0 {
+                format!(
+                    "Compiling {subcompiles} render pipeline{}…",
+                    if subcompiles == 1 { "" } else { "s" }
+                )
+            } else {
+                format!(
+                    "Compiling {materials} material{}…",
+                    if materials == 1 { "" } else { "s" }
+                )
+            };
+            match pos {
+                Some(p) => {
+                    if list[p].1 != label {
+                        list[p].1 = label;
+                    }
+                }
+                // Front-insert so the concrete "Compiling N…" count is the
+                // primary visible label, rather than hiding behind a generic
+                // "uploading to GPU…" guard that's still lingering.
+                None => list.insert(0, (COMPILE_ID, label)),
+            }
+        } else if let Some(p) = pos {
+            list.remove(p);
+        }
+    });
 }
 
 impl Drop for Activity {

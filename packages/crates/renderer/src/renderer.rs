@@ -2509,6 +2509,19 @@ impl AwsmRenderer {
     /// Returns the total number of transitions applied. Diagnostic
     /// only — callers don't usually inspect.
     pub async fn wait_for_pipelines_ready(&mut self) -> crate::error::Result<usize> {
+        self.wait_for_pipelines_ready_with_progress(|_| {}).await
+    }
+
+    /// Same as [`wait_for_pipelines_ready`] but invokes `on_progress` with a
+    /// fresh [`CompileProgress`](crate::pipeline_scheduler::CompileProgress)
+    /// snapshot after each sub-pipeline resolves — so a boot loader / splash
+    /// can show a live "Compiling N render pipelines…" countdown during the
+    /// cold-start warmup, mirroring the in-app activity pill that covers
+    /// post-mount (import / material-edit) compiles.
+    pub async fn wait_for_pipelines_ready_with_progress(
+        &mut self,
+        mut on_progress: impl FnMut(crate::pipeline_scheduler::CompileProgress),
+    ) -> crate::error::Result<usize> {
         // Phase 1: drive compile through the existing batched path.
         // The A.1 bridge inside prewarm_dynamic_pipelines marks
         // scheduler entries Ready on success; mark_failed isn't yet
@@ -2521,6 +2534,10 @@ impl AwsmRenderer {
         // the lazy line-pipeline compile here so the next frame can
         // dispatch the fat-line pass instead of warn-skipping.
         self.ensure_line_pipelines_compiled().await?;
+
+        // Report the initial in-flight count before the drain so the splash
+        // shows a number immediately rather than after the first resolution.
+        on_progress(self.compile_progress());
 
         // Phase 2: drain real D.1 PART 2 inflight_compile via async
         // Stream::next — each .await yields to the JS event loop so
@@ -2538,6 +2555,7 @@ impl AwsmRenderer {
             };
             self.apply_compile_resolution_inline(resolution);
             total += 1;
+            on_progress(self.compile_progress());
         }
 
         // Phase 3: drain legacy whole-batch inflight (currently empty

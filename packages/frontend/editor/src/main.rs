@@ -73,11 +73,23 @@ pub fn main() {
                 spawn_local(clone!(ctx_ready => async move {
                     match engine::context::create_context(canvas).await {
                         Ok(_) => {
-                            awsm_web_shared::util::window::set_boot_loader_message("Warming pipelines");
+                            awsm_web_shared::util::window::set_boot_loader_message("Compiling render pipelines…");
                             {
                                 let handle = engine::context::renderer_handle();
                                 let mut r = handle.lock().await;
-                                if let Err(err) = r.wait_for_pipelines_ready().await {
+                                // Surface the live compile count on the boot
+                                // loader so first-start pipeline creation is
+                                // visible (mirrors the in-app pill that covers
+                                // post-mount import/material compiles).
+                                let on_progress = |p: awsm_renderer::pipeline_scheduler::CompileProgress| {
+                                    let n = p.in_flight_subcompiles;
+                                    if n > 0 {
+                                        awsm_web_shared::util::window::set_boot_loader_message(&format!(
+                                            "Compiling render pipelines… ({n} remaining)"
+                                        ));
+                                    }
+                                };
+                                if let Err(err) = r.wait_for_pipelines_ready_with_progress(on_progress).await {
                                     tracing::warn!("wait_for_pipelines_ready: {err}");
                                 }
                             }

@@ -65,6 +65,17 @@ fn render_one_frame() {
         if let Err(err) = renderer.render(hooks.as_ref()) {
             tracing::error!("render failed: {err}");
         }
+        // `render()` drains the pipeline scheduler in its pre-amble, so these
+        // counts are fresh. Surface them in the activity indicator — this is
+        // what makes post-import shader/pipeline compiles (and any first-start
+        // editor-pipeline warmup that spills past mount) actually visible: the
+        // import command's own RAII guard drops long before the GPU finishes
+        // compiling, so without this the pill flashes and vanishes.
+        let progress = renderer.compile_progress();
+        super::activity::set_compile_progress(
+            progress.materials_pending,
+            progress.in_flight_subcompiles,
+        );
         // Renderables are now collected — update the screen-space selection box.
         super::selection_box::update(renderer, &matrices);
     }
