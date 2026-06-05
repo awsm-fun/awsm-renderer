@@ -23,6 +23,12 @@ use crate::engine::bridge::bridge;
 /// Pixels of movement before a pointer-down is treated as a drag (not a click).
 const DRAG_THRESHOLD: f64 = 4.0;
 
+/// Whether the viewport is locked to a scene `Camera` node (vs the free editor
+/// camera). When true, orbit / pan / zoom are suppressed.
+fn scene_camera_active() -> bool {
+    controller().active_camera.get().is_some()
+}
+
 /// Which kind of pointer drag won the press. `None` while the gizmo-vs-camera
 /// pick is still in flight.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -69,8 +75,12 @@ pub fn render_canvas(on_ready: impl FnOnce(web_sys::HtmlCanvasElement) + 'static
                 let gizmo_possible = controller().settings.gizmo.get()
                     && controller().selected.lock_ref().len() == 1;
                 if !gizmo_possible {
-                    action.set(Some(MoveAction::Camera));
-                    with_camera_mut(|c| c.on_pointer_down());
+                    // A scene camera locks the view — don't start an orbit/pan;
+                    // leaving `action` unset still lets a click pick + select.
+                    if !scene_camera_active() {
+                        action.set(Some(MoveAction::Camera));
+                        with_camera_mut(|c| c.on_pointer_down());
+                    }
                     return;
                 }
 
@@ -109,7 +119,7 @@ pub fn render_canvas(on_ready: impl FnOnce(web_sys::HtmlCanvasElement) + 'static
                     if grabbed {
                         action.set(Some(MoveAction::Gizmo));
                         gizmo::begin_drag();
-                    } else {
+                    } else if !scene_camera_active() {
                         action.set(Some(MoveAction::Camera));
                         with_camera_mut(|c| c.on_pointer_down());
                     }
@@ -177,7 +187,10 @@ pub fn render_canvas(on_ready: impl FnOnce(web_sys::HtmlCanvasElement) + 'static
             }))
             .event(move |event: events::Wheel| {
                 event.prevent_default();
-                try_with_camera_mut(|c| c.on_wheel(event.delta_y()));
+                // A scene camera locks zoom too.
+                if !scene_camera_active() {
+                    try_with_camera_mut(|c| c.on_wheel(event.delta_y()));
+                }
             })
         })
     })

@@ -86,7 +86,7 @@ pub fn render() -> Dom {
         .child(nav_cube())
         .child(tool_palette(&tool))
         .child(shading_and_stats(&shading))
-        .child(camera_chip())
+        .child(camera_dropdown())
     })
 }
 
@@ -177,15 +177,99 @@ fn shading_and_stats(shading: &Mutable<String>) -> Dom {
     })
 }
 
-fn camera_chip() -> Dom {
+/// Bottom-right camera-source dropdown: pick the **Built-in** free editor camera
+/// (orbit/pan/zoom) or one of the scene's `Camera` nodes. Choosing a scene camera
+/// locks the view to that camera's transform + config (input is suppressed in
+/// `canvas.rs`). Rebuilds when the scene tree (cameras added/removed) or the
+/// active selection changes.
+fn camera_dropdown() -> Dom {
+    let ctrl = controller();
     html!("div", {
         .style("position", "absolute")
         .style("right", "12px")
         .style("bottom", "12px")
         .style("display", "flex")
         .style("gap", "6px")
-        .child(chip_text("persp · 50mm"))
+        .child_signal(map_ref! {
+            let _rev = ctrl.scene.revision.signal(),
+            let active = ctrl.active_camera.signal() => {
+                Some(camera_drop_button(*active))
+            }
+        })
     })
+}
+
+/// The dropdown button itself, labelled with the active camera. Items are the
+/// "Built-in" camera plus every scene `Camera` node.
+fn camera_drop_button(active: Option<NodeId>) -> Dom {
+    let cameras = collect_scene_cameras();
+    let label = match active {
+        None => "Built-in".to_string(),
+        Some(id) => cameras
+            .iter()
+            .find(|(cid, _)| *cid == id)
+            .map(|(_, n)| n.clone())
+            // Active camera node was deleted — show Built-in (the render loop
+            // also falls back), and self-heal the state.
+            .unwrap_or_else(|| {
+                controller().active_camera.set_neq(None);
+                "Built-in".to_string()
+            }),
+    };
+    let items = move |close: Close| -> Vec<Dom> {
+        let mut rows = vec![MenuItem::new("Built-in")
+            .checked(active.is_none())
+            .on_click({
+                let close = close.clone();
+                move || {
+                    controller().active_camera.set_neq(None);
+                    (close.borrow_mut())();
+                }
+            })
+            .render()];
+        for (id, name) in cameras.iter() {
+            let id = *id;
+            rows.push(
+                MenuItem::new(name.clone())
+                    .checked(active == Some(id))
+                    .on_click({
+                        let close = close.clone();
+                        move || {
+                            controller().active_camera.set_neq(Some(id));
+                            (close.borrow_mut())();
+                        }
+                    })
+                    .render(),
+            );
+        }
+        rows
+    };
+    DropButton::new()
+        .label(label)
+        .icon("camera")
+        .variant(BtnVariant::Ghost)
+        .size(BtnSize::Sm)
+        .items(items)
+        .render()
+}
+
+/// All scene `Camera` nodes as `(id, name)`, depth-first.
+fn collect_scene_cameras() -> Vec<(NodeId, String)> {
+    use crate::engine::scene::node::Node;
+    use crate::engine::scene::NodeKind;
+    fn walk(node: &std::sync::Arc<Node>, out: &mut Vec<(NodeId, String)>) {
+        if matches!(node.kind.get_cloned(), NodeKind::Camera(_)) {
+            out.push((node.id, node.name.get_cloned()));
+        }
+        for c in node.children.lock_ref().iter() {
+            walk(c, out);
+        }
+    }
+    let mut out = Vec::new();
+    for root in controller().scene.nodes.lock_ref().iter() {
+        walk(root, &mut out);
+    }
+    out
 }
 
 /// A reactive object/tris chip bound to the primary selection. The triangle
@@ -283,22 +367,6 @@ async fn subtree_triangle_count(root: NodeId) -> u64 {
             .sum::<usize>() as u64
     })
     .await
-}
-
-fn chip_text(text: &str) -> Dom {
-    html!("span", {
-        .class("mono")
-        .style("font-size", "10.5px")
-        .style("font-weight", "500")
-        .style("white-space", "nowrap")
-        .style("color", "oklch(0.86 0.01 255)")
-        .style("padding", "4px 8px")
-        .style("background", CHIP_BG)
-        .style("backdrop-filter", "blur(8px)")
-        .style("border-radius", "var(--r1)")
-        .style("border", "1px solid var(--line)")
-        .text(text)
-    })
 }
 
 /// Dispatch a camera axis-snap (through the controller, so it's MCP-drivable).

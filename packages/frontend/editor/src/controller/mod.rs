@@ -82,6 +82,12 @@ pub struct EditorController {
     /// (not project/undo state), held here so the ribbon toggle, the drawer, and
     /// the workspace layout share one source of truth.
     pub content_browser_open: Mutable<bool>,
+    /// Which camera the viewport renders through. `None` = the free built-in
+    /// editor camera (orbit/pan/zoom). `Some(node)` = a scene `Camera` node — the
+    /// view is locked to that camera's transform + config and orbit/pan/zoom do
+    /// nothing. This is *per-window* view state (not a synced command), so two
+    /// windows can look through different cameras at the same scene.
+    pub active_camera: Mutable<Option<NodeId>>,
     /// The asset selected in the Content Browser, if any. When `Some`, the right
     /// rail shows the Asset Inspector instead of the node inspector. Set via the
     /// transient `SetAssetSelection` command.
@@ -142,6 +148,7 @@ impl EditorController {
             can_redo: Mutable::new(false),
             structure_rev: Mutable::new(0),
             content_browser_open: Mutable::new(false),
+            active_camera: Mutable::new(None),
             asset_selection: Mutable::new(None),
             custom_materials: MutableVec::new(),
             current_material: Mutable::new(None),

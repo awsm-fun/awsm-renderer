@@ -31,6 +31,7 @@ fn fire(close: &Close) {
 pub struct AnchorRect {
     pub left: f64,
     pub right: f64,
+    pub top: f64,
     pub bottom: f64,
     pub width: f64,
 }
@@ -40,6 +41,7 @@ impl AnchorRect {
         Self {
             left: r.left(),
             right: r.right(),
+            top: r.top(),
             bottom: r.bottom(),
             width: r.width(),
         }
@@ -76,7 +78,14 @@ pub fn popup(
         .and_then(|v| v.as_f64())
         .unwrap_or(1280.0);
     let left = left.min(viewport_w - w - 8.0).max(8.0);
-    let top = anchor.bottom + 4.0;
+    // Open upward when the trigger sits in the lower part of the window (e.g. the
+    // viewport's bottom-right camera dropdown), so the menu doesn't spill off the
+    // bottom; otherwise open downward as usual.
+    let viewport_h = web_sys::window()
+        .and_then(|w| w.inner_height().ok())
+        .and_then(|v| v.as_f64())
+        .unwrap_or(800.0);
+    let open_up = anchor.bottom > viewport_h * 0.65;
 
     html!("div", {
         // backdrop
@@ -90,7 +99,11 @@ pub fn popup(
         .child(html!("div", {
             .style("position", "fixed")
             .style("left", &format!("{left}px"))
-            .style("top", &format!("{top}px"))
+            .apply(|b| if open_up {
+                b.style("bottom", &format!("{}px", (viewport_h - anchor.top + 4.0).max(8.0)))
+            } else {
+                b.style("top", &format!("{}px", anchor.bottom + 4.0))
+            })
             .apply(|b| match width {
                 Some(w) => b.style("width", format!("{w}px")),
                 None => b,
