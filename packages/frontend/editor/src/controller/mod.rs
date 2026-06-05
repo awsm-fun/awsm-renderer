@@ -763,7 +763,18 @@ fn spawn_auto_register(mat: Arc<CM>) {
     use futures_signals::signal::SignalExt;
     let first_mat = mat.clone();
     spawn_local(async move {
-        let _ = register_material(&first_mat).await;
+        // A fresh material must come up READY (not "draft"). Compile now; if the
+        // very first attempt fails (e.g. the renderer's pipeline scheduler is still
+        // warming up on a cold load), retry a few times so it doesn't get stuck as
+        // a draft requiring a manual edit to recompile.
+        for attempt in 0..4 {
+            if register_material(&first_mat).await {
+                break;
+            }
+            if attempt < 3 {
+                gloo_timers::future::TimeoutFuture::new(300).await;
+            }
+        }
     });
     spawn_local(async move {
         let gen = std::rc::Rc::new(std::cell::Cell::new(0u64));
