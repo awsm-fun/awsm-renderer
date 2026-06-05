@@ -792,11 +792,37 @@ impl EditorController {
         let template = Arc::new(import.template);
         crate::engine::bridge::bridge().insert_template(asset_id, template.clone());
 
+        // glTF primitives with no material use glTF's default material — white,
+        // metallic 1.0, roughness 1.0 (NOT the editor's magenta sentinel, which is
+        // for deliberately-unassigned meshes). Create one shared "Default"
+        // library material iff the model actually has unmaterialed primitives.
+        let default_mat_id = if template.roots.iter().any(template_needs_default_material) {
+            let id = AssetId::new();
+            let def = awsm_scene_schema::MaterialDef {
+                base_color: [1.0, 1.0, 1.0, 1.0],
+                metallic: 1.0,
+                roughness: 1.0,
+                ..Default::default()
+            };
+            let mat = CM::new_builtin(id, "Default".to_string(), MaterialShading::Pbr);
+            mat.builtin.set(Some(def));
+            self.custom_materials.lock_mut().push_cloned(mat);
+            Some(id)
+        } else {
+            None
+        };
+
         // Mirror the glTF hierarchy as editor nodes under the scene root. Pass
         // the per-glTF-material library ids so each mesh node is assigned its
         // material (one per node; multi-material nodes are destructured).
         for root in &template.roots {
-            let node = build_editor_subtree(root, asset_id, &mat_ids, Some(&import.display_name));
+            let node = build_editor_subtree(
+                root,
+                asset_id,
+                &mat_ids,
+                default_mat_id,
+                Some(&import.display_name),
+            );
             mutate::insert_under(&self.scene, None, node);
         }
         self.scene.bump_revision();
@@ -1043,6 +1069,7 @@ fn build_editor_subtree(
     tn: &crate::engine::bridge::asset_template::AssetTemplateNode,
     asset_id: AssetId,
     mat_ids: &[AssetId],
+    default_mat_id: Option<AssetId>,
     fallback_name: Option<&str>,
 ) -> Arc<crate::engine::scene::node::Node> {
     use crate::engine::scene::node::Node;
@@ -1061,8 +1088,15 @@ fn build_editor_subtree(
     // node that uses this glTF material and can be customized per node). `None`
     // (no such material) leaves the node unassigned → magenta.
     let instance_for = |mi: Option<usize>| -> Option<CustomMaterialInstance> {
-        mi.and_then(|i| mat_ids.get(i)).map(|id| CustomMaterialInstance {
-            material: *id,
+        // A primitive's glTF material index → its library material; a primitive
+        // with NO material (`None`) uses glTF's default material (white,
+        // metallic=1, roughness=1) rather than the editor's magenta sentinel.
+        let id = match mi {
+            Some(i) => mat_ids.get(i).copied(),
+            None => default_mat_id,
+        };
+        id.map(|id| CustomMaterialInstance {
+            material: id,
             ..Default::default()
         })
     };
@@ -1143,11 +1177,24 @@ fn build_editor_subtree(
     };
 
     for child in &tn.children {
-        node.children
-            .lock_mut()
-            .push_cloned(build_editor_subtree(child, asset_id, mat_ids, None));
+        node.children.lock_mut().push_cloned(build_editor_subtree(
+            child,
+            asset_id,
+            mat_ids,
+            default_mat_id,
+            None,
+        ));
     }
     node
+}
+
+/// Whether any primitive anywhere in the template has no glTF material (so the
+/// import needs a default material for them). Recurses the template tree.
+fn template_needs_default_material(
+    tn: &crate::engine::bridge::asset_template::AssetTemplateNode,
+) -> bool {
+    tn.mesh_gltf_material_indices.iter().any(|m| m.is_none())
+        || tn.children.iter().any(template_needs_default_material)
 }
 
 /// The **structural** identity of a kind — what determines which inspector rows

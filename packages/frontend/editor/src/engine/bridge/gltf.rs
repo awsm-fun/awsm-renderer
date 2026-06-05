@@ -124,8 +124,16 @@ fn extract_material_specs(data: &GltfData) -> Vec<(MaterialDef, MaterialTextureI
                 metallic: pbr.metallic_factor(),
                 roughness: pbr.roughness_factor(),
                 emissive: m.emissive_factor(),
+                normal_scale: m.normal_texture().map(|t| t.scale()).unwrap_or(1.0),
+                occlusion_strength: m.occlusion_texture().map(|t| t.strength()).unwrap_or(1.0),
                 double_sided: m.double_sided(),
                 alpha_mode: extract_alpha_mode(&m),
+                // KHR_materials_unlit → the editor's flat/unlit shading model.
+                shading: if m.unlit() {
+                    awsm_scene_schema::MaterialShading::Unlit
+                } else {
+                    awsm_scene_schema::MaterialShading::Pbr
+                },
                 extensions: extract_extensions(&m),
                 ..MaterialDef::default()
             };

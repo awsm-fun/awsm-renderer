@@ -335,6 +335,30 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
 /// with this mesh's per-mesh uniform values (`inline`: base color / metallic /
 /// roughness / emissive) into a final `MaterialDef`. Returns `None` for a dynamic
 /// material or an unknown id (callers then try the dynamic path / inline).
+/// Whether a renderer mesh's geometry carries a vertex-colour attribute
+/// (glTF `COLOR_0`). Vertex-colour *usage* is geometry-derived — a material that
+/// multiplies by COLOR_0 only makes sense when the mesh actually has it — so the
+/// bridge sets `vertex_colors_enabled` from this rather than an authored bit,
+/// mirroring how `populate_gltf` decides it per primitive.
+fn mesh_has_vertex_colors(r: &awsm_renderer::AwsmRenderer, mk: awsm_renderer::meshes::MeshKey) -> bool {
+    use awsm_renderer::meshes::buffer_info::{
+        MeshBufferCustomVertexAttributeInfo, MeshBufferVertexAttributeInfo,
+    };
+    r.meshes
+        .buffer_info(mk)
+        .map(|info| {
+            info.triangles.vertex_attributes.iter().any(|attr| {
+                matches!(
+                    attr,
+                    MeshBufferVertexAttributeInfo::Custom(
+                        MeshBufferCustomVertexAttributeInfo::Colors { .. }
+                    )
+                )
+            })
+        })
+        .unwrap_or(false)
+}
+
 fn builtin_merged(
     inst: &awsm_scene_schema::dynamic_material::CustomMaterialInstance,
     inline: &awsm_scene_schema::MaterialDef,
@@ -408,6 +432,8 @@ fn builtin_merged(
         metallic: inline.metallic,
         roughness: inline.roughness,
         emissive: inline.emissive,
+        normal_scale: inline.normal_scale,
+        occlusion_strength: inline.occlusion_strength,
         base_color_texture: tex("base_color_texture", variant.base_color_texture.clone()),
         metallic_roughness_texture: tex(
             "metallic_roughness_texture",
@@ -550,26 +576,18 @@ async fn materialize_model(entry: Arc<RendererNode>, model_ref: awsm_scene_schem
     {
         let handle = renderer_handle();
         let mut r = handle.lock().await;
-        // One material per node: the node's assigned library material (set at
-        // import, swappable in the inspector) drives every primitive it renders.
+        // The node's assigned library material drives every primitive it renders.
         // Resolved exactly like a Primitive/Mesh — a built-in merges this node's
         // per-mesh inline uniforms + texture overrides over the shared variant; a
         // dynamic material applies its declared overrides; an *unassigned* node
-        // renders the flat-magenta missing-material sentinel. Resolve once, reuse.
-        let node_mat_key = match model_ref.material.as_ref() {
-            Some(inst) => {
-                if let Some(merged) = builtin_merged(inst, &model_ref.inline_material) {
-                    material::insert_material(&mut r, &merged)
-                } else if let Some(k) = super::dynamic::insert_custom(&mut r, inst) {
-                    k
-                } else {
-                    material::insert_magenta(&mut r)
-                }
-            }
-            None => material::insert_magenta(&mut r),
-        };
-        material_keys.push(node_mat_key);
+        // renders the flat-magenta missing-material sentinel. The material is
+        // resolved PER PRIMITIVE because vertex-color usage is geometry-derived:
+        // glTF uses COLOR_0 iff the primitive carries it (matching the renderer's
+        // native per-primitive behaviour), not from any authored material bit — so
+        // a primitive with vertex colours gets `vertex_colors_enabled` flipped on
+        // (its own pipeline variant) while a sibling without them does not.
         for (mk, skinned, _mat_idx) in &triples {
+            let has_vertex_colors = mesh_has_vertex_colors(&r, *mk);
             // Skinned meshes keep rendering in place (their original copy) —
             // duplicating collapses the skin; non-skinned are duplicated under
             // this node's transform so the editor node owns + moves them.
@@ -589,7 +607,21 @@ async fn materialize_model(entry: Arc<RendererNode>, model_ref: awsm_scene_schem
                     }
                 }
             };
-            let _ = r.set_mesh_material(target, node_mat_key);
+            let mat_key = match model_ref.material.as_ref() {
+                Some(inst) => {
+                    if let Some(mut merged) = builtin_merged(inst, &model_ref.inline_material) {
+                        merged.vertex_colors_enabled = has_vertex_colors;
+                        material::insert_material(&mut r, &merged)
+                    } else if let Some(k) = super::dynamic::insert_custom(&mut r, inst) {
+                        k
+                    } else {
+                        material::insert_magenta(&mut r)
+                    }
+                }
+                None => material::insert_magenta(&mut r),
+            };
+            let _ = r.set_mesh_material(target, mat_key);
+            material_keys.push(mat_key);
             to_register.push(target);
         }
         if let Err(e) = r.finalize_gpu_textures().await {

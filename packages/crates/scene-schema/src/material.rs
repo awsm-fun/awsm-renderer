@@ -33,10 +33,21 @@ pub struct MaterialDef {
     /// perturb the surface normal at shading time.
     #[serde(default)]
     pub normal_texture: Option<TextureRef>,
+    /// Normal-map intensity (glTF `normalTexture.scale`). A per-mesh uniform —
+    /// scales how strongly the normal map perturbs the surface. Only meaningful
+    /// when `normal_texture` is set. Defaults to 1.0 (and round-trips for old
+    /// projects via `default_one`).
+    #[serde(default = "default_one")]
+    pub normal_scale: f32,
     /// Ambient-occlusion mask (R channel). When set, the renderer
     /// multiplies it into the ambient/indirect lighting term.
     #[serde(default)]
     pub occlusion_texture: Option<TextureRef>,
+    /// Occlusion intensity (glTF `occlusionTexture.strength`). A per-mesh uniform
+    /// — lerps the AO term between 1.0 and the sampled value. Only meaningful
+    /// when `occlusion_texture` is set. Defaults to 1.0.
+    #[serde(default = "default_one")]
+    pub occlusion_strength: f32,
     pub double_sided: bool,
     pub vertex_colors_enabled: bool,
     /// glTF-style alpha rendering mode. Defaults to `Opaque` so
@@ -57,6 +68,10 @@ pub struct MaterialDef {
     pub extensions: PbrExtensions,
 }
 
+fn default_one() -> f32 {
+    1.0
+}
+
 impl Default for MaterialDef {
     fn default() -> Self {
         Self {
@@ -69,7 +84,9 @@ impl Default for MaterialDef {
             emissive: [0.0, 0.0, 0.0],
             emissive_texture: None,
             normal_texture: None,
+            normal_scale: 1.0,
             occlusion_texture: None,
+            occlusion_strength: 1.0,
             double_sided: false,
             vertex_colors_enabled: false,
             alpha_mode: MaterialAlphaMode::Opaque,

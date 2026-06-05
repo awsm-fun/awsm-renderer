@@ -269,6 +269,8 @@ fn material_to_pbr(def: &MaterialDef, alpha_mode: MaterialAlphaMode) -> PbrMater
     pbr.metallic_factor = def.metallic;
     pbr.roughness_factor = def.roughness;
     pbr.emissive_factor = def.emissive;
+    pbr.normal_scale = def.normal_scale;
+    pbr.occlusion_strength = def.occlusion_strength;
     if def.vertex_colors_enabled {
         pbr.vertex_color_info =
             Some(awsm_renderer::materials::pbr::PbrMaterialVertexColorInfo { set_index: 0 });

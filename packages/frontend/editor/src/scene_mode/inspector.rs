@@ -1408,6 +1408,36 @@ fn material_editor(node: &Arc<Node>, mat: &MaterialDef, _has_custom: bool) -> Do
                 })
                 .render(),
         ));
+        // Normal-map scale + occlusion strength — per-mesh uniforms, shown only
+        // when the assigned material declares the corresponding texture slot.
+        if let Some(variant) = assigned_builtin_def(node) {
+            if variant.normal_texture.is_some() {
+                let n = node.clone();
+                sec = sec.child(row(
+                    "Normal scale",
+                    NumField::new(mat.normal_scale as f64).min(0.0).max(4.0).step(0.05)
+                        .on_change(move |v| {
+                            if let Some(cur) = current_primitive_material(&n) {
+                                set_inline_material(&n, MaterialDef { normal_scale: v as f32, ..cur });
+                            }
+                        })
+                        .render(),
+                ));
+            }
+            if variant.occlusion_texture.is_some() {
+                let n = node.clone();
+                sec = sec.child(row(
+                    "Occlusion",
+                    NumField::new(mat.occlusion_strength as f64).min(0.0).max(1.0).step(0.05)
+                        .on_change(move |v| {
+                            if let Some(cur) = current_primitive_material(&n) {
+                                set_inline_material(&n, MaterialDef { occlusion_strength: v as f32, ..cur });
+                            }
+                        })
+                        .render(),
+                ));
+            }
+        }
     }
 
     // Emissive color.
