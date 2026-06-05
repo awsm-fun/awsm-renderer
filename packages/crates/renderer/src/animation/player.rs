@@ -100,9 +100,50 @@ impl<T> AnimationPlayer<T> {
     }
 }
 
+impl<T> AnimationPlayer<T> {
+    /// The clip's duration (seconds).
+    pub fn duration(&self) -> f64 {
+        self.clip.duration
+    }
+
+    /// The current local playback time (seconds).
+    pub fn local_time(&self) -> f64 {
+        self.local_time
+    }
+
+    /// Seeks to an absolute local time (clamped to `[0, duration]`). Used by the
+    /// editor transport to scrub a paused clip. Does not change `state`.
+    pub fn set_local_time(&mut self, time: f64) {
+        self.local_time = time.clamp(0.0, self.clip.duration.max(0.0));
+    }
+
+    /// The current playback state.
+    pub fn state(&self) -> &AnimationState {
+        &self.state
+    }
+
+    /// Sets the playback state (e.g. `Paused` while the editor scrubs).
+    pub fn set_state(&mut self, state: AnimationState) {
+        self.state = state;
+    }
+
+    /// Resets to the start, forward, playing.
+    pub fn reset(&mut self) {
+        self.local_time = 0.0;
+        self.state = AnimationState::Playing;
+        self.play_direction = AnimationPlayDirection::Forward;
+    }
+}
+
 impl AnimationPlayer<AnimationData> {
     /// Samples the animation at the current local time.
     pub fn sample(&self) -> AnimationData {
         self.clip.sampler.sample(self.local_time)
+    }
+
+    /// Samples at an arbitrary time without mutating `local_time` (for the editor
+    /// scrubbing a paused clip / one-shot pose reads).
+    pub fn sample_at(&self, time: f64) -> AnimationData {
+        self.clip.sampler.sample(time)
     }
 }
