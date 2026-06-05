@@ -527,8 +527,8 @@ fn curve_points_list(node: &Arc<Node>) -> Dom {
         .style("color", "var(--text-3)")
         .text(&format!("Control points ({n_points})"))
     }));
-    for (i, p) in pts.iter().enumerate() {
-        kids.push(curve_point_row(node, i, *p, n_points));
+    for i in 0..n_points {
+        kids.push(curve_point_row(node, i, n_points));
     }
     let n = node.clone();
     let add_btn = Btn::new()
@@ -563,54 +563,57 @@ fn curve_points_list(node: &Arc<Node>) -> Dom {
     html!("div", { .children(kids) })
 }
 
-/// A single control point: index label, X/Y/Z number fields, and a delete
-/// button. Delete is omitted when only two points remain — a Catmull-Rom curve
-/// needs at least two. Each field reads the *live* kind before mutating so
-/// concurrent edits don't clobber one another.
-fn curve_point_row(node: &Arc<Node>, index: usize, p: [f32; 3], n_points: usize) -> Dom {
-    let labels = ["X", "Y", "Z"];
-    let mut controls: Vec<Dom> = (0..3)
-        .map(|axis| {
-            let n = node.clone();
-            html!("div", {
-                .style("display", "flex").style("align-items", "center").style("gap", "3px")
-                .child(html!("span", {
-                    .style("font-size", "10px").style("color", "var(--text-3)").text(labels[axis])
-                }))
-                .child(NumField::new(p[axis] as f64).step(0.05).on_change(move |x| {
-                    if let NodeKind::Curve(mut d) = n.kind.get_cloned() {
-                        if let Some(pt) = d.control_points.get_mut(index) {
-                            pt[axis] = x as f32;
-                            dispatch_kind(n.id, NodeKind::Curve(d));
-                        }
-                    }
-                }).render())
-            })
-        })
-        .collect();
-    if n_points > 2 {
-        let n = node.clone();
-        controls.push(
-            IconBtn::new("trash")
-                .size(15.0)
-                .on_click(move || {
-                    if let NodeKind::Curve(mut d) = n.kind.get_cloned() {
-                        if d.control_points.len() > 2 && index < d.control_points.len() {
-                            d.control_points.remove(index);
-                            dispatch_kind(n.id, NodeKind::Curve(d));
-                        }
-                    }
-                })
-                .render(),
-        );
-    }
-    row(
-        format!("P{index}"),
-        html!("div", {
-            .style("display", "flex").style("align-items", "center").style("gap", "6px").style("flex-wrap", "wrap")
-            .children(controls)
+/// A single control point: index label, axis-tinted X/Y/Z fields (color-coded +
+/// drag-to-scrub, like the Transform editor), and a delete button. The fields
+/// track the live kind via a signal, so a viewport handle drag updates them in
+/// real time. Delete is omitted at the 2-point minimum a Catmull-Rom curve needs.
+fn curve_point_row(node: &Arc<Node>, index: usize, n_points: usize) -> Dom {
+    let n = node.clone();
+    let fields = vec3_signal(
+        node.kind.signal_ref(move |k| match k {
+            NodeKind::Curve(d) => d
+                .control_points
+                .get(index)
+                .map(|p| f3(*p))
+                .unwrap_or([0.0; 3]),
+            _ => [0.0; 3],
         }),
-    )
+        0.1,
+        move |v| {
+            if let NodeKind::Curve(mut d) = n.kind.get_cloned() {
+                if let Some(pt) = d.control_points.get_mut(index) {
+                    *pt = [v[0] as f32, v[1] as f32, v[2] as f32];
+                    dispatch_kind(n.id, NodeKind::Curve(d));
+                }
+            }
+        },
+    );
+    let fields_wrap = html!("div", { .style("flex", "1").style("min-width", "0").child(fields) });
+    let control = if n_points > 2 {
+        let n = node.clone();
+        let del = IconBtn::new("trash")
+            .size(15.0)
+            .on_click(move || {
+                if let NodeKind::Curve(mut d) = n.kind.get_cloned() {
+                    if d.control_points.len() > 2 && index < d.control_points.len() {
+                        d.control_points.remove(index);
+                        dispatch_kind(n.id, NodeKind::Curve(d));
+                    }
+                }
+            })
+            .render();
+        html!("div", {
+            .style("display", "flex").style("align-items", "center").style("gap", "6px")
+            .child(fields_wrap)
+            .child(del)
+        })
+    } else {
+        html!("div", {
+            .style("display", "flex").style("align-items", "center").style("gap", "6px")
+            .child(fields_wrap)
+        })
+    };
+    row(format!("P{index}"), control)
 }
 
 fn line_editor(node: &Arc<Node>, def: &LineDef) -> Dom {

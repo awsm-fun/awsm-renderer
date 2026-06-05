@@ -8,6 +8,7 @@ pub mod bridge;
 pub mod canvas;
 pub mod config;
 pub mod context;
+pub mod curve_handles;
 pub mod gizmo;
 pub mod grid;
 pub mod preview;

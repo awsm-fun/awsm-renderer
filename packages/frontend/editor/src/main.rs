@@ -104,6 +104,8 @@ pub fn main() {
                             engine::grid::init();
                             // Transform gizmo (loads gizmo.glb, anchors on selection).
                             engine::gizmo::init();
+                            // Per-control-point drag handles for selected curves.
+                            engine::curve_handles::init();
                             // Push view settings (MSAA / light-heatmap) to the renderer.
                             engine::settings_sync::start();
                             ctx_ready.set(true);

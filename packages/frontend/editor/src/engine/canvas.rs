@@ -16,7 +16,7 @@ use gloo_timers::future::TimeoutFuture;
 use wasm_bindgen_futures::spawn_local;
 
 use super::context::{renderer_handle, try_with_camera_mut, with_camera_mut};
-use super::gizmo;
+use super::{curve_handles, gizmo};
 use crate::controller::{controller, EditorCommand};
 use crate::engine::bridge::bridge;
 
@@ -35,6 +35,8 @@ fn scene_camera_active() -> bool {
 enum MoveAction {
     Camera,
     Gizmo,
+    /// Dragging a curve control-point handle (translate one point in the plane).
+    CurveHandle,
 }
 
 /// Canvas-local coordinates for a client point — the space the GPU picker +
@@ -69,12 +71,15 @@ pub fn render_canvas(on_ready: impl FnOnce(web_sys::HtmlCanvasElement) + 'static
                 let _ = canvas.set_pointer_capture(event.pointer_id());
                 drag.set(Some((event.x(), event.y(), false)));
 
-                // Only probe for a gizmo grab when one is actually on screen
-                // (single selection + toggle on); otherwise start the camera
-                // immediately so navigation stays crisp.
-                let gizmo_possible = controller().settings.gizmo.get()
-                    && controller().selected.lock_ref().len() == 1;
-                if !gizmo_possible {
+                // Only probe for a handle/gizmo grab when one is actually on
+                // screen — a single selection with the gizmo enabled, or a
+                // selected curve (whose control-point handles show regardless of
+                // the gizmo toggle). Otherwise start the camera immediately so
+                // navigation stays crisp.
+                let single = controller().selected.lock_ref().len() == 1;
+                let gizmo_on = controller().settings.gizmo.get();
+                let probe = single && (gizmo_on || curve_handles::has_active_handles());
+                if !probe {
                     // A scene camera locks the view — don't start an orbit/pan;
                     // leaving `action` unset still lets a click pick + select.
                     if !scene_camera_active() {
@@ -92,36 +97,56 @@ pub fn render_canvas(on_ready: impl FnOnce(web_sys::HtmlCanvasElement) + 'static
                     // the gizmo load invalidates it so it rebuilds with the HUD,
                     // and the first pick after that returns Initializing. Release
                     // the lock between attempts so the render loop keeps running.
-                    let mut grabbed = false;
+                    // Curve handles take priority (then the gizmo); `None` falls
+                    // through to the camera.
+                    let mut resolved: Option<Option<MoveAction>> = None;
                     for attempt in 0..12 {
-                        let res = {
+                        let res: Option<Option<MoveAction>> = {
                             let mut r = handle.lock().await;
                             match r.pick(px, py).await {
                                 Ok(PickResult::Hit(mesh_key)) => {
-                                    Some(gizmo::try_start_pick(&mut r, mesh_key, px, py))
+                                    if curve_handles::try_start_pick(&mut r, Some(mesh_key), px, py) {
+                                        Some(Some(MoveAction::CurveHandle))
+                                    } else if gizmo_on && gizmo::try_start_pick(&mut r, mesh_key, px, py) {
+                                        Some(Some(MoveAction::Gizmo))
+                                    } else {
+                                        Some(None)
+                                    }
+                                }
+                                // Empty-space hit: still allow a near-miss grab of
+                                // a small control-point handle (CPU tolerance).
+                                Ok(PickResult::Miss) => {
+                                    if curve_handles::try_start_pick(&mut r, None, px, py) {
+                                        Some(Some(MoveAction::CurveHandle))
+                                    } else {
+                                        Some(None)
+                                    }
                                 }
                                 Ok(PickResult::Initializing) | Ok(PickResult::InFlight) => None,
-                                _ => Some(false),
+                                _ => Some(None),
                             }
                         };
-                        match res {
-                            Some(g) => {
-                                grabbed = g;
-                                break;
-                            }
-                            None => {
-                                if attempt < 11 {
-                                    TimeoutFuture::new(16).await;
-                                }
-                            }
+                        if let Some(r) = res {
+                            resolved = Some(r);
+                            break;
+                        }
+                        if attempt < 11 {
+                            TimeoutFuture::new(16).await;
                         }
                     }
-                    if grabbed {
-                        action.set(Some(MoveAction::Gizmo));
-                        gizmo::begin_drag();
-                    } else if !scene_camera_active() {
-                        action.set(Some(MoveAction::Camera));
-                        with_camera_mut(|c| c.on_pointer_down());
+                    match resolved.flatten() {
+                        Some(MoveAction::CurveHandle) => {
+                            action.set(Some(MoveAction::CurveHandle));
+                        }
+                        Some(MoveAction::Gizmo) => {
+                            action.set(Some(MoveAction::Gizmo));
+                            gizmo::begin_drag();
+                        }
+                        _ if !scene_camera_active() => {
+                            action.set(Some(MoveAction::Camera));
+                            with_camera_mut(|c| c.on_pointer_down());
+                        }
+                        _ => {}
                     }
                 }));
             }))
@@ -140,6 +165,15 @@ pub fn render_canvas(on_ready: impl FnOnce(web_sys::HtmlCanvasElement) + 'static
                                 gizmo::drag(&mut r, dx, dy);
                             }
                             gizmo::sync_scene_transform_from_renderer();
+                        });
+                    }
+                    Some(MoveAction::CurveHandle) => {
+                        spawn_local(async move {
+                            let handle = renderer_handle();
+                            let mut r = handle.lock().await;
+                            // Moves the handle + writes the control point back into
+                            // the node kind (polyline + Inspector follow live).
+                            curve_handles::drag(&mut r, dx, dy);
                         });
                     }
                     Some(MoveAction::Camera) => {
@@ -167,13 +201,16 @@ pub fn render_canvas(on_ready: impl FnOnce(web_sys::HtmlCanvasElement) + 'static
             }))
             .event(clone!(canvas, drag, action => move |event: events::PointerUp| {
                 try_with_camera_mut(|c| c.on_pointer_up());
-                let was_gizmo = action.get() == Some(MoveAction::Gizmo);
+                let finished = action.get();
                 action.set(None);
                 let was = drag.replace(None);
-                if was_gizmo {
+                if finished == Some(MoveAction::Gizmo) {
                     // Commit the net move as a SetTransform command (undoable +
                     // MCP-drivable); lands the Inspector on the exact final value.
                     gizmo::commit_drag();
+                } else if finished == Some(MoveAction::CurveHandle) {
+                    // Commit the moved control point as one undoable SetKind.
+                    curve_handles::commit_drag();
                 } else if let Some((_, _, false)) = was {
                     // A click (no significant drag) runs a GPU pick → select.
                     let (px, py) = canvas_coords(&canvas, event.x(), event.y());

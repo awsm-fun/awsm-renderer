@@ -56,6 +56,8 @@ fn render_one_frame() {
         // Keep the gizmo screen-constant + anchored under the selection, and
         // enforce its visibility against the selection + toggle.
         super::gizmo::per_frame_update(renderer);
+        // Keep curve control-point handles screen-constant + anchored.
+        super::curve_handles::per_frame_update(renderer);
         // Advance any particle emitters + push their live particles to the GPU.
         super::bridge::particles::tick_all(renderer);
         renderer.update_transforms();
