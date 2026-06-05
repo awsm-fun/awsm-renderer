@@ -479,6 +479,23 @@ fn curve_editor(node: &Arc<Node>, def: &CurveDef) -> Dom {
             }
         })
         .render();
+    // The control-point list rebuilds only when the point COUNT changes
+    // (add/delete) — keyed on `control_points.len()` + `dedupe()` — so editing a
+    // single coordinate doesn't tear down the field being typed in. Every edit
+    // dispatches a fresh `CurveDef`, which the bridge's kind subscription picks
+    // up to re-materialize the curve polyline live.
+    let node_for_pts = node.clone();
+    let points_signal = node
+        .kind
+        .signal_ref(|k| match k {
+            NodeKind::Curve(d) => d.control_points.len(),
+            _ => 0,
+        })
+        .dedupe()
+        .map(move |_count| Some(curve_points_list(&node_for_pts)));
+    let points = html!("div", {
+        .child_signal(points_signal)
+    });
     Section::new("Curve")
         .child(row("Tension", tension))
         .child(row("Samples", samples))
@@ -490,11 +507,110 @@ fn curve_editor(node: &Arc<Node>, def: &CurveDef) -> Dom {
                 None
             }
         }))
-        .child(info_text(format!(
-            "{} control points",
-            def.control_points.len()
-        )))
+        .child(points)
         .render()
+}
+
+/// The editable control-point list for the curve's *current* kind: a labelled
+/// row per point (X/Y/Z fields + delete) followed by an "Add point" button.
+/// Rebuilt by [`curve_editor`] whenever the point count changes.
+fn curve_points_list(node: &Arc<Node>) -> Dom {
+    let pts = match node.kind.get_cloned() {
+        NodeKind::Curve(d) => d.control_points,
+        _ => return html!("div", {}),
+    };
+    let n_points = pts.len();
+    let mut kids: Vec<Dom> = Vec::with_capacity(n_points + 2);
+    kids.push(html!("div", {
+        .style("margin", "10px 0 2px").style("font-size", "11px").style("font-weight", "600")
+        .style("letter-spacing", ".04em").style("text-transform", "uppercase")
+        .style("color", "var(--text-3)")
+        .text(&format!("Control points ({n_points})"))
+    }));
+    for (i, p) in pts.iter().enumerate() {
+        kids.push(curve_point_row(node, i, *p, n_points));
+    }
+    let n = node.clone();
+    let add_btn = Btn::new()
+        .label("Add point")
+        .icon("plus")
+        .variant(BtnVariant::Ghost)
+        .size(BtnSize::Sm)
+        .on_click(move || {
+            if let NodeKind::Curve(mut d) = n.kind.get_cloned() {
+                let p = &d.control_points;
+                // Extrapolate one segment past the last point so a new point
+                // naturally *elongates* the curve in its current direction
+                // (rather than stacking at the origin).
+                let new_p = match p.len() {
+                    0 => [0.0, 0.0, 0.0],
+                    1 => [p[0][0] + 1.0, p[0][1], p[0][2]],
+                    len => {
+                        let a = p[len - 2];
+                        let b = p[len - 1];
+                        [2.0 * b[0] - a[0], 2.0 * b[1] - a[1], 2.0 * b[2] - a[2]]
+                    }
+                };
+                d.control_points.push(new_p);
+                dispatch_kind(n.id, NodeKind::Curve(d));
+            }
+        })
+        .render();
+    kids.push(html!("div", {
+        .style("margin-top", "6px")
+        .child(add_btn)
+    }));
+    html!("div", { .children(kids) })
+}
+
+/// A single control point: index label, X/Y/Z number fields, and a delete
+/// button. Delete is omitted when only two points remain — a Catmull-Rom curve
+/// needs at least two. Each field reads the *live* kind before mutating so
+/// concurrent edits don't clobber one another.
+fn curve_point_row(node: &Arc<Node>, index: usize, p: [f32; 3], n_points: usize) -> Dom {
+    let labels = ["X", "Y", "Z"];
+    let mut controls: Vec<Dom> = (0..3)
+        .map(|axis| {
+            let n = node.clone();
+            html!("div", {
+                .style("display", "flex").style("align-items", "center").style("gap", "3px")
+                .child(html!("span", {
+                    .style("font-size", "10px").style("color", "var(--text-3)").text(labels[axis])
+                }))
+                .child(NumField::new(p[axis] as f64).step(0.05).on_change(move |x| {
+                    if let NodeKind::Curve(mut d) = n.kind.get_cloned() {
+                        if let Some(pt) = d.control_points.get_mut(index) {
+                            pt[axis] = x as f32;
+                            dispatch_kind(n.id, NodeKind::Curve(d));
+                        }
+                    }
+                }).render())
+            })
+        })
+        .collect();
+    if n_points > 2 {
+        let n = node.clone();
+        controls.push(
+            IconBtn::new("trash")
+                .size(15.0)
+                .on_click(move || {
+                    if let NodeKind::Curve(mut d) = n.kind.get_cloned() {
+                        if d.control_points.len() > 2 && index < d.control_points.len() {
+                            d.control_points.remove(index);
+                            dispatch_kind(n.id, NodeKind::Curve(d));
+                        }
+                    }
+                })
+                .render(),
+        );
+    }
+    row(
+        format!("P{index}"),
+        html!("div", {
+            .style("display", "flex").style("align-items", "center").style("gap", "6px").style("flex-wrap", "wrap")
+            .children(controls)
+        }),
+    )
 }
 
 fn line_editor(node: &Arc<Node>, def: &LineDef) -> Dom {

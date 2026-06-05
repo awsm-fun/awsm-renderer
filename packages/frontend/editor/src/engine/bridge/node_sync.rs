@@ -722,7 +722,10 @@ async fn materialize_curve_viz(entry: Arc<RendererNode>, def: awsm_scene_schema:
             }
         }
         let colors: Vec<Vec4> = vec![Vec4::new(1.0, 0.45, 0.85, 0.95); positions.len()];
-        match r.add_line_strip(&positions, &colors, 1.5, false) {
+        // Wider than a hairline so the curve reads clearly in the viewport —
+        // a thin line is nearly invisible against the ground grid, especially
+        // for flat (default) curves.
+        match r.add_line_strip(&positions, &colors, 3.0, false) {
             Ok(key) => key,
             Err(err) => {
                 tracing::warn!("materialize_curve_viz: add_line_strip failed: {err}");
