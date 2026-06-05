@@ -351,7 +351,6 @@ pub struct ModalCard {
     width: f64,
     body: Vec<Dom>,
     footer: Vec<Dom>,
-    on_close: Option<Box<dyn FnMut()>>,
 }
 
 impl ModalCard {
@@ -362,7 +361,6 @@ impl ModalCard {
             width: 460.0,
             body: Vec::new(),
             footer: Vec::new(),
-            on_close: None,
         }
     }
     pub fn subtitle(mut self, s: impl Into<String>) -> Self {
@@ -381,81 +379,57 @@ impl ModalCard {
         self.footer.push(d);
         self
     }
-    pub fn on_close(mut self, f: impl FnMut() + 'static) -> Self {
-        self.on_close = Some(Box::new(f));
-        self
-    }
 
     pub fn render(self) -> Dom {
-        let close = make_close(self.on_close.unwrap_or_else(|| Box::new(|| {})));
         let has_footer = !self.footer.is_empty();
+        // ModalCard is the *content* of the global `Modal` host (see
+        // `super::modal::Modal`). The host owns the backdrop, the fixed
+        // centered container, the close button, the outer padding, and
+        // `max-height`/scroll. ModalCard therefore renders strictly
+        // IN-FLOW — a title header, a body, and an optional footer — and
+        // must NOT add its own `position: fixed` backdrop or card.
+        //
+        // It used to render a fixed, self-centered card with its own
+        // backdrop. Placed inside the host that double-wrapped every
+        // editor modal: the host container had only out-of-flow children
+        // so it collapsed to a ~40px strip, while the real card hid
+        // behind the host's (higher z-index) backdrop. `width` is now a
+        // `max-width` so narrow modals (confirmations) stay compact and
+        // centered within the host container.
         html!("div", {
+            .style("width", "100%")
+            .style("max-width", &format!("{}px", self.width))
+            .style("margin", "0 auto")
+            .style("display", "flex")
+            .style("flex-direction", "column")
             .child(html!("div", {
-                .style("position", "fixed")
-                .style("inset", "0")
-                .style("background", "oklch(0 0 0 / 0.5)")
-                .style("z-index", "400")
-                .event(clone!(close => move |_: events::Click| fire(&close)))
-            }))
-            .child(html!("div", {
-                .style("position", "fixed")
-                .style("left", "50%")
-                .style("top", "50%")
-                .style("transform", "translate(-50%,-50%)")
-                .style("z-index", "401")
-                .style("width", &format!("{}px", self.width))
-                .style("max-width", "calc(100vw - 40px)")
-                .style("max-height", "calc(100vh - 60px)")
-                .style("display", "flex")
-                .style("flex-direction", "column")
-                .style("background", "var(--bg-1)")
-                .style("border", "1px solid var(--line)")
-                .style("border-radius", "var(--r4)")
-                .style("box-shadow", "var(--shadow-3)")
+                .style("padding", "0 0 12px")
                 .child(html!("div", {
-                    .style("display", "flex")
-                    .style("align-items", "flex-start")
-                    .style("gap", "10px")
-                    .style("padding", "16px 18px 12px")
-                    .child(html!("div", {
-                        .style("flex", "1")
-                        .child(html!("div", {
-                            .style("font-size", "15px").style("font-weight", "650").style("color", "var(--text-0)")
-                            .text(&self.title)
-                        }))
-                        .apply(|b| match self.subtitle {
-                            Some(s) => b.child(html!("div", {
-                                .style("font-size", "12.5px").style("color", "var(--text-2)")
-                                .style("margin-top", "4px").style("line-height", "1.45").text(&s)
-                            })),
-                            None => b,
-                        })
-                    }))
-                    .child(crate::atoms::button::IconBtn::new("minus").title("Close")
-                        .on_click(clone!(close => move || fire(&close))).render())
+                    .style("font-size", "15px").style("font-weight", "650").style("color", "var(--text-0)")
+                    .text(&self.title)
                 }))
-                .child(html!("div", {
-                    .style("padding", "0 18px")
-                    .style("overflow-y", "auto")
-                    // `flex-basis: auto` (not `1`/0%) so the body sizes to its
-                    // content in a content-height card; `min-height: 0` still lets
-                    // it shrink + scroll when the card hits its max-height.
-                    .style("flex", "1 1 auto")
-                    .style("min-height", "0")
-                    .children(self.body)
-                }))
-                .apply(move |b| if has_footer {
-                    b.child(html!("div", {
-                        .style("display", "flex")
-                        .style("justify-content", "flex-end")
-                        .style("gap", "8px")
-                        .style("padding", "14px 18px 16px")
-                        .children(self.footer)
-                    }))
-                } else {
-                    b
+                .apply(|b| match self.subtitle {
+                    Some(s) => b.child(html!("div", {
+                        .style("font-size", "12.5px").style("color", "var(--text-2)")
+                        .style("margin-top", "4px").style("line-height", "1.45").text(&s)
+                    })),
+                    None => b,
                 })
             }))
+            .child(html!("div", {
+                .children(self.body)
+            }))
+            .apply(move |b| if has_footer {
+                b.child(html!("div", {
+                    .style("display", "flex")
+                    .style("justify-content", "flex-end")
+                    .style("gap", "8px")
+                    .style("padding", "16px 0 0")
+                    .children(self.footer)
+                }))
+            } else {
+                b
+            })
         })
     }
 }
