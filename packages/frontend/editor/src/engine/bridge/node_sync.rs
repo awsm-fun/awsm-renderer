@@ -481,22 +481,20 @@ async fn materialize_model(entry: Arc<RendererNode>, model_ref: awsm_scene_schem
             .unwrap_or_default()
     };
 
-    let _ = &gltf_mat_ids; // wired material assignment is gated below
     let visible = entry.node.visible.get();
     let shadow_flags = mesh_shadow_flags_from_config(&model_ref.shadow);
     let parent_tk = entry.transform_key;
 
     let mut created = Vec::new();
+    let mut material_keys = Vec::new();
     let mut to_register = Vec::new();
     {
         let handle = renderer_handle();
         let mut r = handle.lock().await;
-        for (mk, skinned, _mat_idx) in &triples {
+        for (mk, skinned, mat_idx) in &triples {
             // Skinned meshes keep rendering in place (their original copy) —
             // duplicating collapses the skin; non-skinned are duplicated under
-            // this node's transform so the editor node owns + moves them. The
-            // copy keeps the renderer-baked, fully-textured material, so a
-            // textured import stays textured.
+            // this node's transform so the editor node owns + moves them.
             let target = if *skinned {
                 *mk
             } else {
@@ -513,6 +511,15 @@ async fn materialize_model(entry: Arc<RendererNode>, model_ref: awsm_scene_schem
                     }
                 }
             };
+            // Render through the extracted **editable library material** (its
+            // textures reuse the same baked GPU textures), so the model's
+            // materials are editable + swappable like any other mesh's.
+            if let Some(lib_id) = mat_idx.and_then(|i| gltf_mat_ids.get(i)).copied() {
+                if let Some(key) = build_library_material(&mut r, lib_id) {
+                    let _ = r.set_mesh_material(target, key);
+                    material_keys.push(key);
+                }
+            }
             to_register.push(target);
         }
         if let Err(e) = r.finalize_gpu_textures().await {
@@ -523,13 +530,15 @@ async fn materialize_model(entry: Arc<RendererNode>, model_ref: awsm_scene_schem
     for mk in &to_register {
         bridge().register_mesh(*mk, entry.node_id);
     }
+    // Duplicates + the materials we inserted are owned (torn down) by this node;
+    // skinned originals belong to the populate pass and stay put.
     entry.model_meshes.lock().unwrap().extend(created);
+    entry.material_keys.lock().unwrap().extend(material_keys);
 }
 
 /// Build a renderer material key from an editor **library** material id (a
 /// built-in PBR/Unlit/Toon variant → `material::insert_material`; a dynamic WGSL
 /// material → its registered bucket). `None` if the id isn't a known material.
-#[allow(dead_code)] // used once glTF-material→mesh wiring lands (texture reuse pending)
 fn build_library_material(
     r: &mut awsm_renderer::AwsmRenderer,
     lib_id: crate::engine::scene::AssetId,

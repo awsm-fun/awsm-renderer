@@ -107,6 +107,15 @@ fn resolve_texture(
 ) -> Option<MaterialTexture> {
     let asset_id = tref.0;
     let sampler_key = material_sampler(r)?;
+    // The sampler must be in the texture pool's sampler set *before* the material
+    // is packed — `Materials::insert` immediately writes the material's uniform
+    // buffer, and a sampler that isn't pooled makes `sampler_index` return None,
+    // which encodes the slot as "no texture" (and is never re-packed after a
+    // later finalize). The procedural branch below pools it implicitly via
+    // `add_image`; the cache-hit / reused-key path (e.g. glTF textures baked by
+    // populate) does NOT, so pool it explicitly here. `finalize_gpu_textures`
+    // (which callers run after) then rebuilds the bind group for the new sampler.
+    r.textures.ensure_sampler_in_pool(sampler_key);
     let mk = |key: TextureKey| MaterialTexture {
         key,
         sampler_key: Some(sampler_key),
