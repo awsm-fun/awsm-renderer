@@ -219,6 +219,14 @@ pub fn render_canvas(on_ready: impl FnOnce(web_sys::HtmlCanvasElement) + 'static
             }))
             .event(clone!(drag, action => move |_: events::PointerCancel| {
                 try_with_camera_mut(|c| c.on_pointer_up());
+                // Commit any in-flight gizmo / handle drag so an interrupted
+                // gesture still lands as one undoable command (no scene edit
+                // escapes the EditorController), matching pointer-up.
+                match action.get() {
+                    Some(MoveAction::Gizmo) => gizmo::commit_drag(),
+                    Some(MoveAction::CurveHandle) => curve_handles::commit_drag(),
+                    _ => {}
+                }
                 action.set(None);
                 drag.set(None);
             }))
