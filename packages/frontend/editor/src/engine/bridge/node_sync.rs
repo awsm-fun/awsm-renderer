@@ -335,28 +335,31 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
 /// with this mesh's per-mesh uniform values (`inline`: base color / metallic /
 /// roughness / emissive) into a final `MaterialDef`. Returns `None` for a dynamic
 /// material or an unknown id (callers then try the dynamic path / inline).
-/// Whether a renderer mesh's geometry carries a vertex-colour attribute
-/// (glTF `COLOR_0`). Vertex-colour *usage* is geometry-derived — a material that
-/// multiplies by COLOR_0 only makes sense when the mesh actually has it — so the
-/// bridge sets `vertex_colors_enabled` from this rather than an authored bit,
-/// mirroring how `populate_gltf` decides it per primitive.
-fn mesh_has_vertex_colors(r: &awsm_renderer::AwsmRenderer, mk: awsm_renderer::meshes::MeshKey) -> bool {
+/// The geometry COLOR set index a renderer mesh carries (glTF `COLOR_n`), or
+/// `None` if it has no vertex-colour attribute. Vertex-colour *usage* is
+/// geometry-derived — a material that multiplies by COLOR only makes sense when
+/// the mesh actually has it — so the bridge sets `vertex_colors_enabled` + the
+/// set index from this rather than an authored bit, mirroring how `populate_gltf`
+/// decides it per primitive.
+fn mesh_vertex_color_set(
+    r: &awsm_renderer::AwsmRenderer,
+    mk: awsm_renderer::meshes::MeshKey,
+) -> Option<u32> {
     use awsm_renderer::meshes::buffer_info::{
         MeshBufferCustomVertexAttributeInfo, MeshBufferVertexAttributeInfo,
     };
-    r.meshes
-        .buffer_info(mk)
-        .map(|info| {
-            info.triangles.vertex_attributes.iter().any(|attr| {
-                matches!(
-                    attr,
-                    MeshBufferVertexAttributeInfo::Custom(
-                        MeshBufferCustomVertexAttributeInfo::Colors { .. }
-                    )
-                )
-            })
+    r.meshes.buffer_info(mk).ok().and_then(|info| {
+        info.triangles.vertex_attributes.iter().find_map(|attr| {
+            if let MeshBufferVertexAttributeInfo::Custom(
+                MeshBufferCustomVertexAttributeInfo::Colors { index, .. },
+            ) = attr
+            {
+                Some(*index)
+            } else {
+                None
+            }
         })
-        .unwrap_or(false)
+    })
 }
 
 fn builtin_merged(
@@ -587,7 +590,7 @@ async fn materialize_model(entry: Arc<RendererNode>, model_ref: awsm_scene_schem
         // a primitive with vertex colours gets `vertex_colors_enabled` flipped on
         // (its own pipeline variant) while a sibling without them does not.
         for (mk, skinned, _mat_idx) in &triples {
-            let has_vertex_colors = mesh_has_vertex_colors(&r, *mk);
+            let vertex_color_set = mesh_vertex_color_set(&r, *mk);
             // Skinned meshes keep rendering in place (their original copy) —
             // duplicating collapses the skin; non-skinned are duplicated under
             // this node's transform so the editor node owns + moves them.
@@ -610,8 +613,8 @@ async fn materialize_model(entry: Arc<RendererNode>, model_ref: awsm_scene_schem
             let mat_key = match model_ref.material.as_ref() {
                 Some(inst) => {
                     if let Some(mut merged) = builtin_merged(inst, &model_ref.inline_material) {
-                        merged.vertex_colors_enabled = has_vertex_colors;
-                        material::insert_material(&mut r, &merged)
+                        merged.vertex_colors_enabled = vertex_color_set.is_some();
+                        material::insert_material_vc(&mut r, &merged, vertex_color_set)
                     } else if let Some(k) = super::dynamic::insert_custom(&mut r, inst) {
                         k
                     } else {

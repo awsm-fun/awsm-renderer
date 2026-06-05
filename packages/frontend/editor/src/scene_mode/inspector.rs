@@ -1472,29 +1472,50 @@ fn material_editor(node: &Arc<Node>, mat: &MaterialDef, _has_custom: bool) -> Do
     // to an existing slot does NOT recompile, so per the override rule it's
     // per-mesh overridable: for each slot the material declares, let this mesh
     // swap which texture fills it (clearing falls back to the material default).
-    if let (Some(inst), Some(def)) = (current_custom_instance(node), assigned_builtin_def(node)) {
-        let slots: [(&str, &str, Option<AssetId>); 5] = [
+    if let Some(def) = assigned_builtin_def(node) {
+        // Core PBR slots the material declares (default = its shared texture).
+        let core: [(&'static str, &'static str, Option<AssetId>); 5] = [
             ("base_color_texture", "Base color", def.base_color_texture.map(|t| t.asset)),
             ("metallic_roughness_texture", "Metal/rough", def.metallic_roughness_texture.map(|t| t.asset)),
             ("normal_texture", "Normal", def.normal_texture.map(|t| t.asset)),
             ("occlusion_texture", "Occlusion", def.occlusion_texture.map(|t| t.asset)),
             ("emissive_texture", "Emissive map", def.emissive_texture.map(|t| t.asset)),
         ];
-        let present: Vec<(&str, &str, Option<AssetId>)> =
-            slots.into_iter().filter(|(_, _, d)| d.is_some()).collect();
-        if !present.is_empty() {
-            sec = sec.child(html!("div", {
-                .style("margin", "10px 0 2px").style("font-size", "11px").style("font-weight", "600")
-                .style("letter-spacing", ".04em").style("text-transform", "uppercase")
-                .style("color", "var(--text-3)")
-                .text("Textures")
-            }));
+        // KHR-extension texture slots the material declares.
+        let ext_slots: [(&'static str, &'static str); 14] = [
+            ("specular.tex", "Specular"),
+            ("specular.color_tex", "Specular color"),
+            ("transmission.tex", "Transmission"),
+            ("diffuse_transmission.tex", "Diffuse trans."),
+            ("diffuse_transmission.color_tex", "Diffuse trans. color"),
+            ("volume.thickness_tex", "Volume thickness"),
+            ("clearcoat.tex", "Clearcoat"),
+            ("clearcoat.roughness_tex", "Clearcoat rough"),
+            ("clearcoat.normal_tex", "Clearcoat normal"),
+            ("sheen.color_tex", "Sheen color"),
+            ("sheen.roughness_tex", "Sheen rough"),
+            ("anisotropy.tex", "Anisotropy"),
+            ("iridescence.tex", "Iridescence"),
+            ("iridescence.thickness_tex", "Iridescence thick."),
+        ];
+        let mut entries: Vec<(&'static str, &'static str, Option<AssetId>, bool)> = Vec::new();
+        for (slot, label, d) in core {
+            if d.is_some() {
+                entries.push((slot, label, d, false));
+            }
+        }
+        for (slot, label) in ext_slots {
+            if let Some(t) = crate::controller::get_ext_texture(&def.extensions, slot) {
+                entries.push((slot, label, Some(t.asset), true));
+            }
+        }
+        if !entries.is_empty() {
+            sec = sec.child(uniform_subhead("Textures"));
             let assets = collect_texture_assets();
-            for (slot, label, default_id) in present {
-                // Show the effective texture (this mesh's override, else the
-                // material default); "None" clears the override → default.
-                let cur = inst.texture_overrides.get(slot).map(|t| t.asset).or(default_id);
-                sec = sec.child(row(label, texture_override_picker(node, slot, cur, assets.clone())));
+            for (slot, label, default_id, is_ext) in entries {
+                for r in texture_slot_rows(node, label, slot, default_id, is_ext, &assets) {
+                    sec = sec.child(r);
+                }
             }
         }
     }
@@ -2026,6 +2047,157 @@ fn set_texture_override(node: &Arc<Node>, name: &str, value: Option<awsm_scene_s
         }
         set_custom_instance(node, inst);
     }
+}
+
+// ── Unified per-mesh texture-slot editor (core PBR slots + KHR extension slots) ─
+// Edits the FULL `TextureRef` per mesh: bound image + UV set + KHR_texture_
+// transform — all non-recompiling, so all overridable. Core slots route through
+// the instance's `texture_overrides` map; extension slots edit the inline
+// extension struct (which `builtin_merged` copies per mesh). Always preserves the
+// other binding fields when one changes (read-modify-write at edit time).
+
+/// The currently-bound `TextureRef` for a slot (`is_ext` picks the storage).
+fn read_slot(node: &Arc<Node>, slot: &str, is_ext: bool) -> Option<awsm_scene_schema::TextureRef> {
+    if is_ext {
+        current_primitive_material(node)
+            .and_then(|m| crate::controller::get_ext_texture(&m.extensions, slot))
+    } else {
+        current_custom_instance(node).and_then(|i| i.texture_overrides.get(slot).copied())
+    }
+}
+
+/// Write (or clear) a slot's `TextureRef`.
+fn write_slot(
+    node: &Arc<Node>,
+    slot: &str,
+    is_ext: bool,
+    tref: Option<awsm_scene_schema::TextureRef>,
+) {
+    if is_ext {
+        if let Some(mut m) = current_primitive_material(node) {
+            crate::controller::set_ext_texture(&mut m.extensions, slot, tref);
+            set_inline_material(node, m);
+        }
+    } else {
+        set_texture_override(node, slot, tref);
+    }
+}
+
+/// Read-modify-write one slot's `TextureRef` (seeding from `default_asset` if the
+/// mesh has no override yet), so editing UV/transform keeps the image and vice
+/// versa.
+fn edit_slot(
+    node: &Arc<Node>,
+    slot: &str,
+    is_ext: bool,
+    default_asset: Option<AssetId>,
+    f: impl FnOnce(&mut awsm_scene_schema::TextureRef),
+) {
+    if let Some(mut tr) =
+        read_slot(node, slot, is_ext).or_else(|| default_asset.map(awsm_scene_schema::TextureRef::new))
+    {
+        f(&mut tr);
+        write_slot(node, slot, is_ext, Some(tr));
+    }
+}
+
+/// Build the rows for one texture slot: image picker + UV set + transform.
+fn texture_slot_rows(
+    node: &Arc<Node>,
+    label: &str,
+    slot: &'static str,
+    default_asset: Option<AssetId>,
+    is_ext: bool,
+    assets: &[(AssetId, String)],
+) -> Vec<Dom> {
+    use awsm_scene_schema::TextureTransform;
+    let cur = read_slot(node, slot, is_ext);
+    let cur_asset = cur.map(|t| t.asset).or(default_asset);
+    let xf = cur.and_then(|t| t.transform).unwrap_or_default();
+    let uv = cur.map(|t| t.uv_index).unwrap_or(0);
+    let mut rows: Vec<Dom> = Vec::new();
+
+    // Image picker — swaps the asset, preserving UV/transform.
+    let cur_label = match cur_asset {
+        None => "None".to_string(),
+        Some(id) => assets
+            .iter()
+            .find(|(a, _)| *a == id)
+            .map(|(_, n)| n.clone())
+            .unwrap_or_else(|| "None".to_string()),
+    };
+    let items = {
+        let (node, assets) = (node.clone(), assets.to_vec());
+        move |close: Close| -> Vec<Dom> {
+            let mut v = vec![MenuItem::new("None")
+                .checked(cur_asset.is_none())
+                .on_click({
+                    let (node, close) = (node.clone(), close.clone());
+                    move || {
+                        write_slot(&node, slot, is_ext, None);
+                        (close.borrow_mut())();
+                    }
+                })
+                .render()];
+            for (id, name) in assets.iter() {
+                let id = *id;
+                v.push(
+                    MenuItem::new(name.clone())
+                        .checked(cur_asset == Some(id))
+                        .on_click({
+                            let (node, close) = (node.clone(), close.clone());
+                            move || {
+                                edit_slot(&node, slot, is_ext, default_asset, |t| t.asset = id);
+                                (close.borrow_mut())();
+                            }
+                        })
+                        .render(),
+                );
+            }
+            v
+        }
+    };
+    rows.push(row(
+        label,
+        DropButton::new()
+            .label(cur_label)
+            .variant(BtnVariant::Ghost)
+            .size(BtnSize::Sm)
+            .items(items)
+            .render(),
+    ));
+
+    // UV set + KHR_texture_transform — only when a texture is bound.
+    if cur_asset.is_some() {
+        {
+            let n = node.clone();
+            rows.push(row(
+                "· UV set",
+                NumField::new(uv as f64).min(0.0).max(7.0).step(1.0)
+                    .on_change(move |v| edit_slot(&n, slot, is_ext, default_asset, |t| t.uv_index = v as u32))
+                    .render(),
+            ));
+        }
+        // A transform component setter that preserves the rest of the transform.
+        let set_xf = move |node: &Arc<Node>, g: fn(&mut TextureTransform, f32), v: f32| {
+            edit_slot(node, slot, is_ext, default_asset, |t| {
+                let mut x = t.transform.unwrap_or_default();
+                g(&mut x, v);
+                t.transform = Some(x);
+            });
+        };
+        let num = |val: f64, step: f64, n: Arc<Node>, g: fn(&mut TextureTransform, f32)| {
+            NumField::new(val).step(step)
+                .on_change(move |v| set_xf(&n, g, v as f32))
+                .render()
+        };
+        rows.push(row("· Offset X", num(xf.offset[0] as f64, 0.01, node.clone(), |x, v| x.offset[0] = v)));
+        rows.push(row("· Offset Y", num(xf.offset[1] as f64, 0.01, node.clone(), |x, v| x.offset[1] = v)));
+        rows.push(row("· Rotation", num(xf.rotation as f64, 0.01, node.clone(), |x, v| x.rotation = v)));
+        rows.push(row("· Scale X", num(xf.scale[0] as f64, 0.01, node.clone(), |x, v| x.scale[0] = v)));
+        rows.push(row("· Scale Y", num(xf.scale[1] as f64, 0.01, node.clone(), |x, v| x.scale[1] = v)));
+    }
+    rows
 }
 
 /// The per-mesh `CustomMaterialInstance` on a Primitive/Mesh node, if any.

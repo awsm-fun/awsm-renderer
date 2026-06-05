@@ -72,10 +72,22 @@ pub fn insert_magenta(renderer: &mut AwsmRenderer) -> MaterialKey {
 /// each bound slot flips a `PbrFeatures` bit, so a textured material specializes
 /// to its own shader. The caller commits the uploads via `finalize_gpu_textures`.
 pub fn insert_material(renderer: &mut AwsmRenderer, def: &MaterialDef) -> MaterialKey {
+    insert_material_vc(renderer, def, None)
+}
+
+/// Like [`insert_material`], but binds vertex colours to a specific geometry
+/// COLOR set (glTF `COLOR_n`). The editor's model bridge passes the set index it
+/// detected from the mesh geometry so `COLOR_1+` meshes sample the right set
+/// rather than always set 0.
+pub fn insert_material_vc(
+    renderer: &mut AwsmRenderer,
+    def: &MaterialDef,
+    vertex_color_set: Option<u32>,
+) -> MaterialKey {
     let material = match def.shading {
         MaterialShading::Pbr => {
             let alpha_mode = alpha_mode_of(def);
-            let mut pbr = material_to_pbr(def, alpha_mode);
+            let mut pbr = material_to_pbr(def, alpha_mode, vertex_color_set);
             apply_textures(renderer, &mut pbr, def);
             apply_extension_textures(renderer, &mut pbr, def);
             Material::Pbr(Box::new(pbr))
@@ -322,11 +334,15 @@ pub(crate) fn material_to_renderer(def: &MaterialDef) -> Material {
             m.rim_power = rim_power;
             Material::Toon(Box::new(m))
         }
-        MaterialShading::Pbr => Material::Pbr(Box::new(material_to_pbr(def, alpha_mode))),
+        MaterialShading::Pbr => Material::Pbr(Box::new(material_to_pbr(def, alpha_mode, None))),
     }
 }
 
-fn material_to_pbr(def: &MaterialDef, alpha_mode: MaterialAlphaMode) -> PbrMaterial {
+fn material_to_pbr(
+    def: &MaterialDef,
+    alpha_mode: MaterialAlphaMode,
+    vertex_color_set: Option<u32>,
+) -> PbrMaterial {
     let mut pbr = PbrMaterial::new(alpha_mode, def.double_sided);
     pbr.base_color_factor = def.base_color;
     pbr.metallic_factor = def.metallic;
@@ -335,8 +351,9 @@ fn material_to_pbr(def: &MaterialDef, alpha_mode: MaterialAlphaMode) -> PbrMater
     pbr.normal_scale = def.normal_scale;
     pbr.occlusion_strength = def.occlusion_strength;
     if def.vertex_colors_enabled {
-        pbr.vertex_color_info =
-            Some(awsm_renderer::materials::pbr::PbrMaterialVertexColorInfo { set_index: 0 });
+        pbr.vertex_color_info = Some(awsm_renderer::materials::pbr::PbrMaterialVertexColorInfo {
+            set_index: vertex_color_set.unwrap_or(0),
+        });
     }
     apply_extensions(&mut pbr, &def.extensions);
     pbr

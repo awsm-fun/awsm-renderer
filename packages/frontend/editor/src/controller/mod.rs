@@ -1050,10 +1050,34 @@ fn default_procedural(proc: ProceduralKind) -> ProceduralTextureDef {
     }
 }
 
+/// Read the `TextureRef` at an extension texture slot, keyed `"<ext>.<field>"`.
+pub(crate) fn get_ext_texture(
+    ext: &awsm_scene_schema::PbrExtensions,
+    slot: &str,
+) -> Option<awsm_scene_schema::TextureRef> {
+    match slot {
+        "specular.tex" => ext.specular.and_then(|e| e.tex),
+        "specular.color_tex" => ext.specular.and_then(|e| e.color_tex),
+        "transmission.tex" => ext.transmission.and_then(|e| e.tex),
+        "diffuse_transmission.tex" => ext.diffuse_transmission.and_then(|e| e.tex),
+        "diffuse_transmission.color_tex" => ext.diffuse_transmission.and_then(|e| e.color_tex),
+        "volume.thickness_tex" => ext.volume.and_then(|e| e.thickness_tex),
+        "clearcoat.tex" => ext.clearcoat.and_then(|e| e.tex),
+        "clearcoat.roughness_tex" => ext.clearcoat.and_then(|e| e.roughness_tex),
+        "clearcoat.normal_tex" => ext.clearcoat.and_then(|e| e.normal_tex),
+        "sheen.color_tex" => ext.sheen.and_then(|e| e.color_tex),
+        "sheen.roughness_tex" => ext.sheen.and_then(|e| e.roughness_tex),
+        "anisotropy.tex" => ext.anisotropy.and_then(|e| e.tex),
+        "iridescence.tex" => ext.iridescence.and_then(|e| e.tex),
+        "iridescence.thickness_tex" => ext.iridescence.and_then(|e| e.thickness_tex),
+        _ => None,
+    }
+}
+
 /// Write a resolved extension-texture `TextureRef` onto the matching field of an
 /// enabled extension, keyed by `"<ext>.<field>"`. No-op if the extension isn't
 /// present (it was the variant enable that decided whether the slot exists).
-fn set_ext_texture(
+pub(crate) fn set_ext_texture(
     ext: &mut awsm_scene_schema::PbrExtensions,
     slot: &str,
     tref: Option<awsm_scene_schema::TextureRef>,
