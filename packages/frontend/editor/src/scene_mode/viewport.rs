@@ -20,7 +20,8 @@ pub fn render() -> Dom {
     let tool = gizmo_mode();
     let shading = Mutable::new("material".to_string());
     // Drive the renderer view mode from the shading toggle: material = normal
-    // lit, solid = unlit/flat, wire = wireframe overlay.
+    // lit, solid = unlit/flat, wire = wireframe view (uniform clay fill + edges,
+    // material-independent).
     spawn_local(clone!(shading => async move {
         let mut first = true;
         shading.signal_cloned().for_each(move |s| {
@@ -169,9 +170,9 @@ fn shading_and_stats(shading: &Mutable<String>) -> Dom {
             .style("border", "1px solid var(--line)")
             .style("border-radius", "var(--r2)")
             .style("box-shadow", "var(--shadow-1)")
-            .child(sbtn("solid", "sphere", "Solid", shading))
+            .child(sbtn("solid", "sphere-solid", "Solid", shading))
             .child(sbtn("material", "material", "Material preview", shading))
-            .child(sbtn("wire", "grid", "Wireframe", shading))
+            .child(sbtn("wire", "sphere", "Wireframe", shading))
         }))
         .child(selection_stats())
     })

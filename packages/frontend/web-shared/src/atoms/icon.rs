@@ -47,6 +47,10 @@ fn icon_children(name: &str) -> Vec<Dom> {
             sp("M12 12v9"),
         ],
         "sphere" => vec![sc("12", "12", "8.5"), se("12", "12", "8.5", "3.4"), sp("M12 3.5v17")],
+        // Flat-filled disc — the "Solid" (unlit/flat) shading-mode glyph. Reads
+        // as a solid fill, contrasting the half-shaded `material` sphere and the
+        // open-line `sphere` wireframe globe.
+        "sphere-solid" => vec![fc("12", "12", "8.5")],
         "plane" => vec![sp("M3 15.5l9-5 9 5-9 4-9-4z")],
         "cylinder" => vec![
             se("12", "6", "6.5", "2.6"),

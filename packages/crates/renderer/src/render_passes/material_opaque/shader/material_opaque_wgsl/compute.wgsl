@@ -353,12 +353,15 @@ fn main(
     }
 
     {% if debug.views %}
-    // Global wireframe overlay — darken pixels near a triangle edge (constant
-    // barycentric threshold; derivatives aren't available in a compute kernel).
+    // Global wireframe view — replace the shaded surface with a uniform clay
+    // fill and draw the triangle edges on top, so meshes read as a wireframe
+    // regardless of their material (not edges tinted onto the lit result).
+    // Constant barycentric threshold — derivatives aren't available in a
+    // compute kernel.
     if (cull_params.debug_wireframe == 1u) {
         let wire_edge = min(min(barycentric.x, barycentric.y), barycentric.z);
         let wire = 1.0 - smoothstep(0.0, 0.02, wire_edge);
-        color = mix(color, vec3<f32>(0.02, 0.02, 0.03), wire);
+        color = mix(vec3<f32>(0.55, 0.57, 0.60), vec3<f32>(0.05, 0.05, 0.07), wire);
     }
     {% endif %}
 
