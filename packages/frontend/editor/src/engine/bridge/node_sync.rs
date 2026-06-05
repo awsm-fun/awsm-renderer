@@ -391,7 +391,7 @@ async fn materialize_primitive(
         Some(inst) => {
             if let Some(merged) = builtin_merged(inst.material, &inline) {
                 material::insert_material(&mut r, &merged)
-            } else if let Some(k) = super::dynamic::insert_custom(&mut r, inst.material) {
+            } else if let Some(k) = super::dynamic::insert_custom(&mut r, inst) {
                 k
             } else {
                 material::insert_magenta(&mut r)

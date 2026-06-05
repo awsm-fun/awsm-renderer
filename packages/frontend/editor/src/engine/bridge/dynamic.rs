@@ -19,6 +19,10 @@ use awsm_renderer::dynamic_materials::MaterialRegistration;
 use awsm_renderer::materials::Material;
 use awsm_renderer::AwsmRenderer;
 
+use awsm_scene_schema::dynamic_material::{
+    CustomMaterialInstance, UniformValue as SceneUniformValue,
+};
+
 use crate::controller::{AlphaMode, CustomMaterial};
 use crate::engine::context::renderer_handle;
 use crate::engine::scene::AssetId;
@@ -62,9 +66,9 @@ pub async fn register(mat: &CustomMaterial) -> Result<MaterialShaderId, String> 
 /// disjoint-field borrow so it composes with the renderer lock.
 pub fn insert_custom(
     renderer: &mut AwsmRenderer,
-    id: AssetId,
+    inst: &CustomMaterialInstance,
 ) -> Option<awsm_renderer::materials::MaterialKey> {
-    let material = build_custom(renderer, id)?;
+    let material = build_custom(renderer, inst)?;
     Some(renderer.materials.insert(
         material,
         &renderer.textures,
@@ -73,11 +77,79 @@ pub fn insert_custom(
     ))
 }
 
-/// Build a per-mesh `Material::Custom` for an assigned custom material `id`,
-/// using the registration's authored defaults. `None` if `id` isn't registered.
-/// Per-instance uniform/texture overrides are the follow-on.
-fn build_custom(renderer: &AwsmRenderer, id: AssetId) -> Option<Material> {
-    build_custom_for_shader(renderer, registered_shader_id(id)?)
+/// Build a per-mesh `Material::Custom` for an assigned custom-material
+/// **instance**: starts from the registration's authored defaults, then applies
+/// this mesh's per-instance `uniform_overrides` (#4.2) — matched by slot name
+/// and type-checked against the layout. `None` if the material isn't registered.
+fn build_custom(renderer: &AwsmRenderer, inst: &CustomMaterialInstance) -> Option<Material> {
+    let mut material = build_custom_for_shader(renderer, registered_shader_id(inst.material)?)?;
+    if !inst.uniform_overrides.is_empty() {
+        if let Material::Custom(dm) = &mut material {
+            if let Some(reg) = renderer.dynamic_material_registration(dm.shader_id) {
+                for (i, field) in reg.layout.uniforms.iter().enumerate() {
+                    if let Some(v) = inst.uniform_overrides.get(&field.name) {
+                        let rv = scene_to_renderer(v);
+                        // Type-check so a stale override (material edited after
+                        // assignment) can't poison the uniform buffer.
+                        if rv.field_type() == field.ty {
+                            if let Some(slot) = dm.values.get_mut(i) {
+                                *slot = rv;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Some(material)
+}
+
+/// The default value a declared uniform [`Slot`] parses to (its authored WGSL
+/// type + default-value string), as the **schema** `UniformValue` the inspector
+/// stores in `CustomMaterialInstance::uniform_overrides` (#4.2).
+pub fn slot_default_value(slot: &crate::controller::Slot) -> SceneUniformValue {
+    renderer_to_scene(&parse_uniform_value(parse_field_type(&slot.ty), &slot.val))
+}
+
+/// Convert the serializable schema `UniformValue` (stored on a
+/// `CustomMaterialInstance`) into the renderer's value type. The two enums have
+/// identical variants — this is the (deliberately exhaustive) bridge so adding a
+/// variant to one forces updating the other.
+fn scene_to_renderer(v: &SceneUniformValue) -> UniformValue {
+    match *v {
+        SceneUniformValue::F32(x) => UniformValue::F32(x),
+        SceneUniformValue::Vec2(x) => UniformValue::Vec2(x),
+        SceneUniformValue::Vec3(x) => UniformValue::Vec3(x),
+        SceneUniformValue::Vec4(x) => UniformValue::Vec4(x),
+        SceneUniformValue::U32(x) => UniformValue::U32(x),
+        SceneUniformValue::IVec2(x) => UniformValue::IVec2(x),
+        SceneUniformValue::IVec3(x) => UniformValue::IVec3(x),
+        SceneUniformValue::IVec4(x) => UniformValue::IVec4(x),
+        SceneUniformValue::Mat3(x) => UniformValue::Mat3(x),
+        SceneUniformValue::Mat4(x) => UniformValue::Mat4(x),
+        SceneUniformValue::Color3(x) => UniformValue::Color3(x),
+        SceneUniformValue::Color4(x) => UniformValue::Color4(x),
+        SceneUniformValue::Bool(x) => UniformValue::Bool(x),
+    }
+}
+
+/// Inverse of [`scene_to_renderer`].
+fn renderer_to_scene(v: &UniformValue) -> SceneUniformValue {
+    match *v {
+        UniformValue::F32(x) => SceneUniformValue::F32(x),
+        UniformValue::Vec2(x) => SceneUniformValue::Vec2(x),
+        UniformValue::Vec3(x) => SceneUniformValue::Vec3(x),
+        UniformValue::Vec4(x) => SceneUniformValue::Vec4(x),
+        UniformValue::U32(x) => SceneUniformValue::U32(x),
+        UniformValue::IVec2(x) => SceneUniformValue::IVec2(x),
+        UniformValue::IVec3(x) => SceneUniformValue::IVec3(x),
+        UniformValue::IVec4(x) => SceneUniformValue::IVec4(x),
+        UniformValue::Mat3(x) => SceneUniformValue::Mat3(x),
+        UniformValue::Mat4(x) => SceneUniformValue::Mat4(x),
+        UniformValue::Color3(x) => SceneUniformValue::Color3(x),
+        UniformValue::Color4(x) => SceneUniformValue::Color4(x),
+        UniformValue::Bool(x) => SceneUniformValue::Bool(x),
+    }
 }
 
 /// Like [`build_custom`] but for an explicit `shader_id` (used by the 2nd-renderer

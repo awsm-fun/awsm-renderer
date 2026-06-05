@@ -1410,10 +1410,232 @@ fn material_editor(node: &Arc<Node>, mat: &MaterialDef, _has_custom: bool) -> Do
     sec.render()
 }
 
-/// Per-mesh override editor for an assigned **dynamic** material's declared slots.
-/// Filled out in #4.2 — for now a placeholder so the editor compiles.
-fn dynamic_overrides(_node: &Arc<Node>) -> Dom {
-    html!("div", {})
+/// Per-mesh override editor for an assigned **dynamic** material's declared
+/// uniform slots (#4.2). Each uniform the material declares is shown here with a
+/// control seeded from its default (or this mesh's existing override); editing
+/// it writes a per-mesh entry into `CustomMaterialInstance::uniform_overrides`,
+/// which `dynamic::insert_custom` applies when materializing the mesh. Texture /
+/// buffer slot overrides are a follow-on; uniforms are the common case the user
+/// hit (declared uniforms weren't exposed on the mesh at all).
+fn dynamic_overrides(node: &Arc<Node>) -> Dom {
+    use awsm_scene_schema::dynamic_material::UniformValue as UV;
+
+    let Some(inst) = current_custom_instance(node) else {
+        return html!("div", {});
+    };
+    let Some(mat) =
+        crate::controller::custom_material::find_material(&controller().custom_materials, inst.material)
+    else {
+        return html!("div", {});
+    };
+    if mat.is_builtin() {
+        return html!("div", {});
+    }
+    let slots = mat.uniforms.get_cloned();
+    if slots.is_empty() {
+        return html!("div", {
+            .style("margin-top", "8px").style("font-size", "12px")
+            .style("color", "var(--text-2)").style("line-height", "1.5")
+            .text("This material declares no uniforms. Add uniform slots in the Material pane to expose per-mesh overrides here.")
+        });
+    }
+
+    let mut rows: Vec<Dom> = vec![html!("div", {
+        .style("margin", "8px 0 2px").style("font-size", "11px").style("font-weight", "600")
+        .style("letter-spacing", ".04em").style("text-transform", "uppercase")
+        .style("color", "var(--text-3)")
+        .text("Uniform overrides")
+    })];
+    for slot in &slots {
+        let cur = inst
+            .uniform_overrides
+            .get(&slot.name)
+            .cloned()
+            .unwrap_or_else(|| crate::engine::bridge::dynamic::slot_default_value(slot));
+        let control: Dom = match cur {
+            UV::F32(v) => uniform_num(node, &slot.name, v as f64, 0.05, |x| UV::F32(x as f32)),
+            UV::U32(v) => uniform_num(node, &slot.name, v as f64, 1.0, |x| UV::U32(x.max(0.0) as u32)),
+            UV::Vec2(a) => uniform_vec(node, &slot.name, &a, |c| UV::Vec2([c[0], c[1]])),
+            UV::Vec3(a) => uniform_vec(node, &slot.name, &a, |c| UV::Vec3([c[0], c[1], c[2]])),
+            UV::Vec4(a) => uniform_vec(node, &slot.name, &a, |c| UV::Vec4([c[0], c[1], c[2], c[3]])),
+            UV::Color3(a) => uniform_color(node, &slot.name, [a[0], a[1], a[2]], None),
+            UV::Color4(a) => uniform_color(node, &slot.name, [a[0], a[1], a[2]], Some(a[3])),
+            UV::Bool(b) => uniform_bool(node, &slot.name, b),
+            _ => html!("span", {
+                .style("font-size", "11.5px").style("color", "var(--text-3)")
+                .text("(edit in Material pane)")
+            }),
+        };
+        rows.push(row(&slot.name, control));
+    }
+    html!("div", {
+        .style("display", "flex").style("flex-direction", "column").style("gap", "2px")
+        .children(rows)
+    })
+}
+
+/// The per-mesh `CustomMaterialInstance` on a Primitive/Mesh node, if any.
+fn current_custom_instance(
+    node: &Arc<Node>,
+) -> Option<awsm_scene_schema::dynamic_material::CustomMaterialInstance> {
+    match node.kind.get_cloned() {
+        NodeKind::Primitive { custom_material, .. } | NodeKind::Mesh { custom_material, .. } => {
+            custom_material
+        }
+        _ => None,
+    }
+}
+
+/// Replace the node's `custom_material` instance, preserving the rest of the kind.
+fn set_custom_instance(
+    node: &Arc<Node>,
+    inst: awsm_scene_schema::dynamic_material::CustomMaterialInstance,
+) {
+    match node.kind.get_cloned() {
+        NodeKind::Primitive {
+            shape,
+            material,
+            inline_material,
+            shadow,
+            ..
+        } => dispatch_kind(
+            node.id,
+            NodeKind::Primitive {
+                shape,
+                material,
+                inline_material,
+                custom_material: Some(inst),
+                shadow,
+            },
+        ),
+        NodeKind::Mesh {
+            mesh,
+            material,
+            inline_material,
+            shadow,
+            ..
+        } => dispatch_kind(
+            node.id,
+            NodeKind::Mesh {
+                mesh,
+                material,
+                inline_material,
+                custom_material: Some(inst),
+                shadow,
+            },
+        ),
+        _ => {}
+    }
+}
+
+/// Write one per-mesh uniform override and re-materialize.
+fn set_uniform_override(
+    node: &Arc<Node>,
+    name: &str,
+    value: awsm_scene_schema::dynamic_material::UniformValue,
+) {
+    if let Some(mut inst) = current_custom_instance(node) {
+        inst.uniform_overrides.insert(name.to_string(), value);
+        set_custom_instance(node, inst);
+    }
+}
+
+/// A single scalar (f32 / u32) override control.
+fn uniform_num(
+    node: &Arc<Node>,
+    name: &str,
+    value: f64,
+    step: f64,
+    to_val: impl Fn(f64) -> awsm_scene_schema::dynamic_material::UniformValue + 'static,
+) -> Dom {
+    let node = node.clone();
+    let name = name.to_string();
+    NumField::new(value)
+        .step(step)
+        .on_change(move |x| set_uniform_override(&node, &name, to_val(x)))
+        .render()
+}
+
+/// A multi-component (vec2/3/4) override: one NumField per channel, sharing a
+/// per-row buffer so editing one channel doesn't clobber the others.
+fn uniform_vec(
+    node: &Arc<Node>,
+    name: &str,
+    comps: &[f32],
+    build: impl Fn(&[f32]) -> awsm_scene_schema::dynamic_material::UniformValue + 'static,
+) -> Dom {
+    let state = std::rc::Rc::new(std::cell::RefCell::new(comps.to_vec()));
+    let build = std::rc::Rc::new(build);
+    let labels = ["X", "Y", "Z", "W"];
+    let fields: Vec<Dom> = (0..comps.len())
+        .map(|i| {
+            let node = node.clone();
+            let name = name.to_string();
+            let state = state.clone();
+            let build = build.clone();
+            html!("div", {
+                .style("display", "flex").style("align-items", "center").style("gap", "3px")
+                .child(html!("span", {
+                    .style("font-size", "10px").style("color", "var(--text-3)").text(labels[i])
+                }))
+                .child(NumField::new(comps[i] as f64).step(0.05).on_change(move |x| {
+                    state.borrow_mut()[i] = x as f32;
+                    let v = build(&state.borrow());
+                    set_uniform_override(&node, &name, v);
+                }).render())
+            })
+        })
+        .collect();
+    html!("div", {
+        .style("display", "flex").style("gap", "6px").style("flex-wrap", "wrap")
+        .children(fields)
+    })
+}
+
+/// A color (color3 / color4) override as an RGB swatch; color4 keeps its alpha.
+fn uniform_color(node: &Arc<Node>, name: &str, rgb: [f32; 3], alpha: Option<f32>) -> Dom {
+    use awsm_scene_schema::dynamic_material::UniformValue as UV;
+    let hexm = Mutable::new(rgb_to_hex(rgb));
+    let node = node.clone();
+    let name = name.to_string();
+    spawn_local(clone!(hexm => async move {
+        let mut first = true;
+        hexm.signal_cloned().for_each(move |hex| {
+            let fire = !first;
+            first = false;
+            clone!(node, name => async move {
+                if !fire { return; }
+                if let Some(c) = hex_to_rgb(&hex) {
+                    let v = match alpha {
+                        Some(a) => UV::Color4([c[0], c[1], c[2], a]),
+                        None => UV::Color3(c),
+                    };
+                    set_uniform_override(&node, &name, v);
+                }
+            })
+        }).await;
+    }));
+    swatch(hexm, 22.0)
+}
+
+/// A boolean override toggle.
+fn uniform_bool(node: &Arc<Node>, name: &str, value: bool) -> Dom {
+    use awsm_scene_schema::dynamic_material::UniformValue as UV;
+    let m = Mutable::new(value);
+    let node = node.clone();
+    let name = name.to_string();
+    spawn_local(clone!(m => async move {
+        let mut first = true;
+        m.signal().for_each(move |val| {
+            let fire = !first;
+            first = false;
+            clone!(node, name => async move {
+                if !fire { return; }
+                set_uniform_override(&node, &name, UV::Bool(val));
+            })
+        }).await;
+    }));
+    toggle(m)
 }
 
 // ── Shadows (per-mesh cast / receive) ─────────────────────────────────────────
