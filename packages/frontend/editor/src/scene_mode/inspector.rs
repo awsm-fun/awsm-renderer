@@ -1432,20 +1432,23 @@ fn dynamic_overrides(node: &Arc<Node>) -> Dom {
         return html!("div", {});
     }
     let slots = mat.uniforms.get_cloned();
-    if slots.is_empty() {
+    if slots.is_empty() && mat.textures.lock_ref().is_empty() {
         return html!("div", {
             .style("margin-top", "8px").style("font-size", "12px")
             .style("color", "var(--text-2)").style("line-height", "1.5")
-            .text("This material declares no uniforms. Add uniform slots in the Material pane to expose per-mesh overrides here.")
+            .text("This material declares no uniforms or textures. Add slots in the Material pane to expose per-mesh overrides here.")
         });
     }
 
-    let mut rows: Vec<Dom> = vec![html!("div", {
-        .style("margin", "8px 0 2px").style("font-size", "11px").style("font-weight", "600")
-        .style("letter-spacing", ".04em").style("text-transform", "uppercase")
-        .style("color", "var(--text-3)")
-        .text("Uniform overrides")
-    })];
+    let mut rows: Vec<Dom> = Vec::new();
+    if !slots.is_empty() {
+        rows.push(html!("div", {
+            .style("margin", "8px 0 2px").style("font-size", "11px").style("font-weight", "600")
+            .style("letter-spacing", ".04em").style("text-transform", "uppercase")
+            .style("color", "var(--text-3)")
+            .text("Uniform overrides")
+        }));
+    }
     for slot in &slots {
         let cur = inst
             .uniform_overrides
@@ -1468,10 +1471,104 @@ fn dynamic_overrides(node: &Arc<Node>) -> Dom {
         };
         rows.push(row(&slot.name, control));
     }
+
+    // Per-mesh **texture** overrides (#4.2): one picker per declared texture
+    // slot, choosing among the project's texture assets.
+    let tex_slots = mat.textures.get_cloned();
+    if !tex_slots.is_empty() {
+        rows.push(html!("div", {
+            .style("margin", "10px 0 2px").style("font-size", "11px").style("font-weight", "600")
+            .style("letter-spacing", ".04em").style("text-transform", "uppercase")
+            .style("color", "var(--text-3)")
+            .text("Texture overrides")
+        }));
+        let assets = collect_texture_assets();
+        for slot in &tex_slots {
+            let cur = inst.texture_overrides.get(&slot.name).map(|t| t.0);
+            rows.push(row(
+                &slot.name,
+                texture_override_picker(node, &slot.name, cur, assets.clone()),
+            ));
+        }
+    }
+
     html!("div", {
         .style("display", "flex").style("flex-direction", "column").style("gap", "2px")
         .children(rows)
     })
+}
+
+/// A texture-slot override picker: pick a project texture asset (or None) for a
+/// dynamic material's declared texture slot on this mesh.
+fn texture_override_picker(
+    node: &Arc<Node>,
+    name: &str,
+    cur: Option<AssetId>,
+    assets: Vec<(AssetId, String)>,
+) -> Dom {
+    let current_label = match cur {
+        None => "None".to_string(),
+        Some(id) => assets
+            .iter()
+            .find(|(a, _)| *a == id)
+            .map(|(_, n)| n.clone())
+            .unwrap_or_else(|| "None".to_string()),
+    };
+    let node = node.clone();
+    let name = name.to_string();
+    let items = move |close: Close| -> Vec<Dom> {
+        let mut rows = vec![MenuItem::new("None")
+            .checked(cur.is_none())
+            .on_click({
+                let (node, name, close) = (node.clone(), name.clone(), close.clone());
+                move || {
+                    set_texture_override(&node, &name, None);
+                    (close.borrow_mut())();
+                }
+            })
+            .render()];
+        for (id, label) in assets.iter() {
+            let id = *id;
+            rows.push(
+                MenuItem::new(label.clone())
+                    .checked(cur == Some(id))
+                    .on_click({
+                        let (node, name, close) = (node.clone(), name.clone(), close.clone());
+                        move || {
+                            set_texture_override(
+                                &node,
+                                &name,
+                                Some(awsm_scene_schema::TextureRef(id)),
+                            );
+                            (close.borrow_mut())();
+                        }
+                    })
+                    .render(),
+            );
+        }
+        rows
+    };
+    DropButton::new()
+        .label(current_label)
+        .variant(BtnVariant::Ghost)
+        .size(BtnSize::Sm)
+        .items(items)
+        .render()
+}
+
+/// Write (or clear) one per-mesh texture override and re-materialize.
+fn set_texture_override(node: &Arc<Node>, name: &str, value: Option<awsm_scene_schema::TextureRef>) {
+    if let Some(mut inst) = current_custom_instance(node) {
+        match value {
+            Some(t) => {
+                inst.texture_overrides.insert(name.to_string(), t);
+            }
+            None => {
+                inst.texture_overrides.remove(name);
+            }
+        }
+        set_custom_instance(node, inst);
+    }
 }
 
 /// The per-mesh `CustomMaterialInstance` on a Primitive/Mesh node, if any.

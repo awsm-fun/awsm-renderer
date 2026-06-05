@@ -9,7 +9,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
-use awsm_materials::dynamic::DynamicMaterial;
+use awsm_materials::dynamic::{DynamicMaterial, DynamicTextureBinding};
 use awsm_materials::dynamic_layout::{
     BufferSlotRuntime, FieldType, MaterialLayout, TextureSlotRuntime, UniformFieldRuntime,
     UniformValue,
@@ -81,20 +81,46 @@ pub fn insert_custom(
 /// **instance**: starts from the registration's authored defaults, then applies
 /// this mesh's per-instance `uniform_overrides` (#4.2) — matched by slot name
 /// and type-checked against the layout. `None` if the material isn't registered.
-fn build_custom(renderer: &AwsmRenderer, inst: &CustomMaterialInstance) -> Option<Material> {
+fn build_custom(renderer: &mut AwsmRenderer, inst: &CustomMaterialInstance) -> Option<Material> {
     let mut material = build_custom_for_shader(renderer, registered_shader_id(inst.material)?)?;
-    if !inst.uniform_overrides.is_empty() {
-        if let Material::Custom(dm) = &mut material {
-            if let Some(reg) = renderer.dynamic_material_registration(dm.shader_id) {
-                for (i, field) in reg.layout.uniforms.iter().enumerate() {
-                    if let Some(v) = inst.uniform_overrides.get(&field.name) {
-                        let rv = scene_to_renderer(v);
-                        // Type-check so a stale override (material edited after
-                        // assignment) can't poison the uniform buffer.
-                        if rv.field_type() == field.ty {
-                            if let Some(slot) = dm.values.get_mut(i) {
-                                *slot = rv;
-                            }
+    if let Material::Custom(dm) = &mut material {
+        // Per-mesh uniform overrides (matched by slot name, type-checked).
+        if !inst.uniform_overrides.is_empty() {
+            // Snapshot the layout so we don't hold a renderer borrow while
+            // resolving textures (which needs `&mut renderer`).
+            let uniforms: Vec<(String, FieldType)> = renderer
+                .dynamic_material_registration(dm.shader_id)
+                .map(|reg| {
+                    reg.layout
+                        .uniforms
+                        .iter()
+                        .map(|u| (u.name.clone(), u.ty))
+                        .collect()
+                })
+                .unwrap_or_default();
+            for (i, (name, ty)) in uniforms.iter().enumerate() {
+                if let Some(v) = inst.uniform_overrides.get(name) {
+                    let rv = scene_to_renderer(v);
+                    if rv.field_type() == *ty {
+                        if let Some(slot) = dm.values.get_mut(i) {
+                            *slot = rv;
+                        }
+                    }
+                }
+            }
+        }
+        // Per-mesh texture-slot overrides (#4.2): resolve each TextureRef to a
+        // pooled renderer texture and bind it into the slot.
+        if !inst.texture_overrides.is_empty() {
+            let tex_slots: Vec<String> = renderer
+                .dynamic_material_registration(dm.shader_id)
+                .map(|reg| reg.layout.textures.iter().map(|t| t.name.clone()).collect())
+                .unwrap_or_default();
+            for (i, name) in tex_slots.iter().enumerate() {
+                if let Some(tref) = inst.texture_overrides.get(name) {
+                    if let Some(key) = super::material::resolve_texture_key(renderer, tref) {
+                        if let Some(slot) = dm.textures.get_mut(i) {
+                            *slot = Some(DynamicTextureBinding::Pooled(key));
                         }
                     }
                 }

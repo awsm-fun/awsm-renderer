@@ -29,6 +29,13 @@ thread_local! {
     static TEXTURE_KEYS: RefCell<HashMap<AssetId, TextureKey>> = RefCell::new(HashMap::new());
 }
 
+/// Resolve a [`TextureRef`] to a renderer [`TextureKey`] (uploading a procedural
+/// texture once / reusing a pre-registered key), pooling its sampler so the
+/// binding is valid. Used for per-mesh texture overrides on dynamic materials.
+pub(crate) fn resolve_texture_key(r: &mut AwsmRenderer, tref: &TextureRef) -> Option<TextureKey> {
+    resolve_texture(r, tref, true, MipmapTextureKind::Albedo).map(|t| t.key)
+}
+
 /// Pre-register a texture-asset id against a renderer [`TextureKey`] that's
 /// already uploaded (e.g. one `populate_gltf` baked for an imported model), so
 /// `resolve_texture` returns it on the cache-hit path instead of re-decoding.
