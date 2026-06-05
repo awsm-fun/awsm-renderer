@@ -271,7 +271,7 @@ fn builtin_texture_row(
         .collect();
     let sel = Mutable::new(
         current
-            .map(|t| t.0.to_string())
+            .map(|t| t.asset.0.to_string())
             .unwrap_or_else(|| "__none__".into()),
     );
     let mat = mat.clone();
@@ -280,7 +280,7 @@ fn builtin_texture_row(
         let mut first = true;
         sel.signal_cloned().for_each(move |val| {
             let fire = !first; first = false;
-            let picked = lookup.iter().find(|(s, _)| *s == val).map(|(_, id)| TextureRef(*id));
+            let picked = lookup.iter().find(|(s, _)| *s == val).map(|(_, id)| TextureRef::new(*id));
             let mat = mat.clone(); let set = set.clone();
             async move { if fire { edit_builtin(&mat, |d| set(d, picked)); } }
         }).await;

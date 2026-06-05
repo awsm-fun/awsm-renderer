@@ -119,7 +119,7 @@ fn resolve_texture(
     srgb: bool,
     kind: MipmapTextureKind,
 ) -> Option<MaterialTexture> {
-    let asset_id = tref.0;
+    let asset_id = tref.asset;
     let sampler_key = material_sampler(r)?;
     // The sampler must be in the texture pool's sampler set *before* the material
     // is packed — `Materials::insert` immediately writes the material's uniform
@@ -130,11 +130,22 @@ fn resolve_texture(
     // populate) does NOT, so pool it explicitly here. `finalize_gpu_textures`
     // (which callers run after) then rebuilds the bind group for the new sampler.
     r.textures.ensure_sampler_in_pool(sampler_key);
+    // Honor the binding's UV set + KHR_texture_transform (both non-recompiling).
+    let uv_index = Some(tref.uv_index);
+    let transform_key = tref.transform.map(|t| {
+        r.textures
+            .insert_texture_transform(&awsm_renderer::textures::TextureTransform {
+                offset: t.offset,
+                origin: [0.0, 0.0],
+                rotation: t.rotation,
+                scale: t.scale,
+            })
+    });
     let mk = |key: TextureKey| MaterialTexture {
         key,
         sampler_key: Some(sampler_key),
-        uv_index: Some(0),
-        transform_key: None,
+        uv_index,
+        transform_key,
     };
     if let Some(key) = TEXTURE_KEYS.with(|c| c.borrow().get(&asset_id).copied()) {
         return Some(mk(key));

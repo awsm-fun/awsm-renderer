@@ -38,24 +38,52 @@ pub struct ExtractedMaterial {
     pub textures: MaterialTextureKeys,
 }
 
-/// Baked renderer textures for a material's PBR slots (reused from populate).
-#[derive(Default)]
-pub struct MaterialTextureKeys {
-    pub base_color: Option<TextureKey>,
-    pub metallic_roughness: Option<TextureKey>,
-    pub normal: Option<TextureKey>,
-    pub occlusion: Option<TextureKey>,
-    pub emissive: Option<TextureKey>,
+/// The per-binding sampling metadata for one texture slot: which UV set (glTF
+/// `texCoord`) and an optional `KHR_texture_transform`. Travels with the texture
+/// key/index so it can be written onto the `TextureRef` at import.
+#[derive(Clone, Copy, Default)]
+pub struct TexBinding {
+    pub uv_index: u32,
+    pub transform: Option<awsm_scene_schema::TextureTransform>,
 }
 
-/// glTF texture indices for a material's PBR slots (resolved to keys post-populate).
+/// Baked renderer textures for a material's PBR slots (reused from populate),
+/// each with its glTF binding metadata (UV set + transform).
+#[derive(Default)]
+pub struct MaterialTextureKeys {
+    pub base_color: Option<(TextureKey, TexBinding)>,
+    pub metallic_roughness: Option<(TextureKey, TexBinding)>,
+    pub normal: Option<(TextureKey, TexBinding)>,
+    pub occlusion: Option<(TextureKey, TexBinding)>,
+    pub emissive: Option<(TextureKey, TexBinding)>,
+}
+
+/// glTF texture indices for a material's PBR slots (resolved to keys
+/// post-populate), each with its binding metadata.
 #[derive(Default)]
 struct MaterialTextureIndices {
-    base_color: Option<usize>,
-    metallic_roughness: Option<usize>,
-    normal: Option<usize>,
-    occlusion: Option<usize>,
-    emissive: Option<usize>,
+    base_color: Option<(usize, TexBinding)>,
+    metallic_roughness: Option<(usize, TexBinding)>,
+    normal: Option<(usize, TexBinding)>,
+    occlusion: Option<(usize, TexBinding)>,
+    emissive: Option<(usize, TexBinding)>,
+}
+
+/// Read a texture slot's UV set + `KHR_texture_transform` from its glTF info.
+/// (Works for any of `gltf::texture::Info` / `NormalTexture` / `OcclusionTexture`
+/// — they all expose `tex_coord()` + `texture_transform()`.) The transform may
+/// override the texCoord per glTF spec.
+fn tex_binding(tex_coord: u32, xform: Option<gltf::texture::TextureTransform>) -> TexBinding {
+    let uv_index = xform.as_ref().and_then(|x| x.tex_coord()).unwrap_or(tex_coord);
+    let transform = xform.map(|x| awsm_scene_schema::TextureTransform {
+        offset: x.offset(),
+        rotation: x.rotation(),
+        scale: x.scale(),
+    });
+    TexBinding {
+        uv_index,
+        transform,
+    }
 }
 
 /// Load + populate a glTF/glb from `url`; display name derived from the URL.
@@ -138,11 +166,25 @@ fn extract_material_specs(data: &GltfData) -> Vec<(MaterialDef, MaterialTextureI
                 ..MaterialDef::default()
             };
             let ix = MaterialTextureIndices {
-                base_color: pbr.base_color_texture().map(|t| t.texture().index()),
-                metallic_roughness: pbr.metallic_roughness_texture().map(|t| t.texture().index()),
-                normal: m.normal_texture().map(|t| t.texture().index()),
-                occlusion: m.occlusion_texture().map(|t| t.texture().index()),
-                emissive: m.emissive_texture().map(|t| t.texture().index()),
+                base_color: pbr.base_color_texture().map(|t| {
+                    (t.texture().index(), tex_binding(t.tex_coord(), t.texture_transform()))
+                }),
+                metallic_roughness: pbr.metallic_roughness_texture().map(|t| {
+                    (t.texture().index(), tex_binding(t.tex_coord(), t.texture_transform()))
+                }),
+                // NormalTexture / OcclusionTexture don't expose the typed
+                // texture_transform() accessor (only the base `Info` does), so
+                // they carry their UV set; a transform on a normal/occlusion map
+                // is rare and left off.
+                normal: m.normal_texture().map(|t| {
+                    (t.texture().index(), TexBinding { uv_index: t.tex_coord(), transform: None })
+                }),
+                occlusion: m.occlusion_texture().map(|t| {
+                    (t.texture().index(), TexBinding { uv_index: t.tex_coord(), transform: None })
+                }),
+                emissive: m.emissive_texture().map(|t| {
+                    (t.texture().index(), tex_binding(t.tex_coord(), t.texture_transform()))
+                }),
             };
             (def, ix)
         })
@@ -270,12 +312,13 @@ fn resolve_materials(
     specs: Vec<(MaterialDef, MaterialTextureIndices)>,
 ) -> Vec<ExtractedMaterial> {
     let textures = ctx.textures.lock().unwrap();
-    let find = |idx: Option<usize>| -> Option<TextureKey> {
-        let i = idx?;
+    // Resolve a (glTF texture index, binding) → (baked TextureKey, binding).
+    let find = |slot: Option<(usize, TexBinding)>| -> Option<(TextureKey, TexBinding)> {
+        let (i, binding) = slot?;
         textures
             .iter()
             .find(|(k, _)| k.index == i)
-            .map(|(_, v)| *v)
+            .map(|(_, v)| (*v, binding))
     };
     specs
         .into_iter()

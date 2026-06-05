@@ -1045,18 +1045,28 @@ fn default_procedural(proc: ProceduralKind) -> ProceduralTextureDef {
 fn ensure_import_texture(
     tex_for_key: &mut std::collections::HashMap<awsm_renderer::textures::TextureKey, AssetId>,
     texture_entries: &mut Vec<(AssetId, String)>,
-    key: Option<awsm_renderer::textures::TextureKey>,
+    baked: Option<(
+        awsm_renderer::textures::TextureKey,
+        crate::engine::bridge::gltf::TexBinding,
+    )>,
     name: &str,
 ) -> Option<awsm_scene_schema::TextureRef> {
-    let key = key?;
+    let (key, binding) = baked?;
+    // The texture-asset id is deduped by baked key, but the binding (UV set +
+    // transform) is per-slot, so it goes on the TextureRef, not the asset.
+    let mk = |asset: AssetId| awsm_scene_schema::TextureRef {
+        asset,
+        uv_index: binding.uv_index,
+        transform: binding.transform,
+    };
     if let Some(id) = tex_for_key.get(&key) {
-        return Some(awsm_scene_schema::TextureRef(*id));
+        return Some(mk(*id));
     }
     let id = AssetId::new();
     crate::engine::bridge::material::register_texture_key(id, key);
     tex_for_key.insert(key, id);
     texture_entries.push((id, name.to_string()));
-    Some(awsm_scene_schema::TextureRef(id))
+    Some(mk(id))
 }
 
 /// Recursively mirror one glTF template node as an editor `Node`. Mesh-bearing

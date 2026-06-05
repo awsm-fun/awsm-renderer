@@ -1474,11 +1474,11 @@ fn material_editor(node: &Arc<Node>, mat: &MaterialDef, _has_custom: bool) -> Do
     // swap which texture fills it (clearing falls back to the material default).
     if let (Some(inst), Some(def)) = (current_custom_instance(node), assigned_builtin_def(node)) {
         let slots: [(&str, &str, Option<AssetId>); 5] = [
-            ("base_color_texture", "Base color", def.base_color_texture.map(|t| t.0)),
-            ("metallic_roughness_texture", "Metal/rough", def.metallic_roughness_texture.map(|t| t.0)),
-            ("normal_texture", "Normal", def.normal_texture.map(|t| t.0)),
-            ("occlusion_texture", "Occlusion", def.occlusion_texture.map(|t| t.0)),
-            ("emissive_texture", "Emissive map", def.emissive_texture.map(|t| t.0)),
+            ("base_color_texture", "Base color", def.base_color_texture.map(|t| t.asset)),
+            ("metallic_roughness_texture", "Metal/rough", def.metallic_roughness_texture.map(|t| t.asset)),
+            ("normal_texture", "Normal", def.normal_texture.map(|t| t.asset)),
+            ("occlusion_texture", "Occlusion", def.occlusion_texture.map(|t| t.asset)),
+            ("emissive_texture", "Emissive map", def.emissive_texture.map(|t| t.asset)),
         ];
         let present: Vec<(&str, &str, Option<AssetId>)> =
             slots.into_iter().filter(|(_, _, d)| d.is_some()).collect();
@@ -1493,7 +1493,7 @@ fn material_editor(node: &Arc<Node>, mat: &MaterialDef, _has_custom: bool) -> Do
             for (slot, label, default_id) in present {
                 // Show the effective texture (this mesh's override, else the
                 // material default); "None" clears the override → default.
-                let cur = inst.texture_overrides.get(slot).map(|t| t.0).or(default_id);
+                let cur = inst.texture_overrides.get(slot).map(|t| t.asset).or(default_id);
                 sec = sec.child(row(label, texture_override_picker(node, slot, cur, assets.clone())));
             }
         }
@@ -1833,7 +1833,7 @@ fn dynamic_overrides(node: &Arc<Node>) -> Dom {
         }));
         let assets = collect_texture_assets();
         for slot in &tex_slots {
-            let cur = inst.texture_overrides.get(&slot.name).map(|t| t.0);
+            let cur = inst.texture_overrides.get(&slot.name).map(|t| t.asset);
             rows.push(row(
                 &slot.name,
                 texture_override_picker(node, &slot.name, cur, assets.clone()),
@@ -1995,7 +1995,7 @@ fn texture_override_picker(
                             set_texture_override(
                                 &node,
                                 &name,
-                                Some(awsm_scene_schema::TextureRef(id)),
+                                Some(awsm_scene_schema::TextureRef::new(id)),
                             );
                             (close.borrow_mut())();
                         }
