@@ -322,7 +322,8 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
                 tracing::warn!("NodeKind::Mesh {mesh:?}: not in the capture cache; renders empty")
             }
         },
-        // Group / Camera / Model: no procedural geometry.
+        NodeKind::Model(model_ref) => materialize_model(entry.clone(), model_ref).await,
+        // Group / Camera: no procedural geometry.
         _ => {}
     }
 
@@ -417,6 +418,97 @@ async fn materialize_primitive(
             tracing::error!("materialize primitive failed: {e}");
         }
     }
+}
+
+/// Materialize a `Model` node by **duplicating** its glTF template meshes under
+/// the node's own transform. The template (built at import time from
+/// `populate_gltf`) holds the renderer mesh keys for each glTF node; we look up
+/// this node's by `node_index` and call `duplicate_mesh_with_transform` so the
+/// copy is parented to *this* editor node — moving the node moves the mesh.
+/// Skinning is preserved: the duplicate keeps its joint references (the joints
+/// still live in the renderer transform tree as the hidden template).
+async fn materialize_model(entry: Arc<RendererNode>, model_ref: awsm_scene_schema::ModelRef) {
+    let Some(template) = bridge().get_template(model_ref.asset_id) else {
+        tracing::warn!(
+            "Model {:?}: no node template cached; renders empty",
+            model_ref.asset_id
+        );
+        return;
+    };
+    let Some(tnode) = template.find_by_node_index(model_ref.node_index) else {
+        tracing::warn!(
+            "Model node_index {} not found in template; renders empty",
+            model_ref.node_index
+        );
+        return;
+    };
+    // Pair each mesh with its skinned flag. `primitive_index = Some(i)` would
+    // peel a single primitive (Split); we currently materialize them all.
+    let pairs: Vec<(awsm_renderer::meshes::MeshKey, bool)> = match model_ref.primitive_index {
+        None => tnode
+            .mesh_keys
+            .iter()
+            .copied()
+            .zip(tnode.mesh_is_skinned.iter().copied())
+            .collect(),
+        Some(i) => match (
+            tnode.mesh_keys.get(i as usize),
+            tnode.mesh_is_skinned.get(i as usize),
+        ) {
+            (Some(mk), Some(s)) => vec![(*mk, *s)],
+            _ => Vec::new(),
+        },
+    };
+    if pairs.is_empty() {
+        return;
+    }
+
+    let visible = entry.node.visible.get();
+    let shadow_flags = mesh_shadow_flags_from_config(&model_ref.shadow);
+    let parent_tk = entry.transform_key;
+
+    // Skinned meshes keep rendering in place (their original copy, still
+    // visible) — duplicating them would collapse the skin. We only register
+    // them for picking. Non-skinned meshes are duplicated under this node's
+    // transform so the editor node fully owns + moves them.
+    let skinned_originals: Vec<_> = pairs
+        .iter()
+        .filter(|(_, skinned)| *skinned)
+        .map(|(mk, _)| *mk)
+        .collect();
+    let to_duplicate: Vec<_> = pairs
+        .iter()
+        .filter(|(_, skinned)| !*skinned)
+        .map(|(mk, _)| *mk)
+        .collect();
+
+    let mut created = Vec::with_capacity(to_duplicate.len());
+    if !to_duplicate.is_empty() {
+        let handle = renderer_handle();
+        let mut r = handle.lock().await;
+        for mk in &to_duplicate {
+            match r.duplicate_mesh_with_transform(*mk, parent_tk) {
+                Ok(new_mesh) => {
+                    let _ = r.set_mesh_hidden(new_mesh, !visible);
+                    let _ = r.set_mesh_shadow_flags(new_mesh, shadow_flags);
+                    created.push(new_mesh);
+                }
+                Err(e) => tracing::warn!("Model: duplicate_mesh_with_transform failed: {e}"),
+            }
+        }
+        if let Err(e) = r.finalize_gpu_textures().await {
+            tracing::warn!("finalize_gpu_textures (model): {e}");
+        }
+    }
+
+    // Picking: both the duplicated meshes and the in-place skinned originals
+    // resolve back to this node.
+    for mk in created.iter().chain(skinned_originals.iter()) {
+        bridge().register_mesh(*mk, entry.node_id);
+    }
+    // Only the duplicates are owned (torn down) by this node; the skinned
+    // originals belong to the populate pass and stay put.
+    entry.model_meshes.lock().unwrap().extend(created);
 }
 
 /// Authored polyline (`NodeKind::Line`) → fat-line strip. The fat-line pipeline

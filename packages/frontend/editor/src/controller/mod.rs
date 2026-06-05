@@ -632,21 +632,48 @@ impl EditorController {
         }
     }
 
-    /// Shared tail for the two model-import commands: on success, add a tracking
-    /// Group node so the import appears in the Outliner (the glTF renders directly
-    /// from `populate`; the node⇄mesh binding + teardown is the follow-on) and
-    /// toast; on failure, surface the error.
-    fn finish_model_import(&self, result: Result<String, String>) {
-        match result {
-            Ok(name) => {
-                let node = crate::engine::scene::node::Node::new_group(format!("Model: {name}"));
-                mutate::insert_under(&self.scene, None, node);
-                self.scene.bump_revision();
-                self.dirty.set_neq(true);
-                Toast::info(format!("Imported {name}"));
+    /// Shared tail for the two model-import commands. On success, *deconstruct*
+    /// the imported glTF into the editor scene tree: every glTF node becomes an
+    /// editor node (a `Group` for transform/bone nodes, a `Model` for
+    /// mesh-bearing nodes), preserving the hierarchy + local transforms. The
+    /// node template is cached under a freshly-minted source-file `AssetId` so
+    /// each `Model` node can find + duplicate its meshes (see
+    /// `node_sync::materialize_model`). On failure, surface the error.
+    fn finish_model_import(&self, result: Result<crate::engine::bridge::gltf::GltfImport, String>) {
+        let import = match result {
+            Ok(i) => i,
+            Err(e) => {
+                Toast::error(format!("Import failed: {e}"));
+                return;
             }
-            Err(e) => Toast::error(format!("Import failed: {e}")),
+        };
+
+        if import.template.roots.is_empty() {
+            Toast::error("This model contains no nodes to insert");
+            return;
         }
+
+        // Track the source file as an asset + cache its node template.
+        let asset_id = {
+            let mut table = self.scene.assets.lock().unwrap();
+            let id = AssetId::new();
+            table.entries.insert(
+                id,
+                AssetEntry::new(SceneAssetSource::Filename(import.display_name.clone())),
+            );
+            id
+        };
+        let template = Arc::new(import.template);
+        crate::engine::bridge::bridge().insert_template(asset_id, template.clone());
+
+        // Mirror the glTF hierarchy as editor nodes under the scene root.
+        for root in &template.roots {
+            let node = build_editor_subtree(root, asset_id, Some(&import.display_name));
+            mutate::insert_under(&self.scene, None, node);
+        }
+        self.scene.bump_revision();
+        self.dirty.set_neq(true);
+        Toast::info(format!("Imported {}", import.display_name));
     }
 
     /// Pop the newest inverse and apply it; its own inverse becomes a redo entry.
@@ -849,6 +876,48 @@ fn default_procedural(proc: ProceduralKind) -> ProceduralTextureDef {
             scale: 4.0,
         },
     }
+}
+
+/// Recursively mirror one glTF template node as an editor `Node`. Mesh-bearing
+/// nodes become `Model` nodes (which duplicate the template's meshes under
+/// their own transform); pure transform/bone nodes become `Group`s. The local
+/// transform is carried over so the reconstructed hierarchy matches the glTF.
+/// `fallback_name` only labels an unnamed *top-level* node (so a single-root
+/// import shows the file name); children fall back to `Node {index}`.
+fn build_editor_subtree(
+    tn: &crate::engine::bridge::asset_template::AssetTemplateNode,
+    asset_id: AssetId,
+    fallback_name: Option<&str>,
+) -> Arc<crate::engine::scene::node::Node> {
+    use crate::engine::scene::node::Node;
+    use awsm_scene_schema::ModelRef;
+
+    let name = tn.label.clone().unwrap_or_else(|| {
+        fallback_name
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("Node {}", tn.gltf_node_index))
+    });
+
+    let kind = if tn.mesh_keys.is_empty() {
+        NodeKind::Group
+    } else {
+        NodeKind::Model(ModelRef {
+            asset_id,
+            node_index: tn.gltf_node_index,
+            primitive_index: None,
+            shadow: Default::default(),
+        })
+    };
+
+    let trs = crate::engine::bridge::asset_template::transform_to_trs(&tn.local);
+    let node = Node::new_with_transform_and_kind(name, trs, kind);
+
+    for child in &tn.children {
+        node.children
+            .lock_mut()
+            .push_cloned(build_editor_subtree(child, asset_id, None));
+    }
+    node
 }
 
 /// The **structural** identity of a kind — what determines which inspector rows

@@ -1772,6 +1772,19 @@ impl Meshes {
         self.transform_to_meshes.get(transform_key)
     }
 
+    /// Whether this mesh is skinned (its shared resource carries a `SkinKey`).
+    /// Skinned meshes can't be naively duplicated/hidden by editor tooling:
+    /// the per-frame joint-matrix update is driven through the live mesh, so a
+    /// duplicate (or a hidden original) loses its skinning. Callers use this to
+    /// leave skinned meshes rendering in place.
+    pub fn mesh_is_skinned(&self, mesh_key: MeshKey) -> bool {
+        self.resource_key(mesh_key)
+            .ok()
+            .and_then(|rk| self.resources.get(rk))
+            .map(|r| r.skin_key.is_some())
+            .unwrap_or(false)
+    }
+
     /// Iterates over all mesh keys.
     pub fn keys(&self) -> impl Iterator<Item = MeshKey> + '_ {
         self.list.keys()

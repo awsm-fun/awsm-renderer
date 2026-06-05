@@ -1,18 +1,29 @@
-//! Real glTF/glb model import. Fetches the document and `populate_gltf`s it into
-//! the renderer — which inserts every primitive's mesh + transform tree, so the
-//! model renders immediately (Model imports are no longer passive). The
-//! per-`Model`-node template/instancing binding (one editor node ⇄ one gltf
-//! node's meshes, with teardown) is the deeper follow-on; this delivers visible
-//! glTF rendering.
+//! Real glTF/glb model import + **deconstruction**. Fetches the document and
+//! `populate_gltf`s it into the renderer (which builds the full transform tree,
+//! meshes, and skinning), then snapshots that into an
+//! [`AssetTemplate`](super::asset_template::AssetTemplate). The caller
+//! (`EditorController::finish_model_import`) mirrors the template as editor
+//! `Group`/`Model` nodes so the import appears as an editable hierarchy in the
+//! Outliner; each `Model` node duplicates the template meshes under its own
+//! transform (see `node_sync::materialize_model`). The template's own meshes are
+//! hidden so they don't double-render.
 
 use awsm_renderer_gltf::loader::{get_type_from_filename, GltfFileType};
 use awsm_renderer_gltf::{loader::GltfLoader, AwsmRendererGltfExt};
 
+use super::asset_template::{self, AssetTemplate};
 use crate::engine::context::renderer_handle;
 
-/// Load + populate a glTF/glb from `url`; returns a display name from the URL.
+/// The result of importing one glTF/glb: a display name plus the node template
+/// to deconstruct into the editor scene tree.
+pub struct GltfImport {
+    pub display_name: String,
+    pub template: AssetTemplate,
+}
+
+/// Load + populate a glTF/glb from `url`; display name derived from the URL.
 /// File type is inferred from the URL extension (`.glb`/`.gltf`).
-pub async fn import(url: &str) -> Result<String, String> {
+pub async fn import(url: &str) -> Result<GltfImport, String> {
     import_typed(url, None, None).await
 }
 
@@ -20,7 +31,7 @@ pub async fn import(url: &str) -> Result<String, String> {
 /// name. Used by the **file picker**: the picked file becomes a `blob:` object
 /// URL (which has no extension, so the type can't be inferred), and we want the
 /// real filename for the Outliner label rather than the opaque blob id.
-pub async fn import_file(name: &str, url: &str) -> Result<String, String> {
+pub async fn import_file(name: &str, url: &str) -> Result<GltfImport, String> {
     let file_type = get_type_from_filename(name);
     import_typed(url, file_type, Some(name)).await
 }
@@ -29,20 +40,30 @@ async fn import_typed(
     url: &str,
     file_type: Option<GltfFileType>,
     name: Option<&str>,
-) -> Result<String, String> {
+) -> Result<GltfImport, String> {
     let loader = GltfLoader::load(url, file_type)
         .await
         .map_err(|e| format!("load: {e}"))?;
     let data = loader.into_data(None).map_err(|e| format!("decode: {e}"))?;
-    {
-        // Hold the renderer lock across the async populate.
+    let template = {
+        // Hold the renderer lock across the async populate + the synchronous
+        // template snapshot, so nothing mutates the freshly-built tree first.
         let handle = renderer_handle();
         let mut r = handle.lock().await;
-        r.populate_gltf(data, None)
+        let ctx = r
+            .populate_gltf(data, None)
             .await
             .map_err(|e| format!("populate: {e}"))?;
-    }
-    Ok(name.map(str::to_owned).unwrap_or_else(|| model_name(url)))
+        let template = asset_template::build_from_context(&r, &ctx);
+        // The renderer already rendered these meshes directly; hide them so the
+        // editor's user-movable Model-node duplicates are the only visible copy.
+        asset_template::hide_template_meshes(&mut r, &template);
+        template
+    };
+    Ok(GltfImport {
+        display_name: name.map(str::to_owned).unwrap_or_else(|| model_name(url)),
+        template,
+    })
 }
 
 fn model_name(url: &str) -> String {
