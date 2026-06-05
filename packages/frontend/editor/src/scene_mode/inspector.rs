@@ -1449,11 +1449,11 @@ fn dynamic_overrides(node: &Arc<Node>) -> Dom {
         return html!("div", {});
     }
     let slots = mat.uniforms.get_cloned();
-    if slots.is_empty() && mat.textures.lock_ref().is_empty() {
+    if slots.is_empty() && mat.textures.lock_ref().is_empty() && mat.buffers.lock_ref().is_empty() {
         return html!("div", {
             .style("margin-top", "8px").style("font-size", "12px")
             .style("color", "var(--text-2)").style("line-height", "1.5")
-            .text("This material declares no uniforms or textures. Add slots in the Material pane to expose per-mesh overrides here.")
+            .text("This material declares no uniforms, textures, or buffers. Add slots in the Material pane to expose per-mesh overrides here.")
         });
     }
 
@@ -1509,10 +1509,118 @@ fn dynamic_overrides(node: &Arc<Node>) -> Dom {
         }
     }
 
+    // Per-mesh **buffer** overrides (#4.2): load a `.bin` per declared data-buffer
+    // slot.
+    let buf_slots = mat.buffers.get_cloned();
+    if !buf_slots.is_empty() {
+        rows.push(html!("div", {
+            .style("margin", "10px 0 2px").style("font-size", "11px").style("font-weight", "600")
+            .style("letter-spacing", ".04em").style("text-transform", "uppercase")
+            .style("color", "var(--text-3)")
+            .text("Buffer overrides")
+        }));
+        for slot in &buf_slots {
+            let loaded = inst.buffer_overrides.contains_key(&slot.name);
+            rows.push(row(&slot.name, buffer_override_control(node, &slot.name, loaded)));
+        }
+    }
+
     html!("div", {
         .style("display", "flex").style("flex-direction", "column").style("gap", "2px")
         .children(rows)
     })
+}
+
+/// Control for a buffer-slot override: a "Load .bin" button (+ Clear when set).
+fn buffer_override_control(node: &Arc<Node>, name: &str, loaded: bool) -> Dom {
+    let n1 = node.clone();
+    let nm1 = name.to_string();
+    html!("div", {
+        .style("display", "flex").style("gap", "6px").style("align-items", "center")
+        .child(Btn::new()
+            .label(if loaded { "Replace .bin\u{2026}" } else { "Load .bin\u{2026}" })
+            .variant(BtnVariant::Ghost).size(BtnSize::Sm)
+            .on_click(move || pick_buffer_bin(&n1, &nm1)).render())
+        .apply(|b| if loaded {
+            let n2 = node.clone();
+            let nm2 = name.to_string();
+            b.child(html!("span", { .style("font-size", "11px").style("color", "var(--ok)").text("loaded") }))
+                .child(Btn::new().label("Clear").variant(BtnVariant::Ghost).size(BtnSize::Sm)
+                    .on_click(move || set_buffer_override(&n2, &nm2, None)).render())
+        } else {
+            b
+        })
+    })
+}
+
+/// Open a native file dialog for a `.bin`, load its bytes as little-endian u32
+/// words, stash them, and set this mesh's buffer override to reference them.
+fn pick_buffer_bin(node: &Arc<Node>, name: &str) {
+    use wasm_bindgen::{closure::Closure, JsCast};
+    let Some(document) = web_sys::window().and_then(|w| w.document()) else {
+        return;
+    };
+    let Some(input) = document
+        .create_element("input")
+        .ok()
+        .and_then(|e| e.dyn_into::<web_sys::HtmlInputElement>().ok())
+    else {
+        return;
+    };
+    input.set_type("file");
+    let _ = input.set_attribute("accept", ".bin,application/octet-stream");
+    let node = node.clone();
+    let name = name.to_string();
+    let input_ref = input.clone();
+    let cb = Closure::<dyn FnMut()>::new(move || {
+        let Some(file) = input_ref.files().and_then(|f| f.get(0)) else {
+            return;
+        };
+        let node = node.clone();
+        let name = name.to_string();
+        spawn_local(async move {
+            let Ok(buf) = wasm_bindgen_futures::JsFuture::from(file.array_buffer()).await else {
+                return;
+            };
+            let bytes = js_sys::Uint8Array::new(&buf).to_vec();
+            let words: Vec<u32> = bytes
+                .chunks(4)
+                .map(|c| {
+                    let mut b = [0u8; 4];
+                    b[..c.len()].copy_from_slice(c);
+                    u32::from_le_bytes(b)
+                })
+                .collect();
+            let path = crate::engine::bridge::dynamic::store_buffer_words(words);
+            set_buffer_override(
+                &node,
+                &name,
+                Some(awsm_scene_schema::dynamic_material::BufferRef { path: path.into() }),
+            );
+        });
+    });
+    input.set_onchange(Some(cb.as_ref().unchecked_ref()));
+    cb.forget();
+    input.click();
+}
+
+/// Write (or clear) one per-mesh buffer override and re-materialize.
+fn set_buffer_override(
+    node: &Arc<Node>,
+    name: &str,
+    value: Option<awsm_scene_schema::dynamic_material::BufferRef>,
+) {
+    if let Some(mut inst) = current_custom_instance(node) {
+        match value {
+            Some(b) => {
+                inst.buffer_overrides.insert(name.to_string(), b);
+            }
+            None => {
+                inst.buffer_overrides.remove(name);
+            }
+        }
+        set_custom_instance(node, inst);
+    }
 }
 
 /// A texture-slot override picker: pick a project texture asset (or None) for a

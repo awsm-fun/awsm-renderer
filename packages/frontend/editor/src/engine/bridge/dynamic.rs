@@ -38,6 +38,25 @@ fn registered_shader_id(id: AssetId) -> Option<MaterialShaderId> {
     REGISTRY.with(|r| r.borrow().get(&id).copied())
 }
 
+thread_local! {
+    /// Session-scoped data for per-mesh buffer-slot overrides: a synthetic
+    /// `session://buffer/<uuid>` path → the loaded `.bin`'s little-endian u32
+    /// words. (Persistence writes the `.bin` next to the project on save.)
+    static BUFFER_DATA: RefCell<HashMap<String, Vec<u32>>> = RefCell::new(HashMap::new());
+}
+
+/// Store a loaded buffer's words and return the synthetic path that references
+/// it (set as the `BufferRef::path` on a `CustomMaterialInstance` override).
+pub(crate) fn store_buffer_words(words: Vec<u32>) -> String {
+    let path = format!("session://buffer/{}", AssetId::new().0);
+    BUFFER_DATA.with(|m| m.borrow_mut().insert(path.clone(), words));
+    path
+}
+
+fn buffer_words_for(path: &str) -> Option<Vec<u32>> {
+    BUFFER_DATA.with(|m| m.borrow().get(path).cloned())
+}
+
 /// Register a custom material with the renderer (locks it, finalizes textures).
 /// Returns the assigned shader id, or an error string on failure.
 pub async fn register(mat: &CustomMaterial) -> Result<MaterialShaderId, String> {
@@ -104,6 +123,22 @@ fn build_custom(renderer: &mut AwsmRenderer, inst: &CustomMaterialInstance) -> O
                     if rv.field_type() == *ty {
                         if let Some(slot) = dm.values.get_mut(i) {
                             *slot = rv;
+                        }
+                    }
+                }
+            }
+        }
+        // Per-mesh buffer-slot overrides (#4.2): bind a loaded `.bin`'s words.
+        if !inst.buffer_overrides.is_empty() {
+            let buf_slots: Vec<String> = renderer
+                .dynamic_material_registration(dm.shader_id)
+                .map(|reg| reg.layout.buffers.iter().map(|b| b.name.clone()).collect())
+                .unwrap_or_default();
+            for (i, name) in buf_slots.iter().enumerate() {
+                if let Some(bref) = inst.buffer_overrides.get(name) {
+                    if let Some(words) = buffer_words_for(&bref.path.to_string_lossy()) {
+                        if let Some(slot) = dm.buffers.get_mut(i) {
+                            *slot = Some(words);
                         }
                     }
                 }
