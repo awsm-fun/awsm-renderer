@@ -156,6 +156,10 @@ impl EditorController {
     /// The single entry point. UI handlers build a command and dispatch it here;
     /// async because some commands await the renderer / FS / network.
     pub async fn dispatch(&self, cmd: EditorCommand) -> EditorResult<()> {
+        // Every command entering through `dispatch` is a *direct user input*
+        // (undo/redo replay goes straight to `apply`, bypassing this). Broadcast
+        // it for future multi-window / collaboration sync — see `broadcast`.
+        self.broadcast(&cmd);
         let transient = cmd.is_transient();
         // Coalesce consecutive continuous edits on the same node (transform
         // drag-scrub, name typing) into one undo step.
@@ -173,6 +177,19 @@ impl EditorController {
             self.dirty.set_neq(true);
         }
         Ok(())
+    }
+
+    /// Broadcast a direct-input command. Today this only logs `broadcasting
+    /// <command>` (the command serialized as JSON — the exact payload a peer
+    /// would replay), which is handy for tracing undo/redo and input flow. Later
+    /// this will feed a transport so other windows / collaborators apply the same
+    /// command — e.g. driving a scene camera from one window's built-in view and
+    /// seeing it move in another. Undo/redo deliberately don't broadcast (they
+    /// call `apply` directly), so a replay isn't mistaken for a fresh edit.
+    fn broadcast(&self, cmd: &EditorCommand) {
+        let payload =
+            serde_json::to_string(cmd).unwrap_or_else(|_| format!("{cmd:?}"));
+        tracing::info!("broadcasting {payload}");
     }
 
     /// Apply a command's effect and return its inverse (for the undo log), or
