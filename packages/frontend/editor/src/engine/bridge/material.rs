@@ -29,6 +29,14 @@ thread_local! {
     static TEXTURE_KEYS: RefCell<HashMap<AssetId, TextureKey>> = RefCell::new(HashMap::new());
 }
 
+/// Pre-register a texture-asset id against a renderer [`TextureKey`] that's
+/// already uploaded (e.g. one `populate_gltf` baked for an imported model), so
+/// `resolve_texture` returns it on the cache-hit path instead of re-decoding.
+/// Used by glTF import to wire extracted materials to their original textures.
+pub(crate) fn register_texture_key(asset_id: AssetId, key: TextureKey) {
+    TEXTURE_KEYS.with(|c| c.borrow_mut().insert(asset_id, key));
+}
+
 /// The "missing material" colour: flat, unlit magenta. A mesh with **no** assigned
 /// material renders this (the classic engine sentinel) — it is deliberately NOT a
 /// real material with editable settings (see the material model note in

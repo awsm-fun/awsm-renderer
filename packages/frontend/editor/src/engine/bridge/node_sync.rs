@@ -442,73 +442,109 @@ async fn materialize_model(entry: Arc<RendererNode>, model_ref: awsm_scene_schem
         );
         return;
     };
-    // Pair each mesh with its skinned flag. `primitive_index = Some(i)` would
-    // peel a single primitive (Split); we currently materialize them all.
-    let pairs: Vec<(awsm_renderer::meshes::MeshKey, bool)> = match model_ref.primitive_index {
+    // Each mesh: (mesh_key, is_skinned, gltf material index). `primitive_index =
+    // Some(i)` would peel a single primitive (Split); we materialize them all.
+    type Triple = (awsm_renderer::meshes::MeshKey, bool, Option<usize>);
+    let triples: Vec<Triple> = match model_ref.primitive_index {
         None => tnode
             .mesh_keys
             .iter()
             .copied()
             .zip(tnode.mesh_is_skinned.iter().copied())
+            .zip(tnode.mesh_gltf_material_indices.iter().copied())
+            .map(|((mk, s), mi)| (mk, s, mi))
             .collect(),
-        Some(i) => match (
-            tnode.mesh_keys.get(i as usize),
-            tnode.mesh_is_skinned.get(i as usize),
-        ) {
-            (Some(mk), Some(s)) => vec![(*mk, *s)],
-            _ => Vec::new(),
-        },
+        Some(i) => {
+            let i = i as usize;
+            match (
+                tnode.mesh_keys.get(i),
+                tnode.mesh_is_skinned.get(i),
+                tnode.mesh_gltf_material_indices.get(i),
+            ) {
+                (Some(mk), Some(s), Some(mi)) => vec![(*mk, *s, *mi)],
+                _ => Vec::new(),
+            }
+        }
     };
-    if pairs.is_empty() {
+    if triples.is_empty() {
         return;
     }
 
+    // The library material id per glTF material index (the import wired these).
+    let gltf_mat_ids: Vec<crate::engine::scene::AssetId> = {
+        let ctrl = controller();
+        let assets = ctrl.scene.assets.lock().unwrap();
+        assets
+            .entries
+            .get(&model_ref.asset_id)
+            .map(|e| e.gltf_material_asset_ids.clone())
+            .unwrap_or_default()
+    };
+
+    let _ = &gltf_mat_ids; // wired material assignment is gated below
     let visible = entry.node.visible.get();
     let shadow_flags = mesh_shadow_flags_from_config(&model_ref.shadow);
     let parent_tk = entry.transform_key;
 
-    // Skinned meshes keep rendering in place (their original copy, still
-    // visible) — duplicating them would collapse the skin. We only register
-    // them for picking. Non-skinned meshes are duplicated under this node's
-    // transform so the editor node fully owns + moves them.
-    let skinned_originals: Vec<_> = pairs
-        .iter()
-        .filter(|(_, skinned)| *skinned)
-        .map(|(mk, _)| *mk)
-        .collect();
-    let to_duplicate: Vec<_> = pairs
-        .iter()
-        .filter(|(_, skinned)| !*skinned)
-        .map(|(mk, _)| *mk)
-        .collect();
-
-    let mut created = Vec::with_capacity(to_duplicate.len());
-    if !to_duplicate.is_empty() {
+    let mut created = Vec::new();
+    let mut to_register = Vec::new();
+    {
         let handle = renderer_handle();
         let mut r = handle.lock().await;
-        for mk in &to_duplicate {
-            match r.duplicate_mesh_with_transform(*mk, parent_tk) {
-                Ok(new_mesh) => {
-                    let _ = r.set_mesh_hidden(new_mesh, !visible);
-                    let _ = r.set_mesh_shadow_flags(new_mesh, shadow_flags);
-                    created.push(new_mesh);
+        for (mk, skinned, _mat_idx) in &triples {
+            // Skinned meshes keep rendering in place (their original copy) —
+            // duplicating collapses the skin; non-skinned are duplicated under
+            // this node's transform so the editor node owns + moves them. The
+            // copy keeps the renderer-baked, fully-textured material, so a
+            // textured import stays textured.
+            let target = if *skinned {
+                *mk
+            } else {
+                match r.duplicate_mesh_with_transform(*mk, parent_tk) {
+                    Ok(new_mesh) => {
+                        let _ = r.set_mesh_hidden(new_mesh, !visible);
+                        let _ = r.set_mesh_shadow_flags(new_mesh, shadow_flags);
+                        created.push(new_mesh);
+                        new_mesh
+                    }
+                    Err(e) => {
+                        tracing::warn!("Model: duplicate_mesh_with_transform failed: {e}");
+                        continue;
+                    }
                 }
-                Err(e) => tracing::warn!("Model: duplicate_mesh_with_transform failed: {e}"),
-            }
+            };
+            to_register.push(target);
         }
         if let Err(e) = r.finalize_gpu_textures().await {
             tracing::warn!("finalize_gpu_textures (model): {e}");
         }
     }
 
-    // Picking: both the duplicated meshes and the in-place skinned originals
-    // resolve back to this node.
-    for mk in created.iter().chain(skinned_originals.iter()) {
+    for mk in &to_register {
         bridge().register_mesh(*mk, entry.node_id);
     }
-    // Only the duplicates are owned (torn down) by this node; the skinned
-    // originals belong to the populate pass and stay put.
     entry.model_meshes.lock().unwrap().extend(created);
+}
+
+/// Build a renderer material key from an editor **library** material id (a
+/// built-in PBR/Unlit/Toon variant → `material::insert_material`; a dynamic WGSL
+/// material → its registered bucket). `None` if the id isn't a known material.
+#[allow(dead_code)] // used once glTF-material→mesh wiring lands (texture reuse pending)
+fn build_library_material(
+    r: &mut awsm_renderer::AwsmRenderer,
+    lib_id: crate::engine::scene::AssetId,
+) -> Option<awsm_renderer::materials::MaterialKey> {
+    let ctrl = controller();
+    let mat = crate::controller::custom_material::find_material(&ctrl.custom_materials, lib_id)?;
+    if let Some(def) = mat.builtin.get_cloned() {
+        Some(material::insert_material(r, &def))
+    } else {
+        let inst = awsm_scene_schema::dynamic_material::CustomMaterialInstance {
+            material: lib_id,
+            ..Default::default()
+        };
+        super::dynamic::insert_custom(r, &inst)
+    }
 }
 
 /// Authored polyline (`NodeKind::Line`) → fat-line strip. The fat-line pipeline

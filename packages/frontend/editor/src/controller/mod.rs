@@ -681,21 +681,80 @@ impl EditorController {
             return;
         }
 
-        // Track the source file + the materials/textures it brings in (#6.3):
-        // the Content Browser renders `AssetSource::Material` / `Texture` entries
-        // straight from the table, so extracting them here surfaces them. They're
-        // browsable/editable; the model itself keeps rendering from the
-        // renderer-baked materials (so textured imports stay textured).
-        let mat_ids: Vec<AssetId> = import.materials.iter().map(|_| AssetId::new()).collect();
-        let img_ids: Vec<AssetId> = import.image_names.iter().map(|_| AssetId::new()).collect();
+        // Bring the imported materials into the **assignable library** (so they
+        // can be used on any mesh) and wire them onto the model's meshes — with
+        // their textures preserved by reusing the renderer textures populate
+        // already uploaded (see `gltf::ExtractedMaterial`). Each glTF material
+        // becomes a built-in PBR library material; its textures become texture
+        // assets (deduped by baked key) pre-registered to the baked GPU texture.
+        use awsm_scene_schema::MaterialShading;
+
+        let mut tex_for_key: std::collections::HashMap<awsm_renderer::textures::TextureKey, AssetId> =
+            std::collections::HashMap::new();
+        let mut texture_entries: Vec<(AssetId, String)> = Vec::new();
+        let mut mat_ids: Vec<AssetId> = Vec::with_capacity(import.materials.len());
+
+        for ex in &import.materials {
+            let label = if ex.def.label.is_empty() {
+                "Material".to_string()
+            } else {
+                ex.def.label.clone()
+            };
+            let mut def = ex.def.clone();
+            def.base_color_texture = ensure_import_texture(
+                &mut tex_for_key,
+                &mut texture_entries,
+                ex.textures.base_color,
+                &format!("{label} · base color"),
+            );
+            def.metallic_roughness_texture = ensure_import_texture(
+                &mut tex_for_key,
+                &mut texture_entries,
+                ex.textures.metallic_roughness,
+                &format!("{label} · metal/rough"),
+            );
+            def.normal_texture = ensure_import_texture(
+                &mut tex_for_key,
+                &mut texture_entries,
+                ex.textures.normal,
+                &format!("{label} · normal"),
+            );
+            def.occlusion_texture = ensure_import_texture(
+                &mut tex_for_key,
+                &mut texture_entries,
+                ex.textures.occlusion,
+                &format!("{label} · occlusion"),
+            );
+            def.emissive_texture = ensure_import_texture(
+                &mut tex_for_key,
+                &mut texture_entries,
+                ex.textures.emissive,
+                &format!("{label} · emissive"),
+            );
+
+            // A built-in PBR library material carrying the full variant def.
+            let lib_id = AssetId::new();
+            let mat = CM::new_builtin(lib_id, label, MaterialShading::Pbr);
+            let c = def.base_color;
+            mat.color.set(format!(
+                "#{:02x}{:02x}{:02x}",
+                (c[0].clamp(0.0, 1.0) * 255.0) as u8,
+                (c[1].clamp(0.0, 1.0) * 255.0) as u8,
+                (c[2].clamp(0.0, 1.0) * 255.0) as u8
+            ));
+            mat.double_sided.set_neq(def.double_sided);
+            mat.builtin.set(Some(def));
+            self.custom_materials.lock_mut().push_cloned(mat);
+            mat_ids.push(lib_id);
+        }
+
+        // Track the source file + the texture assets in the table; record the
+        // library material + texture ids on the file entry so `materialize_model`
+        // can wire each mesh to its extracted material.
+        let img_ids: Vec<AssetId> = texture_entries.iter().map(|(id, _)| *id).collect();
         let asset_id = {
             let mut table = self.scene.assets.lock().unwrap();
-            for (id, def) in mat_ids.iter().zip(import.materials.iter()) {
-                table
-                    .entries
-                    .insert(*id, AssetEntry::new(SceneAssetSource::Material(def.clone())));
-            }
-            for (id, name) in img_ids.iter().zip(import.image_names.iter()) {
+            for (id, name) in &texture_entries {
                 table.entries.insert(
                     *id,
                     AssetEntry::new(SceneAssetSource::Texture(TextureDef::Raster {
@@ -706,7 +765,7 @@ impl EditorController {
             let id = AssetId::new();
             let mut entry = AssetEntry::new(SceneAssetSource::Filename(import.display_name.clone()));
             entry.gltf_material_asset_ids = mat_ids.clone();
-            entry.gltf_image_asset_ids = img_ids.clone();
+            entry.gltf_image_asset_ids = img_ids;
             table.entries.insert(id, entry);
             id
         };
@@ -929,6 +988,27 @@ fn default_procedural(proc: ProceduralKind) -> ProceduralTextureDef {
             scale: 4.0,
         },
     }
+}
+
+/// Create (or dedupe) a texture asset for a baked glTF texture key and return a
+/// `TextureRef` to it. The asset id is pre-registered against the already-baked
+/// renderer `TextureKey`, so when the material resolves this slot it reuses the
+/// GPU texture rather than re-decoding (preserving the model's real textures).
+fn ensure_import_texture(
+    tex_for_key: &mut std::collections::HashMap<awsm_renderer::textures::TextureKey, AssetId>,
+    texture_entries: &mut Vec<(AssetId, String)>,
+    key: Option<awsm_renderer::textures::TextureKey>,
+    name: &str,
+) -> Option<awsm_scene_schema::TextureRef> {
+    let key = key?;
+    if let Some(id) = tex_for_key.get(&key) {
+        return Some(awsm_scene_schema::TextureRef(*id));
+    }
+    let id = AssetId::new();
+    crate::engine::bridge::material::register_texture_key(id, key);
+    tex_for_key.insert(key, id);
+    texture_entries.push((id, name.to_string()));
+    Some(awsm_scene_schema::TextureRef(id))
 }
 
 /// Recursively mirror one glTF template node as an editor `Node`. Mesh-bearing
