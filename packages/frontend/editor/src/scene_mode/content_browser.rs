@@ -23,6 +23,9 @@ enum Cat {
     All,
     Material,
     Texture,
+    /// Imported glTF/glb model files.
+    Model,
+    /// Procedural meshes captured from the scene (the `Mesh` insert kind).
     Mesh,
 }
 
@@ -155,7 +158,8 @@ fn tabs(cat: Mutable<Cat>) -> Dom {
         (Cat::All, "All", None),
         (Cat::Material, "Materials", Some(Cat::Material)),
         (Cat::Texture, "Textures", Some(Cat::Texture)),
-        (Cat::Mesh, "Meshes", Some(Cat::Mesh)),
+        (Cat::Model, "Models", Some(Cat::Model)),
+        (Cat::Mesh, "CapturedMeshes", Some(Cat::Mesh)),
     ];
     html!("div", {
         .style("display", "flex").style("gap", "2px")
@@ -213,6 +217,7 @@ fn card(c: Card) -> Dom {
     let kind_label = match c.cat {
         Cat::Material => "material",
         Cat::Texture => "texture",
+        Cat::Model => "model",
         Cat::Mesh => "mesh",
         Cat::All => "",
     };
@@ -399,6 +404,24 @@ fn collect_cards(cat: Cat, query: &str) -> Vec<Card> {
                     });
                 }
             }
+            // Imported glTF/glb model files — the deconstructed scene tree lives
+            // in the Outliner; this is the browsable source-file asset.
+            AssetSource::Filename(name) if matches!(cat, Cat::All | Cat::Model) => {
+                if matches(name) {
+                    cards.push(Card {
+                        cat: Cat::Model,
+                        id: Some(*id),
+                        name: name.clone(),
+                        swatch:
+                            "linear-gradient(135deg, oklch(0.34 0.03 255), oklch(0.20 0.02 255))"
+                                .to_string(),
+                        badge: Some(("MODEL".to_string(), Tone::Accent)),
+                        meta: "glTF/glb".to_string(),
+                        builtin: false,
+                        custom: false,
+                    });
+                }
+            }
             _ => {}
         }
     }
@@ -518,6 +541,7 @@ fn cat_count_signal(cat: Cat) -> impl Signal<Item = String> {
                     (AssetSource::Material(_), Cat::Material)
                         | (AssetSource::Texture(_), Cat::Texture)
                         | (AssetSource::Mesh(_), Cat::Mesh)
+                        | (AssetSource::Filename(_), Cat::Model)
                 )
             })
             .count();
