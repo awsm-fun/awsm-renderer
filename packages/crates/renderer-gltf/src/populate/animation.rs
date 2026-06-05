@@ -143,42 +143,11 @@ impl GltfAnimationExt for AwsmRenderer {
                 }
             };
 
-            let times = sampler_timestamps(ctx, &gltf_sampler)?;
-            let duration = (times.last().copied().unwrap_or(0.0) - times[0]) as f64;
-            let values = accessor_to_bytes(&gltf_sampler.output(), &ctx.data.buffers.raw)?;
-            let values = u8_to_f32_vec(&values);
-
-            let values = values
-                .chunks(targets_len)
-                .map(|chunk| AnimationData::Vertex(VertexAnimation::new(chunk.to_vec())))
-                .collect();
-
-            let sampler = match gltf_sampler.interpolation() {
-                gltf::animation::Interpolation::Linear => {
-                    AnimationSampler::Linear { times, values }
-                }
-                gltf::animation::Interpolation::Step => AnimationSampler::Step { times, values },
-                gltf::animation::Interpolation::CubicSpline => {
-                    let mut in_tangents = Vec::with_capacity(values.len() / 3);
-                    let mut spline_vertices = Vec::with_capacity(values.len() / 3);
-                    let mut out_tangents = Vec::with_capacity(values.len() / 3);
-
-                    for x in values.chunks_exact(3) {
-                        in_tangents.push(x[0].clone());
-                        spline_vertices.push(x[1].clone());
-                        out_tangents.push(x[2].clone());
-                    }
-
-                    AnimationSampler::CubicSpline {
-                        times,
-                        in_tangents,
-                        values: spline_vertices,
-                        out_tangents,
-                    }
-                }
-            };
-
-            let clip = AnimationClip::new(Some("morph".to_string()), duration, sampler);
+            let clip = gltf_animation_clip_morph_from_buffers(
+                &gltf_sampler,
+                targets_len,
+                &ctx.data.buffers.raw,
+            )?;
 
             let player = AnimationPlayer::new(clip);
 
@@ -225,18 +194,7 @@ impl GltfAnimationExt for AwsmRenderer {
     }
 }
 
-fn sampler_timestamps(
-    ctx: &GltfPopulateContext,
-    gltf_sampler: &gltf::animation::Sampler,
-) -> Result<Vec<f64>> {
-    let bytes = accessor_to_bytes(&gltf_sampler.input(), &ctx.data.buffers.raw)?;
-    Ok(u8_to_f32_vec(&bytes)
-        .into_iter()
-        .map(|v| v as f64)
-        .collect())
-}
-
-enum TransformTarget {
+pub(crate) enum TransformTarget {
     Translation,
     Rotation,
     Scale,
@@ -265,9 +223,36 @@ fn gltf_animation_clip_transform(
     gltf_sampler: &gltf::animation::Sampler,
     target: TransformTarget,
 ) -> Result<AnimationClip> {
-    let times = sampler_timestamps(ctx, gltf_sampler)?;
+    gltf_animation_clip_transform_from_buffers(gltf_sampler, target, &ctx.data.buffers.raw)
+}
+
+/// Reads a sampler's input accessor (keyframe timestamps) directly from raw
+/// glTF buffers. Shared by both the populate path (via
+/// `gltf_animation_clip_transform`) and the renderer-free `extract` path.
+pub(crate) fn sampler_timestamps_from_buffers(
+    gltf_sampler: &gltf::animation::Sampler,
+    buffers: &[Vec<u8>],
+) -> Result<Vec<f64>> {
+    let bytes = accessor_to_bytes(&gltf_sampler.input(), buffers)?;
+    Ok(u8_to_f32_vec(&bytes)
+        .into_iter()
+        .map(|v| v as f64)
+        .collect())
+}
+
+/// Parses a transform (translation / rotation / scale) animation sampler into
+/// an `AnimationClip` directly from raw glTF buffers. This carries the canonical
+/// Linear / Step / CubicSpline + chunk-size logic; both the populate path and
+/// the renderer-free `extract` path delegate here so the parsing stays
+/// byte-identical.
+pub(crate) fn gltf_animation_clip_transform_from_buffers(
+    gltf_sampler: &gltf::animation::Sampler,
+    target: TransformTarget,
+    buffers: &[Vec<u8>],
+) -> Result<AnimationClip> {
+    let times = sampler_timestamps_from_buffers(gltf_sampler, buffers)?;
     let duration = (times.last().copied().unwrap_or(0.0) - times[0]) as f64;
-    let values = accessor_to_bytes(&gltf_sampler.output(), &ctx.data.buffers.raw)?;
+    let values = accessor_to_bytes(&gltf_sampler.output(), buffers)?;
     let values = u8_to_f32_vec(&values);
 
     let values = values
@@ -310,6 +295,56 @@ fn gltf_animation_clip_transform(
 
     Ok(AnimationClip::new(
         Some(format!("transform {}", target.as_str())),
+        duration,
+        sampler,
+    ))
+}
+
+/// Parses a morph-target-weights animation sampler into an `AnimationClip`
+/// whose values are `AnimationData::Vertex` chunks of `targets_len` weights
+/// each, directly from raw glTF buffers. Mirrors the sampler parsing in
+/// `populate_gltf_animation_morph`; both paths delegate here so the parsing
+/// stays byte-identical.
+pub(crate) fn gltf_animation_clip_morph_from_buffers(
+    gltf_sampler: &gltf::animation::Sampler,
+    targets_len: usize,
+    buffers: &[Vec<u8>],
+) -> Result<AnimationClip> {
+    let times = sampler_timestamps_from_buffers(gltf_sampler, buffers)?;
+    let duration = (times.last().copied().unwrap_or(0.0) - times[0]) as f64;
+    let values = accessor_to_bytes(&gltf_sampler.output(), buffers)?;
+    let values = u8_to_f32_vec(&values);
+
+    let values: Vec<AnimationData> = values
+        .chunks(targets_len)
+        .map(|chunk| AnimationData::Vertex(VertexAnimation::new(chunk.to_vec())))
+        .collect();
+
+    let sampler = match gltf_sampler.interpolation() {
+        gltf::animation::Interpolation::Linear => AnimationSampler::Linear { times, values },
+        gltf::animation::Interpolation::Step => AnimationSampler::Step { times, values },
+        gltf::animation::Interpolation::CubicSpline => {
+            let mut in_tangents = Vec::with_capacity(values.len() / 3);
+            let mut spline_vertices = Vec::with_capacity(values.len() / 3);
+            let mut out_tangents = Vec::with_capacity(values.len() / 3);
+
+            for x in values.chunks_exact(3) {
+                in_tangents.push(x[0].clone());
+                spline_vertices.push(x[1].clone());
+                out_tangents.push(x[2].clone());
+            }
+
+            AnimationSampler::CubicSpline {
+                times,
+                in_tangents,
+                values: spline_vertices,
+                out_tangents,
+            }
+        }
+    };
+
+    Ok(AnimationClip::new(
+        Some("morph".to_string()),
         duration,
         sampler,
     ))
