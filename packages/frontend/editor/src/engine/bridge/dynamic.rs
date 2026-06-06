@@ -38,6 +38,14 @@ fn registered_shader_id(id: AssetId) -> Option<MaterialShaderId> {
     REGISTRY.with(|r| r.borrow().get(&id).copied())
 }
 
+/// The registered `MaterialShaderId` for a custom-material asset id, if it's been
+/// registered with the renderer. Public seam for the animation bridge, which
+/// resolves a `Uniform` track's material asset → shader id → live `MaterialKey`.
+/// `None` while the material hasn't been registered yet (PENDING).
+pub fn shader_id_for_asset(id: AssetId) -> Option<MaterialShaderId> {
+    registered_shader_id(id)
+}
+
 thread_local! {
     /// Session-scoped data for per-mesh buffer-slot overrides: a synthetic
     /// `session://buffer/<uuid>` path → the loaded `.bin`'s little-endian u32

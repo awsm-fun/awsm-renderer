@@ -8,6 +8,7 @@ use awsm_meshgen::{
     box_mesh, cone_mesh, cylinder_mesh, plane_mesh, sphere_mesh, sweep_along_curve, torus_mesh,
     CrossSection, MeshData, SweepOpts, UvMode,
 };
+use awsm_renderer::cameras::{CameraParams, CameraProjectionParams};
 use awsm_renderer::raw_mesh::RawMeshData;
 use awsm_renderer::transforms::{Transform, TransformKey};
 use awsm_scene_schema::PrimitiveShape;
@@ -245,6 +246,7 @@ async fn teardown(entry: &Arc<RendererNode>) {
     let lines: Vec<_> = entry.line_keys.lock().unwrap().drain(..).collect();
     let decals: Vec<_> = entry.decal_keys.lock().unwrap().drain(..).collect();
     let light = entry.light_key.lock().unwrap().take();
+    let camera = entry.camera_key.lock().unwrap().take();
     let node_id = entry.node_id;
     for mk in &meshes {
         bridge().unregister_mesh(*mk);
@@ -269,6 +271,9 @@ async fn teardown(entry: &Arc<RendererNode>) {
         super::particles::teardown(r, node_id);
         if let Some(lk) = light {
             r.remove_light(lk);
+        }
+        if let Some(ck) = camera {
+            r.cameras.remove(ck);
         }
     })
     .await;
@@ -323,7 +328,8 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
             }
         },
         NodeKind::Model(model_ref) => materialize_model(entry.clone(), model_ref).await,
-        // Group / Camera: no procedural geometry.
+        NodeKind::Camera(cfg) => materialize_camera(entry.clone(), cfg).await,
+        // Group: no procedural geometry, no renderer resource.
         _ => {}
     }
 
@@ -1114,6 +1120,45 @@ async fn apply_light(entry: Arc<RendererNode>, cfg: LightConfig) {
             bridge().light_node_ids.lock().unwrap().insert(node_id);
         }
         Err(e) => tracing::error!("insert_light failed: {e:?}"),
+    }
+}
+
+/// Materialize a `Camera` node into the renderer's camera-params store. The node
+/// has no GPU geometry — this slot mirrors the node's `CameraConfig` and is what
+/// an `AnimationTarget::Camera` channel mutates. The render loop reads this slot
+/// (not the node config directly) so an animated camera is live; for a static
+/// camera the slot equals the config, so the projection is unchanged.
+///
+/// `apply_kind` tears down (removing any prior slot) before this runs, and the
+/// kind observer re-fires on every `SetKind`, so editing the camera config
+/// re-inserts a slot that reflects the new config — keeping store and config in
+/// sync without a separate observer.
+async fn materialize_camera(entry: Arc<RendererNode>, cfg: awsm_scene_schema::CameraConfig) {
+    let params = camera_params_from_config(&cfg);
+    let key = with_renderer_mut(move |r| r.cameras.insert(params)).await;
+    *entry.camera_key.lock().unwrap() = Some(key);
+}
+
+/// Schema camera config → renderer camera params. Maps the projection kind +
+/// clip planes; depth-of-field (`aperture`/`focus_distance`) isn't authored on
+/// the node config yet, so it defaults to the same values `scene_camera_matrices`
+/// has always used (`5.6` / `10.0`).
+fn camera_params_from_config(cfg: &awsm_scene_schema::CameraConfig) -> CameraParams {
+    use awsm_scene_schema::CameraProjection;
+    let projection = match cfg.projection {
+        CameraProjection::Perspective { fov_y_rad } => {
+            CameraProjectionParams::Perspective { fov_y_rad }
+        }
+        CameraProjection::Orthographic { half_height } => {
+            CameraProjectionParams::Orthographic { half_height }
+        }
+    };
+    CameraParams {
+        projection,
+        near: cfg.near,
+        far: cfg.far,
+        aperture: 5.6,
+        focus_distance: 10.0,
     }
 }
 

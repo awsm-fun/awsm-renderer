@@ -3,6 +3,7 @@
 //! colliders) layers in via the renderer bridge as those features land (M4+).
 
 use awsm_renderer::camera::CameraMatrices;
+use awsm_renderer::cameras::CameraProjectionParams;
 use awsm_renderer::AwsmRenderer;
 use awsm_scene_schema::{CameraProjection, NodeKind};
 use glam::{Mat4, Vec3};
@@ -148,10 +149,12 @@ fn scene_camera_matrices(renderer: &AwsmRenderer, node_id: NodeId) -> Option<Cam
         NodeKind::Camera(c) => c,
         _ => return None,
     };
-    let transform_key = {
+    let (transform_key, camera_key) = {
         let b = super::bridge::bridge();
         let nodes = b.nodes.lock().unwrap();
-        nodes.get(&node_id)?.transform_key
+        let entry = nodes.get(&node_id)?;
+        let camera_key = *entry.camera_key.lock().unwrap();
+        (entry.transform_key, camera_key)
     };
     let world = *renderer.transforms.get_world(transform_key).ok()?;
 
@@ -169,19 +172,42 @@ fn scene_camera_matrices(renderer: &AwsmRenderer, node_id: NodeId) -> Option<Cam
 
     let (w, h) = renderer.gpu.current_context_texture_size().ok()?;
     let aspect = if h > 0 { w as f32 / h as f32 } else { 1.0 };
-    let projection = match cfg.projection {
-        CameraProjection::Perspective { fov_y_rad } => {
-            Mat4::perspective_rh(fov_y_rad, aspect, cfg.near, cfg.far)
+
+    // Read the *animatable* params from the renderer cameras store when this node
+    // has a materialized slot — that's what an `AnimationTarget::Camera` channel
+    // mutates, so an animated camera is live. The slot mirrors the node config for
+    // a static camera (node_sync keeps it synced), so the matrices are identical
+    // to reading the config directly. Fall back to the node config if the slot
+    // hasn't materialized yet (e.g. the very first frame after insert).
+    let (projection_params, near, far, focus_distance, aperture) =
+        match camera_key.and_then(|key| renderer.cameras.get(key)) {
+            Some(p) => (p.projection, p.near, p.far, p.focus_distance, p.aperture),
+            None => {
+                let projection = match cfg.projection {
+                    CameraProjection::Perspective { fov_y_rad } => {
+                        CameraProjectionParams::Perspective { fov_y_rad }
+                    }
+                    CameraProjection::Orthographic { half_height } => {
+                        CameraProjectionParams::Orthographic { half_height }
+                    }
+                };
+                (projection, cfg.near, cfg.far, 10.0, 5.6)
+            }
+        };
+
+    let projection = match projection_params {
+        CameraProjectionParams::Perspective { fov_y_rad } => {
+            Mat4::perspective_rh(fov_y_rad, aspect, near, far)
         }
-        CameraProjection::Orthographic { half_height } => {
+        CameraProjectionParams::Orthographic { half_height } => {
             let half_width = half_height * aspect;
             Mat4::orthographic_rh(
                 -half_width,
                 half_width,
                 -half_height,
                 half_height,
-                cfg.near,
-                cfg.far,
+                near,
+                far,
             )
         }
     };
@@ -190,7 +216,7 @@ fn scene_camera_matrices(renderer: &AwsmRenderer, node_id: NodeId) -> Option<Cam
         view,
         projection,
         position_world: pos,
-        focus_distance: 10.0,
-        aperture: 5.6,
+        focus_distance,
+        aperture,
     })
 }

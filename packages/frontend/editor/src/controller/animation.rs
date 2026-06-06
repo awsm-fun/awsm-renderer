@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 use awsm_renderer::animation::{
     AnimationChannel, AnimationData, AnimationSampler, AnimationTarget, TransformAnimation,
+    VertexAnimation,
 };
 use awsm_web_shared::prelude::{Mutable, MutableVec};
 use glam::{Quat, Vec3};
@@ -132,23 +133,38 @@ impl Track {
             TrackTarget::Transform { prop, .. } => Some(*prop),
             _ => None,
         };
-        let values: Vec<AnimationData> = keys
-            .iter()
-            .map(|k| track_value_to_data(&k.value, prop))
-            .collect();
+        // A morph track keys ONE scalar weight per keyframe (`TrackTarget::Morph`
+        // + `TrackValue::Scalar`), but the renderer `Morph` target consumes the
+        // **whole** weight vector (`AnimationData::Vertex { weights }`). Reconcile
+        // by lowering each scalar into a weight vector of length `index + 1` whose
+        // position `index` carries the keyed scalar and every other entry is 0.
+        //
+        // LIMITATION (M-A9): this drives the morph at `index` correctly for the
+        // common single-morph / first-target case, but because the lowered vector
+        // forces all leading weights `0..index` to 0 every frame, a clip with
+        // *separate* tracks for two morphs of the same mesh would have each track
+        // stomp the other's weight. Per-index masked morph blending (write only
+        // the keyed slot, leave the rest at rest) is deferred.
+        let morph_index = match &self.target {
+            TrackTarget::Morph { index, .. } => Some(*index),
+            _ => None,
+        };
+        let to_data = |v: &TrackValue| -> AnimationData {
+            match morph_index {
+                Some(index) => morph_scalar_to_vertex(v, index),
+                None => track_value_to_data(v, prop),
+            }
+        };
+        let values: Vec<AnimationData> = keys.iter().map(|k| to_data(&k.value)).collect();
 
         let sampler = match self.sampler.get() {
             SamplerKind::Linear => AnimationSampler::new_linear(times, values),
             SamplerKind::Step => AnimationSampler::new_step(times, values),
             SamplerKind::Cubic => {
-                let in_tangents: Vec<AnimationData> = keys
-                    .iter()
-                    .map(|k| track_value_to_data(&k.in_tangent, prop))
-                    .collect();
-                let out_tangents: Vec<AnimationData> = keys
-                    .iter()
-                    .map(|k| track_value_to_data(&k.out_tangent, prop))
-                    .collect();
+                let in_tangents: Vec<AnimationData> =
+                    keys.iter().map(|k| to_data(&k.in_tangent)).collect();
+                let out_tangents: Vec<AnimationData> =
+                    keys.iter().map(|k| to_data(&k.out_tangent)).collect();
                 AnimationSampler::new_cubic_spline(
                     self.times.get_cloned(),
                     values,
@@ -200,6 +216,22 @@ fn track_value_to_data(value: &TrackValue, prop: Option<TransformProp>) -> Anima
             AnimationData::Vec3(Vec3::from_array(*v))
         }
     }
+}
+
+/// Lower one authored morph keyframe (a single scalar weight) into the renderer
+/// `AnimationData::Vertex` the morph target consumes: a weight vector of length
+/// `index + 1` with position `index` carrying the scalar and the rest 0. A
+/// non-scalar value (shape mismatch) lowers to its first component / 0. See the
+/// reconciliation note + limitation in [`Track::lower`].
+fn morph_scalar_to_vertex(value: &TrackValue, index: usize) -> AnimationData {
+    let scalar = match value {
+        TrackValue::Scalar(s) => *s,
+        TrackValue::Vec3(v) => v.first().copied().unwrap_or(0.0),
+        TrackValue::Quat(q) => q.first().copied().unwrap_or(0.0),
+    };
+    let mut weights = vec![0.0_f32; index + 1];
+    weights[index] = scalar;
+    AnimationData::Vertex(VertexAnimation::new(weights))
 }
 
 /// A live, reactive animation clip in the library

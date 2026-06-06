@@ -18,6 +18,7 @@ pub mod particles;
 use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
 
+use awsm_renderer::cameras::CameraKey;
 use awsm_renderer::decals::DecalKey;
 use awsm_renderer::lights::LightKey;
 use awsm_renderer::materials::MaterialKey;
@@ -44,6 +45,10 @@ pub struct RendererNode {
     pub material_keys: Mutex<Vec<MaterialKey>>,
     /// The renderer light, if this node is a Light.
     pub light_key: Mutex<Option<LightKey>>,
+    /// The renderer camera-params slot, if this node is a Camera. Mirrors the
+    /// node's `CameraConfig` (kept in sync by the kind observer) and is the
+    /// store an `AnimationTarget::Camera` channel mutates.
+    pub camera_key: Mutex<Option<CameraKey>>,
     /// Fat-line strips this node owns (Line / Curve viz / collider wireframe).
     pub line_keys: Mutex<Vec<LineKey>>,
     /// Projection decals this node owns.
@@ -64,6 +69,7 @@ impl RendererNode {
             model_transforms: Mutex::new(Vec::new()),
             material_keys: Mutex::new(Vec::new()),
             light_key: Mutex::new(None),
+            camera_key: Mutex::new(None),
             line_keys: Mutex::new(Vec::new()),
             decal_keys: Mutex::new(Vec::new()),
             last_kind: Mutex::new(None),

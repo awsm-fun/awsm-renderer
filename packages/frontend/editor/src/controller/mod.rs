@@ -2049,12 +2049,46 @@ fn read_readback_target(
                 None => serde_json::Value::Null,
             }
         }
-        R::Uniform {
-            material: _,
-            name: _,
-        } => {
-            // Custom-material asset → MaterialKey resolution lands in M-A4; null.
-            serde_json::Value::Null
+        R::Uniform { material, name } => {
+            // Custom-material asset → shader id → uniform slot index by name →
+            // live MaterialKey → read its current `DynamicMaterial::values[slot]`.
+            use awsm_materials::dynamic_layout::UniformValue;
+            use awsm_renderer::materials::Material;
+            fn uniform_value_to_json(v: &UniformValue) -> serde_json::Value {
+                match v {
+                    UniformValue::F32(x) => json!(x),
+                    UniformValue::U32(x) => json!(x),
+                    UniformValue::Bool(x) => json!(x),
+                    UniformValue::Vec2(a) => json!(a.to_vec()),
+                    UniformValue::Vec3(a) | UniformValue::Color3(a) => json!(a.to_vec()),
+                    UniformValue::Vec4(a) | UniformValue::Color4(a) => json!(a.to_vec()),
+                    UniformValue::IVec2(a) => json!(a.to_vec()),
+                    UniformValue::IVec3(a) => json!(a.to_vec()),
+                    UniformValue::IVec4(a) => json!(a.to_vec()),
+                    UniformValue::Mat3(a) => json!(a.to_vec()),
+                    UniformValue::Mat4(a) => json!(a.to_vec()),
+                }
+            }
+            let Some(shader_id) = crate::engine::bridge::dynamic::shader_id_for_asset(*material)
+            else {
+                return serde_json::Value::Null;
+            };
+            let Some(slot) = r
+                .dynamic_material_registration(shader_id)
+                .and_then(|reg| reg.layout.uniforms.iter().position(|u| u.name == *name))
+            else {
+                return serde_json::Value::Null;
+            };
+            // Find the live custom material built from this shader id and read its
+            // current uniform value at `slot`.
+            let value = r.materials.iter().find_map(|(_, mat)| match mat {
+                Material::Custom(dm) if dm.shader_id == shader_id => dm.values.get(slot).cloned(),
+                _ => None,
+            });
+            match value {
+                Some(v) => uniform_value_to_json(&v),
+                None => serde_json::Value::Null,
+            }
         }
         R::BuiltinParam { node, param } => {
             use animation::BuiltinParamKind as P;
@@ -2128,8 +2162,52 @@ fn read_readback_target(
                 },
             }
         }
-        // Morph + Camera readback are deferred (M-A4 / M-A3) — null.
-        R::MorphWeight { .. } | R::CameraParam { .. } => serde_json::Value::Null,
+        R::MorphWeight { node, index } => {
+            // node → first materialized mesh → geometry morph key → current
+            // weights; return weights[index] as a number. Null if unresolvable
+            // (mesh/morph not materialized, or index out of range).
+            let mesh = crate::engine::bridge::bridge()
+                .nodes
+                .lock()
+                .unwrap()
+                .get(node)
+                .and_then(|n| n.model_meshes.lock().unwrap().first().copied());
+            let weight = mesh
+                .and_then(|mesh| r.meshes.geometry_morph_key_for_mesh(mesh))
+                .and_then(|key| r.meshes.morphs.geometry.read_morph_weights(key).ok())
+                .and_then(|weights| weights.get(*index).copied());
+            match weight {
+                Some(w) => json!(w),
+                None => serde_json::Value::Null,
+            }
+        }
+        R::CameraParam { node, param } => {
+            // node → camera_key (renderer cameras store, mirrors the node config
+            // and mutated by camera animation) → the requested param as a number.
+            // Null if the camera slot isn't materialized yet, or FovY on an
+            // orthographic camera.
+            use animation::CameraParamKind as P;
+            use awsm_renderer::cameras::CameraProjectionParams;
+            let camera_key = crate::engine::bridge::bridge()
+                .nodes
+                .lock()
+                .unwrap()
+                .get(node)
+                .and_then(|n| *n.camera_key.lock().unwrap());
+            let Some(p) = camera_key.and_then(|key| r.cameras.get(key)) else {
+                return serde_json::Value::Null;
+            };
+            match param {
+                P::FovY => match p.projection {
+                    CameraProjectionParams::Perspective { fov_y_rad } => json!(fov_y_rad),
+                    CameraProjectionParams::Orthographic { .. } => serde_json::Value::Null,
+                },
+                P::Near => json!(p.near),
+                P::Far => json!(p.far),
+                P::Aperture => json!(p.aperture),
+                P::FocusDistance => json!(p.focus_distance),
+            }
+        }
     }
 }
 

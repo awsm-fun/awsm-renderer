@@ -12,23 +12,24 @@
 //! materialized yet (node mid-insert, material awaiting registration) is
 //! **pending** — its channel is skipped and re-lowers when the dependency appears
 //! (the observers re-fire). A target that can *never* resolve (deleted node /
-//! material) is **invalid** — logged via `tracing::error!`. Camera targets are
-//! **deferred** (M-A3): `camera_key` materialization isn't wired yet, so they
-//! resolve to `None` (pending) and log once.
+//! material) is **invalid** — logged via `tracing::error!`. Camera targets
+//! (M-A9) resolve through the node's `camera_key` into the renderer cameras
+//! store; pending until the Camera node materializes that slot.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use awsm_renderer::animation::{
     AnimationChannel, AnimationClipGroup, AnimationLayer, AnimationLoopStyle, AnimationMixer,
-    AnimationPlayDirection, AnimationStrip, AnimationTarget, BuiltinMaterialParam, LayerMode,
-    LightParam, TargetMask,
+    AnimationPlayDirection, AnimationStrip, AnimationTarget, BuiltinMaterialParam, CameraParam,
+    LayerMode, LightParam, TargetMask,
 };
 use futures_signals::signal::SignalExt;
 use futures_signals::signal_vec::SignalVecExt;
 
 use super::bridge;
 use crate::controller::animation::{
-    BuiltinParamKind, CustomAnimation, LayerModeDoc, LightParamKind, MixerDoc, TrackTarget,
+    BuiltinParamKind, CameraParamKind, CustomAnimation, LayerModeDoc, LightParamKind, MixerDoc,
+    TrackTarget,
 };
 use crate::controller::controller;
 use crate::engine::context::with_renderer_mut;
@@ -162,20 +163,27 @@ async fn relower() {
         }
     }
 
-    // Build each clip group on the main thread (resolving via the bridge), then
-    // hand them to the renderer under the lock.
-    let groups: Vec<(AssetId, AnimationClipGroup)> = clip_ids
+    // Collect the live clips up front (cheap Arc clones); the actual lowering —
+    // which for `Uniform` targets needs to resolve a custom-material asset → a
+    // live `MaterialKey` against `r.materials` — happens **inside** the renderer
+    // guard below so the resolver has a renderer reference.
+    let clips: Vec<(AssetId, std::sync::Arc<CustomAnimation>)> = clip_ids
         .iter()
         .filter_map(|id| {
             crate::controller::animation::find_clip(&ctrl.custom_animations, *id)
-                .map(|clip| (*id, lower_clip(&clip, solo_root)))
+                .map(|clip| (*id, clip))
         })
         .collect();
 
-    let mixer = lower_mixer(&mixer_doc, &clip_ids, &groups);
-
     let playhead = ctrl.playhead.get();
     with_renderer_mut(move |r| {
+        // Lower each clip now that the renderer is available (Uniform resolution).
+        let groups: Vec<(AssetId, AnimationClipGroup)> = clips
+            .iter()
+            .map(|(id, clip)| (*id, lower_clip(r, clip, solo_root)))
+            .collect();
+        let mixer = lower_mixer(&mixer_doc, &clip_ids, &groups);
+
         r.animations.clear_clips();
         // Capture clip-asset-id → renderer key as we insert (the mixer references
         // clips by index into `clip_ids`, resolved below).
@@ -199,7 +207,11 @@ async fn relower() {
 /// track's target via the bridge; pending/invalid channels are skipped (logged).
 /// Honors per-track solo + the Solo-subtree focus (`solo_root`): a track outside
 /// the solo set is muted (skipped) so its target rest-holds.
-fn lower_clip(clip: &CustomAnimation, solo_root: Option<NodeId>) -> AnimationClipGroup {
+fn lower_clip(
+    r: &awsm_renderer::AwsmRenderer,
+    clip: &CustomAnimation,
+    solo_root: Option<NodeId>,
+) -> AnimationClipGroup {
     let duration = clip.duration.get();
     let any_solo = clip.tracks.lock_ref().iter().any(|t| t.solo.get());
 
@@ -215,7 +227,7 @@ fn lower_clip(clip: &CustomAnimation, solo_root: Option<NodeId>) -> AnimationCli
                 continue;
             }
         }
-        if let Some(channel) = track.lower(&resolve_target) {
+        if let Some(channel) = track.lower(&|t| resolve_target(r, t)) {
             channels.push(channel);
         }
     }
@@ -271,7 +283,10 @@ fn node_is_descendant(scene: &crate::engine::scene::Scene, root: NodeId, target:
 /// Resolve an authored [`TrackTarget`] → a live renderer [`AnimationTarget`].
 /// `None` = pending (dependency not materialized) or invalid; a genuinely
 /// missing node/material is logged. Camera targets are deferred (M-A3).
-fn resolve_target(target: &TrackTarget) -> Option<AnimationTarget> {
+fn resolve_target(
+    r: &awsm_renderer::AwsmRenderer,
+    target: &TrackTarget,
+) -> Option<AnimationTarget> {
     let b = bridge();
     match target {
         TrackTarget::Transform { node, prop: _ } => {
@@ -320,35 +335,118 @@ fn resolve_target(target: &TrackTarget) -> Option<AnimationTarget> {
                 param: light_param(*param),
             })
         }
-        TrackTarget::Morph { node: _, index: _ } => {
-            // Morph-key resolution needs the renderer mesh→morph mapping, which the
-            // bridge doesn't track per-node yet — treat as PENDING for now (M-A4).
-            None
+        TrackTarget::Morph { node, index: _ } => {
+            // Map node → its first materialized mesh → that mesh's geometry morph
+            // key. glTF mesh morph targets are geometry morphs (the common case);
+            // the authored `index` selects *which* weight within the set, but the
+            // renderer `Morph` target addresses the whole weight vector — the
+            // per-index reconciliation happens in `Track::lower` (see the note +
+            // limitation there). PENDING (None) if the mesh/morph isn't
+            // materialized yet; invalid (warn) if the node id doesn't exist.
+            let mesh = b
+                .nodes
+                .lock()
+                .unwrap()
+                .get(node)
+                .and_then(|n| n.model_meshes.lock().unwrap().first().copied());
+            match mesh {
+                Some(mesh) => r
+                    .meshes
+                    .geometry_morph_key_for_mesh(mesh)
+                    .map(|k| AnimationTarget::Morph(k.into())),
+                None => {
+                    if crate::engine::scene::mutate::find_by_id(&controller().scene, *node)
+                        .is_none()
+                    {
+                        tracing::warn!("animation: morph target references missing node {node}");
+                    }
+                    None
+                }
+            }
         }
-        TrackTarget::Uniform {
-            material: _,
-            name: _,
-        } => {
-            // Custom-material asset → live MaterialKey + slot index resolution lands
-            // with the material-target wiring (M-A4); PENDING for now.
-            None
+        TrackTarget::Uniform { material, name } => {
+            // Custom (dynamic-WGSL) material asset → live MaterialKey + uniform
+            // slot index by name.
+            //   1. asset id → registered MaterialShaderId (PENDING until the
+            //      material has been registered with the renderer).
+            //   2. shader id → the registration's uniform layout → slot index of
+            //      `name` (declared uniform order).
+            //   3. shader id → a live MaterialKey: the per-mesh `Material::Custom`
+            //      whose `shader_id` matches (PENDING until a mesh using it is
+            //      materialized). If several meshes use the material, the first
+            //      found key is driven (documented limitation: one key per track).
+            let Some(shader_id) = super::dynamic::shader_id_for_asset(*material) else {
+                // Not registered yet (or never authored): PENDING if the custom
+                // material asset still exists, otherwise genuinely invalid.
+                if crate::controller::custom_material::find_material(
+                    &controller().custom_materials,
+                    *material,
+                )
+                .is_none()
+                {
+                    tracing::warn!(
+                        "animation: uniform target references missing material {material}"
+                    );
+                }
+                return None;
+            };
+            let slot = r
+                .dynamic_material_registration(shader_id)?
+                .layout
+                .uniforms
+                .iter()
+                .position(|u| u.name == *name);
+            let Some(slot) = slot else {
+                tracing::warn!(
+                    "animation: uniform target references unknown slot '{name}' on material {material}"
+                );
+                return None;
+            };
+            material_key_for_shader(r, shader_id)
+                .map(|material| AnimationTarget::Uniform { material, slot })
         }
-        TrackTarget::Camera { node: _, param: _ } => {
-            // DEFERRED to M-A3: camera_key materialization isn't wired in node_sync.
-            log_camera_deferred_once();
-            None
+        TrackTarget::Camera { node, param } => {
+            // A Camera node's `camera_key` indexes the renderer cameras store
+            // (materialized by node_sync); the channel drives that slot's params.
+            // PENDING (None) if the node exists but isn't materialized yet;
+            // invalid (warn) if the node id doesn't exist at all.
+            let ck = b
+                .nodes
+                .lock()
+                .unwrap()
+                .get(node)
+                .and_then(|n| *n.camera_key.lock().unwrap());
+            match ck {
+                Some(camera) => Some(AnimationTarget::Camera {
+                    camera,
+                    param: camera_param(*param),
+                }),
+                None => {
+                    if crate::engine::scene::mutate::find_by_id(&controller().scene, *node)
+                        .is_none()
+                    {
+                        tracing::warn!("animation: camera target references missing node {node}");
+                    }
+                    None
+                }
+            }
         }
     }
 }
 
-thread_local! {
-    static CAMERA_DEFER_LOGGED: AtomicBool = const { AtomicBool::new(false) };
-}
-
-fn log_camera_deferred_once() {
-    if !CAMERA_DEFER_LOGGED.with(|l| l.swap(true, Ordering::SeqCst)) {
-        tracing::info!("animation: camera targets are deferred to M-A3 (not lowered yet)");
-    }
+/// Find a live `MaterialKey` whose per-mesh `Material::Custom` was built from
+/// `shader_id`. Returns the first match (a material assigned to multiple meshes
+/// has one renderer key per mesh; a track drives one of them — see the
+/// resolution note). `None` until a mesh using the material is materialized.
+fn material_key_for_shader(
+    r: &awsm_renderer::AwsmRenderer,
+    shader_id: awsm_materials::MaterialShaderId,
+) -> Option<awsm_renderer::materials::MaterialKey> {
+    use awsm_renderer::materials::Material;
+    r.materials.iter().find_map(|(key, mat)| match mat {
+        Material::Custom(dm) if dm.shader_id == shader_id => Some(key),
+        _ => None,
+    })
 }
 
 fn builtin_param(p: BuiltinParamKind) -> BuiltinMaterialParam {
@@ -367,6 +465,16 @@ fn light_param(p: LightParamKind) -> LightParam {
         LightParamKind::Range => LightParam::Range,
         LightParamKind::InnerAngle => LightParam::InnerAngle,
         LightParamKind::OuterAngle => LightParam::OuterAngle,
+    }
+}
+
+fn camera_param(p: CameraParamKind) -> CameraParam {
+    match p {
+        CameraParamKind::FovY => CameraParam::FovY,
+        CameraParamKind::Near => CameraParam::Near,
+        CameraParamKind::Far => CameraParam::Far,
+        CameraParamKind::Aperture => CameraParam::Aperture,
+        CameraParamKind::FocusDistance => CameraParam::FocusDistance,
     }
 }
 
