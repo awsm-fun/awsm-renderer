@@ -67,7 +67,6 @@ pub fn new_keyframe(value: TrackValue, interp: Interp) -> Keyframe {
 
 /// A short, stable identity string for a target (selection keys / dedupe).
 /// Consumed by the Animation-mode UI (M-A2+).
-#[allow(dead_code)]
 pub fn target_key(t: &TrackTarget) -> String {
     match t {
         TrackTarget::Transform { node, prop } => format!("transform/{node}/{prop:?}"),

@@ -726,6 +726,7 @@ impl EditorController {
                 self.custom_animations.lock_mut().push_cloned(clip);
                 self.current_clip.set(Some(id));
                 self.dirty.set_neq(true);
+                Toast::info("Created clip");
                 Ok(None)
             }
             EditorCommand::DeleteClip { id } => {
@@ -832,10 +833,12 @@ impl EditorController {
             EditorCommand::AddTrack { clip, target } => {
                 match find_clip(&self.custom_animations, clip) {
                     Some(c) => {
+                        let key = animation::target_key(&target);
                         let track = animation::Track::new(target);
                         let index = c.tracks.lock_ref().len();
                         c.tracks.lock_mut().push_cloned(track);
                         self.dirty.set_neq(true);
+                        Toast::info(format!("Added track {key}"));
                         Ok(Some(EditorCommand::DeleteTrack { clip, track: index }))
                     }
                     None => Ok(None),
@@ -1115,6 +1118,7 @@ impl EditorController {
                 doc.layers.push(animation::LayerDoc::default());
                 self.anim_mixer.set(doc);
                 self.dirty.set_neq(true);
+                Toast::info("Added layer");
                 Ok(Some(EditorCommand::DeleteLayer { layer: index }))
             }
             EditorCommand::DeleteLayer { layer } => {
