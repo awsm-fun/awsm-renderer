@@ -17,7 +17,7 @@ use crate::controller::animation::{find_clip, AnimView, CustomAnimation};
 use crate::controller::EditorCommand;
 use crate::prelude::*;
 
-use super::{dope, ruler, transport, Geo, TimeUnit, NAMES_W, RULER_H};
+use super::{curves, dope, ruler, transport, Geo, TimeUnit, NAMES_W, RULER_H};
 
 /// Zoom bounds + step (px-per-second), mirroring the JSX zoom buttons.
 const PX_MIN: f64 = 40.0;
@@ -161,7 +161,7 @@ fn scroller(clip: Option<Arc<CustomAnimation>>, px: f64, unit: TimeUnit, fps: u3
         .child_signal(controller().anim_view.signal().map(clone!(clip => move |view| {
             Some(match view {
                 AnimView::Dope => dope::render(clip.clone(), geo),
-                AnimView::Curves => placeholder("Curves \u{2014} M-A4"),
+                AnimView::Curves => curves::render(clip.clone(), geo),
                 AnimView::Mixer => placeholder("Mixer \u{2014} M-A5"),
             })
         })))

@@ -14,6 +14,7 @@
 //! timeline zoom is exempt). `anim_view` is controller state (so synced tabs
 //! agree on the active view).
 
+mod curves;
 pub mod dock;
 mod dope;
 mod ruler;
