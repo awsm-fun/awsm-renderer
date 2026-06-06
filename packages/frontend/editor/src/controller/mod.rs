@@ -408,7 +408,21 @@ impl EditorController {
                 // Project-level reset (clears the undo log — not itself undoable).
                 self.scene.nodes.lock_mut().clear();
                 self.selected.set(Vec::new());
+                *self.scene.assets.lock().unwrap() = Default::default();
                 self.scene.bump_revision();
+                // Material library.
+                self.custom_materials.lock_mut().clear();
+                self.current_material.set(None);
+                self.asset_selection.set(None);
+                // Animation library + mixer + transport (these previously leaked
+                // across New Project — clips/mixer/playhead persisted).
+                self.custom_animations.lock_mut().clear();
+                self.current_clip.set(None);
+                self.anim_mixer.set(MixerDoc::default());
+                self.anim_selection.set(None);
+                self.anim_solo_root.set(None);
+                self.playhead.set_neq(0.0);
+                self.playing.set_neq(false);
                 self.project_name.set("untitled.awsm".to_string());
                 self.missing_assets.set(Vec::new());
                 self.dirty.set_neq(false);
