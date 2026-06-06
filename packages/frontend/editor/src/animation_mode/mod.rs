@@ -10,6 +10,7 @@
 //! `EditorCommand` dispatched through the one `EditorController` — the UI never
 //! mutates animation state directly.
 
+mod add_track;
 mod inspector;
 mod library;
 mod ribbon;

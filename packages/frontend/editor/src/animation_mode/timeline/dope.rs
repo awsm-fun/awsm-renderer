@@ -307,7 +307,7 @@ fn body_playhead(geo: Geo) -> Dom {
 }
 
 /// The empty-state (no tracks): icon · headline · hint · Add Track button. The
-/// Add-Track picker lands in M-A6; the button is a hint for now.
+/// button opens the target picker (`add_track::button`).
 fn empty_state() -> Dom {
     html!("div", {
         .style("position", "sticky").style("left", "0").style("max-width", "100%")
@@ -331,12 +331,7 @@ fn empty_state() -> Dom {
                 .text("Add a track to bind a bone, morph weight, or material uniform \u{2014} then key its value over time.")
             }))
         }))
-        .child(Btn::new().label("Add Track").icon("target").variant(BtnVariant::Primary).size(BtnSize::Sm)
-            .on_click(|| {
-                // TODO(M-A6): open the node/property target picker + dispatch AddTrack.
-                tracing::info!("add-track picker lands in M-A6");
-            })
-            .render())
+        .child(super::super::add_track::button(BtnVariant::Primary, BtnSize::Sm))
     })
 }
 

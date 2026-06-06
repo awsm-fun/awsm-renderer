@@ -149,11 +149,7 @@ fn scroller(clip: Option<Arc<CustomAnimation>>, px: f64, unit: TimeUnit, fps: u3
                 .style("border-bottom", "1px solid var(--line)").style("border-right", "1px solid var(--line)")
                 .child(html!("span", { .class("kicker").style("font-size", "9.5px").text("Tracks") }))
                 .child(html!("div", { .style("flex", "1") }))
-                .child(IconBtn::new("plus").title("Add track").size(14.0)
-                    .on_click(|| {
-                        // TODO(M-A6): open the node/property target picker + AddTrack.
-                        tracing::info!("add-track picker lands in M-A6");
-                    }).render())
+                .child(super::super::add_track::icon_button())
             }))
             .child(ruler::render(geo))
         }))

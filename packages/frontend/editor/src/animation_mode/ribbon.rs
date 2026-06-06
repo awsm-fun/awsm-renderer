@@ -74,14 +74,8 @@ fn body(clip: Option<Arc<CustomAnimation>>) -> Dom {
         .child(html!("span", {
             .style("width", "1px").style("height", "18px").style("background", "var(--line)")
         }))
-        // ── Add Track (ghost) — picker lands in M-A6 ─────────────────────────
-        .child(Btn::new().label("Add Track").icon("target").variant(BtnVariant::Ghost).size(BtnSize::Sm)
-            .on_click(|| {
-                // TODO(M-A6): open the real node/property target picker (anim-rail.jsx
-                // AddTrackMenu) and dispatch `EditorCommand::AddTrack { clip, target }`.
-                tracing::info!("add-track picker lands in M-A6");
-            })
-            .render())
+        // ── Add Track (ghost) — opens the target picker (anim-rail AddTrackMenu) ─
+        .child(super::add_track::button(BtnVariant::Ghost, BtnSize::Sm))
         // ── Live · N players chip ────────────────────────────────────────────
         .child(live_chip(&clip))
     })
