@@ -13,6 +13,7 @@
 mod inspector;
 mod library;
 mod ribbon;
+mod timeline;
 mod viewport;
 
 use crate::prelude::*;
@@ -52,16 +53,11 @@ pub fn render() -> Dom {
                     .child(viewport::render())
                 }))
                 // Timeline dock (transport · ruler · Dope Sheet / Curves / Mixer).
-                // M-A4 fills this; M-A3 leaves a sized placeholder so the viewport
-                // canvas gets a real (non-zero) area to size to.
+                // M-A3: the real dock (Dope Sheet live; Curves/Mixer inert).
                 .child(html!("div", {
                     .style("flex", "0 0 320px").style("min-height", "0")
                     .style("border-top", "1px solid var(--line)").style("background", "var(--bg-1)")
-                    .style("display", "flex").style("align-items", "center").style("justify-content", "center")
-                    .child(html!("span", {
-                        .style("font-size", "12px").style("color", "var(--text-3)")
-                        .text("Timeline dock \u{2014} M-A4")
-                    }))
+                    .child(timeline::dock::render())
                 }))
             }))
         }))
