@@ -434,6 +434,67 @@ impl EditorCommand {
         )
     }
 
+    /// Does applying this command change what the renderer must re-lower for
+    /// animation playback — the active clip set, a clip's params, a track's
+    /// sampler/mute/solo/keyframes, the mixer, the solo subtree, or the whole
+    /// project (reset / load / model import that carries clips)?
+    ///
+    /// The bridge ([`animation_sync`]) observes a single revision counter the
+    /// controller bumps for exactly these commands, then debounced-re-lowers.
+    /// Routing through ONE counter (rather than per-field signal observers) means
+    /// no edit can silently skip a re-lower — the bug where `SetTrackSampler` /
+    /// time-only `SetKeyframe` / `SetClipDuration` left a stale lowered channel.
+    ///
+    /// Pure transport (playhead / play / step / fps) and view-only state
+    /// (selection / view / clip color / rename) are EXCLUDED — they never change
+    /// the lowered channels (the playhead is pinned by the render loop directly).
+    pub fn affects_animation(&self) -> bool {
+        matches!(
+            self,
+            // Project-level resets / loads / imports that replace the clip set.
+            EditorCommand::NewProject
+                | EditorCommand::LoadProjectFromUrl { .. }
+                | EditorCommand::ImportModelFromUrl { .. }
+                | EditorCommand::ImportModelFromFile { .. }
+                // Active clip set + clip params that the group lowers.
+                | EditorCommand::AddClip { .. }
+                | EditorCommand::DeleteClip { .. }
+                | EditorCommand::DuplicateClip { .. }
+                | EditorCommand::SetCurrentClip { .. }
+                | EditorCommand::SetClipDuration { .. }
+                | EditorCommand::SetClipLoop { .. }
+                | EditorCommand::SetClipSpeed { .. }
+                | EditorCommand::SetClipDirection { .. }
+                // Tracks.
+                | EditorCommand::AddTrack { .. }
+                | EditorCommand::DeleteTrack { .. }
+                | EditorCommand::RestoreTrack { .. }
+                | EditorCommand::SetTrackSampler { .. }
+                | EditorCommand::SetTrackMute { .. }
+                | EditorCommand::SetTrackSolo { .. }
+                // Keyframes.
+                | EditorCommand::AddKeyframe { .. }
+                | EditorCommand::DeleteKeyframe { .. }
+                | EditorCommand::InsertKeyframe { .. }
+                | EditorCommand::SetKeyframe { .. }
+                // Solo subtree focus.
+                | EditorCommand::SetSoloRoot { .. }
+                // Mixer / NLA.
+                | EditorCommand::AddLayer
+                | EditorCommand::DeleteLayer { .. }
+                | EditorCommand::RestoreLayer { .. }
+                | EditorCommand::SetLayerMode { .. }
+                | EditorCommand::SetLayerWeight { .. }
+                | EditorCommand::SetLayerMask { .. }
+                | EditorCommand::AddStrip { .. }
+                | EditorCommand::DeleteStrip { .. }
+                | EditorCommand::RestoreStrip { .. }
+                | EditorCommand::MoveStrip { .. }
+                | EditorCommand::TrimStrip { .. }
+                | EditorCommand::SetStripRepeat { .. }
+        )
+    }
+
     /// A short human-readable label (used in toasts / telemetry / the eventual
     /// undo-history UI). Consumed as the mutation commands land in M4+.
     #[allow(dead_code)]

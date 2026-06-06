@@ -166,6 +166,12 @@ pub struct EditorController {
     pub anim_selection: Mutable<Option<AnimSel>>,
     /// The NLA mixer document (layers / strips / masks / weights, by clip id).
     pub anim_mixer: Mutable<MixerDoc>,
+    /// Monotonic revision bumped by `apply` whenever a command
+    /// [`EditorCommand::affects_animation`] — the single signal the bridge
+    /// observes to debounced-re-lower the renderer. Routing every lowering-
+    /// affecting edit through ONE counter (rather than per-field signal
+    /// observers) guarantees no edit silently skips a re-lower.
+    pub anim_revision: Mutable<u32>,
     /// Which timeline editor the dock shows (Dope / Curves / Mixer).
     pub anim_view: Mutable<AnimView>,
     /// Whether the ⌘K command palette is open (view state).
@@ -231,6 +237,7 @@ impl EditorController {
             anim_solo_root: Mutable::new(None),
             anim_selection: Mutable::new(None),
             anim_mixer: Mutable::new(MixerDoc::default()),
+            anim_revision: Mutable::new(0),
             anim_view: Mutable::new(AnimView::default()),
             cmdk_open: Mutable::new(false),
             settings: Settings::default(),
@@ -297,10 +304,24 @@ impl EditorController {
         Ok(())
     }
 
+    /// Apply a command and, if it changes anything the renderer must re-lower
+    /// for animation, bump [`Self::anim_revision`] — the single signal the bridge
+    /// debounced-observes. This is the ONE chokepoint every path (`dispatch`,
+    /// `apply_remote`, undo, redo) funnels through, so no edit can skip the
+    /// re-lower (the stale-channel bug). The actual effect lives in `apply_inner`.
+    async fn apply(&self, cmd: EditorCommand) -> EditorResult<Option<EditorCommand>> {
+        let touches_anim = cmd.affects_animation();
+        let result = self.apply_inner(cmd).await;
+        if touches_anim {
+            self.anim_revision.replace_with(|v| v.wrapping_add(1));
+        }
+        result
+    }
+
     /// Apply a command's effect and return its inverse (for the undo log), or
     /// `None` if the command is not undoable. The undoable per-node mutation
     /// commands return `Some(inverse)` here as they land in M4+.
-    async fn apply(&self, cmd: EditorCommand) -> EditorResult<Option<EditorCommand>> {
+    async fn apply_inner(&self, cmd: EditorCommand) -> EditorResult<Option<EditorCommand>> {
         match cmd {
             EditorCommand::SwitchMode { mode } => {
                 self.mode.set_neq(mode);

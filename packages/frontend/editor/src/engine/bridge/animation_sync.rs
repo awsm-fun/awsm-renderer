@@ -24,7 +24,6 @@ use awsm_renderer::animation::{
     CameraParam, LayerMode, LightParam, TargetMask, TransformAnimation,
 };
 use futures_signals::signal::SignalExt;
-use futures_signals::signal_vec::SignalVecExt;
 
 use super::bridge;
 use crate::controller::animation::{
@@ -37,89 +36,25 @@ use crate::engine::scene::{AssetId, NodeId};
 use crate::prelude::*;
 
 /// Begin mirroring the controller's animation library onto the renderer.
+///
+/// Re-lower is driven by ONE signal: the controller's `anim_revision`, which
+/// `EditorController::apply` bumps for every command that
+/// [`affects_animation`](crate::controller::EditorCommand::affects_animation) —
+/// the active clip set, clip params, a track's sampler/mute/solo/keyframes, the
+/// mixer, the solo subtree, project resets/loads/imports. Observing the single
+/// counter (rather than per-field `Mutable` observers) means no edit can silently
+/// skip a re-lower — the bug where `SetTrackSampler` / time-only `SetKeyframe` /
+/// `SetClipDuration` left a stale lowered channel in the renderer.
 pub fn start() {
-    // Re-lower whenever the library, the active clip, or the mixer changes.
-    // Each observer just kicks a debounced re-lower of the whole active set —
-    // simplest correct mirror (the lowering is cheap + GPU-independent).
     spawn_local(async move {
         controller()
-            .custom_animations
-            .signal_vec_cloned()
+            .anim_revision
+            .signal()
             .for_each(|_| async {
                 schedule_relower();
             })
             .await;
     });
-    spawn_local(async move {
-        controller()
-            .current_clip
-            .signal_cloned()
-            .for_each(|_| async {
-                schedule_relower();
-            })
-            .await;
-    });
-    spawn_local(async move {
-        controller()
-            .anim_mixer
-            .signal_cloned()
-            .for_each(|_| async {
-                schedule_relower();
-            })
-            .await;
-    });
-    spawn_local(async move {
-        controller()
-            .anim_solo_root
-            .signal_cloned()
-            .for_each(|_| async {
-                schedule_relower();
-            })
-            .await;
-    });
-    // Re-lower on deep edits (a track's keys / sampler / mute) of the active clip.
-    // Observe the active clip's track list; each track-list change re-arms.
-    spawn_local(async move {
-        controller()
-            .current_clip
-            .signal_cloned()
-            .for_each(|id| async move {
-                if let Some(clip) = id.and_then(|id| {
-                    crate::controller::animation::find_clip(&controller().custom_animations, id)
-                }) {
-                    observe_clip_tracks(clip).await;
-                }
-            })
-            .await;
-    });
-}
-
-/// Observe a clip's tracks + each track's keys/times/sampler/mute so a deep edit
-/// re-lowers. Returns when the active clip changes (the outer `for_each` re-arms).
-async fn observe_clip_tracks(clip: std::sync::Arc<CustomAnimation>) {
-    clip.tracks
-        .signal_vec_cloned()
-        .for_each(|_| async {
-            schedule_relower();
-            // Re-arm per-track observers each time the list changes.
-            let active = controller().current_clip.get();
-            if let Some(c) = active.and_then(|id| {
-                crate::controller::animation::find_clip(&controller().custom_animations, id)
-            }) {
-                for track in c.tracks.lock_ref().iter() {
-                    let t = track.clone();
-                    spawn_local(async move {
-                        // Fire a single relower on any of this track's edits.
-                        let sig = t.keys.signal_cloned().map(|_| ());
-                        sig.for_each(|_| async {
-                            schedule_relower();
-                        })
-                        .await;
-                    });
-                }
-            }
-        })
-        .await;
 }
 
 thread_local! {
