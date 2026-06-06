@@ -1836,6 +1836,23 @@ impl EditorController {
             undo_depth: self.undo.borrow().len(),
             redo_depth: self.redo.borrow().len(),
             animation: self.animation_snapshot(),
+            materials: self
+                .custom_materials
+                .lock_ref()
+                .iter()
+                .map(|m| query::MaterialSnapshot {
+                    id: m.id.to_string(),
+                    name: m.name.get_cloned(),
+                    registered: m.registered.get(),
+                    builtin: m.builtin.lock_ref().is_some(),
+                    uniforms: m
+                        .uniforms
+                        .lock_ref()
+                        .iter()
+                        .map(|s| s.name.clone())
+                        .collect(),
+                })
+                .collect(),
         }
     }
 

@@ -27,7 +27,22 @@ pub struct EditorSnapshot {
     /// Animation-mode state (clip library + transport). Lets a driver discover
     /// clip ids + verify transport without the UI (§6.2).
     pub animation: AnimationSnapshot,
+    /// Custom (dynamic-WGSL) material assets — id / name / registered / declared
+    /// uniform slot names. Lets a driver discover material ids + uniform slots
+    /// (e.g. to author/verify a Uniform animation track).
+    #[serde(default)]
+    pub materials: Vec<MaterialSnapshot>,
     // materials / compile_errors land as those models arrive.
+}
+
+/// Serializable projection of a custom material asset.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MaterialSnapshot {
+    pub id: String,
+    pub name: String,
+    pub registered: bool,
+    pub builtin: bool,
+    pub uniforms: Vec<String>,
 }
 
 /// Serializable projection of Animation-mode state.
