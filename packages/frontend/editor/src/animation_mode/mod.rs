@@ -13,6 +13,7 @@
 mod inspector;
 mod library;
 mod ribbon;
+mod viewport;
 
 use crate::prelude::*;
 
@@ -41,13 +42,26 @@ pub fn render() -> Dom {
                     .child(inspector::render())
                 }))
             }))
-            // RIGHT column: viewport + timeline placeholder (M-A3/M-A4).
+            // RIGHT column: real-scene viewport (top) over the timeline dock.
             .child(html!("div", {
-                .style("position", "relative").style("min-width", "0").style("background", "var(--bg-0)")
-                .style("display", "flex").style("align-items", "center").style("justify-content", "center")
-                .child(html!("span", {
-                    .style("font-size", "12px").style("color", "var(--text-3)")
-                    .text("Viewport + timeline \u{2014} M-A3/M-A4")
+                .style("min-width", "0").style("min-height", "0")
+                .style("display", "flex").style("flex-direction", "column")
+                // Viewport (the reparented WebGPU canvas) — flexes to fill.
+                .child(html!("div", {
+                    .style("position", "relative").style("flex", "1").style("min-height", "0")
+                    .child(viewport::render())
+                }))
+                // Timeline dock (transport · ruler · Dope Sheet / Curves / Mixer).
+                // M-A4 fills this; M-A3 leaves a sized placeholder so the viewport
+                // canvas gets a real (non-zero) area to size to.
+                .child(html!("div", {
+                    .style("flex", "0 0 320px").style("min-height", "0")
+                    .style("border-top", "1px solid var(--line)").style("background", "var(--bg-1)")
+                    .style("display", "flex").style("align-items", "center").style("justify-content", "center")
+                    .child(html!("span", {
+                        .style("font-size", "12px").style("color", "var(--text-3)")
+                        .text("Timeline dock \u{2014} M-A4")
+                    }))
                 }))
             }))
         }))

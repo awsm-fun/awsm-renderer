@@ -64,6 +64,19 @@ pub fn render() -> Dom {
                 // reliably fire its first callback on the reparent, which would
                 // leave the render at 300×150 and break click/gizmo picking.
                 crate::engine::context::sync_canvas_size();
+                // Animation mode shares this same canvas, so it gets reparented
+                // away when the user switches there. Re-claim it on every switch
+                // back into Scene mode.
+                let slot: web_sys::Element = elem.into();
+                spawn_local(clone!(slot => async move {
+                    crate::controller::controller().mode.signal().for_each(move |m| {
+                        if m == crate::controller::EditorMode::Scene {
+                            crate::engine::context::with_canvas(|c| { let _ = slot.append_child(c); });
+                            crate::engine::context::sync_canvas_size();
+                        }
+                        async {}
+                    }).await;
+                }));
             })
         }))
         // Screen-space selection box (orange rect around the selected object,
