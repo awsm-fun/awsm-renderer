@@ -1507,6 +1507,10 @@ impl EditorController {
         // Mirror the glTF hierarchy as editor nodes under the scene root. Pass
         // the per-glTF-material library ids so each mesh node is assigned its
         // material (one per node; multi-material nodes are destructured).
+        // Built while mirroring the tree: glTF node index → minted editor NodeId.
+        // Imported animation channels (keyed by glTF node index) resolve through
+        // this to bind onto the real scene nodes.
+        let mut node_map: std::collections::HashMap<u32, NodeId> = std::collections::HashMap::new();
         for root in &template.roots {
             let node = build_editor_subtree(
                 root,
@@ -1514,12 +1518,181 @@ impl EditorController {
                 &mat_ids,
                 default_mat_id,
                 Some(&import.display_name),
+                &mut node_map,
             );
             mutate::insert_under(&self.scene, None, node);
         }
         self.scene.bump_revision();
         self.dirty.set_neq(true);
-        Toast::info(format!("Imported {}", import.display_name));
+
+        // Convert each extracted glTF animation → a library clip bound to the
+        // freshly-instantiated nodes (channels for un-instantiated nodes skip).
+        let clip_count = self.import_animations(&import.animations, &node_map);
+
+        if clip_count > 0 {
+            Toast::info(format!(
+                "Imported {} ({clip_count} clip{})",
+                import.display_name,
+                if clip_count == 1 { "" } else { "s" }
+            ));
+        } else {
+            Toast::info(format!("Imported {}", import.display_name));
+        }
+    }
+
+    /// Convert extracted glTF animations into library [`CustomAnimation`] clips
+    /// bound (via `node_map`: glTF node index → editor `NodeId`) to the imported
+    /// scene nodes. A channel targeting a node we didn't instantiate is skipped
+    /// with a warning. Returns the number of clips actually created.
+    fn import_animations(
+        &self,
+        animations: &[awsm_renderer_gltf::extract::ExtractedAnimation],
+        node_map: &std::collections::HashMap<u32, NodeId>,
+    ) -> usize {
+        use animation::{Keyframe, TransformProp};
+        use awsm_renderer::animation::{AnimationData, AnimationSampler};
+        use awsm_renderer_gltf::extract::ExtractedProperty;
+
+        // Library-clip swatch palette (mirrors the AddClip color scheme).
+        const CLIP_COLORS: [&str; 6] = [
+            "#7aa2f7", "#9ece6a", "#e0af68", "#f7768e", "#bb9af7", "#7dcfff",
+        ];
+
+        let mut created = 0usize;
+        for (anim_i, anim) in animations.iter().enumerate() {
+            let id = AssetId::new();
+            // Index into the swatch palette by the clip's library position (pushes
+            // from earlier iterations are already reflected in the live length).
+            let base = self.custom_animations.lock_ref().len();
+            let name = anim
+                .name
+                .clone()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| format!("Animation {}", anim_i + 1));
+            let clip = CA::new(id, name);
+            clip.color
+                .set(CLIP_COLORS[base % CLIP_COLORS.len()].to_string());
+
+            let mut tracks: Vec<Arc<Track>> = Vec::new();
+            let mut max_duration = 0.0_f64;
+
+            for channel in &anim.channels {
+                let node = match node_map.get(&(channel.node_index as u32)) {
+                    Some(n) => *n,
+                    None => {
+                        tracing::warn!(
+                            "imported animation channel targets un-instantiated glTF node {} — skipping",
+                            channel.node_index
+                        );
+                        continue;
+                    }
+                };
+
+                let sampler = &channel.clip.sampler;
+                let sampler_kind = match sampler {
+                    AnimationSampler::Linear { .. } => SamplerKind::Linear,
+                    AnimationSampler::Step { .. } => SamplerKind::Step,
+                    AnimationSampler::CubicSpline { .. } => SamplerKind::Cubic,
+                };
+                let interp = animation::sampler_to_interp(sampler_kind);
+
+                // The track's target + a value-extractor that pulls the right
+                // component out of an `AnimationData` for this property.
+                let (target, extract): (TrackTarget, fn(&AnimationData) -> TrackValue) =
+                    match channel.property {
+                        ExtractedProperty::Translation => (
+                            TrackTarget::Transform {
+                                node,
+                                prop: TransformProp::Translation,
+                            },
+                            extract_translation,
+                        ),
+                        ExtractedProperty::Rotation => (
+                            TrackTarget::Transform {
+                                node,
+                                prop: TransformProp::Rotation,
+                            },
+                            extract_rotation,
+                        ),
+                        ExtractedProperty::Scale => (
+                            TrackTarget::Transform {
+                                node,
+                                prop: TransformProp::Scale,
+                            },
+                            extract_scale,
+                        ),
+                        // Per-target-index morph splitting is out of scope: bind
+                        // index 0 only (weight[0] of each key).
+                        ExtractedProperty::MorphWeights => {
+                            (TrackTarget::Morph { node, index: 0 }, extract_morph0)
+                        }
+                    };
+
+                let times: Vec<f64> = sampler.times().to_vec();
+                let values: &[AnimationData] = sampler_values(sampler);
+                let (in_tangents, out_tangents): (&[AnimationData], &[AnimationData]) =
+                    match sampler {
+                        AnimationSampler::CubicSpline {
+                            in_tangents,
+                            out_tangents,
+                            ..
+                        } => (in_tangents, out_tangents),
+                        _ => (&[], &[]),
+                    };
+
+                let keys: Vec<Keyframe> = times
+                    .iter()
+                    .enumerate()
+                    .map(|(i, _)| {
+                        let value = values
+                            .get(i)
+                            .map(extract)
+                            .unwrap_or_else(|| TrackValue::Scalar(0.0));
+                        let (in_tangent, out_tangent) =
+                            if matches!(sampler, AnimationSampler::CubicSpline { .. }) {
+                                let it = in_tangents
+                                    .get(i)
+                                    .map(extract)
+                                    .unwrap_or_else(|| animation::zeroed_like(&value));
+                                let ot = out_tangents
+                                    .get(i)
+                                    .map(extract)
+                                    .unwrap_or_else(|| animation::zeroed_like(&value));
+                                (it, ot)
+                            } else {
+                                let z = animation::zeroed_like(&value);
+                                (z, z)
+                            };
+                        Keyframe {
+                            value,
+                            interp,
+                            in_tangent,
+                            out_tangent,
+                        }
+                    })
+                    .collect();
+
+                max_duration = max_duration.max(channel.clip.duration);
+
+                let track = Track::new(target);
+                track.sampler.set(sampler_kind);
+                track.times.set(times);
+                track.keys.set(keys);
+                tracks.push(track);
+            }
+
+            if max_duration > 0.0 {
+                clip.duration.set(max_duration);
+            }
+            clip.tracks.lock_mut().replace_cloned(tracks);
+
+            self.custom_animations.lock_mut().push_cloned(clip);
+            if self.current_clip.get().is_none() {
+                self.current_clip.set(Some(id));
+            }
+            created += 1;
+        }
+        created
     }
 
     /// Pop the newest inverse and apply it; its own inverse becomes a redo entry.
@@ -2169,6 +2342,7 @@ fn build_editor_subtree(
     mat_ids: &[AssetId],
     default_mat_id: Option<AssetId>,
     fallback_name: Option<&str>,
+    node_map: &mut std::collections::HashMap<u32, NodeId>,
 ) -> Arc<crate::engine::scene::node::Node> {
     use crate::engine::scene::node::Node;
     use awsm_scene_schema::{dynamic_material::CustomMaterialInstance, MaterialDef, ModelRef, Trs};
@@ -2275,6 +2449,12 @@ fn build_editor_subtree(
         }
     };
 
+    // Record this glTF node index → its minted editor `NodeId`, so imported
+    // animation channels (keyed by glTF node index) can resolve their target.
+    // For a destructured multi-material node, the transform-bearing Group keeps
+    // the glTF index (its Model-child parts are unindexed primitive splits).
+    node_map.insert(tn.gltf_node_index, node.id);
+
     for child in &tn.children {
         node.children.lock_mut().push_cloned(build_editor_subtree(
             child,
@@ -2282,9 +2462,68 @@ fn build_editor_subtree(
             mat_ids,
             default_mat_id,
             None,
+            node_map,
         ));
     }
     node
+}
+
+/// The keyframe `values` of an animation sampler (variant-agnostic; tangents
+/// live separately on the cubic variant).
+fn sampler_values(
+    s: &awsm_renderer::animation::AnimationSampler,
+) -> &[awsm_renderer::animation::AnimationData] {
+    use awsm_renderer::animation::AnimationSampler;
+    match s {
+        AnimationSampler::Linear { values, .. } => values,
+        AnimationSampler::Step { values, .. } => values,
+        AnimationSampler::CubicSpline { values, .. } => values,
+    }
+}
+
+/// Pull a translation vec3 out of an imported `AnimationData::Transform`.
+fn extract_translation(d: &awsm_renderer::animation::AnimationData) -> TrackValue {
+    match d {
+        awsm_renderer::animation::AnimationData::Transform(t) => {
+            let v = t.translation.unwrap_or(glam::Vec3::ZERO);
+            TrackValue::Vec3([v.x, v.y, v.z])
+        }
+        _ => TrackValue::Vec3([0.0; 3]),
+    }
+}
+
+/// Pull a scale vec3 out of an imported `AnimationData::Transform`.
+fn extract_scale(d: &awsm_renderer::animation::AnimationData) -> TrackValue {
+    match d {
+        awsm_renderer::animation::AnimationData::Transform(t) => {
+            let v = t.scale.unwrap_or(glam::Vec3::ONE);
+            TrackValue::Vec3([v.x, v.y, v.z])
+        }
+        _ => TrackValue::Vec3([1.0; 3]),
+    }
+}
+
+/// Pull a rotation quat (xyzw) out of an imported `AnimationData::Transform`
+/// (quaternion-native — no Euler conversion).
+fn extract_rotation(d: &awsm_renderer::animation::AnimationData) -> TrackValue {
+    match d {
+        awsm_renderer::animation::AnimationData::Transform(t) => {
+            let q = t.rotation.unwrap_or(glam::Quat::IDENTITY);
+            TrackValue::Quat([q.x, q.y, q.z, q.w])
+        }
+        _ => TrackValue::Quat([0.0, 0.0, 0.0, 1.0]),
+    }
+}
+
+/// Pull morph weight index 0 out of an imported `AnimationData::Vertex`. (Cubic
+/// tangents carry the same `Vertex` shape, so this also reads tangent weights.)
+fn extract_morph0(d: &awsm_renderer::animation::AnimationData) -> TrackValue {
+    match d {
+        awsm_renderer::animation::AnimationData::Vertex(v) => {
+            TrackValue::Scalar(v.weights.first().copied().unwrap_or(0.0))
+        }
+        _ => TrackValue::Scalar(0.0),
+    }
 }
 
 /// Whether any primitive anywhere in the template has no glTF material (so the
