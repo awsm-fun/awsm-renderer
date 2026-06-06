@@ -46,6 +46,8 @@ use std::cell::{OnceCell, RefCell};
 use std::rc::Rc;
 
 use awsm_web_shared::prelude::{Mutable, MutableVec, Toast};
+use wasm_bindgen::closure::Closure;
+use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::spawn_local;
 
 use self::animation::{find_clip, CustomAnimation as CA};
@@ -59,6 +61,12 @@ use std::sync::Arc;
 
 thread_local! {
     static CONTROLLER: OnceCell<EditorController> = const { OnceCell::new() };
+    /// The cross-tab relay channel (§9). `None` until `init`, or if the browser
+    /// lacks `BroadcastChannel` (cross-tab then simply disabled — the editor still
+    /// works). Every non-tab-local dispatched command is posted here; other tabs
+    /// apply it. `BroadcastChannel` does not deliver to the posting context, so
+    /// there is no echo to guard against.
+    static SYNC_CHANNEL: RefCell<Option<web_sys::BroadcastChannel>> = const { RefCell::new(None) };
 }
 
 /// Install the controller singleton. Call once at boot, before mounting the UI.
@@ -66,6 +74,36 @@ pub fn init() {
     CONTROLLER.with(|c| {
         let _ = c.set(EditorController::new());
     });
+    init_cross_tab_sync();
+}
+
+/// Wire the cross-tab relay (§9): a `BroadcastChannel` whose incoming commands
+/// are applied through the same `dispatch`/`apply` seam (replay path — no
+/// re-broadcast, no undo record). Two tabs on the same project thus stay in
+/// lock-step on every clip/track/keyframe/mixer edit + the shared playhead, while
+/// each keeps its own camera / selection / mode (`is_tab_local`, not broadcast).
+fn init_cross_tab_sync() {
+    let bc = match web_sys::BroadcastChannel::new("awsm-editor-sync") {
+        Ok(bc) => bc,
+        Err(_) => return, // unsupported → cross-tab disabled; editor unaffected
+    };
+    let on_message =
+        Closure::<dyn FnMut(web_sys::MessageEvent)>::new(|e: web_sys::MessageEvent| {
+            let Some(json) = e.data().as_string() else {
+                return;
+            };
+            match serde_json::from_str::<EditorCommand>(&json) {
+                Ok(cmd) => spawn_local(async move {
+                    // Remote replay: straight to `apply` (dispatch would re-broadcast
+                    // + record undo). The returned inverse is discarded.
+                    let _ = controller().apply_remote(cmd).await;
+                }),
+                Err(err) => tracing::warn!("cross-tab: undecodable command: {err}"),
+            }
+        });
+    bc.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
+    on_message.forget(); // handler lives for the app's lifetime
+    SYNC_CHANNEL.with(|c| *c.borrow_mut() = Some(bc));
 }
 
 /// A cheap clone of the controller singleton (all fields are `Mutable`/`Rc`).
@@ -236,8 +274,27 @@ impl EditorController {
     /// seeing it move in another. Undo/redo deliberately don't broadcast (they
     /// call `apply` directly), so a replay isn't mistaken for a fresh edit.
     fn broadcast(&self, cmd: &EditorCommand) {
+        // Per-tab view-local commands (camera / selection / mode) never cross-tab
+        // broadcast — a second window keeps its own view (§9).
+        if cmd.is_tab_local() {
+            return;
+        }
         let payload = serde_json::to_string(cmd).unwrap_or_else(|_| format!("{cmd:?}"));
         tracing::info!("broadcasting {payload}");
+        SYNC_CHANNEL.with(|c| {
+            if let Some(bc) = c.borrow().as_ref() {
+                let _ = bc.post_message(&JsValue::from_str(&payload));
+            }
+        });
+    }
+
+    /// Apply a command that arrived from ANOTHER tab via the cross-tab relay
+    /// (§9). Goes straight to `apply` — the replay path: it does NOT re-broadcast
+    /// (only `dispatch` broadcasts) and does NOT record undo (the inverse is
+    /// discarded), so a relayed edit isn't mistaken for a fresh local one.
+    async fn apply_remote(&self, cmd: EditorCommand) -> EditorResult<()> {
+        let _ = self.apply(cmd).await?;
+        Ok(())
     }
 
     /// Apply a command's effect and return its inverse (for the undo log), or
@@ -719,14 +776,17 @@ impl EditorController {
                 Ok(None)
             }
             // ───────────────────── Animation: clip lifecycle ─────────────────
-            EditorCommand::AddClip => {
-                let id = AssetId::new();
-                let n = self.custom_animations.lock_ref().len() + 1;
-                let clip = CA::new(id, format!("Clip {n}"));
-                self.custom_animations.lock_mut().push_cloned(clip);
+            EditorCommand::AddClip { id } => {
+                // Idempotent: a cross-tab relay (§9) replays this; if the clip id
+                // already exists (or a self-echo slips through) it's a no-op.
+                if find_clip(&self.custom_animations, id).is_none() {
+                    let n = self.custom_animations.lock_ref().len() + 1;
+                    let clip = CA::new(id, format!("Clip {n}"));
+                    self.custom_animations.lock_mut().push_cloned(clip);
+                    Toast::info("Created clip");
+                }
                 self.current_clip.set(Some(id));
                 self.dirty.set_neq(true);
-                Toast::info("Created clip");
                 Ok(None)
             }
             EditorCommand::DeleteClip { id } => {

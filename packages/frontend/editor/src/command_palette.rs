@@ -355,7 +355,11 @@ fn commands() -> Vec<Cmd> {
     anim(
         "Animation: New clip",
         "plus",
-        Rc::new(|| dispatch(EditorCommand::AddClip)),
+        Rc::new(|| {
+            dispatch(EditorCommand::AddClip {
+                id: crate::engine::scene::AssetId::new(),
+            })
+        }),
     );
     anim(
         "Animation: Play / Pause",

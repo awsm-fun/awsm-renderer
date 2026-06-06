@@ -28,7 +28,7 @@ pub fn render() -> Dom {
             }))
             .child(html!("div", { .style("flex", "1") }))
             .child(IconBtn::new("plus").title("New clip").size(15.0)
-                .on_click(|| dispatch(EditorCommand::AddClip)).render())
+                .on_click(|| dispatch(EditorCommand::AddClip { id: crate::engine::scene::AssetId::new() })).render())
         }))
         // ── scrollable list (gap 5, padding 8) ───────────────────────────────
         .child(html!("div", {

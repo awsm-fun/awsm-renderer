@@ -74,4 +74,6 @@ features = [
     "Blob",
     "File",
     "Url",
+    "BroadcastChannel",
+    "MessageEvent",
 ]

@@ -159,7 +159,7 @@ fn toolbar(cat: Mutable<Cat>, query: Mutable<String>) -> Dom {
             .on_click(|| {
                 // "+ Clip" authors a fresh animation clip in the library (Animation
                 // category). Switch to Animation mode so the new clip is editable.
-                dispatch(EditorCommand::AddClip);
+                dispatch(EditorCommand::AddClip { id: AssetId::new() });
                 dispatch(EditorCommand::SwitchMode { mode: EditorMode::Animation });
             }).render())
     })

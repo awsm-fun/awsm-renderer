@@ -215,8 +215,11 @@ pub enum EditorCommand {
 
     // ───────────────────────── Animation: clip lifecycle ─────────────────────
     /// Create a fresh empty animation clip and make it current. Lifecycle (no
-    /// inverse recorded).
-    AddClip,
+    /// inverse recorded). **Carries its `id`** (minted by the dispatcher, not in
+    /// `apply`) so the command is deterministic data — a cross-tab relay (§9) that
+    /// replays it produces the *same* clip id in every tab. Idempotent: applying
+    /// it when the id already exists is a no-op.
+    AddClip { id: AssetId },
     /// Delete a clip from the library. Lifecycle.
     DeleteClip { id: AssetId },
     /// Duplicate a clip (deep copy, fresh id) and select it. Lifecycle.
@@ -413,6 +416,24 @@ impl EditorCommand {
         )
     }
 
+    /// Per-tab **view-local** commands that must NOT cross-tab broadcast (§9): a
+    /// second window framing its own camera / with its own selection / mode must
+    /// not be yanked when the first edits. Everything else (clip/track/keyframe/
+    /// mixer edits + the shared transport playhead) DOES broadcast so two tabs on
+    /// the same project stay in lock-step.
+    pub fn is_tab_local(&self) -> bool {
+        matches!(
+            self,
+            EditorCommand::SwitchMode { .. }
+                | EditorCommand::SetSelection { .. }
+                | EditorCommand::SetAssetSelection { .. }
+                | EditorCommand::SnapCameraToAxis { .. }
+                | EditorCommand::ResetCamera
+                | EditorCommand::SetAnimSelection { .. }
+                | EditorCommand::SetSoloRoot { .. }
+        )
+    }
+
     /// A short human-readable label (used in toasts / telemetry / the eventual
     /// undo-history UI). Consumed as the mutation commands land in M4+.
     #[allow(dead_code)]
@@ -451,7 +472,7 @@ impl EditorCommand {
             EditorCommand::SetEnvironment { .. } => "Set environment",
             EditorCommand::SnapCameraToAxis { .. } => "Snap camera",
             EditorCommand::ResetCamera => "Reset view",
-            EditorCommand::AddClip => "New clip",
+            EditorCommand::AddClip { .. } => "New clip",
             EditorCommand::DeleteClip { .. } => "Delete clip",
             EditorCommand::DuplicateClip { .. } => "Duplicate clip",
             EditorCommand::SetCurrentClip { .. } => "Select clip",
