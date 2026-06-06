@@ -134,6 +134,16 @@ impl Animations {
         self.rest.remove(&target);
     }
 
+    /// **Explicitly seed** a target's rest (authored-default) value. The editor
+    /// calls this so rest comes from the authoritative authored value (e.g. a
+    /// node's authored transform) rather than the renderer's lazily-read *live*
+    /// local — which animation overwrites each frame (invariant §4.7-I1: rest is
+    /// the bind/default, never the already-animated value). Overwrites any
+    /// existing entry, so re-lowering refreshes rest from the authored source.
+    pub fn set_rest(&mut self, target: AnimationTarget, value: AnimationData) {
+        self.rest.insert(target, value);
+    }
+
     /// Removes an animation player and its associations.
     pub fn remove(&mut self, key: AnimationKey) {
         self.players.remove(key);

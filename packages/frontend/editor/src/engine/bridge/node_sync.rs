@@ -1289,7 +1289,7 @@ pub fn primitive_to_mesh(shape: &PrimitiveShape) -> MeshData {
     }
 }
 
-fn trs_to_transform(trs: &Trs) -> Transform {
+pub(crate) fn trs_to_transform(trs: &Trs) -> Transform {
     Transform {
         translation: Vec3::from_array(trs.translation),
         rotation: Quat::from_array(trs.rotation),

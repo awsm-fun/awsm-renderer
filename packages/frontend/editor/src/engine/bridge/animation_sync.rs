@@ -19,9 +19,9 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use awsm_renderer::animation::{
-    AnimationChannel, AnimationClipGroup, AnimationLayer, AnimationLoopStyle, AnimationMixer,
-    AnimationPlayDirection, AnimationStrip, AnimationTarget, BuiltinMaterialParam, CameraParam,
-    LayerMode, LightParam, TargetMask,
+    AnimationChannel, AnimationClipGroup, AnimationData, AnimationLayer, AnimationLoopStyle,
+    AnimationMixer, AnimationPlayDirection, AnimationStrip, AnimationTarget, BuiltinMaterialParam,
+    CameraParam, LayerMode, LightParam, TargetMask, TransformAnimation,
 };
 use futures_signals::signal::SignalExt;
 use futures_signals::signal_vec::SignalVecExt;
@@ -194,13 +194,58 @@ async fn relower() {
         }
         // Rebuild the mixer, mapping the doc's clip ids → freshly inserted keys.
         r.animations.mixer = mixer.build(&keys);
-        // Authored defaults may have shifted; recapture rest next frame.
-        r.animations.clear_rest_cache();
+        // Seed the rest (authored-default) pose for every animated TRANSFORM
+        // target from the EDITOR's authored node transform — NOT the renderer's
+        // live local, which animation overwrites each frame (§4.7-I1). Doing this
+        // on every re-lower also refreshes rest if the authored default changed.
+        // (Non-transform targets keep their lazily-captured rest; additive on
+        // those is rare.) Without this, re-lowering would re-capture rest from the
+        // already-animated local → additive deltas collapse to zero.
+        seed_transform_rests(r, &clips);
         // Re-pin the pose at the current playhead so the viewport reflects the
         // edit immediately (WYSIWYG), even while paused.
         pin_pose(r, playhead);
     })
     .await;
+}
+
+/// Seed the rest (authored-default) pose for every animated transform target
+/// from the EDITOR's authored node transform — the authoritative default, which
+/// animation never overwrites (the renderer's live local IS overwritten each
+/// frame, so re-capturing from it would make additive deltas collapse — §4.7-I1).
+fn seed_transform_rests(
+    r: &mut awsm_renderer::AwsmRenderer,
+    clips: &[(AssetId, std::sync::Arc<CustomAnimation>)],
+) {
+    let ctrl = controller();
+    let scene = &ctrl.scene;
+    for (_, clip) in clips {
+        for track in clip.tracks.lock_ref().iter() {
+            let TrackTarget::Transform { node, .. } = &track.target else {
+                continue;
+            };
+            let node = *node;
+            let tk = bridge()
+                .nodes
+                .lock()
+                .unwrap()
+                .get(&node)
+                .map(|n| n.transform_key);
+            let Some(tk) = tk else { continue };
+            let Some(editor_node) = crate::engine::scene::mutate::find_by_id(scene, node) else {
+                continue;
+            };
+            let t = super::node_sync::trs_to_transform(&editor_node.transform.get());
+            r.animations.set_rest(
+                AnimationTarget::Transform(tk),
+                AnimationData::Transform(TransformAnimation {
+                    translation: Some(t.translation),
+                    rotation: Some(t.rotation),
+                    scale: Some(t.scale),
+                }),
+            );
+        }
+    }
 }
 
 /// Lower one authored clip → a renderer [`AnimationClipGroup`]. Resolves each
