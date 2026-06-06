@@ -1,14 +1,18 @@
 //! Animation mode — the third editor workspace (Scene · Material · **Animation**),
 //! a clip-authoring studio. See `docs/plans/animation-editor.md`.
 //!
-//! M-A0 scaffold: an empty shell that mounts under the mode router and proves the
-//! Scene/Material/Animation switch + WebGPU-canvas reparent works. The real panels
-//! (ribbon · clip library · key/track inspector · real-scene viewport · timeline
-//! dock with Dope Sheet / Curves / Mixer) land in M-A2…M-A6.
+//! M-A2 layout: the **ribbon** (active-clip header) over a `248px · 1fr`
+//! workspace — the left column stacks the **ClipLibrary** over the **KeyInspector**
+//! (key/track editor); the right column is a placeholder for the real viewport +
+//! timeline dock that land in M-A3/M-A4.
 //!
 //! Load-bearing rule (§0.2): every animation mutation is a serializable
 //! `EditorCommand` dispatched through the one `EditorController` — the UI never
 //! mutates animation state directly.
+
+mod inspector;
+mod library;
+mod ribbon;
 
 use crate::prelude::*;
 
@@ -16,16 +20,36 @@ pub fn render() -> Dom {
     html!("div", {
         .style("position", "absolute").style("inset", "0")
         .style("display", "flex").style("flex-direction", "column")
-        .style("align-items", "center").style("justify-content", "center")
-        .style("gap", "10px")
         .style("min-height", "0").style("background", "var(--bg-0)")
+        // ── ribbon (active-clip header) ──────────────────────────────────────
+        .child(ribbon::render())
+        // ── workspace: 248px rail + viewport/timeline placeholder ────────────
         .child(html!("div", {
-            .style("font-size", "13px").style("color", "var(--text-2)")
-            .text("Animation workspace")
-        }))
-        .child(html!("div", {
-            .style("font-size", "12px").style("color", "var(--text-3)")
-            .text("Clip authoring lands here (M-A2…M-A6).")
+            .style("flex", "1").style("min-height", "0")
+            .style("display", "grid").style("grid-template-columns", "248px 1fr")
+            // LEFT column: library (flex:1) over inspector (max 48%, scroll).
+            .child(html!("div", {
+                .style("display", "flex").style("flex-direction", "column").style("min-height", "0")
+                .style("background", "var(--bg-1)").style("border-right", "1px solid var(--line)")
+                .child(html!("div", {
+                    .style("flex", "1").style("min-height", "0")
+                    .child(library::render())
+                }))
+                .child(html!("div", {
+                    .style("flex", "0 0 auto").style("max-height", "48%").style("overflow", "auto")
+                    .style("border-top", "1px solid var(--line)")
+                    .child(inspector::render())
+                }))
+            }))
+            // RIGHT column: viewport + timeline placeholder (M-A3/M-A4).
+            .child(html!("div", {
+                .style("position", "relative").style("min-width", "0").style("background", "var(--bg-0)")
+                .style("display", "flex").style("align-items", "center").style("justify-content", "center")
+                .child(html!("span", {
+                    .style("font-size", "12px").style("color", "var(--text-3)")
+                    .text("Viewport + timeline \u{2014} M-A3/M-A4")
+                }))
+            }))
         }))
     })
 }
