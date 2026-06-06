@@ -17,6 +17,7 @@
 mod curves;
 pub mod dock;
 mod dope;
+mod mixer;
 mod ruler;
 mod transport;
 

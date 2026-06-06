@@ -17,7 +17,7 @@ use crate::controller::animation::{find_clip, AnimView, CustomAnimation};
 use crate::controller::EditorCommand;
 use crate::prelude::*;
 
-use super::{curves, dope, ruler, transport, Geo, TimeUnit, NAMES_W, RULER_H};
+use super::{curves, dope, mixer, ruler, transport, Geo, TimeUnit, NAMES_W, RULER_H};
 
 /// Zoom bounds + step (px-per-second), mirroring the JSX zoom buttons.
 const PX_MIN: f64 = 40.0;
@@ -158,7 +158,7 @@ fn scroller(clip: Option<Arc<CustomAnimation>>, px: f64, unit: TimeUnit, fps: u3
             Some(match view {
                 AnimView::Dope => dope::render(clip.clone(), geo),
                 AnimView::Curves => curves::render(clip.clone(), geo),
-                AnimView::Mixer => placeholder("Mixer \u{2014} M-A5"),
+                AnimView::Mixer => mixer::render(clip.clone(), geo),
             })
         })))
     })
@@ -173,16 +173,6 @@ fn no_clip() -> Dom {
             .style("font-size", "12px").style("color", "var(--text-3)")
             .text("No clip selected \u{2014} create one in the library to author it.")
         }))
-    })
-}
-
-/// A small inert placeholder for the not-yet-built views (Curves/Mixer).
-fn placeholder(label: &str) -> Dom {
-    html!("div", {
-        .style("position", "sticky").style("left", "0").style("max-width", "100%")
-        .style("display", "flex").style("align-items", "center").style("justify-content", "center")
-        .style("padding", "40px 0").style("font-size", "12.5px").style("color", "var(--text-3)")
-        .text(label)
     })
 }
 
