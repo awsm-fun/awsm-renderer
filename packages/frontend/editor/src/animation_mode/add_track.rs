@@ -8,18 +8,25 @@
 //!
 //! Target families wired here: **Transform** (Translation/Rotation/Scale on any
 //! node), **Light** (Intensity/Color always; Range/InnerAngle/OuterAngle only for
-//! the light variants that carry them), **Camera** (FovY/Near/Far). Morph and
-//! material-uniform targets are intentionally SKIPPED for now — the editor scene
-//! `Node` does not expose morph-target counts or resolved custom-material uniform
-//! slots readily, and Transforms + Lights + Cameras are the required set for this
-//! milestone.
+//! the light variants that carry them), **Camera** (FovY/Near/Far),
+//! **BuiltinParam** (BaseColor/Metallic/Roughness/Emissive on mesh-bearing nodes),
+//! **Morph** (a single "Morph 0" row on mesh-bearing nodes — see below), and
+//! **Uniform** (one row per declared uniform slot of each *dynamic* custom
+//! material, rendered as material-scoped groups).
+//!
+//! Morph caveat: the editor scene `Node` does NOT expose a mesh's morph-target
+//! count, so we cannot enumerate one row per morph index. We emit a single
+//! `Morph { index: 0 }` row for the common single-morph case (the renderer
+//! resolves index 0 robustly); authoring higher indices is deferred until the
+//! editor model carries per-mesh morph counts.
 
 use std::sync::Arc;
 
 use crate::controller::animation::{
-    find_clip, target_key, CameraParamKind, CustomAnimation, LightParamKind, TrackTarget,
-    TransformProp,
+    find_clip, target_key, BuiltinParamKind, CameraParamKind, CustomAnimation, LightParamKind,
+    TrackTarget, TransformProp,
 };
+use crate::controller::custom_material::CustomMaterial;
 use crate::engine::scene::node::Node;
 use crate::engine::scene::types::LightKind;
 use crate::engine::scene::{AssetId, NodeKind};
@@ -233,7 +240,7 @@ fn prop_button(
     let hover = Mutable::new(false);
     let target = row.target.clone();
     let badge = row.badge;
-    let hint = row.hint;
+    let hint = row.hint.clone();
 
     html!("button", {
         .class("t")
@@ -269,7 +276,7 @@ fn prop_button(
         .child(html!("span", {
             .class("mono").style("font-size", "9.5px").style("color", "var(--text-3)")
             .style("min-width", "96px").style("text-align", "right")
-            .text(if added { "added" } else { hint })
+            .text(if added { "added" } else { &hint })
         }))
     })
 }
@@ -297,8 +304,9 @@ struct PropRow {
     label: String,
     /// An optional kind pill (e.g. `LIGHT` / `CAMERA`).
     badge: Option<&'static str>,
-    /// The right-aligned "lowers to" hint.
-    hint: &'static str,
+    /// The right-aligned "lowers to" hint (a `String` so runtime types — e.g. a
+    /// custom material's declared uniform WGSL type — can be carried directly).
+    hint: String,
 }
 
 /// One node's group of property rows.
@@ -328,6 +336,9 @@ fn collect_groups() -> Vec<TargetGroup> {
     let scene = controller().scene.clone();
     let nodes = scene.nodes.lock_ref();
     walk(nodes.as_slice(), &mut out);
+    // Material-scoped uniform groups (one per dynamic custom material with declared
+    // uniform slots) follow the per-node groups — they aren't tied to a node.
+    out.extend(collect_uniform_groups());
     out
 }
 
@@ -348,7 +359,7 @@ fn node_group(node: &Arc<Node>) -> Option<TargetGroup> {
             },
             label: "Translation".into(),
             badge: None,
-            hint: "vec3 \u{00b7} TRS",
+            hint: "vec3 \u{00b7} TRS".into(),
         },
         PropRow {
             target: TrackTarget::Transform {
@@ -357,7 +368,7 @@ fn node_group(node: &Arc<Node>) -> Option<TargetGroup> {
             },
             label: "Rotation".into(),
             badge: None,
-            hint: "quat \u{00b7} TRS",
+            hint: "quat \u{00b7} TRS".into(),
         },
         PropRow {
             target: TrackTarget::Transform {
@@ -366,7 +377,7 @@ fn node_group(node: &Arc<Node>) -> Option<TargetGroup> {
             },
             label: "Scale".into(),
             badge: None,
-            hint: "vec3 \u{00b7} TRS",
+            hint: "vec3 \u{00b7} TRS".into(),
         },
     ];
 
@@ -378,6 +389,20 @@ fn node_group(node: &Arc<Node>) -> Option<TargetGroup> {
         NodeKind::Camera(_) => {
             rows.extend(camera_rows(id));
             ("camera", "camera")
+        }
+        // Mesh-bearing nodes carry a first-party material (its built-in factors
+        // always exist) and a (possibly morphable) mesh.
+        NodeKind::Primitive { .. } => {
+            rows.extend(mesh_material_rows(id));
+            ("primitive", "cube")
+        }
+        NodeKind::Mesh { .. } => {
+            rows.extend(mesh_material_rows(id));
+            ("mesh", "cube")
+        }
+        NodeKind::Model(_) => {
+            rows.extend(mesh_material_rows(id));
+            ("model", "cube")
         }
         _ => ("node", "cube"),
     };
@@ -401,7 +426,7 @@ fn light_rows(node: crate::engine::scene::NodeId, kind: LightKind) -> Vec<PropRo
             },
             label: "Intensity".into(),
             badge: Some("LIGHT"),
-            hint: "scalar \u{00b7} light",
+            hint: "scalar \u{00b7} light".into(),
         },
         PropRow {
             target: TrackTarget::Light {
@@ -410,7 +435,7 @@ fn light_rows(node: crate::engine::scene::NodeId, kind: LightKind) -> Vec<PropRo
             },
             label: "Color".into(),
             badge: Some("LIGHT"),
-            hint: "vec3 \u{00b7} light",
+            hint: "vec3 \u{00b7} light".into(),
         },
     ];
     if matches!(kind, LightKind::Point | LightKind::Spot) {
@@ -421,7 +446,7 @@ fn light_rows(node: crate::engine::scene::NodeId, kind: LightKind) -> Vec<PropRo
             },
             label: "Range".into(),
             badge: Some("LIGHT"),
-            hint: "scalar \u{00b7} light",
+            hint: "scalar \u{00b7} light".into(),
         });
     }
     if matches!(kind, LightKind::Spot) {
@@ -432,7 +457,7 @@ fn light_rows(node: crate::engine::scene::NodeId, kind: LightKind) -> Vec<PropRo
             },
             label: "Inner Angle".into(),
             badge: Some("LIGHT"),
-            hint: "scalar \u{00b7} light",
+            hint: "scalar \u{00b7} light".into(),
         });
         rows.push(PropRow {
             target: TrackTarget::Light {
@@ -441,7 +466,7 @@ fn light_rows(node: crate::engine::scene::NodeId, kind: LightKind) -> Vec<PropRo
             },
             label: "Outer Angle".into(),
             badge: Some("LIGHT"),
-            hint: "scalar \u{00b7} light",
+            hint: "scalar \u{00b7} light".into(),
         });
     }
     rows
@@ -458,7 +483,7 @@ fn camera_rows(node: crate::engine::scene::NodeId) -> Vec<PropRow> {
             },
             label: "Field of View".into(),
             badge: Some("CAMERA"),
-            hint: "scalar \u{00b7} camera",
+            hint: "scalar \u{00b7} camera".into(),
         },
         PropRow {
             target: TrackTarget::Camera {
@@ -467,7 +492,7 @@ fn camera_rows(node: crate::engine::scene::NodeId) -> Vec<PropRow> {
             },
             label: "Near".into(),
             badge: Some("CAMERA"),
-            hint: "scalar \u{00b7} camera",
+            hint: "scalar \u{00b7} camera".into(),
         },
         PropRow {
             target: TrackTarget::Camera {
@@ -476,9 +501,106 @@ fn camera_rows(node: crate::engine::scene::NodeId) -> Vec<PropRow> {
             },
             label: "Far".into(),
             badge: Some("CAMERA"),
-            hint: "scalar \u{00b7} camera",
+            hint: "scalar \u{00b7} camera".into(),
         },
     ]
+}
+
+/// The built-in-material + morph rows for a mesh-bearing node (Primitive / Mesh /
+/// Model). The four PBR factors always exist on a first-party material, so they're
+/// offered unconditionally. Morph emits a single `index: 0` row (see module doc).
+fn mesh_material_rows(node: crate::engine::scene::NodeId) -> Vec<PropRow> {
+    vec![
+        PropRow {
+            target: TrackTarget::BuiltinParam {
+                node,
+                param: BuiltinParamKind::BaseColor,
+            },
+            label: "Base Color".into(),
+            badge: Some("BUILTIN"),
+            hint: "vec3 \u{00b7} builtin".into(),
+        },
+        PropRow {
+            target: TrackTarget::BuiltinParam {
+                node,
+                param: BuiltinParamKind::Metallic,
+            },
+            label: "Metallic".into(),
+            badge: Some("BUILTIN"),
+            hint: "f32 \u{00b7} builtin".into(),
+        },
+        PropRow {
+            target: TrackTarget::BuiltinParam {
+                node,
+                param: BuiltinParamKind::Roughness,
+            },
+            label: "Roughness".into(),
+            badge: Some("BUILTIN"),
+            hint: "f32 \u{00b7} builtin".into(),
+        },
+        PropRow {
+            target: TrackTarget::BuiltinParam {
+                node,
+                param: BuiltinParamKind::Emissive,
+            },
+            label: "Emissive".into(),
+            badge: Some("BUILTIN"),
+            hint: "vec3 \u{00b7} builtin".into(),
+        },
+        // Single morph row — the editor scene model doesn't carry per-mesh
+        // morph-target counts, so we can't enumerate indices. Index 0 covers the
+        // common single-morph case and the renderer resolves it robustly.
+        PropRow {
+            target: TrackTarget::Morph { node, index: 0 },
+            label: "Morph 0".into(),
+            badge: Some("MORPH"),
+            hint: "f32 \u{00b7} morph".into(),
+        },
+    ]
+}
+
+/// Build one [`TargetGroup`] per *dynamic* custom material that declares at least
+/// one uniform slot. These targets are material-scoped (keyed by `AssetId`, not a
+/// node), mirroring the prototype's material-uniform group in `AddTrackMenu`.
+///
+/// Only dynamic (WGSL) materials are offered: a built-in material (`builtin ==
+/// Some`) animates via the per-node BuiltinParam rows above, not named uniforms.
+fn collect_uniform_groups() -> Vec<TargetGroup> {
+    let materials = controller().custom_materials.clone();
+    let mats = materials.lock_ref();
+    mats.iter().filter_map(uniform_group).collect()
+}
+
+/// The uniform group for one custom material, or `None` if it's a built-in
+/// material or declares no uniform slots.
+fn uniform_group(mat: &Arc<CustomMaterial>) -> Option<TargetGroup> {
+    // Built-in materials animate via BuiltinParam, not named uniforms.
+    if mat.builtin.lock_ref().is_some() {
+        return None;
+    }
+    let material = mat.id;
+    let rows: Vec<PropRow> = mat
+        .uniforms
+        .lock_ref()
+        .iter()
+        .map(|slot| PropRow {
+            target: TrackTarget::Uniform {
+                material,
+                name: slot.name.clone(),
+            },
+            label: slot.name.clone(),
+            badge: Some("UNIFORM"),
+            // The slot's declared WGSL type is the "lowers to" hint.
+            hint: slot.ty.clone(),
+        })
+        .collect();
+
+    (!rows.is_empty()).then(|| TargetGroup {
+        name: mat.name.get_cloned(),
+        kind: "uniform",
+        icon: "sliders",
+        rows,
+    })
 }
 
 /// Dispatch a command through the one controller (`spawn_local`).
