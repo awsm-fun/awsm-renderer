@@ -1,4 +1,4 @@
-//! The ⌘K command palette (extras.jsx `CommandPalette`). A fuzzy-filtered
+//! The ⌘K command palette. A fuzzy-filtered
 //! command list over the same `EditorCommand`s the panels dispatch — opened from
 //! the top-bar search affordance or the ⌘K / Ctrl-K shortcut. Arrow keys move
 //! the selection, Enter runs, Esc closes.
@@ -7,12 +7,13 @@ use std::rc::Rc;
 
 use awsm_scene_schema::{LightKind, PrimitiveShape};
 
+use crate::controller::animation::StepKind;
 use crate::controller::InsertSpec;
 use crate::prelude::*;
 
 /// One palette entry.
 struct Cmd {
-    label: &'static str,
+    label: String,
     group: &'static str,
     icon: &'static str,
     run: Rc<dyn Fn()>,
@@ -113,13 +114,13 @@ fn result_list(cmds: &Rc<Vec<Cmd>>, query: &str, sel: usize, idx: Mutable<usize>
         .children(f.iter().enumerate().map(|(row, &ci)| {
             let on = row == sel;
             let run = cmds[ci].run.clone();
-            let (label, group, icon) = (cmds[ci].label, cmds[ci].group, cmds[ci].icon);
+            let (label, group, icon) = (cmds[ci].label.clone(), cmds[ci].group, cmds[ci].icon);
             html!("button", {
                 .style("display", "flex").style("align-items", "center").style("gap", "11px").style("width", "100%")
                 .style("padding", "8px 11px").style("border-style", "none").style("border-radius", "var(--r2)").style("cursor", "pointer").style("text-align", "left")
                 .style("background", if on { "var(--accent-ghost)" } else { "transparent" }).style("color", "var(--text-0)")
                 .child(Icon::new(icon).size(16.0).color(if on { "var(--accent-bright)" } else { "var(--text-2)" }).render())
-                .child(html!("span", { .style("flex", "1").style("font-size", "13px").text(label) }))
+                .child(html!("span", { .style("flex", "1").style("font-size", "13px").text(&label) }))
                 .child(html!("span", { .class("kicker").style("font-size", "9.5px").style("text-transform", "uppercase").style("letter-spacing", ".06em")
                     .style("color", if on { "var(--accent-bright)" } else { "var(--text-3)" }).text(group) }))
                 .event(clone!(idx => move |_: events::MouseEnter| idx.set_neq(row)))
@@ -187,9 +188,9 @@ fn insert(spec: InsertSpec) -> Rc<dyn Fn()> {
 
 fn commands() -> Vec<Cmd> {
     let mut v: Vec<Cmd> = Vec::new();
-    let mut go = |label, icon, run: Rc<dyn Fn()>| {
+    let mut go = |label: &'static str, icon, run: Rc<dyn Fn()>| {
         v.push(Cmd {
-            label,
+            label: label.to_string(),
             group: "Go",
             icon,
             run,
@@ -227,9 +228,9 @@ fn commands() -> Vec<Cmd> {
         Rc::new(|| dispatch(EditorCommand::NewProject)),
     );
 
-    let mut edit = |label, icon, run: Rc<dyn Fn()>| {
+    let mut edit = |label: &'static str, icon, run: Rc<dyn Fn()>| {
         v.push(Cmd {
-            label,
+            label: label.to_string(),
             group: "Edit",
             icon,
             run,
@@ -254,9 +255,9 @@ fn commands() -> Vec<Cmd> {
         }),
     );
 
-    let mut ins = |label, icon, run: Rc<dyn Fn()>| {
+    let mut ins = |label: &'static str, icon, run: Rc<dyn Fn()>| {
         v.push(Cmd {
-            label,
+            label: label.to_string(),
             group: "Insert",
             icon,
             run,
@@ -315,9 +316,9 @@ fn commands() -> Vec<Cmd> {
         insert(InsertSpec::CollisionBox),
     );
 
-    let mut mat = |label, icon, run: Rc<dyn Fn()>| {
+    let mut mat = |label: &'static str, icon, run: Rc<dyn Fn()>| {
         v.push(Cmd {
-            label,
+            label: label.to_string(),
             group: "Material",
             icon,
             run,
@@ -333,6 +334,68 @@ fn commands() -> Vec<Cmd> {
             });
         }),
     );
+
+    let mut anim = |label: &'static str, icon, run: Rc<dyn Fn()>| {
+        v.push(Cmd {
+            label: label.to_string(),
+            group: "Animation",
+            icon,
+            run,
+        })
+    };
+    anim(
+        "Switch to Animation mode",
+        "curve",
+        Rc::new(|| {
+            dispatch(EditorCommand::SwitchMode {
+                mode: EditorMode::Animation,
+            })
+        }),
+    );
+    anim(
+        "Animation: New clip",
+        "plus",
+        Rc::new(|| {
+            dispatch(EditorCommand::AddClip {
+                id: crate::engine::scene::AssetId::new(),
+            })
+        }),
+    );
+    anim(
+        "Animation: Play / Pause",
+        "curve",
+        Rc::new(|| {
+            let on = !controller().playing.get();
+            dispatch(EditorCommand::SetPlaying { on });
+        }),
+    );
+    anim(
+        "Animation: To start",
+        "reset",
+        Rc::new(|| {
+            dispatch(EditorCommand::StepPlayhead {
+                kind: StepKind::Home,
+            })
+        }),
+    );
+
+    // Per-clip "select" entries — switch to Animation mode + select that clip.
+    // Built directly (owned labels per clip).
+    for clip in controller().custom_animations.lock_ref().iter() {
+        let id = clip.id;
+        let label = format!("Animation: Select clip \u{2014} {}", clip.name.get_cloned());
+        v.push(Cmd {
+            label,
+            group: "Animation",
+            icon: "curve",
+            run: Rc::new(move || {
+                dispatch(EditorCommand::SwitchMode {
+                    mode: EditorMode::Animation,
+                });
+                dispatch(EditorCommand::SetCurrentClip { id: Some(id) });
+            }),
+        });
+    }
 
     v
 }

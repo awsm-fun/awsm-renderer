@@ -10,6 +10,7 @@
 
 use awsm_renderer::textures::TextureKey;
 use awsm_renderer_gltf::data::GltfData;
+use awsm_renderer_gltf::extract::{extract_animations, ExtractedAnimation};
 use awsm_renderer_gltf::loader::{get_type_from_filename, GltfFileType};
 use awsm_renderer_gltf::populate::GltfPopulateContext;
 use awsm_renderer_gltf::{loader::GltfLoader, AwsmRendererGltfExt};
@@ -27,6 +28,11 @@ pub struct GltfImport {
     /// One editable material per glTF material (in glTF material-index order),
     /// with its factors + the renderer textures `populate_gltf` already baked.
     pub materials: Vec<ExtractedMaterial>,
+    /// Parsed animation clips (keyed per channel by glTF node index). The
+    /// controller maps each channel's node index to its minted `NodeId` and
+    /// lowers the sampler into authored keyframes. Empty when the file has no
+    /// animations (or extraction failed — logged, never fatal).
+    pub animations: Vec<ExtractedAnimation>,
 }
 
 /// A glTF material extracted into an editable [`MaterialDef`] (factors only;
@@ -166,6 +172,15 @@ async fn import_typed(
     // Read material factors + texture indices from the document before it's moved
     // into `populate_gltf`; the indices are resolved to baked texture keys after.
     let mat_specs = extract_material_specs(&data);
+    // Parse animations off the document before `data` is moved into populate.
+    // A parse error must not abort the whole import — log it + import zero clips.
+    let animations = match extract_animations(&data.doc, &data.buffers.raw) {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::warn!("glTF animation extraction failed (importing 0 clips): {e}");
+            Vec::new()
+        }
+    };
     let (template, materials) = {
         // Hold the renderer lock across the async populate + the synchronous
         // template snapshot, so nothing mutates the freshly-built tree first.
@@ -186,6 +201,7 @@ async fn import_typed(
         display_name: name.map(str::to_owned).unwrap_or_else(|| model_name(url)),
         template,
         materials,
+        animations,
     })
 }
 

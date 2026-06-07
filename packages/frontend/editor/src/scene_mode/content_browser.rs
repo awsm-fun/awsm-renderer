@@ -1,10 +1,10 @@
-//! Content Browser (content-browser.jsx) — the bottom Assets drawer.
+//! Content Browser — the bottom Assets drawer.
 //!
 //! Collapsed: a 34px bar with a folder glyph + total asset count. Expanded: a
 //! 218px drawer with category tabs (All/Materials/Textures/Meshes), a search
 //! box, "+ Material" / "+ Texture" authoring buttons, and a card grid. Cards are
 //! built from the project [`AssetTable`] plus the fixed built-in material family
-//! palette (PBR/Unlit/Toon/Flipbook, decision 3) — built-ins carry a distinct
+//! palette (PBR/Unlit/Toon/Flipbook) — built-ins carry a distinct
 //! accent outline + family glyph. Every mutation dispatches an `EditorCommand`.
 //!
 //! The Asset Inspector right-rail (selecting a card) lives in `inspector.rs`.
@@ -27,6 +27,8 @@ enum Cat {
     Model,
     /// Procedural meshes captured from the scene (the `Mesh` insert kind).
     Mesh,
+    /// Authored animation clips (live in `custom_animations`, not the asset table).
+    Animation,
 }
 
 /// One card in the grid — either a project asset (`id: Some`) or a built-in
@@ -42,6 +44,8 @@ struct Card {
     /// A custom WGSL material — clicking opens it in the Material-mode Studio
     /// rather than the Asset Inspector.
     custom: bool,
+    /// An animation clip — double-clicking opens it in Animation mode + selects it.
+    anim: bool,
 }
 
 pub fn render() -> Dom {
@@ -99,6 +103,7 @@ fn expanded() -> Dom {
             .child_signal(map_ref! {
                 let _rev = controller().scene.revision.signal(),
                 let _cm = controller().custom_materials.signal_vec_cloned().len(),
+                let _ca = controller().custom_animations.signal_vec_cloned().len(),
                 let c = cat.signal(),
                 let q = query.signal_cloned() =>
                 Some(grid(*c, q))
@@ -128,7 +133,7 @@ fn toolbar(cat: Mutable<Cat>, query: Mutable<String>) -> Dom {
         .child(html!("div", { .style("flex", "1") }))
         .child(Btn::new().label("Material").icon("plus").variant(BtnVariant::Ghost).size(BtnSize::Sm)
             .on_click(|| {
-                // "+ Material" authors a custom WGSL material in the Studio (decision 3).
+                // "+ Material" authors a custom WGSL material in the Studio.
                 dispatch(EditorCommand::AddCustomMaterial);
                 dispatch(EditorCommand::SwitchMode { mode: EditorMode::Material });
             }).render())
@@ -146,9 +151,16 @@ fn toolbar(cat: Mutable<Cat>, query: Mutable<String>) -> Dom {
                     proc(ProceduralKind::Gradient, "Procedural \u{00b7} Gradient", &close),
                     proc(ProceduralKind::Noise, "Procedural \u{00b7} Noise", &close),
                     MenuItem::new("Import image\u{2026}").icon("folder").on_click(|| {
-                        Toast::info("Image import lands in M11");
+                        Toast::info("Image import not yet implemented");
                     }).render(),
                 ]
+            }).render())
+        .child(Btn::new().label("Clip").icon("plus").variant(BtnVariant::Ghost).size(BtnSize::Sm)
+            .on_click(|| {
+                // "+ Clip" authors a fresh animation clip in the library (Animation
+                // category). Switch to Animation mode so the new clip is editable.
+                dispatch(EditorCommand::AddClip { id: AssetId::new() });
+                dispatch(EditorCommand::SwitchMode { mode: EditorMode::Animation });
             }).render())
     })
 }
@@ -160,6 +172,7 @@ fn tabs(cat: Mutable<Cat>) -> Dom {
         (Cat::Texture, "Textures", Some(Cat::Texture)),
         (Cat::Model, "Models", Some(Cat::Model)),
         (Cat::Mesh, "CapturedMeshes", Some(Cat::Mesh)),
+        (Cat::Animation, "Animations", Some(Cat::Animation)),
     ];
     html!("div", {
         .style("display", "flex").style("gap", "2px")
@@ -214,11 +227,13 @@ fn card(c: Card) -> Dom {
     let id = c.id;
     let builtin = c.builtin;
     let custom = c.custom;
+    let anim = c.anim;
     let kind_label = match c.cat {
         Cat::Material => "material",
         Cat::Texture => "texture",
         Cat::Model => "model",
         Cat::Mesh => "mesh",
+        Cat::Animation => "clip",
         Cat::All => "",
     };
     // Selected highlight binds to the live asset_selection.
@@ -284,22 +299,31 @@ fn card(c: Card) -> Dom {
             }))
         }))
         .event(move |_: events::Click| {
-            match (id, custom) {
+            match (id, custom, anim) {
+                // An animation clip → just make it the current clip (double-click
+                // jumps into Animation mode).
+                (Some(id), _, true) => dispatch(EditorCommand::SetCurrentClip { id: Some(id) }),
                 // A custom WGSL material → open it in the Material-mode Studio.
-                (Some(id), true) => {
+                (Some(id), true, _) => {
                     dispatch(EditorCommand::SetCurrentMaterial { id: Some(id) });
                     dispatch(EditorCommand::SwitchMode { mode: EditorMode::Material });
                 }
                 // Any other project asset → route the right rail to the inspector.
-                (Some(id), false) => dispatch(EditorCommand::SetAssetSelection { id: Some(id) }),
-                // Built-in family palette: assigning to a mesh lands in M10.
-                (None, _) => Toast::info("Drag a built-in family onto a mesh to assign (M10)"),
+                (Some(id), false, _) => dispatch(EditorCommand::SetAssetSelection { id: Some(id) }),
+                // Built-in family palette: assigning to a mesh is not yet wired up.
+                (None, _, _) => Toast::info("Drag a built-in family onto a mesh to assign"),
             }
         })
-        .event(move |_: events::DoubleClick| {
-            if id.is_some() && custom {
+        .event(move |_: events::DoubleClick| match (id, anim) {
+            // Clip → enter Animation mode + select it.
+            (Some(id), true) => {
+                dispatch(EditorCommand::SwitchMode { mode: EditorMode::Animation });
+                dispatch(EditorCommand::SetCurrentClip { id: Some(id) });
+            }
+            (Some(_), false) if custom => {
                 dispatch(EditorCommand::SwitchMode { mode: EditorMode::Material });
             }
+            _ => {}
         })
     })
 }
@@ -315,7 +339,7 @@ fn collect_cards(cat: Cat, query: &str) -> Vec<Card> {
     // the user actually created (via the Material pane) + imported assets. A fresh
     // project starts empty.
 
-    // Custom WGSL materials (decision 3) — shown in All + Materials.
+    // Custom WGSL materials — shown in All + Materials.
     if matches!(cat, Cat::All | Cat::Material) {
         for mat in controller().custom_materials.lock_ref().iter() {
             // Queue a rendered thumbnail (built-in materials only; no-op once cached).
@@ -343,6 +367,34 @@ fn collect_cards(cat: Cat, query: &str) -> Vec<Card> {
                     // Clicking opens the Studio (its Definition rail shows the
                     // built-in variant panel, or the dynamic shader graph).
                     custom: true,
+                    anim: false,
+                });
+            }
+        }
+    }
+
+    // Animation clips live in `custom_animations` (not the asset table), so the
+    // Animation category special-cases that list. Clips are intentionally kept
+    // out of the "All" tab (they're not project assets).
+    if cat == Cat::Animation {
+        for clip in controller().custom_animations.lock_ref().iter() {
+            let name = clip.name.get_cloned();
+            if matches(&name) {
+                let dur = clip.duration.get();
+                let n_tracks = clip.tracks.lock_ref().len();
+                cards.push(Card {
+                    cat: Cat::Animation,
+                    id: Some(clip.id),
+                    name,
+                    swatch: clip.color.get_cloned(),
+                    badge: Some(("CLIP".to_string(), Tone::Accent)),
+                    meta: format!(
+                        "{dur:.2}s \u{00b7} {n_tracks} track{}",
+                        if n_tracks == 1 { "" } else { "s" }
+                    ),
+                    builtin: false,
+                    custom: false,
+                    anim: true,
                 });
             }
         }
@@ -365,6 +417,7 @@ fn collect_cards(cat: Cat, query: &str) -> Vec<Card> {
                         meta: material_meta(def),
                         builtin: false,
                         custom: false,
+                        anim: false,
                     });
                 }
             }
@@ -380,6 +433,7 @@ fn collect_cards(cat: Cat, query: &str) -> Vec<Card> {
                         meta,
                         builtin: false,
                         custom: false,
+                        anim: false,
                     });
                 }
             }
@@ -401,6 +455,7 @@ fn collect_cards(cat: Cat, query: &str) -> Vec<Card> {
                         meta: "captured mesh".to_string(),
                         builtin: false,
                         custom: false,
+                        anim: false,
                     });
                 }
             }
@@ -419,6 +474,7 @@ fn collect_cards(cat: Cat, query: &str) -> Vec<Card> {
                     meta: "glTF/glb".to_string(),
                     builtin: false,
                     custom: false,
+                    anim: false,
                 });
             }
             _ => {}
@@ -528,28 +584,42 @@ fn total_count_signal() -> impl Signal<Item = String> {
 }
 
 fn cat_count_signal(cat: Cat) -> impl Signal<Item = String> {
-    controller().scene.revision.signal().map(move |_| {
-        let ctrl = controller();
-        let assets = ctrl.scene.assets.lock().unwrap();
-        let mut n = assets
-            .entries
-            .values()
-            .filter(|e| {
-                matches!(
-                    (&e.source, cat),
-                    (AssetSource::Material(_), Cat::Material)
-                        | (AssetSource::Texture(_), Cat::Texture)
-                        | (AssetSource::Mesh(_), Cat::Mesh)
-                        | (AssetSource::Filename(_), Cat::Model)
-                )
-            })
-            .count();
-        // Custom (user-created) materials count toward Materials.
-        if cat == Cat::Material {
-            n += ctrl.custom_materials.lock_ref().len();
-        }
-        n.to_string()
-    })
+    // Animation clips live outside the asset table — count `custom_animations`.
+    if cat == Cat::Animation {
+        return controller()
+            .custom_animations
+            .signal_vec_cloned()
+            .len()
+            .map(|n| n.to_string())
+            .boxed_local();
+    }
+    controller()
+        .scene
+        .revision
+        .signal()
+        .map(move |_| {
+            let ctrl = controller();
+            let assets = ctrl.scene.assets.lock().unwrap();
+            let mut n = assets
+                .entries
+                .values()
+                .filter(|e| {
+                    matches!(
+                        (&e.source, cat),
+                        (AssetSource::Material(_), Cat::Material)
+                            | (AssetSource::Texture(_), Cat::Texture)
+                            | (AssetSource::Mesh(_), Cat::Mesh)
+                            | (AssetSource::Filename(_), Cat::Model)
+                    )
+                })
+                .count();
+            // Custom (user-created) materials count toward Materials.
+            if cat == Cat::Material {
+                n += ctrl.custom_materials.lock_ref().len();
+            }
+            n.to_string()
+        })
+        .boxed_local()
 }
 
 // ── helpers ────────────────────────────────────────────────────────────────────
@@ -565,7 +635,7 @@ fn dispatch(cmd: EditorCommand) {
 }
 
 /// Count of scene nodes that reference a material asset. Reserved for the Asset
-/// Inspector's "Used by" row (M8 inspector); kept here next to the asset model.
+/// Inspector's "Used by" row; kept here next to the asset model.
 #[allow(dead_code)]
 fn material_users(_id: AssetId) -> usize {
     controller()

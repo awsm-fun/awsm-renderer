@@ -14,8 +14,8 @@ pub struct AwsmRendererLogging {
     /// `tracing_web::performance_layer`, which calls
     /// `performance.mark()` and `performance.measure()` across the
     /// wasm↔JS boundary. On mobile the per-call cost is large enough
-    /// that letting every sub-pass open a span dominates frame time
-    /// (see `docs/perf-tracing.md` for the numbers). We therefore
+    /// that letting every sub-pass open a span dominates frame time.
+    /// We therefore
     /// gate at the call site so a span is never even *created*
     /// unless the tier permits it.
     pub render_timings: RenderTimings,

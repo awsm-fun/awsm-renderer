@@ -61,6 +61,9 @@ fn project_with_mesh_asset(asset_id: AssetId, label: &str) -> EditorProject {
         assets,
         custom_materials: Vec::new(),
         editor_materials: Vec::new(),
+        custom_animations: Vec::new(),
+        editor_animations: Vec::new(),
+        anim_mixer: Default::default(),
         nodes: Vec::new(),
     }
 }
@@ -169,6 +172,9 @@ fn mesh_asset_with_source_roundtrip() {
         assets,
         custom_materials: Vec::new(),
         editor_materials: Vec::new(),
+        custom_animations: Vec::new(),
+        editor_animations: Vec::new(),
+        anim_mixer: Default::default(),
         nodes: Vec::new(),
     };
 

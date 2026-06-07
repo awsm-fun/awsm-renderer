@@ -332,6 +332,10 @@ pub struct AwsmRenderer {
 
     #[cfg(feature = "animation")]
     pub animations: animation::Animations,
+
+    /// Per-camera authorable parameter store (projection, clip planes,
+    /// depth-of-field). Driven by `AnimationTarget::Camera` channels.
+    pub cameras: crate::cameras::Cameras,
 }
 
 /// Compatibility requirements for this renderer.
@@ -416,10 +420,8 @@ impl AwsmRenderer {
 
     /// Force-compile the routinely-used WebGPU pipelines ahead of the
     /// first user-interactive frame, so the first draw doesn't stall
-    /// on shader compilation. See [`PERFORMANCE.md §5g`][perf-5g] for
-    /// the underlying browser-PSO-cache mechanics and the rationale.
-    ///
-    /// [perf-5g]: https://github.com/dakom/awsm-renderer/blob/main/docs/PERFORMANCE.md
+    /// on shader compilation, exploiting the browser's PSO cache so the
+    /// driver reuses already-compiled pipeline state objects.
     ///
     /// ## What's already prewarmed at construction time
     ///
@@ -1703,8 +1705,7 @@ impl AwsmRendererBuilder {
         // The orchestrator owns the pool — `RenderPasses` can't
         // smuggle in a sequential `.await?` because its public API
         // is `describe_shaders → describe_pipelines → from_resolved`,
-        // none of which compile pipelines themselves. See
-        // `docs/PERFORMANCE.md` §5g for the architectural rationale.
+        // none of which compile pipelines themselves.
 
         // Sized for a small initial viewport; recreated by
         // `ClassifyBuffers::ensure_capacity` on first frame once the
@@ -2165,6 +2166,7 @@ impl AwsmRendererBuilder {
             build_complete: false,
             #[cfg(feature = "animation")]
             animations,
+            cameras: crate::cameras::Cameras::new(),
         };
 
         // Initial AA + PP state — the effects + display pipelines we

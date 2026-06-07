@@ -168,30 +168,43 @@ impl<Key: slotmap::Key, Info: MorphInfo> MorphData<Key, Info> {
         let weights_u8 =
             unsafe { std::slice::from_raw_parts(weights.as_ptr() as *const u8, weights.len() * 4) };
         let values_u8 =
-            unsafe { std::slice::from_raw_parts(weights.as_ptr() as *const u8, values.len() * 4) };
+            unsafe { std::slice::from_raw_parts(values.as_ptr() as *const u8, values.len() * 4) };
 
         self.insert_raw(morph_buffer_info, weights_u8, values_u8)
     }
 
-    /// Inserts morph data from raw bytes.
+    /// Inserts morph data from raw bytes. `weights` is `targets_len` little-endian
+    /// f32s with **no** count word; the slot is stored as
+    /// `[count, weight_0, .. weight_{n-1}]` — a leading `targets_len` count word
+    /// the WGSL skips with `+ 1u`. Prepending it here is what sizes the slot for
+    /// `n + 1` floats, so the shader and the per-frame update/read paths (which
+    /// also skip index 0) stay in bounds — including when `n * 4` lands exactly on
+    /// a 256-byte alloc unit (e.g. 64 targets). `values` carries no count word.
     pub fn insert_raw(
         &mut self,
         morph_buffer_info: Info,
         weights: &[u8],
         values: &[u8],
     ) -> Result<Key> {
-        if weights.len() / 4 != morph_buffer_info.targets_len() {
+        let targets = morph_buffer_info.targets_len();
+        if weights.len() / 4 != targets {
             return Err(AwsmMeshError::MorphWeightsTargetsMismatch {
                 weights: weights.len(),
-                targets: morph_buffer_info.targets_len(),
+                targets,
             });
         }
+
+        // Store [count, weight_0, .. weight_{n-1}] to match the WGSL `+ 1u`
+        // offset and the update/read paths that skip index 0.
+        let mut weights_with_count = Vec::with_capacity(4 + weights.len());
+        weights_with_count.extend_from_slice(&(targets as f32).to_le_bytes());
+        weights_with_count.extend_from_slice(weights);
 
         let key = self.infos.insert(morph_buffer_info.clone());
 
         if let Err(e) = self
             .weights
-            .update(key, weights)
+            .update(key, &weights_with_count)
             .map_err(|e| AwsmMeshError::BufferCapacityOverflow(format!("morph weights: {e}")))
             .and_then(|_| {
                 self.values.update(key, values).map_err(|e| {
@@ -237,6 +250,33 @@ impl<Key: slotmap::Key, Info: MorphInfo> MorphData<Key, Info> {
             .ok_or_else(|| AwsmMeshError::MorphNotFound(format!("{:?}", key)))
     }
 
+    /// Reads the current morph weights into a freshly-allocated `Vec<f32>`.
+    /// Mirrors the slice layout that [`Self::update_morph_weights_with`]
+    /// writes: the leading `targets_len` count word is skipped, so the
+    /// returned vector holds exactly `targets_len()` weights. Returns the
+    /// morph error if the key is unknown.
+    pub fn read_morph_weights(&self, key: Key) -> Result<Vec<f32>> {
+        let len = self.get_info(key).map(|info| info.targets_len())?;
+
+        let slice_u8 = self
+            .weights
+            .get(key)
+            .ok_or_else(|| AwsmMeshError::MorphNotFound(format!("{:?}", key)))?;
+
+        // The buffer holds [count: f32, weight_0, .. weight_{len-1}] — read the
+        // `len` weights after the leading count word. Decode each f32 from its
+        // four little-endian bytes: the `u8` slice carries no `f32` alignment
+        // guarantee, so casting its pointer to `*const f32` would be UB.
+        let weights = (0..len)
+            .map(|i| {
+                let start = (i + 1) * 4;
+                let bytes = slice_u8[start..start + 4].try_into().expect("4-byte chunk");
+                f32::from_le_bytes(bytes)
+            })
+            .collect();
+        Ok(weights)
+    }
+
     /// Updates morph weights without writing to the GPU.
     pub fn update_morph_weights_with(
         &mut self,
@@ -246,13 +286,25 @@ impl<Key: slotmap::Key, Info: MorphInfo> MorphData<Key, Info> {
         let len = self.get_info(key).map(|info| info.targets_len())?;
 
         self.weights.update_with_unchecked(key, |_, slice_u8| {
-            let weights_f32 =
-                unsafe { std::slice::from_raw_parts_mut(slice_u8.as_ptr() as *mut f32, len + 1) };
+            // Layout is [count: f32, weight_0, .. weight_{len-1}]. Reinterpret the
+            // bytes as `f32` in place — no copy, no alloc — on the per-frame morph
+            // path. The `u8 -> f32` cast is sound because the pointer is 4-aligned:
+            //  • offset: `DynamicStorageBuffer` is a buddy allocator with
+            //    MIN_BLOCK = 256, so every slot offset is a multiple of 256.
+            //  • base: the backing `Vec<u8>` is >= 16-byte aligned on wasm32.
+            // The debug_assert pins that invariant under test (it fires if the
+            // allocator granularity or backing store ever changes); it compiles
+            // out of release, so the hot path pays nothing for it.
+            debug_assert!(
+                slice_u8.as_ptr().cast::<f32>().is_aligned(),
+                "morph weights buffer must be f32-aligned"
+            );
+            let weights_f32 = unsafe {
+                std::slice::from_raw_parts_mut(slice_u8.as_mut_ptr() as *mut f32, len + 1)
+            };
 
-            // The first value is the number of targets
-            let weights_f32 = &mut weights_f32[1..];
-
-            f(weights_f32)
+            // The first value is the count word; expose the `len` weights after it.
+            f(&mut weights_f32[1..])
         });
 
         self.weights_dirty = true;

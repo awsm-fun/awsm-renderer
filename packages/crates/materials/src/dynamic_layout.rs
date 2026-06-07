@@ -1,5 +1,5 @@
 //! WGSL layout + packing helpers shared by [`DynamicMaterial`] and the
-//! Phase-3+ renderer-side template substitution.
+//! renderer-side template substitution.
 //!
 //! [`DynamicMaterial`]: crate::dynamic::DynamicMaterial
 //!
@@ -44,10 +44,8 @@
 //!
 //! ## Status
 //!
-//! This module ships the helpers + unit tests. Wiring the helpers into
-//! `DynamicMaterial::write_uniform_buffer` and the renderer-side
-//! substitution lands in Phases 3 / 4. The unit tests are the **first
-//! line of defense** against silent rendering garbage — covering every
+//! This module ships the helpers + unit tests. The unit tests are the
+//! **first line of defense** against silent rendering garbage — covering every
 //! [`FieldType`] in isolation and the load-bearing mixed-alignment
 //! corner cases (vec3 trailing padding, mat3 stride, bool→u32, mixed
 //! uniform/texture/buffer tails).
@@ -651,7 +649,7 @@ fn align_buffer_to(out: &mut Vec<u8>, align: usize, struct_start: usize) {
 /// `Vec<u8>` (after writing the shader_id + alignment prefix) and we
 /// pack from offset 0. We compute it from a known invariant rather
 /// than threading it through every helper to keep the signatures
-/// stable for Phases 3 / 4.
+/// stable.
 fn struct_start(_out: &[u8], _layout: &MaterialLayout) -> usize {
     0
 }

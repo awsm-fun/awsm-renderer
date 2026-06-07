@@ -51,6 +51,9 @@ fn sample_project_with_material(asset_id: AssetId) -> EditorProject {
         assets,
         custom_materials: Vec::new(),
         editor_materials: Vec::new(),
+        custom_animations: Vec::new(),
+        editor_animations: Vec::new(),
+        anim_mixer: Default::default(),
         nodes: Vec::new(),
     }
 }
@@ -136,6 +139,9 @@ fn editor_material_library_roundtrips_through_toml() {
         assets: AssetTable::new(),
         custom_materials: Vec::new(),
         editor_materials: vec![stored.clone()],
+        custom_animations: Vec::new(),
+        editor_animations: Vec::new(),
+        anim_mixer: Default::default(),
         nodes: Vec::new(),
     };
 

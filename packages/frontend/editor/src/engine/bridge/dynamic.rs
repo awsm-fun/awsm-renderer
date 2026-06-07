@@ -1,4 +1,4 @@
-//! Real GPU registration for custom WGSL materials (decision 3). Converts a
+//! Real GPU registration for custom WGSL materials. Converts a
 //! [`CustomMaterial`] (the Studio's reactive model) into the renderer's
 //! [`MaterialRegistration`] and registers it, so an assigned mesh can resolve
 //! the material by name to a registered `MaterialShaderId` and render the WGSL.
@@ -36,6 +36,14 @@ thread_local! {
 
 fn registered_shader_id(id: AssetId) -> Option<MaterialShaderId> {
     REGISTRY.with(|r| r.borrow().get(&id).copied())
+}
+
+/// The registered `MaterialShaderId` for a custom-material asset id, if it's been
+/// registered with the renderer. Public seam for the animation bridge, which
+/// resolves a `Uniform` track's material asset → shader id → live `MaterialKey`.
+/// `None` while the material hasn't been registered yet (PENDING).
+pub fn shader_id_for_asset(id: AssetId) -> Option<MaterialShaderId> {
+    registered_shader_id(id)
 }
 
 thread_local! {

@@ -1,8 +1,8 @@
-// The source/sink seam is consumed by the M11 loader/saver; defined now so the
+// The source/sink seam is consumed by the loader/saver; defined now so the
 // load/import command variants + the future MCP transport have a stable contract.
 #![allow(dead_code)]
 
-//! Source/sink abstractions for project load + asset import (§5.5).
+//! Source/sink abstractions for project load + asset import.
 //!
 //! FS file/directory pickers need a user gesture, which an external transport
 //! (and headless tests) can't supply. So loading + import are written over these

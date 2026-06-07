@@ -1,6 +1,5 @@
 //! Askama templates for the per-shader-id edge_resolve + skybox /
-//! final_blend shaders (Priority 3 in
-//! https://github.com/dakom/awsm-renderer/pull/99).
+//! final_blend shaders (the MSAA edge-resolve flow).
 
 use askama::Template;
 use awsm_materials::MaterialShaderId;
@@ -72,7 +71,7 @@ pub struct ShaderTemplateMaterialEdgeResolveCompute {
     /// per-sample guard uses the numeric `shader_id`.
     pub base: ShadingBase,
     /// Skinny-materials include gating (brdf / apply_lighting) — see the opaque
-    /// compute template + `docs/SHADER_GUIDELINES.md`.
+    /// compute template.
     pub inc: crate::dynamic_materials::ShaderIncludeFlags,
     pub dynamic_struct_decl: String,
     pub dynamic_loader_decl: String,

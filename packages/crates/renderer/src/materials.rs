@@ -98,9 +98,8 @@ pub enum Material {
     FlipBook(Box<FlipBookMaterial>),
     /// Runtime-registered custom material. Backed by the generic
     /// [`DynamicMaterial`] interpreter — see
-    /// [`crate::dynamic_materials`] for the registration API and
-    /// `docs/dynamic-materials/contract-{opaque,transparent}.md` for
-    /// the WGSL author contract.
+    /// [`crate::dynamic_materials`] for the registration API and the
+    /// WGSL author contract.
     Custom(Box<DynamicMaterial>),
 }
 
@@ -191,9 +190,7 @@ impl Material {
             // doesn't expose (the `frag_pos: vec4<f32>` + `Camera` args
             // that `sample_transmission_background(...)` needs aren't on
             // `TransparentShadingInput`). Materials that need refractive
-            // sampling promote to first-party PBR. See
-            // `docs/dynamic-materials/contract-transparent.md` § "Helpers
-            // in scope" for the trade-off rationale.
+            // sampling promote to first-party PBR.
             Material::Custom(_) => false,
         }
     }

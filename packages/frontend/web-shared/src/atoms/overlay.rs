@@ -1,9 +1,7 @@
-//! Overlay primitives from `ui-extra.jsx`: `Popup`, `MenuItem`, `MenuSep`,
-//! `DropButton`, `ModalCard` (the prototype's generic `Modal`), `RightDrawer`,
-//! and `ContextMenu`.
+//! Overlay primitives: `Popup`, `MenuItem`, `MenuSep`, `DropButton`,
+//! `ModalCard` (a generic modal), `RightDrawer`, and `ContextMenu`.
 //!
-//! These are fixed-position layers. The prototype mounts/unmounts them via
-//! React conditional rendering; here the *caller* controls mounting (typically
+//! These are fixed-position layers. The *caller* controls mounting (typically
 //! `child_signal` over an open-state `Mutable`), and each layer renders a
 //! full-viewport backdrop that closes on click. `ModalCard` is named to avoid
 //! colliding with [`super::modal::Modal`] (the app-level panic/error host).
@@ -573,8 +571,8 @@ pub fn context_menu(x: f64, y: f64, on_close: impl FnMut() + 'static, rows: Vec<
     })
 }
 
-/// The simple bordered select (anchored popup of checked menu rows) from
-/// `ui.jsx`. Bound to a `Mutable<String>` selected value.
+/// The simple bordered select (anchored popup of checked menu rows). Bound to
+/// a `Mutable<String>` selected value.
 pub fn select(selected: Mutable<String>, options: Vec<(String, String)>) -> Dom {
     let rect: Mutable<Option<AnchorRect>> = Mutable::new(None);
     let opts = Rc::new(options);

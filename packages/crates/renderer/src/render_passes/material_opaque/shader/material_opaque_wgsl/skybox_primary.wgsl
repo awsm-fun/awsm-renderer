@@ -9,7 +9,6 @@
 //
 // Shares the kernel preamble with compute.wgsl; `inc = skybox_only` gates out all
 // the heavy PBR shading includes, so this compiles to a tiny shader.
-// See docs/SHADER_GUIDELINES.md.
 {% include "material_opaque_wgsl/opaque_kernel_includes.wgsl" %}
 
 @compute @workgroup_size(8, 8)

@@ -1,4 +1,5 @@
 use super::{
+    animation::{CustomAnimationRef, MixerDoc, StoredAnimation},
     assets::{AssetId, AssetTable},
     dynamic_material::CustomMaterialRef,
     environment::EnvironmentConfig,
@@ -98,6 +99,18 @@ pub struct EditorProject {
     /// pre-existing projects round-trip.
     #[serde(default)]
     pub editor_materials: Vec<StoredMaterial>,
+    /// Animation clips imported/authored in the project (refs to
+    /// `animation-<slug>.toml` side files). Mirrors `custom_materials`.
+    /// Editor-only; `#[serde(default)]` so projects without animation round-trip.
+    #[serde(default)]
+    pub custom_animations: Vec<CustomAnimationRef>,
+    /// Full editor animation-clip library (the authored model), so clips survive
+    /// save/load and reappear in the Animation library. Editor-only.
+    #[serde(default)]
+    pub editor_animations: Vec<StoredAnimation>,
+    /// The NLA mixer document (layers / strips / masks, by clip id). Editor-only.
+    #[serde(default)]
+    pub anim_mixer: MixerDoc,
     #[serde(default)]
     pub nodes: Vec<EditorNode>,
 }

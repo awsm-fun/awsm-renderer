@@ -1,7 +1,6 @@
 //! Layout primitives for inspector / drawer panels — `Section` (collapsible,
 //! with a kicker title + optional right slot), `Row` (label + control grid),
-//! and `DrawerSection` (a non-collapsing titled group). Ported from `ui.jsx` /
-//! `ui-extra.jsx`.
+//! and `DrawerSection` (a non-collapsing titled group).
 
 use crate::atoms::icon::Icon;
 use crate::prelude::*;

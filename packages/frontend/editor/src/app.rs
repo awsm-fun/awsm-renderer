@@ -1,7 +1,6 @@
 //! App shell: the top bar + mode router + global overlay hosts. Every action is
 //! a dispatched [`EditorCommand`] through the [`controller`] — the UI never
-//! mutates editor state directly. The ribbon + the real Scene/Material
-//! workspaces land in M4+ (placeholders for now).
+//! mutates editor state directly.
 
 use crate::controller::CameraAxis;
 use crate::prelude::*;
@@ -147,7 +146,7 @@ fn typing_in_field() -> bool {
 }
 
 /// Save the live project into a picked directory (File System Access): writes
-/// `project.toml` + the per-material side files (decision 4).
+/// `project.toml` + the per-material side files.
 fn save_project() {
     spawn_local(async {
         match crate::fs::ProjectDir::pick().await {
@@ -348,7 +347,7 @@ fn count_nodes(nodes: &[std::sync::Arc<crate::engine::scene::Node>], c: &mut Cou
     }
 }
 
-/// The bottom status bar (settings-overflow.jsx StatsBar): live scene + material
+/// The bottom status bar: live scene + material
 /// counts. A thin always-on strip below the workspace.
 fn stats_bar() -> Dom {
     html!("div", {
@@ -535,6 +534,7 @@ fn top_bar(ctrl: &EditorController) -> Dom {
         .child(segmented(mode_str, vec![
             SegOption::new("scene", "Scene").icon("layers"),
             SegOption::new("material", "Material").icon("material"),
+            SegOption::new("animation", "Animation").icon("curve"),
         ], false, false))
         .child(IconBtn::new("settings").title("Settings")
             .on_click(|| controller().settings_open.set_neq(true)).render())
@@ -602,7 +602,7 @@ fn workspace(ctrl: &EditorController) -> Dom {
             .style("display", "flex")
             .style("flex-direction", "column")
             .style_signal("display", ctrl.mode.signal().map(|m| if m == EditorMode::Scene { "flex" } else { "none" }))
-            // M5: ribbon over [outliner · viewport]. Inspector (right) lands in M7.
+            // Ribbon over [outliner · viewport · inspector].
             .child(crate::scene_mode::ribbon::render())
             .child(html!("div", {
                 .style("flex", "1")
@@ -631,7 +631,7 @@ fn workspace(ctrl: &EditorController) -> Dom {
                     .child(crate::scene_mode::inspector::render())
                 }))
             }))
-            // M8: Content Browser bottom drawer (collapsed bar / expanded grid).
+            // Content Browser bottom drawer (collapsed bar / expanded grid).
             .child(crate::scene_mode::content_browser::render())
         }))
         .child(html!("div", {
@@ -640,6 +640,12 @@ fn workspace(ctrl: &EditorController) -> Dom {
             .style_signal("display", ctrl.mode.signal().map(|m| if m == EditorMode::Material { "block" } else { "none" }))
             .child(crate::material_mode::render())
         }))
+        .child(html!("div", {
+            .style("position", "absolute")
+            .style("inset", "0")
+            .style_signal("display", ctrl.mode.signal().map(|m| if m == EditorMode::Animation { "block" } else { "none" }))
+            .child(crate::animation_mode::render())
+        }))
     })
 }
 
@@ -647,12 +653,14 @@ fn mode_to_str(m: EditorMode) -> String {
     match m {
         EditorMode::Scene => "scene".to_string(),
         EditorMode::Material => "material".to_string(),
+        EditorMode::Animation => "animation".to_string(),
     }
 }
 fn str_to_mode(s: &str) -> Option<EditorMode> {
     match s {
         "scene" => Some(EditorMode::Scene),
         "material" => Some(EditorMode::Material),
+        "animation" => Some(EditorMode::Animation),
         _ => None,
     }
 }

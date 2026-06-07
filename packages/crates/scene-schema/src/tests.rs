@@ -23,6 +23,9 @@ fn sample() -> EditorProject {
         assets,
         custom_materials: Vec::new(),
         editor_materials: Vec::new(),
+        custom_animations: Vec::new(),
+        editor_animations: Vec::new(),
+        anim_mixer: Default::default(),
         nodes: vec![EditorNode {
             id: NodeId::new(),
             name: "root".to_string(),

@@ -15,7 +15,7 @@
 //! tree). The template's own meshes are *hidden* (not removed) so they don't
 //! double-render as ghosts and so the joints survive for skinning.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use awsm_renderer::meshes::MeshKey;
 use awsm_renderer::transforms::{Transform, TransformKey};
@@ -30,6 +30,17 @@ pub struct AssetTemplateNode {
     /// Original glTF node index — stored on the editor `Model` node's
     /// [`ModelRef`](awsm_scene_schema::ModelRef) so it can find these meshes.
     pub gltf_node_index: u32,
+    /// The renderer `TransformKey` `populate_gltf` baked for this node — the key
+    /// the **skin** reads from for skinned meshes. The editor mirrors this node
+    /// as its own scene node with a *separate* transform; the per-frame skin
+    /// bridge ([`skin_bridge`](super::skin_bridge)) copies the editor node's
+    /// local onto this baked key so animation/posing of the mirror bone actually
+    /// deforms the skin.
+    pub baked_transform_key: TransformKey,
+    /// Whether this node's baked transform is a joint of some skin in this glTF
+    /// (i.e. the skin's `skeleton_transforms` references it). Only these nodes
+    /// need the per-frame editor→baked local copy.
+    pub is_skin_joint: bool,
     /// glTF node name, if any.
     pub label: Option<String>,
     /// The node's local transform (as parsed from the glTF).
@@ -96,6 +107,14 @@ pub fn build_from_context(renderer: &AwsmRenderer, ctx: &GltfPopulateContext) ->
         (key_to_node_index, key_to_label, mesh_mat, all_keys)
     };
 
+    // Union of every skin's joint TransformKeys — the baked keys the renderer's
+    // skin matrices are derived from. Used to flag which template nodes need the
+    // per-frame editor→baked local copy (the skin bridge).
+    let skin_joints: HashSet<TransformKey> = {
+        let map = ctx.node_to_skin_transform.lock().unwrap();
+        map.values().flat_map(|arc| arc.0.iter().copied()).collect()
+    };
+
     let root = renderer.transforms.root_node;
     let top_level: Vec<TransformKey> = all_keys
         .into_iter()
@@ -104,7 +123,16 @@ pub fn build_from_context(renderer: &AwsmRenderer, ctx: &GltfPopulateContext) ->
 
     let roots = top_level
         .into_iter()
-        .map(|k| snapshot(renderer, k, &key_to_node_index, &key_to_label, &mesh_mat))
+        .map(|k| {
+            snapshot(
+                renderer,
+                k,
+                &key_to_node_index,
+                &key_to_label,
+                &mesh_mat,
+                &skin_joints,
+            )
+        })
         .collect();
     AssetTemplate { roots }
 }
@@ -115,6 +143,7 @@ fn snapshot(
     key_to_node_index: &HashMap<TransformKey, u32>,
     key_to_label: &HashMap<TransformKey, String>,
     mesh_mat: &HashMap<MeshKey, Option<usize>>,
+    skin_joints: &HashSet<TransformKey>,
 ) -> AssetTemplateNode {
     let local = renderer
         .transforms
@@ -139,12 +168,23 @@ fn snapshot(
         .get_children(key)
         .map(|kids| {
             kids.iter()
-                .map(|c| snapshot(renderer, *c, key_to_node_index, key_to_label, mesh_mat))
+                .map(|c| {
+                    snapshot(
+                        renderer,
+                        *c,
+                        key_to_node_index,
+                        key_to_label,
+                        mesh_mat,
+                        skin_joints,
+                    )
+                })
                 .collect()
         })
         .unwrap_or_default();
     AssetTemplateNode {
         gltf_node_index: key_to_node_index.get(&key).copied().unwrap_or(0),
+        baked_transform_key: key,
+        is_skin_joint: skin_joints.contains(&key),
         label: key_to_label.get(&key).cloned(),
         local,
         mesh_keys,

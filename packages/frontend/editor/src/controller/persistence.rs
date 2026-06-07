@@ -1,4 +1,4 @@
-//! Project (de)serialization — the TOML project format (decision 4 / §11).
+//! Project (de)serialization — the TOML project format.
 //!
 //! A project is a directory: a `project.toml` (carrying the scene tree,
 //! environment, shadows, asset table, and custom-material refs) plus the asset
@@ -11,9 +11,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use awsm_scene_schema::{CustomMaterialRef, EditorProject, StoredMaterial, StoredSlot};
+use awsm_scene_schema::animation::CustomAnimationRef;
+use awsm_scene_schema::{AssetId, CustomMaterialRef, EditorProject, StoredMaterial, StoredSlot};
 use awsm_web_shared::prelude::Mutable;
 
+use super::animation::{stored_from_live, stored_to_live};
 use super::custom_material::{AlphaMode, CustomMaterial, Slot};
 use super::node_spec::NodeSpec;
 use super::EditorController;
@@ -93,10 +95,10 @@ pub fn to_editor_project(ctrl: &EditorController) -> EditorProject {
         .iter()
         .map(|m| {
             let name = m.name.get_cloned();
-            let slug = slugify(&name);
+            let folder = material_folder_path(m.id, &name);
             CustomMaterialRef {
                 name,
-                folder: PathBuf::from(format!("assets/materials/{slug}")),
+                folder: PathBuf::from(folder),
             }
         })
         .collect();
@@ -108,6 +110,27 @@ pub fn to_editor_project(ctrl: &EditorController) -> EditorProject {
         .map(|m| stored_from_material(m))
         .collect();
 
+    // Animation library: refs (name + side-file path) + the full authored model.
+    let custom_animations = ctrl
+        .custom_animations
+        .lock_ref()
+        .iter()
+        .map(|c| {
+            let name = c.name.get_cloned();
+            let file = animation_file_path(c.id, &name);
+            CustomAnimationRef {
+                name,
+                file: PathBuf::from(file),
+            }
+        })
+        .collect();
+    let editor_animations = ctrl
+        .custom_animations
+        .lock_ref()
+        .iter()
+        .map(|c| stored_from_live(c))
+        .collect();
+
     EditorProject {
         name: ctrl.project_name.get_cloned(),
         environment: ctrl.scene.environment.get_cloned(),
@@ -115,6 +138,9 @@ pub fn to_editor_project(ctrl: &EditorController) -> EditorProject {
         assets: ctrl.scene.assets.lock().unwrap().clone(),
         custom_materials,
         editor_materials,
+        custom_animations,
+        editor_animations,
+        anim_mixer: ctrl.anim_mixer.get_cloned(),
         nodes,
     }
 }
@@ -125,16 +151,18 @@ pub fn project_to_toml(ctrl: &EditorController) -> EditorResult<String> {
         .map_err(|e| EditorError::Msg(format!("serialize project: {e}")))
 }
 
-/// Per-custom-material side files (`material-<slug>.toml` + `.wgsl`) — the body
-/// the Studio authored. Returned alongside `project.toml` for the directory-handle
-/// (FS Access) Save writer, which lands as the follow-on; the single-file Save
-/// downloads only `project.toml` today.
+/// Per-custom-material side files (`<folder>/material.wgsl` + `material.toml`) —
+/// the body the Studio authored. Each path is rooted at the same per-material
+/// folder the `CustomMaterialRef` in `project.toml` declares (via the shared
+/// [`material_folder_path`], so the writer can't drift from the ref), so the
+/// directory-handle (FS Access) Save writer emits files exactly where the refs
+/// point. The single-file Save downloads only `project.toml` today.
 #[allow(dead_code)]
 pub fn material_files(ctrl: &EditorController) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for m in ctrl.custom_materials.lock_ref().iter() {
-        let slug = slugify(&m.name.get_cloned());
-        out.push((format!("material-{slug}.wgsl"), m.wgsl.get_cloned()));
+        let folder = material_folder_path(m.id, &m.name.get_cloned());
+        out.push((format!("{folder}/material.wgsl"), m.wgsl.get_cloned()));
         // A compact TOML sidecar of the surface + declared slots.
         let meta = format!(
             "name = \"{}\"\nalpha = \"{}\"\ndouble_sided = {}\nregistered = {}\n",
@@ -143,7 +171,24 @@ pub fn material_files(ctrl: &EditorController) -> Vec<(String, String)> {
             m.double_sided.get(),
             m.registered.get(),
         );
-        out.push((format!("material-{slug}.toml"), meta));
+        out.push((format!("{folder}/material.toml"), meta));
+    }
+    out
+}
+
+/// Per-clip animation side files — the full authored model serialized as TOML
+/// (mirrors `material_files`). Each path matches the `CustomAnimationRef.file` in
+/// `project.toml` via the shared [`animation_file_path`] (so the writer can't
+/// drift from the ref), so the directory-handle Save writer emits files exactly
+/// where the refs point.
+#[allow(dead_code)]
+pub fn animation_files(ctrl: &EditorController) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for c in ctrl.custom_animations.lock_ref().iter() {
+        let stored = stored_from_live(c);
+        if let Ok(body) = toml::to_string_pretty(&stored) {
+            out.push((animation_file_path(c.id, &c.name.get_cloned()), body));
+        }
     }
     out
 }
@@ -177,6 +222,22 @@ pub fn apply_project(ctrl: &EditorController, project: EditorProject) {
         }
     }
 
+    // Restore the animation library (the full authored model, keyed by stable id)
+    // + the mixer doc. The `animation_sync` bridge re-lowers on the resulting
+    // `custom_animations` change; node/material targets re-resolve as they
+    // materialize (pending-skip in the bridge).
+    let clips: Vec<Arc<super::animation::CustomAnimation>> = project
+        .editor_animations
+        .iter()
+        .map(stored_to_live)
+        .collect();
+    ctrl.custom_animations.lock_mut().replace_cloned(clips);
+    ctrl.anim_mixer.set(project.anim_mixer);
+    ctrl.current_clip
+        .set(ctrl.custom_animations.lock_ref().first().map(|c| c.id));
+    ctrl.playhead.set_neq(0.0);
+    ctrl.playing.set_neq(false);
+
     let new_nodes: Vec<Arc<Node>> = project
         .nodes
         .iter()
@@ -188,13 +249,21 @@ pub fn apply_project(ctrl: &EditorController, project: EditorProject) {
 }
 
 /// Save the project to a picked directory (File System Access): writes
-/// `project.toml` + each custom material's `material-<slug>.{toml,wgsl}` side
-/// files. The directory layout is decision 4's flat project directory.
+/// `project.toml` at the root plus each custom material's and clip's side files
+/// under `assets/` — material bodies in `assets/materials/<slug>-<id>/` and clips
+/// as `assets/animations/animation-<slug>-<id>.toml` (the stable id keeps
+/// same-named entries from colliding), matching the ref paths recorded in
+/// `project.toml`. `write_text` creates the subdirectories as it writes.
 pub async fn save_to_dir(ctrl: &EditorController, dir: &crate::fs::ProjectDir) -> EditorResult<()> {
     dir.write_text("project.toml", &project_to_toml(ctrl)?)
         .await
         .map_err(|e| EditorError::Msg(e.to_string()))?;
     for (name, content) in material_files(ctrl) {
+        dir.write_text(&name, &content)
+            .await
+            .map_err(|e| EditorError::Msg(e.to_string()))?;
+    }
+    for (name, content) in animation_files(ctrl) {
         dir.write_text(&name, &content)
             .await
             .map_err(|e| EditorError::Msg(e.to_string()))?;
@@ -242,6 +311,20 @@ pub async fn load_project_from_url(ctrl: &EditorController, base_url: &str) -> E
         toml::from_str(&body).map_err(|e| EditorError::Msg(format!("parse {url}: {e}")))?;
     apply_project(ctrl, project);
     Ok(())
+}
+
+/// The per-material side-file folder: a readable slug **plus the stable id**.
+/// Names can collide (duplicates, or empty → `slugify` returns `"material"`), so
+/// the id (a UUID) guarantees uniqueness. The ref builder and the side-file
+/// writer both call this, so their paths can't drift apart.
+fn material_folder_path(id: AssetId, name: &str) -> String {
+    format!("assets/materials/{}-{}", slugify(name), id)
+}
+
+/// The per-clip side-file path: a readable slug **plus the stable id**, for the
+/// same collision-safety reason as [`material_folder_path`].
+fn animation_file_path(id: AssetId, name: &str) -> String {
+    format!("assets/animations/animation-{}-{}.toml", slugify(name), id)
 }
 
 /// A filesystem-safe slug for a material name (`"Holo Grid"` → `holo-grid`).

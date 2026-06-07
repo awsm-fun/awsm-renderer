@@ -1,4 +1,4 @@
-//! Outliner (scene-mode.jsx): the scene tree — kind icon · name · eye · lock,
+//! Outliner: the scene tree — kind icon · name · eye · lock,
 //! group collapse, single/ctrl/shift select, per-row context menu, empty state,
 //! filter, and an add button. Bound to `controller().scene`; every mutation is a
 //! dispatched command (selection is transient; visibility/lock/prefab/duplicate/

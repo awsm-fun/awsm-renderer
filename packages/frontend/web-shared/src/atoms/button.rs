@@ -1,8 +1,8 @@
 //! Prototype buttons — `Btn` (ghost / quiet / primary / solid, sm/md/lg) and
 //! `IconBtn` (square icon action with optional label, active + danger states).
-//! Ported from `ui.jsx`. Hover state is a per-button `Mutable<bool>` so the
-//! background + text color flip exactly as the reference (CSS `:hover` can't
-//! express the variant-specific color pairs as cleanly).
+//! Hover state is a per-button `Mutable<bool>` so the background + text color
+//! flip together (CSS `:hover` can't express the variant-specific color pairs
+//! as cleanly).
 
 use crate::atoms::icon::Icon;
 use crate::prelude::*;

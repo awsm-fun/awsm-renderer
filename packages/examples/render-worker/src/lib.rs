@@ -1,5 +1,5 @@
 #![allow(clippy::type_complexity)]
-//! Phase 4.4 reference example — the entire renderer runs in a
+//! Reference example — the entire renderer runs in a
 //! Web Worker against an `OffscreenCanvas`.
 //!
 //! ### Architecture
@@ -13,8 +13,8 @@
 //!
 //! - **Worker thread** (`worker_thread_boot`): receives the
 //!   `OffscreenCanvas`, builds an [`awsm_renderer_core::renderer::AwsmRendererWebGpuBuilder`] via
-//!   the [`new_with_offscreen_canvas`](awsm_renderer_core::renderer::AwsmRendererWebGpuBuilder::new_with_offscreen_canvas) constructor added in
-//!   Phase 4.4, and drives a `requestAnimationFrame`-paced render
+//!   the [`new_with_offscreen_canvas`](awsm_renderer_core::renderer::AwsmRendererWebGpuBuilder::new_with_offscreen_canvas) constructor, and
+//!   drives a `requestAnimationFrame`-paced render
 //!   loop. Today the worker only `tracing::trace!`s any
 //!   [`WorkerInputEvent`] it receives — wiring those into a free
 //!   camera is intentionally left to the consumer.
@@ -60,11 +60,10 @@
 //!   / `renderer.environment` once those need exercising on the
 //!   worker path.
 //! - DOM-overlay UI — that's a consumer choice (HTML element
-//!   absolutely-positioned over the canvas; see
-//!   `docs/DEPLOYMENT_MODES.md`).
+//!   absolutely-positioned over the canvas).
 //!
-//! Browser smoke-verification of this example is part of the
-//! Phase 4.4 follow-on work — `cargo check` passes today; an
+//! Browser smoke-verification of this example is follow-on
+//! work — `cargo check` passes today; an
 //! end-to-end `trunk serve` boot needs a tiny `index.html` shim
 //! (see [`HTML_SHIM`] below) and is verified in the editor's
 //! Claude Preview MCP harness.

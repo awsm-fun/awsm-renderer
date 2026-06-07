@@ -1,23 +1,23 @@
 //! `EditorCommand` — the single serializable enum covering every editor
-//! mutation (decision 8 / §5.5). The UI never mutates editor state directly; it
+//! mutation. The UI never mutates editor state directly; it
 //! builds a command and dispatches it through the [`super::EditorController`].
 //! Commands are **data** (no closures) so they serialize, and non-transient
 //! ones are invertible — the inverse is captured at apply-time and pushed onto
 //! the undo log (command-sourcing, replacing the old snapshot history).
-//!
-//! M3 establishes the seam + the project/mode commands. The per-node mutation
-//! commands (insert/delete/reparent/transform/material/env/…) are added as the
-//! panels that dispatch them land in M4–M12.
 
 use serde::{Deserialize, Serialize};
 
+use super::animation::{
+    AnimSel, AnimView, ClipDirection, ClipLoop, Interp, LayerModeDoc, SamplerKind, StepKind,
+    TrackTarget, TrackValue,
+};
 use super::node_spec::{InsertSpec, NodeSpec};
 use crate::engine::scene::types::Trs;
 use crate::engine::scene::{AssetId, EnvironmentConfig, NodeId, NodeKind};
 use awsm_scene_schema::{AssetEntry, MaterialShading};
 
-/// A procedural texture generator the Content Browser can author (decision 3 /
-/// §8). Maps to `ProceduralTextureDef` with sensible defaults at apply-time.
+/// A procedural texture generator the Content Browser can author.
+/// Maps to `ProceduralTextureDef` with sensible defaults at apply-time.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProceduralKind {
@@ -40,12 +40,13 @@ pub enum CameraAxis {
 }
 
 /// Top-level workspace mode (the Scene/Material switch in the top bar).
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EditorMode {
     #[default]
     Scene,
     Material,
+    Animation,
 }
 
 /// Every editor mutation, as serializable data.
@@ -121,11 +122,11 @@ pub enum EditorCommand {
 
     /// Load a project from a base URL (gesture-free; fetches `<base>/project.toml`
     /// and the referenced material/asset files). The external/MCP + headless-test
-    /// entry point (§5.5). Full implementation lands in M11; the seam exists now.
+    /// entry point. Full implementation is future work; the seam exists now.
     LoadProjectFromUrl { base_url: String },
 
     /// Import a glTF model from a URL (gesture-free). Pairs with the file-picker
-    /// variant `ImportModelFromFile` (added with the ribbon in M4).
+    /// variant `ImportModelFromFile`.
     ImportModelFromUrl { url: String },
 
     /// Import a glTF model from a locally-picked file. `url` is a `blob:` object
@@ -174,9 +175,9 @@ pub enum EditorCommand {
     /// Set the material the Studio is editing. **Transient**.
     SetCurrentMaterial { id: Option<AssetId> },
 
-    /// Register (compile to a renderer bucket) the current custom material. M9
-    /// validates the WGSL and flips the `registered` flag; the real GPU
-    /// registration + bucket accounting lands in M10.
+    /// Register (compile to a renderer bucket) the current custom material.
+    /// Validates the WGSL and flips the `registered` flag; the real GPU
+    /// registration + bucket accounting is future work.
     RegisterMaterial { id: AssetId },
 
     /// Set the scene environment (skybox + IBL). Stored in `scene.environment`
@@ -207,6 +208,184 @@ pub enum EditorCommand {
     /// MCP path for "paste these material settings onto that mesh". No-op when the
     /// two meshes don't share the same material. Inverse: restore `to`'s prior kind.
     CopyMaterialInstance { from: NodeId, to: NodeId },
+
+    // ───────────────────────── Animation: clip lifecycle ─────────────────────
+    /// Create a fresh empty animation clip and make it current. Lifecycle (no
+    /// inverse recorded). **Carries its `id`** (minted by the dispatcher, not in
+    /// `apply`) so the command is deterministic data — a cross-tab relay that
+    /// replays it produces the *same* clip id in every tab. Idempotent: applying
+    /// it when the id already exists is a no-op.
+    AddClip { id: AssetId },
+    /// Delete a clip from the library. Lifecycle.
+    DeleteClip { id: AssetId },
+    /// Duplicate a clip (deep copy, fresh id) and select it. Lifecycle.
+    DuplicateClip { id: AssetId },
+    /// Set the clip Animation mode is editing. **Transient**.
+    SetCurrentClip { id: Option<AssetId> },
+
+    // ───────────────────────── Animation: clip props ─────────────────────────
+    /// Rename a clip. Inverse: rename back.
+    RenameClip { id: AssetId, name: String },
+    /// Set a clip's duration (seconds). Inverse: restore prior. Coalesces.
+    SetClipDuration { id: AssetId, duration: f64 },
+    /// Set a clip's loop style. Inverse: restore prior.
+    SetClipLoop { id: AssetId, loop_style: ClipLoop },
+    /// Set a clip's speed multiplier. Inverse: restore prior. Coalesces.
+    SetClipSpeed { id: AssetId, speed: f64 },
+    /// Set a clip's default play direction. Inverse: restore prior.
+    SetClipDirection {
+        id: AssetId,
+        direction: ClipDirection,
+    },
+    /// Set a clip's library color (`#rrggbb`). Inverse: restore prior.
+    SetClipColor { id: AssetId, color: String },
+
+    // ───────────────────────── Animation: tracks ─────────────────────────────
+    /// Add a track to a clip, bound to `target`. Inverse: `DeleteTrack`.
+    AddTrack { clip: AssetId, target: TrackTarget },
+    /// Delete a track (by index) from a clip. Inverse: re-insert the captured track.
+    DeleteTrack { clip: AssetId, track: usize },
+    /// Re-insert a captured track at its original index (the inverse of
+    /// `DeleteTrack`). `track` is boxed (the full stored track is a large payload).
+    RestoreTrack {
+        clip: AssetId,
+        index: usize,
+        track: Box<super::animation::StoredTrack>,
+    },
+    /// Set a track's sampler kind. Inverse: restore prior.
+    SetTrackSampler {
+        clip: AssetId,
+        track: usize,
+        sampler: SamplerKind,
+    },
+    /// Set a track's mute flag. Inverse: restore prior.
+    SetTrackMute {
+        clip: AssetId,
+        track: usize,
+        mute: bool,
+    },
+    /// Set a track's solo flag. Inverse: restore prior.
+    SetTrackSolo {
+        clip: AssetId,
+        track: usize,
+        solo: bool,
+    },
+
+    // ───────────────────────── Animation: keyframes ──────────────────────────
+    /// Insert a keyframe at time `t` (seconds) with `value` on a track (sorted by
+    /// time; an existing key at `t` is replaced). Inverse: `DeleteKeyframe` /
+    /// restore.
+    AddKeyframe {
+        clip: AssetId,
+        track: usize,
+        t: f64,
+        value: TrackValue,
+    },
+    /// Delete a keyframe (by index). Inverse: `InsertKeyframe` of the captured key.
+    DeleteKeyframe {
+        clip: AssetId,
+        track: usize,
+        index: usize,
+    },
+    /// Re-insert a captured keyframe at its original index + time (the inverse of
+    /// `DeleteKeyframe`). `key` is boxed.
+    InsertKeyframe {
+        clip: AssetId,
+        track: usize,
+        index: usize,
+        t: f64,
+        key: Box<super::animation::Keyframe>,
+    },
+    /// Patch a keyframe (partial: any subset of time/value/interp/tangents).
+    /// Inverse: restore the prior keyframe (+ its time). Coalesces per
+    /// (clip, track, index).
+    SetKeyframe {
+        clip: AssetId,
+        track: usize,
+        index: usize,
+        #[serde(default)]
+        t: Option<f64>,
+        #[serde(default)]
+        value: Option<TrackValue>,
+        #[serde(default)]
+        interp: Option<Interp>,
+        #[serde(default)]
+        in_tangent: Option<TrackValue>,
+        #[serde(default)]
+        out_tangent: Option<TrackValue>,
+    },
+
+    // ───────────────────────── Animation: transport ──────────────────────────
+    /// Set the playhead (seconds). **Transient**.
+    SetPlayhead { t: f64 },
+    /// Set play/pause. **Transient**.
+    SetPlaying { on: bool },
+    /// Step the playhead (home / prev-key / next-key / end). **Transient**.
+    StepPlayhead { kind: StepKind },
+    /// Set the display frame rate. **Transient**.
+    SetAnimFps { fps: u32 },
+    /// Set the Solo-subtree focus node (or clear). **Transient**.
+    SetSoloRoot { id: Option<NodeId> },
+    /// Set the selected timeline element. **Transient**.
+    SetAnimSelection { sel: Option<AnimSel> },
+    /// Set which timeline editor the dock shows. **Transient**.
+    SetAnimView { view: AnimView },
+
+    // ───────────────────────── Animation: mixer (NLA) ────────────────────────
+    /// Add a fresh (Replace, weight 1) layer to the mixer. Inverse: `DeleteLayer`.
+    AddLayer,
+    /// Delete a mixer layer (by index). Inverse: `RestoreLayer` of the captured layer.
+    DeleteLayer { layer: usize },
+    /// Re-insert a captured layer at its original index (inverse of `DeleteLayer`).
+    RestoreLayer {
+        layer: usize,
+        doc: Box<super::animation::LayerDoc>,
+    },
+    /// Set a layer's composite mode (+ optional additive base clip). Inverse:
+    /// restore prior.
+    SetLayerMode { layer: usize, mode: LayerModeDoc },
+    /// Set a layer's blend weight. Inverse: restore prior. Coalesces.
+    SetLayerWeight { layer: usize, weight: f64 },
+    /// Set a layer's node mask (+ include-descendants). Inverse: restore prior.
+    SetLayerMask {
+        layer: usize,
+        nodes: Vec<NodeId>,
+        include_descendants: bool,
+    },
+    /// Add a clip strip to a layer at `[start, start+len]`. Inverse: `DeleteStrip`.
+    AddStrip {
+        layer: usize,
+        clip: AssetId,
+        start: f64,
+        len: f64,
+    },
+    /// Delete a strip (by index) from a layer. Inverse: `RestoreStrip`.
+    DeleteStrip { layer: usize, strip: usize },
+    /// Re-insert a captured strip at its original index (inverse of `DeleteStrip`).
+    RestoreStrip {
+        layer: usize,
+        strip: usize,
+        doc: Box<super::animation::StripDoc>,
+    },
+    /// Move a strip's start on the timeline. Inverse: restore prior. Coalesces.
+    MoveStrip {
+        layer: usize,
+        strip: usize,
+        start: f64,
+    },
+    /// Trim a strip's start + length. Inverse: restore prior. Coalesces.
+    TrimStrip {
+        layer: usize,
+        strip: usize,
+        start: f64,
+        len: f64,
+    },
+    /// Set a strip's repeat (wrap) flag. Inverse: restore prior.
+    SetStripRepeat {
+        layer: usize,
+        strip: usize,
+        repeat: bool,
+    },
 }
 
 impl EditorCommand {
@@ -222,11 +401,98 @@ impl EditorCommand {
                 | EditorCommand::SetCurrentMaterial { .. }
                 | EditorCommand::SnapCameraToAxis { .. }
                 | EditorCommand::ResetCamera
+                | EditorCommand::SetCurrentClip { .. }
+                | EditorCommand::SetPlayhead { .. }
+                | EditorCommand::SetPlaying { .. }
+                | EditorCommand::StepPlayhead { .. }
+                | EditorCommand::SetAnimFps { .. }
+                | EditorCommand::SetSoloRoot { .. }
+                | EditorCommand::SetAnimSelection { .. }
+                | EditorCommand::SetAnimView { .. }
+        )
+    }
+
+    /// Per-tab **view-local** commands that must NOT cross-tab broadcast: a
+    /// second window framing its own camera / with its own selection / mode must
+    /// not be yanked when the first edits. Everything else (clip/track/keyframe/
+    /// mixer edits + the shared transport playhead) DOES broadcast so two tabs on
+    /// the same project stay in lock-step.
+    pub fn is_tab_local(&self) -> bool {
+        matches!(
+            self,
+            EditorCommand::SwitchMode { .. }
+                | EditorCommand::SetSelection { .. }
+                | EditorCommand::SetAssetSelection { .. }
+                | EditorCommand::SnapCameraToAxis { .. }
+                | EditorCommand::ResetCamera
+                | EditorCommand::SetAnimSelection { .. }
+                | EditorCommand::SetSoloRoot { .. }
+        )
+    }
+
+    /// Does applying this command change what the renderer must re-lower for
+    /// animation playback — the active clip set, a clip's params, a track's
+    /// sampler/mute/solo/keyframes, the mixer, the solo subtree, or the whole
+    /// project (reset / load / model import that carries clips)?
+    ///
+    /// The bridge ([`animation_sync`]) observes a single revision counter the
+    /// controller bumps for exactly these commands, then debounced-re-lowers.
+    /// Routing through ONE counter (rather than per-field signal observers) means
+    /// no edit can silently skip a re-lower — the bug where `SetTrackSampler` /
+    /// time-only `SetKeyframe` / `SetClipDuration` left a stale lowered channel.
+    ///
+    /// Pure transport (playhead / play / step / fps) and view-only state
+    /// (selection / view / clip color / rename) are EXCLUDED — they never change
+    /// the lowered channels (the playhead is pinned by the render loop directly).
+    pub fn affects_animation(&self) -> bool {
+        matches!(
+            self,
+            // Project-level resets / loads / imports that replace the clip set.
+            EditorCommand::NewProject
+                | EditorCommand::LoadProjectFromUrl { .. }
+                | EditorCommand::ImportModelFromUrl { .. }
+                | EditorCommand::ImportModelFromFile { .. }
+                // Active clip set + clip params that the group lowers.
+                | EditorCommand::AddClip { .. }
+                | EditorCommand::DeleteClip { .. }
+                | EditorCommand::DuplicateClip { .. }
+                | EditorCommand::SetCurrentClip { .. }
+                | EditorCommand::SetClipDuration { .. }
+                | EditorCommand::SetClipLoop { .. }
+                | EditorCommand::SetClipSpeed { .. }
+                | EditorCommand::SetClipDirection { .. }
+                // Tracks.
+                | EditorCommand::AddTrack { .. }
+                | EditorCommand::DeleteTrack { .. }
+                | EditorCommand::RestoreTrack { .. }
+                | EditorCommand::SetTrackSampler { .. }
+                | EditorCommand::SetTrackMute { .. }
+                | EditorCommand::SetTrackSolo { .. }
+                // Keyframes.
+                | EditorCommand::AddKeyframe { .. }
+                | EditorCommand::DeleteKeyframe { .. }
+                | EditorCommand::InsertKeyframe { .. }
+                | EditorCommand::SetKeyframe { .. }
+                // Solo subtree focus.
+                | EditorCommand::SetSoloRoot { .. }
+                // Mixer / NLA.
+                | EditorCommand::AddLayer
+                | EditorCommand::DeleteLayer { .. }
+                | EditorCommand::RestoreLayer { .. }
+                | EditorCommand::SetLayerMode { .. }
+                | EditorCommand::SetLayerWeight { .. }
+                | EditorCommand::SetLayerMask { .. }
+                | EditorCommand::AddStrip { .. }
+                | EditorCommand::DeleteStrip { .. }
+                | EditorCommand::RestoreStrip { .. }
+                | EditorCommand::MoveStrip { .. }
+                | EditorCommand::TrimStrip { .. }
+                | EditorCommand::SetStripRepeat { .. }
         )
     }
 
     /// A short human-readable label (used in toasts / telemetry / the eventual
-    /// undo-history UI). Consumed as the mutation commands land in M4+.
+    /// undo-history UI).
     #[allow(dead_code)]
     pub fn label(&self) -> &'static str {
         match self {
@@ -263,6 +529,49 @@ impl EditorCommand {
             EditorCommand::SetEnvironment { .. } => "Set environment",
             EditorCommand::SnapCameraToAxis { .. } => "Snap camera",
             EditorCommand::ResetCamera => "Reset view",
+            EditorCommand::AddClip { .. } => "New clip",
+            EditorCommand::DeleteClip { .. } => "Delete clip",
+            EditorCommand::DuplicateClip { .. } => "Duplicate clip",
+            EditorCommand::SetCurrentClip { .. } => "Select clip",
+            EditorCommand::RenameClip { .. } => "Rename clip",
+            EditorCommand::SetClipDuration { .. } => "Set duration",
+            EditorCommand::SetClipLoop { .. } => "Set loop",
+            EditorCommand::SetClipSpeed { .. } => "Set speed",
+            EditorCommand::SetClipDirection { .. } => "Set direction",
+            EditorCommand::SetClipColor { .. } => "Set clip color",
+            EditorCommand::AddTrack { .. } => "Add track",
+            EditorCommand::DeleteTrack { .. } | EditorCommand::RestoreTrack { .. } => {
+                "Delete track"
+            }
+            EditorCommand::SetTrackSampler { .. } => "Set sampler",
+            EditorCommand::SetTrackMute { .. } => "Mute track",
+            EditorCommand::SetTrackSolo { .. } => "Solo track",
+            EditorCommand::AddKeyframe { .. } => "Add keyframe",
+            EditorCommand::DeleteKeyframe { .. } | EditorCommand::InsertKeyframe { .. } => {
+                "Delete keyframe"
+            }
+            EditorCommand::SetKeyframe { .. } => "Edit keyframe",
+            EditorCommand::SetPlayhead { .. } => "Scrub",
+            EditorCommand::SetPlaying { .. } => "Play/pause",
+            EditorCommand::StepPlayhead { .. } => "Step playhead",
+            EditorCommand::SetAnimFps { .. } => "Set FPS",
+            EditorCommand::SetSoloRoot { .. } => "Solo subtree",
+            EditorCommand::SetAnimSelection { .. } => "Select",
+            EditorCommand::SetAnimView { .. } => "Switch view",
+            EditorCommand::AddLayer => "Add layer",
+            EditorCommand::DeleteLayer { .. } | EditorCommand::RestoreLayer { .. } => {
+                "Delete layer"
+            }
+            EditorCommand::SetLayerMode { .. } => "Set layer mode",
+            EditorCommand::SetLayerWeight { .. } => "Set layer weight",
+            EditorCommand::SetLayerMask { .. } => "Set layer mask",
+            EditorCommand::AddStrip { .. } => "Add strip",
+            EditorCommand::DeleteStrip { .. } | EditorCommand::RestoreStrip { .. } => {
+                "Delete strip"
+            }
+            EditorCommand::MoveStrip { .. } => "Move strip",
+            EditorCommand::TrimStrip { .. } => "Trim strip",
+            EditorCommand::SetStripRepeat { .. } => "Set strip repeat",
         }
     }
 }

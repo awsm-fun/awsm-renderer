@@ -1,7 +1,7 @@
-//! Inspector (kind-editors.jsx): priority asset > node. M7 core delivers the
-//! universal node inspector — name · prefab toggle · Transform (TRS) — plus the
-//! batch panel for multi-select. Per-kind editors (Light/Camera/Geometry/
-//! MaterialBlock/Shadows) extend this incrementally.
+//! Inspector: priority asset > node. The universal node inspector — name ·
+//! prefab toggle · Transform (TRS) — plus the batch panel for multi-select.
+//! Per-kind editors (Light/Camera/Geometry/MaterialBlock/Shadows) extend this
+//! incrementally.
 
 use std::sync::Arc;
 
@@ -3785,7 +3785,7 @@ fn for_each_selected(make: fn(NodeId) -> EditorCommand) {
     });
 }
 
-// ── Asset Inspector (content-browser.jsx AssetInspector) ──────────────────────
+// ── Asset Inspector ───────────────────────────────────────────────────────────
 
 fn close_asset() {
     spawn_local(async {

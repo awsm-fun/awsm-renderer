@@ -3,7 +3,7 @@
 //! wasm-bindgen helpers every UI file needs. Lockstep-specific
 //! reexports live in `lockstep_frontend_shared::prelude`.
 
-// Prototype atom set (ui.jsx / ui-extra.jsx).
+// Prototype atom set.
 pub use crate::atoms::button::*;
 pub use crate::atoms::controls::*;
 pub use crate::atoms::field::*;

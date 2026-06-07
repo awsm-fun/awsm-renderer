@@ -39,7 +39,7 @@ pub struct Node {
     /// and exposes them for on-demand instantiation by per-game code).
     /// The flag is **root-only** — descendants don't inherit it, and
     /// any descendant may itself be marked to create a nested prefab.
-    /// Persists across save/load. See `docs/game-editor-player.md`.
+    /// Persists across save/load.
     pub prefab: Mutable<bool>,
 }
 

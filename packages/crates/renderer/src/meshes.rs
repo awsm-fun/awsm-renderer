@@ -1834,6 +1834,17 @@ impl Meshes {
         self.resource(mesh_key).ok().map(|r| r.skin_key)
     }
 
+    /// Convenience accessor for the optional `GeometryMorphKey` on a mesh
+    /// resource. Returns `None` if the mesh has no resource or no geometry
+    /// morph targets. Used by the editor's animation bridge to resolve a
+    /// morph-weight animation track (which names a node) to the renderer
+    /// morph-weight set it drives.
+    pub fn geometry_morph_key_for_mesh(&self, mesh_key: MeshKey) -> Option<GeometryMorphKey> {
+        self.resource(mesh_key)
+            .ok()
+            .and_then(|r| r.geometry_morph_key)
+    }
+
     /// Smallest `skin_update_period` across every mesh that references
     /// `skin_key`. Used by the per-frame skinning-LOD gate: a skin is
     /// updated this frame if ANY of its consumer meshes wants the

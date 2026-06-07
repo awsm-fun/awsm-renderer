@@ -42,7 +42,7 @@ use crate::{
 /// Opaque material pass bind groups and pipelines.
 ///
 /// In addition to the primary opaque pipelines (one per shader_id), the
-/// MSAA edge-resolve flow (Priority 3) adds a second tier of pipelines
+/// MSAA edge-resolve flow adds a second tier of pipelines
 /// that the dispatch loop drives: per-shader-id `edge_resolve`, the
 /// global `skybox_edge_resolve`, and the global `final_blend`
 /// compositor. Their compile lifecycle is scheduler-managed (lazy);
@@ -95,11 +95,9 @@ impl MaterialOpaqueRenderPass {
     }
 
     /// Dispatches the per-shader-id edge_resolve + skybox_edge_resolve
-    /// and final_blend pipelines for the MSAA edge-resolve flow
-    /// (Priority 3). Called from the renderer's frame orchestration
+    /// and final_blend pipelines for the MSAA edge-resolve flow.
+    /// Called from the renderer's frame orchestration
     /// after the primary opaque dispatch.
-    ///
-    /// (Stage 3 — see `https://github.com/dakom/awsm-renderer/pull/99` § Priority 3.)
     ///
     /// **Lazy-pool semantics:** any pipeline whose typed-key accessor
     /// returns `None` is silently skipped via
@@ -110,8 +108,8 @@ impl MaterialOpaqueRenderPass {
     ///
     /// **Bind-group binding:** the edge dispatches need access to the
     /// edge buffer (read-write storage) + the edge-layout uniform —
-    /// neither of which lives on `RenderContext` yet (Stage 3.7 wires
-    /// the `MaterialEdgeBuffers` allocator into the renderer's
+    /// neither of which lives on `RenderContext` yet (the
+    /// `MaterialEdgeBuffers` allocator must be wired into the renderer's
     /// finalize-textures flow). Until that lands, this method
     /// short-circuits at the top with a tracing warn.
     pub fn render_edge_resolve(&self, ctx: &RenderContext) -> Result<()> {
@@ -183,7 +181,7 @@ impl MaterialOpaqueRenderPass {
         // which is compatible with its concurrent Indirect usage as
         // the dispatch source.
         //
-        // T2.2 (see docs/plans/more-optimizations.md): all per-shader,
+        // All per-shader,
         // skybox, and final_blend dispatches now live inside ONE
         // compute pass. Each separate `begin_compute_pass` on mobile
         // TBR drivers is a tile flush + barrier sync (~30 µs); with

@@ -509,7 +509,7 @@ impl RenderTexturesInner {
         // `OpaqueMipgen` between the opaque pass and the transparent pass
         // when the frame uses transmission.
         //
-        // T2.3 audit (see docs/plans/more-optimizations.md): RENDER_ATTACHMENT
+        // RENDER_ATTACHMENT
         // dropped — this texture is never used as a render-pass color
         // attachment. The frame-start clear runs via `TextureClearer::clear`
         // which uses `copy_buffer_to_texture` (needs COPY_DST, not
