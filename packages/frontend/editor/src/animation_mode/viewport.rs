@@ -88,15 +88,21 @@ fn clip_chip() -> Dom {
 }
 
 fn active_clip_name() -> impl Signal<Item = String> {
-    controller().current_clip.signal().map(|cur| match cur {
-        Some(id) => controller()
-            .custom_animations
-            .lock_ref()
-            .iter()
-            .find(|c| c.id == id)
-            .map(|c| format!("{} \u{00B7} scene preview", c.name.get_cloned()))
-            .unwrap_or_else(|| "\u{2014}".to_string()),
-        None => "no clip".to_string(),
+    use crate::controller::animation::find_clip;
+    use futures_signals::signal::always;
+    // Flatten into the active clip's own `name` signal (not a one-shot
+    // `get_cloned`) so the chip stays live while the clip is renamed — without
+    // the inner subscription it would only refresh when `current_clip` changes.
+    controller().current_clip.signal().switch(|cur| match cur {
+        Some(id) => match find_clip(&controller().custom_animations, id) {
+            Some(c) => c
+                .name
+                .signal_cloned()
+                .map(|n| format!("{n} \u{00B7} scene preview"))
+                .boxed_local(),
+            None => always("\u{2014}".to_string()).boxed_local(),
+        },
+        None => always("no clip".to_string()).boxed_local(),
     })
 }
 

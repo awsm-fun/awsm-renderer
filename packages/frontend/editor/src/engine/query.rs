@@ -156,8 +156,12 @@ pub fn canvas_stats(
 ) -> Result<crate::controller::query::StatsResult, String> {
     let (data, w, h) = canvas_image_data()?;
     let [rx, ry, rw, rh] = region.unwrap_or([0, 0, w, h]);
-    let x1 = (rx + rw).min(w);
-    let y1 = (ry + rh).min(h);
+    // The region arrives via the JSON query seam, so clamp defensively: saturate
+    // the corner before `.min(w/h)` so an out-of-range `rx+rw`/`ry+rh` can't
+    // overflow `u32` (which would panic in debug builds). An origin past the
+    // edge yields an empty range below → the `count == 0` "empty region" error.
+    let x1 = rx.saturating_add(rw).min(w);
+    let y1 = ry.saturating_add(rh).min(h);
     let mut sum = 0.0f64;
     let mut min = f64::INFINITY;
     let mut max = f64::NEG_INFINITY;

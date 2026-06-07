@@ -67,7 +67,12 @@ pub fn lower_stored_clip(
         ClipLoop::PingPong => Some(AnimationLoopStyle::PingPong),
         ClipLoop::Once => None,
     };
-    group.speed = clip.speed;
+    // `clip.speed` is the authored playback multiplier (1.0 == authored rate).
+    // `AnimationClipGroup::speed` additionally carries the base ms→s convention
+    // (default 1/1000), since `update_animations` is fed `global_time_delta` in
+    // milliseconds. Fold both in, matching the editor's own lowering — without
+    // the 1/1000 a game driving via `update_animations(dt_ms)` runs ~1000× fast.
+    group.speed = clip.speed / 1000.0;
     group.play_direction = match clip.direction {
         ClipDirection::Forward => AnimationPlayDirection::Forward,
         ClipDirection::Reverse => AnimationPlayDirection::Backward,
@@ -257,6 +262,9 @@ mod tests {
 
         assert_eq!(group.channels.len(), 1);
         assert_eq!(group.loop_style, Some(AnimationLoopStyle::Loop));
+        // Authored speed 1.0 folds in the base ms→s convention → 1/1000, so a
+        // game feeding `update_animations` milliseconds advances at real time.
+        assert!((group.speed - 1.0 / 1000.0).abs() < 1e-12);
 
         // Sample at t=0.5 → translation [0, 5, 0].
         let mut got = None;
