@@ -168,30 +168,43 @@ impl<Key: slotmap::Key, Info: MorphInfo> MorphData<Key, Info> {
         let weights_u8 =
             unsafe { std::slice::from_raw_parts(weights.as_ptr() as *const u8, weights.len() * 4) };
         let values_u8 =
-            unsafe { std::slice::from_raw_parts(weights.as_ptr() as *const u8, values.len() * 4) };
+            unsafe { std::slice::from_raw_parts(values.as_ptr() as *const u8, values.len() * 4) };
 
         self.insert_raw(morph_buffer_info, weights_u8, values_u8)
     }
 
-    /// Inserts morph data from raw bytes.
+    /// Inserts morph data from raw bytes. `weights` is `targets_len` little-endian
+    /// f32s with **no** count word; the slot is stored as
+    /// `[count, weight_0, .. weight_{n-1}]` — a leading `targets_len` count word
+    /// the WGSL skips with `+ 1u`. Prepending it here is what sizes the slot for
+    /// `n + 1` floats, so the shader and the per-frame update/read paths (which
+    /// also skip index 0) stay in bounds — including when `n * 4` lands exactly on
+    /// a 256-byte alloc unit (e.g. 64 targets). `values` carries no count word.
     pub fn insert_raw(
         &mut self,
         morph_buffer_info: Info,
         weights: &[u8],
         values: &[u8],
     ) -> Result<Key> {
-        if weights.len() / 4 != morph_buffer_info.targets_len() {
+        let targets = morph_buffer_info.targets_len();
+        if weights.len() / 4 != targets {
             return Err(AwsmMeshError::MorphWeightsTargetsMismatch {
                 weights: weights.len(),
-                targets: morph_buffer_info.targets_len(),
+                targets,
             });
         }
+
+        // Store [count, weight_0, .. weight_{n-1}] to match the WGSL `+ 1u`
+        // offset and the update/read paths that skip index 0.
+        let mut weights_with_count = Vec::with_capacity(4 + weights.len());
+        weights_with_count.extend_from_slice(&(targets as f32).to_le_bytes());
+        weights_with_count.extend_from_slice(weights);
 
         let key = self.infos.insert(morph_buffer_info.clone());
 
         if let Err(e) = self
             .weights
-            .update(key, weights)
+            .update(key, &weights_with_count)
             .map_err(|e| AwsmMeshError::BufferCapacityOverflow(format!("morph weights: {e}")))
             .and_then(|_| {
                 self.values.update(key, values).map_err(|e| {
