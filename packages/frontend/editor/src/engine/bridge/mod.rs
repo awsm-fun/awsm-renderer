@@ -14,6 +14,7 @@ pub mod material;
 pub mod mesh_cache;
 pub mod node_sync;
 pub mod particles;
+pub mod skin_bridge;
 
 use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
@@ -91,6 +92,12 @@ pub struct Bridge {
     /// Per-imported-glTF node templates, keyed by the source file's `AssetId`.
     /// `Model` nodes look up their meshes here (see `asset_template`).
     pub templates: Mutex<HashMap<AssetId, Arc<AssetTemplate>>>,
+    /// Skin bridge: editor bone `NodeId` → the baked joint `TransformKey` the
+    /// renderer's skin reads. A skinned glTF renders from its baked
+    /// `populate_gltf` copy, but the editor drives a *separate* mirror-bone
+    /// transform; each frame [`skin_bridge`] copies the mirror's local onto the
+    /// baked key so animation + posing actually deform the skin (#2).
+    pub skin_joint_baked: Mutex<HashMap<NodeId, TransformKey>>,
 }
 
 impl Bridge {
@@ -101,7 +108,17 @@ impl Bridge {
             child_order: Mutex::new(HashMap::new()),
             mesh_to_node: Mutex::new(HashMap::new()),
             templates: Mutex::new(HashMap::new()),
+            skin_joint_baked: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Register a skinned-model bone: editor `NodeId` → baked joint key (#2).
+    pub fn register_skin_joint(&self, node: NodeId, baked: TransformKey) {
+        self.skin_joint_baked.lock().unwrap().insert(node, baked);
+    }
+    /// Drop all skin-joint mappings (project reset).
+    pub fn clear_skin_joints(&self) {
+        self.skin_joint_baked.lock().unwrap().clear();
     }
 
     /// Cache a glTF node template under its source file's `AssetId`.

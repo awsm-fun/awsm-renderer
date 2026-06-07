@@ -118,6 +118,10 @@ fn render_one_frame() {
         // Pin the animation pose at the current playhead BEFORE world transforms
         // are derived (animation writes locals; `update_transforms` derives world).
         super::bridge::animation_sync::pin_pose(renderer, controller().playhead.get());
+        // Skin bridge (#2): copy animated/posed mirror-bone locals onto the baked
+        // joint keys the skin reads, BEFORE world matrices are derived — otherwise
+        // a skinned glTF's joint data animates but the mesh stays frozen.
+        super::bridge::skin_bridge::sync_bones_to_skin(renderer);
         renderer.update_transforms();
         let hooks = context::render_hooks_handle();
         let hooks = hooks.read().unwrap();
@@ -220,3 +224,5 @@ fn scene_camera_matrices(renderer: &AwsmRenderer, node_id: NodeId) -> Option<Cam
         aperture,
     })
 }
+
+// trunk rebuild nudge

@@ -444,6 +444,8 @@ impl EditorController {
                 self.anim_solo_root.set(None);
                 self.playhead.set_neq(0.0);
                 self.playing.set_neq(false);
+                // Skin bridge mappings (#2) belong to imported models — drop them.
+                crate::engine::bridge::bridge().clear_skin_joints();
                 self.project_name.set("untitled.awsm".to_string());
                 self.missing_assets.set(Vec::new());
                 self.dirty.set_neq(false);
@@ -1623,6 +1625,33 @@ impl EditorController {
         }
         self.scene.bump_revision();
         self.dirty.set_neq(true);
+
+        // Skin bridge (#2): for every skinned-model bone, map the editor mirror
+        // node → the baked joint TransformKey the renderer skin reads. The
+        // per-frame `skin_bridge` copies the mirror's local onto the baked key so
+        // animating/posing the bone deforms the skin (otherwise the mesh freezes:
+        // the skin reads the baked copy, the animation drives the mirror).
+        {
+            fn walk_skin_joints(
+                nodes: &[crate::engine::bridge::asset_template::AssetTemplateNode],
+                node_map: &std::collections::HashMap<u32, NodeId>,
+                count: &mut usize,
+            ) {
+                let bridge = crate::engine::bridge::bridge();
+                for n in nodes {
+                    if n.is_skin_joint {
+                        if let Some(node_id) = node_map.get(&n.gltf_node_index) {
+                            bridge.register_skin_joint(*node_id, n.baked_transform_key);
+                            *count += 1;
+                        }
+                    }
+                    walk_skin_joints(&n.children, node_map, count);
+                }
+            }
+            let mut skin_joint_count = 0;
+            walk_skin_joints(&template.roots, &node_map, &mut skin_joint_count);
+            tracing::debug!("skin bridge: registered {skin_joint_count} skin-joint mappings");
+        }
 
         // Convert each extracted glTF animation → a library clip bound to the
         // freshly-instantiated nodes (channels for un-instantiated nodes skip).
