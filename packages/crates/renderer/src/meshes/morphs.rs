@@ -251,10 +251,17 @@ impl<Key: slotmap::Key, Info: MorphInfo> MorphData<Key, Info> {
             .ok_or_else(|| AwsmMeshError::MorphNotFound(format!("{:?}", key)))?;
 
         // The buffer holds [count: f32, weight_0, .. weight_{len-1}] — read the
-        // `len` weights after the leading count word.
-        let weights_f32 =
-            unsafe { std::slice::from_raw_parts(slice_u8.as_ptr() as *const f32, len + 1) };
-        Ok(weights_f32[1..=len].to_vec())
+        // `len` weights after the leading count word. Decode each f32 from its
+        // four little-endian bytes: the `u8` slice carries no `f32` alignment
+        // guarantee, so casting its pointer to `*const f32` would be UB.
+        let weights = (0..len)
+            .map(|i| {
+                let start = (i + 1) * 4;
+                let bytes = slice_u8[start..start + 4].try_into().expect("4-byte chunk");
+                f32::from_le_bytes(bytes)
+            })
+            .collect();
+        Ok(weights)
     }
 
     /// Updates morph weights without writing to the GPU.
@@ -266,13 +273,20 @@ impl<Key: slotmap::Key, Info: MorphInfo> MorphData<Key, Info> {
         let len = self.get_info(key).map(|info| info.targets_len())?;
 
         self.weights.update_with_unchecked(key, |_, slice_u8| {
-            let weights_f32 =
-                unsafe { std::slice::from_raw_parts_mut(slice_u8.as_ptr() as *mut f32, len + 1) };
+            // Layout is [count: f32, weight_0, .. weight_{len-1}]. Reinterpret the
+            // bytes as `f32` through `align_to_mut` rather than a raw `*mut f32`
+            // cast: the buffer is laid out in 4-byte words at a 4-byte-aligned
+            // offset, so the unaligned prefix is empty — but `align_to_mut` is
+            // defined behavior whatever the alignment, where the pointer cast
+            // would be UB. Zero-alloc, so it stays cheap on the per-frame path.
+            let (prefix, weights_f32, _) = unsafe { slice_u8.align_to_mut::<f32>() };
+            debug_assert!(
+                prefix.is_empty(),
+                "morph weights buffer must be f32-aligned"
+            );
 
-            // The first value is the number of targets
-            let weights_f32 = &mut weights_f32[1..];
-
-            f(weights_f32)
+            // The first value is the count word; expose the `len` weights after it.
+            f(&mut weights_f32[1..=len])
         });
 
         self.weights_dirty = true;

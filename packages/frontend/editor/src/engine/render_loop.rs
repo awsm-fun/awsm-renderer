@@ -38,9 +38,12 @@ fn request_frame() {
 }
 
 /// Advance the animation transport while playing. The editor owns the clock:
-/// when playing we advance the controller `playhead` by `dt` (seconds,
-/// scaled by the active clip's speed) and dispatch a transient `SetPlayhead` so
-/// the ruler + synced tabs follow. The pose is *pinned* into the renderer in
+/// when playing we advance the controller `playhead` by `dt` (seconds, scaled by
+/// the active clip's speed) with a direct local `set_neq` — the ruler binds to
+/// the `playhead` signal, so it follows without a command. Each tab runs its own
+/// rAF clock, kept in agreement by the one-shot `SetPlaying`/`SetPlayhead`
+/// broadcasts (play/pause + discrete scrubs), so there is no per-frame dispatch
+/// to broadcast 60×/sec. The pose is *pinned* into the renderer in
 /// `render_one_frame` (under the held guard, before `update_transforms`) via
 /// [`super::bridge::animation_sync::pin_pose`].
 fn tick_animation_clock(dt_ms: f64) {
@@ -72,12 +75,10 @@ fn tick_animation_clock(dt_ms: f64) {
     } else {
         next = 0.0;
     }
-    // Transient command (broadcasts + syncs tabs, never recorded for undo).
-    crate::prelude::spawn_local(async move {
-        let _ = controller()
-            .dispatch(crate::controller::EditorCommand::SetPlayhead { t: next })
-            .await;
-    });
+    // Advance the clock locally — no command, no broadcast. The ruler binds to
+    // the `playhead` signal; cross-tab agreement comes from the one-shot
+    // play/pause + scrub broadcasts, not this per-frame tick.
+    ctrl.playhead.set_neq(next.max(0.0));
 }
 
 fn render_one_frame() {

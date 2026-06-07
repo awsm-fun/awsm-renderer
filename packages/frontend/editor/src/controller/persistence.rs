@@ -151,16 +151,19 @@ pub fn project_to_toml(ctrl: &EditorController) -> EditorResult<String> {
         .map_err(|e| EditorError::Msg(format!("serialize project: {e}")))
 }
 
-/// Per-custom-material side files (`material-<slug>.toml` + `.wgsl`) — the body
-/// the Studio authored. Returned alongside `project.toml` for the directory-handle
-/// (FS Access) Save writer, which lands as the follow-on; the single-file Save
-/// downloads only `project.toml` today.
+/// Per-custom-material side files (`<folder>/material.wgsl` + `material.toml`) —
+/// the body the Studio authored. Each path is rooted at the same per-material
+/// folder the `CustomMaterialRef` in `project.toml` declares
+/// (`assets/materials/<slug>`), so the directory-handle (FS Access) Save writer
+/// emits files exactly where the refs point. The single-file Save downloads only
+/// `project.toml` today.
 #[allow(dead_code)]
 pub fn material_files(ctrl: &EditorController) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for m in ctrl.custom_materials.lock_ref().iter() {
         let slug = slugify(&m.name.get_cloned());
-        out.push((format!("material-{slug}.wgsl"), m.wgsl.get_cloned()));
+        let folder = format!("assets/materials/{slug}");
+        out.push((format!("{folder}/material.wgsl"), m.wgsl.get_cloned()));
         // A compact TOML sidecar of the surface + declared slots.
         let meta = format!(
             "name = \"{}\"\nalpha = \"{}\"\ndouble_sided = {}\nregistered = {}\n",
@@ -169,14 +172,15 @@ pub fn material_files(ctrl: &EditorController) -> Vec<(String, String)> {
             m.double_sided.get(),
             m.registered.get(),
         );
-        out.push((format!("material-{slug}.toml"), meta));
+        out.push((format!("{folder}/material.toml"), meta));
     }
     out
 }
 
-/// Per-clip animation side files (`animation-<slug>.toml`) — the full authored
-/// model serialized as TOML (mirrors `material_files`). Returned alongside
-/// `project.toml` for the directory-handle Save writer.
+/// Per-clip animation side files — the full authored model serialized as TOML
+/// (mirrors `material_files`). Each path matches the `CustomAnimationRef.file` in
+/// `project.toml` (`assets/animations/animation-<slug>.toml`), so the
+/// directory-handle Save writer emits files exactly where the refs point.
 #[allow(dead_code)]
 pub fn animation_files(ctrl: &EditorController) -> Vec<(String, String)> {
     let mut out = Vec::new();
@@ -184,7 +188,7 @@ pub fn animation_files(ctrl: &EditorController) -> Vec<(String, String)> {
         let slug = slugify(&c.name.get_cloned());
         let stored = stored_from_live(c);
         if let Ok(body) = toml::to_string_pretty(&stored) {
-            out.push((format!("animation-{slug}.toml"), body));
+            out.push((format!("assets/animations/animation-{slug}.toml"), body));
         }
     }
     out
@@ -246,8 +250,10 @@ pub fn apply_project(ctrl: &EditorController, project: EditorProject) {
 }
 
 /// Save the project to a picked directory (File System Access): writes
-/// `project.toml` + each custom material's `material-<slug>.{toml,wgsl}` side
-/// files. The directory layout is a flat project directory.
+/// `project.toml` at the root plus each custom material's and clip's side files
+/// under `assets/` — material bodies in `assets/materials/<slug>/` and clips in
+/// `assets/animations/`, matching the ref paths recorded in `project.toml`.
+/// `write_text` creates the subdirectories as it writes.
 pub async fn save_to_dir(ctrl: &EditorController, dir: &crate::fs::ProjectDir) -> EditorResult<()> {
     dir.write_text("project.toml", &project_to_toml(ctrl)?)
         .await

@@ -244,7 +244,7 @@ impl EditorController {
             return;
         }
         let payload = serde_json::to_string(cmd).unwrap_or_else(|_| format!("{cmd:?}"));
-        tracing::info!("broadcasting {payload}");
+        tracing::trace!("broadcasting {payload}");
         SYNC_CHANNEL.with(|c| {
             if let Some(bc) = c.borrow().as_ref() {
                 let _ = bc.post_message(&JsValue::from_str(&payload));
