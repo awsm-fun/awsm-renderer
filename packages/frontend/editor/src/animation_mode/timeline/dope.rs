@@ -19,7 +19,9 @@ use crate::controller::EditorCommand;
 use crate::engine::scene::AssetId;
 use crate::prelude::*;
 
-use super::{prop_label, prop_suffix, target_icon, target_label, Geo, CH_H, NAMES_W, TRACK_H};
+use super::{
+    channels_label, prop_label, prop_suffix, target_icon, target_label, Geo, CH_H, NAMES_W, TRACK_H,
+};
 
 /// The full Dope Sheet body (rows + playhead), or the empty-state when no tracks.
 pub fn render(clip: Arc<CustomAnimation>, geo: Geo) -> Dom {
@@ -160,10 +162,13 @@ fn track_name_cell(clip: AssetId, idx: usize, track: &Arc<Track>) -> Dom {
     })
 }
 
-/// A channel name cell (h=23): color dot · channel name · key count. M-A3 shows
-/// the single "value" channel; per-component channels arrive in M-A4.
+/// A channel name cell (h=23): color dot · channel name · key count. The label
+/// names the components the track's keyframes carry (`x · y · z` for a vec3
+/// transform, `x · y · z · w` for a rotation, `weight` for a morph, `value` for
+/// a scalar) so the expanded lane isn't a mysterious "value" row.
 fn channel_name_cell(track: &Arc<Track>) -> Dom {
     let keys = track.keys.clone();
+    let channels = channels_label(&track.target);
     html!("div", {
         .style("display", "flex").style("align-items", "center").style("gap", "8px")
         .style("height", &format!("{CH_H}px")).style("padding", "0 8px 0 30px")
@@ -174,7 +179,7 @@ fn channel_name_cell(track: &Arc<Track>) -> Dom {
         }))
         .child(html!("span", {
             .class("mono").style("flex", "1").style("font-size", "11px").style("color", "var(--text-1)")
-            .text("value")
+            .text(&channels)
         }))
         .child(html!("span", {
             .class("mono").style("font-size", "9.5px").style("color", "var(--text-3)")

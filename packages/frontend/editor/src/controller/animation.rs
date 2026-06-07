@@ -175,6 +175,81 @@ impl Track {
         };
         Some(AnimationChannel::new(target, sampler))
     }
+
+    /// The track's value at time `t`, interpolated from its keyframes so that
+    /// inserting a key here doesn't change the curve. Linear for vec3/scalar,
+    /// normalized-lerp for quaternions (an inserted key the user immediately
+    /// tweaks doesn't warrant full step/cubic reconstruction). `None` if empty.
+    pub fn sample_at(&self, t: f64) -> Option<TrackValue> {
+        let times = self.times.get_cloned();
+        let keys = self.keys.get_cloned();
+        if times.is_empty() || keys.len() != times.len() {
+            return None;
+        }
+        if t <= times[0] {
+            return Some(keys[0].value);
+        }
+        let last = times.len() - 1;
+        if t >= times[last] {
+            return Some(keys[last].value);
+        }
+        let mut i = 0;
+        while i + 1 < times.len() && times[i + 1] < t {
+            i += 1;
+        }
+        let (t0, t1) = (times[i], times[i + 1]);
+        let f = if t1 > t0 {
+            ((t - t0) / (t1 - t0)) as f32
+        } else {
+            0.0
+        };
+        Some(lerp_value(&keys[i].value, &keys[i + 1].value, f))
+    }
+}
+
+/// Linear interpolation between two track values (normalized-lerp for quats).
+fn lerp_value(a: &TrackValue, b: &TrackValue, f: f32) -> TrackValue {
+    match (a, b) {
+        (TrackValue::Vec3(x), TrackValue::Vec3(y)) => TrackValue::Vec3([
+            x[0] + (y[0] - x[0]) * f,
+            x[1] + (y[1] - x[1]) * f,
+            x[2] + (y[2] - x[2]) * f,
+        ]),
+        (TrackValue::Scalar(x), TrackValue::Scalar(y)) => TrackValue::Scalar(x + (y - x) * f),
+        (TrackValue::Quat(x), TrackValue::Quat(y)) => {
+            let mut r = [
+                x[0] + (y[0] - x[0]) * f,
+                x[1] + (y[1] - x[1]) * f,
+                x[2] + (y[2] - x[2]) * f,
+                x[3] + (y[3] - x[3]) * f,
+            ];
+            let n = (r[0] * r[0] + r[1] * r[1] + r[2] * r[2] + r[3] * r[3]).sqrt();
+            if n > 1e-6 {
+                for c in &mut r {
+                    *c /= n;
+                }
+            }
+            TrackValue::Quat(r)
+        }
+        _ => *a,
+    }
+}
+
+/// A sensible default value for a fresh keyframe on a track of this target —
+/// identity rotation, unit scale, zero translation/scalar.
+pub fn default_value_for(target: &TrackTarget) -> TrackValue {
+    match target {
+        TrackTarget::Transform {
+            prop: TransformProp::Rotation,
+            ..
+        } => TrackValue::Quat([0.0, 0.0, 0.0, 1.0]),
+        TrackTarget::Transform {
+            prop: TransformProp::Scale,
+            ..
+        } => TrackValue::Vec3([1.0, 1.0, 1.0]),
+        TrackTarget::Transform { .. } => TrackValue::Vec3([0.0; 3]),
+        _ => TrackValue::Scalar(0.0),
+    }
 }
 
 /// The default sampler kind for a fresh track of the given target kind.

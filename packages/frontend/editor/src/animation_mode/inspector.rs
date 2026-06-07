@@ -9,9 +9,7 @@
 
 use std::sync::Arc;
 
-use crate::controller::animation::{
-    find_clip, AnimSel, CustomAnimation, Track, TrackTarget, TransformProp,
-};
+use crate::controller::animation::{find_clip, AnimSel, CustomAnimation, Track, TrackTarget};
 use crate::controller::{EditorCommand, Interp, SamplerKind, TrackValue};
 use crate::prelude::*;
 
@@ -120,8 +118,9 @@ fn keyframe_rows(
             .render(),
     ));
 
-    // Value (NumField, step = track.step). Scalar tracks edit inline; vec3/quat
-    // values are authored per-channel in the timeline (M-A4), shown read-only.
+    // Value — editable. A scalar is one field; a vec3 / quaternion is edited
+    // per component (X·Y·Z, +W for rotation). Each field dispatches a full
+    // `SetKeyframe` with the other components preserved.
     b = match key.value {
         TrackValue::Scalar(s) => b.child(row(
             "Value",
@@ -141,13 +140,58 @@ fn keyframe_rows(
                 })
                 .render(),
         )),
-        _ => b.child(row(
-            "Value",
-            html!("span", {
-                .class("mono").style("font-size", "11.5px").style("color", "var(--text-3)")
-                .text(&value_display(&key.value))
-            }),
-        )),
+        TrackValue::Vec3(v) => {
+            let mut bb = b;
+            for (i, lab) in ["X", "Y", "Z"].iter().enumerate() {
+                bb = bb.child(row(
+                    *lab,
+                    NumField::new(v[i] as f64)
+                        .step(step)
+                        .on_change(move |val| {
+                            let mut nv = v;
+                            nv[i] = val as f32;
+                            dispatch(EditorCommand::SetKeyframe {
+                                clip: clip_id,
+                                track: track_idx,
+                                index,
+                                t: None,
+                                value: Some(TrackValue::Vec3(nv)),
+                                interp: None,
+                                in_tangent: None,
+                                out_tangent: None,
+                            });
+                        })
+                        .render(),
+                ));
+            }
+            bb
+        }
+        TrackValue::Quat(q) => {
+            let mut bb = b;
+            for (i, lab) in ["X", "Y", "Z", "W"].iter().enumerate() {
+                bb = bb.child(row(
+                    *lab,
+                    NumField::new(q[i] as f64)
+                        .step(step)
+                        .on_change(move |val| {
+                            let mut nq = q;
+                            nq[i] = val as f32;
+                            dispatch(EditorCommand::SetKeyframe {
+                                clip: clip_id,
+                                track: track_idx,
+                                index,
+                                t: None,
+                                value: Some(TrackValue::Quat(nq)),
+                                interp: None,
+                                in_tangent: None,
+                                out_tangent: None,
+                            });
+                        })
+                        .render(),
+                ));
+            }
+            bb
+        }
     };
 
     // Interp (Select: Constant / Linear / Cubic spline).
@@ -225,6 +269,28 @@ fn keyframe_rows(
         }
     }
 
+    // Delete this keyframe.
+    b = b.child(html!("div", {
+        .style("padding", "10px 0 2px")
+        .child(html!("button", {
+            .class("t")
+            .attr("title", "Delete this keyframe")
+            .style("width", "100%").style("height", "28px")
+            .style("display", "flex").style("align-items", "center").style("justify-content", "center")
+            .style("border", "1px solid var(--line-soft)").style("border-radius", "var(--r2)")
+            .style("background", "transparent").style("color", "#f7768e").style("cursor", "pointer")
+            .style("font-size", "11.5px")
+            .text("Delete keyframe")
+            .event(move |_: events::Click| {
+                dispatch(EditorCommand::DeleteKeyframe {
+                    clip: clip_id,
+                    track: track_idx,
+                    index,
+                });
+            })
+        }))
+    }));
+
     b
 }
 
@@ -238,6 +304,9 @@ fn track_rows(
     let clip_id = controller().current_clip.get();
     let track_idx = sel.track;
 
+    // "Target · Property" identifies the track (e.g. `Skeleton_neck_joint_1 ·
+    // rotation`). The internal renderer binding ("Lowers to") is a dev detail —
+    // omitted from the inspector to avoid confusion.
     let mut b = b
         .child(row(
             "Target",
@@ -246,10 +315,6 @@ fn track_rows(
         .child(row(
             "Property",
             mono(prop_label(&track.target), "var(--text-0)", 12.0),
-        ))
-        .child(row(
-            "Lowers to",
-            mono(lowers_to_label(&track.target), "var(--accent-bright)", 11.5),
         ));
 
     // Sampler (Select: Step / Linear / CubicSpline).
@@ -315,16 +380,10 @@ fn target_icon(t: &TrackTarget) -> &'static str {
     }
 }
 
-/// A short human label for the target object (node/material id).
+/// A short human label for the target object — resolves the scene node's /
+/// material's name (shared with the dope sheet).
 fn target_label(t: &TrackTarget) -> String {
-    match t {
-        TrackTarget::Transform { node, .. }
-        | TrackTarget::Morph { node, .. }
-        | TrackTarget::BuiltinParam { node, .. }
-        | TrackTarget::Light { node, .. }
-        | TrackTarget::Camera { node, .. } => node.to_string(),
-        TrackTarget::Uniform { material, .. } => material.to_string(),
-    }
+    super::timeline::target_label(t)
 }
 
 /// The property this track drives.
@@ -339,32 +398,9 @@ fn prop_label(t: &TrackTarget) -> String {
     }
 }
 
-/// The renderer target this track lowers onto (the "Lowers to" row).
-fn lowers_to_label(t: &TrackTarget) -> String {
-    match t {
-        TrackTarget::Transform { prop, .. } => match prop {
-            TransformProp::Translation => "Transform · translation".into(),
-            TransformProp::Rotation => "Transform · rotation".into(),
-            TransformProp::Scale => "Transform · scale".into(),
-        },
-        TrackTarget::Morph { .. } => "Vertex · weight".into(),
-        TrackTarget::Uniform { .. } => "Material · uniform".into(),
-        TrackTarget::BuiltinParam { .. } => "Material · factor".into(),
-        TrackTarget::Light { .. } => "Light · param".into(),
-        TrackTarget::Camera { .. } => "Camera · param".into(),
-    }
-}
-
-/// The per-value channel names (X·Y·Z for vec3/quat, "value" for scalars).
+/// The per-value channel names (shared with the dope sheet's expanded lane).
 fn channels_label(t: &TrackTarget) -> String {
-    match t {
-        TrackTarget::Transform {
-            prop: TransformProp::Rotation,
-            ..
-        } => "X · Y · Z · W".into(),
-        TrackTarget::Transform { .. } => "X · Y · Z".into(),
-        _ => "value".into(),
-    }
+    super::timeline::channels_label(t)
 }
 
 /// The NumField step for a track's value field.
@@ -372,14 +408,6 @@ fn value_step(t: &TrackTarget) -> f64 {
     match t {
         TrackTarget::Transform { .. } => 0.05,
         _ => 0.05,
-    }
-}
-
-fn value_display(v: &TrackValue) -> String {
-    match v {
-        TrackValue::Scalar(s) => format!("{s:.3}"),
-        TrackValue::Vec3([x, y, z]) => format!("[{x:.2}, {y:.2}, {z:.2}]"),
-        TrackValue::Quat([x, y, z, w]) => format!("[{x:.2}, {y:.2}, {z:.2}, {w:.2}]"),
     }
 }
 

@@ -9,7 +9,9 @@
 
 use std::sync::Arc;
 
-use crate::controller::animation::{find_clip, ClipDirection, ClipLoop, CustomAnimation, StepKind};
+use crate::controller::animation::{
+    default_value_for, find_clip, ClipDirection, ClipLoop, CustomAnimation, StepKind,
+};
 use crate::controller::EditorCommand;
 use crate::prelude::*;
 
@@ -44,6 +46,13 @@ fn body(clip: Option<Arc<CustomAnimation>>, unit: Mutable<TimeUnit>) -> Dom {
                 || dispatch(EditorCommand::StepPlayhead { kind: StepKind::Next })))
             .child(transport_btn("To end", false, true, glyph_to_end(),
                 || dispatch(EditorCommand::StepPlayhead { kind: StepKind::End })))
+        }))
+        // ── add-key button (inserts a keyframe on the selected track) ─────────
+        .child(html!("div", {
+            .style("display", "flex").style("align-items", "center")
+            .style("padding", "2px").style("background", "var(--bg-3)")
+            .style("border", "1px solid var(--line-soft)").style("border-radius", "var(--r2)")
+            .child(add_key_btn())
         }))
         // ── time readout (frames⇄seconds toggle) ─────────────────────────────
         .child(time_readout(clip.clone(), unit))
@@ -90,6 +99,49 @@ fn transport_btn(
         .event(move |_: events::Click| on_click())
         .child(glyph)
     })
+}
+
+/// Insert a keyframe at the current playhead on the *selected* track. The
+/// inserted value is sampled from the track so it lands on the existing curve
+/// (a fresh track keys its target's default). No-op with a hint if no track is
+/// selected. Delete is in the keyframe inspector.
+fn add_key_btn() -> Dom {
+    transport_btn(
+        "Add keyframe at playhead (on the selected track)",
+        false,
+        true,
+        glyph_diamond(),
+        || {
+            let ctrl = controller();
+            let Some(clip_id) = ctrl.current_clip.get() else {
+                Toast::info("No active clip");
+                return;
+            };
+            let Some(sel) = ctrl.anim_selection.get() else {
+                Toast::info("Select a track first, then add a key");
+                return;
+            };
+            let t = ctrl.playhead.get();
+            let value = {
+                let Some(clip) = find_clip(&ctrl.custom_animations, clip_id) else {
+                    return;
+                };
+                let tracks = clip.tracks.lock_ref();
+                let Some(track) = tracks.get(sel.track) else {
+                    return;
+                };
+                track
+                    .sample_at(t)
+                    .unwrap_or_else(|| default_value_for(&track.target))
+            };
+            dispatch(EditorCommand::AddKeyframe {
+                clip: clip_id,
+                track: sel.track,
+                t,
+                value,
+            });
+        },
+    )
 }
 
 /// Play/pause toggle — reads `controller().playing`, dispatches `SetPlaying`.
@@ -304,6 +356,10 @@ fn glyph_play() -> Dom {
 }
 fn glyph_pause() -> Dom {
     tri(vec![rect("4", "3", "3", "10"), rect("9", "3", "3", "10")])
+}
+/// A keyframe diamond (the "add key" affordance).
+fn glyph_diamond() -> Dom {
+    tri(vec![path("M8 2l6 6-6 6-6-6z")])
 }
 
 fn dispatch(cmd: EditorCommand) {

@@ -1655,7 +1655,8 @@ impl EditorController {
 
         // Convert each extracted glTF animation → a library clip bound to the
         // freshly-instantiated nodes (channels for un-instantiated nodes skip).
-        let clip_count = self.import_animations(&import.animations, &node_map);
+        let clip_count =
+            self.import_animations(&import.animations, &node_map, &import.display_name);
 
         if clip_count > 0 {
             Toast::info(format!(
@@ -1676,6 +1677,7 @@ impl EditorController {
         &self,
         animations: &[awsm_renderer_gltf::extract::ExtractedAnimation],
         node_map: &std::collections::HashMap<u32, NodeId>,
+        model_name: &str,
     ) -> usize {
         use animation::{Keyframe, TransformProp};
         use awsm_renderer::animation::{AnimationData, AnimationSampler};
@@ -1692,11 +1694,24 @@ impl EditorController {
             // Index into the swatch palette by the clip's library position (pushes
             // from earlier iterations are already reflected in the live length).
             let base = self.custom_animations.lock_ref().len();
+            // Prefer the glTF animation's own name; otherwise name the clip after
+            // the model (e.g. `CesiumMan`), suffixing an index only when the file
+            // carries several animations — clearer than a generic "Animation N".
+            let model = model_name
+                .strip_suffix(".glb")
+                .or_else(|| model_name.strip_suffix(".gltf"))
+                .unwrap_or(model_name);
             let name = anim
                 .name
                 .clone()
                 .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| format!("Animation {}", anim_i + 1));
+                .unwrap_or_else(|| {
+                    if animations.len() > 1 {
+                        format!("{model} {}", anim_i + 1)
+                    } else {
+                        model.to_string()
+                    }
+                });
             let clip = CA::new(id, name);
             clip.color
                 .set(CLIP_COLORS[base % CLIP_COLORS.len()].to_string());

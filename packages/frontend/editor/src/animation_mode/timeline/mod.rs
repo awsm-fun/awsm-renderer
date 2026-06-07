@@ -22,6 +22,7 @@ mod ruler;
 mod transport;
 
 use crate::controller::animation::TrackTarget;
+use crate::engine::scene::NodeId;
 
 // ── shared geometry constants (mirror the JSX) ───────────────────────────────
 /// Left names-column width (the freeze pane).
@@ -102,16 +103,42 @@ pub fn target_icon(t: &TrackTarget) -> &'static str {
     }
 }
 
-/// A short human label for the target object (node / material id).
+/// A short human label for the target object — the scene node's name (or the
+/// custom material's name for a Uniform track), resolved live from the
+/// controller. Falls back to a short id fragment if the target was deleted.
 pub fn target_label(t: &TrackTarget) -> String {
     match t {
         TrackTarget::Transform { node, .. }
         | TrackTarget::Morph { node, .. }
         | TrackTarget::BuiltinParam { node, .. }
         | TrackTarget::Light { node, .. }
-        | TrackTarget::Camera { node, .. } => node.to_string(),
-        TrackTarget::Uniform { material, .. } => material.to_string(),
+        | TrackTarget::Camera { node, .. } => node_label(node),
+        TrackTarget::Uniform { material, .. } => {
+            let ctrl = crate::controller::controller();
+            let mats = ctrl.custom_materials.lock_ref();
+            let name = mats
+                .iter()
+                .find(|m| m.id == *material)
+                .map(|m| m.name.get_cloned());
+            drop(mats);
+            name.filter(|s| !s.is_empty())
+                .unwrap_or_else(|| short_id(&material.to_string()))
+        }
     }
+}
+
+/// The scene node's name, or a short id fragment if it's gone / unnamed.
+fn node_label(node: &NodeId) -> String {
+    crate::engine::scene::mutate::find_by_id(&crate::controller::controller().scene, *node)
+        .map(|n| n.name.get_cloned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| short_id(&node.to_string()))
+}
+
+/// First segment of a UUID string (`"3d546f45-…"` → `"3d546f45"`) for a
+/// readable fallback when a target has no resolvable name.
+fn short_id(id: &str) -> String {
+    id.split('-').next().unwrap_or(id).to_string()
 }
 
 /// The property this track drives (the second line of a track label).
@@ -132,5 +159,21 @@ pub fn prop_suffix(t: &TrackTarget) -> &'static str {
         TrackTarget::Uniform { .. } | TrackTarget::BuiltinParam { .. } => " \u{00b7} uniform",
         TrackTarget::Morph { .. } => " \u{00b7} morph",
         _ => "",
+    }
+}
+
+/// The components a track's keyframes carry — the label for the expanded lane /
+/// the inspector's "Channels" row. `x · y · z` for a vec3 transform, `· w` added
+/// for a rotation quaternion, `weight` for a morph, `value` for everything else.
+pub fn channels_label(t: &TrackTarget) -> String {
+    use crate::controller::animation::TransformProp;
+    match t {
+        TrackTarget::Transform {
+            prop: TransformProp::Rotation,
+            ..
+        } => "x · y · z · w".into(),
+        TrackTarget::Transform { .. } => "x · y · z".into(),
+        TrackTarget::Morph { .. } => "weight".into(),
+        _ => "value".into(),
     }
 }
