@@ -8,6 +8,11 @@ mod interpolate;
 mod mixer;
 mod player;
 mod sampler;
+/// Reusable loader for editor-authored (`scene_schema`) animation data — lets a
+/// game play authored clips/mixer at runtime, not just glTF. Behind the
+/// `scene-schema` feature. See `docs/plans/scene-loader.md`.
+#[cfg(feature = "scene-schema")]
+pub mod scene_loader;
 
 pub use animations::{AnimationKey, AnimationMorphKey, Animations};
 pub use blend::{blend_additive, blend_replace};
