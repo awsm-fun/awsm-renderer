@@ -1,10 +1,6 @@
 //! Viewport: the real WebGPU canvas (reparented into the slot) + the overlay
-//! chrome from viewport.jsx — transform-tool palette, shading-mode toggles,
-//! nav-cube, and readout chips. (The prototype's MaterialBall/fake-grid/fake-
-//! gizmo are CSS stand-ins for the render the real canvas already produces.)
-//!
-//! M6-A: the chrome + view-state (active tool / shading). Picking + gizmo drag
-//! + shading→renderer-debug wiring layer in next.
+//! chrome — transform-tool palette, shading-mode toggles, nav-cube, and readout
+//! chips.
 
 use crate::controller::CameraAxis;
 use crate::engine::gizmo::{gizmo_mode, GizmoMode};

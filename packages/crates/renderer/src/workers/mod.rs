@@ -1,6 +1,4 @@
-//! Library-wide worker-job infrastructure. `docs/PERFORMANCE.md` §5c
-//! covers operational behaviour; `docs/DEPLOYMENT_MODES.md` covers
-//! how this pool relates to the OffscreenCanvas renderer-worker.
+//! Library-wide worker-job infrastructure.
 //!
 //! Public surface:
 //!
@@ -17,9 +15,8 @@
 //! **Scope**: CPU-only work that produces `Vec<u8>` / parsed
 //! structures, ingested by the main thread via
 //! [`crate::buffer::mapped_uploader::MappedUploader::ingest_foreign`].
-//! The WebGPU device cannot be shared across workers; see
-//! `docs/DEPLOYMENT_MODES.md` for the `OffscreenCanvas` mode that
-//! runs the entire renderer in a worker.
+//! The WebGPU device cannot be shared across workers (the
+//! `OffscreenCanvas` mode instead runs the entire renderer in a worker).
 
 mod blob;
 mod entry;

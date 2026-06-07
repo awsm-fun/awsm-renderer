@@ -14,11 +14,9 @@
 //! Most scenes won't trigger growth at all (the 1 MiB default holds
 //! ~262k u32s, easily enough for hand-authored sprite atlases).
 //!
-//! The pool integrates with [`MappedUploader`] per
-//! [`docs/PERFORMANCE.md`][perf]: bulk inserts use `ingest_foreign`
-//! (foreign-bytes ingestion), per-frame edits use `write_dirty_ranges`.
-//!
-//! [perf]: ../../../docs/PERFORMANCE.md
+//! The pool integrates with [`MappedUploader`]: bulk inserts use
+//! `ingest_foreign` (foreign-bytes ingestion), per-frame edits use
+//! `write_dirty_ranges`.
 
 use std::collections::HashMap;
 use std::sync::LazyLock;

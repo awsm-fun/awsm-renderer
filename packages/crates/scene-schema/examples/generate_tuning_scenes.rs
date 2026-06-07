@@ -17,7 +17,7 @@
 //! 5. `tuning-coverage`         — 100 small props at varying camera distances.
 //! 6. `tuning-10k-meshes`       — 10K boxes (100×100×1 grid).
 //! 7. `tuning-importance-tiers` — 16 lights spanning a 4×4 (distance, intensity) grid; drives importance-tier cutoff tuning.
-//! 8. `tuning-1024-lights`      — ~1000 point lights spread over a 100m oversized floor + a transparent pane + a 40-light corner cluster; the GPU light-culling acceptance fixture (see docs/PERFORMANCE.md §5h).
+//! 8. `tuning-1024-lights`      — ~1000 point lights spread over a 100m oversized floor + a transparent pane + a 40-light corner cluster; the GPU light-culling acceptance fixture.
 
 use std::{fs, path::PathBuf};
 
@@ -367,7 +367,7 @@ fn shadow_off() -> LightShadowConfig {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Scene 1 — 1k meshes, 20 shadow-casting lights. Drives T1.
+// Scene 1 — 1k meshes, 20 shadow-casting lights.
 // ─────────────────────────────────────────────────────────────────────
 
 fn scene_1k_meshes() -> EditorProject {
@@ -427,7 +427,6 @@ fn scene_1k_meshes() -> EditorProject {
 
 // ─────────────────────────────────────────────────────────────────────
 // Scene 2 — 64 mixed lights + ~10 medium meshes (~500K verts total).
-// Drives T2.
 // ─────────────────────────────────────────────────────────────────────
 
 fn scene_64_lights() -> EditorProject {
@@ -506,7 +505,7 @@ fn scene_64_lights() -> EditorProject {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Scene 3 — 20 lights at varied intensities (0.1× → 50×). Drives T3.
+// Scene 3 — 20 lights at varied intensities (0.1× → 50×).
 // ─────────────────────────────────────────────────────────────────────
 
 fn scene_mixed_intensity() -> EditorProject {
@@ -565,7 +564,7 @@ fn scene_mixed_intensity() -> EditorProject {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Scene 4 — terrain + ocean + skybox + 50 props. Drives T6.
+// Scene 4 — terrain + ocean + skybox + 50 props.
 // ─────────────────────────────────────────────────────────────────────
 
 fn scene_open_world() -> EditorProject {
@@ -640,7 +639,7 @@ fn scene_open_world() -> EditorProject {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Scene 5 — 100 small props at varying camera distances. Drives T4.
+// Scene 5 — 100 small props at varying camera distances.
 // ─────────────────────────────────────────────────────────────────────
 
 fn scene_coverage() -> EditorProject {
@@ -684,7 +683,7 @@ fn scene_coverage() -> EditorProject {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Scene 6 — 10K boxes (100×100). Drives T5 SceneSpatial rebuild
+// Scene 6 — 10K boxes (100×100). Drives SceneSpatial rebuild
 // thresholds.
 // ─────────────────────────────────────────────────────────────────────
 
@@ -769,7 +768,7 @@ fn scene_10k_meshes() -> EditorProject {
 //
 // Loaded non-interactively for measurement via
 //   window.wasmBindings.load_scene_by_path("tuning-50-materials")
-// (debug builds only). See docs/DEBUGGING-PREVIEW.md.
+// (debug builds only).
 // ─────────────────────────────────────────────────────────────────────
 
 /// SHA-256 of `assets/world/tuning-50-materials/assets/<hash>.png` — the
@@ -963,7 +962,7 @@ fn scene_50_materials() -> EditorProject {
     // opaque grid (smaller z = nearer the camera) so they blend over the
     // opaque meshes + floor — the visible transparent-path test. Each has
     // a distinct feature-set so it compiles its OWN specialized transparent
-    // pipeline (transparent specializes per feature-set too — #17): three
+    // pipeline (transparent specializes per feature-set too): three
     // untextured (the smallest transparent variant) plus one with a
     // base-color texture (a different variant, exercising the transparent
     // texture-slot gate). Kept in a separate group so the 50-material grid
@@ -1104,7 +1103,7 @@ fn hsv_to_rgb_arr(h: f32, s: f32, v: f32) -> [f32; 3] {
 //
 // With the current cutoffs (0.1 / 1 / 4): 6 Low, 4 Medium, 1 High,
 // 5 Ultra. The High band is sparse — only a single (d=5, i=100)
-// combo lands there. T3 re-tuning either widens High (bump Ultra
+// combo lands there. Re-tuning either widens High (bump Ultra
 // cutoff above 4) or accepts that mid-distance + bright is rare.
 // ─────────────────────────────────────────────────────────────────────
 
@@ -1163,8 +1162,6 @@ fn scene_importance_tiers() -> EditorProject {
 //   - an intentional 40-light corner cluster at (-45, _, -45) that
 //     concentrates enough lights into a single 16-pixel × 32-slice
 //     froxel to trigger the auto-grow overflow path on first frame.
-//
-// See docs/PERFORMANCE.md §5h (Lighting & light culling).
 // ─────────────────────────────────────────────────────────────────────
 
 fn scene_1024_lights() -> EditorProject {

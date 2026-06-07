@@ -1,4 +1,4 @@
-//! The ⌘K command palette (extras.jsx `CommandPalette`). A fuzzy-filtered
+//! The ⌘K command palette. A fuzzy-filtered
 //! command list over the same `EditorCommand`s the panels dispatch — opened from
 //! the top-bar search affordance or the ⌘K / Ctrl-K shortcut. Arrow keys move
 //! the selection, Enter runs, Esc closes.

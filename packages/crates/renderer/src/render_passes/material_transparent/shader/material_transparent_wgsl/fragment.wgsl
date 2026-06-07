@@ -135,8 +135,8 @@ fn sample_transmission_background_for_ior(
 
 {% if base == ShadingBase::Custom %}
 /*************** START dynamic-material wrapper ******************/
-// Auto-generated per the registered transparent material's layout.
-// See docs/dynamic-materials/contract-transparent.md for the
+// Auto-generated per the registered transparent material's layout,
+// implementing the
 // TransparentShadingInput / TransparentShadingOutput / MaterialData
 // contract.
 
@@ -330,7 +330,7 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
         base_alpha = material_color.base.a;
     {% endif %}
 
-    // Apply per-instance tint (Stage-3b — mirrors the opaque non-MSAA path).
+    // Apply per-instance tint (mirrors the opaque non-MSAA path).
     if (input.instance_id != INSTANCE_ATTR_NONE) {
         let attr = instance_attrs[input.instance_id];
         let tint = unpack4x8unorm(attr.color_packed);

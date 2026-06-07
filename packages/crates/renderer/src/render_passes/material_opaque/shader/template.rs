@@ -34,7 +34,7 @@ pub struct ShaderTemplateMaterialOpaqueBindGroups {
     /// Bind-group slot index the shadow declarations should occupy.
     /// Opaque pipelines use slot 3; the field exists so the same
     /// `shared_wgsl/shadow/bind_groups.wgsl` include can be reused by
-    /// the transparent pipeline (slot 1 as of 16.B).
+    /// the transparent pipeline (slot 1).
     pub shadow_group_index: u32,
     /// Registry bucket list — drives the templated `ClassifyBuckets`
     /// struct emit, must match the classify-pass writer's struct
@@ -71,8 +71,7 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     /// When `true`, the shared `lights.wgsl` emits the
     /// `apply_lighting_per_froxel*` helpers. Opaque sets this `true` —
     /// all opaque shading reads the per-pixel froxel light list produced
-    /// by the GPU cull pass (see `compute.wgsl` and docs/PERFORMANCE.md
-    /// §5h).
+    /// by the GPU cull pass (see `compute.wgsl`).
     pub use_froxel_lights: bool,
     /// Number of view-space Z slices in the cull grid. Constant-
     /// folded into the per-pixel froxel-index calc that the gated
@@ -98,7 +97,7 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     /// the numeric `shader_id` regardless of `base`.
     pub base: crate::dynamic_materials::ShadingBase,
     /// Which optional shared modules this pipeline's material declares (skinny
-    /// materials — `docs/SHADER_GUIDELINES.md`). The host gates heavy
+    /// materials). The host gates heavy
     /// PBR-only includes (brdf / apply_lighting) behind these so non-PBR
     /// pipelines don't compile them.
     pub inc: crate::dynamic_materials::ShaderIncludeFlags,
@@ -282,7 +281,7 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 // Skinny materials: emit only this pipeline's base material body
                 // (the dispatch references only that base's fragment). Custom
                 // (None) emits all — covers dynamic-material dispatch. The
-                // skybox-owner shades nothing (its body is gated out, #13), so
+                // skybox-owner shades nothing (its body is gated out), so
                 // it carries no material fragment + no PBR shading includes.
                 materials_wgsl: if value.owns_skybox {
                     String::new()
@@ -650,7 +649,7 @@ mod empty_registry_tests {
 
     #[test]
     fn empty_registry_bucket_offset_resolves() {
-        // The Phase-3 bug we fixed was `let bucket_offset =;` when
+        // A past bug we fixed was `let bucket_offset =;` when
         // the lookup chain had no match. Verify the resolved
         // expression isn't empty for every first-party shader_id.
         for (shader_id, expected) in [

@@ -1,4 +1,4 @@
-//! Animation-mode **ribbon** (anim-app.jsx, the bar right after the top bar):
+//! Animation-mode **ribbon** (the bar right after the top bar):
 //! the active clip's color chip · name · Duration · FPS, a `N tracks → N players`
 //! readout, an **Add Track** ghost button, and a green **Live · N players** chip.
 //!
@@ -74,7 +74,7 @@ fn body(clip: Option<Arc<CustomAnimation>>) -> Dom {
         .child(html!("span", {
             .style("width", "1px").style("height", "18px").style("background", "var(--line)")
         }))
-        // ── Add Track (ghost) — opens the target picker (anim-rail AddTrackMenu) ─
+        // ── Add Track (ghost) — opens the target picker ──────────────────────
         .child(super::add_track::button(BtnVariant::Ghost, BtnSize::Sm))
         // ── Live · N players chip ────────────────────────────────────────────
         .child(live_chip(&clip))

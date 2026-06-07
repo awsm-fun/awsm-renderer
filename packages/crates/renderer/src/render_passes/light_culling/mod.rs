@@ -5,8 +5,7 @@
 //! transparent shader and — when the per-mesh CPU bucket marks a mesh
 //! as oversized — by the opaque shader's oversized-mesh override path.
 //!
-//! The cull runs in two stages (`cs_tile` → `cs_main`); see
-//! `docs/PERFORMANCE.md` (Lighting & light culling) for the full design.
+//! The cull runs in two stages (`cs_tile` → `cs_main`).
 
 pub mod bind_group;
 pub mod buffers;

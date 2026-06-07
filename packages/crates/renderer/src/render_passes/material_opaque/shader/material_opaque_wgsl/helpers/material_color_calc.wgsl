@@ -1,8 +1,8 @@
 
 {# Skinny materials: the PBR PbrMaterialColor builder. Gated so non-PBR
    pipelines (which call compute_unlit_material_color below instead) don't
-   compile ~700 lines of PBR texture/extension sampling. See
-   docs/SHADER_GUIDELINES.md. The unlit builder further down is ungated. #}
+   compile ~700 lines of PBR texture/extension sampling. The unlit builder
+   further down is ungated. #}
 {% if inc.material_color_calc %}
 {% if mipmap.is_gradient() %}
 struct PbrMaterialGradients {
@@ -393,7 +393,7 @@ fn _pbr_material_base_color{{ mipmap.suffix() }}(
     {% if mipmap.is_gradient() %}uv_derivs: UvDerivs,{% endif %}
 ) -> vec4<f32> {
     var color = material.base_color_factor;
-    // Compile-time feature gate (criterion 4): a feature-set without
+    // Compile-time feature gate: a feature-set without
     // a base-color texture emits NO sampler load here, so the whole
     // sample → multiply chain dead-code-eliminates (lower register
     // pressure → higher occupancy). Pixel-equivalent: a material lacking

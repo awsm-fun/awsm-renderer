@@ -86,8 +86,8 @@ impl AppCanvas {
                             .with_profile(profile)
                             .with_logging(AwsmRendererLogging {
                                 // Default tier comes from build profile + `?trace=…` URL
-                                // override. See `crate::logger::default_render_timings` and
-                                // `docs/perf-tracing.md` for the policy.
+                                // override. See `crate::logger::default_render_timings`
+                                // for the policy.
                                 render_timings: crate::logger::default_render_timings(),
                             })
                             .with_clear_color(Color::MID_GREY)
@@ -136,7 +136,7 @@ impl AppCanvas {
                         // above, but the prewarm hook is the
                         // documented place that will absorb extra
                         // work when the dynamic-materials sprint
-                        // lands (see PERFORMANCE.md §5g). The
+                        // lands. The
                         // explicit status flag also surfaces *that
                         // the renderer is doing shader work at all*
                         // — which used to hide inside the

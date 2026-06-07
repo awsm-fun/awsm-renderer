@@ -1,7 +1,7 @@
 //! Per-material declaration of which shared shader modules and pre-shade
 //! fragment inputs a shading model needs — the heart of "skinny materials".
 //!
-//! See `docs/SHADER_GUIDELINES.md`. The principle: **no global core set**.
+//! The principle: **no global core set**.
 //! Each material declares the optional shared modules its shading body uses
 //! (possibly none); the renderer compiles the transitive closure of that set
 //! and emits only those `{% include %}`s. The `@group/@binding` surface is *not*
@@ -107,8 +107,8 @@ impl ShaderIncludes {
     }
 
     /// Direct (one-hop) code dependencies of a single module. The bindings a
-    /// module touches are *not* modeled here — bindings stay full (§9 of the
-    /// plan), so deps are purely "this WGSL calls into that WGSL".
+    /// module touches are *not* modeled here — bindings stay full, so deps
+    /// are purely "this WGSL calls into that WGSL".
     const fn direct_deps(bit: u32) -> Self {
         match bit {
             Self::BIT_APPLY_LIGHTING => Self::BRDF

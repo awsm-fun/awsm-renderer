@@ -1,4 +1,4 @@
-//! Content Browser (content-browser.jsx) — the bottom Assets drawer.
+//! Content Browser — the bottom Assets drawer.
 //!
 //! Collapsed: a 34px bar with a folder glyph + total asset count. Expanded: a
 //! 218px drawer with category tabs (All/Materials/Textures/Meshes), a search

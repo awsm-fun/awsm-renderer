@@ -18,8 +18,6 @@
 //! Each frontend decides its own *default* (typically: SubFrame +
 //! DEBUG in debug builds, Frame + INFO in release). The query
 //! params, when present, override.
-//!
-//! See `docs/perf-tracing.md` for the rationale and worked numbers.
 
 use awsm_renderer::{debug::RenderTimings, profile::RendererProfile};
 use tracing_subscriber::filter::LevelFilter;

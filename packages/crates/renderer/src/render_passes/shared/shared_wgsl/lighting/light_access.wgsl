@@ -1,7 +1,6 @@
 // light_access.wgsl — light-data access shared by every lit shading model
 // (PBR + toon). Split out of the former lights.wgsl so non-PBR materials can
 // walk the light list WITHOUT pulling in apply_lighting + the PBR BRDF.
-// See docs/SHADER_GUIDELINES.md.
 //
 // DELIBERATELY NOT skinny-gated, and included in every opaque pipeline. The
 // packed structs (LightsInfoPacked/LightPacked) are part of the bind-group ABI

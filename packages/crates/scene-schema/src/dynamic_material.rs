@@ -21,9 +21,6 @@
 //! consumer converts the loaded folder into
 //! `awsm_renderer::dynamic_materials::MaterialRegistration` before calling
 //! `AwsmRenderer::register_material`.
-//!
-//! See `docs/dynamic-materials/contract-{opaque,transparent}.md` for the
-//! author-facing WGSL contract this on-disk shape ultimately wires up to.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -219,7 +216,7 @@ pub struct TextureSlot {
 /// The `name` becomes `<name>_offset: u32` and `<name>_length: u32` in the
 /// auto-generated WGSL `MaterialData` struct. The author reads the data via
 /// the renderer-side `extras_load_f32` / `extras_load_u32` helpers (see
-/// `shared_wgsl/extras.wgsl`, landed in Phase 6).
+/// `shared_wgsl/extras.wgsl`).
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct BufferSlot {

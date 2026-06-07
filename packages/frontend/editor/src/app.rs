@@ -347,7 +347,7 @@ fn count_nodes(nodes: &[std::sync::Arc<crate::engine::scene::Node>], c: &mut Cou
     }
 }
 
-/// The bottom status bar (settings-overflow.jsx StatsBar): live scene + material
+/// The bottom status bar: live scene + material
 /// counts. A thin always-on strip below the workspace.
 fn stats_bar() -> Dom {
     html!("div", {

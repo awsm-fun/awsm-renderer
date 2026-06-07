@@ -1,4 +1,4 @@
-//! Animation-mode **Add-Track picker** (anim-rail.jsx `AddTrackMenu`): a popup
+//! Animation-mode **Add-Track picker**: a popup
 //! anchored under an "Add Track" trigger that lists the animatable **targets**
 //! of the *real* scene, grouped by node. Picking a property row dispatches
 //! `EditorCommand::AddTrack { clip, target }` and closes.
@@ -561,7 +561,7 @@ fn mesh_material_rows(node: crate::engine::scene::NodeId) -> Vec<PropRow> {
 
 /// Build one [`TargetGroup`] per *dynamic* custom material that declares at least
 /// one uniform slot. These targets are material-scoped (keyed by `AssetId`, not a
-/// node), mirroring the prototype's material-uniform group in `AddTrackMenu`.
+/// node).
 ///
 /// Only dynamic (WGSL) materials are offered: a built-in material (`builtin ==
 /// Some`) animates via the per-node BuiltinParam rows above, not named uniforms.

@@ -1,6 +1,6 @@
-//! Prototype icon set — the geometric 24×24 line icons from the design
-//! reference (`ui.jsx` `ICONS` + `Icon`). Each icon is a name → list of svg
-//! child shapes; the [`Icon`] builder wraps them in an `<svg>` that strokes
+//! Prototype icon set — the geometric 24×24 line icons. Each icon is a name →
+//! list of svg child shapes; the [`Icon`] builder wraps them in an `<svg>` that
+//! strokes
 //! with `currentColor` (so the icon inherits the surrounding text color), at a
 //! configurable pixel size + stroke width.
 //!
@@ -37,8 +37,7 @@ fn sr(x: &str, y: &str, w: &str, h: &str, rx: &str) -> Dom {
     svg!("rect", { .attr("x", x).attr("y", y).attr("width", w).attr("height", h).attr("rx", rx) })
 }
 
-/// The svg child shapes for a named icon. Unknown names fall back to `dot`
-/// (matching the prototype's `ICONS[name] || ICONS.dot`).
+/// The svg child shapes for a named icon. Unknown names fall back to `dot`.
 fn icon_children(name: &str) -> Vec<Dom> {
     match name {
         "cube" => vec![
@@ -131,8 +130,8 @@ fn icon_children(name: &str) -> Vec<Dom> {
     }
 }
 
-/// Builder for a single prototype icon. Defaults match `ui.jsx`'s `Icon`
-/// (16px, 1.6 stroke width, `currentColor`).
+/// Builder for a single prototype icon. Defaults are 16px, 1.6 stroke width,
+/// `currentColor`.
 pub struct Icon {
     name: String,
     size: f64,
@@ -154,7 +153,7 @@ impl Icon {
         self.size = size;
         self
     }
-    /// Stroke width (prototype `sw`).
+    /// Stroke width.
     pub fn stroke_width(mut self, sw: f64) -> Self {
         self.sw = sw;
         self

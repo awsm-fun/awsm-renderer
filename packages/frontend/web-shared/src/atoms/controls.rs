@@ -1,5 +1,5 @@
-//! Small controlled inputs from `ui.jsx`: `Toggle`, `Check`, `Segmented`,
-//! `Swatch`, `Badge`, and `Slider` (the labeled range from `ui-extra.jsx`).
+//! Small controlled inputs: `Toggle`, `Check`, `Segmented`, `Swatch`, `Badge`,
+//! and `Slider` (a labeled range).
 //!
 //! State-bearing controls (`toggle`, `check`, `segmented`, `swatch`, `slider`)
 //! take a caller-owned `Mutable` so the editor can both observe changes (to

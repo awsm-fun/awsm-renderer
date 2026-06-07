@@ -1,4 +1,4 @@
-//! Animation-mode **ClipLibrary** (anim-rail.jsx `ClipLibrary`): the reactive
+//! Animation-mode **ClipLibrary**: the reactive
 //! list of authored clips with a "+ New clip" header action. Mirrors
 //! `material_mode::library`.
 //!

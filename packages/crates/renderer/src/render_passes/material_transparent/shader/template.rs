@@ -54,7 +54,7 @@ pub struct ShaderTemplateTransparentMaterialIncludes {
     /// feature-set (each transparent material compiles its own pipeline).
     pub pbr_features: awsm_materials::pbr::PbrFeatures,
     /// Skinny-materials include gating (brdf / apply_lighting) — see the opaque
-    /// compute template + `docs/SHADER_GUIDELINES.md`.
+    /// compute template.
     pub inc: crate::dynamic_materials::ShaderIncludeFlags,
     /// Shading family this transparent pipeline handles — gates the PBR vs unlit
     /// material-color builders in `material_color_calc.wgsl` so a thin non-PBR
@@ -124,7 +124,7 @@ pub struct ShaderTemplateTransparentMaterialBindGroups {
     pub texture_pool_samplers_len: u32,
     pub multisampled_geometry: bool,
     /// Bind-group slot used by the shared shadow `bind_groups.wgsl`
-    /// include. 16.B folded `lights` into `main` (group 0) so the
+    /// include. `lights` is folded into `main` (group 0) so the
     /// shadow group lives at slot 1 on the transparent pipeline.
     pub shadow_group_index: u32,
     /// SSCS is opaque-only — the transparent pass doesn't have access

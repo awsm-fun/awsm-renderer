@@ -1,4 +1,4 @@
-//! Numeric field (`NumField`) + 3-axis vector (`Vec3`) from `ui.jsx`.
+//! Numeric field (`NumField`) + 3-axis vector (`Vec3`).
 //!
 //! `NumField` is an axis-tinted numeric input with **drag-to-scrub**: pressing
 //! the axis chip and dragging horizontally scrubs the value by `step` per pixel.

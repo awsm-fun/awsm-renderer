@@ -1,6 +1,6 @@
-//! The prototype text input (`TextInput` in `ui.jsx`) — a styled wrapper with
-//! an optional leading icon, mono mode, placeholder, and an accent focus ring.
-//! Bound to a caller-owned `Mutable<String>`.
+//! The prototype text input (`TextInput`) — a styled wrapper with an optional
+//! leading icon, mono mode, placeholder, and an accent focus ring. Bound to a
+//! caller-owned `Mutable<String>`.
 
 use std::cell::RefCell;
 use std::rc::Rc;

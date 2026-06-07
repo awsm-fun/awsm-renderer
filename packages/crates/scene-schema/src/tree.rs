@@ -40,7 +40,7 @@ pub struct EditorNode {
     /// is **root-only**: descendants are not implicitly prefabs and may
     /// themselves be marked, creating nested prefabs (each independently
     /// instantiable). The editor renders prefab subtrees verbatim so
-    /// authors can see and edit them. See `docs/game-editor-player.md`.
+    /// authors can see and edit them.
     #[serde(default)]
     pub prefab: bool,
     #[serde(default)]

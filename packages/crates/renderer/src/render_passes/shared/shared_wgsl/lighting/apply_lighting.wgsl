@@ -1,6 +1,6 @@
 // apply_lighting.wgsl — PBR lighting orchestration (apply_lighting*) + froxel
 // light walking. Calls into brdf.wgsl; depends on light_access.wgsl. PBR only.
-// Split out of the former lights.wgsl. See docs/SHADER_GUIDELINES.md.
+// Split out of the former lights.wgsl.
 
 // Apply all enabled lighting to a material and return the final color
 fn apply_lighting(

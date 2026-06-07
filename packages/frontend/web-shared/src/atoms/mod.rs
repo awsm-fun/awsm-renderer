@@ -1,6 +1,5 @@
-// Prototype atom set (ported from the editor design reference's ui.jsx /
-// ui-extra.jsx). These supersede the v1 buttons/checkbox/dropdown/segmented/
-// text_input modules.
+// Prototype atom set. These supersede the v1 buttons/checkbox/dropdown/
+// segmented/text_input modules.
 pub mod button;
 pub mod controls;
 pub mod field;

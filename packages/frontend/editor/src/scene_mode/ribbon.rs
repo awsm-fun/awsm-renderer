@@ -1,4 +1,4 @@
-//! Scene-mode ribbon (ribbon-rows.jsx): a tab strip (Insert · Object ·
+//! Scene-mode ribbon: a tab strip (Insert · Object ·
 //! Environment + Assets toggle) over the active tab's action row. Every Insert
 //! action dispatches an `EditorCommand::Insert` through the controller. Camera
 //! ops live in the Settings drawer (a Camera node is inserted from Insert).
@@ -242,8 +242,8 @@ fn insert_row() -> Dom {
 }
 
 fn object_row() -> Dom {
-    // Object actions operate on the selection, which lands in M5. For now the
-    // buttons are present (prototype-faithful) and toast until selection exists.
+    // Object actions operate on the selection. For now the buttons are present
+    // and toast until selection exists.
     html!("div", {
         .style("display", "flex").style("align-items", "center").style("gap", "7px")
         .child(Btn::new().label("Duplicate").icon("copy").variant(BtnVariant::Solid).size(BtnSize::Sm)
