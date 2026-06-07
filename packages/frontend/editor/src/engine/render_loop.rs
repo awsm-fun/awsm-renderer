@@ -22,6 +22,15 @@ thread_local! {
     /// The previous rAF timestamp (ms), for computing the per-frame delta the
     /// animation transport advances by while playing.
     static LAST_TS: std::cell::Cell<Option<f64>> = const { std::cell::Cell::new(None) };
+
+    /// Transport state for the playing clock: `(phase, last_emitted)`. `phase` is
+    /// the **unbounded** elapsed clip time (seconds) along the clip's base
+    /// direction — folding it into `[0, dur]` per loop style is what gives
+    /// ping-pong its bounce without tracking a separate direction. `last_emitted`
+    /// is the playhead we last wrote, so a value that differs at the next tick
+    /// means an external scrub (`SetPlayhead`) landed and the phase must re-seed.
+    static TRANSPORT: std::cell::Cell<(f64, f64)> =
+        const { std::cell::Cell::new((0.0, f64::NAN)) };
 }
 
 fn request_frame() {
@@ -38,47 +47,76 @@ fn request_frame() {
 }
 
 /// Advance the animation transport while playing. The editor owns the clock:
-/// when playing we advance the controller `playhead` by `dt` (seconds, scaled by
-/// the active clip's speed) with a direct local `set_neq` — the ruler binds to
-/// the `playhead` signal, so it follows without a command. Each tab runs its own
-/// rAF clock, kept in agreement by the one-shot `SetPlaying`/`SetPlayhead`
-/// broadcasts (play/pause + discrete scrubs), so there is no per-frame dispatch
-/// to broadcast 60×/sec. The pose is *pinned* into the renderer in
-/// `render_one_frame` (under the held guard, before `update_transforms`) via
-/// [`super::bridge::animation_sync::pin_pose`].
+/// when playing we advance the controller `playhead` with a direct local
+/// `set_neq` — the ruler binds to the `playhead` signal, so it follows without a
+/// command. Each tab runs its own rAF clock, kept in agreement by the one-shot
+/// `SetPlaying`/`SetPlayhead` broadcasts (play/pause + discrete scrubs), so there
+/// is no per-frame dispatch to broadcast 60×/sec. The pose is *pinned* into the
+/// renderer in `render_one_frame` (under the held guard, before
+/// `update_transforms`) via [`super::bridge::animation_sync::pin_pose`].
+///
+/// Playback honors the clip's authored `direction` (Forward/Reverse) and
+/// `loop_style`: **Loop** wraps, **Once** clamps at the far end, and **PingPong**
+/// bounces. Since `pin_pose` only seeks to the playhead value (the clip group's
+/// own loop/direction don't apply when pinning a one-shot pose), that trajectory
+/// has to be produced here — see [`TRANSPORT`].
 fn tick_animation_clock(dt_ms: f64) {
+    use crate::controller::animation::{ClipDirection, ClipLoop};
     let ctrl = controller();
     if !ctrl.playing.get() {
         return;
     }
-    let dt_s = dt_ms / 1000.0;
-    let (dur, speed, loops) = ctrl
+    let Some(clip) = ctrl
         .current_clip
         .get()
         .and_then(|id| crate::controller::animation::find_clip(&ctrl.custom_animations, id))
-        .map(|c| {
-            (
-                c.duration.get(),
-                c.speed.get(),
-                !matches!(
-                    c.loop_style.get(),
-                    crate::controller::animation::ClipLoop::Once
-                ),
-            )
-        })
-        .unwrap_or((0.0, 1.0, true));
-    let mut next = ctrl.playhead.get() + dt_s * speed;
-    if dur > 0.0 {
-        if next >= dur {
-            next = if loops { next.rem_euclid(dur) } else { dur };
-        }
-    } else {
-        next = 0.0;
+    else {
+        return;
+    };
+    let dur = clip.duration.get();
+    if dur <= 0.0 {
+        ctrl.playhead.set_neq(0.0);
+        return;
     }
+    let dt_s = dt_ms / 1000.0;
+    let speed = clip.speed.get();
+    let base_sign = match clip.direction.get() {
+        ClipDirection::Forward => 1.0,
+        ClipDirection::Reverse => -1.0,
+    };
+    let cur = ctrl.playhead.get();
+
+    let next = TRANSPORT.with(|t| {
+        let (mut phase, last_emitted) = t.get();
+        // Re-seed from the playhead on the first tick or whenever it moved
+        // externally (a scrub) since we last emitted — otherwise the unbounded
+        // phase would fight the scrubbed value.
+        if last_emitted.is_nan() || (cur - last_emitted).abs() > 1e-9 {
+            phase = cur;
+        }
+        // Advance along the base direction, then fold into [0, dur] per loop
+        // style. The triangle wave is the bounce for ping-pong; `rem_euclid`
+        // handles a negative (reverse) phase correctly for both it and Loop.
+        phase += dt_s * speed * base_sign;
+        let next = match clip.loop_style.get() {
+            ClipLoop::Once => phase.clamp(0.0, dur),
+            ClipLoop::Loop => phase.rem_euclid(dur),
+            ClipLoop::PingPong => {
+                let m = phase.rem_euclid(2.0 * dur);
+                if m <= dur {
+                    m
+                } else {
+                    2.0 * dur - m
+                }
+            }
+        };
+        t.set((phase, next));
+        next
+    });
     // Advance the clock locally — no command, no broadcast. The ruler binds to
     // the `playhead` signal; cross-tab agreement comes from the one-shot
     // play/pause + scrub broadcasts, not this per-frame tick.
-    ctrl.playhead.set_neq(next.max(0.0));
+    ctrl.playhead.set_neq(next);
 }
 
 fn render_one_frame() {
@@ -225,5 +263,3 @@ fn scene_camera_matrices(renderer: &AwsmRenderer, node_id: NodeId) -> Option<Cam
         aperture,
     })
 }
-
-// trunk rebuild nudge
