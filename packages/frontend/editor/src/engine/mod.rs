@@ -6,6 +6,7 @@
 pub mod activity;
 pub mod bridge;
 pub mod canvas;
+pub mod canvas_host;
 pub mod config;
 pub mod context;
 pub mod curve_handles;

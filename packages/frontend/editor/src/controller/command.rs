@@ -40,7 +40,7 @@ pub enum CameraAxis {
 }
 
 /// Top-level workspace mode (the Scene/Material switch in the top bar).
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EditorMode {
     #[default]

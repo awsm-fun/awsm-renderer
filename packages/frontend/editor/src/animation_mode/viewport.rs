@@ -26,43 +26,17 @@ pub fn render() -> Dom {
         .child(html!("div", {
             .style("position", "absolute")
             .style("inset", "0")
+            // Register this slot as the Animation-mode host for the single live
+            // canvas; `canvas_host` owns the lone mode watcher + reparent +
+            // resize, so a DOM rebuild here just replaces the slot.
             .after_inserted(|elem| {
-                let slot: web_sys::Element = elem.into();
-                // Grab the canvas now if we're already in Animation mode.
-                reparent_if_active(&slot);
-                // …and re-grab it on every later switch into Animation mode.
-                spawn_local(clone!(slot => async move {
-                    controller().mode.signal().for_each(move |m| {
-                        if m == EditorMode::Animation {
-                            reparent_canvas(&slot);
-                        }
-                        async {}
-                    }).await;
-                }));
+                crate::engine::canvas_host::register_slot(EditorMode::Animation, elem.into());
             })
         }))
         // Overlay chrome.
         .child(transport_overlay())
         .child(clip_chip())
     })
-}
-
-fn reparent_if_active(slot: &web_sys::Element) {
-    if controller().mode.get() == EditorMode::Animation {
-        reparent_canvas(slot);
-    }
-}
-
-/// Move the single live WebGPU canvas into this slot, surfacing a mount failure
-/// (mirrors the Scene viewport) instead of swallowing it — a broken reparent
-/// would otherwise leave the viewport blank with no diagnostics.
-fn reparent_canvas(slot: &web_sys::Element) {
-    crate::engine::context::with_canvas(|c| {
-        if let Err(err) = slot.append_child(c) {
-            Modal::error(format!("Failed to mount viewport canvas: {err:?}"));
-        }
-    });
-    crate::engine::context::sync_canvas_size();
 }
 
 /// Bottom-left: active clip name + a "playing" indicator.

@@ -50,33 +50,16 @@ pub fn render() -> Dom {
         .child(html!("div", {
             .style("position", "absolute")
             .style("inset", "0")
+            // Register this slot as the Scene-mode host for the single live
+            // canvas; `canvas_host` owns the (one) mode watcher + reparent +
+            // resize, so a DOM rebuild here just replaces the slot — no leaked
+            // watchers. (The ResizeObserver doesn't reliably fire on reparent,
+            // so the host resizes too — otherwise a 300×150 render breaks picks.)
             .after_inserted(|elem| {
-                crate::engine::context::with_canvas(|canvas| {
-                    if let Err(err) = elem.append_child(canvas) {
-                        Modal::error(format!("Failed to mount viewport canvas: {err:?}"));
-                    }
-                });
-                // Size the surface to this slot now — the ResizeObserver doesn't
-                // reliably fire its first callback on the reparent, which would
-                // leave the render at 300×150 and break click/gizmo picking.
-                crate::engine::context::sync_canvas_size();
-                // Animation mode shares this same canvas, so it gets reparented
-                // away when the user switches there. Re-claim it on every switch
-                // back into Scene mode.
-                let slot: web_sys::Element = elem.into();
-                spawn_local(clone!(slot => async move {
-                    crate::controller::controller().mode.signal().for_each(move |m| {
-                        if m == crate::controller::EditorMode::Scene {
-                            crate::engine::context::with_canvas(|c| {
-                                if let Err(err) = slot.append_child(c) {
-                                    Modal::error(format!("Failed to mount viewport canvas: {err:?}"));
-                                }
-                            });
-                            crate::engine::context::sync_canvas_size();
-                        }
-                        async {}
-                    }).await;
-                }));
+                crate::engine::canvas_host::register_slot(
+                    crate::controller::EditorMode::Scene,
+                    elem.into(),
+                );
             })
         }))
         // Screen-space selection box (orange rect around the selected object,
