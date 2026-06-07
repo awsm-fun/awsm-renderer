@@ -135,6 +135,9 @@ pub struct AnimationClipGroup {
     pub name: String,
     pub duration: f64,
     pub loop_style: Option<AnimationLoopStyle>,
+    /// Playback-rate multiplier (dimensionless); see
+    /// [`AnimationPlayer::speed`](super::player::AnimationPlayer::speed). The
+    /// clock runs in seconds, so this carries no unit conversion.
     pub speed: f64,
     pub play_direction: AnimationPlayDirection,
     pub channels: Vec<AnimationChannel>,
@@ -143,15 +146,15 @@ pub struct AnimationClipGroup {
 }
 
 impl AnimationClipGroup {
-    /// New group, defaulting to looping forward at the same `speed` convention as
-    /// [`AnimationPlayer`](super::player::AnimationPlayer) (`1/1000`, i.e. the
-    /// clock is driven in **milliseconds**).
+    /// New group, defaulting to looping forward at the authored rate
+    /// (`speed = 1.0`). The clock runs in **seconds** (the unit of `duration` and
+    /// the channels' keyframe times).
     pub fn new(name: impl Into<String>, duration: f64, channels: Vec<AnimationChannel>) -> Self {
         Self {
             name: name.into(),
             duration,
             loop_style: Some(AnimationLoopStyle::Loop),
-            speed: 1.0 / 1000.0,
+            speed: 1.0,
             play_direction: AnimationPlayDirection::Forward,
             channels,
             local_time: 0.0,
@@ -186,8 +189,8 @@ impl AnimationClipGroup {
         self.play_direction = AnimationPlayDirection::Forward;
     }
 
-    /// Advance the **shared** clock by a global time delta, wrapping per
-    /// `loop_style`. Mirrors [`AnimationPlayer::update`](super::player::AnimationPlayer::update)
+    /// Advance the **shared** clock by `global_time_delta` **seconds**, wrapping
+    /// per `loop_style`. Mirrors [`AnimationPlayer::update`](super::player::AnimationPlayer::update)
     /// exactly, but for the whole group at once (so every channel stays in sync).
     pub fn update(&mut self, global_time_delta: f64) {
         if self.state != AnimationState::Playing {
@@ -282,7 +285,7 @@ mod tests {
 
     fn group(loop_style: Option<AnimationLoopStyle>) -> AnimationClipGroup {
         let mut g = AnimationClipGroup::new("test", 1.0, vec![f32_channel()]);
-        g.speed = 1.0; // drive in the same units as `duration` for these tests
+        // speed defaults to 1.0 (seconds clock), which is what these tests drive.
         g.loop_style = loop_style;
         g
     }
@@ -365,7 +368,6 @@ mod tests {
             ),
         );
         let mut player = AnimationPlayer::new(clip);
-        player.speed = 1.0;
         let mut g = group(Some(AnimationLoopStyle::Loop));
 
         for &dt in &[0.3, 0.3, 0.3, 0.3, 0.3, 0.7, 0.9] {

@@ -5,6 +5,10 @@ use super::{clip::AnimationClip, data::AnimationData};
 /// Animation player for a clip.
 #[derive(Debug, Clone)]
 pub struct AnimationPlayer<T = AnimationData> {
+    /// Playback-rate multiplier (dimensionless): `1.0` plays at the authored
+    /// rate, `2.0` double speed, `0.5` half. The clock runs in **seconds**
+    /// throughout — `update` is handed a seconds delta — so this carries no unit
+    /// conversion (`update_animations` converts its millisecond input once).
     pub speed: f64,
     pub loop_style: Option<AnimationLoopStyle>,
     // will change with ping-pong as each end is hit
@@ -40,7 +44,7 @@ impl<T> AnimationPlayer<T> {
     /// Creates a new animation player for a clip.
     pub fn new(clip: AnimationClip<T>) -> Self {
         Self {
-            speed: 1.0 / 1000.0,
+            speed: 1.0,
             loop_style: Some(AnimationLoopStyle::Loop),
             play_direction: AnimationPlayDirection::Forward,
             clip,
@@ -49,7 +53,9 @@ impl<T> AnimationPlayer<T> {
         }
     }
 
-    /// Advances the animation by the given global time delta.
+    /// Advances the animation by `global_time_delta` **seconds** (the same unit
+    /// as the clip's keyframe times / duration; `update_animations` converts the
+    /// frame's millisecond delta to seconds before calling this).
     pub fn update(&mut self, global_time_delta: f64) {
         if self.state != AnimationState::Playing {
             return;

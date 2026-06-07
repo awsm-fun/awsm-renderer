@@ -177,8 +177,10 @@ impl AnimationMixer {
         self.time = time;
     }
 
-    /// Advance the timeline by `dt`. The timeline is linear — per-strip
-    /// `repeat` handles looping, so the mixer clock never wraps.
+    /// Advance the timeline by `dt` **seconds** (the unit of strip `start`/`len`
+    /// and clip durations; `update_animations` converts the frame's millisecond
+    /// delta before calling). The timeline is linear — per-strip `repeat` handles
+    /// looping, so the mixer clock never wraps.
     pub fn advance(&mut self, dt: f64) {
         self.time += dt;
     }

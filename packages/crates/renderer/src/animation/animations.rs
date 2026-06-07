@@ -249,7 +249,15 @@ fn data_to_uniform_value(
 
 impl AwsmRenderer {
     /// Advances animation players and applies their results.
-    pub fn update_animations(&mut self, global_time_delta: f64) -> Result<()> {
+    ///
+    /// `global_time_delta_ms` is the wall-clock frame delta in **milliseconds**
+    /// (e.g. the difference of two rAF / `performance.now()` timestamps) — the one
+    /// millisecond quantity in the system. It is converted to seconds once here;
+    /// every downstream clock (loose players, clip groups, the mixer timeline)
+    /// then runs in **seconds**, the same unit as glTF keyframe times and authored
+    /// durations. `speed`/`scale` are pure dimensionless multipliers.
+    pub fn update_animations(&mut self, global_time_delta_ms: f64) -> Result<()> {
+        let global_time_delta = global_time_delta_ms / 1000.0;
         for player in self.animations.players.values_mut() {
             player.update(global_time_delta)
         }

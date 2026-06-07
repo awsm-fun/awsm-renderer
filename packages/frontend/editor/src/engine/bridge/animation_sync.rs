@@ -218,8 +218,10 @@ fn lower_clip(
         crate::controller::animation::ClipLoop::PingPong => Some(AnimationLoopStyle::PingPong),
         crate::controller::animation::ClipLoop::Once => None,
     };
-    // Authored speed multiplier over the base ms→s convention (1/1000).
-    group.speed = clip.speed.get() / 1000.0;
+    // Authored playback-rate multiplier (1.0 == authored rate). The clock runs
+    // in seconds end to end; `update_animations` converts the frame's
+    // millisecond delta once, so no unit factor belongs here.
+    group.speed = clip.speed.get();
     group.play_direction = match clip.direction.get() {
         crate::controller::animation::ClipDirection::Forward => AnimationPlayDirection::Forward,
         crate::controller::animation::ClipDirection::Reverse => AnimationPlayDirection::Backward,
