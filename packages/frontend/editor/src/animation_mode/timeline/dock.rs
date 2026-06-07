@@ -1,9 +1,9 @@
-//! Timeline **dock shell** (anim-timeline.jsx `TimelineDock`): the header
+//! Timeline **dock shell**: the header
 //! (transport · Dope/Curves/Mixer segmented · zoom buttons) over a freeze-pane
 //! scroller (sticky ruler row + the active view's body). `render()` is the
 //! Animation-mode entry point.
 //!
-//! Load-bearing rule (§0.2): the active view is controller state (`anim_view`,
+//! Load-bearing rule: the active view is controller state (`anim_view`,
 //! so synced tabs agree) — the segmented drives it via `SetAnimView`. `px_per_sec`
 //! (zoom) + the frames/seconds unit are pure view chrome (local `Mutable`s).
 //!
@@ -19,7 +19,7 @@ use crate::prelude::*;
 
 use super::{curves, dope, mixer, ruler, transport, Geo, TimeUnit, NAMES_W, RULER_H};
 
-/// Zoom bounds + step (px-per-second), mirroring the JSX zoom buttons.
+/// Zoom bounds + step (px-per-second) for the zoom buttons.
 const PX_MIN: f64 = 40.0;
 const PX_MAX: f64 = 900.0;
 const PX_DEFAULT: f64 = 190.0;

@@ -2,7 +2,7 @@
 //! list of authored clips with a "+ New clip" header action. Mirrors
 //! `material_mode::library`.
 //!
-//! Load-bearing rule (§0.2): row click → `SetCurrentClip`, "+" → `AddClip`,
+//! Load-bearing rule: row click → `SetCurrentClip`, "+" → `AddClip`,
 //! both dispatched through the one `EditorController`. The UI never mutates the
 //! clip library directly.
 

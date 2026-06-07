@@ -1,14 +1,14 @@
-//! Timeline **Dope Sheet** body (anim-timeline.jsx `NameCell` + `DopeLane` +
-//! `EmptyTimeline`): the freeze-pane rows — a sticky-left names column + a
-//! scrollable lanes area sharing one geometry. A track row (h=30) carries the
-//! expand chevron · kind icon · two-line label · mute eye; expanded tracks add
-//! channel rows (h=23). Lanes draw keyframe diamonds at `time_to_x(t)`; dragging
-//! a diamond horizontally updates its keyframe time. A vertical playhead line
-//! spans the body.
+//! Timeline **Dope Sheet** body: the freeze-pane rows — a sticky-left names
+//! column + a scrollable lanes area sharing one geometry. A track row (h=30)
+//! carries the expand chevron · kind icon · two-line label · mute eye; expanded
+//! tracks add channel rows (h=23). Lanes draw keyframe diamonds at `time_to_x(t)`;
+//! dragging a diamond horizontally updates its keyframe time. A vertical playhead
+//! line spans the body.
 //!
-//! Load-bearing rule (§0.2): mute → `SetTrackMute`, selection → `SetAnimSelection`,
+//! Load-bearing rule: mute → `SetTrackMute`, selection → `SetAnimSelection`,
 //! diamond drag → `SetKeyframe { t }`. Per-track **expanded** is pure view chrome
-//! (no command exists; set the live `Mutable` directly — §0.2 carve-out).
+//! (no command exists; set the live `Mutable` directly — a carve-out from the
+//! dispatch-everything rule).
 
 use std::cell::Cell;
 use std::rc::Rc;

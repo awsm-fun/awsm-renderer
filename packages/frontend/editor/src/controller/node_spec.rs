@@ -4,7 +4,7 @@
 //! `NodeSpec` is a full serializable capture of an existing node subtree — it's
 //! how `Delete`'s inverse round-trips the exact removed subtree (same ids) back
 //! into the scene on undo, and it's the shape the query snapshot + TOML
-//! persistence (M11) build on.
+//! persistence build on.
 
 use serde::{Deserialize, Serialize};
 
@@ -171,7 +171,7 @@ impl NodeSpec {
     }
 }
 
-/// A node as projected into the serializable editor snapshot (§5.5).
+/// A node as projected into the serializable editor snapshot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeQuery {
     pub id: String,

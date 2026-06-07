@@ -1,12 +1,12 @@
 //! Material-mode **Studio** (material-mode.jsx + material-shell.jsx) — the
-//! custom-WGSL authoring workspace (decision 3). A 3-column grid:
+//! custom-WGSL authoring workspace. A 3-column grid:
 //! Library (the custom material list) · Definition (surface + declared uniforms/
 //! textures/buffers) · main (a code pane + preview placeholder). The Material
 //! Contract is a dismissible help drawer.
 //!
-//! The live 2nd-renderer preview + real GPU registration land in M10; this
-//! milestone delivers the full authoring surface, a lightweight in-editor WGSL
-//! check, and the register/draft lifecycle.
+//! Delivers the full authoring surface, a lightweight in-editor WGSL check, the
+//! register/draft lifecycle, the live 2nd-renderer preview, and real GPU
+//! registration.
 
 use std::sync::Arc;
 
@@ -1029,7 +1029,7 @@ fn preview_pane(mat: &Arc<CustomMaterial>) -> Dom {
     html!("div", {
         .style("position", "relative").style("height", "100%").style("overflow", "hidden")
         .style("background", "radial-gradient(120% 120% at 50% 30%, oklch(0.26 0.01 255), oklch(0.16 0.008 255))")
-        // The live 2nd-renderer preview canvas (decision 5 / M1 device-scoping).
+        // The live 2nd-renderer preview canvas (its own device-scoped renderer).
         .child(html!("canvas" => web_sys::HtmlCanvasElement, {
             .style("width", "100%").style("height", "100%").style("display", "block")
             .after_inserted(crate::engine::preview::mount)

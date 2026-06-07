@@ -1,8 +1,8 @@
 //! Renderer bridge: mirrors the reactive scene tree onto the GPU renderer.
 //! A per-node `RendererNode` tracks the GPU resources a scene node owns
 //! (transform, meshes, materials, light); observers materialize/teardown them
-//! as the node's kind/transform/visibility change. M4-C handles primitives +
-//! lights + passive kinds; models/curves/particles/decals/etc. layer in later.
+//! as the node's kind/transform/visibility change. Primitives, lights, and
+//! passive kinds are handled; models/curves/particles/decals/etc. layer in.
 
 pub mod animation_sync;
 pub mod asset_template;
@@ -196,6 +196,6 @@ pub fn init() {
     // emission applies the default Simple Sky so the editor never boots black.
     env_sync::start();
     // Lowers authored animation clips + mixer into the renderer's clip-group
-    // runtime and drives the transport clock (§6.5).
+    // runtime and drives the transport clock.
     animation_sync::start();
 }

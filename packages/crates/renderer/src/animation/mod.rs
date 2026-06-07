@@ -10,7 +10,7 @@ mod player;
 mod sampler;
 /// Reusable loader for editor-authored (`scene_schema`) animation data — lets a
 /// game play authored clips/mixer at runtime, not just glTF. Behind the
-/// `scene-schema` feature. See `docs/plans/scene-loader.md`.
+/// `scene-schema` feature.
 #[cfg(feature = "scene-schema")]
 pub mod scene_loader;
 

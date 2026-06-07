@@ -103,7 +103,7 @@ pub enum LightParamKind {
     OuterAngle,
 }
 
-/// Which camera parameter a `Camera` track drives (DEFERRED in lowering to M-A3).
+/// Which camera parameter a `Camera` track drives (lowering deferred for now).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CameraParamKind {

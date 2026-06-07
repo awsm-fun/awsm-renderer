@@ -1,4 +1,4 @@
-//! Project (de)serialization — the TOML project format (decision 4 / §11).
+//! Project (de)serialization — the TOML project format.
 //!
 //! A project is a directory: a `project.toml` (carrying the scene tree,
 //! environment, shadows, asset table, and custom-material refs) plus the asset
@@ -247,7 +247,7 @@ pub fn apply_project(ctrl: &EditorController, project: EditorProject) {
 
 /// Save the project to a picked directory (File System Access): writes
 /// `project.toml` + each custom material's `material-<slug>.{toml,wgsl}` side
-/// files. The directory layout is decision 4's flat project directory.
+/// files. The directory layout is a flat project directory.
 pub async fn save_to_dir(ctrl: &EditorController, dir: &crate::fs::ProjectDir) -> EditorResult<()> {
     dir.write_text("project.toml", &project_to_toml(ctrl)?)
         .await

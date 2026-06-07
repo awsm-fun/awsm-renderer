@@ -1,8 +1,8 @@
-//! Timeline **ruler** (anim-timeline.jsx `Ruler`): the tick strip with major-tick
+//! Timeline **ruler**: the tick strip with major-tick
 //! spacing from [`nice_step_sec`], tick labels via [`fmt_time`], an end-of-clip
 //! marker, and a draggable playhead handle. Click/drag on the ruler scrubs.
 //!
-//! Load-bearing rule (§0.2): scrubbing dispatches `SetPlayhead { t }`. Time is
+//! Load-bearing rule: scrubbing dispatches `SetPlayhead { t }`. Time is
 //! computed from `clientX` relative to the ruler's `getBoundingClientRect().left`
 //! (captured on mousedown), then clamped to `[0, dur]`.
 

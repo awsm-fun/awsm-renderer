@@ -10,7 +10,7 @@
 //! property) maps to a concrete renderer [`AnimationTarget`], which inserted
 //! [`AnimationClipKey`] a clip `AssetId` refers to, and how a layer's node mask
 //! resolves to a [`TargetMask`] — are **caller-provided closures**. The lowering
-//! here is pure. See `docs/plans/scene-loader.md`.
+//! here is pure.
 //!
 //! Typical game flow:
 //! ```ignore

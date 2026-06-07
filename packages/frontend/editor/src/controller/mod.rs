@@ -1,4 +1,4 @@
-//! `EditorController` — the single command/query authority (decision 8 / §5.5).
+//! `EditorController` — the single command/query authority.
 //!
 //! All editor/project state is governed here. The UI is just one driver: event
 //! handlers translate gestures → [`EditorCommand`]s → [`EditorController::dispatch`];
@@ -19,7 +19,7 @@ pub mod query;
 mod source;
 
 // The animation model + transport/mixer doc types. Several are consumed only by
-// the Animation-mode UI panels (M-A2+); re-exported now so the contract is
+// the Animation-mode UI panels; re-exported now so the contract is
 // reachable + the command/query/persistence layers use them.
 #[allow(unused_imports)]
 pub use animation::{
@@ -28,16 +28,16 @@ pub use animation::{
 };
 pub use command::{CameraAxis, EditorCommand, EditorMode, ProceduralKind};
 pub use custom_material::{compile_wgsl, AlphaMode, CustomMaterial, Slot};
-// InsertSpec is dispatched by the ribbon (M4); NodeQuery is the snapshot
+// InsertSpec is dispatched by the ribbon; NodeQuery is the snapshot
 // projection — re-exported now for those consumers.
 #[allow(unused_imports)]
 pub use node_spec::{InsertSpec, NodeQuery, NodeSpec};
 pub use query::{EditorSnapshot, ProjectSnapshot};
-// The query read-surface (§6.8) — consumed by the `editor_query_json` wasm seam
+// The query read-surface — consumed by the `editor_query_json` wasm seam
 // + the future MCP transport.
 #[allow(unused_imports)]
 pub use query::{EditorQuery, QueryResult, ReadbackTarget};
-// The source/sink seam is wired into the loader/saver in M11; re-export now so
+// The source/sink seam is wired into the loader/saver; re-export now so
 // the contract is reachable + documented.
 #[allow(unused_imports)]
 pub use source::{AssetSource, ProjectSink, ProjectSource};
@@ -61,7 +61,7 @@ use std::sync::Arc;
 
 thread_local! {
     static CONTROLLER: OnceCell<EditorController> = const { OnceCell::new() };
-    /// The cross-tab relay channel (§9). `None` until `init`, or if the browser
+    /// The cross-tab relay channel. `None` until `init`, or if the browser
     /// lacks `BroadcastChannel` (cross-tab then simply disabled — the editor still
     /// works). Every non-tab-local dispatched command is posted here; other tabs
     /// apply it. `BroadcastChannel` does not deliver to the posting context, so
@@ -77,7 +77,7 @@ pub fn init() {
     init_cross_tab_sync();
 }
 
-/// Wire the cross-tab relay (§9): a `BroadcastChannel` whose incoming commands
+/// Wire the cross-tab relay: a `BroadcastChannel` whose incoming commands
 /// are applied through the same `dispatch`/`apply` seam (replay path — no
 /// re-broadcast, no undo record). Two tabs on the same project thus stay in
 /// lock-step on every clip/track/keyframe/mixer edit + the shared playhead, while
@@ -144,8 +144,8 @@ pub struct EditorController {
     /// rail shows the Asset Inspector instead of the node inspector. Set via the
     /// transient `SetAssetSelection` command.
     pub asset_selection: Mutable<Option<AssetId>>,
-    /// The custom WGSL materials authored in the Material-mode Studio (decision
-    /// 3). Reactive — the Studio edits their bodies/slots live.
+    /// The custom WGSL materials authored in the Material-mode Studio.
+    /// Reactive — the Studio edits their bodies/slots live.
     pub custom_materials: MutableVec<Arc<CM>>,
     /// The material the Studio is currently editing.
     pub current_material: Mutable<Option<AssetId>>,
@@ -160,7 +160,7 @@ pub struct EditorController {
     pub playing: Mutable<bool>,
     /// The display frame rate (frames⇄seconds in the ruler).
     pub anim_fps: Mutable<u32>,
-    /// Solo-subtree focus: only tracks under this node advance (decision #6).
+    /// Solo-subtree focus: only tracks under this node advance.
     pub anim_solo_root: Mutable<Option<NodeId>>,
     /// The selected timeline element (track / keyframe).
     pub anim_selection: Mutable<Option<AnimSel>>,
@@ -282,7 +282,7 @@ impl EditorController {
     /// call `apply` directly), so a replay isn't mistaken for a fresh edit.
     fn broadcast(&self, cmd: &EditorCommand) {
         // Per-tab view-local commands (camera / selection / mode) never cross-tab
-        // broadcast — a second window keeps its own view (§9).
+        // broadcast — a second window keeps its own view.
         if cmd.is_tab_local() {
             return;
         }
@@ -295,8 +295,8 @@ impl EditorController {
         });
     }
 
-    /// Apply a command that arrived from ANOTHER tab via the cross-tab relay
-    /// (§9). Goes straight to `apply` — the replay path: it does NOT re-broadcast
+    /// Apply a command that arrived from ANOTHER tab via the cross-tab relay.
+    /// Goes straight to `apply` — the replay path: it does NOT re-broadcast
     /// (only `dispatch` broadcasts) and does NOT record undo (the inverse is
     /// discarded), so a relayed edit isn't mistaken for a fresh local one.
     async fn apply_remote(&self, cmd: EditorCommand) -> EditorResult<()> {
@@ -320,7 +320,7 @@ impl EditorController {
 
     /// Apply a command's effect and return its inverse (for the undo log), or
     /// `None` if the command is not undoable. The undoable per-node mutation
-    /// commands return `Some(inverse)` here as they land in M4+.
+    /// commands return `Some(inverse)` here.
     async fn apply_inner(&self, cmd: EditorCommand) -> EditorResult<Option<EditorCommand>> {
         match cmd {
             EditorCommand::SwitchMode { mode } => {
@@ -809,12 +809,12 @@ impl EditorController {
                 Ok(None)
             }
             EditorCommand::ImportTextureFromUrl { url } => {
-                Toast::info(format!("Import texture from {url} — lands in M11"));
+                Toast::info(format!("Import texture from {url} — not yet implemented"));
                 Ok(None)
             }
             // ───────────────────── Animation: clip lifecycle ─────────────────
             EditorCommand::AddClip { id } => {
-                // Idempotent: a cross-tab relay (§9) replays this; if the clip id
+                // Idempotent: a cross-tab relay replays this; if the clip id
                 // already exists (or a self-echo slips through) it's a no-op.
                 if find_clip(&self.custom_animations, id).is_none() {
                     let n = self.custom_animations.lock_ref().len() + 1;
@@ -1889,7 +1889,7 @@ impl EditorController {
         format!("{kind} {n}")
     }
 
-    /// A serializable read of editor state (§5.5) for external inspection.
+    /// A serializable read of editor state for external inspection.
     pub fn snapshot(&self) -> EditorSnapshot {
         let scene_tree = self
             .scene
@@ -1935,7 +1935,7 @@ impl EditorController {
         }
     }
 
-    /// The Animation-mode projection of `snapshot()` (§6.2).
+    /// The Animation-mode projection of `snapshot()`.
     fn animation_snapshot(&self) -> query::AnimationSnapshot {
         use crate::controller::animation::TrackTarget;
         let clips = self
@@ -1987,7 +1987,7 @@ impl EditorController {
         serde_json::to_string(&self.snapshot()).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
     }
 
-    /// Run a read-only [`EditorQuery`] (§6.8) and return a serializable result.
+    /// Run a read-only [`EditorQuery`] and return a serializable result.
     /// Read-only: never mutates persisted state, never records undo, never
     /// broadcasts; the pinning handler saves + restores the transport.
     pub async fn query(&self, q: query::EditorQuery) -> query::QueryResult {

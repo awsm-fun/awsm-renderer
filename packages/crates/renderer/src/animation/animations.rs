@@ -51,18 +51,19 @@ pub struct Animations {
     morphs: SecondaryMap<AnimationKey, AnimationMorphKey>,
     // Named clip groups (the editor-authored "Clip" runtime form). Each
     // group shares one clock across its channels and may drive any
-    // `AnimationTarget` kind. In the mixer path (M-R2) the group's own
+    // `AnimationTarget` kind. In the mixer path the group's own
     // clock is NOT advanced — strips derive the clip-local time from the
     // mixer timeline. In the single-clip fallback (empty mixer) each group
     // advances on its own clock as an implicit whole-rig Replace layer.
     clips: SlotMap<AnimationClipKey, AnimationClipGroup>,
-    /// The NLA mixer (M-R2 §4.4). When non-empty, it composites the clip
+    /// The NLA mixer. When non-empty, it composites the clip
     /// groups via weighted/additive layers; when empty, the single-clip
     /// fallback in `update_animations` plays each clip on its own clock.
     pub mixer: AnimationMixer,
     /// Per-target **rest** (authored-default) cache. The mixer composite
     /// seeds each target's accumulator from this, NOT from the live
-    /// (already-animated) value — the no-drift invariant I1. Lazily
+    /// (already-animated) value — so additive deltas don't accumulate and
+    /// drift across frames. Lazily
     /// captured the first frame a target receives a contribution (before
     /// any write this frame, so the captured value is the authored
     /// default). The editor invalidates entries when authored defaults
@@ -154,8 +155,8 @@ impl Animations {
     /// **Explicitly seed** a target's rest (authored-default) value. The editor
     /// calls this so rest comes from the authoritative authored value (e.g. a
     /// node's authored transform) rather than the renderer's lazily-read *live*
-    /// local — which animation overwrites each frame (invariant §4.7-I1: rest is
-    /// the bind/default, never the already-animated value). Overwrites any
+    /// local — which animation overwrites each frame (rest must be the
+    /// bind/default, never the already-animated value). Overwrites any
     /// existing entry, so re-lowering refreshes rest from the authored source.
     pub fn set_rest(&mut self, target: AnimationTarget, value: AnimationData) {
         self.rest.insert(target, value);
@@ -304,23 +305,22 @@ impl AwsmRenderer {
             }
         }
 
-        // ---- Clip-group processing (M-R2 NLA mixer) ---------------------
+        // ---- Clip-group processing (NLA mixer) --------------------------
         // Accumulate-then-write: every animated target's accumulator is
-        // seeded from its REST value (the authored default, captured once —
-        // invariant I1), each active layer's contribution is composited in
-        // order, and the result is written ONCE per target. The loose-player
-        // path above is left byte-for-byte unchanged (invariant I4) so
+        // seeded from its REST value (the authored default, captured once,
+        // so additive deltas don't drift), each active layer's contribution
+        // is composited in order, and the result is written ONCE per target.
+        // The loose-player path above is left byte-for-byte unchanged so
         // single-channel models (e.g. the Fox) stay bit-identical.
         self.update_clip_mixer(global_time_delta)?;
 
         Ok(())
     }
 
-    /// The M-R2 NLA-mixer composite. Replaces the M-R1 last-write-wins simple
-    /// path. Selects between the mixer path (layers/strips drive clip-local
-    /// time off the shared mixer timeline) and the single-clip fallback (no
-    /// mixer ⇒ each clip plays on its own clock as an implicit whole-rig
-    /// Replace layer).
+    /// The NLA-mixer composite. Selects between the mixer path (layers/strips
+    /// drive clip-local time off the shared mixer timeline) and the
+    /// single-clip fallback (no mixer ⇒ each clip plays on its own clock as an
+    /// implicit whole-rig Replace layer).
     fn update_clip_mixer(&mut self, global_time_delta: f64) -> Result<()> {
         // Nothing to do if there are no clip groups at all.
         if !self.animations.has_clips() {
@@ -507,8 +507,8 @@ impl AwsmRenderer {
     /// Lazily captures the rest (authored-default) value for `target` into the
     /// cache if absent. Reads the target's CURRENT value via the real read
     /// paths — called BEFORE any mixer write this frame, so the first capture
-    /// records the authored default (I1). A target whose key/slot is missing
-    /// (unreadable) is simply not inserted.
+    /// records the authored default (not an already-animated value). A target
+    /// whose key/slot is missing (unreadable) is simply not inserted.
     fn ensure_rest(&mut self, target: AnimationTarget) -> Result<()> {
         if self.animations.rest.contains_key(&target) {
             return Ok(());
@@ -653,7 +653,7 @@ impl AwsmRenderer {
     }
 
     /// Writes a composited `value` to `target` via the real write paths
-    /// (transforms / morphs / materials / lights / cameras). Strict (I2): a
+    /// (transforms / morphs / materials / lights / cameras). Strict: a
     /// kind mismatch returns `WrongKind`; a missing transform key propagates
     /// the transform error.
     fn write_anim_target(&mut self, target: AnimationTarget, value: &AnimationData) -> Result<()> {

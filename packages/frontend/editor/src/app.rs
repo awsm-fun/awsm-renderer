@@ -1,7 +1,6 @@
 //! App shell: the top bar + mode router + global overlay hosts. Every action is
 //! a dispatched [`EditorCommand`] through the [`controller`] — the UI never
-//! mutates editor state directly. The ribbon + the real Scene/Material
-//! workspaces land in M4+ (placeholders for now).
+//! mutates editor state directly.
 
 use crate::controller::CameraAxis;
 use crate::prelude::*;
@@ -147,7 +146,7 @@ fn typing_in_field() -> bool {
 }
 
 /// Save the live project into a picked directory (File System Access): writes
-/// `project.toml` + the per-material side files (decision 4).
+/// `project.toml` + the per-material side files.
 fn save_project() {
     spawn_local(async {
         match crate::fs::ProjectDir::pick().await {
@@ -603,7 +602,7 @@ fn workspace(ctrl: &EditorController) -> Dom {
             .style("display", "flex")
             .style("flex-direction", "column")
             .style_signal("display", ctrl.mode.signal().map(|m| if m == EditorMode::Scene { "flex" } else { "none" }))
-            // M5: ribbon over [outliner · viewport]. Inspector (right) lands in M7.
+            // Ribbon over [outliner · viewport · inspector].
             .child(crate::scene_mode::ribbon::render())
             .child(html!("div", {
                 .style("flex", "1")
@@ -632,7 +631,7 @@ fn workspace(ctrl: &EditorController) -> Dom {
                     .child(crate::scene_mode::inspector::render())
                 }))
             }))
-            // M8: Content Browser bottom drawer (collapsed bar / expanded grid).
+            // Content Browser bottom drawer (collapsed bar / expanded grid).
             .child(crate::scene_mode::content_browser::render())
         }))
         .child(html!("div", {

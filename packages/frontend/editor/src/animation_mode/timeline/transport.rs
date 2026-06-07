@@ -1,9 +1,9 @@
-//! Timeline **transport** (anim-timeline.jsx `Transport`): the play controls
+//! Timeline **transport**: the play controls
 //! (to-start · prev-key · play/pause · next-key · to-end), a time readout that
 //! toggles frames⇄seconds, a direction toggle, a loop toggle (LOOP→PP→ONCE) and
 //! a speed slider. Heights ~28px, mono labels.
 //!
-//! Load-bearing rule (§0.2): play/pause/step + loop/direction/speed are all
+//! Load-bearing rule: play/pause/step + loop/direction/speed are all
 //! `EditorCommand`s dispatched through the one controller. The frames/seconds
 //! `unit` is pure view chrome (a local `Mutable` owned by the dock).
 

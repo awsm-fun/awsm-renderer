@@ -47,8 +47,8 @@ pub fn main() {
         .style(["-moz-user-select", "user-select", "-webkit-user-select"], "text")
     });
 
-    // Establish the command/query authority before mounting any UI (decision 8):
-    // every later panel dispatches through this singleton.
+    // Establish the command/query authority before mounting any UI: every later
+    // panel dispatches through this singleton.
     controller::init();
 
     let ctx_ready = Mutable::new(false);
@@ -156,7 +156,7 @@ fn boot_load_url() -> Option<String> {
     None
 }
 
-/// External-inspection seam (§5.5): a JS-callable export returning the
+/// External-inspection seam: a JS-callable export returning the
 /// serializable editor snapshot as JSON. This is exactly what a future
 /// MCP/websocket transport (or a headless test driving the build) reads back —
 /// the transport itself is NOT built now, only this read seam.
@@ -165,7 +165,7 @@ pub fn editor_snapshot_json() -> String {
     controller::controller().snapshot_json()
 }
 
-/// External-dispatch seam (§5.5): decode a JSON `EditorCommand` and dispatch it
+/// External-dispatch seam: decode a JSON `EditorCommand` and dispatch it
 /// through the controller. This is the write half of the future MCP transport
 /// (decode command → dispatch); built now only as the seam + for scriptable,
 /// gesture-free testing. Returns `"ok"` on a valid decode (dispatch is async and
@@ -216,7 +216,7 @@ pub async fn editor_query_texture_png(asset_id: &str) -> String {
     }
 }
 
-/// Animation/verification read seam (§6.8): decode a JSON `EditorQuery`, run it
+/// Animation/verification read seam: decode a JSON `EditorQuery`, run it
 /// through `controller().query(...)`, and return the JSON result. Async because
 /// the value/pixel readbacks await the renderer lock (mirrors
 /// `editor_query_texture_png`). The read half of the future MCP transport.

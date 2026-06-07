@@ -1,7 +1,7 @@
-//! Animation viewport — the **real WebGPU scene** (decision §5), reparented into
+//! Animation viewport — the **real WebGPU scene**, reparented into
 //! this slot when Animation mode is active, posed by the active clip at the
 //! playhead. No mock rig. Overlay chrome: clip-name + playing chip, a
-//! Solo-subtree control, and a Frame-selection button (§7.3).
+//! Solo-subtree control, and a Frame-selection button.
 //!
 //! Canvas reparent: the single live canvas can only live in one DOM slot, so on
 //! every switch INTO Animation mode we re-append it here (and Scene mode does the
@@ -100,7 +100,7 @@ fn active_clip_name() -> impl Signal<Item = String> {
     })
 }
 
-/// Top-right overlay: Solo-subtree toggle + Frame-selection button (§7.3).
+/// Top-right overlay: Solo-subtree toggle + Frame-selection button.
 fn transport_overlay() -> Dom {
     html!("div", {
         .style("position", "absolute").style("right", "12px").style("top", "12px")

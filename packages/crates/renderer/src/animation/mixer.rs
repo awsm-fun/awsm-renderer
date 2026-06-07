@@ -1,6 +1,6 @@
 //! The **NLA (non-linear animation) mixer** — the weighted/additive blending
 //! engine that composites [`AnimationClipGroup`](super::clip_group::AnimationClipGroup)s
-//! onto a single timeline (M-R2 §4.4).
+//! onto a single timeline.
 //!
 //! The mixer owns one linear timeline (`time`) and a stack of
 //! [`AnimationLayer`]s. Each layer is either a [`LayerMode::Replace`] (lerp the
@@ -12,8 +12,8 @@
 //!
 //! The accumulate-then-write composite lives in
 //! [`update_animations`](super::animations) which seeds the accumulator from
-//! each target's *rest* value (the authored default, captured once) — see the
-//! no-drift invariant I1.
+//! each target's *rest* value (the authored default, captured once) so
+//! additive deltas don't accumulate and drift across frames.
 
 use std::collections::HashSet;
 

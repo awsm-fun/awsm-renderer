@@ -2,7 +2,7 @@
 //! the active clip's color chip · name · Duration · FPS, a `N tracks → N players`
 //! readout, an **Add Track** ghost button, and a green **Live · N players** chip.
 //!
-//! Load-bearing rule (§0.2): every mutation is an `EditorCommand` dispatched
+//! Load-bearing rule: every mutation is an `EditorCommand` dispatched
 //! through the one `EditorController` (`controller().dispatch(..)` via
 //! `spawn_local`). The fields here are local `Mutable` mirrors that dispatch on
 //! change while skipping the first emission (the seed) — mirroring the

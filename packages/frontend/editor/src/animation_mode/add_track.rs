@@ -3,7 +3,7 @@
 //! of the *real* scene, grouped by node. Picking a property row dispatches
 //! `EditorCommand::AddTrack { clip, target }` and closes.
 //!
-//! Load-bearing rule (§0.2): a row click NEVER mutates state directly — it
+//! Load-bearing rule: a row click NEVER mutates state directly — it
 //! dispatches `AddTrack` through the one `EditorController` (`spawn_local`).
 //!
 //! Target families wired here: **Transform** (Translation/Rotation/Scale on any

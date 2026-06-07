@@ -1,4 +1,4 @@
-//! Timeline **Mixer / NLA** body (anim-mixer.jsx `MixerView`): the freeze-pane
+//! Timeline **Mixer / NLA** body: the freeze-pane
 //! layer stack — a sticky-left layer list (name · REPLACE/ADD mode · weight
 //! slider · bone-mask · additive base-clip) + a scrollable lanes area where each
 //! layer's clip **strips** are placed, trimmed, and repeat-toggled.
@@ -9,7 +9,7 @@
 //! lanes can be longer than the active clip — but the shared ruler/playhead still
 //! apply.
 //!
-//! Load-bearing rule (§0.2): every edit is an `EditorCommand` dispatched through
+//! Load-bearing rule: every edit is an `EditorCommand` dispatched through
 //! the one `EditorController` (`AddLayer` · `SetLayerMode` · `SetLayerWeight` ·
 //! `SetLayerMask` · `AddStrip` · `MoveStrip` · `TrimStrip` · `SetStripRepeat` …).
 //! Only drag-preview anchoring lives in local `Cell`s. The renderer mixer +
@@ -29,9 +29,9 @@ use crate::prelude::*;
 
 use super::{Geo, NAMES_W};
 
-/// Per-layer lane height (mirrors the JSX `LANE_H`).
+/// Per-layer lane height.
 const LANE_H: f64 = 58.0;
-/// Minimum strip length / drag floor (seconds), mirroring the JSX.
+/// Minimum strip length / drag floor (seconds).
 const MIN_LEN: f64 = 0.2;
 /// Trim-handle hit width (px).
 const HANDLE_W: f64 = 6.0;
@@ -556,7 +556,7 @@ fn strip_drag(
 // ── helpers ────────────────────────────────────────────────────────────────────
 
 /// The Mixer arrangement length = `max(strip.start + strip.len)` (a floor of 4s,
-/// + 1s of trailing room) — mirrors the JSX `mixerDuration`.
+/// + 1s of trailing room).
 fn mixer_duration(doc: &MixerDoc) -> f64 {
     let mut m = 0.0_f64;
     for layer in &doc.layers {
@@ -567,7 +567,7 @@ fn mixer_duration(doc: &MixerDoc) -> f64 {
     (m + 1.0).max(4.0)
 }
 
-/// Time gridlines (coarser for long arrangements), mirroring the JSX `gridSecs`.
+/// Time gridlines (coarser for long arrangements).
 fn grid_secs(dur: f64) -> Vec<f64> {
     let step = if dur > 6.0 { 1.0 } else { 0.5 };
     let mut out = Vec::new();
@@ -604,7 +604,7 @@ fn body_playhead_signal(geo: Geo, height: f64) -> Dom {
     })
 }
 
-/// Round to 3 decimals (mirrors the JSX `.toFixed(3)` drag snapping).
+/// Round to 3 decimals (drag snapping).
 fn round3(v: f64) -> f64 {
     (v * 1e3).round() / 1e3
 }

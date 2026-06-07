@@ -4,7 +4,7 @@
 //! 218px drawer with category tabs (All/Materials/Textures/Meshes), a search
 //! box, "+ Material" / "+ Texture" authoring buttons, and a card grid. Cards are
 //! built from the project [`AssetTable`] plus the fixed built-in material family
-//! palette (PBR/Unlit/Toon/Flipbook, decision 3) — built-ins carry a distinct
+//! palette (PBR/Unlit/Toon/Flipbook) — built-ins carry a distinct
 //! accent outline + family glyph. Every mutation dispatches an `EditorCommand`.
 //!
 //! The Asset Inspector right-rail (selecting a card) lives in `inspector.rs`.
@@ -133,7 +133,7 @@ fn toolbar(cat: Mutable<Cat>, query: Mutable<String>) -> Dom {
         .child(html!("div", { .style("flex", "1") }))
         .child(Btn::new().label("Material").icon("plus").variant(BtnVariant::Ghost).size(BtnSize::Sm)
             .on_click(|| {
-                // "+ Material" authors a custom WGSL material in the Studio (decision 3).
+                // "+ Material" authors a custom WGSL material in the Studio.
                 dispatch(EditorCommand::AddCustomMaterial);
                 dispatch(EditorCommand::SwitchMode { mode: EditorMode::Material });
             }).render())
@@ -151,7 +151,7 @@ fn toolbar(cat: Mutable<Cat>, query: Mutable<String>) -> Dom {
                     proc(ProceduralKind::Gradient, "Procedural \u{00b7} Gradient", &close),
                     proc(ProceduralKind::Noise, "Procedural \u{00b7} Noise", &close),
                     MenuItem::new("Import image\u{2026}").icon("folder").on_click(|| {
-                        Toast::info("Image import lands in M11");
+                        Toast::info("Image import not yet implemented");
                     }).render(),
                 ]
             }).render())
@@ -310,8 +310,8 @@ fn card(c: Card) -> Dom {
                 }
                 // Any other project asset → route the right rail to the inspector.
                 (Some(id), false, _) => dispatch(EditorCommand::SetAssetSelection { id: Some(id) }),
-                // Built-in family palette: assigning to a mesh lands in M10.
-                (None, _, _) => Toast::info("Drag a built-in family onto a mesh to assign (M10)"),
+                // Built-in family palette: assigning to a mesh is not yet wired up.
+                (None, _, _) => Toast::info("Drag a built-in family onto a mesh to assign"),
             }
         })
         .event(move |_: events::DoubleClick| match (id, anim) {
@@ -339,7 +339,7 @@ fn collect_cards(cat: Cat, query: &str) -> Vec<Card> {
     // the user actually created (via the Material pane) + imported assets. A fresh
     // project starts empty.
 
-    // Custom WGSL materials (decision 3) — shown in All + Materials.
+    // Custom WGSL materials — shown in All + Materials.
     if matches!(cat, Cat::All | Cat::Material) {
         for mat in controller().custom_materials.lock_ref().iter() {
             // Queue a rendered thumbnail (built-in materials only; no-op once cached).
@@ -635,7 +635,7 @@ fn dispatch(cmd: EditorCommand) {
 }
 
 /// Count of scene nodes that reference a material asset. Reserved for the Asset
-/// Inspector's "Used by" row (M8 inspector); kept here next to the asset model.
+/// Inspector's "Used by" row; kept here next to the asset model.
 #[allow(dead_code)]
 fn material_users(_id: AssetId) -> usize {
     controller()

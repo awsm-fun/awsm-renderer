@@ -102,7 +102,7 @@ fn rgba_to_png_data_url(rgba: &[u8], w: u32, h: u32) -> Result<String, String> {
 }
 
 /// Draw the live WebGPU `<canvas>` onto an offscreen 2D canvas + return its
-/// `ImageData` (RGBA8) plus dimensions. The §6.8 `CanvasPixels`/`CanvasStats`
+/// `ImageData` (RGBA8) plus dimensions. The `CanvasPixels`/`CanvasStats` query
 /// path — needs a *rendered* frame (the canvas presents on the RAF loop).
 fn canvas_image_data() -> Result<(Vec<u8>, u32, u32), String> {
     let document = web_sys::window()

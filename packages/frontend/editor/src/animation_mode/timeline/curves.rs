@@ -1,16 +1,16 @@
-//! Timeline **Curve / Graph editor** body (anim-curves.jsx `CurvesView`): the
+//! Timeline **Curve / Graph editor** body: the
 //! freeze-pane graph view — a sticky-left channel list + pinned value axis, then
 //! a scrollable SVG graph that shares the dock geometry (`Geo`) + playhead with
 //! the Dope Sheet.
 //!
 //! Each track expands into one (scalar) or three (vec3 / rotation) display
 //! **channels**. Vec3 tracks plot each component; rotation tracks plot an
-//! **Euler-projection** (XYZ degrees) that is *bit-WYSIWYG with the GPU* (§10):
+//! **Euler-projection** (XYZ degrees) that matches the GPU result:
 //! the quaternion curve is densely sampled (slerp between adjacent quat keys),
 //! each sample converted quat→euler with continuity unwrapping so the curve never
 //! jumps ±360° across a gimbal flip.
 //!
-//! Load-bearing rule (§0.2): every keyframe edit (dot drag = time+value, tangent
+//! Load-bearing rule: every keyframe edit (dot drag = time+value, tangent
 //! handle = in/out slope) dispatches `EditorCommand::SetKeyframe`; selection
 //! dispatches `SetAnimSelection`. The hidden-channels set + the focused component
 //! are pure view chrome (local `Mutable`s).
@@ -31,7 +31,7 @@ use crate::prelude::*;
 
 use super::{Geo, NAMES_W};
 
-/// Pinned value-axis width inside the freeze pane (mirrors the JSX).
+/// Pinned value-axis width inside the freeze pane.
 const VALUE_AXIS_W: f64 = 42.0;
 /// The graph height (the scroller above provides the outer overflow).
 const GRAPH_H: f64 = 320.0;
@@ -741,7 +741,7 @@ fn sample_channel(track: &Arc<Track>, ch: &Channel, geo: Geo) -> Vec<(f64, f64)>
 /// Sample a rotation track's Euler-projection curve for component `comp` (degrees),
 /// densely slerping between adjacent quat keys with continuity unwrapping.
 ///
-/// NOTE (M-A4 approximation): `Cubic` rotation segments are approximated by
+/// NOTE (approximation): `Cubic` rotation segments are approximated by
 /// **slerp** (same as Linear) — a true cubic-quaternion (squad) is deferred.
 fn sample_rotation(times: &[f64], keys: &[Keyframe], comp: usize, geo: Geo) -> Vec<(f64, f64)> {
     let quats: Vec<Quat> = keys.iter().map(quat_of).collect();
@@ -868,7 +868,7 @@ fn write_tangent(ch: &Channel, key: &Keyframe, slope: f64) -> TrackValue {
     }
 }
 
-// ── euler projection (§10) ────────────────────────────────────────────────────
+// ── euler projection ──────────────────────────────────────────────────────────
 
 fn quat_of(key: &Keyframe) -> Quat {
     match key.value {
@@ -962,7 +962,7 @@ fn nice_step(raw: f64) -> f64 {
     m * p
 }
 
-/// Time gridlines (coarser than the ruler ticks; mirrors the JSX `timeTicks`).
+/// Time gridlines (coarser than the ruler ticks).
 fn time_ticks(geo: Geo) -> Vec<f64> {
     let step = if geo.dur > 4.0 {
         1.0

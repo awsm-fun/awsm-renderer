@@ -3,10 +3,6 @@
 //! the runtime form the editor's authored "Clip" lowers to (one Clip → one
 //! `AnimationClipGroup`), formalizing the shared-clock semantics the loose
 //! per-channel [`AnimationPlayer`](super::player::AnimationPlayer)s lack.
-//!
-//! M-R0 introduces the type + shared clock + per-channel sampling. The new target
-//! kinds (material uniforms, lights, camera) land in M-R1 (§4.3); the
-//! weighted/additive mixer that composites groups lands in M-R2 (§4.4).
 
 use slotmap::new_key_type;
 
@@ -29,9 +25,9 @@ new_key_type! {
     pub struct AnimationClipKey;
 }
 
-/// What a single channel of a clip drives. M-R0 covers the two kinds the runtime
-/// already had; M-R1 (§4.3) extends this with `Uniform`, `BuiltinParam`, `Light`,
-/// and `Camera`. Keys are `Copy`, so the whole target is `Copy`.
+/// What a single channel of a clip drives — a node transform, a mesh morph,
+/// a material uniform or built-in factor, a light, or a camera. Keys are
+/// `Copy`, so the whole target is `Copy`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AnimationTarget {
     /// A node's local transform (translation/rotation/scale).
@@ -357,7 +353,7 @@ mod tests {
 
     /// Guard: the group's shared clock must advance identically to a loose
     /// `AnimationPlayer` for the same inputs (so a single-clip group reduces to
-    /// today's behavior — invariant §4.7-I4).
+    /// the loose-player behavior, byte-for-byte).
     #[test]
     fn clock_matches_player() {
         let clip = AnimationClip::new(

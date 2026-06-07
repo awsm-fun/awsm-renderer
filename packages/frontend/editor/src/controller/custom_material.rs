@@ -1,12 +1,12 @@
 //! The reactive model for **custom WGSL materials** — the only material kind the
-//! Material-mode Studio authors (decision 3). Each is a registered dynamic-WGSL
+//! Material-mode Studio authors. Each is a registered dynamic-WGSL
 //! asset: a shader body + declared uniforms/textures/buffers + surface state.
 //!
 //! Unlike scene mutations (which flow through invertible `EditorCommand`s), the
 //! *content* of a material — WGSL text, uniform values, slot edits — is edited
 //! live through these `Mutable` fields, the way a document editor works. Only the
 //! structural lifecycle (create / delete / register) goes through commands. The
-//! TOML serializer (M11) snapshots these fields into `material-<id>.{toml,wgsl}`.
+//! TOML serializer snapshots these fields into `material-<id>.{toml,wgsl}`.
 
 use crate::engine::scene::AssetId;
 use awsm_scene_schema::{MaterialDef, MaterialShading};
@@ -208,8 +208,8 @@ pub fn find_material(
 
 /// A *very* lightweight WGSL "compile" check (mirrors the prototype's
 /// `compileWGSL`): flags statements that begin with `let`/`var`/`return` but
-/// don't end in `;`/`{`/`}`. Real validation lands with renderer registration
-/// (M10); this gives instant in-editor feedback (line + message).
+/// don't end in `;`/`{`/`}`. Real validation lands with renderer registration;
+/// this gives instant in-editor feedback (line + message).
 pub fn compile_wgsl(code: &str) -> Vec<(usize, String)> {
     let mut errs = Vec::new();
     for (i, raw) in code.lines().enumerate() {

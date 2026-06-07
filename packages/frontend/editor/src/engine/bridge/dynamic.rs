@@ -1,4 +1,4 @@
-//! Real GPU registration for custom WGSL materials (decision 3). Converts a
+//! Real GPU registration for custom WGSL materials. Converts a
 //! [`CustomMaterial`] (the Studio's reactive model) into the renderer's
 //! [`MaterialRegistration`] and registers it, so an assigned mesh can resolve
 //! the material by name to a registered `MaterialShaderId` and render the WGSL.

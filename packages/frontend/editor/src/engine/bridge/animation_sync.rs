@@ -3,18 +3,18 @@
 //! runtime, then **drive** the renderer clock from the transport. Mirrors
 //! `node_sync.rs` (observe reactive state, materialize renderer resources).
 //!
-//! Load-bearing rule (§0.2): nothing here mutates animation state — it only reads
-//! the controller and writes the renderer. The transport (playhead/playing) is
+//! Load-bearing rule: nothing here mutates animation state — it only reads the
+//! controller and writes the renderer. The transport (playhead/playing) is
 //! controller state, and the editor owns the clock: the render loop drives
 //! [`drive_clock`] which sets each clip group's local time + `update_animations`.
 //!
-//! Resolution policy (§4.7-I2): a `TrackTarget` whose dependency hasn't
-//! materialized yet (node mid-insert, material awaiting registration) is
-//! **pending** — its channel is skipped and re-lowers when the dependency appears
-//! (the observers re-fire). A target that can *never* resolve (deleted node /
-//! material) is **invalid** — logged via `tracing::error!`. Camera targets
-//! (M-A9) resolve through the node's `camera_key` into the renderer cameras
-//! store; pending until the Camera node materializes that slot.
+//! Resolution policy: a `TrackTarget` whose dependency hasn't materialized yet
+//! (node mid-insert, material awaiting registration) is **pending** — its
+//! channel is skipped and re-lowers when the dependency appears (the observers
+//! re-fire). A target that can *never* resolve (deleted node / material) is
+//! **invalid** — logged via `tracing::error!`. Camera targets resolve through
+//! the node's `camera_key` into the renderer cameras store; pending until the
+//! Camera node materializes that slot.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -131,7 +131,7 @@ async fn relower() {
         r.animations.mixer = mixer.build(&keys);
         // Seed the rest (authored-default) pose for every animated TRANSFORM
         // target from the EDITOR's authored node transform — NOT the renderer's
-        // live local, which animation overwrites each frame (§4.7-I1). Doing this
+        // live local, which animation overwrites each frame. Doing this
         // on every re-lower also refreshes rest if the authored default changed.
         // (Non-transform targets keep their lazily-captured rest; additive on
         // those is rare.) Without this, re-lowering would re-capture rest from the
@@ -147,7 +147,7 @@ async fn relower() {
 /// Seed the rest (authored-default) pose for every animated transform target
 /// from the EDITOR's authored node transform — the authoritative default, which
 /// animation never overwrites (the renderer's live local IS overwritten each
-/// frame, so re-capturing from it would make additive deltas collapse — §4.7-I1).
+/// frame, so re-capturing from it would make additive deltas collapse).
 fn seed_transform_rests(
     r: &mut awsm_renderer::AwsmRenderer,
     clips: &[(AssetId, std::sync::Arc<CustomAnimation>)],
@@ -262,7 +262,7 @@ fn node_is_descendant(scene: &crate::engine::scene::Scene, root: NodeId, target:
 
 /// Resolve an authored [`TrackTarget`] → a live renderer [`AnimationTarget`].
 /// `None` = pending (dependency not materialized) or invalid; a genuinely
-/// missing node/material is logged. Camera targets are deferred (M-A3).
+/// missing node/material is logged.
 fn resolve_target(
     r: &awsm_renderer::AwsmRenderer,
     target: &TrackTarget,
@@ -272,7 +272,7 @@ fn resolve_target(
         TrackTarget::Transform { node, prop: _ } => {
             // Transform tracks drive the node's own transform key (T/R/S all map
             // to it; the per-field `TransformAnimation` already isolates which
-            // component is written — invariant I3).
+            // component is written).
             let tk = b.nodes.lock().unwrap().get(node).map(|n| n.transform_key);
             match tk {
                 Some(tk) => Some(AnimationTarget::Transform(tk)),

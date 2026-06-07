@@ -1,5 +1,5 @@
-//! 2nd-renderer live material preview (decision 5; the M1 device-scoping work
-//! enables a second `AwsmRenderer` with its own GPU caches). A standalone
+//! 2nd-renderer live material preview: a second `AwsmRenderer` with its own GPU
+//! caches (device-scoping makes this possible). A standalone
 //! renderer on the Studio's preview canvas renders a sphere lit by a key light,
 //! shaded by the current custom material — re-syncing whenever the material is
 //! registered. Its dynamic-material ids live on this renderer, separate from the

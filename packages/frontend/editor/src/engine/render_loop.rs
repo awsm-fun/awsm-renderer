@@ -1,6 +1,6 @@
-//! The render loop. M3 keeps it slim: each frame pushes the editor camera and
-//! renders. The per-frame scene→GPU sync (lights / decals / gizmo / particles /
-//! colliders) layers in via the renderer bridge as those features land (M4+).
+//! The render loop. Each frame pushes the editor camera and renders. The
+//! per-frame scene→GPU sync (lights / decals / gizmo / particles / colliders)
+//! is layered in via the renderer bridge.
 
 use awsm_renderer::camera::CameraMatrices;
 use awsm_renderer::cameras::CameraProjectionParams;
@@ -37,8 +37,8 @@ fn request_frame() {
     context::set_raf(raf);
 }
 
-/// Advance the animation transport while playing. The editor owns the clock
-/// (§6.5): when playing we advance the controller `playhead` by `dt` (seconds,
+/// Advance the animation transport while playing. The editor owns the clock:
+/// when playing we advance the controller `playhead` by `dt` (seconds,
 /// scaled by the active clip's speed) and dispatch a transient `SetPlayhead` so
 /// the ruler + synced tabs follow. The pose is *pinned* into the renderer in
 /// `render_one_frame` (under the held guard, before `update_transforms`) via
@@ -118,7 +118,7 @@ fn render_one_frame() {
         // Pin the animation pose at the current playhead BEFORE world transforms
         // are derived (animation writes locals; `update_transforms` derives world).
         super::bridge::animation_sync::pin_pose(renderer, controller().playhead.get());
-        // Skin bridge (#2): copy animated/posed mirror-bone locals onto the baked
+        // Skin bridge: copy animated/posed mirror-bone locals onto the baked
         // joint keys the skin reads, BEFORE world matrices are derived — otherwise
         // a skinned glTF's joint data animates but the mesh stays frozen.
         super::bridge::skin_bridge::sync_bones_to_skin(renderer);

@@ -1,9 +1,9 @@
-//! Animation-mode **KeyInspector** (anim-rail.jsx `Inspector`): edits the
-//! selected timeline element — a keyframe (Time / Value / Interp / tangents) or,
-//! when only a track is selected, the track (Target / Property / Lowers-to /
-//! Sampler / Channels). Mirrors `material_mode`'s row + field-binding patterns.
+//! Animation-mode **KeyInspector**: edits the selected timeline element — a
+//! keyframe (Time / Value / Interp / tangents) or, when only a track is
+//! selected, the track (Target / Property / Sampler / Channels). Mirrors
+//! `material_mode`'s row + field-binding patterns.
 //!
-//! Load-bearing rule (§0.2): every edit dispatches `SetKeyframe` /
+//! Load-bearing rule: every edit dispatches `SetKeyframe` /
 //! `SetTrackSampler` through the one `EditorController`. Reads of
 //! `anim_selection` + the active clip are read-only.
 

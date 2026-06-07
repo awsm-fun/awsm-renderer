@@ -1,10 +1,7 @@
 //! `EditorQuery` / `snapshot()` — a serializable read of editor state for
-//! external inspection + headless tests (§5.5). A future MCP/websocket transport
+//! external inspection + headless tests. A future MCP/websocket transport
 //! `serde`-encodes this back to the caller. It is a flat, view-agnostic
 //! projection of the controller's state, not the live model.
-//!
-//! M3 carries the project/mode surface; the scene-tree / selection / material
-//! projections are filled in as those models land (M4+).
 
 use serde::{Deserialize, Serialize};
 
@@ -25,7 +22,7 @@ pub struct EditorSnapshot {
     pub undo_depth: usize,
     pub redo_depth: usize,
     /// Animation-mode state (clip library + transport). Lets a driver discover
-    /// clip ids + verify transport without the UI (§6.2).
+    /// clip ids + verify transport without the UI.
     pub animation: AnimationSnapshot,
     /// Custom (dynamic-WGSL) material assets — id / name / registered / declared
     /// uniform slot names. Lets a driver discover material ids + uniform slots
@@ -79,7 +76,7 @@ pub struct ProjectSnapshot {
     pub missing_assets: Vec<String>,
 }
 
-// ─────────────────────────────── query surface (§6.8) ───────────────────────
+// ─────────────────────────────── query surface ──────────────────────────────
 // The READ half of the controller — serializable, read-only (never mutates
 // persisted state, never records undo, never broadcasts; any handler that pins
 // the playhead saves + restores the transport). The future MCP/websocket
@@ -127,7 +124,7 @@ pub enum ReadbackTarget {
     },
     /// A light parameter on a node.
     LightParam { node: NodeId, param: LightParamKind },
-    /// A camera parameter on a node (DEFERRED — resolves to null until M-A3).
+    /// A camera parameter on a node (DEFERRED — resolves to null for now).
     CameraParam {
         node: NodeId,
         param: CameraParamKind,

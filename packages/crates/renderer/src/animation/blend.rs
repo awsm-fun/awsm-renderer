@@ -1,5 +1,5 @@
 //! Pure blend math over [`AnimationData`] — the per-target compositing
-//! primitives the NLA mixer (§4.4) uses to fold layer contributions onto an
+//! primitives the NLA mixer uses to fold layer contributions onto an
 //! accumulator.
 //!
 //! Two operations:
@@ -14,8 +14,8 @@
 //! `acc.clone()` rather than panicking (the editor lowering guarantees matching
 //! kinds; this is purely defensive). For `Transform` they operate **per-field**
 //! (translation / rotation / scale independently), honoring the layer field's
-//! `Option`-ness (a `None` layer field leaves that field of `acc` untouched) —
-//! invariant I3. `acc` is always a fully-populated `Transform` because it is
+//! `Option`-ness (a `None` layer field leaves that field of `acc` untouched).
+//! `acc` is always a fully-populated `Transform` because it is
 //! seeded from rest.
 
 use glam::{Quat, Vec3};
@@ -62,7 +62,7 @@ fn quat_scaled_delta(layer: Quat, reference: Quat, w: f32) -> Quat {
 /// Blend the per-field `Transform` accumulator toward `layer` (a
 /// [`Replace`](super::mixer::LayerMode::Replace) contribution). `acc` carries
 /// all three fields (seeded from rest); a `None` field on `layer` leaves that
-/// field of `acc` unchanged (I3).
+/// field of `acc` unchanged.
 fn transform_blend_replace(
     acc: &TransformAnimation,
     layer: &TransformAnimation,
@@ -92,7 +92,7 @@ fn transform_blend_replace(
 /// - `F32` / `F64` / `Vec3`: component lerp.
 /// - `Quat`: shortest-arc `slerp`.
 /// - `Vertex`: per-index lerp.
-/// - `Transform`: per-field (I3), honoring layer-field `Option`-ness.
+/// - `Transform`: per-field, honoring layer-field `Option`-ness.
 /// - Mismatched variants: returns `acc.clone()`.
 pub fn blend_replace(acc: &AnimationData, layer: &AnimationData, w: f32) -> AnimationData {
     match (acc, layer) {
@@ -119,7 +119,7 @@ pub fn blend_replace(acc: &AnimationData, layer: &AnimationData, w: f32) -> Anim
 
 /// Add `w * (layer - reference)` onto a per-field `Transform` accumulator (an
 /// [`Additive`](super::mixer::LayerMode::Additive) contribution). A `None`
-/// field on `layer` contributes no delta to that field of `acc` (I3); the
+/// field on `layer` contributes no delta to that field of `acc`; the
 /// `reference` field falls back to identity when absent so a present `layer`
 /// field still produces a well-defined delta.
 fn transform_blend_additive(
@@ -163,7 +163,7 @@ fn transform_blend_additive(
 ///   `layer * reference.inverse()` (delta scaled via
 ///   `Quat::IDENTITY.slerp(delta, w)`), then normalize.
 /// - `Vertex`: per-index `acc + w * (layer - reference)`.
-/// - `Transform`: per-field additive (I3), honoring layer-field `Option`-ness.
+/// - `Transform`: per-field additive, honoring layer-field `Option`-ness.
 /// - Mismatched variants: returns `acc.clone()`.
 pub fn blend_additive(
     acc: &AnimationData,
@@ -411,7 +411,7 @@ mod tests {
         assert!((as_f32(&blend_additive(&acc, &layer, &reference, 1.0)) - 5.0).abs() < 1e-6);
     }
 
-    /// I1 no-drift: the real loop RE-SEEDS the accumulator from a constant rest
+    /// No-drift: the real loop RE-SEEDS the accumulator from a constant rest
     /// every frame, so an additive layer with constant inputs must produce the
     /// SAME result every iteration (no accumulation / drift).
     #[test]
@@ -434,7 +434,7 @@ mod tests {
         assert!((first.unwrap() - 6.0).abs() < 1e-6);
     }
 
-    /// I1 no-drift for quaternions: re-seeding from rest yields an identical
+    /// No-drift for quaternions: re-seeding from rest yields an identical
     /// quaternion every iteration (premultiply does not accumulate).
     #[test]
     fn additive_seed_from_rest_no_drift_quat() {
@@ -458,7 +458,7 @@ mod tests {
         }
     }
 
-    /// I1 no-drift for a per-field Transform additive layer.
+    /// No-drift for a per-field Transform additive layer.
     #[test]
     fn additive_seed_from_rest_no_drift_transform() {
         let rest = TransformAnimation {

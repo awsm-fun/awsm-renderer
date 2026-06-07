@@ -10,10 +10,9 @@
 //! renderer [`AnimationChannel`] given a resolver that maps the authored
 //! [`TrackTarget`] descriptor → a live renderer [`AnimationTarget`] key.
 //!
-//! Rotation is **quaternion-native** (decision §10 / invariant I5): a rotation
+//! Rotation is **quaternion-native**: a rotation
 //! track's keyframe value is a `Quat` that lowers straight onto a `Quat` sampler
-//! — there is no Euler representation in the model (Euler is only a UI projection
-//! added in M-A4).
+//! — there is no Euler representation in the model (Euler is only a UI projection).
 
 use std::sync::Arc;
 
@@ -67,7 +66,7 @@ pub fn new_keyframe(value: TrackValue, interp: Interp) -> Keyframe {
 }
 
 /// A short, stable identity string for a target (selection keys / dedupe).
-/// Consumed by the Animation-mode UI (M-A2+).
+/// Consumed by the Animation-mode UI.
 pub fn target_key(t: &TrackTarget) -> String {
     match t {
         TrackTarget::Transform { node, prop } => format!("transform/{node}/{prop:?}"),
@@ -139,7 +138,7 @@ impl Track {
         // by lowering each scalar into a weight vector of length `index + 1` whose
         // position `index` carries the keyed scalar and every other entry is 0.
         //
-        // LIMITATION (M-A9): this drives the morph at `index` correctly for the
+        // LIMITATION: this drives the morph at `index` correctly for the
         // common single-morph / first-target case, but because the lowered vector
         // forces all leading weights `0..index` to 0 every frame, a clip with
         // *separate* tracks for two morphs of the same mesh would have each track
@@ -263,8 +262,8 @@ fn default_sampler_for(target: &TrackTarget) -> SamplerKind {
 
 /// Lower one authored [`TrackValue`] → the renderer [`AnimationData`] for a
 /// channel. Transform tracks lower to a per-field `TransformAnimation` (only the
-/// track's own component set — so a rotation track leaves T/S untouched, invariant
-/// I3); everything else lowers to the matching scalar/vec3/quat data.
+/// track's own component set — so a rotation track leaves T/S untouched);
+/// everything else lowers to the matching scalar/vec3/quat data.
 fn track_value_to_data(value: &TrackValue, prop: Option<TransformProp>) -> AnimationData {
     match (prop, value) {
         (Some(TransformProp::Translation), TrackValue::Vec3(v)) => {
@@ -422,7 +421,7 @@ pub fn stored_to_live(s: &StoredAnimation) -> Arc<CustomAnimation> {
 }
 
 // ──────────────────────── controller transport / selection state ────────────
-// Transport + selection are controller state too (§0.2): set via transient
+// Transport + selection are controller state too: set via transient
 // commands so they broadcast + snapshot but don't pollute undo. These are
 // editor-runtime-only (not persisted in `EditorProject`), so they live here.
 

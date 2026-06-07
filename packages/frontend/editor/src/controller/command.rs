@@ -1,13 +1,9 @@
 //! `EditorCommand` — the single serializable enum covering every editor
-//! mutation (decision 8 / §5.5). The UI never mutates editor state directly; it
+//! mutation. The UI never mutates editor state directly; it
 //! builds a command and dispatches it through the [`super::EditorController`].
 //! Commands are **data** (no closures) so they serialize, and non-transient
 //! ones are invertible — the inverse is captured at apply-time and pushed onto
 //! the undo log (command-sourcing, replacing the old snapshot history).
-//!
-//! M3 establishes the seam + the project/mode commands. The per-node mutation
-//! commands (insert/delete/reparent/transform/material/env/…) are added as the
-//! panels that dispatch them land in M4–M12.
 
 use serde::{Deserialize, Serialize};
 
@@ -20,8 +16,8 @@ use crate::engine::scene::types::Trs;
 use crate::engine::scene::{AssetId, EnvironmentConfig, NodeId, NodeKind};
 use awsm_scene_schema::{AssetEntry, MaterialShading};
 
-/// A procedural texture generator the Content Browser can author (decision 3 /
-/// §8). Maps to `ProceduralTextureDef` with sensible defaults at apply-time.
+/// A procedural texture generator the Content Browser can author.
+/// Maps to `ProceduralTextureDef` with sensible defaults at apply-time.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProceduralKind {
@@ -126,11 +122,11 @@ pub enum EditorCommand {
 
     /// Load a project from a base URL (gesture-free; fetches `<base>/project.toml`
     /// and the referenced material/asset files). The external/MCP + headless-test
-    /// entry point (§5.5). Full implementation lands in M11; the seam exists now.
+    /// entry point. Full implementation is future work; the seam exists now.
     LoadProjectFromUrl { base_url: String },
 
     /// Import a glTF model from a URL (gesture-free). Pairs with the file-picker
-    /// variant `ImportModelFromFile` (added with the ribbon in M4).
+    /// variant `ImportModelFromFile`.
     ImportModelFromUrl { url: String },
 
     /// Import a glTF model from a locally-picked file. `url` is a `blob:` object
@@ -179,9 +175,9 @@ pub enum EditorCommand {
     /// Set the material the Studio is editing. **Transient**.
     SetCurrentMaterial { id: Option<AssetId> },
 
-    /// Register (compile to a renderer bucket) the current custom material. M9
-    /// validates the WGSL and flips the `registered` flag; the real GPU
-    /// registration + bucket accounting lands in M10.
+    /// Register (compile to a renderer bucket) the current custom material.
+    /// Validates the WGSL and flips the `registered` flag; the real GPU
+    /// registration + bucket accounting is future work.
     RegisterMaterial { id: AssetId },
 
     /// Set the scene environment (skybox + IBL). Stored in `scene.environment`
@@ -216,7 +212,7 @@ pub enum EditorCommand {
     // ───────────────────────── Animation: clip lifecycle ─────────────────────
     /// Create a fresh empty animation clip and make it current. Lifecycle (no
     /// inverse recorded). **Carries its `id`** (minted by the dispatcher, not in
-    /// `apply`) so the command is deterministic data — a cross-tab relay (§9) that
+    /// `apply`) so the command is deterministic data — a cross-tab relay that
     /// replays it produces the *same* clip id in every tab. Idempotent: applying
     /// it when the id already exists is a no-op.
     AddClip { id: AssetId },
@@ -416,7 +412,7 @@ impl EditorCommand {
         )
     }
 
-    /// Per-tab **view-local** commands that must NOT cross-tab broadcast (§9): a
+    /// Per-tab **view-local** commands that must NOT cross-tab broadcast: a
     /// second window framing its own camera / with its own selection / mode must
     /// not be yanked when the first edits. Everything else (clip/track/keyframe/
     /// mixer edits + the shared transport playhead) DOES broadcast so two tabs on
@@ -496,7 +492,7 @@ impl EditorCommand {
     }
 
     /// A short human-readable label (used in toasts / telemetry / the eventual
-    /// undo-history UI). Consumed as the mutation commands land in M4+.
+    /// undo-history UI).
     #[allow(dead_code)]
     pub fn label(&self) -> &'static str {
         match self {
