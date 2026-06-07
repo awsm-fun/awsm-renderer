@@ -1,12 +1,29 @@
 # Animation Editor — implementation plan (single-`/goal` executable)
 
-> **Status:** Planning complete, ready to execute via one `/goal`. This plan adds
-> a third top-level workspace — **Animation** — to `packages/frontend/editor`
-> (`awsm-editor`), alongside **Scene** and **Material**, and implements the
-> renderer-core + crate changes the feature needs end-to-end. It is the animation
-> analog of [editor-rewrite.md](editor-rewrite.md), and reuses that editor's
-> architecture wholesale (EditorController command/query, the bridge, TOML
-> persistence, web-shared design system).
+> **Status: ✅ IMPLEMENTED — shipped in PR #113.** This was the build plan; the
+> code is now the source of truth. It's kept as the **design reference** the
+> codebase points at — the `§x.y` section numbers and `I1`–`I6` invariant labels
+> in the renderer/editor comments resolve here. Everything in the §13 Definition
+> of Done is built and verified: Animation mode + all panels, renderer-core
+> clip-group/mixer blending, glTF clip extraction, all six target families, the
+> EditorController command/query flow, cross-tab sync, and the §6.8 query surface.
+> The interactive-authoring affordances and the skinned-mesh *visual* path — not
+> exercised by the original command/query verification — were finished as
+> follow-ups in the same PR: editable per-channel keyframe values, add/remove
+> keyframe controls, name-resolved track labels, and a per-frame skin bridge so
+> imported skinned glTF actually deforms. Runtime playback *outside* the editor
+> (a game loading the saved scene) is a separate, partially-started effort tracked
+> in [scene-loader.md](scene-loader.md).
+>
+> **Original plan (historical) below.**
+>
+> This plan adds a third top-level workspace — **Animation** — to
+> `packages/frontend/editor` (`awsm-editor`), alongside **Scene** and
+> **Material**, and implements the renderer-core + crate changes the feature
+> needs end-to-end. It is the animation analog of
+> [editor-rewrite.md](editor-rewrite.md), and reuses that editor's architecture
+> wholesale (EditorController command/query, the bridge, TOML persistence,
+> web-shared design system).
 >
 > It is inspired by the React design prototype at
 > `~/Downloads/animation-reference/` (and its `HANDOFF.md`), but is **much more

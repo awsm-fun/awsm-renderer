@@ -1,10 +1,10 @@
 //! Animation mode — the third editor workspace (Scene · Material · **Animation**),
 //! a clip-authoring studio. See `docs/plans/animation-editor.md`.
 //!
-//! M-A2 layout: the **ribbon** (active-clip header) over a `248px · 1fr`
-//! workspace — the left column stacks the **ClipLibrary** over the **KeyInspector**
-//! (key/track editor); the right column is a placeholder for the real viewport +
-//! timeline dock that land in M-A3/M-A4.
+//! Layout: the **ribbon** (active-clip header) over a `248px · 1fr` workspace —
+//! the left column stacks the **ClipLibrary** over the **KeyInspector**
+//! (key/track editor); the right column holds the real-scene **viewport** over
+//! the **timeline dock** (transport · ruler · Dope Sheet / Curves / Mixer).
 //!
 //! Load-bearing rule (§0.2): every animation mutation is a serializable
 //! `EditorCommand` dispatched through the one `EditorController` — the UI never
@@ -26,7 +26,7 @@ pub fn render() -> Dom {
         .style("min-height", "0").style("background", "var(--bg-0)")
         // ── ribbon (active-clip header) ──────────────────────────────────────
         .child(ribbon::render())
-        // ── workspace: 248px rail + viewport/timeline placeholder ────────────
+        // ── workspace: 248px rail + viewport over timeline dock ──────────────
         .child(html!("div", {
             .style("flex", "1").style("min-height", "0")
             .style("display", "grid").style("grid-template-columns", "248px 1fr")

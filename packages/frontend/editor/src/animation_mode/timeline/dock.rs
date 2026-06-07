@@ -7,9 +7,9 @@
 //! so synced tabs agree) — the segmented drives it via `SetAnimView`. `px_per_sec`
 //! (zoom) + the frames/seconds unit are pure view chrome (local `Mutable`s).
 //!
-//! M-A3 implements only the **Dope Sheet** body. Curves + Mixer are present but
-//! inert segmented options that show a small placeholder; they light up in
-//! M-A4/M-A5.
+//! All three bodies are live: the **Dope Sheet** (keyframe diamonds), the
+//! **Curve** editor (per-channel value graphs with tangent handles), and the
+//! **Mixer / NLA** (layers · strips · weights · modes · bone masks).
 
 use std::sync::Arc;
 
@@ -153,7 +153,7 @@ fn scroller(clip: Option<Arc<CustomAnimation>>, px: f64, unit: TimeUnit, fps: u3
             }))
             .child(ruler::render(geo))
         }))
-        // ── body: the active view (Dope real; Curves/Mixer placeholders) ──────
+        // ── body: the active view (Dope · Curves · Mixer) ─────────────────────
         .child_signal(controller().anim_view.signal().map(clone!(clip => move |view| {
             Some(match view {
                 AnimView::Dope => dope::render(clip.clone(), geo),

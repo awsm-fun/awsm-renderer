@@ -2,10 +2,8 @@
 //! freeze-pane Dope Sheet that lives under the viewport. `dock::render()` is the
 //! entry point (wired from `animation_mode::mod`).
 //!
-//! Geometry is shared across the dock's three views (Dope · Curves · Mixer) so
-//! the ruler / playhead / column widths line up. For M-A3 only the **Dope Sheet**
-//! is real; Curves + Mixer are present-but-inert segmented options that show a
-//! small placeholder (they light up in M-A4/M-A5).
+//! Geometry is shared across the dock's three (all live) views — Dope · Curves ·
+//! Mixer — so the ruler / playhead / column widths line up.
 //!
 //! Load-bearing rule (§0.2): every *animation/project* mutation is dispatched as
 //! an `EditorCommand` through the one `EditorController`. Pure view chrome —

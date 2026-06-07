@@ -57,8 +57,10 @@ fn rows_body(clip: Arc<CustomAnimation>, geo: Geo) -> Dom {
 fn track_block(clip: Arc<CustomAnimation>, idx: usize, track: Arc<Track>, geo: Geo) -> Dom {
     html!("div", {
         .child(row(clip.clone(), idx, track.clone(), geo, true))
-        // expanded → channel rows. M-A3 shows a single "value" channel per track
-        // (per-component channels arrive with the value editors in M-A4).
+        // expanded → one channel lane, labelled with the track's components
+        // (`x · y · z`, `weight`, …). Per-component value *editing* is in the
+        // keyframe inspector; splitting the lane into one row per component is a
+        // possible future refinement.
         .child_signal(track.expanded.signal().map(clone!(clip, track => move |open| {
             if open {
                 Some(row(clip.clone(), idx, track.clone(), geo, false))
