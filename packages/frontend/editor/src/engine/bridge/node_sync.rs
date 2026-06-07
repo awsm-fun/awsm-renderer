@@ -294,11 +294,24 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
     if let NodeKind::Camera(cfg) = &kind {
         let existing = *entry.camera_key.lock().unwrap();
         if let Some(ck) = existing {
+            // The in-place path assumes a camera node owns nothing else that
+            // `teardown` would normally free (only the camera key). If a future
+            // kind gives camera nodes extra GPU resources, this early return
+            // would leak them — trip it in tests.
+            debug_assert!(
+                entry.model_meshes.lock().unwrap().is_empty()
+                    && entry.material_keys.lock().unwrap().is_empty()
+                    && entry.light_key.lock().unwrap().is_none(),
+                "camera node unexpectedly owns non-camera GPU resources"
+            );
             let params = camera_params_from_config(cfg);
             with_renderer_mut(move |r| {
                 r.cameras.update(ck, |p| *p = params);
             })
             .await;
+            // Keep `last_kind` in step with the applied kind, exactly as the
+            // normal path does after its match arm.
+            *entry.last_kind.lock().unwrap() = Some(entry.node.kind.get_cloned());
             return;
         }
     }

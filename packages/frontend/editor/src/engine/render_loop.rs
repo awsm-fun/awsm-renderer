@@ -61,7 +61,7 @@ fn request_frame() {
 /// own loop/direction don't apply when pinning a one-shot pose), that trajectory
 /// has to be produced here — see [`TRANSPORT`].
 fn tick_animation_clock(dt_ms: f64) {
-    use crate::controller::animation::{ClipDirection, ClipLoop};
+    use crate::controller::animation::ClipDirection;
     let ctrl = controller();
     if !ctrl.playing.get() {
         return;
@@ -95,21 +95,9 @@ fn tick_animation_clock(dt_ms: f64) {
             phase = cur;
         }
         // Advance along the base direction, then fold into [0, dur] per loop
-        // style. The triangle wave is the bounce for ping-pong; `rem_euclid`
-        // handles a negative (reverse) phase correctly for both it and Loop.
+        // style.
         phase += dt_s * speed * base_sign;
-        let next = match clip.loop_style.get() {
-            ClipLoop::Once => phase.clamp(0.0, dur),
-            ClipLoop::Loop => phase.rem_euclid(dur),
-            ClipLoop::PingPong => {
-                let m = phase.rem_euclid(2.0 * dur);
-                if m <= dur {
-                    m
-                } else {
-                    2.0 * dur - m
-                }
-            }
-        };
+        let next = playhead_from_phase(phase, dur, clip.loop_style.get());
         t.set((phase, next));
         next
     });
@@ -117,6 +105,30 @@ fn tick_animation_clock(dt_ms: f64) {
     // the `playhead` signal; cross-tab agreement comes from the one-shot
     // play/pause + scrub broadcasts, not this per-frame tick.
     ctrl.playhead.set_neq(next);
+}
+
+/// Fold an unbounded transport `phase` (seconds) into a playhead in `[0, dur]`
+/// per loop style: **Once** clamps at the ends, **Loop** wraps, **PingPong**
+/// bounces (a triangle wave). `rem_euclid` keeps a negative — i.e. reverse —
+/// phase correct for both Loop and PingPong. Caller guarantees `dur > 0`.
+fn playhead_from_phase(
+    phase: f64,
+    dur: f64,
+    loop_style: crate::controller::animation::ClipLoop,
+) -> f64 {
+    use crate::controller::animation::ClipLoop;
+    match loop_style {
+        ClipLoop::Once => phase.clamp(0.0, dur),
+        ClipLoop::Loop => phase.rem_euclid(dur),
+        ClipLoop::PingPong => {
+            let m = phase.rem_euclid(2.0 * dur);
+            if m <= dur {
+                m
+            } else {
+                2.0 * dur - m
+            }
+        }
+    }
 }
 
 fn render_one_frame() {
@@ -262,4 +274,38 @@ fn scene_camera_matrices(renderer: &AwsmRenderer, node_id: NodeId) -> Option<Cam
         focus_distance,
         aperture,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::playhead_from_phase;
+    use crate::controller::animation::ClipLoop;
+
+    const DUR: f64 = 4.0;
+
+    fn approx(a: f64, b: f64) {
+        assert!((a - b).abs() < 1e-9, "{a} != {b}");
+    }
+
+    #[test]
+    fn once_clamps_at_both_ends() {
+        approx(playhead_from_phase(2.0, DUR, ClipLoop::Once), 2.0);
+        approx(playhead_from_phase(6.0, DUR, ClipLoop::Once), DUR); // past end → clamp
+        approx(playhead_from_phase(-1.0, DUR, ClipLoop::Once), 0.0); // reverse past start
+    }
+
+    #[test]
+    fn loop_wraps_forward_and_reverse() {
+        approx(playhead_from_phase(5.0, DUR, ClipLoop::Loop), 1.0); // 5 mod 4
+        approx(playhead_from_phase(-1.0, DUR, ClipLoop::Loop), 3.0); // reverse wraps to near end
+    }
+
+    #[test]
+    fn pingpong_bounces() {
+        approx(playhead_from_phase(1.0, DUR, ClipLoop::PingPong), 1.0); // ascending
+        approx(playhead_from_phase(DUR, DUR, ClipLoop::PingPong), DUR); // at the turn
+        approx(playhead_from_phase(5.0, DUR, ClipLoop::PingPong), 3.0); // descending: 2*4-5
+        approx(playhead_from_phase(8.0, DUR, ClipLoop::PingPong), 0.0); // full cycle back to 0
+        approx(playhead_from_phase(-1.0, DUR, ClipLoop::PingPong), 1.0); // reverse bounce
+    }
 }

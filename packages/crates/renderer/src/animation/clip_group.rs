@@ -189,15 +189,15 @@ impl AnimationClipGroup {
         self.play_direction = AnimationPlayDirection::Forward;
     }
 
-    /// Advance the **shared** clock by `global_time_delta` **seconds**, wrapping
-    /// per `loop_style`. Mirrors [`AnimationPlayer::update`](super::player::AnimationPlayer::update)
+    /// Advance the **shared** clock by `dt_seconds`, wrapping per `loop_style`.
+    /// Mirrors [`AnimationPlayer::update`](super::player::AnimationPlayer::update)
     /// exactly, but for the whole group at once (so every channel stays in sync).
-    pub fn update(&mut self, global_time_delta: f64) {
+    pub fn update(&mut self, dt_seconds: f64) {
         if self.state != AnimationState::Playing {
             return;
         }
 
-        let local_time_delta = global_time_delta * self.speed;
+        let local_time_delta = dt_seconds * self.speed;
 
         match self.play_direction {
             AnimationPlayDirection::Forward => {

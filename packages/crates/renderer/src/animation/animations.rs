@@ -257,9 +257,9 @@ impl AwsmRenderer {
     /// then runs in **seconds**, the same unit as glTF keyframe times and authored
     /// durations. `speed`/`scale` are pure dimensionless multipliers.
     pub fn update_animations(&mut self, global_time_delta_ms: f64) -> Result<()> {
-        let global_time_delta = global_time_delta_ms / 1000.0;
+        let dt_seconds = global_time_delta_ms / 1000.0;
         for player in self.animations.players.values_mut() {
-            player.update(global_time_delta)
+            player.update(dt_seconds)
         }
 
         for (animation_key, transform_key) in self.animations.transforms.iter() {
@@ -320,7 +320,7 @@ impl AwsmRenderer {
         // is composited in order, and the result is written ONCE per target.
         // The loose-player path above is left byte-for-byte unchanged so
         // single-channel models (e.g. the Fox) stay bit-identical.
-        self.update_clip_mixer(global_time_delta)?;
+        self.update_clip_mixer(dt_seconds)?;
 
         Ok(())
     }
@@ -329,7 +329,7 @@ impl AwsmRenderer {
     /// drive clip-local time off the shared mixer timeline) and the
     /// single-clip fallback (no mixer ⇒ each clip plays on its own clock as an
     /// implicit whole-rig Replace layer).
-    fn update_clip_mixer(&mut self, global_time_delta: f64) -> Result<()> {
+    fn update_clip_mixer(&mut self, dt_seconds: f64) -> Result<()> {
         // Nothing to do if there are no clip groups at all.
         if !self.animations.has_clips() {
             return Ok(());
@@ -339,11 +339,11 @@ impl AwsmRenderer {
 
         // 1. Advance the relevant clock(s).
         if use_mixer {
-            self.animations.mixer.advance(global_time_delta);
+            self.animations.mixer.advance(dt_seconds);
         } else {
             // Single-clip fallback: advance each clip group's own clock.
             for (_, group) in self.animations.clips_iter_mut() {
-                group.update(global_time_delta);
+                group.update(dt_seconds);
             }
         }
 

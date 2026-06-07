@@ -53,15 +53,15 @@ impl<T> AnimationPlayer<T> {
         }
     }
 
-    /// Advances the animation by `global_time_delta` **seconds** (the same unit
-    /// as the clip's keyframe times / duration; `update_animations` converts the
-    /// frame's millisecond delta to seconds before calling this).
-    pub fn update(&mut self, global_time_delta: f64) {
+    /// Advances the animation by `dt_seconds` (the same unit as the clip's
+    /// keyframe times / duration; `update_animations` converts the frame's
+    /// millisecond delta to seconds before calling this).
+    pub fn update(&mut self, dt_seconds: f64) {
         if self.state != AnimationState::Playing {
             return;
         }
 
-        let local_time_delta = global_time_delta * self.speed;
+        let local_time_delta = dt_seconds * self.speed;
 
         match self.play_direction {
             AnimationPlayDirection::Forward => {
