@@ -15,7 +15,7 @@ use super::clip_group::{
     AnimationClipGroup, AnimationClipKey, AnimationTarget, BuiltinMaterialParam, CameraParam,
     LightParam,
 };
-use super::mixer::{AnimationMixer, LayerMode};
+use super::mixer::{AnimationLayer, AnimationMixer, LayerMode};
 use super::{data::AnimationData, error::Result, player::AnimationPlayer, AwsmAnimationError};
 
 new_key_type! {
@@ -68,6 +68,23 @@ pub struct Animations {
     /// default). The editor invalidates entries when authored defaults
     /// change via [`Self::invalidate_rest`] / [`Self::clear_rest_cache`].
     rest: HashMap<AnimationTarget, AnimationData>,
+
+    // ── per-frame scratch buffers (capacity reused across frames so the
+    //    composite path allocates nothing in steady state). Each is
+    //    `mem::take`-n into a local at the top of `update_clip_mixer` and put
+    //    back at the end; on an (exceptional) error the take is simply dropped
+    //    and re-grown next frame — no correctness impact.
+    /// Per-target composite accumulator.
+    scratch_acc: HashMap<AnimationTarget, AnimationData>,
+    /// One strip's sampled `(target, value)` pairs.
+    scratch_samples: Vec<(AnimationTarget, AnimationData)>,
+    /// The write-pass target list (drawn from `rest`'s keys).
+    scratch_targets: Vec<AnimationTarget>,
+    /// The single-clip-fallback clip-key list.
+    scratch_clip_keys: Vec<AnimationClipKey>,
+    /// An additive layer's base-clip pose, sampled once per strip (so the
+    /// per-target reference lookup is O(1), not a full re-sample per target).
+    scratch_base: HashMap<AnimationTarget, AnimationData>,
 }
 
 impl Animations {
@@ -322,103 +339,64 @@ impl AwsmRenderer {
             }
         }
 
-        // 2. Gather, per target, the accumulator after compositing every
-        //    layer's active contributions in order. Each target's accumulator
-        //    is seeded from rest (lazily captured below).
+        // 2. Composite, per target, every active layer/clip contribution into
+        //    `acc` (seeded from each target's rest value). Targets in `rest` that
+        //    receive NO contribution this frame still write their rest value back
+        //    (write pass) so disabling a layer restores the default.
         //
-        //    `contributions[target]` holds the running accumulator. Targets
-        //    that exist in `rest` but receive NO contribution this frame are
-        //    still written back (their rest value) so disabling a layer
-        //    restores the default rather than freezing — handled in the write
-        //    pass via the rest cache.
-        let mut acc: HashMap<AnimationTarget, AnimationData> = HashMap::new();
+        //    The accumulator + sample buffers are `mem::take`-n from `self` so
+        //    they're owned locals here (lets us borrow `self` freely while using
+        //    them); their capacity is reused across frames, so the steady-state
+        //    composite allocates nothing. An exceptional early-return just drops
+        //    them — they re-grow next frame, no correctness impact.
+        let mut acc = std::mem::take(&mut self.animations.scratch_acc);
+        let mut samples = std::mem::take(&mut self.animations.scratch_samples);
+        let mut base = std::mem::take(&mut self.animations.scratch_base);
+        acc.clear();
 
         if use_mixer {
-            // Snapshot the mixer (clone) so we can read clip groups + capture
-            // rest (borrowing `self`) without holding a borrow on the mixer.
             let mixer_time = self.animations.mixer.time();
-            let layers = self.animations.mixer.layers.clone();
-
-            for layer in &layers {
-                let w = layer.weight as f32;
-                for strip in &layer.strips {
-                    if !strip.is_active(mixer_time) {
-                        continue;
-                    }
-                    let Some(duration) = self.animations.get_clip(strip.clip).map(|g| g.duration)
-                    else {
-                        continue;
-                    };
-                    let local = strip.local_time(mixer_time, duration);
-
-                    // Collect this strip's samples first (releases the clip
-                    // borrow before we mutate `self`/`acc`).
-                    let mut samples: Vec<(AnimationTarget, AnimationData)> = Vec::new();
-                    if let Some(group) = self.animations.get_clip(strip.clip) {
-                        group.for_each_sample_at(local, |t, v| samples.push((t, v)));
-                    }
-
-                    for (target, value) in samples {
-                        // Layer mask gates transform targets.
-                        if !layer.admits(target) {
-                            continue;
-                        }
-
-                        // Lazy-capture rest BEFORE any write this frame.
-                        self.ensure_rest(target)?;
-                        let rest_val = match self.animations.rest.get(&target) {
-                            Some(r) => r.clone(),
-                            None => continue, // unreadable target — skip
-                        };
-
-                        let entry = acc.entry(target).or_insert_with(|| rest_val.clone());
-
-                        match &layer.mode {
-                            LayerMode::Replace => {
-                                *entry = blend_replace(entry, &value, w);
-                            }
-                            LayerMode::Additive { base_clip } => {
-                                let reference = match base_clip {
-                                    Some(base) => self
-                                        .sample_clip_target(*base, local, target)
-                                        .unwrap_or_else(|| rest_val.clone()),
-                                    None => rest_val.clone(),
-                                };
-                                *entry = blend_additive(entry, &value, &reference, w);
-                            }
-                        }
-                    }
-                }
-            }
+            // Move the layer stack out (vs cloning its strips + mask sets EVERY
+            // frame) and restore it UNCONDITIONALLY after compositing — including
+            // when the helper returns early via `?`.
+            let layers = std::mem::take(&mut self.animations.mixer.layers);
+            let result =
+                self.composite_mixer_layers(&layers, mixer_time, &mut acc, &mut samples, &mut base);
+            self.animations.mixer.layers = layers;
+            result?;
         } else {
-            // Single-clip fallback: every clip is an implicit whole-rig
-            // Replace layer at weight 1.0, sampled at its OWN local time.
-            let clip_keys: Vec<AnimationClipKey> =
-                self.animations.clips_iter().map(|(k, _)| k).collect();
-            for key in clip_keys {
-                let mut samples: Vec<(AnimationTarget, AnimationData)> = Vec::new();
+            // Single-clip fallback: every clip is an implicit whole-rig Replace
+            // layer at weight 1.0 on its OWN clock.
+            let mut clip_keys = std::mem::take(&mut self.animations.scratch_clip_keys);
+            clip_keys.clear();
+            clip_keys.extend(self.animations.clips_iter().map(|(k, _)| k));
+            for &key in &clip_keys {
+                samples.clear();
                 if let Some(group) = self.animations.get_clip(key) {
                     group.for_each_sample(|t, v| samples.push((t, v)));
                 }
-                for (target, value) in samples {
+                for (target, value) in samples.iter() {
+                    let target = *target;
                     self.ensure_rest(target)?;
                     let rest_val = match self.animations.rest.get(&target) {
                         Some(r) => r.clone(),
                         None => continue,
                     };
                     let entry = acc.entry(target).or_insert_with(|| rest_val.clone());
-                    *entry = blend_replace(entry, &value, 1.0);
+                    *entry = blend_replace(entry, value, 1.0);
                 }
             }
+            clip_keys.clear();
+            self.animations.scratch_clip_keys = clip_keys;
         }
 
-        // 3. Write once per target. Every target present in the rest cache is
-        //    written each frame: a target that received a contribution writes
-        //    its composited accumulator; a target that received NONE this
-        //    frame (e.g. a muted strip) writes its REST value back so the
-        //    default is restored rather than frozen.
-        let targets: Vec<AnimationTarget> = self.animations.rest.keys().copied().collect();
-        for target in targets {
+        // 3. Write once per target. A target that received a contribution writes
+        //    its composited accumulator; one that received NONE this frame writes
+        //    its REST value back so the default is restored rather than frozen.
+        let mut targets = std::mem::take(&mut self.animations.scratch_targets);
+        targets.clear();
+        targets.extend(self.animations.rest.keys().copied());
+        for &target in &targets {
             let value = match acc.get(&target) {
                 Some(v) => v.clone(),
                 None => self
@@ -431,25 +409,99 @@ impl AwsmRenderer {
             self.write_anim_target(target, &value)?;
         }
 
+        // Return the scratch buffers (cleared — capacity retained for next frame).
+        acc.clear();
+        samples.clear();
+        base.clear();
+        targets.clear();
+        self.animations.scratch_acc = acc;
+        self.animations.scratch_samples = samples;
+        self.animations.scratch_base = base;
+        self.animations.scratch_targets = targets;
+
         Ok(())
     }
 
-    /// Samples clip group `clip` at clip-local `time` and returns the value of
-    /// channel `target`, or `None` if the clip / channel is absent.
-    fn sample_clip_target(
-        &self,
-        clip: AnimationClipKey,
-        time: f64,
-        target: AnimationTarget,
-    ) -> Option<AnimationData> {
-        let group = self.animations.get_clip(clip)?;
-        let mut found = None;
-        group.for_each_sample_at(time, |t, v| {
-            if t == target && found.is_none() {
-                found = Some(v);
+    /// Composite every active strip contribution from `layers` into `acc`. Split
+    /// out of [`Self::update_clip_mixer`] so the caller can `mem::take` the layer
+    /// stack (avoiding a per-frame clone of the strips + mask sets) and restore
+    /// it unconditionally — including across the `?` below. `samples` / `base`
+    /// are reused scratch buffers, cleared per strip.
+    fn composite_mixer_layers(
+        &mut self,
+        layers: &[AnimationLayer],
+        mixer_time: f64,
+        acc: &mut HashMap<AnimationTarget, AnimationData>,
+        samples: &mut Vec<(AnimationTarget, AnimationData)>,
+        base: &mut HashMap<AnimationTarget, AnimationData>,
+    ) -> Result<()> {
+        for layer in layers {
+            let w = layer.weight as f32;
+            for strip in &layer.strips {
+                if !strip.is_active(mixer_time) {
+                    continue;
+                }
+                let Some(duration) = self.animations.get_clip(strip.clip).map(|g| g.duration)
+                else {
+                    continue;
+                };
+                let local = strip.local_time(mixer_time, duration);
+
+                // Sample this strip's channels into the reusable buffer (releases
+                // the clip borrow before we touch `self`/`acc`).
+                samples.clear();
+                if let Some(group) = self.animations.get_clip(strip.clip) {
+                    group.for_each_sample_at(local, |t, v| samples.push((t, v)));
+                }
+
+                // Additive-with-base: sample the base pose ONCE (O(channels)) so
+                // the per-target reference lookup below is O(1) — not a full clip
+                // re-sample per target (was O(channels²) for such a strip).
+                let base_clip = match &layer.mode {
+                    LayerMode::Additive { base_clip: Some(b) } => Some(*b),
+                    _ => None,
+                };
+                base.clear();
+                if let Some(b) = base_clip {
+                    if let Some(group) = self.animations.get_clip(b) {
+                        group.for_each_sample_at(local, |t, v| {
+                            base.insert(t, v);
+                        });
+                    }
+                }
+
+                for (target, value) in samples.iter() {
+                    let target = *target;
+                    // Layer mask gates transform targets.
+                    if !layer.admits(target) {
+                        continue;
+                    }
+                    // Lazy-capture rest BEFORE any write this frame.
+                    self.ensure_rest(target)?;
+                    let rest_val = match self.animations.rest.get(&target) {
+                        Some(r) => r.clone(),
+                        None => continue, // unreadable target — skip
+                    };
+                    let entry = acc.entry(target).or_insert_with(|| rest_val.clone());
+                    match &layer.mode {
+                        LayerMode::Replace => {
+                            *entry = blend_replace(entry, value, w);
+                        }
+                        LayerMode::Additive { base_clip } => {
+                            let reference = match base_clip {
+                                Some(_) => base
+                                    .get(&target)
+                                    .cloned()
+                                    .unwrap_or_else(|| rest_val.clone()),
+                                None => rest_val.clone(),
+                            };
+                            *entry = blend_additive(entry, value, &reference, w);
+                        }
+                    }
+                }
             }
-        });
-        found
+        }
+        Ok(())
     }
 
     /// Lazily captures the rest (authored-default) value for `target` into the
