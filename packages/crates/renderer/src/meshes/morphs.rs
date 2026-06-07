@@ -274,19 +274,24 @@ impl<Key: slotmap::Key, Info: MorphInfo> MorphData<Key, Info> {
 
         self.weights.update_with_unchecked(key, |_, slice_u8| {
             // Layout is [count: f32, weight_0, .. weight_{len-1}]. Reinterpret the
-            // bytes as `f32` through `align_to_mut` rather than a raw `*mut f32`
-            // cast: the buffer is laid out in 4-byte words at a 4-byte-aligned
-            // offset, so the unaligned prefix is empty — but `align_to_mut` is
-            // defined behavior whatever the alignment, where the pointer cast
-            // would be UB. Zero-alloc, so it stays cheap on the per-frame path.
-            let (prefix, weights_f32, _) = unsafe { slice_u8.align_to_mut::<f32>() };
+            // bytes as `f32` in place — no copy, no alloc — on the per-frame morph
+            // path. The `u8 -> f32` cast is sound because the pointer is 4-aligned:
+            //  • offset: `DynamicStorageBuffer` is a buddy allocator with
+            //    MIN_BLOCK = 256, so every slot offset is a multiple of 256.
+            //  • base: the backing `Vec<u8>` is >= 16-byte aligned on wasm32.
+            // The debug_assert pins that invariant under test (it fires if the
+            // allocator granularity or backing store ever changes); it compiles
+            // out of release, so the hot path pays nothing for it.
             debug_assert!(
-                prefix.is_empty(),
+                slice_u8.as_ptr().cast::<f32>().is_aligned(),
                 "morph weights buffer must be f32-aligned"
             );
+            let weights_f32 = unsafe {
+                std::slice::from_raw_parts_mut(slice_u8.as_mut_ptr() as *mut f32, len + 1)
+            };
 
             // The first value is the count word; expose the `len` weights after it.
-            f(&mut weights_f32[1..=len])
+            f(&mut weights_f32[1..])
         });
 
         self.weights_dirty = true;
