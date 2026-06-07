@@ -317,13 +317,19 @@ fn create_resize_observer(
 /// resize the observer would.
 pub fn sync_canvas_size() {
     thread_local! {
-        // Guards against the viewport's `after_inserted` firing more than once
-        // (DOM rebuilds on signal changes): concurrent resizes racing each
-        // other's render-texture recreation produce "destroyed texture in
-        // submit" GPU errors. Only the first mount runs the initial resize.
-        static DONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        // At most ONE resize task in flight at a time. The viewport's
+        // `after_inserted` can fire repeatedly (DOM rebuilds on signal changes),
+        // and a mode switch re-invokes this on the reparent; concurrent resize
+        // tasks race each other's render-texture recreation and produce
+        // "destroyed texture in submit" GPU errors. Overlapping calls are
+        // coalesced — but, unlike a run-once latch, the flag clears when the
+        // task finishes, so a later reparent into a differently-sized slot
+        // (e.g. Scene ⇄ Animation, whose viewports differ in size) still resizes
+        // the surface. The `ResizeObserver` handles steady-state resizes; this
+        // is the backstop for reparents it doesn't reliably deliver.
+        static IN_FLIGHT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
-    if DONE.with(|d| d.replace(true)) {
+    if IN_FLIGHT.with(|d| d.replace(true)) {
         return;
     }
     wasm_bindgen_futures::spawn_local(async move {
@@ -345,10 +351,13 @@ pub fn sync_canvas_size() {
                     .lock()
                     .unwrap()
                     .set_aspect(width as f32 / height as f32);
+                IN_FLIGHT.with(|d| d.set(false));
                 return;
             }
             gloo_timers::future::TimeoutFuture::new(16).await;
         }
+        // The slot never acquired a real size; release so a later call can retry.
+        IN_FLIGHT.with(|d| d.set(false));
     });
 }
 
