@@ -295,6 +295,18 @@ impl EditorController {
                         self.structure_rev
                             .set(self.structure_rev.get().wrapping_add(1));
                     }
+                    // A Light node owns a renderer `LightKey` that a lowered
+                    // `AnimationTarget::Light` channel holds. Editing a light
+                    // param rebuilds the light in the bridge (teardown keeps
+                    // shadow reallocation correct) and churns that key, so force
+                    // a re-lower to refresh the target. (Camera nodes keep a
+                    // stable key via an in-place update in the bridge — no
+                    // shadow resource to rebuild — so they don't need this.)
+                    if matches!(&prev, NodeKind::Light(_))
+                        || matches!(kind.as_ref(), NodeKind::Light(_))
+                    {
+                        self.anim_revision.replace_with(|v| v.wrapping_add(1));
+                    }
                     node.kind.set(*kind);
                     self.scene.bump_revision();
                     Ok(Some(EditorCommand::SetKind {

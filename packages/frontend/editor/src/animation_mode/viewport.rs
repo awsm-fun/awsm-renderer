@@ -34,10 +34,7 @@ pub fn render() -> Dom {
                 spawn_local(clone!(slot => async move {
                     controller().mode.signal().for_each(move |m| {
                         if m == EditorMode::Animation {
-                            crate::engine::context::with_canvas(|c| {
-                                let _ = slot.append_child(c);
-                            });
-                            crate::engine::context::sync_canvas_size();
+                            reparent_canvas(&slot);
                         }
                         async {}
                     }).await;
@@ -52,11 +49,20 @@ pub fn render() -> Dom {
 
 fn reparent_if_active(slot: &web_sys::Element) {
     if controller().mode.get() == EditorMode::Animation {
-        crate::engine::context::with_canvas(|c| {
-            let _ = slot.append_child(c);
-        });
-        crate::engine::context::sync_canvas_size();
+        reparent_canvas(slot);
     }
+}
+
+/// Move the single live WebGPU canvas into this slot, surfacing a mount failure
+/// (mirrors the Scene viewport) instead of swallowing it — a broken reparent
+/// would otherwise leave the viewport blank with no diagnostics.
+fn reparent_canvas(slot: &web_sys::Element) {
+    crate::engine::context::with_canvas(|c| {
+        if let Err(err) = slot.append_child(c) {
+            Modal::error(format!("Failed to mount viewport canvas: {err:?}"));
+        }
+    });
+    crate::engine::context::sync_canvas_size();
 }
 
 /// Bottom-left: active clip name + a "playing" indicator.

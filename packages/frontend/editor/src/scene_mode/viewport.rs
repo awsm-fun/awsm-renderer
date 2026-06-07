@@ -67,7 +67,11 @@ pub fn render() -> Dom {
                 spawn_local(clone!(slot => async move {
                     crate::controller::controller().mode.signal().for_each(move |m| {
                         if m == crate::controller::EditorMode::Scene {
-                            crate::engine::context::with_canvas(|c| { let _ = slot.append_child(c); });
+                            crate::engine::context::with_canvas(|c| {
+                                if let Err(err) = slot.append_child(c) {
+                                    Modal::error(format!("Failed to mount viewport canvas: {err:?}"));
+                                }
+                            });
                             crate::engine::context::sync_canvas_size();
                         }
                         async {}

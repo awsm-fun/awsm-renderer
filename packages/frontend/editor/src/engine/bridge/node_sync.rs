@@ -282,6 +282,27 @@ async fn teardown(entry: &Arc<RendererNode>) {
 
 /// Materialize (or re-materialize) a node for its current kind.
 async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
+    // Camera → Camera: update the params IN PLACE so the `CameraKey` stays
+    // stable. Editing a camera param re-emits `node.kind`, but a numeric
+    // `SetKind` doesn't bump `anim_revision`, so a lowered
+    // `AnimationTarget::Camera { camera }` channel never re-lowers — a
+    // teardown + re-insert here would churn the key and strand that target on a
+    // freed slot. The camera store is purpose-built for this (it holds the
+    // params the animation channel drives). The key is only freed when the node
+    // is deleted or changes away from `Camera` (handled by `teardown` below /
+    // `remove_node`).
+    if let NodeKind::Camera(cfg) = &kind {
+        let existing = *entry.camera_key.lock().unwrap();
+        if let Some(ck) = existing {
+            let params = camera_params_from_config(cfg);
+            with_renderer_mut(move |r| {
+                r.cameras.update(ck, |p| *p = params);
+            })
+            .await;
+            return;
+        }
+    }
+
     // Tear down the previous materialization (no-op on first apply).
     teardown(&entry).await;
 
