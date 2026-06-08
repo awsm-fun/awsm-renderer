@@ -134,3 +134,55 @@ fn modifier_stack_roundtrip_and_default() {
     let bin = bitcode::serialize(&stack).unwrap();
     assert_eq!(stack, bitcode::deserialize::<ModifierStack>(&bin).unwrap());
 }
+
+/// An SDF/CSG graph base round-trips (a mug = cylinder minus cylinder, union a
+/// torus handle).
+#[test]
+fn sdf_graph_roundtrip() {
+    use crate::modifier::{MeshBase, ModifierStack, SdfNode, SdfPrimitive};
+    let mug = MeshBase::Sdf {
+        resolution: 48,
+        node: SdfNode::Union {
+            smooth: 0.05,
+            children: vec![
+                SdfNode::Subtract {
+                    smooth: 0.0,
+                    children: vec![
+                        SdfNode::Primitive(SdfPrimitive::Cylinder {
+                            radius: 1.0,
+                            height: 2.0,
+                        }),
+                        SdfNode::Transform {
+                            trs: Trs {
+                                translation: [0.0, 0.2, 0.0],
+                                ..Trs::IDENTITY
+                            },
+                            child: Box::new(SdfNode::Primitive(SdfPrimitive::Cylinder {
+                                radius: 0.85,
+                                height: 2.0,
+                            })),
+                        },
+                    ],
+                },
+                SdfNode::Transform {
+                    trs: Trs {
+                        translation: [1.1, 0.0, 0.0],
+                        ..Trs::IDENTITY
+                    },
+                    child: Box::new(SdfNode::Primitive(SdfPrimitive::Torus {
+                        major: 0.5,
+                        minor: 0.15,
+                    })),
+                },
+            ],
+        },
+    };
+    let stack = ModifierStack {
+        base: mug,
+        modifiers: vec![],
+    };
+    let json = serde_json::to_string(&stack).unwrap();
+    assert_eq!(stack, serde_json::from_str::<ModifierStack>(&json).unwrap());
+    let bin = bitcode::serialize(&stack).unwrap();
+    assert_eq!(stack, bitcode::deserialize::<ModifierStack>(&bin).unwrap());
+}

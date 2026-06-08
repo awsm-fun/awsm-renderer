@@ -53,6 +53,58 @@ pub enum MeshBase {
     Sweep(SweepAlongCurveDef),
     /// Pre-captured geometry (resolved from the mesh store editor-side).
     Captured(MeshRef),
+    /// An SDF/CSG graph meshed via surface nets (Phase 5). Pure data →
+    /// trivially agent-composable ("a mug = cylinder minus a smaller cylinder,
+    /// union a torus handle"). `resolution` is the sample-grid edge count.
+    Sdf { node: SdfNode, resolution: u32 },
+}
+
+/// A signed-distance-field expression tree. Combinators carry an optional
+/// `smooth` radius (0 = hard boolean; >0 = rounded/blended), which mesh booleans
+/// cannot do — the deliberate reason SDF is the chosen CSG paradigm.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SdfNode {
+    /// A primitive SDF, positioned by its own transform via [`SdfNode::Transform`].
+    Primitive(SdfPrimitive),
+    /// `min` (rounded by `smooth`).
+    Union { smooth: f32, children: Vec<SdfNode> },
+    /// `a` minus the union of the rest.
+    Subtract { smooth: f32, children: Vec<SdfNode> },
+    /// `max` (rounded by `smooth`).
+    Intersect { smooth: f32, children: Vec<SdfNode> },
+    /// Translate/rotate/scale a child SDF.
+    Transform {
+        trs: super::transform::Trs,
+        child: Box<SdfNode>,
+    },
+}
+
+/// SDF primitive shapes (centered at the local origin).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SdfPrimitive {
+    Sphere {
+        radius: f32,
+    },
+    /// Box of the given half-extents.
+    Box {
+        half: [f32; 3],
+    },
+    /// Capped cylinder along Y.
+    Cylinder {
+        radius: f32,
+        height: f32,
+    },
+    Torus {
+        major: f32,
+        minor: f32,
+    },
+    /// Capsule along Y between ±height/2.
+    Capsule {
+        radius: f32,
+        height: f32,
+    },
 }
 
 /// A world/local axis selector for axis-parameterized deformers.
