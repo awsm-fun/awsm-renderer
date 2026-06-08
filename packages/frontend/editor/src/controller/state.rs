@@ -2751,6 +2751,41 @@ impl EditorController {
                     Err(e) => QueryResult::Error { error: e },
                 }
             }
+            EditorQuery::ExportPlayerBundle { name } => {
+                use serde_json::json;
+                // scene.glb — whole scene baked (reuses the GLB exporter).
+                let scene_glb = match crate::controller::export::export_glb(&self.scene, None) {
+                    Ok(bytes) => {
+                        use base64::Engine;
+                        base64::engine::general_purpose::STANDARD.encode(bytes)
+                    }
+                    Err(e) => return QueryResult::Error { error: e },
+                };
+                // Pruned custom-material side-files (wgsl + toml) — those a
+                // re-imported AWSM_materials_none primitive resolves against.
+                let materials: Vec<serde_json::Value> =
+                    crate::controller::persistence::material_files(self)
+                        .into_iter()
+                        .map(|(path, content)| json!({ "path": path, "content": content }))
+                        .collect();
+                let env = serde_json::to_value(self.scene.environment.get_cloned())
+                    .unwrap_or(serde_json::Value::Null);
+                let mut entries = std::collections::BTreeMap::new();
+                entries.insert("name".to_string(), json!(name));
+                entries.insert("scene_glb".to_string(), json!(scene_glb));
+                entries.insert("materials".to_string(), json!(materials));
+                entries.insert("env".to_string(), env);
+                // Animation lowering into the GLB + texture copying + the
+                // player-side bundle loader are follow-ons (see STATUS).
+                entries.insert(
+                    "note".to_string(),
+                    json!("first-cut: geometry+materials+env; animations/textures pending"),
+                );
+                QueryResult::Map(query::MapResult {
+                    kind: "player_bundle".to_string(),
+                    entries,
+                })
+            }
             EditorQuery::SelectVerticesWhere { node, predicate } => {
                 use awsm_editor_protocol::VertexPredicate as P;
                 use awsm_meshgen::edit::{

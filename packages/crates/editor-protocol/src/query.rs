@@ -226,6 +226,13 @@ pub enum EditorQuery {
         node: NodeId,
         predicate: VertexPredicate,
     },
+    /// Lower the whole project to a player runtime bundle: a base64 `scene.glb`
+    /// (geometry + materials + lights/cameras, reusing the GLB exporter), the
+    /// pruned custom-material side-files, and an environment descriptor. A read
+    /// (returns the file set; never mutates the project). MCP:
+    /// `export_player_bundle`. (Animation lowering + texture copying + the
+    /// player-side loader are follow-ons — see the STATUS doc.)
+    ExportPlayerBundle { name: String },
     /// Geometry stats for a node's resolved mesh (Primitive / Mesh / Sweep):
     /// vertex+triangle counts, bbox, centroid, surface area, volume, watertight.
     /// A read — the perceive half of the agent's measure→adjust loop. MCP:

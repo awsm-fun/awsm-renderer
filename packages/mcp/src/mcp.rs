@@ -133,6 +133,12 @@ pub struct SelectVerticesParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ExportBundleParams {
+    /// Bundle name (publish dir / manifest label).
+    pub name: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct MeshIdParams {
     /// UUID of the editable mesh asset.
     pub mesh: String,
@@ -852,6 +858,17 @@ impl EditorMcp {
             samples: p.samples,
         })
         .await
+    }
+
+    #[tool(
+        description = "Lower the whole project to a player runtime bundle: base64 scene.glb (geometry + materials + lights/cameras) + the pruned custom-material side-files + an env descriptor. A read; returns the file set. Animations/textures/player-loader are follow-ons."
+    )]
+    async fn export_player_bundle(
+        &self,
+        Parameters(p): Parameters<ExportBundleParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::ExportPlayerBundle { name: p.name })
+            .await
     }
 
     #[tool(description = "Mean/min/max luma over a canvas region (or the whole canvas).")]
