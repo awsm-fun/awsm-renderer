@@ -54,3 +54,46 @@ fn bitcode_roundtrip() {
     let back: EditorProject = bitcode::deserialize(&bytes).unwrap();
     assert_eq!(project, back);
 }
+
+/// The captured-mesh side-file bytes (`assets/<id>.mesh.bin`) are bitcode; this
+/// is the format the editor/player read back, so guard the round-trip.
+#[test]
+fn captured_mesh_bitcode_roundtrip() {
+    let mesh = CapturedMesh {
+        positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        normals: Some(vec![[0.0, 0.0, 1.0]; 3]),
+        uvs: Some(vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
+        colors: None,
+        indices: vec![0, 1, 2],
+    };
+    let bytes = bitcode::serialize(&mesh).unwrap();
+    let back: CapturedMesh = bitcode::deserialize(&bytes).unwrap();
+    assert_eq!(mesh, back);
+}
+
+/// `MeshDef.editable` defaults to `false` for pre-feature files, and the new
+/// `CapturedSource` variants round-trip through serde + bitcode.
+#[test]
+fn mesh_def_editable_default_and_sources() {
+    // Old files have no `editable` key → defaults false.
+    let old: MeshDef = serde_json::from_str(r#"{"label":"m"}"#).unwrap();
+    assert!(!old.editable);
+
+    for src in [
+        None,
+        Some(CapturedSource::Editable),
+        Some(CapturedSource::Imported {
+            source: AssetId::new(),
+        }),
+    ] {
+        let def = MeshDef {
+            label: "m".to_string(),
+            source: src,
+            editable: true,
+        };
+        let json = serde_json::to_string(&def).unwrap();
+        assert_eq!(def, serde_json::from_str::<MeshDef>(&json).unwrap());
+        let bin = bitcode::serialize(&def).unwrap();
+        assert_eq!(def, bitcode::deserialize::<MeshDef>(&bin).unwrap());
+    }
+}

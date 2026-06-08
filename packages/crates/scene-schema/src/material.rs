@@ -278,6 +278,14 @@ pub struct MeshDef {
     pub label: String,
     #[serde(default)]
     pub source: Option<CapturedSource>,
+    /// When true the mesh is *editable*: its geometry is the regenerable
+    /// `.mesh.bin` cache (raw-vertex-edited or collapsed), and — once the
+    /// modifier stack lands (Phase 3) — re-evaluated from `modifiers`. Flipped on
+    /// by `ConvertToEditableMesh`. `#[serde(default)]` keeps pre-feature
+    /// project.json/bin files round-tripping (older captured meshes deserialize as
+    /// `editable = false`).
+    #[serde(default)]
+    pub editable: bool,
 }
 
 /// Where a captured mesh's geometry came from. Stored on `MeshDef`
@@ -292,6 +300,15 @@ pub struct MeshDef {
 pub enum CapturedSource {
     Primitive(super::primitive::PrimitiveShape),
     Sweep(super::instances::SweepAlongCurveDef),
+    /// Raw-vertex-edited / collapsed geometry — there is **no** recipe to
+    /// regenerate from; the `.mesh.bin` triangle buffer *is* the source of truth.
+    Editable,
+    /// Geometry baked from an imported model. The original `.glb` on disk
+    /// (referenced by `source`) remains the editable source of truth; the
+    /// `.mesh.bin` is a bake for editing/export.
+    Imported {
+        source: super::assets::AssetId,
+    },
 }
 
 /// Captured procedural-mesh geometry, bitcode-serialized into the
