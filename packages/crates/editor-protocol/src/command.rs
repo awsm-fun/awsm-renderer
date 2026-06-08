@@ -11,6 +11,7 @@ use awsm_scene_schema::animation::{
     BuiltinParamKind, ClipDirection, ClipLoop, Interp, Keyframe, LayerDoc, LayerModeDoc,
     LightParamKind, SamplerKind, StoredTrack, StripDoc, TrackTarget, TrackValue,
 };
+use awsm_scene_schema::modifier::ModifierStack;
 use awsm_scene_schema::{
     AssetEntry, AssetId, CapturedMesh, EnvironmentConfig, MaterialShading, NodeId, NodeKind, Trs,
 };
@@ -310,6 +311,14 @@ pub enum EditorCommand {
     /// `NodeKind::Mesh` node via the mesh-revision observer. Inverse: restore the
     /// prior geometry (a `SetMeshData` carrying the previous `CapturedMesh`).
     SetMeshData { mesh: AssetId, data: CapturedMesh },
+    /// Replace an editable mesh's procedural **recipe** wholesale (modifier
+    /// stack: base + ordered deformers) — the idempotent, coalescing idiom of
+    /// `SetCustomMaterialLayout`. The handler re-evaluates the stack to triangles
+    /// (resolving `Sweep`/`Captured` bases against the scene) and re-bakes the
+    /// `.mesh.bin` cache; the bridge re-materializes referencing nodes. Add /
+    /// remove / reorder / param-tweak are all the UI/agent sending a new whole
+    /// stack. Inverse: restore the prior stack (or prior bytes if there was none).
+    SetMeshModifiers { mesh: AssetId, stack: ModifierStack },
 
     // ─────────────────── Custom (dynamic-WGSL) material authoring ─────────────
     // The Studio surface that used to mutate the reactive `CustomMaterial`
@@ -675,7 +684,9 @@ impl EditorCommand {
     pub fn affects_mesh(&self) -> bool {
         matches!(
             self,
-            EditorCommand::SetMeshData { .. } | EditorCommand::ConvertToEditableMesh { .. }
+            EditorCommand::SetMeshData { .. }
+                | EditorCommand::ConvertToEditableMesh { .. }
+                | EditorCommand::SetMeshModifiers { .. }
         )
     }
 
@@ -718,6 +729,7 @@ impl EditorCommand {
             EditorCommand::CopyMaterialInstance { .. } => "Copy material settings",
             EditorCommand::ConvertToEditableMesh { .. } => "Convert to editable mesh",
             EditorCommand::SetMeshData { .. } => "Edit mesh",
+            EditorCommand::SetMeshModifiers { .. } => "Edit modifiers",
             EditorCommand::SetCustomMaterialAlphaMode { .. } => "Set alpha mode",
             EditorCommand::SetCustomMaterialDoubleSided { .. } => "Set double-sided",
             EditorCommand::SetCustomMaterialDebugColor { .. } => "Set base color",

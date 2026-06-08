@@ -106,6 +106,17 @@ pub struct ExportNodeParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SetMeshModifiersParams {
+    /// UUID of the editable mesh asset.
+    pub mesh: String,
+    /// A `ModifierStack` JSON: `{ "base": {...}, "modifiers": [...] }`. Base is
+    /// one of `primitive`/`lathe`/`superquadric`/`sweep`/`captured`; modifiers is
+    /// an ordered list (taper/twist/bend/inflate/spherify/roughen/subdivide/
+    /// smooth/mirror/array/displace).
+    pub stack: serde_json::Value,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct RenameParams {
     pub node: String,
     pub name: String,
@@ -1148,6 +1159,22 @@ impl EditorMcp {
         let node = parse_node(&p.node)?;
         let mesh = AssetId::new();
         self.dispatch_echo_asset(EditorCommand::ConvertToEditableMesh { node, mesh }, mesh)
+            .await
+    }
+
+    #[tool(
+        description = "Replace an editable mesh's procedural recipe (modifier stack). `mesh` is the mesh asset UUID; `stack` is a ModifierStack JSON { base, modifiers }. Re-bakes the geometry and re-materializes referencing nodes. The recipe lives in the project; the baked .mesh.bin is a regenerable cache."
+    )]
+    async fn set_mesh_modifiers(
+        &self,
+        Parameters(p): Parameters<SetMeshModifiersParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let mesh = AssetId(uuid::Uuid::parse_str(&p.mesh).map_err(|e| {
+            McpError::invalid_params(format!("invalid mesh id {:?}: {e}", p.mesh), None)
+        })?);
+        let stack: awsm_scene_schema::modifier::ModifierStack = serde_json::from_value(p.stack)
+            .map_err(|e| McpError::invalid_params(format!("bad modifier stack: {e}"), None))?;
+        self.dispatch(EditorCommand::SetMeshModifiers { mesh, stack })
             .await
     }
 

@@ -776,6 +776,46 @@ impl EditorController {
                 // didn't exist), the edit isn't undoable.
                 Ok(prior.map(|data| EditorCommand::SetMeshData { mesh, data }))
             }
+            EditorCommand::SetMeshModifiers { mesh, stack } => {
+                use crate::engine::bridge::mesh_cache;
+                // Capture the prior recipe + baked bytes for the inverse, and bail
+                // if this asset isn't a mesh.
+                let prior_stack = match self
+                    .scene
+                    .assets
+                    .lock()
+                    .unwrap()
+                    .get(mesh)
+                    .map(|e| &e.source)
+                {
+                    Some(SceneAssetSource::Mesh(def)) => def.modifiers.clone(),
+                    _ => return Ok(None),
+                };
+                let prior_bytes = mesh_cache::get_captured(mesh);
+                // Store the new recipe on the asset (the recipe lives in the
+                // project; the .mesh.bin is a regenerable cache).
+                {
+                    let mut assets = self.scene.assets.lock().unwrap();
+                    if let Some(entry) = assets.entries.get_mut(&mesh) {
+                        if let SceneAssetSource::Mesh(def) = &mut entry.source {
+                            def.modifiers = Some(stack.clone());
+                            def.editable = true;
+                        }
+                    }
+                }
+                // Re-evaluate → re-bake the cache (the bridge re-materializes via
+                // the mesh-revision bump in `apply`).
+                let baked = crate::controller::mesh_eval::evaluate_stack(&self.scene, &stack);
+                mesh_cache::store_with_id(mesh, mesh_cache::from_mesh_data(baked));
+                self.scene.bump_revision();
+                // Inverse: restore the prior stack (re-evaluates to prior geometry)
+                // or, if there was no recipe, the prior baked bytes.
+                let inverse = match prior_stack {
+                    Some(stack) => Some(EditorCommand::SetMeshModifiers { mesh, stack }),
+                    None => prior_bytes.map(|data| EditorCommand::SetMeshData { mesh, data }),
+                };
+                Ok(inverse)
+            }
             EditorCommand::SetAssetSelection { id } => {
                 self.asset_selection.set(id);
                 Ok(None)
