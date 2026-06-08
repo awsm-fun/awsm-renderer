@@ -17,6 +17,50 @@ use std::sync::{Arc, Mutex};
 
 use crate::error::AwsmGltfError;
 
+/// glTF extensions this renderer handles — most via raw-JSON parsing in
+/// `populate::material` / `populate::extensions`. The upstream `gltf` crate only
+/// feature-gates a subset, so its `from_slice` validation rejects a model that
+/// lists any of the others in `extensionsRequired` (even though we render them
+/// fine). [`parse_gltf_lenient`] drops these from `extensionsRequired` before
+/// re-validating, so they load; genuinely unsupported extensions (e.g.
+/// `KHR_materials_variants`, `EXT_texture_webp`, `KHR_draco_mesh_compression`,
+/// `KHR_mesh_quantization`) stay in the list and still fail validation cleanly.
+///
+/// Keep this in sync with what `populate` actually consumes.
+pub(crate) const RENDERER_SUPPORTED_EXTENSIONS: &[&str] = &[
+    "KHR_lights_punctual",
+    "KHR_texture_transform",
+    "KHR_materials_emissive_strength",
+    "KHR_materials_unlit",
+    "KHR_materials_specular",
+    "KHR_materials_ior",
+    "KHR_materials_transmission",
+    "KHR_materials_volume",
+    "KHR_materials_clearcoat",
+    "KHR_materials_sheen",
+    "KHR_materials_anisotropy",
+    "KHR_materials_iridescence",
+    "KHR_materials_dispersion",
+    "KHR_materials_diffuse_transmission",
+    "EXT_mesh_gpu_instancing",
+];
+
+/// Parse glTF/GLB bytes, tolerating `extensionsRequired` entries this renderer
+/// supports but the `gltf` crate doesn't feature-gate (see
+/// [`RENDERER_SUPPORTED_EXTENSIONS`]). Identical to `Gltf::from_slice` for
+/// everything else — full structural validation is retained (we parse without
+/// validation only to edit `extensionsRequired`, then re-validate via
+/// `Document::from_json`).
+pub(crate) fn parse_gltf_lenient(bytes: &[u8]) -> std::result::Result<Gltf, GltfError> {
+    let gltf = Gltf::from_slice_without_validation(bytes)?;
+    let blob = gltf.blob;
+    let mut json = gltf.document.into_json();
+    json.extensions_required
+        .retain(|e| !RENDERER_SUPPORTED_EXTENSIONS.contains(&e.as_str()));
+    let document = Document::from_json(json)?;
+    Ok(Gltf { document, blob })
+}
+
 /// Loaded glTF document plus buffer and image data.
 pub struct GltfLoader {
     pub doc: Document,
@@ -62,7 +106,7 @@ impl GltfLoader {
                     .await?;
 
                 let bytes: &[u8] = text.as_bytes();
-                Gltf::from_slice(bytes)
+                parse_gltf_lenient(bytes)
             }
             GltfFileType::Glb => {
                 let bytes = gloo_net::http::Request::get(&url)
@@ -70,7 +114,7 @@ impl GltfLoader {
                     .await?
                     .binary()
                     .await?;
-                Gltf::from_slice(&bytes)
+                parse_gltf_lenient(&bytes)
             }
             _ => return Err(AwsmGltfError::Load.into()),
         }?;
