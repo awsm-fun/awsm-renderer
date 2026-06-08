@@ -23,7 +23,7 @@ resolver = "2"
 description = "awsm renderer"
 edition = "2021"
 version = "0.2.0"
-license = "MIT"
+license = "MIT OR Apache-2.0"
 authors = ["David Komer"]
 # 1.85 floor: rmcp 1.x (the MCP server SDK) is edition-2024, which requires
 # Rust 1.85+. Keeping the MSRV here lets dependency specs stay simple (`rmcp = "1"`)
