@@ -13,6 +13,7 @@
 pub mod animation;
 mod command;
 pub mod custom_material;
+pub mod export;
 mod node_spec;
 pub mod persistence;
 pub mod query;

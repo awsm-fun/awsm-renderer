@@ -208,6 +208,16 @@ pub enum EditorQuery {
         #[serde(default = "default_log_limit")]
         limit: u32,
     },
+    /// Bake geometry + materials to a binary glTF (`.glb`) and return the bytes
+    /// base64-encoded (in a `QueryResult::Text`). `None` exports the whole scene;
+    /// `Some(node)` exports just that subtree. A read — no mutation, no undo.
+    /// Built-in PBR → glTF PBR; Unlit → `KHR_materials_unlit`; custom/Toon →
+    /// `AWSM_materials_none` (no embedded material). MCP: `export_scene_glb` /
+    /// `export_node_glb`.
+    ExportGlb {
+        #[serde(default)]
+        node: Option<NodeId>,
+    },
     /// Block until no material recompile is pending **and** the renderer's
     /// pipeline scheduler has drained **and** a fresh frame has presented (or
     /// `max_ms` elapses). The deterministic barrier between an edit and a

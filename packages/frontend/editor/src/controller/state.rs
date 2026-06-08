@@ -2476,6 +2476,15 @@ impl EditorController {
                     },
                 }
             }
+            EditorQuery::ExportGlb { node } => {
+                match crate::controller::export::export_glb(&self.scene, node) {
+                    Ok(bytes) => {
+                        use base64::Engine;
+                        QueryResult::Text(base64::engine::general_purpose::STANDARD.encode(bytes))
+                    }
+                    Err(e) => QueryResult::Error { error: e },
+                }
+            }
             EditorQuery::WaitRenderSettled { max_ms } => self.wait_render_settled(max_ms).await,
             EditorQuery::NodeTransforms { nodes } => self.node_transforms(&nodes).await,
             EditorQuery::NodeKindDetails { nodes } => {

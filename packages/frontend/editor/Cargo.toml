@@ -11,6 +11,7 @@ rust-version.workspace = true
 [dependencies]
 awsm-curves = { workspace = true, features = ["serde"] }
 awsm-meshgen = { workspace = true, features = ["serde"] }
+awsm-glb-export = { workspace = true }
 awsm-materials = { workspace = true }
 awsm-particles = { workspace = true, features = ["serde"] }
 awsm-renderer = { workspace = true, features = ["ktx", "serde", "texture-export", "debug-views"] }

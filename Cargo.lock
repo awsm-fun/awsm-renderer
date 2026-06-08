@@ -203,6 +203,7 @@ dependencies = [
  "anyhow",
  "awsm-curves",
  "awsm-editor-protocol",
+ "awsm-glb-export",
  "awsm-materials",
  "awsm-meshgen",
  "awsm-particles",

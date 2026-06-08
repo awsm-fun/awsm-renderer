@@ -100,6 +100,12 @@ pub struct NodesParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ExportNodeParams {
+    /// UUID of the node (subtree) to bake to GLB.
+    pub node: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct RenameParams {
     pub node: String,
     pub name: String,
@@ -732,6 +738,26 @@ impl EditorMcp {
     ) -> Result<CallToolResult, McpError> {
         self.query(EditorQuery::NodeBounds {
             nodes: parse_nodes(&p.nodes)?,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Bake the whole scene to a binary glTF and return the .glb bytes base64-encoded. Built-in PBR → glTF PBR; Unlit → KHR_materials_unlit; custom/Toon → AWSM_materials_none (no embedded material). Textures are referenced-only."
+    )]
+    async fn export_scene_glb(&self) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::ExportGlb { node: None }).await
+    }
+
+    #[tool(
+        description = "Bake one node (and its subtree) to a binary glTF and return the .glb bytes base64-encoded. Same material mapping as export_scene_glb."
+    )]
+    async fn export_node_glb(
+        &self,
+        Parameters(p): Parameters<ExportNodeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::ExportGlb {
+            node: Some(parse_node(&p.node)?),
         })
         .await
     }
