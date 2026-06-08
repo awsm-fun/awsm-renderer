@@ -23,7 +23,7 @@
 {% match debug.lighting %}
     {% when ShaderTemplateMaterialOpaqueDebugLighting::None | ShaderTemplateMaterialOpaqueDebugLighting::PunctualOnly %}
         for(var i = 0u; i < lights_info.n_lights; i = i + 1u) {
-            let light_brdf = light_to_brdf(get_light(i), material_color_{{s}}.normal, standard_coordinates.world_position);
+            let light_brdf = light_sample(get_light(i), material_color_{{s}}.normal, standard_coordinates.world_position);
             sample_color += brdf_direct(material_color_{{s}}, light_brdf, standard_coordinates.surface_to_camera);
         }
     {% when _ %}
@@ -215,7 +215,7 @@ match debug.lighting {
 match debug.lighting {
     None | PunctualOnly =>
         for(var i = 0u; i < lights_info.n_lights; i = i + 1u) {
-            let light_brdf = light_to_brdf(get_light(i), material_color_<S>.normal, standard_coordinates.world_position);
+            let light_brdf = light_sample(get_light(i), material_color_<S>.normal, standard_coordinates.world_position);
             sample_color += brdf_direct(material_color_<S>, light_brdf, standard_coordinates.surface_to_camera);
         }
     _ => {}

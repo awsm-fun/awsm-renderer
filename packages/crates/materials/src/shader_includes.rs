@@ -50,7 +50,7 @@ impl ShaderIncludes {
     pub const TEXTURES: Self = Self(Self::BIT_TEXTURES);
     /// `vertex_color.wgsl` (+ the pass's vertex-color attrib helper).
     pub const VERTEX_COLOR: Self = Self(Self::BIT_VERTEX_COLOR);
-    /// `lighting/light_access.wgsl` — get_light / light_to_brdf / LightsInfo /
+    /// `lighting/light_access.wgsl` — get_light / light_sample / LightsInfo /
     /// attenuation. Needed by anything that walks punctual lights (PBR + toon).
     pub const LIGHT_ACCESS: Self = Self(Self::BIT_LIGHT_ACCESS);
     /// `lighting/apply_lighting.wgsl` — the `apply_lighting*` orchestration that

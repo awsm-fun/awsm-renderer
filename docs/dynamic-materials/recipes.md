@@ -122,13 +122,41 @@ let alpha = mix(0.15, 0.9, fresnel);     // edges more opaque
 return TransparentShadingOutput(vec4<f32>(input.material.tint, alpha));
 ```
 
-## 8. Advanced: a PBR-lit custom material
-If you need real punctual + IBL lighting inside a custom material (rather than a
-built-in PBR material), set `set_material_includes { material, keys:
-["apply_lighting","brdf","light_access","material_color_calc"] }` and
-`fragment_inputs:["normals","view_dir","uv","tangents"]`, build a
-`PbrMaterialColor`, and call
+## 8. Lit (Lambert + Phong) — your own lighting, no PBR
+You do **not** need the PBR/BRDF stack to react to the scene's lights. The light
+list is **always in scope** (no `set_material_includes` needed): walk it with
+`get_lights_info()` / `get_light(i)` and sample each with `light_sample(light,
+normal, world_position)`, which returns a shading-model-agnostic
+`LightSample { light_dir, radiance, n_dot_l }` (attenuation + spot cone already
+applied). Compose any model you like.
+
+fragment_inputs: `["normals","view_dir"]`,
+uniforms: `[{name:"albedo",ty:"vec3<f32>",val:"0.8,0.3,0.3"},{name:"shininess",ty:"f32",val:"32.0"}]`.
+```wgsl
+let n = normalize(input.world_normal);
+let v = input.surface_to_camera;            // surface→camera, normalized
+let info = get_lights_info();
+var lit = vec3<f32>(0.0);
+for (var i = 0u; i < info.n_lights; i = i + 1u) {
+    let s = light_sample(get_light(i), n, input.world_position);
+    let diffuse = s.radiance * s.n_dot_l;                                  // Lambert
+    let r = reflect(-s.light_dir, n);
+    let spec = pow(max(dot(r, v), 0.0), input.material.shininess) * s.radiance * step(0.0001, s.n_dot_l);  // Phong
+    lit += diffuse + spec;
+}
+let ambient = vec3<f32>(0.03);
+let color = input.material.albedo * (lit + ambient);
+return OpaqueShadingOutput(color, 1.0);
+```
+(Iterating `n_lights` is fine for a handful of lights. For hundreds of punctuals
+prefer froxel-culled walking — declare `fragment_inputs:["lights"]` and use
+`apply_lighting_per_froxel`; see the contract.)
+
+## 9. Advanced: full PBR (GGX + IBL) inside a custom material
+For physically-based shading equal to the built-in PBR material, set
+`set_material_includes { material, keys:["apply_lighting","brdf","material_color_calc"] }`
+(`light_access` is already always present), build a `PbrMaterialColor`, and call
 `apply_lighting(material_color, input.surface_to_camera, input.world_position,
-lights_info, 1u)`. This is non-trivial — see `contract-opaque.md` ("Helpers in
-scope" → lighting) and the renderer's `lighting/apply_lighting.wgsl`. For most
-lit surfaces the built-in PBR material is the right tool.
+get_lights_info(), 1u)`. This pulls in the GGX/Fresnel/IBL math — only worth it
+when you need true PBR that the built-in material can't express; otherwise
+recipe #8 (or a built-in PBR material) is lighter.

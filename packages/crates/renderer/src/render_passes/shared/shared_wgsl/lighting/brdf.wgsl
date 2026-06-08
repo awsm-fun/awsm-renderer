@@ -429,7 +429,7 @@ fn iridescence_fresnel(
 // Direct Lighting BRDF (Cook-Torrance)
 // With clearcoat and sheen extensions
 // -------------------------------------------------------------
-fn brdf_direct(color: PbrMaterialColor, light_brdf: LightBrdf, surface_to_camera: vec3<f32>) -> vec3<f32> {
+fn brdf_direct(color: PbrMaterialColor, light_brdf: LightSample, surface_to_camera: vec3<f32>) -> vec3<f32> {
     let n = safe_normalize(light_brdf.normal);
     let l = safe_normalize(light_brdf.light_dir);
 

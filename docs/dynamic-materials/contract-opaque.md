@@ -250,10 +250,25 @@ For convenience, the kernel exposes the per-pixel barycentric UV via
 
 ### `shared_wgsl/lighting/`
 
-`brdf.wgsl` (Schlick / Lambert / GGX), `light_access.wgsl` (light unpack
-/ `get_light` / `LightsInfo`), `apply_lighting.wgsl` (the punctual-light
-walk → `brdf`). (`lights.wgsl` was split into `light_access.wgsl` +
-`apply_lighting.wgsl` — see the specialize-only materials notes in
+Lighting is split into three layers so you only pay for what you use:
+
+- **`light_access.wgsl` — ALWAYS present, no include needed, NO PBR cost.**
+  The generic light primitive. `get_lights_info() -> LightsInfo` (`.n_lights`),
+  `get_light(i) -> Light`, and `light_sample(light, normal, world_position) ->
+  LightSample`. `LightSample` is shading-model-agnostic:
+  `{ light_dir, radiance (color·intensity·attenuation, spot+range applied),
+  n_dot_l }`. Build **any** model directly — Lambert is `radiance * n_dot_l`;
+  Phong adds `pow(max(dot(reflect(-light_dir, normal), view_dir), 0), s) *
+  radiance`. This is the right tool for simple lit custom materials (see the
+  recipes cookbook, "Lit (Lambert + Phong)"). For many punctual lights,
+  declare `fragment_inputs:["lights"]` and use the froxel-culled walk.
+- **`brdf.wgsl`** (Schlick / Lambert / GGX) and **`apply_lighting.wgsl`** (the
+  full punctual + IBL orchestration over `brdf`) — opt in with
+  `set_material_includes` only when you want true PBR. `apply_lighting(
+  material_color: PbrMaterialColor, surface_to_camera, world_position,
+  get_lights_info(), receive_shadows)` is the heavy path.
+
+(`lights.wgsl` was split into these — see the specialize-only notes in
 `docs/SHADER_GUIDELINES.md`.) The unlit output helper `compute_unlit_output`
 is **not** a shared module — it lives in the unlit material fragment
 (`crates/materials/src/wgsl/unlit_material.wgsl`).
