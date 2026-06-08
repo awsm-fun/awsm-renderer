@@ -32,6 +32,13 @@ thread_local! {
     /// the material's **stable id** (not its display name) so renaming a material
     /// never orphans an assigned mesh's resolution.
     static REGISTRY: RefCell<HashMap<AssetId, MaterialShaderId>> = RefCell::new(HashMap::new());
+
+    /// `material id → (layout_hash, wgsl_hash)` of its last *successful*
+    /// registration. Lets [`register`] no-op when re-registering byte-identical
+    /// content — so the ~400ms debounced auto-register doesn't churn the
+    /// shader_id (drop + re-add → a fresh id) out from under an in-flight
+    /// compile-status poll, which would otherwise race the diagnostics.
+    static LAST_HASH: RefCell<HashMap<AssetId, (u64, u64)>> = RefCell::new(HashMap::new());
 }
 
 fn registered_shader_id(id: AssetId) -> Option<MaterialShaderId> {
@@ -70,13 +77,24 @@ fn buffer_words_for(path: &str) -> Option<Vec<u32>> {
 pub async fn register(mat: &CustomMaterial) -> Result<MaterialShaderId, String> {
     let reg = build_registration(mat);
     let mat_id = mat.id;
+    let hashes = (reg.layout_hash, reg.wgsl_hash);
+    // No-op when the content is byte-identical to the last successful register
+    // (same layout + wgsl) and we still hold its shader id. Avoids the debounced
+    // auto-register dropping + re-adding the same material — which would mint a
+    // new shader_id and invalidate an in-flight `await_dynamic_compile` poll.
+    let existing = REGISTRY.with(|reg| reg.borrow().get(&mat_id).copied());
+    if let Some(existing) = existing {
+        if LAST_HASH.with(|h| h.borrow().get(&mat_id).copied()) == Some(hashes) {
+            return Ok(existing);
+        }
+    }
     let handle = renderer_handle();
     let mut r = handle.lock().await;
     // Recompile: the renderer rejects re-registering a key whose content changed,
     // so drop this material's previous registration first (the editor's
     // edit→re-register cycle `unregister_material` expects). Keyed by id, so a
     // rename is just a display change — the registration key is unaffected.
-    if let Some(old) = REGISTRY.with(|reg| reg.borrow().get(&mat_id).copied()) {
+    if let Some(old) = existing {
         let _ = r.unregister_material(old);
     }
     let shader_id = r.register_material(reg).map_err(|e| format!("{e}"))?;
@@ -84,6 +102,7 @@ pub async fn register(mat: &CustomMaterial) -> Result<MaterialShaderId, String> 
         tracing::warn!("finalize after register: {e}");
     }
     REGISTRY.with(|reg| reg.borrow_mut().insert(mat_id, shader_id));
+    LAST_HASH.with(|h| h.borrow_mut().insert(mat_id, hashes));
     Ok(shader_id)
 }
 
@@ -161,9 +180,14 @@ fn build_custom(renderer: &mut AwsmRenderer, inst: &CustomMaterialInstance) -> O
                 .unwrap_or_default();
             for (i, name) in tex_slots.iter().enumerate() {
                 if let Some(tref) = inst.texture_overrides.get(name) {
-                    if let Some(key) = super::material::resolve_texture_key(renderer, tref) {
+                    if let Some((key, sampler)) =
+                        super::material::resolve_texture_binding(renderer, tref)
+                    {
                         if let Some(slot) = dm.textures.get_mut(i) {
-                            *slot = Some(DynamicTextureBinding::Pooled(key));
+                            *slot = Some(DynamicTextureBinding::Pooled {
+                                texture: key,
+                                sampler,
+                            });
                         }
                     }
                 }

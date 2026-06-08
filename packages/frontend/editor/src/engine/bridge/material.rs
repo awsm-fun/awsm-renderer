@@ -29,11 +29,18 @@ thread_local! {
     static TEXTURE_KEYS: RefCell<HashMap<AssetId, TextureKey>> = RefCell::new(HashMap::new());
 }
 
-/// Resolve a [`TextureRef`] to a renderer [`TextureKey`] (uploading a procedural
-/// texture once / reusing a pre-registered key), pooling its sampler so the
-/// binding is valid. Used for per-mesh texture overrides on dynamic materials.
-pub(crate) fn resolve_texture_key(r: &mut AwsmRenderer, tref: &TextureRef) -> Option<TextureKey> {
-    resolve_texture(r, tref, true, MipmapTextureKind::Albedo).map(|t| t.key)
+/// Resolve a texture ref → `(pooled texture key, sampler key)` for a dynamic
+/// material slot, uploading a procedural texture once / reusing a
+/// pre-registered key and pooling its sampler so the binding is valid. Returns
+/// the sampler too so the dynamic packer can encode the slot's `uv_and_sampler`
+/// word (see `DynamicMaterialContext::resolve_texture_index`). Used for
+/// per-mesh texture overrides on dynamic materials.
+pub(crate) fn resolve_texture_binding(
+    r: &mut AwsmRenderer,
+    tref: &TextureRef,
+) -> Option<(TextureKey, SamplerKey)> {
+    let mt = resolve_texture(r, tref, true, MipmapTextureKind::Albedo)?;
+    Some((mt.key, mt.sampler_key?))
 }
 
 /// The renderer [`TextureKey`] a texture asset resolves to, if it's been
@@ -49,6 +56,65 @@ pub(crate) fn texture_key_for(asset_id: AssetId) -> Option<TextureKey> {
 /// Used by glTF import to wire extracted materials to their original textures.
 pub(crate) fn register_texture_key(asset_id: AssetId, key: TextureKey) {
     TEXTURE_KEYS.with(|c| c.borrow_mut().insert(asset_id, key));
+}
+
+/// Fetch + decode an image URL to RGBA8 bytes (via the browser's
+/// `createImageBitmap` + a 2D canvas readback). Cross-origin URLs need CORS
+/// headers (same constraint as glTF image loads).
+async fn fetch_rgba(url: &str) -> Result<(Vec<u8>, u32, u32), String> {
+    use wasm_bindgen::JsCast;
+    let bitmap = awsm_renderer_core::image::bitmap::load(url.to_string(), None)
+        .await
+        .map_err(|e| format!("load image: {e}"))?;
+    let (w, h) = (bitmap.width().max(1), bitmap.height().max(1));
+    let document = web_sys::window()
+        .and_then(|w| w.document())
+        .ok_or("no document")?;
+    let canvas: web_sys::HtmlCanvasElement = document
+        .create_element("canvas")
+        .map_err(|_| "create canvas")?
+        .dyn_into()
+        .map_err(|_| "canvas cast")?;
+    canvas.set_width(w);
+    canvas.set_height(h);
+    let ctx: web_sys::CanvasRenderingContext2d = canvas
+        .get_context("2d")
+        .map_err(|_| "get 2d context")?
+        .ok_or("no 2d context")?
+        .dyn_into()
+        .map_err(|_| "2d context cast")?;
+    ctx.draw_image_with_image_bitmap(&bitmap, 0.0, 0.0)
+        .map_err(|_| "drawImage")?;
+    let image_data = ctx
+        .get_image_data(0, 0, w as i32, h as i32)
+        .map_err(|_| "getImageData (image cross-origin without CORS?)")?;
+    Ok((image_data.data().to_vec(), w, h))
+}
+
+/// Import a raster texture from a URL: fetch + decode, upload to the GPU texture
+/// pool, and register the asset id against the resulting [`TextureKey`] so it
+/// resolves for material binding + `screenshot_texture`. The caller creates the
+/// `TextureDef::Raster` asset entry.
+pub(crate) async fn import_texture_url(id: AssetId, url: &str) -> Result<(), String> {
+    // Fetch/decode WITHOUT holding the renderer lock (network wait).
+    let (rgba, w, h) = fetch_rgba(url).await?;
+    let handle = crate::engine::context::renderer_handle();
+    let mut r = handle.lock().await;
+    let sampler_key = sampler_for(&mut r, None).ok_or("sampler")?;
+    let color = TextureColorInfo {
+        mipmap_kind: MipmapTextureKind::Albedo,
+        srgb_to_linear: true,
+        premultiplied_alpha: None,
+    };
+    let key = r
+        .textures
+        .add_image_rgba_raw(&rgba, w, h, sampler_key, color)
+        .map_err(|e| format!("upload: {e}"))?;
+    r.finalize_gpu_textures()
+        .await
+        .map_err(|e| format!("finalize: {e}"))?;
+    register_texture_key(id, key);
+    Ok(())
 }
 
 /// The "missing material" colour: flat, unlit magenta. A mesh with **no** assigned

@@ -180,6 +180,7 @@ fn dispatch(cmd: EditorCommand) {
 fn insert(spec: InsertSpec) -> Rc<dyn Fn()> {
     Rc::new(move || {
         dispatch(EditorCommand::Insert {
+            id: awsm_scene_schema::NodeId::new(),
             spec: spec.clone(),
             parent: None,
         })
@@ -328,7 +329,9 @@ fn commands() -> Vec<Cmd> {
         "New custom material",
         "material",
         Rc::new(|| {
-            dispatch(EditorCommand::AddCustomMaterial);
+            dispatch(EditorCommand::AddCustomMaterial {
+                id: awsm_scene_schema::AssetId::new(),
+            });
             dispatch(EditorCommand::SwitchMode {
                 mode: EditorMode::Material,
             });

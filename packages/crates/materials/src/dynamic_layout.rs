@@ -34,7 +34,9 @@
 //! ## Field order for the generated `MaterialData` struct
 //!
 //! 1. Every [`UniformField`](Self) in declaration order (alignment-respecting).
-//! 2. One `<name>_index: u32` per [`TextureSlot`](Self).
+//! 2. One `<name>_index: u32` + `<name>_uv_sampler: u32` per
+//!    [`TextureSlot`](Self) (`array_index | layer<<12`, and
+//!    `uv_set | sampler<<8`).
 //! 3. One `<name>_offset: u32` + `<name>_length: u32` per
 //!    [`BufferSlot`](Self).
 //!
@@ -289,11 +291,22 @@ pub fn generate_wgsl_struct(struct_name: &str, layout: &MaterialLayout) -> Strin
         );
     }
     for tex in &layout.textures {
+        // Two u32 per texture slot: `<name>_index` packs array_and_layer,
+        // `<name>_uv_sampler` packs uv_set | sampler<<8. The generated
+        // `material_sample_<name>` helper reads both (see
+        // `generate_wgsl_texture_helpers`).
         emit_field(
             &mut out,
             &mut offset,
             &mut pad_counter,
             &format!("{}_index", tex.name),
+            FieldType::U32,
+        );
+        emit_field(
+            &mut out,
+            &mut offset,
+            &mut pad_counter,
+            &format!("{}_uv_sampler", tex.name),
             FieldType::U32,
         );
     }
@@ -456,6 +469,12 @@ pub fn generate_wgsl_loader(struct_name: &str, fn_name: &str, layout: &MaterialL
             FieldType::U32,
             &mut field_byte_offset,
         );
+        emit(
+            &mut out,
+            &format!("{}_uv_sampler", tex.name),
+            FieldType::U32,
+            &mut field_byte_offset,
+        );
     }
     for buf in &layout.buffers {
         emit(
@@ -480,6 +499,69 @@ pub fn generate_wgsl_loader(struct_name: &str, fn_name: &str, layout: &MaterialL
     }
 
     out.push_str("    );\n}\n");
+
+    // Per-texture sampler helpers ride along with the loader so they reach
+    // every kernel that consumes `dynamic_loader_decl` (opaque, transparent,
+    // edge-resolve) — all of which already define `TextureInfo` and
+    // `texture_pool_sample`, and emit `dynamic_struct_decl` (the struct) ahead
+    // of the loader.
+    out.push_str(&generate_wgsl_texture_helpers(struct_name, layout));
+
+    out
+}
+
+/// Generate the per-texture-slot author helpers for a dynamic material.
+///
+/// For each declared texture `<name>`, emits two module-scope functions:
+///
+/// ```wgsl
+/// fn material_<name>_texture_info(m: MaterialData) -> TextureInfo  // advanced
+/// fn material_sample_<name>(m: MaterialData, uv: vec2<f32>) -> vec4<f32>
+/// ```
+///
+/// `material_sample_<name>(input.material, uv)` is the one-liner authors call
+/// instead of hand-rolling offset math + `material_load_texture_info_raw`. It
+/// reads the two packed slot words the packer wrote — `<name>_index`
+/// (`array_index | layer<<12`) and `<name>_uv_sampler` (`uv_set | sampler<<8`)
+/// — reconstructs a [`TextureInfo`] (the field order mirrors
+/// `shared_wgsl/textures.wgsl`'s `struct TextureInfo`), and calls the kernel's
+/// variant-agnostic `texture_pool_sample`. An unbound slot (first word ==
+/// `u32::MAX`) samples to transparent black. `uv_transform_index` is `0`
+/// (identity) — pooled dynamic bindings carry no KHR_texture_transform.
+///
+/// Appended to [`generate_wgsl_loader`]'s output, so the 5 shader-assembly
+/// sites need no changes.
+pub fn generate_wgsl_texture_helpers(struct_name: &str, layout: &MaterialLayout) -> String {
+    let mut out = String::new();
+    for tex in &layout.textures {
+        let name = &tex.name;
+        // TextureInfo constructor field order (shared_wgsl/textures.wgsl):
+        //   exists, size, array_index, layer_index, uv_set_index,
+        //   sampler_index, mipmapped, address_mode_u, address_mode_v,
+        //   uv_transform_index
+        out.push_str(&format!(
+            "fn material_{name}_texture_info(m: {struct_name}) -> TextureInfo {{\n\
+             \x20   let packed = m.{name}_index;\n\
+             \x20   let uv_samp = m.{name}_uv_sampler;\n\
+             \x20   return TextureInfo(\n\
+             \x20       packed != 0xFFFFFFFFu,\n\
+             \x20       vec2<u32>(0u, 0u),\n\
+             \x20       packed & 0xFFFu,\n\
+             \x20       packed >> 12u,\n\
+             \x20       uv_samp & 0xFFu,\n\
+             \x20       uv_samp >> 8u,\n\
+             \x20       false,\n\
+             \x20       0u,\n\
+             \x20       0u,\n\
+             \x20       0u,\n\
+             \x20   );\n\
+             }}\n\
+             fn material_sample_{name}(m: {struct_name}, uv: vec2<f32>) -> vec4<f32> {{\n\
+             \x20   if (m.{name}_index == 0xFFFFFFFFu) {{ return vec4<f32>(0.0, 0.0, 0.0, 0.0); }}\n\
+             \x20   return texture_pool_sample(material_{name}_texture_info(m), uv);\n\
+             }}\n"
+        ));
+    }
     out
 }
 
@@ -518,6 +600,8 @@ pub fn layout_size(layout: &MaterialLayout) -> usize {
         walk(field.ty);
     }
     for _ in &layout.textures {
+        // `<name>_index` + `<name>_uv_sampler`
+        walk(FieldType::U32);
         walk(FieldType::U32);
     }
     for _ in &layout.buffers {
@@ -572,7 +656,7 @@ pub fn pack_uniform_values(layout: &MaterialLayout, values: &[UniformValue], out
 /// The caller is responsible for having packed the uniform tail first
 /// via [`pack_uniform_values`]; the writer aligns to `u32` at the slot's
 /// natural alignment relative to its own struct-start offset.
-pub fn pack_texture_indices(layout: &MaterialLayout, indices: &[u32], out: &mut Vec<u8>) {
+pub fn pack_texture_indices(layout: &MaterialLayout, indices: &[[u32; 2]], out: &mut Vec<u8>) {
     assert_eq!(
         indices.len(),
         layout.textures.len(),
@@ -583,10 +667,13 @@ pub fn pack_texture_indices(layout: &MaterialLayout, indices: &[u32], out: &mut 
     // The caller is expected to have already packed the uniform tail
     // starting at `out`'s base; align_buffer_to uses the *current* out
     // length as a proxy for "next field offset within the struct".
+    // Each slot is two words: `<name>_index` then `<name>_uv_sampler`.
     let start = struct_start(out, layout);
-    for &index in indices {
+    for &[array_and_layer, uv_and_sampler] in indices {
         align_buffer_to(out, FieldType::U32.align(), start);
-        out.extend_from_slice(&index.to_le_bytes());
+        out.extend_from_slice(&array_and_layer.to_le_bytes());
+        align_buffer_to(out, FieldType::U32.align(), start);
+        out.extend_from_slice(&uv_and_sampler.to_le_bytes());
     }
 }
 
@@ -923,24 +1010,26 @@ mod tests {
     #[test]
     fn mixed_uniform_texture_buffer_tail() {
         // [F32 "a"] uniform + [TextureSlot "tex"] + [BufferSlot "buf"]
-        // → struct is { a: f32, tex_index: u32, buf_offset: u32, buf_length: u32 }
-        // → 16 bytes total, naturally tight.
+        // → struct is { a: f32, tex_index: u32, tex_uv_sampler: u32,
+        //               buf_offset: u32, buf_length: u32 }
+        // → 20 bytes total, naturally tight.
         let layout = MaterialLayout {
             uniforms: vec![ufield("a", FieldType::F32)],
             textures: vec![tslot("tex")],
             buffers: vec![bslot("buf")],
         };
-        assert_eq!(layout_size(&layout), 16);
+        assert_eq!(layout_size(&layout), 20);
 
         let mut out = Vec::new();
         pack_uniform_values(&layout, &[UniformValue::F32(3.5)], &mut out);
-        pack_texture_indices(&layout, &[7u32], &mut out);
+        pack_texture_indices(&layout, &[[7u32, 9u32]], &mut out);
         pack_buffer_offsets(&layout, &[(100, 4)], &mut out);
-        assert_eq!(out.len(), 16);
+        assert_eq!(out.len(), 20);
         assert_eq!(&out[0..4], &3.5_f32.to_le_bytes());
-        assert_eq!(&out[4..8], &7u32.to_le_bytes());
-        assert_eq!(&out[8..12], &100u32.to_le_bytes());
-        assert_eq!(&out[12..16], &4u32.to_le_bytes());
+        assert_eq!(&out[4..8], &7u32.to_le_bytes()); // tex_index
+        assert_eq!(&out[8..12], &9u32.to_le_bytes()); // tex_uv_sampler
+        assert_eq!(&out[12..16], &100u32.to_le_bytes()); // buf_offset
+        assert_eq!(&out[16..20], &4u32.to_le_bytes()); // buf_length
     }
 
     #[test]
@@ -954,6 +1043,7 @@ mod tests {
         assert!(src.contains("struct MaterialData {"));
         assert!(src.contains("    a: f32,"));
         assert!(src.contains("    tex_index: u32,"));
+        assert!(src.contains("    tex_uv_sampler: u32,"));
         assert!(src.contains("    buf_offset: u32,"));
         assert!(src.contains("    buf_length: u32,"));
     }

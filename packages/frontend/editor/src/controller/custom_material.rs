@@ -9,6 +9,7 @@
 //! TOML serializer snapshots these fields into `material-<id>.{toml,wgsl}`.
 
 use crate::engine::scene::AssetId;
+use awsm_editor_protocol::CompileError;
 use awsm_scene_schema::{MaterialDef, MaterialShading};
 use awsm_web_shared::prelude::{Mutable, MutableVec};
 use std::sync::Arc;
@@ -109,6 +110,13 @@ pub struct CustomMaterial {
     /// Whether the material has been registered (compiled to a renderer bucket).
     /// A content edit after registration flips this back to `false` (draft).
     pub registered: Mutable<bool>,
+    /// The outstanding compile diagnostics from the last (auto- or manual-)
+    /// register attempt — empty when the WGSL compiled cleanly. Surfaced over
+    /// MCP via `MaterialDiagnostics` so a caller can tell a compile failure from
+    /// a successful-but-dark shader (the original §A failure). Populated by the
+    /// register path (both the lightweight syntax check and the real GPU/naga
+    /// error, which is otherwise dropped).
+    pub last_diagnostics: Mutable<Vec<CompileError>>,
     /// Declared **pass dependencies** (the v1 "skinny materials" win): which
     /// `ShaderIncludes` this material's WGSL needs. Stored as the include keys;
     /// mapped to `awsm_materials::ShaderIncludes` bits at registration. The
@@ -117,6 +125,11 @@ pub struct CustomMaterial {
     pub shader_includes: Mutable<Vec<String>>,
     /// Declared `FragmentInputs` (interpolants the fragment reads).
     pub fragment_inputs: Mutable<Vec<String>>,
+    /// Monotonic counter bumped by *any* compile-affecting edit (WGSL, alpha,
+    /// double-sided, layout, includes/inputs). The auto-register observer watches
+    /// this — so a layout/alpha edit recompiles too, not just a WGSL edit (the
+    /// pre-reroute observer only watched `wgsl`). Not persisted.
+    pub recompile_rev: Mutable<u64>,
 }
 
 /// Every `ShaderIncludes` flag, by key (order = display order).
@@ -145,9 +158,22 @@ pub const FRAGMENT_INPUT_KEYS: &[&str] = &[
     "vertex_color",
 ];
 
-/// The default WGSL body for a fresh opaque material (matches the prototype).
-pub const NEW_MATERIAL_WGSL: &str =
-    "// new material — opaque.\nreturn OpaqueShadingOutput(vec3<f32>(0.55, 0.6, 0.68), 1.0);";
+/// The default WGSL body for a fresh opaque material: a view-dependent rim that
+/// renders **non-black out of the box** and demonstrates the input ABI (the
+/// `normals` + `view_dir` fragment inputs are seeded for it in
+/// [`CustomMaterial::new`]). See `docs/dynamic-materials/contract-opaque.md`.
+pub const NEW_MATERIAL_WGSL: &str = "\
+// Opaque material. Inputs arrive as fields on `input` (declare them in Pass
+// Dependencies): input.world_normal, input.surface_to_camera (normalized),
+// input.world_position, input.coords. Time: frame_globals_from_raw(frame_globals_raw).
+// `color` is linear HDR (tonemap is a later pass); it is UNLIT unless you call
+// apply_lighting(...). Must end in `return OpaqueShadingOutput(color, ao)`.
+let n = normalize(input.world_normal);
+let v = input.surface_to_camera;          // already normalized (surface -> camera)
+let fresnel = pow(1.0 - max(dot(n, v), 0.0), 3.0);
+let base = vec3<f32>(0.1, 0.12, 0.2);
+let color = base + vec3<f32>(0.6, 0.7, 1.0) * fresnel;
+return OpaqueShadingOutput(color, 1.0);";
 
 impl CustomMaterial {
     pub fn new(id: AssetId, name: impl Into<String>) -> Arc<Self> {
@@ -164,10 +190,14 @@ impl CustomMaterial {
             textures: Mutable::new(Vec::new()),
             buffers: Mutable::new(Vec::new()),
             registered: Mutable::new(false),
-            // Default to none selected — opt in only what the material's WGSL
-            // actually references (select-all is one click in the Definition rail).
+            last_diagnostics: Mutable::new(Vec::new()),
+            // Seed the inputs the default rim shader (`NEW_MATERIAL_WGSL`)
+            // references, so a fresh material compiles + renders non-black out of
+            // the box. Pare these back in the Definition rail for a leaner bucket
+            // once the WGSL no longer needs them.
             shader_includes: Mutable::new(Vec::new()),
-            fragment_inputs: Mutable::new(Vec::new()),
+            fragment_inputs: Mutable::new(vec!["normals".to_string(), "view_dir".to_string()]),
+            recompile_rev: Mutable::new(0),
         })
     }
 

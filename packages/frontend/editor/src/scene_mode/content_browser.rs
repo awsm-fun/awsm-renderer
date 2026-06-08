@@ -134,7 +134,9 @@ fn toolbar(cat: Mutable<Cat>, query: Mutable<String>) -> Dom {
         .child(Btn::new().label("Material").icon("plus").variant(BtnVariant::Ghost).size(BtnSize::Sm)
             .on_click(|| {
                 // "+ Material" authors a custom WGSL material in the Studio.
-                dispatch(EditorCommand::AddCustomMaterial);
+                dispatch(EditorCommand::AddCustomMaterial {
+                    id: awsm_scene_schema::AssetId::new(),
+                });
                 dispatch(EditorCommand::SwitchMode { mode: EditorMode::Material });
             }).render())
         .child(DropButton::new().label("Texture").icon("plus").variant(BtnVariant::Ghost).size(BtnSize::Sm)
@@ -142,7 +144,10 @@ fn toolbar(cat: Mutable<Cat>, query: Mutable<String>) -> Dom {
                 let proc = |kind: ProceduralKind, label: &str, close: &Close| {
                     let close = close.clone();
                     MenuItem::new(label).icon("texture").on_click(move || {
-                        dispatch(EditorCommand::AddTextureAsset { proc: kind });
+                        dispatch(EditorCommand::AddTextureAsset {
+                            id: awsm_scene_schema::AssetId::new(),
+                            proc: kind,
+                        });
                         (close.borrow_mut())();
                     }).render()
                 };

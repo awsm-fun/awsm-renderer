@@ -197,8 +197,8 @@ pub struct PipelineScheduler {
     /// Currently driven by the A.1 bridge via explicit `mark_ready` /
     /// `mark_failed`; no real futures pushed to it.
     inflight: FuturesUnordered<PendingFuture>,
-    /// Block D.1 PART 2 inflight: real per-pipeline compile promises
-    /// pushed by `AwsmRenderer::launch_dynamic_material_compile`.
+    /// Inflight: real per-pipeline compile promises pushed by
+    /// `AwsmRenderer::ensure_scene_pipelines` / `launch_edge_resolve_compile`.
     /// Each resolves to a [`PipelineCompileResolution`] carrying the
     /// `GpuComputePipeline` JsValue + install target; the renderer's
     /// `apply_compile_resolution` drives the install at poll time.
@@ -214,9 +214,9 @@ pub struct PipelineScheduler {
     pending_subcompiles: HashMap<MaterialId, u32>,
     /// **Cross-call in-flight waiter map** (compute pipelines).
     ///
-    /// Launch sites (`launch_dynamic_material_compile`,
-    /// `launch_first_party_material_compile`,
-    /// `launch_edge_resolve_compile`) all install resolved pipelines
+    /// The launch path (`ensure_scene_pipelines` via
+    /// `ensure_bucket_pipelines`, plus `launch_edge_resolve_compile`)
+    /// installs resolved pipelines
     /// into the SAME shared `ComputePipelines.cache`. When two
     /// launches in the same outer loop want the same cache key
     /// (e.g. the classify variant — keyed on
@@ -585,53 +585,6 @@ impl PipelineScheduler {
         // discards stale resolutions silently.
     }
 
-    /// Iterate every currently-submitted [`MaterialId`] whose
-    /// `MaterialDef.config_snapshot` differs from `expected`. Used by
-    /// the `set_anti_aliasing` config-flip path (Block D.3): when the
-    /// active config drifts, the scheduler iterates here, flips each
-    /// stale entry back to `Pending`, drives recompile, then marks
-    /// each `Ready` on success.
-    pub fn materials_with_stale_snapshot(
-        &self,
-        expected: &PipelineConfigSnapshot,
-    ) -> Vec<MaterialId> {
-        self.materials
-            .iter()
-            .filter(|(_, state)| state.status.is_ready() && state.def.config_snapshot != *expected)
-            .map(|(id, _)| id)
-            .collect()
-    }
-
-    /// Flip a Ready material back to `Pending` (Block D.3 config-flip
-    /// reset). Bumps the generation marker so any in-flight stale
-    /// compile resolutions get discarded. Updates `config_snapshot`
-    /// to the new active config so subsequent status queries see the
-    /// right one. No-op if the id doesn't exist or isn't a material.
-    pub fn mark_material_pending(
-        &mut self,
-        id: PipelineGroupId,
-        new_snapshot: PipelineConfigSnapshot,
-    ) {
-        let PipelineGroupId::Material(mid) = id else {
-            return;
-        };
-        let Some(state) = self.materials.get_mut(mid) else {
-            return;
-        };
-        state.status = PipelineGroupStatus::Pending;
-        state.generation = state.generation.wrapping_add(1);
-        state.def.config_snapshot = new_snapshot;
-        self.events.push(StatusEvent {
-            id,
-            status: PipelineGroupStatus::Pending,
-        });
-        tracing::info!(
-            target: "awsm_renderer::pipeline_readiness",
-            "mark_material_pending: material({:?}) -> Pending (config-flip)",
-            mid
-        );
-    }
-
     /// Returns the current generation marker for a material id, or
     /// `None` if the id isn't in the scheduler. Used by the literal-
     /// push-futures launch path (Block D.1 PART 2) to capture the
@@ -696,13 +649,11 @@ impl PipelineScheduler {
     /// matches the given `MaterialShaderId`. Returns `None` if no
     /// submitted material has this shader_id.
     ///
-    /// Used by the bridge between the legacy `prewarm_pipelines`
-    /// compile path and the new scheduler state: after
-    /// `prewarm_dynamic_pipelines` finishes compiling pipelines for a
-    /// registered material, the renderer calls this to find the
-    /// matching scheduler entry and then calls
-    /// [`Self::mark_ready`]. O(N) scan over registered materials —
-    /// N is small (typically <16 dynamic materials at runtime).
+    /// Used by `ensure_scene_pipelines` / `ensure_bucket_pipelines` to
+    /// find the scheduler group a bucket's compile should be charged to,
+    /// and by `dynamic_material_compile_status` to look up a material's
+    /// status by shader id. O(N) scan over registered materials — N is
+    /// small (typically <16 dynamic materials at runtime).
     pub fn find_material_by_shader_id(
         &self,
         shader_id: awsm_materials::MaterialShaderId,
@@ -713,28 +664,6 @@ impl PipelineScheduler {
             }
         }
         None
-    }
-
-    /// Returns the `MaterialShaderId` of every currently-submitted
-    /// scheduler material entry (dedup-by-shader_id at the call site
-    /// is the caller's job; in practice the gltf populate path
-    /// already de-duplicates per shader_id, so this method returns
-    /// one id per registered material).
-    ///
-    /// Used by [`crate::AwsmRenderer::finalize_gpu_textures`] to
-    /// re-launch the compile for every currently-registered material
-    /// after a texture-pool grow has invalidated their previously-
-    /// compiled pipelines' bind-group-layout shape. The launch path
-    /// (`launch_first_party_material_compile` /
-    /// `launch_dynamic_material_compile`) is idempotent — when the
-    /// new shader cache keys hit the cache (e.g. the rebuild was
-    /// triggered by a non-pool change that happened to also bump
-    /// `BindGroupCreate::TexturePool`), it short-circuits cheaply.
-    pub fn registered_material_shader_ids(&self) -> Vec<awsm_materials::MaterialShaderId> {
-        self.materials
-            .iter()
-            .map(|(_, state)| state.def.shader_id)
-            .collect()
     }
 
     /// Poll the in-flight `FuturesUnordered` for resolved compiles,

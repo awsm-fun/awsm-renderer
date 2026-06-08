@@ -309,8 +309,7 @@ impl MaterialEdgePipelines {
             //      PBR bucket) — has a dynamic-range id but NO custom
             //      registration. It compiles the built-in PBR/Toon body
             //      (`dynamic_shader = None`, `dispatch_hash = 0`), exactly
-            //      like a canonical bucket and mirroring
-            //      `launch_first_party_material_compile`. Skipping it here
+            //      like a canonical bucket. Skipping it here
             //      (the old `registry.get(...).else { continue }`) left the
             //      variant's per-shader edge pipeline unbuilt → dead MSAA
             //      for every mesh using a specialized first-party material.

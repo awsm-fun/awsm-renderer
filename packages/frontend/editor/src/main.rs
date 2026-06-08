@@ -218,17 +218,20 @@ pub fn editor_query_mode() -> String {
 }
 
 /// PNG data URL of the scene viewport (through the active camera). Empty string
-/// if the canvas isn't ready.
+/// if the canvas isn't ready. Async (returns a JS Promise) — the scene is read
+/// back from the GPU on the next presented frame.
 #[wasm_bindgen]
-pub fn editor_query_scene_png() -> String {
-    engine::query::scene_png().unwrap_or_default()
+pub async fn editor_query_scene_png() -> String {
+    engine::query::scene_png(None, None)
+        .await
+        .unwrap_or_default()
 }
 
 /// PNG data URL of the material-mode preview sphere. Empty string if the Studio
 /// isn't mounted.
 #[wasm_bindgen]
 pub fn editor_query_material_png() -> String {
-    engine::query::material_png().unwrap_or_default()
+    engine::query::material_png(None, None).unwrap_or_default()
 }
 
 /// PNG data URL of a texture asset (by UUID) — procedural textures are encoded

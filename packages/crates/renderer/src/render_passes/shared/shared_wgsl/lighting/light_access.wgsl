@@ -114,7 +114,19 @@ fn light_count_heatmap(count: u32) -> vec3<f32> {
     return vec3<f32>(r, g, b);
 }
 
-struct LightBrdf {
+// The result of sampling one light at a surface point — the generic,
+// shading-model-agnostic lighting primitive. `light_sample()` (below) computes
+// it for any light kind (directional/point/spot) with NO PBR/BRDF math, so
+// custom materials can do Lambert / Phong / toon / whatever WITHOUT pulling in
+// brdf.wgsl or apply_lighting.wgsl (this file is always present in every opaque
+// + transparent pipeline). The PBR path (`brdf_direct`) consumes the same
+// struct; it's just one consumer.
+//   - light_dir : normalized surface->light direction
+//   - radiance  : color * intensity * attenuation (spot/range already applied)
+//   - n_dot_l   : saturate(dot(normal, light_dir)) — the Lambert term
+// Lambert diffuse:  radiance * n_dot_l
+// Phong specular:   pow(max(dot(reflect(-light_dir, normal), view_dir), 0), s) * radiance
+struct LightSample {
     normal: vec3<f32>,
     n_dot_l: f32,
     light_dir: vec3<f32>,
@@ -131,7 +143,7 @@ struct LightBrdf {
 // difference; a strictly physical pipeline would multiply each kind by
 // the appropriate `683 lm/W` luminous-efficacy scale and divide by the
 // shaded surface's projected area.
-fn light_to_brdf(light:Light, normal: vec3<f32>, world_position: vec3<f32>) -> LightBrdf {
+fn light_sample(light:Light, normal: vec3<f32>, world_position: vec3<f32>) -> LightSample {
     var light_dir: vec3<f32> = vec3<f32>(0.0, 0.0, 0.0);
     var radiance: vec3<f32> = vec3<f32>(0.0, 0.0, 0.0);
     var n_dot_l: f32 = 0.0;
@@ -167,7 +179,7 @@ fn light_to_brdf(light:Light, normal: vec3<f32>, world_position: vec3<f32>) -> L
         }
     }
 
-    return LightBrdf(
+    return LightSample(
         normal,
         n_dot_l,
         light_dir,

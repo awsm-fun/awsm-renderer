@@ -178,7 +178,8 @@ struct MaterialData {
     tint: vec3<f32>,        // 12 bytes
     _pad0: u32,             // align next field to 16 (vec3 padding)
     scan_freq: f32,
-    base_index: u32,
+    base_index: u32,        // <name>_index      (array_index | layer<<12)
+    base_uv_sampler: u32,   // <name>_uv_sampler (uv_set | sampler<<8)
 }
 ```
 
@@ -216,27 +217,32 @@ let camera = camera_from_raw(camera_raw);
 
 ### `shared_wgsl/textures.wgsl`
 
-The auto-generated `<name>_index: u32` field on `MaterialData` is the
-renderer's [`array_and_layer`](../../packages/crates/renderer/src/render_passes/shared/shared_wgsl/textures.wgsl)
-encoding — `array_index` in the low 12 bits, `layer_index` in the
-upper 20 bits, exactly matching what
-`shared_wgsl/textures.wgsl::TextureInfoRaw.array_and_layer`
-decodes:
+For each texture slot `<name>` you declare, the renderer **generates two
+helper functions** for you — use these instead of decoding the raw slot
+words by hand:
 
 ```wgsl
-let raw_idx = input.material.base_index;       // <name>_index
-if (raw_idx == 0xFFFFFFFFu) {
-    // Unbound — fall back to a uniform colour, skip sampling, etc.
-} else {
-    let array_index = raw_idx & 0xFFFu;
-    let layer_index = raw_idx >> 12u;
-    // Direct texture_pool_arrays[array_index] sample at layer_index.
-    // For full glTF-style sampler / UV-transform / mipmap support,
-    // declare the texture as part of a typed first-party material
-    // (e.g. via `MaterialTexture`) instead — the dynamic schema's
-    // single-u32 slot intentionally trades that surface for
-    // simplicity.
-}
+// Sample the bound texture at `uv` (LOD 0 in the opaque/edge kernels,
+// hardware-derivative in the transparent kernel). Returns transparent
+// black when the slot is unbound.
+fn material_sample_<name>(m: MaterialData, uv: vec2<f32>) -> vec4<f32>
+
+// The reconstructed descriptor, if you need array/layer/sampler directly.
+fn material_<name>_texture_info(m: MaterialData) -> TextureInfo
+```
+
+So sampling is a one-liner:
+
+```wgsl
+let base = material_sample_base(input.material, uv).rgb;
+```
+
+Under the hood the slot is two `u32` words — `<name>_index`
+(`array_index | layer<<12`) and `<name>_uv_sampler` (`uv_set | sampler<<8`),
+matching `shared_wgsl/textures.wgsl::TextureInfoRaw`. The generated helper
+unpacks both, builds a `TextureInfo` (identity UV-transform), and calls the
+kernel's variant-agnostic `texture_pool_sample`. You normally never touch
+the raw words; `material_<name>_texture_info` is the escape hatch if you do.
 ```
 
 For convenience, the kernel exposes the per-pixel barycentric UV via
@@ -244,10 +250,25 @@ For convenience, the kernel exposes the per-pixel barycentric UV via
 
 ### `shared_wgsl/lighting/`
 
-`brdf.wgsl` (Schlick / Lambert / GGX), `light_access.wgsl` (light unpack
-/ `get_light` / `LightsInfo`), `apply_lighting.wgsl` (the punctual-light
-walk → `brdf`). (`lights.wgsl` was split into `light_access.wgsl` +
-`apply_lighting.wgsl` — see the specialize-only materials notes in
+Lighting is split into three layers so you only pay for what you use:
+
+- **`light_access.wgsl` — ALWAYS present, no include needed, NO PBR cost.**
+  The generic light primitive. `get_lights_info() -> LightsInfo` (`.n_lights`),
+  `get_light(i) -> Light`, and `light_sample(light, normal, world_position) ->
+  LightSample`. `LightSample` is shading-model-agnostic:
+  `{ light_dir, radiance (color·intensity·attenuation, spot+range applied),
+  n_dot_l }`. Build **any** model directly — Lambert is `radiance * n_dot_l`;
+  Phong adds `pow(max(dot(reflect(-light_dir, normal), view_dir), 0), s) *
+  radiance`. This is the right tool for simple lit custom materials (see the
+  recipes cookbook, "Lit (Lambert + Phong)"). For many punctual lights,
+  declare `fragment_inputs:["lights"]` and use the froxel-culled walk.
+- **`brdf.wgsl`** (Schlick / Lambert / GGX) and **`apply_lighting.wgsl`** (the
+  full punctual + IBL orchestration over `brdf`) — opt in with
+  `set_material_includes` only when you want true PBR. `apply_lighting(
+  material_color: PbrMaterialColor, surface_to_camera, world_position,
+  get_lights_info(), receive_shadows)` is the heavy path.
+
+(`lights.wgsl` was split into these — see the specialize-only notes in
 `docs/SHADER_GUIDELINES.md`.) The unlit output helper `compute_unlit_output`
 is **not** a shared module — it lives in the unlit material fragment
 (`crates/materials/src/wgsl/unlit_material.wgsl`).
@@ -354,10 +375,13 @@ let fg = frame_globals_from_raw(frame_globals_raw);
 let uv = vec2<f32>(f32(input.coords.x), f32(input.coords.y))
        / vec2<f32>(f32(input.screen_dims.x), f32(input.screen_dims.y));
 
-// Sample the base texture (the wrapper populated input.material.base_index).
-let info_raw = material_load_texture_info_raw(input.material_offset / 4u + 1u);
-let info = convert_texture_info(info_raw);
-let base = texture_pool_sample_no_mips(info, uv).rgb;
+// Sample the `base` texture slot. `material_sample_<name>` is the
+// renderer-generated, variant-agnostic helper for each declared texture —
+// no offset math, correct sampler + UV, unbound-safe. Do NOT hand-roll
+// `material_load_texture_info_raw(...)` or call `texture_pool_sample_no_mips`
+// / `texture_pool_sample_grad` directly (each exists in only one mipmap
+// variant; a custom fragment compiles into both).
+let base = material_sample_base(input.material, uv).rgb;
 
 // Animated horizontal scanline pattern.
 let scan = sin(uv.y * input.material.scan_freq

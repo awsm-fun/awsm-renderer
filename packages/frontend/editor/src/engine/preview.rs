@@ -234,7 +234,14 @@ pub(super) async fn build_renderer(
         .with_configuration(
             CanvasConfiguration::default()
                 .with_alpha_mode(CanvasAlphaMode::Opaque)
-                .with_tone_mapping(CanvasToneMappingMode::Standard),
+                .with_tone_mapping(CanvasToneMappingMode::Standard)
+                // COPY_SRC so the preview swapchain is readable via toDataURL
+                // (same Chrome requirement as the main canvas — see context.rs).
+                .with_usage(
+                    awsm_renderer_core::texture::TextureUsage::new()
+                        .with_render_attachment()
+                        .with_copy_src(),
+                ),
         )
         .with_device_request_limits(DeviceRequestLimits::max_all());
 

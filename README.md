@@ -162,7 +162,7 @@ authority, so the agent and a human watching the same tab stay in sync.
 
 ## What the agent can do
 
-~40 typed tools, including:
+~90 typed tools, including:
 
 - **Discover / observe** — `get_snapshot` (scene tree, ids, selection, mode,
   materials, animation), `screenshot_scene` (PNG image block), `get_mode`,

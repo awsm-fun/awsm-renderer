@@ -99,53 +99,111 @@ sync, and undo/redo/coalescing all work as in the UI.
 
 ## Tool catalog
 
-~40 typed tools. Each is a thin wrapper that builds an `EditorCommand` /
+~90 typed tools plus MCP **resources** (the docs below) and **prompts** (workflow
+templates). Each tool is a thin wrapper that builds an `EditorCommand` /
 `EditorQuery` from typed (schema'd) parameters and relays it to the editor. Node
 and asset references are UUID strings — get them from `get_snapshot`.
 
+> **New to driving this over MCP?** Read the [Agent Guide](AGENT_GUIDE.md)
+> (`awsm://docs/agent-guide`) first — it covers the mutate→settle→screenshot
+> loop, an end-to-end scene walkthrough, lighting, batching, and
+> troubleshooting. For custom materials see the
+> [recipes cookbook](dynamic-materials/recipes.md)
+> (`awsm://docs/material-recipes`); for animation see
+> [Animation Authoring](ANIMATION_AUTHORING.md) (`awsm://docs/animation`).
+
+**Connection / health**
+- `ping` — confirm an editor is attached (fails fast otherwise).
+- `get_console_logs { limit? }` — recent editor notices (toasts) from a ring
+  buffer; surfaces runtime errors otherwise stuck in the browser.
+
 **Discover / observe**
-- `get_snapshot` — scene tree (ids/names/kinds), selection, mode, undo/redo
-  depth, animation library, custom materials. *Start here.*
+- `get_snapshot` — scene tree (ids/names/kinds + visible/locked), selection,
+  mode, undo/redo depth, animation library, custom materials (incl. `compile_ok`
+  + `errors`), textures, project coordinate-system metadata. *Start here.*
 - `get_mode` — current workspace (`scene` / `material` / `animation`).
+- `get_node_transforms { nodes? }` — local TRS + world matrix per node (empty = all).
+- `get_node_details { nodes? }` — full per-kind config + material assignment.
+- `get_node_bounds { nodes? }` — world-space AABB per node (for framing/sizing).
 - `get_material_wgsl { asset }` — a custom material's WGSL source.
+- `get_material_diagnostics { asset }` — `{ registered, ok, errors }` (tell a
+  compile failure from a successful-but-dark shader).
+- `get_material_contract { transparent? }` — the WGSL authoring ABI + legal keys.
+- `get_track_data { clip, track }` — a track's full keyframes/sampler/mute/solo.
+- `get_frame_globals` — renderer `time`/`delta_time`/`frame_count`/`resolution`.
 - `canvas_stats { region? }` — mean/min/max luma over a region or the whole canvas.
-- `screenshot_scene` / `screenshot_material` / `screenshot_texture { asset }` —
-  PNG returned as an MCP **image** content block, so the agent sees its effect.
+- `wait_render_settled { max_ms? }` — block until recompiles drain + a frame
+  presents. **Call between an edit and a screenshot.**
+- `screenshot_scene { width?, height? }` / `screenshot_material { width?, height? }`
+  / `screenshot_texture { asset }` — PNG as an MCP **image** block.
 
 **Scene / nodes**
 - `insert_primitive { shape, parent? }` (plane/box/sphere/cylinder/cone/torus),
-  `insert_empty`, `insert_camera`, `insert_light { kind, parent? }`.
-- `node_set_transform { node, translation, rotation, scale }` (rotation is a
-  quaternion `[x,y,z,w]`).
+  `insert_empty`, `insert_camera`, `insert_light { kind, parent? }` — **return the
+  new node id.**
+- `node_set_transform { node, translation, rotation, scale }` (rotation is a local
+  quaternion `[x,y,z,w]`), plus convenience: `set_translation`, `translate_by`,
+  `set_scale`, `set_rotation_euler { euler, order? }`.
 - `rename_node`, `delete_node`, `duplicate_node`, `reparent_node`,
   `set_node_visible`, `set_node_locked`, `set_selection`.
 
 **Project / import / history**
-- `new_project`, `load_project_from_url { base_url }`,
+- `new_project` (seeds a key light + IBL), `load_project_from_url { base_url }`,
   `import_model_from_url { url }`, `undo`, `redo`.
 
 **Materials**
-- `add_builtin_material { shading }` (pbr/unlit), `add_custom_material`,
-  `register_material { asset }`, `assign_material { node, material? }`.
-- `set_material_wgsl { material, wgsl }` (replace source; auto-recompiles),
-  `get_material_wgsl { asset }`.
+- `add_builtin_material { shading }` (pbr/unlit), `add_custom_material` — **return
+  the new id.** `register_material`, `assign_material { node, material? }`,
+  `delete_custom_material`, `copy_material_instance { from, to }`.
+- `set_material_wgsl { material, wgsl }` — replace source + synchronous recompile;
+  **answers truthfully** (errors carry the compiler diagnostics, no silent `ok`).
+- Authoring: `set_material_alpha_mode`, `set_material_double_sided`,
+  `set_material_debug_color`, `set_material_layout { uniforms, textures, buffers }`,
+  `set_material_includes { keys }`, `set_material_fragment_inputs { keys }`,
+  `set_material_uniform { material, name, value }`, `set_material_texture
+  { node, slot, texture? }`, `set_builtin_param { node, param, value }`.
 
-**View / camera**
+**Lighting / environment**
+- `set_light_color`, `set_light_intensity`, `set_light_range`, `set_light_angles`.
+- `set_environment { skybox?, ibl_prefiltered?, ibl_irradiance? }` (builtin or KTX).
+
+**Textures**
+- `add_texture_asset { proc }` (checker/gradient/noise) and
+  `import_texture_from_url { url }` (PNG/JPEG/WebP, fetched + uploaded to the GPU)
+  — both return the new id; bind with `set_material_texture`.
+
+**View / camera / time**
 - `switch_mode { mode }`, `snap_camera_to_axis { axis }`, `reset_camera`.
+- `set_camera_orbit { yaw, pitch, radius, look_at }`,
+  `set_camera_projection { perspective, fov_y? }`, `frame_node { node, padding? }`.
+- `set_frame_time { seconds }` / `clear_frame_time` — pin `frame_globals.time` for
+  deterministic temporal-material screenshots.
 
 **Animation**
-- `add_clip` (returns the new clip id), `delete_clip`, `set_current_clip`,
+- `add_clip` (returns the new id), `delete_clip`, `duplicate_clip`, `rename_clip`,
+  `set_clip_duration`, `set_clip_speed`, `set_clip_loop`, `set_current_clip`,
   `set_playhead { t }`, `set_playing { on }`.
+- Typed tracks/keys: `add_track { clip, target }`, `add_keyframe`, `set_keyframe`,
+  `delete_keyframe`.
 
-**Generic escape hatches — full coverage**
-- `dispatch_command { command }` — a raw `EditorCommand` as JSON (internally
-  tagged by `"cmd"`), e.g. `{"cmd":"set_keyframe","clip":"<uuid>","track":0,...}`.
-- `run_query { query }` — a raw `EditorQuery` as JSON (tagged by `"query"`), e.g.
-  `{"query":"canvas_pixels","coords":[[100,100]]}`.
+**Batch + generic escape hatches — full coverage**
+- `dispatch_batch { commands }` — a list of raw `EditorCommand`s applied
+  atomically as one undo step (one round-trip).
+- `dispatch_command { command }` — a single raw `EditorCommand` (tagged by `"cmd"`).
+- `run_query { query }` — a raw `EditorQuery` (tagged by `"query"`).
 
-The escape hatches reach **every** `EditorCommand` / `EditorQuery` variant — even
-the ones without a dedicated tool (keyframes, tracks, the NLA mixer, environment,
-…). The authoritative inventory is the enums themselves:
+**Resources** (read-only docs): `awsm://docs/mcp`,
+`awsm://docs/material-contract-opaque`, `awsm://docs/material-contract-transparent`.
+
+**Prompts** (workflow templates): `author_lit_material`, `setup_rotation_clip`,
+`import_and_frame_model`.
+
+**Push channel** — the editor relays toasts (warning/error) and selection changes
+to the agent as MCP `notifications/message` logging notifications, so an agent can
+react to compile errors or a human clicking a node.
+
+The escape hatches reach **every** `EditorCommand` / `EditorQuery` variant. The
+authoritative inventory is the enums themselves:
 [`controller/command.rs`](../packages/frontend/editor/src/controller/command.rs)
 and [`controller/query.rs`](../packages/frontend/editor/src/controller/query.rs)
 (which re-export from `awsm-editor-protocol`).
@@ -248,9 +306,13 @@ curl -s -X POST http://127.0.0.1:9086/debug -H 'content-type: application/json' 
 
 - **Single editor link.** The server holds one attached editor; the last tab to
   connect wins. Multi-tab routing (a `link_id` selector) is not implemented.
-- **Request/reply only.** There's no editor→agent push channel (e.g. "the user
-  clicked node X"). An editor-initiated stream + an MCP resource/subscription
-  would add it.
+- **Editor→agent push** is implemented for toasts (warning/error) and selection
+  changes: the editor opens a unidirectional stream per event
+  ([`remote::notify_event`](../packages/frontend/editor/src/remote.rs)), the
+  server fans them out ([`link::EditorLink`](../packages/mcp/src/link.rs)) and each
+  MCP session forwards them as `notifications/message` logging notifications
+  ([`on_initialized`](../packages/mcp/src/mcp.rs)). Other event kinds (and an
+  MCP resource-subscription model) are future work.
 
 ---
 

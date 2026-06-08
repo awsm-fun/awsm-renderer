@@ -9,22 +9,115 @@
 //! the material preview render on a continuous RAF, so `toDataURL` returns the
 //! latest frame.
 
+use std::cell::RefCell;
+
 use awsm_scene_schema::{AssetSource, TextureDef};
+use awsm_web_shared::prelude::Mutable;
 use wasm_bindgen::{Clamped, JsCast};
 
 use crate::controller::controller;
 use crate::engine::scene::AssetId;
 
-/// PNG data URL of the **scene viewport** (rendered through the active camera —
-/// built-in or a scene camera). `None` if the canvas isn't mounted yet.
-pub fn scene_png() -> Option<String> {
-    crate::engine::context::with_canvas(|c| c.to_data_url_with_type("image/png").ok())
+/// A captured scene frame: tightly packed display-space RGBA8 + dimensions.
+type CapturedFrame = Result<(Vec<u8>, u32, u32), String>;
+
+thread_local! {
+    /// Pending scene-capture requests. The render loop fills these AFTER it
+    /// renders a frame — the only point where the WebGPU swapchain texture holds
+    /// the rendered content + is still the current texture (a `getCurrentTexture`
+    /// on the next frame returns a fresh, blank one). `toDataURL`/`drawImage`
+    /// return empty on a WebGPU canvas, so we GPU-copy the texture instead.
+    static CAPTURE_REQUESTS: RefCell<Vec<Mutable<Option<CapturedFrame>>>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// Capture the current scene viewport as display-space RGBA8 `(rgba, w, h)`.
+/// Registers a request the render loop fulfills on its next frame (`poll` below);
+/// times out if no frame presents.
+pub async fn capture_scene_rgba() -> CapturedFrame {
+    let slot: Mutable<Option<CapturedFrame>> = Mutable::new(None);
+    CAPTURE_REQUESTS.with(|q| q.borrow_mut().push(slot.clone()));
+    // Poll on a frame cadence; the render loop drives `poll_scene_capture`.
+    for _ in 0..120 {
+        gloo_timers::future::TimeoutFuture::new(16).await;
+        if let Some(result) = slot.get_cloned() {
+            return result;
+        }
+    }
+    Err("scene capture timed out (no frame presented)".to_string())
+}
+
+/// Called by the render loop right AFTER `render()` (swapchain texture valid):
+/// fulfill any pending scene-capture requests by GPU-copying the current context
+/// texture. The copy is submitted synchronously inside the spawned export's
+/// pre-await section, before the browser presents — so it captures this frame.
+pub fn poll_scene_capture(renderer: &awsm_renderer::AwsmRenderer) {
+    let slots = CAPTURE_REQUESTS.with(|q| std::mem::take(&mut *q.borrow_mut()));
+    if slots.is_empty() {
+        return;
+    }
+    let gpu = renderer.gpu.clone();
+    let texture = renderer.gpu.current_context_texture();
+    let size = renderer.gpu.current_context_texture_size();
+    let format = renderer.gpu.current_context_format();
+    wasm_bindgen_futures::spawn_local(async move {
+        let result: CapturedFrame = match (texture, size) {
+            (Ok(texture), Ok((w, h))) => gpu
+                .export_texture_as_rgba8(&texture, w, h, 0, format)
+                .await
+                .map(|rgba| (rgba, w, h))
+                .map_err(|e| format!("{e}")),
+            _ => Err("scene canvas not ready".to_string()),
+        };
+        for slot in slots {
+            slot.set(Some(result.clone()));
+        }
+    });
+}
+
+/// PNG data URL of the **scene viewport** (rendered through the active camera).
+/// GPU-reads the swapchain (a WebGPU canvas isn't `toDataURL`-readable), scaling
+/// to `width`/`height` when given. `None` if no frame could be captured.
+pub async fn scene_png(width: Option<u32>, height: Option<u32>) -> Option<String> {
+    let (rgba, w, h) = capture_scene_rgba().await.ok()?;
+    rgba_to_png_data_url_scaled(&rgba, w, h, width, height)
 }
 
 /// PNG data URL of the **material-mode preview** (the example sphere). `None`
 /// when the Studio isn't mounted.
-pub fn material_png() -> Option<String> {
-    crate::engine::preview::preview_canvas().and_then(|c| c.to_data_url_with_type("image/png").ok())
+pub fn material_png(width: Option<u32>, height: Option<u32>) -> Option<String> {
+    crate::engine::preview::preview_canvas().and_then(|c| canvas_png(&c, width, height))
+}
+
+/// Encode a live canvas to a PNG data URL, optionally scaling the output to
+/// `width`/`height` (one given → preserve aspect; both → exact; neither → the
+/// canvas's own size). Scaling samples the presented frame — it normalizes the
+/// output size, it doesn't add detail beyond what the canvas rendered.
+fn canvas_png(
+    src: &web_sys::HtmlCanvasElement,
+    width: Option<u32>,
+    height: Option<u32>,
+) -> Option<String> {
+    if width.is_none() && height.is_none() {
+        return src.to_data_url_with_type("image/png").ok();
+    }
+    let (sw, sh) = (src.width().max(1), src.height().max(1));
+    let aspect = sw as f64 / sh as f64;
+    let (w, h) = match (width, height) {
+        (Some(w), Some(h)) => (w.max(1), h.max(1)),
+        (Some(w), None) => (w.max(1), ((w as f64 / aspect).round() as u32).max(1)),
+        (None, Some(h)) => (((h as f64 * aspect).round() as u32).max(1), h.max(1)),
+        (None, None) => (sw, sh),
+    };
+    let document = web_sys::window()?.document()?;
+    let off: web_sys::HtmlCanvasElement =
+        document.create_element("canvas").ok()?.dyn_into().ok()?;
+    off.set_width(w);
+    off.set_height(h);
+    let ctx: web_sys::CanvasRenderingContext2d = off.get_context("2d").ok()??.dyn_into().ok()?;
+    ctx.draw_image_with_html_canvas_element_and_dw_and_dh(src, 0.0, 0.0, w as f64, h as f64)
+        .ok()?;
+    off.to_data_url_with_type("image/png").ok()
 }
 
 /// PNG data URL of a **texture asset** by id. Procedural textures are generated
@@ -101,42 +194,48 @@ fn rgba_to_png_data_url(rgba: &[u8], w: u32, h: u32) -> Result<String, String> {
         .map_err(|_| "encode PNG".to_string())
 }
 
-/// Draw the live WebGPU `<canvas>` onto an offscreen 2D canvas + return its
-/// `ImageData` (RGBA8) plus dimensions. The `CanvasPixels`/`CanvasStats` query
-/// path — needs a *rendered* frame (the canvas presents on the RAF loop).
-fn canvas_image_data() -> Result<(Vec<u8>, u32, u32), String> {
-    let document = web_sys::window()
-        .and_then(|w| w.document())
-        .ok_or("no document")?;
-    let (src, w, h) = crate::engine::context::with_canvas(|c| (c.clone(), c.width(), c.height()));
-    if w == 0 || h == 0 {
-        return Err("canvas has zero size".to_string());
+/// Encode display-space RGBA8 to a PNG data URL via a 2D canvas, optionally
+/// scaling to `target_w`/`target_h` (one given → preserve aspect).
+fn rgba_to_png_data_url_scaled(
+    rgba: &[u8],
+    w: u32,
+    h: u32,
+    target_w: Option<u32>,
+    target_h: Option<u32>,
+) -> Option<String> {
+    let document = web_sys::window()?.document()?;
+    let src: web_sys::HtmlCanvasElement =
+        document.create_element("canvas").ok()?.dyn_into().ok()?;
+    src.set_width(w);
+    src.set_height(h);
+    let sctx: web_sys::CanvasRenderingContext2d = src.get_context("2d").ok()??.dyn_into().ok()?;
+    let image_data =
+        web_sys::ImageData::new_with_u8_clamped_array_and_sh(Clamped(rgba), w, h).ok()?;
+    sctx.put_image_data(&image_data, 0, 0).ok()?;
+    if target_w.is_none() && target_h.is_none() {
+        return src.to_data_url_with_type("image/png").ok();
     }
-    let off: web_sys::HtmlCanvasElement = document
-        .create_element("canvas")
-        .map_err(|_| "create canvas")?
-        .dyn_into()
-        .map_err(|_| "canvas cast")?;
-    off.set_width(w);
-    off.set_height(h);
-    let ctx: web_sys::CanvasRenderingContext2d = off
-        .get_context("2d")
-        .map_err(|_| "get 2d context")?
-        .ok_or("no 2d context")?
-        .dyn_into()
-        .map_err(|_| "2d context cast")?;
-    ctx.draw_image_with_html_canvas_element(&src, 0.0, 0.0)
-        .map_err(|_| "drawImage (canvas not presenting / tainted)")?;
-    let image_data = ctx
-        .get_image_data(0, 0, w as i32, h as i32)
-        .map_err(|_| "getImageData")?;
-    Ok((image_data.data().to_vec(), w, h))
+    let aspect = w as f64 / h as f64;
+    let (tw, th) = match (target_w, target_h) {
+        (Some(a), Some(b)) => (a.max(1), b.max(1)),
+        (Some(a), None) => (a.max(1), ((a as f64 / aspect).round() as u32).max(1)),
+        (None, Some(b)) => (((b as f64 * aspect).round() as u32).max(1), b.max(1)),
+        (None, None) => (w, h),
+    };
+    let off: web_sys::HtmlCanvasElement =
+        document.create_element("canvas").ok()?.dyn_into().ok()?;
+    off.set_width(tw);
+    off.set_height(th);
+    let octx: web_sys::CanvasRenderingContext2d = off.get_context("2d").ok()??.dyn_into().ok()?;
+    octx.draw_image_with_html_canvas_element_and_dw_and_dh(&src, 0.0, 0.0, tw as f64, th as f64)
+        .ok()?;
+    off.to_data_url_with_type("image/png").ok()
 }
 
 /// Exact RGBA (0–255) at each requested canvas coordinate. Out-of-bounds coords
-/// read transparent black.
-pub fn canvas_pixels(coords: &[(u32, u32)]) -> Result<Vec<[u8; 4]>, String> {
-    let (data, w, h) = canvas_image_data()?;
+/// read transparent black. GPU-captures the scene (not a 2D canvas readback).
+pub async fn canvas_pixels(coords: &[(u32, u32)]) -> Result<Vec<[u8; 4]>, String> {
+    let (data, w, h) = capture_scene_rgba().await?;
     let mut out = Vec::with_capacity(coords.len());
     for &(x, y) in coords {
         if x >= w || y >= h {
@@ -151,10 +250,10 @@ pub fn canvas_pixels(coords: &[(u32, u32)]) -> Result<Vec<[u8; 4]>, String> {
 
 /// Mean / min / max luma (Rec. 709) over a region `[x, y, w, h]`, or the whole
 /// canvas when `None`.
-pub fn canvas_stats(
+pub async fn canvas_stats(
     region: Option<[u32; 4]>,
 ) -> Result<crate::controller::query::StatsResult, String> {
-    let (data, w, h) = canvas_image_data()?;
+    let (data, w, h) = capture_scene_rgba().await?;
     let [rx, ry, rw, rh] = region.unwrap_or([0, 0, w, h]);
     // The region arrives via the JSON query seam, so clamp defensively: saturate
     // the corner before `.min(w/h)` so an out-of-range `rx+rw`/`ry+rh` can't

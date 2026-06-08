@@ -80,7 +80,11 @@ fn add_menu(close: Close) -> Vec<Dom> {
                 let spec = spec.clone();
                 spawn_local(async move {
                     let _ = controller()
-                        .dispatch(EditorCommand::Insert { spec, parent: None })
+                        .dispatch(EditorCommand::Insert {
+                            id: awsm_scene_schema::NodeId::new(),
+                            spec,
+                            parent: None,
+                        })
                         .await;
                 });
                 (close.borrow_mut())();
@@ -353,6 +357,7 @@ fn empty_state() -> Dom {
         .child(Btn::new().label("Add a Sphere").icon("sphere").variant(BtnVariant::Primary).size(BtnSize::Sm)
             .on_click(|| spawn_local(async {
                 let _ = controller().dispatch(EditorCommand::Insert {
+                    id: awsm_scene_schema::NodeId::new(),
                     spec: InsertSpec::Primitive(PrimitiveShape::default_sphere()),
                     parent: None,
                 }).await;

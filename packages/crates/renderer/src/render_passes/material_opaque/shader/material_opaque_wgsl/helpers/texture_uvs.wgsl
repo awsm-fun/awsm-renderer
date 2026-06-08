@@ -141,6 +141,9 @@ fn _texture_uv_per_vertex(attribute_data_offset: u32, set_index: u32, vertex_ind
 
 
     {% when MipmapMode::None %}
+        // Mode-internal alias so first-party kernels in `None` mode keep calling
+        // `texture_pool_sample_no_mips` (this arm) while custom-material authors
+        // call the always-emitted `texture_pool_sample` below.
         // Sampling helpers for the mega-texture atlas. Every fetch receives an explicit LOD so the compute
         // pass can emulate hardware derivative selection.
         fn texture_pool_sample_no_mips(info: TextureInfo, attribute_uv: vec2<f32>) -> vec4<f32> {
@@ -189,3 +192,44 @@ fn _texture_uv_per_vertex(attribute_data_offset: u32, set_index: u32, vertex_ind
         }
 
 {% endmatch %}
+
+
+// ─── Variant-agnostic sampler for CUSTOM (dynamic-WGSL) materials ───────────
+// `texture_pool_sample_grad` / `texture_pool_sample_no_mips` above are each
+// emitted in ONLY one mipmap variant, but a custom material's fragment is
+// compiled into ALL of them (mipmaps on AND off, MSAA on AND off) — so calling
+// either from author WGSL fails to resolve in the other variant. This LOD-0
+// sampler is emitted unconditionally (both mipmap modes, both the primary opaque
+// + edge-resolve kernels), so authors have one stable, always-present entry
+// point. Compute shaders have no automatic derivatives, so LOD 0 is the correct
+// behavior regardless of the pipeline's mipmap mode.
+fn texture_pool_sample(info: TextureInfo, attribute_uv: vec2<f32>) -> vec4<f32> {
+    let uv = texture_transform_uvs(attribute_uv, info);
+    switch info.array_index {
+        {% for i in 0..texture_pool_arrays_len %}
+            case {{ i }}u: {
+                return _texture_pool_sample_lod0(info, pool_tex_{{ i }}, uv);
+            }
+        {% endfor %}
+        default: {
+            return vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        }
+    }
+}
+
+fn _texture_pool_sample_lod0(
+    info: TextureInfo,
+    tex: texture_2d_array<f32>,
+    uv: vec2<f32>,
+) -> vec4<f32> {
+    var color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    switch info.sampler_index {
+        {% for i in 0..texture_pool_samplers_len %}
+            case {{ i }}u: {
+                color = textureSampleLevel(tex, pool_sampler_{{ i }}, uv, i32(info.layer_index), 0);
+            }
+        {% endfor %}
+        default: {}
+    }
+    return color;
+}

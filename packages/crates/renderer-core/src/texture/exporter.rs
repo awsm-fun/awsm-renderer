@@ -335,4 +335,85 @@ impl AwsmRendererWebGpu {
 
         Ok(png_output)
     }
+
+    /// Read back an 8-bit texture (the swapchain / canvas formats) as tightly
+    /// packed **display-space RGBA8** `(rgba, width, height)`. Like
+    /// [`Self::export_texture_as_png`] but without the PNG encode — for callers
+    /// that want raw pixels (luma stats, pixel probes, or their own encoder).
+    ///
+    /// The copy is submitted **before the first await**, so issuing this within a
+    /// render frame (before the next `getCurrentTexture`/present) captures the
+    /// just-rendered swapchain — the reliable replacement for `toDataURL`/
+    /// `drawImage`, which return empty on a WebGPU canvas.
+    pub async fn export_texture_as_rgba8(
+        &self,
+        texture: &web_sys::GpuTexture,
+        width: u32,
+        height: u32,
+        array_index: u32,
+        format: TextureFormat,
+    ) -> Result<Vec<u8>> {
+        let format_info = get_format_info(format, None)?;
+        let unpadded_bytes_per_row = width * format_info.bytes_per_pixel;
+        let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(256) * 256;
+        let buffer_size = padded_bytes_per_row * height;
+
+        let destination_buffer = self.create_buffer(
+            &BufferDescriptor::new(
+                Some("Texture RGBA Exporter"),
+                buffer_size as usize,
+                BufferUsage::new().with_copy_dst().with_map_read(),
+            )
+            .into(),
+        )?;
+
+        let command_encoder = self.create_command_encoder(Some("Texture RGBA Exporter"));
+        let image_copy_texture =
+            TexelCopyTextureInfo::new(texture).with_origin(Origin3d::new().with_z(array_index));
+        let image_copy_buffer = TexelCopyBufferInfo::new(&destination_buffer)
+            .with_bytes_per_row(padded_bytes_per_row)
+            .with_rows_per_image(height);
+        command_encoder.copy_texture_to_buffer(
+            &image_copy_texture.into(),
+            &image_copy_buffer.into(),
+            &Extent3d::new(width, Some(height), Some(1)).into(),
+        )?;
+        // Submit BEFORE awaiting — this captures the current texture content.
+        self.submit_commands(&command_encoder.finish());
+
+        JsFuture::from(destination_buffer.map_async(MapMode::Read as u32))
+            .await
+            .map_err(AwsmCoreError::buffer_map)?;
+        let array_buffer = destination_buffer
+            .get_mapped_range()
+            .map_err(AwsmCoreError::buffer_map_range)?;
+        let padded_data: Vec<u8> = js_sys::Uint8Array::new(&array_buffer).to_vec();
+
+        let mut data: Vec<u8> = Vec::with_capacity((unpadded_bytes_per_row * height) as usize);
+        for row in 0..height {
+            let row_start = (row * padded_bytes_per_row) as usize;
+            data.extend_from_slice(
+                &padded_data[row_start..row_start + unpadded_bytes_per_row as usize],
+            );
+        }
+        destination_buffer.unmap();
+        destination_buffer.destroy();
+
+        let mut rgba = match format {
+            TextureFormat::Rgba8unorm | TextureFormat::Rgba8unormSrgb => data,
+            TextureFormat::Bgra8unorm | TextureFormat::Bgra8unormSrgb => {
+                for chunk in data.chunks_exact_mut(4) {
+                    chunk.swap(0, 2);
+                }
+                data
+            }
+            _ => return Err(AwsmCoreError::TextureExportUnsupportedPngEncoding(format)),
+        };
+        // Convert to display (sRGB-encoded) bytes when the source is linear, so
+        // luma/pixel readers see what's on screen.
+        if !format_info.is_srgb {
+            rgba = convert_linear_to_srgb_u8(&rgba);
+        }
+        Ok(rgba)
+    }
 }

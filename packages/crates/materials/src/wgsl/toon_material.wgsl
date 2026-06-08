@@ -95,7 +95,7 @@ fn compute_toon_lit_color(
 
     for (var i = 0u; i < lights_info.n_lights; i = i + 1u) {
         let light = get_light(i);
-        let lb = light_to_brdf(light, world_normal, world_position);
+        let lb = light_sample(light, world_normal, world_position);
         if (lb.radiance.x + lb.radiance.y + lb.radiance.z <= 0.0) {
             continue;
         }

@@ -163,10 +163,9 @@ impl MaterialOpaquePipelines {
         // First-party extension: the eager-batch
         // path (called from `AwsmRendererBuilder::build`) emits ONLY
         // the empty-opaque pipeline. First-party material opaque
-        // pipelines (PBR / UNLIT / TOON / FLIPBOOK) defer until
-        // `launch_first_party_material_compile` fires — gltf-driven
-        // material register + the explicit `register_first_party_*`
-        // builder paths both trigger it.
+        // pipelines (PBR / UNLIT / TOON / FLIPBOOK) defer until the
+        // render-driven `ensure_scene_pipelines` compiles them — a
+        // gltf-driven material register flags the reconcile that drives it.
         //
         // At builder-build time no dynamic material can be registered
         // yet (build() returns the renderer before any
@@ -184,39 +183,14 @@ impl MaterialOpaquePipelines {
         )
     }
 
-    /// Live-config descriptor builder used by both the initial build
-    /// (via `shader_descriptors_and_layouts`) and the
-    /// `recompile_for_anti_aliasing` mid-session path. Takes the AA
-    /// config explicitly so the recompile flow can compile the
-    /// *next* MSAA/mipmap state without rewriting the renderer's
-    /// fields first.
-    pub(crate) fn shader_descriptors_for_config(
-        gpu: &awsm_renderer_core::renderer::AwsmRendererWebGpu,
-        bind_group_layouts: &mut crate::bind_group_layout::BindGroupLayouts,
-        pipeline_layouts: &mut crate::pipeline_layouts::PipelineLayouts,
-        bind_groups: &MaterialOpaqueBindGroups,
-        anti_aliasing: &AntiAliasing,
-        bucket_entries: &[crate::dynamic_materials::BucketEntry],
-    ) -> Result<Vec<OpaqueShaderDesc>> {
-        Self::shader_descriptors_for_config_with(
-            gpu,
-            bind_group_layouts,
-            pipeline_layouts,
-            bind_groups,
-            anti_aliasing,
-            bucket_entries,
-            true,
-        )
-    }
-
     /// Extension to first-party materials: emit
     /// shader descriptors with the OPAQUE_SHADER_IDS iteration
     /// gated by `include_first_party`. When `false`, only the
     /// empty-opaque pipeline is emitted — first-party pipelines
-    /// (PBR / UNLIT / TOON / FLIPBOOK) compile lazily on first
-    /// material register via
-    /// `AwsmRenderer::launch_first_party_material_compile`. Cold-boot
-    /// on a zero-scene compiles 0 material pipelines (was 4).
+    /// (PBR / UNLIT / TOON / FLIPBOOK) compile lazily via the
+    /// render-driven `AwsmRenderer::ensure_scene_pipelines` once a
+    /// material registers. Cold-boot on a zero-scene compiles 0 material
+    /// pipelines (was 4).
     pub(crate) fn shader_descriptors_for_config_with(
         gpu: &awsm_renderer_core::renderer::AwsmRendererWebGpu,
         bind_group_layouts: &mut crate::bind_group_layout::BindGroupLayouts,

@@ -13,7 +13,11 @@ use crate::prelude::*;
 fn insert(spec: InsertSpec) {
     spawn_local(async move {
         if let Err(err) = controller()
-            .dispatch(EditorCommand::Insert { spec, parent: None })
+            .dispatch(EditorCommand::Insert {
+                id: awsm_scene_schema::NodeId::new(),
+                spec,
+                parent: None,
+            })
             .await
         {
             tracing::error!("ribbon: Insert failed: {err}");

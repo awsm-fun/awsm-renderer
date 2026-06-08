@@ -45,7 +45,7 @@ fn apply_lighting(
         {% endif %}
         for(var i = 0u; i < lights_info.n_lights; i = i + 1u) {
             let light = get_light(i);
-            let light_brdf = light_to_brdf(light, material_color.normal, world_position);
+            let light_brdf = light_sample(light, material_color.normal, world_position);
             let direct = brdf_direct(material_color, light_brdf, surface_to_camera);
             {% if shadows_enabled %}
                 // Modulate by shadow visibility (1.0 = lit, 0.0 = fully
@@ -195,7 +195,7 @@ fn apply_lighting_per_froxel(
         let n_directional = get_n_directional();
         for(var d = 0u; d < n_directional; d = d + 1u) {
             let light = get_light(get_directional_light_index(d));
-            let light_brdf = light_to_brdf(light, material_color.normal, world_position);
+            let light_brdf = light_sample(light, material_color.normal, world_position);
             let direct = brdf_direct(material_color, light_brdf, surface_to_camera);
             {% if shadows_enabled %}
                 var visibility: f32 = 1.0;
@@ -232,12 +232,12 @@ fn apply_lighting_per_froxel(
                 // Range reject: the froxel bins every light whose bounding
                 // sphere touches the froxel volume — large distant froxels
                 // over-include lights that can't reach this pixel. Skip them
-                // for the cost of one dot product, before light_to_brdf.
+                // for the cost of one dot product, before light_sample.
                 let to_light = light.position - world_position;
                 if light.range > 0.0 && dot(to_light, to_light) > light.range * light.range {
                     continue;
                 }
-                let light_brdf = light_to_brdf(light, material_color.normal, world_position);
+                let light_brdf = light_sample(light, material_color.normal, world_position);
                 let direct = brdf_direct(material_color, light_brdf, surface_to_camera);
                 {% if shadows_enabled %}
                     var visibility: f32 = 1.0;
@@ -324,7 +324,7 @@ fn apply_lighting_per_froxel_with_transmission(
         let n_directional = get_n_directional();
         for(var d = 0u; d < n_directional; d = d + 1u) {
             let light = get_light(get_directional_light_index(d));
-            let light_brdf = light_to_brdf(light, material_color.normal, world_position);
+            let light_brdf = light_sample(light, material_color.normal, world_position);
             let direct = brdf_direct(material_color, light_brdf, surface_to_camera);
             {% if shadows_enabled %}
                 var visibility: f32 = 1.0;
@@ -359,12 +359,12 @@ fn apply_lighting_per_froxel_with_transmission(
                 // Range reject: the froxel bins every light whose bounding
                 // sphere touches the froxel volume — large distant froxels
                 // over-include lights that can't reach this pixel. Skip them
-                // for the cost of one dot product, before light_to_brdf.
+                // for the cost of one dot product, before light_sample.
                 let to_light = light.position - world_position;
                 if light.range > 0.0 && dot(to_light, to_light) > light.range * light.range {
                     continue;
                 }
-                let light_brdf = light_to_brdf(light, material_color.normal, world_position);
+                let light_brdf = light_sample(light, material_color.normal, world_position);
                 let direct = brdf_direct(material_color, light_brdf, surface_to_camera);
                 {% if shadows_enabled %}
                     var visibility: f32 = 1.0;

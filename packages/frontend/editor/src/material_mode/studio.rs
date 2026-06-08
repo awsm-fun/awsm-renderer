@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use awsm_editor_protocol::{CustomAlphaMode, SlotSpec};
+
 use crate::controller::{AlphaMode, CustomMaterial, Slot};
 use crate::engine::scene::AssetId;
 use crate::prelude::*;
@@ -56,8 +58,13 @@ fn new_material_items(close: Close) -> Vec<Dom> {
         MenuItem::new(label)
             .on_click(move || {
                 match shading {
-                    Some(s) => dispatch(EditorCommand::AddBuiltinMaterial { shading: s }),
-                    None => dispatch(EditorCommand::AddCustomMaterial),
+                    Some(s) => dispatch(EditorCommand::AddBuiltinMaterial {
+                        id: awsm_scene_schema::AssetId::new(),
+                        shading: s,
+                    }),
+                    None => dispatch(EditorCommand::AddCustomMaterial {
+                        id: awsm_scene_schema::AssetId::new(),
+                    }),
                 }
                 (close.borrow_mut())();
             })
@@ -649,6 +656,13 @@ fn name_section(mat: &Arc<CustomMaterial>) -> Dom {
 /// `ShaderIncludes` + `FragmentInputs` this material's WGSL actually needs, so
 /// registration compiles a leaner bucket. Default is everything (behavior-
 /// preserving); unchecking pares the emitted shader down.
+/// Which declared-dependency list a `dep_group` edits.
+#[derive(Clone, Copy, PartialEq)]
+enum DepKind {
+    Includes,
+    Inputs,
+}
+
 fn pass_deps_section(mat: &Arc<CustomMaterial>) -> Dom {
     use crate::controller::custom_material::{FRAGMENT_INPUT_KEYS, SHADER_INCLUDE_KEYS};
     Section::new("Pass Dependencies")
@@ -657,24 +671,54 @@ fn pass_deps_section(mat: &Arc<CustomMaterial>) -> Dom {
             .style("font-size", "11px").style("color", "var(--text-3)").style("line-height", "1.45").style("margin-bottom", "8px")
             .text("Which shader includes + interpolants the WGSL needs. Fewer = leaner bucket.")
         }))
-        .child(dep_group("Shader includes", SHADER_INCLUDE_KEYS, mat.shader_includes.clone(), mat))
+        .child(dep_group("Shader includes", SHADER_INCLUDE_KEYS, DepKind::Includes, mat))
         .child(html!("div", { .style("height", "8px") }))
-        .child(dep_group("Fragment inputs", FRAGMENT_INPUT_KEYS, mat.fragment_inputs.clone(), mat))
+        .child(dep_group("Fragment inputs", FRAGMENT_INPUT_KEYS, DepKind::Inputs, mat))
         .render()
+}
+
+/// Build a `SetCustomMaterial{ShaderIncludes,FragmentInputs}` command from the
+/// currently-checked dep states.
+fn dep_command(
+    mat_id: AssetId,
+    kind: DepKind,
+    keys: &[&'static str],
+    states: &[Mutable<bool>],
+) -> EditorCommand {
+    let list: Vec<String> = keys
+        .iter()
+        .zip(states)
+        .filter(|(_, on)| on.get())
+        .map(|(&k, _)| k.to_string())
+        .collect();
+    match kind {
+        DepKind::Includes => EditorCommand::SetCustomMaterialShaderIncludes {
+            id: mat_id,
+            includes: list,
+        },
+        DepKind::Inputs => EditorCommand::SetCustomMaterialFragmentInputs {
+            id: mat_id,
+            inputs: list,
+        },
+    }
 }
 
 fn dep_group(
     title: &str,
     keys: &'static [&'static str],
-    field: Mutable<Vec<String>>,
+    kind: DepKind,
     mat: &Arc<CustomMaterial>,
 ) -> Dom {
-    // One bool per key, shared by the row checkbox + the All/None buttons (each
-    // bool is two-way synced with `field`), so a bulk toggle updates both the
-    // checkboxes and the underlying include list.
+    // One bool per key (the checkbox + All/None drive these); any change rebuilds
+    // the full list and dispatches it through the controller (undo + cross-tab +
+    // MCP). Seeded from the material's current declared set.
+    let current = match kind {
+        DepKind::Includes => mat.shader_includes.get_cloned(),
+        DepKind::Inputs => mat.fragment_inputs.get_cloned(),
+    };
     let states: Vec<Mutable<bool>> = keys
         .iter()
-        .map(|&k| Mutable::new(field.lock_ref().iter().any(|x| x == k)))
+        .map(|&k| Mutable::new(current.iter().any(|x| x == k)))
         .collect();
     let all = states.clone();
     let none = states.clone();
@@ -688,7 +732,7 @@ fn dep_group(
                 .child(dep_bulk_btn("None", move || { for s in none.iter() { s.set_neq(false); } }))
             }))
         }))
-        .children(keys.iter().zip(states).map(clone!(field, mat => move |(&key, on)| dep_row(key, on, field.clone(), &mat))))
+        .children(keys.iter().zip(states.iter().cloned()).map(clone!(mat, states => move |(&key, on)| dep_row(key, on, keys, states.clone(), kind, mat.id))))
     })
 }
 
@@ -706,21 +750,19 @@ fn dep_bulk_btn(label: &str, on_click: impl Fn() + 'static) -> Dom {
 fn dep_row(
     key: &'static str,
     on: Mutable<bool>,
-    field: Mutable<Vec<String>>,
-    mat: &Arc<CustomMaterial>,
+    keys: &'static [&'static str],
+    states: Vec<Mutable<bool>>,
+    kind: DepKind,
+    mat_id: AssetId,
 ) -> Dom {
-    let f = field.clone();
-    let m = mat.clone();
+    let _ = key;
     spawn_local(clone!(on => async move {
         let mut first = true;
-        on.signal().for_each(move |checked| {
+        on.signal().for_each(move |_checked| {
             let fire = !first; first = false;
-            clone!(f, m => async move {
+            clone!(states => async move {
                 if fire {
-                    let mut v = f.get_cloned();
-                    let has = v.iter().any(|k| k == key);
-                    if checked && !has { v.push(key.to_string()); f.set(v); draft(&m); }
-                    else if !checked && has { v.retain(|k| k != key); f.set(v); draft(&m); }
+                    dispatch(dep_command(mat_id, kind, keys, &states));
                 }
             })
         }).await;
@@ -733,13 +775,22 @@ fn dep_row(
 }
 
 fn surface_section(mat: &Arc<CustomMaterial>) -> Dom {
-    // Alpha mode segmented.
+    // Alpha mode segmented. Routes through the controller (undo + cross-tab + MCP).
     let alpha = Mutable::new(mat.alpha.get().key().to_string());
     spawn_local(clone!(alpha, mat => async move {
         let mut first = true;
         alpha.signal_cloned().for_each(move |k| {
             let fire = !first; first = false;
-            clone!(mat => async move { if fire { mat.alpha.set_neq(AlphaMode::from_key(&k)); draft(&mat); } })
+            clone!(mat => async move {
+                if fire {
+                    let mode = match k.as_str() {
+                        "mask" => CustomAlphaMode::Mask { cutoff: mat.cutoff.get() },
+                        "blend" => CustomAlphaMode::Blend,
+                        _ => CustomAlphaMode::Opaque,
+                    };
+                    dispatch(EditorCommand::SetCustomMaterialAlphaMode { id: mat.id, mode });
+                }
+            })
         }).await;
     }));
 
@@ -759,7 +810,10 @@ fn surface_section(mat: &Arc<CustomMaterial>) -> Dom {
             if a == AlphaMode::Mask {
                 let m = mat.clone();
                 Some(row("Cutoff", NumField::new(mat.cutoff.get()).min(0.0).max(1.0).step(0.01)
-                    .on_change(move |v| { m.cutoff.set_neq(v); draft(&m); }).render()))
+                    .on_change(move |v| dispatch(EditorCommand::SetCustomMaterialAlphaMode {
+                        id: m.id,
+                        mode: CustomAlphaMode::Mask { cutoff: v },
+                    })).render()))
             } else { None }
         })))
     }));
@@ -770,7 +824,7 @@ fn surface_section(mat: &Arc<CustomMaterial>) -> Dom {
         let mut first = true;
         ds.signal().for_each(move |on| {
             let fire = !first; first = false;
-            clone!(mat => async move { if fire { mat.double_sided.set_neq(on); draft(&mat); } })
+            clone!(mat => async move { if fire { dispatch(EditorCommand::SetCustomMaterialDoubleSided { id: mat.id, double_sided: on }); } })
         }).await;
     }));
     sec = sec.child(row("Double-sided", toggle(ds)));
@@ -781,7 +835,7 @@ fn surface_section(mat: &Arc<CustomMaterial>) -> Dom {
         let mut first = true;
         col.signal_cloned().for_each(move |hex| {
             let fire = !first; first = false;
-            clone!(mat => async move { if fire { mat.color.set_neq(hex); draft(&mat); } })
+            clone!(mat => async move { if fire { dispatch(EditorCommand::SetCustomMaterialDebugColor { id: mat.id, hex }); } })
         }).await;
     }));
     sec = sec.child(row("Base color", html!("div", {
@@ -819,16 +873,14 @@ fn slot_list(mat: &Arc<CustomMaterial>, kind: SlotKind) -> Dom {
         .child(Icon::new("plus").size(13.0).render())
         .child(html!("span", { .text(add_label) }))
         .event(move |_: events::Click| {
-            let f = slot_field_of(&mat_add, kind);
-            let mut v = f.get_cloned();
+            let mut v = slot_field_of(&mat_add, kind).get_cloned();
             let n = v.len() + 1;
             v.push(match kind {
                 SlotKind::Uniform => Slot::uniform(format!("value{n}"), "f32", "0.0"),
                 SlotKind::Texture => Slot::named(format!("tex{n}"), "texture_2d<f32>"),
                 SlotKind::Buffer => Slot::named(format!("buf{n}"), "array<vec4<f32>>"),
             });
-            f.set(v);
-            draft(&mat_add);
+            dispatch_layout(&mat_add, kind, v);
         })
     });
 
@@ -850,6 +902,44 @@ fn slot_field_of(mat: &Arc<CustomMaterial>, kind: SlotKind) -> Mutable<Vec<Slot>
         SlotKind::Texture => mat.textures.clone(),
         SlotKind::Buffer => mat.buffers.clone(),
     }
+}
+
+fn to_specs(slots: &[Slot]) -> Vec<SlotSpec> {
+    slots
+        .iter()
+        .map(|s| SlotSpec {
+            name: s.name.clone(),
+            ty: s.ty.clone(),
+            val: s.val.clone(),
+            debug: s.debug.clone(),
+        })
+        .collect()
+}
+
+/// Dispatch a layout edit through the controller: takes the new `slots` for one
+/// kind and reads the other two off the live material, sending the full layout.
+fn dispatch_layout(mat: &Arc<CustomMaterial>, kind: SlotKind, slots: Vec<Slot>) {
+    let uniforms = if kind == SlotKind::Uniform {
+        to_specs(&slots)
+    } else {
+        to_specs(&mat.uniforms.get_cloned())
+    };
+    let textures = if kind == SlotKind::Texture {
+        to_specs(&slots)
+    } else {
+        to_specs(&mat.textures.get_cloned())
+    };
+    let buffers = if kind == SlotKind::Buffer {
+        to_specs(&slots)
+    } else {
+        to_specs(&mat.buffers.get_cloned())
+    };
+    dispatch(EditorCommand::SetCustomMaterialLayout {
+        id: mat.id,
+        uniforms,
+        textures,
+        buffers,
+    });
 }
 
 /// The reactive list of slot rows for one kind, rebuilt when the vec changes.
@@ -882,7 +972,7 @@ fn slot_row(mat: &Arc<CustomMaterial>, kind: SlotKind, i: usize, slot: &Slot) ->
             clone!(f_name, m_name => async move {
                 if fire {
                     let mut arr = f_name.get_cloned();
-                    if let Some(s) = arr.get_mut(i) { s.name = v; f_name.set(arr); draft(&m_name); }
+                    if let Some(s) = arr.get_mut(i) { s.name = v; dispatch_layout(&m_name, kind, arr); }
                 }
             })
         }).await;
@@ -914,7 +1004,7 @@ fn slot_row(mat: &Arc<CustomMaterial>, kind: SlotKind, i: usize, slot: &Slot) ->
                 .child(Icon::new("trash").size(13.0).render())
                 .event(move |_: events::Click| {
                     let mut arr = f_rm.get_cloned();
-                    if i < arr.len() { arr.remove(i); f_rm.set(arr); draft(&m_rm); }
+                    if i < arr.len() { arr.remove(i); dispatch_layout(&m_rm, kind, arr); }
                 })
             }))
         }))
@@ -938,7 +1028,7 @@ fn uniform_type_select(mat: &Arc<CustomMaterial>, i: usize) -> Dom {
             clone!(f, m => async move {
                 if fire {
                     let mut arr = f.get_cloned();
-                    if let Some(s) = arr.get_mut(i) { s.ty = ty; f.set(arr); draft(&m); }
+                    if let Some(s) = arr.get_mut(i) { s.ty = ty; dispatch_layout(&m, SlotKind::Uniform, arr); }
                 }
             })
         }).await;
@@ -1087,7 +1177,10 @@ fn code_editor(mat: &Arc<CustomMaterial>) -> Dom {
             .style("background", "var(--bg-3)").style("border-style", "none").style("outline-style", "none").style("resize", "none")
             .style("color", "var(--text-0)").style("font-size", "12.5px").style("line-height", "19px").style("white-space", "pre").style("tab-size", "4")
             .with_node!(ta => {
-                .event(clone!(ta, mat => move |_: events::Input| mat.wgsl.set(ta.value())))
+                // Route through the controller (coalesced into one undo step,
+                // cross-tab broadcast, MCP-reachable) rather than writing the
+                // reactive model directly.
+                .event(clone!(ta, mat => move |_: events::Input| dispatch(EditorCommand::SetCustomMaterialWgsl { id: mat.id, wgsl: ta.value() })))
             })
         }))
     })
@@ -1237,12 +1330,6 @@ fn panel_header(title: &str, right: Option<Dom>) -> Dom {
         .child(html!("span", { .style("font-size", "12.5px").style("font-weight", "620").style("color", "var(--text-0)").text(title) }))
         .child(html!("div", { .style("margin-left", "auto").apply(|b| match right { Some(r) => b.child(r), None => b }) }))
     })
-}
-
-/// Mark a material a draft (un-registered) after any content edit.
-fn draft(mat: &Arc<CustomMaterial>) {
-    mat.registered.set_neq(false);
-    controller().dirty.set_neq(true);
 }
 
 fn dispatch(cmd: EditorCommand) {

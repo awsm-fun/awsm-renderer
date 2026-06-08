@@ -246,7 +246,7 @@ impl GltfParseOutput {
     /// in the Phase 4.3b spec confirms a real win on representative
     /// scenes (e.g. the 27 MB robot stress asset).
     pub async fn into_loader(self) -> anyhow::Result<GltfLoader> {
-        let Gltf { document: doc, .. } = Gltf::from_slice(&self.doc_bytes)?;
+        let Gltf { document: doc, .. } = crate::loader::parse_gltf_lenient(&self.doc_bytes)?;
         // Buffers are already 4-byte padded by `execute_async`.
         let buffers: Vec<Vec<u8>> = self
             .buffer_bytes
@@ -517,7 +517,7 @@ pub async fn execute_async(input: GltfParseInput) -> anyhow::Result<GltfParseOut
             let Gltf {
                 document: doc,
                 blob,
-            } = Gltf::from_slice(&bytes)?;
+            } = crate::loader::parse_gltf_lenient(&bytes)?;
             (doc, blob, bytes)
         }
         GltfFileType::Glb => {
@@ -532,7 +532,7 @@ pub async fn execute_async(input: GltfParseInput) -> anyhow::Result<GltfParseOut
             let Gltf {
                 document: doc,
                 blob,
-            } = Gltf::from_slice(&bytes)?;
+            } = crate::loader::parse_gltf_lenient(&bytes)?;
             (doc, blob, bytes)
         }
         _ => return Err(AwsmGltfError::Load.into()),

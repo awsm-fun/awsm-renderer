@@ -89,6 +89,8 @@ impl NodeSpec {
             id: self.id.to_string(),
             name: self.name.clone(),
             kind: kind_tag(&self.kind).to_string(),
+            visible: self.visible,
+            locked: self.locked,
             children: self.children.iter().map(|c| c.to_query()).collect(),
         }
     }
@@ -100,7 +102,17 @@ pub struct NodeQuery {
     pub id: String,
     pub name: String,
     pub kind: String,
+    /// Whether the node is shown (the Outliner eye toggle).
+    #[serde(default = "default_true_nq")]
+    pub visible: bool,
+    /// Whether the node is locked from selection/editing.
+    #[serde(default)]
+    pub locked: bool,
     pub children: Vec<NodeQuery>,
+}
+
+fn default_true_nq() -> bool {
+    true
 }
 
 /// A short stable tag for a node kind (used by the query projection).

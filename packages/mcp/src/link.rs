@@ -9,10 +9,10 @@
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use tokio::sync::Mutex;
+use tokio::sync::{broadcast, Mutex};
 use web_transport::{RecvStream, SendStream, Session};
 
-use awsm_editor_protocol::{Request, Response};
+use awsm_editor_protocol::{EditorEvent, Request, Response};
 
 /// Cap on a single response (PNGs are the large case). 64 MiB is far above any
 /// legitimate payload and bounds memory if a peer streams without finishing.
@@ -22,13 +22,29 @@ const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 #[derive(Clone)]
 pub struct EditorLink {
     inner: Arc<Mutex<Option<Session>>>,
+    /// Fan-out of editor push events to every connected MCP session's forwarder.
+    events: broadcast::Sender<EditorEvent>,
 }
 
 impl EditorLink {
     pub fn shared() -> Self {
+        let (events, _) = broadcast::channel(256);
         Self {
             inner: Arc::new(Mutex::new(None)),
+            events,
         }
+    }
+
+    /// Publish an editor push event to all subscribed MCP forwarders. (Called by
+    /// the QUIC uni-stream reader.)
+    pub fn publish_event(&self, ev: EditorEvent) {
+        // Err only when there are no receivers — fine, just drop it.
+        let _ = self.events.send(ev);
+    }
+
+    /// Subscribe to the editor push-event stream (one per MCP session forwarder).
+    pub fn subscribe_events(&self) -> broadcast::Receiver<EditorEvent> {
+        self.events.subscribe()
     }
 
     pub async fn set(&self, session: Option<Session>) {
