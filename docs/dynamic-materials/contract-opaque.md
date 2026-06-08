@@ -355,9 +355,13 @@ let uv = vec2<f32>(f32(input.coords.x), f32(input.coords.y))
        / vec2<f32>(f32(input.screen_dims.x), f32(input.screen_dims.y));
 
 // Sample the base texture (the wrapper populated input.material.base_index).
+// `texture_pool_sample` is the variant-agnostic sampler for custom materials —
+// always emitted (LOD 0). Do NOT call `texture_pool_sample_no_mips` /
+// `texture_pool_sample_grad` directly: each exists in only one mipmap variant
+// and a custom fragment is compiled into both.
 let info_raw = material_load_texture_info_raw(input.material_offset / 4u + 1u);
 let info = convert_texture_info(info_raw);
-let base = texture_pool_sample_no_mips(info, uv).rgb;
+let base = texture_pool_sample(info, uv).rgb;
 
 // Animated horizontal scanline pattern.
 let scan = sin(uv.y * input.material.scan_freq
