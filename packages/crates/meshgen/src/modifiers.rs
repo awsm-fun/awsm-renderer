@@ -103,9 +103,44 @@ fn apply_one(mesh: &mut MeshData, m: &Modifier) {
         Modifier::Smooth { iterations, factor } => smooth(mesh, *iterations, *factor),
         Modifier::Mirror { axis } => mirror(mesh, *axis),
         Modifier::Array { count, offset } => array(mesh, *count, *offset),
-        // Formula displacement: evaluator is a follow-on; no-op for now so a
-        // stack carrying it still bakes the rest.
-        Modifier::Displace { .. } => {}
+        Modifier::Displace { expr } => displace(mesh, expr),
+    }
+}
+
+/// Formula displacement: evaluate `expr` per vertex (over `x,y,z,nx,ny,nz,u,v,i`)
+/// and offset the vertex along its normal by the result. A malformed expression
+/// (or one referencing an unknown name) is a no-op.
+fn displace(mesh: &mut MeshData, expr: &str) {
+    let Some(program) = crate::expr::Expr::compile(expr) else {
+        return;
+    };
+    let normals = match &mesh.normals {
+        Some(n) if n.len() == mesh.positions.len() => n.clone(),
+        _ => return,
+    };
+    let uvs = mesh.uvs.clone();
+    for (i, (p, n)) in mesh.positions.iter_mut().zip(normals.iter()).enumerate() {
+        let (uu, vv) = uvs
+            .as_ref()
+            .and_then(|u| u.get(i))
+            .map(|uv| (uv[0], uv[1]))
+            .unwrap_or((0.0, 0.0));
+        let vars = crate::expr::Vars {
+            x: p[0],
+            y: p[1],
+            z: p[2],
+            nx: n[0],
+            ny: n[1],
+            nz: n[2],
+            u: uu,
+            v: vv,
+            i: i as f32,
+        };
+        if let Some(d) = program.eval(&vars) {
+            p[0] += n[0] * d;
+            p[1] += n[1] * d;
+            p[2] += n[2] * d;
+        }
     }
 }
 
@@ -609,6 +644,30 @@ mod tests {
         mirror(&mut m, Axis::X);
         assert_eq!(m.positions.len(), v * 2);
         assert_eq!(m.indices.len() % 3, 0);
+    }
+
+    #[test]
+    fn displace_constant_matches_inflate() {
+        // A constant formula displaces every vertex one unit along its normal —
+        // equivalent to Inflate(1.0); a bad formula is a no-op.
+        let with_normals = || {
+            let mut m = cube();
+            m.compute_vertex_normals();
+            m
+        };
+        let mut a = with_normals();
+        let mut b = with_normals();
+        displace(&mut a, "1");
+        inflate(&mut b, 1.0);
+        for (pa, pb) in a.positions.iter().zip(&b.positions) {
+            for k in 0..3 {
+                assert!((pa[k] - pb[k]).abs() < 1e-5);
+            }
+        }
+        let before = with_normals();
+        let mut bad = with_normals();
+        displace(&mut bad, "1 +"); // malformed → no-op
+        assert_eq!(bad.positions, before.positions);
     }
 
     #[test]

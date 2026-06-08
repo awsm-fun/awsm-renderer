@@ -1,5 +1,6 @@
 //! Pure-CPU mesh + texture-pixel generators. See [`README.md`](../README.md).
 
+pub mod expr;
 pub mod mesh_data;
 pub mod modifiers;
 pub mod primitives;
