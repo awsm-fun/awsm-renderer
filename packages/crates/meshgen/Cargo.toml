@@ -16,5 +16,9 @@ serde = ["dep:serde", "awsm-curves/serde", "awsm-geometry/serde"]
 [dependencies]
 awsm-curves = { workspace = true }
 awsm-geometry = { workspace = true }
+# Modifier-stack evaluation (`modifiers.rs`) consumes the recipe types
+# (`ModifierStack`/`MeshBase`/`Modifier`) defined in the scene schema. No cycle:
+# scene-schema is pure data and does not depend on meshgen.
+awsm-scene-schema = { workspace = true }
 glam = {workspace = true}
 serde = {workspace = true, optional = true}

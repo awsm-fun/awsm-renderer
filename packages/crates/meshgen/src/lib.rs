@@ -1,11 +1,13 @@
 //! Pure-CPU mesh + texture-pixel generators. See [`README.md`](../README.md).
 
 pub mod mesh_data;
+pub mod modifiers;
 pub mod primitives;
 pub mod procedural_texture;
 pub mod sweep;
 
 pub use mesh_data::{compute_vertex_normals, MeshData};
+pub use modifiers::{apply_modifiers, evaluate, lathe, superquadric};
 pub use primitives::{
     box_mesh, cone_mesh, cylinder_mesh, plane_mesh, sphere_mesh, sprite_quad, torus_mesh,
 };
