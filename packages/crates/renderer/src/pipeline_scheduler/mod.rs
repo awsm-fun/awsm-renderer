@@ -18,19 +18,18 @@
 //!   transitions back to Pending; pass-level groups for the new config are
 //!   submitted in the same batch.
 //!
-//! **Stage 1 status (commit history of this file):**
+//! Real compile is driven by the single render-driven operation
+//! [`crate::AwsmRenderer::ensure_scene_pipelines`] (in
+//! [`launch`]): it pushes per-sub-pipeline compile promises onto the
+//! [`PipelineScheduler`]'s `inflight_compile` queue, charged to each
+//! bucket's material group, and the renderer's `poll_pipeline_scheduler`
+//! drains + installs them, flipping each material `Pending → Ready` when
+//! its last sub-pipeline resolves.
 //!
-//! - The type surface (`PipelineGroupId`, `PipelineGroupStatus`,
-//!   `PipelineGroupDef`, `MaterialDef`, `MaterialDefKind`, `PassDef`,
-//!   `PassKind`, `PipelineConfigSnapshot`, `MaterialId`) is complete in
-//!   [`types`].
-//! - The [`PipelineScheduler`] struct holds the slot maps and the
-//!   `FuturesUnordered`. Real compile is driven via the Block A.1
-//!   bridge inside `prewarm_dynamic_pipelines` (in
-//!   `crates/renderer/src/lib.rs`): each scheduler entry is marked
-//!   `Ready` once the existing batched compile path resolves. The
-//!   literal "push real compile futures onto `inflight`" direction is
-//!   preserved as a Block D follow-up.
+//! The type surface (`PipelineGroupId`, `PipelineGroupStatus`,
+//! `PipelineGroupDef`, `MaterialDef`, `MaterialDefKind`, `PassDef`,
+//! `PassKind`, `PipelineConfigSnapshot`, `MaterialId`) lives in
+//! [`types`].
 
 #![warn(missing_docs)]
 

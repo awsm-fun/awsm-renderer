@@ -1,30 +1,40 @@
-//! Block D.1 PART 2 — sync compile-launch path that pushes real
-//! compile promises into the scheduler's `inflight_compile` queue.
+//! Render-driven, family-agnostic, AA-agnostic pipeline-compile path.
 //!
-//! The architecture:
+//! There is ONE compile-launch operation:
+//! [`AwsmRenderer::ensure_scene_pipelines`]. It is SYNC + non-blocking
+//! (the render loop can't await — it kicks async compiles and the
+//! dispatch sites skip not-ready pipelines until they resolve). It
+//! compiles exactly what the LIVE scene needs at the ACTIVE AA config,
+//! via the lazy content-keyed pipeline caches underneath.
 //!
-//! 1. **Sync at submit time** — `AwsmRenderer::launch_dynamic_material_compile`
-//!    is called when a new dynamic material registers. It synchronously:
-//!    - Installs every shader needed (via
-//!      `Shaders::ensure_keys_sync_skip_validate`). `compile_shader`
-//!      is a sync browser call; validation is skipped here and
-//!      surfaces later as a `create_compute_pipeline_async` rejection.
-//!    - Builds all pipeline cache keys + descriptors (sync — needs
-//!      `&Shaders` + `&PipelineLayouts`).
-//!    - Issues every `gpu.create_compute_pipeline_promise` back-to-back
-//!      (sync — Dawn starts compiling all N in parallel by the time the
-//!      loop returns).
-//!    - Wraps each `JsFuture` in a closure that emits a
-//!      [`PipelineCompileResolution`] when the pipeline resolves; pushes
-//!      it into the scheduler via `push_compile_future`.
+//! Flow:
 //!
-//! 2. **`AwsmRenderer::poll_pipeline_scheduler`** drains the
-//!    scheduler's `inflight_compile` queue per-frame and calls
-//!    `apply_compile_resolution` to install the resolved pipeline
-//!    into the per-pass cache + decrement the scheduler's
-//!    sub-compile counter. When the last sub-pipeline lands, the
-//!    material flips Pending → Ready and frontends subscribed to the
-//!    status stream observe the transition.
+//! 1. **Dirty-gated.** The render preamble calls it every frame; on the
+//!    warm path it is a single `bool` check (`materials.variants_dirty`)
+//!    and returns immediately — zero per-frame iteration / allocation.
+//! 2. **Bucket-layout change first.** When the live bucket SET changed
+//!    (`dispatch_hash` or entry count drifted from the last ensure), it
+//!    resizes the classify + edge GPU buffers, rebuilds the edge-layout
+//!    uniform, and CLEARS the stale layout-keyed pipeline caches BEFORE
+//!    compiling against the new layout. Getting this ordering wrong =
+//!    pipelines dispatch against mismatched classify-output offsets =
+//!    corrupted shading, so it is strictly ordered.
+//! 3. **Classify + per-bucket opaque.** For the ACTIVE `(msaa, mipmaps)`
+//!    only (never the 4× msaa×mipmap blowup), it ensures the classify
+//!    pipeline and every opaque-routed bucket's opaque pipeline via the
+//!    shared content-keyed cache, charging each compile to the bucket's
+//!    scheduler `Material(mid)` group (so a CUSTOM material's WGSL
+//!    compile error surfaces via `dynamic_material_compile_status`).
+//! 4. **Edge resolve.** Delegates to the layout-level
+//!    [`AwsmRenderer::launch_edge_resolve_compile`] (idempotent,
+//!    dedup'd by cache + desired-keys).
+//!
+//! `AwsmRenderer::poll_pipeline_scheduler` drains the scheduler's
+//! `inflight_compile` queue per-frame and `apply_compile_resolution`
+//! installs the resolved pipeline into the per-pass cache + decrements
+//! the owning material's sub-compile counter. When the last sub-pipeline
+//! lands, the material flips Pending → Ready and frontends subscribed to
+//! the status stream observe the transition.
 
 use awsm_materials::{MaterialAlphaMode, MaterialShaderId};
 use wasm_bindgen::JsValue;
@@ -42,37 +52,225 @@ use crate::render_passes::material_opaque::shader::cache_key::{
 };
 
 impl crate::AwsmRenderer {
-    /// Block D.1 PART 2 — kick off real-future compile for the
-    /// scheduler entry corresponding to `shader_id`. Synchronously
-    /// builds + issues this material's classify + opaque-compute
-    /// pipeline promises; pushes each to the scheduler's
-    /// `inflight_compile`. Returns immediately; the resulting material
-    /// entry stays `Pending` until every sub-pipeline resolves.
+    /// THE render-driven, family-agnostic, AA-agnostic compile-launch
+    /// operation. Compiles on demand exactly what the LIVE scene needs
+    /// at the ACTIVE AA config, via the lazy content-keyed pipeline
+    /// caches underneath. SYNC + non-blocking — it kicks async compiles
+    /// and returns; the dispatch sites skip not-ready pipelines until
+    /// they resolve via `poll_pipeline_scheduler`.
     ///
-    /// **MSAA-edge integration**: this method does NOT launch edge-resolve
-    /// pipelines. Edge resolve is a LAYOUT-level concern (its cache keys
-    /// embed the whole `bucket_entries`), so it is rebuilt ONCE per layout
-    /// change by [`Self::launch_edge_resolve_compile`] from the relaunch
-    /// sites — not once per material. `render_edge_resolve` is
-    /// per-bucket-independent (no all-or-nothing gate); a bucket whose edge
-    /// pipeline isn't resident yet simply keeps primary-pass shading for
-    /// the frame.
+    /// Called from the render preamble. It is gated by the caller on
+    /// `materials.variants_dirty` (see `reconcile_material_variants`),
+    /// so the warm/unchanged path never reaches here — zero per-frame
+    /// iteration / allocation.
     ///
-    /// Idempotent on cache hits: cache-hit pipelines bypass the
-    /// scheduler's sub-compile counter entirely (they're installed
-    /// inline as part of this method's sync window). The counter
-    /// only tracks actual in-flight async compiles. If every
-    /// sub-pipeline was a cache hit, the method calls `mark_ready`
-    /// inline before returning so the status surface stays accurate.
+    /// Steps (strictly ordered):
     ///
-    /// Skipped silently if the material has no scheduler entry
-    /// (caller never called `submit_pipeline_group_batch` /
-    /// `submit_dynamic_material` / `register_material`'s A.1 bridge).
-    pub fn launch_dynamic_material_compile(
+    /// 1. Capture `active_msaa` / `active_mipmaps`.
+    /// 2. **Bucket-layout change.** If the live bucket SET changed
+    ///    (`dispatch_hash` or entry count drifted from
+    ///    `last_ensured_bucket_layout`), resize the classify + edge GPU
+    ///    buffers, rebuild the edge-layout uniform, and CLEAR the stale
+    ///    layout-keyed pipeline caches BEFORE compiling against the new
+    ///    layout — getting this ordering wrong dispatches pipelines
+    ///    against mismatched classify-output offsets.
+    /// 3. **Classify** (active msaa) — ensured + installed.
+    /// 4. **Per-bucket opaque** (active msaa × mipmaps) — every
+    ///    opaque-routed bucket. A CUSTOM material's compile is charged
+    ///    to its `Material(mid)` group so a WGSL error surfaces via
+    ///    `dynamic_material_compile_status`; first-party variants charge
+    ///    to their own (never-failing) group the same way.
+    /// 5. **Edge resolve** (active_msaa MSAA + supported) — delegated to
+    ///    the layout-level `launch_edge_resolve_compile`.
+    ///
+    /// Every bucket has a scheduler `Material(mid)` group: this method
+    /// submits one for any bucket lacking it (so its compile is
+    /// chargeable + observable). The shared per-bucket compile reuses
+    /// the same cross-call waiter dedup the old launch paths used, so
+    /// the classify compile (keyed on `(msaa, bucket_entries)`, shared
+    /// by every bucket) is issued once and every bucket waits on it.
+    pub fn ensure_scene_pipelines(&mut self) -> Result<(), crate::error::AwsmError> {
+        let active_msaa = self.anti_aliasing.msaa_sample_count;
+        let active_mipmaps = self.anti_aliasing.mipmap;
+
+        // ── Step 1: detect a bucket-SET change and, if so, re-lay-out the
+        //    bucket-dependent GPU buffers + clear the stale layout-keyed
+        //    pipeline caches BEFORE compiling against the new layout.
+        let dispatch_hash = self.dynamic_materials.dispatch_hash_cached();
+        let bucket_count = self.dynamic_materials.bucket_entries_cached().len();
+        let layout_signature = (dispatch_hash, bucket_count);
+        let layout_changed = self.last_ensured_bucket_layout != Some(layout_signature);
+        if layout_changed {
+            self.relayout_bucket_buffers(bucket_count as u32)?;
+            self.last_ensured_bucket_layout = Some(layout_signature);
+        }
+
+        // ── Step 2: ensure a scheduler entry for every live bucket so each
+        //    bucket's compile is chargeable + observable. Idempotent — skips
+        //    buckets that already have an entry. Snapshot the ids first to
+        //    avoid borrowing the registry across the mutating submit.
+        let bucket_ids: Vec<MaterialShaderId> = self
+            .dynamic_materials
+            .bucket_entries_cached()
+            .iter()
+            .map(|e| e.shader_id)
+            .collect();
+        for id in &bucket_ids {
+            if let Err(e) = self.submit_to_scheduler_for_shader_id(*id) {
+                tracing::warn!(
+                    target: "awsm_renderer::pipeline_readiness",
+                    "ensure_scene_pipelines: submit_to_scheduler({:?}) failed: {:?}", id, e
+                );
+            }
+        }
+
+        // ── On a bucket-SET change, re-mark every still-tracked material
+        //    `Pending` + bump its generation. The generation bump is what
+        //    makes `apply_compile_resolution`'s stale-generation gate DROP
+        //    any in-flight resolution compiled against the PREVIOUS layout
+        //    (the caches were just cleared in `relayout_bucket_buffers`;
+        //    without the bump a late old-layout promise would install a
+        //    pipeline that dispatches against the new classify offsets).
+        //    It also keeps the compile-status surface honest — existing
+        //    materials show Pending while their replacement compiles.
+        if layout_changed {
+            for id in &bucket_ids {
+                if let Some(mid) = self.pipeline_scheduler.find_material_by_shader_id(*id) {
+                    self.pipeline_scheduler
+                        .mark_material_pending_for_relaunch(PipelineGroupId::Material(mid));
+                }
+            }
+        }
+
+        // ── Step 3: classify + per-bucket opaque, active config only.
+        //    The classify cache key is shared across buckets (keyed on
+        //    `(msaa, bucket_entries)`, not shader_id); the per-bucket
+        //    compile helper's cross-call waiter dedup issues it once (on
+        //    the first bucket, always the canonical PBR skybox owner) and
+        //    makes every later bucket wait on it. So classify lands even on
+        //    a Blend-only custom scene whose own opaque compile is skipped.
+        let entries = self.dynamic_materials.bucket_entries_cached().to_vec();
+
+        for shader_id in &bucket_ids {
+            if let Err(e) = self.ensure_bucket_pipelines(
+                *shader_id,
+                &entries,
+                dispatch_hash,
+                active_msaa,
+                active_mipmaps,
+            ) {
+                tracing::warn!(
+                    target: "awsm_renderer::pipeline_readiness",
+                    "ensure_scene_pipelines: bucket({:?}) compile failed: {:?}",
+                    shader_id, e
+                );
+            }
+        }
+
+        // ── Step 4: edge resolve — layout-level, idempotent (deduped by
+        //    cache + in-flight + desired_keys). No-op when MSAA is off or
+        //    `edge_resolve_supported` is false.
+        self.launch_edge_resolve_compile()?;
+
+        Ok(())
+    }
+
+    /// Re-lay-out the bucket-dependent GPU state for `bucket_count`:
+    /// classify buffers (per-bucket indirect args + tile lists), the
+    /// edge buffers + edge-layout uniform (MSAA only), then CLEAR the
+    /// layout-keyed pipeline caches (opaque `main` + the edge per-shader
+    /// + globals).
+    ///
+    /// **Ordering is load-bearing.** Resize the buffers and clear the
+    /// caches BEFORE [`Self::ensure_scene_pipelines`] compiles against
+    /// the new layout. Were the old (smaller-bucket) pipelines left in
+    /// the layout-keyed caches (their lookup keys are bucket-layout-
+    /// AGNOSTIC — `(shader_id, msaa, mipmaps)` for opaque), dispatch in
+    /// the window before the new compiles land would read them against
+    /// the freshly-resized classify / edge buffers, where every
+    /// `<shader>_offset` field has shifted — corrupted shading, worse
+    /// than a skipped draw. After the clear the dispatch site's `Option`
+    /// guard returns `None` and skips the draw until the new pipeline
+    /// lands. The classify per-pass cache is self-invalidating (keyed on
+    /// `dispatch_hash`, which changes on every bucket mutation) so old
+    /// entries become unreachable orphans — no clear needed there.
+    fn relayout_bucket_buffers(
+        &mut self,
+        bucket_count: u32,
+    ) -> Result<(), crate::error::AwsmError> {
+        // Classify buffers (per-bucket indirect args + tile lists). A
+        // realloc invalidates every bind group that referenced the old
+        // buffer — mark them for recreation.
+        if self
+            .material_classify_buffers
+            .ensure_bucket_count(&self.gpu, bucket_count)?
+        {
+            self.bind_groups
+                .mark_create(crate::bind_groups::BindGroupCreate::MaterialClassifyBuffersResize);
+        }
+        // Edge buffers + edge-layout uniform (MSAA only). The edge
+        // args/data buffers live on the classify multi-sampled bind group
+        // (binding 4/5) — the classify recreate mark covers them too.
+        if let Some(edge_buffers) = self.material_edge_buffers.as_mut() {
+            if edge_buffers.ensure_bucket_count(&self.gpu, bucket_count)? {
+                self.bind_groups.mark_create(
+                    crate::bind_groups::BindGroupCreate::MaterialClassifyBuffersResize,
+                );
+                let max_edge_budget = edge_buffers.max_edge_budget;
+                if let Ok((uniform, _bytes)) =
+                    crate::render_passes::material_opaque::edge_buffers::build_edge_layout_uniform(
+                        &self.gpu,
+                        bucket_count,
+                        max_edge_budget,
+                    )
+                {
+                    self.material_edge_layout_uniform = Some(uniform);
+                }
+            }
+        }
+
+        // Clear layout-keyed typed pipeline caches (opaque `main` + edge).
+        self.render_passes
+            .material_opaque
+            .pipelines
+            .clear_dynamic_pipelines();
+        self.render_passes
+            .material_opaque
+            .edge_pipelines
+            .clear_dynamic_pipelines();
+
+        Ok(())
+    }
+
+    /// Ensure the classify (active msaa) + opaque (active msaa × mipmaps)
+    /// pipelines for a single bucket `shader_id`, charging the compile to
+    /// the bucket's scheduler `Material(mid)` group.
+    ///
+    /// Shared by every bucket in [`Self::ensure_scene_pipelines`]. The
+    /// classify cache key is identical across buckets (keyed on
+    /// `(msaa, bucket_entries, emit_edge_data)`, not shader_id), so the
+    /// cross-call waiter dedup here issues its compile once and registers
+    /// later buckets as waiters — every bucket's Ready transition still
+    /// waits on the shared classify compile.
+    ///
+    /// A CUSTOM (registered) material attaches its `DynamicShaderInfo`
+    /// (its WGSL is templated into the opaque kernel); a first-party
+    /// canonical bucket / feature-set variant compiles the built-in body
+    /// (`dynamic_shader: None`). A Blend/Mask custom registration skips
+    /// the opaque compile (its body targets the transparent contract).
+    ///
+    /// Charging the compile to `Material(mid)` is what surfaces a custom
+    /// material's WGSL compile error via
+    /// `dynamic_material_compile_status` (the `create_compute_pipeline_async`
+    /// rejection flows to `apply_compile_resolution` → `mark_failed`).
+    fn ensure_bucket_pipelines(
         &mut self,
         shader_id: MaterialShaderId,
+        entries: &[crate::dynamic_materials::BucketEntry],
+        dispatch_hash: u64,
+        active_msaa: Option<u32>,
+        active_mipmaps: bool,
     ) -> Result<(), crate::error::AwsmError> {
-        // Find the scheduler MaterialId for this shader_id.
         let Some(mid) = self
             .pipeline_scheduler
             .find_material_by_shader_id(shader_id)
@@ -80,30 +278,18 @@ impl crate::AwsmRenderer {
             return Ok(());
         };
         let group_id = PipelineGroupId::Material(mid);
-
-        // Capture generation up front. `&mut self` for the whole
-        // method body means nothing concurrent can bump it; once
-        // we've passed this guard, all later code can rely on the
-        // captured value. Doing this BEFORE any state mutation
-        // (waiter registration, promise pushes) means we never leak
-        // counter/waiter state if the material is somehow already
-        // gone.
         let Some(generation) = self.pipeline_scheduler.material_generation(mid) else {
             return Ok(());
         };
 
-        // Compile ONLY the variant matching the live AA config — the dispatch
-        // only ever uses `(active_msaa, active_mipmaps)`, and `set_anti_aliasing`
-        // relaunches every registered material for the new config on a toggle
-        // (already-compiled variants stay cached). Matches the cold-boot
-        // lazy-pool model; compiling all 4 (msaa × mipmap) here was redundant.
-        let active_msaa = self.anti_aliasing.msaa_sample_count;
-        let active_mipmaps = self.anti_aliasing.mipmap;
-
-        // Snapshot the active dispatch_hash + bucket_entries (cached
-        // refreshes via the registry's per-mutation refresh).
-        let entries = self.dynamic_materials.bucket_entries_cached().to_vec();
-        let dispatch_hash = self.dynamic_materials.dispatch_hash_cached();
+        // Orphan guard: registration was removed but the scheduler group
+        // lingers — nothing to compile. Mark Ready so a stray entry can't
+        // hang the compile-status surface. (Canonical first-party + live
+        // custom + known fp-variant ids are all launchable.)
+        if !self.is_launchable_material(shader_id) {
+            self.pipeline_scheduler.mark_ready(group_id);
+            return Ok(());
+        }
 
         // Resolve cached pipeline layouts (sync).
         let classify_bg = &self.render_passes.material_classify.bind_groups;
@@ -145,34 +331,9 @@ impl crate::AwsmRenderer {
             ]),
         )?;
 
-        // Build shader cache keys + slot identities. For this
-        // shader_id only — other already-registered materials keep
-        // their existing pipelines (the new material entering shifts
-        // dispatch_hash, so classify recompiles for both MSAA states).
-        // `dynamic_material_registration` lives at the AwsmRenderer
-        // facade; the `DynamicMaterials` registry exposes the lookup
-        // via `.get()`. Take a short-lived borrow + clone for the
-        // shader-info build (the registration's WGSL fragment is
-        // captured by the dynamic_shader info below).
-        // `reg` is `Some` only for a custom author material; a first-party
-        // feature-set variant has a dynamic-range id but no registration —
-        // it compiles the built-in PBR/Toon body (no `DynamicShaderInfo`).
+        // `reg` is `Some` only for a CUSTOM author material; a first-party
+        // feature-set variant has a dynamic-range id but no registration.
         let reg = self.dynamic_materials.get(shader_id).cloned();
-        // Nothing to compile — the id was removed between submit and launch
-        // (an orphan; see `is_launchable_material`). Defense-in-depth: the
-        // relaunch sites retire orphans before they reach here, but mark any
-        // group still `Pending` Ready so a stray caller can't hang the
-        // compile-status surface.
-        if !self.is_launchable_material(shader_id) {
-            if let Some(mid) = self
-                .pipeline_scheduler
-                .find_material_by_shader_id(shader_id)
-            {
-                self.pipeline_scheduler
-                    .mark_ready(PipelineGroupId::Material(mid));
-            }
-            return Ok(());
-        }
         let dynamic_shader = reg.as_ref().map(|reg| DynamicShaderInfo {
             shader_includes: reg.shader_includes.resolve(),
             struct_decl: awsm_materials::dynamic_layout::generate_wgsl_struct(
@@ -186,73 +347,59 @@ impl crate::AwsmRenderer {
             ),
             wgsl_fragment: reg.wgsl_fragment.clone(),
         });
-        // Shading family + feature mask + skybox ownership from the bucket
-        // entry (Custom for a registration; Pbr/Toon for a variant).
-        let (base, pbr_features, owns_skybox) = opaque_variant_params(&entries, shader_id);
+        let (base, pbr_features, owns_skybox) = opaque_variant_params(entries, shader_id);
 
         let mut shader_jobs: Vec<crate::shaders::ShaderCacheKey> = Vec::new();
         let mut slots: Vec<LaunchSlot> = Vec::new();
 
-        // Classify variant for the ACTIVE MSAA only (the only one dispatched;
-        // a toggle recompiles the other via `set_anti_aliasing`).
-        {
-            let msaa = active_msaa;
-            shader_jobs.push(
-                ShaderCacheKeyMaterialClassify {
-                    msaa_sample_count: msaa,
-                    bucket_entries: entries.clone(),
-                    emit_edge_data: msaa.is_some() && crate::edge_resolve_supported(&self.gpu),
-                }
-                .into(),
-            );
-            slots.push(LaunchSlot::Classify { msaa });
-        }
-        // Opaque variants for THIS shader_id — only for materials that route
-        // to the opaque pass. A Blend/Mask *dynamic* material's author body
-        // targets the transparent contract (returns `TransparentShadingOutput`),
-        // so compiling it in the opaque wrapper fails; it renders via the
-        // transparent pass instead. First-party variants (no registration)
-        // always build — their built-in body fits both contracts.
+        // Classify variant for the ACTIVE MSAA only (the only one
+        // dispatched). Shared cache key across buckets.
+        shader_jobs.push(
+            ShaderCacheKeyMaterialClassify {
+                msaa_sample_count: active_msaa,
+                bucket_entries: entries.to_vec(),
+                emit_edge_data: active_msaa.is_some() && crate::edge_resolve_supported(&self.gpu),
+            }
+            .into(),
+        );
+        slots.push(LaunchSlot::Classify { msaa: active_msaa });
+
+        // Opaque variant for THIS bucket — only when it routes to the
+        // opaque pass. A Blend/Mask custom material's body targets the
+        // transparent contract; it renders via the transparent pass.
+        // First-party variants (no registration) always build.
         let build_opaque = reg
             .as_ref()
             .is_none_or(|r| matches!(r.alpha_mode, MaterialAlphaMode::Opaque));
         if build_opaque {
-            // Active (msaa, mipmap) only — see the note at the top of this fn.
-            let (msaa, mipmaps) = (active_msaa, active_mipmaps);
             shader_jobs.push(
                 ShaderCacheKeyMaterialOpaque {
                     texture_pool_arrays_len,
                     texture_pool_samplers_len,
-                    msaa_sample_count: msaa,
-                    mipmaps,
+                    msaa_sample_count: active_msaa,
+                    mipmaps: active_mipmaps,
                     shader_id,
                     base,
                     owns_skybox,
                     pbr_features,
                     dispatch_hash,
                     dynamic_shader: dynamic_shader.clone(),
-                    bucket_entries: entries.clone(),
+                    bucket_entries: entries.to_vec(),
                 }
                 .into(),
             );
-            slots.push(LaunchSlot::Opaque { msaa, mipmaps });
-        }
-        // Transparent stubs handled by the legacy prewarm path (per-mesh,
-        // depends on buffer_info — not part of this launch).
-        if reg.as_ref().map(|r| r.alpha_mode) == Some(MaterialAlphaMode::Blend) {
-            tracing::debug!(
-                target: "awsm_renderer::pipeline_readiness",
-                "launch_dynamic_material_compile: Blend material — transparent pipeline stays on prewarm path",
-            );
+            slots.push(LaunchSlot::Opaque {
+                msaa: active_msaa,
+                mipmaps: active_mipmaps,
+            });
         }
 
         // Sync shader install — skips validation; validation errors
-        // re-surface as pipeline-creation rejections below.
+        // re-surface as pipeline-creation rejections (→ `mark_failed`).
         let resolved_shader_keys = self
             .shaders
             .ensure_keys_sync_skip_validate(&self.gpu, shader_jobs)?;
 
-        // Build compute pipeline cache keys per slot.
         let mut compute_jobs: Vec<(LaunchSlot, ComputePipelineCacheKey)> =
             Vec::with_capacity(slots.len());
         for (shader_key, slot) in resolved_shader_keys.into_iter().zip(slots) {
@@ -275,30 +422,13 @@ impl crate::AwsmRenderer {
             compute_jobs.push((slot, ComputePipelineCacheKey::new(shader_key, layout)));
         }
 
-        // Cache-hit + cross-call waiter dedup. When an outer loop
-        // (e.g. `register_material`'s relaunch over
-        // `registered_material_shader_ids()`) calls this method N
-        // times with overlapping classify cache keys (classify is
-        // keyed on `(msaa, bucket_entries, emit_edge_data)`, NOT
-        // shader_id, so every dynamic launch in the same loop wants
-        // the SAME classify cache key), the first launch issues the
-        // promise; subsequent launches register as additional
-        // waiters (so their Ready transition waits on the shared
-        // compile) and skip the duplicate
-        // `createComputePipelineAsync`.
-        //
-        // **Waiter registration is deferred until after the fallible
-        // `ensure_keys_prepare` succeeds**: if prep returns Err,
-        // no waiters/counters are touched, so a sync prep error
-        // never leaks subcompile counters or in-flight waiter map
-        // entries. Within this single launch invocation (single
-        // sync window — no concurrent calls in single-threaded
-        // wasm), the decide-vs-register split is safe: the
-        // read-only `has_compute_compile_waiter` check correctly
-        // sees what PRIOR launches have registered, and within
-        // this launch the slot identities (msaa × mipmaps × type)
-        // produce distinct cache keys so there's no
-        // within-batch dedup needed at the decision step.
+        // Cache-hit + cross-call waiter dedup. The classify cache key is
+        // shared by every bucket in this ensure pass: the first bucket
+        // issues the promise; later buckets register as waiters (so their
+        // Ready transition waits on the shared compile) and skip the
+        // duplicate `createComputePipelineAsync`. Waiter registration is
+        // deferred until after the fallible `ensure_keys_prepare` succeeds
+        // so a prep error never leaks counter / waiter-map state.
         let mut promise_jobs: Vec<(LaunchSlot, ComputePipelineCacheKey)> = Vec::new();
         let mut skip_keys: Vec<ComputePipelineCacheKey> = Vec::new();
         for (slot, cache_key) in &compute_jobs {
@@ -308,23 +438,14 @@ impl crate::AwsmRenderer {
                 .pipeline_scheduler
                 .has_compute_compile_waiter(cache_key)
             {
-                // Another launch's promise is already in flight for
-                // this cache key. Defer the waiter registration to
-                // AFTER prep succeeds (no prep call needed for skips,
-                // but we still want the same all-or-nothing
-                // registration semantics across the launch).
                 skip_keys.push(cache_key.clone());
             } else {
                 promise_jobs.push((slot.clone(), cache_key.clone()));
             }
         }
 
-        let opaque_promise_count = promise_jobs.len();
+        let promise_count = promise_jobs.len();
 
-        // Sync prep BEFORE any waiter registration so a prep error
-        // doesn't leak counter / waiter-map state. `Option<Prepped>`
-        // is `None` when there are no promises to push (everything
-        // was cache-hit or skip-via-in-flight).
         let prepped_opt = if !promise_jobs.is_empty() {
             let cache_keys_only: Vec<ComputePipelineCacheKey> =
                 promise_jobs.iter().map(|(_, k)| k.clone()).collect();
@@ -340,10 +461,6 @@ impl crate::AwsmRenderer {
             None
         };
 
-        // Prep (if any) succeeded — NOW commit waiter registrations
-        // for skip keys AND push keys. After this point the path is
-        // infallible: every counter bump matches a future push that
-        // drains via `apply_compile_resolution_inline`.
         for key in &skip_keys {
             self.pipeline_scheduler
                 .register_compute_compile_waiter(key.clone(), mid);
@@ -354,11 +471,7 @@ impl crate::AwsmRenderer {
         }
 
         if let Some(mut prepped) = prepped_opt {
-            // The factored ensure_keys_prepare treats every input as
-            // a miss; prep.promises has the same length as promise_jobs.
-            // `generation` was captured at function top.
             let promises = std::mem::take(&mut prepped.promises);
-
             for ((slot, cache_key), promise) in promise_jobs.into_iter().zip(promises) {
                 let target = match &slot {
                     LaunchSlot::Classify { msaa } => CompileInstallTarget::ClassifyDynamic {
@@ -389,262 +502,16 @@ impl crate::AwsmRenderer {
             }
             tracing::info!(
                 target: "awsm_renderer::pipeline_readiness",
-                "launch_dynamic_material_compile: {:?} opaque/classify sub-pipelines pushed for material({:?})",
-                opaque_promise_count,
+                "ensure_bucket_pipelines({:?}): {} sub-pipelines pushed for material({:?})",
+                shader_id,
+                promise_count,
                 mid,
             );
         }
 
-        // NOTE: edge-resolve pipelines are NOT launched here. They are a
-        // layout-level concern (their cache keys embed the whole
-        // bucket_entries), rebuilt ONCE per layout change by
-        // `launch_edge_resolve_compile` from the relaunch sites — not once
-        // per material. See that method's rustdoc.
-
-        // If both launches were full cache hits, no promise pushed
-        // → subcompile counter stayed at 0 → Ready never auto-fires
-        // via note_subcompile_complete. Mark Ready inline.
-        if self.pipeline_scheduler.pending_subcompile_count(mid) == 0 {
-            self.pipeline_scheduler.mark_ready(group_id);
-        }
-        Ok(())
-    }
-
-    /// Block D.1 PART 2 first-party extension: kick off real-future
-    /// compile for a FIRST-PARTY material's opaque pipeline.
-    /// Mirrors [`Self::launch_dynamic_material_compile`] but with
-    /// `dynamic_shader: None` and a hard-coded first-party shader_id
-    /// (PBR / UNLIT / TOON / FLIPBOOK).
-    ///
-    /// Called from `AwsmRenderer::register_first_party_material` —
-    /// the gltf-loader's first-party material insert path. Cold-boot
-    /// no longer compiles first-party opaque pipelines (the eager
-    /// `shader_descriptors_and_layouts` path now skips them); they
-    /// land via this method as gltf materials register.
-    ///
-    /// **MSAA + mipmap variants**: compiles all 4 (msaa × mipmaps)
-    /// combinations for this shader_id, so MSAA-flip + mipmap-flip
-    /// don't trigger a fresh recompile. (Dynamic materials do the
-    /// same.) The classify pipelines are NOT touched here — they're
-    /// either already eager (no dynamic registered) or compiled via
-    /// `launch_dynamic_material_compile` when dynamics enter.
-    ///
-    /// Idempotent on cache hits: variants already compiled are
-    /// skipped; the scheduler counter only tracks actual in-flight
-    /// async compiles.
-    pub fn launch_first_party_material_compile(
-        &mut self,
-        shader_id: MaterialShaderId,
-    ) -> Result<(), crate::error::AwsmError> {
-        // Every dynamic-range id (custom author material OR a first-party
-        // feature-set variant) routes through the dynamic launch: it
-        // pushes the classify recompile that a bucket-list change needs.
-        // The dynamic launch reads each bucket's `base`/`features` off its
-        // registry entry and only attaches a `DynamicShaderInfo` for the
-        // custom case (variants compile the built-in body). Canonical
-        // first-party ids (PBR/UNLIT/TOON/FLIPBOOK) stay on this path.
-        if shader_id.is_dynamic() {
-            return self.launch_dynamic_material_compile(shader_id);
-        }
-        let Some(mid) = self
-            .pipeline_scheduler
-            .find_material_by_shader_id(shader_id)
-        else {
-            return Ok(());
-        };
-        let group_id = PipelineGroupId::Material(mid);
-
-        // Capture generation up front — see the matching comment in
-        // `launch_dynamic_material_compile` for the rationale (avoid
-        // leaking waiter/counter state on a None lookup that happens
-        // after waiter registration).
-        let Some(generation) = self.pipeline_scheduler.material_generation(mid) else {
-            return Ok(());
-        };
-
-        // Active (msaa, mipmap) only — the dispatch never uses a non-active
-        // variant, and `set_anti_aliasing` relaunches this material for the new
-        // config on a toggle (old variants stay cached).
-        let active_msaa = self.anti_aliasing.msaa_sample_count;
-        let active_mipmaps = self.anti_aliasing.mipmap;
-
-        // First-party materials use the stable empty-state dispatch_hash
-        // at registration time. The `dispatch_hash: 0` sentinel matches
-        // what `MaterialOpaquePipelines::shader_descriptors_for_config_with`
-        // used to emit in the eager batch.
-        let dispatch_hash = self.dynamic_materials.dispatch_hash_cached();
-
-        let opaque_bg = &self.render_passes.material_opaque.bind_groups;
-        let texture_pool_arrays_len = opaque_bg.texture_pool_arrays_len;
-        let texture_pool_samplers_len = opaque_bg.texture_pool_sampler_keys.len() as u32;
-        let opaque_layout_msaa = self.pipeline_layouts.get_key(
-            &self.gpu,
-            &self.bind_group_layouts,
-            crate::pipeline_layouts::PipelineLayoutCacheKey::new(vec![
-                opaque_bg.multisampled_main_bind_group_layout_key,
-                opaque_bg.lights_bind_group_layout_key,
-                opaque_bg.texture_pool_textures_bind_group_layout_key,
-                opaque_bg.shadows_bind_group_layout_key,
-            ]),
-        )?;
-        let opaque_layout_no_msaa = self.pipeline_layouts.get_key(
-            &self.gpu,
-            &self.bind_group_layouts,
-            crate::pipeline_layouts::PipelineLayoutCacheKey::new(vec![
-                opaque_bg.singlesampled_main_bind_group_layout_key,
-                opaque_bg.lights_bind_group_layout_key,
-                opaque_bg.texture_pool_textures_bind_group_layout_key,
-                opaque_bg.shadows_bind_group_layout_key,
-            ]),
-        )?;
-
-        // Bucket entries snapshot — for first-party-only scenes
-        // matches `first_party_bucket_entries()`; with dynamics
-        // registered uses the live `bucket_entries_cached()`.
-        let entries = self.dynamic_materials.bucket_entries_cached().to_vec();
-
-        let mut shader_jobs: Vec<crate::shaders::ShaderCacheKey> = Vec::new();
-        let mut slots: Vec<LaunchSlot> = Vec::new();
-
-        // Read this bucket's shading family + specialized feature mask off
-        // its registry bucket entry. For a per-feature-set PBR/Toon
-        // variant this is `(Pbr|Toon, that variant's features)`; for a
-        // canonical first-party id it's `(family, all())`. The opaque
-        // template gates per-feature WGSL on these features (#16).
-        let (base, pbr_features, owns_skybox) = opaque_variant_params(&entries, shader_id);
-
-        // Active (msaa, mipmap) only — a toggle recompiles via `set_anti_aliasing`.
-        let (msaa, mipmaps) = (active_msaa, active_mipmaps);
-        shader_jobs.push(
-            ShaderCacheKeyMaterialOpaque {
-                texture_pool_arrays_len,
-                texture_pool_samplers_len,
-                msaa_sample_count: msaa,
-                mipmaps,
-                shader_id,
-                base,
-                owns_skybox,
-                pbr_features,
-                dispatch_hash,
-                dynamic_shader: None,
-                bucket_entries: entries.clone(),
-            }
-            .into(),
-        );
-        slots.push(LaunchSlot::Opaque { msaa, mipmaps });
-
-        let resolved_shader_keys = self
-            .shaders
-            .ensure_keys_sync_skip_validate(&self.gpu, shader_jobs)?;
-
-        let mut compute_jobs: Vec<(LaunchSlot, ComputePipelineCacheKey)> =
-            Vec::with_capacity(slots.len());
-        for (shader_key, slot) in resolved_shader_keys.into_iter().zip(slots) {
-            let layout = match &slot {
-                LaunchSlot::Opaque { msaa, .. } => {
-                    if msaa.is_some() {
-                        opaque_layout_msaa
-                    } else {
-                        opaque_layout_no_msaa
-                    }
-                }
-                LaunchSlot::Classify { .. } => unreachable!("classify not emitted here"),
-            };
-            compute_jobs.push((slot, ComputePipelineCacheKey::new(shader_key, layout)));
-        }
-
-        // Cache-hit + cross-call waiter dedup. See the matching
-        // block in `launch_dynamic_material_compile` for the full
-        // rationale, including the "defer waiter registration until
-        // after prep succeeds" ordering.
-        let mut promise_jobs: Vec<(LaunchSlot, ComputePipelineCacheKey)> = Vec::new();
-        let mut skip_keys: Vec<ComputePipelineCacheKey> = Vec::new();
-        for (slot, cache_key) in &compute_jobs {
-            if let Some(existing_key) = self.pipelines.compute.cache_lookup(cache_key).copied() {
-                install_per_pass(self, slot, shader_id, dispatch_hash, existing_key);
-            } else if self
-                .pipeline_scheduler
-                .has_compute_compile_waiter(cache_key)
-            {
-                skip_keys.push(cache_key.clone());
-            } else {
-                promise_jobs.push((slot.clone(), cache_key.clone()));
-            }
-        }
-
-        let opaque_promise_count = promise_jobs.len();
-
-        // Sync prep before any waiter registration.
-        let prepped_opt = if !promise_jobs.is_empty() {
-            let cache_keys_only: Vec<ComputePipelineCacheKey> =
-                promise_jobs.iter().map(|(_, k)| k.clone()).collect();
-            Some(
-                crate::pipelines::compute_pipeline::ComputePipelines::ensure_keys_prepare(
-                    &self.gpu,
-                    &self.shaders,
-                    &self.pipeline_layouts,
-                    cache_keys_only,
-                )?,
-            )
-        } else {
-            None
-        };
-
-        // Now commit waiter registrations (skip + push). Past this
-        // point everything is infallible.
-        for key in &skip_keys {
-            self.pipeline_scheduler
-                .register_compute_compile_waiter(key.clone(), mid);
-        }
-        for (_, key) in &promise_jobs {
-            self.pipeline_scheduler
-                .register_compute_compile_waiter(key.clone(), mid);
-        }
-
-        if let Some(mut prepped) = prepped_opt {
-            let promises = std::mem::take(&mut prepped.promises);
-            for ((slot, cache_key), promise) in promise_jobs.into_iter().zip(promises) {
-                let target = match &slot {
-                    LaunchSlot::Opaque { msaa, mipmaps } => CompileInstallTarget::OpaqueDynamic {
-                        shader_id,
-                        msaa: *msaa,
-                        mipmaps: *mipmaps,
-                    },
-                    LaunchSlot::Classify { .. } => unreachable!(),
-                };
-                let id = group_id;
-                let fut: std::pin::Pin<
-                    Box<dyn std::future::Future<Output = PipelineCompileResolution>>,
-                > = Box::pin(async move {
-                    let result: std::result::Result<web_sys::GpuComputePipeline, JsValue> =
-                        promise.await;
-                    PipelineCompileResolution {
-                        id,
-                        generation,
-                        target,
-                        cache_key,
-                        result,
-                    }
-                });
-                self.pipeline_scheduler.push_compile_future_no_count(fut);
-            }
-            tracing::info!(
-                target: "awsm_renderer::pipeline_readiness",
-                "launch_first_party_material_compile({:?}): {} opaque sub-pipelines pushed for material({:?})",
-                shader_id,
-                opaque_promise_count,
-                mid,
-            );
-        }
-
-        // NOTE: edge-resolve pipelines are NOT launched here — they are a
-        // layout-level concern rebuilt once per layout change by
-        // `launch_edge_resolve_compile` from the relaunch sites (see that
-        // method's rustdoc).
-
-        // If both launches were full cache hits, mark Ready inline.
-        // Otherwise note_subcompile_complete will fire it when the
-        // last sub-pipeline resolves.
+        // Every sub-pipeline was a cache hit (or already in flight as a
+        // skip — those decrement via their resolution): if this material
+        // has no pending subcompiles, mark Ready inline.
         if self.pipeline_scheduler.pending_subcompile_count(mid) == 0 {
             self.pipeline_scheduler.mark_ready(group_id);
         }

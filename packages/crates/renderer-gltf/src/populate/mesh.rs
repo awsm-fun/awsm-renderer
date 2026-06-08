@@ -290,19 +290,14 @@ impl GltfMeshExt for AwsmRenderer {
                                 .submit_pipeline_group_batch(vec![PipelineGroupDef::Material(def)]);
                             let _ = PipelineGroupId::Material; // silence unused-import warning
                         }
-                        // Block D.1 PART 2 first-party extension: kick
-                        // off real-future compile for this shader_id's
-                        // opaque pipelines. Idempotent — the underlying
-                        // `ensure_keys` cache-hits on a repeat call so
-                        // a second gltf material with the same
-                        // shader_id pays nothing.
-                        if let Err(e) = self.launch_first_party_material_compile(shader_id) {
-                            tracing::warn!(
-                                target: "awsm_renderer::pipeline_readiness",
-                                "launch_first_party_material_compile({:?}) failed: {:?}",
-                                shader_id, e
-                            );
-                        }
+                        // The actual compile is render-driven: flag the
+                        // reconcile so the next render preamble's
+                        // `ensure_scene_pipelines` compiles this
+                        // shader_id's opaque pipeline (charged to the
+                        // scheduler group just submitted above) for the
+                        // active AA config. Idempotent — a second gltf
+                        // material with the same shader_id cache-hits.
+                        self.materials.mark_variants_dirty();
                     }
                     ctx.material_keys
                         .lock()
