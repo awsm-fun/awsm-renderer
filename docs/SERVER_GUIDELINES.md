@@ -46,7 +46,7 @@ Brotli is similar to gzip — apply the same logic (text yes, images no).
 
 ## CORS
 
-The model-tests and scene-editor frontends serve from a different origin
+The model-tests and editor frontends serve from a different origin
 than the media. The fetch will fail without:
 
 ```

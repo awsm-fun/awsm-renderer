@@ -1,5 +1,11 @@
 # Perf tracing — runtime knobs
 
+> **Note (pre-editor-unification).** The `?trace=` tier system is live in
+> `packages/frontend/web-shared/src/perf.rs` and is consumed by `model-tests` (and
+> the editor). The `load_scene_by_path` / `read_render_pass_timings` dev exports
+> shown below lived on the v1 scene-editor, which has since been removed; they were
+> never re-ported to `packages/frontend/editor`. Treat those snippets as historical.
+
 How to measure renderer frame work without paying for the
 measurement. Three tiers, two URL params, one rule of thumb.
 
@@ -48,13 +54,13 @@ creates a `tracing::Span`, so the JS host call never happens.
 ## The three tiers
 
 `awsm_renderer::debug::RenderTimings` (defined in
-[crates/renderer/src/debug.rs](../crates/renderer/src/debug.rs)):
+[packages/crates/renderer/src/debug.rs](../packages/crates/renderer/src/debug.rs)):
 
 * **`Off`** — no render-timing spans at all. The crate-level
   `Default::default()`. Pick this when you have no use for
   per-frame instrumentation and want the absolute zero.
 * **`Frame`** — exactly one span per frame: the outermost
-  `"Render"` (see [crates/renderer/src/render.rs](../crates/renderer/src/render.rs)).
+  `"Render"` (see [packages/crates/renderer/src/render.rs](../packages/crates/renderer/src/render.rs)).
   Costs one `performance.mark` + one `performance.measure` per
   frame. The shipping web build's default. Use this to know
   whether you're holding 60 fps without polluting the trace.
@@ -119,7 +125,7 @@ investigating.
 
 ## Picking a tier from code
 
-Frontends call into [`awsm_web_shared::perf`](../crates/web-shared/src/perf.rs):
+Frontends call into [`awsm_web_shared::perf`](../packages/frontend/web-shared/src/perf.rs):
 
 ```rust
 use awsm_renderer::debug::{AwsmRendererLogging, RenderTimings};
@@ -142,7 +148,7 @@ let renderer = AwsmRendererBuilder::new(gpu_builder)
 `resolve_render_timings(default)` returns the `?trace=…` override
 if present, else `default`. `model-tests` uses a local copy of
 the same logic (it doesn't depend on `web-shared`) — see
-[crates/frontend/model-tests/src/logger.rs](../crates/frontend/model-tests/src/logger.rs).
+[packages/frontend/model-tests/src/logger.rs](../packages/frontend/model-tests/src/logger.rs).
 
 ---
 
@@ -167,9 +173,8 @@ way to view them — open DevTools, hit Record, reload with
 `?trace=sub-frame`, stop after a few seconds.
 
 For programmatic / regression-driven measurement, the
-`scene-editor` debug-build harness in
-[crates/frontend/scene-editor/src/actions/measurement.rs](../crates/frontend/scene-editor/src/actions/measurement.rs)
-reads `getEntriesByType('measure')` directly. It already loads
+v1 editor's debug-build measurement harness (since removed)
+read `getEntriesByType('measure')` directly. It already loads
 with debug-build defaults (= `SubFrame`); no URL params needed.
 
 ---

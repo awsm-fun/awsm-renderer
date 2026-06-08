@@ -461,6 +461,130 @@ fn cmdk_button() -> Dom {
     })
 }
 
+/// Top-bar MCP link button. Reflects the remote connection [`status`] and opens
+/// the connect modal on click (where the server address is editable).
+///
+/// [`status`]: crate::remote::status
+fn mcp_button() -> Dom {
+    use crate::remote::RemoteStatus;
+    html!("div", {
+        .style("display", "flex")
+        .child_signal(crate::remote::status().signal().map(|st| {
+            let (title, active) = match st {
+                RemoteStatus::Disconnected => ("Connect to MCP server", false),
+                RemoteStatus::Connecting => ("Connecting to MCP\u{2026}", false),
+                RemoteStatus::Connected => ("MCP connected", true),
+            };
+            Some(
+                IconBtn::new("link")
+                    .title(title)
+                    .active(active)
+                    .on_click(open_mcp_modal)
+                    .render(),
+            )
+        }))
+    })
+}
+
+/// Open the MCP connect modal: an editable server address + a connect/disconnect
+/// action that reflects the live [`status`](crate::remote::status).
+fn open_mcp_modal() {
+    Modal::open(|| {
+        use crate::remote::RemoteStatus;
+        // Seeded once per open from the current/last-used origin (the `?mcp=` value
+        // or the build default); edits feed straight into `connect`.
+        let addr = Mutable::new(crate::remote::origin().get_cloned());
+
+        html!("div", {
+            .style("display", "flex")
+            .style("flex-direction", "column")
+            .style("gap", "14px")
+            .child(html!("div", {
+                .style("font-size", "15px")
+                .style("font-weight", "600")
+                .style("color", "var(--text-0)")
+                .text("MCP server")
+            }))
+            .child(html!("div", {
+                .style("font-size", "12.5px")
+                .style("color", "var(--text-2)")
+                .style("line-height", "1.5")
+                .text("Run awsm-mcp-server locally, then connect — the editor dials out to \
+                       this address. An MCP agent (Claude, Codex, \u{2026}) drives the editor \
+                       through that same server.")
+            }))
+            // Live status line.
+            .child(html!("div", {
+                .style("display", "flex")
+                .style("align-items", "center")
+                .style("gap", "8px")
+                .style("font-size", "12.5px")
+                .child(html!("span", {
+                    .style("width", "8px")
+                    .style("height", "8px")
+                    .style("border-radius", "50%")
+                    .style("flex", "0 0 auto")
+                    .style_signal("background", crate::remote::status().signal().map(|s| match s {
+                        RemoteStatus::Connected => "var(--ok)",
+                        RemoteStatus::Connecting => "var(--warn)",
+                        RemoteStatus::Disconnected => "var(--text-3)",
+                    }))
+                }))
+                .child(html!("span", {
+                    .style("color", "var(--text-1)")
+                    .text_signal(crate::remote::status().signal().map(|s| match s {
+                        RemoteStatus::Connected => "Connected",
+                        RemoteStatus::Connecting => "Connecting\u{2026}",
+                        RemoteStatus::Disconnected => "Not connected",
+                    }))
+                }))
+            }))
+            .child(html!("label", {
+                .style("font-size", "11px")
+                .style("color", "var(--text-3)")
+                .style("text-transform", "uppercase")
+                .style("letter-spacing", "0.04em")
+                .text("Server address")
+            }))
+            .child(TextInput::new(addr.clone())
+                .placeholder(crate::remote::default_origin())
+                .mono(true)
+                .render())
+            // Action: Connect / Connecting… / Disconnect, by live status.
+            .child(html!("div", {
+                .style("display", "flex")
+                .style("justify-content", "flex-end")
+                .style("margin-top", "4px")
+                .child_signal(crate::remote::status().signal().map(clone!(addr => move |st| {
+                    Some(match st {
+                        RemoteStatus::Connected => Btn::new()
+                            .label("Disconnect")
+                            .variant(BtnVariant::Ghost)
+                            .size(BtnSize::Md)
+                            .on_click(|| { crate::remote::disconnect(); Modal::close(); })
+                            .render(),
+                        RemoteStatus::Connecting => Btn::new()
+                            .label("Connecting\u{2026}")
+                            .variant(BtnVariant::Ghost)
+                            .size(BtnSize::Md)
+                            .disabled(true)
+                            .render(),
+                        RemoteStatus::Disconnected => Btn::new()
+                            .label("Connect")
+                            .variant(BtnVariant::Primary)
+                            .size(BtnSize::Md)
+                            .on_click(clone!(addr => move || {
+                                crate::remote::connect(addr.get_cloned());
+                                Modal::close();
+                            }))
+                            .render(),
+                    })
+                })))
+            }))
+        })
+    });
+}
+
 fn project_label(ctrl: &EditorController) -> Dom {
     html!("div", {
         .style("display", "flex")
@@ -539,6 +663,7 @@ fn top_bar(ctrl: &EditorController) -> Dom {
         .child(IconBtn::new("settings").title("Settings")
             .on_click(|| controller().settings_open.set_neq(true)).render())
         .child(cmdk_button())
+        .child(mcp_button())
         .child(html!("div", { .style("flex", "1") }))
         .child(project_label(ctrl))
         .child(vdivider())

@@ -22,7 +22,6 @@ use awsm_renderer::animation::{
 };
 use awsm_web_shared::prelude::{Mutable, MutableVec};
 use glam::{Quat, Vec3};
-use serde::{Deserialize, Serialize};
 
 use crate::engine::scene::AssetId;
 
@@ -423,40 +422,7 @@ pub fn stored_to_live(s: &StoredAnimation) -> Arc<CustomAnimation> {
 // ──────────────────────── controller transport / selection state ────────────
 // Transport + selection are controller state too: set via transient
 // commands so they broadcast + snapshot but don't pollute undo. These are
-// editor-runtime-only (not persisted in `EditorProject`), so they live here.
-
-/// Which timeline editor the dock shows. Controller state (so synced tabs agree),
-/// not pure view chrome.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AnimView {
-    #[default]
-    Dope,
-    Curves,
-    Mixer,
-}
-
-/// A step-playhead direction (transport buttons).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StepKind {
-    /// Jump to clip start (t = 0).
-    Home,
-    /// Previous keyframe (of the selected/active track).
-    Prev,
-    /// Next keyframe.
-    Next,
-    /// Jump to clip end (t = duration).
-    End,
-}
-
-/// The selected timeline element (track / keyframe). Identified by track index
-/// within the active clip + optional keyframe index.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AnimSel {
-    /// Index of the selected track in the active clip's `tracks`.
-    pub track: usize,
-    /// The selected keyframe within that track, if any.
-    #[serde(default)]
-    pub keyframe: Option<usize>,
-}
+// editor-runtime-only (not persisted in `EditorProject`). The data definitions
+// now live in `awsm_editor_protocol` (so the MCP server shares them); re-exported
+// here at their established path.
+pub use awsm_editor_protocol::{AnimSel, AnimView, StepKind};

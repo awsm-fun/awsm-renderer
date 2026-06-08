@@ -1,0 +1,124 @@
+//! Serializable node descriptors used by the invertible scene commands.
+//!
+//! `InsertSpec` names a fresh node to create (the ribbon's Insert options).
+//! `NodeSpec` is a full serializable capture of an existing node subtree — it's
+//! how `Delete`'s inverse round-trips the exact removed subtree (same ids) back
+//! into the scene on undo, and it's the shape the query snapshot + TOML
+//! persistence build on.
+//!
+//! Pure data only. The reactive materialization (`InsertSpec → Node`,
+//! `NodeSpec ↔ Node`) lives in the editor (it touches the live scene graph), so
+//! the editor provides those as free functions; here we keep the data + the
+//! pure-data conversions (`NodeSpec ↔ EditorNode`, `NodeSpec → NodeQuery`).
+
+use serde::{Deserialize, Serialize};
+
+use awsm_scene_schema::{EditorNode, LightKind, NodeId, NodeKind, PrimitiveShape, Trs};
+
+/// A fresh node to insert (one per ribbon Insert action). The editor's
+/// `build_insert` turns this into a reactive `Node`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InsertSpec {
+    Empty,
+    Light(LightKind),
+    Camera,
+    CollisionBox,
+    CollisionSphere,
+    CollisionCapsule,
+    CollisionCylinder,
+    CollisionCone,
+    CollisionEllipsoid,
+    Primitive(PrimitiveShape),
+    Curve,
+    Line,
+    Sprite,
+    Particle,
+    Decal,
+    Sweep,
+    Instances,
+    Mesh,
+}
+
+/// A full serializable capture of a node subtree (preserves ids).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeSpec {
+    pub id: NodeId,
+    pub name: String,
+    pub transform: Trs,
+    pub kind: NodeKind,
+    pub locked: bool,
+    pub visible: bool,
+    pub prefab: bool,
+    pub children: Vec<NodeSpec>,
+}
+
+impl NodeSpec {
+    /// Convert to the scene-schema's serializable [`EditorNode`] (project.toml
+    /// persistence). The two are field-identical; this is a structural map.
+    pub fn to_editor_node(&self) -> EditorNode {
+        EditorNode {
+            id: self.id,
+            name: self.name.clone(),
+            transform: self.transform,
+            kind: self.kind.clone(),
+            locked: self.locked,
+            visible: self.visible,
+            prefab: self.prefab,
+            children: self.children.iter().map(|c| c.to_editor_node()).collect(),
+        }
+    }
+
+    /// Build a `NodeSpec` from a persisted [`EditorNode`].
+    pub fn from_editor_node(node: &EditorNode) -> Self {
+        Self {
+            id: node.id,
+            name: node.name.clone(),
+            transform: node.transform,
+            kind: node.kind.clone(),
+            locked: node.locked,
+            visible: node.visible,
+            prefab: node.prefab,
+            children: node.children.iter().map(Self::from_editor_node).collect(),
+        }
+    }
+
+    /// A lightweight projection for the query snapshot (no transform payload).
+    pub fn to_query(&self) -> NodeQuery {
+        NodeQuery {
+            id: self.id.to_string(),
+            name: self.name.clone(),
+            kind: kind_tag(&self.kind).to_string(),
+            children: self.children.iter().map(|c| c.to_query()).collect(),
+        }
+    }
+}
+
+/// A node as projected into the serializable editor snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeQuery {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub children: Vec<NodeQuery>,
+}
+
+/// A short stable tag for a node kind (used by the query projection).
+pub fn kind_tag(kind: &NodeKind) -> &'static str {
+    match kind {
+        NodeKind::Group => "group",
+        NodeKind::Model(_) => "model",
+        NodeKind::Light(_) => "light",
+        NodeKind::Collider(_) => "collider",
+        NodeKind::Camera(_) => "camera",
+        NodeKind::Primitive { .. } => "primitive",
+        NodeKind::Mesh { .. } => "mesh",
+        NodeKind::Curve(_) => "curve",
+        NodeKind::SweepAlongCurve { .. } => "sweep",
+        NodeKind::InstancesAlongCurve(_) => "instances",
+        NodeKind::Line(_) => "line",
+        NodeKind::Sprite(_) => "sprite",
+        NodeKind::ParticleEmitter(_) => "particle",
+        NodeKind::Decal(_) => "decal",
+    }
+}

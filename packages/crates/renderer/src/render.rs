@@ -1715,7 +1715,7 @@ impl AwsmRenderer {
             self.render_passes
                 .material_transparent
                 .pipelines
-                .install_per_mesh_keys(mesh_keys, std::iter::repeat(pipeline_key).take(count));
+                .install_per_mesh_keys(mesh_keys, std::iter::repeat_n(pipeline_key, count));
         }
         self.hud_resolve.last_sig = Some(inflight.sig);
         Ok(())

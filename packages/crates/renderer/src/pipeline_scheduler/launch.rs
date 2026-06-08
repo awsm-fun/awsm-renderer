@@ -1,7 +1,7 @@
 //! Block D.1 PART 2 — sync compile-launch path that pushes real
 //! compile promises into the scheduler's `inflight_compile` queue.
 //!
-//! The architecture per the plan doc's § Block D prescription:
+//! The architecture:
 //!
 //! 1. **Sync at submit time** — `AwsmRenderer::launch_dynamic_material_compile`
 //!    is called when a new dynamic material registers. It synchronously:
@@ -205,7 +205,7 @@ impl crate::AwsmRenderer {
         // always build — their built-in body fits both contracts.
         let build_opaque = reg
             .as_ref()
-            .map_or(true, |r| matches!(r.alpha_mode, MaterialAlphaMode::Opaque));
+            .is_none_or(|r| matches!(r.alpha_mode, MaterialAlphaMode::Opaque));
         if build_opaque {
             for &(msaa, mipmaps) in &[
                 (Some(4u32), true),

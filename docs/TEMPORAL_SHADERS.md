@@ -117,7 +117,7 @@ impl AwsmRenderer {
 ```
 
 The editor's particle bridge
-([`particles_sync.rs`](../crates/frontend/scene-editor/src/renderer_bridge/particles_sync.rs))
+([`particles.rs`](../packages/frontend/editor/src/engine/bridge/particles.rs))
 is the canonical first non-shader consumer: `tick_all` reads
 `renderer.frame_globals().delta_time`, so pause / time-scale / replay
 flow through `set_time_source` automatically. Any subsystem that used
@@ -234,12 +234,12 @@ repo, not the editor's build tree.
   change since material classify + indirect dispatch landed (see
   [`PERFORMANCE.md §1`](./PERFORMANCE.md)). Bump
   `BUCKET_COUNT` in
-  [`material_classify/buffers.rs`](../crates/renderer/src/render_passes/material_classify/buffers.rs),
+  [`material_classify/buffers.rs`](../packages/crates/renderer/src/render_passes/material_classify/buffers.rs),
   add the matching `BUCKET_BIT_*` + dispatch branch in
-  [`compute.wgsl`](../crates/renderer/src/render_passes/material_classify/shader/material_classify_wgsl/compute.wgsl),
+  [`compute.wgsl`](../packages/crates/renderer/src/render_passes/material_classify/shader/material_classify_wgsl/compute.wgsl),
   extend the per-bucket extract block, and append the id to
   `OPAQUE_SHADER_IDS` in
-  [`material_opaque/pipeline.rs`](../crates/renderer/src/render_passes/material_opaque/pipeline.rs).
+  [`material_opaque/pipeline.rs`](../packages/crates/renderer/src/render_passes/material_opaque/pipeline.rs).
 - **Adding a new pass that needs `frame_globals`**: declare
   `@group(N) @binding(M) var<uniform> frame_globals_raw: FrameGlobalsRaw;`
   in the pass's `bind_groups.wgsl`, include `shared_wgsl/frame_globals.wgsl`

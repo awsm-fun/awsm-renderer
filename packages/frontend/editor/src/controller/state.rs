@@ -425,7 +425,7 @@ impl EditorController {
                 Ok(None)
             }
             EditorCommand::Insert { spec, parent } => {
-                let node = spec.build();
+                let node = build_insert(&spec);
                 let id = node.id;
                 if mutate::insert_under(&self.scene, parent, node) {
                     self.scene.bump_revision();
@@ -439,7 +439,7 @@ impl EditorController {
                 parent,
                 index,
             } => {
-                let arc = node.to_node();
+                let arc = node_from_spec(&node);
                 let id = arc.id;
                 // Insert at the captured position so undo lands the subtree back
                 // where it was; fall back to append if the slot is gone.
@@ -473,7 +473,7 @@ impl EditorController {
                 let index = node_index(&self.scene, id, parent);
                 match mutate::remove_by_id(&self.scene, id) {
                     Some(node) => {
-                        let spec = NodeSpec::from_node(&node);
+                        let spec = spec_from_node(&node);
                         self.selected.lock_mut().retain(|x| *x != id);
                         self.scene.bump_revision();
                         Ok(Some(EditorCommand::InsertTree {
@@ -613,6 +613,25 @@ impl EditorController {
                     }
                 }
                 Ok(None)
+            }
+            EditorCommand::SetCustomMaterialWgsl { id, wgsl } => {
+                // Replace a custom (dynamic-WGSL) material's source. Setting the
+                // live `wgsl` field triggers the controller-owned auto-register
+                // observer (`spawn_auto_register`), which recompiles + re-
+                // materializes — so this works headlessly (no Studio UI). Inverse:
+                // restore the prior source.
+                match find_material(&self.custom_materials, id) {
+                    Some(mat) => {
+                        let prev = mat.wgsl.get_cloned();
+                        mat.wgsl.set(wgsl);
+                        self.dirty.set_neq(true);
+                        Ok(Some(EditorCommand::SetCustomMaterialWgsl {
+                            id,
+                            wgsl: prev,
+                        }))
+                    }
+                    None => Ok(None),
+                }
             }
             EditorCommand::AssignMaterial { node, material } => {
                 match mutate::find_by_id(&self.scene, node) {
@@ -1865,7 +1884,7 @@ impl EditorController {
             .nodes
             .lock_ref()
             .iter()
-            .map(|n| NodeSpec::from_node(n).to_query())
+            .map(|n| spec_from_node(n).to_query())
             .collect();
         EditorSnapshot {
             mode: self.mode.get(),
@@ -1978,6 +1997,14 @@ impl EditorController {
                 match crate::engine::query::canvas_stats(region) {
                     Ok(s) => QueryResult::Stats(s),
                     Err(e) => QueryResult::Error { error: e },
+                }
+            }
+            EditorQuery::CustomMaterialWgsl { material } => {
+                match find_material(&self.custom_materials, material) {
+                    Some(mat) => QueryResult::Text(mat.wgsl.get_cloned()),
+                    None => QueryResult::Error {
+                        error: format!("no custom material {material}"),
+                    },
                 }
             }
         }

@@ -24,15 +24,25 @@ renderer load never touches the Claude app.
 
 ### Setup
 
-1. Start the server in the shell (background), e.g.:
-   `cd crates/frontend/scene-editor && … trunk serve --port 9090 …`
-   Wait for `applying new distribution` in the log before loading.
+1. Start the server in the shell (background), e.g. `task editor:dev` (the editor
+   on port **9085**) — or `task model-tests:dev` (port 9080) / a direct
+   `trunk serve` for another frontend. Wait for `applying new distribution` in the
+   log before loading.
 2. `mcp__Claude_in_Chrome__list_connected_browsers` → `select_browser`.
 3. `mcp__Claude_in_Chrome__tabs_context_mcp { createIfEmpty: true }` →
-   `navigate` your tab to `http://localhost:9090/`. Use **one** tab and
+   `navigate` your tab to `http://localhost:9085/`. Use **one** tab and
    reuse it; don't churn tabs (it creates new windows and loses focus).
 4. Drive it with `javascript_tool` (eval), `read_console_messages`
    (always pass a `pattern`), and the pixel-capture recipes below.
+
+> **Driving the editor specifically?** Prefer the **MCP bridge** over raw
+> `javascript_tool`: run `task mcp-dev`, load the editor at
+> `http://localhost:9085/?mcp=http://127.0.0.1:9086`, and call the `awsm-editor`
+> MCP tools (`get_snapshot`, `node_set_transform`, `screenshot_scene`, …). That
+> path goes through the editor's command/query authority instead of poking the
+> DOM. See the README's "Driving the editor from an AI agent" section and
+> [MCP.md](MCP.md). The Chrome-extension recipes below still apply for
+> raw rendering debugging of any frontend.
 
 ### ⚠️ The tab must be VISIBLE — `requestAnimationFrame` pauses when hidden
 
@@ -364,7 +374,7 @@ silhouette deltas that swamp any real rendering difference. **Pin the
 animation on BOTH branches before capturing.**
 
 For `model-tests`, patch `fire_raf` in
-`crates/frontend/model-tests/src/pages/app/scene.rs`:
+`packages/frontend/model-tests/src/pages/app/scene.rs`:
 
 ```rust
 if let Some(last_timestamp) = state.last_request_animation_frame.get() {
@@ -495,7 +505,7 @@ doesn't rebuild. Symptom: you make a shader change, reload the page,
 and the output is identical to before.
 
 **Reliable rebuild trigger:** add and immediately remove a comment line
-in `crates/frontend/model-tests/src/main.rs` (or any `.rs` file under a
+in `packages/frontend/model-tests/src/main.rs` (or any `.rs` file under a
 watched path). Trunk picks up real file-content changes reliably.
 
 ### Verify the rebuild actually deployed
@@ -521,7 +531,7 @@ watched path). Trunk picks up real file-content changes reliably.
 
 ## `?cam=` URL override (model-tests frontend) — use it on EVERY test
 
-`crates/frontend/model-tests/src/pages/app/scene/camera/view/orbit.rs::setup_from_gltf`
+`packages/frontend/model-tests/src/pages/app/scene/camera/view/orbit.rs::setup_from_gltf`
 accepts a `?cam=yaw,pitch,radius,lx,ly,lz` query string to seed the
 OrbitCamera. **Always use this on every navigation** for a reproducible
 camera. Without it the camera lands at the auto-aabb default and you
@@ -556,6 +566,13 @@ close zoom — that asymmetry was a major factor in earlier misdiagnoses.
 
 ## Scene-editor: load a tuning scene + read timings non-interactively
 
+> **⚠️ Legacy (pre-editor-unification).** The `load_scene_by_path` /
+> `read_render_pass_timings` dev exports below lived on the v1 scene-editor, which has
+> since been removed. They were **not** re-ported to `packages/frontend/editor`, so the
+> recipes here will not work as-is against the current editor — kept as a reference
+> for when the measurement harness is re-ported. (The `?trace=` tier system itself
+> is live in `packages/frontend/web-shared/src/perf.rs` + `model-tests`.)
+
 The **scene-editor** loads projects through a native directory picker
 (File System Access) — there is **no `?project=` URL route**. But for
 automated measurement there is a dev-only `#[wasm_bindgen]` export that
@@ -571,8 +588,7 @@ It fetches `assets/world/<name>/project.json` (Trunk copies
 `assets/world` into the dist, see scene-editor `index.html`), drops
 prior renderer caches, applies the snapshot, hydrates raster-texture
 assets over HTTP, and resolves once every node has materialised on the
-GPU. Implemented in
-`crates/frontend/scene-editor/src/actions/measurement.rs::load_scene_by_path`.
+GPU. (Implemented in the v1 editor's `measurement.rs`, since removed.)
 
 > **Limitation — custom/dynamic materials don't load this way.** The
 > loader only hydrates raster textures, and the editor's live
@@ -605,7 +621,7 @@ RenderPass"`, `"Material Transparent RenderPass"`, etc.
 
 ```
 1. Start the dev server (background), trace tier on by default in debug:
-     task scene-editor:dev   # serves http://localhost:9081
+     task editor:dev         # serves http://localhost:9085
    Wait for "applying new distribution" in the log.
 2. list_connected_browsers → select_browser → tabs_context_mcp.
 3. navigate the (foreground, visible) tab to

@@ -19,6 +19,7 @@ tasks:
     env:
       ROOT_BASE_URI_PATH: "{{.DEV_ROOT_BASE_URI_PATH}}"
       MEDIA_BASE_URL_ADDITIONAL_ASSETS: "{{.URL_DEV_MEDIA_BASE_URL_ADDITIONAL_ASSETS}}"
+      MCP_DEFAULT_ORIGIN: "{{.URL_MCP_DEFAULT}}"
     cmds:
       - >
         cd {{.PATH_CRATE}} &&
@@ -35,6 +36,7 @@ tasks:
     env:
       ROOT_BASE_URI_PATH: "{{.PROD_ROOT_BASE_URI_PATH}}/editor"
       MEDIA_BASE_URL_ADDITIONAL_ASSETS: "{{.URL_PROD_MEDIA_BASE_URL_ADDITIONAL_ASSETS}}"
+      MCP_DEFAULT_ORIGIN: "{{.URL_MCP_DEFAULT}}"
     cmds:
       - rm -rf {{joinPath .PATH_CRATE "dist"}}
       - rm -rf {{.PATH_DIST}}
