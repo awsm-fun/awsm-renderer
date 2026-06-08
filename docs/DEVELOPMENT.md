@@ -5,7 +5,16 @@
 It's really as simple as:
 
 ```bash
-task dev
+task dev            # every frontend dev server + media servers in parallel
+```
+
+Or run just what you need:
+
+```bash
+task editor-dev     # the editor on http://localhost:9085 (+ media)
+task model-tests-dev # the glTF test viewer on http://localhost:9080 (+ media)
+task mcp-dev        # editor + the MCP server, for agent-driven control (see below)
+task --list-all     # everything available
 ```
 
 However, that assumes you have all the prerequisites installed and media assets downloaded.
@@ -51,13 +60,43 @@ Use the releases: https://github.com/KhronosGroup/KTX-Software/releases
 
 ## Project layout
 
-* [awsm-renderer](crates/renderer): The renderer in all its glory 
-* [awsm-renderer-core](crates/renderer-core): Wraps the WebGPU API with very little opinion, just a nicer Rust API
-* [awsm-renderer-editor](crates/editor): Helper crate for transform gizmo, grid, etc. 
-* [frontend](crates/frontend): Just for demo and debugging purposes 
-* [docs](docs): Documentation
-* [media](media): Media assets for the demo scenes
-* [licenses](licenses): Any third-party licenses needed for demo purposes
+Everything lives under `packages/`:
+
+**Library crates** (`packages/crates/`)
+
+* [awsm-renderer](../packages/crates/renderer): the renderer in all its glory
+* [awsm-renderer-core](../packages/crates/renderer-core): wraps the WebGPU API with very little opinion — just a nicer Rust API
+* [awsm-renderer-gltf](../packages/crates/renderer-gltf): glTF loading on top of the renderer
+* [awsm-scene-schema](../packages/crates/scene-schema): the authored scene / project schema (pure data; shared by the editor + any runtime)
+* [awsm-editor-protocol](../packages/crates/editor-protocol): the serializable command / query / transport types the editor and the MCP server share
+* [awsm-materials](../packages/crates/materials), [awsm-meshgen](../packages/crates/meshgen), [awsm-curves](../packages/crates/curves), [awsm-geometry](../packages/crates/geometry), [awsm-particles](../packages/crates/particles): supporting libraries
+
+**Frontends** (`packages/frontend/`, WASM via Trunk)
+
+* [editor](../packages/frontend/editor): the unified scene / material / animation editor (`awsm-editor`). Absorbs what used to be the separate `scene-editor` + `material-editor` + `awsm-renderer-editor` gizmo/grid crate.
+* [model-tests](../packages/frontend/model-tests): the glTF feature-test viewer
+* [site-index](../packages/frontend/site-index): the landing page
+* [web-shared](../packages/frontend/web-shared): shared UI / theme primitives + the viewport gizmo / grid / free-camera helpers
+
+**Native tooling**
+
+* [mcp](../packages/mcp): the `awsm-mcp-server` that drives the editor from an AI agent (see below)
+* [debugging](../packages/debugging): native debugging binaries
+
+**Other**
+
+* [docs](.): documentation
+* [media](../media): media assets for the demo scenes
+* [taskfiles](../taskfiles): Taskfile includes — ports, dev recipes, build/deploy (`config.yml` is the single source of truth for ports)
+
+## Driving the editor from an AI agent (MCP)
+
+The editor can be driven by an MCP-capable agent (Claude Code, Codex, …) over a
+WebTransport link. Start both sides with `task mcp-dev`, open
+`http://localhost:9085/?mcp=http://127.0.0.1:9086`, and point your agent at the
+`.mcp.json` in the repo root. Full details, the tool catalog, and the wire
+protocol are in [docs/MCP.md](MCP.md). The renderer README's
+"Driving the editor from an AI agent" section has the quick start.
 
 
 # Create maps

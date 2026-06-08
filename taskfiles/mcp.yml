@@ -1,0 +1,20 @@
+version: "3"
+
+includes:
+  config:
+    taskfile: ./config.yml
+    flatten: true
+
+tasks:
+  serve:
+    desc: "MCP server: WebTransport (QUIC) link the editor dials into + the rmcp /mcp endpoint + /control (cert-hash discovery) + /debug (raw-request seam)."
+    cmds:
+      - >
+        cargo run -p awsm-mcp-server --
+        --http-port {{.PORT_MCP_HTTP_DEV}}
+        --quic-port {{.PORT_MCP_QUIC_DEV}}
+
+  build:
+    desc: "Build the MCP server binary (debug)."
+    cmds:
+      - cargo build -p awsm-mcp-server

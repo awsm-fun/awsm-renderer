@@ -22,21 +22,21 @@ cannot be starved by main-thread CPU contention.
 ## Worker-mode infrastructure
 
 Runtime-global helpers in
-[`crates/renderer/src/web_global.rs`](../crates/renderer/src/web_global.rs)
+[`packages/crates/renderer/src/web_global.rs`](../packages/crates/renderer/src/web_global.rs)
 and
-[`crates/renderer-core/src/web_global.rs`](../crates/renderer-core/src/web_global.rs)
+[`packages/crates/renderer-core/src/web_global.rs`](../packages/crates/renderer-core/src/web_global.rs)
 pick the right global (`Window` vs `DedicatedWorkerGlobalScope`)
 on every call site that needs `navigator`, `performance`, or
 `requestAnimationFrame`. The renderer + renderer-core crates
 route every such site through these helpers, so the same code
 compiles unchanged for both deployment modes.
-[`AwsmRendererWebGpuBuilder::new_with_offscreen_canvas(gpu, canvas)`](../crates/renderer-core/src/renderer.rs)
+[`AwsmRendererWebGpuBuilder::new_with_offscreen_canvas(gpu, canvas)`](../packages/crates/renderer-core/src/renderer.rs)
 is the worker-mode constructor; internally the builder stores a
 `CanvasKind { Html, Offscreen }` enum and dispatches GPU-context
 acquisition + resize handling accordingly.
 
 A reference consumer lives at
-[`crates/examples/render-worker/`](../crates/examples/render-worker/)
+[`packages/examples/render-worker/`](../packages/examples/render-worker/)
 — a single wasm-bindgen target that boots into either
 `main_thread_boot()` or `worker_thread_boot()` based on the
 active global, transfers an `OffscreenCanvas` to the worker, and
@@ -74,14 +74,14 @@ consumer-specific (different games want different event shapes,
 different latency trade-offs, different filtering). The shape above
 is the documented pattern; consumers DIY the actual implementation
 against the `WorkerInputEvent` enum exposed by the example crate
-([`crates/examples/render-worker/src/lib.rs`](../crates/examples/render-worker/src/lib.rs)).
+([`packages/examples/render-worker/src/lib.rs`](../packages/examples/render-worker/src/lib.rs)).
 
 ## Worker pools vs the renderer worker
 
 `awsm-renderer` ships **two unrelated worker concepts** — easy to
 conflate, important to keep separate:
 
-1. **`WorkerPool` for CPU jobs** (`crates/renderer/src/workers/`).
+1. **`WorkerPool` for CPU jobs** (`packages/crates/renderer/src/workers/`).
    N background workers sharing the consumer's compiled
    `WebAssembly.Module`, dispatched by `WorkerJob::NAME`. The
    first concrete consumer is `GltfParseJob` — fetch + parse +
@@ -108,7 +108,7 @@ Pre-warm guidance:
 
 - **Editor / main-thread mode:** the pool comes up at editor
   init, alongside the renderer build. See
-  [`scene-editor/src/context.rs::maybe_build_worker_pool`](../crates/frontend/scene-editor/src/context.rs).
+  [`editor engine/context.rs::maybe_build_worker_pool`](../packages/frontend/editor/src/engine/context.rs).
 - **Worker / OffscreenCanvas mode:** build the `WorkerPool`
   *from inside the renderer worker* using
   `WorkerPoolBootstrap::ModuleUrl { bundle_url: … }` (the

@@ -87,6 +87,102 @@ Because the geometry pass writes out unique identifiers per-mesh, picking opaque
 
 See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for details on setting up the development environment, building, and running the examples.
 
+# EDITOR
+
+The repo ships a WebGPU scene / material / animation **editor**
+([`packages/frontend/editor`](packages/frontend/editor)) built on this renderer —
+a node tree + transform gizmos, a custom-WGSL material studio, and an animation
+timeline. Run it with:
+
+```bash
+task editor-dev      # serves http://localhost:9085
+```
+
+# DRIVING THE EDITOR FROM AN AI AGENT (MCP)
+
+The editor can be driven programmatically by any MCP-capable agent (Claude Code,
+Claude Desktop, Codex, …) — insert and transform nodes, author materials and edit
+WGSL, drive the animation timeline, and read back editor state **and viewport
+screenshots**. Useful for agent-in-the-loop scene authoring and visual checks.
+
+## How it works
+
+```
+agent (MCP client) ──HTTP /mcp──▶ awsm-mcp-server ──WebTransport/QUIC──▶ editor (browser tab)
+                                  (packages/mcp)      editor dials out    → EditorController
+```
+
+A native server ([`packages/mcp`](packages/mcp), `awsm-mcp-server`) exposes MCP
+tools over streamable-HTTP and relays each one to a running editor tab over a
+WebTransport (QUIC) link that the **editor dials out to** (a browser tab can't be
+a server). Every mutation flows through the editor's single command/query
+authority, so the agent and a human watching the same tab stay in sync.
+
+## Quick start
+
+1. Start the editor **and** the MCP server together:
+
+   ```bash
+   task mcp-dev
+   ```
+
+   | Service | Address |
+   | --- | --- |
+   | Editor (Trunk) | `http://localhost:9085` |
+   | MCP + control HTTP | `http://127.0.0.1:9086` (`/mcp`, `/control`) |
+   | WebTransport link | UDP `9087` |
+
+2. Attach the editor to the server — click the **link icon** ("Connect to MCP
+   server") in the editor's top bar, or load it with the `?mcp=` param to
+   auto-connect:
+
+   ```
+   http://localhost:9085/?mcp=http://127.0.0.1:9086
+   ```
+
+   Connect/disconnect show a toast and the button reflects the live state; the
+   server logs `editor attached` once the link is up. (No connection → the editor
+   runs normally with zero remote overhead.)
+
+3. Point your agent at the MCP server. A ready-to-use [`.mcp.json`](.mcp.json) is
+   included in the repo root:
+
+   ```json
+   {
+     "mcpServers": {
+       "awsm-editor": { "type": "http", "url": "http://127.0.0.1:9086/mcp" }
+     }
+   }
+   ```
+
+   - **Claude Code / Claude Desktop**: a project-root `.mcp.json` is picked up
+     automatically — just restart the agent in this directory.
+   - **Codex / other MCP clients**: register a streamable-HTTP MCP server pointing
+     at `http://127.0.0.1:9086/mcp`.
+
+## What the agent can do
+
+~40 typed tools, including:
+
+- **Discover / observe** — `get_snapshot` (scene tree, ids, selection, mode,
+  materials, animation), `screenshot_scene` (PNG image block), `get_mode`,
+  `canvas_stats`.
+- **Scene** — `insert_primitive` / `insert_empty` / `insert_camera` /
+  `insert_light`, `node_set_transform`, `rename_node`, `delete_node`,
+  `duplicate_node`, `reparent_node`, `set_node_visible` / `_locked`,
+  `set_selection`.
+- **Materials** — `add_builtin_material`, `add_custom_material`,
+  `set_material_wgsl` / `get_material_wgsl`, `register_material`,
+  `assign_material`.
+- **View / animation** — `switch_mode`, `snap_camera_to_axis`, `reset_camera`,
+  `add_clip`, `set_playhead`, `set_playing`, …
+- **Escape hatches** — `dispatch_command` / `run_query` accept any raw
+  `EditorCommand` / `EditorQuery` JSON, so the *entire* command/query surface is
+  reachable even without a dedicated tool.
+
+For the full architecture, tool catalog, transport, and cert handling, see
+[docs/MCP.md](docs/MCP.md).
+
 # NON-GOALS
 
 ### ECS (or any other game framework)

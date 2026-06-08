@@ -17,6 +17,7 @@ awsm-renderer = { workspace = true, features = ["ktx", "serde", "texture-export"
 awsm-renderer-core = { workspace = true }
 awsm-renderer-gltf = { workspace = true }
 awsm-scene-schema = { workspace = true }
+awsm-editor-protocol = { workspace = true }
 awsm-web-shared = { workspace = true }
 
 anyhow = { workspace = true }
@@ -35,6 +36,9 @@ indexmap = { workspace = true }
 # Frontend-only — not in the awsm workspace deps, mirror what
 # `model-tests` and `web-shared` pull directly.
 bitcode = { version = "0.6.9", features = ["serde", "uuid"] }
+base64 = "0.22"
+url = "2"
+web-transport = "0.10.5"
 dominator = "0.5.38"
 futures-signals = "0.3.34"
 gloo-events = "0.2.0"
@@ -50,7 +54,7 @@ awsm_web = { version = "0.45.0", default-features = false, features = ["dom", "f
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
 # Parse glTF documents at editor-import time.
 gltf = { workspace = true }
-# TOML project directory persistence (§10).
+# TOML project directory persistence.
 toml = "0.8"
 
 # web-sys features additive on top of the awsm workspace baseline.

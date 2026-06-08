@@ -14,6 +14,7 @@ mod error;
 mod fs;
 mod material_mode;
 mod prelude;
+mod remote;
 mod scene_mode;
 
 use awsm_web_shared::{logger, prelude::*, theme};
@@ -124,6 +125,13 @@ pub fn main() {
                                     }
                                 });
                             }
+                            // Remote MCP control: `?mcp=<control-origin>` auto-dials
+                            // the native server over WebTransport. Absent → the
+                            // top-bar MCP button connects on demand (to the dev
+                            // default origin).
+                            if let Some(origin) = boot_mcp_origin() {
+                                remote::connect(origin);
+                            }
                         }
                         Err(err) => {
                             awsm_web_shared::util::window::remove_boot_loader();
@@ -144,6 +152,26 @@ fn boot_load_url() -> Option<String> {
     let q = search.strip_prefix('?').unwrap_or(&search);
     for pair in q.split('&') {
         if let Some(val) = pair.strip_prefix("load=") {
+            let decoded = js_sys::decode_uri_component(val)
+                .ok()
+                .and_then(|v| v.as_string())
+                .unwrap_or_else(|| val.to_string());
+            if !decoded.is_empty() {
+                return Some(decoded);
+            }
+        }
+    }
+    None
+}
+
+/// Read a `?mcp=<control-origin>` query parameter (URL-decoded) — the native MCP
+/// server's HTTP control origin (e.g. `http://127.0.0.1:9086`). Returns `None`
+/// when absent (remote control disabled).
+fn boot_mcp_origin() -> Option<String> {
+    let search = web_sys::window()?.location().search().ok()?;
+    let q = search.strip_prefix('?').unwrap_or(&search);
+    for pair in q.split('&') {
+        if let Some(val) = pair.strip_prefix("mcp=") {
             let decoded = js_sys::decode_uri_component(val)
                 .ok()
                 .and_then(|v| v.as_string())

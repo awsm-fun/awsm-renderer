@@ -1,0 +1,40 @@
+[package]
+name = "awsm-mcp-server"
+description = "Native MCP server that drives the awsm-renderer editor over a WebTransport (QUIC) link."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "awsm-mcp-server"
+path = "src/main.rs"
+
+[dependencies]
+awsm-editor-protocol = { workspace = true }
+awsm-scene-schema = { workspace = true }
+
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# WebTransport (QUIC) — quinn on native, with a self-signed dev cert the browser
+# pins via serverCertificateHashes.
+web-transport = "0.10.5"
+rustls = "0.23"
+rcgen = "0.14"
+sha2 = "0.10"
+base64 = "0.22"
+time = { version = "0.3", features = ["formatting"] }
+bytes = "1"
+
+# HTTP control surface (cert-hash discovery) + the rmcp /mcp endpoint.
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors"] }
+rmcp = { version = "1", features = ["server", "macros", "schemars", "transport-streamable-http-server"] }
+uuid = { version = "1.11", features = ["v4"] }

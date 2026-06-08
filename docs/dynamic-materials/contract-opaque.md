@@ -30,7 +30,7 @@ classify pass packs one bucket bit per `u32` of its tile mask). Registering
 a material that would push past the cap is a **hard error**
 (`AwsmDynamicMaterialError::BucketCapExceeded`) — there is no silent
 fallback. To allow more, raise `MAX_BUCKET_WORDS` in
-`crates/renderer/src/dynamic_materials/mod.rs` and rebuild.
+`packages/crates/renderer/src/dynamic_materials/mod.rs` and rebuild.
 
 Registration is **transactional**: you submit a batch, and if any entry is
 invalid (duplicate name, reserved field name, WGSL compile failure, or cap
@@ -75,7 +75,7 @@ Your fragment is wrapped into **two** compute kernels per `shader_id`,
 not one: the **primary opaque** kernel (full-pixel shading across the
 tile) and the per-shader-id **edge_resolve** kernel (single-sample
 shading at MSAA boundary pixels — see
-`crates/renderer/src/render_passes/material_opaque/edge_pipeline.rs`
+`packages/crates/renderer/src/render_passes/material_opaque/edge_pipeline.rs`
 and `…/shader/edge_template.rs`). The same `custom_shade_dynamic` body is
 emitted into both; the wrapper supplies the right `OpaqueShadingInput`
 in each context (full pixel vs. masked sub-sample). There is no PBR
@@ -217,7 +217,7 @@ let camera = camera_from_raw(camera_raw);
 ### `shared_wgsl/textures.wgsl`
 
 The auto-generated `<name>_index: u32` field on `MaterialData` is the
-renderer's [`array_and_layer`](../../crates/renderer/src/render_passes/shared/shared_wgsl/textures.wgsl)
+renderer's [`array_and_layer`](../../packages/crates/renderer/src/render_passes/shared/shared_wgsl/textures.wgsl)
 encoding — `array_index` in the low 12 bits, `layer_index` in the
 upper 20 bits, exactly matching what
 `shared_wgsl/textures.wgsl::TextureInfoRaw.array_and_layer`

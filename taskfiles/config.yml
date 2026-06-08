@@ -23,11 +23,14 @@ vars:
   PORT_MEDIA_LOCAL_DEV: 9082
   PORT_MEDIA_ADDITIONAL_ASSETS_DEV: 9083
   PORT_EDITOR_DEV: 9085
+  PORT_MCP_HTTP_DEV: 9086 # TCP — rmcp /mcp + /control + /debug
+  PORT_MCP_QUIC_DEV: 9087 # UDP — WebTransport link the editor dials out to
 
   # URLs — dev (served by the per-frontend dev recipes + media servers)
   URL_DEV_SITE_INDEX: "http://localhost:{{.PORT_SITE_INDEX_DEV}}"
   URL_DEV_MODEL_TESTS: "http://localhost:{{.PORT_MODEL_TESTS_DEV}}"
   URL_DEV_EDITOR: "http://localhost:{{.PORT_EDITOR_DEV}}"
+  URL_DEV_MCP: "http://localhost:{{.PORT_MCP_HTTP_DEV}}"
   URL_DEV_MEDIA_BASE_URL_GLTF_SAMPLES: "http://localhost:{{.PORT_MEDIA_LOCAL_DEV}}/glTF-Sample-Assets/Models"
   URL_DEV_MEDIA_BASE_URL_ADDITIONAL_ASSETS: "http://localhost:{{.PORT_MEDIA_ADDITIONAL_ASSETS_DEV}}"
 

@@ -1,5 +1,11 @@
 # Multithreading prep — `pipeline_scheduler` + frontend boundaries
 
+> **Note (pre-editor-unification).** Written when the editor was split into
+> `scene-editor` + `material-editor`; those are now the single
+> `packages/frontend/editor`, whose renderer handle lives in
+> `packages/frontend/editor/src/engine/context.rs`. The concurrency *shape* below
+> still holds, but verify specific paths/types against the unified editor.
+
 Audit notes for a future wasm32-multithread migration. The scheduler
 work landed in [PR #99](https://github.com/dakom/awsm-renderer/pull/99);
 this doc captures every place in the renderer + editor frontends that
@@ -55,7 +61,7 @@ The editors layer extra single-thread assumptions on top of the renderer. These 
 
 ### `Rc` + `RefCell` in frontends
 
-The material-editor's `RendererHandle = Rc<RefCell<Option<RendererHost>>>` is the load-bearing single-thread assumption. Multi-thread access would need `Arc<Mutex<...>>` everywhere. The pattern is documented inline in `crates/frontend/material-editor/src/host.rs` and is intentional — the clippy `await_holding_refcell_ref` lint is silenced with a comment explaining wasm32's single-thread model.
+The material-editor's `RendererHandle = Rc<RefCell<Option<RendererHost>>>` is the load-bearing single-thread assumption. Multi-thread access would need `Arc<Mutex<...>>` everywhere. The pattern is documented inline in `packages/frontend/editor/src/engine/context.rs` (the unified editor; this pattern came from the old material-editor `host.rs`) and is intentional — the clippy `await_holding_refcell_ref` lint is silenced with a comment explaining wasm32's single-thread model.
 
 scene-editor uses the same pattern (`renderer_bridge` holds an `Rc<RefCell<…>>` over the live renderer).
 
@@ -130,6 +136,6 @@ No deep architectural lock-in.
 
 ## Cross-references
 
-- Pipeline-readiness architecture: [`crates/renderer/src/pipeline_scheduler/mod.rs`](../crates/renderer/src/pipeline_scheduler/mod.rs) (module-level doc comments cover the single-thread invariants inline).
-- Readback-state pattern (the multi-thread-ready template): `CoverageReadbackState` in [`crates/renderer/src/lib.rs`](../crates/renderer/src/lib.rs) and `EdgeOverflowReadbackState` next to it.
-- Renderer-host clippy escape: see the long comment block above `prewarm_holding_borrow` in [`crates/frontend/material-editor/src/host.rs`](../crates/frontend/material-editor/src/host.rs).
+- Pipeline-readiness architecture: [`packages/crates/renderer/src/pipeline_scheduler/mod.rs`](../packages/crates/renderer/src/pipeline_scheduler/mod.rs) (module-level doc comments cover the single-thread invariants inline).
+- Readback-state pattern (the multi-thread-ready template): `CoverageReadbackState` in [`packages/crates/renderer/src/lib.rs`](../packages/crates/renderer/src/lib.rs) and `EdgeOverflowReadbackState` next to it.
+- Renderer-host clippy escape: the `prewarm_holding_borrow` / host-borrow pattern (from the old material-editor) now lives in the unified editor at [`packages/frontend/editor/src/engine/context.rs`](../packages/frontend/editor/src/engine/context.rs).

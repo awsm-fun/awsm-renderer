@@ -461,6 +461,32 @@ fn cmdk_button() -> Dom {
     })
 }
 
+/// Top-bar MCP link toggle. Reflects the remote connection [`status`] and
+/// connects / disconnects on click — the on-demand path when the page wasn't
+/// loaded with a `?mcp=` param.
+///
+/// [`status`]: crate::remote::status
+fn mcp_button() -> Dom {
+    use crate::remote::RemoteStatus;
+    html!("div", {
+        .style("display", "flex")
+        .child_signal(crate::remote::status().signal().map(|st| {
+            let (title, active) = match st {
+                RemoteStatus::Disconnected => ("Connect to MCP server", false),
+                RemoteStatus::Connecting => ("Connecting to MCP\u{2026}", false),
+                RemoteStatus::Connected => ("MCP connected \u{2014} click to disconnect", true),
+            };
+            Some(
+                IconBtn::new("link")
+                    .title(title)
+                    .active(active)
+                    .on_click(crate::remote::toggle)
+                    .render(),
+            )
+        }))
+    })
+}
+
 fn project_label(ctrl: &EditorController) -> Dom {
     html!("div", {
         .style("display", "flex")
@@ -539,6 +565,7 @@ fn top_bar(ctrl: &EditorController) -> Dom {
         .child(IconBtn::new("settings").title("Settings")
             .on_click(|| controller().settings_open.set_neq(true)).render())
         .child(cmdk_button())
+        .child(mcp_button())
         .child(html!("div", { .style("flex", "1") }))
         .child(project_label(ctrl))
         .child(vdivider())

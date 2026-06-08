@@ -17,7 +17,7 @@ use awsm_web_shared::prelude::Mutable;
 
 use super::animation::{stored_from_live, stored_to_live};
 use super::custom_material::{AlphaMode, CustomMaterial, Slot};
-use super::node_spec::NodeSpec;
+use super::node_spec::{node_from_spec, spec_from_node, NodeSpec};
 use super::EditorController;
 use crate::engine::scene::node::Node;
 use crate::error::{EditorError, EditorResult};
@@ -86,7 +86,7 @@ pub fn to_editor_project(ctrl: &EditorController) -> EditorProject {
         .nodes
         .lock_ref()
         .iter()
-        .map(|n| NodeSpec::from_node(n).to_editor_node())
+        .map(|n| spec_from_node(n).to_editor_node())
         .collect();
 
     let custom_materials = ctrl
@@ -241,7 +241,7 @@ pub fn apply_project(ctrl: &EditorController, project: EditorProject) {
     let new_nodes: Vec<Arc<Node>> = project
         .nodes
         .iter()
-        .map(|n| NodeSpec::from_editor_node(n).to_node())
+        .map(|n| node_from_spec(&NodeSpec::from_editor_node(n)))
         .collect();
     ctrl.scene.nodes.lock_mut().replace_cloned(new_nodes);
     ctrl.selected.set(Vec::new());

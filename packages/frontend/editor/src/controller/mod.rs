@@ -29,9 +29,13 @@ pub use animation::{
 pub use command::{CameraAxis, EditorCommand, EditorMode, ProceduralKind};
 pub use custom_material::{compile_wgsl, AlphaMode, CustomMaterial, Slot};
 // InsertSpec is dispatched by the ribbon; NodeQuery is the snapshot
-// projection — re-exported now for those consumers.
+// projection. `build_insert` / `spec_from_node` / `node_from_spec` are the
+// editor-side reactive materialization (data types live in
+// `awsm_editor_protocol`).
 #[allow(unused_imports)]
-pub use node_spec::{InsertSpec, NodeQuery, NodeSpec};
+pub use node_spec::{
+    build_insert, node_from_spec, spec_from_node, InsertSpec, NodeQuery, NodeSpec,
+};
 pub use query::{EditorSnapshot, ProjectSnapshot};
 // The query read-surface — consumed by the `editor_query_json` wasm seam
 // + the future MCP transport.

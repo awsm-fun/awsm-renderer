@@ -9,17 +9,13 @@ members = [
     "packages/crates/renderer-core",
     "packages/crates/renderer-gltf",
     "packages/crates/scene-schema",
+    "packages/crates/editor-protocol",
     "packages/frontend/web-shared",
     "packages/frontend/editor",
     "packages/frontend/model-tests",
     "packages/examples/render-worker",
     "packages/debugging",
-]
-# The v1 editor is archived in-tree as a pure code reference for the v2
-# blank-slate rebuild (see docs/plans/editor-rewrite.md §3). It is NOT a
-# workspace member and is never compiled or linted.
-exclude = [
-    "packages/frontend/bad-editor-whoopsie",
+    "packages/mcp",
 ]
 resolver = "2"
 
@@ -29,7 +25,10 @@ edition = "2021"
 version = "0.2.0"
 license = "MIT"
 authors = ["David Komer"]
-rust-version = "1.80.0"
+# 1.85 floor: rmcp 1.x (the MCP server SDK) is edition-2024, which requires
+# Rust 1.85+. Keeping the MSRV here lets dependency specs stay simple (`rmcp = "1"`)
+# instead of pinning around the resolver.
+rust-version = "1.85.0"
 repository = "https://github.com/dakom/awsm-renderer"
 homepage = "https://dakom.github.io/awsm-renderer/"
 
@@ -82,6 +81,7 @@ opt-level = 1
 awsm-curves = { path = "packages/crates/curves", version = "0.2.0" }
 awsm-geometry = { path = "packages/crates/geometry", version = "0.2.0" }
 awsm-scene-schema = { path = "packages/crates/scene-schema", version = "0.2.0" }
+awsm-editor-protocol = { path = "packages/crates/editor-protocol", version = "0.2.0" }
 awsm-renderer-core = { path = "packages/crates/renderer-core", version = "0.2.0" }
 awsm-meshgen = { path = "packages/crates/meshgen", version = "0.2.0" }
 awsm-particles = { path = "packages/crates/particles", version = "0.2.0" }

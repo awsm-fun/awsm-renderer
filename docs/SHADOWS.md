@@ -12,7 +12,7 @@ bottom for where to look.
   on far cascades).
 * **Point lights** cast cube-map shadows. The cube convention is
   D3D-style; if you're authoring matrices yourself, see
-  [crates/renderer/src/shadows/mod.rs](../crates/renderer/src/shadows/mod.rs)
+  [packages/crates/renderer/src/shadows/mod.rs](../packages/crates/renderer/src/shadows/mod.rs)
   for the canonical Y-flip + `front_face = Cw` pattern.
 * **Spot lights** cast a single perspective shadow map.
 * **Transparent geometry** receives shadows in the same way opaque
@@ -131,7 +131,7 @@ into its tree — keeping the renderer scene-schema-free for consumers
 that have their own serialization pipeline.
 
 The editor frontend keeps a hand-rolled bridge in
-`scene-editor/src/renderer_bridge/{node_sync,shadows_sync}.rs` for
+`packages/frontend/editor/src/engine/bridge/ (e.g. node_sync.rs)` for
 historical reasons; new player code should prefer the From impls.
 
 ## Performance implications
@@ -278,7 +278,7 @@ your world:
 they suit the majority of scenes the editor will see. If your project
 authors at a different world scale, override these per-light or
 adjust the defaults in
-[`shadows/light_shadow.rs`](../crates/renderer/src/shadows/light_shadow.rs).
+[`shadows/light_shadow.rs`](../packages/crates/renderer/src/shadows/light_shadow.rs).
 
 The two have completely different jobs — don't conflate them:
 
@@ -429,9 +429,9 @@ winding fix landed.
 
 **Fix:** force a full shader rebuild
 (`cargo clean -p awsm-renderer`, then rebuild the editor). The
-fix lives in [`shadows/state.rs`](../crates/renderer/src/shadows/state.rs)
+fix lives in [`shadows/state.rs`](../packages/crates/renderer/src/shadows/state.rs)
 (search for `y_flip`) and
-[`shadows/helpers.rs`](../crates/renderer/src/shadows/helpers.rs)
+[`shadows/helpers.rs`](../packages/crates/renderer/src/shadows/helpers.rs)
 (search for `CullMode::Front` + the cube_face front-face override).
 
 ### Testing EVSM visually
@@ -483,7 +483,7 @@ Recipe for an unambiguous EVSM-vs-PCF demo:
   `meshes × overlapping_cascades`. Hold off until a test scene
   passes ~50 dynamic meshes; today the per-view cull is plenty.
 * **Cascade-blend zone tuning** — `CASCADE_BLEND = 0.5` in
-  [bind_groups.wgsl](../crates/renderer/src/render_passes/shared/shared_wgsl/shadow/bind_groups.wgsl).
+  [bind_groups.wgsl](../packages/crates/renderer/src/render_passes/shared/shared_wgsl/shadow/bind_groups.wgsl).
   Receivers inside the blend zone pay 2× PCF cost (sample both
   cascades and lerp). On a 4K screen with a single directional light
   the blend zone is ~60% of receiver pixels (4 cascades × 15%
@@ -498,14 +498,14 @@ move with the code if it gets refactored. Map of where to look:
 
 | Subsystem                          | Where the rationale lives                                                                                                                  |
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| Cascade fit (stable-fit, splits)   | [`shadows/cascade.rs`](../crates/renderer/src/shadows/cascade.rs)                                                                          |
-| Atlas clear-once / cube clear      | [`shadows/render_pass.rs`](../crates/renderer/src/shadows/render_pass.rs)                                                                  |
-| Cube Y-flip + CW winding           | [`shadows/mod.rs`](../crates/renderer/src/shadows/mod.rs) (search for `y_flip`)                                                            |
-| EVSM moment write + blur shaders   | [`shadows/evsm.rs`](../crates/renderer/src/shadows/evsm.rs)                                                                                |
-| Cascade-blend, PCF / PCSS taps     | [`shared_wgsl/shadow/bind_groups.wgsl`](../crates/renderer/src/render_passes/shared/shared_wgsl/shadow/bind_groups.wgsl)                   |
-| Equal-resolution cascades          | [`shadows/cascade.rs::cascade_resolution`](../crates/renderer/src/shadows/cascade.rs)                                                      |
-| Slope-scale + constant depth bias  | [`build_shadow_pipeline`](../crates/renderer/src/shadows/mod.rs) (`with_depth_bias(1).with_depth_bias_slope_scale(1.5)`)                  |
-| 16.B bind-group consolidation      | [`material_transparent/bind_group.rs`](../crates/renderer/src/render_passes/material_transparent/bind_group.rs)                            |
+| Cascade fit (stable-fit, splits)   | [`shadows/cascade.rs`](../packages/crates/renderer/src/shadows/cascade.rs)                                                                          |
+| Atlas clear-once / cube clear      | [`shadows/render_pass.rs`](../packages/crates/renderer/src/shadows/render_pass.rs)                                                                  |
+| Cube Y-flip + CW winding           | [`shadows/mod.rs`](../packages/crates/renderer/src/shadows/mod.rs) (search for `y_flip`)                                                            |
+| EVSM moment write + blur shaders   | [`shadows/evsm.rs`](../packages/crates/renderer/src/shadows/evsm.rs)                                                                                |
+| Cascade-blend, PCF / PCSS taps     | [`shared_wgsl/shadow/bind_groups.wgsl`](../packages/crates/renderer/src/render_passes/shared/shared_wgsl/shadow/bind_groups.wgsl)                   |
+| Equal-resolution cascades          | [`shadows/cascade.rs::cascade_resolution`](../packages/crates/renderer/src/shadows/cascade.rs)                                                      |
+| Slope-scale + constant depth bias  | [`build_shadow_pipeline`](../packages/crates/renderer/src/shadows/mod.rs) (`with_depth_bias(1).with_depth_bias_slope_scale(1.5)`)                  |
+| 16.B bind-group consolidation      | [`material_transparent/bind_group.rs`](../packages/crates/renderer/src/render_passes/material_transparent/bind_group.rs)                            |
 
 If a future regression makes one of these decisions look wrong, the
 comment in the code block typically explains the trade-off the

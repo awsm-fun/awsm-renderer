@@ -19,7 +19,7 @@ runs the vertex shader and writes per-fragment data; shading is
 a separate compute pass that reads the visibility buffer and
 material data per pixel.
 
-Frame structure (per `crates/renderer/src/render.rs::render`):
+Frame structure (per `packages/crates/renderer/src/render.rs::render`):
 
 ```
 ┌──────────────────────┐
@@ -265,7 +265,7 @@ p99 17.6 ms (vsync-aligned).
 
 ## 2. Opt-in features
 
-`RendererFeatures` (`crates/renderer/src/features.rs`) gates always-on
+`RendererFeatures` (`packages/crates/renderer/src/features.rs`) gates always-on
 infrastructure. **Boolean fields default to `false`**, so library
 consumers pay zero overhead for features they don't use. Game-side
 and editor builds opt in explicitly. Capability-tied features use
@@ -678,8 +678,8 @@ writes (`coverage_buffers.reset_counts`,
 of small fixed-content payloads (zeros / static headers) where the
 ring's mapped-write win doesn't apply.
 
-[mu]: ../crates/renderer/src/buffer/mapped_uploader.rs
-[msr]: ../crates/renderer/src/buffer/mapped_staging_ring.rs
+[mu]: ../packages/crates/renderer/src/buffer/mapped_uploader.rs
+[msr]: ../packages/crates/renderer/src/buffer/mapped_staging_ring.rs
 
 ---
 
@@ -710,9 +710,9 @@ cloned) across the `postMessage` boundary using the trait hooks
   `Uint8Array::to_vec` back into wasm linear memory on the main
   thread); the cross-thread hop itself is free.
 
-[wj_into]: ../crates/renderer/src/workers/pool.rs
-[wj_from]: ../crates/renderer/src/workers/pool.rs
-[gp_il]: ../crates/renderer-gltf/src/worker_job.rs
+[wj_into]: ../packages/crates/renderer/src/workers/pool.rs
+[wj_from]: ../packages/crates/renderer/src/workers/pool.rs
+[gp_il]: ../packages/crates/renderer-gltf/src/worker_job.rs
 
 A/B measurement on Corset.glb (12.8 MB, the heaviest single-asset
 glb in the shipped samples), n=3 iterations on M2 MacBook /
@@ -814,12 +814,12 @@ format the worker browser rejected would fail identically on
 the main thread after a bytes round-trip — pure overhead.
 Decision rationale and the design note for a future Rust-side
 decoder (e.g. `image` crate basis support behind a feature
-flag) live in [`crates/renderer-gltf/src/worker_job.rs`][gp]'s
+flag) live in [`packages/crates/renderer-gltf/src/worker_job.rs`][gp]'s
 `import_image_data` doc.
 
-[gp]: ../crates/renderer-gltf/src/worker_job.rs
+[gp]: ../packages/crates/renderer-gltf/src/worker_job.rs
 
-[mu]: ../crates/renderer/src/buffer/mapped_uploader.rs
+[mu]: ../packages/crates/renderer/src/buffer/mapped_uploader.rs
 
 ---
 
@@ -839,7 +839,7 @@ value, and patches `MaterialMeshMeta.material_offset` only on the
 meshes that actually crossed the threshold. Steady-state writes
 are O(0) when nothing changed — the cache short-circuits.
 
-[cm_refresh]: ../crates/renderer/src/meshes.rs
+[cm_refresh]: ../packages/crates/renderer/src/meshes.rs
 
 ### Compatibility constraint — enforced at set time
 
@@ -875,8 +875,8 @@ cheap shader can preserve, not raw screen-space size).
 
 Two extensions to the shadow path, both live in [`render_passes/shared/shared_wgsl/shadow/bind_groups.wgsl`][bgw] and the receiver-side WGSL in [`apply_lighting.wgsl`][lwgsl]:
 
-[bgw]: ../crates/renderer/src/render_passes/shared/shared_wgsl/shadow/bind_groups.wgsl
-[lwgsl]: ../crates/renderer/src/render_passes/shared/shared_wgsl/lighting/apply_lighting.wgsl
+[bgw]: ../packages/crates/renderer/src/render_passes/shared/shared_wgsl/shadow/bind_groups.wgsl
+[lwgsl]: ../packages/crates/renderer/src/render_passes/shared/shared_wgsl/lighting/apply_lighting.wgsl
 
 ### Coverage-driven shadow-receiver gate
 
@@ -1309,7 +1309,7 @@ naturally. Two wrinkles to handle:
    First-party materials are enumerable at compile time
    (`enabled_materials()`); custom ones come from registry
    calls. Drive
-   [`AwsmRenderer::prewarm_pipelines`](../crates/renderer/src/lib.rs)
+   [`AwsmRenderer::prewarm_pipelines`](../packages/crates/renderer/src/lib.rs)
    *after* the consumer has finished registering, before the
    first gameplay frame.
 2. **Mid-session registration triggers a recompile.** Registering
@@ -1350,7 +1350,7 @@ PSO cache is empty. The recipe:
 PROFILE=/tmp/chrome-webgpu-cold-$(date +%s)
 /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
     --user-data-dir=$PROFILE \
-    http://localhost:9080/  # or 9081 for scene-editor
+    http://localhost:9080/  # model-tests; the editor is on 9085
 ```
 
 In the resulting browser:
@@ -1748,7 +1748,7 @@ viewport on first gameplay frame.
 ### What to monitor in production
 
 The `read_render_pass_timings` + `read_upload_ring_stats` helpers
-in `crates/frontend/scene-editor/src/actions/measurement.rs` are
+in the v1 editor's measurement harness (since removed) were
 debug-only, but the same data is on the renderer's tracing spans
 — production consumers can subscribe to the `tracing` subscriber
 and emit metrics to their own telemetry system.
@@ -1768,8 +1768,7 @@ The two metrics to watch:
 
 Driven by the Claude Preview MCP (or any equivalent). The
 scene-editor exposes four `#[cfg(debug_assertions)]`
-`#[wasm_bindgen]` helpers from
-`crates/frontend/scene-editor/src/actions/measurement.rs`:
+`#[wasm_bindgen]` helpers from the v1 editor's `measurement.rs` (since removed):
 
 | Helper | Returns | Use |
 |---|---|---|
@@ -1875,7 +1874,7 @@ emitter of unshadowed point lights) before attempting this.
 - **Don't introduce a backend trait abstraction.** The
   renderer is web-sys-only (not `wgpu`) by design. WGSL changes
   ship via Askama templates under
-  `crates/renderer/src/render_passes/*/shader/`.
+  `packages/crates/renderer/src/render_passes/*/shader/`.
 - **Don't bypass the visibility-buffer pipeline.** Adding a
   forward pass for "just this one effect" reintroduces the
   wasted-lane tax the visibility-buffer architecture avoids.
