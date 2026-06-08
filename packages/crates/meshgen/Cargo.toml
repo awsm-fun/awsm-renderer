@@ -22,3 +22,8 @@ awsm-geometry = { workspace = true }
 awsm-scene-schema = { workspace = true }
 glam = {workspace = true}
 serde = {workspace = true, optional = true}
+# SDF → triangles (Phase 5). We don't write a mesher — surface nets is delegated
+# to this crate (pure Rust, wasm-friendly); our value-add is the SDF distance
+# graph in `sdf.rs`.
+fast-surface-nets = "0.2.1"
+ndshape = "0.3.0"

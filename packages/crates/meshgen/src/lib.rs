@@ -7,6 +7,7 @@ pub mod modifiers;
 pub mod primitives;
 pub mod procedural_texture;
 pub mod sdf;
+pub mod sdf_mesh;
 pub mod stats;
 pub mod sweep;
 

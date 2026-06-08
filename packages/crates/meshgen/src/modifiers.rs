@@ -34,10 +34,10 @@ pub fn evaluate(stack: &ModifierStack) -> MeshData {
             segments_long,
             segments_lat,
         } => superquadric(*e1, *e2, *segments_long, *segments_lat),
-        // Sweep/Captured need scene state (resolved editor-side); Sdf meshing is
-        // delegated to a surface-nets crate (wiring pending — the distance graph
-        // in `sdf::eval_sdf` is the tested value-add).
-        MeshBase::Sweep(_) | MeshBase::Captured(_) | MeshBase::Sdf { .. } => MeshData::default(),
+        // Sweep/Captured need scene state (resolved editor-side).
+        MeshBase::Sweep(_) | MeshBase::Captured(_) => MeshData::default(),
+        // SDF/CSG graph → surface nets.
+        MeshBase::Sdf { node, resolution } => crate::sdf_mesh::surface_nets_mesh(node, *resolution),
     };
     apply_modifiers(base, &stack.modifiers)
 }
