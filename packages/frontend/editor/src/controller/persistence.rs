@@ -12,7 +12,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use awsm_scene_schema::animation::CustomAnimationRef;
-use awsm_scene_schema::{AssetId, CustomMaterialRef, EditorProject, StoredMaterial, StoredSlot};
+use awsm_scene_schema::{
+    mesh_asset_filename, AssetId, AssetSource, CapturedMesh, CustomMaterialRef, EditorProject,
+    StoredMaterial, StoredSlot,
+};
 use awsm_web_shared::prelude::Mutable;
 
 use super::animation::{stored_from_live, stored_to_live};
@@ -178,6 +181,52 @@ pub fn material_files(ctrl: &EditorController) -> Vec<(String, String)> {
     out
 }
 
+/// Per-captured-mesh side files (`assets/<id>.mesh.bin`) — the bitcode-encoded
+/// [`CapturedMesh`] geometry for every `AssetSource::Mesh` entry whose bytes are
+/// live in the [`mesh_cache`] store. Binary (not TOML), so this is the
+/// `write_bytes` sibling of [`material_files`]. Closes the session-local-only
+/// persistence gap: captured/editable meshes now survive Save → reload.
+pub fn mesh_files(ctrl: &EditorController) -> Vec<(String, Vec<u8>)> {
+    use crate::engine::bridge::mesh_cache;
+    let mut out = Vec::new();
+    let assets = ctrl.scene.assets.lock().unwrap();
+    for (id, entry) in assets.entries.iter() {
+        if matches!(entry.source, AssetSource::Mesh(_)) {
+            if let Some(captured) = mesh_cache::get_captured(*id) {
+                if let Ok(bytes) = bitcode::serialize(&captured) {
+                    out.push((format!("assets/{}", mesh_asset_filename(*id)), bytes));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Restore captured-mesh bytes into the [`mesh_cache`] store from a loaded
+/// project's asset table, reading each `assets/<id>.mesh.bin` via `read`. Called
+/// **before** [`apply_project`] rebuilds the scene so `NodeKind::Mesh` nodes
+/// resolve their geometry the first time they materialize. Missing files are
+/// skipped (older projects, or meshes captured but never saved).
+async fn restore_mesh_bytes<F, Fut>(project: &EditorProject, mut read: F)
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<u8>, String>>,
+{
+    use crate::engine::bridge::mesh_cache;
+    for (id, entry) in project.assets.entries.iter() {
+        if !matches!(entry.source, AssetSource::Mesh(_)) {
+            continue;
+        }
+        let path = format!("assets/{}", mesh_asset_filename(*id));
+        if let Ok(bytes) = read(path).await {
+            match bitcode::deserialize::<CapturedMesh>(&bytes) {
+                Ok(captured) => mesh_cache::store_with_id(*id, captured),
+                Err(e) => tracing::warn!("mesh {id}: bad .mesh.bin ({e})"),
+            }
+        }
+    }
+}
+
 /// Per-clip animation side files — the full authored model serialized as TOML
 /// (mirrors `material_files`). Each path matches the `CustomAnimationRef.file` in
 /// `project.toml` via the shared [`animation_file_path`] (so the writer can't
@@ -270,6 +319,11 @@ pub async fn save_to_dir(ctrl: &EditorController, dir: &crate::fs::ProjectDir) -
             .await
             .map_err(|e| EditorError::Msg(e.to_string()))?;
     }
+    for (name, bytes) in mesh_files(ctrl) {
+        dir.write_bytes(&name, &bytes)
+            .await
+            .map_err(|e| EditorError::Msg(e.to_string()))?;
+    }
     Ok(())
 }
 
@@ -285,6 +339,11 @@ pub async fn load_from_dir(
         .map_err(|e| EditorError::Msg(e.to_string()))?;
     let project: EditorProject =
         toml::from_str(&body).map_err(|e| EditorError::Msg(format!("parse project.toml: {e}")))?;
+    // Populate the mesh store before nodes materialize (see `restore_mesh_bytes`).
+    restore_mesh_bytes(&project, |path| async move {
+        dir.read_bytes(&path).await.map_err(|e| e.to_string())
+    })
+    .await;
     apply_project(ctrl, project);
     ctrl.reset_history();
     ctrl.dirty.set_neq(false);
@@ -311,6 +370,21 @@ pub async fn load_project_from_url(ctrl: &EditorController, base_url: &str) -> E
         .map_err(|e| EditorError::Msg(format!("read {url}: {e}")))?;
     let project: EditorProject =
         toml::from_str(&body).map_err(|e| EditorError::Msg(format!("parse {url}: {e}")))?;
+    // Fetch captured-mesh side files over HTTP before nodes materialize.
+    restore_mesh_bytes(&project, |path| {
+        let file_url = format!("{base}/{path}");
+        async move {
+            let resp = gloo_net::http::Request::get(&file_url)
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
+            if !resp.ok() {
+                return Err(format!("HTTP {}", resp.status()));
+            }
+            resp.binary().await.map_err(|e| e.to_string())
+        }
+    })
+    .await;
     apply_project(ctrl, project);
     Ok(())
 }
