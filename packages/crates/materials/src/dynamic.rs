@@ -72,10 +72,15 @@ pub struct DynamicMaterial {
 /// [`TextureSlot`](crate::dynamic_layout::TextureSlotRuntime).
 #[derive(Clone, Debug)]
 pub enum DynamicTextureBinding {
-    /// The slot is bound to a pooled texture key. The renderer
-    /// resolves this to a `u32` index into the texture pool at
-    /// upload time via `TextureContext`.
-    Pooled(awsm_renderer_core::keys::TextureKey),
+    /// The slot is bound to a pooled texture key together with the sampler
+    /// it should be sampled through. The renderer resolves these to the two
+    /// packed `u32` words the generated `MaterialData` carries per texture
+    /// slot — `array_and_layer` and `uv_and_sampler` — at upload time via
+    /// `TextureContext` (see [`DynamicMaterialContext::resolve_texture_index`]).
+    Pooled {
+        texture: awsm_renderer_core::keys::TextureKey,
+        sampler: awsm_renderer_core::keys::SamplerKey,
+    },
 }
 
 impl DynamicMaterial {
@@ -132,11 +137,14 @@ pub trait DynamicMaterialContext {
     /// [`Self::layout`]'s contract — `None` for unknown ids.
     fn alpha_mode(&self, shader_id: MaterialShaderId) -> Option<MaterialAlphaMode>;
 
-    /// Resolves a per-instance texture binding to a texture-pool u32
-    /// index. Returns `u32::MAX` for unbound slots — the WGSL
-    /// `texture_pool_sample_*` helpers treat that as "no texture"
-    /// (consistent with first-party material packers).
-    fn resolve_texture_index(&self, binding: Option<&DynamicTextureBinding>) -> u32;
+    /// Resolves a per-instance texture binding to the two packed `u32`
+    /// words the generated `MaterialData` carries per texture slot:
+    /// `[array_and_layer, uv_and_sampler]` — the same bit layout as
+    /// `TextureInfoRaw`'s corresponding fields (array_index | layer<<12,
+    /// and uv_set | sampler<<8). Returns `[u32::MAX, 0]` for unbound slots —
+    /// the generated `material_sample_<name>` helper treats the `u32::MAX`
+    /// sentinel in the first word as "no texture".
+    fn resolve_texture_index(&self, binding: Option<&DynamicTextureBinding>) -> [u32; 2];
 
     /// Returns the extras-pool slice currently assigned to
     /// `(shader_id, buffer_slot_index)`. `None` means no slice
@@ -269,8 +277,9 @@ impl DynamicMaterial {
         // 3. Uniform values.
         pack_uniform_values(layout, &self.values, out);
 
-        // 4. Texture indices.
-        let texture_indices: Vec<u32> = self
+        // 4. Texture indices — two words per slot
+        //    (`array_and_layer`, `uv_and_sampler`).
+        let texture_indices: Vec<[u32; 2]> = self
             .textures
             .iter()
             .map(|binding| ctx.resolve_texture_index(binding.as_ref()))
@@ -322,8 +331,8 @@ mod tests {
         fn alpha_mode(&self, _id: MaterialShaderId) -> Option<MaterialAlphaMode> {
             Some(MaterialAlphaMode::Opaque)
         }
-        fn resolve_texture_index(&self, _binding: Option<&DynamicTextureBinding>) -> u32 {
-            42
+        fn resolve_texture_index(&self, _binding: Option<&DynamicTextureBinding>) -> [u32; 2] {
+            [42, 43]
         }
         fn buffer_slice(&self, _id: MaterialShaderId, _slot: usize) -> Option<(u32, u32)> {
             None
@@ -353,14 +362,16 @@ mod tests {
         let mut out = Vec::new();
         material.write_uniform_buffer_with_layout(&ctx, &mut out);
 
-        // shader_id (4) + struct (16: f32 + u32 tex + u32 buf_off + u32 buf_len)
-        assert_eq!(out.len(), 4 + 16);
+        // shader_id (4) + struct (20: f32 + u32 tex_index + u32 tex_uv_sampler
+        // + u32 buf_off + u32 buf_len)
+        assert_eq!(out.len(), 4 + 20);
         let id_bytes = MaterialShaderId::DYNAMIC_START.to_le_bytes();
         assert_eq!(&out[0..4], &id_bytes);
         assert_eq!(&out[4..8], &3.5_f32.to_le_bytes());
-        assert_eq!(&out[8..12], &42u32.to_le_bytes()); // tex_index
-        assert_eq!(&out[12..16], &0u32.to_le_bytes()); // buf_offset stub
-        assert_eq!(&out[16..20], &0u32.to_le_bytes()); // buf_length stub
+        assert_eq!(&out[8..12], &42u32.to_le_bytes()); // tex_index (array_and_layer)
+        assert_eq!(&out[12..16], &43u32.to_le_bytes()); // tex_uv_sampler
+        assert_eq!(&out[16..20], &0u32.to_le_bytes()); // buf_offset stub
+        assert_eq!(&out[20..24], &0u32.to_le_bytes()); // buf_length stub
     }
 
     #[test]

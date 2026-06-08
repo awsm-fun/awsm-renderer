@@ -78,39 +78,47 @@ impl<'a> DynamicMaterialContext for DynamicMaterialPackContext<'a> {
         self.materials.get(shader_id).map(|r| r.alpha_mode)
     }
 
-    fn resolve_texture_index(&self, binding: Option<&DynamicTextureBinding>) -> u32 {
-        // Unbound slot → "no texture" sentinel. Same convention
-        // first-party materials use when an Optional<MaterialTexture>
-        // is None.
+    fn resolve_texture_index(&self, binding: Option<&DynamicTextureBinding>) -> [u32; 2] {
+        // Unbound slot → "no texture" sentinel in the first word. Same
+        // convention first-party materials use when an
+        // Optional<MaterialTexture> is None; the generated
+        // `material_sample_<name>` helper treats first-word `u32::MAX` as
+        // "no texture".
         let Some(binding) = binding else {
-            return u32::MAX;
+            return [u32::MAX, 0];
         };
         // No `TextureContext` attached → can't resolve. Stay at the
         // sentinel rather than guessing. Callers that route through
         // `Materials::update` always plumb `Textures` in.
         let Some(textures) = self.textures else {
-            return u32::MAX;
+            return [u32::MAX, 0];
         };
         match binding {
-            DynamicTextureBinding::Pooled(key) => {
-                // Encode `array_index | (layer_index << 12)` to
-                // match the bit-layout the rest of the renderer's
-                // `TextureInfoRaw.array_and_layer` field uses (see
+            DynamicTextureBinding::Pooled { texture, sampler } => {
+                // Word 0 — `array_and_layer`: `array_index |
+                // (layer_index << 12)`, matching the bit-layout of
+                // `TextureInfoRaw.array_and_layer` (see
                 // `shared_wgsl/textures.wgsl::convert_texture_info`).
-                // Authors decode via:
-                //   let array_index = idx & 0xFFFu;
-                //   let layer_index = idx >> 12u;
-                // for use with the texture-pool array bindings.
-                // Missing entries → `u32::MAX` (the WGSL helpers
-                // treat that as "no texture").
-                let Some(entry) = textures.texture_entry(*key) else {
-                    return u32::MAX;
+                // Missing entries → `u32::MAX` (the WGSL helpers treat
+                // that as "no texture").
+                let Some(entry) = textures.texture_entry(*texture) else {
+                    return [u32::MAX, 0];
                 };
                 let array_index = entry.array_index as u32;
                 let layer_index = entry.layer_index as u32;
                 debug_assert!(array_index <= 0xFFF, "array_index exceeds 12-bit field");
                 debug_assert!(layer_index <= 0xFFFFF, "layer_index exceeds 20-bit field");
-                (layer_index << 12) | (array_index & 0xFFF)
+                let array_and_layer = (layer_index << 12) | (array_index & 0xFFF);
+
+                // Word 1 — `uv_and_sampler`: `uv_set | (sampler_index <<
+                // 8)`, mirroring `TextureInfoRaw.uv_and_sampler`. Dynamic
+                // pooled bindings carry no UV-set selector (the author
+                // passes `uv` explicitly), so uv_set is 0. A sampler that
+                // isn't pooled resolves to index 0 (the pool default).
+                let sampler_index = textures.sampler_index(*sampler).unwrap_or(0);
+                let uv_and_sampler = sampler_index << 8;
+
+                [array_and_layer, uv_and_sampler]
             }
         }
     }

@@ -29,11 +29,18 @@ thread_local! {
     static TEXTURE_KEYS: RefCell<HashMap<AssetId, TextureKey>> = RefCell::new(HashMap::new());
 }
 
-/// Resolve a [`TextureRef`] to a renderer [`TextureKey`] (uploading a procedural
-/// texture once / reusing a pre-registered key), pooling its sampler so the
-/// binding is valid. Used for per-mesh texture overrides on dynamic materials.
-pub(crate) fn resolve_texture_key(r: &mut AwsmRenderer, tref: &TextureRef) -> Option<TextureKey> {
-    resolve_texture(r, tref, true, MipmapTextureKind::Albedo).map(|t| t.key)
+/// Resolve a texture ref → `(pooled texture key, sampler key)` for a dynamic
+/// material slot, uploading a procedural texture once / reusing a
+/// pre-registered key and pooling its sampler so the binding is valid. Returns
+/// the sampler too so the dynamic packer can encode the slot's `uv_and_sampler`
+/// word (see `DynamicMaterialContext::resolve_texture_index`). Used for
+/// per-mesh texture overrides on dynamic materials.
+pub(crate) fn resolve_texture_binding(
+    r: &mut AwsmRenderer,
+    tref: &TextureRef,
+) -> Option<(TextureKey, SamplerKey)> {
+    let mt = resolve_texture(r, tref, true, MipmapTextureKind::Albedo)?;
+    Some((mt.key, mt.sampler_key?))
 }
 
 /// The renderer [`TextureKey`] a texture asset resolves to, if it's been

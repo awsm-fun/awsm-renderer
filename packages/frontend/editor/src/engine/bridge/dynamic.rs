@@ -180,9 +180,14 @@ fn build_custom(renderer: &mut AwsmRenderer, inst: &CustomMaterialInstance) -> O
                 .unwrap_or_default();
             for (i, name) in tex_slots.iter().enumerate() {
                 if let Some(tref) = inst.texture_overrides.get(name) {
-                    if let Some(key) = super::material::resolve_texture_key(renderer, tref) {
+                    if let Some((key, sampler)) =
+                        super::material::resolve_texture_binding(renderer, tref)
+                    {
                         if let Some(slot) = dm.textures.get_mut(i) {
-                            *slot = Some(DynamicTextureBinding::Pooled(key));
+                            *slot = Some(DynamicTextureBinding::Pooled {
+                                texture: key,
+                                sampler,
+                            });
                         }
                     }
                 }
