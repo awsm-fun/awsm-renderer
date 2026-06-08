@@ -51,6 +51,35 @@ use crate::render_passes::material_opaque::shader::cache_key::{
     DynamicShaderInfo, ShaderCacheKeyMaterialOpaque,
 };
 
+/// Pull the WGSL compile diagnostic for a failed pipeline compile by routing
+/// through the shader module's `getCompilationInfo`. The `createComputePipeline
+/// Async` rejection value is typically an opaque `GPUPipelineError` whose
+/// message is empty / non-actionable; `getCompilationInfo` is where the real
+/// line/column + message live. Awaited inside the compile future (alongside the
+/// pipeline promise) so the sync apply site has the text ready.
+///
+/// Returns `None` when no module was captured (edge pipelines), when the info
+/// fetch itself fails, or when the module reports no errors — the apply site
+/// then falls back to the raw rejection value.
+async fn shader_compile_diagnostic(module: Option<web_sys::GpuShaderModule>) -> Option<String> {
+    use awsm_renderer_core::shaders::ShaderModuleExt;
+    let info = module?.get_compilation_info_ext().await.ok()?;
+    if info.errors.is_empty() {
+        return None;
+    }
+    let mut out = String::new();
+    for msg in &info.errors {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&format!(
+            "line {}:{}: {}",
+            msg.line_num, msg.line_pos, msg.message
+        ));
+    }
+    Some(out)
+}
+
 impl crate::AwsmRenderer {
     /// THE render-driven, family-agnostic, AA-agnostic compile-launch
     /// operation. Compiles on demand exactly what the LIVE scene needs
@@ -485,17 +514,26 @@ impl crate::AwsmRenderer {
                     },
                 };
                 let id = group_id;
+                // Clone the shader module so the future can pull a real WGSL
+                // diagnostic (via `getCompilationInfo`) if the compile rejects.
+                let shader_module = self.shaders.get(cache_key.shader_key).cloned();
                 let fut: std::pin::Pin<
                     Box<dyn std::future::Future<Output = PipelineCompileResolution>>,
                 > = Box::pin(async move {
                     let result: std::result::Result<web_sys::GpuComputePipeline, JsValue> =
                         promise.await;
+                    let compile_error = if result.is_err() {
+                        shader_compile_diagnostic(shader_module).await
+                    } else {
+                        None
+                    };
                     PipelineCompileResolution {
                         id,
                         generation,
                         target,
                         cache_key,
                         result,
+                        compile_error,
                     }
                 });
                 self.pipeline_scheduler.push_compile_future_no_count(fut);
@@ -708,6 +746,10 @@ impl crate::AwsmRenderer {
                     target,
                     cache_key,
                     result,
+                    // Edge pipelines are layout-level (not owned by any
+                    // material); their failures are logged, not surfaced to an
+                    // author via compile-status, so no diagnostic is pulled.
+                    compile_error: None,
                 }
             });
             self.pipeline_scheduler.push_compile_future_no_count(fut);
@@ -750,6 +792,7 @@ impl crate::AwsmRenderer {
             target,
             cache_key,
             result,
+            compile_error,
         } = resolution;
 
         // Edge-resolve pipelines are LAYOUT-level: they're charged to no
@@ -859,18 +902,21 @@ impl crate::AwsmRenderer {
         let pipeline = match result {
             Ok(p) => p,
             Err(e) => {
+                // Prefer the real WGSL diagnostic (line/column + message, via
+                // `getCompilationInfo`) the compile future resolved alongside
+                // the rejection; fall back to the raw rejection value when the
+                // module reported no errors (e.g. a layout / binding mismatch
+                // rather than a shader syntax/type error).
+                let detail =
+                    compile_error.unwrap_or_else(|| format!("{e:?} (no shader compilation info)"));
                 tracing::warn!(
                     target: "awsm_renderer::pipeline_readiness",
-                    "apply_compile_resolution: pipeline-creation failed for material({:?}): {:?}",
+                    "apply_compile_resolution: pipeline-creation failed for material({:?}): {}",
                     mid,
-                    e,
+                    detail,
                 );
-                self.pipeline_scheduler.mark_failed(
-                    id,
-                    crate::error::AwsmError::PipelineVariantNotCompiled(
-                        "create_compute_pipeline_async rejected",
-                    ),
-                );
+                self.pipeline_scheduler
+                    .mark_failed(id, crate::error::AwsmError::MaterialShaderCompile(detail));
                 // Drain waiter counts so additional waiters don't get
                 // stuck Pending. They'll still be marked Failed if
                 // any of their OWN compiles fail; this cache_key's
