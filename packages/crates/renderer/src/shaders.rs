@@ -63,13 +63,10 @@ impl Shaders {
         let shader_descriptor = ShaderTemplate::try_from(&cache_key)?.into_descriptor()?;
         let shader_module = gpu.compile_shader(&shader_descriptor);
 
-        if let Err(err) = shader_module
-            .validate_shader()
-            .await
-            .map_err(AwsmShaderError::Compilation)
-        {
-            print_shader_source(&shader_descriptor.get_code(), true);
-            return Err(err);
+        if let Err(err) = shader_module.validate_shader().await {
+            let code = shader_descriptor.get_code();
+            print_shader_source(&code, true);
+            return Err(compile_error_with_source(&code, err));
         }
 
         let shader_key = self.lookup.insert(shader_module.clone());
@@ -166,11 +163,13 @@ impl Shaders {
                 "Shaders::ensure_keys: {n} shaders compiled in {dt_ms:.0}ms",
             );
             for (i, result) in results.into_iter().enumerate() {
-                if let Err(err) = result.map_err(AwsmShaderError::Compilation) {
+                if let Err(err) = result {
                     // Match the diagnostic behavior of `get_key`:
-                    // print the offending source on a failed compile.
-                    print_shader_source(&modules[i].2.get_code(), true);
-                    return Err(err);
+                    // print the offending source on a failed compile + quote
+                    // the failing line(s) in the returned error.
+                    let code = modules[i].2.get_code();
+                    print_shader_source(&code, true);
+                    return Err(compile_error_with_source(&code, err));
                 }
             }
 
@@ -404,6 +403,33 @@ pub enum AwsmShaderError {
     #[error("[shader] Compilation error: {0:?}")]
     Compilation(AwsmCoreError),
 
+    /// A WGSL validation failure enriched with the offending source line(s) —
+    /// far more debuggable than the bare line number (which indexes the
+    /// *assembled* module, not any one author file).
+    #[error("[shader] Compilation error:\n{0}")]
+    CompilationDetail(String),
+
     #[error("[shader] Template error: {0:?}")]
     Template(#[from] askama::Error),
+}
+
+/// Turn a core validation error into a shader error that quotes the offending
+/// source line(s). Non-validation errors pass through as `Compilation`.
+pub(crate) fn compile_error_with_source(code: &str, err: AwsmCoreError) -> AwsmShaderError {
+    let AwsmCoreError::ShaderValidation(msgs) = &err else {
+        return AwsmShaderError::Compilation(err);
+    };
+    let lines: Vec<&str> = code.lines().collect();
+    let mut out = String::from("WGSL validation failed:");
+    for m in msgs {
+        out.push_str(&format!(
+            "\n  line {}:{}: {}",
+            m.line_num, m.line_pos, m.message
+        ));
+        let ln = m.line_num as usize;
+        if ln >= 1 && ln <= lines.len() {
+            out.push_str(&format!("\n    > {}", lines[ln - 1].trim_end()));
+        }
+    }
+    AwsmShaderError::CompilationDetail(out)
 }

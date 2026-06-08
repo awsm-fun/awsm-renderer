@@ -253,7 +253,7 @@ async fn dispatch(req: Request) -> Response {
             Response::Ok
         }
         Request::ScenePng { width, height } => {
-            png_response(crate::engine::query::scene_png(width, height))
+            png_response(crate::engine::query::scene_png(width, height).await)
         }
         Request::MaterialPng { width, height } => {
             png_response(crate::engine::query::material_png(width, height))

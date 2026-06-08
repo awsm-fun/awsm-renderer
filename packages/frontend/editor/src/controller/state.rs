@@ -2442,13 +2442,13 @@ impl EditorController {
                 targets,
             } => self.sample_clip_timeseries(clip, times, targets).await,
             EditorQuery::CanvasPixels { coords } => {
-                match crate::engine::query::canvas_pixels(&coords) {
+                match crate::engine::query::canvas_pixels(&coords).await {
                     Ok(pixels) => QueryResult::Pixels(PixelsResult { pixels }),
                     Err(e) => QueryResult::Error { error: e },
                 }
             }
             EditorQuery::CanvasStats { region } => {
-                match crate::engine::query::canvas_stats(region) {
+                match crate::engine::query::canvas_stats(region).await {
                     Ok(s) => QueryResult::Stats(s),
                     Err(e) => QueryResult::Error { error: e },
                 }

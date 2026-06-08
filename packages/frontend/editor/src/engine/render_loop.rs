@@ -179,6 +179,10 @@ fn render_one_frame() {
         if let Err(err) = renderer.render(hooks.as_ref()) {
             tracing::error!("render failed: {err}");
         }
+        // Fulfill any pending scene screenshots/pixel reads now — the swapchain
+        // texture still holds this frame's render and is the current texture
+        // (a WebGPU canvas isn't `toDataURL`-readable, so we GPU-copy it).
+        super::query::poll_scene_capture(renderer);
         // `render()` drains the pipeline scheduler in its pre-amble, so these
         // counts are fresh. Surface them in the activity indicator — this is
         // what makes post-import shader/pipeline compiles (and any first-start

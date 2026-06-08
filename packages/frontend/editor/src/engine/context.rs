@@ -219,7 +219,17 @@ async fn create_renderer(canvas: web_sys::HtmlCanvasElement) -> EditorResult<Aws
         .with_configuration(
             CanvasConfiguration::default()
                 .with_alpha_mode(CanvasAlphaMode::Opaque)
-                .with_tone_mapping(CanvasToneMappingMode::Standard),
+                .with_tone_mapping(CanvasToneMappingMode::Standard)
+                // RENDER_ATTACHMENT (to draw) + COPY_SRC so the WebGPU swapchain
+                // is readable via `toDataURL`/`drawImage` — Chrome returns an
+                // empty (transparent) buffer for a WebGPU canvas without
+                // COPY_SRC, which is what made `screenshot_scene`/`canvas_stats`
+                // come back blank while the scene rendered fine on screen.
+                .with_usage(
+                    awsm_renderer_core::texture::TextureUsage::new()
+                        .with_render_attachment()
+                        .with_copy_src(),
+                ),
         )
         .with_device_request_limits(DeviceRequestLimits::max_all());
 
