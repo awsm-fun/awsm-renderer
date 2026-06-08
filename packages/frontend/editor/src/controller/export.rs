@@ -250,8 +250,9 @@ fn map_camera(cfg: &CameraConfig) -> ExportCamera {
 }
 
 /// Bake a `SweepAlongCurve` to triangles by resolving its referenced curve node
-/// from the scene tree (mirrors the renderer-bridge `materialize_sweep`).
-fn sweep_mesh(scene: &Scene, def: &SweepAlongCurveDef) -> Option<MeshData> {
+/// from the scene tree (mirrors the renderer-bridge `materialize_sweep`). Shared
+/// with `ConvertToEditableMesh` (which bakes a sweep into a captured mesh).
+pub(crate) fn sweep_mesh(scene: &Scene, def: &SweepAlongCurveDef) -> Option<MeshData> {
     use awsm_curves::CatmullRomCurve;
     use awsm_meshgen::{sweep_along_curve, CrossSection, SweepOpts, UvMode};
     use glam::Vec3;

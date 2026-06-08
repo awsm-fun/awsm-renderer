@@ -169,6 +169,11 @@ pub struct EditorController {
     /// affecting edit through ONE counter (rather than per-field signal
     /// observers) guarantees no edit silently skips a re-lower.
     pub anim_revision: Mutable<u32>,
+    /// Monotonic revision bumped by `apply` whenever a command
+    /// [`EditorCommand::affects_mesh`] — the single signal the `mesh_sync` bridge
+    /// observes to re-materialize captured-mesh geometry that changed without a
+    /// node-kind change (`SetMeshData`). Mirrors [`Self::anim_revision`].
+    pub mesh_revision: Mutable<u32>,
     /// Which timeline editor the dock shows (Dope / Curves / Mixer).
     pub anim_view: Mutable<AnimView>,
     /// Whether the ⌘K command palette is open (view state).
@@ -240,6 +245,7 @@ impl EditorController {
             anim_selection: Mutable::new(None),
             anim_mixer: Mutable::new(MixerDoc::default()),
             anim_revision: Mutable::new(0),
+            mesh_revision: Mutable::new(0),
             anim_view: Mutable::new(AnimView::default()),
             cmdk_open: Mutable::new(false),
             settings: Settings::default(),
@@ -321,20 +327,28 @@ impl EditorController {
             let mut inverses = Vec::new();
             for c in cmds {
                 let touches_anim = c.affects_animation();
+                let touches_mesh = c.affects_mesh();
                 if let Some(inv) = Box::pin(self.apply_inner(c)).await? {
                     inverses.push(inv);
                 }
                 if touches_anim {
                     self.anim_revision.replace_with(|v| v.wrapping_add(1));
                 }
+                if touches_mesh {
+                    self.mesh_revision.replace_with(|v| v.wrapping_add(1));
+                }
             }
             inverses.reverse();
             return Ok(Some(EditorCommand::Batch(inverses)));
         }
         let touches_anim = cmd.affects_animation();
+        let touches_mesh = cmd.affects_mesh();
         let result = self.apply_inner(cmd).await;
         if touches_anim {
             self.anim_revision.replace_with(|v| v.wrapping_add(1));
+        }
+        if touches_mesh {
+            self.mesh_revision.replace_with(|v| v.wrapping_add(1));
         }
         result
     }
@@ -665,6 +679,99 @@ impl EditorController {
                 self.scene.assets.lock().unwrap().entries.insert(id, *entry);
                 self.scene.bump_revision();
                 Ok(Some(EditorCommand::DeleteAsset { id }))
+            }
+            EditorCommand::ConvertToEditableMesh { node, mesh } => {
+                use crate::engine::bridge::{mesh_cache, node_sync};
+                use awsm_scene_schema::{CapturedSource, MeshDef, MeshRef};
+                // Idempotent: don't clobber an existing asset.
+                if self
+                    .scene
+                    .assets
+                    .lock()
+                    .unwrap()
+                    .entries
+                    .contains_key(&mesh)
+                {
+                    return Ok(None);
+                }
+                let Some(n) = mutate::find_by_id(&self.scene, node) else {
+                    return Ok(None);
+                };
+                let prev = n.kind.get_cloned();
+                // Bake the current geometry + carry the material slots forward.
+                let (mesh_data, source, material, inline_material, custom_material, shadow) =
+                    match &prev {
+                        NodeKind::Primitive {
+                            shape,
+                            material,
+                            inline_material,
+                            custom_material,
+                            shadow,
+                        } => (
+                            node_sync::primitive_to_mesh(shape),
+                            CapturedSource::Primitive(shape.clone()),
+                            *material,
+                            inline_material.clone(),
+                            custom_material.clone(),
+                            *shadow,
+                        ),
+                        NodeKind::SweepAlongCurve {
+                            def,
+                            material,
+                            inline_material,
+                            custom_material,
+                            shadow,
+                        } => match crate::controller::export::sweep_mesh(&self.scene, def) {
+                            Some(m) => (
+                                m,
+                                CapturedSource::Sweep(def.clone()),
+                                *material,
+                                inline_material.clone(),
+                                custom_material.clone(),
+                                *shadow,
+                            ),
+                            None => return Ok(None),
+                        },
+                        // Only procedural kinds are bakeable; anything else is a no-op.
+                        _ => return Ok(None),
+                    };
+                // Store geometry under the caller-minted id BEFORE swapping the
+                // kind so the node resolves geometry the first time it materializes.
+                mesh_cache::store_with_id(mesh, mesh_cache::from_mesh_data(mesh_data));
+                self.scene.assets.lock().unwrap().entries.insert(
+                    mesh,
+                    AssetEntry::new(SceneAssetSource::Mesh(MeshDef {
+                        label: "Editable Mesh".to_string(),
+                        source: Some(source),
+                        editable: true,
+                    })),
+                );
+                n.kind.set(NodeKind::Mesh {
+                    mesh: MeshRef(mesh),
+                    material,
+                    inline_material,
+                    custom_material,
+                    shadow,
+                });
+                self.structure_rev
+                    .set(self.structure_rev.get().wrapping_add(1));
+                self.scene.bump_revision();
+                Ok(Some(EditorCommand::Batch(vec![
+                    EditorCommand::SetKind {
+                        id: node,
+                        kind: Box::new(prev),
+                    },
+                    EditorCommand::DeleteAsset { id: mesh },
+                ])))
+            }
+            EditorCommand::SetMeshData { mesh, data } => {
+                use crate::engine::bridge::mesh_cache;
+                let prior = mesh_cache::get_captured(mesh);
+                mesh_cache::store_with_id(mesh, data);
+                self.scene.bump_revision();
+                // Inverse restores the prior geometry; if there was none (the mesh
+                // didn't exist), the edit isn't undoable.
+                Ok(prior.map(|data| EditorCommand::SetMeshData { mesh, data }))
             }
             EditorCommand::SetAssetSelection { id } => {
                 self.asset_selection.set(id);

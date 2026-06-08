@@ -12,6 +12,7 @@ pub mod env_sync;
 pub mod gltf;
 pub mod material;
 pub mod mesh_cache;
+pub mod mesh_sync;
 pub mod node_sync;
 pub mod particles;
 pub mod skin_bridge;

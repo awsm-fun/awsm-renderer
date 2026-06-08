@@ -11,7 +11,7 @@ use awsm_renderer::transforms::TransformKey;
 use awsm_web_shared::prelude::AsyncLoader;
 
 use super::asset_template::AssetTemplate;
-use super::{animation_sync, env_sync, node_sync};
+use super::{animation_sync, env_sync, mesh_sync, node_sync};
 use crate::engine::scene::{AssetId, Node, NodeId, NodeKind};
 use std::sync::{Arc, Mutex};
 
@@ -181,4 +181,7 @@ pub fn init() {
     // Lowers authored animation clips + mixer into the renderer's clip-group
     // runtime and drives the transport clock.
     animation_sync::start();
+    // Re-materializes captured-mesh nodes when SetMeshData replaces an editable
+    // mesh's bytes (no node-kind change → the kind observer wouldn't re-fire).
+    mesh_sync::start();
 }

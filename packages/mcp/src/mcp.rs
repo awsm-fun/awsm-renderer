@@ -1138,6 +1138,19 @@ impl EditorMcp {
             .await
     }
 
+    #[tool(
+        description = "Bake a procedural node's geometry (Primitive or Sweep) into an editable captured mesh and swap the node to a Mesh. Echoes the new mesh asset id. The mesh persists to assets/<id>.mesh.bin and accepts further geometry edits (set_mesh_data / future modifiers). No-op if the node isn't a bakeable kind."
+    )]
+    async fn convert_to_editable_mesh(
+        &self,
+        Parameters(p): Parameters<ExportNodeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let node = parse_node(&p.node)?;
+        let mesh = AssetId::new();
+        self.dispatch_echo_asset(EditorCommand::ConvertToEditableMesh { node, mesh }, mesh)
+            .await
+    }
+
     #[tool(description = "Delete a custom (dynamic/built-in) material by id.")]
     async fn delete_custom_material(
         &self,

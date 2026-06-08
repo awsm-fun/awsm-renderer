@@ -12,7 +12,7 @@ use awsm_scene_schema::animation::{
     LightParamKind, SamplerKind, StoredTrack, StripDoc, TrackTarget, TrackValue,
 };
 use awsm_scene_schema::{
-    AssetEntry, AssetId, EnvironmentConfig, MaterialShading, NodeId, NodeKind, Trs,
+    AssetEntry, AssetId, CapturedMesh, EnvironmentConfig, MaterialShading, NodeId, NodeKind, Trs,
 };
 
 use crate::anim_ui::{AnimSel, AnimView, StepKind};
@@ -296,6 +296,20 @@ pub enum EditorCommand {
     /// MCP path for "paste these material settings onto that mesh". No-op when the
     /// two meshes don't share the same material. Inverse: restore `to`'s prior kind.
     CopyMaterialInstance { from: NodeId, to: NodeId },
+
+    // ─────────────────────────── Mesh editing ────────────────────────────────
+    /// Bake a procedural node's current geometry (Primitive / Sweep) into an
+    /// **editable** captured mesh and swap the node to `NodeKind::Mesh`. The
+    /// `mesh` AssetId is **caller-minted** (deterministic data; the MCP path
+    /// echoes it). The carried material (assigned / inline / custom) survives the
+    /// swap. Idempotent: a no-op if `mesh` already exists or the node isn't a
+    /// bakeable kind. Inverse: `Batch[SetKind(prior), DeleteAsset(mesh)]`.
+    ConvertToEditableMesh { node: NodeId, mesh: AssetId },
+    /// Replace an editable mesh's geometry wholesale (raw per-vertex editing / a
+    /// collapsed modifier bake). The bridge re-materializes every referencing
+    /// `NodeKind::Mesh` node via the mesh-revision observer. Inverse: restore the
+    /// prior geometry (a `SetMeshData` carrying the previous `CapturedMesh`).
+    SetMeshData { mesh: AssetId, data: CapturedMesh },
 
     // ─────────────────── Custom (dynamic-WGSL) material authoring ─────────────
     // The Studio surface that used to mutate the reactive `CustomMaterial`
@@ -650,6 +664,21 @@ impl EditorCommand {
         )
     }
 
+    /// Does applying this command change captured-mesh geometry the bridge must
+    /// re-materialize? The bridge (`mesh_sync`) observes a single revision counter
+    /// the controller bumps for exactly these commands (mirrors
+    /// [`affects_animation`](Self::affects_animation)) — `SetMeshData` replaces an
+    /// editable mesh's bytes without changing the node kind, so the per-node
+    /// `node.kind` observer wouldn't otherwise re-fire. (`ConvertToEditableMesh`
+    /// changes the node kind too, so its `SetKind` already re-materializes; it's
+    /// listed for symmetry.)
+    pub fn affects_mesh(&self) -> bool {
+        matches!(
+            self,
+            EditorCommand::SetMeshData { .. } | EditorCommand::ConvertToEditableMesh { .. }
+        )
+    }
+
     /// A short human-readable label (used in toasts / telemetry / the eventual
     /// undo-history UI).
     #[allow(dead_code)]
@@ -687,6 +716,8 @@ impl EditorCommand {
             EditorCommand::SetCustomMaterialWgsl { .. } => "Edit shader",
             EditorCommand::AssignMaterial { .. } => "Assign material",
             EditorCommand::CopyMaterialInstance { .. } => "Copy material settings",
+            EditorCommand::ConvertToEditableMesh { .. } => "Convert to editable mesh",
+            EditorCommand::SetMeshData { .. } => "Edit mesh",
             EditorCommand::SetCustomMaterialAlphaMode { .. } => "Set alpha mode",
             EditorCommand::SetCustomMaterialDoubleSided { .. } => "Set double-sided",
             EditorCommand::SetCustomMaterialDebugColor { .. } => "Set base color",

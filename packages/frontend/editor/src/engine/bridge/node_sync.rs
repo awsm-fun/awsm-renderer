@@ -1330,3 +1330,19 @@ pub(crate) fn trs_to_transform(trs: &Trs) -> Transform {
         scale: Vec3::from_array(trs.scale),
     }
 }
+
+/// Re-materialize every `NodeKind::Mesh` node — the `mesh_sync` observer's
+/// response to a `mesh_revision` bump. `SetMeshData` replaces an editable mesh's
+/// bytes in the store *without* changing the node kind, so the per-node `kind`
+/// observer wouldn't re-fire on its own; this re-runs `apply_kind` (which re-reads
+/// `mesh_cache::get_raw`) for the affected nodes.
+pub(crate) async fn rematerialize_mesh_nodes() {
+    let entries: Vec<Arc<RendererNode>> =
+        bridge().nodes.lock().unwrap().values().cloned().collect();
+    for entry in entries {
+        let kind = entry.node.kind.get_cloned();
+        if matches!(kind, NodeKind::Mesh { .. }) {
+            apply_kind(entry, kind).await;
+        }
+    }
+}
