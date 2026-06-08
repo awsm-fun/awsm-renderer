@@ -366,32 +366,27 @@ pass for transmission like PBR does), implement it as a built-in
 //              scan_freq: F32 = 80.0,
 //              scan_speed: F32 = 0.5,
 //              scan_strength: F32 = 0.3]
-//   textures: [base]
+//   textures: []
 //   buffers:  []
 //
 // alpha_mode: Opaque, double_sided: false
 
+let coords_f = vec2<f32>(f32(input.coords.x), f32(input.coords.y));
+let dims_f = vec2<f32>(f32(input.screen_dims.x), f32(input.screen_dims.y));
+let uv = coords_f / dims_f;
 let fg = frame_globals_from_raw(frame_globals_raw);
-let uv = vec2<f32>(f32(input.coords.x), f32(input.coords.y))
-       / vec2<f32>(f32(input.screen_dims.x), f32(input.screen_dims.y));
-
-// Sample the `base` texture slot. `material_sample_<name>` is the
-// renderer-generated, variant-agnostic helper for each declared texture —
-// no offset math, correct sampler + UV, unbound-safe. Do NOT hand-roll
-// `material_load_texture_info_raw(...)` or call `texture_pool_sample_no_mips`
-// / `texture_pool_sample_grad` directly (each exists in only one mipmap
-// variant; a custom fragment compiles into both).
-let base = material_sample_base(input.material, uv).rgb;
 
 // Animated horizontal scanline pattern.
-let scan = sin(uv.y * input.material.scan_freq
-             + fg.time * input.material.scan_speed);
-let overlay = mix(vec3<f32>(0.0), input.material.tint,
-                  scan * input.material.scan_strength);
+let scan = sin(uv.y * input.material.scan_freq + fg.time * input.material.scan_speed);
+let overlay = mix(vec3<f32>(0.0), input.material.tint, scan * input.material.scan_strength);
 
-let color = base + overlay;
+let color = vec3<f32>(0.5, 0.5, 0.5) + overlay;
 return OpaqueShadingOutput(color, 1.0);
 ```
+
+(For sampling a declared texture slot in your own material, use the
+generated `material_sample_<name>` helper — see
+[`shared_wgsl/textures.wgsl`](#shared_wgsltextureswgsl) above.)
 
 This is the dynamic worked example shipped at
 [`assets/test-materials/scanline/`](../../assets/test-materials/scanline)

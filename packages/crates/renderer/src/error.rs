@@ -88,6 +88,14 @@ pub enum AwsmError {
     #[error("Pipeline variant not yet compiled: {0}")]
     PipelineVariantNotCompiled(&'static str),
 
+    /// A dynamic / custom material's shader failed to compile. Carries the
+    /// real WGSL compile diagnostic (line/column + message, pulled from the
+    /// shader module's `getCompilationInfo`) when one is available, falling
+    /// back to the raw `createComputePipelineAsync` rejection text otherwise.
+    /// Surfaces to authors via [`crate::AwsmRenderer::dynamic_material_compile_status`].
+    #[error("Material shader compile failed:\n{0}")]
+    MaterialShaderCompile(String),
+
     /// A config-change API (e.g. `set_anti_aliasing`,
     /// `set_post_processing`) was called before `AwsmRendererBuilder::build`
     /// finished its eager-set compile batch. The first valid call site

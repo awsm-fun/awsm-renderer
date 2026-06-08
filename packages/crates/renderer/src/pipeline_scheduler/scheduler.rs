@@ -121,9 +121,15 @@ pub struct PipelineCompileResolution {
     /// after the slotmap installs the resolved pipeline.
     pub cache_key: crate::pipelines::compute_pipeline::ComputePipelineCacheKey,
     /// Resolved `GpuComputePipeline` from `create_compute_pipeline_async`
-    /// or the JS-side rejection value (carries the shader-compile
-    /// diagnostic when the underlying shader fails to compile).
+    /// or the JS-side rejection value.
     pub result: std::result::Result<web_sys::GpuComputePipeline, wasm_bindgen::JsValue>,
+    /// On a failed compile, the human-readable WGSL diagnostic pulled from
+    /// the shader module's `getCompilationInfo` (line/column + message),
+    /// resolved asynchronously alongside the pipeline promise. `None` when
+    /// the compile succeeded, when no shader module was captured (edge
+    /// pipelines), or when the module reported no error messages — in which
+    /// case the apply site falls back to the raw rejection value.
+    pub compile_error: Option<String>,
 }
 
 type PipelineCompileFuture = Pin<Box<dyn Future<Output = PipelineCompileResolution> + 'static>>;
