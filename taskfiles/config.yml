@@ -30,7 +30,9 @@ vars:
   URL_DEV_SITE_INDEX: "http://localhost:{{.PORT_SITE_INDEX_DEV}}"
   URL_DEV_MODEL_TESTS: "http://localhost:{{.PORT_MODEL_TESTS_DEV}}"
   URL_DEV_EDITOR: "http://localhost:{{.PORT_EDITOR_DEV}}"
-  URL_DEV_MCP: "http://localhost:{{.PORT_MCP_HTTP_DEV}}"
+  # The default MCP server origin the editor dials out to (always local; the
+  # server is a local dev tool). Baked into the editor build + the button default.
+  URL_MCP_DEFAULT: "http://127.0.0.1:{{.PORT_MCP_HTTP_DEV}}"
   URL_DEV_MEDIA_BASE_URL_GLTF_SAMPLES: "http://localhost:{{.PORT_MEDIA_LOCAL_DEV}}/glTF-Sample-Assets/Models"
   URL_DEV_MEDIA_BASE_URL_ADDITIONAL_ASSETS: "http://localhost:{{.PORT_MEDIA_ADDITIONAL_ASSETS_DEV}}"
 

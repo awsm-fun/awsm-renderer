@@ -4,9 +4,9 @@
 //!
 //! Started two ways: automatically when the page is loaded with
 //! `?mcp=<control-origin>` (e.g. `?mcp=http://127.0.0.1:9086`), or on demand via
-//! the top-bar MCP button (which connects to [`DEFAULT_ORIGIN`], or the `?mcp=`
-//! origin if one was supplied). Connect / disconnect surface as toasts and a
-//! reactive [`status`] signal the button reflects.
+//! the top-bar MCP button → connect modal (pre-filled with [`default_origin`], or
+//! the `?mcp=` origin if one was supplied, and editable there). Connect /
+//! disconnect surface as toasts and a reactive [`status`] signal the UI reflects.
 //!
 //! Flow: fetch `<control-origin>/control` → `{ quic_url, cert_hash }` → open a
 //! WebTransport session pinning that self-signed cert hash → loop accepting
@@ -29,11 +29,16 @@ use crate::controller::controller;
 /// finishing). Requests are small; 16 MiB is far outside the legitimate range.
 const MAX_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 
-/// The MCP server's control origin the button connects to when no `?mcp=` param
-/// was supplied — the dev default from the Taskfile (`PORT_MCP_HTTP_DEV`).
-pub const DEFAULT_ORIGIN: &str = "http://127.0.0.1:9086";
+/// The MCP server's control origin the connect modal pre-fills when no `?mcp=`
+/// param was supplied. Baked from `MCP_DEFAULT_ORIGIN` at build time (sourced from
+/// `taskfiles/config.yml` → `URL_MCP_DEFAULT`, derived from `PORT_MCP_HTTP_DEV`),
+/// falling back to the loopback dev default. The server is always local, so this
+/// is the same in dev and prod.
+pub fn default_origin() -> &'static str {
+    option_env!("MCP_DEFAULT_ORIGIN").unwrap_or("http://127.0.0.1:9086")
+}
 
-/// The link's connection state. The top-bar button reflects this.
+/// The link's connection state. The top-bar button + modal reflect this.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemoteStatus {
     Disconnected,
@@ -43,8 +48,8 @@ pub enum RemoteStatus {
 
 thread_local! {
     static STATUS: Mutable<RemoteStatus> = Mutable::new(RemoteStatus::Disconnected);
-    static ORIGIN: Mutable<String> = Mutable::new(DEFAULT_ORIGIN.to_string());
-    /// The live session, kept so the button can `disconnect()` it.
+    static ORIGIN: Mutable<String> = Mutable::new(default_origin().to_string());
+    /// The live session, kept so the UI can `disconnect()` it.
     static SESSION: RefCell<Option<Session>> = const { RefCell::new(None) };
 }
 
@@ -53,7 +58,7 @@ pub fn status() -> Mutable<RemoteStatus> {
     STATUS.with(|s| s.clone())
 }
 
-/// The control origin the button will connect to (defaults to [`DEFAULT_ORIGIN`];
+/// The control origin the modal pre-fills (defaults to [`default_origin`];
 /// overwritten by `?mcp=` or the last connect attempt).
 pub fn origin() -> Mutable<String> {
     ORIGIN.with(|s| s.clone())
@@ -107,15 +112,6 @@ pub fn disconnect() {
             session.close(0, "client disconnect");
         }
     });
-}
-
-/// Button action: connect when idle, disconnect when live, ignore mid-connect.
-pub fn toggle() {
-    match status().get() {
-        RemoteStatus::Disconnected => connect(origin().get_cloned()),
-        RemoteStatus::Connected => disconnect(),
-        RemoteStatus::Connecting => {}
-    }
 }
 
 async fn run(control_origin: String) -> Result<(), String> {

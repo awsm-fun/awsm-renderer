@@ -17,7 +17,7 @@ live in a shared crate the native server and the editor both depend on.
 ```
 agent (MCP client) ──HTTP /mcp──▶ awsm-mcp-server ──WebTransport (QUIC/UDP)──▶ editor (browser tab)
                                   (packages/mcp)       editor dials out         → EditorController
-                                  • rmcp tool layer    server.open_bi() per req  • src/remote/ module
+                                  • rmcp tool layer    server.open_bi() per req  • src/remote.rs
                                   • QUIC listener      editor replies on stream  • calls controller directly
                                   • holds editor link                            • returns PNG bytes
 ```
@@ -40,7 +40,7 @@ Three pieces:
 |---|---|---|
 | `awsm-editor-protocol` | [`packages/crates/editor-protocol`](../packages/crates/editor-protocol) | The serializable wire vocabulary — `EditorCommand` / `EditorQuery` / `EditorSnapshot` / `QueryResult` + the `Request` / `Response` transport envelope. Compiles for both wasm and native; re-exports the heavy payloads from `awsm-scene-schema`. |
 | `awsm-mcp-server` | [`packages/mcp`](../packages/mcp) | Native binary. rmcp tool layer over streamable-HTTP + the WebTransport listener + the single editor link. `publish = false`. |
-| editor remote module | [`packages/frontend/editor/src/remote/`](../packages/frontend/editor/src/remote) | The WebTransport client: parse `?mcp=`, fetch `/control`, connect, `accept_bi()` loop, decode `Request` → call `EditorController` → encode `Response`. |
+| editor remote module | [`packages/frontend/editor/src/remote.rs`](../packages/frontend/editor/src/remote.rs) | The WebTransport client: parse `?mcp=`, fetch `/control`, connect, `accept_bi()` loop, decode `Request` → call `EditorController` → encode `Response`. |
 
 All editor mutation flows through `EditorController` (the editor's single
 command/query authority), so an agent and a human watching the same tab stay in
@@ -261,7 +261,7 @@ curl -s -X POST http://127.0.0.1:9086/debug -H 'content-type: application/json' 
 - Server: [`packages/mcp/src`](../packages/mcp/src) — `mcp.rs` (tools), `quic.rs`
   (WebTransport listener), `link.rs` (editor link + framing), `http.rs`
   (`/control`, `/debug`, `/mcp` mount), `cert.rs`.
-- Editor remote: [`packages/frontend/editor/src/remote/mod.rs`](../packages/frontend/editor/src/remote/mod.rs);
+- Editor remote: [`packages/frontend/editor/src/remote.rs`](../packages/frontend/editor/src/remote.rs);
   `?mcp=` parsing in [`main.rs`](../packages/frontend/editor/src/main.rs).
 - Controller surface: [`controller/command.rs`](../packages/frontend/editor/src/controller/command.rs),
   [`controller/query.rs`](../packages/frontend/editor/src/controller/query.rs),

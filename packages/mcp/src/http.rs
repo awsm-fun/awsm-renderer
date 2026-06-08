@@ -47,7 +47,10 @@ pub async fn serve(
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
-        .allow_headers(Any);
+        .allow_headers(Any)
+        // Private Network Access: let a public HTTPS page (e.g. the hosted editor)
+        // reach this loopback server -- Chrome demands this opt-in on the preflight.
+        .allow_private_network(true);
 
     // The rmcp MCP endpoint: a streamable-HTTP tower service mounted at /mcp.
     // A fresh handler is built per session, sharing the (Arc-backed) editor link.
