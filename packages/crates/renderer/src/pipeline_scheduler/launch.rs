@@ -92,6 +92,14 @@ impl crate::AwsmRenderer {
             return Ok(());
         };
 
+        // Compile ONLY the variant matching the live AA config — the dispatch
+        // only ever uses `(active_msaa, active_mipmaps)`, and `set_anti_aliasing`
+        // relaunches every registered material for the new config on a toggle
+        // (already-compiled variants stay cached). Matches the cold-boot
+        // lazy-pool model; compiling all 4 (msaa × mipmap) here was redundant.
+        let active_msaa = self.anti_aliasing.msaa_sample_count;
+        let active_mipmaps = self.anti_aliasing.mipmap;
+
         // Snapshot the active dispatch_hash + bucket_entries (cached
         // refreshes via the registry's per-mutation refresh).
         let entries = self.dynamic_materials.bucket_entries_cached().to_vec();
@@ -185,8 +193,10 @@ impl crate::AwsmRenderer {
         let mut shader_jobs: Vec<crate::shaders::ShaderCacheKey> = Vec::new();
         let mut slots: Vec<LaunchSlot> = Vec::new();
 
-        // Classify variants (per MSAA × emit_edge_data toggle).
-        for msaa in [Some(4u32), None] {
+        // Classify variant for the ACTIVE MSAA only (the only one dispatched;
+        // a toggle recompiles the other via `set_anti_aliasing`).
+        {
+            let msaa = active_msaa;
             shader_jobs.push(
                 ShaderCacheKeyMaterialClassify {
                     msaa_sample_count: msaa,
@@ -207,30 +217,25 @@ impl crate::AwsmRenderer {
             .as_ref()
             .is_none_or(|r| matches!(r.alpha_mode, MaterialAlphaMode::Opaque));
         if build_opaque {
-            for &(msaa, mipmaps) in &[
-                (Some(4u32), true),
-                (Some(4u32), false),
-                (None, true),
-                (None, false),
-            ] {
-                shader_jobs.push(
-                    ShaderCacheKeyMaterialOpaque {
-                        texture_pool_arrays_len,
-                        texture_pool_samplers_len,
-                        msaa_sample_count: msaa,
-                        mipmaps,
-                        shader_id,
-                        base,
-                        owns_skybox,
-                        pbr_features,
-                        dispatch_hash,
-                        dynamic_shader: dynamic_shader.clone(),
-                        bucket_entries: entries.clone(),
-                    }
-                    .into(),
-                );
-                slots.push(LaunchSlot::Opaque { msaa, mipmaps });
-            }
+            // Active (msaa, mipmap) only — see the note at the top of this fn.
+            let (msaa, mipmaps) = (active_msaa, active_mipmaps);
+            shader_jobs.push(
+                ShaderCacheKeyMaterialOpaque {
+                    texture_pool_arrays_len,
+                    texture_pool_samplers_len,
+                    msaa_sample_count: msaa,
+                    mipmaps,
+                    shader_id,
+                    base,
+                    owns_skybox,
+                    pbr_features,
+                    dispatch_hash,
+                    dynamic_shader: dynamic_shader.clone(),
+                    bucket_entries: entries.clone(),
+                }
+                .into(),
+            );
+            slots.push(LaunchSlot::Opaque { msaa, mipmaps });
         }
         // Transparent stubs handled by the legacy prewarm path (per-mesh,
         // depends on buffer_info — not part of this launch).
@@ -457,6 +462,12 @@ impl crate::AwsmRenderer {
             return Ok(());
         };
 
+        // Active (msaa, mipmap) only — the dispatch never uses a non-active
+        // variant, and `set_anti_aliasing` relaunches this material for the new
+        // config on a toggle (old variants stay cached).
+        let active_msaa = self.anti_aliasing.msaa_sample_count;
+        let active_mipmaps = self.anti_aliasing.mipmap;
+
         // First-party materials use the stable empty-state dispatch_hash
         // at registration time. The `dispatch_hash: 0` sentinel matches
         // what `MaterialOpaquePipelines::shader_descriptors_for_config_with`
@@ -502,30 +513,25 @@ impl crate::AwsmRenderer {
         // template gates per-feature WGSL on these features (#16).
         let (base, pbr_features, owns_skybox) = opaque_variant_params(&entries, shader_id);
 
-        for &(msaa, mipmaps) in &[
-            (Some(4u32), true),
-            (Some(4u32), false),
-            (None, true),
-            (None, false),
-        ] {
-            shader_jobs.push(
-                ShaderCacheKeyMaterialOpaque {
-                    texture_pool_arrays_len,
-                    texture_pool_samplers_len,
-                    msaa_sample_count: msaa,
-                    mipmaps,
-                    shader_id,
-                    base,
-                    owns_skybox,
-                    pbr_features,
-                    dispatch_hash,
-                    dynamic_shader: None,
-                    bucket_entries: entries.clone(),
-                }
-                .into(),
-            );
-            slots.push(LaunchSlot::Opaque { msaa, mipmaps });
-        }
+        // Active (msaa, mipmap) only — a toggle recompiles via `set_anti_aliasing`.
+        let (msaa, mipmaps) = (active_msaa, active_mipmaps);
+        shader_jobs.push(
+            ShaderCacheKeyMaterialOpaque {
+                texture_pool_arrays_len,
+                texture_pool_samplers_len,
+                msaa_sample_count: msaa,
+                mipmaps,
+                shader_id,
+                base,
+                owns_skybox,
+                pbr_features,
+                dispatch_hash,
+                dynamic_shader: None,
+                bucket_entries: entries.clone(),
+            }
+            .into(),
+        );
+        slots.push(LaunchSlot::Opaque { msaa, mipmaps });
 
         let resolved_shader_keys = self
             .shaders
