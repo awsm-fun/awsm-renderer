@@ -260,6 +260,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "awsm-glb-export"
+version = "0.2.0"
+dependencies = [
+ "awsm-meshgen",
+ "glam 0.32.1",
+ "gltf",
+ "gltf-json",
+ "serde_json",
+]
+
+[[package]]
 name = "awsm-materials"
 version = "0.2.0"
 dependencies = [

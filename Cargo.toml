@@ -4,6 +4,7 @@ members = [
     "packages/crates/geometry",
     "packages/crates/materials",
     "packages/crates/meshgen",
+    "packages/crates/glb-export",
     "packages/crates/particles",
     "packages/crates/renderer",
     "packages/crates/renderer-core",
@@ -84,6 +85,7 @@ awsm-scene-schema = { path = "packages/crates/scene-schema", version = "0.2.0" }
 awsm-editor-protocol = { path = "packages/crates/editor-protocol", version = "0.2.0" }
 awsm-renderer-core = { path = "packages/crates/renderer-core", version = "0.2.0" }
 awsm-meshgen = { path = "packages/crates/meshgen", version = "0.2.0" }
+awsm-glb-export = { path = "packages/crates/glb-export", version = "0.2.0" }
 awsm-particles = { path = "packages/crates/particles", version = "0.2.0" }
 awsm-materials = { path = "packages/crates/materials", version = "0.2.0" }
 awsm-renderer = { path = "packages/crates/renderer", version = "0.2.0" }
@@ -150,6 +152,16 @@ gltf = {version = "1.4.1", features = [
     "KHR_materials_ior",
     "KHR_materials_transmission",
     "KHR_materials_volume",
+]}
+# Export writer (Phase 1 GLB export). The reader `gltf` above is import-only;
+# this is the JSON model used to *build* a glTF/GLB. Feature set mirrors what
+# the export IR can emit: named objects, custom extensions (AWSM_materials_none),
+# punctual lights, and unlit materials.
+gltf-json = { version = "1.4.1", features = [
+    "names",
+    "extensions",
+    "KHR_lights_punctual",
+    "KHR_materials_unlit",
 ]}
 exr = "1.74.0"
 binpack2d = "1.0.1"

@@ -1,0 +1,21 @@
+[package]
+name = "awsm-glb-export"
+description = "Scene-complete glTF/GLB export IR + writer for awsm-renderer (no GPU deps)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+awsm-meshgen = { workspace = true }
+gltf-json = { workspace = true }
+glam = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+# The reader half of the gltf stack — used by the round-trip tests to re-parse
+# what `write_glb` produced and assert geometry/material survive the bake.
+gltf = { workspace = true }
