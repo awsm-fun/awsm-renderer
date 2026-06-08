@@ -2635,6 +2635,59 @@ impl EditorController {
                     Err(e) => QueryResult::Error { error: e },
                 }
             }
+            EditorQuery::MeshStats { node } => {
+                use serde_json::json;
+                let mesh = mutate::find_by_id(&self.scene, node).and_then(|n| {
+                    crate::controller::export::node_mesh(&self.scene, &n.kind.get_cloned())
+                });
+                match mesh {
+                    Some(mesh) => {
+                        let s = awsm_meshgen::mesh_stats(&mesh);
+                        let mut entries = std::collections::BTreeMap::new();
+                        entries.insert("vertices".to_string(), json!(s.vertices));
+                        entries.insert("triangles".to_string(), json!(s.triangles));
+                        entries.insert("bbox_min".to_string(), json!(s.bbox_min));
+                        entries.insert("bbox_max".to_string(), json!(s.bbox_max));
+                        entries.insert("centroid".to_string(), json!(s.centroid));
+                        entries.insert("surface_area".to_string(), json!(s.surface_area));
+                        entries.insert("volume".to_string(), json!(s.volume));
+                        entries.insert("watertight".to_string(), json!(s.watertight));
+                        QueryResult::Map(query::MapResult {
+                            kind: "mesh_stats".to_string(),
+                            entries,
+                        })
+                    }
+                    None => QueryResult::Error {
+                        error: format!("node {node} has no resolvable mesh"),
+                    },
+                }
+            }
+            EditorQuery::MeshCrossSection {
+                node,
+                axis,
+                samples,
+            } => {
+                use serde_json::json;
+                let mesh = mutate::find_by_id(&self.scene, node).and_then(|n| {
+                    crate::controller::export::node_mesh(&self.scene, &n.kind.get_cloned())
+                });
+                match mesh {
+                    Some(mesh) => {
+                        let profile =
+                            awsm_meshgen::cross_section_profile(&mesh, axis as usize, samples);
+                        let mut entries = std::collections::BTreeMap::new();
+                        entries.insert("axis".to_string(), json!(axis));
+                        entries.insert("profile".to_string(), json!(profile));
+                        QueryResult::Map(query::MapResult {
+                            kind: "mesh_cross_section".to_string(),
+                            entries,
+                        })
+                    }
+                    None => QueryResult::Error {
+                        error: format!("node {node} has no resolvable mesh"),
+                    },
+                }
+            }
             EditorQuery::WaitRenderSettled { max_ms } => self.wait_render_settled(max_ms).await,
             EditorQuery::NodeTransforms { nodes } => self.node_transforms(&nodes).await,
             EditorQuery::NodeKindDetails { nodes } => {

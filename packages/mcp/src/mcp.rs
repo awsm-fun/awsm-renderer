@@ -106,6 +106,25 @@ pub struct ExportNodeParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct MeshCrossSectionParams {
+    /// UUID of the geometry node.
+    pub node: String,
+    /// Profile axis: 0=X, 1=Y, 2=Z. Defaults to Y.
+    #[serde(default = "default_axis_y")]
+    pub axis: u8,
+    /// Number of height bins. Defaults to 16.
+    #[serde(default = "default_cross_samples")]
+    pub samples: u32,
+}
+
+fn default_axis_y() -> u8 {
+    1
+}
+fn default_cross_samples() -> u32 {
+    16
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct SetMeshModifiersParams {
     /// UUID of the editable mesh asset.
     pub mesh: String,
@@ -769,6 +788,34 @@ impl EditorMcp {
     ) -> Result<CallToolResult, McpError> {
         self.query(EditorQuery::ExportGlb {
             node: Some(parse_node(&p.node)?),
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Geometry stats for a node's resolved mesh (Primitive/Mesh/Sweep): vertex+triangle counts, bbox, centroid, surface area, volume, watertight. The perceive half of a measure→adjust loop."
+    )]
+    async fn get_mesh_stats(
+        &self,
+        Parameters(p): Parameters<ExportNodeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::MeshStats {
+            node: parse_node(&p.node)?,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Silhouette radius profile of a node's mesh along an axis (0=X,1=Y,2=Z) in `samples` bins, as [[height,radius],…]. Pairs with a lathe (height,radius) profile — measure the tip radius, adjust, re-measure."
+    )]
+    async fn get_mesh_cross_section(
+        &self,
+        Parameters(p): Parameters<MeshCrossSectionParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::MeshCrossSection {
+            node: parse_node(&p.node)?,
+            axis: p.axis,
+            samples: p.samples,
         })
         .await
     }

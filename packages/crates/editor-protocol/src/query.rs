@@ -218,6 +218,21 @@ pub enum EditorQuery {
         #[serde(default)]
         node: Option<NodeId>,
     },
+    /// Geometry stats for a node's resolved mesh (Primitive / Mesh / Sweep):
+    /// vertex+triangle counts, bbox, centroid, surface area, volume, watertight.
+    /// A read — the perceive half of the agent's measure→adjust loop. MCP:
+    /// `get_mesh_stats`.
+    MeshStats { node: NodeId },
+    /// Silhouette radius profile of a node's resolved mesh along `axis`
+    /// (0=X, 1=Y, 2=Z) in `samples` bins — `[[height, radius], …]`. Pairs with a
+    /// lathe `(height, radius)` profile. MCP: `get_mesh_cross_section`.
+    MeshCrossSection {
+        node: NodeId,
+        #[serde(default = "default_axis")]
+        axis: u8,
+        #[serde(default = "default_cross_section_samples")]
+        samples: u32,
+    },
     /// Block until no material recompile is pending **and** the renderer's
     /// pipeline scheduler has drained **and** a fresh frame has presented (or
     /// `max_ms` elapses). The deterministic barrier between an edit and a
@@ -235,6 +250,14 @@ fn default_log_limit() -> u32 {
 
 fn default_settle_ms() -> u32 {
     4000
+}
+
+fn default_axis() -> u8 {
+    1 // Y
+}
+
+fn default_cross_section_samples() -> u32 {
+    16
 }
 
 /// What a [`EditorQuery::SampleClipTimeseries`] frame reads.

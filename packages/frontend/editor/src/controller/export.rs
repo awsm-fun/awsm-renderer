@@ -66,15 +66,10 @@ fn node_to_export(scene: &Scene, node: &Node) -> ExportNode {
         ..Default::default()
     };
 
-    match &node.kind.get_cloned() {
-        NodeKind::Primitive {
-            shape,
-            material,
-            inline_material,
-            custom_material,
-            ..
-        } => {
-            out.mesh = Some(node_sync::primitive_to_mesh(shape));
+    let kind = node.kind.get_cloned();
+    if let Some(mesh) = node_mesh(scene, &kind) {
+        out.mesh = Some(mesh);
+        if let Some((material, inline_material, custom_material)) = material_slots(&kind) {
             out.material = Some(map_material(
                 scene,
                 material,
@@ -82,46 +77,8 @@ fn node_to_export(scene: &Scene, node: &Node) -> ExportNode {
                 custom_material,
             ));
         }
-        NodeKind::Mesh {
-            mesh,
-            material,
-            inline_material,
-            custom_material,
-            ..
-        } => {
-            if let Some(raw) = mesh_cache::get_raw(mesh.0) {
-                out.mesh = Some(MeshData {
-                    positions: raw.positions,
-                    normals: raw.normals,
-                    uvs: raw.uvs,
-                    colors: raw.colors,
-                    indices: raw.indices,
-                });
-                out.material = Some(map_material(
-                    scene,
-                    material,
-                    inline_material,
-                    custom_material,
-                ));
-            }
-        }
-        NodeKind::SweepAlongCurve {
-            def,
-            material,
-            inline_material,
-            custom_material,
-            ..
-        } => {
-            if let Some(mesh) = sweep_mesh(scene, def) {
-                out.mesh = Some(mesh);
-                out.material = Some(map_material(
-                    scene,
-                    material,
-                    inline_material,
-                    custom_material,
-                ));
-            }
-        }
+    }
+    match &kind {
         NodeKind::Light(cfg) => out.light = Some(map_light(cfg)),
         NodeKind::Camera(cfg) => out.camera = Some(map_camera(cfg)),
         // Group + (deferred) Model + non-geometry leaves export as plain
@@ -136,6 +93,57 @@ fn node_to_export(scene: &Scene, node: &Node) -> ExportNode {
         .map(|c| node_to_export(scene, c))
         .collect();
     out
+}
+
+/// Resolve any geometry node to baked triangles: Primitive → generated, Mesh →
+/// the captured-mesh store, Sweep → the curve baked along the scene curve. `None`
+/// for non-geometry kinds (Model is deferred — needs source-blob re-read). Shared
+/// by GLB export and the `MeshStats`/`MeshCrossSection` introspection queries.
+pub(crate) fn node_mesh(scene: &Scene, kind: &NodeKind) -> Option<MeshData> {
+    match kind {
+        NodeKind::Primitive { shape, .. } => Some(node_sync::primitive_to_mesh(shape)),
+        NodeKind::Mesh { mesh, .. } => mesh_cache::get_raw(mesh.0).map(|r| MeshData {
+            positions: r.positions,
+            normals: r.normals,
+            uvs: r.uvs,
+            colors: r.colors,
+            indices: r.indices,
+        }),
+        NodeKind::SweepAlongCurve { def, .. } => sweep_mesh(scene, def),
+        _ => None,
+    }
+}
+
+/// Borrow the (assigned, inline, custom) material slots of a geometry node kind.
+#[allow(clippy::type_complexity)]
+fn material_slots(
+    kind: &NodeKind,
+) -> Option<(
+    &Option<MaterialRef>,
+    &MaterialDef,
+    &Option<CustomMaterialInstance>,
+)> {
+    match kind {
+        NodeKind::Primitive {
+            material,
+            inline_material,
+            custom_material,
+            ..
+        }
+        | NodeKind::Mesh {
+            material,
+            inline_material,
+            custom_material,
+            ..
+        }
+        | NodeKind::SweepAlongCurve {
+            material,
+            inline_material,
+            custom_material,
+            ..
+        } => Some((material, inline_material, custom_material)),
+        _ => None,
+    }
 }
 
 /// Resolve a node's effective material to the export representation.
