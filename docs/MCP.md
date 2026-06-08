@@ -99,10 +99,18 @@ sync, and undo/redo/coalescing all work as in the UI.
 
 ## Tool catalog
 
-~70 typed tools plus MCP **resources** (the docs below) and **prompts** (workflow
+~90 typed tools plus MCP **resources** (the docs below) and **prompts** (workflow
 templates). Each tool is a thin wrapper that builds an `EditorCommand` /
 `EditorQuery` from typed (schema'd) parameters and relays it to the editor. Node
 and asset references are UUID strings — get them from `get_snapshot`.
+
+> **New to driving this over MCP?** Read the [Agent Guide](AGENT_GUIDE.md)
+> (`awsm://docs/agent-guide`) first — it covers the mutate→settle→screenshot
+> loop, an end-to-end scene walkthrough, lighting, batching, and
+> troubleshooting. For custom materials see the
+> [recipes cookbook](dynamic-materials/recipes.md)
+> (`awsm://docs/material-recipes`); for animation see
+> [Animation Authoring](ANIMATION_AUTHORING.md) (`awsm://docs/animation`).
 
 **Connection / health**
 - `ping` — confirm an editor is attached (fails fast otherwise).

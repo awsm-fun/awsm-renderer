@@ -1015,6 +1015,18 @@ impl EditorMcp {
         .await
     }
 
+    #[tool(description = "Mark a node as a prefab root (or clear the flag).")]
+    async fn set_prefab(
+        &self,
+        Parameters(p): Parameters<SetBoolParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetPrefab {
+            id: parse_node(&p.node)?,
+            prefab: p.value,
+        })
+        .await
+    }
+
     #[tool(description = "Set the selection (ordered node UUIDs; last = primary).")]
     async fn set_selection(
         &self,
@@ -2028,6 +2040,21 @@ impl ServerHandler for EditorMcp {
                 "How to drive the editor over MCP (docs/MCP.md).",
             ),
             res(
+                "awsm://docs/agent-guide",
+                "Agent guide",
+                "The agent loop, end-to-end scene walkthrough, lighting, batching, troubleshooting.",
+            ),
+            res(
+                "awsm://docs/material-recipes",
+                "Material recipes",
+                "Copy-paste custom-material WGSL recipes (textured, emissive, fresnel, scrolling, glass).",
+            ),
+            res(
+                "awsm://docs/animation",
+                "Animation authoring",
+                "Clips, tracks, keyframes + worked examples (spin, pulse).",
+            ),
+            res(
                 "awsm://docs/material-contract-opaque",
                 "Opaque material contract",
                 "The WGSL ABI for opaque/mask dynamic materials.",
@@ -2047,6 +2074,9 @@ impl ServerHandler for EditorMcp {
     ) -> Result<ReadResourceResult, McpError> {
         let body = match req.uri.as_str() {
             "awsm://docs/mcp" => MCP_DOC,
+            "awsm://docs/agent-guide" => AGENT_GUIDE,
+            "awsm://docs/material-recipes" => MATERIAL_RECIPES,
+            "awsm://docs/animation" => ANIMATION_DOC,
             "awsm://docs/material-contract-opaque" => CONTRACT_OPAQUE,
             "awsm://docs/material-contract-transparent" => CONTRACT_TRANSPARENT,
             other => {
@@ -2248,6 +2278,9 @@ const CONTRACT_OPAQUE: &str = include_str!("../../../docs/dynamic-materials/cont
 const CONTRACT_TRANSPARENT: &str =
     include_str!("../../../docs/dynamic-materials/contract-transparent.md");
 const MCP_DOC: &str = include_str!("../../../docs/MCP.md");
+const AGENT_GUIDE: &str = include_str!("../../../docs/AGENT_GUIDE.md");
+const MATERIAL_RECIPES: &str = include_str!("../../../docs/dynamic-materials/recipes.md");
+const ANIMATION_DOC: &str = include_str!("../../../docs/ANIMATION_AUTHORING.md");
 
 const PROMPT_AUTHOR_MATERIAL: &str = "\
 Author a lit custom WGSL material so it renders (never a silent black mesh):

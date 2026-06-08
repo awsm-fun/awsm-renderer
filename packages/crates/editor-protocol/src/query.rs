@@ -248,7 +248,9 @@ pub enum ReadbackTarget {
     },
     /// A light parameter on a node.
     LightParam { node: NodeId, param: LightParamKind },
-    /// A camera parameter on a node (DEFERRED — resolves to null for now).
+    /// A camera parameter on a node — resolves to the live renderer camera's
+    /// value (fov_y, near, far, aperture, focus_distance). Null if the camera
+    /// slot isn't materialized yet, or fov_y on an orthographic camera.
     CameraParam {
         node: NodeId,
         param: CameraParamKind,
