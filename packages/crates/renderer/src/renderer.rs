@@ -2341,6 +2341,36 @@ impl AwsmRenderer {
         self.pipeline_scheduler.compile_progress()
     }
 
+    /// Compile status of a registered dynamic material's pipeline group, by
+    /// shader id. `None` while the compile is still pending (or the material has
+    /// no scheduler group yet); `Some(Ok(()))` once its pipelines are `Ready`;
+    /// `Some(Err(msg))` with the real WGSL/driver compile error once `Failed`.
+    ///
+    /// The launch path skips synchronous shader validation
+    /// (`ensure_keys_sync_skip_validate`); the actual compile resolves
+    /// asynchronously via `poll_pipeline_scheduler` and lands the error here. The
+    /// editor polls this after register so it can surface a true compile failure
+    /// (undefined symbol, type error, …) instead of only the trailing-`;`
+    /// heuristic.
+    pub fn dynamic_material_compile_status(
+        &self,
+        shader_id: awsm_materials::MaterialShaderId,
+    ) -> Option<std::result::Result<(), String>> {
+        let mid = self
+            .pipeline_scheduler
+            .find_material_by_shader_id(shader_id)?;
+        match self
+            .pipeline_scheduler
+            .pipeline_group_status(crate::pipeline_scheduler::PipelineGroupId::Material(mid))?
+        {
+            crate::pipeline_scheduler::PipelineGroupStatus::Pending => None,
+            crate::pipeline_scheduler::PipelineGroupStatus::Ready => Some(Ok(())),
+            crate::pipeline_scheduler::PipelineGroupStatus::Failed { error } => {
+                Some(Err(error.to_string()))
+            }
+        }
+    }
+
     /// Drop a material group. No-op if the id isn't in the scheduler.
     pub fn drop_material_group(&mut self, id: crate::pipeline_scheduler::MaterialId) {
         self.pipeline_scheduler.drop_material_group(id);

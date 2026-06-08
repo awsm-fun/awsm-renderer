@@ -3234,6 +3234,30 @@ pub(crate) fn compile_end() {
 /// Compile + register a dynamic material into a renderer bucket, then
 /// re-materialize meshes using it. Returns true on success; leaves
 /// `registered = false` on a compile error (the code pane surfaces the problems).
+/// Poll the renderer for a dynamic material's real pipeline-compile result after
+/// register: `Some(Ok)` ready, `Some(Err(msg))` failed (the browser WGSL/driver
+/// diagnostic), or `None` if it never resolved within the window (e.g. a paused
+/// RAF/compile loop on a backgrounded tab — the caller then stays optimistic).
+/// Polls on a frame cadence so `poll_pipeline_scheduler` (driven by the RAF
+/// render loop) can resolve the async compile between checks.
+async fn await_dynamic_compile(
+    shader_id: awsm_renderer::materials::MaterialShaderId,
+) -> Option<Result<(), String>> {
+    // ~2s ceiling (shader compiles are typically a handful of frames; the cap
+    // just bounds a stuck/backgrounded loop).
+    for _ in 0..120 {
+        let status = crate::engine::context::with_renderer_mut(move |r| {
+            r.dynamic_material_compile_status(shader_id)
+        })
+        .await;
+        if status.is_some() {
+            return status; // Ready (Ok) or Failed (Err) — resolved.
+        }
+        gloo_timers::future::TimeoutFuture::new(16).await;
+    }
+    None
+}
+
 async fn register_material(mat: &Arc<CM>) -> bool {
     // Lightweight, author-relative syntax pre-check — its line numbers index the
     // author's WGSL body (the GPU/naga pass can't, since it sees the assembled
@@ -3259,15 +3283,35 @@ async fn register_material(mat: &Arc<CM>) -> bool {
         mat.name.get_cloned()
     ));
     match crate::engine::bridge::dynamic::register(mat).await {
-        Ok(_) => {
-            mat.last_diagnostics.set(Vec::new());
-            mat.registered.set_neq(true);
-            crate::engine::bridge::rematerialize_for_material(mat.id);
-            true
+        Ok(shader_id) => {
+            // `register` only QUEUES an async pipeline compile (the launch path
+            // skips synchronous shader validation), so a WGSL error in the
+            // author body — undefined symbol, type mismatch, garbage — isn't
+            // known yet. Poll the scheduler for this material's real compile
+            // result and report the truth (the trailing-`;` heuristic above
+            // never catches these).
+            match await_dynamic_compile(shader_id).await {
+                Some(Err(msg)) => {
+                    Toast::error(format!("Material compile failed: {msg}"));
+                    mat.last_diagnostics.set(vec![query::CompileError {
+                        line: None,
+                        message: msg,
+                    }]);
+                    mat.registered.set_neq(false);
+                    false
+                }
+                // Ready, or undetermined (timeout — e.g. a backgrounded tab whose
+                // RAF/compile loop is paused). Optimistic: don't invent an error.
+                _ => {
+                    mat.last_diagnostics.set(Vec::new());
+                    mat.registered.set_neq(true);
+                    crate::engine::bridge::rematerialize_for_material(mat.id);
+                    true
+                }
+            }
         }
         Err(e) => {
-            // The real WebGPU/naga diagnostic — previously dropped after the
-            // toast, leaving an MCP caller staring at a black mesh + `ok`.
+            // Registration-level rejection (name collision / bucket-cap overflow).
             Toast::error(format!("Material compile failed: {e}"));
             mat.last_diagnostics.set(vec![query::CompileError {
                 line: None,
