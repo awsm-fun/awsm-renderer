@@ -221,14 +221,14 @@ pub fn editor_query_mode() -> String {
 /// if the canvas isn't ready.
 #[wasm_bindgen]
 pub fn editor_query_scene_png() -> String {
-    engine::query::scene_png().unwrap_or_default()
+    engine::query::scene_png(None, None).unwrap_or_default()
 }
 
 /// PNG data URL of the material-mode preview sphere. Empty string if the Studio
 /// isn't mounted.
 #[wasm_bindgen]
 pub fn editor_query_material_png() -> String {
-    engine::query::material_png().unwrap_or_default()
+    engine::query::material_png(None, None).unwrap_or_default()
 }
 
 /// PNG data URL of a texture asset (by UUID) — procedural textures are encoded

@@ -20,11 +20,13 @@ mod query;
 mod transport;
 
 pub use anim_ui::{AnimSel, AnimView, StepKind};
-pub use command::{CameraAxis, EditorCommand, EditorMode, ProceduralKind};
+pub use command::{
+    CameraAxis, CustomAlphaMode, EditorCommand, EditorMode, ProceduralKind, SlotSpec,
+};
 pub use node_spec::{kind_tag, InsertSpec, NodeQuery, NodeSpec};
 pub use query::{
-    AnimationSnapshot, ClipSnapshot, EditorQuery, EditorSnapshot, MaterialSnapshot, PixelsResult,
-    ProjectSnapshot, QueryResult, ReadbackTarget, StatsResult, TimeseriesFrame, TimeseriesResult,
-    TrackSnapshot,
+    AnimationSnapshot, ClipSnapshot, CompileDiagnostics, CompileError, EditorQuery, EditorSnapshot,
+    MapResult, MaterialSnapshot, PixelsResult, ProjectSnapshot, QueryResult, ReadbackTarget,
+    SettledResult, StatsResult, TextureSnapshot, TimeseriesFrame, TimeseriesResult, TrackSnapshot,
 };
-pub use transport::{Request, Response};
+pub use transport::{EditorEvent, Request, Response};

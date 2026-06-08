@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 awsm-editor-protocol = { workspace = true }
 awsm-scene-schema = { workspace = true }
+glam = { workspace = true }
 
 tokio = { workspace = true }
 anyhow = { workspace = true }

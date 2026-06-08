@@ -21,7 +21,7 @@ use serde::Deserialize;
 use wasm_bindgen_futures::spawn_local;
 use web_transport::{ClientBuilder, RecvStream, SendStream, Session};
 
-use awsm_editor_protocol::{Request, Response};
+use awsm_editor_protocol::{EditorEvent, Request, Response};
 
 use crate::controller::controller;
 
@@ -101,6 +101,38 @@ pub fn connect(control_origin: String) {
             (false, Ok(())) => {} // run() only returns Ok via the accept loop ending
         }
     });
+}
+
+/// Push an editor → agent event over the link (compile/runtime toast, selection
+/// change). No-op when no link is attached. Each event rides its own
+/// unidirectional stream (framed by stream-finish); the MCP server relays it to
+/// the agent as a logging notification. Best-effort — failures are logged, never
+/// surfaced (the editor must not block on the agent being connected).
+pub fn notify_event(event: EditorEvent) {
+    let session = SESSION.with(|s| s.borrow().clone());
+    let Some(session) = session else {
+        return;
+    };
+    spawn_local(async move {
+        if let Err(e) = send_event(session, &event).await {
+            tracing::debug!("mcp notify failed: {e}");
+        }
+    });
+}
+
+async fn send_event(session: Session, ev: &EditorEvent) -> Result<(), String> {
+    let mut send = session
+        .open_uni()
+        .await
+        .map_err(|e| format!("open_uni: {e}"))?;
+    let bytes = serde_json::to_vec(ev).map_err(|e| format!("encode event: {e}"))?;
+    let mut buf = bytes.as_slice();
+    while !buf.is_empty() {
+        let n = send.write(buf).await.map_err(|e| format!("write: {e}"))?;
+        buf = &buf[n..];
+    }
+    send.finish().map_err(|e| format!("finish: {e}"))?;
+    Ok(())
 }
 
 /// Disconnect the live link (closes the WebTransport session). No-op when not
@@ -207,6 +239,10 @@ async fn dispatch(req: Request) -> Response {
             Ok(()) => Response::Ok,
             Err(e) => Response::Err(format!("{e}")),
         },
+        Request::DispatchBatch(cmds) => match ctrl.dispatch_batch(cmds).await {
+            Ok(()) => Response::Ok,
+            Err(e) => Response::Err(format!("{e}")),
+        },
         Request::Query(q) => Response::Query(Box::new(ctrl.query(q).await)),
         Request::Undo => {
             ctrl.undo().await;
@@ -216,8 +252,12 @@ async fn dispatch(req: Request) -> Response {
             ctrl.redo().await;
             Response::Ok
         }
-        Request::ScenePng => png_response(crate::engine::query::scene_png()),
-        Request::MaterialPng => png_response(crate::engine::query::material_png()),
+        Request::ScenePng { width, height } => {
+            png_response(crate::engine::query::scene_png(width, height))
+        }
+        Request::MaterialPng { width, height } => {
+            png_response(crate::engine::query::material_png(width, height))
+        }
         Request::TexturePng(id) => match crate::engine::query::texture_png(id).await {
             Ok(data_url) => png_from_data_url(&data_url),
             Err(e) => Response::Err(e),

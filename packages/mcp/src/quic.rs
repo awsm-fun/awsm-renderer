@@ -11,7 +11,7 @@ use web_transport::quinn::quinn::{
 };
 use web_transport::Session;
 
-use awsm_editor_protocol::Request;
+use awsm_editor_protocol::{EditorEvent, Request};
 
 use crate::cert::GeneratedCert;
 use crate::link::{self, EditorLink};
@@ -49,6 +49,10 @@ pub async fn accept_loop(endpoint: Endpoint, link: EditorLink) {
                 Ok(session) => {
                     tracing::info!("editor attached");
                     link.set(Some(session.clone())).await;
+                    // Drain the editor's push channel: it opens one uni stream per
+                    // event (compile/runtime toasts, selection changes). Forward
+                    // each into the link's broadcast for the MCP forwarders.
+                    tokio::spawn(read_event_stream(session.clone(), link.clone()));
                     // Phase-2 gate: prove the round-trip by asking the editor its
                     // mode the moment it attaches.
                     match link::request(&session, &Request::Mode).await {
@@ -59,6 +63,46 @@ pub async fn accept_loop(endpoint: Endpoint, link: EditorLink) {
                 Err(e) => tracing::error!("accept failed: {e:#}"),
             }
         });
+    }
+}
+
+/// Read the editor's unidirectional push streams (one JSON [`EditorEvent`] each,
+/// framed by stream-finish) and publish them into the link's broadcast. Ends when
+/// the session closes.
+async fn read_event_stream(session: Session, link: EditorLink) {
+    loop {
+        let mut recv = match session.accept_uni().await {
+            Ok(recv) => recv,
+            Err(e) => {
+                tracing::debug!("editor push channel closed: {e}");
+                break;
+            }
+        };
+        let mut buf = Vec::new();
+        // One event per stream; cap to bound memory against a misbehaving peer.
+        let ok = loop {
+            match recv.read(64 * 1024).await {
+                Ok(Some(chunk)) => {
+                    buf.extend_from_slice(&chunk);
+                    if buf.len() > 1024 * 1024 {
+                        tracing::warn!("editor event exceeded 1 MiB; dropping");
+                        break false;
+                    }
+                }
+                Ok(None) => break true,
+                Err(e) => {
+                    tracing::debug!("editor event read error: {e}");
+                    break false;
+                }
+            }
+        };
+        if !ok {
+            continue;
+        }
+        match serde_json::from_slice::<EditorEvent>(&buf) {
+            Ok(ev) => link.publish_event(ev),
+            Err(e) => tracing::warn!("bad editor event: {e}"),
+        }
     }
 }
 

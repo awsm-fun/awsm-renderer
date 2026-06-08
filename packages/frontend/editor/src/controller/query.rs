@@ -4,7 +4,7 @@
 //! re-exports them at their established path. The `query()` *interpreter* (which
 //! reads live controller + renderer state) stays in [`super::state`].
 pub use awsm_editor_protocol::{
-    AnimationSnapshot, ClipSnapshot, EditorQuery, EditorSnapshot, MaterialSnapshot, PixelsResult,
-    ProjectSnapshot, QueryResult, ReadbackTarget, StatsResult, TimeseriesFrame, TimeseriesResult,
-    TrackSnapshot,
+    AnimationSnapshot, ClipSnapshot, CompileDiagnostics, CompileError, EditorQuery, EditorSnapshot,
+    MapResult, MaterialSnapshot, PixelsResult, ProjectSnapshot, QueryResult, ReadbackTarget,
+    SettledResult, StatsResult, TextureSnapshot, TimeseriesFrame, TimeseriesResult, TrackSnapshot,
 };

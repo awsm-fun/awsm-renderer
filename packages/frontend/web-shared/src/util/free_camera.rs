@@ -148,6 +148,35 @@ impl FreeCamera {
         self.view = CameraView::new(yaw, pitch, self.view.look_at, self.view.radius);
     }
 
+    /// Set the full orbit pose (yaw/pitch radians, look-at point, radius). The
+    /// MCP `SetCameraOrbit` entry point — lets a driver compose an arbitrary view
+    /// (3/4 front, orbit-around-subject, …). Clip planes refresh against the
+    /// current framing AABB so the new pose renders correctly next frame.
+    pub fn set_orbit(&mut self, yaw: f32, pitch: f32, radius: f32, look_at: Vec3) {
+        self.view = CameraView::new(yaw, pitch, look_at, radius);
+        self.perspective
+            .refresh_clip_planes(&self.view, &self.aabb, self.margin);
+        self.orthographic
+            .refresh_clip_planes(&self.view, &self.aabb, self.margin);
+    }
+
+    /// Set the perspective vertical field-of-view (radians).
+    pub fn set_fov_y(&mut self, fov_y: f32) {
+        self.perspective.fov_y = fov_y;
+    }
+
+    /// Re-frame the orbit around an explicit AABB with `margin` (1.0 = tight).
+    /// The MCP `FrameNode` entry point — fits a chosen subject in view.
+    pub fn frame_aabb(&mut self, aabb: Aabb, margin: f32) {
+        self.aabb = aabb;
+        self.margin = margin;
+        self.view = CameraView::new_aabb(&self.aabb, self.margin);
+        self.perspective
+            .refresh_clip_planes(&self.view, &self.aabb, self.margin);
+        self.orthographic
+            .refresh_clip_planes(&self.view, &self.aabb, self.margin);
+    }
+
     /// Reset the orbit to the default framing (the `new_default_cube` pose) —
     /// look-at back at the origin, default yaw/pitch + radius — preserving the
     /// current projection mode and aspect. Backs the "Reset View" action.

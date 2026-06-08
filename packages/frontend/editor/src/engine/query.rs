@@ -17,14 +17,45 @@ use crate::engine::scene::AssetId;
 
 /// PNG data URL of the **scene viewport** (rendered through the active camera —
 /// built-in or a scene camera). `None` if the canvas isn't mounted yet.
-pub fn scene_png() -> Option<String> {
-    crate::engine::context::with_canvas(|c| c.to_data_url_with_type("image/png").ok())
+pub fn scene_png(width: Option<u32>, height: Option<u32>) -> Option<String> {
+    crate::engine::context::with_canvas(|c| canvas_png(c, width, height))
 }
 
 /// PNG data URL of the **material-mode preview** (the example sphere). `None`
 /// when the Studio isn't mounted.
-pub fn material_png() -> Option<String> {
-    crate::engine::preview::preview_canvas().and_then(|c| c.to_data_url_with_type("image/png").ok())
+pub fn material_png(width: Option<u32>, height: Option<u32>) -> Option<String> {
+    crate::engine::preview::preview_canvas().and_then(|c| canvas_png(&c, width, height))
+}
+
+/// Encode a live canvas to a PNG data URL, optionally scaling the output to
+/// `width`/`height` (one given → preserve aspect; both → exact; neither → the
+/// canvas's own size). Scaling samples the presented frame — it normalizes the
+/// output size, it doesn't add detail beyond what the canvas rendered.
+fn canvas_png(
+    src: &web_sys::HtmlCanvasElement,
+    width: Option<u32>,
+    height: Option<u32>,
+) -> Option<String> {
+    if width.is_none() && height.is_none() {
+        return src.to_data_url_with_type("image/png").ok();
+    }
+    let (sw, sh) = (src.width().max(1), src.height().max(1));
+    let aspect = sw as f64 / sh as f64;
+    let (w, h) = match (width, height) {
+        (Some(w), Some(h)) => (w.max(1), h.max(1)),
+        (Some(w), None) => (w.max(1), ((w as f64 / aspect).round() as u32).max(1)),
+        (None, Some(h)) => (((h as f64 * aspect).round() as u32).max(1), h.max(1)),
+        (None, None) => (sw, sh),
+    };
+    let document = web_sys::window()?.document()?;
+    let off: web_sys::HtmlCanvasElement =
+        document.create_element("canvas").ok()?.dyn_into().ok()?;
+    off.set_width(w);
+    off.set_height(h);
+    let ctx: web_sys::CanvasRenderingContext2d = off.get_context("2d").ok()??.dyn_into().ok()?;
+    ctx.draw_image_with_html_canvas_element_and_dw_and_dh(src, 0.0, 0.0, w as f64, h as f64)
+        .ok()?;
+    off.to_data_url_with_type("image/png").ok()
 }
 
 /// PNG data URL of a **texture asset** by id. Procedural textures are generated

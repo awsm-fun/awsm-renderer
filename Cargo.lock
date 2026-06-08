@@ -278,6 +278,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "bytes",
+ "glam 0.32.1",
  "rcgen",
  "rmcp",
  "rustls",

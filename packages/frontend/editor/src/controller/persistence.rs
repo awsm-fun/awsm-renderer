@@ -74,8 +74,10 @@ fn material_from_stored(s: &StoredMaterial) -> Arc<CustomMaterial> {
         textures: Mutable::new(s.textures.iter().map(slot).collect()),
         buffers: Mutable::new(s.buffers.iter().map(slot).collect()),
         registered: Mutable::new(s.registered),
+        last_diagnostics: Mutable::new(Vec::new()),
         shader_includes: Mutable::new(s.shader_includes.clone()),
         fragment_inputs: Mutable::new(s.fragment_inputs.clone()),
+        recompile_rev: Mutable::new(0),
     })
 }
 

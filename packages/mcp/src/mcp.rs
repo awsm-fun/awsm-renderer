@@ -14,14 +14,30 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, Content, ServerCapabilities, ServerInfo};
-use rmcp::{schemars, tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler};
+use rmcp::model::{
+    AnnotateAble, CallToolResult, Content, GetPromptRequestParams, GetPromptResult,
+    ListPromptsResult, ListResourcesResult, LoggingLevel, LoggingMessageNotificationParam,
+    PaginatedRequestParams, Prompt, PromptMessage, PromptMessageRole, RawResource,
+    ReadResourceRequestParams, ReadResourceResult, ResourceContents, ServerCapabilities,
+    ServerInfo,
+};
+use rmcp::service::{NotificationContext, RequestContext};
+use rmcp::{
+    schemars, tool, tool_handler, tool_router, ErrorData as McpError, RoleServer, ServerHandler,
+};
 use serde_json::Value;
 
 use awsm_editor_protocol::{
-    CameraAxis, EditorCommand, EditorMode, EditorQuery, InsertSpec, QueryResult, Request, Response,
+    CameraAxis, CompileError, CustomAlphaMode, EditorCommand, EditorMode, EditorQuery, InsertSpec,
+    ProceduralKind, QueryResult, Request, Response, SlotSpec,
 };
-use awsm_scene_schema::{AssetId, LightKind, MaterialShading, NodeId, PrimitiveShape, Trs};
+use awsm_scene_schema::animation::{
+    BuiltinParamKind, ClipLoop, Interp, LightParamKind, TrackTarget, TrackValue, TransformProp,
+};
+use awsm_scene_schema::{
+    AssetId, EnvironmentConfig, IblConfig, LightKind, MaterialShading, NodeId, PrimitiveShape,
+    SkyboxConfig, Trs,
+};
 
 use crate::link::EditorLink;
 
@@ -48,12 +64,39 @@ pub struct NodeArg {
 pub struct SetTransformParams {
     /// Target node UUID.
     pub node: String,
-    /// World translation `[x, y, z]` (meters, right-handed Y-up).
+    /// Local translation `[x, y, z]` (meters, relative to the parent; the scene
+    /// is right-handed Y-up).
     pub translation: [f32; 3],
-    /// Rotation quaternion `[x, y, z, w]`.
+    /// Local rotation quaternion `[x, y, z, w]`.
     pub rotation: [f32; 4],
     /// Per-axis scale `[x, y, z]`.
     pub scale: [f32; 3],
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct Vec3Params {
+    /// Target node UUID.
+    pub node: String,
+    /// `[x, y, z]`.
+    pub value: [f32; 3],
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct EulerParams {
+    /// Target node UUID.
+    pub node: String,
+    /// Euler angles `[x, y, z]` in **radians**.
+    pub euler: [f32; 3],
+    /// Rotation order (default `xyz`): xyz | xzy | yxz | yzx | zxy | zyx.
+    #[serde(default)]
+    pub order: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct NodesParams {
+    /// Node UUIDs to read; empty/omitted = every node in the scene.
+    #[serde(default)]
+    pub nodes: Vec<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -170,6 +213,168 @@ pub struct SetWgslParams {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
+pub enum AlphaModeArg {
+    Opaque,
+    Mask,
+    Blend,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ContractParams {
+    /// Which contract: false (default) = opaque/mask, true = transparent/blend.
+    #[serde(default)]
+    pub transparent: bool,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AlphaModeParams {
+    /// Custom material asset UUID.
+    pub material: String,
+    pub mode: AlphaModeArg,
+    /// Alpha cutoff for `mask` mode (default 0.5; ignored otherwise).
+    #[serde(default)]
+    pub cutoff: Option<f64>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct MaterialBoolParams {
+    pub material: String,
+    pub value: bool,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct MaterialHexParams {
+    pub material: String,
+    /// Hex color `#rrggbb`.
+    pub hex: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SlotArg {
+    /// Slot name (the WGSL field/binding name).
+    pub name: String,
+    /// WGSL type, e.g. `"f32"`, `"vec3<f32>"`, `"texture_2d<f32>"`, `"array<vec4<f32>>"`.
+    pub ty: String,
+    /// Default value for uniforms (comma-separated for vectors, e.g. `"0.6, 0.7, 1.0"`).
+    #[serde(default)]
+    pub val: String,
+    /// Debug-preview source for textures/buffers (optional).
+    #[serde(default)]
+    pub debug: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct MaterialLayoutParams {
+    pub material: String,
+    #[serde(default)]
+    pub uniforms: Vec<SlotArg>,
+    #[serde(default)]
+    pub textures: Vec<SlotArg>,
+    #[serde(default)]
+    pub buffers: Vec<SlotArg>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct MaterialKeysParams {
+    pub material: String,
+    /// The declared keys (validated against the legal set; unknowns dropped).
+    pub keys: Vec<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct MaterialUniformParams {
+    pub material: String,
+    /// Declared uniform slot name.
+    pub name: String,
+    /// Value as the comma-separated form the layout uses (e.g. `"0.6, 0.7, 1.0"`).
+    pub value: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BuiltinParamArg {
+    BaseColor,
+    Metallic,
+    Roughness,
+    Emissive,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct BuiltinParamParams {
+    /// Mesh node UUID.
+    pub node: String,
+    pub param: BuiltinParamArg,
+    /// 1 element for metallic/roughness, 3 for base_color/emissive.
+    pub value: Vec<f32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProceduralArg {
+    Checker,
+    Gradient,
+    Noise,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AddTextureParams {
+    /// Procedural generator: checker | gradient | noise.
+    pub proc: ProceduralArg,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct MaterialTextureParams {
+    /// Mesh node UUID (must already have a custom material assigned).
+    pub node: String,
+    /// Declared texture slot name on the material.
+    pub slot: String,
+    /// Texture asset UUID to bind, or omit/null to clear the slot.
+    #[serde(default)]
+    pub texture: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct LightColorParams {
+    /// Light node UUID.
+    pub node: String,
+    /// Linear RGB `[r, g, b]`.
+    pub color: [f32; 3],
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct LightScalarParams {
+    /// Light node UUID.
+    pub node: String,
+    pub value: f32,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct LightAnglesParams {
+    /// Spot light node UUID.
+    pub node: String,
+    /// Inner cone angle (radians).
+    pub inner: f32,
+    /// Outer cone angle (radians).
+    pub outer: f32,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct EnvironmentParams {
+    /// Skybox: omit/"builtin" for the built-in default, or a KTX texture asset
+    /// UUID for a custom cubemap.
+    #[serde(default)]
+    pub skybox: Option<String>,
+    /// IBL prefiltered specular: omit/"builtin" for the built-in default, or a
+    /// KTX asset UUID (then `ibl_irradiance` is required too).
+    #[serde(default)]
+    pub ibl_prefiltered: Option<String>,
+    /// IBL irradiance KTX asset UUID (required when `ibl_prefiltered` is a UUID).
+    #[serde(default)]
+    pub ibl_irradiance: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum ModeArg {
     Scene,
     Material,
@@ -198,10 +403,143 @@ pub struct AxisParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CameraOrbitParams {
+    /// Yaw (radians): 0 looks down -Z, π/2 down -X.
+    pub yaw: f32,
+    /// Pitch (radians): > 0 raises the camera (looks down).
+    pub pitch: f32,
+    /// Distance from the look-at point.
+    pub radius: f32,
+    /// Orbit center `[x, y, z]`.
+    pub look_at: [f32; 3],
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CameraProjectionParams {
+    /// true = perspective, false = orthographic.
+    pub perspective: bool,
+    /// Optional perspective vertical FOV (radians).
+    #[serde(default)]
+    pub fov_y: Option<f32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct FrameNodeParams {
+    /// Node UUID to frame.
+    pub node: String,
+    /// Margin around the node (0 = tight, 0.2 = 20% padding). Default 0.1.
+    #[serde(default)]
+    pub padding: Option<f32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ClipOptParams {
     /// Clip asset UUID, or omit/null to clear.
     #[serde(default)]
     pub clip: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct TrackTargetArg {
+    /// Target kind: transform | morph | uniform | builtin_param | light | camera.
+    pub kind: String,
+    /// Node UUID (transform / morph / builtin_param / light / camera).
+    #[serde(default)]
+    pub node: Option<String>,
+    /// Transform property: translation | rotation | scale.
+    #[serde(default)]
+    pub prop: Option<String>,
+    /// Morph target index.
+    #[serde(default)]
+    pub index: Option<u32>,
+    /// Custom material UUID (uniform target).
+    #[serde(default)]
+    pub material: Option<String>,
+    /// Uniform slot name (uniform target).
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Param name for builtin_param/light/camera (snake_case, e.g. base_color,
+    /// intensity, color, range, inner_angle, outer_angle, fov_y).
+    #[serde(default)]
+    pub param: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct TrackValueArg {
+    /// Value kind: vec3 (3 floats) | quat (4, xyzw) | scalar (1 float).
+    pub kind: String,
+    pub value: Vec<f32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AddTrackParams {
+    pub clip: String,
+    pub target: TrackTargetArg,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AddKeyframeParams {
+    pub clip: String,
+    pub track: u32,
+    /// Time in seconds.
+    pub t: f64,
+    pub value: TrackValueArg,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SetKeyframeParams {
+    pub clip: String,
+    pub track: u32,
+    pub index: u32,
+    /// New time (seconds), optional.
+    #[serde(default)]
+    pub t: Option<f64>,
+    /// New value, optional.
+    #[serde(default)]
+    pub value: Option<TrackValueArg>,
+    /// New interpolation: step | linear | cubic, optional.
+    #[serde(default)]
+    pub interp: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct DeleteKeyframeParams {
+    pub clip: String,
+    pub track: u32,
+    pub index: u32,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct TrackDataParams {
+    pub clip: String,
+    pub track: u32,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ClipNameParams {
+    pub clip: String,
+    pub name: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ClipScalarParams {
+    pub clip: String,
+    pub value: f64,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ClipLoopParams {
+    pub clip: String,
+    /// once | loop | ping_pong.
+    pub loop_style: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CopyInstanceParams {
+    /// Source mesh node UUID.
+    pub from: String,
+    /// Destination mesh node UUID (must reference the same material).
+    pub to: String,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -223,11 +561,43 @@ pub struct RegionParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct LogLimitParams {
+    /// Max entries to return (default 50).
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ScreenshotParams {
+    /// Output width in px (optional; alone, preserves aspect).
+    #[serde(default)]
+    pub width: Option<u32>,
+    /// Output height in px (optional; alone, preserves aspect).
+    #[serde(default)]
+    pub height: Option<u32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct WaitSettledParams {
+    /// Max time to wait, in milliseconds (default 4000).
+    #[serde(default)]
+    pub max_ms: Option<u32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct CommandJsonParams {
     /// A raw `EditorCommand` as JSON, internally tagged by `"cmd"`. Example:
     /// `{"cmd":"set_keyframe","clip":"<uuid>","track":0,"index":0,"value":{"vec3":[0,1,0]}}`.
     /// Discover variants from docs/MCP.md or the editor command enum.
     pub command: Value,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct BatchJsonParams {
+    /// An ordered list of raw `EditorCommand`s (each internally tagged by
+    /// `"cmd"`), applied atomically as one undo step. Example:
+    /// `[{"cmd":"set_visible","id":"<uuid>","visible":false}, ...]`.
+    pub commands: Vec<Value>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -257,6 +627,29 @@ impl EditorMcp {
         self.query(EditorQuery::Snapshot).await
     }
 
+    #[tool(
+        description = "Health check: confirms an editor is attached (fails fast with 'no editor attached' if not). Returns the current mode."
+    )]
+    async fn ping(&self) -> Result<CallToolResult, McpError> {
+        match self.req(Request::Mode).await? {
+            Response::Mode(m) => Ok(text(format!("pong — editor attached (mode={m:?})"))),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    #[tool(
+        description = "The last `limit` editor notices (toasts: info/warning/error) — surfaces runtime errors otherwise invisible over MCP. For material compile errors prefer get_material_diagnostics."
+    )]
+    async fn get_console_logs(
+        &self,
+        Parameters(p): Parameters<LogLimitParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::ConsoleLogs {
+            limit: p.limit.unwrap_or(50),
+        })
+        .await
+    }
+
     #[tool(description = "The current workspace mode (scene | material | animation).")]
     async fn get_mode(&self) -> Result<CallToolResult, McpError> {
         match self.req(Request::Mode).await? {
@@ -272,6 +665,73 @@ impl EditorMcp {
     ) -> Result<CallToolResult, McpError> {
         self.query(EditorQuery::CustomMaterialWgsl {
             material: parse_asset(&p.asset)?,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "The dynamic-material WGSL authoring contract (the shader ABI): input.* fields, return type, time/camera access, legal shader_include + fragment_input keys. Pass transparent:true for the blend contract. Read this before authoring a custom material."
+    )]
+    async fn get_material_contract(
+        &self,
+        Parameters(p): Parameters<ContractParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let body = if p.transparent {
+            CONTRACT_TRANSPARENT
+        } else {
+            CONTRACT_OPAQUE
+        };
+        Ok(text(format!("{body}\n\n{MATERIAL_KEYS_DOC}")))
+    }
+
+    #[tool(
+        description = "Compile diagnostics for a custom (dynamic-WGSL) material: { registered, ok, errors:[{line?,message}] }. A black mesh + ok:false means the WGSL failed to compile (the error is in `errors`); ok:true + black means a successful-but-dark shader (check lighting/inputs)."
+    )]
+    async fn get_material_diagnostics(
+        &self,
+        Parameters(p): Parameters<AssetArg>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::MaterialDiagnostics {
+            material: parse_asset(&p.asset)?,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Local TRS + world matrix for each node (pass node UUIDs, or empty for all nodes). Reads the live scene — no animation-clip hack."
+    )]
+    async fn get_node_transforms(
+        &self,
+        Parameters(p): Parameters<NodesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::NodeTransforms {
+            nodes: parse_nodes(&p.nodes)?,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Full per-kind config (primitive shape, light/camera config, assigned + inline material) for each node, as serialized NodeKind. Pass node UUIDs, or empty for all."
+    )]
+    async fn get_node_details(
+        &self,
+        Parameters(p): Parameters<NodesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::NodeKindDetails {
+            nodes: parse_nodes(&p.nodes)?,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "World-space AABB { min, max } for each node (CPU-estimated; pass node UUIDs, or empty for all). Use to frame the camera or size objects."
+    )]
+    async fn get_node_bounds(
+        &self,
+        Parameters(p): Parameters<NodesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::NodeBounds {
+            nodes: parse_nodes(&p.nodes)?,
         })
         .await
     }
@@ -299,14 +759,45 @@ impl EditorMcp {
 
     // ── screenshots ─────────────────────────────────────────────────────────
 
-    #[tool(description = "PNG screenshot of the scene viewport (through the active camera).")]
-    async fn screenshot_scene(&self) -> Result<CallToolResult, McpError> {
-        self.png(Request::ScenePng).await
+    #[tool(
+        description = "Block until the scene has settled — no material recompile pending, the renderer's pipeline scheduler drained, and a fresh frame presented — or max_ms elapses. Call between an edit and screenshot_scene so the image reflects the edit, not a mid-recompile frame. Returns { settled, waited_ms }."
+    )]
+    async fn wait_render_settled(
+        &self,
+        Parameters(p): Parameters<WaitSettledParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::WaitRenderSettled {
+            max_ms: p.max_ms.unwrap_or(4000),
+        })
+        .await
     }
 
-    #[tool(description = "PNG of the material-mode preview sphere.")]
-    async fn screenshot_material(&self) -> Result<CallToolResult, McpError> {
-        self.png(Request::MaterialPng).await
+    #[tool(
+        description = "PNG screenshot of the scene viewport (through the active camera). Optional width/height scale the output (one given preserves aspect). Frame a subject first with frame_node / set_camera_orbit."
+    )]
+    async fn screenshot_scene(
+        &self,
+        Parameters(p): Parameters<ScreenshotParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.png(Request::ScenePng {
+            width: p.width,
+            height: p.height,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "PNG of the material-mode preview sphere. Optional width/height scale the output (e.g. 512 for a readable preview)."
+    )]
+    async fn screenshot_material(
+        &self,
+        Parameters(p): Parameters<ScreenshotParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.png(Request::MaterialPng {
+            width: p.width,
+            height: p.height,
+        })
+        .await
     }
 
     #[tool(description = "PNG thumbnail of a texture asset (by UUID).")]
@@ -414,6 +905,80 @@ impl EditorMcp {
         .await
     }
 
+    #[tool(
+        description = "Set a node's local translation [x,y,z], keeping its current rotation + scale."
+    )]
+    async fn set_translation(
+        &self,
+        Parameters(p): Parameters<Vec3Params>,
+    ) -> Result<CallToolResult, McpError> {
+        let node = parse_node(&p.node)?;
+        let mut trs = self.current_trs(node).await?;
+        trs.translation = p.value;
+        self.dispatch(EditorCommand::SetTransform {
+            id: node,
+            transform: trs,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Translate a node by a local delta [dx,dy,dz] (added to its current translation)."
+    )]
+    async fn translate_by(
+        &self,
+        Parameters(p): Parameters<Vec3Params>,
+    ) -> Result<CallToolResult, McpError> {
+        let node = parse_node(&p.node)?;
+        let mut trs = self.current_trs(node).await?;
+        trs.translation = [
+            trs.translation[0] + p.value[0],
+            trs.translation[1] + p.value[1],
+            trs.translation[2] + p.value[2],
+        ];
+        self.dispatch(EditorCommand::SetTransform {
+            id: node,
+            transform: trs,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Set a node's per-axis scale [x,y,z], keeping its translation + rotation."
+    )]
+    async fn set_scale(
+        &self,
+        Parameters(p): Parameters<Vec3Params>,
+    ) -> Result<CallToolResult, McpError> {
+        let node = parse_node(&p.node)?;
+        let mut trs = self.current_trs(node).await?;
+        trs.scale = p.value;
+        self.dispatch(EditorCommand::SetTransform {
+            id: node,
+            transform: trs,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Set a node's local rotation from Euler angles (radians) + order (default xyz), keeping translation + scale. Avoids hand-computing quaternions."
+    )]
+    async fn set_rotation_euler(
+        &self,
+        Parameters(p): Parameters<EulerParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let node = parse_node(&p.node)?;
+        let order = euler_order(p.order.as_deref())?;
+        let q = glam::Quat::from_euler(order, p.euler[0], p.euler[1], p.euler[2]);
+        let mut trs = self.current_trs(node).await?;
+        trs.rotation = [q.x, q.y, q.z, q.w];
+        self.dispatch(EditorCommand::SetTransform {
+            id: node,
+            transform: trs,
+        })
+        .await
+    }
+
     #[tool(description = "Rename a node.")]
     async fn rename_node(
         &self,
@@ -510,12 +1075,18 @@ impl EditorMcp {
 
     // ── materials ───────────────────────────────────────────────────────────
 
-    #[tool(description = "Create a fresh custom WGSL (dynamic) material and make it current.")]
+    #[tool(
+        description = "Create a fresh custom WGSL (dynamic) material and make it current. Returns the new material id."
+    )]
     async fn add_custom_material(&self) -> Result<CallToolResult, McpError> {
-        self.dispatch(EditorCommand::AddCustomMaterial).await
+        let id = AssetId::new();
+        self.dispatch_echo_asset(EditorCommand::AddCustomMaterial { id }, id)
+            .await
     }
 
-    #[tool(description = "Create a fresh built-in material (pbr | unlit).")]
+    #[tool(
+        description = "Create a fresh built-in material (pbr | unlit). Returns the new material id."
+    )]
     async fn add_builtin_material(
         &self,
         Parameters(p): Parameters<ShadingParams>,
@@ -524,8 +1095,45 @@ impl EditorMcp {
             ShadingArg::Pbr => MaterialShading::Pbr,
             ShadingArg::Unlit => MaterialShading::Unlit,
         };
-        self.dispatch(EditorCommand::AddBuiltinMaterial { shading })
+        let id = AssetId::new();
+        self.dispatch_echo_asset(EditorCommand::AddBuiltinMaterial { id, shading }, id)
             .await
+    }
+
+    #[tool(description = "Delete a custom (dynamic/built-in) material by id.")]
+    async fn delete_custom_material(
+        &self,
+        Parameters(p): Parameters<AssetArg>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::DeleteCustomMaterial {
+            id: parse_asset(&p.asset)?,
+        })
+        .await
+    }
+
+    #[tool(description = "Delete a project asset (material / texture) from the asset table by id.")]
+    async fn delete_asset(
+        &self,
+        Parameters(p): Parameters<AssetArg>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::DeleteAsset {
+            id: parse_asset(&p.asset)?,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Copy a mesh's per-mesh material instance (its inline uniform values) onto another mesh that references the same assigned material."
+    )]
+    async fn copy_material_instance(
+        &self,
+        Parameters(p): Parameters<CopyInstanceParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::CopyMaterialInstance {
+            from: parse_node(&p.from)?,
+            to: parse_node(&p.to)?,
+        })
+        .await
     }
 
     #[tool(description = "Register (compile to a renderer bucket) a custom material by id.")]
@@ -551,14 +1159,319 @@ impl EditorMcp {
         .await
     }
 
-    #[tool(description = "Replace a custom material's WGSL source (auto-recompiles).")]
+    #[tool(
+        description = "Replace a custom material's WGSL source and synchronously recompile. Answers truthfully: returns ok only if the shader compiled, else an error carrying the compiler diagnostics (no more silent `ok` on a black mesh). Inspect later with get_material_diagnostics."
+    )]
     async fn set_material_wgsl(
         &self,
         Parameters(p): Parameters<SetWgslParams>,
     ) -> Result<CallToolResult, McpError> {
-        self.dispatch(EditorCommand::SetCustomMaterialWgsl {
+        let id = parse_asset(&p.material)?;
+        // 1. Set the source (the debounced auto-register also fires, but we don't
+        //    wait on it — step 2 forces a deterministic compile of THIS edit).
+        if let Response::Err(e) = self
+            .req(Request::Dispatch(EditorCommand::SetCustomMaterialWgsl {
+                id,
+                wgsl: p.wgsl,
+            }))
+            .await?
+        {
+            return Err(McpError::internal_error(e, None));
+        }
+        // 2. Synchronous compile/register — records diagnostics on the material.
+        if let Response::Err(e) = self
+            .req(Request::Dispatch(EditorCommand::RegisterMaterial { id }))
+            .await?
+        {
+            return Err(McpError::internal_error(e, None));
+        }
+        // 3. Report the compile outcome truthfully.
+        match self
+            .req(Request::Query(EditorQuery::MaterialDiagnostics {
+                material: id,
+            }))
+            .await?
+        {
+            Response::Query(qr) => match *qr {
+                QueryResult::Diagnostics(d) if d.ok => Ok(text("ok")),
+                QueryResult::Diagnostics(d) => Err(McpError::internal_error(
+                    format!("WGSL compile failed:\n{}", fmt_diag_errors(&d.errors)),
+                    None,
+                )),
+                QueryResult::Error { error } => Err(McpError::internal_error(error, None)),
+                other => Ok(text(
+                    serde_json::to_string_pretty(&other).unwrap_or_default(),
+                )),
+            },
+            Response::Err(e) => Err(McpError::internal_error(e, None)),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    #[tool(
+        description = "Set a custom material's alpha mode: opaque | mask (with `cutoff`) | blend."
+    )]
+    async fn set_material_alpha_mode(
+        &self,
+        Parameters(p): Parameters<AlphaModeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let mode = match p.mode {
+            AlphaModeArg::Opaque => CustomAlphaMode::Opaque,
+            AlphaModeArg::Mask => CustomAlphaMode::Mask {
+                cutoff: p.cutoff.unwrap_or(0.5),
+            },
+            AlphaModeArg::Blend => CustomAlphaMode::Blend,
+        };
+        self.dispatch(EditorCommand::SetCustomMaterialAlphaMode {
             id: parse_asset(&p.material)?,
-            wgsl: p.wgsl,
+            mode,
+        })
+        .await
+    }
+
+    #[tool(description = "Set a custom material's double-sided flag.")]
+    async fn set_material_double_sided(
+        &self,
+        Parameters(p): Parameters<MaterialBoolParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetCustomMaterialDoubleSided {
+            id: parse_asset(&p.material)?,
+            double_sided: p.value,
+        })
+        .await
+    }
+
+    #[tool(description = "Set a custom material's debug base color (#rrggbb, preview-only).")]
+    async fn set_material_debug_color(
+        &self,
+        Parameters(p): Parameters<MaterialHexParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetCustomMaterialDebugColor {
+            id: parse_asset(&p.material)?,
+            hex: p.hex,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Replace a custom material's declared slot layout (uniforms / textures / buffers). Send the FULL lists. Each slot is { name, ty, val?, debug? }. Re-registers the material."
+    )]
+    async fn set_material_layout(
+        &self,
+        Parameters(p): Parameters<MaterialLayoutParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetCustomMaterialLayout {
+            id: parse_asset(&p.material)?,
+            uniforms: p.uniforms.into_iter().map(slot_arg).collect(),
+            textures: p.textures.into_iter().map(slot_arg).collect(),
+            buffers: p.buffers.into_iter().map(slot_arg).collect(),
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Set the ShaderIncludes a custom material's WGSL needs (`keys`). Legal: math, camera, color_space, textures, vertex_color, light_access, apply_lighting, brdf, material_color_calc, shadows, skybox, extras. Unknown keys are dropped."
+    )]
+    async fn set_material_includes(
+        &self,
+        Parameters(p): Parameters<MaterialKeysParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetCustomMaterialShaderIncludes {
+            id: parse_asset(&p.material)?,
+            includes: p.keys,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Set the FragmentInputs (interpolants) a custom material's WGSL reads (`keys`). Legal: normals, tangents, uv, lights, view_dir, vertex_color. Unknown keys are dropped."
+    )]
+    async fn set_material_fragment_inputs(
+        &self,
+        Parameters(p): Parameters<MaterialKeysParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetCustomMaterialFragmentInputs {
+            id: parse_asset(&p.material)?,
+            inputs: p.keys,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Set the default value of a custom material's declared uniform slot (by name). `value` is comma-separated (e.g. \"0.6, 0.7, 1.0\"). The writable counterpart of reading a uniform back."
+    )]
+    async fn set_material_uniform(
+        &self,
+        Parameters(p): Parameters<MaterialUniformParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetMaterialUniform {
+            material: parse_asset(&p.material)?,
+            name: p.name,
+            value: p.value,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Bind a texture asset into a mesh node's custom-material texture slot (by slot name), or clear it (omit `texture`). The node needs a custom material assigned with a matching declared texture slot."
+    )]
+    async fn set_material_texture(
+        &self,
+        Parameters(p): Parameters<MaterialTextureParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetMaterialTexture {
+            node: parse_node(&p.node)?,
+            slot: p.slot,
+            texture: parse_asset_opt(&p.texture)?,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Import a raster texture (PNG/JPEG/WebP) from a URL: fetch + decode + upload to the GPU + add the asset. Returns the new texture id. Cross-origin URLs need CORS headers. Bind with set_material_texture."
+    )]
+    async fn import_texture_from_url(
+        &self,
+        Parameters(p): Parameters<UrlParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let id = AssetId::new();
+        self.dispatch_echo_asset(EditorCommand::ImportTextureFromUrl { id, url: p.url }, id)
+            .await
+    }
+
+    #[tool(
+        description = "Create a procedural texture asset (checker | gradient | noise). Returns the new texture id. Discover textures via get_snapshot's `textures`; bind with set_material_texture."
+    )]
+    async fn add_texture_asset(
+        &self,
+        Parameters(p): Parameters<AddTextureParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let proc = match p.proc {
+            ProceduralArg::Checker => ProceduralKind::Checker,
+            ProceduralArg::Gradient => ProceduralKind::Gradient,
+            ProceduralArg::Noise => ProceduralKind::Noise,
+        };
+        let id = AssetId::new();
+        self.dispatch_echo_asset(EditorCommand::AddTextureAsset { id, proc }, id)
+            .await
+    }
+
+    #[tool(
+        description = "Set a built-in material factor on a mesh node's inline material. param: base_color | emissive (value = 3 floats) | metallic | roughness (value = 1 float)."
+    )]
+    async fn set_builtin_param(
+        &self,
+        Parameters(p): Parameters<BuiltinParamParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let param = match p.param {
+            BuiltinParamArg::BaseColor => BuiltinParamKind::BaseColor,
+            BuiltinParamArg::Metallic => BuiltinParamKind::Metallic,
+            BuiltinParamArg::Roughness => BuiltinParamKind::Roughness,
+            BuiltinParamArg::Emissive => BuiltinParamKind::Emissive,
+        };
+        self.dispatch(EditorCommand::SetBuiltinParam {
+            node: parse_node(&p.node)?,
+            param,
+            value: p.value,
+        })
+        .await
+    }
+
+    // ── lighting / environment ───────────────────────────────────────────────
+
+    #[tool(description = "Set a light node's color (linear RGB).")]
+    async fn set_light_color(
+        &self,
+        Parameters(p): Parameters<LightColorParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetLightParam {
+            node: parse_node(&p.node)?,
+            param: LightParamKind::Color,
+            value: p.color.to_vec(),
+        })
+        .await
+    }
+
+    #[tool(description = "Set a light node's intensity.")]
+    async fn set_light_intensity(
+        &self,
+        Parameters(p): Parameters<LightScalarParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetLightParam {
+            node: parse_node(&p.node)?,
+            param: LightParamKind::Intensity,
+            value: vec![p.value],
+        })
+        .await
+    }
+
+    #[tool(description = "Set a point/spot light node's range.")]
+    async fn set_light_range(
+        &self,
+        Parameters(p): Parameters<LightScalarParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetLightParam {
+            node: parse_node(&p.node)?,
+            param: LightParamKind::Range,
+            value: vec![p.value],
+        })
+        .await
+    }
+
+    #[tool(description = "Set a spot light node's inner + outer cone angles (radians).")]
+    async fn set_light_angles(
+        &self,
+        Parameters(p): Parameters<LightAnglesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let node = parse_node(&p.node)?;
+        if let Response::Err(e) = self
+            .req(Request::Dispatch(EditorCommand::SetLightParam {
+                node,
+                param: LightParamKind::InnerAngle,
+                value: vec![p.inner],
+            }))
+            .await?
+        {
+            return Err(McpError::internal_error(e, None));
+        }
+        self.dispatch(EditorCommand::SetLightParam {
+            node,
+            param: LightParamKind::OuterAngle,
+            value: vec![p.outer],
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Set the scene environment (skybox + IBL). Use 'builtin' (or omit) for the built-in default cubemap/lighting, or pass KTX texture asset UUIDs. A fresh scene already seeds the built-in environment; use this to switch to custom KTX."
+    )]
+    async fn set_environment(
+        &self,
+        Parameters(p): Parameters<EnvironmentParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let skybox = match p.skybox.as_deref() {
+            None | Some("builtin") | Some("builtin_default") => SkyboxConfig::BuiltInDefault,
+            Some(uuid) => SkyboxConfig::Ktx {
+                asset_id: parse_asset(uuid)?,
+            },
+        };
+        let ibl = match p.ibl_prefiltered.as_deref() {
+            None | Some("builtin") | Some("builtin_default") => IblConfig::BuiltInDefault,
+            Some(prefiltered) => {
+                let irradiance = p.ibl_irradiance.as_deref().ok_or_else(|| {
+                    McpError::invalid_params(
+                        "ibl_irradiance is required when ibl_prefiltered is a KTX asset UUID",
+                        None,
+                    )
+                })?;
+                IblConfig::Ktx {
+                    prefiltered_asset_id: parse_asset(prefiltered)?,
+                    irradiance_asset_id: parse_asset(irradiance)?,
+                }
+            }
+        };
+        self.dispatch(EditorCommand::SetEnvironment {
+            env: EnvironmentConfig { skybox, ibl },
         })
         .await
     }
@@ -600,6 +1513,50 @@ impl EditorMcp {
         self.dispatch(EditorCommand::ResetCamera).await
     }
 
+    #[tool(
+        description = "Set the orbit camera's full pose: yaw/pitch (radians), radius (distance), look_at [x,y,z]. Compose any view (e.g. 3/4 front)."
+    )]
+    async fn set_camera_orbit(
+        &self,
+        Parameters(p): Parameters<CameraOrbitParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetCameraOrbit {
+            yaw: p.yaw,
+            pitch: p.pitch,
+            radius: p.radius,
+            look_at: p.look_at,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Switch the viewport projection (perspective vs orthographic), with optional perspective FOV (radians)."
+    )]
+    async fn set_camera_projection(
+        &self,
+        Parameters(p): Parameters<CameraProjectionParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetCameraProjection {
+            perspective: p.perspective,
+            fov_y: p.fov_y,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Frame a node in the viewport — fit its world bounds with `padding` (0 = tight, default 0.1). Then screenshot_scene to capture the framed subject."
+    )]
+    async fn frame_node(
+        &self,
+        Parameters(p): Parameters<FrameNodeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::FrameNode {
+            node: parse_node(&p.node)?,
+            padding: p.padding.unwrap_or(0.1),
+        })
+        .await
+    }
+
     // ── animation (lifecycle + transport) ───────────────────────────────────
 
     #[tool(
@@ -628,6 +1585,66 @@ impl EditorMcp {
         .await
     }
 
+    #[tool(description = "Duplicate an animation clip (deep copy, fresh id) and select it.")]
+    async fn duplicate_clip(
+        &self,
+        Parameters(p): Parameters<AssetArg>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::DuplicateClip {
+            id: parse_asset(&p.asset)?,
+        })
+        .await
+    }
+
+    #[tool(description = "Rename an animation clip.")]
+    async fn rename_clip(
+        &self,
+        Parameters(p): Parameters<ClipNameParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::RenameClip {
+            id: parse_asset(&p.clip)?,
+            name: p.name,
+        })
+        .await
+    }
+
+    #[tool(description = "Set an animation clip's duration (seconds).")]
+    async fn set_clip_duration(
+        &self,
+        Parameters(p): Parameters<ClipScalarParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetClipDuration {
+            id: parse_asset(&p.clip)?,
+            duration: p.value,
+        })
+        .await
+    }
+
+    #[tool(description = "Set an animation clip's speed multiplier.")]
+    async fn set_clip_speed(
+        &self,
+        Parameters(p): Parameters<ClipScalarParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetClipSpeed {
+            id: parse_asset(&p.clip)?,
+            speed: p.value,
+        })
+        .await
+    }
+
+    #[tool(description = "Set an animation clip's loop style: once | loop | ping_pong.")]
+    async fn set_clip_loop(
+        &self,
+        Parameters(p): Parameters<ClipLoopParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let loop_style: ClipLoop = parse_enum(&p.loop_style, "loop style")?;
+        self.dispatch(EditorCommand::SetClipLoop {
+            id: parse_asset(&p.clip)?,
+            loop_style,
+        })
+        .await
+    }
+
     #[tool(description = "Set the clip Animation mode is editing (or clear).")]
     async fn set_current_clip(
         &self,
@@ -637,6 +1654,31 @@ impl EditorMcp {
             id: parse_asset_opt(&p.clip)?,
         })
         .await
+    }
+
+    #[tool(
+        description = "Pin the renderer's frame_globals.time to `seconds` so a temporal material (sin(time*f)) screenshots the same phase every call. Separate from the animation playhead. Clear with clear_frame_time."
+    )]
+    async fn set_frame_time(
+        &self,
+        Parameters(p): Parameters<PlayheadParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetFrameTime {
+            seconds: p.t as f32,
+        })
+        .await
+    }
+
+    #[tool(description = "Clear the pinned frame time — back to the wall-clock source.")]
+    async fn clear_frame_time(&self) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::ClearFrameTime).await
+    }
+
+    #[tool(
+        description = "Read the renderer's current frame globals: time, delta_time, frame_count, resolution. Reflects a set_frame_time pin."
+    )]
+    async fn get_frame_globals(&self) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::FrameGlobals).await
     }
 
     #[tool(description = "Set the animation playhead (seconds).")]
@@ -655,6 +1697,91 @@ impl EditorMcp {
         self.dispatch(EditorCommand::SetPlaying { on: p.on }).await
     }
 
+    #[tool(
+        description = "Add an animation track to a clip, bound to a target. target.kind = transform (node+prop) | morph (node+index) | uniform (material+name) | builtin_param/light/camera (node+param). Tracks append; the new index is the prior track count."
+    )]
+    async fn add_track(
+        &self,
+        Parameters(p): Parameters<AddTrackParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::AddTrack {
+            clip: parse_asset(&p.clip)?,
+            target: build_track_target(&p.target)?,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Insert a keyframe at time `t` (seconds) with `value` on a track. value.kind = vec3 | quat (xyzw) | scalar. Replaces any existing key at `t`."
+    )]
+    async fn add_keyframe(
+        &self,
+        Parameters(p): Parameters<AddKeyframeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::AddKeyframe {
+            clip: parse_asset(&p.clip)?,
+            track: p.track as usize,
+            t: p.t,
+            value: build_track_value(&p.value)?,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Patch a keyframe by index (any subset of t / value / interp). interp = step | linear | cubic."
+    )]
+    async fn set_keyframe(
+        &self,
+        Parameters(p): Parameters<SetKeyframeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let value = match &p.value {
+            Some(v) => Some(build_track_value(v)?),
+            None => None,
+        };
+        let interp = match p.interp.as_deref() {
+            None => None,
+            Some(s) => Some(parse_interp(s)?),
+        };
+        self.dispatch(EditorCommand::SetKeyframe {
+            clip: parse_asset(&p.clip)?,
+            track: p.track as usize,
+            index: p.index as usize,
+            t: p.t,
+            value,
+            interp,
+            in_tangent: None,
+            out_tangent: None,
+        })
+        .await
+    }
+
+    #[tool(description = "Delete a keyframe by index from a track.")]
+    async fn delete_keyframe(
+        &self,
+        Parameters(p): Parameters<DeleteKeyframeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::DeleteKeyframe {
+            clip: parse_asset(&p.clip)?,
+            track: p.track as usize,
+            index: p.index as usize,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Read a track's full stored data (target, sampler, mute/solo, times, keyframes incl. interp/tangents) — to verify what you authored."
+    )]
+    async fn get_track_data(
+        &self,
+        Parameters(p): Parameters<TrackDataParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::GetTrackData {
+            clip: parse_asset(&p.clip)?,
+            track: p.track as usize,
+        })
+        .await
+    }
+
     // ── generic escape hatch ────────────────────────────────────────────────
 
     #[tool(
@@ -667,6 +1794,26 @@ impl EditorMcp {
         let cmd: EditorCommand = serde_json::from_value(p.command)
             .map_err(|e| McpError::invalid_params(format!("bad command: {e}"), None))?;
         self.dispatch(cmd).await
+    }
+
+    #[tool(
+        description = "Dispatch a list of raw EditorCommands as ONE atomic step (applied in order, collapsed into a single undo entry, one round-trip). Cuts latency for multi-step edits (e.g. building a rig). Each command is internally tagged by \"cmd\"."
+    )]
+    async fn dispatch_batch(
+        &self,
+        Parameters(p): Parameters<BatchJsonParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let cmds: Vec<EditorCommand> = p
+            .commands
+            .into_iter()
+            .map(serde_json::from_value)
+            .collect::<Result<_, _>>()
+            .map_err(|e| McpError::invalid_params(format!("bad command in batch: {e}"), None))?;
+        match self.req(Request::DispatchBatch(cmds)).await? {
+            Response::Ok => Ok(text("ok")),
+            Response::Err(e) => Err(McpError::internal_error(e, None)),
+            other => Err(unexpected(other)),
+        }
     }
 }
 
@@ -688,16 +1835,97 @@ impl EditorMcp {
         }
     }
 
+    /// Dispatch a creation command that carries a caller-minted `AssetId` and, on
+    /// success, echo the id back as the tool result (the `add_clip` pattern — no
+    /// snapshot round-trip needed to discover what was just made).
+    async fn dispatch_echo_asset(
+        &self,
+        cmd: EditorCommand,
+        id: AssetId,
+    ) -> Result<CallToolResult, McpError> {
+        match self.req(Request::Dispatch(cmd)).await? {
+            Response::Ok => Ok(text(id.to_string())),
+            Response::Err(e) => Err(McpError::internal_error(e, None)),
+            other => Err(unexpected(other)),
+        }
+    }
+
     async fn insert(
         &self,
         spec: InsertSpec,
         parent: Option<String>,
     ) -> Result<CallToolResult, McpError> {
-        self.dispatch(EditorCommand::Insert {
-            spec,
-            parent: parse_node_opt(&parent)?,
+        let id = NodeId::new();
+        match self
+            .req(Request::Dispatch(EditorCommand::Insert {
+                id,
+                spec,
+                parent: parse_node_opt(&parent)?,
+            }))
+            .await?
+        {
+            Response::Ok => Ok(text(id.to_string())),
+            Response::Err(e) => Err(McpError::internal_error(e, None)),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Read a node's current local TRS (for the partial-transform convenience
+    /// tools) via the `NodeTransforms` query.
+    async fn current_trs(&self, node: NodeId) -> Result<Trs, McpError> {
+        let resp = self
+            .req(Request::Query(EditorQuery::NodeTransforms {
+                nodes: vec![node],
+            }))
+            .await?;
+        let Response::Query(qr) = resp else {
+            return Err(unexpected(resp));
+        };
+        let QueryResult::Map(m) = *qr else {
+            return Err(McpError::internal_error(
+                "unexpected transforms result",
+                None,
+            ));
+        };
+        let v = m
+            .entries
+            .get(&node.to_string())
+            .ok_or_else(|| McpError::invalid_params(format!("no such node {node}"), None))?;
+        let arr3 = |key: &str, fallback: [f32; 3]| -> [f32; 3] {
+            v.get(key)
+                .and_then(|a| a.as_array())
+                .map(|a| {
+                    [
+                        a.first()
+                            .and_then(|x| x.as_f64())
+                            .unwrap_or(fallback[0] as f64) as f32,
+                        a.get(1)
+                            .and_then(|x| x.as_f64())
+                            .unwrap_or(fallback[1] as f64) as f32,
+                        a.get(2)
+                            .and_then(|x| x.as_f64())
+                            .unwrap_or(fallback[2] as f64) as f32,
+                    ]
+                })
+                .unwrap_or(fallback)
+        };
+        let rotation = v
+            .get("rotation")
+            .and_then(|a| a.as_array())
+            .map(|a| {
+                [
+                    a.first().and_then(|x| x.as_f64()).unwrap_or(0.0) as f32,
+                    a.get(1).and_then(|x| x.as_f64()).unwrap_or(0.0) as f32,
+                    a.get(2).and_then(|x| x.as_f64()).unwrap_or(0.0) as f32,
+                    a.get(3).and_then(|x| x.as_f64()).unwrap_or(1.0) as f32,
+                ]
+            })
+            .unwrap_or([0.0, 0.0, 0.0, 1.0]);
+        Ok(Trs {
+            translation: arr3("translation", [0.0; 3]),
+            rotation,
+            scale: arr3("scale", [1.0; 3]),
         })
-        .await
     }
 
     async fn query(&self, q: EditorQuery) -> Result<CallToolResult, McpError> {
@@ -733,14 +1961,157 @@ impl ServerHandler for EditorMcp {
         // `ServerInfo` is `#[non_exhaustive]` in rmcp 1.x — build from Default and
         // set the public fields rather than a struct literal.
         let mut info = ServerInfo::default();
-        info.capabilities = ServerCapabilities::builder().enable_tools().build();
+        info.capabilities = ServerCapabilities::builder()
+            .enable_tools()
+            .enable_resources()
+            .enable_prompts()
+            .build();
         info.instructions = Some(
             "Drive the awsm-renderer editor. Call get_snapshot to discover node/asset ids, \
-             mutate with the scene/material/animation tools (or dispatch_command for anything \
-             without a dedicated tool), and screenshot_scene to see the result."
+             mutate with the scene/material/animation tools (or dispatch_command/dispatch_batch \
+             for anything without a dedicated tool), then wait_render_settled + screenshot_scene \
+             to see the result. For custom WGSL materials read get_material_contract first and \
+             check get_material_diagnostics after editing. Docs + workflow templates are exposed \
+             as MCP resources + prompts."
                 .to_string(),
         );
         info
+    }
+
+    // ── push channel: forward editor events as MCP logging notifications ─────
+    async fn on_initialized(&self, context: NotificationContext<RoleServer>) {
+        let mut rx = self.link.subscribe_events();
+        let peer = context.peer;
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(ev) => {
+                        let level = match ev.level.as_deref() {
+                            Some("error") => LoggingLevel::Error,
+                            Some("warning") => LoggingLevel::Warning,
+                            _ => LoggingLevel::Info,
+                        };
+                        let param = LoggingMessageNotificationParam {
+                            level,
+                            logger: Some("awsm-editor".to_string()),
+                            data: serde_json::to_value(&ev).unwrap_or(Value::Null),
+                        };
+                        // Stops the forwarder once this MCP session drops.
+                        if peer.notify_logging_message(param).await.is_err() {
+                            break;
+                        }
+                    }
+                    // Slow consumer dropped some events — keep going.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+    }
+
+    // ── resources: the published docs (read-only) ───────────────────────────
+    async fn list_resources(
+        &self,
+        _req: Option<PaginatedRequestParams>,
+        _ctx: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, McpError> {
+        let res = |uri: &str, name: &str, desc: &str| {
+            let mut r = RawResource::new(uri, name);
+            r.description = Some(desc.to_string());
+            r.mime_type = Some("text/markdown".to_string());
+            r.no_annotation()
+        };
+        Ok(ListResourcesResult::with_all_items(vec![
+            res(
+                "awsm://docs/mcp",
+                "MCP guide",
+                "How to drive the editor over MCP (docs/MCP.md).",
+            ),
+            res(
+                "awsm://docs/material-contract-opaque",
+                "Opaque material contract",
+                "The WGSL ABI for opaque/mask dynamic materials.",
+            ),
+            res(
+                "awsm://docs/material-contract-transparent",
+                "Transparent material contract",
+                "The WGSL ABI for blend (transparent) dynamic materials.",
+            ),
+        ]))
+    }
+
+    async fn read_resource(
+        &self,
+        req: ReadResourceRequestParams,
+        _ctx: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResult, McpError> {
+        let body = match req.uri.as_str() {
+            "awsm://docs/mcp" => MCP_DOC,
+            "awsm://docs/material-contract-opaque" => CONTRACT_OPAQUE,
+            "awsm://docs/material-contract-transparent" => CONTRACT_TRANSPARENT,
+            other => {
+                return Err(McpError::resource_not_found(
+                    format!("unknown resource {other}"),
+                    None,
+                ))
+            }
+        };
+        Ok(ReadResourceResult::new(vec![ResourceContents::text(
+            body, req.uri,
+        )]))
+    }
+
+    // ── prompts: workflow templates (the correct create→diagnose→settle loop) ─
+    async fn list_prompts(
+        &self,
+        _req: Option<PaginatedRequestParams>,
+        _ctx: RequestContext<RoleServer>,
+    ) -> Result<ListPromptsResult, McpError> {
+        Ok(ListPromptsResult::with_all_items(vec![
+            Prompt::new(
+                "author_lit_material",
+                Some("Author a lit custom WGSL material end-to-end (the no-black-screen loop)."),
+                None,
+            ),
+            Prompt::new(
+                "setup_rotation_clip",
+                Some("Create an animation clip with a rotation track + keyframes and play it."),
+                None,
+            ),
+            Prompt::new(
+                "import_and_frame_model",
+                Some("Import a glTF model from a URL and frame it for a screenshot."),
+                None,
+            ),
+        ]))
+    }
+
+    async fn get_prompt(
+        &self,
+        req: GetPromptRequestParams,
+        _ctx: RequestContext<RoleServer>,
+    ) -> Result<GetPromptResult, McpError> {
+        let (description, body) = match req.name.as_str() {
+            "author_lit_material" => (
+                "Author a lit custom WGSL material end-to-end.",
+                PROMPT_AUTHOR_MATERIAL,
+            ),
+            "setup_rotation_clip" => (
+                "Create + play a rotation animation clip.",
+                PROMPT_ROTATION_CLIP,
+            ),
+            "import_and_frame_model" => ("Import a glTF model and frame it.", PROMPT_IMPORT_FRAME),
+            other => {
+                return Err(McpError::invalid_params(
+                    format!("unknown prompt {other}"),
+                    None,
+                ))
+            }
+        };
+        Ok(
+            GetPromptResult::new(vec![PromptMessage::new_text(PromptMessageRole::User, body)])
+                .with_description(description),
+        )
     }
 }
 
@@ -758,6 +2129,10 @@ fn parse_node_opt(s: &Option<String>) -> Result<Option<NodeId>, McpError> {
     s.as_deref().map(parse_node).transpose()
 }
 
+fn parse_nodes(ids: &[String]) -> Result<Vec<NodeId>, McpError> {
+    ids.iter().map(|s| parse_node(s)).collect()
+}
+
 fn parse_asset(s: &str) -> Result<AssetId, McpError> {
     uuid::Uuid::parse_str(s)
         .map(AssetId)
@@ -766,6 +2141,186 @@ fn parse_asset(s: &str) -> Result<AssetId, McpError> {
 
 fn parse_asset_opt(s: &Option<String>) -> Result<Option<AssetId>, McpError> {
     s.as_deref().map(parse_asset).transpose()
+}
+
+/// Parse a snake_case string into a scene-schema enum via serde (e.g. param /
+/// interp names). Keeps the MCP layer from re-enumerating every variant.
+fn parse_enum<T: serde::de::DeserializeOwned>(s: &str, what: &str) -> Result<T, McpError> {
+    serde_json::from_value(Value::String(s.to_string()))
+        .map_err(|_| McpError::invalid_params(format!("unknown {what}: {s:?}"), None))
+}
+
+fn build_track_target(a: &TrackTargetArg) -> Result<TrackTarget, McpError> {
+    let need_node = || -> Result<NodeId, McpError> {
+        a.node
+            .as_deref()
+            .ok_or_else(|| McpError::invalid_params("target requires `node`", None))
+            .and_then(parse_node)
+    };
+    Ok(match a.kind.as_str() {
+        "transform" => {
+            let prop_s = a.prop.as_deref().ok_or_else(|| {
+                McpError::invalid_params("transform target requires `prop`", None)
+            })?;
+            TrackTarget::Transform {
+                node: need_node()?,
+                prop: parse_enum::<TransformProp>(prop_s, "transform prop")?,
+            }
+        }
+        "morph" => TrackTarget::Morph {
+            node: need_node()?,
+            index: a.index.unwrap_or(0) as usize,
+        },
+        "uniform" => TrackTarget::Uniform {
+            material: parse_asset(a.material.as_deref().ok_or_else(|| {
+                McpError::invalid_params("uniform target requires `material`", None)
+            })?)?,
+            name: a
+                .name
+                .clone()
+                .ok_or_else(|| McpError::invalid_params("uniform target requires `name`", None))?,
+        },
+        "builtin_param" => TrackTarget::BuiltinParam {
+            node: need_node()?,
+            param: parse_enum(param_str(a)?, "builtin param")?,
+        },
+        "light" => TrackTarget::Light {
+            node: need_node()?,
+            param: parse_enum(param_str(a)?, "light param")?,
+        },
+        "camera" => TrackTarget::Camera {
+            node: need_node()?,
+            param: parse_enum(param_str(a)?, "camera param")?,
+        },
+        other => {
+            return Err(McpError::invalid_params(
+                format!("unknown target kind {other:?}"),
+                None,
+            ))
+        }
+    })
+}
+
+fn param_str(a: &TrackTargetArg) -> Result<&str, McpError> {
+    a.param
+        .as_deref()
+        .ok_or_else(|| McpError::invalid_params("target requires `param`", None))
+}
+
+fn build_track_value(a: &TrackValueArg) -> Result<TrackValue, McpError> {
+    let bad =
+        |n: usize| McpError::invalid_params(format!("{} value needs {n} number(s)", a.kind), None);
+    Ok(match a.kind.as_str() {
+        "vec3" => {
+            if a.value.len() < 3 {
+                return Err(bad(3));
+            }
+            TrackValue::Vec3([a.value[0], a.value[1], a.value[2]])
+        }
+        "quat" => {
+            if a.value.len() < 4 {
+                return Err(bad(4));
+            }
+            TrackValue::Quat([a.value[0], a.value[1], a.value[2], a.value[3]])
+        }
+        "scalar" => {
+            if a.value.is_empty() {
+                return Err(bad(1));
+            }
+            TrackValue::Scalar(a.value[0])
+        }
+        other => {
+            return Err(McpError::invalid_params(
+                format!("unknown value kind {other:?} (use vec3|quat|scalar)"),
+                None,
+            ))
+        }
+    })
+}
+
+fn parse_interp(s: &str) -> Result<Interp, McpError> {
+    parse_enum(s, "interp")
+}
+
+/// The published dynamic-material contracts, embedded at build time (served
+/// verbatim by `get_material_contract` + the `awsm://docs/...` MCP resources).
+const CONTRACT_OPAQUE: &str = include_str!("../../../docs/dynamic-materials/contract-opaque.md");
+const CONTRACT_TRANSPARENT: &str =
+    include_str!("../../../docs/dynamic-materials/contract-transparent.md");
+const MCP_DOC: &str = include_str!("../../../docs/MCP.md");
+
+const PROMPT_AUTHOR_MATERIAL: &str = "\
+Author a lit custom WGSL material so it renders (never a silent black mesh):
+1. get_material_contract — read the input ABI + legal include/input keys.
+2. add_custom_material — returns the new material id.
+3. set_material_fragment_inputs { keys: [\"normals\",\"view_dir\"] } and, if you \
+   call apply_lighting/brdf, set_material_includes the matching keys.
+4. set_material_layout — declare any uniforms (e.g. a Color3 tint), if needed.
+5. set_material_wgsl — write the body using input.world_normal / \
+   input.surface_to_camera etc. This recompiles synchronously and FAILS LOUDLY \
+   with the compiler error if the WGSL is invalid (no silent ok).
+6. If it errored, get_material_diagnostics for details; fix and retry.
+7. assign_material to a mesh node, wait_render_settled, then screenshot_scene.
+8. A fresh scene already has a key light + IBL; if the mesh is still dark, check \
+   set_light_intensity or set_environment.";
+
+const PROMPT_ROTATION_CLIP: &str = "\
+Create and play a rotation animation clip:
+1. add_clip — returns the clip id.
+2. add_track { clip, target: { kind: \"transform\", node: \"<id>\", prop: \"rotation\" } }.
+   Tracks append; the new index is the prior track count (read get_snapshot).
+3. add_keyframe { clip, track, t: 0.0, value: { kind: \"quat\", value: [0,0,0,1] } }.
+4. add_keyframe { clip, track, t: 1.0, value: { kind: \"quat\", value: [0,0,0.707,0.707] } }.
+5. get_track_data to verify the keyframes you authored.
+6. set_current_clip { clip }, set_playing { on: true } (or set_playhead to scrub).";
+
+const PROMPT_IMPORT_FRAME: &str = "\
+Import a glTF/glb model and frame it:
+1. import_model_from_url { url }.
+2. wait_render_settled (the import compiles pipelines).
+3. get_snapshot to find the imported node id.
+4. frame_node { node } (optionally set_camera_orbit for a 3/4 view).
+5. wait_render_settled, then screenshot_scene.";
+
+/// The legal Pass-Dependency keys, appended to the contract output.
+const MATERIAL_KEYS_DOC: &str = "\
+## Legal Pass-Dependency keys
+
+shader_includes (set_material_includes): math, camera, color_space, textures, \
+vertex_color, light_access, apply_lighting, brdf, material_color_calc, shadows, \
+skybox, extras.
+
+fragment_inputs (set_material_fragment_inputs): normals, tangents, uv, lights, \
+view_dir, vertex_color.
+
+Declare exactly the inputs/includes your WGSL references — an under-declaration \
+fails to resolve a referenced symbol (→ compile error / black), an \
+over-declaration just compiles a heavier bucket.";
+
+fn euler_order(order: Option<&str>) -> Result<glam::EulerRot, McpError> {
+    Ok(match order.unwrap_or("xyz").to_ascii_lowercase().as_str() {
+        "xyz" => glam::EulerRot::XYZ,
+        "xzy" => glam::EulerRot::XZY,
+        "yxz" => glam::EulerRot::YXZ,
+        "yzx" => glam::EulerRot::YZX,
+        "zxy" => glam::EulerRot::ZXY,
+        "zyx" => glam::EulerRot::ZYX,
+        other => {
+            return Err(McpError::invalid_params(
+                format!("unknown euler order {other:?} (use xyz|xzy|yxz|yzx|zxy|zyx)"),
+                None,
+            ))
+        }
+    })
+}
+
+fn slot_arg(s: SlotArg) -> SlotSpec {
+    SlotSpec {
+        name: s.name,
+        ty: s.ty,
+        val: s.val,
+        debug: s.debug,
+    }
 }
 
 fn default_shape(shape: ShapeArg) -> PrimitiveShape {
@@ -805,4 +2360,17 @@ fn default_shape(shape: ShapeArg) -> PrimitiveShape {
 
 fn unexpected(resp: Response) -> McpError {
     McpError::internal_error(format!("unexpected editor response: {resp:?}"), None)
+}
+
+/// Render compile diagnostics as a human-readable multi-line string (line-tagged
+/// when the line is known).
+fn fmt_diag_errors(errors: &[CompileError]) -> String {
+    errors
+        .iter()
+        .map(|e| match e.line {
+            Some(l) => format!("  line {l}: {}", e.message),
+            None => format!("  {}", e.message),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }

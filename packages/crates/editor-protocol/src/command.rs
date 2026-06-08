@@ -8,8 +8,8 @@
 use serde::{Deserialize, Serialize};
 
 use awsm_scene_schema::animation::{
-    ClipDirection, ClipLoop, Interp, Keyframe, LayerDoc, LayerModeDoc, SamplerKind, StoredTrack,
-    StripDoc, TrackTarget, TrackValue,
+    BuiltinParamKind, ClipDirection, ClipLoop, Interp, Keyframe, LayerDoc, LayerModeDoc,
+    LightParamKind, SamplerKind, StoredTrack, StripDoc, TrackTarget, TrackValue,
 };
 use awsm_scene_schema::{
     AssetEntry, AssetId, EnvironmentConfig, MaterialShading, NodeId, NodeKind, Trs,
@@ -26,6 +26,32 @@ pub enum ProceduralKind {
     Checker,
     Gradient,
     Noise,
+}
+
+/// Alpha/surface mode a custom (dynamic-WGSL) material compiles for. `Mask`
+/// carries its alpha cutoff. Mirrors the editor's `AlphaMode` + cutoff pair.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CustomAlphaMode {
+    Opaque,
+    Mask { cutoff: f64 },
+    Blend,
+}
+
+/// One declared slot in a custom material's layout (uniform / texture / buffer).
+/// A string-typed mirror of the editor's live `Slot` — `val` is the uniform's
+/// default (comma-separated for vectors, e.g. `"0.6, 0.7, 1.0"`); `debug` is the
+/// texture/buffer debug-preview source. Used by `SetCustomMaterialLayout`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SlotSpec {
+    pub name: String,
+    /// WGSL type, e.g. `"f32"`, `"vec3<f32>"`, `"texture_2d<f32>"`,
+    /// `"array<vec4<f32>>"`.
+    pub ty: String,
+    #[serde(default)]
+    pub val: String,
+    #[serde(default)]
+    pub debug: String,
 }
 
 /// A world axis to snap the viewport camera to (the nav-cube directions). The
@@ -63,6 +89,12 @@ pub enum EditorCommand {
     /// — the UI computes single/ctrl-toggle/shift-range and dispatches the
     /// resulting set.
     SetSelection { ids: Vec<NodeId> },
+
+    /// Apply a list of commands as one atomic step: they run in order and
+    /// collapse into a **single undo entry** (so undo reverses the whole batch).
+    /// The MCP `dispatch_batch` round-trips here. Inverse: a `Batch` of the
+    /// sub-inverses, reversed.
+    Batch(Vec<EditorCommand>),
 
     /// Replace a node's kind config (per-kind property edits — light color/
     /// intensity, geometry params, camera fov, …). The bridge re-materializes on
@@ -103,8 +135,13 @@ pub enum EditorCommand {
     NewProject,
 
     /// Insert a fresh node (from a ribbon Insert action) under `parent` (root
-    /// when `None`). Inverse: `Delete` of the new node.
+    /// when `None`). **Carries its `id`** (minted by the dispatcher, not in
+    /// `apply`) so the command is deterministic data — the MCP path can echo the
+    /// new id without a snapshot round-trip, and a cross-tab replay produces the
+    /// *same* id in every tab. Idempotent: applying it when the id already exists
+    /// is a no-op. Inverse: `Delete` of the new node.
     Insert {
+        id: NodeId,
         spec: InsertSpec,
         parent: Option<NodeId>,
     },
@@ -138,17 +175,25 @@ pub enum EditorCommand {
     /// session-local); treated as transient for undo.
     ImportModelFromFile { name: String, url: String },
 
-    /// Import a texture from a URL (gesture-free).
-    ImportTextureFromUrl { url: String },
+    /// Import a raster texture from a URL (gesture-free): fetch + decode + upload
+    /// to the GPU, then add a `TextureDef::Raster` asset. **Carries its `id`**
+    /// (caller-minted, idempotent) so the MCP path can echo it. Inverse:
+    /// `DeleteAsset` of the new id.
+    ImportTextureFromUrl { id: AssetId, url: String },
 
     /// Create a fresh custom material asset (Content Browser "+ Material") of the
     /// given shading family. Inserts a `MaterialDef` into the project asset table
-    /// and selects it. Inverse: `DeleteAsset` of the new id.
-    AddMaterialAsset { shading: MaterialShading },
+    /// and selects it. **Carries its `id`** (caller-minted, idempotent) so the
+    /// MCP path can echo it. Inverse: `DeleteAsset` of the new id.
+    AddMaterialAsset {
+        id: AssetId,
+        shading: MaterialShading,
+    },
 
     /// Create a fresh procedural texture asset (Content Browser "+ Texture").
-    /// Inverse: `DeleteAsset` of the new id.
-    AddTextureAsset { proc: ProceduralKind },
+    /// **Carries its `id`** (caller-minted, idempotent). Inverse: `DeleteAsset`
+    /// of the new id.
+    AddTextureAsset { id: AssetId, proc: ProceduralKind },
 
     /// Remove an asset from the project asset table. Inverse: `RestoreAsset` with
     /// the captured entry (so undo round-trips the exact asset + id).
@@ -164,12 +209,18 @@ pub enum EditorCommand {
 
     /// Create a fresh custom WGSL (dynamic) material and make it the current
     /// Studio material. Auto-registers on create + on edit (no manual Register).
-    AddCustomMaterial,
+    /// **Carries its `id`** (caller-minted, idempotent) so the MCP path can echo
+    /// it without a snapshot round-trip.
+    AddCustomMaterial { id: AssetId },
 
     /// Create a fresh **built-in** library material (PBR / Unlit / Toon) and make
     /// it current. Carries shared variant settings; per-mesh uniform values are
-    /// set on each assigned mesh. Needs no compile.
-    AddBuiltinMaterial { shading: MaterialShading },
+    /// set on each assigned mesh. Needs no compile. **Carries its `id`**
+    /// (caller-minted, idempotent).
+    AddBuiltinMaterial {
+        id: AssetId,
+        shading: MaterialShading,
+    },
 
     /// Delete a custom WGSL material.
     DeleteCustomMaterial { id: AssetId },
@@ -202,6 +253,34 @@ pub enum EditorCommand {
     /// **Transient** — camera/view state, not recorded in the undo log.
     ResetCamera,
 
+    /// Set the orbit camera's full pose: `yaw`/`pitch` (radians), `radius`
+    /// (distance from look-at), and the `look_at` point. **Transient** (view
+    /// state). Convention: yaw 0 looks down -Z, π/2 down -X; pitch > 0 raises
+    /// the camera (looks down).
+    SetCameraOrbit {
+        yaw: f32,
+        pitch: f32,
+        radius: f32,
+        look_at: [f32; 3],
+    },
+    /// Switch the viewport projection (perspective vs orthographic), with an
+    /// optional perspective vertical FOV (radians). **Transient** (view state).
+    SetCameraProjection {
+        perspective: bool,
+        #[serde(default)]
+        fov_y: Option<f32>,
+    },
+    /// Frame a node in the viewport — fit its world-space bounds with `padding`
+    /// (0 = tight, 0.2 = 20% margin). **Transient** (view state).
+    FrameNode { node: NodeId, padding: f32 },
+
+    /// Pin the renderer's `frame_globals.time` to `seconds` (overrides the
+    /// wall-clock). A temporal material (`sin(time*f)`) then screenshots the same
+    /// phase every call. Separate from the animation playhead. **Transient**.
+    SetFrameTime { seconds: f32 },
+    /// Clear the pinned frame time — back to the wall-clock source. **Transient**.
+    ClearFrameTime,
+
     /// Assign a custom WGSL material (by id) to a scene node's mesh, or clear it
     /// (`material: None`). Sets the node's `custom_material` reference. Inverse:
     /// restore the node's prior kind (a `SetKind`). The bridge renders the
@@ -217,6 +296,70 @@ pub enum EditorCommand {
     /// MCP path for "paste these material settings onto that mesh". No-op when the
     /// two meshes don't share the same material. Inverse: restore `to`'s prior kind.
     CopyMaterialInstance { from: NodeId, to: NodeId },
+
+    // ─────────────────── Custom (dynamic-WGSL) material authoring ─────────────
+    // The Studio surface that used to mutate the reactive `CustomMaterial`
+    // `Mutable`s directly now routes through these commands (the "all via
+    // controller" rule), so each edit is undoable, cross-tab-broadcast, and
+    // reachable over MCP. Each flips the material back to draft (`registered =
+    // false`); the debounced auto-register recompiles. Inverse: restore prior.
+    /// Set a custom material's alpha/surface mode (`Mask` carries its cutoff).
+    SetCustomMaterialAlphaMode { id: AssetId, mode: CustomAlphaMode },
+    /// Set a custom material's double-sided flag.
+    SetCustomMaterialDoubleSided { id: AssetId, double_sided: bool },
+    /// Set a custom material's debug base color (`#rrggbb`, preview-only).
+    SetCustomMaterialDebugColor { id: AssetId, hex: String },
+    /// Replace a custom material's declared slot layout (uniforms / textures /
+    /// buffers). The full lists are sent (not a delta) so it's a single
+    /// idempotent edit. Re-registration re-derives the WGSL `MaterialData` struct.
+    SetCustomMaterialLayout {
+        id: AssetId,
+        uniforms: Vec<SlotSpec>,
+        textures: Vec<SlotSpec>,
+        buffers: Vec<SlotSpec>,
+    },
+    /// Set the declared `ShaderIncludes` keys a custom material's WGSL needs
+    /// (validated against `SHADER_INCLUDE_KEYS`; unknown keys are dropped).
+    SetCustomMaterialShaderIncludes { id: AssetId, includes: Vec<String> },
+    /// Set the declared `FragmentInputs` keys (interpolants the fragment reads;
+    /// validated against `FRAGMENT_INPUT_KEYS`).
+    SetCustomMaterialFragmentInputs { id: AssetId, inputs: Vec<String> },
+    /// Set the default value of a custom material's declared uniform slot (by
+    /// slot name). `value` is the comma-separated form the layout uses (e.g.
+    /// `"0.6, 0.7, 1.0"`). The writable counterpart of `ReadbackTarget::Uniform`.
+    SetMaterialUniform {
+        material: AssetId,
+        name: String,
+        value: String,
+    },
+    /// Set a built-in material factor on a mesh node's inline material (the
+    /// writable counterpart of `ReadbackTarget::BuiltinParam`). `value` is 1
+    /// element for `Metallic`/`Roughness`, 3 for `BaseColor`/`Emissive`. Inverse:
+    /// restore the node's prior kind.
+    SetBuiltinParam {
+        node: NodeId,
+        param: BuiltinParamKind,
+        value: Vec<f32>,
+    },
+    /// Set a light parameter on a light node (writable counterpart of
+    /// `ReadbackTarget::LightParam`). `value` is 3 floats for `Color`, 1 for
+    /// `Intensity`/`Range`/`InnerAngle`/`OuterAngle`. Range/angles only apply to
+    /// the relevant light kind. Inverse: restore the node's prior kind.
+    SetLightParam {
+        node: NodeId,
+        param: LightParamKind,
+        value: Vec<f32>,
+    },
+    /// Bind a texture asset into a mesh node's assigned custom-material texture
+    /// slot (by slot name), or clear it (`texture: None`). Writes the node's
+    /// `CustomMaterialInstance::texture_overrides`. The node must already have a
+    /// custom material assigned with a matching declared texture slot. Inverse:
+    /// restore the node's prior kind.
+    SetMaterialTexture {
+        node: NodeId,
+        slot: String,
+        texture: Option<AssetId>,
+    },
 
     // ───────────────────────── Animation: clip lifecycle ─────────────────────
     /// Create a fresh empty animation clip and make it current. Lifecycle (no
@@ -407,6 +550,11 @@ impl EditorCommand {
                 | EditorCommand::SetCurrentMaterial { .. }
                 | EditorCommand::SnapCameraToAxis { .. }
                 | EditorCommand::ResetCamera
+                | EditorCommand::SetCameraOrbit { .. }
+                | EditorCommand::SetCameraProjection { .. }
+                | EditorCommand::FrameNode { .. }
+                | EditorCommand::SetFrameTime { .. }
+                | EditorCommand::ClearFrameTime
                 | EditorCommand::SetCurrentClip { .. }
                 | EditorCommand::SetPlayhead { .. }
                 | EditorCommand::SetPlaying { .. }
@@ -431,6 +579,11 @@ impl EditorCommand {
                 | EditorCommand::SetAssetSelection { .. }
                 | EditorCommand::SnapCameraToAxis { .. }
                 | EditorCommand::ResetCamera
+                | EditorCommand::SetCameraOrbit { .. }
+                | EditorCommand::SetCameraProjection { .. }
+                | EditorCommand::FrameNode { .. }
+                | EditorCommand::SetFrameTime { .. }
+                | EditorCommand::ClearFrameTime
                 | EditorCommand::SetAnimSelection { .. }
                 | EditorCommand::SetSoloRoot { .. }
         )
@@ -504,6 +657,7 @@ impl EditorCommand {
         match self {
             EditorCommand::SwitchMode { .. } => "Switch mode",
             EditorCommand::SetSelection { .. } => "Select",
+            EditorCommand::Batch(_) => "Batch edit",
             EditorCommand::NewProject => "New project",
             EditorCommand::Insert { .. } | EditorCommand::InsertTree { .. } => "Insert node",
             EditorCommand::Delete { .. } => "Delete node",
@@ -525,7 +679,7 @@ impl EditorCommand {
                 "Delete asset"
             }
             EditorCommand::SetAssetSelection { .. } => "Select asset",
-            EditorCommand::AddCustomMaterial => "New material",
+            EditorCommand::AddCustomMaterial { .. } => "New material",
             EditorCommand::AddBuiltinMaterial { .. } => "New material",
             EditorCommand::DeleteCustomMaterial { .. } => "Delete material",
             EditorCommand::SetCurrentMaterial { .. } => "Select material",
@@ -533,9 +687,24 @@ impl EditorCommand {
             EditorCommand::SetCustomMaterialWgsl { .. } => "Edit shader",
             EditorCommand::AssignMaterial { .. } => "Assign material",
             EditorCommand::CopyMaterialInstance { .. } => "Copy material settings",
+            EditorCommand::SetCustomMaterialAlphaMode { .. } => "Set alpha mode",
+            EditorCommand::SetCustomMaterialDoubleSided { .. } => "Set double-sided",
+            EditorCommand::SetCustomMaterialDebugColor { .. } => "Set base color",
+            EditorCommand::SetCustomMaterialLayout { .. } => "Edit material layout",
+            EditorCommand::SetCustomMaterialShaderIncludes { .. } => "Set shader includes",
+            EditorCommand::SetCustomMaterialFragmentInputs { .. } => "Set fragment inputs",
+            EditorCommand::SetMaterialUniform { .. } => "Set uniform",
+            EditorCommand::SetBuiltinParam { .. } => "Set material param",
+            EditorCommand::SetLightParam { .. } => "Set light param",
+            EditorCommand::SetMaterialTexture { .. } => "Bind texture",
             EditorCommand::SetEnvironment { .. } => "Set environment",
             EditorCommand::SnapCameraToAxis { .. } => "Snap camera",
             EditorCommand::ResetCamera => "Reset view",
+            EditorCommand::SetCameraOrbit { .. } => "Orbit camera",
+            EditorCommand::SetCameraProjection { .. } => "Set projection",
+            EditorCommand::FrameNode { .. } => "Frame node",
+            EditorCommand::SetFrameTime { .. } => "Pin frame time",
+            EditorCommand::ClearFrameTime => "Clear frame time",
             EditorCommand::AddClip { .. } => "New clip",
             EditorCommand::DeleteClip { .. } => "Delete clip",
             EditorCommand::DuplicateClip { .. } => "Duplicate clip",

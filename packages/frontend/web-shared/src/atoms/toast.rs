@@ -1,14 +1,28 @@
 //! Lightweight toast for transient user-facing notices (rate-limit hits,
 //! save confirmations, etc.). Singleton — call `Toast::show` from anywhere.
 
+use std::cell::RefCell;
 use std::time::Duration;
 
 use crate::prelude::*;
 use gloo_timers::future::TimeoutFuture;
 use wasm_bindgen_futures::spawn_local;
 
+/// A sink invoked for every shown toast (kind + message).
+type ToastLogHook = Box<dyn Fn(ToastKind, &str)>;
+
 thread_local! {
     static TOAST: ToastInstance = ToastInstance::new();
+    /// Optional sink that every shown toast is mirrored into (besides the
+    /// on-screen toast). Lets a host capture the user-facing notice stream into
+    /// an in-process log buffer — e.g. the editor's MCP `get_console_logs`.
+    static LOG_HOOK: RefCell<Option<ToastLogHook>> = const { RefCell::new(None) };
+}
+
+/// Install a sink invoked for every `Toast::show` (kind + message). Replaces any
+/// prior hook. Used by the editor to feed its console-log ring buffer.
+pub fn set_toast_log_hook(f: impl Fn(ToastKind, &str) + 'static) {
+    LOG_HOOK.with(|h| *h.borrow_mut() = Some(Box::new(f)));
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -37,6 +51,11 @@ impl Toast {
     }
 
     pub fn show(kind: ToastKind, msg: String, ttl: Duration) {
+        LOG_HOOK.with(|h| {
+            if let Some(f) = h.borrow().as_ref() {
+                f(kind, &msg);
+            }
+        });
         TOAST.with(|t| t.show(kind, msg, ttl));
     }
 

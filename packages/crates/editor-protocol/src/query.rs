@@ -30,7 +30,19 @@ pub struct EditorSnapshot {
     /// (e.g. to author/verify a Uniform animation track).
     #[serde(default)]
     pub materials: Vec<MaterialSnapshot>,
-    // materials / compile_errors land as those models arrive.
+    /// Texture assets in the project (id / name / kind / dims). Lets a driver
+    /// discover texture ids to bind into material slots.
+    #[serde(default)]
+    pub textures: Vec<TextureSnapshot>,
+}
+
+/// Serializable projection of a texture asset.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TextureSnapshot {
+    pub id: String,
+    pub name: String,
+    /// `"procedural"` | `"raster"`.
+    pub kind: String,
 }
 
 /// Serializable projection of a custom material asset.
@@ -41,6 +53,42 @@ pub struct MaterialSnapshot {
     pub registered: bool,
     pub builtin: bool,
     pub uniforms: Vec<String>,
+    /// True when the material has no outstanding compile errors (always true for
+    /// built-ins, which need no compile). Closes the old `query.rs` TODO.
+    #[serde(default = "default_true")]
+    pub compile_ok: bool,
+    /// Outstanding compile diagnostics (empty when `compile_ok`).
+    #[serde(default)]
+    pub errors: Vec<CompileError>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// One compile diagnostic for a custom material's WGSL.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompileError {
+    /// 1-based line in the author's WGSL body, when known. The lightweight
+    /// in-editor syntax check reports author-relative lines; GPU/naga errors
+    /// carry only a message (their line numbers index the assembled module, not
+    /// the author's snippet, so they're omitted rather than mislead).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+    pub message: String,
+}
+
+/// The compile status of a custom (dynamic-WGSL) material — the answer to
+/// [`EditorQuery::MaterialDiagnostics`]. Lets an MCP caller tell a compile
+/// failure from a successful-but-dark shader (the original §A failure).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompileDiagnostics {
+    /// Whether the material is currently registered (compiled into a renderer
+    /// bucket and live on assigned meshes).
+    pub registered: bool,
+    /// True when there are no compile errors.
+    pub ok: bool,
+    pub errors: Vec<CompileError>,
 }
 
 /// Serializable projection of Animation-mode state.
@@ -75,6 +123,21 @@ pub struct ProjectSnapshot {
     pub name: String,
     pub dirty: bool,
     pub missing_assets: Vec<String>,
+    /// Coordinate-system description (handedness / up-axis / units) so a driver
+    /// doesn't have to guess the frame. Constant for now.
+    #[serde(default = "default_coordinate_system")]
+    pub coordinate_system: String,
+    /// World units. Constant ("meters") for now.
+    #[serde(default = "default_units")]
+    pub units: String,
+}
+
+fn default_coordinate_system() -> String {
+    "right-handed, Y-up, -Z forward".to_string()
+}
+
+fn default_units() -> String {
+    "meters".to_string()
 }
 
 // ─────────────────────────────── query surface ──────────────────────────────
@@ -106,6 +169,62 @@ pub enum EditorQuery {
     /// snapshot field) so potentially-large shader bodies stay out of every
     /// snapshot.
     CustomMaterialWgsl { material: AssetId },
+    /// Compile diagnostics for a custom (dynamic) material — registered flag, an
+    /// `ok` bool, and the outstanding errors. The answer to "did my last
+    /// `set_material_wgsl` actually compile?".
+    MaterialDiagnostics { material: AssetId },
+    /// Local TRS + world matrix for each node (empty `nodes` = all nodes). Reads
+    /// the live scene — no animation-clip pin hack needed.
+    NodeTransforms {
+        #[serde(default)]
+        nodes: Vec<NodeId>,
+    },
+    /// The full per-kind config (primitive shape, light/camera config, assigned +
+    /// inline material) for each node, as the serialized `NodeKind` (empty
+    /// `nodes` = all nodes).
+    NodeKindDetails {
+        #[serde(default)]
+        nodes: Vec<NodeId>,
+    },
+    /// World-space axis-aligned bounding box `{min,max}` for each node (empty
+    /// `nodes` = all nodes). CPU-estimated from primitive dims + world transform;
+    /// used to frame the camera (`FrameNode`) and size objects.
+    NodeBounds {
+        #[serde(default)]
+        nodes: Vec<NodeId>,
+    },
+    /// The full stored data for one animation track (target, sampler, mute/solo,
+    /// times, keyframes incl. interp/tangents) — lets a driver verify what it
+    /// authored. `SampleClipTimeseries` samples rendered output; this returns the
+    /// keyframes themselves.
+    GetTrackData { clip: AssetId, track: usize },
+    /// The renderer's current frame globals: `time`, `delta_time`, `frame_count`,
+    /// `resolution`. Reflects a `SetFrameTime` pin.
+    FrameGlobals,
+    /// The last `limit` editor notices (toasts: info/warning/error) from an
+    /// in-process ring buffer — surfaces runtime errors otherwise invisible over
+    /// MCP. Material compile errors have a dedicated path (`MaterialDiagnostics`).
+    ConsoleLogs {
+        #[serde(default = "default_log_limit")]
+        limit: u32,
+    },
+    /// Block until no material recompile is pending **and** the renderer's
+    /// pipeline scheduler has drained **and** a fresh frame has presented (or
+    /// `max_ms` elapses). The deterministic barrier between an edit and a
+    /// screenshot — defeats the `set → screenshot` race against the ~400ms
+    /// debounced recompile + RAF present.
+    WaitRenderSettled {
+        #[serde(default = "default_settle_ms")]
+        max_ms: u32,
+    },
+}
+
+fn default_log_limit() -> u32 {
+    50
+}
+
+fn default_settle_ms() -> u32 {
+    4000
 }
 
 /// What a [`EditorQuery::SampleClipTimeseries`] frame reads.
@@ -140,10 +259,19 @@ pub enum ReadbackTarget {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum QueryResult {
-    Snapshot(EditorSnapshot),
+    // Boxed — `EditorSnapshot` is by far the largest variant; serde boxes
+    // transparently so the JSON wire form is unchanged.
+    Snapshot(Box<EditorSnapshot>),
     Timeseries(TimeseriesResult),
     Pixels(PixelsResult),
     Stats(StatsResult),
+    /// Compile diagnostics for a custom material.
+    Diagnostics(CompileDiagnostics),
+    /// Render-settle barrier outcome.
+    Settled(SettledResult),
+    /// A keyed map result (node transforms / kind details / bounds / track data).
+    /// `kind` discriminates; `entries` maps id (or index) → arbitrary JSON.
+    Map(MapResult),
     /// A plain text payload (e.g. a custom material's WGSL source).
     Text(String),
     Error {
@@ -178,4 +306,23 @@ pub struct StatsResult {
     pub min_luma: f64,
     pub max_luma: f64,
     pub pixel_count: u64,
+}
+
+/// A keyed-map query result (see [`QueryResult::Map`]). The `kind` field is what
+/// lets the `untagged` `QueryResult` tell this apart from the other variants.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MapResult {
+    /// Discriminator: `"transforms"` | `"kind_details"` | `"bounds"` | `"track"`.
+    pub kind: String,
+    /// id (or index) → value.
+    pub entries: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+/// The outcome of a [`EditorQuery::WaitRenderSettled`] barrier.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SettledResult {
+    /// True if the scene settled before `max_ms`; false on timeout.
+    pub settled: bool,
+    /// How long the barrier actually waited (ms).
+    pub waited_ms: u32,
 }

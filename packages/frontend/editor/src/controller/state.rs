@@ -1,4 +1,4 @@
-use std::cell::{OnceCell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::Rc;
 
 use awsm_web_shared::prelude::{Mutable, MutableVec, Toast};
@@ -26,12 +26,52 @@ thread_local! {
     static SYNC_CHANNEL: RefCell<Option<web_sys::BroadcastChannel>> = const { RefCell::new(None) };
 }
 
+thread_local! {
+    /// In-process ring buffer of editor notices (toasts) — surfaced over MCP via
+    /// `ConsoleLogs` so a driver can see runtime errors otherwise stuck in the
+    /// browser. Capped; oldest dropped.
+    static CONSOLE_LOG: RefCell<std::collections::VecDeque<(String, String)>> =
+        const { RefCell::new(std::collections::VecDeque::new()) };
+}
+
+const CONSOLE_LOG_CAP: usize = 200;
+
+/// Append an editor notice to the console-log ring buffer (level + message).
+pub(crate) fn record_console_log(level: &str, msg: &str) {
+    CONSOLE_LOG.with(|b| {
+        let mut b = b.borrow_mut();
+        if b.len() >= CONSOLE_LOG_CAP {
+            b.pop_front();
+        }
+        b.push_back((level.to_string(), msg.to_string()));
+    });
+}
+
 /// Install the controller singleton. Call once at boot, before mounting the UI.
 pub fn init() {
     CONTROLLER.with(|c| {
         let _ = c.set(EditorController::new());
     });
     init_cross_tab_sync();
+    // Mirror every toast into the console-log ring buffer (MCP `get_console_logs`).
+    awsm_web_shared::prelude::set_toast_log_hook(|kind, msg| {
+        use awsm_web_shared::prelude::ToastKind;
+        let level = match kind {
+            ToastKind::Info => "info",
+            ToastKind::Warning => "warning",
+            ToastKind::Error => "error",
+        };
+        record_console_log(level, msg);
+        // Push the noteworthy notices to the agent (editor → agent channel).
+        if matches!(kind, ToastKind::Warning | ToastKind::Error) {
+            crate::remote::notify_event(awsm_editor_protocol::EditorEvent {
+                kind: "toast".to_string(),
+                level: Some(level.to_string()),
+                message: Some(msg.to_string()),
+                nodes: None,
+            });
+        }
+    });
 }
 
 /// Wire the cross-tab relay: a `BroadcastChannel` whose incoming commands
@@ -142,6 +182,11 @@ pub struct EditorController {
     undo: Rc<RefCell<Vec<EditorCommand>>>,
     /// Inverses popped by undo, re-appliable by redo.
     redo: Rc<RefCell<Vec<EditorCommand>>>,
+    /// Count of in-flight (or debounce-scheduled) material compiles. The
+    /// `WaitRenderSettled` query waits for this to reach zero — plus the
+    /// renderer's own pipeline scheduler to drain and a frame to present — so an
+    /// MCP `set_material_wgsl → screenshot` doesn't race the ~400ms recompile.
+    pub(crate) compile_pending: Rc<Cell<u32>>,
 }
 
 /// Editor view-only settings (viewport toggles + units). Reactive; each field is
@@ -201,6 +246,7 @@ impl EditorController {
             settings_open: Mutable::new(false),
             undo: Rc::new(RefCell::new(Vec::new())),
             redo: Rc::new(RefCell::new(Vec::new())),
+            compile_pending: Rc::new(Cell::new(0)),
         }
     }
 
@@ -267,12 +313,60 @@ impl EditorController {
     /// `apply_remote`, undo, redo) funnels through, so no edit can skip the
     /// re-lower (the stale-channel bug). The actual effect lives in `apply_inner`.
     async fn apply(&self, cmd: EditorCommand) -> EditorResult<Option<EditorCommand>> {
+        // A `Batch` applies its sub-commands in order (each a leaf — batches don't
+        // nest) and returns a `Batch` of their inverses, reversed, so undo replays
+        // them back-to-front as one step. Handled here (not `apply_inner`) so the
+        // async fn doesn't recurse into itself.
+        if let EditorCommand::Batch(cmds) = cmd {
+            let mut inverses = Vec::new();
+            for c in cmds {
+                let touches_anim = c.affects_animation();
+                if let Some(inv) = Box::pin(self.apply_inner(c)).await? {
+                    inverses.push(inv);
+                }
+                if touches_anim {
+                    self.anim_revision.replace_with(|v| v.wrapping_add(1));
+                }
+            }
+            inverses.reverse();
+            return Ok(Some(EditorCommand::Batch(inverses)));
+        }
         let touches_anim = cmd.affects_animation();
         let result = self.apply_inner(cmd).await;
         if touches_anim {
             self.anim_revision.replace_with(|v| v.wrapping_add(1));
         }
         result
+    }
+
+    /// Apply a list of commands as one atomic step that collapses into a single
+    /// undo entry. The MCP `dispatch_batch` round-trips here. Each sub-command is
+    /// broadcast individually (cross-tab replay), then the combined inverse is
+    /// pushed as one `Batch` so undo reverses the whole thing.
+    pub async fn dispatch_batch(&self, cmds: Vec<EditorCommand>) -> EditorResult<()> {
+        let mut inverses = Vec::new();
+        let mut any_recorded = false;
+        for cmd in cmds {
+            self.broadcast(&cmd);
+            let transient = cmd.is_transient();
+            let inv = self.apply(cmd).await?;
+            if !transient {
+                any_recorded = true;
+                if let Some(i) = inv {
+                    inverses.push(i);
+                }
+            }
+        }
+        if !inverses.is_empty() {
+            inverses.reverse();
+            self.undo.borrow_mut().push(EditorCommand::Batch(inverses));
+            self.redo.borrow_mut().clear();
+            self.refresh_history_signals();
+        }
+        if any_recorded {
+            self.dirty.set_neq(true);
+        }
+        Ok(())
     }
 
     /// Apply a command's effect and return its inverse (for the undo log), or
@@ -285,9 +379,20 @@ impl EditorController {
                 Ok(None)
             }
             EditorCommand::SetSelection { ids } => {
+                // Notify the agent of selection changes (e.g. a human clicking a
+                // node in the Outliner) over the push channel.
+                crate::remote::notify_event(awsm_editor_protocol::EditorEvent {
+                    kind: "selection".to_string(),
+                    level: None,
+                    message: None,
+                    nodes: Some(ids.iter().map(|id| id.to_string()).collect()),
+                });
                 self.selected.set(ids);
                 Ok(None)
             }
+            // `Batch` is unwrapped in `apply` (so the async fn doesn't recurse);
+            // it never reaches here.
+            EditorCommand::Batch(_) => Ok(None),
             EditorCommand::SetKind { id, kind } => match mutate::find_by_id(&self.scene, id) {
                 Some(node) => {
                     let prev = node.kind.get_cloned();
@@ -417,6 +522,18 @@ impl EditorController {
                 crate::engine::bridge::bridge().clear_skin_joints();
                 self.project_name.set("untitled.awsm".to_string());
                 self.missing_assets.set(Vec::new());
+                // Seed a sane default scene: a key directional light (tilted ~50°
+                // by `new_light`) + the built-in skybox/IBL environment, so the
+                // first PBR/lit material isn't black out of the box (the §E3 fix —
+                // applies to the human editor and MCP alike).
+                let light = build_insert(&InsertSpec::Light(
+                    awsm_scene_schema::LightKind::Directional,
+                ));
+                mutate::insert_under(&self.scene, None, light);
+                self.scene
+                    .environment
+                    .set(awsm_scene_schema::EnvironmentConfig::default());
+                self.scene.bump_revision();
                 self.dirty.set_neq(false);
                 self.undo.borrow_mut().clear();
                 self.redo.borrow_mut().clear();
@@ -424,9 +541,17 @@ impl EditorController {
                 Toast::info("New project");
                 Ok(None)
             }
-            EditorCommand::Insert { spec, parent } => {
-                let node = build_insert(&spec);
-                let id = node.id;
+            EditorCommand::Insert { id, spec, parent } => {
+                // Idempotent (apply-when-absent): a cross-tab replay or a
+                // duplicate caller-minted id is a no-op, so the id stays stable.
+                if mutate::find_by_id(&self.scene, id).is_some() {
+                    return Ok(None);
+                }
+                let mut node = build_insert(&spec);
+                // Adopt the caller-minted id (build_insert mints a fresh one).
+                Arc::get_mut(&mut node)
+                    .expect("freshly built node is sole-owned")
+                    .id = id;
                 if mutate::insert_under(&self.scene, parent, node) {
                     self.scene.bump_revision();
                     Ok(Some(EditorCommand::Delete { id }))
@@ -485,8 +610,10 @@ impl EditorController {
                     None => Ok(None),
                 }
             }
-            EditorCommand::AddMaterialAsset { shading } => {
-                let id = AssetId::new();
+            EditorCommand::AddMaterialAsset { id, shading } => {
+                if self.scene.assets.lock().unwrap().entries.contains_key(&id) {
+                    return Ok(None);
+                }
                 let label = self.next_asset_label("Material");
                 let def = MaterialDef {
                     label,
@@ -503,8 +630,10 @@ impl EditorController {
                 self.asset_selection.set(Some(id));
                 Ok(Some(EditorCommand::DeleteAsset { id }))
             }
-            EditorCommand::AddTextureAsset { proc } => {
-                let id = AssetId::new();
+            EditorCommand::AddTextureAsset { id, proc } => {
+                if self.scene.assets.lock().unwrap().entries.contains_key(&id) {
+                    return Ok(None);
+                }
                 let def = TextureDef::Procedural(default_procedural(proc));
                 self.scene
                     .assets
@@ -541,8 +670,10 @@ impl EditorController {
                 self.asset_selection.set(id);
                 Ok(None)
             }
-            EditorCommand::AddCustomMaterial => {
-                let id = AssetId::new();
+            EditorCommand::AddCustomMaterial { id } => {
+                if find_material(&self.custom_materials, id).is_some() {
+                    return Ok(None);
+                }
                 let n = self.custom_materials.lock_ref().len() + 1;
                 let mat = CM::new(id, format!("New Material {n}"));
                 self.custom_materials.lock_mut().push_cloned(mat.clone());
@@ -553,8 +684,10 @@ impl EditorController {
                 self.dirty.set_neq(true);
                 Ok(None)
             }
-            EditorCommand::AddBuiltinMaterial { shading } => {
-                let id = AssetId::new();
+            EditorCommand::AddBuiltinMaterial { id, shading } => {
+                if find_material(&self.custom_materials, id).is_some() {
+                    return Ok(None);
+                }
                 let n = self.custom_materials.lock_ref().len() + 1;
                 let label = match shading {
                     awsm_scene_schema::MaterialShading::Pbr => "PBR",
@@ -586,30 +719,20 @@ impl EditorController {
             }
             EditorCommand::RegisterMaterial { id } => {
                 if let Some(mat) = find_material(&self.custom_materials, id) {
-                    let errs = compile_wgsl(&mat.wgsl.get_cloned());
-                    if !errs.is_empty() {
-                        Toast::error(format!(
-                            "Can't register \u{2014} {} compile error(s).",
-                            errs.len()
-                        ));
-                    } else {
-                        let was = mat.registered.get();
-                        let name = mat.name.get_cloned();
-                        // Real GPU registration: compile the material into a
-                        // renderer bucket. On success flag it registered + re-
-                        // materialize any mesh it's assigned to so it renders.
-                        match crate::engine::bridge::dynamic::register(&mat).await {
-                            Ok(_) => {
-                                mat.registered.set_neq(true);
-                                crate::engine::bridge::rematerialize_for_material(mat.id);
-                                Toast::info(if was {
-                                    format!("Recompiled \u{201c}{name}\u{201d} \u{2014} bucket refreshed.")
-                                } else {
-                                    format!("Registered \u{201c}{name}\u{201d}.")
-                                });
-                            }
-                            Err(e) => Toast::error(format!("Register failed: {e}")),
-                        }
+                    let was = mat.registered.get();
+                    let name = mat.name.get_cloned();
+                    // `register_material` records diagnostics (syntax + GPU/naga)
+                    // on the material and flips `registered`, so MCP's
+                    // `MaterialDiagnostics` query reads the truth either way.
+                    compile_begin();
+                    let ok = register_material(&mat).await;
+                    compile_end();
+                    if ok {
+                        Toast::info(if was {
+                            format!("Recompiled \u{201c}{name}\u{201d} \u{2014} bucket refreshed.")
+                        } else {
+                            format!("Registered \u{201c}{name}\u{201d}.")
+                        });
                     }
                 }
                 Ok(None)
@@ -624,6 +747,7 @@ impl EditorController {
                     Some(mat) => {
                         let prev = mat.wgsl.get_cloned();
                         mat.wgsl.set(wgsl);
+                        mark_material_draft(&mat);
                         self.dirty.set_neq(true);
                         Ok(Some(EditorCommand::SetCustomMaterialWgsl {
                             id,
@@ -743,6 +867,214 @@ impl EditorController {
                     kind: Box::new(prev),
                 }))
             }
+            EditorCommand::SetCustomMaterialAlphaMode { id, mode } => {
+                match find_material(&self.custom_materials, id) {
+                    Some(mat) => {
+                        let prev = custom_alpha_of(&mat);
+                        match mode {
+                            awsm_editor_protocol::CustomAlphaMode::Opaque => {
+                                mat.alpha.set_neq(AlphaMode::Opaque);
+                            }
+                            awsm_editor_protocol::CustomAlphaMode::Mask { cutoff } => {
+                                mat.alpha.set_neq(AlphaMode::Mask);
+                                mat.cutoff.set_neq(cutoff);
+                            }
+                            awsm_editor_protocol::CustomAlphaMode::Blend => {
+                                mat.alpha.set_neq(AlphaMode::Blend);
+                            }
+                        }
+                        mark_material_draft(&mat);
+                        self.dirty.set_neq(true);
+                        Ok(Some(EditorCommand::SetCustomMaterialAlphaMode {
+                            id,
+                            mode: prev,
+                        }))
+                    }
+                    None => Ok(None),
+                }
+            }
+            EditorCommand::SetCustomMaterialDoubleSided { id, double_sided } => {
+                match find_material(&self.custom_materials, id) {
+                    Some(mat) => {
+                        let prev = mat.double_sided.get();
+                        mat.double_sided.set_neq(double_sided);
+                        mark_material_draft(&mat);
+                        self.dirty.set_neq(true);
+                        Ok(Some(EditorCommand::SetCustomMaterialDoubleSided {
+                            id,
+                            double_sided: prev,
+                        }))
+                    }
+                    None => Ok(None),
+                }
+            }
+            EditorCommand::SetCustomMaterialDebugColor { id, hex } => {
+                match find_material(&self.custom_materials, id) {
+                    Some(mat) => {
+                        let prev = mat.color.get_cloned();
+                        mat.color.set_neq(hex);
+                        // Debug color is preview-only — no recompile needed, but it
+                        // is project state, so flag dirty.
+                        self.dirty.set_neq(true);
+                        Ok(Some(EditorCommand::SetCustomMaterialDebugColor {
+                            id,
+                            hex: prev,
+                        }))
+                    }
+                    None => Ok(None),
+                }
+            }
+            EditorCommand::SetCustomMaterialLayout {
+                id,
+                uniforms,
+                textures,
+                buffers,
+            } => match find_material(&self.custom_materials, id) {
+                Some(mat) => {
+                    let prev = EditorCommand::SetCustomMaterialLayout {
+                        id,
+                        uniforms: slots_to_specs(&mat.uniforms.get_cloned()),
+                        textures: slots_to_specs(&mat.textures.get_cloned()),
+                        buffers: slots_to_specs(&mat.buffers.get_cloned()),
+                    };
+                    mat.uniforms.set(specs_to_slots(&uniforms));
+                    mat.textures.set(specs_to_slots(&textures));
+                    mat.buffers.set(specs_to_slots(&buffers));
+                    mark_material_draft(&mat);
+                    self.dirty.set_neq(true);
+                    Ok(Some(prev))
+                }
+                None => Ok(None),
+            },
+            EditorCommand::SetCustomMaterialShaderIncludes { id, includes } => {
+                match find_material(&self.custom_materials, id) {
+                    Some(mat) => {
+                        let prev = mat.shader_includes.get_cloned();
+                        mat.shader_includes.set(validate_keys(
+                            &includes,
+                            custom_material::SHADER_INCLUDE_KEYS,
+                        ));
+                        mark_material_draft(&mat);
+                        self.dirty.set_neq(true);
+                        Ok(Some(EditorCommand::SetCustomMaterialShaderIncludes {
+                            id,
+                            includes: prev,
+                        }))
+                    }
+                    None => Ok(None),
+                }
+            }
+            EditorCommand::SetCustomMaterialFragmentInputs { id, inputs } => {
+                match find_material(&self.custom_materials, id) {
+                    Some(mat) => {
+                        let prev = mat.fragment_inputs.get_cloned();
+                        mat.fragment_inputs
+                            .set(validate_keys(&inputs, custom_material::FRAGMENT_INPUT_KEYS));
+                        mark_material_draft(&mat);
+                        self.dirty.set_neq(true);
+                        Ok(Some(EditorCommand::SetCustomMaterialFragmentInputs {
+                            id,
+                            inputs: prev,
+                        }))
+                    }
+                    None => Ok(None),
+                }
+            }
+            EditorCommand::SetMaterialUniform {
+                material,
+                name,
+                value,
+            } => match find_material(&self.custom_materials, material) {
+                Some(mat) => {
+                    let mut slots = mat.uniforms.get_cloned();
+                    let Some(slot) = slots.iter_mut().find(|s| s.name == name) else {
+                        return Ok(None);
+                    };
+                    let prev = slot.val.clone();
+                    slot.val = value;
+                    mat.uniforms.set(slots);
+                    mark_material_draft(&mat);
+                    self.dirty.set_neq(true);
+                    Ok(Some(EditorCommand::SetMaterialUniform {
+                        material,
+                        name,
+                        value: prev,
+                    }))
+                }
+                None => Ok(None),
+            },
+            EditorCommand::SetBuiltinParam { node, param, value } => {
+                match mutate::find_by_id(&self.scene, node) {
+                    Some(n) => {
+                        let prev = n.kind.get_cloned();
+                        let mut next = prev.clone();
+                        let patched = patch_builtin_param(&mut next, param, &value);
+                        if !patched {
+                            return Ok(None);
+                        }
+                        n.kind.set(next);
+                        self.scene.bump_revision();
+                        Ok(Some(EditorCommand::SetKind {
+                            id: node,
+                            kind: Box::new(prev),
+                        }))
+                    }
+                    None => Ok(None),
+                }
+            }
+            EditorCommand::SetLightParam { node, param, value } => {
+                match mutate::find_by_id(&self.scene, node) {
+                    Some(n) => {
+                        let prev = n.kind.get_cloned();
+                        let NodeKind::Light(mut cfg) = prev.clone() else {
+                            return Ok(None);
+                        };
+                        if !patch_light_param(&mut cfg, param, &value) {
+                            return Ok(None);
+                        }
+                        // A light edit churns the renderer LightKey a lowered
+                        // animation channel holds — force a re-lower (same as the
+                        // SetKind light path).
+                        self.anim_revision.replace_with(|v| v.wrapping_add(1));
+                        n.kind.set(NodeKind::Light(cfg));
+                        self.scene.bump_revision();
+                        Ok(Some(EditorCommand::SetKind {
+                            id: node,
+                            kind: Box::new(prev),
+                        }))
+                    }
+                    None => Ok(None),
+                }
+            }
+            EditorCommand::SetFrameTime { seconds } => {
+                crate::engine::context::with_renderer_mut(move |r| r.set_time_source(seconds))
+                    .await;
+                Ok(None)
+            }
+            EditorCommand::ClearFrameTime => {
+                crate::engine::context::with_renderer_mut(|r| r.clear_time_source()).await;
+                Ok(None)
+            }
+            EditorCommand::SetMaterialTexture {
+                node,
+                slot,
+                texture,
+            } => match mutate::find_by_id(&self.scene, node) {
+                Some(n) => {
+                    let prev = n.kind.get_cloned();
+                    let mut next = prev.clone();
+                    if !patch_material_texture(&mut next, &slot, texture) {
+                        return Ok(None);
+                    }
+                    n.kind.set(next);
+                    self.scene.bump_revision();
+                    Ok(Some(EditorCommand::SetKind {
+                        id: node,
+                        kind: Box::new(prev),
+                    }))
+                }
+                None => Ok(None),
+            },
             EditorCommand::SetEnvironment { env } => {
                 let prev = self.scene.environment.get_cloned();
                 self.scene.environment.set(env);
@@ -766,6 +1098,60 @@ impl EditorController {
             }
             EditorCommand::ResetCamera => {
                 crate::engine::context::try_with_camera_mut(|c| c.reset_default());
+                Ok(None)
+            }
+            EditorCommand::SetCameraOrbit {
+                yaw,
+                pitch,
+                radius,
+                look_at,
+            } => {
+                crate::engine::context::try_with_camera_mut(|c| {
+                    c.set_orbit(yaw, pitch, radius, glam::Vec3::from_array(look_at))
+                });
+                Ok(None)
+            }
+            EditorCommand::SetCameraProjection { perspective, fov_y } => {
+                use awsm_web_shared::util::free_camera::ProjectionMode;
+                crate::engine::context::try_with_camera_mut(|c| {
+                    if let Some(f) = fov_y {
+                        c.set_fov_y(f);
+                    }
+                    c.set_projection_mode(if perspective {
+                        ProjectionMode::Perspective
+                    } else {
+                        ProjectionMode::Orthographic
+                    });
+                });
+                Ok(None)
+            }
+            EditorCommand::FrameNode { node, padding } => {
+                // Compute the node's world AABB (local extent × world matrix),
+                // then fit the camera with a margin (padding 0 = tight).
+                let local =
+                    mutate::find_by_id(&self.scene, node).map(|n| local_aabb(&n.kind.get_cloned()));
+                let Some((lmin, lmax)) = local else {
+                    return Ok(None);
+                };
+                crate::engine::context::with_renderer_mut(move |r| {
+                    let world = crate::engine::bridge::bridge()
+                        .nodes
+                        .lock()
+                        .unwrap()
+                        .get(&node)
+                        .map(|n| n.transform_key)
+                        .and_then(|tk| r.transforms.get_world(tk).ok().copied())
+                        .unwrap_or(glam::Mat4::IDENTITY);
+                    let (wmin, wmax) = transform_aabb(world, lmin, lmax);
+                    let aabb = awsm_renderer::bounds::Aabb::new(
+                        glam::Vec3::from_array(wmin),
+                        glam::Vec3::from_array(wmax),
+                    );
+                    crate::engine::context::try_with_camera_mut(|c| {
+                        c.frame_aabb(aabb, 1.0 + padding.max(0.0))
+                    });
+                })
+                .await;
                 Ok(None)
             }
             EditorCommand::LoadProjectFromUrl { base_url } => {
@@ -796,9 +1182,40 @@ impl EditorController {
                 self.finish_model_import(result);
                 Ok(None)
             }
-            EditorCommand::ImportTextureFromUrl { url } => {
-                Toast::info(format!("Import texture from {url} — not yet implemented"));
-                Ok(None)
+            EditorCommand::ImportTextureFromUrl { id, url } => {
+                // Idempotent: skip if this id already exists (cross-tab replay).
+                if self.scene.assets.lock().unwrap().entries.contains_key(&id) {
+                    return Ok(None);
+                }
+                let _activity = crate::engine::activity::begin_activity(
+                    "Importing texture — uploading to GPU…",
+                );
+                match crate::engine::bridge::material::import_texture_url(id, &url).await {
+                    Ok(()) => {
+                        let name = url
+                            .rsplit('/')
+                            .next()
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or("texture")
+                            .to_string();
+                        self.scene.assets.lock().unwrap().entries.insert(
+                            id,
+                            AssetEntry::new(SceneAssetSource::Texture(TextureDef::Raster {
+                                display_name: name,
+                            })),
+                        );
+                        self.scene.bump_revision();
+                        self.asset_selection.set(Some(id));
+                        self.dirty.set_neq(true);
+                        Toast::info("Imported texture");
+                        Ok(Some(EditorCommand::DeleteAsset { id }))
+                    }
+                    // Fail loudly — the MCP tool surfaces this as an error, not a
+                    // silent `ok`.
+                    Err(e) => Err(crate::error::EditorError::msg(format!(
+                        "texture import failed: {e}"
+                    ))),
+                }
             }
             // ───────────────────── Animation: clip lifecycle ─────────────────
             EditorCommand::AddClip { id } => {
@@ -1892,6 +2309,8 @@ impl EditorController {
                 name: self.project_name.get_cloned(),
                 dirty: self.dirty.get(),
                 missing_assets: self.missing_assets.get_cloned(),
+                coordinate_system: "right-handed, Y-up, -Z forward".to_string(),
+                units: self.settings.units.get_cloned(),
             },
             scene_tree,
             selection: self
@@ -1907,20 +2326,55 @@ impl EditorController {
                 .custom_materials
                 .lock_ref()
                 .iter()
-                .map(|m| query::MaterialSnapshot {
-                    id: m.id.to_string(),
-                    name: m.name.get_cloned(),
-                    registered: m.registered.get(),
-                    builtin: m.builtin.lock_ref().is_some(),
-                    uniforms: m
-                        .uniforms
-                        .lock_ref()
-                        .iter()
-                        .map(|s| s.name.clone())
-                        .collect(),
+                .map(|m| {
+                    let errors = m.last_diagnostics.get_cloned();
+                    query::MaterialSnapshot {
+                        id: m.id.to_string(),
+                        name: m.name.get_cloned(),
+                        registered: m.registered.get(),
+                        builtin: m.builtin.lock_ref().is_some(),
+                        uniforms: m
+                            .uniforms
+                            .lock_ref()
+                            .iter()
+                            .map(|s| s.name.clone())
+                            .collect(),
+                        compile_ok: errors.is_empty(),
+                        errors,
+                    }
                 })
                 .collect(),
+            textures: self.texture_snapshots(),
         }
+    }
+
+    /// Project texture assets into the snapshot (id / name / procedural-vs-raster).
+    fn texture_snapshots(&self) -> Vec<query::TextureSnapshot> {
+        use awsm_scene_schema::{AssetSource as S, TextureDef};
+        let assets = self.scene.assets.lock().unwrap();
+        assets
+            .entries
+            .iter()
+            .filter_map(|(id, entry)| match &entry.source {
+                S::Texture(def) => {
+                    let kind = match def {
+                        TextureDef::Procedural(_) => "procedural",
+                        TextureDef::Raster { .. } => "raster",
+                    };
+                    let name = entry
+                        .source
+                        .display_name()
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| format!("texture {id}"));
+                    Some(query::TextureSnapshot {
+                        id: id.to_string(),
+                        name,
+                        kind: kind.to_string(),
+                    })
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     /// The Animation-mode projection of `snapshot()`.
@@ -1981,7 +2435,7 @@ impl EditorController {
     pub async fn query(&self, q: query::EditorQuery) -> query::QueryResult {
         use query::*;
         match q {
-            EditorQuery::Snapshot => QueryResult::Snapshot(self.snapshot()),
+            EditorQuery::Snapshot => QueryResult::Snapshot(Box::new(self.snapshot())),
             EditorQuery::SampleClipTimeseries {
                 clip,
                 times,
@@ -2007,7 +2461,234 @@ impl EditorController {
                     },
                 }
             }
+            EditorQuery::MaterialDiagnostics { material } => {
+                match find_material(&self.custom_materials, material) {
+                    Some(mat) => {
+                        let errors = mat.last_diagnostics.get_cloned();
+                        QueryResult::Diagnostics(CompileDiagnostics {
+                            registered: mat.registered.get(),
+                            ok: errors.is_empty(),
+                            errors,
+                        })
+                    }
+                    None => QueryResult::Error {
+                        error: format!("no custom material {material}"),
+                    },
+                }
+            }
+            EditorQuery::WaitRenderSettled { max_ms } => self.wait_render_settled(max_ms).await,
+            EditorQuery::NodeTransforms { nodes } => self.node_transforms(&nodes).await,
+            EditorQuery::NodeKindDetails { nodes } => {
+                use serde_json::Value;
+                let ids = self.resolve_node_ids(&nodes);
+                let mut entries = std::collections::BTreeMap::new();
+                for id in ids {
+                    if let Some(n) = mutate::find_by_id(&self.scene, id) {
+                        let kind = n.kind.get_cloned();
+                        entries.insert(
+                            id.to_string(),
+                            serde_json::to_value(&kind).unwrap_or(Value::Null),
+                        );
+                    }
+                }
+                QueryResult::Map(query::MapResult {
+                    kind: "kind_details".to_string(),
+                    entries,
+                })
+            }
+            EditorQuery::NodeBounds { nodes } => self.node_bounds(&nodes).await,
+            EditorQuery::FrameGlobals => {
+                use serde_json::json;
+                let fg = crate::engine::context::with_renderer_mut(|r| r.frame_globals()).await;
+                let mut entries = std::collections::BTreeMap::new();
+                entries.insert("time".to_string(), json!(fg.time));
+                entries.insert("delta_time".to_string(), json!(fg.delta_time));
+                entries.insert("frame_count".to_string(), json!(fg.frame_count));
+                entries.insert("resolution".to_string(), json!(fg.resolution));
+                QueryResult::Map(query::MapResult {
+                    kind: "frame_globals".to_string(),
+                    entries,
+                })
+            }
+            EditorQuery::ConsoleLogs { limit } => {
+                use serde_json::json;
+                let logs: Vec<serde_json::Value> = CONSOLE_LOG.with(|b| {
+                    let b = b.borrow();
+                    let start = b.len().saturating_sub(limit as usize);
+                    b.iter()
+                        .skip(start)
+                        .map(|(level, message)| json!({ "level": level, "message": message }))
+                        .collect()
+                });
+                let mut entries = std::collections::BTreeMap::new();
+                entries.insert("logs".to_string(), json!(logs));
+                QueryResult::Map(query::MapResult {
+                    kind: "console_logs".to_string(),
+                    entries,
+                })
+            }
+            EditorQuery::GetTrackData { clip, track } => {
+                match find_track(&self.custom_animations, clip, track) {
+                    Some(t) => {
+                        let stored = awsm_scene_schema::animation::StoredTrack {
+                            target: t.target.clone(),
+                            sampler: t.sampler.get(),
+                            mute: t.mute.get(),
+                            solo: t.solo.get(),
+                            expanded: t.expanded.get(),
+                            times: t.times.get_cloned(),
+                            keys: t.keys.get_cloned(),
+                        };
+                        let mut entries = std::collections::BTreeMap::new();
+                        entries.insert(
+                            "data".to_string(),
+                            serde_json::to_value(&stored).unwrap_or(serde_json::Value::Null),
+                        );
+                        QueryResult::Map(query::MapResult {
+                            kind: "track".to_string(),
+                            entries,
+                        })
+                    }
+                    None => QueryResult::Error {
+                        error: format!("no track {track} in clip {clip}"),
+                    },
+                }
+            }
         }
+    }
+
+    /// Resolve a requested node-id list to concrete ids; an empty request means
+    /// every node in the scene (depth-first).
+    fn resolve_node_ids(&self, requested: &[NodeId]) -> Vec<NodeId> {
+        if !requested.is_empty() {
+            return requested.to_vec();
+        }
+        fn walk(nodes: &[Arc<crate::engine::scene::node::Node>], out: &mut Vec<NodeId>) {
+            for n in nodes {
+                out.push(n.id);
+                walk(&n.children.lock_ref(), out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(&self.scene.nodes.lock_ref(), &mut out);
+        out
+    }
+
+    /// `NodeTransforms` handler — local TRS from the live scene + world matrix
+    /// from the renderer transform graph (no animation-clip pin hack).
+    async fn node_transforms(&self, nodes: &[NodeId]) -> query::QueryResult {
+        use serde_json::json;
+        let ids = self.resolve_node_ids(nodes);
+        let mut entries = std::collections::BTreeMap::new();
+        for id in &ids {
+            if let Some(n) = mutate::find_by_id(&self.scene, *id) {
+                let t = n.transform.get();
+                entries.insert(
+                    id.to_string(),
+                    json!({
+                        "translation": t.translation,
+                        "rotation": t.rotation,
+                        "scale": t.scale,
+                    }),
+                );
+            }
+        }
+        // Augment with world matrices read from the renderer transform graph.
+        let ids2 = ids.clone();
+        let worlds = crate::engine::context::with_renderer_mut(move |r| {
+            let mut m = std::collections::BTreeMap::new();
+            let bridge = crate::engine::bridge::bridge();
+            let nodes = bridge.nodes.lock().unwrap();
+            for id in &ids2 {
+                if let Some(tk) = nodes.get(id).map(|n| n.transform_key) {
+                    if let Ok(w) = r.transforms.get_world(tk) {
+                        m.insert(id.to_string(), w.to_cols_array().to_vec());
+                    }
+                }
+            }
+            m
+        })
+        .await;
+        for (k, w) in worlds {
+            if let Some(serde_json::Value::Object(obj)) = entries.get_mut(&k) {
+                obj.insert("world".to_string(), json!(w));
+            }
+        }
+        QueryResult::Map(query::MapResult {
+            kind: "transforms".to_string(),
+            entries,
+        })
+    }
+
+    /// `NodeBounds` handler — world-space AABB per node, CPU-estimated from the
+    /// node's local extent (primitive dims; unit box otherwise) transformed by
+    /// its renderer world matrix.
+    async fn node_bounds(&self, nodes: &[NodeId]) -> query::QueryResult {
+        use serde_json::json;
+        let ids = self.resolve_node_ids(nodes);
+        // (id, local-aabb) pairs from the scene; world matrices from the renderer.
+        let locals: Vec<(NodeId, Aabb3)> = ids
+            .iter()
+            .filter_map(|id| {
+                mutate::find_by_id(&self.scene, *id)
+                    .map(|n| (*id, local_aabb(&n.kind.get_cloned())))
+            })
+            .collect();
+        let entries = crate::engine::context::with_renderer_mut(move |r| {
+            let mut m = std::collections::BTreeMap::new();
+            let bridge = crate::engine::bridge::bridge();
+            let nodes = bridge.nodes.lock().unwrap();
+            for (id, (lmin, lmax)) in &locals {
+                let world = nodes
+                    .get(id)
+                    .map(|n| n.transform_key)
+                    .and_then(|tk| r.transforms.get_world(tk).ok().copied())
+                    .unwrap_or(glam::Mat4::IDENTITY);
+                let (wmin, wmax) = transform_aabb(world, *lmin, *lmax);
+                m.insert(id.to_string(), json!({ "min": wmin, "max": wmax }));
+            }
+            m
+        })
+        .await;
+        QueryResult::Map(query::MapResult {
+            kind: "bounds".to_string(),
+            entries,
+        })
+    }
+
+    /// Poll until no material recompile is pending (`compile_pending == 0`) and
+    /// the renderer's pipeline scheduler has drained, held stable across two
+    /// consecutive frames so the settled frame has actually presented. Returns on
+    /// timeout otherwise. Polls on a ~frame cadence.
+    async fn wait_render_settled(&self, max_ms: u32) -> query::QueryResult {
+        const INTERVAL_MS: u32 = 16;
+        let max_polls = (max_ms / INTERVAL_MS).max(1);
+        let mut stable = 0u32;
+        let mut waited = 0u32;
+        let mut settled = false;
+        for _ in 0..max_polls {
+            gloo_timers::future::TimeoutFuture::new(INTERVAL_MS).await;
+            waited = waited.saturating_add(INTERVAL_MS);
+            let editor_pending = self.compile_pending.get() > 0;
+            let renderer_pending = crate::engine::context::with_renderer_mut(|r| {
+                let p = r.compile_progress();
+                p.materials_pending > 0 || p.in_flight_subcompiles > 0
+            })
+            .await;
+            if !editor_pending && !renderer_pending {
+                stable += 1;
+                if stable >= 2 {
+                    settled = true;
+                    break;
+                }
+            } else {
+                stable = 0;
+            }
+        }
+        query::QueryResult::Settled(query::SettledResult {
+            settled,
+            waited_ms: waited,
+        })
     }
 
     /// `SampleClipTimeseries` handler — the workhorse verification query. Snapshot
@@ -2074,6 +2755,55 @@ impl EditorController {
             Err(e) => format!("{{\"error\":\"decode: {e}\"}}"),
         }
     }
+}
+
+/// A min/max bound as a pair of `[x,y,z]` corners.
+type Aabb3 = ([f32; 3], [f32; 3]);
+
+/// A coarse local-space AABB for a node kind (half-extents from primitive dims;
+/// a unit box for anything without obvious bounds). Used only to frame the
+/// camera + report approximate size — not a tight collision bound.
+fn local_aabb(kind: &NodeKind) -> Aabb3 {
+    use awsm_scene_schema::PrimitiveShape as P;
+    let (hx, hy, hz) = match kind {
+        NodeKind::Primitive { shape, .. } => match shape {
+            P::Box { dims } => (dims[0] * 0.5, dims[1] * 0.5, dims[2] * 0.5),
+            P::Sphere { radius, .. } => (*radius, *radius, *radius),
+            P::Plane { width, depth, .. } => (width * 0.5, 0.001, depth * 0.5),
+            P::Cylinder { radius, height, .. } | P::Cone { radius, height, .. } => {
+                (*radius, height * 0.5, *radius)
+            }
+            P::Torus {
+                radius, thickness, ..
+            } => (radius + thickness, *thickness, radius + thickness),
+        },
+        // Lights / cameras / empties / models: a small unit box centered on the
+        // node (a glTF model's true bounds aren't cheaply available CPU-side).
+        _ => (0.5, 0.5, 0.5),
+    };
+    ([-hx, -hy, -hz], [hx, hy, hz])
+}
+
+/// Transform a local AABB by a world matrix and return the enclosing world AABB.
+fn transform_aabb(world: glam::Mat4, min: [f32; 3], max: [f32; 3]) -> Aabb3 {
+    let corners = [
+        [min[0], min[1], min[2]],
+        [max[0], min[1], min[2]],
+        [min[0], max[1], min[2]],
+        [max[0], max[1], min[2]],
+        [min[0], min[1], max[2]],
+        [max[0], min[1], max[2]],
+        [min[0], max[1], max[2]],
+        [max[0], max[1], max[2]],
+    ];
+    let mut wmin = glam::Vec3::splat(f32::INFINITY);
+    let mut wmax = glam::Vec3::splat(f32::NEG_INFINITY);
+    for c in corners {
+        let p = world.transform_point3(glam::Vec3::from_array(c));
+        wmin = wmin.min(p);
+        wmax = wmax.max(p);
+    }
+    (wmin.to_array(), wmax.to_array())
 }
 
 /// A stable string key for a readback target (the `values` map key).
@@ -2303,11 +3033,222 @@ fn read_readback_target(
     }
 }
 
+/// Flip a custom material back to draft and request a (debounced) recompile.
+/// The single place the authoring command handlers funnel through — bumping
+/// `recompile_rev` is what wakes the auto-register observer (so an alpha/layout/
+/// includes edit recompiles, not just a WGSL edit). Mirrors the Studio's old
+/// `draft()` helper, now owned by the controller.
+fn mark_material_draft(mat: &Arc<CM>) {
+    mat.registered.set_neq(false);
+    mat.recompile_rev.replace_with(|v| v.wrapping_add(1));
+}
+
+/// The current alpha/surface mode of a custom material as the serializable
+/// [`awsm_editor_protocol::CustomAlphaMode`] (folds in the mask cutoff).
+fn custom_alpha_of(mat: &Arc<CM>) -> awsm_editor_protocol::CustomAlphaMode {
+    use awsm_editor_protocol::CustomAlphaMode as M;
+    match mat.alpha.get() {
+        AlphaMode::Opaque => M::Opaque,
+        AlphaMode::Mask => M::Mask {
+            cutoff: mat.cutoff.get(),
+        },
+        AlphaMode::Blend => M::Blend,
+    }
+}
+
+/// Project the editor's live `Slot`s into serializable `SlotSpec`s (and back).
+fn slots_to_specs(slots: &[Slot]) -> Vec<awsm_editor_protocol::SlotSpec> {
+    slots
+        .iter()
+        .map(|s| awsm_editor_protocol::SlotSpec {
+            name: s.name.clone(),
+            ty: s.ty.clone(),
+            val: s.val.clone(),
+            debug: s.debug.clone(),
+        })
+        .collect()
+}
+
+fn specs_to_slots(specs: &[awsm_editor_protocol::SlotSpec]) -> Vec<Slot> {
+    specs
+        .iter()
+        .map(|s| Slot {
+            name: s.name.clone(),
+            ty: s.ty.clone(),
+            val: s.val.clone(),
+            debug: s.debug.clone(),
+        })
+        .collect()
+}
+
+/// Keep only keys present in `valid` (drops unknowns rather than failing).
+fn validate_keys(keys: &[String], valid: &[&str]) -> Vec<String> {
+    keys.iter()
+        .filter(|k| valid.contains(&k.as_str()))
+        .cloned()
+        .collect()
+}
+
+/// Patch a built-in material factor on a node's inline material. Returns false
+/// if the node has no inline material or `value` is too short.
+fn patch_builtin_param(
+    kind: &mut NodeKind,
+    param: awsm_scene_schema::animation::BuiltinParamKind,
+    value: &[f32],
+) -> bool {
+    use awsm_scene_schema::animation::BuiltinParamKind as P;
+    let inline = match kind {
+        NodeKind::Primitive {
+            inline_material, ..
+        } => inline_material,
+        NodeKind::Model(r) => &mut r.inline_material,
+        _ => return false,
+    };
+    match param {
+        P::BaseColor => {
+            if value.len() < 3 {
+                return false;
+            }
+            inline.base_color[0] = value[0];
+            inline.base_color[1] = value[1];
+            inline.base_color[2] = value[2];
+        }
+        P::Emissive => {
+            if value.len() < 3 {
+                return false;
+            }
+            inline.emissive = [value[0], value[1], value[2]];
+        }
+        P::Metallic => match value.first() {
+            Some(&v) => inline.metallic = v,
+            None => return false,
+        },
+        P::Roughness => match value.first() {
+            Some(&v) => inline.roughness = v,
+            None => return false,
+        },
+    }
+    true
+}
+
+/// Bind (or clear) a texture override on a node's assigned custom material.
+/// Returns false if the node has no custom-material instance.
+fn patch_material_texture(kind: &mut NodeKind, slot: &str, texture: Option<AssetId>) -> bool {
+    let inst = match kind {
+        NodeKind::Primitive {
+            custom_material, ..
+        } => custom_material.as_mut(),
+        NodeKind::Model(r) => r.material.as_mut(),
+        _ => None,
+    };
+    let Some(inst) = inst else {
+        return false;
+    };
+    match texture {
+        Some(asset) => {
+            inst.texture_overrides
+                .insert(slot.to_string(), awsm_scene_schema::TextureRef::new(asset));
+        }
+        None => {
+            inst.texture_overrides.remove(slot);
+        }
+    }
+    true
+}
+
+/// Patch a light parameter on a `LightConfig`. Returns false if the param
+/// doesn't apply to the light kind or `value` is too short.
+fn patch_light_param(
+    cfg: &mut awsm_scene_schema::LightConfig,
+    param: awsm_scene_schema::animation::LightParamKind,
+    value: &[f32],
+) -> bool {
+    use awsm_scene_schema::animation::LightParamKind as P;
+    use awsm_scene_schema::LightConfig as L;
+    match param {
+        P::Color => {
+            if value.len() < 3 {
+                return false;
+            }
+            let c = [value[0], value[1], value[2]];
+            match cfg {
+                L::Directional { color, .. } | L::Point { color, .. } | L::Spot { color, .. } => {
+                    *color = c
+                }
+            }
+        }
+        P::Intensity => {
+            let Some(&v) = value.first() else {
+                return false;
+            };
+            match cfg {
+                L::Directional { intensity, .. }
+                | L::Point { intensity, .. }
+                | L::Spot { intensity, .. } => *intensity = v,
+            }
+        }
+        P::Range => {
+            let Some(&v) = value.first() else {
+                return false;
+            };
+            match cfg {
+                L::Point { range, .. } | L::Spot { range, .. } => *range = v,
+                L::Directional { .. } => return false,
+            }
+        }
+        P::InnerAngle => {
+            let Some(&v) = value.first() else {
+                return false;
+            };
+            match cfg {
+                L::Spot { inner_angle, .. } => *inner_angle = v,
+                _ => return false,
+            }
+        }
+        P::OuterAngle => {
+            let Some(&v) = value.first() else {
+                return false;
+            };
+            match cfg {
+                L::Spot { outer_angle, .. } => *outer_angle = v,
+                _ => return false,
+            }
+        }
+    }
+    true
+}
+
+/// Mark a material compile as in-flight (or debounce-scheduled). Paired with
+/// [`compile_end`]; the `WaitRenderSettled` query waits for the count to hit 0.
+pub(crate) fn compile_begin() {
+    let c = controller().compile_pending;
+    c.set(c.get().saturating_add(1));
+}
+
+/// Mark an in-flight material compile as finished (see [`compile_begin`]).
+pub(crate) fn compile_end() {
+    let c = controller().compile_pending;
+    c.set(c.get().saturating_sub(1));
+}
+
 /// Compile + register a dynamic material into a renderer bucket, then
 /// re-materialize meshes using it. Returns true on success; leaves
 /// `registered = false` on a compile error (the code pane surfaces the problems).
 async fn register_material(mat: &Arc<CM>) -> bool {
-    if !compile_wgsl(&mat.wgsl.get_cloned()).is_empty() {
+    // Lightweight, author-relative syntax pre-check — its line numbers index the
+    // author's WGSL body (the GPU/naga pass can't, since it sees the assembled
+    // module). Record these as diagnostics so MCP callers see them.
+    let syntax = compile_wgsl(&mat.wgsl.get_cloned());
+    if !syntax.is_empty() {
+        mat.last_diagnostics.set(
+            syntax
+                .into_iter()
+                .map(|(line, message)| query::CompileError {
+                    line: Some(line as u32),
+                    message,
+                })
+                .collect(),
+        );
         mat.registered.set_neq(false);
         return false;
     }
@@ -2319,12 +3260,19 @@ async fn register_material(mat: &Arc<CM>) -> bool {
     ));
     match crate::engine::bridge::dynamic::register(mat).await {
         Ok(_) => {
+            mat.last_diagnostics.set(Vec::new());
             mat.registered.set_neq(true);
             crate::engine::bridge::rematerialize_for_material(mat.id);
             true
         }
         Err(e) => {
+            // The real WebGPU/naga diagnostic — previously dropped after the
+            // toast, leaving an MCP caller staring at a black mesh + `ok`.
             Toast::error(format!("Material compile failed: {e}"));
+            mat.last_diagnostics.set(vec![query::CompileError {
+                line: None,
+                message: e,
+            }]);
             mat.registered.set_neq(false);
             false
         }
@@ -2341,6 +3289,7 @@ pub(crate) fn spawn_auto_register(mat: Arc<CM>) {
         // very first attempt fails (e.g. the renderer's pipeline scheduler is still
         // warming up on a cold load), retry a few times so it doesn't get stuck as
         // a draft requiring a manual edit to recompile.
+        compile_begin();
         for attempt in 0..4 {
             if register_material(&first_mat).await {
                 break;
@@ -2349,16 +3298,24 @@ pub(crate) fn spawn_auto_register(mat: Arc<CM>) {
                 gloo_timers::future::TimeoutFuture::new(300).await;
             }
         }
+        compile_end();
     });
     spawn_local(async move {
         let gen = std::rc::Rc::new(std::cell::Cell::new(0u64));
-        let sig = mat.wgsl.signal_cloned();
+        // Observe the recompile counter (bumped by every compile-affecting edit:
+        // WGSL, alpha, layout, includes/inputs) — not just the WGSL field.
+        let sig = mat.recompile_rev.signal();
         let mut first = true;
         sig.for_each(move |_| {
             let fire = !first;
             first = false;
             let g = gen.get().wrapping_add(1);
             gen.set(g);
+            // A recompile is now pending — count it so `WaitRenderSettled` blocks
+            // a screenshot until the debounce fires and the bucket refreshes.
+            if fire {
+                compile_begin();
+            }
             let mat = mat.clone();
             let gen = gen.clone();
             async move {
@@ -2369,6 +3326,7 @@ pub(crate) fn spawn_auto_register(mat: Arc<CM>) {
                 if gen.get() == g {
                     let _ = register_material(&mat).await;
                 }
+                compile_end();
             }
         })
         .await;
@@ -2852,6 +3810,23 @@ fn coalesce_key(cmd: &EditorCommand) -> Option<(u8, NodeId)> {
         | EditorCommand::TrimStrip { layer, strip, .. } => {
             Some((7, pack(Aid(uuid::Uuid::nil()), *layer, *strip)))
         }
+        // Material authoring — coalesce continuous edits (WGSL typing, cutoff /
+        // color scrubs, dep bulk-toggles) per material into one undo step.
+        EditorCommand::SetCustomMaterialWgsl { id, .. } => Some((8, pack(*id, 0, 0))),
+        EditorCommand::SetCustomMaterialAlphaMode { id, .. } => Some((9, pack(*id, 0, 0))),
+        EditorCommand::SetCustomMaterialDoubleSided { id, .. } => Some((10, pack(*id, 0, 0))),
+        EditorCommand::SetCustomMaterialDebugColor { id, .. } => Some((11, pack(*id, 0, 0))),
+        EditorCommand::SetCustomMaterialLayout { id, .. } => Some((12, pack(*id, 0, 0))),
+        EditorCommand::SetCustomMaterialShaderIncludes { id, .. } => Some((13, pack(*id, 0, 0))),
+        EditorCommand::SetCustomMaterialFragmentInputs { id, .. } => Some((14, pack(*id, 0, 0))),
+        EditorCommand::SetMaterialUniform { material, name, .. } => {
+            let h = name
+                .bytes()
+                .fold(0usize, |a, b| a.wrapping_mul(31).wrapping_add(b as usize));
+            Some((15, pack(*material, h, h >> 16)))
+        }
+        EditorCommand::SetBuiltinParam { node, .. } => Some((16, *node)),
+        EditorCommand::SetLightParam { node, .. } => Some((17, *node)),
         _ => None,
     }
 }
