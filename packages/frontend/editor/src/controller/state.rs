@@ -816,6 +816,122 @@ impl EditorController {
                 };
                 Ok(inverse)
             }
+            EditorCommand::SetVertexPositions {
+                mesh,
+                indices,
+                positions,
+            } => {
+                use crate::engine::bridge::mesh_cache;
+                let Some(mut cap) = mesh_cache::get_captured(mesh) else {
+                    return Ok(None);
+                };
+                // Sparse inverse: capture only the prior positions of touched verts.
+                let mut prior = Vec::with_capacity(indices.len());
+                for (k, &idx) in indices.iter().enumerate() {
+                    match cap.positions.get_mut(idx as usize) {
+                        Some(slot) => {
+                            prior.push(*slot);
+                            if let Some(np) = positions.get(k) {
+                                *slot = *np;
+                            }
+                        }
+                        None => prior.push([0.0, 0.0, 0.0]),
+                    }
+                }
+                crate::controller::mesh_eval::recompute_captured_normals(&mut cap);
+                mesh_cache::store_with_id(mesh, cap);
+                self.scene.bump_revision();
+                Ok(Some(EditorCommand::SetVertexPositions {
+                    mesh,
+                    indices,
+                    positions: prior,
+                }))
+            }
+            EditorCommand::SoftTransformVertices {
+                mesh,
+                indices,
+                translation,
+                falloff,
+            } => {
+                use crate::engine::bridge::mesh_cache;
+                let Some(mut cap) = mesh_cache::get_captured(mesh) else {
+                    return Ok(None);
+                };
+                let md = awsm_meshgen::MeshData {
+                    positions: cap.positions.clone(),
+                    normals: cap.normals.clone(),
+                    uvs: cap.uvs.clone(),
+                    colors: cap.colors.clone(),
+                    indices: cap.indices.clone(),
+                };
+                let new_positions = awsm_meshgen::edit::soft_transform_positions(
+                    &md,
+                    &indices,
+                    translation,
+                    falloff,
+                );
+                // Sparse inverse over every vertex the falloff actually moved.
+                let mut inv_idx = Vec::new();
+                let mut inv_pos = Vec::new();
+                for (i, (old, new)) in cap.positions.iter().zip(&new_positions).enumerate() {
+                    if old != new {
+                        inv_idx.push(i as u32);
+                        inv_pos.push(*old);
+                    }
+                }
+                if inv_idx.is_empty() {
+                    return Ok(None);
+                }
+                cap.positions = new_positions;
+                crate::controller::mesh_eval::recompute_captured_normals(&mut cap);
+                mesh_cache::store_with_id(mesh, cap);
+                self.scene.bump_revision();
+                Ok(Some(EditorCommand::SetVertexPositions {
+                    mesh,
+                    indices: inv_idx,
+                    positions: inv_pos,
+                }))
+            }
+            EditorCommand::CollapseMeshStack { mesh } => {
+                use crate::engine::bridge::mesh_cache;
+                let prior_stack = match self
+                    .scene
+                    .assets
+                    .lock()
+                    .unwrap()
+                    .get(mesh)
+                    .map(|e| &e.source)
+                {
+                    Some(SceneAssetSource::Mesh(def)) => def.modifiers.clone(),
+                    _ => return Ok(None),
+                };
+                // Nothing to collapse without a recipe.
+                let Some(stack) = prior_stack else {
+                    return Ok(None);
+                };
+                let Some(prior_bytes) = mesh_cache::get_captured(mesh) else {
+                    return Ok(None);
+                };
+                let baked = crate::controller::mesh_eval::evaluate_stack(&self.scene, &stack);
+                {
+                    let mut assets = self.scene.assets.lock().unwrap();
+                    if let Some(entry) = assets.entries.get_mut(&mesh) {
+                        if let SceneAssetSource::Mesh(def) = &mut entry.source {
+                            def.modifiers = None;
+                        }
+                    }
+                }
+                mesh_cache::store_with_id(mesh, mesh_cache::from_mesh_data(baked));
+                self.scene.bump_revision();
+                // Undo restores the recipe (re-evaluates) then the exact prior bytes.
+                Ok(Some(EditorCommand::Batch(vec![
+                    EditorCommand::SetMeshModifiers { mesh, stack },
+                    EditorCommand::SetMeshData {
+                        mesh,
+                        data: prior_bytes,
+                    },
+                ])))
+            }
             EditorCommand::SetAssetSelection { id } => {
                 self.asset_selection.set(id);
                 Ok(None)

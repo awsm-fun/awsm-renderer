@@ -319,6 +319,28 @@ pub enum EditorCommand {
     /// remove / reorder / param-tweak are all the UI/agent sending a new whole
     /// stack. Inverse: restore the prior stack (or prior bytes if there was none).
     SetMeshModifiers { mesh: AssetId, stack: ModifierStack },
+    /// Replace the positions of specific vertices (raw editing). `indices[k]`
+    /// gets `positions[k]`; normals are recomputed. Inverse: a `SetVertexPositions`
+    /// carrying the **prior** positions of the same indices (sparse — never a
+    /// whole-mesh snapshot).
+    SetVertexPositions {
+        mesh: AssetId,
+        indices: Vec<u32>,
+        positions: Vec<[f32; 3]>,
+    },
+    /// Translate a vertex selection with a smooth radial falloff (server computes
+    /// the per-vertex weights via `meshgen::edit::soft_transform_positions`).
+    /// Inverse: a sparse `SetVertexPositions` of every vertex the move touched.
+    SoftTransformVertices {
+        mesh: AssetId,
+        indices: Vec<u32>,
+        translation: [f32; 3],
+        falloff: f32,
+    },
+    /// Bake an editable mesh's modifier stack into raw triangles and clear the
+    /// recipe (the deliberate heavy snapshot). Inverse:
+    /// `Batch[SetMeshModifiers(prior), SetMeshData(prior_bytes)]`.
+    CollapseMeshStack { mesh: AssetId },
 
     // ─────────────────── Custom (dynamic-WGSL) material authoring ─────────────
     // The Studio surface that used to mutate the reactive `CustomMaterial`
@@ -687,6 +709,9 @@ impl EditorCommand {
             EditorCommand::SetMeshData { .. }
                 | EditorCommand::ConvertToEditableMesh { .. }
                 | EditorCommand::SetMeshModifiers { .. }
+                | EditorCommand::SetVertexPositions { .. }
+                | EditorCommand::SoftTransformVertices { .. }
+                | EditorCommand::CollapseMeshStack { .. }
         )
     }
 
@@ -730,6 +755,9 @@ impl EditorCommand {
             EditorCommand::ConvertToEditableMesh { .. } => "Convert to editable mesh",
             EditorCommand::SetMeshData { .. } => "Edit mesh",
             EditorCommand::SetMeshModifiers { .. } => "Edit modifiers",
+            EditorCommand::SetVertexPositions { .. } => "Move vertices",
+            EditorCommand::SoftTransformVertices { .. } => "Soft-transform vertices",
+            EditorCommand::CollapseMeshStack { .. } => "Collapse mesh stack",
             EditorCommand::SetCustomMaterialAlphaMode { .. } => "Set alpha mode",
             EditorCommand::SetCustomMaterialDoubleSided { .. } => "Set double-sided",
             EditorCommand::SetCustomMaterialDebugColor { .. } => "Set base color",

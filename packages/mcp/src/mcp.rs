@@ -125,6 +125,32 @@ fn default_cross_samples() -> u32 {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct MeshIdParams {
+    /// UUID of the editable mesh asset.
+    pub mesh: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SetVertexPositionsParams {
+    pub mesh: String,
+    /// Vertex indices to move.
+    pub indices: Vec<u32>,
+    /// New positions, aligned with `indices`.
+    pub positions: Vec<[f32; 3]>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SoftTransformParams {
+    pub mesh: String,
+    /// The selected vertex indices (the move's full-weight center).
+    pub indices: Vec<u32>,
+    /// Translation applied at the selection, fading over the falloff radius.
+    pub translation: [f32; 3],
+    /// Falloff radius (world units); 0 = hard move of exactly the selection.
+    pub falloff: f32,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct SetMeshModifiersParams {
     /// UUID of the editable mesh asset.
     pub mesh: String,
@@ -1223,6 +1249,50 @@ impl EditorMcp {
             .map_err(|e| McpError::invalid_params(format!("bad modifier stack: {e}"), None))?;
         self.dispatch(EditorCommand::SetMeshModifiers { mesh, stack })
             .await
+    }
+
+    #[tool(
+        description = "Replace specific vertices' positions on an editable mesh (raw editing). `indices[k]` ↦ `positions[k]`; normals are recomputed. Undo restores the prior positions (sparse)."
+    )]
+    async fn set_vertex_positions(
+        &self,
+        Parameters(p): Parameters<SetVertexPositionsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetVertexPositions {
+            mesh: parse_asset(&p.mesh)?,
+            indices: p.indices,
+            positions: p.positions,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Translate a vertex selection with a smooth radial falloff (server computes the per-vertex weights). `falloff` 0 = hard move of exactly the selection. Pairs with select-by-predicate + get_mesh_stats for cursor-free editing."
+    )]
+    async fn soft_transform_vertices(
+        &self,
+        Parameters(p): Parameters<SoftTransformParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SoftTransformVertices {
+            mesh: parse_asset(&p.mesh)?,
+            indices: p.indices,
+            translation: p.translation,
+            falloff: p.falloff,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Bake an editable mesh's modifier stack into raw triangles and clear the recipe (the deliberate heavy snapshot, undoable). After this the mesh is raw-vertex-edited via set_vertex_positions / soft_transform_vertices."
+    )]
+    async fn collapse_mesh_stack(
+        &self,
+        Parameters(p): Parameters<MeshIdParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::CollapseMeshStack {
+            mesh: parse_asset(&p.mesh)?,
+        })
+        .await
     }
 
     #[tool(description = "Delete a custom (dynamic/built-in) material by id.")]

@@ -8,6 +8,7 @@
 
 use awsm_meshgen::MeshData;
 use awsm_scene_schema::modifier::{MeshBase, ModifierStack};
+use awsm_scene_schema::CapturedMesh;
 
 use crate::engine::bridge::mesh_cache;
 use crate::engine::scene::Scene;
@@ -34,4 +35,17 @@ pub(crate) fn evaluate_stack(scene: &Scene, stack: &ModifierStack) -> MeshData {
         // Pure bases evaluate entirely in meshgen.
         _ => awsm_meshgen::evaluate(stack),
     }
+}
+
+/// Recompute a captured mesh's per-vertex normals after a raw position edit.
+pub(crate) fn recompute_captured_normals(cap: &mut CapturedMesh) {
+    let mut md = MeshData {
+        positions: cap.positions.clone(),
+        normals: None,
+        uvs: None,
+        colors: None,
+        indices: cap.indices.clone(),
+    };
+    md.compute_vertex_normals();
+    cap.normals = md.normals;
 }
