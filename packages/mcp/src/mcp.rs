@@ -125,6 +125,14 @@ fn default_cross_samples() -> u32 {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SelectVerticesParams {
+    /// UUID of the geometry node.
+    pub node: String,
+    /// A `VertexPredicate` JSON (tagged by `kind`).
+    pub predicate: serde_json::Value,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct MeshIdParams {
     /// UUID of the editable mesh asset.
     pub mesh: String,
@@ -1291,6 +1299,22 @@ impl EditorMcp {
     ) -> Result<CallToolResult, McpError> {
         self.dispatch(EditorCommand::CollapseMeshStack {
             mesh: parse_asset(&p.mesh)?,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Select a node mesh's vertices by predicate (no cursor), returning their indices to feed into set_vertex_positions / soft_transform_vertices. `predicate` is a VertexPredicate JSON, e.g. {\"kind\":\"top_percent\",\"axis\":1,\"percent\":0.2} or {\"kind\":\"normal_dir\",\"dir\":[0,1,0],\"threshold\":0.7} / axis_greater / axis_less / within_radius."
+    )]
+    async fn select_vertices_where(
+        &self,
+        Parameters(p): Parameters<SelectVerticesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let predicate = serde_json::from_value(p.predicate)
+            .map_err(|e| McpError::invalid_params(format!("bad predicate: {e}"), None))?;
+        self.query(EditorQuery::SelectVerticesWhere {
+            node: parse_node(&p.node)?,
+            predicate,
         })
         .await
     }

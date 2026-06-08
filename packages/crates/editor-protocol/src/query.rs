@@ -218,6 +218,14 @@ pub enum EditorQuery {
         #[serde(default)]
         node: Option<NodeId>,
     },
+    /// Select the vertices of a node's resolved mesh matching `predicate`,
+    /// returning their indices (a read — the agent feeds them to
+    /// `SetVertexPositions` / `SoftTransformVertices`). Command-only selection,
+    /// no cursor. MCP: `select_vertices_where`.
+    SelectVerticesWhere {
+        node: NodeId,
+        predicate: VertexPredicate,
+    },
     /// Geometry stats for a node's resolved mesh (Primitive / Mesh / Sweep):
     /// vertex+triangle counts, bbox, centroid, surface area, volume, watertight.
     /// A read — the perceive half of the agent's measure→adjust loop. MCP:
@@ -258,6 +266,24 @@ fn default_axis() -> u8 {
 
 fn default_cross_section_samples() -> u32 {
     16
+}
+
+/// A command-driven vertex selection predicate (no cursor). Backs
+/// [`EditorQuery::SelectVerticesWhere`]; each maps to a `meshgen::edit::select_*`
+/// function. `axis`: 0=X, 1=Y, 2=Z.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum VertexPredicate {
+    /// Normal points within `threshold` (dot > threshold) of `dir`.
+    NormalDir { dir: [f32; 3], threshold: f32 },
+    /// Component `axis` greater than `value`.
+    AxisGreater { axis: u8, value: f32 },
+    /// Component `axis` less than `value`.
+    AxisLess { axis: u8, value: f32 },
+    /// Top `percent` (0..1) along `axis`.
+    TopPercent { axis: u8, percent: f32 },
+    /// Within `radius` of `center`.
+    WithinRadius { center: [f32; 3], radius: f32 },
 }
 
 /// What a [`EditorQuery::SampleClipTimeseries`] frame reads.

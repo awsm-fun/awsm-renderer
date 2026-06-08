@@ -2751,6 +2751,48 @@ impl EditorController {
                     Err(e) => QueryResult::Error { error: e },
                 }
             }
+            EditorQuery::SelectVerticesWhere { node, predicate } => {
+                use awsm_editor_protocol::VertexPredicate as P;
+                use awsm_meshgen::edit::{
+                    select_by_axis, select_by_normal_dir, select_top_percent_axis,
+                    select_within_radius, Cmp,
+                };
+                use serde_json::json;
+                let mesh = mutate::find_by_id(&self.scene, node).and_then(|n| {
+                    crate::controller::export::node_mesh(&self.scene, &n.kind.get_cloned())
+                });
+                match mesh {
+                    Some(mesh) => {
+                        let idx = match predicate {
+                            P::NormalDir { dir, threshold } => {
+                                select_by_normal_dir(&mesh, dir, threshold)
+                            }
+                            P::AxisGreater { axis, value } => {
+                                select_by_axis(&mesh, axis as usize, Cmp::Greater, value)
+                            }
+                            P::AxisLess { axis, value } => {
+                                select_by_axis(&mesh, axis as usize, Cmp::Less, value)
+                            }
+                            P::TopPercent { axis, percent } => {
+                                select_top_percent_axis(&mesh, axis as usize, percent)
+                            }
+                            P::WithinRadius { center, radius } => {
+                                select_within_radius(&mesh, center, radius)
+                            }
+                        };
+                        let mut entries = std::collections::BTreeMap::new();
+                        entries.insert("count".to_string(), json!(idx.len()));
+                        entries.insert("indices".to_string(), json!(idx));
+                        QueryResult::Map(query::MapResult {
+                            kind: "vertex_selection".to_string(),
+                            entries,
+                        })
+                    }
+                    None => QueryResult::Error {
+                        error: format!("node {node} has no resolvable mesh"),
+                    },
+                }
+            }
             EditorQuery::MeshStats { node } => {
                 use serde_json::json;
                 let mesh = mutate::find_by_id(&self.scene, node).and_then(|n| {
