@@ -220,13 +220,18 @@ Native test counts now: `glb-export` 6, `scene-schema` 14, `meshgen` 34.
 - ⬜ Browser: `set_mesh_modifiers` a mug SDF graph → `screenshot`/`get_mesh_stats`
   shows a closed rounded result; tune `resolution` + grid margin.
 
-## Phase 6 — Player runtime bundle — ⬜ NOT STARTED
-`EditorQuery::ExportPlayerBundle { name }` reusing `write_glb`/`GlbScene` (IR is
-scene-complete; lights/cameras already populated by `export::node_to_export`).
-Remaining: editor clips → `ExportAnimation` lowering; bundle layout (`scene.glb`
-+ pruned `materials/` side-files for `AWSM_materials_none` + referenced
-`textures/` + `env/` sidecar). Risk: the player likely needs a **net-new bundle
-loader** (vs the project loader).
+## Phase 6 — Player runtime bundle — 🟡 first-cut wired (lint-gated)
+- `EditorQuery::ExportPlayerBundle { name }` returns a manifest: base64
+  `scene.glb` (whole-scene `export_glb` — geometry + materials + lights/cameras),
+  pruned custom-material side-files (`persistence::material_files`), and an env
+  descriptor. MCP `export_player_bundle`. (Confirms the Phase-1 scene-complete IR
+  reuses with no rewrite.)
+### ⬜ Phase 6 remaining
+- Editor clips → glTF animation lowering populating `GlbScene.animations`
+  (`ExportAnimation` channels; `KHR_animation_pointer` for material/light/camera
+  tracks). Texture copying/compression into `textures/`. Write the bundle to a
+  picked dir via `ProjectDir` (vs returning the manifest). **Net-new player-side
+  bundle loader** (the called-out unknown). Screenshot-parity verification.
 
 ## Generated capabilities reference / `awsm://docs/mesh-tools` — ⬜ NOT STARTED
 Mesh-edit view is read-only + a generated reference (no manipulation UI).
