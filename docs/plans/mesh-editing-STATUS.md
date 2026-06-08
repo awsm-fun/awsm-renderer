@@ -6,6 +6,24 @@ Branch: `mesh-authoring`. Native gates used each commit: `task lint` (fmt + clip
 
 Legend: ✅ done & gated · 🟡 implemented, needs in-browser verification · ⬜ not started.
 
+## Summary (where we are)
+Phases **1–4** have their natively-testable cores **done + tested** and their
+command/query/MCP surfaces **wired + lint-gated**, plus the LLM perceive→act
+introspection loop. Native test counts: `glb-export` 6, `scene-schema` 13,
+`meshgen` 28. Whole-workspace `task lint` green at every commit.
+
+**Done (native-tested):** GLB writer + scene-complete IR; editable-mesh schema;
+modifier-stack schema + full evaluator (incl. `Displace` formula evaluator);
+mesh stats + cross-section; soft-transform + predicate selection.
+**Wired (lint-gated, browser-pending):** ExportGlb; persistence side-files;
+ConvertToEditableMesh / SetMeshData / SetMeshModifiers / SetVertexPositions /
+SoftTransformVertices / CollapseMeshStack commands + mesh-revision bridge;
+get_mesh_stats / get_mesh_cross_section / select_vertices_where queries; ~14 new
+MCP tools.
+**Next arcs:** Phase 5 SDF/CSG (needs a surface-nets crate), Phase 6 player
+bundle (reuses the scene-complete `write_glb`), the generated capabilities
+reference / mesh-edit view, and all in-browser verification (checklists below).
+
 ---
 
 ## Phase 1 — GLB export
@@ -180,12 +198,16 @@ Legend: ✅ done & gated · 🟡 implemented, needs in-browser verification · �
   MCP `set_vertex_positions` / `soft_transform_vertices` / `collapse_mesh_stack`.
 - Browser: `collapse_mesh_stack` → `select` (by index) → `soft_transform_vertices`
   → `get_node_bounds` reflects the move → undo restores exactly.
+### 🟡 Predicate selection — lint-gated
+- `EditorQuery::SelectVerticesWhere { node, predicate }` → matching vertex
+  indices, via the tested `edit::select_*` fns. `VertexPredicate`: normal_dir /
+  axis_greater / axis_less / top_percent / within_radius. MCP
+  `select_vertices_where`. Closes the cursor-free loop with the introspection
+  queries + soft_transform_vertices.
 ### ⬜ Phase 4 remaining
 - Transient `SetVertexSelection` (controller field, like `SetSelection`) +
-  `select_vertices_where` mapping a predicate enum → the `edit::select_*` fns
-  (which already exist + are tested). MCP `select_vertices_where`.
-- Read-only selection-highlight rendering in the bridge/viewport (the one small
-  view addition — observability only).
+  read-only selection-highlight rendering in the bridge/viewport (the one small
+  view addition — observability only; browser).
 - **5** SDF/CSG: `MeshBase::Sdf(SdfNode)` + a surface-nets crate in `meshgen/src/sdf.rs`.
 - **6** player runtime bundle: `ExportPlayerBundle` reusing `write_glb`/`GlbScene`
   (the IR is already scene-complete — lights/cameras/animations/env slots exist).
