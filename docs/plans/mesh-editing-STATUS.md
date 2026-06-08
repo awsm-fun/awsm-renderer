@@ -20,9 +20,11 @@ ConvertToEditableMesh / SetMeshData / SetMeshModifiers / SetVertexPositions /
 SoftTransformVertices / CollapseMeshStack commands + mesh-revision bridge;
 get_mesh_stats / get_mesh_cross_section / select_vertices_where queries; ~14 new
 MCP tools.
-**Next arcs:** Phase 5 SDF/CSG (needs a surface-nets crate), Phase 6 player
-bundle (reuses the scene-complete `write_glb`), the generated capabilities
-reference / mesh-edit view, and all in-browser verification (checklists below).
+**Next arcs:** Phase 6 player bundle (reuses the scene-complete `write_glb`; needs
+a player-side bundle loader), the generated capabilities reference / mesh-edit
+view, and all in-browser verification (checklists below).
+
+Native test counts now: `glb-export` 6, `scene-schema` 14, `meshgen` 34.
 
 ---
 
@@ -208,10 +210,23 @@ reference / mesh-edit view, and all in-browser verification (checklists below).
 - Transient `SetVertexSelection` (controller field, like `SetSelection`) +
   read-only selection-highlight rendering in the bridge/viewport (the one small
   view addition — observability only; browser).
-- **5** SDF/CSG: `MeshBase::Sdf(SdfNode)` + a surface-nets crate in `meshgen/src/sdf.rs`.
-- **6** player runtime bundle: `ExportPlayerBundle` reusing `write_glb`/`GlbScene`
-  (the IR is already scene-complete — lights/cameras/animations/env slots exist).
-- Capability menu is incremental by cost tier, not phase-gated.
+
+## Phase 5 — SDF / CSG — 🟡 core complete (native-tested)
+- `MeshBase::Sdf { node, resolution }` + `SdfNode`/`SdfPrimitive` (round-trip
+  tested). `meshgen/src/sdf.rs`: `eval_sdf` distance graph (smooth booleans) +
+  `sdf_bounds`. `sdf_mesh.rs`: `surface_nets_mesh` via `fast-surface-nets`
+  (sphere + CSG mug tested). `evaluate(Sdf)` returns real geometry, so
+  `set_mesh_modifiers` with an SDF base meshes it.
+- ⬜ Browser: `set_mesh_modifiers` a mug SDF graph → `screenshot`/`get_mesh_stats`
+  shows a closed rounded result; tune `resolution` + grid margin.
+
+## Phase 6 — Player runtime bundle — ⬜ NOT STARTED
+`EditorQuery::ExportPlayerBundle { name }` reusing `write_glb`/`GlbScene` (IR is
+scene-complete; lights/cameras already populated by `export::node_to_export`).
+Remaining: editor clips → `ExportAnimation` lowering; bundle layout (`scene.glb`
++ pruned `materials/` side-files for `AWSM_materials_none` + referenced
+`textures/` + `env/` sidecar). Risk: the player likely needs a **net-new bundle
+loader** (vs the project loader).
 
 ## Generated capabilities reference / `awsm://docs/mesh-tools` — ⬜ NOT STARTED
 Mesh-edit view is read-only + a generated reference (no manipulation UI).
