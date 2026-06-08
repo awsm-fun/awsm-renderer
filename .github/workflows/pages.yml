@@ -21,7 +21,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -35,13 +35,18 @@ jobs:
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # Install Trunk from its official release binary (rather than
+      # jetli/trunk-action, which still ships as a Node-20 action) — keeps the
+      # workflow free of deprecation warnings.
       - name: Install Trunk
-        uses: jetli/trunk-action@v0.5.0
-        with:
-          version: "latest"
+        run: |
+          set -euo pipefail
+          curl -fsSL https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-unknown-linux-gnu.tar.gz \
+            | tar -xz -C "$HOME/.cargo/bin"
+          trunk --version
 
       - name: Install Task
-        uses: go-task/setup-task@v1
+        uses: go-task/setup-task@v2
 
       # `envsubst` ships with gettext-base; preinstalled on
       # ubuntu-latest at time of writing but cheap to ensure.
@@ -80,7 +85,7 @@ jobs:
           cp .build-artifacts/pages/index.html .build-artifacts/pages/404.html
 
       - name: Upload artifacts
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           name: github-pages
           path: ./.build-artifacts/pages
@@ -101,4 +106,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
