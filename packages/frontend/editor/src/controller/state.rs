@@ -744,6 +744,9 @@ impl EditorController {
                         label: "Editable Mesh".to_string(),
                         source: Some(source),
                         editable: true,
+                        // No recipe yet — the baked bytes are the source of truth
+                        // until `SetMeshModifiers` + meshgen eval are wired in.
+                        modifiers: None,
                     })),
                 );
                 n.kind.set(NodeKind::Mesh {

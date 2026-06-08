@@ -53,6 +53,7 @@ fn project_with_mesh_asset(asset_id: AssetId, label: &str) -> EditorProject {
             label: label.to_string(),
             source: None,
             editable: false,
+            modifiers: None,
         })),
     );
     EditorProject {
@@ -148,6 +149,7 @@ fn mesh_asset_with_source_roundtrip() {
                 segments_lat: 12,
             })),
             editable: false,
+            modifiers: None,
         })),
     );
     let sweep_id = AssetId::new();
@@ -166,6 +168,7 @@ fn mesh_asset_with_source_roundtrip() {
                 samples: 128,
             })),
             editable: false,
+            modifiers: None,
         })),
     );
     let project = EditorProject {

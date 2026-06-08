@@ -90,10 +90,47 @@ fn mesh_def_editable_default_and_sources() {
             label: "m".to_string(),
             source: src,
             editable: true,
+            modifiers: None,
         };
         let json = serde_json::to_string(&def).unwrap();
         assert_eq!(def, serde_json::from_str::<MeshDef>(&json).unwrap());
         let bin = bitcode::serialize(&def).unwrap();
         assert_eq!(def, bitcode::deserialize::<MeshDef>(&bin).unwrap());
     }
+}
+
+/// A modifier stack round-trips through serde + bitcode, and an old MeshDef
+/// (no `modifiers` key) defaults to `None`.
+#[test]
+fn modifier_stack_roundtrip_and_default() {
+    use crate::modifier::{Axis, MeshBase, Modifier, ModifierStack};
+
+    let old: MeshDef = serde_json::from_str(r#"{"label":"m"}"#).unwrap();
+    assert!(old.modifiers.is_none());
+
+    let stack = ModifierStack {
+        base: MeshBase::Lathe {
+            profile: vec![[0.0, 0.5], [1.0, 0.9], [2.0, 0.4]],
+            segments: 24,
+            angle: std::f32::consts::TAU,
+        },
+        modifiers: vec![
+            Modifier::Twist {
+                axis: Axis::Y,
+                turns: 0.5,
+            },
+            Modifier::Taper {
+                axis: Axis::Y,
+                factor: 0.3,
+            },
+            Modifier::Array {
+                count: 3,
+                offset: [2.0, 0.0, 0.0],
+            },
+        ],
+    };
+    let json = serde_json::to_string(&stack).unwrap();
+    assert_eq!(stack, serde_json::from_str::<ModifierStack>(&json).unwrap());
+    let bin = bitcode::serialize(&stack).unwrap();
+    assert_eq!(stack, bitcode::deserialize::<ModifierStack>(&bin).unwrap());
 }

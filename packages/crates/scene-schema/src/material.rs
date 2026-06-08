@@ -286,6 +286,12 @@ pub struct MeshDef {
     /// `editable = false`).
     #[serde(default)]
     pub editable: bool,
+    /// The procedural recipe (modifier stack) this mesh regenerates from, when
+    /// any. `None` = no recipe; the `.mesh.bin` triangle buffer is the source of
+    /// truth (raw-edited / collapsed). `#[serde(default)]` so pre-Phase-3 captured
+    /// meshes round-trip. See [`super::modifier::ModifierStack`].
+    #[serde(default)]
+    pub modifiers: Option<super::modifier::ModifierStack>,
 }
 
 /// Where a captured mesh's geometry came from. Stored on `MeshDef`
