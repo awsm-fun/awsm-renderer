@@ -298,9 +298,11 @@ version = "0.2.0"
 dependencies = [
  "awsm-meshgen",
  "awsm-scene",
+ "bitcode",
  "schemars",
  "serde",
  "serde_json",
+ "toml",
 ]
 
 [[package]]
@@ -516,20 +518,6 @@ dependencies = [
 
 [[package]]
 name = "awsm-scene"
-version = "0.2.0"
-dependencies = [
- "bitcode",
- "glam 0.32.1",
- "schemars",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "toml",
- "uuid",
-]
-
-[[package]]
-name = "awsm-scene-schema"
 version = "0.2.0"
 dependencies = [
  "bitcode",

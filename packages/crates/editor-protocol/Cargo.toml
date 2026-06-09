@@ -20,3 +20,8 @@ schemars = { version = "1", optional = true }
 default = []
 # Derive JSON Schemas (chains awsm-scene's + meshgen's recipe schemas). MCP server.
 schemars = ["dep:schemars", "awsm-scene/schemars", "awsm-meshgen/schemars"]
+
+[dev-dependencies]
+# Authoring round-trip tests (EditorProject + the .mesh.bin bitcode side file).
+bitcode = { version = "0.6.9", features = ["serde", "uuid"] }
+toml = "0.8"

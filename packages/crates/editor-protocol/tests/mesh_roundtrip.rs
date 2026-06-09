@@ -13,7 +13,7 @@
 //! either the asset table forgets the Mesh entry, or the side-file
 //! contents come back malformed.
 
-use awsm_scene_schema::{
+use awsm_editor_protocol::{
     mesh_asset_filename, AssetEntry, AssetId, AssetSource, AssetTable, CapturedMesh, EditorProject,
     EnvironmentConfig, MeshDef, MESH_FILE_EXTENSION,
 };
@@ -53,8 +53,10 @@ fn project_with_mesh_asset(asset_id: AssetId, label: &str) -> EditorProject {
             label: label.to_string(),
             source: None,
             editable: false,
-            stack: awsm_scene_schema::ModifierStack {
-                base: awsm_scene_schema::MeshBase::Captured(awsm_scene_schema::MeshRef(asset_id)),
+            stack: awsm_editor_protocol::ModifierStack {
+                base: awsm_editor_protocol::MeshBase::Captured(awsm_editor_protocol::MeshRef(
+                    asset_id,
+                )),
                 modifiers: vec![],
             },
             overrides: Default::default(),
@@ -136,7 +138,7 @@ fn mesh_asset_with_source_roundtrip() {
     // H1: MeshDef.source records the kind the bytes were captured
     // from. Verify both Primitive + Sweep variants survive JSON +
     // bitcode round-trips.
-    use awsm_scene_schema::{
+    use awsm_editor_protocol::{
         AssetTable, CapturedSource, CrossSectionDef, MaterialDef, NodeId, PrimitiveShape,
         SweepAlongCurveDef, SweepUvMode,
     };
@@ -153,8 +155,8 @@ fn mesh_asset_with_source_roundtrip() {
                 segments_lat: 12,
             })),
             editable: false,
-            stack: awsm_scene_schema::ModifierStack {
-                base: awsm_scene_schema::MeshBase::Primitive(PrimitiveShape::Sphere {
+            stack: awsm_editor_protocol::ModifierStack {
+                base: awsm_editor_protocol::MeshBase::Primitive(PrimitiveShape::Sphere {
                     radius: 1.25,
                     segments_long: 24,
                     segments_lat: 12,
@@ -180,8 +182,8 @@ fn mesh_asset_with_source_roundtrip() {
                 samples: 128,
             })),
             editable: false,
-            stack: awsm_scene_schema::ModifierStack {
-                base: awsm_scene_schema::MeshBase::Sweep(SweepAlongCurveDef {
+            stack: awsm_editor_protocol::ModifierStack {
+                base: awsm_editor_protocol::MeshBase::Sweep(SweepAlongCurveDef {
                     curve_node: NodeId::new(),
                     cross_section: CrossSectionDef::Tube {
                         radius: 0.3,
