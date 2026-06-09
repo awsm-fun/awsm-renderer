@@ -68,54 +68,76 @@ pub async fn export_scene_glb(ctrl: &super::EditorController) -> Result<Vec<u8>,
     Ok(write_glb(&glb))
 }
 
-/// Assemble a player bundle for the live scene, reusing the native
-/// [`awsm_glb_export::assemble_bundle`] layout so the editor and the
-/// natively-tested directory layout can never drift.
+/// Bake the live scene to a **player bundle directory** (`scene.toml` + an
+/// `assets/` directory) — the runtime form per the glb-mesh design, replacing the
+/// old single-`scene.glb` bundle.
 ///
-/// Pieces:
-/// - `scene.glb`: the whole-scene baked glTF (with embedded **PBR/built-in**
-///   textures — referenced-only — and animations) from [`export_scene_glb`].
-/// - `materials`: the custom-material `.wgsl`/`.toml` side-files at their
-///   bundle-relative paths (from `persistence::material_files`).
-/// - `textures`: only the textures referenced by **custom-WGSL** material
-///   instances in the scene (their `texture_overrides`). Built-in/PBR textures
-///   are NOT gathered here — they already travel embedded inside `scene_glb`.
-/// - `env.json`: the serialized environment descriptor.
-pub async fn assemble_player_bundle(
+/// Emits: `scene.toml` (the runtime `Scene` from `project_to_scene` — nodes /
+/// transforms / material-instances / lights / cameras / our-clips / env, meshes
+/// by id); `assets/<id>.glb` (one geometry-only glb per mesh that lowered to
+/// `RuntimeMesh::Glb` — bare primitives stay procedural in `scene.toml`; no
+/// materials/animations in the glb, those are ours); `assets/materials/<name>/…`
+/// (custom-material wgsl + sidecars); `assets/<id>.png` (referenced textures).
+///
+/// Skinned/morph meshes' glb re-export from their source (preserving the rig) is
+/// the follow-on; this pass bakes static geometry, like the prior path.
+pub async fn bake_player_bundle(
     ctrl: &super::EditorController,
-    name: &str,
-) -> Result<awsm_glb_export::PlayerBundle, String> {
-    use awsm_glb_export::BundleInputs;
+) -> Result<Vec<awsm_editor_protocol::BundleFile>, String> {
+    use awsm_editor_protocol::{
+        assemble_bundle, mesh_glb_filename, BundleFile, RuntimeMesh, ASSETS_DIR,
+    };
+    use awsm_editor_protocol::{lower_mesh, project_to_scene};
 
-    let scene_glb = export_scene_glb(ctrl).await?;
-    let materials = crate::controller::persistence::material_files(ctrl);
-    let env_json = serde_json::to_string(&ctrl.scene.environment.get_cloned()).ok();
+    let project = crate::controller::persistence::to_editor_project(ctrl);
+    let scene = project_to_scene(&project);
+    let mut files: Vec<BundleFile> = Vec::new();
 
-    // Gather the (deduped, ordered) texture asset ids referenced by custom-WGSL
-    // material instances in the scene.
-    let mut ids: Vec<AssetId> = Vec::new();
-    let mut seen: HashSet<AssetId> = HashSet::new();
-    let roots: Vec<Arc<Node>> = ctrl.scene.nodes.lock_ref().iter().cloned().collect();
-    for n in &roots {
-        collect_custom_texture_assets(ctrl, n, &mut ids, &mut seen);
-    }
-
-    let mut textures: Vec<(String, Vec<u8>)> = Vec::new();
-    for id in ids {
-        if let Some((tex_name, png)) = resolve_one_texture(&ctrl.scene, id).await {
-            textures.push((format!("{}.png", sanitize_filename(&tex_name)), png));
+    // 1. One geometry-only glb per Glb-lowered mesh asset.
+    for (id, entry) in &project.assets.entries {
+        if let AssetSource::Mesh(def) = &entry.source {
+            if matches!(lower_mesh(def), RuntimeMesh::Glb) {
+                if let Some(raw) = mesh_cache::get_raw(*id) {
+                    let mesh = MeshData {
+                        positions: raw.positions,
+                        normals: raw.normals,
+                        uvs: raw.uvs,
+                        colors: raw.colors,
+                        indices: raw.indices,
+                    };
+                    let glb = write_glb(&GlbScene {
+                        nodes: vec![ExportNode::new("mesh").with_mesh(mesh)],
+                        ..Default::default()
+                    });
+                    files.push(BundleFile::asset(mesh_glb_filename(*id), glb));
+                }
+            }
         }
     }
 
-    Ok(awsm_glb_export::assemble_bundle(
-        name,
-        BundleInputs {
-            scene_glb,
-            materials,
-            textures,
-            env_json,
-        },
-    ))
+    // 2. Custom-material folders (paths already bundle-relative under assets/).
+    for (path, contents) in crate::controller::persistence::material_files(ctrl) {
+        files.push(BundleFile::new(
+            format!("{ASSETS_DIR}/{path}"),
+            contents.into_bytes(),
+        ));
+    }
+
+    // 3. Textures the materials reference → assets/<id>.png (built-in + custom-WGSL).
+    let roots: Vec<Arc<Node>> = ctrl.scene.nodes.lock_ref().iter().cloned().collect();
+    let mut ids: Vec<AssetId> = Vec::new();
+    let mut seen: HashSet<AssetId> = HashSet::new();
+    for n in &roots {
+        collect_texture_assets(n, &mut ids, &mut seen);
+        collect_custom_texture_assets(ctrl, n, &mut ids, &mut seen);
+    }
+    for id in ids {
+        if let Some((_name, png)) = resolve_one_texture(&ctrl.scene, id).await {
+            files.push(BundleFile::asset(format!("{id}.png"), png));
+        }
+    }
+
+    assemble_bundle(&scene, files).map_err(|e| e.to_string())
 }
 
 /// Walk a subtree collecting the (unique, ordered) texture asset ids referenced
@@ -150,20 +172,6 @@ fn collect_custom_texture_assets(
     for c in node.children.lock_ref().iter() {
         collect_custom_texture_assets(ctrl, c, ids, seen);
     }
-}
-
-/// Keep a filename simple/safe: alphanumeric, dash, underscore, dot are kept;
-/// everything else becomes `_`.
-fn sanitize_filename(name: &str) -> String {
-    name.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
 }
 
 /// `node.id → depth-first index`, matching `write_glb`'s node flattening (so

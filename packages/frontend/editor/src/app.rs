@@ -409,18 +409,18 @@ fn export_player_bundle() {
                 n
             }
         };
-        let bundle =
-            match crate::controller::export::assemble_player_bundle(&controller(), &name).await {
-                Ok(bundle) => bundle,
-                Err(e) => {
-                    Toast::error(format!("Export bundle failed: {e}"));
-                    return;
-                }
-            };
+        let _ = &name; // bundle name is the picked directory's; kept for the toast.
+        let bundle = match crate::controller::export::bake_player_bundle(&controller()).await {
+            Ok(bundle) => bundle,
+            Err(e) => {
+                Toast::error(format!("Export bundle failed: {e}"));
+                return;
+            }
+        };
         match crate::fs::ProjectDir::pick().await {
             Ok(dir) => {
-                let count = bundle.files.len();
-                for file in &bundle.files {
+                let count = bundle.len();
+                for file in &bundle {
                     if let Err(e) = dir.write_bytes(&file.path, &file.bytes).await {
                         Toast::error(format!("Export bundle failed ({}): {e}", file.path));
                         return;

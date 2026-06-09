@@ -3182,13 +3182,13 @@ impl EditorController {
             EditorQuery::ExportPlayerBundle { name } => {
                 use base64::Engine;
                 use serde_json::json;
-                // Assemble via the native `awsm_glb_export::assemble_bundle` layout
-                // (so editor + native bundle layout never drift). Each file's bytes
-                // are base64 (STANDARD) so the wire result stays JSON-clean.
-                match crate::controller::export::assemble_player_bundle(self, &name).await {
+                // The runtime bundle directory (scene.toml + assets/, per the
+                // glb-mesh design) via the native-tested `project_to_scene` +
+                // `assemble_bundle`. Each file's bytes are base64 (STANDARD) so the
+                // wire result stays JSON-clean.
+                match crate::controller::export::bake_player_bundle(self).await {
                     Ok(bundle) => {
                         let files: Vec<serde_json::Value> = bundle
-                            .files
                             .into_iter()
                             .map(|f| {
                                 json!({
