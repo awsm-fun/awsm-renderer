@@ -6,6 +6,30 @@ Branch: `mesh-authoring`. Native gates used each commit: `task lint` (fmt + clip
 
 Legend: ✅ done & gated · 🟡 implemented, needs in-browser verification · ⬜ not started.
 
+## Group B — LIVE-VERIFIED via MCP (driven against the running editor)
+All confirmed end-to-end through `task mcp-dev` + a Chrome WebGPU tab:
+- **Phase 1 export:** `export_node_glb` on a box → valid GLB (POSITION min/max,
+  PBR material). Custom-WGSL material → `export_node_glb` shows
+  `extensionsUsed:[AWSM_materials_none]`, **no** embedded material, primitive
+  `extensions.AWSM_materials_none.id` = the material id. ✅ (import recognition is
+  in renderer-gltf.)
+- **Phase 2:** `convert_to_editable_mesh` → node becomes `Mesh`, renders, material
+  edits apply (after the patch_builtin_param fix). ✅
+- **Phase 3:** `set_mesh_modifiers` subdivide+twist → twisted prism + undo
+  restores; lathe bat profile → `get_mesh_cross_section` reads the radii. ✅
+- **Phase 4:** `select_vertices_where` (top_percent → 1470 rim verts);
+  `soft_transform_vertices` flared the rim (bbox 0.6→0.996, watertight) → undo
+  exact; `collapse_mesh_stack` preserves geometry. ✅
+- **Phase 5:** `set_mesh_modifiers` SDF mug graph → 22k-tri watertight hollow cup
+  with handle (screenshot + stats). ✅
+- **Phase 6:** `export_player_bundle` → scene.glb with `KHR_lights_punctual`,
+  pruned `materials/*.wgsl`+`.toml`, `AWSM_materials_none` wiring, env descriptor;
+  `export_scene_glb` carries a rotation **animation** (LINEAR sampler, times,
+  VEC4 outputs, right node). ✅
+- **Introspection:** `get_mesh_stats` + `get_mesh_cross_section`. ✅
+- **Fixes found+shipped while driving:** material params on Mesh/Sweep nodes;
+  MCP string-encoded JSON args (`stack`/`predicate`/`query`).
+
 ## Finish-line tracker (A → B → C)
 - **Group A — pure code (done, all lint+native-gated):** Phase 6 animation
   lowering (TRS clips → glTF channels, writer natively tested); `AWSM_materials_none`
