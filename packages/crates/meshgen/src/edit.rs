@@ -122,12 +122,38 @@ pub fn select_within_radius(mesh: &MeshData, center: [f32; 3], radius: f32) -> V
         .collect()
 }
 
+/// Select vertices inside the axis-aligned box `[min, max]` (inclusive). The box
+/// is in the mesh's local space (pair with `get_node_bounds`, transforming a
+/// world box into local first, for region selection by area).
+pub fn select_within_aabb(mesh: &MeshData, min: [f32; 3], max: [f32; 3]) -> Vec<u32> {
+    mesh.positions
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| (0..3).all(|a| p[a] >= min[a] && p[a] <= max[a]))
+        .map(|(i, _)| i as u32)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::modifiers::lathe;
     use crate::primitives::box_mesh;
     use std::f32::consts::TAU;
+
+    #[test]
+    fn within_aabb_selects_the_box_region() {
+        // A 2x2x2 box centered at origin → 8 corners at ±1. A box covering only
+        // the +x half (x in [0,2]) selects exactly the 4 +x corners.
+        let m = box_mesh(Vec3::splat(2.0));
+        let sel = select_within_aabb(&m, [0.0, -2.0, -2.0], [2.0, 2.0, 2.0]);
+        assert!(!sel.is_empty());
+        assert!(sel.iter().all(|&i| m.positions[i as usize][0] >= 0.0));
+        // Every +x vertex is selected; no -x vertex is.
+        for (i, p) in m.positions.iter().enumerate() {
+            assert_eq!(sel.contains(&(i as u32)), p[0] >= 0.0);
+        }
+    }
 
     #[test]
     fn hard_transform_moves_only_selection() {

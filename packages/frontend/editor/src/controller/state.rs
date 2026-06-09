@@ -3209,11 +3209,64 @@ impl EditorController {
                     Err(e) => QueryResult::Error { error: e },
                 }
             }
+            EditorQuery::ResolveNodeMaterial { node } => {
+                use serde_json::json;
+                let Some(n) = mutate::find_by_id(&self.scene, node) else {
+                    return QueryResult::Error {
+                        error: format!("no node {node}"),
+                    };
+                };
+                let kind = n.kind.get_cloned();
+                let mut entries = std::collections::BTreeMap::new();
+                match node_material_ref(&kind) {
+                    None => {
+                        let is_geo =
+                            matches!(kind, NodeKind::Mesh { .. } | NodeKind::SkinnedMesh { .. });
+                        entries.insert("assigned".to_string(), json!(false));
+                        entries.insert(
+                            "kind".to_string(),
+                            json!(if is_geo { "unassigned" } else { "none" }),
+                        );
+                    }
+                    Some(inst) => {
+                        entries.insert("assigned".to_string(), json!(true));
+                        entries.insert("asset".to_string(), json!(inst.asset.to_string()));
+                        entries.insert("base_color".to_string(), json!(inst.inline.base_color));
+                        match crate::controller::custom_material::find_material(
+                            &self.custom_materials,
+                            inst.asset,
+                        ) {
+                            Some(m) => {
+                                entries.insert("name".to_string(), json!(m.name.get_cloned()));
+                                match m.builtin.get_cloned() {
+                                    Some(def) => {
+                                        entries.insert("kind".to_string(), json!("builtin"));
+                                        entries.insert(
+                                            "shading".to_string(),
+                                            json!(format!("{:?}", def.shading)),
+                                        );
+                                    }
+                                    None => {
+                                        entries.insert("kind".to_string(), json!("custom"));
+                                    }
+                                }
+                            }
+                            None => {
+                                entries.insert("kind".to_string(), json!("unknown"));
+                            }
+                        }
+                    }
+                }
+                QueryResult::Map(query::MapResult {
+                    kind: "node_material".to_string(),
+                    entries,
+                })
+            }
             EditorQuery::SelectVerticesWhere { node, predicate } => {
                 use awsm_editor_protocol::VertexPredicate as P;
                 use awsm_meshgen::edit::{
                     select_by_axis, select_by_normal_dir, select_top_percent_axis,
-                    select_within_radius, Cmp,
+                    select_within_aabb, select_within_radius, Cmp,
                 };
                 use serde_json::json;
                 if node_is_skinned(&self.scene, node) {
@@ -3242,6 +3295,7 @@ impl EditorController {
                             P::WithinRadius { center, radius } => {
                                 select_within_radius(&mesh, center, radius)
                             }
+                            P::WithinAabb { min, max } => select_within_aabb(&mesh, min, max),
                         };
                         let mut entries = std::collections::BTreeMap::new();
                         entries.insert("count".to_string(), json!(idx.len()));

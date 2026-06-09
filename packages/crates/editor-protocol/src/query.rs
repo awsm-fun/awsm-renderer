@@ -237,6 +237,12 @@ pub enum EditorQuery {
     /// set; never mutates). MCP: `export_player_bundle`. Skinned/morph glb
     /// re-export from source is a follow-on (static for now).
     ExportPlayerBundle { name: String },
+    /// Resolve the material a node actually renders with — the most common
+    /// authoring target, otherwise only reachable by parsing the opaque `NodeKind`
+    /// blob from `node_kind_details`. Returns `{ assigned, kind:
+    /// builtin|custom|unassigned|none, asset, name, shading, base_color }`.
+    /// MCP: `resolve_node_material`.
+    ResolveNodeMaterial { node: NodeId },
     /// Geometry stats for a node's resolved mesh (Primitive / Mesh / Sweep):
     /// vertex+triangle counts, bbox, centroid, surface area, volume, watertight.
     /// A read — the perceive half of the agent's measure→adjust loop. MCP:
@@ -317,6 +323,9 @@ pub enum VertexPredicate {
     TopPercent { axis: u8, percent: f32 },
     /// Within `radius` of `center`.
     WithinRadius { center: [f32; 3], radius: f32 },
+    /// Inside the axis-aligned box `[min, max]` (inclusive), in the mesh's local
+    /// space — region selection by area (pairs with `get_node_bounds`).
+    WithinAabb { min: [f32; 3], max: [f32; 3] },
 }
 
 /// What a [`EditorQuery::SampleClipTimeseries`] frame reads.

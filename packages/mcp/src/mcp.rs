@@ -931,6 +931,19 @@ impl EditorMcp {
     }
 
     #[tool(
+        description = "Resolve the material a node actually RENDERS with — the direct answer to 'what material is on this node?' (otherwise only reachable by parsing the opaque NodeKind blob from get_node_details). Returns { assigned, kind: builtin|custom|unassigned|none, asset (material UUID), name, shading, base_color }. `unassigned` = a geometry node with no material (renders magenta); `none` = not a geometry node."
+    )]
+    async fn resolve_node_material(
+        &self,
+        Parameters(p): Parameters<ExportNodeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::ResolveNodeMaterial {
+            node: parse_node(&p.node)?,
+        })
+        .await
+    }
+
+    #[tool(
         description = "Silhouette radius profile of a node's mesh along an axis (0=X,1=Y,2=Z) in `samples` bins, as [[height,radius],…]. Pairs with a lathe (height,radius) profile — measure the tip radius, adjust, re-measure."
     )]
     async fn get_mesh_cross_section(
@@ -1511,7 +1524,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Select a node mesh's vertices by predicate (no cursor), returning their indices to feed into set_vertex_positions / soft_transform_vertices. `predicate` is a VertexPredicate JSON, e.g. {\"kind\":\"top_percent\",\"axis\":1,\"percent\":0.2} or {\"kind\":\"normal_dir\",\"dir\":[0,1,0],\"threshold\":0.7} / axis_greater / axis_less / within_radius."
+        description = "Select a node mesh's vertices by predicate (no cursor), returning their indices to feed into set_vertex_positions / soft_transform_vertices. `predicate` is a VertexPredicate JSON, e.g. {\"kind\":\"top_percent\",\"axis\":1,\"percent\":0.2} or {\"kind\":\"normal_dir\",\"dir\":[0,1,0],\"threshold\":0.7} / axis_greater / axis_less / within_radius / within_aabb (box: {\"kind\":\"within_aabb\",\"min\":[x,y,z],\"max\":[x,y,z]} — local space; pair with get_node_bounds for region selection)."
     )]
     async fn select_vertices_where(
         &self,
