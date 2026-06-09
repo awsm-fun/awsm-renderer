@@ -159,16 +159,49 @@ fn agent_feed() -> Dom {
         .style("gap", "5px")
         .style("max-width", "min(340px, 42vw)")
         .style("pointer-events", "none")
-        // Cap the visible rows to a trailing window via CSS (cheaper + simpler
-        // than an index-aware signal): the column is bottom-anchored, so older
-        // entries overflow + scroll off the top. The model keeps the full ~50.
-        .style("max-height", &max_height)
-        .style("overflow", "hidden")
         .style("justify-content", "flex-end")
         // Hide the whole strip when the feed is empty (no agent activity yet) so
         // it degrades silently with no agent connected.
         .style_signal("display", feed().signal_vec_cloned().len().map(|n| if n == 0 { "none" } else { "flex" }))
-        .children_signal_vec(feed().signal_vec_cloned().map(|entry| agent_feed_row(&entry.phrase)))
+        // A tiny "clear" affordance pinned above the rows (the column is
+        // bottom-anchored, so the first child sits at top). Interactive, so it
+        // opts back into pointer events the strip otherwise disables.
+        .child(agent_feed_clear_btn())
+        // Cap the *rows* to a trailing window via CSS: the inner column is
+        // bottom-anchored, so older entries overflow + scroll off the top. The
+        // model keeps the full ~50.
+        .child(html!("div", {
+            .style("display", "flex")
+            .style("flex-direction", "column")
+            .style("gap", "5px")
+            .style("max-height", &max_height)
+            .style("overflow", "hidden")
+            .style("justify-content", "flex-end")
+            .children_signal_vec(feed().signal_vec_cloned().map(|entry| agent_feed_row(&entry.phrase)))
+        }))
+    })
+}
+
+/// Small "✕ clear" chip above the feed rows — empties the narration strip. Mute
+/// (stop narrating entirely) lives in Settings → "Agent activity feed".
+fn agent_feed_clear_btn() -> Dom {
+    html!("button", {
+        .style("align-self", "flex-start")
+        .style("pointer-events", "auto")
+        .style("cursor", "pointer")
+        .style("display", "inline-flex")
+        .style("align-items", "center")
+        .style("gap", "5px")
+        .style("padding", "2px 8px")
+        .style("margin-bottom", "1px")
+        .style("background", "color-mix(in oklch, var(--bg-1) 80%, transparent)")
+        .style("border", "1px solid var(--line-soft)")
+        .style("border-radius", "999px")
+        .style("font-size", "10.5px")
+        .style("color", "var(--text-3)")
+        .attr("title", "Clear the agent activity feed")
+        .text("\u{2715} clear")
+        .event(|_: events::Click| crate::engine::activity_feed::clear())
     })
 }
 
@@ -416,6 +449,10 @@ fn settings_drawer() -> Dom {
                 .child(row("Show gizmo", toggle(s.gizmo.clone())))
                 .child(row("MSAA", toggle(s.msaa.clone())))
                 .child(row("Light heatmap", toggle(s.heatmap.clone())))
+                .child(row(
+                    "Agent activity feed",
+                    toggle(crate::engine::activity_feed::enabled()),
+                ))
                 .render(),
         )
         .child(

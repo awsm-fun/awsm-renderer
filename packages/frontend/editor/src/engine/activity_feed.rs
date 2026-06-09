@@ -62,6 +62,10 @@ thread_local! {
     /// Bumped on each highlight; lets a queued clear cancel itself when a newer
     /// command re-arms the spotlight (so it stays lit through a burst).
     static FOCUS_GEN: Cell<u64> = const { Cell::new(0) };
+    /// User toggle: when `false`, [`narrate`] is a no-op (no new entries, no
+    /// spotlight) so the feed never crowds the screen. Bound to a Settings
+    /// toggle; defaults on. Session-only (editor chrome, not project state).
+    static ENABLED: Mutable<bool> = Mutable::new(true);
 }
 
 /// The reactive feed for the app shell to render.
@@ -72,6 +76,37 @@ pub fn feed() -> MutableVec<FeedEntry> {
 /// The reactive spotlight target for the app shell to pulse.
 pub fn focus() -> Mutable<Option<FocusTarget>> {
     FOCUS.with(|f| f.clone())
+}
+
+/// The reactive "narrate agent activity" toggle, for a Settings checkbox. When
+/// flipped off it also clears any existing entries + spotlight so the screen
+/// frees up immediately.
+pub fn enabled() -> Mutable<bool> {
+    let m = ENABLED.with(|e| e.clone());
+    // Lazily wire the side effect once: turning the toggle off clears the strip.
+    thread_local!(static WIRED: Cell<bool> = const { Cell::new(false) });
+    if !WIRED.with(|w| w.replace(true)) {
+        let sig = m.clone();
+        spawn_local(async move {
+            use futures_signals::signal::SignalExt;
+            sig.signal()
+                .for_each(|on| {
+                    if !on {
+                        clear();
+                    }
+                    async {}
+                })
+                .await;
+        });
+    }
+    m
+}
+
+/// Empty the feed + drop the spotlight (the "clear" button). Also the immediate
+/// effect of toggling the feed off.
+pub fn clear() {
+    FEED.with(|f| f.lock_mut().clear());
+    FOCUS.with(|f| f.set(None));
 }
 
 /// Narrate one inbound agent command: push a feed entry + arm the panel
@@ -97,6 +132,9 @@ pub fn narrate_batch(cmds: &[EditorCommand]) {
 }
 
 fn emit(cmd: &EditorCommand) {
+    if !ENABLED.with(|e| e.get()) {
+        return; // feed muted by the user
+    }
     let Some((target, phrase)) = describe(cmd) else {
         return; // purely-transient/no-op chatter we don't surface
     };
