@@ -8,15 +8,16 @@
 
 use serde::{Deserialize, Serialize};
 
-use awsm_scene_schema::animation::{
+use awsm_scene::animation::{
     BuiltinParamKind, ClipDirection, ClipLoop, Interp, Keyframe, LayerDoc, LayerModeDoc,
     LightParamKind, SamplerKind, StoredTrack, StripDoc, TrackTarget, TrackValue,
 };
-use awsm_scene_schema::modifier::{Modifier, ModifierStack};
-use awsm_scene_schema::{
-    AssetEntry, AssetId, CapturedMesh, EnvironmentConfig, MaterialShading, NodeId, NodeKind, Trs,
-    VertexOverrides,
-};
+use awsm_scene::{AssetId, EnvironmentConfig, MaterialShading, NodeId, NodeKind, Trs};
+
+use awsm_meshgen::recipe::{Modifier, ModifierStack};
+
+use crate::assets::AssetEntry;
+use crate::mesh_def::{CapturedMesh, VertexOverrides};
 
 use crate::anim_ui::{AnimSel, AnimView, StepKind};
 use crate::node_spec::{InsertSpec, NodeSpec};

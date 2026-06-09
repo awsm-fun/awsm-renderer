@@ -8,7 +8,9 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-awsm-scene-schema = { workspace = true }
+awsm-scene = { workspace = true }
+# Recipe types (ModifierStack/Modifier/…) the commands carry — meshgen owns them.
+awsm-meshgen = { workspace = true, features = ["recipes"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 # Optional: JSON Schemas for strongly-typed MCP tool params (e.g. VertexPredicate).
@@ -16,5 +18,5 @@ schemars = { version = "1", optional = true }
 
 [features]
 default = []
-# Derive JSON Schemas (pulls scene-schema's too). Enabled by the MCP server.
-schemars = ["dep:schemars", "awsm-scene-schema/schemars"]
+# Derive JSON Schemas (chains awsm-scene's + meshgen's recipe schemas). MCP server.
+schemars = ["dep:schemars", "awsm-scene/schemars", "awsm-meshgen/schemars"]

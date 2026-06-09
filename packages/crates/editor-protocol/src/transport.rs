@@ -10,7 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use awsm_scene_schema::AssetId;
+use awsm_scene::AssetId;
 
 use crate::{EditorCommand, EditorMode, EditorQuery, QueryResult};
 

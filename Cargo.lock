@@ -297,7 +297,8 @@ dependencies = [
 name = "awsm-editor-protocol"
 version = "0.2.0"
 dependencies = [
- "awsm-scene-schema",
+ "awsm-meshgen",
+ "awsm-scene",
  "schemars",
  "serde",
  "serde_json",
