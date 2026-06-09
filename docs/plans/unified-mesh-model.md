@@ -268,16 +268,20 @@ findings (which simplify/correct the framing above):
      deps. Verified dep isolation: `primitives.rs`+`mesh_data.rs` import only
      `glam`; `fast-surface-nets`+`ndshape` are used ONLY by `sdf_mesh.rs`,
      `awsm-curves` ONLY by `sweep.rs`. So:
-     - meshgen `default` (light): `primitives` + `mesh_data` + the recipe **types**
-       (pure data; glam+serde). `awsm-curves`/`awsm-geometry`/`fast-surface-nets`/
-       `ndshape` become **optional** deps.
-     - meshgen `authoring` feature: the modifier/SDF/sweep/edit/expr/stats
-       *execution* + those optional deps.
-     - **Player** → `awsm-meshgen = { default-features = false }` (primitive-gen
-       only, glam-only — no mesher/curves/eval). **Editor** → `["authoring"]`.
-       **protocol/mcp** → default (recipe types, light). `resolver="2"` resolves
-       features per-build, so the editor enabling `authoring` here does not leak
-       into the player's separate build.
+     - **`primitives` + `mesh_data` are ALWAYS compiled, un-gated** (glam-only) —
+       and **`default = []`**, so the lean player build is the *zero-config*
+       default: a plain `awsm-meshgen` dep is already player-friendly, no
+       `default-features = false` needed. `awsm-curves`/`awsm-geometry`/
+       `fast-surface-nets`/`ndshape` become **optional** deps.
+     - `recipes` feature: the recipe **types** (pure data; pulls `serde`).
+     - `authoring` feature: the modifier/SDF/sweep/edit/expr/stats *execution* +
+       the optional heavy deps; **implies `recipes`**.
+     - `schemars` feature: JsonSchema derives on the recipe types (for MCP).
+     - **Player** → `awsm-meshgen` (plain, default) → primitive-gen only, glam-
+       only. **Editor** → `["authoring"]`. **protocol/mcp** → `["recipes",
+       "schemars"]` (types only, light). `resolver="2"` resolves features
+       per-build, so the editor enabling `authoring` here does not leak into the
+       player's separate build.
 4. **Renderer barely touches the schema** (only shadows/animation/AssetId/NodeId —
    all CORE → awsm-scene; its dep is already optional+feature-gated). **Never needs
    protocol.** `glb-export` has no scene-schema dep at all (Step 8, orthogonal).
@@ -293,9 +297,10 @@ findings (which simplify/correct the framing above):
 
 Step order (full carve, one arc; red window is steps 3→7 contiguous): (1) scaffold
 `awsm-scene` + move CORE modules + new `mesh.rs`/`scene.rs`/`project_dir.rs`;
-(2) move recipes into meshgen + **feature-gate meshgen** (`default`=primitives+
-mesh_data+recipe types light; `authoring`=exec + optional heavy deps), repoint
-meshgen→awsm-scene; (3) build protocol
+(2) move recipes into meshgen + **feature-gate meshgen** (primitives+mesh_data
+always-on glam-only; `default = []` player-lean; `recipes`=types; `authoring`=exec
++ optional heavy deps, implies recipes), repoint meshgen→awsm-scene; (3) build
+protocol
 authoring layer (`MeshDef`/`VertexOverrides`/`EditorProject` + re-export recipes),
 chain `schemars`; (4) repoint renderer; (5) repoint mcp (`Flexible<ModifierStack>`
 → protocol); (6) repoint editor frontend (~140 sites, the bulk); (7) delete
