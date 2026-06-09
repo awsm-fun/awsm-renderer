@@ -2372,6 +2372,12 @@ impl EditorController {
             table.entries.insert(id, entry);
             id
         };
+        // Stash the raw source bytes (session-local) so GLB export can re-read the
+        // model's geometry; the import-time blob URL is already revoked by now.
+        // See `model_source_cache` for the cross-reload persistence TODO.
+        if let Some(bytes) = import.source_bytes {
+            crate::engine::bridge::model_source_cache::store(asset_id, bytes);
+        }
         let template = Arc::new(import.template);
         crate::engine::bridge::bridge().insert_template(asset_id, template.clone());
 

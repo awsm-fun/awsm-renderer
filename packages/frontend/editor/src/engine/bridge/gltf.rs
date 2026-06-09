@@ -33,6 +33,13 @@ pub struct GltfImport {
     /// lowers the sampler into authored keyframes. Empty when the file has no
     /// animations (or extraction failed — logged, never fatal).
     pub animations: Vec<ExtractedAnimation>,
+    /// The raw source glTF/GLB bytes, fetched at import (before the `blob:`
+    /// object URL is revoked). The controller stashes these in
+    /// [`model_source_cache`](super::model_source_cache) keyed by the minted
+    /// model `asset_id`, so GLB export can re-read the node's geometry later.
+    /// `None` when the fetch failed (export of this model then falls back to an
+    /// empty transform node — logged, never fatal).
+    pub source_bytes: Option<Vec<u8>>,
 }
 
 /// A glTF material extracted into an editable [`MaterialDef`] (factors only;
@@ -160,11 +167,34 @@ pub async fn import_file(name: &str, url: &str) -> Result<GltfImport, String> {
     import_typed(url, file_type, Some(name)).await
 }
 
+/// Fetch the raw bytes behind a glTF/GLB source URL (handles `blob:` object URLs
+/// and regular http(s) URLs the same way). Used to stash a model's source for
+/// later GLB export; a failure is non-fatal (export falls back to a transform-only
+/// node). Note: `.gltf` files with *external* `.bin`/image side-files won't
+/// self-contain here — only their JSON document is fetched — but `.glb` and
+/// embedded/data-URI `.gltf` (the file-picker + most URL imports) re-read fully.
+async fn fetch_source_bytes(url: &str) -> Option<Vec<u8>> {
+    match gloo_net::http::Request::get(url).send().await {
+        Ok(resp) if resp.ok() => resp.binary().await.ok(),
+        Ok(resp) => {
+            tracing::warn!("model source fetch {url}: HTTP {}", resp.status());
+            None
+        }
+        Err(e) => {
+            tracing::warn!("model source fetch {url}: {e}");
+            None
+        }
+    }
+}
+
 async fn import_typed(
     url: &str,
     file_type: Option<GltfFileType>,
     name: Option<&str>,
 ) -> Result<GltfImport, String> {
+    // Grab the raw source bytes up front — before the caller revokes the blob URL
+    // — so GLB export can re-read this model's geometry later.
+    let source_bytes = fetch_source_bytes(url).await;
     let loader = GltfLoader::load(url, file_type)
         .await
         .map_err(|e| format!("load: {e}"))?;
@@ -202,6 +232,7 @@ async fn import_typed(
         template,
         materials,
         animations,
+        source_bytes,
     })
 }
 

@@ -129,17 +129,25 @@ Native test counts now: `glb-export` 6, `scene-schema` 14, `meshgen` 34.
 4. Custom-WGSL material → export → confirm primitive carries `AWSM_materials_none`
    and no embedded material.
 
-#### ⬜ Phase 1 remaining (browser-only or deferred — do NOT block native gates)
-- **Textures**: factors export; the image pool is empty because reading raster
-  bytes off `ProjectDir` is async/browser-only. Implement: in `export.rs`, walk
-  the assigned `MaterialDef`'s `*_texture: Option<TextureRef>`, load bytes via
-  `ProjectDir` / the asset disk path (`asset_disk_path`), push `ExportImage`s,
-  and set `TexRef`s. Needs the async controller + fs handle.
-- **Model nodes**: re-read the source glb via `GltfLoader::load`
-  (`engine/bridge/gltf.rs:148`) at export and pull POSITION/NORMAL/TEXCOORD/
-  indices. **Risk (from spec): `ImportModelFromFile` blob: URLs are session-local
-  and may be revoked** — mitigate by persisting imported source bytes into the
-  project at import. Currently Model subtrees export as empty transform nodes.
+#### Phase 1 remaining
+- ✅ **Textures** (DONE — `fb9b3000`): referenced-only embedding (procedural
+  regen + raster GPU readback); export is async. Verified earlier (Group B).
+- ✅ **Model nodes** (DONE + MCP-verified): `glb-export::extract_node_mesh`
+  (native, 2 unit tests) reads POSITION/NORMAL/TEXCOORD_0/COLOR_0/indices from a
+  source glTF's accessors for a `ModelRef`'s `node_index` (+ optional
+  `primitive_index`, merging primitives with index offset); `export.rs`'s async
+  `resolve_model_meshes` pre-pass loads each source once (deduped) and the export
+  emits the **raw** accessor geometry — the ExportNode transform already mirrors
+  the glTF node-local transform (set at import), so **no extra matrix** (no
+  double-transform). `node_mesh` resolves Model too (so get_mesh_stats /
+  cross-section / vertex-highlight work on imported models). Blob-URL revocation:
+  source bytes are captured at import into an in-memory `model_source_cache`
+  (export works in-session after the blob is gone); **cross-reload on-disk
+  persistence is a documented TODO** — model sources aren't disk-persisted by
+  `save_to_dir` at all today (pre-existing). Verified live: imported
+  `Box.glb` → `get_mesh_stats` on the Model node = 24 verts / 12 tris / bbox ±0.5
+  watertight; `export_node_glb` → GLB with POSITION(24)/NORMAL/indices(36), the
+  "Red" PBR material, and the correct node hierarchy + import rotation.
 - ✅ **UI button** (DONE + browser-verified): scene-level "Export scene as GLB…"
   in the overflow (⋯) menu (`app.rs::export_scene_glb`) + per-node "Export GLB"
   button in the inspector for geometry/Group/Model kinds

@@ -32,10 +32,12 @@
 //!   textures with no special "slim" flag.
 
 mod bundle;
+mod extract;
 mod write;
 
 pub use awsm_meshgen::MeshData;
 pub use bundle::{assemble_bundle, BundleFile, BundleInputs, PlayerBundle};
+pub use extract::{extract_node_mesh, extract_node_mesh_from_bytes};
 pub use write::write_glb;
 
 /// The primitive-level glTF extension marking a primitive whose real material is

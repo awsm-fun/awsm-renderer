@@ -14,10 +14,11 @@ awsm-meshgen = { workspace = true }
 gltf-json = { workspace = true }
 glam = { workspace = true }
 serde_json = { workspace = true }
+# The reader half of the gltf stack. Used by `extract::extract_node_mesh` to read
+# geometry back out of a source glTF/GLB's accessors (the editor's Model-node
+# export re-reads the imported file). Pure-Rust + wasm-friendly, no GPU deps.
+gltf = { workspace = true }
 
 [dev-dependencies]
-# The reader half of the gltf stack — used by the round-trip tests to re-parse
-# what `write_glb` produced and assert geometry/material survive the bake.
-gltf = { workspace = true }
 # Throwaway directories for the player-bundle write_to_dir integration test.
 tempfile = "3"
