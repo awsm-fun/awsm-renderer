@@ -30,6 +30,31 @@ All confirmed end-to-end through `task mcp-dev` + a Chrome WebGPU tab:
 - **Fixes found+shipped while driving:** material params on Mesh/Sweep nodes;
   MCP string-encoded JSON args (`stack`/`predicate`/`query`).
 
+## Finish line — COMPLETE (everything except the separate-repo player loader)
+
+- **Texture embedding** ✅ implemented + live-verified: a procedural checker on a
+  PBR material exports with `images:1` (PNG embedded in BIN), `textures:1`,
+  `baseColorTexture` wired; no-texture material → `images:0` (referenced-only both
+  ways). Export is async (procedural regen + raster GPU readback).
+- **MCP robustness + discoverability** ✅ (the "guesswork" fix):
+  - `awsm://docs/mesh-tools` resource — exact JSON shapes + copy-paste examples,
+    served + verified.
+  - **Strongly-typed tool params** via `schemars`: `set_mesh_modifiers.stack` =
+    `ModifierStack`, `select_vertices_where.predicate` = `VertexPredicate` (full
+    schemas published, incl. UUID-as-string). Wrapped in `Flexible<T>` so they're
+    typed/self-documenting **and** tolerant of clients that send a nested object
+    as a JSON string (the root cause of the earlier failures). `json_arg` retained
+    only on the raw escape hatches (`dispatch_command`/`dispatch_batch`/`run_query`).
+  - Two bugs found+fixed while driving: material params on Mesh/Sweep nodes;
+    string-encoded args across all object tools.
+- **Driven live (real concepts):** twisted/tapered column, baseball-bat lathe +
+  cross-section, CSG mug (SDF), soft-transform spout + undo, superquadric pebble,
+  formula-displaced **rock** with a live checker texture. All via MCP.
+- **Out of scope (by decision):** the player-side bundle bundle loader lives in
+  the separate game-player repo. One optional in-repo cosmetic remains: a
+  read-only *vertex-selection highlight* in the viewport (the functional
+  `select_vertices_where` query already works).
+
 ## Finish-line tracker (A → B → C)
 - **Group A — pure code (done, all lint+native-gated):** Phase 6 animation
   lowering (TRS clips → glTF channels, writer natively tested); `AWSM_materials_none`
