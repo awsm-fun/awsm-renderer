@@ -47,7 +47,7 @@ pub use write::write_glb;
 pub const AWSM_MATERIALS_NONE: &str = "AWSM_materials_none";
 
 /// A translate / rotate (xyzw quaternion) / scale local transform. Mirrors
-/// `awsm_scene_schema::Trs` but kept local so this crate stays decoupled from the
+/// `awsm_scene::Trs` but kept local so this crate stays decoupled from the
 /// project schema.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Trs {

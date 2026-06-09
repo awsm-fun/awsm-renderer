@@ -12,7 +12,7 @@
 //! ```
 //!
 //! This file deliberately depends ONLY on `awsm-renderer` +
-//! `awsm-materials` + `awsm-renderer-core`. No `awsm-scene-schema`, no
+//! `awsm-materials` + `awsm-renderer-core`. No `awsm-scene`, no
 //! `awsm-web-shared`, no editor crates. A game runtime can reproduce
 //! this recipe verbatim.
 //!

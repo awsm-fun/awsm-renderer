@@ -5,7 +5,7 @@
 //!
 //! We are pre-1.0 and not shipping persisted player content yet, so this format
 //! is designed *clean* rather than wire-compatible with the old
-//! `awsm-scene-schema::CapturedMesh` bitcode blob — existing `.mesh.bin` files
+//! `awsm-scene::CapturedMesh` bitcode blob — existing `.mesh.bin` files
 //! re-bake. That frees `uvs`/`colors` to be multi-set and adds an open
 //! [`NamedAttribute`] table (the runtime is no longer bound to the glTF
 //! `COLOR_n`/`TEXCOORD_n` vocabulary — arbitrary per-vertex streams ride here:

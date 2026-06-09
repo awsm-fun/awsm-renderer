@@ -40,7 +40,7 @@ serde = ["awsm-renderer-core/serde"]
 mega-texture = ["awsm-renderer-core/mega-texture"]
 exr = ["awsm-renderer-core/exr"]
 texture-export = ["awsm-renderer-core/texture-export"]
-# Pulls in `awsm-scene-schema` and compiles the `From<scene_schema::*>`
+# Pulls in `awsm-scene` and compiles the `From<awsm_scene::*>`
 # bridges that convert the on-disk authoring format into the renderer's
 # runtime types (`ShadowsConfig`, `LightShadowParams`, `MeshShadowFlags`,
 # etc.). Off by default so the renderer stays scene-schema-free for

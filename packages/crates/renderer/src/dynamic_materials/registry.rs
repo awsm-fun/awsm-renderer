@@ -871,7 +871,7 @@ impl DynamicMaterials {
 /// game runtimes) convert their on-disk format into a
 /// [`MaterialRegistration`] before calling
 /// [`AwsmRenderer::register_material`](crate::AwsmRenderer::register_material);
-/// the renderer never depends on `awsm-scene-schema`.
+/// the renderer never depends on `awsm-scene`.
 #[derive(Clone, Debug)]
 pub struct MaterialRegistration {
     /// Author-facing name. Must be unique across registered materials.

@@ -1,7 +1,7 @@
 //! Per-light shadow parameters (runtime, not on-disk schema).
 
 /// Runtime per-light shadow parameters. The renderer-side counterpart
-/// to `scene_schema::LightShadowConfig` — the scene editor converts
+/// to `awsm_scene::LightShadowConfig` — the scene editor converts
 /// between them in its renderer-bridge. A non-editor consumer
 /// constructs `LightShadowParams` directly via `Default::default()`.
 ///
