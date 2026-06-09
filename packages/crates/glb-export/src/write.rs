@@ -8,13 +8,13 @@
 use gltf_json::validation::{Checked, USize64};
 use gltf_json::{
     accessor, animation, buffer, camera, extensions, material, mesh, scene, texture, Accessor,
-    Animation, Camera, Image, Index, Material, Mesh, Node, Root, Scene, Texture,
+    Animation, Camera, Image, Index, Material, Mesh, Node, Root, Scene, Skin, Texture,
 };
 use serde_json::json;
 
 use crate::{
     AlphaMode, AnimInterp, AnimPath, ExportCamera, ExportLight, ExportMaterial, ExportNode,
-    GlbScene, MeshData, PbrMaterial, TexRef, UnlitMaterial, AWSM_MATERIALS_NONE,
+    ExportSkin, GlbScene, PbrMaterial, TexRef, UnlitMaterial, AWSM_MATERIALS_NONE,
 };
 
 const GLB_VERSION: u32 = 2;
@@ -65,14 +65,16 @@ impl Builder {
         let mut light_ext: Vec<Option<extensions::scene::Node>> = Vec::with_capacity(flat.len());
         for n in &flat {
             mesh_idx.push(match &n.mesh {
-                Some(m) if !m.positions.is_empty() => {
-                    Some(self.build_mesh(m, n.material.as_ref(), &n.name, &texture_indices))
-                }
+                Some(m) if !m.positions.is_empty() => Some(self.build_mesh(n, &texture_indices)),
                 _ => None,
             });
             camera_idx.push(n.camera.map(|c| self.build_camera(&c, &n.name)));
             light_ext.push(n.light.map(|l| self.build_light(&l, &n.name)));
         }
+
+        // 3b. Skins (joint refs are flat node indices, set above; inverse-bind
+        // accessors go in the BIN buffer). A node binds to one via `n.skin`.
+        let skin_idx: Vec<Index<Skin>> = scene.skins.iter().map(|s| self.build_skin(s)).collect();
 
         // 4. Nodes, in flat order — index i is node i.
         for (i, n) in flat.iter().enumerate() {
@@ -92,7 +94,7 @@ impl Builder {
                 rotation: Some(scene::UnitQuaternion(n.transform.rotation)),
                 scale: Some(n.transform.scale),
                 translation: Some(n.transform.translation),
-                skin: None,
+                skin: n.skin.map(|s| skin_idx[s]),
                 weights: None,
             };
             self.root.nodes.push(node);
@@ -126,13 +128,11 @@ impl Builder {
 
     // ───────────────────────── geometry ─────────────────────────
 
-    fn build_mesh(
-        &mut self,
-        m: &MeshData,
-        material: Option<&ExportMaterial>,
-        name: &str,
-        texture_indices: &[Index<Texture>],
-    ) -> Index<Mesh> {
+    fn build_mesh(&mut self, n: &ExportNode, texture_indices: &[Index<Texture>]) -> Index<Mesh> {
+        let m = n.mesh.as_ref().expect("build_mesh requires a mesh");
+        let material = n.material.as_ref();
+        let name = n.name.as_str();
+        let vcount = m.positions.len();
         let mut attributes = std::collections::BTreeMap::new();
 
         // POSITION (with required min/max).
@@ -187,6 +187,71 @@ impl Builder {
             }
         }
 
+        // JOINTS_0 / WEIGHTS_0 (skinned meshes). u16 joint indices + f32 weights,
+        // one vec4 per vertex.
+        if let (Some(joints), Some(weights)) = (&n.joints, &n.weights) {
+            if joints.len() == vcount && weights.len() == vcount {
+                let jbytes: Vec<u8> = joints
+                    .iter()
+                    .flat_map(|j| j.iter().flat_map(|v| v.to_le_bytes()))
+                    .collect();
+                let jacc = self.push_accessor(
+                    &jbytes,
+                    vcount,
+                    accessor::ComponentType::U16,
+                    accessor::Type::Vec4,
+                    None,
+                    None,
+                );
+                attributes.insert(Checked::Valid(mesh::Semantic::Joints(0)), jacc);
+                let wacc = self.push_accessor(
+                    &flatten_f32x4(weights),
+                    vcount,
+                    accessor::ComponentType::F32,
+                    accessor::Type::Vec4,
+                    None,
+                    None,
+                );
+                attributes.insert(Checked::Valid(mesh::Semantic::Weights(0)), wacc);
+            }
+        }
+
+        // Morph targets (position / optional normal deltas).
+        let mut targets: Vec<mesh::MorphTarget> = Vec::new();
+        for t in &n.morph_targets {
+            if t.positions.len() != vcount {
+                continue;
+            }
+            let (tmin, tmax) = position_bounds(&t.positions);
+            let positions = Some(self.push_accessor(
+                &flatten_f32x3(&t.positions),
+                vcount,
+                accessor::ComponentType::F32,
+                accessor::Type::Vec3,
+                Some(json!(tmin)),
+                Some(json!(tmax)),
+            ));
+            let normals = t
+                .normals
+                .as_ref()
+                .filter(|nn| nn.len() == vcount)
+                .map(|nn| {
+                    self.push_accessor(
+                        &flatten_f32x3(nn),
+                        vcount,
+                        accessor::ComponentType::F32,
+                        accessor::Type::Vec3,
+                        None,
+                        None,
+                    )
+                });
+            targets.push(mesh::MorphTarget {
+                positions,
+                normals,
+                tangents: None,
+            });
+        }
+
         // Indices (u32 SCALAR).
         let idx_bytes: Vec<u8> = m.indices.iter().flat_map(|i| i.to_le_bytes()).collect();
         let idx_acc = self.push_accessor(
@@ -213,7 +278,11 @@ impl Builder {
             indices: Some(idx_acc),
             material: material_index,
             mode: Checked::Valid(mesh::Mode::Triangles),
-            targets: None,
+            targets: if targets.is_empty() {
+                None
+            } else {
+                Some(targets)
+            },
         };
 
         let mesh_obj = Mesh {
@@ -221,9 +290,45 @@ impl Builder {
             extras: Default::default(),
             name: Some(name.to_string()),
             primitives: vec![primitive],
-            weights: None,
+            weights: if n.morph_weights.is_empty() {
+                None
+            } else {
+                Some(n.morph_weights.clone())
+            },
         };
         self.root.push(mesh_obj)
+    }
+
+    // ───────────────────────── skin ─────────────────────────
+
+    fn build_skin(&mut self, s: &ExportSkin) -> Index<Skin> {
+        // inverseBindMatrices: one Mat4 (16 f32, column-major) per joint.
+        let inverse_bind_matrices = if s.inverse_bind_matrices.is_empty() {
+            None
+        } else {
+            let bytes: Vec<u8> = s
+                .inverse_bind_matrices
+                .iter()
+                .flat_map(|mtx| mtx.iter().flat_map(|f| f.to_le_bytes()))
+                .collect();
+            Some(self.push_accessor(
+                &bytes,
+                s.inverse_bind_matrices.len(),
+                accessor::ComponentType::F32,
+                accessor::Type::Mat4,
+                None,
+                None,
+            ))
+        };
+        let skin = Skin {
+            extensions: Default::default(),
+            extras: Default::default(),
+            inverse_bind_matrices,
+            joints: s.joints.iter().map(|j| Index::new(*j as u32)).collect(),
+            name: None,
+            skeleton: s.skeleton.map(|sk| Index::new(sk as u32)),
+        };
+        self.root.push(skin)
     }
 
     // ───────────────────────── materials ─────────────────────────

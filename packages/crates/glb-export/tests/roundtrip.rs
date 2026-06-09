@@ -196,6 +196,106 @@ fn animation_channel_roundtrips() {
 }
 
 #[test]
+fn skinned_morph_mesh_roundtrips() {
+    use awsm_glb_export::{ExportSkin, MeshData, MorphTarget};
+
+    // A triangle skinned to a 2-joint skeleton, with one morph target.
+    let tri = MeshData {
+        positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        normals: Some(vec![[0.0, 0.0, 1.0]; 3]),
+        uvs: None,
+        colors: None,
+        indices: vec![0, 1, 2],
+    };
+    let scene = GlbScene {
+        // Armature(0) → J0(1), J1(2); skinned Mesh(3).
+        nodes: vec![
+            ExportNode {
+                name: "Armature".into(),
+                children: vec![ExportNode::new("J0"), ExportNode::new("J1")],
+                ..Default::default()
+            },
+            ExportNode {
+                name: "Mesh".into(),
+                mesh: Some(tri),
+                material: Some(ExportMaterial::None { id: None }),
+                skin: Some(0),
+                joints: Some(vec![[0, 1, 0, 0]; 3]),
+                weights: Some(vec![[0.5, 0.5, 0.0, 0.0]; 3]),
+                morph_targets: vec![MorphTarget {
+                    name: Some("bulge".into()),
+                    positions: vec![[0.0, 0.1, 0.0]; 3],
+                    normals: None,
+                }],
+                morph_weights: vec![0.0],
+                ..Default::default()
+            },
+        ],
+        skins: vec![ExportSkin {
+            joints: vec![1, 2],
+            inverse_bind_matrices: vec![
+                // identity ×2 (column-major)
+                [
+                    1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+                ],
+                [
+                    1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+                ],
+            ],
+            skeleton: Some(0),
+        }],
+        ..Default::default()
+    };
+
+    let glb = write_glb(&scene);
+    // import_slice fully validates accessors (incl. JOINTS/WEIGHTS/IBM/targets).
+    let (doc, buffers, _i) = gltf::import_slice(&glb).expect("re-parse skinned GLB");
+
+    // Skin: 2 joints + inverse-bind matrices.
+    let skin = doc.skins().next().expect("one skin");
+    assert_eq!(skin.joints().count(), 2, "two joints");
+    assert!(
+        skin.inverse_bind_matrices().is_some(),
+        "inverse-bind accessor present"
+    );
+    assert_eq!(skin.skeleton().map(|n| n.index()), Some(0));
+
+    // The skinned node references the skin.
+    let mesh_node = doc.nodes().find(|n| n.name() == Some("Mesh")).unwrap();
+    assert_eq!(mesh_node.skin().map(|s| s.index()), Some(0));
+
+    // Per-vertex JOINTS_0 / WEIGHTS_0 read back.
+    let prim = doc.meshes().next().unwrap().primitives().next().unwrap();
+    let reader = prim.reader(|b| Some(&buffers[b.index()]));
+    let joints: Vec<_> = reader
+        .read_joints(0)
+        .expect("JOINTS_0")
+        .into_u16()
+        .collect();
+    assert_eq!(joints.len(), 3);
+    assert_eq!(joints[0], [0, 1, 0, 0]);
+    let weights: Vec<_> = reader
+        .read_weights(0)
+        .expect("WEIGHTS_0")
+        .into_f32()
+        .collect();
+    assert_eq!(weights.len(), 3);
+    assert!((weights[0][0] - 0.5).abs() < 1e-6);
+
+    // Morph target present + its position deltas read back.
+    assert_eq!(prim.morph_targets().count(), 1, "one morph target");
+    assert!(
+        prim.morph_targets().next().unwrap().positions().is_some(),
+        "morph positions accessor present"
+    );
+    let mut mt_reader = reader.read_morph_targets();
+    let (pos, _normals, _tangents) = mt_reader.next().expect("one morph target reader");
+    let deltas: Vec<_> = pos.expect("morph positions").collect();
+    assert_eq!(deltas.len(), 3);
+    assert!((deltas[0][1] - 0.1).abs() < 1e-6, "y-delta 0.1");
+}
+
+#[test]
 fn scene_complete_light_node() {
     // Phase 6 reuse smoke test: a light-only node lowers to KHR_lights_punctual
     // even with no geometry (empty BIN ⇒ no buffer, still valid JSON).

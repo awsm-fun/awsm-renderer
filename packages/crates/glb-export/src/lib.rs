@@ -79,6 +79,10 @@ pub struct GlbScene {
     /// Keyframe animations. Channels reference nodes by their **depth-first
     /// flatten index** (see [`ExportAnimChannel::node_index`]). Empty in Phase 1.
     pub animations: Vec<ExportAnimation>,
+    /// Skins (skeletons). A node binds to one via [`ExportNode::skin`] (an index
+    /// into this vector); its mesh carries per-vertex [`ExportNode::joints`] /
+    /// [`ExportNode::weights`]. Empty for non-skinned scenes.
+    pub skins: Vec<ExportSkin>,
     /// Image pool. Material texture refs index into this vector. The caller adds
     /// only images that assigned materials actually reference (the referenced-only
     /// rule); the writer embeds them all into the GLB `BIN` chunk.
@@ -86,6 +90,34 @@ pub struct GlbScene {
     /// Skybox / IBL references. glTF cannot carry IBL, so the player bundle
     /// (Phase 6) emits this as a sidecar; Phase 1 leaves it `None`.
     pub env: Option<EnvRef>,
+}
+
+/// A skin (skeleton) — a set of joint nodes + their inverse-bind matrices. The
+/// player rebuilds the skinned deformation from this + the mesh's per-vertex
+/// `JOINTS_0`/`WEIGHTS_0`; our clips animate the joint nodes' TRS.
+#[derive(Clone, Debug, Default)]
+pub struct ExportSkin {
+    /// Joint node indices, by **depth-first flatten index** over [`GlbScene::nodes`]
+    /// (the same order the writer assigns glTF node indices). Order matters: a
+    /// vertex's `JOINTS_0` indexes into this list.
+    pub joints: Vec<usize>,
+    /// Per-joint inverse-bind matrix, column-major 16 floats (matches glTF's
+    /// `inverseBindMatrices` accessor). Empty ⇒ identity for all joints.
+    pub inverse_bind_matrices: Vec<[f32; 16]>,
+    /// Optional skeleton-root node (flatten index). `None` lets the loader infer.
+    pub skeleton: Option<usize>,
+}
+
+/// One morph target: per-vertex position (and optional normal) **deltas** added
+/// to the base mesh, scaled by the target's weight. Parallel to the mesh's
+/// vertices.
+#[derive(Clone, Debug, Default)]
+pub struct MorphTarget {
+    pub name: Option<String>,
+    /// Position deltas, one per base vertex.
+    pub positions: Vec<[f32; 3]>,
+    /// Optional normal deltas, one per base vertex.
+    pub normals: Option<Vec<[f32; 3]>>,
 }
 
 /// One node in the export forest.
@@ -97,6 +129,19 @@ pub struct ExportNode {
     pub mesh: Option<MeshData>,
     /// The material applied to [`Self::mesh`]'s single primitive.
     pub material: Option<ExportMaterial>,
+    /// Skin binding: the [`GlbScene::skins`] index this node's mesh is skinned by.
+    /// Requires [`Self::joints`] + [`Self::weights`] on the mesh.
+    pub skin: Option<usize>,
+    /// Per-vertex `JOINTS_0` (4 joint indices into the bound skin's joint list),
+    /// one per mesh vertex. `Some` only for skinned meshes.
+    pub joints: Option<Vec<[u16; 4]>>,
+    /// Per-vertex `WEIGHTS_0` (4 blend weights, summing to ~1), one per mesh
+    /// vertex. `Some` only for skinned meshes.
+    pub weights: Option<Vec<[f32; 4]>>,
+    /// Morph targets on this node's mesh (position/normal deltas). Empty = none.
+    pub morph_targets: Vec<MorphTarget>,
+    /// Default morph-target weights (one per [`Self::morph_targets`] entry).
+    pub morph_weights: Vec<f32>,
     /// Punctual light at this node (`KHR_lights_punctual`).
     pub light: Option<ExportLight>,
     /// Camera at this node.
@@ -111,6 +156,11 @@ impl Default for ExportNode {
             transform: Trs::IDENTITY,
             mesh: None,
             material: None,
+            skin: None,
+            joints: None,
+            weights: None,
+            morph_targets: Vec::new(),
+            morph_weights: Vec::new(),
             light: None,
             camera: None,
             children: Vec::new(),
