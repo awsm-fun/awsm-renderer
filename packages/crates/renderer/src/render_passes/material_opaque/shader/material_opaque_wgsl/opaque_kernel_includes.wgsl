@@ -141,6 +141,14 @@ struct OpaqueShadingInput {
     world_normal: vec3<f32>,
     world_position: vec3<f32>,
     surface_to_camera: vec3<f32>,
+    // Per-vertex attribute access (so a custom material can read COLOR_n / future
+    // named streams the way built-in PBR does). The kernel computes these per
+    // pixel anyway; we forward them rather than make the author recompute. Use
+    // `material_vertex_color(input, set)`.
+    triangle_indices: vec3<u32>,    // the 3 vertex indices of this pixel's triangle
+    attribute_data_offset: u32,     // base offset into the packed per-vertex attr stream
+    vertex_attribute_stride: u32,   // floats per vertex in that stream
+    color_sets_index: u32,          // float offset to COLOR_0 within that stream
     material_offset: u32,
     material: MaterialData,
 };
@@ -148,6 +156,22 @@ struct OpaqueShadingOutput {
     color: vec3<f32>,
     alpha: f32,
 };
+
+// Interpolated per-vertex `COLOR_<set_index>` at this pixel (barycentric-blended
+// across the triangle). Mirrors built-in PBR's vertex-colour read. Only
+// meaningful when the mesh actually carries that colour set — declare
+// `fragment_inputs: ["vertex_color"]` and author against a painted mesh; on a
+// mesh without the set there is no presence guard on the custom path.
+fn material_vertex_color(input: OpaqueShadingInput, set_index: u32) -> vec4<f32> {
+    return vertex_color(
+        input.attribute_data_offset,
+        input.triangle_indices,
+        input.barycentric,
+        VertexColorInfo(set_index),
+        input.vertex_attribute_stride,
+        input.color_sets_index,
+    );
+}
 
 fn custom_shade_dynamic(input: OpaqueShadingInput) -> OpaqueShadingOutput {
 {{ dynamic_wgsl_fragment|safe }}

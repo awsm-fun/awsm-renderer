@@ -130,6 +130,14 @@ struct OpaqueShadingInput {
     world_normal: vec3<f32>,
     world_position: vec3<f32>,
     surface_to_camera: vec3<f32>,
+    // Per-vertex attribute access — see the primary opaque kernel
+    // (opaque_kernel_includes.wgsl) for the contract; mirrored here so the
+    // SAME author fragment compiles in both the primary + edge-resolve contexts
+    // (the dual-context invariant). Use `material_vertex_color(input, set)`.
+    triangle_indices: vec3<u32>,
+    attribute_data_offset: u32,
+    vertex_attribute_stride: u32,
+    color_sets_index: u32,
     material_offset: u32,
     material: MaterialData,
 };
@@ -137,6 +145,20 @@ struct OpaqueShadingOutput {
     color: vec3<f32>,
     alpha: f32,
 };
+
+// Interpolated per-vertex `COLOR_<set_index>` at this MSAA sample. Mirror of the
+// primary-kernel helper so an author's `material_vertex_color(...)` call resolves
+// identically in both contexts.
+fn material_vertex_color(input: OpaqueShadingInput, set_index: u32) -> vec4<f32> {
+    return vertex_color(
+        input.attribute_data_offset,
+        input.triangle_indices,
+        input.barycentric,
+        VertexColorInfo(set_index),
+        input.vertex_attribute_stride,
+        input.color_sets_index,
+    );
+}
 
 fn custom_shade_dynamic(input: OpaqueShadingInput) -> OpaqueShadingOutput {
 {{ dynamic_wgsl_fragment|safe }}
@@ -189,6 +211,7 @@ fn shade_sample(
     let sample_indices_off = sample_mesh_meta.vertex_attribute_indices_offset / 4;
     let sample_data_off = sample_mesh_meta.vertex_attribute_data_offset / 4;
     let sample_uv_sets_idx = sample_mesh_meta.uv_sets_index;
+    let sample_color_sets_idx = sample_mesh_meta.color_sets_index;
 
     let base_tri = sample_indices_off + (tri_id * 3u);
     let sample_tri_indices = vec3<u32>(
@@ -258,6 +281,7 @@ fn shade_sample(
                     sample_bary,
                     sample_stride,
                     sample_uv_sets_idx,
+                    sample_color_sets_idx,
                     sample_tbn,
                     textures.bary_derivs,
                 );
@@ -271,6 +295,7 @@ fn shade_sample(
                     sample_bary,
                     sample_stride,
                     sample_uv_sets_idx,
+                    sample_color_sets_idx,
                     sample_tbn,
                 );
         {% endmatch %}
@@ -348,6 +373,10 @@ fn shade_sample(
             sample_normal,
             standard_coordinates.world_position,
             standard_coordinates.surface_to_camera,
+            sample_tri_indices,
+            sample_data_off,
+            sample_stride,
+            sample_color_sets_idx,
             sample_mat_offset,
             dyn_material,
         );

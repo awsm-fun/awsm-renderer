@@ -43,6 +43,7 @@ fn pbr_get_material_color{{ mipmap.suffix() }}(
     barycentric: vec3<f32>,
     vertex_attribute_stride: u32,
     uv_sets_index: u32,
+    color_sets_index: u32,
     {% if mipmap.is_gradient() %}gradients: PbrMaterialGradients,{% endif %}
     geometry_tbn: TBN,
 ) -> PbrMaterialColor {
@@ -90,6 +91,7 @@ fn pbr_get_material_color{{ mipmap.suffix() }}(
             barycentric,
             vertex_color_info,
             vertex_attribute_stride,
+            color_sets_index,
         );
     }
     {% endif %}

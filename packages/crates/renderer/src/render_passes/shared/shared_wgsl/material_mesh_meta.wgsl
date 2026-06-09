@@ -50,7 +50,11 @@ struct MaterialMeshMeta {
     // padding (each entry is 256-byte aligned, so removing them
     // reclaims nothing). The four u32s keep the populated region at a
     // vec4 boundary so `padding_4` lays out cleanly.
-    _reserved0: u32,
+    // Offset in floats to COLOR_0 within the packed per-vertex attribute data
+    // (symmetric with `uv_sets_index`). The opaque compute kernel fetches vertex
+    // colours manually, so it needs the real offset — colours pack after UVs,
+    // not at 0. Formerly `_reserved0`.
+    color_sets_index: u32,
     _reserved1: u32,
     _reserved2: u32,
     _reserved3: u32,
