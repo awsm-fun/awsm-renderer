@@ -4281,6 +4281,11 @@ fn coalesce_key(cmd: &EditorCommand) -> Option<(u8, NodeId)> {
         }
         EditorCommand::SetBuiltinParam { node, .. } => Some((16, *node)),
         EditorCommand::SetLightParam { node, .. } => Some((17, *node)),
+        // Mesh editing — collapse a continuous edit (modifier-param scrub, a
+        // soft-transform drag) per mesh into one undo step. Explicit
+        // `SetVertexPositions` is left granular (distinct edits stay distinct).
+        EditorCommand::SetMeshModifiers { mesh, .. } => Some((18, pack(*mesh, 0, 0))),
+        EditorCommand::SoftTransformVertices { mesh, .. } => Some((19, pack(*mesh, 0, 0))),
         _ => None,
     }
 }
