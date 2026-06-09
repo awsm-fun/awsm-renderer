@@ -59,6 +59,27 @@ in chat; the split's runtime/authoring line is defined by the unification).
   pivots to `Primitive | Glb` (NOT the custom `MeshBlob` blob), needs the
   exporter skin/morph work + the bake + scene.toml writer.
 
+### Bundle progress (glb-mesh pivot) — STATIC bake DONE + MCP-verified
+- ✅ glb-export emits skin + morph (`84513f5b`): ExportSkin/MorphTarget +
+  JOINTS/WEIGHTS/inverse-bind/morph accessors; round-trip tested (parse a wild
+  skinned glb → re-emit → re-parse).
+- ✅ awsm-scene `RuntimeMesh = Primitive|Glb` + `project_dir.rs` scene.toml writer
+  (`789c8fc0`); `MeshBlob` retired.
+- ✅ editor-protocol `bake::project_to_scene` (EditorProject → Scene, pure,
+  native-tested) + `lower_mesh` (bare primitive→procedural, else→Glb) (`317e7f50`).
+- ✅ editor `bake_player_bundle` (`f1a606a4`): scene.toml + one geometry-only
+  `assets/<id>.glb` per Glb-lowered mesh + material folders + textures; repointed
+  the `export_player_bundle` MCP query + menu; removed the old scene.glb path.
+  **MCP-verified in-browser**: torus stays procedural in scene.toml; twisted box
+  → `assets/<id>.glb` (geometry only, no materials); scene.toml valid + complete.
+- ⬜ REMAINING: **skinned/morph glb re-export from source** (the intricate
+  follow-on). Needs the source-glb bytes editor-side + parse skin/morph →
+  ExportNode (the keystone writer already supports it) + the glb-skeleton ↔
+  scene-joint-node correspondence (our clips target scene NodeIds; the editor's
+  `AssetTemplate` holds the glb-node↔scene-node mapping). Skinned meshes are
+  currently absent from the bundle (their referenced source isn't copied/baked).
+  The static bake is correct for all non-skinned content.
+
 ### Bundle: glb mesh assets (revised from "our MeshBlob", locked with user)
 We do NOT hand-roll a runtime mesh-bytes format. Reinventing vertex packing /
 quantization / Draco / **skins + morph targets** (which glTF expresses natively)
