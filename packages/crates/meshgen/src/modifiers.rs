@@ -10,8 +10,8 @@
 use std::collections::HashMap;
 use std::f32::consts::{PI, TAU};
 
-use awsm_scene_schema::modifier::{Axis, MeshBase, Modifier, ModifierStack};
-use awsm_scene_schema::PrimitiveShape;
+use crate::recipe::{Axis, MeshBase, Modifier, ModifierStack};
+use awsm_scene::PrimitiveShape;
 use glam::Vec3;
 
 use crate::mesh_data::MeshData;
@@ -877,7 +877,7 @@ mod tests {
     fn sweep_and_captured_bases_are_empty_pending_editor() {
         // These need scene state; evaluate yields an empty base (editor resolves).
         let stack = ModifierStack {
-            base: MeshBase::Captured(awsm_scene_schema::MeshRef(awsm_scene_schema::AssetId::new())),
+            base: MeshBase::Captured(awsm_scene::MeshRef(awsm_scene::AssetId::new())),
             modifiers: vec![Modifier::Inflate { amount: 1.0 }],
         };
         assert!(evaluate(&stack).positions.is_empty());

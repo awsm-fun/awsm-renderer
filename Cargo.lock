@@ -338,10 +338,11 @@ version = "0.2.0"
 dependencies = [
  "awsm-curves",
  "awsm-geometry",
- "awsm-scene-schema",
+ "awsm-scene",
  "fast-surface-nets",
  "glam 0.32.1",
  "ndshape",
+ "schemars",
  "serde",
 ]
 

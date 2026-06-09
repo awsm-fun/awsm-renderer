@@ -117,7 +117,7 @@ fn is_watertight(mesh: &MeshData) -> bool {
 /// The silhouette **profile** along `axis`: split the axis extent into `samples`
 /// bins and, for each, report `[height, radius]` where `radius` is the max
 /// distance of any vertex in the bin from the axis line (through the centroid).
-/// Pairs with a [`MeshBase::Lathe`](awsm_scene_schema::modifier::MeshBase) profile
+/// Pairs with a [`MeshBase::Lathe`](crate::recipe::MeshBase) profile
 /// — "measure the tip radius, adjust, re-measure".
 pub fn cross_section_profile(mesh: &MeshData, axis: usize, samples: u32) -> Vec<[f32; 2]> {
     let n = samples.max(1) as usize;

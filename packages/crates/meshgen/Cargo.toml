@@ -10,20 +10,34 @@ repository.workspace = true
 homepage.workspace = true
 
 [features]
+# Player-lean by default: `primitives` + `mesh_data` (glam-only) always compile,
+# so a plain `awsm-meshgen` dep IS the player build. Heavier capabilities opt in.
 default = []
-serde = ["dep:serde", "awsm-curves/serde", "awsm-geometry/serde"]
+serde = ["dep:serde", "awsm-curves?/serde", "awsm-geometry?/serde"]
+# Recipe TYPES only (ModifierStack/Modifier/SdfNode/MeshBase/Axis/Sweep…) — pure
+# data the editor↔mcp protocol wires; enabled by awsm-editor-protocol. No heavy
+# deps. (The recipe types derive serde unconditionally.)
+recipes = ["dep:serde"]
+# Recipe EXECUTION (modifiers / SDF mesher / sweep / edit / expr / stats /
+# procedural textures) + its heavy deps. Implies `recipes`. Enabled by the editor.
+authoring = [
+    "recipes",
+    "serde",
+    "dep:awsm-curves",
+    "dep:awsm-geometry",
+    "dep:fast-surface-nets",
+    "dep:ndshape",
+]
+schemars = ["dep:schemars", "awsm-scene/schemars"]
 
 [dependencies]
-awsm-curves = { workspace = true }
-awsm-geometry = { workspace = true }
-# Modifier-stack evaluation (`modifiers.rs`) consumes the recipe types
-# (`ModifierStack`/`MeshBase`/`Modifier`) defined in the scene schema. No cycle:
-# scene-schema is pure data and does not depend on meshgen.
-awsm-scene-schema = { workspace = true }
-glam = {workspace = true}
-serde = {workspace = true, optional = true}
-# SDF → triangles (Phase 5). We don't write a mesher — surface nets is delegated
-# to this crate (pure Rust, wasm-friendly); our value-add is the SDF distance
-# graph in `sdf.rs`.
-fast-surface-nets = "0.2.1"
-ndshape = "0.3.0"
+awsm-scene = { workspace = true }
+glam = { workspace = true }
+serde = { workspace = true, optional = true }
+schemars = { version = "1", optional = true }
+# Authoring-only (heavy) — pulled in by the `authoring` feature, never the player.
+awsm-curves = { workspace = true, optional = true }
+awsm-geometry = { workspace = true, optional = true }
+# SDF → triangles: surface-nets mesher (pure Rust, wasm-friendly). Authoring-only.
+fast-surface-nets = { version = "0.2.1", optional = true }
+ndshape = { version = "0.3.0", optional = true }

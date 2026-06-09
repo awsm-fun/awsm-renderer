@@ -3,7 +3,7 @@
 //! padded grid sized from [`sdf_bounds`](crate::sdf::sdf_bounds), run surface
 //! nets, and map the array-local vertices back to world space.
 
-use awsm_scene_schema::modifier::SdfNode;
+use crate::recipe::SdfNode;
 use fast_surface_nets::{surface_nets, SurfaceNetsBuffer};
 use glam::Vec3;
 use ndshape::{RuntimeShape, Shape};
@@ -56,8 +56,8 @@ pub fn surface_nets_mesh(node: &SdfNode, resolution: u32) -> MeshData {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::recipe::{SdfNode as N, SdfPrimitive as P};
     use crate::stats::mesh_stats;
-    use awsm_scene_schema::modifier::{SdfNode as N, SdfPrimitive as P};
 
     #[test]
     fn meshes_a_sphere() {
@@ -95,9 +95,9 @@ mod tests {
                             height: 2.0,
                         }),
                         N::Transform {
-                            trs: awsm_scene_schema::Trs {
+                            trs: awsm_scene::Trs {
                                 translation: [0.0, 0.3, 0.0],
-                                ..awsm_scene_schema::Trs::IDENTITY
+                                ..awsm_scene::Trs::IDENTITY
                             },
                             child: Box::new(N::Primitive(P::Cylinder {
                                 radius: 0.8,
@@ -107,9 +107,9 @@ mod tests {
                     ],
                 },
                 N::Transform {
-                    trs: awsm_scene_schema::Trs {
+                    trs: awsm_scene::Trs {
                         translation: [1.2, 0.0, 0.0],
-                        ..awsm_scene_schema::Trs::IDENTITY
+                        ..awsm_scene::Trs::IDENTITY
                     },
                     child: Box::new(N::Primitive(P::Torus {
                         major: 0.5,
