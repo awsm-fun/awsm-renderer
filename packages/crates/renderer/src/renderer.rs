@@ -439,10 +439,13 @@ impl AwsmRenderer {
     ///
     /// `AwsmRendererBuilder::build()` already compiles, in parallel:
     ///
-    /// - **Opaque-compute** material kernels — 12 variants (3
-    ///   `MaterialShaderId` × {MSAA on, off} × {mipmaps on, off}) plus
-    ///   two empty kernels for the no-meshes case. See
-    ///   `MaterialOpaquePipelines::new`.
+    /// - **Opaque-compute** material kernels — only the empty kernel for the
+    ///   active MSAA (the no-meshes / skybox-only fallback). The first-party
+    ///   material shaders (PBR / Unlit / Toon / Flipbook) are **NOT** compiled
+    ///   at boot — they compile lazily on first use via
+    ///   [`Self::ensure_scene_pipelines`], so a project that uses none of them
+    ///   pays zero material-shader compile cost at startup. See the
+    ///   `MaterialOpaquePipelines` module docs + `shader_descriptors_and_layouts`.
     /// - **Geometry render pipelines** — every (MSAA × instancing ×
     ///   storage-array × cull_mode) variant. See
     ///   `GeometryRenderPipelineKeys::new`.
@@ -458,12 +461,13 @@ impl AwsmRenderer {
     ///
     /// ## What this method does today
     ///
-    /// - **Builder-time prewarm** has already compiled the first-party
-    ///   opaque material pipelines, the geometry passes, hzb,
-    ///   material_classify, effects, decal, shadows, and the picker /
-    ///   line variants. Calling this at the end of `build()` finds all
-    ///   those keys already cached and returns immediately (single
-    ///   tracing span; no GPU work).
+    /// - **Builder-time prewarm** has already compiled the empty-opaque kernel,
+    ///   the geometry passes, hzb, material_classify, effects, decal, shadows,
+    ///   and the picker / line variants — but **not** the first-party material
+    ///   pipelines (those are lazy). Calling this at the end of `build()` kicks
+    ///   `ensure_scene_pipelines`, which compiles whatever the *live* scene
+    ///   actually needs (none, on an empty scene); cached keys return
+    ///   immediately.
     ///
     /// - **Per-scene transparent prewarm** runs whenever the caller
     ///   invokes this method after meshes have been populated. It
