@@ -461,14 +461,23 @@ fn builtin_merged(
 /// built-in assignment (base colour / metallic / … — see the material model note
 /// in `inspector.rs::material_editor`); it never stands in as a material on its
 /// own.
+///
+/// `vertex_color_set` is the geometry COLOR set the mesh carries (`Some(0)` for
+/// painted `COLOR_0`), or `None` when it has none. Vertex-colour *usage* is
+/// geometry-derived, so — exactly as the skinned path does — we flip
+/// `vertex_colors_enabled` on the merged built-in def + bind the set, so painted
+/// colours actually multiply the base colour instead of being uploaded and
+/// silently ignored.
 fn resolve_assigned_material(
     r: &mut awsm_renderer::AwsmRenderer,
     material: Option<&awsm_scene_schema::dynamic_material::MaterialInstance>,
+    vertex_color_set: Option<u32>,
 ) -> awsm_renderer::materials::MaterialKey {
     match material {
         Some(inst) => {
-            if let Some(merged) = builtin_merged(inst) {
-                material::insert_material(r, &merged)
+            if let Some(mut merged) = builtin_merged(inst) {
+                merged.vertex_colors_enabled = vertex_color_set.is_some();
+                material::insert_material_vc(r, &merged, vertex_color_set)
             } else if let Some(k) = super::dynamic::insert_custom(r, inst) {
                 k
             } else {
@@ -859,8 +868,13 @@ async fn upload_simple_mesh(
     let parent_tk = entry.transform_key;
     let handle = renderer_handle();
     let mut r = handle.lock().await;
+    // Vertex-colour usage is geometry-derived: painted meshes carry a non-empty
+    // `colors` (uploaded as `COLOR_0`), so bind set 0 on the assigned built-in.
+    let vertex_color_set = raw.colors.as_ref().filter(|c| !c.is_empty()).map(|_| 0u32);
     let mat_key = match &mat {
-        MeshMaterial::Assigned(material) => resolve_assigned_material(&mut r, material.as_ref()),
+        MeshMaterial::Assigned(material) => {
+            resolve_assigned_material(&mut r, material.as_ref(), vertex_color_set)
+        }
         MeshMaterial::Flat(def) => material::insert_material(&mut r, def),
     };
     let sub_tk = r.transforms.insert(Transform::IDENTITY, Some(parent_tk));
