@@ -1067,6 +1067,34 @@ impl EditorController {
                                 custom_material: instance,
                                 shadow,
                             },
+                            // Captured mesh — same material model as a Primitive.
+                            NodeKind::Mesh {
+                                mesh,
+                                material: mref,
+                                inline_material,
+                                shadow,
+                                ..
+                            } => NodeKind::Mesh {
+                                mesh,
+                                material: mref,
+                                inline_material: seeded_inline.unwrap_or(inline_material),
+                                custom_material: instance,
+                                shadow,
+                            },
+                            // Sweep — same material model as a Primitive.
+                            NodeKind::SweepAlongCurve {
+                                def,
+                                material: mref,
+                                inline_material,
+                                shadow,
+                                ..
+                            } => NodeKind::SweepAlongCurve {
+                                def,
+                                material: mref,
+                                inline_material: seeded_inline.unwrap_or(inline_material),
+                                custom_material: instance,
+                                shadow,
+                            },
                             // A Model node carries one assigned material (the
                             // same model as a Primitive); `None` = unassigned →
                             // magenta.

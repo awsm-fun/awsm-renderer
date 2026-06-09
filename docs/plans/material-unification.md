@@ -1,9 +1,27 @@
 # Material data-model unification
 
-**Status:** PLANNED (not started). Needs in-browser GPU verification at each
-step — every change here alters a render path that native `cargo test` cannot
-exercise, so this must be executed with the editor open (`task mcp-dev`), not
-shipped blind.
+**Status:** IN PROGRESS. Step 1 (render-path unification) + the `AssignMaterial`
+Mesh/Sweep fix are **done and GPU-verified live** (see below). Steps 3–5 (remove
+the dead `material: MaterialRef` field, fold `inline_material` into overrides,
+rename) remain — they carry serde-migration + exporter blast radius and should
+likewise be done with the editor open (`task mcp-dev`), not shipped blind.
+
+## Done + verified
+
+- **Render paths unified.** `materialize_primitive`, `upload_simple_mesh`
+  (captured Mesh), and `materialize_sweep` now all resolve through one helper
+  `resolve_assigned_material` (assigned built-in/custom → render; unassigned →
+  magenta). Instanced geometry stays on an explicit `MeshMaterial::Flat` (flat
+  default + per-instance colours, no assignment concept).
+- **`AssignMaterial` now handles Mesh + Sweep.** It previously had only
+  `Primitive` + `Model` arms (`_ => Ok(None)`), so assigning a material to a
+  converted mesh was a silent no-op.
+- **Verified live (screenshots):** fresh Primitive → magenta; convert to Mesh →
+  **magenta** (was incorrectly white); assign built-in PBR → renders, on both a
+  Mesh and a Primitive; `custom_material` correctly populated.
+
+This delivers the user-facing goal — **0-or-1 assignment, 0 → magenta,
+uniformly across all geometry**. The remaining steps are internal cleanup.
 
 ## Goal (the model we want)
 

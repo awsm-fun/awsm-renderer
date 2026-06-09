@@ -345,17 +345,27 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
         NodeKind::SweepAlongCurve {
             def,
             inline_material,
+            custom_material,
             ..
-        } => materialize_sweep(entry.clone(), def, inline_material).await,
+        } => materialize_sweep(entry.clone(), def, inline_material, custom_material).await,
         NodeKind::InstancesAlongCurve(def) => materialize_instances(entry.clone(), def).await,
         NodeKind::ParticleEmitter(def) => materialize_particle(entry.clone(), def).await,
         NodeKind::Mesh {
             mesh,
             inline_material,
+            custom_material,
             ..
         } => match super::mesh_cache::get_raw(mesh.0) {
             Some(raw) => {
-                upload_simple_mesh(entry.clone(), raw, inline_material).await;
+                upload_simple_mesh(
+                    entry.clone(),
+                    raw,
+                    MeshMaterial::Assigned {
+                        custom_material,
+                        inline: inline_material,
+                    },
+                )
+                .await;
             }
             None => {
                 tracing::warn!("NodeKind::Mesh {mesh:?}: not in the capture cache; renders empty")
@@ -494,6 +504,53 @@ fn builtin_merged(
     })
 }
 
+/// Resolve the renderer material key for a geometry node from its optional
+/// library assignment + per-mesh inline uniform store. **The single source of
+/// truth** for the material model — shared by primitives, captured meshes, and
+/// sweeps so all three render identically:
+///   • assigned built-in → merge its shared *variant* with this mesh's per-mesh
+///     `inline` uniforms → one `Material::Pbr/Unlit/Toon`;
+///   • assigned custom WGSL → its registered bucket;
+///   • unassigned (or an assignment that can't resolve yet) → flat **magenta**,
+///     the missing-material sentinel.
+///
+/// `inline` is purely the per-mesh *uniform* store for a built-in assignment
+/// (base colour / metallic / … — see the material model note in
+/// `inspector.rs::material_editor`); it never stands in as a material on its own.
+fn resolve_assigned_material(
+    r: &mut awsm_renderer::AwsmRenderer,
+    custom_material: Option<&awsm_scene_schema::dynamic_material::CustomMaterialInstance>,
+    inline: &awsm_scene_schema::MaterialDef,
+) -> awsm_renderer::materials::MaterialKey {
+    match custom_material {
+        Some(inst) => {
+            if let Some(merged) = builtin_merged(inst, inline) {
+                material::insert_material(r, &merged)
+            } else if let Some(k) = super::dynamic::insert_custom(r, inst) {
+                k
+            } else {
+                material::insert_magenta(r)
+            }
+        }
+        None => material::insert_magenta(r),
+    }
+}
+
+/// How [`upload_simple_mesh`] resolves its material.
+enum MeshMaterial {
+    /// A user-assignable geometry node (captured mesh, sweep): resolve the
+    /// optional assignment via [`resolve_assigned_material`] — magenta when
+    /// unassigned, exactly like a primitive.
+    Assigned {
+        custom_material: Option<awsm_scene_schema::dynamic_material::CustomMaterialInstance>,
+        inline: awsm_scene_schema::MaterialDef,
+    },
+    /// Render this material def directly — no assignment concept. Used by
+    /// instanced geometry, whose appearance is the flat default + per-instance
+    /// colours, not a per-node material assignment.
+    Flat(awsm_scene_schema::MaterialDef),
+}
+
 async fn materialize_primitive(
     entry: Arc<RendererNode>,
     shape: PrimitiveShape,
@@ -516,29 +573,10 @@ async fn materialize_primitive(
     // actually draws — the archived editor batched this in instance_batcher).
     let handle = renderer_handle();
     let mut r = handle.lock().await;
-    // Resolve the assigned library material (by stable id):
-    //   • a built-in → merge its shared *variant* settings with this mesh's
-    //     per-mesh *uniform* values (`inline`) → one Material::Pbr/Unlit/Toon;
-    //   • a registered dynamic WGSL material → its registered bucket;
-    //   • otherwise (unassigned / not-yet-registered) → the mesh's inline material.
-    // Material resolution. A mesh with NO assigned material (or an assignment that
-    // can't be resolved yet) renders flat **magenta** — the missing-material
-    // sentinel — NOT a default PBR material. `inline` is purely the per-mesh
-    // *uniform* store for a built-in assignment (base colour / metallic / … — see
-    // the material model note in inspector.rs::material_editor); it never stands in
-    // as a material on its own.
-    let mat_key = match custom_material.as_ref() {
-        Some(inst) => {
-            if let Some(merged) = builtin_merged(inst, &inline) {
-                material::insert_material(&mut r, &merged)
-            } else if let Some(k) = super::dynamic::insert_custom(&mut r, inst) {
-                k
-            } else {
-                material::insert_magenta(&mut r)
-            }
-        }
-        None => material::insert_magenta(&mut r),
-    };
+    // Material resolution — shared with captured meshes + sweeps so all
+    // geometry renders identically (assigned → built-in/custom; unassigned →
+    // magenta). See [`resolve_assigned_material`].
+    let mat_key = resolve_assigned_material(&mut r, custom_material.as_ref(), &inline);
     let sub_tk = r.transforms.insert(Transform::IDENTITY, Some(parent_tk));
     match r.add_raw_mesh(raw, sub_tk, mat_key) {
         Ok(mk) => {
@@ -911,12 +949,18 @@ fn lookup_curve_def(node_id: NodeId) -> Option<awsm_scene_schema::CurveDef> {
 async fn upload_simple_mesh(
     entry: Arc<RendererNode>,
     raw: RawMeshData,
-    inline: awsm_scene_schema::MaterialDef,
+    mat: MeshMaterial,
 ) -> Option<awsm_renderer::meshes::MeshKey> {
     let parent_tk = entry.transform_key;
     let handle = renderer_handle();
     let mut r = handle.lock().await;
-    let mat_key = material::insert_material(&mut r, &inline);
+    let mat_key = match &mat {
+        MeshMaterial::Assigned {
+            custom_material,
+            inline,
+        } => resolve_assigned_material(&mut r, custom_material.as_ref(), inline),
+        MeshMaterial::Flat(def) => material::insert_material(&mut r, def),
+    };
     let sub_tk = r.transforms.insert(Transform::IDENTITY, Some(parent_tk));
     match r.add_raw_mesh(raw, sub_tk, mat_key) {
         Ok(mk) => {
@@ -945,6 +989,7 @@ async fn materialize_sweep(
     entry: Arc<RendererNode>,
     def: awsm_scene_schema::SweepAlongCurveDef,
     inline: awsm_scene_schema::MaterialDef,
+    custom_material: Option<awsm_scene_schema::dynamic_material::CustomMaterialInstance>,
 ) {
     use awsm_curves::CatmullRomCurve;
     use awsm_scene_schema::{CrossSectionDef, SweepUvMode};
@@ -999,7 +1044,15 @@ async fn materialize_sweep(
         colors: mesh.colors,
         indices: mesh.indices,
     };
-    upload_simple_mesh(entry, raw, inline).await;
+    upload_simple_mesh(
+        entry,
+        raw,
+        MeshMaterial::Assigned {
+            custom_material,
+            inline,
+        },
+    )
+    .await;
 }
 
 /// Place copies of a source primitive along the referenced curve
@@ -1080,7 +1133,12 @@ async fn materialize_instances(
         colors: mesh.colors,
         indices: mesh.indices,
     };
-    let mesh_key = upload_simple_mesh(entry, raw, awsm_scene_schema::MaterialDef::default()).await;
+    let mesh_key = upload_simple_mesh(
+        entry,
+        raw,
+        MeshMaterial::Flat(awsm_scene_schema::MaterialDef::default()),
+    )
+    .await;
     if let Some(mk) = mesh_key {
         with_renderer_mut(move |r| {
             if let Err(err) = r.enable_mesh_instancing_opaque(mk, &transforms) {
