@@ -10,11 +10,18 @@ tasks:
     desc: "MCP server: WebTransport (QUIC) link the editor dials into + the rmcp /mcp endpoint + /control (cert-hash discovery) + /debug (raw-request seam)."
     cmds:
       - >
-        cargo run -p awsm-mcp-server --
+        cargo run -p awsm-renderer-mcp --
         --http-port {{.PORT_MCP_HTTP_DEV}}
-        --quic-port {{.PORT_MCP_QUIC_DEV}}
+        --client-port {{.PORT_MCP_QUIC_DEV}}
 
   build:
     desc: "Build the MCP server binary (debug)."
     cmds:
-      - cargo build -p awsm-mcp-server
+      - cargo build -p awsm-renderer-mcp
+
+  install:
+    desc: "Build (release) + install the `awsm-renderer-mcp` binary to ~/.cargo/bin so you can run it from anywhere."
+    # Optimized release build — the same artifact CI will package + distribute (github-built binaries) later.
+    cmds:
+      - cargo install --path {{.PATH_PACKAGES}}/mcp --bin awsm-renderer-mcp --force
+      - 'echo "Installed awsm-renderer-mcp to ~/.cargo/bin. Run it from anywhere — bare awsm-renderer-mcp uses the default ports {{.PORT_MCP_HTTP_DEV}} (HTTP) / {{.PORT_MCP_QUIC_DEV}} (WebTransport)."'

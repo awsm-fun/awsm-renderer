@@ -8,7 +8,7 @@ the editor connect button/modal, the PNA opt-in).
 A tiny, separate repo (working name **`awsm-mcp`**) that lets anyone drive the
 **hosted** awsm-renderer editor from an MCP agent **without cloning
 `awsm-renderer` or building the WASM frontend**. They get the local
-`awsm-mcp-server` binary + a ready `.mcp.json`, run one command, open the hosted
+`awsm-renderer-mcp` binary + a ready `.mcp.json`, run one command, open the hosted
 editor in a Chromium browser, and click **Connect**.
 
 This repo *is* the directory the user runs their MCP agent from — its `.mcp.json`
@@ -18,10 +18,10 @@ is what points the agent at the local server.
 
 ```bash
 # one-time: install the server (prebuilt binary — no Rust)
-curl -fsSL https://github.com/dakom/awsm-renderer/releases/latest/download/awsm-mcp-server-installer.sh | sh
+curl -fsSL https://github.com/dakom/awsm-renderer/releases/latest/download/awsm-renderer-mcp-installer.sh | sh
 
 # each session, from this repo's directory:
-task serve            # runs awsm-mcp-server on :9086 (HTTP/MCP) + :9087 (WebTransport)
+task serve            # runs awsm-renderer-mcp on :9086 (HTTP/MCP) + :9087 (WebTransport)
 # → open the hosted editor, click the link icon in the top bar → Connect
 # → run your MCP agent here; it picks up ./.mcp.json automatically
 ```
@@ -64,7 +64,7 @@ awsm-mcp/
 
 ## Delivering the server binary
 
-`awsm-mcp-server` lives at [`packages/mcp`](../../packages/mcp) in the main repo
+`awsm-renderer-mcp` lives at [`packages/mcp`](../../packages/mcp) in the main repo
 (`publish = false`). Its dependency tree is **native-only** (editor-protocol,
 scene-schema, web-transport/quinn, rmcp, axum) — no wasm — so it builds and
 installs standalone. Three delivery options, in preference order:
@@ -74,7 +74,7 @@ installs standalone. Three delivery options, in preference order:
 Set up [**cargo-dist** ("dist")](https://opensource.axo.dev/cargo-dist/) in
 `awsm-renderer`:
 
-- `dist init`, scoped to release **only** `awsm-mcp-server` (dist builds and
+- `dist init`, scoped to release **only** `awsm-renderer-mcp` (dist builds and
   attaches binaries to a GitHub Release; it does **not** publish to crates.io, so
   `publish = false` is fine).
 - Targets: `aarch64-apple-darwin`, `x86_64-apple-darwin`,
@@ -89,13 +89,13 @@ Set up [**cargo-dist** ("dist")](https://opensource.axo.dev/cargo-dist/) in
 ### B. `cargo install --git` — zero release infra, needs Rust
 
 ```bash
-cargo install --git https://github.com/dakom/awsm-renderer awsm-mcp-server
+cargo install --git https://github.com/dakom/awsm-renderer awsm-renderer-mcp
 ```
 
 Works today (publish=false doesn't block git installs). Compiles only the native
 server tree. Slower first run; requires a Rust toolchain. Good fallback / pre-CI.
 
-### C. `cargo binstall awsm-mcp-server`
+### C. `cargo binstall awsm-renderer-mcp`
 
 Fetches the prebuilt binary if cargo-dist published a binstall manifest (A),
 otherwise compiles. Nice middle ground for Rust users.
@@ -106,9 +106,9 @@ otherwise compiles. Nice middle ground for Rust users.
 ## Changes needed in the main repo (`awsm-renderer`)
 
 1. **Release pipeline.** Add cargo-dist config + the generated
-   `.github/workflows/release.yml` to build + attach `awsm-mcp-server` binaries on
+   `.github/workflows/release.yml` to build + attach `awsm-renderer-mcp` binaries on
    `v*` tags. Scope dist to the one binary.
-2. **Verify standalone install.** Confirm `cargo install --git … awsm-mcp-server`
+2. **Verify standalone install.** Confirm `cargo install --git … awsm-renderer-mcp`
    builds clean from a fresh checkout (should — native-only deps).
 3. **Optional `--allow-origin` flag** (security; see below). Default `Any` for
    zero-config; lets the template lock CORS to the editor origin. PNA header stays.
@@ -126,13 +126,13 @@ vars:
   HTTP_PORT: 9086
   QUIC_PORT: 9087
   EDITOR_URL: https://<hosted-editor-url>   # filled from the main-repo deploy
-  BIN: ./bin/awsm-mcp-server
+  BIN: ./bin/awsm-renderer-mcp
 
 tasks:
   install:
-    desc: "Install awsm-mcp-server (prebuilt binary; falls back to cargo)"
+    desc: "Install awsm-renderer-mcp (prebuilt binary; falls back to cargo)"
     # 1) try the cargo-dist installer / download the latest release asset for this
-    #    OS+arch into ./bin/, else 2) cargo install --git … awsm-mcp-server
+    #    OS+arch into ./bin/, else 2) cargo install --git … awsm-renderer-mcp
   serve:
     desc: "Run the MCP server (open the hosted editor, then click Connect)"
     cmds:
@@ -201,9 +201,9 @@ For v1, "use the latest of both, released together" is sufficient — document i
 ## Checklist
 
 Main repo (`awsm-renderer`):
-- [ ] cargo-dist init + release workflow scoped to `awsm-mcp-server`
+- [ ] cargo-dist init + release workflow scoped to `awsm-renderer-mcp`
 - [ ] tag a release; verify binaries + installer assets attach
-- [ ] verify `cargo install --git … awsm-mcp-server` from a clean checkout
+- [ ] verify `cargo install --git … awsm-renderer-mcp` from a clean checkout
 - [ ] *(optional)* `--allow-origin` CORS flag
 - [ ] deploy the branch-`mcp` editor; record the hosted URL
 

@@ -55,6 +55,15 @@ pub fn render() -> Dom {
             if e.ctrl_key() || e.alt_key() || e.shift_key() || typing_in_field() {
                 return;
             }
+            // `5` toggles the editor view between perspective and orthographic
+            // (Blender uses Numpad-5; dominator only exposes `key()`, so plain `5`
+            // — which also works on numpad-less laptops).
+            if e.key() == "5" {
+                e.prevent_default();
+                let ortho = controller().settings.editor_ortho.get();
+                crate::scene_mode::viewport::set_editor_projection(!ortho);
+                return;
+            }
             let mode = match e.key().as_str() {
                 "q" | "Q" => GizmoMode::Select,
                 "w" | "W" => GizmoMode::Move,
@@ -461,28 +470,94 @@ fn cmdk_button() -> Dom {
     })
 }
 
-/// Top-bar MCP link button. Reflects the remote connection [`status`] and opens
-/// the connect modal on click (where the server address is editable).
+/// Top-bar MCP cluster: a `MCP` / `MCP…` / `MCP ✓` status button (opens the
+/// connect modal, or disconnects when connected) plus — while connected — a
+/// same-sized 🤖 activity chip that pulses whenever the agent is mid-request.
+///
+/// The chip is informational only: the editor stays fully interactive while the
+/// agent works (every edit is command-sourced + undoable), matching the
+/// awsm-audio convention — it tells the human "changes are landing live; wait
+/// for idle before editing / exporting" without locking input.
 ///
 /// [`status`]: crate::remote::status
 fn mcp_button() -> Dom {
     use crate::remote::RemoteStatus;
     html!("div", {
         .style("display", "flex")
-        .child_signal(crate::remote::status().signal().map(|st| {
-            let (title, active) = match st {
-                RemoteStatus::Disconnected => ("Connect to MCP server", false),
-                RemoteStatus::Connecting => ("Connecting to MCP\u{2026}", false),
-                RemoteStatus::Connected => ("MCP connected", true),
-            };
-            Some(
-                IconBtn::new("link")
-                    .title(title)
-                    .active(active)
-                    .on_click(open_mcp_modal)
-                    .render(),
-            )
-        }))
+        .style("align-items", "center")
+        .style("gap", "6px")
+        .child_signal(crate::remote::status().signal().map(|st| Some(mcp_status_button(st))))
+        .child_signal(map_ref! {
+            let status = crate::remote::status().signal(),
+            let working = crate::remote::working().signal() =>
+            (*status == RemoteStatus::Connected).then(|| mcp_activity_chip(*working))
+        })
+    })
+}
+
+/// The three-state MCP status button.
+fn mcp_status_button(status: crate::remote::RemoteStatus) -> Dom {
+    use crate::remote::RemoteStatus;
+    match status {
+        RemoteStatus::Disconnected => Btn::new()
+            .label("MCP")
+            .variant(BtnVariant::Ghost)
+            .size(BtnSize::Sm)
+            .title("Connect to an MCP server")
+            .on_click(open_mcp_modal)
+            .render(),
+        RemoteStatus::Connecting => Btn::new()
+            .label("MCP\u{2026}")
+            .variant(BtnVariant::Ghost)
+            .size(BtnSize::Sm)
+            .title("Connecting\u{2026}")
+            .disabled(true)
+            .render(),
+        RemoteStatus::Connected => Btn::new()
+            .label("MCP \u{2713}")
+            .variant(BtnVariant::Primary)
+            .size(BtnSize::Sm)
+            .title("Connected \u{2014} click to disconnect")
+            .on_click(crate::remote::disconnect)
+            .render(),
+    }
+}
+
+/// The 🤖 agent-activity chip shown next to the MCP button while connected.
+/// Sized to match the `BtnSize::Sm` button (26px height) so the two read as one
+/// cluster. Pulses (via the `mcp-pulse` keyframe in `index.html`) while working.
+fn mcp_activity_chip(working: bool) -> Dom {
+    html!("div", {
+        .style("display", "inline-flex")
+        .style("align-items", "center")
+        .style("gap", "5px")
+        .style("height", "26px")
+        .style("box-sizing", "border-box")
+        .style("padding", "0 11px")
+        .style("border-radius", "var(--r2)")
+        .style("border-style", "solid")
+        .style("border-width", "1px")
+        .style("font-size", "12.5px")
+        .style("font-weight", "550")
+        .style("white-space", "nowrap")
+        .style("user-select", "none")
+        .apply(|d| if working {
+            d.style("color", "var(--accent-bright)")
+                .style("background", "var(--accent-ghost)")
+                .style("border-color", "var(--accent-line)")
+                .style("animation", "mcp-pulse 1.1s ease-in-out infinite")
+                .attr(
+                    "title",
+                    "Agent is working \u{2014} changes are landing live; wait for idle before editing or exporting.",
+                )
+        } else {
+            d.style("color", "var(--text-3)")
+                .style("background", "transparent")
+                .style("border-color", "var(--line)")
+                .attr("title", "Agent idle \u{2014} safe to edit / export.")
+        })
+        .child(html!("span", { .text("\u{1F916}") }))
+        .child(html!("span", { .text(if working { "working\u{2026}" } else { "idle" }) }))
     })
 }
 
@@ -509,7 +584,7 @@ fn open_mcp_modal() {
                 .style("font-size", "12.5px")
                 .style("color", "var(--text-2)")
                 .style("line-height", "1.5")
-                .text("Run awsm-mcp-server locally, then connect — the editor dials out to \
+                .text("Run awsm-renderer-mcp locally, then connect — the editor dials out to \
                        this address. An MCP agent (Claude, Codex, \u{2026}) drives the editor \
                        through that same server.")
             }))

@@ -204,6 +204,10 @@ pub struct Settings {
     pub heatmap: Mutable<bool>,
     pub snap: Mutable<bool>,
     pub units: Mutable<String>,
+    /// Built-in editor view camera projection: `true` = orthographic, `false` =
+    /// perspective. Kept authoritative by the `SetCameraProjection` handler, so the
+    /// viewport toggle/keyboard shortcut and any MCP-driven change stay in sync.
+    pub editor_ortho: Mutable<bool>,
 }
 
 impl Default for Settings {
@@ -215,6 +219,7 @@ impl Default for Settings {
             heatmap: Mutable::new(false),
             snap: Mutable::new(false),
             units: Mutable::new("meters".to_string()),
+            editor_ortho: Mutable::new(false),
         }
     }
 }
@@ -1409,6 +1414,9 @@ impl EditorController {
                         ProjectionMode::Orthographic
                     });
                 });
+                // Mirror into the reactive flag so the viewport toggle / shortcut
+                // reflect the current mode regardless of who changed it (incl. MCP).
+                self.settings.editor_ortho.set_neq(!perspective);
                 Ok(None)
             }
             EditorCommand::FrameNode { node, padding } => {

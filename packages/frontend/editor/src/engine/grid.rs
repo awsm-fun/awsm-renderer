@@ -53,6 +53,13 @@ pub fn init() {
                     None
                 };
                 *render_hooks_handle().write().unwrap() = hooks;
+                // The grid pipelines compile asynchronously after boot, so the hook
+                // is installed well after the initial canvas sync. Re-sync now to
+                // draw one correct-aspect frame with the hook present — otherwise the
+                // grid stays invisible until the user resizes the window.
+                if on {
+                    crate::engine::context::sync_canvas_size();
+                }
                 async {}
             })
             .await;

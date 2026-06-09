@@ -142,6 +142,24 @@ fn render_one_frame() {
     // local (declared after `handle`) so it drops before `handle`.
     let mut guard = handle.try_lock();
     if let Some(renderer) = guard.as_mut() {
+        // Self-heal the surface size every frame. The canvas is reparented into the
+        // viewport slot *after* layout, so the initial `ResizeObserver` / `sync_canvas_size`
+        // can miss the first real size — leaving the surface at the stale default and every
+        // RAF render BLACK until the user resizes the window (which is what finally
+        // reconfigures it). Here we reconfigure whenever the backing store doesn't match the
+        // CSS box: a cheap int compare that no-ops once they agree, so it fixes first mount
+        // (and any resize the observer drops) without a manual resize. Done under the guard,
+        // before any render, so there's no in-flight-submit race against texture recreation.
+        let canvas = renderer.gpu.canvas().clone();
+        let cw = canvas.client_width();
+        let ch = canvas.client_height();
+        if cw > 0 && ch > 0 && (canvas.width() != cw as u32 || canvas.height() != ch as u32) {
+            canvas.set_width(cw as u32);
+            canvas.set_height(ch as u32);
+            renderer.gpu.sync_canvas_buffer_with_css();
+            context::try_with_camera_mut(|c| c.set_aspect(cw as f32 / ch as f32));
+        }
+
         // A scene camera reads from the renderer's transform graph, so refresh
         // world matrices before sampling it.
         if active.is_some() {
