@@ -1260,7 +1260,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Replace an editable mesh's procedural recipe (modifier stack). `mesh` is the mesh asset UUID; `stack` is a ModifierStack JSON { base, modifiers }. Re-bakes the geometry and re-materializes referencing nodes. The recipe lives in the project; the baked .mesh.bin is a regenerable cache."
+        description = "Replace an editable mesh's procedural recipe (modifier stack). `mesh` is the mesh asset UUID; `stack` is a ModifierStack JSON { base, modifiers }. base = primitive/lathe/superquadric/sweep/captured/sdf; modifiers = ordered taper/twist/bend/inflate/spherify/roughen/subdivide/smooth/mirror/array/displace. **Read the `awsm://docs/mesh-tools` resource for the full JSON shapes + copy-paste examples (twist, lathe bat, SDF mug).** Re-bakes geometry; the recipe lives in the project, the .mesh.bin is a regenerable cache."
     )]
     async fn set_mesh_modifiers(
         &self,
@@ -2277,6 +2277,13 @@ impl ServerHandler for EditorMcp {
                 "Clips, tracks, keyframes + worked examples (spin, pulse).",
             ),
             res(
+                "awsm://docs/mesh-tools",
+                "Mesh tools",
+                "Authoring/editing geometry: set_mesh_modifiers (modifier stack + SDF) \
+                 JSON shapes, vertex selection/edit predicates, introspection, export — \
+                 with copy-paste examples (twist, lathe bat, SDF mug).",
+            ),
+            res(
                 "awsm://docs/material-contract-opaque",
                 "Opaque material contract",
                 "The WGSL ABI for opaque/mask dynamic materials.",
@@ -2299,6 +2306,7 @@ impl ServerHandler for EditorMcp {
             "awsm://docs/agent-guide" => AGENT_GUIDE,
             "awsm://docs/material-recipes" => MATERIAL_RECIPES,
             "awsm://docs/animation" => ANIMATION_DOC,
+            "awsm://docs/mesh-tools" => MESH_TOOLS_DOC,
             "awsm://docs/material-contract-opaque" => CONTRACT_OPAQUE,
             "awsm://docs/material-contract-transparent" => CONTRACT_TRANSPARENT,
             other => {
@@ -2519,6 +2527,7 @@ const MCP_DOC: &str = include_str!("../../../docs/MCP.md");
 const AGENT_GUIDE: &str = include_str!("../../../docs/AGENT_GUIDE.md");
 const MATERIAL_RECIPES: &str = include_str!("../../../docs/dynamic-materials/recipes.md");
 const ANIMATION_DOC: &str = include_str!("../../../docs/ANIMATION_AUTHORING.md");
+const MESH_TOOLS_DOC: &str = include_str!("../../../docs/MESH_TOOLS.md");
 
 const PROMPT_AUTHOR_MATERIAL: &str = "\
 Author a lit custom WGSL material so it renders (never a silent black mesh):
