@@ -61,6 +61,10 @@ thread_local! {
     static IN_FLIGHT: Cell<u32> = const { Cell::new(0) };
     /// Bumped whenever activity starts/stops; lets a queued cooldown cancel itself.
     static IDLE_GEN: Cell<u64> = const { Cell::new(0) };
+    /// True while a connect/reconnect task is active — the editor keeps re-dialing
+    /// the MCP server (with backoff) until [`disconnect`] clears it. Lets a server
+    /// restart reconnect seamlessly without a manual page reload.
+    static RECONNECT: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Reactive connection status (for the UI button).
@@ -127,37 +131,61 @@ struct ControlInfo {
     cert_hash: String,
 }
 
-/// Connect to the MCP server at `control_origin`. No-op if already connecting or
-/// connected. Surfaces connect / disconnect / failure as toasts and drives the
-/// [`status`] signal.
+/// Connect to the MCP server at `control_origin`, **staying connected**: if the
+/// link drops (e.g. the server restarts), re-dial with backoff until
+/// [`disconnect`] is called. No-op if a connect/reconnect task is already active.
+/// Surfaces connect / disconnect / failure as toasts and drives the [`status`]
+/// signal. The seamless reconnect is what lets the dev MCP server restart (new
+/// commands/tools) without a manual editor reload.
 pub fn connect(control_origin: String) {
-    let status = status();
-    if status.get() != RemoteStatus::Disconnected {
-        return; // already connecting or connected
+    if RECONNECT.with(|r| r.get()) {
+        return; // a connect/reconnect task is already running
     }
     origin().set(control_origin.clone());
-    status.set(RemoteStatus::Connecting);
+    RECONNECT.with(|r| r.set(true));
+    status().set(RemoteStatus::Connecting);
 
     spawn_local(async move {
-        let result = run(control_origin).await;
-        SESSION.with(|s| *s.borrow_mut() = None);
-        activity_reset();
-        let was_connected = status.get() == RemoteStatus::Connected;
-        status.set(RemoteStatus::Disconnected);
-        match (was_connected, result) {
-            // Dropped after a successful connect (server stopped, or user clicked
-            // disconnect) — informational, not an error.
-            (true, res) => {
-                if let Err(e) = res {
-                    tracing::warn!("mcp link ended: {e}");
+        let mut backoff_ms = 500u32;
+        let mut toasted_failure = false;
+        loop {
+            let result = run(control_origin.clone()).await;
+            SESSION.with(|s| *s.borrow_mut() = None);
+            activity_reset();
+            let was_connected = status().get() == RemoteStatus::Connected;
+            status().set(RemoteStatus::Disconnected);
+
+            // Explicit disconnect (RECONNECT cleared) — stop, no retry.
+            if !RECONNECT.with(|r| r.get()) {
+                if was_connected {
+                    Toast::info("MCP disconnected");
                 }
-                Toast::info("MCP disconnected");
+                break;
             }
-            // Never got connected — the connect itself failed (server down, bad
-            // cert, …).
-            (false, Err(e)) => Toast::error(format!("MCP connect failed: {e}")),
-            (false, Ok(())) => {} // run() only returns Ok via the accept loop ending
+
+            // Otherwise keep the link alive by re-dialing.
+            if was_connected {
+                Toast::info("MCP disconnected \u{2014} reconnecting\u{2026}");
+                backoff_ms = 500; // a live link dropped; retry promptly
+                toasted_failure = false;
+            } else if let Err(e) = &result {
+                // Connect attempt failed (server not up yet / bad cert). Toast
+                // once, then retry quietly so we don't spam while it comes up.
+                if !toasted_failure {
+                    Toast::error(format!("MCP connect failed (retrying): {e}"));
+                    toasted_failure = true;
+                }
+                tracing::warn!("mcp connect failed (retrying): {e}");
+            }
+
+            gloo_timers::future::TimeoutFuture::new(backoff_ms).await;
+            if !RECONNECT.with(|r| r.get()) {
+                break; // disconnected during the backoff
+            }
+            backoff_ms = (backoff_ms.saturating_mul(2)).min(3000);
+            status().set(RemoteStatus::Connecting);
         }
+        RECONNECT.with(|r| r.set(false)); // task done; allow a future connect()
     });
 }
 
@@ -193,10 +221,12 @@ async fn send_event(session: Session, ev: &EditorEvent) -> Result<(), String> {
     Ok(())
 }
 
-/// Disconnect the live link (closes the WebTransport session). No-op when not
-/// connected. The "MCP disconnected" toast is emitted by the connect task once
-/// the accept loop unwinds.
+/// Disconnect the live link and **stop reconnecting** (clears the reconnect
+/// flag, then closes the WebTransport session). The connect task sees the flag
+/// cleared and exits instead of re-dialing. The "MCP disconnected" toast is
+/// emitted by that task as it unwinds.
 pub fn disconnect() {
+    RECONNECT.with(|r| r.set(false));
     SESSION.with(|s| {
         if let Some(session) = s.borrow().as_ref() {
             session.close(0, "client disconnect");

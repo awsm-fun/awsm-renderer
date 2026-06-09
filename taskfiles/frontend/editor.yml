@@ -30,6 +30,9 @@ tasks:
         --watch "{{.PATH_CRATE_MATERIALS}}"
         --watch "{{.PATH_CRATE_SCENE_SCHEMA}}"
         --watch "{{.PATH_CRATE_WEB_SHARED}}"
+        --watch "{{joinPath .PATH_CRATES "editor-protocol"}}"
+        --watch "{{joinPath .PATH_CRATES "meshgen"}}"
+        --watch "{{joinPath .PATH_CRATES "glb-export"}}"
 
   build:
     desc: "editor: production build"

@@ -312,17 +312,25 @@ browser reloads. Two small fixes up front remove it; do them as **step 0**:
    escape hatches reach any rebuilt editor without needing the new typed tool, and
    a fresh client session picks them up — so with §10.1–2 this is a non-issue.
 
-## Open questions (answerable inline; none block starting)
-- **Runtime clip format** = our editor clip schema verbatim? (So bake is a copy,
-  not a translation.) Verify no editor-only fields leak into `awsm-scene`.
-- **Deterministic baked-asset ids** (content-hash) so re-bakes don't churn
-  `assets/` or break references — reuse the existing content-hash path.
-- **Stacking after a vertex-authoring (baked) layer:** lean rule — per-vertex
-  authoring is *terminal* for that mesh (no new procedural modifiers above it
-  without an explicit new base/collapse). Confirm we want terminal vs re-collapse.
-- **Player capability boundary:** primitives-only confirmed; still, design
-  `awsm-scene`'s mesh enum to *tolerate* procedural non-primitive bases (default:
-  bake) so a future smarter player needn't a format change.
+## Resolved decisions (formerly open questions)
+- **Runtime clip format** = the editor clip schema **verbatim**. The clip types
+  live in `awsm-scene` (shared, runtime-owned); the editor uses them directly, so
+  bake is a *copy*, not a translation. Any editor-only authoring metadata is kept
+  *out* of `awsm-scene` (the authoring crate adds it on top if needed).
+- **Baked-asset ids are content-hashed** (reuse the existing
+  `content_hash` / `asset_disk_path` path), so re-baking identical geometry is
+  stable — no `assets/` churn, no dangling references.
+- **Per-vertex authoring is terminal** for a mesh: once it has a vertex-authoring
+  layer, no new procedural modifiers stack above it. Further procedural work
+  requires an explicit new base (re-import / new generator). This is the simplest
+  rule and sidesteps index-vs-topology fragility; chosen over re-collapse.
+- **Player runs primitives only**, but `awsm-scene`'s mesh enum is designed to
+  *tolerate* procedural non-primitive bases (sweep/SDF) so a future smarter player
+  needs no format change; **bake defaults to baking everything except primitives.**
+
+(All decided; nothing blocks starting. Verify-during-implementation only: confirm
+no editor-only field actually leaks into the `awsm-scene` clip type during the
+crate split.)
 
 ## Out of scope (handoff)
 - The **player runtime/loader** lives in the separate game-player repo; it

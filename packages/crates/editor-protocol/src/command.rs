@@ -1,6 +1,7 @@
 //! `EditorCommand` — the single serializable enum covering every editor
-//! mutation. The UI never mutates editor state directly; it
-//! builds a command and dispatches it through the `EditorController`.
+//! mutation. The UI is read-only/informational and never mutates editor state
+//! directly; every change is a command (from the MCP agent, or UI affordances)
+//! dispatched through the `EditorController`.
 //! Commands are **data** (no closures) so they serialize, and non-transient
 //! ones are invertible — the inverse is captured at apply-time and pushed onto
 //! the undo log (command-sourcing, replacing the old snapshot history).
