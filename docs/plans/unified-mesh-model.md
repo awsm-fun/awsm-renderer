@@ -1,7 +1,33 @@
 # Unified mesh model + scene/player split
 
-**Status:** DESIGN — for sign-off before any code. Captures the model agreed in
-discussion. Nothing here is implemented yet.
+**Status:** IN PROGRESS. Prereqs + the geometry unification + per-vertex authoring
+are landed + live-verified (overnight). See progress below.
+
+## Implementation progress (overnight, autonomous)
+Order was corrected from the doc's (split-first was infeasible — see §"the finding"
+in chat; the split's runtime/authoring line is defined by the unification).
+- ✅ **Step 0 — dev-loop prereqs** (`8beb7146`): trunk watches editor-protocol/
+  meshgen/glb-export; editor auto-reconnects to the MCP server. Both verified.
+- ✅ **Step 1 — unify NodeKind** (`6eaf0d9c`): Primitive + Sweep → one
+  `Mesh{ mesh, material, shadow }` backed by `MeshDef{ stack: ModifierStack }`.
+  Verified live: insert→magenta, add_modifier subdivide+twist→re-bake, material
+  →render, export-path→correct geometry.
+- ✅ **Step 2 — import normalization** (`0dbb3e3c`): glTF imports bake to captured
+  `Mesh{Captured}`; `NodeKind::Model`/`model_source_cache` retired (geometry
+  unification complete). Verified live: Box.glb → a `mesh` node renders with its
+  material. **KNOWN GAP: skinned imports bake to bind pose** (see below).
+- ✅ **Step 5 — per-vertex authoring** (`ddad79dc`): `MeshDef.overrides`
+  (sparse pos/color/normal/uv), terminal-collapse rule, PaintVertexColors/
+  SetVertexNormals/BakeAll + GetVertexData/GetMeshLayers, position-verb migration.
+  Verified live: soft_transform pulls a sphere pole into a teardrop (collapse +
+  override + re-materialize). Paint-render + the new typed verbs need a server
+  restart + a vertex-color material to demo (deferred).
+- ⏸ **Step 4 — crate split**: NOT started — deferred. It's the most delicate
+  cross-crate work AND its `awsm-scene` runtime-mesh type depends on the
+  **skinning decision** (the known gap). Best done with that decided + fresh
+  context. (Step 3's bake/collapse is effectively covered by collapse + BakeAll.)
+- ⬜ Steps 6 (bundle = awsm-scene dir — needs step 4), 7 (watch-it-work UI —
+  ungated but visual), 8 (splat test — needs paint-render + a splat material).
 
 This plan unifies how geometry is represented, edited, persisted, and exported,
 and splits the schema into a lean runtime crate and an authoring crate. It folds
@@ -332,17 +358,41 @@ browser reloads. Two small fixes up front remove it; do them as **step 0**:
 no editor-only field actually leaks into the `awsm-scene` clip type during the
 crate split.)
 
-## Known gap surfaced during implementation — **needs a decision**
-- **Skinned meshes.** The unified `base + edits → baked blob` model assumes static
-  geometry. Geometry extraction (`extract_node_mesh`) reads POSITION/NORMAL/UV/
-  COLOR only — **not JOINTS/WEIGHTS** — so an imported *skinned* glTF (a character)
-  now bakes to its **bind pose** and no longer deforms. The static case (props,
-  agent-generated geometry — the common path) is unaffected and verified. Options
-  to decide: (a) accept bind-pose for skinned imports (skinning is out of the
-  editable-mesh model); (b) carry a separate skinned-mesh node kind / skin data in
-  `awsm-scene` (the runtime already supports skinning); (c) capture JOINTS/WEIGHTS
-  into the blob + keep a skeleton ref. This also affects the `awsm-scene` runtime
-  mesh type (step 4), so worth deciding before the crate split.
+## Skinning — DECIDED: editable XOR skinned, `drop_skinning` is the terminal door
+**Premise (agreed):** per-vertex skin weights cannot survive topology-changing
+edits (subdivide / boolean / decimate remap or delete vertices, so the per-vertex
+JOINTS/WEIGHTS arrays become meaningless). So **editing and skinning are mutually
+exclusive** — we don't auto-rebind.
+
+**Model:** a mesh is exactly one of:
+- **Editable** — `Mesh{ base + edits }`, static, the unified model above.
+- **Skinned** — carries skin data (JOINTS/WEIGHTS + a skeleton ref), deformed by
+  the renderer's existing skinning path; **not editable** (no base/edits/overrides).
+
+**`drop_skinning`** (MCP **and** a UI affordance) is the explicit, **terminal**
+bridge: it bakes the skinned mesh to a static **Editable** `Mesh{Captured}` at bind
+pose, discarding JOINTS/WEIGHTS. It is a **hard prerequisite** for *any* mesh op on
+a skinned mesh — editing a still-skinned mesh **errors** ("drop_skinning first").
+This mirrors the per-vertex-authoring "terminal" rule.
+
+**Import:** skinned glTF nodes are **preserved as Skinned meshes** (they render +
+animate); static nodes bake to Editable `Mesh{Captured}` (as step 2 does today).
+→ **Fixes the step-2 regression**: today step 2 silently bakes skinned imports to
+bind pose; the correct behavior preserves skinning until `drop_skinning`.
+
+**`awsm-scene` (crate split) implication:** the runtime mesh is an enum
+`Editable(blob|primitive) | Skinned(skin data + skeleton ref)`. (Justified
+exception to "one mesh" — skinned is a genuinely different *rendering* category,
+not an editing variant.)
+
+**Future upside (noted, exciting):** with a Skinned representation + our clip/
+skeleton model, the agent can author *our own* skinning/morphs — bind a skeleton,
+**paint weights via the per-vertex authoring layer** (`paint`/`set_vertex_*`),
+define morph targets. Agent-driven rigging. Out of the current arc's scope.
+
+**Near-term work (revises step 2 + feeds step 4):** add a Skinned mesh kind +
+route imported skinned nodes to it (renderer skin path) + `drop_skinning` (MCP +
+UI) + the edit-guard. Do before/with the crate split (awsm-scene mesh enum).
 
 ## Out of scope (handoff)
 - The **player runtime/loader** lives in the separate game-player repo; it
