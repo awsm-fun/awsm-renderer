@@ -136,7 +136,7 @@ tasks:
   serve:
     desc: "Run the MCP server (open the hosted editor, then click Connect)"
     cmds:
-      - '{{.BIN}} --http-port {{.HTTP_PORT}} --quic-port {{.QUIC_PORT}}'
+      - '{{.BIN}} --client-port {{.HTTP_PORT}} --browser-port {{.QUIC_PORT}}'
   open:
     desc: "Print/open the hosted editor URL"
     cmds:

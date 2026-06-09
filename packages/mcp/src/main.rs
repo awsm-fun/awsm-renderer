@@ -21,22 +21,20 @@ use clap::Parser;
 use crate::cert::GeneratedCert;
 use crate::link::EditorLink;
 
-const DEFAULT_HTTP_PORT: u16 = 9086;
-const DEFAULT_CLIENT_PORT: u16 = 9087;
+const DEFAULT_CLIENT_PORT: u16 = 9086;
+const DEFAULT_BROWSER_PORT: u16 = 9087;
 
 /// CLI arguments: the two listen ports.
 ///
 /// The server runs two listeners for two different peers:
 ///
-///   --http-port    (HTTP, TCP)  the MCP client / agent connects here: the rmcp
-///                               `/mcp` endpoint, plus `/control` (cert-hash
-///                               discovery) and `/debug` (raw-request seam). This
+///   --client-port  (HTTP, TCP)  the MCP client / agent connects here: the rmcp
+///                               `/mcp` endpoint, plus `/control` + `/debug`. This
 ///                               is also the `?mcp=http://127.0.0.1:<port>` origin
 ///                               the editor points at to fetch the cert + dial info.
 ///
-///   --client-port  (WebTransport / QUIC, UDP)  the in-browser editor (the live
-///                               link's client) dials *out* to this port for the
-///                               data link.
+///   --browser-port (WebTransport / QUIC, UDP)  the in-browser editor dials *out*
+///                               to this for the live data link.
 #[derive(Debug, Parser)]
 #[command(
     name = "awsm-renderer-mcp",
@@ -45,22 +43,22 @@ const DEFAULT_CLIENT_PORT: u16 = 9087;
     long_about = "Native MCP server for the awsm-renderer editor — a stateless bridge \
 between an MCP client and the in-browser editor.\n\n\
 It runs two listeners for two different peers:\n\
-  - --http-port    (HTTP / TCP):  the MCP client / agent connects here (rmcp `/mcp`, \
-plus `/control` for cert-hash discovery and `/debug`). This is also the \
-`?mcp=http://127.0.0.1:<port>` origin the editor points at.\n\
-  - --client-port  (WebTransport / QUIC, UDP):  the in-browser editor dials out to \
-this port for the live data link."
+  - --client-port  (HTTP / TCP):  the MCP client / agent connects here (rmcp `/mcp`, \
+plus `/control` + `/debug`). This is also the `?mcp=http://127.0.0.1:<port>` origin \
+the editor points at.\n\
+  - --browser-port (WebTransport / QUIC, UDP):  the in-browser editor dials out to \
+this for the live data link."
 )]
 struct Args {
     /// HTTP/TCP port for the MCP client + control surface (rmcp `/mcp`, `/control`,
-    /// `/debug`); also the `?mcp=http://127.0.0.1:<port>` origin the editor points at.
-    #[arg(long, default_value_t = DEFAULT_HTTP_PORT)]
-    http_port: u16,
+    /// `/debug`); this is also the `?mcp=http://127.0.0.1:<port>` origin the editor points at.
+    #[arg(long, default_value_t = DEFAULT_CLIENT_PORT)]
+    client_port: u16,
 
     /// WebTransport (QUIC / UDP) port the in-browser editor dials out to for the
     /// live data link.
-    #[arg(long, default_value_t = DEFAULT_CLIENT_PORT)]
-    client_port: u16,
+    #[arg(long, default_value_t = DEFAULT_BROWSER_PORT)]
+    browser_port: u16,
 }
 
 #[tokio::main]
@@ -83,13 +81,13 @@ async fn main() -> Result<()> {
 
     let link = EditorLink::shared();
 
-    let quic_addr = SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), args.client_port);
+    let quic_addr = SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), args.browser_port);
     let endpoint = quic::build_endpoint(&cert, quic_addr).context("build QUIC endpoint")?;
-    tracing::info!("WebTransport (QUIC) listening on udp/{}", args.client_port);
+    tracing::info!("WebTransport (QUIC) listening on udp/{}", args.browser_port);
     tokio::spawn(quic::accept_loop(endpoint, link.clone()));
 
-    let http_addr = SocketAddr::from(([127, 0, 0, 1], args.http_port));
-    http::serve(http_addr, cert, args.client_port, link)
+    let http_addr = SocketAddr::from(([127, 0, 0, 1], args.client_port));
+    http::serve(http_addr, cert, args.browser_port, link)
         .await
         .context("control http server")?;
 

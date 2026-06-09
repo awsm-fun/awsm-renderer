@@ -11,8 +11,8 @@ tasks:
     cmds:
       - >
         cargo run -p awsm-renderer-mcp --
-        --http-port {{.PORT_MCP_HTTP_DEV}}
-        --client-port {{.PORT_MCP_QUIC_DEV}}
+        --client-port {{.PORT_MCP_HTTP_DEV}}
+        --browser-port {{.PORT_MCP_QUIC_DEV}}
 
   build:
     desc: "Build the MCP server binary (debug)."
