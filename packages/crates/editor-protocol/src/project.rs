@@ -57,7 +57,7 @@ pub struct StoredMaterial {
     pub fragment_inputs: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct EditorProject {
     /// Human-readable project name. When empty (the default), the
