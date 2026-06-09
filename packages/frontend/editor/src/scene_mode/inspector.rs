@@ -143,11 +143,11 @@ fn single_node(node: Arc<Node>) -> Dom {
 }
 
 /// "Export GLB" for the selected node's subtree (geometry-bearing kinds +
-/// Group/Model containers). Downloads a binary glTF; re-import is up to the user.
+/// Group containers). Downloads a binary glTF; re-import is up to the user.
 fn export_node_section(node: &Arc<Node>) -> Dom {
     let exportable = matches!(
         node.kind.get_cloned(),
-        NodeKind::Mesh { .. } | NodeKind::Model(_) | NodeKind::Group
+        NodeKind::Mesh { .. } | NodeKind::Group
     );
     if !exportable {
         return html!("div");
@@ -210,14 +210,6 @@ fn kind_editor(node: &Arc<Node>) -> Dom {
         // A Group is purely an organisational transform parent — name + transform
         // (above) are its full property set.
         NodeKind::Group => info_section("Group", "An organizational parent. Its children inherit this node's transform; it has no geometry of its own."),
-        // A Model is an imported glTF/glb mesh. It carries one assigned library
-        // material (shared, derived at import) plus the *same* per-mesh editing
-        // surface as a captured Mesh: built-in uniform factors + texture
-        // overrides, or a dynamic material's declared overrides, and shadow flags.
-        NodeKind::Model(r) => html!("div", {
-            .child(material_editor(node, &inline_of(&r.material), r.material.is_some()))
-            .child(mesh_shadow_editor(node, r.shadow))
-        }),
     }
 }
 
@@ -2720,9 +2712,6 @@ fn node_material_instance(
 ) -> Option<awsm_scene_schema::dynamic_material::MaterialInstance> {
     match node.kind.get_cloned() {
         NodeKind::Mesh { material, .. } => material,
-        // A Model node stores its single assignment (built-in or dynamic) in
-        // `material`; per-mesh inline uniforms + texture/buffer overrides live on it.
-        NodeKind::Model(r) => r.material,
         _ => None,
     }
 }
@@ -2732,20 +2721,15 @@ fn set_node_material(
     node: &Arc<Node>,
     inst: awsm_scene_schema::dynamic_material::MaterialInstance,
 ) {
-    match node.kind.get_cloned() {
-        NodeKind::Mesh { mesh, shadow, .. } => dispatch_kind(
+    if let NodeKind::Mesh { mesh, shadow, .. } = node.kind.get_cloned() {
+        dispatch_kind(
             node.id,
             NodeKind::Mesh {
                 mesh,
                 material: Some(inst),
                 shadow,
             },
-        ),
-        NodeKind::Model(mut r) => {
-            r.material = Some(inst);
-            dispatch_kind(node.id, NodeKind::Model(r));
-        }
-        _ => {}
+        );
     }
 }
 

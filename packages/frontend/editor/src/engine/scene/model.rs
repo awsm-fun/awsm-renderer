@@ -40,7 +40,6 @@ impl Scene {
                 stats.nodes += 1;
                 match &*node.kind.lock_ref() {
                     NodeKind::Group => stats.groups += 1,
-                    NodeKind::Model(_) => stats.models += 1,
                     NodeKind::Light(_) => stats.lights += 1,
                     NodeKind::Collider(_) => stats.colliders += 1,
                     NodeKind::Camera(_) => stats.cameras += 1,

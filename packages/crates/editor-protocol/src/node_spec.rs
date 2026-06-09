@@ -119,7 +119,6 @@ fn default_true_nq() -> bool {
 pub fn kind_tag(kind: &NodeKind) -> &'static str {
     match kind {
         NodeKind::Group => "group",
-        NodeKind::Model(_) => "model",
         NodeKind::Light(_) => "light",
         NodeKind::Collider(_) => "collider",
         NodeKind::Camera(_) => "camera",

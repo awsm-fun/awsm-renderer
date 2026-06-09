@@ -5,15 +5,16 @@
 //! document and creates a full transform tree + meshes (rig + skinning baked
 //! in). The editor then *deconstructs* that into its own scene tree: every
 //! glTF node becomes an editor [`Node`](crate::engine::scene::node::Node) —
-//! a `Group` for pure transform/bone nodes, a `Model` for mesh-bearing nodes —
+//! a `Group` for pure transform/bone nodes, a `Mesh` for mesh-bearing nodes —
 //! preserving each node's local transform.
 //!
-//! Each `Model` node materializes by **duplicating** the template's meshes
-//! under its own (user-movable) transform via
-//! `renderer.duplicate_mesh_with_transform`, which preserves the mesh's
-//! skinning joint references (the joints still live in the renderer transform
-//! tree). The template's own meshes are *hidden* (not removed) so they don't
-//! double-render as ghosts and so the joints survive for skinning.
+//! The template is now used only for **materials + structure**: it carries each
+//! node's local transform, label, glTF material index per primitive, and skin
+//! joint flags. Geometry is baked into captured `NodeKind::Mesh` assets at import
+//! (CPU-extracted from the document accessors — see
+//! `controller::state::build_editor_subtree`), so the renderer's own
+//! `populate_gltf` meshes are *hidden* ([`hide_template_meshes`]) and exist only so
+//! `populate_gltf` can extract/upload the materials + textures.
 
 use std::collections::{HashMap, HashSet};
 
@@ -27,8 +28,9 @@ use crate::engine::scene::Trs;
 /// One glTF node, mirrored as an editor scene node.
 #[derive(Clone)]
 pub struct AssetTemplateNode {
-    /// Original glTF node index — stored on the editor `Model` node's
-    /// [`ModelRef`](awsm_scene_schema::ModelRef) so it can find these meshes.
+    /// Original glTF node index — used by the controller to look up this node's
+    /// CPU-extracted geometry (`GltfImport::node_meshes`) and to bind imported
+    /// animation channels (keyed by glTF node index) onto the minted editor node.
     pub gltf_node_index: u32,
     /// The renderer `TransformKey` `populate_gltf` baked for this node — the key
     /// the **skin** reads from for skinned meshes. The editor mirrors this node
@@ -45,19 +47,14 @@ pub struct AssetTemplateNode {
     pub label: Option<String>,
     /// The node's local transform (as parsed from the glTF).
     pub local: Transform,
-    /// Renderer mesh keys for this node's primitives (the template copies,
-    /// hidden — Model nodes duplicate these under their own transform).
+    /// Renderer mesh keys for this node's primitives (the template copies; hidden
+    /// after import so they don't double-render with the captured Mesh nodes).
     pub mesh_keys: Vec<MeshKey>,
     /// One entry per `mesh_keys[i]`: the originating glTF material index
     /// (`None` ⇒ the primitive had no material, i.e. glTF's default). Used by
-    /// the asset-extraction pass (#6.3) to swap in an editable material.
-    #[allow(dead_code)] // consumed by the #6.3 material-extraction pass
+    /// the controller to assign each captured Mesh node its imported material and
+    /// to decide whether to destructure a multi-material node per-primitive.
     pub mesh_gltf_material_indices: Vec<Option<usize>>,
-    /// One entry per `mesh_keys[i]`: whether that primitive is **skinned**.
-    /// Skinned meshes are left rendering in place (the original copy) rather
-    /// than duplicated under the editor node — duplicating/hiding them breaks
-    /// the per-frame joint-matrix update and collapses the skin to bind pose.
-    pub mesh_is_skinned: Vec<bool>,
     pub children: Vec<AssetTemplateNode>,
 }
 
@@ -65,24 +62,6 @@ pub struct AssetTemplateNode {
 #[derive(Clone)]
 pub struct AssetTemplate {
     pub roots: Vec<AssetTemplateNode>,
-}
-
-impl AssetTemplate {
-    /// Depth-first lookup of a template node by its glTF node index.
-    pub fn find_by_node_index(&self, node_index: u32) -> Option<&AssetTemplateNode> {
-        fn walk(nodes: &[AssetTemplateNode], idx: u32) -> Option<&AssetTemplateNode> {
-            for n in nodes {
-                if n.gltf_node_index == idx {
-                    return Some(n);
-                }
-                if let Some(found) = walk(&n.children, idx) {
-                    return Some(found);
-                }
-            }
-            None
-        }
-        walk(&self.roots, node_index)
-    }
 }
 
 /// Snapshot the renderer's transform tree (as just built by `populate_gltf`)
@@ -159,10 +138,6 @@ fn snapshot(
         .iter()
         .map(|mk| mesh_mat.get(mk).copied().unwrap_or(None))
         .collect();
-    let mesh_is_skinned = mesh_keys
-        .iter()
-        .map(|mk| renderer.meshes.mesh_is_skinned(*mk))
-        .collect();
     let children = renderer
         .transforms
         .get_children(key)
@@ -189,25 +164,23 @@ fn snapshot(
         local,
         mesh_keys,
         mesh_gltf_material_indices,
-        mesh_is_skinned,
         children,
     }
 }
 
-/// Hide every **non-skinned** mesh the template owns so the populate-baked copy
-/// doesn't render as a ghost duplicate (the editor renders user-movable
-/// duplicates of those instead). **Skinned** meshes are left visible and
-/// rendering in place — duplicating/hiding them breaks the per-frame
-/// joint-matrix update, collapsing the skin to bind pose (a flat blob). The
-/// editor still mirrors their node hierarchy (bones as `Group`s); the mesh just
-/// keeps rendering from the original copy.
+/// Hide **every** mesh the template owns so the populate-baked copies don't
+/// render as ghost duplicates: geometry is now baked into captured Mesh nodes at
+/// import (see `controller::state::build_editor_subtree`), so the renderer's own
+/// populate meshes are kept only to extract materials/textures. This includes
+/// skinned meshes — they now bake to their bind pose as static captured geometry
+/// (JOINTS/WEIGHTS aren't read), so leaving the original rendering would
+/// double-render. The template hierarchy + baked transform keys are still kept so
+/// the skin bridge can drive bone transforms if reintroduced.
 pub fn hide_template_meshes(renderer: &mut AwsmRenderer, template: &AssetTemplate) {
     fn walk(renderer: &mut AwsmRenderer, nodes: &[AssetTemplateNode]) {
         for n in nodes {
-            for (mk, &skinned) in n.mesh_keys.iter().zip(n.mesh_is_skinned.iter()) {
-                if !skinned {
-                    let _ = renderer.set_mesh_hidden(*mk, true);
-                }
+            for mk in n.mesh_keys.iter() {
+                let _ = renderer.set_mesh_hidden(*mk, true);
             }
             walk(renderer, &n.children);
         }

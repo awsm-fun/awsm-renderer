@@ -13,7 +13,6 @@ pub mod gltf;
 pub mod material;
 pub mod mesh_cache;
 pub mod mesh_sync;
-pub mod model_source_cache;
 pub mod node_sync;
 pub mod particles;
 pub mod skin_bridge;

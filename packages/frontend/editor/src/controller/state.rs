@@ -1186,13 +1186,6 @@ impl EditorController {
                                 material: instance,
                                 shadow,
                             },
-                            // A Model node carries one assigned material (the same
-                            // one-material-per-node model as a Mesh); `None` =
-                            // unassigned → magenta.
-                            NodeKind::Model(mut r) => {
-                                r.material = instance;
-                                NodeKind::Model(r)
-                            }
                             _ => return Ok(None),
                         };
                         n.kind.set(next);
@@ -1219,7 +1212,6 @@ impl EditorController {
                 // The source node's material slot (geometry kinds only).
                 let src_slot = match src.kind.get_cloned() {
                     NodeKind::Mesh { material, .. } => material,
-                    NodeKind::Model(r) => r.material,
                     _ => return Ok(None),
                 };
                 let prev = dst.kind.get_cloned();
@@ -1237,11 +1229,6 @@ impl EditorController {
                         },
                         dst_mat,
                     ),
-                    NodeKind::Model(mut r) => {
-                        let dst_mat = r.material.clone();
-                        r.material = src_slot.clone();
-                        (NodeKind::Model(r), dst_mat)
-                    }
                     _ => return Ok(None),
                 };
                 // Only copy between meshes that reference the same material.
@@ -2401,14 +2388,7 @@ impl EditorController {
             table.entries.insert(id, entry);
             id
         };
-        // Stash the raw source bytes (session-local) so GLB export can re-read the
-        // model's geometry; the import-time blob URL is already revoked by now.
-        // See `model_source_cache` for the cross-reload persistence TODO.
-        if let Some(bytes) = import.source_bytes {
-            crate::engine::bridge::model_source_cache::store(asset_id, bytes);
-        }
         let template = Arc::new(import.template);
-        crate::engine::bridge::bridge().insert_template(asset_id, template.clone());
 
         // glTF primitives with no material use glTF's default material — white,
         // metallic 1.0, roughness 1.0 (NOT the editor's magenta sentinel, which is
@@ -2443,6 +2423,7 @@ impl EditorController {
                 asset_id,
                 &mat_ids,
                 default_mat_id,
+                &import.node_meshes,
                 Some(&import.display_name),
                 &mut node_map,
             );
@@ -3683,7 +3664,6 @@ fn node_material_ref(
 ) -> Option<&awsm_scene_schema::dynamic_material::MaterialInstance> {
     match kind {
         NodeKind::Mesh { material, .. } => material.as_ref(),
-        NodeKind::Model(r) => r.material.as_ref(),
         _ => None,
     }
 }
@@ -3694,7 +3674,6 @@ fn node_material_mut(
 ) -> Option<&mut awsm_scene_schema::dynamic_material::MaterialInstance> {
     match kind {
         NodeKind::Mesh { material, .. } => material.as_mut(),
-        NodeKind::Model(r) => r.material.as_mut(),
         _ => None,
     }
 }
@@ -4195,22 +4174,63 @@ fn ensure_import_texture(
     Some(mk(id))
 }
 
+/// Mint a captured-mesh `MeshDef` asset from CPU-extracted glTF geometry: store
+/// the baked bytes in the [`mesh_cache`](crate::engine::bridge::mesh_cache) under
+/// a deterministic id (`AssetId(node_id.0)`, matching the primitive-insert
+/// convention) and register an `AssetSource::Mesh` whose stack `base` is
+/// [`MeshBase::Captured`] (no modifiers). `source_asset` is the imported model's
+/// Filename asset id, recorded as the mesh's [`CapturedSource::Imported`] origin.
+/// Returns the `MeshRef` for the new node's `NodeKind::Mesh`.
+fn mint_imported_mesh(
+    node_id: NodeId,
+    label: &str,
+    mesh: &awsm_glb_export::MeshData,
+    source_asset: AssetId,
+) -> awsm_scene_schema::MeshRef {
+    use crate::engine::bridge::mesh_cache;
+    use awsm_scene_schema::modifier::{MeshBase, ModifierStack};
+    use awsm_scene_schema::{CapturedSource, MeshDef, MeshRef};
+
+    let mesh_id = AssetId(node_id.0);
+    mesh_cache::store_with_id(mesh_id, mesh_cache::from_mesh_data(mesh.clone()));
+    let stack = ModifierStack {
+        base: MeshBase::Captured(MeshRef(mesh_id)),
+        modifiers: vec![],
+    };
+    controller().scene.assets.lock().unwrap().entries.insert(
+        mesh_id,
+        AssetEntry::new(SceneAssetSource::Mesh(MeshDef {
+            label: label.to_string(),
+            source: Some(CapturedSource::Imported {
+                source: source_asset,
+            }),
+            editable: true,
+            stack,
+        })),
+    );
+    MeshRef(mesh_id)
+}
+
 /// Recursively mirror one glTF template node as an editor `Node`. Mesh-bearing
-/// nodes become `Model` nodes (which duplicate the template's meshes under
-/// their own transform); pure transform/bone nodes become `Group`s. The local
-/// transform is carried over so the reconstructed hierarchy matches the glTF.
-/// `fallback_name` only labels an unnamed *top-level* node (so a single-root
-/// import shows the file name); children fall back to `Node {index}`.
+/// nodes become unified `NodeKind::Mesh` nodes backed by a captured `MeshDef`
+/// asset (CPU-extracted glTF geometry, via [`mint_imported_mesh`]); pure
+/// transform/bone nodes become `Group`s. The local transform is carried over so
+/// the reconstructed hierarchy matches the glTF — the captured geometry is the
+/// node's *raw* local accessor positions, so this transform places it with no
+/// extra matrix. `fallback_name` only labels an unnamed *top-level* node (so a
+/// single-root import shows the file name); children fall back to `Node {index}`.
+#[allow(clippy::too_many_arguments)]
 fn build_editor_subtree(
     tn: &crate::engine::bridge::asset_template::AssetTemplateNode,
     asset_id: AssetId,
     mat_ids: &[AssetId],
     default_mat_id: Option<AssetId>,
+    node_meshes: &std::collections::HashMap<(u32, Option<u32>), awsm_glb_export::MeshData>,
     fallback_name: Option<&str>,
     node_map: &mut std::collections::HashMap<u32, NodeId>,
 ) -> Arc<crate::engine::scene::node::Node> {
     use crate::engine::scene::node::Node;
-    use awsm_scene_schema::{dynamic_material::MaterialInstance, ModelRef, Trs};
+    use awsm_scene_schema::{dynamic_material::MaterialInstance, NodeKind, Trs};
 
     let name = tn.label.clone().unwrap_or_else(|| {
         fallback_name
@@ -4257,26 +4277,32 @@ fn build_editor_subtree(
         Node::new_with_transform_and_kind(name, trs, NodeKind::Group)
     } else {
         // With one material per node, a node whose primitives all share a
-        // material (the common case) maps 1:1. A node whose primitives use
-        // *different* materials is destructured: a Group keeps the transform +
-        // glTF children, and one Model child per primitive carries its own
-        // `primitive_index` + assigned material.
+        // material (the common case) maps 1:1 to a single Mesh node. A node whose
+        // primitives use *different* materials is destructured: a Group keeps the
+        // transform + glTF children, and one Mesh child per primitive carries its
+        // own captured geometry + assigned material.
         let mat_indices = &tn.mesh_gltf_material_indices;
         let distinct: std::collections::BTreeSet<Option<usize>> =
             mat_indices.iter().copied().collect();
         if distinct.len() <= 1 {
             let material = instance_for(mat_indices.first().copied().flatten());
-            Node::new_with_transform_and_kind(
-                name,
-                trs,
-                NodeKind::Model(ModelRef {
-                    asset_id,
-                    node_index: tn.gltf_node_index,
-                    primitive_index: None,
+            // The whole-node merged geometry (every primitive concatenated).
+            let mesh_node = Node::new_with_transform_and_kind(name.clone(), trs, NodeKind::Group);
+            if let Some(mesh) = node_meshes.get(&(tn.gltf_node_index, None)) {
+                let mesh_ref = mint_imported_mesh(mesh_node.id, &name, mesh, asset_id);
+                mesh_node.kind.set(NodeKind::Mesh {
+                    mesh: mesh_ref,
                     material,
                     shadow: Default::default(),
-                }),
-            )
+                });
+            } else {
+                tracing::warn!(
+                    "import: glTF node {} has mesh keys but no extracted geometry; \
+                     leaving an empty Group",
+                    tn.gltf_node_index
+                );
+            }
+            mesh_node
         } else {
             let group = Node::new_with_transform_and_kind(name.clone(), trs, NodeKind::Group);
             for (i, mi) in mat_indices.iter().enumerate() {
@@ -4291,20 +4317,27 @@ fn build_editor_subtree(
                         .map(|m| m.name.get_cloned())
                     })
                     .unwrap_or_else(|| format!("{name} · part {i}"));
-                group
-                    .children
-                    .lock_mut()
-                    .push_cloned(Node::new_with_transform_and_kind(
-                        part_label,
-                        Trs::IDENTITY,
-                        NodeKind::Model(ModelRef {
-                            asset_id,
-                            node_index: tn.gltf_node_index,
-                            primitive_index: Some(i as u32),
-                            material,
-                            shadow: Default::default(),
-                        }),
-                    ));
+                let part = Node::new_with_transform_and_kind(
+                    part_label.clone(),
+                    Trs::IDENTITY,
+                    NodeKind::Group,
+                );
+                if let Some(mesh) = node_meshes.get(&(tn.gltf_node_index, Some(i as u32))) {
+                    let mesh_ref = mint_imported_mesh(part.id, &part_label, mesh, asset_id);
+                    part.kind.set(NodeKind::Mesh {
+                        mesh: mesh_ref,
+                        material,
+                        shadow: Default::default(),
+                    });
+                } else {
+                    tracing::warn!(
+                        "import: glTF node {} primitive {} has no extracted geometry; \
+                         leaving an empty Group",
+                        tn.gltf_node_index,
+                        i
+                    );
+                }
+                group.children.lock_mut().push_cloned(part);
             }
             group
         }
@@ -4313,7 +4346,7 @@ fn build_editor_subtree(
     // Record this glTF node index → its minted editor `NodeId`, so imported
     // animation channels (keyed by glTF node index) can resolve their target.
     // For a destructured multi-material node, the transform-bearing Group keeps
-    // the glTF index (its Model-child parts are unindexed primitive splits).
+    // the glTF index (its Mesh-child parts are unindexed primitive splits).
     node_map.insert(tn.gltf_node_index, node.id);
 
     for child in &tn.children {
@@ -4322,6 +4355,7 @@ fn build_editor_subtree(
             asset_id,
             mat_ids,
             default_mat_id,
+            node_meshes,
             None,
             node_map,
         ));

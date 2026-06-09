@@ -332,6 +332,18 @@ browser reloads. Two small fixes up front remove it; do them as **step 0**:
 no editor-only field actually leaks into the `awsm-scene` clip type during the
 crate split.)
 
+## Known gap surfaced during implementation — **needs a decision**
+- **Skinned meshes.** The unified `base + edits → baked blob` model assumes static
+  geometry. Geometry extraction (`extract_node_mesh`) reads POSITION/NORMAL/UV/
+  COLOR only — **not JOINTS/WEIGHTS** — so an imported *skinned* glTF (a character)
+  now bakes to its **bind pose** and no longer deforms. The static case (props,
+  agent-generated geometry — the common path) is unaffected and verified. Options
+  to decide: (a) accept bind-pose for skinned imports (skinning is out of the
+  editable-mesh model); (b) carry a separate skinned-mesh node kind / skin data in
+  `awsm-scene` (the runtime already supports skinning); (c) capture JOINTS/WEIGHTS
+  into the blob + keep a skeleton ref. This also affects the `awsm-scene` runtime
+  mesh type (step 4), so worth deciding before the crate split.
+
 ## Out of scope (handoff)
 - The **player runtime/loader** lives in the separate game-player repo; it
   consumes an `awsm-scene` directory. This plan defines that contract; it does

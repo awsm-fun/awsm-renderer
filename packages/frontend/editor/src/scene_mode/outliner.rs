@@ -403,7 +403,6 @@ fn select_node(id: NodeId, additive: bool, range: bool) {
 pub fn kind_icon(kind: &NodeKind) -> &'static str {
     match kind {
         NodeKind::Group => "empty",
-        NodeKind::Model(_) => "cube",
         NodeKind::Light(_) => "light",
         NodeKind::Collider(_) => "collision",
         NodeKind::Camera(_) => "camera",

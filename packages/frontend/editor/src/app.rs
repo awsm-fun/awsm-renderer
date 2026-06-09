@@ -434,7 +434,7 @@ fn count_nodes(nodes: &[std::sync::Arc<crate::engine::scene::Node>], c: &mut Cou
     for node in nodes {
         c.nodes += 1;
         match node.kind.get_cloned() {
-            NodeKind::Mesh { .. } | NodeKind::Model(_) => c.meshes += 1,
+            NodeKind::Mesh { .. } => c.meshes += 1,
             NodeKind::Light(_) => c.lights += 1,
             _ => {}
         }

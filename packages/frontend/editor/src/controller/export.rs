@@ -19,14 +19,10 @@
 //! Raster textures not yet uploaded to the GPU are skipped (the material keeps its
 //! factors). This is why export is **async**.
 //!
-//! ## Model nodes
-//! An imported-glTF `Model` node references one node inside a source file (by
-//! node index, optionally one primitive). Export re-reads that node's geometry
-//! from the source bytes cached at import (`model_source_cache`, consulted via the
-//! [`resolve_model_meshes`] pre-pass) and emits it as baked triangles, with the
-//! node's assigned library material. Models whose source bytes aren't cached
-//! (e.g. after a project reload — see the `model_source_cache` TODO) still export
-//! as empty transform nodes (their children recurse).
+//! ## Imported-glTF geometry
+//! Imported models are baked into captured `NodeKind::Mesh` nodes at import (their
+//! geometry lives in the [`mesh_cache`] store, like every other procedural mesh),
+//! so export reads them through the normal Mesh path with no special handling.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -44,15 +40,11 @@ use awsm_scene_schema::{
     SweepUvMode, TextureDef, TextureRef,
 };
 
-use crate::engine::bridge::{material as bridge_material, mesh_cache, model_source_cache};
+use crate::engine::bridge::{material as bridge_material, mesh_cache};
 use crate::engine::scene::{mutate, node::Node, Scene};
 
 /// Maps a referenced texture asset → its index in `GlbScene::images`.
 type TexIndex = HashMap<AssetId, usize>;
-
-/// Maps a `Model` node's id → its re-read source geometry (the [`resolve_model_meshes`]
-/// pre-pass). A node absent from the map had no cached source / no extractable mesh.
-type ModelMeshes = HashMap<NodeId, MeshData>;
 
 /// Bake the whole scene **including animations** (clips lowered to glTF TRS
 /// channels) — the path behind `ExportGlb { node: None }` and the player bundle.
@@ -60,10 +52,9 @@ pub async fn export_scene_glb(ctrl: &super::EditorController) -> Result<Vec<u8>,
     let scene = &ctrl.scene;
     let roots: Vec<Arc<Node>> = scene.nodes.lock_ref().iter().cloned().collect();
     let (images, tex_index) = resolve_images(scene, &roots).await;
-    let model_meshes = resolve_model_meshes(scene, &roots);
     let nodes: Vec<ExportNode> = roots
         .iter()
-        .map(|n| node_to_export(scene, n, &tex_index, &model_meshes))
+        .map(|n| node_to_export(scene, n, &tex_index))
         .collect();
     let index_map = build_index_map(scene);
     let clips: Vec<_> = ctrl.custom_animations.lock_ref().iter().cloned().collect();
@@ -268,10 +259,9 @@ pub async fn export_glb(scene: &Scene, node: Option<NodeId>) -> Result<Vec<u8>, 
         None => scene.nodes.lock_ref().iter().cloned().collect(),
     };
     let (images, tex_index) = resolve_images(scene, &roots).await;
-    let model_meshes = resolve_model_meshes(scene, &roots);
     let nodes: Vec<ExportNode> = roots
         .iter()
-        .map(|n| node_to_export(scene, n, &tex_index, &model_meshes))
+        .map(|n| node_to_export(scene, n, &tex_index))
         .collect();
     let glb = GlbScene {
         nodes,
@@ -305,103 +295,6 @@ async fn resolve_images(scene: &Scene, roots: &[Arc<Node>]) -> (Vec<ExportImage>
         }
     }
     (images, index)
-}
-
-/// Pre-pass mirroring [`resolve_images`]: re-read every `Model` node's geometry
-/// from its source glTF/GLB and key it by `NodeId` for [`node_to_export`].
-///
-/// Source bytes come from [`model_source_cache`] (stashed at import), loaded
-/// **once per `asset_id`** (deduped) and parsed into a `gltf::Document` reused
-/// across every Model node referencing that asset. A node is omitted from the map
-/// (and exports as an empty transform node) when its source isn't cached or its
-/// `node_index` / mesh can't be read — each logged with a `tracing::warn!`.
-///
-/// Synchronous: parsing + accessor reads need no GPU/await (unlike texture
-/// readback). It's a free-standing pre-pass only to keep the per-asset parse
-/// deduped and out of the recursive `node_to_export` hot path.
-fn resolve_model_meshes(scene: &Scene, roots: &[Arc<Node>]) -> ModelMeshes {
-    // Collect (node id, model ref) for every Model node in the forest.
-    let mut models: Vec<(NodeId, awsm_scene_schema::ModelRef)> = Vec::new();
-    fn walk(node: &Node, out: &mut Vec<(NodeId, awsm_scene_schema::ModelRef)>) {
-        if let NodeKind::Model(m) = node.kind.get_cloned() {
-            out.push((node.id, m));
-        }
-        for c in node.children.lock_ref().iter() {
-            walk(c, out);
-        }
-    }
-    for r in roots {
-        walk(r, &mut models);
-    }
-
-    // Parse each referenced source glTF/GLB once (deduped by asset_id). `None`
-    // marks an asset whose bytes weren't cached or didn't parse, so we warn once.
-    let mut parsed: HashMap<AssetId, Option<Arc<ParsedGltf>>> = HashMap::new();
-    let mut out = ModelMeshes::new();
-    for (node_id, model) in models {
-        let entry = parsed
-            .entry(model.asset_id)
-            .or_insert_with(|| load_model_source(scene, model.asset_id));
-        let Some(gltf) = entry.clone() else {
-            continue; // already warned in load_model_source
-        };
-        match awsm_glb_export::extract_node_mesh(
-            &gltf.doc,
-            &gltf.buffers,
-            model.node_index,
-            model.primitive_index,
-        ) {
-            Some(mesh) => {
-                out.insert(node_id, mesh);
-            }
-            None => tracing::warn!(
-                "model export: node {} (asset {}, gltf node {}) has no extractable mesh; \
-                 exporting as empty transform node",
-                node_id,
-                model.asset_id,
-                model.node_index
-            ),
-        }
-    }
-    out
-}
-
-/// A parsed source glTF/GLB held for the duration of a single export (its
-/// `Document` + buffer blobs are reused across every Model node that references
-/// the same asset).
-struct ParsedGltf {
-    doc: gltf::Document,
-    buffers: Vec<Vec<u8>>,
-}
-
-/// Load + parse a model's cached source bytes for `asset_id`. `None` (with a
-/// warn) when the bytes aren't cached (e.g. post-reload) or don't parse.
-fn load_model_source(scene: &Scene, asset_id: AssetId) -> Option<Arc<ParsedGltf>> {
-    let Some(bytes) = model_source_cache::get(asset_id) else {
-        let name = scene
-            .assets
-            .lock()
-            .unwrap()
-            .display_name(asset_id)
-            .map(str::to_owned)
-            .unwrap_or_default();
-        tracing::warn!(
-            "model export: no cached source bytes for asset {asset_id} ({name}); \
-             Model nodes from it export as empty transform nodes \
-             (model source bytes don't survive a project reload yet)"
-        );
-        return None;
-    };
-    match gltf::import_slice(bytes.as_slice()) {
-        Ok((doc, buffers, _images)) => Some(Arc::new(ParsedGltf {
-            doc,
-            buffers: buffers.into_iter().map(|b| b.0).collect(),
-        })),
-        Err(e) => {
-            tracing::warn!("model export: asset {asset_id} source failed to parse: {e}");
-            None
-        }
-    }
 }
 
 /// Walk a subtree collecting the (unique, ordered) texture asset ids that the
@@ -485,12 +378,7 @@ fn rgba_to_png(rgba: &[u8], w: u32, h: u32) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
-fn node_to_export(
-    scene: &Scene,
-    node: &Node,
-    tex_index: &TexIndex,
-    model_meshes: &ModelMeshes,
-) -> ExportNode {
+fn node_to_export(scene: &Scene, node: &Node, tex_index: &TexIndex) -> ExportNode {
     let trs = node.transform.get();
     let mut out = ExportNode {
         name: node.name.get_cloned(),
@@ -503,17 +391,13 @@ fn node_to_export(
     };
 
     let kind = node.kind.get_cloned();
-    // Model geometry comes from the pre-pass map (keyed by node id, re-read from
-    // the source file); every other geometry kind bakes inline via `node_mesh`.
-    // The mesh is the source node's RAW accessor geometry (its own local space) —
-    // `out.transform` (above, the editor node's transform, mirrored from the glTF
-    // node's local at import) already places it, so applying any extra matrix here
-    // would double-transform.
-    let mesh = match &kind {
-        NodeKind::Model(_) => model_meshes.get(&node.id).cloned(),
-        _ => node_mesh(scene, &kind),
-    };
-    if let Some(mesh) = mesh {
+    // Every geometry kind — including imported models, now baked into captured
+    // Mesh nodes — bakes its triangles inline via `node_mesh` (from the
+    // captured-mesh store). The mesh is the node's RAW local-space geometry;
+    // `out.transform` (the editor node's transform, mirrored from the glTF node's
+    // local at import) already places it, so applying any extra matrix here would
+    // double-transform.
+    if let Some(mesh) = node_mesh(scene, &kind) {
         out.mesh = Some(mesh);
         if let Some(material) = material_slot(&kind) {
             out.material = Some(map_material(material, tex_index));
@@ -522,8 +406,8 @@ fn node_to_export(
     match &kind {
         NodeKind::Light(cfg) => out.light = Some(map_light(cfg)),
         NodeKind::Camera(cfg) => out.camera = Some(map_camera(cfg)),
-        // Group + non-geometry leaves (and Models with no cached source) export as
-        // plain transform nodes; their children still recurse below.
+        // Group + non-geometry leaves export as plain transform nodes; their
+        // children still recurse below.
         _ => {}
     }
 
@@ -531,20 +415,18 @@ fn node_to_export(
         .children
         .lock_ref()
         .iter()
-        .map(|c| node_to_export(scene, c, tex_index, model_meshes))
+        .map(|c| node_to_export(scene, c, tex_index))
         .collect();
     out
 }
 
 /// Resolve any geometry node to baked triangles: Mesh → the captured-mesh store
-/// (every procedural node — primitive / sweep / lathe / SDF — is a Mesh backed by
-/// a baked `ModifierStack`), Model → its source node's geometry re-read from the
-/// import-cached glTF bytes (raw
-/// accessor positions in the node's local space — see [`node_to_export`] on the
-/// no-double-transform rule). `None` for non-geometry kinds and for Models whose
-/// source bytes aren't cached. Shared by GLB export and the
-/// `MeshStats`/`MeshCrossSection` introspection queries + vertex-highlight.
-pub(crate) fn node_mesh(scene: &Scene, kind: &NodeKind) -> Option<MeshData> {
+/// (every geometry node — primitive / sweep / lathe / SDF / imported-glTF — is a
+/// Mesh backed by a baked `ModifierStack`). `None` for non-geometry kinds. Shared
+/// by GLB export and the `MeshStats`/`MeshCrossSection` introspection queries +
+/// vertex-highlight. (`scene` is unused now that all geometry resolves from the
+/// store, but kept for signature stability with the introspection callers.)
+pub(crate) fn node_mesh(_scene: &Scene, kind: &NodeKind) -> Option<MeshData> {
     match kind {
         NodeKind::Mesh { mesh, .. } => mesh_cache::get_raw(mesh.0).map(|r| MeshData {
             positions: r.positions,
@@ -553,26 +435,14 @@ pub(crate) fn node_mesh(scene: &Scene, kind: &NodeKind) -> Option<MeshData> {
             colors: r.colors,
             indices: r.indices,
         }),
-        NodeKind::Model(m) => {
-            let gltf = load_model_source(scene, m.asset_id)?;
-            awsm_glb_export::extract_node_mesh(
-                &gltf.doc,
-                &gltf.buffers,
-                m.node_index,
-                m.primitive_index,
-            )
-        }
         _ => None,
     }
 }
 
-/// Borrow the single material assignment of a geometry node kind (the `Model`
-/// slot lives inside its `ModelRef`, but it's the same one-material-per-node
-/// model as every other geometry kind).
+/// Borrow the single material assignment of a geometry node kind.
 fn material_slot(kind: &NodeKind) -> Option<&Option<MaterialInstance>> {
     match kind {
         NodeKind::Mesh { material, .. } => Some(material),
-        NodeKind::Model(m) => Some(&m.material),
         _ => None,
     }
 }

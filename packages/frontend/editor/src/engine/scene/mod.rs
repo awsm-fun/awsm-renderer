@@ -24,5 +24,5 @@ pub use node::{Node, NodeId};
 #[allow(unused_imports)]
 pub use types::{
     AssetStatus, CameraConfig, CameraProjection, ColliderShape, EnvironmentConfig, IblConfig,
-    LightConfig, LightKind, ModelRef, NodeKind, SkyboxConfig, Trs,
+    LightConfig, LightKind, NodeKind, SkyboxConfig, Trs,
 };

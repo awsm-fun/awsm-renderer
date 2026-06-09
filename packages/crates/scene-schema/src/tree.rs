@@ -3,8 +3,8 @@ use uuid::Uuid;
 use super::{
     camera::CameraConfig, collider::ColliderShape, curve::CurveDef, decal::DecalConfig,
     dynamic_material::MaterialInstance, instances::InstancesAlongCurveDef, light::LightConfig,
-    line::LineDef, model::ModelRef, particle::ParticleEmitterDef, primitive::MeshRef,
-    sprite::SpriteDef, transform::Trs,
+    line::LineDef, particle::ParticleEmitterDef, primitive::MeshRef, sprite::SpriteDef,
+    transform::Trs,
 };
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -119,9 +119,12 @@ impl std::fmt::Display for NodeId {
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+// `Mesh` (the common, dominant variant) inlines a `MaterialInstance`, which makes
+// it much larger than the leaf variants. Boxing it would penalise the hot path to
+// shrink the rare ones, so accept the size spread (same call as `AssetSource`).
+#[allow(clippy::large_enum_variant)]
 pub enum NodeKind {
     Group,
-    Model(ModelRef),
     Light(LightConfig),
     Collider(ColliderShape),
     Camera(CameraConfig),
@@ -202,7 +205,6 @@ impl NodeKind {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Group => "group",
-            Self::Model(_) => "model",
             Self::Light(_) => "light",
             Self::Collider(_) => "collider",
             Self::Camera(_) => "camera",
@@ -221,7 +223,6 @@ impl NodeKind {
     /// cameras, curves, lines, sprites, particles).
     pub fn mesh_shadow(&self) -> Option<&MeshShadowConfig> {
         match self {
-            Self::Model(r) => Some(&r.shadow),
             Self::Mesh { shadow, .. } => Some(shadow),
             Self::InstancesAlongCurve(d) => Some(&d.shadow),
             _ => None,
@@ -231,7 +232,6 @@ impl NodeKind {
     /// Mutable variant of [`Self::mesh_shadow`].
     pub fn mesh_shadow_mut(&mut self) -> Option<&mut MeshShadowConfig> {
         match self {
-            Self::Model(r) => Some(&mut r.shadow),
             Self::Mesh { shadow, .. } => Some(shadow),
             Self::InstancesAlongCurve(d) => Some(&mut d.shadow),
             _ => None,

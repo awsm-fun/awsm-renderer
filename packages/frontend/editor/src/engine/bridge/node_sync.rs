@@ -335,7 +335,6 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
                 tracing::warn!("NodeKind::Mesh {mesh:?}: not in the capture cache; renders empty")
             }
         },
-        NodeKind::Model(model_ref) => materialize_model(entry.clone(), model_ref).await,
         NodeKind::Camera(cfg) => materialize_camera(entry.clone(), cfg).await,
         // Group: no procedural geometry, no renderer resource.
         _ => {}
@@ -349,33 +348,6 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
 /// with this mesh's per-mesh uniform values (`inline`: base color / metallic /
 /// roughness / emissive) into a final `MaterialDef`. Returns `None` for a dynamic
 /// material or an unknown id (callers then try the dynamic path / inline).
-/// The geometry COLOR set index a renderer mesh carries (glTF `COLOR_n`), or
-/// `None` if it has no vertex-colour attribute. Vertex-colour *usage* is
-/// geometry-derived — a material that multiplies by COLOR only makes sense when
-/// the mesh actually has it — so the bridge sets `vertex_colors_enabled` + the
-/// set index from this rather than an authored bit, mirroring how `populate_gltf`
-/// decides it per primitive.
-fn mesh_vertex_color_set(
-    r: &awsm_renderer::AwsmRenderer,
-    mk: awsm_renderer::meshes::MeshKey,
-) -> Option<u32> {
-    use awsm_renderer::meshes::buffer_info::{
-        MeshBufferCustomVertexAttributeInfo, MeshBufferVertexAttributeInfo,
-    };
-    r.meshes.buffer_info(mk).ok().and_then(|info| {
-        info.triangles.vertex_attributes.iter().find_map(|attr| {
-            if let MeshBufferVertexAttributeInfo::Custom(
-                MeshBufferCustomVertexAttributeInfo::Colors { index, .. },
-            ) = attr
-            {
-                Some(*index)
-            } else {
-                None
-            }
-        })
-    })
-}
-
 fn builtin_merged(
     inst: &awsm_scene_schema::dynamic_material::MaterialInstance,
 ) -> Option<awsm_scene_schema::MaterialDef> {
@@ -510,128 +482,6 @@ enum MeshMaterial {
     /// instanced geometry, whose appearance is the flat default + per-instance
     /// colours, not a per-node material assignment.
     Flat(awsm_scene_schema::MaterialDef),
-}
-
-/// Materialize a `Model` node by **duplicating** its glTF template meshes under
-/// the node's own transform. The template (built at import time from
-/// `populate_gltf`) holds the renderer mesh keys for each glTF node; we look up
-/// this node's by `node_index` and call `duplicate_mesh_with_transform` so the
-/// copy is parented to *this* editor node — moving the node moves the mesh.
-/// Skinning is preserved: the duplicate keeps its joint references (the joints
-/// still live in the renderer transform tree as the hidden template).
-async fn materialize_model(entry: Arc<RendererNode>, model_ref: awsm_scene_schema::ModelRef) {
-    let Some(template) = bridge().get_template(model_ref.asset_id) else {
-        tracing::warn!(
-            "Model {:?}: no node template cached; renders empty",
-            model_ref.asset_id
-        );
-        return;
-    };
-    let Some(tnode) = template.find_by_node_index(model_ref.node_index) else {
-        tracing::warn!(
-            "Model node_index {} not found in template; renders empty",
-            model_ref.node_index
-        );
-        return;
-    };
-    // Each mesh: (mesh_key, is_skinned, gltf material index). `primitive_index =
-    // Some(i)` would peel a single primitive (Split); we materialize them all.
-    type Triple = (awsm_renderer::meshes::MeshKey, bool, Option<usize>);
-    let triples: Vec<Triple> = match model_ref.primitive_index {
-        None => tnode
-            .mesh_keys
-            .iter()
-            .copied()
-            .zip(tnode.mesh_is_skinned.iter().copied())
-            .zip(tnode.mesh_gltf_material_indices.iter().copied())
-            .map(|((mk, s), mi)| (mk, s, mi))
-            .collect(),
-        Some(i) => {
-            let i = i as usize;
-            match (
-                tnode.mesh_keys.get(i),
-                tnode.mesh_is_skinned.get(i),
-                tnode.mesh_gltf_material_indices.get(i),
-            ) {
-                (Some(mk), Some(s), Some(mi)) => vec![(*mk, *s, *mi)],
-                _ => Vec::new(),
-            }
-        }
-    };
-    if triples.is_empty() {
-        return;
-    }
-
-    let visible = entry.node.visible.get();
-    let shadow_flags = mesh_shadow_flags_from_config(&model_ref.shadow);
-    let parent_tk = entry.transform_key;
-
-    let mut created = Vec::new();
-    let mut material_keys = Vec::new();
-    let mut to_register = Vec::new();
-    {
-        let handle = renderer_handle();
-        let mut r = handle.lock().await;
-        // The node's assigned library material drives every primitive it renders.
-        // Resolved exactly like a Primitive/Mesh — a built-in merges this node's
-        // per-mesh inline uniforms + texture overrides over the shared variant; a
-        // dynamic material applies its declared overrides; an *unassigned* node
-        // renders the flat-magenta missing-material sentinel. The material is
-        // resolved PER PRIMITIVE because vertex-color usage is geometry-derived:
-        // glTF uses COLOR_0 iff the primitive carries it (matching the renderer's
-        // native per-primitive behaviour), not from any authored material bit — so
-        // a primitive with vertex colours gets `vertex_colors_enabled` flipped on
-        // (its own pipeline variant) while a sibling without them does not.
-        for (mk, skinned, _mat_idx) in &triples {
-            let vertex_color_set = mesh_vertex_color_set(&r, *mk);
-            // Skinned meshes keep rendering in place (their original copy) —
-            // duplicating collapses the skin; non-skinned are duplicated under
-            // this node's transform so the editor node owns + moves them.
-            let target = if *skinned {
-                *mk
-            } else {
-                match r.duplicate_mesh_with_transform(*mk, parent_tk) {
-                    Ok(new_mesh) => {
-                        let _ = r.set_mesh_hidden(new_mesh, !visible);
-                        let _ = r.set_mesh_shadow_flags(new_mesh, shadow_flags);
-                        created.push(new_mesh);
-                        new_mesh
-                    }
-                    Err(e) => {
-                        tracing::warn!("Model: duplicate_mesh_with_transform failed: {e}");
-                        continue;
-                    }
-                }
-            };
-            let mat_key = match model_ref.material.as_ref() {
-                Some(inst) => {
-                    if let Some(mut merged) = builtin_merged(inst) {
-                        merged.vertex_colors_enabled = vertex_color_set.is_some();
-                        material::insert_material_vc(&mut r, &merged, vertex_color_set)
-                    } else if let Some(k) = super::dynamic::insert_custom(&mut r, inst) {
-                        k
-                    } else {
-                        material::insert_magenta(&mut r)
-                    }
-                }
-                None => material::insert_magenta(&mut r),
-            };
-            let _ = r.set_mesh_material(target, mat_key);
-            material_keys.push(mat_key);
-            to_register.push(target);
-        }
-        if let Err(e) = r.finalize_gpu_textures().await {
-            tracing::warn!("finalize_gpu_textures (model): {e}");
-        }
-    }
-
-    for mk in &to_register {
-        bridge().register_mesh(*mk, entry.node_id);
-    }
-    // Duplicates + the materials we inserted are owned (torn down) by this node;
-    // skinned originals belong to the populate pass and stay put.
-    entry.model_meshes.lock().unwrap().extend(created);
-    entry.material_keys.lock().unwrap().extend(material_keys);
 }
 
 /// Authored polyline (`NodeKind::Line`) → fat-line strip. The fat-line pipeline
@@ -1143,16 +993,6 @@ fn light_shadow_params_from_config(
             s::CubeFaceUpdateRate::Every4Frames => r::CubeFaceUpdateRate::Every4Frames,
             s::CubeFaceUpdateRate::Every8Frames => r::CubeFaceUpdateRate::Every8Frames,
         },
-    }
-}
-
-/// Schema → runtime per-mesh shadow cast/receive flags.
-fn mesh_shadow_flags_from_config(
-    cfg: &awsm_scene_schema::MeshShadowConfig,
-) -> awsm_renderer::shadows::MeshShadowFlags {
-    awsm_renderer::shadows::MeshShadowFlags {
-        cast: cfg.cast,
-        receive: cfg.receive,
     }
 }
 

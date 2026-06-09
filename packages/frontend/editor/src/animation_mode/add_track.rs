@@ -396,10 +396,6 @@ fn node_group(node: &Arc<Node>) -> Option<TargetGroup> {
             rows.extend(mesh_material_rows(id));
             ("mesh", "cube")
         }
-        NodeKind::Model(_) => {
-            rows.extend(mesh_material_rows(id));
-            ("model", "cube")
-        }
         _ => ("node", "cube"),
     };
 

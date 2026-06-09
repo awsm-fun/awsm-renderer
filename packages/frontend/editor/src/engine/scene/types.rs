@@ -9,7 +9,7 @@
 
 pub use awsm_scene_schema::{
     CameraConfig, CameraProjection, ColliderShape, EnvironmentConfig, IblConfig, LightConfig,
-    LightKind, ModelRef, NodeKind, SkyboxConfig, Trs,
+    LightKind, NodeKind, SkyboxConfig, Trs,
 };
 
 /// Load state of the renderer-side asset (glb/gltf) for a `Model` node.

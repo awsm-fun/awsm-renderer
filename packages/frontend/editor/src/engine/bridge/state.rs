@@ -10,9 +10,8 @@ use awsm_renderer::render_passes::lines::LineKey;
 use awsm_renderer::transforms::TransformKey;
 use awsm_web_shared::prelude::AsyncLoader;
 
-use super::asset_template::AssetTemplate;
 use super::{animation_sync, env_sync, mesh_sync, node_sync};
-use crate::engine::scene::{AssetId, Node, NodeId, NodeKind};
+use crate::engine::scene::{Node, NodeId, NodeKind};
 use std::sync::{Arc, Mutex};
 
 /// GPU-side mirror of one scene node.
@@ -72,9 +71,6 @@ pub struct Bridge {
     pub child_order: Mutex<HashMap<Option<NodeId>, Vec<NodeId>>>,
     /// Reverse map for GPU picking: a hit `MeshKey` → the owning scene node.
     pub mesh_to_node: Mutex<HashMap<MeshKey, NodeId>>,
-    /// Per-imported-glTF node templates, keyed by the source file's `AssetId`.
-    /// `Model` nodes look up their meshes here (see `asset_template`).
-    pub templates: Mutex<HashMap<AssetId, Arc<AssetTemplate>>>,
     /// Skin bridge: editor bone `NodeId` → the baked joint `TransformKey` the
     /// renderer's skin reads. A skinned glTF renders from its baked
     /// `populate_gltf` copy, but the editor drives a *separate* mirror-bone
@@ -90,7 +86,6 @@ impl Bridge {
             light_node_ids: Mutex::new(HashSet::new()),
             child_order: Mutex::new(HashMap::new()),
             mesh_to_node: Mutex::new(HashMap::new()),
-            templates: Mutex::new(HashMap::new()),
             skin_joint_baked: Mutex::new(HashMap::new()),
         }
     }
@@ -102,15 +97,6 @@ impl Bridge {
     /// Drop all skin-joint mappings (project reset).
     pub fn clear_skin_joints(&self) {
         self.skin_joint_baked.lock().unwrap().clear();
-    }
-
-    /// Cache a glTF node template under its source file's `AssetId`.
-    pub fn insert_template(&self, id: AssetId, template: Arc<AssetTemplate>) {
-        self.templates.lock().unwrap().insert(id, template);
-    }
-    /// The node template for an imported glTF, if still cached.
-    pub fn get_template(&self, id: AssetId) -> Option<Arc<AssetTemplate>> {
-        self.templates.lock().unwrap().get(&id).cloned()
     }
 
     /// Register a materialized mesh so a GPU pick can resolve it to its node.
@@ -136,7 +122,6 @@ pub fn rematerialize_for_material(id: crate::engine::scene::AssetId) {
     fn node_assigned_material(kind: &NodeKind) -> Option<AssetId> {
         match kind {
             NodeKind::Mesh { material, .. } => material.as_ref().map(|i| i.asset),
-            NodeKind::Model(r) => r.material.as_ref().map(|i| i.asset),
             _ => None,
         }
     }

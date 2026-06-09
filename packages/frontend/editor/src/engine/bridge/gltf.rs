@@ -3,11 +3,22 @@
 //! meshes, and skinning), then snapshots that into an
 //! [`AssetTemplate`](super::asset_template::AssetTemplate). The caller
 //! (`EditorController::finish_model_import`) mirrors the template as editor
-//! `Group`/`Model` nodes so the import appears as an editable hierarchy in the
-//! Outliner; each `Model` node duplicates the template meshes under its own
-//! transform (see `node_sync::materialize_model`). The template's own meshes are
-//! hidden so they don't double-render.
+//! `Group`/`Mesh` nodes so the import appears as an editable hierarchy in the
+//! Outliner.
+//!
+//! **Geometry is baked at import** (not retained as a hidden renderer copy): each
+//! mesh-bearing glTF node's geometry is read CPU-side from the document's
+//! accessors via [`awsm_glb_export::extract_node_mesh`] and carried on
+//! [`GltfImport::node_meshes`]. The controller mints a captured `MeshDef` asset
+//! per node and builds a `NodeKind::Mesh { mesh: Captured(..), .. }` node — so an
+//! imported model is the same unified Mesh node as every other geometry kind, with
+//! no `NodeKind::Model` and no retained source bytes. `populate_gltf` is still run
+//! purely to extract materials + textures (and the transform/material-index
+//! template); its meshes are hidden so they don't render.
 
+use std::collections::HashMap;
+
+use awsm_glb_export::MeshData;
 use awsm_renderer::textures::TextureKey;
 use awsm_renderer_gltf::data::GltfData;
 use awsm_renderer_gltf::extract::{extract_animations, ExtractedAnimation};
@@ -33,13 +44,16 @@ pub struct GltfImport {
     /// lowers the sampler into authored keyframes. Empty when the file has no
     /// animations (or extraction failed — logged, never fatal).
     pub animations: Vec<ExtractedAnimation>,
-    /// The raw source glTF/GLB bytes, fetched at import (before the `blob:`
-    /// object URL is revoked). The controller stashes these in
-    /// [`model_source_cache`](super::model_source_cache) keyed by the minted
-    /// model `asset_id`, so GLB export can re-read the node's geometry later.
-    /// `None` when the fetch failed (export of this model then falls back to an
-    /// empty transform node — logged, never fatal).
-    pub source_bytes: Option<Vec<u8>>,
+    /// Baked geometry for every mesh-bearing glTF node, read CPU-side from the
+    /// document accessors at import. Keyed by `(node_index, primitive_index)`:
+    /// the `None` primitive key is the whole node (every primitive merged), and
+    /// each `Some(i)` key is one primitive in isolation — the controller uses the
+    /// merged entry for single-material nodes and the per-primitive entries when
+    /// it destructures a multi-material node. Positions are the node's *raw* local
+    /// accessor values; the editor node carries the glTF node's local transform,
+    /// so the geometry is used as-is (no extra matrix). Skinned meshes bake to
+    /// their bind pose (JOINTS/WEIGHTS are not read).
+    pub node_meshes: HashMap<(u32, Option<u32>), MeshData>,
 }
 
 /// A glTF material extracted into an editable [`MaterialDef`] (factors only;
@@ -167,24 +181,37 @@ pub async fn import_file(name: &str, url: &str) -> Result<GltfImport, String> {
     import_typed(url, file_type, Some(name)).await
 }
 
-/// Fetch the raw bytes behind a glTF/GLB source URL (handles `blob:` object URLs
-/// and regular http(s) URLs the same way). Used to stash a model's source for
-/// later GLB export; a failure is non-fatal (export falls back to a transform-only
-/// node). Note: `.gltf` files with *external* `.bin`/image side-files won't
-/// self-contain here — only their JSON document is fetched — but `.glb` and
-/// embedded/data-URI `.gltf` (the file-picker + most URL imports) re-read fully.
-async fn fetch_source_bytes(url: &str) -> Option<Vec<u8>> {
-    match gloo_net::http::Request::get(url).send().await {
-        Ok(resp) if resp.ok() => resp.binary().await.ok(),
-        Ok(resp) => {
-            tracing::warn!("model source fetch {url}: HTTP {}", resp.status());
-            None
+/// Read CPU-side geometry for every mesh-bearing glTF node out of an
+/// already-decoded document, into a map keyed by `(node_index, primitive_index)`.
+/// For each such node we store the whole-node merge (`primitive_index = None`) and
+/// one entry per individual primitive (`Some(i)`), so the controller can build a
+/// single Mesh node or destructure a multi-material node per-primitive — exactly
+/// the cases the old `Model` path covered. Positions are raw local accessor values
+/// (see [`awsm_glb_export::extract_node_mesh`] on the no-double-transform rule).
+fn extract_node_meshes(data: &GltfData) -> HashMap<(u32, Option<u32>), MeshData> {
+    let buffers = &data.buffers.raw;
+    let mut out = HashMap::new();
+    for node in data.doc.nodes() {
+        let Some(mesh) = node.mesh() else { continue };
+        let node_index = node.index() as u32;
+        // Whole-node merge (the common, single-material case).
+        if let Some(m) = awsm_glb_export::extract_node_mesh(&data.doc, buffers, node_index, None) {
+            out.insert((node_index, None), m);
         }
-        Err(e) => {
-            tracing::warn!("model source fetch {url}: {e}");
-            None
+        // Per-primitive (used when a node's primitives carry different materials
+        // and the controller destructures it into one Mesh child per primitive).
+        let prim_count = mesh.primitives().count();
+        if prim_count > 1 {
+            for i in 0..prim_count as u32 {
+                if let Some(m) =
+                    awsm_glb_export::extract_node_mesh(&data.doc, buffers, node_index, Some(i))
+                {
+                    out.insert((node_index, Some(i)), m);
+                }
+            }
         }
     }
+    out
 }
 
 async fn import_typed(
@@ -192,13 +219,15 @@ async fn import_typed(
     file_type: Option<GltfFileType>,
     name: Option<&str>,
 ) -> Result<GltfImport, String> {
-    // Grab the raw source bytes up front — before the caller revokes the blob URL
-    // — so GLB export can re-read this model's geometry later.
-    let source_bytes = fetch_source_bytes(url).await;
     let loader = GltfLoader::load(url, file_type)
         .await
         .map_err(|e| format!("load: {e}"))?;
     let data = loader.into_data(None).map_err(|e| format!("decode: {e}"))?;
+    // Bake every mesh-bearing node's geometry CPU-side from the accessors before
+    // `data` is moved into `populate_gltf` — this is what becomes each editor
+    // node's captured Mesh asset (the renderer's own meshes are only kept for
+    // material/texture extraction, then hidden).
+    let node_meshes = extract_node_meshes(&data);
     // Read material factors + texture indices from the document before it's moved
     // into `populate_gltf`; the indices are resolved to baked texture keys after.
     let mat_specs = extract_material_specs(&data);
@@ -232,7 +261,7 @@ async fn import_typed(
         template,
         materials,
         animations,
-        source_bytes,
+        node_meshes,
     })
 }
 
