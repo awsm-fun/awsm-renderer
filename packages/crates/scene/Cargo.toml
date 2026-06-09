@@ -1,0 +1,29 @@
+[package]
+name = "awsm-scene"
+description = "Lean canonical runtime scene schema (scene.toml + assets/) for the awsm-renderer player. Authoring types live in awsm-editor-protocol."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+glam = { workspace = true, features = ["serde"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, optional = true }
+uuid = { version = "1.11.0", features = ["v4", "serde", "js"] }
+thiserror = { workspace = true }
+# Native `scene.toml` + material-folder loaders. Off by default so the wasm
+# build (no std::fs) pays no code-size cost — matches awsm-scene-schema.
+toml = { version = "0.8", optional = true }
+# Optional JSON Schemas so the MCP server can expose strongly-typed tool params.
+schemars = { version = "1", optional = true }
+
+[features]
+default = []
+fs-loader = ["dep:serde_json", "dep:toml"]
+schemars = ["dep:schemars"]
+
+[dev-dependencies]
+bitcode = { version = "0.6.9", features = ["serde", "uuid"] }
+serde_json = { workspace = true }

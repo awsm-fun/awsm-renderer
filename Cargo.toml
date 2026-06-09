@@ -10,6 +10,7 @@ members = [
     "packages/crates/renderer-core",
     "packages/crates/renderer-gltf",
     "packages/crates/scene-schema",
+    "packages/crates/scene",
     "packages/crates/editor-protocol",
     "packages/frontend/web-shared",
     "packages/frontend/editor",
@@ -82,6 +83,7 @@ opt-level = 1
 awsm-curves = { path = "packages/crates/curves", version = "0.2.0" }
 awsm-geometry = { path = "packages/crates/geometry", version = "0.2.0" }
 awsm-scene-schema = { path = "packages/crates/scene-schema", version = "0.2.0" }
+awsm-scene = { path = "packages/crates/scene", version = "0.2.0" }
 awsm-editor-protocol = { path = "packages/crates/editor-protocol", version = "0.2.0" }
 awsm-renderer-core = { path = "packages/crates/renderer-core", version = "0.2.0" }
 awsm-meshgen = { path = "packages/crates/meshgen", version = "0.2.0" }
