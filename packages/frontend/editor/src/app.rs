@@ -80,6 +80,7 @@ pub fn render() -> Dom {
         .child(stats_bar())
         .child(crate::command_palette::render())
         .child(activity_indicator())
+        .child(agent_feed())
         .child_signal(ctrl.settings_open.signal().map(|open| if open { Some(settings_drawer()) } else { None }))
     })
 }
@@ -132,6 +133,98 @@ fn activity_indicator() -> Dom {
             }))
         }))
     })
+}
+
+/// "Watch-it-work" agent-activity feed: a compact, auto-scrolling narration
+/// strip pinned to the bottom-left, fed from the inbound MCP command stream (see
+/// `engine::activity_feed`). Each entry reads "🤖 {phrase}" with a subtle
+/// fade-in. Read-only/informational — it never mutates editor state, and
+/// degrades silently (hidden) when no agent is connected or the feed is empty.
+///
+/// The newest entries render at the bottom (closest to the eye); only the last
+/// handful are shown so the strip stays unobtrusive over the viewport while the
+/// full ~50-entry history is retained in the model.
+fn agent_feed() -> Dom {
+    use crate::engine::activity_feed::feed;
+    /// How many trailing entries the strip shows at once (the model keeps ~50).
+    const VISIBLE: usize = 6;
+    let max_height = format!("{}px", VISIBLE * 30);
+    html!("div", {
+        .style("position", "fixed")
+        .style("left", "12px")
+        .style("bottom", "40px")
+        .style("z-index", "340")
+        .style("display", "flex")
+        .style("flex-direction", "column")
+        .style("gap", "5px")
+        .style("max-width", "min(340px, 42vw)")
+        .style("pointer-events", "none")
+        // Cap the visible rows to a trailing window via CSS (cheaper + simpler
+        // than an index-aware signal): the column is bottom-anchored, so older
+        // entries overflow + scroll off the top. The model keeps the full ~50.
+        .style("max-height", &max_height)
+        .style("overflow", "hidden")
+        .style("justify-content", "flex-end")
+        // Hide the whole strip when the feed is empty (no agent activity yet) so
+        // it degrades silently with no agent connected.
+        .style_signal("display", feed().signal_vec_cloned().len().map(|n| if n == 0 { "none" } else { "flex" }))
+        .children_signal_vec(feed().signal_vec_cloned().map(|entry| agent_feed_row(&entry.phrase)))
+    })
+}
+
+/// One narration row: "🤖 {phrase}" in a small translucent pill that fades in.
+fn agent_feed_row(phrase: &str) -> Dom {
+    html!("div", {
+        .style("display", "inline-flex")
+        .style("align-items", "center")
+        .style("gap", "7px")
+        .style("align-self", "flex-start")
+        .style("padding", "5px 11px 5px 9px")
+        .style("background", "color-mix(in oklch, var(--bg-1) 88%, transparent)")
+        .style("border", "1px solid var(--line-soft)")
+        .style("border-radius", "999px")
+        .style("box-shadow", "var(--shadow-2)")
+        .style("font-size", "12px")
+        .style("color", "var(--text-1)")
+        .style("white-space", "nowrap")
+        .style("max-width", "100%")
+        .style("overflow", "hidden")
+        .style("text-overflow", "ellipsis")
+        .style("animation", "feed-in 0.28s ease-out")
+        .child(html!("span", { .style("flex", "0 0 auto").text("\u{1F916}") }))
+        .child(html!("span", {
+            .style("overflow", "hidden")
+            .style("text-overflow", "ellipsis")
+            .text(phrase)
+        }))
+    })
+}
+
+/// Transient "agent acting" spotlight: while a panel is the active focus target
+/// (set for ~1s when a matching command lands, see `engine::activity_feed`),
+/// overlay a non-interactive pulsing accent ring on it so the human's eye lands
+/// where the agent is working. Reuses the `mcp-pulse` keyframe (index.html).
+/// Returns an `apply` closure adding the overlay child to a (positioned) panel.
+fn panel_highlight(
+    target: crate::engine::activity_feed::FocusTarget,
+) -> impl FnOnce(
+    dominator::DomBuilder<web_sys::HtmlElement>,
+) -> dominator::DomBuilder<web_sys::HtmlElement> {
+    use crate::engine::activity_feed::focus;
+    move |d| {
+        d.child(html!("div", {
+            .style("position", "absolute")
+            .style("inset", "0")
+            .style("z-index", "300")
+            .style("pointer-events", "none")
+            .style("border-radius", "2px")
+            .style("box-shadow", "inset 0 0 0 2px var(--accent-line)")
+            .style("animation", "mcp-pulse 1.1s ease-in-out infinite")
+            .style_signal("display", focus().signal().map(move |f| {
+                if f == Some(target) { "block" } else { "none" }
+            }))
+        }))
+    }
 }
 
 /// Whether a text-entry element currently holds focus — used to suppress the
@@ -877,6 +970,7 @@ fn overflow_button(ctrl: &EditorController) -> Dom {
 }
 
 fn workspace(ctrl: &EditorController) -> Dom {
+    use crate::engine::activity_feed::FocusTarget;
     // Both workspaces stay mounted and are display-toggled by mode, so the
     // WebGPU canvas (reparented into the Scene viewport slot) is never torn out
     // of the DOM on a mode switch — the render loop keeps ticking.
@@ -902,6 +996,8 @@ fn workspace(ctrl: &EditorController) -> Dom {
                     .style("flex", "0 0 auto")
                     .style("border-right", "1px solid var(--line)")
                     .style("min-height", "0")
+                    .style("position", "relative")
+                    .apply(panel_highlight(FocusTarget::Outliner))
                     .child(crate::scene_mode::outliner::render())
                 }))
                 .child(html!("div", {
@@ -909,6 +1005,7 @@ fn workspace(ctrl: &EditorController) -> Dom {
                     .style("min-width", "0")
                     .style("min-height", "0")
                     .style("position", "relative")
+                    .apply(panel_highlight(FocusTarget::Viewport))
                     .child(crate::scene_mode::viewport::render())
                 }))
                 .child(html!("div", {
@@ -916,6 +1013,8 @@ fn workspace(ctrl: &EditorController) -> Dom {
                     .style("flex", "0 0 auto")
                     .style("border-left", "1px solid var(--line)")
                     .style("min-height", "0")
+                    .style("position", "relative")
+                    .apply(panel_highlight(FocusTarget::Inspector))
                     .child(crate::scene_mode::inspector::render())
                 }))
             }))

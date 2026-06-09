@@ -325,14 +325,23 @@ async fn dispatch(req: Request) -> Response {
     let ctrl = controller();
     match req {
         Request::Mode => Response::Mode(ctrl.mode.get()),
-        Request::Dispatch(cmd) => match ctrl.dispatch(cmd).await {
-            Ok(()) => Response::Ok,
-            Err(e) => Response::Err(format!("{e}")),
-        },
-        Request::DispatchBatch(cmds) => match ctrl.dispatch_batch(cmds).await {
-            Ok(()) => Response::Ok,
-            Err(e) => Response::Err(format!("{e}")),
-        },
+        Request::Dispatch(cmd) => {
+            // "Watch-it-work": narrate the agent's command into the activity
+            // feed + spotlight the focus panel. Read-only/informational — never
+            // mutates state; derived from the command alone.
+            crate::engine::activity_feed::narrate(&cmd);
+            match ctrl.dispatch(cmd).await {
+                Ok(()) => Response::Ok,
+                Err(e) => Response::Err(format!("{e}")),
+            }
+        }
+        Request::DispatchBatch(cmds) => {
+            crate::engine::activity_feed::narrate_batch(&cmds);
+            match ctrl.dispatch_batch(cmds).await {
+                Ok(()) => Response::Ok,
+                Err(e) => Response::Err(format!("{e}")),
+            }
+        }
         Request::Query(q) => Response::Query(Box::new(ctrl.query(q).await)),
         Request::Undo => {
             ctrl.undo().await;

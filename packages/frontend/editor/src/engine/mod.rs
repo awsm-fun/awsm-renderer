@@ -4,6 +4,7 @@
 //! bridge + actions land here as the panels that need them arrive (M4+).
 
 pub mod activity;
+pub mod activity_feed;
 pub mod bridge;
 pub mod canvas;
 pub mod canvas_host;

@@ -49,6 +49,8 @@
             }
             @keyframes boot-spin { to { transform: rotate(360deg); } }
             @keyframes mcp-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+            /* Watch-it-work: a new feed entry slides up + fades in. */
+            @keyframes feed-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
         </style>
         <!--
             Editor-bundled assets (e.g. gizmo.glb). Trunk copies the crate-local
