@@ -2025,8 +2025,7 @@ impl EditorMcp {
         &self,
         Parameters(p): Parameters<CommandJsonParams>,
     ) -> Result<CallToolResult, McpError> {
-        let cmd: EditorCommand = serde_json::from_value(p.command)
-            .map_err(|e| McpError::invalid_params(format!("bad command: {e}"), None))?;
+        let cmd: EditorCommand = json_arg(p.command, "command")?;
         self.dispatch(cmd).await
     }
 
@@ -2040,9 +2039,8 @@ impl EditorMcp {
         let cmds: Vec<EditorCommand> = p
             .commands
             .into_iter()
-            .map(serde_json::from_value)
-            .collect::<Result<_, _>>()
-            .map_err(|e| McpError::invalid_params(format!("bad command in batch: {e}"), None))?;
+            .map(|c| json_arg(c, "command in batch"))
+            .collect::<Result<_, _>>()?;
         match self.req(Request::DispatchBatch(cmds)).await? {
             Response::Ok => Ok(text("ok")),
             Response::Err(e) => Err(McpError::internal_error(e, None)),
