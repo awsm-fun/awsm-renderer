@@ -1008,7 +1008,7 @@ impl AwsmRendererBuilder {
 
     /// Pins a renderer-wide shadow configuration that the new
     /// `Shadows` will use at construction. Use this when loading an
-    /// `awsm_scene_schema::EditorProject` so the cube-pool size, EVSM
+    /// `awsm_scene::EditorProject` so the cube-pool size, EVSM
     /// atlas size, and 2D atlas size match the authored intent before
     /// any frame renders.
     pub fn with_shadows_config(mut self, config: shadows::ShadowsConfig) -> Self {

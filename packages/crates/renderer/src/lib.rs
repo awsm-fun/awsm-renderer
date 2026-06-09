@@ -10,7 +10,7 @@
 //! authored data into renderer config with a single `.into()`:
 //!
 //! ```ignore
-//! let project: awsm_scene_schema::EditorProject = serde_json::from_str(&text)?;
+//! let project: awsm_scene::EditorProject = serde_json::from_str(&text)?;
 //! renderer.set_shadows_config(project.shadows.into());
 //! ```
 //!

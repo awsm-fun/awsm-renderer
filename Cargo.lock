@@ -418,7 +418,7 @@ dependencies = [
  "askama",
  "awsm-materials",
  "awsm-renderer-core",
- "awsm-scene-schema",
+ "awsm-scene",
  "bevy_mikktspace",
  "futures",
  "glam 0.32.1",
@@ -494,7 +494,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "awsm-editor-protocol",
- "awsm-scene-schema",
+ "awsm-scene",
  "axum",
  "base64 0.22.1",
  "bytes",

@@ -31,10 +31,10 @@ use awsm_editor_protocol::{
     CameraAxis, CompileError, CustomAlphaMode, EditorCommand, EditorMode, EditorQuery, InsertSpec,
     ProceduralKind, QueryResult, Request, Response, SlotSpec,
 };
-use awsm_scene_schema::animation::{
+use awsm_scene::animation::{
     BuiltinParamKind, ClipLoop, Interp, LightParamKind, TrackTarget, TrackValue, TransformProp,
 };
-use awsm_scene_schema::{
+use awsm_scene::{
     AssetId, EnvironmentConfig, IblConfig, LightKind, MaterialShading, NodeId, PrimitiveShape,
     SkyboxConfig, Trs,
 };
@@ -170,7 +170,7 @@ pub struct SetMeshModifiersParams {
     pub mesh: String,
     /// Strongly-typed modifier stack (the schema lists every base + modifier).
     /// See the `awsm://docs/mesh-tools` resource for worked examples.
-    pub stack: Flexible<awsm_scene_schema::modifier::ModifierStack>,
+    pub stack: Flexible<awsm_editor_protocol::ModifierStack>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -180,7 +180,7 @@ pub struct AddModifierParams {
     pub mesh: String,
     /// One strongly-typed modifier object (e.g. `{"twist":{"axis":"y","turns":2}}`).
     /// See the `awsm://docs/mesh-tools` resource for every modifier's shape.
-    pub modifier: Flexible<awsm_scene_schema::modifier::Modifier>,
+    pub modifier: Flexible<awsm_editor_protocol::Modifier>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -190,7 +190,7 @@ pub struct SetModifierParams {
     /// Zero-based index of the modifier to replace (must be in range).
     pub index: u32,
     /// The replacement modifier object.
-    pub modifier: Flexible<awsm_scene_schema::modifier::Modifier>,
+    pub modifier: Flexible<awsm_editor_protocol::Modifier>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]

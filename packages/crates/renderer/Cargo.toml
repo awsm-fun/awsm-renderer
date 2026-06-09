@@ -50,12 +50,12 @@ texture-export = ["awsm-renderer-core/texture-export"]
 # This is an extension point: new bridges go in feature-gated
 # `schema_convert` modules next to each subsystem's runtime structs.
 # See the crate-root docs and `shadows::schema_convert` for the pattern.
-scene-schema = ["dep:awsm-scene-schema"]
+scene-schema = ["dep:awsm-scene"]
 
 [dependencies]
 awsm-renderer-core = { workspace = true, features = ["texture-pool"] }
 awsm-materials = { workspace = true }
-awsm-scene-schema = { workspace = true, optional = true }
+awsm-scene = { workspace = true, optional = true }
 web-sys = {workspace = true}
 wasm-bindgen = {workspace = true}
 wasm-bindgen-futures = {workspace = true}

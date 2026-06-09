@@ -866,7 +866,7 @@ impl DynamicMaterials {
 
 /// Runtime registration payload for a custom material.
 ///
-/// The renderer's counterpart to `awsm_scene_schema::MaterialDefinition` +
+/// The renderer's counterpart to `awsm_scene::MaterialDefinition` +
 /// the loaded WGSL fragment. Consumers (`scene-editor`, `material-editor`,
 /// game runtimes) convert their on-disk format into a
 /// [`MaterialRegistration`] before calling
