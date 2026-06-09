@@ -3510,6 +3510,12 @@ fn patch_builtin_param(
     let inline = match kind {
         NodeKind::Primitive {
             inline_material, ..
+        }
+        | NodeKind::Mesh {
+            inline_material, ..
+        }
+        | NodeKind::SweepAlongCurve {
+            inline_material, ..
         } => inline_material,
         NodeKind::Model(r) => &mut r.inline_material,
         _ => return false,

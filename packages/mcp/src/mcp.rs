@@ -887,8 +887,7 @@ impl EditorMcp {
         &self,
         Parameters(p): Parameters<QueryJsonParams>,
     ) -> Result<CallToolResult, McpError> {
-        let q: EditorQuery = serde_json::from_value(p.query)
-            .map_err(|e| McpError::invalid_params(format!("bad query: {e}"), None))?;
+        let q: EditorQuery = json_arg(p.query, "query")?;
         self.query(q).await
     }
 
@@ -1270,8 +1269,8 @@ impl EditorMcp {
         let mesh = AssetId(uuid::Uuid::parse_str(&p.mesh).map_err(|e| {
             McpError::invalid_params(format!("invalid mesh id {:?}: {e}", p.mesh), None)
         })?);
-        let stack: awsm_scene_schema::modifier::ModifierStack = serde_json::from_value(p.stack)
-            .map_err(|e| McpError::invalid_params(format!("bad modifier stack: {e}"), None))?;
+        let stack: awsm_scene_schema::modifier::ModifierStack =
+            json_arg(p.stack, "modifier stack")?;
         self.dispatch(EditorCommand::SetMeshModifiers { mesh, stack })
             .await
     }
@@ -1327,8 +1326,7 @@ impl EditorMcp {
         &self,
         Parameters(p): Parameters<SelectVerticesParams>,
     ) -> Result<CallToolResult, McpError> {
-        let predicate = serde_json::from_value(p.predicate)
-            .map_err(|e| McpError::invalid_params(format!("bad predicate: {e}"), None))?;
+        let predicate = json_arg(p.predicate, "predicate")?;
         self.query(EditorQuery::SelectVerticesWhere {
             node: parse_node(&p.node)?,
             predicate,
@@ -2395,6 +2393,22 @@ fn parse_asset(s: &str) -> Result<AssetId, McpError> {
 
 fn parse_asset_opt(s: &Option<String>) -> Result<Option<AssetId>, McpError> {
     s.as_deref().map(parse_asset).transpose()
+}
+
+/// Deserialize a free-form JSON tool argument into `T`. Some MCP clients deliver
+/// an untyped (schema-less) object argument as a JSON *string* rather than a
+/// nested object; accept both by re-parsing a string first.
+fn json_arg<T: serde::de::DeserializeOwned>(
+    v: serde_json::Value,
+    what: &str,
+) -> Result<T, McpError> {
+    let v = match v {
+        serde_json::Value::String(s) => serde_json::from_str(&s)
+            .map_err(|e| McpError::invalid_params(format!("bad {what}: {e}"), None))?,
+        other => other,
+    };
+    serde_json::from_value(v)
+        .map_err(|e| McpError::invalid_params(format!("bad {what}: {e}"), None))
 }
 
 /// Parse a snake_case string into a scene-schema enum via serde (e.g. param /
