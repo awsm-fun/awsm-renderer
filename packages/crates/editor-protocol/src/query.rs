@@ -149,6 +149,7 @@ fn default_units() -> String {
 /// A read/verification query against editor + renderer state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "query", rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum EditorQuery {
     /// The existing editor snapshot.
     Snapshot,
@@ -297,6 +298,7 @@ pub enum VertexPredicate {
 /// What a [`EditorQuery::SampleClipTimeseries`] frame reads.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "target", rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum ReadbackTarget {
     /// A node's local TRS (translation, rotation xyzw, scale). Struct variant
     /// (not a newtype) so the internally-tagged enum round-trips — a tagged

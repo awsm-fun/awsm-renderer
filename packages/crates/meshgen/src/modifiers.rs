@@ -792,6 +792,61 @@ mod tests {
     }
 
     #[test]
+    fn degenerate_inputs_dont_panic() {
+        // Every modifier on an empty mesh — must not panic.
+        let all = [
+            Modifier::Taper {
+                axis: Axis::Y,
+                factor: 0.0,
+            },
+            Modifier::Twist {
+                axis: Axis::X,
+                turns: 2.0,
+            },
+            Modifier::Bend {
+                axis: Axis::Z,
+                angle: 3.0,
+            },
+            Modifier::Inflate { amount: 1.0 },
+            Modifier::Spherify { factor: 1.0 },
+            Modifier::Roughen {
+                amount: 0.1,
+                seed: 0,
+            },
+            Modifier::Subdivide { iterations: 2 },
+            Modifier::Smooth {
+                iterations: 3,
+                factor: 0.5,
+            },
+            Modifier::Mirror { axis: Axis::X },
+            Modifier::Array {
+                count: 0,
+                offset: [1.0, 0.0, 0.0],
+            },
+            Modifier::Displace {
+                expr: "1 + ".into(),
+            }, // malformed
+        ];
+        let out = apply_modifiers(MeshData::default(), &all);
+        assert!(out.positions.is_empty());
+
+        // Lathe needs ≥2 profile rows; fewer → empty (no panic / no OOB).
+        assert!(lathe(&[], 8, TAU).positions.is_empty());
+        assert!(lathe(&[[0.0, 1.0]], 8, TAU).positions.is_empty());
+        // Superquadric clamps tiny segment counts instead of producing garbage.
+        assert!(!superquadric(1.0, 1.0, 1, 1).positions.is_empty());
+        // Array count 0/1 is a no-op (not a crash / empty).
+        let mut b = cube();
+        let v0 = b.positions.len();
+        array(&mut b, 1, [1.0, 0.0, 0.0]);
+        assert_eq!(b.positions.len(), v0);
+        // Modifiers needing normals on a mesh without them: no-op, no panic.
+        let mut nonorm = cube();
+        nonorm.normals = None;
+        inflate(&mut nonorm, 0.5); // returns early (no normals)
+    }
+
+    #[test]
     fn evaluate_runs_a_full_stack() {
         let stack = ModifierStack {
             base: MeshBase::Superquadric {

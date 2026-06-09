@@ -676,9 +676,9 @@ pub struct BatchJsonParams {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct QueryJsonParams {
-    /// A raw `EditorQuery` as JSON, internally tagged by `"query"`. Example:
-    /// `{"query":"canvas_pixels","coords":[[100,100],[200,200]]}`.
-    pub query: Value,
+    /// Strongly-typed `EditorQuery` (the schema lists every variant, tagged by
+    /// `"query"`). Example: `{"query":"canvas_pixels","coords":[[100,100],[200,200]]}`.
+    pub query: Flexible<EditorQuery>,
 }
 
 // ──────────────────────────────── the tools ─────────────────────────────────
@@ -885,8 +885,7 @@ impl EditorMcp {
         &self,
         Parameters(p): Parameters<QueryJsonParams>,
     ) -> Result<CallToolResult, McpError> {
-        let q: EditorQuery = json_arg(p.query, "query")?;
-        self.query(q).await
+        self.query(p.query.0).await
     }
 
     // ── screenshots ─────────────────────────────────────────────────────────

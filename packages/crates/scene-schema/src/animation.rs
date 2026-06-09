@@ -85,6 +85,7 @@ pub enum TransformProp {
 /// Which built-in material factor a `BuiltinParam` track drives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum BuiltinParamKind {
     BaseColor,
     Metallic,
@@ -95,6 +96,7 @@ pub enum BuiltinParamKind {
 /// Which light parameter a `Light` track drives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum LightParamKind {
     Intensity,
     Color,
@@ -106,6 +108,7 @@ pub enum LightParamKind {
 /// Which camera parameter a `Camera` track drives (lowering deferred for now).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum CameraParamKind {
     FovY,
     Near,
