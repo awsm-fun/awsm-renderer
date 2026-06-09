@@ -352,14 +352,27 @@ fn roughen(mesh: &mut MeshData, amount: f32, seed: u32) {
         Some(n) if n.len() == mesh.positions.len() => n.clone(),
         _ => return,
     };
-    for (i, (p, n)) in mesh.positions.iter_mut().zip(normals.iter()).enumerate() {
-        // Deterministic per-vertex jitter in [-amount, amount] (Math.random is
-        // unavailable here and determinism matters for tests/replay).
-        let r = hash01(i as u32 ^ seed.wrapping_mul(0x9E37_79B9)) * 2.0 - 1.0;
-        let d = r * amount;
-        p[0] += n[0] * d;
-        p[1] += n[1] * d;
-        p[2] += n[2] * d;
+    // Weld-aware: jitter is keyed by **position** (not vertex index) and applied
+    // along a **per-weld-group** averaged normal, so coincident-but-split vertices
+    // (UV-sphere seams/poles, hard-edged box corners) move identically and the
+    // surface stays closed (index-keyed jitter cracked them open).
+    let canon = weld_indices(&mesh.positions);
+    let groups = canon.iter().copied().max().map_or(0, |m| m as usize + 1);
+    let mut group_normal = vec![Vec3::ZERO; groups];
+    for (i, &c) in canon.iter().enumerate() {
+        group_normal[c as usize] += Vec3::from_array(normals[i]);
+    }
+    for v in group_normal.iter_mut() {
+        *v = v.normalize_or_zero();
+    }
+    for (i, p) in mesh.positions.iter_mut().enumerate() {
+        // Deterministic jitter in [-amount, amount] from the quantized position +
+        // seed (Math.random is unavailable here; determinism matters for replay).
+        let d = (hash01(pos_hash(p, seed)) * 2.0 - 1.0) * amount;
+        let dir = group_normal[canon[i] as usize];
+        p[0] += dir.x * d;
+        p[1] += dir.y * d;
+        p[2] += dir.z * d;
     }
 }
 
@@ -402,38 +415,54 @@ fn subdivide(mesh: &mut MeshData) {
 }
 
 /// Laplacian smoothing: move each vertex `factor` toward its neighbours' mean.
+///
+/// Weld-aware: the adjacency graph + the moved positions are computed on
+/// **welded** vertices (coincident vertices collapse to one node), so seams stay
+/// shut. A per-index graph let split seam/corner vertices drift apart (holes).
 fn smooth(mesh: &mut MeshData, iterations: u32, factor: f32) {
     let n = mesh.positions.len();
     if n == 0 {
         return;
     }
-    // Neighbour sets from triangle edges.
-    let mut neighbours: Vec<Vec<u32>> = vec![Vec::new(); n];
+    let canon = weld_indices(&mesh.positions);
+    let groups = canon.iter().copied().max().map_or(0, |m| m as usize + 1);
+    // Neighbour sets on the welded graph.
+    let mut neighbours: Vec<Vec<u32>> = vec![Vec::new(); groups];
     for tri in mesh.indices.chunks_exact(3) {
         for k in 0..3 {
-            let a = tri[k];
-            let b = tri[(k + 1) % 3];
-            if !neighbours[a as usize].contains(&b) {
-                neighbours[a as usize].push(b);
-            }
-            if !neighbours[b as usize].contains(&a) {
-                neighbours[b as usize].push(a);
+            let a = canon[tri[k] as usize];
+            let b = canon[tri[(k + 1) % 3] as usize];
+            if a != b {
+                if !neighbours[a as usize].contains(&b) {
+                    neighbours[a as usize].push(b);
+                }
+                if !neighbours[b as usize].contains(&a) {
+                    neighbours[b as usize].push(a);
+                }
             }
         }
     }
     for _ in 0..iterations {
-        let snapshot = mesh.positions.clone();
-        for (i, nbrs) in neighbours.iter().enumerate() {
+        // Current welded positions (all members of a group share one).
+        let mut cur = vec![Vec3::ZERO; groups];
+        for (i, &c) in canon.iter().enumerate() {
+            cur[c as usize] = Vec3::from_array(mesh.positions[i]);
+        }
+        let mut next = cur.clone();
+        for (g, nbrs) in neighbours.iter().enumerate() {
             if nbrs.is_empty() {
                 continue;
             }
             let mut avg = Vec3::ZERO;
             for &j in nbrs {
-                avg += Vec3::from_array(snapshot[j as usize]);
+                avg += cur[j as usize];
             }
             avg /= nbrs.len() as f32;
-            let cur = Vec3::from_array(snapshot[i]);
-            mesh.positions[i] = cur.lerp(avg, factor).to_array();
+            next[g] = cur[g].lerp(avg, factor);
+        }
+        // Write the welded result back to every member (keeps seams shut).
+        for (i, &c) in canon.iter().enumerate() {
+            mesh.positions[i] = next[c as usize].to_array();
         }
     }
 }
@@ -502,6 +531,42 @@ fn array(mesh: &mut MeshData, count: u32, offset: [f32; 3]) {
 }
 
 // ───────────────────────── helpers ─────────────────────────
+
+/// Quantize positions and assign each vertex a **canonical weld index** so that
+/// coincident-but-split vertices (UV-sphere seams/poles, per-face box corners)
+/// share one node. Used by weld-sensitive deformers (`roughen`, `smooth`) to
+/// keep the surface closed.
+fn weld_indices(positions: &[[f32; 3]]) -> Vec<u32> {
+    const Q: f32 = 1e4;
+    let key = |p: &[f32; 3]| {
+        (
+            (p[0] * Q).round() as i64,
+            (p[1] * Q).round() as i64,
+            (p[2] * Q).round() as i64,
+        )
+    };
+    let mut map: HashMap<(i64, i64, i64), u32> = HashMap::new();
+    positions
+        .iter()
+        .map(|p| {
+            let next = map.len() as u32;
+            *map.entry(key(p)).or_insert(next)
+        })
+        .collect()
+}
+
+/// A deterministic hash of a quantized position + seed → `u32`. Coincident
+/// positions hash identically (so welded vertices get identical jitter).
+fn pos_hash(p: &[f32; 3], seed: u32) -> u32 {
+    let q = |v: f32| (v * 1024.0).round() as i32 as u32;
+    let mut h = seed.wrapping_mul(0x9E37_79B9).wrapping_add(0x1234_5678);
+    for v in [p[0], p[1], p[2]] {
+        h ^= q(v);
+        h = h.wrapping_mul(0x85EB_CA6B);
+        h ^= h >> 13;
+    }
+    h
+}
 
 fn other_axes(a: usize) -> (usize, usize) {
     match a {
@@ -671,6 +736,59 @@ mod tests {
         let mut bad = with_normals();
         displace(&mut bad, "1 +"); // malformed → no-op
         assert_eq!(bad.positions, before.positions);
+    }
+
+    #[test]
+    fn roughen_keeps_the_surface_welded() {
+        // Regression: index-keyed jitter split coincident corner vertices →
+        // holes. A box stays watertight (welded) after roughen, and it moved.
+        use crate::stats::mesh_stats;
+        let mut m = cube();
+        m.compute_vertex_normals();
+        let before = m.positions.clone();
+        roughen(&mut m, 0.1, 7);
+        assert!(
+            mesh_stats(&m).watertight,
+            "roughen split coincident vertices (holes)"
+        );
+        assert!(m.positions != before, "roughen did nothing");
+    }
+
+    #[test]
+    fn smooth_keeps_the_surface_welded() {
+        use crate::stats::mesh_stats;
+        let mut m = cube();
+        smooth(&mut m, 3, 0.5);
+        assert!(
+            mesh_stats(&m).watertight,
+            "smooth split coincident vertices (holes)"
+        );
+    }
+
+    #[test]
+    fn roughen_is_weld_consistent_on_a_sphere_seam() {
+        // Coincident vertices (sphere seam/poles) must receive identical offsets.
+        use crate::primitives::sphere_mesh;
+        let mut m = sphere_mesh(1.0, 24, 16);
+        m.compute_vertex_normals();
+        let canon = weld_indices(&m.positions);
+        roughen(&mut m, 0.08, 3);
+        // After roughen, vertices that were coincident are still coincident.
+        let mut group_pos: std::collections::HashMap<u32, [f32; 3]> =
+            std::collections::HashMap::new();
+        for (i, &c) in canon.iter().enumerate() {
+            let p = m.positions[i];
+            if let Some(prev) = group_pos.get(&c) {
+                for k in 0..3 {
+                    assert!(
+                        (prev[k] - p[k]).abs() < 1e-4,
+                        "coincident vertices drifted apart under roughen"
+                    );
+                }
+            } else {
+                group_pos.insert(c, p);
+            }
+        }
     }
 
     #[test]
