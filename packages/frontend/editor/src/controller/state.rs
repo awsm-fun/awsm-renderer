@@ -2743,7 +2743,12 @@ impl EditorController {
                 }
             }
             EditorQuery::ExportGlb { node } => {
-                match crate::controller::export::export_glb(&self.scene, node) {
+                // Whole-scene export includes animations; single-node does not.
+                let result = match node {
+                    Some(id) => crate::controller::export::export_glb(&self.scene, Some(id)),
+                    None => crate::controller::export::export_scene_glb(self),
+                };
+                match result {
                     Ok(bytes) => {
                         use base64::Engine;
                         QueryResult::Text(base64::engine::general_purpose::STANDARD.encode(bytes))
@@ -2753,8 +2758,8 @@ impl EditorController {
             }
             EditorQuery::ExportPlayerBundle { name } => {
                 use serde_json::json;
-                // scene.glb — whole scene baked (reuses the GLB exporter).
-                let scene_glb = match crate::controller::export::export_glb(&self.scene, None) {
+                // scene.glb — whole scene baked, incl. animations (GLB exporter).
+                let scene_glb = match crate::controller::export::export_scene_glb(self) {
                     Ok(bytes) => {
                         use base64::Engine;
                         base64::engine::general_purpose::STANDARD.encode(bytes)

@@ -161,6 +161,41 @@ fn referenced_texture_is_embedded() {
 }
 
 #[test]
+fn animation_channel_roundtrips() {
+    use awsm_glb_export::{AnimInterp, AnimPath, ExportAnimChannel, ExportAnimation};
+    // One node + a rotation track (two quaternion keyframes at t=0,1).
+    let scene = GlbScene {
+        nodes: vec![ExportNode::new("Spinner")],
+        animations: vec![ExportAnimation {
+            name: "spin".into(),
+            channels: vec![ExportAnimChannel {
+                node_index: 0,
+                path: AnimPath::Rotation,
+                interpolation: AnimInterp::Linear,
+                times: vec![0.0, 1.0],
+                values: vec![0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0],
+            }],
+        }],
+        ..Default::default()
+    };
+    let glb = write_glb(&scene);
+    let (doc, buffers, _i) = gltf::import_slice(&glb).expect("re-parse GLB");
+    let anim = doc.animations().next().expect("one animation");
+    let ch = anim.channels().next().expect("one channel");
+    assert_eq!(ch.target().property(), gltf::animation::Property::Rotation);
+    assert_eq!(ch.target().node().index(), 0);
+    let reader = ch.reader(|b| Some(&buffers[b.index()]));
+    let inputs: Vec<f32> = reader.read_inputs().expect("inputs").collect();
+    assert_eq!(inputs, vec![0.0, 1.0]);
+    match reader.read_outputs().expect("outputs") {
+        gltf::animation::util::ReadOutputs::Rotations(rot) => {
+            assert_eq!(rot.into_f32().count(), 2);
+        }
+        _ => panic!("expected rotation outputs"),
+    }
+}
+
+#[test]
 fn scene_complete_light_node() {
     // Phase 6 reuse smoke test: a light-only node lowers to KHR_lights_punctual
     // even with no geometry (empty BIN ⇒ no buffer, still valid JSON).

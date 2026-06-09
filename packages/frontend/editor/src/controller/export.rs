@@ -20,10 +20,13 @@
 //!   blob (`GltfLoader::load`), which is browser-only; Model subtrees export as
 //!   empty transform nodes for now.
 
+use std::collections::HashMap;
+
 use awsm_glb_export::{
-    write_glb, AlphaMode, ExportCamera, ExportLight, ExportMaterial, ExportNode, GlbScene,
-    MeshData, PbrMaterial, Trs, UnlitMaterial,
+    write_glb, AlphaMode, AnimInterp, AnimPath, ExportAnimChannel, ExportAnimation, ExportCamera,
+    ExportLight, ExportMaterial, ExportNode, GlbScene, MeshData, PbrMaterial, Trs, UnlitMaterial,
 };
+use awsm_scene_schema::animation::{TrackTarget, TrackValue, TransformProp};
 use awsm_scene_schema::{
     AssetSource, CameraConfig, CameraProjection, CrossSectionDef, CustomMaterialInstance,
     LightConfig, MaterialAlphaMode, MaterialDef, MaterialRef, MaterialShading, NodeId, NodeKind,
@@ -33,7 +36,114 @@ use awsm_scene_schema::{
 use crate::engine::bridge::{mesh_cache, node_sync};
 use crate::engine::scene::{mutate, node::Node, Scene};
 
+/// Bake the whole scene **including animations** (clips lowered to glTF TRS
+/// channels) — the path behind `ExportGlb { node: None }` and the player bundle.
+pub fn export_scene_glb(ctrl: &super::EditorController) -> Result<Vec<u8>, String> {
+    let scene = &ctrl.scene;
+    let nodes: Vec<ExportNode> = scene
+        .nodes
+        .lock_ref()
+        .iter()
+        .map(|n| node_to_export(scene, n))
+        .collect();
+    let index_map = build_index_map(scene);
+    let clips: Vec<_> = ctrl.custom_animations.lock_ref().iter().cloned().collect();
+    let animations = lower_clips(&clips, &index_map);
+    let glb = GlbScene {
+        nodes,
+        animations,
+        ..Default::default()
+    };
+    Ok(write_glb(&glb))
+}
+
+/// `node.id → depth-first index`, matching `write_glb`'s node flattening (so
+/// animation channels reference the right glTF node).
+fn build_index_map(scene: &Scene) -> HashMap<NodeId, usize> {
+    fn walk(nodes: &[std::sync::Arc<Node>], map: &mut HashMap<NodeId, usize>, next: &mut usize) {
+        for n in nodes {
+            map.insert(n.id, *next);
+            *next += 1;
+            walk(&n.children.lock_ref(), map, next);
+        }
+    }
+    let mut map = HashMap::new();
+    let mut next = 0;
+    walk(&scene.nodes.lock_ref(), &mut map, &mut next);
+    map
+}
+
+/// Lower editor clips → glTF TRS animations. First cut: **Transform** tracks
+/// only (translation/rotation/scale); morph-weight, material-uniform, light, and
+/// camera tracks need `KHR_animation_pointer`/morph wiring (follow-on). Cubic
+/// tracks are emitted as Linear (glTF CubicSpline needs in/out tangents).
+fn lower_clips(
+    clips: &[std::sync::Arc<crate::controller::animation::CustomAnimation>],
+    index_map: &HashMap<NodeId, usize>,
+) -> Vec<ExportAnimation> {
+    use awsm_scene_schema::animation::SamplerKind;
+    let mut out = Vec::new();
+    for clip in clips {
+        let mut channels = Vec::new();
+        for track in clip.tracks.lock_ref().iter() {
+            let TrackTarget::Transform { node, prop } = &track.target else {
+                continue; // non-TRS targets: follow-on
+            };
+            let Some(&node_index) = index_map.get(node) else {
+                continue;
+            };
+            let times: Vec<f32> = track.times.get_cloned().iter().map(|t| *t as f32).collect();
+            let keys = track.keys.get_cloned();
+            if times.is_empty() || keys.len() != times.len() {
+                continue;
+            }
+            let path = match prop {
+                TransformProp::Translation => AnimPath::Translation,
+                TransformProp::Rotation => AnimPath::Rotation,
+                TransformProp::Scale => AnimPath::Scale,
+            };
+            let mut values = Vec::new();
+            let mut ok = true;
+            for k in &keys {
+                match (prop, &k.value) {
+                    (TransformProp::Translation | TransformProp::Scale, TrackValue::Vec3(v)) => {
+                        values.extend_from_slice(v)
+                    }
+                    (TransformProp::Rotation, TrackValue::Quat(q)) => values.extend_from_slice(q),
+                    _ => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if !ok {
+                continue;
+            }
+            let interpolation = match track.sampler.get() {
+                SamplerKind::Step => AnimInterp::Step,
+                SamplerKind::Linear | SamplerKind::Cubic => AnimInterp::Linear,
+            };
+            channels.push(ExportAnimChannel {
+                node_index,
+                path,
+                interpolation,
+                times,
+                values,
+            });
+        }
+        if !channels.is_empty() {
+            out.push(ExportAnimation {
+                name: clip.name.get_cloned(),
+                channels,
+            });
+        }
+    }
+    out
+}
+
 /// Bake `node` (or the whole scene when `None`) to a binary glTF byte vector.
+/// Single-node export carries no animations (channels are scene-flat-indexed);
+/// use [`export_scene_glb`] for the whole scene with animations.
 pub fn export_glb(scene: &Scene, node: Option<NodeId>) -> Result<Vec<u8>, String> {
     let nodes = match node {
         Some(id) => {
