@@ -55,6 +55,19 @@ pub struct SlotSpec {
     pub debug: String,
 }
 
+/// Which texture slot of a built-in/inline `MaterialDef` a `SetBuiltinTexture`
+/// targets (mirrors the glTF PBR texture set).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub enum BuiltinTextureSlot {
+    BaseColor,
+    MetallicRoughness,
+    Normal,
+    Occlusion,
+    Emissive,
+}
+
 /// A world axis to snap the viewport camera to (the nav-cube directions). The
 /// camera ends up on that axis looking back at the orbit target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -341,6 +354,16 @@ pub enum EditorCommand {
     /// recipe (the deliberate heavy snapshot). Inverse:
     /// `Batch[SetMeshModifiers(prior), SetMeshData(prior_bytes)]`.
     CollapseMeshStack { mesh: AssetId },
+
+    /// Bind (or clear) a texture on a mesh node's **built-in/inline** material
+    /// slot — the counterpart of `SetMaterialTexture` (which targets custom-WGSL
+    /// materials). `texture: None` clears the slot. Inverse: restore the node's
+    /// prior kind.
+    SetBuiltinTexture {
+        node: NodeId,
+        slot: BuiltinTextureSlot,
+        texture: Option<AssetId>,
+    },
 
     // ─────────────────── Custom (dynamic-WGSL) material authoring ─────────────
     // The Studio surface that used to mutate the reactive `CustomMaterial`
@@ -758,6 +781,7 @@ impl EditorCommand {
             EditorCommand::SetVertexPositions { .. } => "Move vertices",
             EditorCommand::SoftTransformVertices { .. } => "Soft-transform vertices",
             EditorCommand::CollapseMeshStack { .. } => "Collapse mesh stack",
+            EditorCommand::SetBuiltinTexture { .. } => "Bind texture",
             EditorCommand::SetCustomMaterialAlphaMode { .. } => "Set alpha mode",
             EditorCommand::SetCustomMaterialDoubleSided { .. } => "Set double-sided",
             EditorCommand::SetCustomMaterialDebugColor { .. } => "Set base color",

@@ -21,7 +21,8 @@ mod transport;
 
 pub use anim_ui::{AnimSel, AnimView, StepKind};
 pub use command::{
-    CameraAxis, CustomAlphaMode, EditorCommand, EditorMode, ProceduralKind, SlotSpec,
+    BuiltinTextureSlot, CameraAxis, CustomAlphaMode, EditorCommand, EditorMode, ProceduralKind,
+    SlotSpec,
 };
 pub use node_spec::{kind_tag, InsertSpec, NodeQuery, NodeSpec};
 pub use query::{

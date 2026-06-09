@@ -1288,6 +1288,26 @@ impl EditorController {
                     None => Ok(None),
                 }
             }
+            EditorCommand::SetBuiltinTexture {
+                node,
+                slot,
+                texture,
+            } => match mutate::find_by_id(&self.scene, node) {
+                Some(n) => {
+                    let prev = n.kind.get_cloned();
+                    let mut next = prev.clone();
+                    if !patch_builtin_texture(&mut next, slot, texture) {
+                        return Ok(None);
+                    }
+                    n.kind.set(next);
+                    self.scene.bump_revision();
+                    Ok(Some(EditorCommand::SetKind {
+                        id: node,
+                        kind: Box::new(prev),
+                    }))
+                }
+                None => Ok(None),
+            },
             EditorCommand::SetLightParam { node, param, value } => {
                 match mutate::find_by_id(&self.scene, node) {
                     Some(n) => {
@@ -3543,6 +3563,43 @@ fn patch_builtin_param(
             Some(&v) => inline.roughness = v,
             None => return false,
         },
+    }
+    true
+}
+
+/// Bind (or clear) a texture on a node's **built-in/inline** `MaterialDef` slot.
+/// Returns false if the node has no inline material.
+fn patch_builtin_texture(
+    kind: &mut NodeKind,
+    slot: awsm_editor_protocol::BuiltinTextureSlot,
+    texture: Option<AssetId>,
+) -> bool {
+    use awsm_editor_protocol::BuiltinTextureSlot as S;
+    let inline = match kind {
+        NodeKind::Primitive {
+            inline_material, ..
+        }
+        | NodeKind::Mesh {
+            inline_material, ..
+        }
+        | NodeKind::SweepAlongCurve {
+            inline_material, ..
+        } => inline_material,
+        NodeKind::Model(r) => &mut r.inline_material,
+        _ => return false,
+    };
+    let tref = texture.map(|asset| awsm_scene_schema::TextureRef {
+        asset,
+        uv_index: 0,
+        transform: None,
+        sampler: None,
+    });
+    match slot {
+        S::BaseColor => inline.base_color_texture = tref,
+        S::MetallicRoughness => inline.metallic_roughness_texture = tref,
+        S::Normal => inline.normal_texture = tref,
+        S::Occlusion => inline.occlusion_texture = tref,
+        S::Emissive => inline.emissive_texture = tref,
     }
     true
 }

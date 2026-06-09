@@ -383,6 +383,17 @@ pub struct BuiltinParamParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct BuiltinTextureParams {
+    /// Mesh node UUID.
+    pub node: String,
+    /// Which built-in PBR slot to bind.
+    pub slot: awsm_editor_protocol::BuiltinTextureSlot,
+    /// Texture asset UUID to bind, or omit/null to clear the slot.
+    #[serde(default)]
+    pub texture: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ProceduralArg {
     Checker,
@@ -1604,6 +1615,21 @@ impl EditorMcp {
             node: parse_node(&p.node)?,
             param,
             value: p.value,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Bind a texture asset onto a mesh node's BUILT-IN (inline PBR) material slot: base_color | metallic_roughness | normal | occlusion | emissive. Omit `texture` to clear. Create textures with import_texture_from_url (raster) or add_texture_asset (procedural). (set_material_texture is the custom-WGSL-material counterpart.)"
+    )]
+    async fn set_node_texture(
+        &self,
+        Parameters(p): Parameters<BuiltinTextureParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetBuiltinTexture {
+            node: parse_node(&p.node)?,
+            slot: p.slot,
+            texture: parse_asset_opt(&p.texture)?,
         })
         .await
     }
