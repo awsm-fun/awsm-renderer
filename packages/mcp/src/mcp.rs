@@ -129,7 +129,7 @@ pub struct SelectVerticesParams {
     /// UUID of the geometry node.
     pub node: String,
     /// Strongly-typed selection predicate (the schema lists every `kind`).
-    pub predicate: awsm_editor_protocol::VertexPredicate,
+    pub predicate: Flexible<awsm_editor_protocol::VertexPredicate>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -170,7 +170,7 @@ pub struct SetMeshModifiersParams {
     pub mesh: String,
     /// Strongly-typed modifier stack (the schema lists every base + modifier).
     /// See the `awsm://docs/mesh-tools` resource for worked examples.
-    pub stack: awsm_scene_schema::modifier::ModifierStack,
+    pub stack: Flexible<awsm_scene_schema::modifier::ModifierStack>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -1269,7 +1269,7 @@ impl EditorMcp {
         })?);
         self.dispatch(EditorCommand::SetMeshModifiers {
             mesh,
-            stack: p.stack,
+            stack: p.stack.0,
         })
         .await
     }
@@ -1327,7 +1327,7 @@ impl EditorMcp {
     ) -> Result<CallToolResult, McpError> {
         self.query(EditorQuery::SelectVerticesWhere {
             node: parse_node(&p.node)?,
-            predicate: p.predicate,
+            predicate: p.predicate.0,
         })
         .await
     }
@@ -2399,9 +2399,41 @@ fn parse_asset_opt(s: &Option<String>) -> Result<Option<AssetId>, McpError> {
     s.as_deref().map(parse_asset).transpose()
 }
 
+/// A tool argument that is **strongly typed** (its JSON Schema is `T`'s, so
+/// clients see the exact shape) yet tolerant of clients that deliver a nested
+/// object as a JSON *string* — it deserializes from either form. The best of
+/// both: typed/self-documenting AND robust.
+#[derive(Debug, Clone)]
+pub struct Flexible<T>(pub T);
+
+impl<'de, T: serde::de::DeserializeOwned> serde::Deserialize<'de> for Flexible<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let inner = match serde_json::Value::deserialize(d)? {
+            serde_json::Value::String(s) => serde_json::from_str(&s).map_err(Error::custom)?,
+            other => serde_json::from_value(other).map_err(Error::custom)?,
+        };
+        Ok(Flexible(inner))
+    }
+}
+
+// Schema is exactly `T`'s — clients that respect schemas send a structured object.
+impl<T: schemars::JsonSchema> schemars::JsonSchema for Flexible<T> {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        T::schema_name()
+    }
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        T::schema_id()
+    }
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        T::json_schema(generator)
+    }
+}
+
 /// Deserialize a free-form JSON tool argument into `T`. Some MCP clients deliver
 /// an untyped (schema-less) object argument as a JSON *string* rather than a
-/// nested object; accept both by re-parsing a string first.
+/// nested object; accept both by re-parsing a string first. (For typed args
+/// prefer [`Flexible<T>`], which also publishes the schema.)
 fn json_arg<T: serde::de::DeserializeOwned>(
     v: serde_json::Value,
     what: &str,
