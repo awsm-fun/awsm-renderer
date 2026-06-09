@@ -6,6 +6,17 @@ Branch: `mesh-authoring`. Native gates used each commit: `task lint` (fmt + clip
 
 Legend: ✅ done & gated · 🟡 implemented, needs in-browser verification · ⬜ not started.
 
+## Finish-line tracker (A → B → C)
+- **Group A — pure code (done, all lint+native-gated):** Phase 6 animation
+  lowering (TRS clips → glTF channels, writer natively tested); `AWSM_materials_none`
+  import recognition in renderer-gltf; `SetMeshModifiers`/`SoftTransformVertices`
+  per-mesh undo coalescing.
+- **Group B — needs a live editor tab (next):** all browser/MCP checklists below
+  + GLB texture-byte embedding (async ProjectDir reads) + transient
+  `SetVertexSelection` highlight rendering. **Unblock:** `task mcp-dev`, open
+  `http://localhost:9085/?mcp=http://127.0.0.1:9086` in Chrome.
+- **Group C — separate repo:** the game-player bundle loader.
+
 ## Summary (where we are)
 Phases **1–4** have their natively-testable cores **done + tested** and their
 command/query/MCP surfaces **wired + lint-gated**, plus the LLM perceive→act
