@@ -54,9 +54,38 @@ in chat; the split's runtime/authoring line is defined by the unification).
   protocol round-trips) + editor wasm + `trunk build` + in-browser MCP smoke
   (insert + modifier-stack eval through the new crates renders). Bitcode-compat
   risk dropped (pre-1.0, re-bake).
-- ⬜ Step 6 (bundle = awsm-scene dir + the `project_dir.rs` scene.toml writer) —
-  now unblocked; the runtime `Scene` + `RuntimeMesh` exist, needs the bake
-  (EditorProject → Scene, collapse stacks to blobs) + dir writer.
+- ⬜ Step 6 (bundle = awsm-scene dir). **DIRECTION REVISED (locked w/ user) — see
+  "Bundle: glb mesh assets" below.** The runtime `Scene` exists; `RuntimeMesh`
+  pivots to `Primitive | Glb` (NOT the custom `MeshBlob` blob), needs the
+  exporter skin/morph work + the bake + scene.toml writer.
+
+### Bundle: glb mesh assets (revised from "our MeshBlob", locked with user)
+We do NOT hand-roll a runtime mesh-bytes format. Reinventing vertex packing /
+quantization / Draco / **skins + morph targets** (which glTF expresses natively)
+is wasted effort. So:
+- **Mesh geometry = glb.** `RuntimeMesh = Primitive(params) | Glb(asset_id)` →
+  `assets/<id>.glb`. `MeshBlob` is retired as the runtime format (it was unused
+  scaffolding; the named-attribute idea survives via glTF `COLOR_n`/`_`-attrs).
+- The glb is **geometry + skin-rig + morph-targets ONLY** — NO materials, NO
+  animations, NO cameras. Materials are ours (scene.toml, player-applied);
+  animations are ours (NLA mixer, targets outside the mesh: lights + custom-
+  material uniforms — strictly richer than glTF animation). Even skin/morph
+  *animation* is our clips (joint-node TRS + morph-weight tracks); the glb is the
+  rig+geometry, our clips drive it.
+- **Bake = re-export EVERYTHING through our glb writer** (decision: not a
+  source-copy/prune). Why: uniform Draco later; no sparse-accessor/unused cruft;
+  we control packing; and round-tripping wild glbs through our writer is free
+  test coverage. Edited meshes (always static, per the XOR rule) feed our
+  geometry; unedited imports feed geometry+skin+morph parsed from the source glb.
+- **Player** loads each glb (geometry+skin+morph rig via its glTF loader — needed
+  for all meshes, so skinned adds no extra bloat), binds OUR materials per node,
+  drives everything with OUR clips.
+- Keystone work: **extend `awsm-glb-export` to emit skin (JOINTS/WEIGHTS, skins/
+  inverse-bind/skeleton) + morph targets**; then source-glb→IR + editor save/load
+  skin reconstruction; then the bake + `project_dir.rs` scene.toml writer.
+- Deferred (designed-for, not built): MCP add/edit/remove skins/morphs (editing
+  skinned meshes breaks editable-XOR-skinned today; glb round-trips skin/morph so
+  it's not precluded); arbitrary `_`-attr → GPU wiring (COLOR_0 already wired).
 
 This plan unifies how geometry is represented, edited, persisted, and exported,
 and splits the schema into a lean runtime crate and an authoring crate. It folds
