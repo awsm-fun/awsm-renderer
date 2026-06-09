@@ -11,40 +11,48 @@
 //! - custom-WGSL or **Toon** → `AWSM_materials_none` (no embedded material; the
 //!   scene/player re-binds the real material on import via the carried id).
 //!
-//! ## Known gaps (tracked in docs/plans/mesh-editing-STATUS.md, verified in-browser)
-//! - **Textures**: emitted referenced-only, but reading the raster bytes off
-//!   `ProjectDir` is async/browser-only, so texture *factors* export today and the
-//!   image pool is left empty. The lightweighting use-case (reassign a no-texture
-//!   PBR) already works.
+//! ## Textures (referenced-only)
+//! Export embeds exactly the images the *assigned* materials reference: procedural
+//! textures are regenerated + PNG-encoded on the spot; raster textures are read
+//! back from the GPU (`texture_png_bytes`). Unreferenced textures are never
+//! carried — so reassigning a lighter material drops the heavy ones with no flag.
+//! Raster textures not yet uploaded to the GPU are skipped (the material keeps its
+//! factors). This is why export is **async**.
+//!
+//! ## Known gap
 //! - **Model nodes**: exporting an imported glTF requires re-reading its source
-//!   blob (`GltfLoader::load`), which is browser-only; Model subtrees export as
-//!   empty transform nodes for now.
+//!   blob (`GltfLoader::load`); Model subtrees export as empty transform nodes.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use awsm_glb_export::{
     write_glb, AlphaMode, AnimInterp, AnimPath, ExportAnimChannel, ExportAnimation, ExportCamera,
-    ExportLight, ExportMaterial, ExportNode, GlbScene, MeshData, PbrMaterial, Trs, UnlitMaterial,
+    ExportImage, ExportLight, ExportMaterial, ExportNode, GlbScene, ImageMime, MeshData,
+    PbrMaterial, TexRef, Trs, UnlitMaterial,
 };
 use awsm_scene_schema::animation::{TrackTarget, TrackValue, TransformProp};
 use awsm_scene_schema::{
-    AssetSource, CameraConfig, CameraProjection, CrossSectionDef, CustomMaterialInstance,
+    AssetId, AssetSource, CameraConfig, CameraProjection, CrossSectionDef, CustomMaterialInstance,
     LightConfig, MaterialAlphaMode, MaterialDef, MaterialRef, MaterialShading, NodeId, NodeKind,
-    SweepAlongCurveDef, SweepUvMode,
+    SweepAlongCurveDef, SweepUvMode, TextureDef, TextureRef,
 };
 
-use crate::engine::bridge::{mesh_cache, node_sync};
+use crate::engine::bridge::{material as bridge_material, mesh_cache, node_sync};
 use crate::engine::scene::{mutate, node::Node, Scene};
+
+/// Maps a referenced texture asset → its index in `GlbScene::images`.
+type TexIndex = HashMap<AssetId, usize>;
 
 /// Bake the whole scene **including animations** (clips lowered to glTF TRS
 /// channels) — the path behind `ExportGlb { node: None }` and the player bundle.
-pub fn export_scene_glb(ctrl: &super::EditorController) -> Result<Vec<u8>, String> {
+pub async fn export_scene_glb(ctrl: &super::EditorController) -> Result<Vec<u8>, String> {
     let scene = &ctrl.scene;
-    let nodes: Vec<ExportNode> = scene
-        .nodes
-        .lock_ref()
+    let roots: Vec<Arc<Node>> = scene.nodes.lock_ref().iter().cloned().collect();
+    let (images, tex_index) = resolve_images(scene, &roots).await;
+    let nodes: Vec<ExportNode> = roots
         .iter()
-        .map(|n| node_to_export(scene, n))
+        .map(|n| node_to_export(scene, n, &tex_index))
         .collect();
     let index_map = build_index_map(scene);
     let clips: Vec<_> = ctrl.custom_animations.lock_ref().iter().cloned().collect();
@@ -52,6 +60,7 @@ pub fn export_scene_glb(ctrl: &super::EditorController) -> Result<Vec<u8>, Strin
     let glb = GlbScene {
         nodes,
         animations,
+        images,
         ..Default::default()
     };
     Ok(write_glb(&glb))
@@ -144,27 +153,132 @@ fn lower_clips(
 /// Bake `node` (or the whole scene when `None`) to a binary glTF byte vector.
 /// Single-node export carries no animations (channels are scene-flat-indexed);
 /// use [`export_scene_glb`] for the whole scene with animations.
-pub fn export_glb(scene: &Scene, node: Option<NodeId>) -> Result<Vec<u8>, String> {
-    let nodes = match node {
-        Some(id) => {
-            let n = mutate::find_by_id(scene, id).ok_or_else(|| format!("no node {id}"))?;
-            vec![node_to_export(scene, &n)]
-        }
-        None => scene
-            .nodes
-            .lock_ref()
-            .iter()
-            .map(|n| node_to_export(scene, n))
-            .collect(),
+pub async fn export_glb(scene: &Scene, node: Option<NodeId>) -> Result<Vec<u8>, String> {
+    let roots: Vec<Arc<Node>> = match node {
+        Some(id) => vec![mutate::find_by_id(scene, id).ok_or_else(|| format!("no node {id}"))?],
+        None => scene.nodes.lock_ref().iter().cloned().collect(),
     };
+    let (images, tex_index) = resolve_images(scene, &roots).await;
+    let nodes: Vec<ExportNode> = roots
+        .iter()
+        .map(|n| node_to_export(scene, n, &tex_index))
+        .collect();
     let glb = GlbScene {
         nodes,
+        images,
         ..Default::default()
     };
     Ok(write_glb(&glb))
 }
 
-fn node_to_export(scene: &Scene, node: &Node) -> ExportNode {
+/// Resolve every texture referenced by the exported subtree(s) to embedded PNG
+/// images (referenced-only): procedural textures are regenerated + encoded;
+/// raster textures are read back from the GPU. Returns the image pool + an
+/// `AssetId → image index` map. Textures that can't be resolved (e.g. a raster
+/// not yet uploaded) are skipped.
+async fn resolve_images(scene: &Scene, roots: &[Arc<Node>]) -> (Vec<ExportImage>, TexIndex) {
+    let mut ids: Vec<AssetId> = Vec::new();
+    let mut seen: HashSet<AssetId> = HashSet::new();
+    for n in roots {
+        collect_texture_assets(scene, n, &mut ids, &mut seen);
+    }
+    let mut images = Vec::new();
+    let mut index = TexIndex::new();
+    for id in ids {
+        if let Some((name, bytes)) = resolve_one_texture(scene, id).await {
+            index.insert(id, images.len());
+            images.push(ExportImage {
+                name,
+                bytes,
+                mime: ImageMime::Png,
+            });
+        }
+    }
+    (images, index)
+}
+
+/// Walk a subtree collecting the (unique, ordered) texture asset ids that the
+/// nodes' effective materials reference.
+fn collect_texture_assets(
+    scene: &Scene,
+    node: &Node,
+    ids: &mut Vec<AssetId>,
+    seen: &mut HashSet<AssetId>,
+) {
+    let kind = node.kind.get_cloned();
+    if let Some((material, inline_material, custom_material)) = material_slots(&kind) {
+        // Custom-WGSL materials export as AWSM_materials_none (no glTF textures).
+        if custom_material.is_none() {
+            if let Some(def) = effective_material_def(scene, material, inline_material) {
+                for t in material_texture_refs(&def) {
+                    if seen.insert(t.asset) {
+                        ids.push(t.asset);
+                    }
+                }
+            }
+        }
+    }
+    for c in node.children.lock_ref().iter() {
+        collect_texture_assets(scene, c, ids, seen);
+    }
+}
+
+/// The texture refs a PBR/Unlit `MaterialDef` carries (the five glTF slots).
+fn material_texture_refs(def: &MaterialDef) -> Vec<TextureRef> {
+    [
+        &def.base_color_texture,
+        &def.metallic_roughness_texture,
+        &def.normal_texture,
+        &def.occlusion_texture,
+        &def.emissive_texture,
+    ]
+    .into_iter()
+    .flatten()
+    .cloned()
+    .collect()
+}
+
+/// Resolve one texture asset to `(name, png_bytes)`. Procedural → regenerate +
+/// encode (sync); raster → GPU readback (async). `None` if missing/unavailable.
+async fn resolve_one_texture(scene: &Scene, id: AssetId) -> Option<(String, Vec<u8>)> {
+    let def = {
+        let assets = scene.assets.lock().unwrap();
+        match assets.get(id).map(|e| &e.source) {
+            Some(AssetSource::Texture(d)) => d.clone(),
+            _ => return None,
+        }
+    };
+    match def {
+        TextureDef::Procedural(p) => {
+            let (rgba, w, h) = bridge_material::procedural_rgba(&p);
+            rgba_to_png(&rgba, w, h).map(|png| (format!("texture-{id}"), png))
+        }
+        TextureDef::Raster { display_name } => {
+            // Only available once uploaded to the GPU (assign the material / its
+            // model first). Skipped otherwise — referenced-only.
+            let key = bridge_material::texture_key_for(id)?;
+            let handle = crate::engine::context::renderer_handle();
+            let r = handle.lock().await;
+            let png = r.texture_png_bytes(key).await.ok()?;
+            Some((display_name, png))
+        }
+    }
+}
+
+/// Encode tightly-packed RGBA8 to PNG bytes (via the `image` crate).
+fn rgba_to_png(rgba: &[u8], w: u32, h: u32) -> Option<Vec<u8>> {
+    let img = image::RgbaImage::from_raw(w, h, rgba.to_vec())?;
+    let mut bytes = Vec::new();
+    image::DynamicImage::ImageRgba8(img)
+        .write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .ok()?;
+    Some(bytes)
+}
+
+fn node_to_export(scene: &Scene, node: &Node, tex_index: &TexIndex) -> ExportNode {
     let trs = node.transform.get();
     let mut out = ExportNode {
         name: node.name.get_cloned(),
@@ -185,6 +299,7 @@ fn node_to_export(scene: &Scene, node: &Node) -> ExportNode {
                 material,
                 inline_material,
                 custom_material,
+                tex_index,
             ));
         }
     }
@@ -200,7 +315,7 @@ fn node_to_export(scene: &Scene, node: &Node) -> ExportNode {
         .children
         .lock_ref()
         .iter()
-        .map(|c| node_to_export(scene, c))
+        .map(|c| node_to_export(scene, c, tex_index))
         .collect();
     out
 }
@@ -256,12 +371,30 @@ fn material_slots(
     }
 }
 
+/// The effective `MaterialDef` for a geometry node: the assigned library material
+/// asset if present + resolvable, else the inline material.
+fn effective_material_def(
+    scene: &Scene,
+    material: &Option<MaterialRef>,
+    inline: &MaterialDef,
+) -> Option<MaterialDef> {
+    let assigned = material.as_ref().and_then(|r| {
+        let assets = scene.assets.lock().unwrap();
+        match assets.get(r.0).map(|e| &e.source) {
+            Some(AssetSource::Material(def)) => Some(def.clone()),
+            _ => None,
+        }
+    });
+    Some(assigned.unwrap_or_else(|| inline.clone()))
+}
+
 /// Resolve a node's effective material to the export representation.
 fn map_material(
     scene: &Scene,
     material: &Option<MaterialRef>,
     inline: &MaterialDef,
     custom: &Option<CustomMaterialInstance>,
+    tex_index: &TexIndex,
 ) -> ExportMaterial {
     // A custom-WGSL material is not glTF-representable → none + carried id.
     if let Some(inst) = custom {
@@ -269,21 +402,26 @@ fn map_material(
             id: Some(inst.material.to_string()),
         };
     }
-    // Prefer an assigned library MaterialDef asset; fall back to the inline one.
-    let assigned = material
-        .as_ref()
-        .and_then(|r| {
-            let assets = scene.assets.lock().unwrap();
-            match assets.get(r.0).map(|e| &e.source) {
-                Some(AssetSource::Material(def)) => Some(def.clone()),
-                _ => None,
-            }
-        })
-        .unwrap_or_else(|| inline.clone());
-    map_material_def(&assigned, material.as_ref())
+    let def = effective_material_def(scene, material, inline).unwrap_or_else(|| inline.clone());
+    map_material_def(&def, material.as_ref(), tex_index)
 }
 
-fn map_material_def(def: &MaterialDef, assigned: Option<&MaterialRef>) -> ExportMaterial {
+/// Resolve a `TextureRef` to an export `TexRef` (image index + uv set), if the
+/// referenced texture was embedded.
+fn tex_ref(t: &Option<TextureRef>, tex_index: &TexIndex) -> Option<TexRef> {
+    let t = t.as_ref()?;
+    let image = *tex_index.get(&t.asset)?;
+    Some(TexRef {
+        image,
+        tex_coord: t.uv_index,
+    })
+}
+
+fn map_material_def(
+    def: &MaterialDef,
+    assigned: Option<&MaterialRef>,
+    tex_index: &TexIndex,
+) -> ExportMaterial {
     match def.shading {
         MaterialShading::Pbr => ExportMaterial::Pbr(PbrMaterial {
             name: def.label.clone(),
@@ -293,14 +431,18 @@ fn map_material_def(def: &MaterialDef, assigned: Option<&MaterialRef>) -> Export
             emissive: def.emissive,
             alpha_mode: map_alpha(&def.alpha_mode),
             double_sided: def.double_sided,
-            ..Default::default()
+            base_color_texture: tex_ref(&def.base_color_texture, tex_index),
+            metallic_roughness_texture: tex_ref(&def.metallic_roughness_texture, tex_index),
+            normal_texture: tex_ref(&def.normal_texture, tex_index),
+            occlusion_texture: tex_ref(&def.occlusion_texture, tex_index),
+            emissive_texture: tex_ref(&def.emissive_texture, tex_index),
         }),
         MaterialShading::Unlit => ExportMaterial::Unlit(UnlitMaterial {
             name: def.label.clone(),
             base_color: def.base_color,
             alpha_mode: map_alpha(&def.alpha_mode),
             double_sided: def.double_sided,
-            ..Default::default()
+            base_color_texture: tex_ref(&def.base_color_texture, tex_index),
         }),
         // Toon isn't glTF-representable → none + the assigned id (if any) for
         // scene-level re-resolution on import.
