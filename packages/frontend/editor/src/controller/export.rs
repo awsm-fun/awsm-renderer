@@ -44,9 +44,7 @@ use awsm_scene_schema::{
     SweepUvMode, TextureDef, TextureRef,
 };
 
-use crate::engine::bridge::{
-    material as bridge_material, mesh_cache, model_source_cache, node_sync,
-};
+use crate::engine::bridge::{material as bridge_material, mesh_cache, model_source_cache};
 use crate::engine::scene::{mutate, node::Node, Scene};
 
 /// Maps a referenced texture asset → its index in `GlbScene::images`.
@@ -538,16 +536,16 @@ fn node_to_export(
     out
 }
 
-/// Resolve any geometry node to baked triangles: Primitive → generated, Mesh →
-/// the captured-mesh store, Sweep → the curve baked along the scene curve, Model
-/// → its source node's geometry re-read from the import-cached glTF bytes (raw
+/// Resolve any geometry node to baked triangles: Mesh → the captured-mesh store
+/// (every procedural node — primitive / sweep / lathe / SDF — is a Mesh backed by
+/// a baked `ModifierStack`), Model → its source node's geometry re-read from the
+/// import-cached glTF bytes (raw
 /// accessor positions in the node's local space — see [`node_to_export`] on the
 /// no-double-transform rule). `None` for non-geometry kinds and for Models whose
 /// source bytes aren't cached. Shared by GLB export and the
 /// `MeshStats`/`MeshCrossSection` introspection queries + vertex-highlight.
 pub(crate) fn node_mesh(scene: &Scene, kind: &NodeKind) -> Option<MeshData> {
     match kind {
-        NodeKind::Primitive { shape, .. } => Some(node_sync::primitive_to_mesh(shape)),
         NodeKind::Mesh { mesh, .. } => mesh_cache::get_raw(mesh.0).map(|r| MeshData {
             positions: r.positions,
             normals: r.normals,
@@ -555,7 +553,6 @@ pub(crate) fn node_mesh(scene: &Scene, kind: &NodeKind) -> Option<MeshData> {
             colors: r.colors,
             indices: r.indices,
         }),
-        NodeKind::SweepAlongCurve { def, .. } => sweep_mesh(scene, def),
         NodeKind::Model(m) => {
             let gltf = load_model_source(scene, m.asset_id)?;
             awsm_glb_export::extract_node_mesh(
@@ -574,9 +571,7 @@ pub(crate) fn node_mesh(scene: &Scene, kind: &NodeKind) -> Option<MeshData> {
 /// model as every other geometry kind).
 fn material_slot(kind: &NodeKind) -> Option<&Option<MaterialInstance>> {
     match kind {
-        NodeKind::Primitive { material, .. }
-        | NodeKind::Mesh { material, .. }
-        | NodeKind::SweepAlongCurve { material, .. } => Some(material),
+        NodeKind::Mesh { material, .. } => Some(material),
         NodeKind::Model(m) => Some(&m.material),
         _ => None,
     }

@@ -9,10 +9,12 @@ examples for the non-obvious ones (`set_mesh_modifiers`, `select_vertices_where`
 
 ## Workflow
 
-1. `insert_primitive { shape }` → a node id.
-2. `convert_to_editable_mesh { node }` → a **mesh asset id** (the node becomes a
-   `Mesh`; geometry persists to `assets/<id>.mesh.bin`). Use this mesh id with the
-   modifier / vertex tools below.
+1. `insert_primitive { shape }` → a node id. Every procedural-geometry node is a
+   `Mesh` backed by an editable `MeshDef` (a `ModifierStack`), so the inserted
+   node is already editable — there is **no separate "make editable" step**.
+2. Get its mesh asset id: `get_node_details { node }` (the kind's `mesh` field), or
+   `convert_to_editable_mesh { node }` — now a no-op that simply **echoes the
+   node's existing mesh asset id** (geometry persists to `assets/<id>.mesh.bin`).
 3. Shape it: `set_mesh_modifiers` (procedural recipe) and/or the vertex tools.
 4. Measure: `get_mesh_stats`, `get_mesh_cross_section` (perceive → adjust loop).
 5. `wait_render_settled` then `screenshot_scene` to see it; `undo` to revert.

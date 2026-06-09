@@ -4,14 +4,10 @@
 
 use std::sync::Arc;
 
-use awsm_meshgen::{
-    box_mesh, cone_mesh, cylinder_mesh, plane_mesh, sphere_mesh, sweep_along_curve, torus_mesh,
-    CrossSection, MeshData, SweepOpts, UvMode,
-};
+use awsm_meshgen::MeshData;
 use awsm_renderer::cameras::{CameraParams, CameraProjectionParams};
 use awsm_renderer::raw_mesh::RawMeshData;
 use awsm_renderer::transforms::{Transform, TransformKey};
-use awsm_scene_schema::PrimitiveShape;
 use futures_signals::signal::SignalExt;
 use futures_signals::signal_vec::{SignalVecExt, VecDiff};
 use glam::{Quat, Vec3, Vec4};
@@ -320,23 +316,17 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
     teardown(&entry).await;
 
     match kind {
-        NodeKind::Primitive {
-            shape,
-            material,
-            shadow,
-            ..
-        } => materialize_primitive(entry.clone(), shape, material, shadow).await,
         NodeKind::Light(cfg) => apply_light(entry.clone(), cfg).await,
         NodeKind::Line(def) => materialize_line(entry.clone(), def).await,
         NodeKind::Curve(def) => materialize_curve_viz(entry.clone(), def).await,
         NodeKind::Sprite(def) => materialize_sprite(entry.clone(), def).await,
         NodeKind::Collider(shape) => materialize_collider(entry.clone(), shape).await,
         NodeKind::Decal(cfg) => materialize_decal(entry.clone(), cfg).await,
-        NodeKind::SweepAlongCurve { def, material, .. } => {
-            materialize_sweep(entry.clone(), def, material).await
-        }
         NodeKind::InstancesAlongCurve(def) => materialize_instances(entry.clone(), def).await,
         NodeKind::ParticleEmitter(def) => materialize_particle(entry.clone(), def).await,
+        // The sole procedural-geometry path: read the baked stack from the mesh
+        // cache + upload with the node's assigned material (magenta when None).
+        // Primitives + sweeps are now `MeshDef` stacks behind this same arm.
         NodeKind::Mesh { mesh, material, .. } => match super::mesh_cache::get_raw(mesh.0) {
             Some(raw) => {
                 upload_simple_mesh(entry.clone(), raw, MeshMaterial::Assigned(material)).await;
@@ -520,52 +510,6 @@ enum MeshMaterial {
     /// instanced geometry, whose appearance is the flat default + per-instance
     /// colours, not a per-node material assignment.
     Flat(awsm_scene_schema::MaterialDef),
-}
-
-async fn materialize_primitive(
-    entry: Arc<RendererNode>,
-    shape: PrimitiveShape,
-    material: Option<awsm_scene_schema::dynamic_material::MaterialInstance>,
-    shadow: awsm_scene_schema::MeshShadowConfig,
-) {
-    let mesh = primitive_to_mesh(&shape);
-    let raw = RawMeshData {
-        positions: mesh.positions,
-        normals: mesh.normals,
-        uvs: mesh.uvs,
-        colors: mesh.colors,
-        indices: mesh.indices,
-    };
-    let parent_tk = entry.transform_key;
-
-    // Hold the renderer lock across the upload so we can finalize the GPU
-    // texture pool / bind groups afterwards (committing the material so the mesh
-    // actually draws — the archived editor batched this in instance_batcher).
-    let handle = renderer_handle();
-    let mut r = handle.lock().await;
-    // Material resolution — shared with captured meshes + sweeps so all
-    // geometry renders identically (assigned → built-in/custom; unassigned →
-    // magenta). See [`resolve_assigned_material`].
-    let mat_key = resolve_assigned_material(&mut r, material.as_ref());
-    let sub_tk = r.transforms.insert(Transform::IDENTITY, Some(parent_tk));
-    match r.add_raw_mesh(raw, sub_tk, mat_key) {
-        Ok(mk) => {
-            if let Err(e) = r.finalize_gpu_textures().await {
-                tracing::warn!("finalize_gpu_textures: {e}");
-            }
-            let _ = r.set_mesh_shadow_flags(mk, mesh_shadow_flags_from_config(&shadow));
-            drop(r);
-            entry.model_meshes.lock().unwrap().push(mk);
-            entry.model_transforms.lock().unwrap().push(sub_tk);
-            entry.material_keys.lock().unwrap().push(mat_key);
-            bridge().register_mesh(mk, entry.node_id);
-        }
-        Err(e) => {
-            r.transforms.remove(sub_tk);
-            r.remove_material(mat_key);
-            tracing::error!("materialize primitive failed: {e}");
-        }
-    }
 }
 
 /// Materialize a `Model` node by **duplicating** its glTF template meshes under
@@ -950,72 +894,9 @@ async fn upload_simple_mesh(
     }
 }
 
-/// Sweep a cross-section along the referenced curve (`NodeKind::SweepAlongCurve`)
-/// → solid geometry. Renders only once its `curve_node` points at a real Curve.
-async fn materialize_sweep(
-    entry: Arc<RendererNode>,
-    def: awsm_scene_schema::SweepAlongCurveDef,
-    material: Option<awsm_scene_schema::dynamic_material::MaterialInstance>,
-) {
-    use awsm_curves::CatmullRomCurve;
-    use awsm_scene_schema::{CrossSectionDef, SweepUvMode};
-
-    // Nil curve ref = "not wired up yet"; render empty quietly until the user picks one.
-    if def.curve_node.is_nil() {
-        return;
-    }
-    let Some(curve_def) = lookup_curve_def(def.curve_node) else {
-        tracing::warn!("SweepAlongCurve references missing/!curve node");
-        return;
-    };
-    let curve = CatmullRomCurve::new(
-        curve_def
-            .control_points
-            .iter()
-            .map(|p| Vec3::from_array(*p))
-            .collect(),
-        curve_def.closed,
-    );
-    let cs = match def.cross_section {
-        CrossSectionDef::Strip { width, y_offset } => CrossSection::Strip { width, y_offset },
-        CrossSectionDef::Tube {
-            radius,
-            radial_segments,
-        } => CrossSection::Tube {
-            radius,
-            radial_segments,
-        },
-        CrossSectionDef::Wall { width, height } => CrossSection::Wall { width, height },
-        CrossSectionDef::Profile { points, closed } => CrossSection::Profile { points, closed },
-    };
-    let opts = SweepOpts {
-        samples: def.samples,
-        uv_mode: match def.uv_mode {
-            SweepUvMode::StretchOnce => UvMode::StretchOnce,
-            SweepUvMode::RepeatByLength {
-                u_repeat,
-                v_repeat_per_unit,
-            } => UvMode::RepeatByLength {
-                u_repeat,
-                v_repeat_per_unit,
-            },
-        },
-        up_hint: def.up_hint,
-    };
-    let mesh = sweep_along_curve(&curve, &cs, &opts);
-    let raw = RawMeshData {
-        positions: mesh.positions,
-        normals: mesh.normals,
-        uvs: mesh.uvs,
-        colors: mesh.colors,
-        indices: mesh.indices,
-    };
-    upload_simple_mesh(entry, raw, MeshMaterial::Assigned(material)).await;
-}
-
-/// Place copies of a source primitive along the referenced curve
+/// Place copies of a source mesh along the referenced curve
 /// (`NodeKind::InstancesAlongCurve`) via GPU instancing. Renders once both its
-/// `curve_node` (a Curve) and `source_node` (a Primitive) point at real nodes.
+/// `curve_node` (a Curve) and `source_node` (a Mesh) point at real nodes.
 async fn materialize_instances(
     entry: Arc<RendererNode>,
     def: awsm_scene_schema::InstancesAlongCurveDef,
@@ -1024,7 +905,7 @@ async fn materialize_instances(
     use awsm_renderer::instances::InstanceAttr;
 
     // Both refs are optional; a nil sentinel just means "not wired up yet" — the
-    // node renders empty until the user picks a curve + a source primitive.
+    // node renders empty until the user picks a curve + a source mesh.
     if def.curve_node.is_nil() || def.source_node.is_nil() {
         return;
     }
@@ -1032,13 +913,27 @@ async fn materialize_instances(
         tracing::warn!("InstancesAlongCurve references missing curve node");
         return;
     };
-    let shape = {
+    // The source is a Mesh node; its baked geometry lives in the mesh cache.
+    let mesh = {
         let b = bridge();
         let src = b.nodes.lock().unwrap().get(&def.source_node).cloned();
-        match src.map(|e| e.node.kind.get_cloned()) {
-            Some(NodeKind::Primitive { shape, .. }) => shape,
+        let mesh_ref = match src.map(|e| e.node.kind.get_cloned()) {
+            Some(NodeKind::Mesh { mesh, .. }) => mesh,
             _ => {
-                tracing::warn!("InstancesAlongCurve source node is missing/not a Primitive");
+                tracing::warn!("InstancesAlongCurve source node is missing/not a Mesh");
+                return;
+            }
+        };
+        match super::mesh_cache::get_raw(mesh_ref.0) {
+            Some(raw) => MeshData {
+                positions: raw.positions,
+                normals: raw.normals,
+                uvs: raw.uvs,
+                colors: raw.colors,
+                indices: raw.indices,
+            },
+            None => {
+                tracing::warn!("InstancesAlongCurve source mesh not in capture cache");
                 return;
             }
         }
@@ -1083,7 +978,6 @@ async fn materialize_instances(
         attrs.push(InstanceAttr::from_rgba_alpha_size(rgba, 1.0, 1.0));
     }
 
-    let mesh = primitive_to_mesh(&shape);
     let raw = RawMeshData {
         positions: mesh.positions,
         normals: mesh.normals,
@@ -1303,39 +1197,6 @@ fn light_from_config(
             inner_angle: *inner_angle,
             outer_angle: *outer_angle,
         },
-    }
-}
-
-pub fn primitive_to_mesh(shape: &PrimitiveShape) -> MeshData {
-    match shape {
-        PrimitiveShape::Plane {
-            width,
-            depth,
-            segments_x,
-            segments_z,
-        } => plane_mesh(*width, *depth, *segments_x, *segments_z),
-        PrimitiveShape::Box { dims } => box_mesh(Vec3::from_array(*dims)),
-        PrimitiveShape::Sphere {
-            radius,
-            segments_long,
-            segments_lat,
-        } => sphere_mesh(*radius, *segments_long, *segments_lat),
-        PrimitiveShape::Cylinder {
-            radius,
-            height,
-            radial_segments,
-        } => cylinder_mesh(*radius, *height, *radial_segments),
-        PrimitiveShape::Cone {
-            radius,
-            height,
-            radial_segments,
-        } => cone_mesh(*radius, *height, *radial_segments),
-        PrimitiveShape::Torus {
-            radius,
-            thickness,
-            segments_major,
-            segments_minor,
-        } => torus_mesh(*radius, *thickness, *segments_major, *segments_minor),
     }
 }
 

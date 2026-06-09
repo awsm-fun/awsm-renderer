@@ -1311,16 +1311,32 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Bake a procedural node's geometry (Primitive or Sweep) into an editable captured mesh and swap the node to a Mesh. Echoes the new mesh asset id. The mesh persists to assets/<id>.mesh.bin and accepts further geometry edits (set_mesh_data / future modifiers). No-op if the node isn't a bakeable kind."
+        description = "Retired/no-op: every procedural node is already an editable Mesh backed by a ModifierStack (MeshDef), so there is nothing to convert. Echoes the node's EXISTING mesh asset id (use it with set_mesh_modifiers / vertex tools). Errors if the node isn't a Mesh."
     )]
     async fn convert_to_editable_mesh(
         &self,
         Parameters(p): Parameters<ExportNodeParams>,
     ) -> Result<CallToolResult, McpError> {
         let node = parse_node(&p.node)?;
-        let mesh = AssetId::new();
-        self.dispatch_echo_asset(EditorCommand::ConvertToEditableMesh { node, mesh }, mesh)
-            .await
+        // Resolve the node's existing mesh asset id from its serialized kind.
+        let resp = self
+            .req(Request::Query(EditorQuery::NodeKindDetails {
+                nodes: vec![node],
+            }))
+            .await?;
+        let Response::Query(qr) = resp else {
+            return Err(unexpected(resp));
+        };
+        let QueryResult::Map(m) = *qr else {
+            return Err(McpError::internal_error("unexpected kind result", None));
+        };
+        let mesh = m
+            .entries
+            .get(&node.to_string())
+            .and_then(|v| v.get("mesh"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError::invalid_params(format!("node {node} is not a Mesh"), None))?;
+        Ok(text(mesh.to_string()))
     }
 
     #[tool(
@@ -1341,7 +1357,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Append one modifier to the END of a mesh's existing modifier stack — the convenience alternative to resending the whole stack via set_mesh_modifiers. `mesh` is the mesh asset UUID; `modifier` is a single Modifier object (e.g. {\"twist\":{\"axis\":\"y\",\"turns\":2}}, {\"taper\":{\"axis\":\"y\",\"factor\":0.3}}, {\"subdivide\":{\"iterations\":2}}). PRECONDITION: the mesh must ALREADY have a modifier stack — call set_mesh_modifiers (to set a base) first, or this errors (a raw captured/converted mesh has no recipe). Re-bakes geometry; each call is one discrete undo step. Read get_mesh_modifiers to see the current stack + indices. Full modifier shapes: the `awsm://docs/mesh-tools` resource."
+        description = "Append one modifier to the END of a mesh's modifier stack — the convenience alternative to resending the whole stack via set_mesh_modifiers. `mesh` is the mesh asset UUID; `modifier` is a single Modifier object (e.g. {\"twist\":{\"axis\":\"y\",\"turns\":2}}, {\"taper\":{\"axis\":\"y\",\"factor\":0.3}}, {\"subdivide\":{\"iterations\":2}}). Every Mesh node already carries a stack (its base shape), so this works on any mesh asset id; errors only if `mesh` isn't a mesh asset. Re-bakes geometry; each call is one discrete undo step. Read get_mesh_modifiers to see the current stack + indices. Full modifier shapes: the `awsm://docs/mesh-tools` resource."
     )]
     async fn add_modifier(
         &self,

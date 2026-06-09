@@ -392,10 +392,6 @@ fn node_group(node: &Arc<Node>) -> Option<TargetGroup> {
         }
         // Mesh-bearing nodes carry a first-party material (its built-in factors
         // always exist) and a (possibly morphable) mesh.
-        NodeKind::Primitive { .. } => {
-            rows.extend(mesh_material_rows(id));
-            ("primitive", "cube")
-        }
         NodeKind::Mesh { .. } => {
             rows.extend(mesh_material_rows(id));
             ("mesh", "cube")

@@ -23,11 +23,42 @@ use std::{fs, path::PathBuf};
 
 use awsm_scene_schema::{
     dynamic_material::MaterialInstance, AssetEntry, AssetId, AssetSource, AssetTable,
-    CubeFaceUpdateRate, EditorNode, EditorProject, EnvironmentConfig, EvsmCutoff,
+    CapturedSource, CubeFaceUpdateRate, EditorNode, EditorProject, EnvironmentConfig, EvsmCutoff,
     FarCascadeUpdateRate, LightConfig, LightShadowConfig, LightShadowHardness, MaterialAlphaMode,
-    MaterialDef, MaterialShading, MeshShadowConfig, NodeId, NodeKind, PrimitiveShape,
-    ShadowsConfig, StoredMaterial, TextureDef, TextureRef, Trs,
+    MaterialDef, MaterialShading, MeshBase, MeshDef, MeshRef, MeshShadowConfig, ModifierStack,
+    NodeId, NodeKind, PrimitiveShape, ShadowsConfig, StoredMaterial, TextureDef, TextureRef, Trs,
 };
+
+/// Mint a captured-mesh asset (`AssetSource::Mesh`) whose modifier-stack base is
+/// this primitive `shape`, and return the `NodeKind::Mesh` that references it.
+/// Procedural nodes are unified on `Mesh`/`MeshDef` — there is no longer a
+/// `NodeKind::Primitive`. The editor re-bakes the stack on load (no `.mesh.bin`
+/// side file required for these generated scenes).
+fn mesh_kind(
+    assets: &mut AssetTable,
+    label: &str,
+    shape: PrimitiveShape,
+    material: Option<MaterialInstance>,
+) -> NodeKind {
+    let id = AssetId::new();
+    assets.entries.insert(
+        id,
+        AssetEntry::new(AssetSource::Mesh(MeshDef {
+            label: label.to_string(),
+            source: Some(CapturedSource::Primitive(shape.clone())),
+            editable: false,
+            stack: ModifierStack {
+                base: MeshBase::Primitive(shape),
+                modifiers: vec![],
+            },
+        })),
+    );
+    NodeKind::Mesh {
+        mesh: MeshRef(id),
+        material,
+        shadow: MeshShadowConfig::default(),
+    }
+}
 
 fn main() -> std::io::Result<()> {
     let workspace_root = workspace_root();
@@ -69,8 +100,10 @@ fn main() -> std::io::Result<()> {
 fn scene_cull_debug() -> EditorProject {
     let mut project = empty_project("tuning-cull-debug");
     let lib = &mut project.editor_materials;
+    let assets = &mut project.assets;
     project.nodes.push(plane_node(
         lib,
+        assets,
         "floor_oversized",
         [0.0, -0.01, 0.0],
         100.0,
@@ -189,6 +222,7 @@ fn root_group(name: &str, children: Vec<EditorNode>) -> EditorNode {
 
 fn box_node(
     lib: &mut Vec<StoredMaterial>,
+    assets: &mut AssetTable,
     name: &str,
     position: [f32; 3],
     dims: [f32; 3],
@@ -212,11 +246,7 @@ fn box_node(
             rotation: [0.0, 0.0, 0.0, 1.0],
             scale: [1.0, 1.0, 1.0],
         },
-        kind: NodeKind::Primitive {
-            shape: PrimitiveShape::Box { dims },
-            material,
-            shadow: MeshShadowConfig::default(),
-        },
+        kind: mesh_kind(assets, name, PrimitiveShape::Box { dims }, material),
         locked: false,
         visible: true,
         prefab: false,
@@ -226,6 +256,7 @@ fn box_node(
 
 fn plane_node(
     lib: &mut Vec<StoredMaterial>,
+    assets: &mut AssetTable,
     name: &str,
     position: [f32; 3],
     width: f32,
@@ -250,16 +281,17 @@ fn plane_node(
             rotation: [0.0, 0.0, 0.0, 1.0],
             scale: [1.0, 1.0, 1.0],
         },
-        kind: NodeKind::Primitive {
-            shape: PrimitiveShape::Plane {
+        kind: mesh_kind(
+            assets,
+            name,
+            PrimitiveShape::Plane {
                 width,
                 depth,
                 segments_x: 1,
                 segments_z: 1,
             },
             material,
-            shadow: MeshShadowConfig::default(),
-        },
+        ),
         locked: false,
         visible: true,
         prefab: false,
@@ -269,6 +301,7 @@ fn plane_node(
 
 fn sphere_node(
     lib: &mut Vec<StoredMaterial>,
+    assets: &mut AssetTable,
     name: &str,
     position: [f32; 3],
     radius: f32,
@@ -292,15 +325,16 @@ fn sphere_node(
             rotation: [0.0, 0.0, 0.0, 1.0],
             scale: [1.0, 1.0, 1.0],
         },
-        kind: NodeKind::Primitive {
-            shape: PrimitiveShape::Sphere {
+        kind: mesh_kind(
+            assets,
+            name,
+            PrimitiveShape::Sphere {
                 radius,
                 segments_long: 24,
                 segments_lat: 16,
             },
             material,
-            shadow: MeshShadowConfig::default(),
-        },
+        ),
         locked: false,
         visible: true,
         prefab: false,
@@ -437,6 +471,7 @@ fn shadow_off() -> LightShadowConfig {
 fn scene_1k_meshes() -> EditorProject {
     let mut project = empty_project("tuning-1k-meshes");
     let lib = &mut project.editor_materials;
+    let assets = &mut project.assets;
 
     // 32×32 grid of small boxes, spaced 2 units apart. Centered on origin.
     let mut grid_children = Vec::with_capacity(1024);
@@ -451,6 +486,7 @@ fn scene_1k_meshes() -> EditorProject {
             let hue = (ix as f32 * 0.13 + iz as f32 * 0.07) % 1.0;
             grid_children.push(box_node(
                 lib,
+                assets,
                 &format!("box_{ix}_{iz}"),
                 [x, 0.5, z],
                 [1.0, 1.0, 1.0],
@@ -463,6 +499,7 @@ fn scene_1k_meshes() -> EditorProject {
     let floor_extent = count as f32 * spacing + 10.0;
     project.nodes.push(plane_node(
         lib,
+        assets,
         "floor",
         [0.0, -0.01, 0.0],
         floor_extent,
@@ -499,9 +536,11 @@ fn scene_1k_meshes() -> EditorProject {
 fn scene_64_lights() -> EditorProject {
     let mut project = empty_project("tuning-64-lights");
     let lib = &mut project.editor_materials;
+    let assets = &mut project.assets;
 
     project.nodes.push(plane_node(
         lib,
+        assets,
         "floor",
         [0.0, -0.01, 0.0],
         80.0,
@@ -521,6 +560,7 @@ fn scene_64_lights() -> EditorProject {
         let z = theta.sin() * r;
         mesh_children.push(sphere_node(
             lib,
+            assets,
             &format!("mesh_{i}"),
             [x, 2.0, z],
             2.0,
@@ -581,9 +621,11 @@ fn scene_64_lights() -> EditorProject {
 fn scene_mixed_intensity() -> EditorProject {
     let mut project = empty_project("tuning-mixed-intensity");
     let lib = &mut project.editor_materials;
+    let assets = &mut project.assets;
 
     project.nodes.push(plane_node(
         lib,
+        assets,
         "floor",
         [0.0, -0.01, 0.0],
         40.0,
@@ -600,6 +642,7 @@ fn scene_mixed_intensity() -> EditorProject {
         for iz in 0..count {
             box_children.push(box_node(
                 lib,
+                assets,
                 &format!("box_{ix}_{iz}"),
                 [
                     offset + ix as f32 * spacing,
@@ -643,6 +686,7 @@ fn scene_mixed_intensity() -> EditorProject {
 fn scene_open_world() -> EditorProject {
     let mut project = empty_project("tuning-open-world");
     let lib = &mut project.editor_materials;
+    let assets = &mut project.assets;
 
     // 1 km × 1 km terrain (single segmented plane stand-in).
     let terrain_material = assign_builtin(
@@ -659,16 +703,17 @@ fn scene_open_world() -> EditorProject {
         id: NodeId::new(),
         name: "terrain".to_string(),
         transform: Trs::IDENTITY,
-        kind: NodeKind::Primitive {
-            shape: PrimitiveShape::Plane {
+        kind: mesh_kind(
+            assets,
+            "terrain",
+            PrimitiveShape::Plane {
                 width: 1000.0,
                 depth: 1000.0,
                 segments_x: 64,
                 segments_z: 64,
             },
-            material: terrain_material,
-            shadow: MeshShadowConfig::default(),
-        },
+            terrain_material,
+        ),
         locked: false,
         visible: true,
         prefab: false,
@@ -678,6 +723,7 @@ fn scene_open_world() -> EditorProject {
     // Ocean plane just under the terrain — blue + glossy.
     project.nodes.push(plane_node(
         lib,
+        assets,
         "ocean",
         [0.0, -0.5, 0.0],
         1500.0,
@@ -695,6 +741,7 @@ fn scene_open_world() -> EditorProject {
         let size = 1.5 + ((h * 0.3).fract() * 3.0);
         props.push(box_node(
             lib,
+            assets,
             &format!("prop_{i}"),
             [x, size * 0.5, z],
             [size, size, size],
@@ -723,9 +770,11 @@ fn scene_open_world() -> EditorProject {
 fn scene_coverage() -> EditorProject {
     let mut project = empty_project("tuning-coverage");
     let lib = &mut project.editor_materials;
+    let assets = &mut project.assets;
 
     project.nodes.push(plane_node(
         lib,
+        assets,
         "floor",
         [0.0, -0.01, 0.0],
         200.0,
@@ -744,6 +793,7 @@ fn scene_coverage() -> EditorProject {
         let y = 0.25;
         props.push(box_node(
             lib,
+            assets,
             &format!("prop_{i:03}"),
             [x, y, z],
             [0.5, 0.5, 0.5],
@@ -771,6 +821,7 @@ fn scene_coverage() -> EditorProject {
 fn scene_10k_meshes() -> EditorProject {
     let mut project = empty_project("tuning-10k-meshes");
     let lib = &mut project.editor_materials;
+    let assets = &mut project.assets;
 
     let mut grid_children = Vec::with_capacity(10_000);
     let spacing = 1.5_f32;
@@ -781,6 +832,7 @@ fn scene_10k_meshes() -> EditorProject {
             let hue = (ix as f32 * 0.013 + iz as f32 * 0.007) % 1.0;
             grid_children.push(box_node(
                 lib,
+                assets,
                 &format!("box_{ix}_{iz}"),
                 [
                     offset + ix as f32 * spacing,
@@ -796,6 +848,7 @@ fn scene_10k_meshes() -> EditorProject {
     let floor_extent = count as f32 * spacing + 20.0;
     project.nodes.push(plane_node(
         lib,
+        assets,
         "floor",
         [0.0, -0.01, 0.0],
         floor_extent,
@@ -876,6 +929,7 @@ fn fifty_materials_pos(idx: i32) -> [f32; 3] {
 
 fn prim_node(
     lib: &mut Vec<StoredMaterial>,
+    assets: &mut AssetTable,
     name: &str,
     pos: [f32; 3],
     shape: PrimitiveShape,
@@ -890,11 +944,7 @@ fn prim_node(
             rotation: [0.0, 0.0, 0.0, 1.0],
             scale: [1.0, 1.0, 1.0],
         },
-        kind: NodeKind::Primitive {
-            shape,
-            material,
-            shadow: MeshShadowConfig::default(),
-        },
+        kind: mesh_kind(assets, name, shape, material),
         locked: false,
         visible: true,
         prefab: false,
@@ -943,6 +993,7 @@ fn pbr_from_mask(tex: TextureRef, mask: u32, vcolor: bool, color: [f32; 4]) -> M
 fn scene_50_materials() -> EditorProject {
     let mut project = empty_project("tuning-50-materials");
     let lib = &mut project.editor_materials;
+    let assets = &mut project.assets;
 
     // Register the single placeholder texture asset (content-hash
     // addressed; the file lives at assets/<hash>.png next to project.json).
@@ -954,7 +1005,7 @@ fn scene_50_materials() -> EditorProject {
             PLACEHOLDER_TEX_HASH.to_string(),
         );
         let id = AssetId::new();
-        project.assets.entries.insert(id, entry);
+        assets.entries.insert(id, entry);
         TextureRef::new(id)
     };
 
@@ -990,6 +1041,7 @@ fn scene_50_materials() -> EditorProject {
         let mat = pbr_from_mask(tex, mask, vcolor, hsv_to_rgba(hue, 0.5, 0.9));
         meshes.push(prim_node(
             lib,
+            assets,
             &format!(
                 "pbr_{i:02}_mask{mask:05b}{}",
                 if vcolor { "_vc" } else { "" }
@@ -1020,6 +1072,7 @@ fn scene_50_materials() -> EditorProject {
         };
         meshes.push(prim_node(
             lib,
+            assets,
             &format!("toon_{i}_b{bands}"),
             fifty_materials_pos(idx),
             alt_shape(idx),
@@ -1039,6 +1092,7 @@ fn scene_50_materials() -> EditorProject {
         };
         meshes.push(prim_node(
             lib,
+            assets,
             &format!("unlit_{i}"),
             fifty_materials_pos(idx),
             alt_shape(idx),
@@ -1063,6 +1117,7 @@ fn scene_50_materials() -> EditorProject {
     let transparent: Vec<EditorNode> = vec![
         prim_node(
             lib,
+            assets,
             "transp_glass_clear",
             [-6.0, 0.8, -0.6],
             PrimitiveShape::Box {
@@ -1079,6 +1134,7 @@ fn scene_50_materials() -> EditorProject {
         ),
         prim_node(
             lib,
+            assets,
             "transp_glass_green",
             [-2.0, 0.8, -0.6],
             PrimitiveShape::Sphere {
@@ -1097,6 +1153,7 @@ fn scene_50_materials() -> EditorProject {
         ),
         prim_node(
             lib,
+            assets,
             "transp_glass_amber",
             [2.0, 0.8, -0.6],
             PrimitiveShape::Box {
@@ -1113,6 +1170,7 @@ fn scene_50_materials() -> EditorProject {
         ),
         prim_node(
             lib,
+            assets,
             "transp_glass_textured",
             [6.0, 0.8, -0.6],
             PrimitiveShape::Sphere {
@@ -1137,6 +1195,7 @@ fn scene_50_materials() -> EditorProject {
     // materials ignore lighting, but PBR/Toon need it).
     project.nodes.push(plane_node(
         lib,
+        assets,
         "floor",
         [0.0, -0.01, 0.0],
         60.0,
@@ -1208,6 +1267,7 @@ fn hsv_to_rgb_arr(h: f32, s: f32, v: f32) -> [f32; 3] {
 fn scene_importance_tiers() -> EditorProject {
     let mut project = empty_project("tuning-importance-tiers");
     let lib = &mut project.editor_materials;
+    let assets = &mut project.assets;
 
     // A 40×40 floor + a few props so the lights have something to
     // illuminate. The visual output is incidental — what matters is
@@ -1215,6 +1275,7 @@ fn scene_importance_tiers() -> EditorProject {
     // `refresh_light_importance_budgets`.
     project.nodes.push(plane_node(
         lib,
+        assets,
         "floor",
         [0.0, -0.01, 0.0],
         80.0,
@@ -1267,10 +1328,12 @@ fn scene_importance_tiers() -> EditorProject {
 fn scene_1024_lights() -> EditorProject {
     let mut project = empty_project("tuning-1024-lights");
     let lib = &mut project.editor_materials;
+    let assets = &mut project.assets;
 
     // Oversized floor — 100m × 100m, diagonal ≈ 141m > 50m threshold.
     project.nodes.push(plane_node(
         lib,
+        assets,
         "floor_oversized",
         [0.0, -0.01, 0.0],
         100.0,
@@ -1282,6 +1345,7 @@ fn scene_1024_lights() -> EditorProject {
     // to refract/blend against.
     project.nodes.push(box_node(
         lib,
+        assets,
         "back_wall",
         [0.0, 5.0, -45.0],
         [80.0, 10.0, 0.5],
@@ -1305,6 +1369,7 @@ fn scene_1024_lights() -> EditorProject {
             if (ix + iz) % 2 == 0 {
                 props.push(box_node(
                     lib,
+                    assets,
                     &format!("prop_box_{ix}_{iz}"),
                     [x, 0.6, z],
                     [1.0, 1.2, 1.0],
@@ -1313,6 +1378,7 @@ fn scene_1024_lights() -> EditorProject {
             } else {
                 props.push(sphere_node(
                     lib,
+                    assets,
                     &format!("prop_sphere_{ix}_{iz}"),
                     [x, 0.8, z],
                     0.8,
@@ -1346,13 +1412,14 @@ fn scene_1024_lights() -> EditorProject {
             rotation: [0.0, 0.0, 0.0, 1.0],
             scale: [1.0, 1.0, 1.0],
         },
-        kind: NodeKind::Primitive {
-            shape: PrimitiveShape::Box {
+        kind: mesh_kind(
+            assets,
+            "glass_pane",
+            PrimitiveShape::Box {
                 dims: [12.0, 6.0, 0.1],
             },
-            material: glass_material,
-            shadow: MeshShadowConfig::default(),
-        },
+            glass_material,
+        ),
         locked: false,
         visible: true,
         prefab: false,

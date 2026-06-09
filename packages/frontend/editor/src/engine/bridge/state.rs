@@ -135,9 +135,7 @@ pub fn rematerialize_for_material(id: crate::engine::scene::AssetId) {
 
     fn node_assigned_material(kind: &NodeKind) -> Option<AssetId> {
         match kind {
-            NodeKind::Primitive { material, .. }
-            | NodeKind::Mesh { material, .. }
-            | NodeKind::SweepAlongCurve { material, .. } => material.as_ref().map(|i| i.asset),
+            NodeKind::Mesh { material, .. } => material.as_ref().map(|i| i.asset),
             NodeKind::Model(r) => r.material.as_ref().map(|i| i.asset),
             _ => None,
         }

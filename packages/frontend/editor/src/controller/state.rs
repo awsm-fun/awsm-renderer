@@ -410,11 +410,7 @@ impl EditorController {
             .get(mesh)
             .map(|e| &e.source)
         {
-            Some(SceneAssetSource::Mesh(def)) => def.modifiers.clone().ok_or_else(|| {
-                crate::error::EditorError::msg(format!(
-                    "mesh {mesh} has no modifier stack; set a base stack with set_mesh_modifiers first"
-                ))
-            }),
+            Some(SceneAssetSource::Mesh(def)) => Ok(def.stack.clone()),
             _ => Err(crate::error::EditorError::msg(format!(
                 "asset {mesh} is not an editable mesh"
             ))),
@@ -425,13 +421,13 @@ impl EditorController {
     /// recipe on the asset, re-evaluate → re-bake the `.mesh.bin` cache, bump the
     /// mesh revision (the bridge re-materializes referencing nodes), and return
     /// the inverse — `SetMeshModifiers(prior_stack)` (re-evaluates to the prior
-    /// geometry) or, if there was no prior recipe, a `SetMeshData(prior_bytes)`.
-    /// The shared body of `SetMeshModifiers` and the incremental modifier
-    /// commands. Returns `None` (not undoable) if the asset isn't a mesh.
+    /// geometry). Every `MeshDef` carries a mandatory `stack`, so the prior recipe
+    /// always exists. The shared body of `SetMeshModifiers` and the incremental
+    /// modifier commands. Returns `None` (not undoable) if the asset isn't a mesh.
     fn apply_mesh_stack(&self, mesh: AssetId, stack: ModifierStack) -> Option<EditorCommand> {
         use crate::engine::bridge::mesh_cache;
-        // Capture the prior recipe + baked bytes for the inverse, and bail
-        // if this asset isn't a mesh.
+        // Capture the prior recipe for the inverse, and bail if this asset isn't a
+        // mesh.
         let prior_stack = match self
             .scene
             .assets
@@ -440,17 +436,16 @@ impl EditorController {
             .get(mesh)
             .map(|e| &e.source)
         {
-            Some(SceneAssetSource::Mesh(def)) => def.modifiers.clone(),
+            Some(SceneAssetSource::Mesh(def)) => def.stack.clone(),
             _ => return None,
         };
-        let prior_bytes = mesh_cache::get_captured(mesh);
         // Store the new recipe on the asset (the recipe lives in the
         // project; the .mesh.bin is a regenerable cache).
         {
             let mut assets = self.scene.assets.lock().unwrap();
             if let Some(entry) = assets.entries.get_mut(&mesh) {
                 if let SceneAssetSource::Mesh(def) = &mut entry.source {
-                    def.modifiers = Some(stack.clone());
+                    def.stack = stack.clone();
                     def.editable = true;
                 }
             }
@@ -460,12 +455,92 @@ impl EditorController {
         let baked = crate::controller::mesh_eval::evaluate_stack(&self.scene, &stack);
         mesh_cache::store_with_id(mesh, mesh_cache::from_mesh_data(baked));
         self.scene.bump_revision();
-        // Inverse: restore the prior stack (re-evaluates to prior geometry)
-        // or, if there was no recipe, the prior baked bytes.
-        match prior_stack {
-            Some(stack) => Some(EditorCommand::SetMeshModifiers { mesh, stack }),
-            None => prior_bytes.map(|data| EditorCommand::SetMeshData { mesh, data }),
-        }
+        // Inverse: restore the prior stack (re-evaluates to prior geometry).
+        Some(EditorCommand::SetMeshModifiers {
+            mesh,
+            stack: prior_stack,
+        })
+    }
+
+    /// For a procedural-geometry `InsertSpec` (`Primitive` / `Sweep`), mint the
+    /// backing `MeshDef` asset (a `ModifierStack` with the matching base), bake
+    /// its `.mesh.bin` cache, and build the unified `NodeKind::Mesh` node that
+    /// references it. Returns `(mesh_asset_id, node)`; `None` for any other spec
+    /// (the caller falls back to a plain `build_insert`).
+    ///
+    /// The mesh asset id is `AssetId(node_id.0)` — deterministic from the node id
+    /// (asset ids and node ids are disjoint keyspaces, so reusing the UUID is
+    /// safe) so cross-tab replays produce the same asset and the insert stays
+    /// idempotent. Baking the stack now means the node renders the first time it
+    /// materializes (a nil-curve Sweep bakes empty until its curve is picked).
+    fn build_mesh_insert(
+        &self,
+        node_id: NodeId,
+        spec: &InsertSpec,
+    ) -> Option<(AssetId, std::sync::Arc<crate::engine::scene::node::Node>)> {
+        use crate::engine::bridge::mesh_cache;
+        use crate::engine::scene::node::Node;
+        use awsm_scene_schema::modifier::{MeshBase, ModifierStack};
+        use awsm_scene_schema::{CapturedSource, MeshDef, MeshRef, PrimitiveShape, Trs};
+
+        let (label, base, source): (&str, MeshBase, CapturedSource) = match spec {
+            InsertSpec::Primitive(shape) => {
+                let label = match shape {
+                    PrimitiveShape::Plane { .. } => "Plane",
+                    PrimitiveShape::Box { .. } => "Box",
+                    PrimitiveShape::Sphere { .. } => "Sphere",
+                    PrimitiveShape::Cylinder { .. } => "Cylinder",
+                    PrimitiveShape::Cone { .. } => "Cone",
+                    PrimitiveShape::Torus { .. } => "Torus",
+                };
+                (
+                    label,
+                    MeshBase::Primitive(shape.clone()),
+                    CapturedSource::Primitive(shape.clone()),
+                )
+            }
+            InsertSpec::Sweep => {
+                let def = awsm_scene_schema::SweepAlongCurveDef::default();
+                (
+                    "Sweep",
+                    MeshBase::Sweep(def.clone()),
+                    CapturedSource::Sweep(def),
+                )
+            }
+            _ => return None,
+        };
+
+        let mesh_id = AssetId(node_id.0);
+        let stack = ModifierStack {
+            base,
+            modifiers: vec![],
+        };
+        // Bake the stack now so the node has geometry on first materialize.
+        let baked = crate::controller::mesh_eval::evaluate_stack(&self.scene, &stack);
+        mesh_cache::store_with_id(mesh_id, mesh_cache::from_mesh_data(baked));
+        self.scene.assets.lock().unwrap().entries.insert(
+            mesh_id,
+            AssetEntry::new(SceneAssetSource::Mesh(MeshDef {
+                label: label.to_string(),
+                source: Some(source),
+                editable: true,
+                stack,
+            })),
+        );
+
+        let mut node = Node::new_with_transform_and_kind(
+            label,
+            Trs::default(),
+            NodeKind::Mesh {
+                mesh: MeshRef(mesh_id),
+                material: None,
+                shadow: Default::default(),
+            },
+        );
+        std::sync::Arc::get_mut(&mut node)
+            .expect("freshly built node is sole-owned")
+            .id = node_id;
+        Some((mesh_id, node))
     }
 
     /// Apply a command's effect and return its inverse (for the undo log), or
@@ -657,6 +732,22 @@ impl EditorController {
                 if mutate::find_by_id(&self.scene, id).is_some() {
                     return Ok(None);
                 }
+                // Procedural-geometry specs (Primitive / Sweep) mint a `MeshDef`
+                // asset (a `ModifierStack` with the matching base) + bake its cache,
+                // then create a unified `NodeKind::Mesh` referencing it. The mesh
+                // asset id is derived deterministically from the node id (disjoint
+                // keyspace) so a cross-tab replay produces the same asset id, and
+                // the inverse can delete both. Every other spec is a plain insert.
+                if let Some((mesh_id, node)) = self.build_mesh_insert(id, &spec) {
+                    if mutate::insert_under(&self.scene, parent, node) {
+                        self.scene.bump_revision();
+                        return Ok(Some(EditorCommand::Batch(vec![
+                            EditorCommand::Delete { id },
+                            EditorCommand::DeleteAsset { id: mesh_id },
+                        ])));
+                    }
+                    return Ok(None);
+                }
                 let mut node = build_insert(&spec);
                 // Adopt the caller-minted id (build_insert mints a fresh one).
                 Arc::get_mut(&mut node)
@@ -777,80 +868,13 @@ impl EditorController {
                 Ok(Some(EditorCommand::DeleteAsset { id }))
             }
             EditorCommand::ConvertToEditableMesh { node, mesh } => {
-                use crate::engine::bridge::{mesh_cache, node_sync};
-                use awsm_scene_schema::{CapturedSource, MeshDef, MeshRef};
-                // Idempotent: don't clobber an existing asset.
-                if self
-                    .scene
-                    .assets
-                    .lock()
-                    .unwrap()
-                    .entries
-                    .contains_key(&mesh)
-                {
-                    return Ok(None);
-                }
-                let Some(n) = mutate::find_by_id(&self.scene, node) else {
-                    return Ok(None);
-                };
-                let prev = n.kind.get_cloned();
-                // Bake the current geometry + carry the material slots forward.
-                let (mesh_data, source, material, shadow) = match &prev {
-                    NodeKind::Primitive {
-                        shape,
-                        material,
-                        shadow,
-                    } => (
-                        node_sync::primitive_to_mesh(shape),
-                        CapturedSource::Primitive(shape.clone()),
-                        material.clone(),
-                        *shadow,
-                    ),
-                    NodeKind::SweepAlongCurve {
-                        def,
-                        material,
-                        shadow,
-                    } => match crate::controller::export::sweep_mesh(&self.scene, def) {
-                        Some(m) => (
-                            m,
-                            CapturedSource::Sweep(def.clone()),
-                            material.clone(),
-                            *shadow,
-                        ),
-                        None => return Ok(None),
-                    },
-                    // Only procedural kinds are bakeable; anything else is a no-op.
-                    _ => return Ok(None),
-                };
-                // Store geometry under the caller-minted id BEFORE swapping the
-                // kind so the node resolves geometry the first time it materializes.
-                mesh_cache::store_with_id(mesh, mesh_cache::from_mesh_data(mesh_data));
-                self.scene.assets.lock().unwrap().entries.insert(
-                    mesh,
-                    AssetEntry::new(SceneAssetSource::Mesh(MeshDef {
-                        label: "Editable Mesh".to_string(),
-                        source: Some(source),
-                        editable: true,
-                        // No recipe yet — the baked bytes are the source of truth
-                        // until `SetMeshModifiers` + meshgen eval are wired in.
-                        modifiers: None,
-                    })),
-                );
-                n.kind.set(NodeKind::Mesh {
-                    mesh: MeshRef(mesh),
-                    material,
-                    shadow,
-                });
-                self.structure_rev
-                    .set(self.structure_rev.get().wrapping_add(1));
-                self.scene.bump_revision();
-                Ok(Some(EditorCommand::Batch(vec![
-                    EditorCommand::SetKind {
-                        id: node,
-                        kind: Box::new(prev),
-                    },
-                    EditorCommand::DeleteAsset { id: mesh },
-                ])))
+                // Retired: every procedural node is already a `NodeKind::Mesh`
+                // backed by an editable `MeshDef` stack, so there is nothing to
+                // convert. Kept as a no-op for protocol/back-compat; the MCP tool
+                // echoes the node's existing mesh id instead of the (now ignored)
+                // caller-minted `mesh`. Not undoable.
+                let _ = (node, mesh);
+                Ok(None)
             }
             EditorCommand::SetMeshData { mesh, data } => {
                 use crate::engine::bridge::mesh_cache;
@@ -984,7 +1008,9 @@ impl EditorController {
             }
             EditorCommand::CollapseMeshStack { mesh } => {
                 use crate::engine::bridge::mesh_cache;
-                let prior_stack = match self
+                use awsm_scene_schema::modifier::{MeshBase, ModifierStack};
+                use awsm_scene_schema::MeshRef;
+                let stack = match self
                     .scene
                     .assets
                     .lock()
@@ -992,22 +1018,29 @@ impl EditorController {
                     .get(mesh)
                     .map(|e| &e.source)
                 {
-                    Some(SceneAssetSource::Mesh(def)) => def.modifiers.clone(),
+                    Some(SceneAssetSource::Mesh(def)) => def.stack.clone(),
                     _ => return Ok(None),
                 };
-                // Nothing to collapse without a recipe.
-                let Some(stack) = prior_stack else {
+                // Nothing to collapse if the stack is already a bare capture
+                // (a `Captured` base with no modifiers — its bytes are the source).
+                if stack.modifiers.is_empty() && matches!(stack.base, MeshBase::Captured(_)) {
                     return Ok(None);
-                };
+                }
                 let Some(prior_bytes) = mesh_cache::get_captured(mesh) else {
                     return Ok(None);
                 };
+                // Bake the current stack, then flatten the recipe to a bare capture
+                // of this same asset's bytes — the baked geometry becomes the
+                // source of truth (no recipe left to re-evaluate).
                 let baked = crate::controller::mesh_eval::evaluate_stack(&self.scene, &stack);
                 {
                     let mut assets = self.scene.assets.lock().unwrap();
                     if let Some(entry) = assets.entries.get_mut(&mesh) {
                         if let SceneAssetSource::Mesh(def) = &mut entry.source {
-                            def.modifiers = None;
+                            def.stack = ModifierStack {
+                                base: MeshBase::Captured(MeshRef(mesh)),
+                                modifiers: vec![],
+                            };
                         }
                     }
                 }
@@ -1147,28 +1180,15 @@ impl EditorController {
                                 }
                             });
                         let next = match prev.clone() {
-                            NodeKind::Primitive { shape, shadow, .. } => NodeKind::Primitive {
-                                shape,
-                                material: instance,
-                                shadow,
-                            },
-                            // Captured mesh — same material model as a Primitive.
+                            // The sole procedural-geometry node: one material slot.
                             NodeKind::Mesh { mesh, shadow, .. } => NodeKind::Mesh {
                                 mesh,
                                 material: instance,
                                 shadow,
                             },
-                            // Sweep — same material model as a Primitive.
-                            NodeKind::SweepAlongCurve { def, shadow, .. } => {
-                                NodeKind::SweepAlongCurve {
-                                    def,
-                                    material: instance,
-                                    shadow,
-                                }
-                            }
-                            // A Model node carries one assigned material (the
-                            // same model as a Primitive); `None` = unassigned →
-                            // magenta.
+                            // A Model node carries one assigned material (the same
+                            // one-material-per-node model as a Mesh); `None` =
+                            // unassigned → magenta.
                             NodeKind::Model(mut r) => {
                                 r.material = instance;
                                 NodeKind::Model(r)
@@ -1196,31 +1216,40 @@ impl EditorController {
                 ) else {
                     return Ok(None);
                 };
-                let NodeKind::Primitive {
-                    material: src_mat, ..
-                } = src.kind.get_cloned()
-                else {
-                    return Ok(None);
+                // The source node's material slot (geometry kinds only).
+                let src_slot = match src.kind.get_cloned() {
+                    NodeKind::Mesh { material, .. } => material,
+                    NodeKind::Model(r) => r.material,
+                    _ => return Ok(None),
                 };
                 let prev = dst.kind.get_cloned();
-                let NodeKind::Primitive {
-                    shape,
-                    material: dst_mat,
-                    shadow,
-                } = prev.clone()
-                else {
-                    return Ok(None);
+                // Build the next dst kind by replacing only its material slot.
+                let (next, dst_mat) = match prev.clone() {
+                    NodeKind::Mesh {
+                        mesh,
+                        material: dst_mat,
+                        shadow,
+                    } => (
+                        NodeKind::Mesh {
+                            mesh,
+                            material: src_slot.clone(),
+                            shadow,
+                        },
+                        dst_mat,
+                    ),
+                    NodeKind::Model(mut r) => {
+                        let dst_mat = r.material.clone();
+                        r.material = src_slot.clone();
+                        (NodeKind::Model(r), dst_mat)
+                    }
+                    _ => return Ok(None),
                 };
                 // Only copy between meshes that reference the same material.
-                if src_mat.as_ref().map(|i| i.asset) != dst_mat.as_ref().map(|i| i.asset) {
+                if src_slot.as_ref().map(|i| i.asset) != dst_mat.as_ref().map(|i| i.asset) {
                     return Ok(None);
                 }
                 // Copy the whole instance (inline uniforms + override maps).
-                dst.kind.set(NodeKind::Primitive {
-                    shape,
-                    material: src_mat,
-                    shadow,
-                });
+                dst.kind.set(next);
                 self.structure_rev
                     .set(self.structure_rev.get().wrapping_add(1));
                 self.scene.bump_revision();
@@ -3016,14 +3045,13 @@ impl EditorController {
                     .get(mesh)
                     .map(|e| &e.source)
                 {
-                    Some(SceneAssetSource::Mesh(def)) => Ok(def.modifiers.clone()),
+                    Some(SceneAssetSource::Mesh(def)) => Ok(def.stack.clone()),
                     Some(_) => Err(format!("asset {mesh} is not a mesh")),
                     None => Err(format!("no asset {mesh}")),
                 };
                 match stack {
                     Ok(stack) => {
-                        // `Some(stack)` → the recipe JSON; `None` → JSON `null`
-                        // (the mesh has no recipe yet — set a base stack first).
+                        // Every mesh carries a recipe now — serialize the stack.
                         QueryResult::Text(
                             serde_json::to_string(&stack)
                                 .unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}")),
@@ -3320,24 +3348,27 @@ type Aabb3 = ([f32; 3], [f32; 3]);
 /// a unit box for anything without obvious bounds). Used only to frame the
 /// camera + report approximate size — not a tight collision bound.
 fn local_aabb(kind: &NodeKind) -> Aabb3 {
-    use awsm_scene_schema::PrimitiveShape as P;
-    let (hx, hy, hz) = match kind {
-        NodeKind::Primitive { shape, .. } => match shape {
-            P::Box { dims } => (dims[0] * 0.5, dims[1] * 0.5, dims[2] * 0.5),
-            P::Sphere { radius, .. } => (*radius, *radius, *radius),
-            P::Plane { width, depth, .. } => (width * 0.5, 0.001, depth * 0.5),
-            P::Cylinder { radius, height, .. } | P::Cone { radius, height, .. } => {
-                (*radius, height * 0.5, *radius)
+    // A Mesh's true bounds come from its baked geometry in the mesh cache; every
+    // procedural node (box / sphere / sweep / …) is a Mesh now.
+    if let NodeKind::Mesh { mesh, .. } = kind {
+        if let Some(raw) = crate::engine::bridge::mesh_cache::get_raw(mesh.0) {
+            if !raw.positions.is_empty() {
+                let mut min = [f32::INFINITY; 3];
+                let mut max = [f32::NEG_INFINITY; 3];
+                for p in &raw.positions {
+                    for i in 0..3 {
+                        min[i] = min[i].min(p[i]);
+                        max[i] = max[i].max(p[i]);
+                    }
+                }
+                return (min, max);
             }
-            P::Torus {
-                radius, thickness, ..
-            } => (radius + thickness, *thickness, radius + thickness),
-        },
-        // Lights / cameras / empties / models: a small unit box centered on the
-        // node (a glTF model's true bounds aren't cheaply available CPU-side).
-        _ => (0.5, 0.5, 0.5),
-    };
-    ([-hx, -hy, -hz], [hx, hy, hz])
+        }
+    }
+    // Lights / cameras / empties / models / un-baked meshes: a small unit box
+    // centered on the node (a glTF model's true bounds aren't cheaply available
+    // CPU-side).
+    ([-0.5, -0.5, -0.5], [0.5, 0.5, 0.5])
 }
 
 /// Transform a local AABB by a world matrix and return the enclosing world AABB.
@@ -3651,9 +3682,7 @@ fn node_material_ref(
     kind: &NodeKind,
 ) -> Option<&awsm_scene_schema::dynamic_material::MaterialInstance> {
     match kind {
-        NodeKind::Primitive { material, .. }
-        | NodeKind::Mesh { material, .. }
-        | NodeKind::SweepAlongCurve { material, .. } => material.as_ref(),
+        NodeKind::Mesh { material, .. } => material.as_ref(),
         NodeKind::Model(r) => r.material.as_ref(),
         _ => None,
     }
@@ -3664,9 +3693,7 @@ fn node_material_mut(
     kind: &mut NodeKind,
 ) -> Option<&mut awsm_scene_schema::dynamic_material::MaterialInstance> {
     match kind {
-        NodeKind::Primitive { material, .. }
-        | NodeKind::Mesh { material, .. }
-        | NodeKind::SweepAlongCurve { material, .. } => material.as_mut(),
+        NodeKind::Mesh { material, .. } => material.as_mut(),
         NodeKind::Model(r) => r.material.as_mut(),
         _ => None,
     }
@@ -4375,29 +4402,21 @@ fn template_needs_default_material(
 /// Drives `structure_rev` so the inspector rebuilds on a discrete toggle but not
 /// on a continuous scrub.
 fn structure_key(kind: &NodeKind) -> String {
-    use awsm_scene_schema::{CameraProjection, LightConfig, MaterialShading, PrimitiveShape};
+    use awsm_scene_schema::{CameraProjection, LightConfig, MaterialShading};
     match kind {
-        NodeKind::Primitive {
-            shape, material, ..
-        } => {
-            let shp = match shape {
-                PrimitiveShape::Plane { .. } => "plane",
-                PrimitiveShape::Box { .. } => "box",
-                PrimitiveShape::Sphere { .. } => "sphere",
-                PrimitiveShape::Cylinder { .. } => "cylinder",
-                PrimitiveShape::Cone { .. } => "cone",
-                PrimitiveShape::Torus { .. } => "torus",
-            };
-            // The inspector rows depend on the assigned material's shading model
-            // (its shared variant) — read it from the per-mesh inline store, which
-            // is seeded from that variant. Unassigned → no material rows.
+        // The Mesh inspector rows depend on the assigned material's shading model
+        // (its shared variant) — read it from the per-mesh inline store, which is
+        // seeded from that variant. Unassigned → no material rows. (Geometry is no
+        // longer edited inline — the base/stack display is informational — so the
+        // structure key doesn't vary on the stack base.)
+        NodeKind::Mesh { material, .. } => {
             let shading = match material.as_ref().map(|m| m.inline.shading) {
                 Some(MaterialShading::Pbr) => "pbr",
                 Some(MaterialShading::Unlit) => "unlit",
                 Some(MaterialShading::Toon { .. }) => "toon",
                 None => "none",
             };
-            format!("prim/{shp}/{shading}/{}", material.is_some())
+            format!("mesh/{shading}/{}", material.is_some())
         }
         NodeKind::Camera(c) => match c.projection {
             CameraProjection::Perspective { .. } => "cam/persp".into(),

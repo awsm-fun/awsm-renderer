@@ -71,12 +71,26 @@ fn captured_mesh_bitcode_roundtrip() {
     assert_eq!(mesh, back);
 }
 
-/// `MeshDef.editable` defaults to `false` for pre-feature files, and the new
-/// `CapturedSource` variants round-trip through serde + bitcode.
+/// `MeshDef.editable` defaults to `false` when omitted, and the
+/// `CapturedSource` variants round-trip through serde + bitcode. Every
+/// `MeshDef` now carries a mandatory `stack`.
 #[test]
 fn mesh_def_editable_default_and_sources() {
-    // Old files have no `editable` key → defaults false.
-    let old: MeshDef = serde_json::from_str(r#"{"label":"m"}"#).unwrap();
+    use crate::modifier::{MeshBase, ModifierStack};
+    use crate::MeshRef;
+
+    let captured = || ModifierStack {
+        base: MeshBase::Captured(MeshRef(AssetId::new())),
+        modifiers: vec![],
+    };
+
+    // A blob without the `editable` key → defaults false.
+    let json = serde_json::to_string(&serde_json::json!({
+        "label": "m",
+        "stack": { "base": { "captured": AssetId::new().0.to_string() } },
+    }))
+    .unwrap();
+    let old: MeshDef = serde_json::from_str(&json).unwrap();
     assert!(!old.editable);
 
     for src in [
@@ -90,7 +104,7 @@ fn mesh_def_editable_default_and_sources() {
             label: "m".to_string(),
             source: src,
             editable: true,
-            modifiers: None,
+            stack: captured(),
         };
         let json = serde_json::to_string(&def).unwrap();
         assert_eq!(def, serde_json::from_str::<MeshDef>(&json).unwrap());
@@ -99,14 +113,10 @@ fn mesh_def_editable_default_and_sources() {
     }
 }
 
-/// A modifier stack round-trips through serde + bitcode, and an old MeshDef
-/// (no `modifiers` key) defaults to `None`.
+/// A modifier stack round-trips through serde + bitcode.
 #[test]
 fn modifier_stack_roundtrip_and_default() {
     use crate::modifier::{Axis, MeshBase, Modifier, ModifierStack};
-
-    let old: MeshDef = serde_json::from_str(r#"{"label":"m"}"#).unwrap();
-    assert!(old.modifiers.is_none());
 
     let stack = ModifierStack {
         base: MeshBase::Lathe {

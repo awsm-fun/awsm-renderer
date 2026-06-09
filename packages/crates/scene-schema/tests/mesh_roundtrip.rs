@@ -53,7 +53,10 @@ fn project_with_mesh_asset(asset_id: AssetId, label: &str) -> EditorProject {
             label: label.to_string(),
             source: None,
             editable: false,
-            modifiers: None,
+            stack: awsm_scene_schema::ModifierStack {
+                base: awsm_scene_schema::MeshBase::Captured(awsm_scene_schema::MeshRef(asset_id)),
+                modifiers: vec![],
+            },
         })),
     );
     EditorProject {
@@ -149,7 +152,14 @@ fn mesh_asset_with_source_roundtrip() {
                 segments_lat: 12,
             })),
             editable: false,
-            modifiers: None,
+            stack: awsm_scene_schema::ModifierStack {
+                base: awsm_scene_schema::MeshBase::Primitive(PrimitiveShape::Sphere {
+                    radius: 1.25,
+                    segments_long: 24,
+                    segments_lat: 12,
+                }),
+                modifiers: vec![],
+            },
         })),
     );
     let sweep_id = AssetId::new();
@@ -168,7 +178,19 @@ fn mesh_asset_with_source_roundtrip() {
                 samples: 128,
             })),
             editable: false,
-            modifiers: None,
+            stack: awsm_scene_schema::ModifierStack {
+                base: awsm_scene_schema::MeshBase::Sweep(SweepAlongCurveDef {
+                    curve_node: NodeId::new(),
+                    cross_section: CrossSectionDef::Tube {
+                        radius: 0.3,
+                        radial_segments: 16,
+                    },
+                    uv_mode: SweepUvMode::StretchOnce,
+                    up_hint: [0.0, 1.0, 0.0],
+                    samples: 128,
+                }),
+                modifiers: vec![],
+            },
         })),
     );
     let project = EditorProject {

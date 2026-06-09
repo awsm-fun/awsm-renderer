@@ -9,7 +9,6 @@ use crate::engine::scene::types::{AssetStatus, LightConfig, LightKind, NodeKind,
 use crate::prelude::*;
 
 pub use awsm_scene_schema::NodeId;
-use awsm_scene_schema::PrimitiveShape;
 
 pub struct Node {
     pub id: NodeId,
@@ -143,17 +142,6 @@ impl Node {
     // used to create a shared `AssetSource::Material(MaterialDef)`.
     // ─────────────────────────────────────────────────────────────────────
 
-    pub fn new_primitive(name: impl Into<String>, shape: PrimitiveShape) -> Arc<Self> {
-        Self::new_inner(
-            name,
-            NodeKind::Primitive {
-                shape,
-                material: None,
-                shadow: Default::default(),
-            },
-        )
-    }
-
     pub fn new_curve(name: impl Into<String>) -> Arc<Self> {
         Self::new_inner(
             name,
@@ -186,23 +174,8 @@ impl Node {
         )
     }
 
-    /// `SweepAlongCurve` needs the user to pick a curve node id after
-    /// insert (the inspector exposes the picker). Until then the def
-    /// references the placeholder ID — the editor materializer logs a
-    /// warning and skips materialization.
-    pub fn new_sweep(name: impl Into<String>) -> Arc<Self> {
-        Self::new_inner(
-            name,
-            NodeKind::SweepAlongCurve {
-                def: awsm_scene_schema::SweepAlongCurveDef::default(),
-                material: None,
-                shadow: Default::default(),
-            },
-        )
-    }
-
-    /// Same caveat as `new_sweep` — the user picks the curve node + the
-    /// source primitive node via the inspector after insert.
+    /// The user picks the curve node + the source mesh node via the inspector
+    /// after insert.
     pub fn new_instances(name: impl Into<String>) -> Arc<Self> {
         Self::new_inner(
             name,

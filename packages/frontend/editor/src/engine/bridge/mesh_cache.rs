@@ -30,13 +30,6 @@ pub fn from_mesh_data(m: MeshData) -> CapturedMesh {
     }
 }
 
-/// Store a captured mesh under a fresh id and return it (for a `MeshRef`).
-pub fn store(captured: CapturedMesh) -> AssetId {
-    let id = AssetId::new();
-    CAPTURED.with(|c| c.borrow_mut().insert(id, captured));
-    id
-}
-
 /// Store (or replace) a captured mesh under a **known** id — the Load path
 /// restoring `assets/<id>.mesh.bin`, and the raw-edit command path
 /// (`SetMeshData`) overwriting an editable mesh in place.

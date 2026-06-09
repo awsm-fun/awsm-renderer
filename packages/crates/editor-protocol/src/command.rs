@@ -321,12 +321,12 @@ pub enum EditorCommand {
     CopyMaterialInstance { from: NodeId, to: NodeId },
 
     // ─────────────────────────── Mesh editing ────────────────────────────────
-    /// Bake a procedural node's current geometry (Primitive / Sweep) into an
-    /// **editable** captured mesh and swap the node to `NodeKind::Mesh`. The
-    /// `mesh` AssetId is **caller-minted** (deterministic data; the MCP path
-    /// echoes it). The carried material (assigned / inline / custom) survives the
-    /// swap. Idempotent: a no-op if `mesh` already exists or the node isn't a
-    /// bakeable kind. Inverse: `Batch[SetKind(prior), DeleteAsset(mesh)]`.
+    /// **Retired / no-op.** Procedural-geometry nodes are now unified on
+    /// `NodeKind::Mesh`, each already backed by an editable `MeshDef` carrying a
+    /// `ModifierStack` — so there is nothing to convert. The variant is kept for
+    /// protocol stability; `apply` does nothing (not undoable) and the MCP tool
+    /// echoes the node's existing mesh id instead of the (ignored) caller-minted
+    /// `mesh`.
     ConvertToEditableMesh { node: NodeId, mesh: AssetId },
     /// Replace an editable mesh's geometry wholesale (raw per-vertex editing / a
     /// collapsed modifier bake). The bridge re-materializes every referencing

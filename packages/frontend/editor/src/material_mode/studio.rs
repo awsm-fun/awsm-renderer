@@ -1235,16 +1235,16 @@ fn assign_to_selection(material: AssetId) {
             Toast::warning("Select a mesh in the Scene to assign this material to.");
             return;
         };
-        let is_primitive = crate::engine::scene::mutate::find_by_id(&ctrl.scene, node)
+        let is_mesh = crate::engine::scene::mutate::find_by_id(&ctrl.scene, node)
             .map(|n| {
                 matches!(
                     n.kind.get_cloned(),
-                    crate::engine::scene::NodeKind::Primitive { .. }
+                    crate::engine::scene::NodeKind::Mesh { .. }
                 )
             })
             .unwrap_or(false);
-        if !is_primitive {
-            Toast::warning("Select a mesh primitive to assign this material.");
+        if !is_mesh {
+            Toast::warning("Select a mesh to assign this material.");
             return;
         }
         let registered =

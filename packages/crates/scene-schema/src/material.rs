@@ -279,19 +279,19 @@ pub struct MeshDef {
     #[serde(default)]
     pub source: Option<CapturedSource>,
     /// When true the mesh is *editable*: its geometry is the regenerable
-    /// `.mesh.bin` cache (raw-vertex-edited or collapsed), and — once the
-    /// modifier stack lands (Phase 3) — re-evaluated from `modifiers`. Flipped on
-    /// by `ConvertToEditableMesh`. `#[serde(default)]` keeps pre-feature
-    /// project.json/bin files round-tripping (older captured meshes deserialize as
-    /// `editable = false`).
+    /// `.mesh.bin` cache (raw-vertex-edited or collapsed) re-evaluated from
+    /// `stack`. `#[serde(default)]` keeps pre-feature project.json/bin files
+    /// round-tripping (older captured meshes deserialize as `editable = false`).
     #[serde(default)]
     pub editable: bool,
-    /// The procedural recipe (modifier stack) this mesh regenerates from, when
-    /// any. `None` = no recipe; the `.mesh.bin` triangle buffer is the source of
-    /// truth (raw-edited / collapsed). `#[serde(default)]` so pre-Phase-3 captured
-    /// meshes round-trip. See [`super::modifier::ModifierStack`].
-    #[serde(default)]
-    pub modifiers: Option<super::modifier::ModifierStack>,
+    /// The procedural recipe (modifier stack) this mesh regenerates from. Every
+    /// `MeshDef` carries one: a purely-captured / imported blob is a stack whose
+    /// `base` is [`MeshBase::Captured`] (or the source's own recipe) with no
+    /// modifiers; a primitive/sweep node mints a stack with the matching
+    /// [`MeshBase::Primitive`] / [`MeshBase::Sweep`] base. The `.mesh.bin`
+    /// triangle buffer is the regenerable bake of evaluating this stack. See
+    /// [`super::modifier::ModifierStack`].
+    pub stack: super::modifier::ModifierStack,
 }
 
 /// Where a captured mesh's geometry came from. Stored on `MeshDef`

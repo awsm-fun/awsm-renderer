@@ -1,7 +1,11 @@
-//! Procedural primitive shapes authored via `NodeKind::Primitive`.
+//! Procedural primitive shapes — the [`MeshBase::Primitive`] base of a mesh
+//! [`ModifierStack`]. Every procedural-geometry node is a `NodeKind::Mesh` backed
+//! by a `MeshDef` stack; a box/sphere/… is just a stack whose base is one of
+//! these shapes, evaluated to triangles via `awsm-meshgen`'s primitive
+//! generators.
 //!
-//! The renderer materializes each shape at load time via `awsm-meshgen`'s
-//! primitive generators — there's no baking, just parameters in `project.json`.
+//! [`MeshBase::Primitive`]: super::modifier::MeshBase::Primitive
+//! [`ModifierStack`]: super::modifier::ModifierStack
 
 use super::assets::AssetId;
 

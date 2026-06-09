@@ -407,24 +407,12 @@ pub fn kind_icon(kind: &NodeKind) -> &'static str {
         NodeKind::Light(_) => "light",
         NodeKind::Collider(_) => "collision",
         NodeKind::Camera(_) => "camera",
-        NodeKind::Primitive { shape, .. } => primitive_icon(shape),
         NodeKind::Mesh { .. } => "cube",
         NodeKind::Curve(_) => "curve",
-        NodeKind::SweepAlongCurve { .. } => "curve",
         NodeKind::InstancesAlongCurve(_) => "layers",
         NodeKind::Line(_) => "curve",
         NodeKind::Sprite(_) => "sprite",
         NodeKind::ParticleEmitter(_) => "sprite",
         NodeKind::Decal(_) => "texture",
-    }
-}
-
-fn primitive_icon(shape: &PrimitiveShape) -> &'static str {
-    match shape {
-        PrimitiveShape::Plane { .. } => "plane",
-        PrimitiveShape::Box { .. } => "cube",
-        PrimitiveShape::Sphere { .. } => "sphere",
-        PrimitiveShape::Cylinder { .. } | PrimitiveShape::Cone { .. } => "cylinder",
-        PrimitiveShape::Torus { .. } => "sphere",
     }
 }

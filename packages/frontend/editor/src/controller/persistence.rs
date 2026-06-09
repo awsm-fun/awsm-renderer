@@ -295,6 +295,35 @@ pub fn apply_project(ctrl: &EditorController, project: EditorProject) {
         .map(|n| node_from_spec(&NodeSpec::from_editor_node(n)))
         .collect();
     ctrl.scene.nodes.lock_mut().replace_cloned(new_nodes);
+
+    // Re-bake any Mesh asset whose `.mesh.bin` cache wasn't restored (missing
+    // side file, or a project authored without one — e.g. the tuning-scene
+    // generator). Every `MeshDef` carries a `stack`, so its geometry is always
+    // regenerable: evaluate it against the now-live scene (resolving Sweep curve
+    // nodes / Captured refs) and store the bake so the `NodeKind::Mesh` node
+    // materializes with geometry. Skips assets already in the cache (the common
+    // path where `restore_mesh_bytes` loaded the saved bytes).
+    {
+        use crate::engine::bridge::mesh_cache;
+        let stacks: Vec<(AssetId, awsm_scene_schema::ModifierStack)> = {
+            let assets = ctrl.scene.assets.lock().unwrap();
+            assets
+                .entries
+                .iter()
+                .filter_map(|(id, entry)| match &entry.source {
+                    AssetSource::Mesh(def) if mesh_cache::get_captured(*id).is_none() => {
+                        Some((*id, def.stack.clone()))
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        for (id, stack) in stacks {
+            let baked = super::mesh_eval::evaluate_stack(&ctrl.scene, &stack);
+            mesh_cache::store_with_id(id, mesh_cache::from_mesh_data(baked));
+        }
+    }
+
     ctrl.selected.set(Vec::new());
     ctrl.scene.bump_revision();
 }

@@ -1,19 +1,10 @@
 use uuid::Uuid;
 
 use super::{
-    camera::CameraConfig,
-    collider::ColliderShape,
-    curve::CurveDef,
-    decal::DecalConfig,
-    dynamic_material::MaterialInstance,
-    instances::{InstancesAlongCurveDef, SweepAlongCurveDef},
-    light::LightConfig,
-    line::LineDef,
-    model::ModelRef,
-    particle::ParticleEmitterDef,
-    primitive::{MeshRef, PrimitiveShape},
-    sprite::SpriteDef,
-    transform::Trs,
+    camera::CameraConfig, collider::ColliderShape, curve::CurveDef, decal::DecalConfig,
+    dynamic_material::MaterialInstance, instances::InstancesAlongCurveDef, light::LightConfig,
+    line::LineDef, model::ModelRef, particle::ParticleEmitterDef, primitive::MeshRef,
+    sprite::SpriteDef, transform::Trs,
 };
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -134,22 +125,16 @@ pub enum NodeKind {
     Light(LightConfig),
     Collider(ColliderShape),
     Camera(CameraConfig),
-    /// Procedural primitive with material reference. The renderer materializes
-    /// the shape at load time via `awsm-meshgen`.
-    Primitive {
-        shape: PrimitiveShape,
-        /// The node's single material assignment. `None` means *unassigned*
-        /// and renders flat magenta (the missing-material sentinel).
-        #[serde(default)]
-        material: Option<MaterialInstance>,
-        #[serde(default)]
-        shadow: MeshShadowConfig,
-    },
-    /// A captured procedural mesh stored as an asset; multiple nodes can share it.
+    /// The sole procedural-geometry node. Backed by an `AssetSource::Mesh`
+    /// ([`super::material::MeshDef`]) referenced by `MeshRef`; the `MeshDef`
+    /// always carries a `ModifierStack { base, modifiers }`, so a box/sphere/…,
+    /// a sweep, a lathe, an SDF, or a raw-edited capture are all the same node
+    /// kind — only the stack `base` differs. Multiple nodes can share one mesh
+    /// asset.
     Mesh {
         mesh: MeshRef,
-        /// The node's single material assignment. See
-        /// [`NodeKind::Primitive`].
+        /// The node's single material assignment. `None` means *unassigned*
+        /// and renders flat magenta (the missing-material sentinel).
         #[serde(default)]
         material: Option<MaterialInstance>,
         #[serde(default)]
@@ -158,16 +143,6 @@ pub enum NodeKind {
     /// Catmull-Rom curve (control points + closed + tension). Emits no renderer
     /// node directly; consumed by sweep / instance / camera nodes.
     Curve(CurveDef),
-    /// Sweep a cross-section along a curve to produce surface geometry.
-    SweepAlongCurve {
-        def: SweepAlongCurveDef,
-        /// The node's single material assignment. See
-        /// [`NodeKind::Primitive`].
-        #[serde(default)]
-        material: Option<MaterialInstance>,
-        #[serde(default)]
-        shadow: MeshShadowConfig,
-    },
     /// Place copies of a source node along a curve.
     InstancesAlongCurve(InstancesAlongCurveDef),
     /// Authored polyline (debug-draw / neon rails / curve handles).
@@ -231,10 +206,8 @@ impl NodeKind {
             Self::Light(_) => "light",
             Self::Collider(_) => "collider",
             Self::Camera(_) => "camera",
-            Self::Primitive { .. } => "primitive",
             Self::Mesh { .. } => "mesh",
             Self::Curve(_) => "curve",
-            Self::SweepAlongCurve { .. } => "sweep",
             Self::InstancesAlongCurve(_) => "instances",
             Self::Line(_) => "line",
             Self::Sprite(_) => "sprite",
@@ -249,9 +222,7 @@ impl NodeKind {
     pub fn mesh_shadow(&self) -> Option<&MeshShadowConfig> {
         match self {
             Self::Model(r) => Some(&r.shadow),
-            Self::Primitive { shadow, .. }
-            | Self::Mesh { shadow, .. }
-            | Self::SweepAlongCurve { shadow, .. } => Some(shadow),
+            Self::Mesh { shadow, .. } => Some(shadow),
             Self::InstancesAlongCurve(d) => Some(&d.shadow),
             _ => None,
         }
@@ -261,9 +232,7 @@ impl NodeKind {
     pub fn mesh_shadow_mut(&mut self) -> Option<&mut MeshShadowConfig> {
         match self {
             Self::Model(r) => Some(&mut r.shadow),
-            Self::Primitive { shadow, .. }
-            | Self::Mesh { shadow, .. }
-            | Self::SweepAlongCurve { shadow, .. } => Some(shadow),
+            Self::Mesh { shadow, .. } => Some(shadow),
             Self::InstancesAlongCurve(d) => Some(&mut d.shadow),
             _ => None,
         }

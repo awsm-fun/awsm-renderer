@@ -6,9 +6,9 @@
 //! Evaluation (recipe → `MeshData`) lives in `awsm-meshgen` (`modifiers::evaluate`),
 //! which is pure-CPU and natively unit-tested.
 //!
-//! Stored on [`MeshDef::modifiers`](super::material::MeshDef::modifiers)
-//! (`#[serde(default)]`, so captured meshes without a recipe — raw-edited /
-//! collapsed — round-trip with `None`).
+//! Stored on [`MeshDef::stack`](super::material::MeshDef::stack) — every
+//! `MeshDef` carries one. A purely-captured / raw-edited / collapsed mesh is a
+//! stack whose `base` is [`MeshBase::Captured`] with no modifiers.
 
 use serde::{Deserialize, Serialize};
 

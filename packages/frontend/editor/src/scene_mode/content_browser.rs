@@ -648,6 +648,6 @@ fn material_users(_id: AssetId) -> usize {
         .nodes
         .lock_ref()
         .iter()
-        .filter(|n| matches!(n.kind.get_cloned(), NodeKind::Primitive { .. }))
+        .filter(|n| matches!(n.kind.get_cloned(), NodeKind::Mesh { .. }))
         .count()
 }

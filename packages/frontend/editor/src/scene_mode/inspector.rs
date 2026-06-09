@@ -7,7 +7,6 @@ use std::sync::Arc;
 
 use glam::{EulerRot, Quat};
 
-use crate::controller::NodeSpec;
 use crate::engine::scene::mutate::find_by_id;
 use crate::engine::scene::{
     AssetId, CameraConfig, CameraProjection, ColliderShape, LightConfig, Node, NodeId, NodeKind,
@@ -16,8 +15,8 @@ use crate::engine::scene::{
 use crate::prelude::*;
 use awsm_scene_schema::{
     AssetSource, BillboardMode, CurveDef, DecalConfig, LineDef, MaterialAlphaMode, MaterialDef,
-    MaterialShading, MeshRef, MeshShadowConfig, ParticleEmitterDef, PrimitiveShape,
-    ProceduralTextureDef, SpriteAlphaMode, SpriteDef, TextureDef,
+    MaterialShading, MeshShadowConfig, ParticleEmitterDef, PrimitiveShape, ProceduralTextureDef,
+    SpriteAlphaMode, SpriteDef, TextureDef,
 };
 
 /// The right rail shows the **Asset Inspector** when an asset is selected in the
@@ -148,11 +147,7 @@ fn single_node(node: Arc<Node>) -> Dom {
 fn export_node_section(node: &Arc<Node>) -> Dom {
     let exportable = matches!(
         node.kind.get_cloned(),
-        NodeKind::Primitive { .. }
-            | NodeKind::Mesh { .. }
-            | NodeKind::SweepAlongCurve { .. }
-            | NodeKind::Model(_)
-            | NodeKind::Group
+        NodeKind::Mesh { .. } | NodeKind::Model(_) | NodeKind::Group
     );
     if !exportable {
         return html!("div");
@@ -193,29 +188,22 @@ fn kind_editor(node: &Arc<Node>) -> Dom {
         NodeKind::Light(cfg) => light_editor(node, &cfg),
         NodeKind::Camera(cfg) => camera_editor(node, &cfg),
         NodeKind::Collider(shape) => collider_editor(node, &shape),
-        NodeKind::Primitive {
-            shape,
-            material,
-            shadow,
-            ..
-        } => html!("div", {
-            .child(geometry_editor(node, &shape))
-            .child(material_editor(node, &inline_of(&material), material.is_some()))
-            .child(mesh_shadow_editor(node, shadow))
-            .child(capture_mesh_button(shape))
-        }),
-        NodeKind::SweepAlongCurve { .. } => sweep_editor(node),
         NodeKind::InstancesAlongCurve(_) => instances_editor(node),
         NodeKind::Curve(def) => curve_editor(node, &def),
         NodeKind::Sprite(def) => sprite_editor(node, &def),
         NodeKind::Line(def) => line_editor(node, &def),
         NodeKind::Decal(cfg) => decal_editor(node, &cfg),
         NodeKind::ParticleEmitter(def) => particle_editor(node, &def),
-        // A captured-geometry Mesh shares the Primitive's per-mesh surface:
-        // material (built-in/dynamic + per-mesh uniforms) + shadow flags.
+        // The sole procedural-geometry node. Shows an informational geometry
+        // summary (the stack base + modifier count — editing is via MCP) plus the
+        // per-mesh surface: material (built-in/dynamic + per-mesh uniforms) and
+        // shadow flags.
         NodeKind::Mesh {
-            material, shadow, ..
+            mesh,
+            material,
+            shadow,
         } => html!("div", {
+            .child(mesh_geometry_section(mesh.0))
             .child(material_editor(node, &inline_of(&material), material.is_some()))
             .child(mesh_shadow_editor(node, shadow))
         }),
@@ -231,6 +219,58 @@ fn kind_editor(node: &Arc<Node>) -> Dom {
             .child(mesh_shadow_editor(node, r.shadow))
         }),
     }
+}
+
+/// Read-only geometry summary for a `NodeKind::Mesh`: the backing `MeshDef`'s
+/// stack base (box / sphere / sweep / lathe / SDF / captured) + modifier count.
+/// Geometry editing is done via MCP (`set_mesh_modifiers` / vertex tools), so
+/// this is purely informational. Falls back to a "missing asset" note when the
+/// referenced mesh asset isn't in the table.
+fn mesh_geometry_section(mesh: awsm_scene_schema::AssetId) -> Dom {
+    use awsm_scene_schema::modifier::MeshBase;
+
+    let summary = {
+        let ctrl = controller();
+        let assets = ctrl.scene.assets.lock().unwrap();
+        match assets.get(mesh).map(|e| &e.source) {
+            Some(AssetSource::Mesh(def)) => {
+                let base = match &def.stack.base {
+                    MeshBase::Primitive(s) => match s {
+                        PrimitiveShape::Plane { .. } => "plane".to_string(),
+                        PrimitiveShape::Box { .. } => "box".to_string(),
+                        PrimitiveShape::Sphere { .. } => "sphere".to_string(),
+                        PrimitiveShape::Cylinder { .. } => "cylinder".to_string(),
+                        PrimitiveShape::Cone { .. } => "cone".to_string(),
+                        PrimitiveShape::Torus { .. } => "torus".to_string(),
+                    },
+                    MeshBase::Lathe { .. } => "lathe".to_string(),
+                    MeshBase::Superquadric { .. } => "superquadric".to_string(),
+                    MeshBase::Sweep(_) => "sweep along curve".to_string(),
+                    MeshBase::Captured(_) => "captured".to_string(),
+                    MeshBase::Sdf { .. } => "SDF/CSG".to_string(),
+                };
+                let n = def.stack.modifiers.len();
+                let mods = if n == 1 {
+                    "1 modifier".to_string()
+                } else {
+                    format!("{n} modifiers")
+                };
+                format!("base: {base} · {mods}")
+            }
+            _ => "geometry asset missing".to_string(),
+        }
+    };
+    Section::new("Geometry")
+        .dense(true)
+        .child(html!("div", {
+            .style("font-size", "12px").style("color", "var(--text-3)").style("line-height", "1.5")
+            .text(&summary)
+        }))
+        .child(html!("div", {
+            .style("font-size", "11px").style("color", "var(--text-4)").style("margin-top", "4px")
+            .text("Edit the modifier stack + vertices via the MCP mesh tools.")
+        }))
+        .render()
 }
 
 /// A small read-only info Section (used for kinds whose only settable properties
@@ -310,80 +350,6 @@ fn ref_picker(
     row(label, select(sel, options))
 }
 
-/// "Capture as Mesh asset": freeze this primitive's geometry into a captured
-/// mesh + spawn a `Mesh` node referencing it (shared, reusable geometry).
-fn capture_mesh_button(shape: PrimitiveShape) -> Dom {
-    html!("div", {
-        .style("margin-top", "10px")
-        .child(Btn::new()
-            .label("Capture as Mesh asset")
-            .icon("mesh")
-            .variant(BtnVariant::Solid)
-            .full(true)
-            .on_click(move || {
-                let mesh = crate::engine::bridge::node_sync::primitive_to_mesh(&shape);
-                let id = crate::engine::bridge::mesh_cache::store(
-                    crate::engine::bridge::mesh_cache::from_mesh_data(mesh),
-                );
-                let node = NodeSpec {
-                    id: NodeId::new(),
-                    name: "Captured Mesh".to_string(),
-                    transform: Trs::default(),
-                    kind: NodeKind::Mesh {
-                        mesh: MeshRef(id),
-                        material: None,
-                        shadow: MeshShadowConfig::default(),
-                    },
-                    locked: false,
-                    visible: true,
-                    prefab: false,
-                    children: Vec::new(),
-                };
-                spawn_local(async move {
-                    let _ = controller()
-                        .dispatch(EditorCommand::InsertTree {
-                            node: Box::new(node),
-                            parent: None,
-                            index: None,
-                        })
-                        .await;
-                    Toast::info("Captured mesh \u{2192} new Mesh node");
-                });
-            })
-            .render())
-    })
-}
-
-fn sweep_editor(node: &Arc<Node>) -> Dom {
-    let id = node.id;
-    let curve_node = match node.kind.get_cloned() {
-        NodeKind::SweepAlongCurve { def, .. } => def.curve_node,
-        _ => NodeId::nil(),
-    };
-    let curves = collect_kind_nodes(|k| matches!(k, NodeKind::Curve(_)));
-    let n = node.clone();
-    Section::new("Sweep")
-        .child(ref_picker("Curve", curves, curve_node, move |picked| {
-            if let NodeKind::SweepAlongCurve {
-                mut def,
-                material,
-                shadow,
-            } = n.kind.get_cloned()
-            {
-                def.curve_node = picked;
-                dispatch_kind(
-                    id,
-                    NodeKind::SweepAlongCurve {
-                        def,
-                        material,
-                        shadow,
-                    },
-                );
-            }
-        }))
-        .render()
-}
-
 fn instances_editor(node: &Arc<Node>) -> Dom {
     let id = node.id;
     let def = match node.kind.get_cloned() {
@@ -391,7 +357,7 @@ fn instances_editor(node: &Arc<Node>) -> Dom {
         _ => return html!("div", {}),
     };
     let curves = collect_kind_nodes(|k| matches!(k, NodeKind::Curve(_)));
-    let sources = collect_kind_nodes(|k| matches!(k, NodeKind::Primitive { .. }));
+    let sources = collect_kind_nodes(|k| matches!(k, NodeKind::Mesh { .. }));
     let n_curve = node.clone();
     let n_src = node.clone();
     Section::new("Instances")
@@ -2753,9 +2719,7 @@ fn node_material_instance(
     node: &Arc<Node>,
 ) -> Option<awsm_scene_schema::dynamic_material::MaterialInstance> {
     match node.kind.get_cloned() {
-        NodeKind::Primitive { material, .. }
-        | NodeKind::Mesh { material, .. }
-        | NodeKind::SweepAlongCurve { material, .. } => material,
+        NodeKind::Mesh { material, .. } => material,
         // A Model node stores its single assignment (built-in or dynamic) in
         // `material`; per-mesh inline uniforms + texture/buffer overrides live on it.
         NodeKind::Model(r) => r.material,
@@ -2769,26 +2733,10 @@ fn set_node_material(
     inst: awsm_scene_schema::dynamic_material::MaterialInstance,
 ) {
     match node.kind.get_cloned() {
-        NodeKind::Primitive { shape, shadow, .. } => dispatch_kind(
-            node.id,
-            NodeKind::Primitive {
-                shape,
-                material: Some(inst),
-                shadow,
-            },
-        ),
         NodeKind::Mesh { mesh, shadow, .. } => dispatch_kind(
             node.id,
             NodeKind::Mesh {
                 mesh,
-                material: Some(inst),
-                shadow,
-            },
-        ),
-        NodeKind::SweepAlongCurve { def, shadow, .. } => dispatch_kind(
-            node.id,
-            NodeKind::SweepAlongCurve {
-                def,
                 material: Some(inst),
                 shadow,
             },
@@ -2925,16 +2873,13 @@ fn uniform_bool(node: &Arc<Node>, name: &str, value: bool) -> Dom {
 
 // ── Shadows (per-mesh cast / receive) ─────────────────────────────────────────
 
-/// Replace a Primitive's `shadow`, preserving the rest of the kind.
+/// Replace a Mesh's `shadow`, preserving the rest of the kind.
 fn set_mesh_shadow(node: &Arc<Node>, shadow: MeshShadowConfig) {
-    if let NodeKind::Primitive {
-        shape, material, ..
-    } = node.kind.get_cloned()
-    {
+    if let NodeKind::Mesh { mesh, material, .. } = node.kind.get_cloned() {
         dispatch_kind(
             node.id,
-            NodeKind::Primitive {
-                shape,
+            NodeKind::Mesh {
+                mesh,
                 material,
                 shadow,
             },
@@ -2951,7 +2896,7 @@ fn mesh_shadow_editor(node: &Arc<Node>, shadow: MeshShadowConfig) -> Dom {
             first = false;
             clone!(node => async move {
                 if !fire { return; }
-                if let NodeKind::Primitive { shadow, .. } = node.kind.get_cloned() {
+                if let NodeKind::Mesh { shadow, .. } = node.kind.get_cloned() {
                     if shadow.cast != on {
                         set_mesh_shadow(&node, MeshShadowConfig { cast: on, ..shadow });
                     }
@@ -2967,7 +2912,7 @@ fn mesh_shadow_editor(node: &Arc<Node>, shadow: MeshShadowConfig) -> Dom {
             first = false;
             clone!(node => async move {
                 if !fire { return; }
-                if let NodeKind::Primitive { shadow, .. } = node.kind.get_cloned() {
+                if let NodeKind::Mesh { shadow, .. } = node.kind.get_cloned() {
                     if shadow.receive != on {
                         set_mesh_shadow(&node, MeshShadowConfig { receive: on, ..shadow });
                     }
@@ -3164,375 +3109,6 @@ fn with_range(cfg: LightConfig, range: f32) -> LightConfig {
             shadow,
         },
         other => other,
-    }
-}
-
-fn geometry_editor(node: &Arc<Node>, shape: &PrimitiveShape) -> Dom {
-    let mut sec = Section::new("Geometry");
-    let num = |label: &str, val: f64, step: f64, min: f64, on_change: Box<dyn FnMut(f64)>| -> Dom {
-        row(
-            label,
-            NumField::new(val)
-                .step(step)
-                .min(min)
-                .on_change(on_change)
-                .render(),
-        )
-    };
-    match shape {
-        PrimitiveShape::Plane { width, depth, .. } => {
-            let n = node.clone();
-            sec = sec.child(num(
-                "Width",
-                *width as f64,
-                0.1,
-                0.01,
-                Box::new(move |v| {
-                    if let Some(PrimitiveShape::Plane {
-                        depth,
-                        segments_x,
-                        segments_z,
-                        ..
-                    }) = current_shape(&n)
-                    {
-                        set_shape(
-                            &n,
-                            PrimitiveShape::Plane {
-                                width: v as f32,
-                                depth,
-                                segments_x,
-                                segments_z,
-                            },
-                        );
-                    }
-                }),
-            ));
-            let n = node.clone();
-            sec = sec.child(num(
-                "Depth",
-                *depth as f64,
-                0.1,
-                0.01,
-                Box::new(move |v| {
-                    if let Some(PrimitiveShape::Plane {
-                        width,
-                        segments_x,
-                        segments_z,
-                        ..
-                    }) = current_shape(&n)
-                    {
-                        set_shape(
-                            &n,
-                            PrimitiveShape::Plane {
-                                width,
-                                depth: v as f32,
-                                segments_x,
-                                segments_z,
-                            },
-                        );
-                    }
-                }),
-            ));
-        }
-        PrimitiveShape::Box { dims } => {
-            for (i, axis) in ["Width", "Height", "Depth"].iter().enumerate() {
-                let n = node.clone();
-                sec = sec.child(num(
-                    axis,
-                    dims[i] as f64,
-                    0.1,
-                    0.01,
-                    Box::new(move |v| {
-                        if let Some(PrimitiveShape::Box { mut dims }) = current_shape(&n) {
-                            dims[i] = v as f32;
-                            set_shape(&n, PrimitiveShape::Box { dims });
-                        }
-                    }),
-                ));
-            }
-        }
-        PrimitiveShape::Sphere {
-            radius,
-            segments_long,
-            segments_lat,
-        } => {
-            let n = node.clone();
-            sec = sec.child(num(
-                "Radius",
-                *radius as f64,
-                0.05,
-                0.01,
-                Box::new(move |v| {
-                    if let Some(PrimitiveShape::Sphere {
-                        segments_long,
-                        segments_lat,
-                        ..
-                    }) = current_shape(&n)
-                    {
-                        set_shape(
-                            &n,
-                            PrimitiveShape::Sphere {
-                                radius: v as f32,
-                                segments_long,
-                                segments_lat,
-                            },
-                        );
-                    }
-                }),
-            ));
-            let n = node.clone();
-            sec = sec.child(num(
-                "Segments (long)",
-                *segments_long as f64,
-                1.0,
-                3.0,
-                Box::new(move |v| {
-                    if let Some(PrimitiveShape::Sphere {
-                        radius,
-                        segments_lat,
-                        ..
-                    }) = current_shape(&n)
-                    {
-                        set_shape(
-                            &n,
-                            PrimitiveShape::Sphere {
-                                radius,
-                                segments_long: (v.round() as u32).max(3),
-                                segments_lat,
-                            },
-                        );
-                    }
-                }),
-            ));
-            let n = node.clone();
-            sec = sec.child(num(
-                "Segments (lat)",
-                *segments_lat as f64,
-                1.0,
-                2.0,
-                Box::new(move |v| {
-                    if let Some(PrimitiveShape::Sphere {
-                        radius,
-                        segments_long,
-                        ..
-                    }) = current_shape(&n)
-                    {
-                        set_shape(
-                            &n,
-                            PrimitiveShape::Sphere {
-                                radius,
-                                segments_long,
-                                segments_lat: (v.round() as u32).max(2),
-                            },
-                        );
-                    }
-                }),
-            ));
-        }
-        PrimitiveShape::Cylinder {
-            radius,
-            height,
-            radial_segments,
-        } => {
-            let n = node.clone();
-            sec = sec.child(num(
-                "Radius",
-                *radius as f64,
-                0.05,
-                0.01,
-                Box::new(move |v| {
-                    if let Some(PrimitiveShape::Cylinder {
-                        height,
-                        radial_segments,
-                        ..
-                    }) = current_shape(&n)
-                    {
-                        set_shape(
-                            &n,
-                            PrimitiveShape::Cylinder {
-                                radius: v as f32,
-                                height,
-                                radial_segments,
-                            },
-                        );
-                    }
-                }),
-            ));
-            let n = node.clone();
-            sec = sec.child(num(
-                "Height",
-                *height as f64,
-                0.1,
-                0.01,
-                Box::new(move |v| {
-                    if let Some(PrimitiveShape::Cylinder {
-                        radius,
-                        radial_segments,
-                        ..
-                    }) = current_shape(&n)
-                    {
-                        set_shape(
-                            &n,
-                            PrimitiveShape::Cylinder {
-                                radius,
-                                height: v as f32,
-                                radial_segments,
-                            },
-                        );
-                    }
-                }),
-            ));
-            let n = node.clone();
-            sec = sec.child(num(
-                "Segments",
-                *radial_segments as f64,
-                1.0,
-                3.0,
-                Box::new(move |v| {
-                    if let Some(PrimitiveShape::Cylinder { radius, height, .. }) = current_shape(&n)
-                    {
-                        set_shape(
-                            &n,
-                            PrimitiveShape::Cylinder {
-                                radius,
-                                height,
-                                radial_segments: (v.round() as u32).max(3),
-                            },
-                        );
-                    }
-                }),
-            ));
-        }
-        PrimitiveShape::Cone { radius, height, .. } => {
-            let n = node.clone();
-            sec = sec.child(num(
-                "Radius",
-                *radius as f64,
-                0.05,
-                0.01,
-                Box::new(move |v| {
-                    if let Some(PrimitiveShape::Cone {
-                        height,
-                        radial_segments,
-                        ..
-                    }) = current_shape(&n)
-                    {
-                        set_shape(
-                            &n,
-                            PrimitiveShape::Cone {
-                                radius: v as f32,
-                                height,
-                                radial_segments,
-                            },
-                        );
-                    }
-                }),
-            ));
-            let n = node.clone();
-            sec = sec.child(num(
-                "Height",
-                *height as f64,
-                0.1,
-                0.01,
-                Box::new(move |v| {
-                    if let Some(PrimitiveShape::Cone {
-                        radius,
-                        radial_segments,
-                        ..
-                    }) = current_shape(&n)
-                    {
-                        set_shape(
-                            &n,
-                            PrimitiveShape::Cone {
-                                radius,
-                                height: v as f32,
-                                radial_segments,
-                            },
-                        );
-                    }
-                }),
-            ));
-        }
-        PrimitiveShape::Torus {
-            radius, thickness, ..
-        } => {
-            let n = node.clone();
-            sec = sec.child(num(
-                "Radius",
-                *radius as f64,
-                0.05,
-                0.01,
-                Box::new(move |v| {
-                    if let Some(PrimitiveShape::Torus {
-                        thickness,
-                        segments_major,
-                        segments_minor,
-                        ..
-                    }) = current_shape(&n)
-                    {
-                        set_shape(
-                            &n,
-                            PrimitiveShape::Torus {
-                                radius: v as f32,
-                                thickness,
-                                segments_major,
-                                segments_minor,
-                            },
-                        );
-                    }
-                }),
-            ));
-            let n = node.clone();
-            sec = sec.child(num(
-                "Thickness",
-                *thickness as f64,
-                0.02,
-                0.005,
-                Box::new(move |v| {
-                    if let Some(PrimitiveShape::Torus {
-                        radius,
-                        segments_major,
-                        segments_minor,
-                        ..
-                    }) = current_shape(&n)
-                    {
-                        set_shape(
-                            &n,
-                            PrimitiveShape::Torus {
-                                radius,
-                                thickness: v as f32,
-                                segments_major,
-                                segments_minor,
-                            },
-                        );
-                    }
-                }),
-            ));
-        }
-    }
-    sec.render()
-}
-
-fn current_shape(node: &Arc<Node>) -> Option<PrimitiveShape> {
-    match node.kind.get_cloned() {
-        NodeKind::Primitive { shape, .. } => Some(shape),
-        _ => None,
-    }
-}
-
-fn set_shape(node: &Arc<Node>, shape: PrimitiveShape) {
-    if let NodeKind::Primitive {
-        material, shadow, ..
-    } = node.kind.get_cloned()
-    {
-        dispatch_kind(
-            node.id,
-            NodeKind::Primitive {
-                shape,
-                material,
-                shadow,
-            },
-        );
     }
 }
 
