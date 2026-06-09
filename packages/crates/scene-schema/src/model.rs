@@ -1,7 +1,4 @@
-use super::{
-    assets::AssetId, dynamic_material::CustomMaterialInstance, material::MaterialDef,
-    tree::MeshShadowConfig,
-};
+use super::{assets::AssetId, dynamic_material::MaterialInstance, tree::MeshShadowConfig};
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -25,19 +22,13 @@ pub struct ModelRef {
     /// missing-material sentinel — exactly like an unassigned primitive. A glTF
     /// node whose primitives use *different* materials is split at import into
     /// one child node per primitive (each with its own `primitive_index` +
-    /// `material`), so this single slot is always sufficient. The instance also
-    /// carries per-node uniform/texture/buffer overrides, so one library
-    /// material can be shared across many nodes and customized per node.
+    /// `material`), so this single slot is always sufficient. The instance
+    /// carries the per-mesh built-in uniform values (`inline`) seeded at import
+    /// from the glTF material's factors, plus per-node uniform/texture/buffer
+    /// overrides, so one library material can be shared across many nodes and
+    /// customized per node.
     #[serde(default)]
-    pub material: Option<CustomMaterialInstance>,
-    /// Per-mesh **uniform** values for a built-in assigned material (base color /
-    /// opacity / metallic / roughness / emissive) — the same per-mesh store a
-    /// Primitive/Mesh node carries. Seeded at import from the glTF material's
-    /// factors; merged over the assigned material's shared variant by
-    /// `builtin_merged`. Non-recompiling overrides (textures, etc.) live in
-    /// `material`'s override maps.
-    #[serde(default)]
-    pub inline_material: MaterialDef,
+    pub material: Option<MaterialInstance>,
     /// Per-mesh shadow cast / receive flags.
     #[serde(default)]
     pub shadow: MeshShadowConfig,

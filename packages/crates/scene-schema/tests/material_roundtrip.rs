@@ -169,7 +169,7 @@ fn material_bitcode_roundtrip() {
 #[test]
 fn material_mutation_survives_roundtrip() {
     // The editor's flow is: open project → mutate the MaterialDef behind
-    // a MaterialRef → Save. Reproduce that ordering and assert the
+    // an asset entry → Save. Reproduce that ordering and assert the
     // mutated values survive both encodings.
     let asset_id = AssetId::new();
     let mut project = sample_project_with_material(asset_id);

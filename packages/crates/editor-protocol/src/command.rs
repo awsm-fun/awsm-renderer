@@ -295,10 +295,11 @@ pub enum EditorCommand {
     /// Clear the pinned frame time — back to the wall-clock source. **Transient**.
     ClearFrameTime,
 
-    /// Assign a custom WGSL material (by id) to a scene node's mesh, or clear it
-    /// (`material: None`). Sets the node's `custom_material` reference. Inverse:
-    /// restore the node's prior kind (a `SetKind`). The bridge renders the
-    /// assigned material once it's registered with the renderer.
+    /// Assign a library material (built-in or custom WGSL, by id) to a scene
+    /// node's mesh, or clear it (`material: None` → magenta). Sets the node's
+    /// single `material: Option<MaterialInstance>` field. Inverse: restore the
+    /// node's prior kind (a `SetKind`). The bridge renders the assigned material
+    /// once it's registered with the renderer.
     AssignMaterial {
         node: NodeId,
         material: Option<AssetId>,
@@ -420,7 +421,7 @@ pub enum EditorCommand {
     },
     /// Bind a texture asset into a mesh node's assigned custom-material texture
     /// slot (by slot name), or clear it (`texture: None`). Writes the node's
-    /// `CustomMaterialInstance::texture_overrides`. The node must already have a
+    /// `MaterialInstance::texture_overrides`. The node must already have a
     /// custom material assigned with a matching declared texture slot. Inverse:
     /// restore the node's prior kind.
     SetMaterialTexture {

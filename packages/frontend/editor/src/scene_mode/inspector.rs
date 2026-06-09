@@ -152,13 +152,12 @@ fn kind_editor(node: &Arc<Node>) -> Dom {
         NodeKind::Collider(shape) => collider_editor(node, &shape),
         NodeKind::Primitive {
             shape,
-            inline_material,
-            custom_material,
+            material,
             shadow,
             ..
         } => html!("div", {
             .child(geometry_editor(node, &shape))
-            .child(material_editor(node, &inline_material, custom_material.is_some()))
+            .child(material_editor(node, &inline_of(&material), material.is_some()))
             .child(mesh_shadow_editor(node, shadow))
             .child(capture_mesh_button(shape))
         }),
@@ -172,12 +171,9 @@ fn kind_editor(node: &Arc<Node>) -> Dom {
         // A captured-geometry Mesh shares the Primitive's per-mesh surface:
         // material (built-in/dynamic + per-mesh uniforms) + shadow flags.
         NodeKind::Mesh {
-            inline_material,
-            custom_material,
-            shadow,
-            ..
+            material, shadow, ..
         } => html!("div", {
-            .child(material_editor(node, &inline_material, custom_material.is_some()))
+            .child(material_editor(node, &inline_of(&material), material.is_some()))
             .child(mesh_shadow_editor(node, shadow))
         }),
         // A Group is purely an organisational transform parent — name + transform
@@ -188,7 +184,7 @@ fn kind_editor(node: &Arc<Node>) -> Dom {
         // surface as a captured Mesh: built-in uniform factors + texture
         // overrides, or a dynamic material's declared overrides, and shadow flags.
         NodeKind::Model(r) => html!("div", {
-            .child(material_editor(node, &r.inline_material, r.material.is_some()))
+            .child(material_editor(node, &inline_of(&r.material), r.material.is_some()))
             .child(mesh_shadow_editor(node, r.shadow))
         }),
     }
@@ -293,8 +289,6 @@ fn capture_mesh_button(shape: PrimitiveShape) -> Dom {
                     kind: NodeKind::Mesh {
                         mesh: MeshRef(id),
                         material: None,
-                        inline_material: MaterialDef::default(),
-                        custom_material: None,
                         shadow: MeshShadowConfig::default(),
                     },
                     locked: false,
@@ -330,8 +324,6 @@ fn sweep_editor(node: &Arc<Node>) -> Dom {
             if let NodeKind::SweepAlongCurve {
                 mut def,
                 material,
-                inline_material,
-                custom_material,
                 shadow,
             } = n.kind.get_cloned()
             {
@@ -341,8 +333,6 @@ fn sweep_editor(node: &Arc<Node>) -> Dom {
                     NodeKind::SweepAlongCurve {
                         def,
                         material,
-                        inline_material,
-                        custom_material,
                         shadow,
                     },
                 );
@@ -1163,61 +1153,20 @@ fn collider_editor(node: &Arc<Node>, shape: &ColliderShape) -> Dom {
 // ── Material (built-in inline_material) ───────────────────────────────────────
 
 /// The per-mesh inline material of a Primitive **or** a captured Mesh node (both
-/// share the same material surface in the inspector).
+/// share the same material surface in the inspector). `None` when the node is
+/// unassigned (nothing to edit on a magenta node).
 fn current_primitive_material(node: &Arc<Node>) -> Option<MaterialDef> {
-    match node.kind.get_cloned() {
-        NodeKind::Primitive {
-            inline_material, ..
-        }
-        | NodeKind::Mesh {
-            inline_material, ..
-        } => Some(inline_material),
-        NodeKind::Model(r) => Some(r.inline_material),
-        _ => None,
-    }
+    node_material_instance(node).map(|inst| inst.inline)
 }
 
-/// Replace a Primitive's or Mesh's `inline_material`, preserving the rest of the kind.
+/// Replace the node's per-mesh inline uniform store, preserving the rest of the
+/// assigned instance + kind. A no-op when the node is unassigned.
 fn set_inline_material(node: &Arc<Node>, mat: MaterialDef) {
-    match node.kind.get_cloned() {
-        NodeKind::Primitive {
-            shape,
-            material,
-            custom_material,
-            shadow,
-            ..
-        } => dispatch_kind(
-            node.id,
-            NodeKind::Primitive {
-                shape,
-                material,
-                inline_material: mat,
-                custom_material,
-                shadow,
-            },
-        ),
-        NodeKind::Mesh {
-            mesh,
-            material,
-            custom_material,
-            shadow,
-            ..
-        } => dispatch_kind(
-            node.id,
-            NodeKind::Mesh {
-                mesh,
-                material,
-                inline_material: mat,
-                custom_material,
-                shadow,
-            },
-        ),
-        NodeKind::Model(mut r) => {
-            r.inline_material = mat;
-            dispatch_kind(node.id, NodeKind::Model(r));
-        }
-        _ => {}
-    }
+    let Some(mut inst) = node_material_instance(node) else {
+        return;
+    };
+    inst.inline = mat;
+    set_node_material(node, inst);
 }
 
 /// Reactive material-assignment dropdown — rebuilds whenever the custom-material
@@ -1255,14 +1204,7 @@ fn build_material_select(node: &Arc<Node>) -> Option<Dom> {
         .iter()
         .map(|m| (m.id, m.name.get_cloned()))
         .collect();
-    let current: Option<AssetId> = match node.kind.get_cloned() {
-        NodeKind::Primitive {
-            custom_material: Some(inst),
-            ..
-        } => Some(inst.material),
-        NodeKind::Model(r) => r.material.map(|i| i.material),
-        _ => None,
-    };
+    let current: Option<AssetId> = node_material_instance(node).map(|i| i.asset);
     // A DropButton whose items dispatch `AssignMaterial` directly on click —
     // robust against the reactive rebuild (no Mutable-observer race). The button
     // label reflects the current assignment; the inspector rebuilds on assign.
@@ -1323,20 +1265,8 @@ enum Assigned {
 }
 
 fn assigned_material(node: &Arc<Node>) -> Assigned {
-    let id = match node.kind.get_cloned() {
-        NodeKind::Primitive {
-            custom_material: Some(inst),
-            ..
-        }
-        | NodeKind::Mesh {
-            custom_material: Some(inst),
-            ..
-        } => inst.material,
-        NodeKind::Model(r) => match r.material {
-            Some(inst) => inst.material,
-            None => return Assigned::None,
-        },
-        _ => return Assigned::None,
+    let Some(id) = node_material_instance(node).map(|i| i.asset) else {
+        return Assigned::None;
     };
     match crate::controller::custom_material::find_material(&controller().custom_materials, id) {
         Some(m) if m.is_builtin() => Assigned::Builtin,
@@ -1347,21 +1277,10 @@ fn assigned_material(node: &Arc<Node>) -> Assigned {
 
 /// The shading model of the **assigned** library material (which decides whether to
 /// show the PBR factor knobs), or `None` when nothing resolvable is assigned. Note:
-/// the *mesh's* `inline_material.shading` is irrelevant — shading is a variant
-/// setting that lives on the material.
+/// the *mesh's* `inline.shading` is irrelevant — shading is a variant setting that
+/// lives on the material.
 fn assigned_shading(node: &Arc<Node>) -> Option<MaterialShading> {
-    let id = match node.kind.get_cloned() {
-        NodeKind::Primitive {
-            custom_material: Some(inst),
-            ..
-        }
-        | NodeKind::Mesh {
-            custom_material: Some(inst),
-            ..
-        } => inst.material,
-        NodeKind::Model(r) => r.material?.material,
-        _ => return None,
-    };
+    let id = node_material_instance(node).map(|i| i.asset)?;
     crate::controller::custom_material::find_material(&controller().custom_materials, id)
         .and_then(|m| m.builtin.get_cloned())
         .map(|def| def.shading)
@@ -1684,13 +1603,10 @@ fn material_editor(node: &Arc<Node>, mat: &MaterialDef, _has_custom: bool) -> Do
 /// node (its shared defaults — texture slots, shading, factors), or `None` when
 /// the node has no built-in material assigned.
 fn assigned_builtin_def(node: &Arc<Node>) -> Option<MaterialDef> {
-    let inst = current_custom_instance(node)?;
-    crate::controller::custom_material::find_material(
-        &controller().custom_materials,
-        inst.material,
-    )?
-    .builtin
-    .get_cloned()
+    let inst = node_material_instance(node)?;
+    crate::controller::custom_material::find_material(&controller().custom_materials, inst.asset)?
+        .builtin
+        .get_cloned()
 }
 
 /// A small uppercase subsection header row (for grouping uniform overrides).
@@ -2209,19 +2125,19 @@ fn builtin_uniform_extras(
 /// Per-mesh override editor for an assigned **dynamic** material's declared
 /// uniform slots (#4.2). Each uniform the material declares is shown here with a
 /// control seeded from its default (or this mesh's existing override); editing
-/// it writes a per-mesh entry into `CustomMaterialInstance::uniform_overrides`,
+/// it writes a per-mesh entry into `MaterialInstance::uniform_overrides`,
 /// which `dynamic::insert_custom` applies when materializing the mesh. Texture /
 /// buffer slot overrides are a follow-on; uniforms are the common case the user
 /// hit (declared uniforms weren't exposed on the mesh at all).
 fn dynamic_overrides(node: &Arc<Node>) -> Dom {
     use awsm_scene_schema::dynamic_material::UniformValue as UV;
 
-    let Some(inst) = current_custom_instance(node) else {
+    let Some(inst) = node_material_instance(node) else {
         return html!("div", {});
     };
     let Some(mat) = crate::controller::custom_material::find_material(
         &controller().custom_materials,
-        inst.material,
+        inst.asset,
     ) else {
         return html!("div", {});
     };
@@ -2397,7 +2313,7 @@ fn set_buffer_override(
     name: &str,
     value: Option<awsm_scene_schema::dynamic_material::BufferRef>,
 ) {
-    if let Some(mut inst) = current_custom_instance(node) {
+    if let Some(mut inst) = node_material_instance(node) {
         match value {
             Some(b) => {
                 inst.buffer_overrides.insert(name.to_string(), b);
@@ -2406,7 +2322,7 @@ fn set_buffer_override(
                 inst.buffer_overrides.remove(name);
             }
         }
-        set_custom_instance(node, inst);
+        set_node_material(node, inst);
     }
 }
 
@@ -2474,7 +2390,7 @@ fn set_texture_override(
     name: &str,
     value: Option<awsm_scene_schema::TextureRef>,
 ) {
-    if let Some(mut inst) = current_custom_instance(node) {
+    if let Some(mut inst) = node_material_instance(node) {
         match value {
             Some(t) => {
                 inst.texture_overrides.insert(name.to_string(), t);
@@ -2483,7 +2399,7 @@ fn set_texture_override(
                 inst.texture_overrides.remove(name);
             }
         }
-        set_custom_instance(node, inst);
+        set_node_material(node, inst);
     }
 }
 
@@ -2500,7 +2416,7 @@ fn read_slot(node: &Arc<Node>, slot: &str, is_ext: bool) -> Option<awsm_scene_sc
         current_primitive_material(node)
             .and_then(|m| crate::controller::get_ext_texture(&m.extensions, slot))
     } else {
-        current_custom_instance(node).and_then(|i| i.texture_overrides.get(slot).copied())
+        node_material_instance(node).and_then(|i| i.texture_overrides.get(slot).copied())
     }
 }
 
@@ -2789,59 +2705,48 @@ fn texture_slot_rows(
     rows
 }
 
-/// The per-mesh `CustomMaterialInstance` on a Primitive/Mesh node, if any.
-fn current_custom_instance(
+/// The single per-mesh `MaterialInstance` on a geometry node, if assigned.
+fn node_material_instance(
     node: &Arc<Node>,
-) -> Option<awsm_scene_schema::dynamic_material::CustomMaterialInstance> {
+) -> Option<awsm_scene_schema::dynamic_material::MaterialInstance> {
     match node.kind.get_cloned() {
-        NodeKind::Primitive {
-            custom_material, ..
-        }
-        | NodeKind::Mesh {
-            custom_material, ..
-        } => custom_material,
+        NodeKind::Primitive { material, .. }
+        | NodeKind::Mesh { material, .. }
+        | NodeKind::SweepAlongCurve { material, .. } => material,
         // A Model node stores its single assignment (built-in or dynamic) in
-        // `material`; per-mesh texture/uniform/buffer overrides live on it.
+        // `material`; per-mesh inline uniforms + texture/buffer overrides live on it.
         NodeKind::Model(r) => r.material,
         _ => None,
     }
 }
 
-/// Replace the node's `custom_material` instance, preserving the rest of the kind.
-fn set_custom_instance(
+/// Replace the node's `material` instance, preserving the rest of the kind.
+fn set_node_material(
     node: &Arc<Node>,
-    inst: awsm_scene_schema::dynamic_material::CustomMaterialInstance,
+    inst: awsm_scene_schema::dynamic_material::MaterialInstance,
 ) {
     match node.kind.get_cloned() {
-        NodeKind::Primitive {
-            shape,
-            material,
-            inline_material,
-            shadow,
-            ..
-        } => dispatch_kind(
+        NodeKind::Primitive { shape, shadow, .. } => dispatch_kind(
             node.id,
             NodeKind::Primitive {
                 shape,
-                material,
-                inline_material,
-                custom_material: Some(inst),
+                material: Some(inst),
                 shadow,
             },
         ),
-        NodeKind::Mesh {
-            mesh,
-            material,
-            inline_material,
-            shadow,
-            ..
-        } => dispatch_kind(
+        NodeKind::Mesh { mesh, shadow, .. } => dispatch_kind(
             node.id,
             NodeKind::Mesh {
                 mesh,
-                material,
-                inline_material,
-                custom_material: Some(inst),
+                material: Some(inst),
+                shadow,
+            },
+        ),
+        NodeKind::SweepAlongCurve { def, shadow, .. } => dispatch_kind(
+            node.id,
+            NodeKind::SweepAlongCurve {
+                def,
+                material: Some(inst),
                 shadow,
             },
         ),
@@ -2853,15 +2758,27 @@ fn set_custom_instance(
     }
 }
 
+/// The per-mesh inline uniform store for a (possibly `None`) assignment — the
+/// built-in's per-mesh values, or a default for an unassigned node. Used as the
+/// `material_editor`'s read-only `MaterialDef` view.
+fn inline_of(
+    material: &Option<awsm_scene_schema::dynamic_material::MaterialInstance>,
+) -> MaterialDef {
+    material
+        .as_ref()
+        .map(|i| i.inline.clone())
+        .unwrap_or_default()
+}
+
 /// Write one per-mesh uniform override and re-materialize.
 fn set_uniform_override(
     node: &Arc<Node>,
     name: &str,
     value: awsm_scene_schema::dynamic_material::UniformValue,
 ) {
-    if let Some(mut inst) = current_custom_instance(node) {
+    if let Some(mut inst) = node_material_instance(node) {
         inst.uniform_overrides.insert(name.to_string(), value);
-        set_custom_instance(node, inst);
+        set_node_material(node, inst);
     }
 }
 
@@ -2968,11 +2885,7 @@ fn uniform_bool(node: &Arc<Node>, name: &str, value: bool) -> Dom {
 /// Replace a Primitive's `shadow`, preserving the rest of the kind.
 fn set_mesh_shadow(node: &Arc<Node>, shadow: MeshShadowConfig) {
     if let NodeKind::Primitive {
-        shape,
-        material,
-        inline_material,
-        custom_material,
-        ..
+        shape, material, ..
     } = node.kind.get_cloned()
     {
         dispatch_kind(
@@ -2980,8 +2893,6 @@ fn set_mesh_shadow(node: &Arc<Node>, shadow: MeshShadowConfig) {
             NodeKind::Primitive {
                 shape,
                 material,
-                inline_material,
-                custom_material,
                 shadow,
             },
         );
@@ -3568,11 +3479,7 @@ fn current_shape(node: &Arc<Node>) -> Option<PrimitiveShape> {
 
 fn set_shape(node: &Arc<Node>, shape: PrimitiveShape) {
     if let NodeKind::Primitive {
-        material,
-        inline_material,
-        custom_material,
-        shadow,
-        ..
+        material, shadow, ..
     } = node.kind.get_cloned()
     {
         dispatch_kind(
@@ -3580,8 +3487,6 @@ fn set_shape(node: &Arc<Node>, shape: PrimitiveShape) {
             NodeKind::Primitive {
                 shape,
                 material,
-                inline_material,
-                custom_material,
                 shadow,
             },
         );

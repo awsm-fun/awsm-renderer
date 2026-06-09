@@ -32,10 +32,11 @@ use awsm_glb_export::{
     PbrMaterial, TexRef, Trs, UnlitMaterial,
 };
 use awsm_scene_schema::animation::{TrackTarget, TrackValue, TransformProp};
+use awsm_scene_schema::dynamic_material::MaterialInstance;
 use awsm_scene_schema::{
-    AssetId, AssetSource, CameraConfig, CameraProjection, CrossSectionDef, CustomMaterialInstance,
-    LightConfig, MaterialAlphaMode, MaterialDef, MaterialRef, MaterialShading, NodeId, NodeKind,
-    SweepAlongCurveDef, SweepUvMode, TextureDef, TextureRef,
+    AssetId, AssetSource, CameraConfig, CameraProjection, CrossSectionDef, LightConfig,
+    MaterialAlphaMode, MaterialDef, MaterialShading, NodeId, NodeKind, SweepAlongCurveDef,
+    SweepUvMode, TextureDef, TextureRef,
 };
 
 use crate::engine::bridge::{material as bridge_material, mesh_cache, node_sync};
@@ -180,7 +181,7 @@ async fn resolve_images(scene: &Scene, roots: &[Arc<Node>]) -> (Vec<ExportImage>
     let mut ids: Vec<AssetId> = Vec::new();
     let mut seen: HashSet<AssetId> = HashSet::new();
     for n in roots {
-        collect_texture_assets(scene, n, &mut ids, &mut seen);
+        collect_texture_assets(n, &mut ids, &mut seen);
     }
     let mut images = Vec::new();
     let mut index = TexIndex::new();
@@ -199,27 +200,27 @@ async fn resolve_images(scene: &Scene, roots: &[Arc<Node>]) -> (Vec<ExportImage>
 
 /// Walk a subtree collecting the (unique, ordered) texture asset ids that the
 /// nodes' effective materials reference.
-fn collect_texture_assets(
-    scene: &Scene,
-    node: &Node,
-    ids: &mut Vec<AssetId>,
-    seen: &mut HashSet<AssetId>,
-) {
+fn collect_texture_assets(node: &Node, ids: &mut Vec<AssetId>, seen: &mut HashSet<AssetId>) {
     let kind = node.kind.get_cloned();
-    if let Some((material, inline_material, custom_material)) = material_slots(&kind) {
-        // Custom-WGSL materials export as AWSM_materials_none (no glTF textures).
-        if custom_material.is_none() {
-            if let Some(def) = effective_material_def(scene, material, inline_material) {
-                for t in material_texture_refs(&def) {
-                    if seen.insert(t.asset) {
-                        ids.push(t.asset);
-                    }
+    if let Some(Some(inst)) = material_slot(&kind) {
+        // Only a built-in assignment exports glTF textures (its per-mesh `inline`
+        // carries the slots); custom-WGSL materials export as AWSM_materials_none.
+        let is_builtin = crate::controller::custom_material::find_material(
+            &crate::controller::controller().custom_materials,
+            inst.asset,
+        )
+        .map(|m| m.builtin.get_cloned().is_some())
+        .unwrap_or(false);
+        if is_builtin {
+            for t in material_texture_refs(&inst.inline) {
+                if seen.insert(t.asset) {
+                    ids.push(t.asset);
                 }
             }
         }
     }
     for c in node.children.lock_ref().iter() {
-        collect_texture_assets(scene, c, ids, seen);
+        collect_texture_assets(c, ids, seen);
     }
 }
 
@@ -293,14 +294,8 @@ fn node_to_export(scene: &Scene, node: &Node, tex_index: &TexIndex) -> ExportNod
     let kind = node.kind.get_cloned();
     if let Some(mesh) = node_mesh(scene, &kind) {
         out.mesh = Some(mesh);
-        if let Some((material, inline_material, custom_material)) = material_slots(&kind) {
-            out.material = Some(map_material(
-                scene,
-                material,
-                inline_material,
-                custom_material,
-                tex_index,
-            ));
+        if let Some(material) = material_slot(&kind) {
+            out.material = Some(map_material(material, tex_index));
         }
     }
     match &kind {
@@ -339,71 +334,42 @@ pub(crate) fn node_mesh(scene: &Scene, kind: &NodeKind) -> Option<MeshData> {
     }
 }
 
-/// Borrow the (assigned, inline, custom) material slots of a geometry node kind.
-#[allow(clippy::type_complexity)]
-fn material_slots(
-    kind: &NodeKind,
-) -> Option<(
-    &Option<MaterialRef>,
-    &MaterialDef,
-    &Option<CustomMaterialInstance>,
-)> {
+/// Borrow the single material assignment of a geometry node kind.
+fn material_slot(kind: &NodeKind) -> Option<&Option<MaterialInstance>> {
     match kind {
-        NodeKind::Primitive {
-            material,
-            inline_material,
-            custom_material,
-            ..
-        }
-        | NodeKind::Mesh {
-            material,
-            inline_material,
-            custom_material,
-            ..
-        }
-        | NodeKind::SweepAlongCurve {
-            material,
-            inline_material,
-            custom_material,
-            ..
-        } => Some((material, inline_material, custom_material)),
+        NodeKind::Primitive { material, .. }
+        | NodeKind::Mesh { material, .. }
+        | NodeKind::SweepAlongCurve { material, .. } => Some(material),
         _ => None,
     }
 }
 
-/// The effective `MaterialDef` for a geometry node: the assigned library material
-/// asset if present + resolvable, else the inline material.
-fn effective_material_def(
-    scene: &Scene,
-    material: &Option<MaterialRef>,
-    inline: &MaterialDef,
-) -> Option<MaterialDef> {
-    let assigned = material.as_ref().and_then(|r| {
-        let assets = scene.assets.lock().unwrap();
-        match assets.get(r.0).map(|e| &e.source) {
-            Some(AssetSource::Material(def)) => Some(def.clone()),
-            _ => None,
+/// Resolve a node's material assignment to the export representation.
+///
+/// - Unassigned (`None`) → [`ExportMaterial::None`] with no id.
+/// - A **built-in** assignment (the asset resolves to a built-in library
+///   material) → its per-mesh `inline` def mapped to glTF (built-ins ARE
+///   glTF-representable).
+/// - A **custom-WGSL** assignment (or one that doesn't resolve to a built-in) →
+///   [`ExportMaterial::None`] carrying the assigned id for scene-level
+///   re-resolution on import.
+fn map_material(material: &Option<MaterialInstance>, tex_index: &TexIndex) -> ExportMaterial {
+    let Some(inst) = material else {
+        return ExportMaterial::None { id: None };
+    };
+    let is_builtin = crate::controller::custom_material::find_material(
+        &crate::controller::controller().custom_materials,
+        inst.asset,
+    )
+    .map(|m| m.builtin.get_cloned().is_some())
+    .unwrap_or(false);
+    if is_builtin {
+        map_material_def(&inst.inline, Some(inst.asset), tex_index)
+    } else {
+        ExportMaterial::None {
+            id: Some(inst.asset.to_string()),
         }
-    });
-    Some(assigned.unwrap_or_else(|| inline.clone()))
-}
-
-/// Resolve a node's effective material to the export representation.
-fn map_material(
-    scene: &Scene,
-    material: &Option<MaterialRef>,
-    inline: &MaterialDef,
-    custom: &Option<CustomMaterialInstance>,
-    tex_index: &TexIndex,
-) -> ExportMaterial {
-    // A custom-WGSL material is not glTF-representable → none + carried id.
-    if let Some(inst) = custom {
-        return ExportMaterial::None {
-            id: Some(inst.material.to_string()),
-        };
     }
-    let def = effective_material_def(scene, material, inline).unwrap_or_else(|| inline.clone());
-    map_material_def(&def, material.as_ref(), tex_index)
 }
 
 /// Resolve a `TextureRef` to an export `TexRef` (image index + uv set), if the
@@ -419,7 +385,7 @@ fn tex_ref(t: &Option<TextureRef>, tex_index: &TexIndex) -> Option<TexRef> {
 
 fn map_material_def(
     def: &MaterialDef,
-    assigned: Option<&MaterialRef>,
+    assigned: Option<AssetId>,
     tex_index: &TexIndex,
 ) -> ExportMaterial {
     match def.shading {
@@ -447,7 +413,7 @@ fn map_material_def(
         // Toon isn't glTF-representable → none + the assigned id (if any) for
         // scene-level re-resolution on import.
         MaterialShading::Toon { .. } => ExportMaterial::None {
-            id: assigned.map(|r| r.0.to_string()),
+            id: assigned.map(|a| a.to_string()),
         },
     }
 }

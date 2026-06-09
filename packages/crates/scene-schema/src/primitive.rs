@@ -86,12 +86,6 @@ impl PrimitiveShape {
     }
 }
 
-/// Typed reference to a material asset (`AssetSource::Material`).
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(transparent)]
-#[derive(Eq, Hash, Copy)]
-pub struct MaterialRef(pub AssetId);
-
 /// Typed reference to a texture asset, with the glTF per-binding metadata that
 /// decides how the image is sampled: which UV set (`uv_index`, glTF `texCoord`)
 /// and an optional `KHR_texture_transform`. Both are non-recompiling, so they're
@@ -240,12 +234,6 @@ fn default_uv_scale() -> [f32; 2] {
 #[derive(Eq, Hash, Copy)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct MeshRef(pub AssetId);
-
-impl std::fmt::Display for MaterialRef {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.0, f)
-    }
-}
 
 impl std::fmt::Display for TextureRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

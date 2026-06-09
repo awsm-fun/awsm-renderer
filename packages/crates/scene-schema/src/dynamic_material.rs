@@ -28,7 +28,7 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 use crate::assets::AssetId;
-use crate::material::MaterialAlphaMode;
+use crate::material::{MaterialAlphaMode, MaterialDef};
 
 const DEFAULT_VERSION: u32 = 1;
 
@@ -97,7 +97,7 @@ pub struct UniformField {
     /// WGSL type.
     pub ty: FieldType,
     /// Default value used at instance time when no
-    /// [`CustomMaterialInstance::uniform_overrides`] entry exists.
+    /// [`MaterialInstance::uniform_overrides`] entry exists.
     pub default: UniformValue,
 }
 
@@ -138,7 +138,7 @@ pub enum FieldType {
 }
 
 /// Default value for a [`UniformField`], and the in-memory shape of per-
-/// instance overrides on [`CustomMaterialInstance::uniform_overrides`].
+/// instance overrides on [`MaterialInstance::uniform_overrides`].
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "value")]
 pub enum UniformValue {
@@ -206,7 +206,7 @@ pub struct TextureSlot {
     /// Path relative to the material folder root (typically inside
     /// `assets/`). Optional — slots without a default require a binding at
     /// instance time (via
-    /// [`CustomMaterialInstance::texture_overrides`]).
+    /// [`MaterialInstance::texture_overrides`]).
     #[serde(default)]
     pub default: Option<PathBuf>,
 }
@@ -226,7 +226,7 @@ pub struct BufferSlot {
     /// Path to a `.bin` file (raw little-endian u32 words) relative to the
     /// material folder root, typically inside `assets/`. Optional — slots
     /// without a default require a binding at instance time (via
-    /// [`CustomMaterialInstance::buffer_overrides`]).
+    /// [`MaterialInstance::buffer_overrides`]).
     ///
     /// The file size must be a multiple of 4. The loader returns
     /// [`MaterialFolderError::BinSizeNotMultipleOfFour`] otherwise.
@@ -249,21 +249,39 @@ pub struct CustomMaterialRef {
     pub folder: PathBuf,
 }
 
-/// Per-mesh instance reference to a registered custom material.
+/// Per-geometry-node material assignment — the single material field carried
+/// by every renderable node (Primitive / Mesh / SweepAlongCurve / Model).
 ///
-/// Carries the material's `name` (resolved against the renderer's
-/// `MaterialRegistry` (renderer side) at bridge time to produce a `MaterialShaderId`) plus
-/// any per-instance overrides of the layout's defaults.
+/// `asset` is the stable id of the assigned material in the editor's
+/// custom-material list. That entry may be a **built-in** material (PBR /
+/// Unlit / Toon, glTF-representable) or a **custom WGSL** material:
+///
+/// - For a built-in assignment, the per-mesh uniform values (base color /
+///   metallic / roughness / emissive / extension params + textures) live in
+///   [`MaterialInstance::inline`]; the override maps are ignored.
+/// - For a custom-WGSL assignment, the per-mesh overrides live in the
+///   `uniform_overrides` / `texture_overrides` / `buffer_overrides` maps
+///   (resolved against the renderer's `MaterialRegistry` at bridge time);
+///   `inline` is ignored.
+///
+/// A `None` material on a node means *unassigned* and renders flat magenta —
+/// the missing-material sentinel.
 #[derive(Clone, Debug, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub struct CustomMaterialInstance {
-    /// Stable id of the assigned custom material (an entry in the editor's
-    /// custom-material list). Id-keyed (not name-keyed) so renaming a material
-    /// never orphans the meshes assigned to it.
-    pub material: AssetId,
-    /// Per-instance uniform overrides. Keys must match a
-    /// [`UniformField::name`] on the registered material's layout; values
-    /// must satisfy the corresponding [`FieldType`].
+pub struct MaterialInstance {
+    /// Stable id of the assigned material (built-in OR custom WGSL), an entry
+    /// in the editor's custom-material list. Id-keyed (not name-keyed) so
+    /// renaming a material never orphans the meshes assigned to it.
+    pub asset: AssetId,
+    /// Per-mesh built-in uniform values (base_color / metallic / roughness /
+    /// emissive / extension params + textures). Used when `asset` resolves to
+    /// a BUILT-IN material; IGNORED by custom-WGSL assignments.
+    #[serde(default)]
+    pub inline: MaterialDef,
+    /// Per-instance uniform overrides for a CUSTOM-WGSL assignment. Keys must
+    /// match a [`UniformField::name`] on the registered material's layout;
+    /// values must satisfy the corresponding [`FieldType`]. Ignored by
+    /// built-in assignments.
     #[serde(default)]
     pub uniform_overrides: HashMap<String, UniformValue>,
     /// Per-instance texture overrides. Keys must match a

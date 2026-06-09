@@ -19,9 +19,7 @@ use awsm_renderer::dynamic_materials::MaterialRegistration;
 use awsm_renderer::materials::Material;
 use awsm_renderer::AwsmRenderer;
 
-use awsm_scene_schema::dynamic_material::{
-    CustomMaterialInstance, UniformValue as SceneUniformValue,
-};
+use awsm_scene_schema::dynamic_material::{MaterialInstance, UniformValue as SceneUniformValue};
 
 use crate::controller::{AlphaMode, CustomMaterial};
 use crate::engine::context::renderer_handle;
@@ -61,7 +59,7 @@ thread_local! {
 }
 
 /// Store a loaded buffer's words and return the synthetic path that references
-/// it (set as the `BufferRef::path` on a `CustomMaterialInstance` override).
+/// it (set as the `BufferRef::path` on a `MaterialInstance` override).
 pub(crate) fn store_buffer_words(words: Vec<u32>) -> String {
     let path = format!("session://buffer/{}", AssetId::new().0);
     BUFFER_DATA.with(|m| m.borrow_mut().insert(path.clone(), words));
@@ -112,7 +110,7 @@ pub async fn register(mat: &CustomMaterial) -> Result<MaterialShaderId, String> 
 /// disjoint-field borrow so it composes with the renderer lock.
 pub fn insert_custom(
     renderer: &mut AwsmRenderer,
-    inst: &CustomMaterialInstance,
+    inst: &MaterialInstance,
 ) -> Option<awsm_renderer::materials::MaterialKey> {
     let material = build_custom(renderer, inst)?;
     Some(renderer.materials.insert(
@@ -127,8 +125,8 @@ pub fn insert_custom(
 /// **instance**: starts from the registration's authored defaults, then applies
 /// this mesh's per-instance `uniform_overrides` (#4.2) — matched by slot name
 /// and type-checked against the layout. `None` if the material isn't registered.
-fn build_custom(renderer: &mut AwsmRenderer, inst: &CustomMaterialInstance) -> Option<Material> {
-    let mut material = build_custom_for_shader(renderer, registered_shader_id(inst.material)?)?;
+fn build_custom(renderer: &mut AwsmRenderer, inst: &MaterialInstance) -> Option<Material> {
+    let mut material = build_custom_for_shader(renderer, registered_shader_id(inst.asset)?)?;
     if let Material::Custom(dm) = &mut material {
         // Per-mesh uniform overrides (matched by slot name, type-checked).
         if !inst.uniform_overrides.is_empty() {
@@ -199,13 +197,13 @@ fn build_custom(renderer: &mut AwsmRenderer, inst: &CustomMaterialInstance) -> O
 
 /// The default value a declared uniform [`Slot`] parses to (its authored WGSL
 /// type + default-value string), as the **schema** `UniformValue` the inspector
-/// stores in `CustomMaterialInstance::uniform_overrides` (#4.2).
+/// stores in `MaterialInstance::uniform_overrides` (#4.2).
 pub fn slot_default_value(slot: &crate::controller::Slot) -> SceneUniformValue {
     renderer_to_scene(&parse_uniform_value(parse_field_type(&slot.ty), &slot.val))
 }
 
 /// Convert the serializable schema `UniformValue` (stored on a
-/// `CustomMaterialInstance`) into the renderer's value type. The two enums have
+/// `MaterialInstance`) into the renderer's value type. The two enums have
 /// identical variants — this is the (deliberately exhaustive) bridge so adding a
 /// variant to one forces updating the other.
 fn scene_to_renderer(v: &SceneUniformValue) -> UniformValue {

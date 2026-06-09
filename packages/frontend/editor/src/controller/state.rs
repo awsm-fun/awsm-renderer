@@ -704,42 +704,33 @@ impl EditorController {
                 };
                 let prev = n.kind.get_cloned();
                 // Bake the current geometry + carry the material slots forward.
-                let (mesh_data, source, material, inline_material, custom_material, shadow) =
-                    match &prev {
-                        NodeKind::Primitive {
-                            shape,
-                            material,
-                            inline_material,
-                            custom_material,
-                            shadow,
-                        } => (
-                            node_sync::primitive_to_mesh(shape),
-                            CapturedSource::Primitive(shape.clone()),
-                            *material,
-                            inline_material.clone(),
-                            custom_material.clone(),
+                let (mesh_data, source, material, shadow) = match &prev {
+                    NodeKind::Primitive {
+                        shape,
+                        material,
+                        shadow,
+                    } => (
+                        node_sync::primitive_to_mesh(shape),
+                        CapturedSource::Primitive(shape.clone()),
+                        material.clone(),
+                        *shadow,
+                    ),
+                    NodeKind::SweepAlongCurve {
+                        def,
+                        material,
+                        shadow,
+                    } => match crate::controller::export::sweep_mesh(&self.scene, def) {
+                        Some(m) => (
+                            m,
+                            CapturedSource::Sweep(def.clone()),
+                            material.clone(),
                             *shadow,
                         ),
-                        NodeKind::SweepAlongCurve {
-                            def,
-                            material,
-                            inline_material,
-                            custom_material,
-                            shadow,
-                        } => match crate::controller::export::sweep_mesh(&self.scene, def) {
-                            Some(m) => (
-                                m,
-                                CapturedSource::Sweep(def.clone()),
-                                *material,
-                                inline_material.clone(),
-                                custom_material.clone(),
-                                *shadow,
-                            ),
-                            None => return Ok(None),
-                        },
-                        // Only procedural kinds are bakeable; anything else is a no-op.
-                        _ => return Ok(None),
-                    };
+                        None => return Ok(None),
+                    },
+                    // Only procedural kinds are bakeable; anything else is a no-op.
+                    _ => return Ok(None),
+                };
                 // Store geometry under the caller-minted id BEFORE swapping the
                 // kind so the node resolves geometry the first time it materializes.
                 mesh_cache::store_with_id(mesh, mesh_cache::from_mesh_data(mesh_data));
@@ -757,8 +748,6 @@ impl EditorController {
                 n.kind.set(NodeKind::Mesh {
                     mesh: MeshRef(mesh),
                     material,
-                    inline_material,
-                    custom_material,
                     shadow,
                 });
                 self.structure_rev
@@ -1032,76 +1021,59 @@ impl EditorController {
                 match mutate::find_by_id(&self.scene, node) {
                     Some(n) => {
                         let prev = n.kind.get_cloned();
-                        // Id-keyed assignment: store the material's stable id (so
-                        // renaming it never orphans this mesh). Validate the id
-                        // exists in the custom-material list.
-                        let instance = material
-                            .filter(|id| find_material(&self.custom_materials, *id).is_some())
-                            .map(|id| awsm_scene_schema::CustomMaterialInstance {
-                                material: id,
-                                uniform_overrides: Default::default(),
-                                texture_overrides: Default::default(),
-                                buffer_overrides: Default::default(),
-                            });
+                        // The node's prior assignment (if any) — used to carry the
+                        // existing per-mesh inline store forward when reassigning.
+                        let prior = node_material_ref(&prev).cloned();
                         // Assigning a material adopts its *defaults* (the full
                         // uniform surface — factors, extension params, Toon knobs,
                         // cutoff) into this mesh's inline store, so the mesh starts
                         // looking like the material; the user then customizes
                         // per-mesh from there. (A dynamic material has no built-in
-                        // defaults → keep the existing inline, which it ignores.)
-                        let seeded_inline = instance.as_ref().and_then(|inst| {
-                            find_material(&self.custom_materials, inst.material)
-                                .and_then(|m| m.builtin.get_cloned())
-                        });
+                        // defaults → keep the existing inline, which it ignores;
+                        // fall back to the node's prior inline, else a default.)
+                        // Id-keyed assignment: store the material's stable id (so
+                        // renaming it never orphans this mesh). Validate the id
+                        // exists in the custom-material list. `None` clears the
+                        // assignment → magenta.
+                        let instance = material
+                            .filter(|id| find_material(&self.custom_materials, *id).is_some())
+                            .map(|id| {
+                                let inline = find_material(&self.custom_materials, id)
+                                    .and_then(|m| m.builtin.get_cloned())
+                                    .or_else(|| prior.as_ref().map(|p| p.inline.clone()))
+                                    .unwrap_or_default();
+                                awsm_scene_schema::dynamic_material::MaterialInstance {
+                                    asset: id,
+                                    inline,
+                                    uniform_overrides: Default::default(),
+                                    texture_overrides: Default::default(),
+                                    buffer_overrides: Default::default(),
+                                }
+                            });
                         let next = match prev.clone() {
-                            NodeKind::Primitive {
+                            NodeKind::Primitive { shape, shadow, .. } => NodeKind::Primitive {
                                 shape,
-                                material: mref,
-                                inline_material,
-                                shadow,
-                                ..
-                            } => NodeKind::Primitive {
-                                shape,
-                                material: mref,
-                                inline_material: seeded_inline.unwrap_or(inline_material),
-                                custom_material: instance,
+                                material: instance,
                                 shadow,
                             },
                             // Captured mesh — same material model as a Primitive.
-                            NodeKind::Mesh {
+                            NodeKind::Mesh { mesh, shadow, .. } => NodeKind::Mesh {
                                 mesh,
-                                material: mref,
-                                inline_material,
-                                shadow,
-                                ..
-                            } => NodeKind::Mesh {
-                                mesh,
-                                material: mref,
-                                inline_material: seeded_inline.unwrap_or(inline_material),
-                                custom_material: instance,
+                                material: instance,
                                 shadow,
                             },
                             // Sweep — same material model as a Primitive.
-                            NodeKind::SweepAlongCurve {
-                                def,
-                                material: mref,
-                                inline_material,
-                                shadow,
-                                ..
-                            } => NodeKind::SweepAlongCurve {
-                                def,
-                                material: mref,
-                                inline_material: seeded_inline.unwrap_or(inline_material),
-                                custom_material: instance,
-                                shadow,
-                            },
+                            NodeKind::SweepAlongCurve { def, shadow, .. } => {
+                                NodeKind::SweepAlongCurve {
+                                    def,
+                                    material: instance,
+                                    shadow,
+                                }
+                            }
                             // A Model node carries one assigned material (the
                             // same model as a Primitive); `None` = unassigned →
                             // magenta.
                             NodeKind::Model(mut r) => {
-                                if let Some(inline) = seeded_inline {
-                                    r.inline_material = inline;
-                                }
                                 r.material = instance;
                                 NodeKind::Model(r)
                             }
@@ -1129,9 +1101,7 @@ impl EditorController {
                     return Ok(None);
                 };
                 let NodeKind::Primitive {
-                    inline_material: src_inline,
-                    custom_material: src_cm,
-                    ..
+                    material: src_mat, ..
                 } = src.kind.get_cloned()
                 else {
                     return Ok(None);
@@ -1139,23 +1109,20 @@ impl EditorController {
                 let prev = dst.kind.get_cloned();
                 let NodeKind::Primitive {
                     shape,
-                    material,
-                    custom_material: dst_cm,
+                    material: dst_mat,
                     shadow,
-                    ..
                 } = prev.clone()
                 else {
                     return Ok(None);
                 };
                 // Only copy between meshes that reference the same material.
-                if src_cm.as_ref().map(|i| i.material) != dst_cm.as_ref().map(|i| i.material) {
+                if src_mat.as_ref().map(|i| i.asset) != dst_mat.as_ref().map(|i| i.asset) {
                     return Ok(None);
                 }
+                // Copy the whole instance (inline uniforms + override maps).
                 dst.kind.set(NodeKind::Primitive {
                     shape,
-                    material,
-                    inline_material: src_inline,
-                    custom_material: dst_cm,
+                    material: src_mat,
                     shadow,
                 });
                 self.structure_rev
@@ -3555,27 +3522,46 @@ fn validate_keys(keys: &[String], valid: &[&str]) -> Vec<String> {
         .collect()
 }
 
-/// Patch a built-in material factor on a node's inline material. Returns false
-/// if the node has no inline material or `value` is too short.
+/// The node's single material assignment, if it carries one and is assigned
+/// (`Some`). Returns `None` for non-geometry nodes and for unassigned geometry.
+fn node_material_ref(
+    kind: &NodeKind,
+) -> Option<&awsm_scene_schema::dynamic_material::MaterialInstance> {
+    match kind {
+        NodeKind::Primitive { material, .. }
+        | NodeKind::Mesh { material, .. }
+        | NodeKind::SweepAlongCurve { material, .. } => material.as_ref(),
+        NodeKind::Model(r) => r.material.as_ref(),
+        _ => None,
+    }
+}
+
+/// Mutable variant of [`node_material_ref`].
+fn node_material_mut(
+    kind: &mut NodeKind,
+) -> Option<&mut awsm_scene_schema::dynamic_material::MaterialInstance> {
+    match kind {
+        NodeKind::Primitive { material, .. }
+        | NodeKind::Mesh { material, .. }
+        | NodeKind::SweepAlongCurve { material, .. } => material.as_mut(),
+        NodeKind::Model(r) => r.material.as_mut(),
+        _ => None,
+    }
+}
+
+/// Patch a built-in material factor on a node's per-mesh inline store. Returns
+/// false if the node is unassigned (nothing to tweak on a magenta node) or
+/// `value` is too short.
 fn patch_builtin_param(
     kind: &mut NodeKind,
     param: awsm_scene_schema::animation::BuiltinParamKind,
     value: &[f32],
 ) -> bool {
     use awsm_scene_schema::animation::BuiltinParamKind as P;
-    let inline = match kind {
-        NodeKind::Primitive {
-            inline_material, ..
-        }
-        | NodeKind::Mesh {
-            inline_material, ..
-        }
-        | NodeKind::SweepAlongCurve {
-            inline_material, ..
-        } => inline_material,
-        NodeKind::Model(r) => &mut r.inline_material,
-        _ => return false,
+    let Some(inst) = node_material_mut(kind) else {
+        return false;
     };
+    let inline = &mut inst.inline;
     match param {
         P::BaseColor => {
             if value.len() < 3 {
@@ -3604,26 +3590,17 @@ fn patch_builtin_param(
 }
 
 /// Bind (or clear) a texture on a node's **built-in/inline** `MaterialDef` slot.
-/// Returns false if the node has no inline material.
+/// Returns false if the node is unassigned (no inline store to tweak).
 fn patch_builtin_texture(
     kind: &mut NodeKind,
     slot: awsm_editor_protocol::BuiltinTextureSlot,
     texture: Option<AssetId>,
 ) -> bool {
     use awsm_editor_protocol::BuiltinTextureSlot as S;
-    let inline = match kind {
-        NodeKind::Primitive {
-            inline_material, ..
-        }
-        | NodeKind::Mesh {
-            inline_material, ..
-        }
-        | NodeKind::SweepAlongCurve {
-            inline_material, ..
-        } => inline_material,
-        NodeKind::Model(r) => &mut r.inline_material,
-        _ => return false,
+    let Some(inst) = node_material_mut(kind) else {
+        return false;
     };
+    let inline = &mut inst.inline;
     let tref = texture.map(|asset| awsm_scene_schema::TextureRef {
         asset,
         uv_index: 0,
@@ -3643,14 +3620,7 @@ fn patch_builtin_texture(
 /// Bind (or clear) a texture override on a node's assigned custom material.
 /// Returns false if the node has no custom-material instance.
 fn patch_material_texture(kind: &mut NodeKind, slot: &str, texture: Option<AssetId>) -> bool {
-    let inst = match kind {
-        NodeKind::Primitive {
-            custom_material, ..
-        } => custom_material.as_mut(),
-        NodeKind::Model(r) => r.material.as_mut(),
-        _ => None,
-    };
-    let Some(inst) = inst else {
+    let Some(inst) = node_material_mut(kind) else {
         return false;
     };
     match texture {
@@ -4090,7 +4060,7 @@ fn build_editor_subtree(
     node_map: &mut std::collections::HashMap<u32, NodeId>,
 ) -> Arc<crate::engine::scene::node::Node> {
     use crate::engine::scene::node::Node;
-    use awsm_scene_schema::{dynamic_material::CustomMaterialInstance, MaterialDef, ModelRef, Trs};
+    use awsm_scene_schema::{dynamic_material::MaterialInstance, ModelRef, Trs};
 
     let name = tn.label.clone().unwrap_or_else(|| {
         fallback_name
@@ -4104,7 +4074,13 @@ fn build_editor_subtree(
     // material per node, derived at import; the instance is shared across every
     // node that uses this glTF material and can be customized per node). `None`
     // (no such material) leaves the node unassigned → magenta.
-    let instance_for = |mi: Option<usize>| -> Option<CustomMaterialInstance> {
+    //
+    // The instance's `inline` per-mesh store is seeded as a *clone of the
+    // assigned material's defaults*. `builtin_merged` then layers its
+    // uniform-class fields (factors, extension params, Toon knobs, mask cutoff)
+    // over the shared variant, so editing it customizes this node without
+    // touching the shared material.
+    let instance_for = |mi: Option<usize>| -> Option<MaterialInstance> {
         // A primitive's glTF material index → its library material; a primitive
         // with NO material (`None`) uses glTF's default material (white,
         // metallic=1, roughness=1) rather than the editor's magenta sentinel.
@@ -4112,25 +4088,19 @@ fn build_editor_subtree(
             Some(i) => mat_ids.get(i).copied(),
             None => default_mat_id,
         };
-        id.map(|id| CustomMaterialInstance {
-            material: id,
-            ..Default::default()
-        })
-    };
-    // The per-mesh inline store, seeded as a *clone of the assigned material's
-    // defaults*. `builtin_merged` then layers its uniform-class fields (factors,
-    // extension params, Toon knobs, mask cutoff) over the shared variant, so
-    // editing it customizes this node without touching the shared material.
-    let inline_for = |inst: &Option<CustomMaterialInstance>| -> MaterialDef {
-        inst.as_ref()
-            .and_then(|i| {
-                crate::controller::custom_material::find_material(
-                    &controller().custom_materials,
-                    i.material,
-                )
-            })
+        id.map(|id| {
+            let inline = crate::controller::custom_material::find_material(
+                &controller().custom_materials,
+                id,
+            )
             .and_then(|m| m.builtin.get_cloned())
-            .unwrap_or_default()
+            .unwrap_or_default();
+            MaterialInstance {
+                asset: id,
+                inline,
+                ..Default::default()
+            }
+        })
     };
 
     let node = if tn.mesh_keys.is_empty() {
@@ -4146,7 +4116,6 @@ fn build_editor_subtree(
             mat_indices.iter().copied().collect();
         if distinct.len() <= 1 {
             let material = instance_for(mat_indices.first().copied().flatten());
-            let inline_material = inline_for(&material);
             Node::new_with_transform_and_kind(
                 name,
                 trs,
@@ -4155,7 +4124,6 @@ fn build_editor_subtree(
                     node_index: tn.gltf_node_index,
                     primitive_index: None,
                     material,
-                    inline_material,
                     shadow: Default::default(),
                 }),
             )
@@ -4163,13 +4131,12 @@ fn build_editor_subtree(
             let group = Node::new_with_transform_and_kind(name.clone(), trs, NodeKind::Group);
             for (i, mi) in mat_indices.iter().enumerate() {
                 let material = instance_for(*mi);
-                let inline_material = inline_for(&material);
                 let part_label = material
                     .as_ref()
                     .and_then(|inst| {
                         crate::controller::custom_material::find_material(
                             &controller().custom_materials,
-                            inst.material,
+                            inst.asset,
                         )
                         .map(|m| m.name.get_cloned())
                     })
@@ -4185,7 +4152,6 @@ fn build_editor_subtree(
                             node_index: tn.gltf_node_index,
                             primitive_index: Some(i as u32),
                             material,
-                            inline_material,
                             shadow: Default::default(),
                         }),
                     ));
@@ -4289,10 +4255,7 @@ fn structure_key(kind: &NodeKind) -> String {
     use awsm_scene_schema::{CameraProjection, LightConfig, MaterialShading, PrimitiveShape};
     match kind {
         NodeKind::Primitive {
-            shape,
-            inline_material,
-            custom_material,
-            ..
+            shape, material, ..
         } => {
             let shp = match shape {
                 PrimitiveShape::Plane { .. } => "plane",
@@ -4302,12 +4265,16 @@ fn structure_key(kind: &NodeKind) -> String {
                 PrimitiveShape::Cone { .. } => "cone",
                 PrimitiveShape::Torus { .. } => "torus",
             };
-            let shading = match inline_material.shading {
-                MaterialShading::Pbr => "pbr",
-                MaterialShading::Unlit => "unlit",
-                MaterialShading::Toon { .. } => "toon",
+            // The inspector rows depend on the assigned material's shading model
+            // (its shared variant) — read it from the per-mesh inline store, which
+            // is seeded from that variant. Unassigned → no material rows.
+            let shading = match material.as_ref().map(|m| m.inline.shading) {
+                Some(MaterialShading::Pbr) => "pbr",
+                Some(MaterialShading::Unlit) => "unlit",
+                Some(MaterialShading::Toon { .. }) => "toon",
+                None => "none",
             };
-            format!("prim/{shp}/{shading}/{}", custom_material.is_some())
+            format!("prim/{shp}/{shading}/{}", material.is_some())
         }
         NodeKind::Camera(c) => match c.projection {
             CameraProjection::Perspective { .. } => "cam/persp".into(),

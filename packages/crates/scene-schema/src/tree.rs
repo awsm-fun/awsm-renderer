@@ -5,14 +5,13 @@ use super::{
     collider::ColliderShape,
     curve::CurveDef,
     decal::DecalConfig,
-    dynamic_material::CustomMaterialInstance,
+    dynamic_material::MaterialInstance,
     instances::{InstancesAlongCurveDef, SweepAlongCurveDef},
     light::LightConfig,
     line::LineDef,
-    material::MaterialDef,
     model::ModelRef,
     particle::ParticleEmitterDef,
-    primitive::{MaterialRef, MeshRef, PrimitiveShape},
+    primitive::{MeshRef, PrimitiveShape},
     sprite::SpriteDef,
     transform::Trs,
 };
@@ -139,32 +138,20 @@ pub enum NodeKind {
     /// the shape at load time via `awsm-meshgen`.
     Primitive {
         shape: PrimitiveShape,
-        material: Option<MaterialRef>,
-        /// Embedded fallback material, used when `material` is `None`. Useful for
-        /// quick authoring without going through the asset table.
+        /// The node's single material assignment. `None` means *unassigned*
+        /// and renders flat magenta (the missing-material sentinel).
         #[serde(default)]
-        inline_material: MaterialDef,
-        /// Optional runtime-registered custom material. When `Some`,
-        /// wins over both `material` and `inline_material` — the
-        /// renderer-bridge resolves the name against the
-        /// `MaterialRegistry` and constructs a `Material::Custom`.
-        /// Old `project.json` files without this field round-trip via
-        /// `#[serde(default)]`.
-        #[serde(default)]
-        custom_material: Option<CustomMaterialInstance>,
+        material: Option<MaterialInstance>,
         #[serde(default)]
         shadow: MeshShadowConfig,
     },
     /// A captured procedural mesh stored as an asset; multiple nodes can share it.
     Mesh {
         mesh: MeshRef,
-        material: Option<MaterialRef>,
+        /// The node's single material assignment. See
+        /// [`NodeKind::Primitive`].
         #[serde(default)]
-        inline_material: MaterialDef,
-        /// Optional runtime-registered custom material. See
-        /// [`NodeKind::Primitive::custom_material`].
-        #[serde(default)]
-        custom_material: Option<CustomMaterialInstance>,
+        material: Option<MaterialInstance>,
         #[serde(default)]
         shadow: MeshShadowConfig,
     },
@@ -174,13 +161,10 @@ pub enum NodeKind {
     /// Sweep a cross-section along a curve to produce surface geometry.
     SweepAlongCurve {
         def: SweepAlongCurveDef,
-        material: Option<MaterialRef>,
+        /// The node's single material assignment. See
+        /// [`NodeKind::Primitive`].
         #[serde(default)]
-        inline_material: MaterialDef,
-        /// Optional runtime-registered custom material. See
-        /// [`NodeKind::Primitive::custom_material`].
-        #[serde(default)]
-        custom_material: Option<CustomMaterialInstance>,
+        material: Option<MaterialInstance>,
         #[serde(default)]
         shadow: MeshShadowConfig,
     },

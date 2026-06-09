@@ -133,25 +133,24 @@ pub fn rematerialize_for_material(id: crate::engine::scene::AssetId) {
     use crate::engine::scene::node::Node;
     use crate::engine::scene::{AssetId, NodeKind};
 
+    fn node_assigned_material(kind: &NodeKind) -> Option<AssetId> {
+        match kind {
+            NodeKind::Primitive { material, .. }
+            | NodeKind::Mesh { material, .. }
+            | NodeKind::SweepAlongCurve { material, .. } => material.as_ref().map(|i| i.asset),
+            NodeKind::Model(r) => r.material.as_ref().map(|i| i.asset),
+            _ => None,
+        }
+    }
+
     fn walk(nodes: &[Arc<Node>], id: AssetId) {
         for node in nodes {
             let kind = node.kind.get_cloned();
-            match &kind {
-                NodeKind::Primitive {
-                    custom_material: Some(inst),
-                    ..
-                } if inst.material == id => {
-                    node.kind.set(kind.clone());
-                }
-                // A Model node carries one assigned library material (set at
-                // import, swappable in the inspector); if the edited material is
-                // it, re-materialize so the model reflects the edit.
-                NodeKind::Model(model_ref)
-                    if model_ref.material.as_ref().map(|i| i.material) == Some(id) =>
-                {
-                    node.kind.set(kind.clone());
-                }
-                _ => {}
+            // Any geometry node assigned the edited material re-materializes so it
+            // picks up the now-live shader / variant edit (a same-value `set`
+            // re-triggers the kind observer).
+            if node_assigned_material(&kind) == Some(id) {
+                node.kind.set(kind.clone());
             }
             walk(&node.children.lock_ref(), id);
         }

@@ -322,50 +322,24 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
     match kind {
         NodeKind::Primitive {
             shape,
-            inline_material,
-            custom_material,
+            material,
             shadow,
             ..
-        } => {
-            materialize_primitive(
-                entry.clone(),
-                shape,
-                inline_material,
-                custom_material,
-                shadow,
-            )
-            .await
-        }
+        } => materialize_primitive(entry.clone(), shape, material, shadow).await,
         NodeKind::Light(cfg) => apply_light(entry.clone(), cfg).await,
         NodeKind::Line(def) => materialize_line(entry.clone(), def).await,
         NodeKind::Curve(def) => materialize_curve_viz(entry.clone(), def).await,
         NodeKind::Sprite(def) => materialize_sprite(entry.clone(), def).await,
         NodeKind::Collider(shape) => materialize_collider(entry.clone(), shape).await,
         NodeKind::Decal(cfg) => materialize_decal(entry.clone(), cfg).await,
-        NodeKind::SweepAlongCurve {
-            def,
-            inline_material,
-            custom_material,
-            ..
-        } => materialize_sweep(entry.clone(), def, inline_material, custom_material).await,
+        NodeKind::SweepAlongCurve { def, material, .. } => {
+            materialize_sweep(entry.clone(), def, material).await
+        }
         NodeKind::InstancesAlongCurve(def) => materialize_instances(entry.clone(), def).await,
         NodeKind::ParticleEmitter(def) => materialize_particle(entry.clone(), def).await,
-        NodeKind::Mesh {
-            mesh,
-            inline_material,
-            custom_material,
-            ..
-        } => match super::mesh_cache::get_raw(mesh.0) {
+        NodeKind::Mesh { mesh, material, .. } => match super::mesh_cache::get_raw(mesh.0) {
             Some(raw) => {
-                upload_simple_mesh(
-                    entry.clone(),
-                    raw,
-                    MeshMaterial::Assigned {
-                        custom_material,
-                        inline: inline_material,
-                    },
-                )
-                .await;
+                upload_simple_mesh(entry.clone(), raw, MeshMaterial::Assigned(material)).await;
             }
             None => {
                 tracing::warn!("NodeKind::Mesh {mesh:?}: not in the capture cache; renders empty")
@@ -413,14 +387,14 @@ fn mesh_vertex_color_set(
 }
 
 fn builtin_merged(
-    inst: &awsm_scene_schema::dynamic_material::CustomMaterialInstance,
-    inline: &awsm_scene_schema::MaterialDef,
+    inst: &awsm_scene_schema::dynamic_material::MaterialInstance,
 ) -> Option<awsm_scene_schema::MaterialDef> {
     use awsm_scene_schema::material::{MaterialAlphaMode, MaterialShading, PbrExtensions};
     use awsm_scene_schema::TextureRef;
+    let inline = &inst.inline;
     let ctrl = crate::controller::controller();
     let mat =
-        crate::controller::custom_material::find_material(&ctrl.custom_materials, inst.material)?;
+        crate::controller::custom_material::find_material(&ctrl.custom_materials, inst.asset)?;
     let variant = mat.builtin.get_cloned()?;
 
     // ── The override rule ────────────────────────────────────────────────────
@@ -514,17 +488,17 @@ fn builtin_merged(
 ///   • unassigned (or an assignment that can't resolve yet) → flat **magenta**,
 ///     the missing-material sentinel.
 ///
-/// `inline` is purely the per-mesh *uniform* store for a built-in assignment
-/// (base colour / metallic / … — see the material model note in
-/// `inspector.rs::material_editor`); it never stands in as a material on its own.
+/// The instance's `inline` field is purely the per-mesh *uniform* store for a
+/// built-in assignment (base colour / metallic / … — see the material model note
+/// in `inspector.rs::material_editor`); it never stands in as a material on its
+/// own.
 fn resolve_assigned_material(
     r: &mut awsm_renderer::AwsmRenderer,
-    custom_material: Option<&awsm_scene_schema::dynamic_material::CustomMaterialInstance>,
-    inline: &awsm_scene_schema::MaterialDef,
+    material: Option<&awsm_scene_schema::dynamic_material::MaterialInstance>,
 ) -> awsm_renderer::materials::MaterialKey {
-    match custom_material {
+    match material {
         Some(inst) => {
-            if let Some(merged) = builtin_merged(inst, inline) {
+            if let Some(merged) = builtin_merged(inst) {
                 material::insert_material(r, &merged)
             } else if let Some(k) = super::dynamic::insert_custom(r, inst) {
                 k
@@ -541,10 +515,7 @@ enum MeshMaterial {
     /// A user-assignable geometry node (captured mesh, sweep): resolve the
     /// optional assignment via [`resolve_assigned_material`] — magenta when
     /// unassigned, exactly like a primitive.
-    Assigned {
-        custom_material: Option<awsm_scene_schema::dynamic_material::CustomMaterialInstance>,
-        inline: awsm_scene_schema::MaterialDef,
-    },
+    Assigned(Option<awsm_scene_schema::dynamic_material::MaterialInstance>),
     /// Render this material def directly — no assignment concept. Used by
     /// instanced geometry, whose appearance is the flat default + per-instance
     /// colours, not a per-node material assignment.
@@ -554,8 +525,7 @@ enum MeshMaterial {
 async fn materialize_primitive(
     entry: Arc<RendererNode>,
     shape: PrimitiveShape,
-    inline: awsm_scene_schema::MaterialDef,
-    custom_material: Option<awsm_scene_schema::dynamic_material::CustomMaterialInstance>,
+    material: Option<awsm_scene_schema::dynamic_material::MaterialInstance>,
     shadow: awsm_scene_schema::MeshShadowConfig,
 ) {
     let mesh = primitive_to_mesh(&shape);
@@ -576,7 +546,7 @@ async fn materialize_primitive(
     // Material resolution — shared with captured meshes + sweeps so all
     // geometry renders identically (assigned → built-in/custom; unassigned →
     // magenta). See [`resolve_assigned_material`].
-    let mat_key = resolve_assigned_material(&mut r, custom_material.as_ref(), &inline);
+    let mat_key = resolve_assigned_material(&mut r, material.as_ref());
     let sub_tk = r.transforms.insert(Transform::IDENTITY, Some(parent_tk));
     match r.add_raw_mesh(raw, sub_tk, mat_key) {
         Ok(mk) => {
@@ -691,7 +661,7 @@ async fn materialize_model(entry: Arc<RendererNode>, model_ref: awsm_scene_schem
             };
             let mat_key = match model_ref.material.as_ref() {
                 Some(inst) => {
-                    if let Some(mut merged) = builtin_merged(inst, &model_ref.inline_material) {
+                    if let Some(mut merged) = builtin_merged(inst) {
                         merged.vertex_colors_enabled = vertex_color_set.is_some();
                         material::insert_material_vc(&mut r, &merged, vertex_color_set)
                     } else if let Some(k) = super::dynamic::insert_custom(&mut r, inst) {
@@ -955,10 +925,7 @@ async fn upload_simple_mesh(
     let handle = renderer_handle();
     let mut r = handle.lock().await;
     let mat_key = match &mat {
-        MeshMaterial::Assigned {
-            custom_material,
-            inline,
-        } => resolve_assigned_material(&mut r, custom_material.as_ref(), inline),
+        MeshMaterial::Assigned(material) => resolve_assigned_material(&mut r, material.as_ref()),
         MeshMaterial::Flat(def) => material::insert_material(&mut r, def),
     };
     let sub_tk = r.transforms.insert(Transform::IDENTITY, Some(parent_tk));
@@ -988,8 +955,7 @@ async fn upload_simple_mesh(
 async fn materialize_sweep(
     entry: Arc<RendererNode>,
     def: awsm_scene_schema::SweepAlongCurveDef,
-    inline: awsm_scene_schema::MaterialDef,
-    custom_material: Option<awsm_scene_schema::dynamic_material::CustomMaterialInstance>,
+    material: Option<awsm_scene_schema::dynamic_material::MaterialInstance>,
 ) {
     use awsm_curves::CatmullRomCurve;
     use awsm_scene_schema::{CrossSectionDef, SweepUvMode};
@@ -1044,15 +1010,7 @@ async fn materialize_sweep(
         colors: mesh.colors,
         indices: mesh.indices,
     };
-    upload_simple_mesh(
-        entry,
-        raw,
-        MeshMaterial::Assigned {
-            custom_material,
-            inline,
-        },
-    )
-    .await;
+    upload_simple_mesh(entry, raw, MeshMaterial::Assigned(material)).await;
 }
 
 /// Place copies of a source primitive along the referenced curve

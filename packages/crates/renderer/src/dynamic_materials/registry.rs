@@ -901,7 +901,7 @@ pub struct MaterialRegistration {
     /// Default buffer-slot data, one `Vec<u32>` per `BufferSlot` in
     /// declaration order. Passed at registration time to the extras
     /// pool's bump allocator; per-instance overrides (the per-instance
-    /// `CustomMaterialInstance::buffer_overrides`) can also override.
+    /// `MaterialInstance::buffer_overrides`) can also override.
     /// Empty Vec for slots without a registration default.
     pub buffer_defaults: Vec<Vec<u32>>,
     /// Default values for each uniform in `layout.uniforms`, in the
@@ -1023,7 +1023,7 @@ impl crate::AwsmRenderer {
         let id = self.dynamic_materials.insert(registration)?;
         // Assign extras-pool slices for any buffer-slot defaults
         // declared on the registration. Per-instance overrides
-        // (the per-instance CustomMaterialInstance.buffer_overrides) can
+        // (the per-instance MaterialInstance.buffer_overrides) can
         // overwrite these per instance — the bridge calls
         // `extras_pool.assign_or_update` directly for those.
         for (slot_index, data) in buffer_defaults.iter().enumerate() {

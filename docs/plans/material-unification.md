@@ -1,10 +1,14 @@
 # Material data-model unification
 
-**Status:** IN PROGRESS. Step 1 (render-path unification) + the `AssignMaterial`
-Mesh/Sweep fix are **done and GPU-verified live** (see below). Steps 3–5 (remove
-the dead `material: MaterialRef` field, fold `inline_material` into overrides,
-rename) remain — they carry serde-migration + exporter blast radius and should
-likewise be done with the editor open (`task mcp-dev`), not shipped blind.
+**Status:** ✅ DONE + GPU-verified live. The three node fields are collapsed to
+one `material: Option<MaterialInstance>` (no backwards-compat — the project is
+not live, so no serde migration was written). `CustomMaterialInstance` →
+`MaterialInstance` (`.material` field → `.asset`, gained an `.inline:
+MaterialDef`); the dead `MaterialRef` type is deleted; the exporter reads the
+unified instance. Verified in-editor: unassigned Primitive + Mesh → magenta;
+assign built-in PBR → renders; `set_builtin_param` edits `material.inline` →
+renders + persists; GLB export maps the built-in's inline → glTF PBR with the
+per-mesh base color.
 
 ## Done + verified
 
