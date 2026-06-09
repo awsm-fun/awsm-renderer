@@ -321,6 +321,16 @@ pub enum EditorCommand {
     /// two meshes don't share the same material. Inverse: restore `to`'s prior kind.
     CopyMaterialInstance { from: NodeId, to: NodeId },
 
+    /// Bake a **skinned** mesh node to a static **editable** mesh: discard the
+    /// skin (JOINTS/WEIGHTS + skeleton), capture the bind-pose geometry into a
+    /// new captured `MeshDef{ stack:{ base: Captured } }` asset, and swap the
+    /// node's kind from `SkinnedMesh` to `Mesh` (carrying the material + shadow
+    /// across). The explicit, **terminal** bridge that makes a skinned import
+    /// editable — a hard prerequisite for any mesh-editing op on it. Errors if
+    /// the node isn't a `SkinnedMesh`. Inverse: restore the prior `SkinnedMesh`
+    /// kind (the captured asset is left behind, harmlessly unreferenced).
+    DropSkinning { node: NodeId },
+
     // ─────────────────────────── Mesh editing ────────────────────────────────
     /// **Retired / no-op.** Procedural-geometry nodes are now unified on
     /// `NodeKind::Mesh`, each already backed by an editable `MeshDef` carrying a
@@ -852,6 +862,7 @@ impl EditorCommand {
             EditorCommand::SetCustomMaterialWgsl { .. } => "Edit shader",
             EditorCommand::AssignMaterial { .. } => "Assign material",
             EditorCommand::CopyMaterialInstance { .. } => "Copy material settings",
+            EditorCommand::DropSkinning { .. } => "Drop skinning",
             EditorCommand::ConvertToEditableMesh { .. } => "Convert to editable mesh",
             EditorCommand::SetMeshData { .. } => "Edit mesh",
             EditorCommand::SetMeshModifiers { .. } => "Edit modifiers",

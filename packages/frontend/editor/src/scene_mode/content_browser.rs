@@ -648,6 +648,11 @@ fn material_users(_id: AssetId) -> usize {
         .nodes
         .lock_ref()
         .iter()
-        .filter(|n| matches!(n.kind.get_cloned(), NodeKind::Mesh { .. }))
+        .filter(|n| {
+            matches!(
+                n.kind.get_cloned(),
+                NodeKind::Mesh { .. } | NodeKind::SkinnedMesh { .. }
+            )
+        })
         .count()
 }

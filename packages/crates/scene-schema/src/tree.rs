@@ -1,10 +1,10 @@
 use uuid::Uuid;
 
 use super::{
-    camera::CameraConfig, collider::ColliderShape, curve::CurveDef, decal::DecalConfig,
-    dynamic_material::MaterialInstance, instances::InstancesAlongCurveDef, light::LightConfig,
-    line::LineDef, particle::ParticleEmitterDef, primitive::MeshRef, sprite::SpriteDef,
-    transform::Trs,
+    assets::AssetId, camera::CameraConfig, collider::ColliderShape, curve::CurveDef,
+    decal::DecalConfig, dynamic_material::MaterialInstance, instances::InstancesAlongCurveDef,
+    light::LightConfig, line::LineDef, particle::ParticleEmitterDef, primitive::MeshRef,
+    sprite::SpriteDef, transform::Trs,
 };
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -117,6 +117,27 @@ impl std::fmt::Display for NodeId {
     }
 }
 
+/// Reference to a **skinned** glTF mesh: the imported source file + which node
+/// (and optionally which primitive) inside it. The renderer's `populate_gltf`
+/// builds the skinned mesh + skeleton at import; the bridge looks this node up
+/// in the per-import template (keyed by `source`) to find the populate-baked
+/// renderer mesh that deforms via the skeleton joints. There is no `MeshRef`/
+/// captured-geometry side: skinned geometry lives only in the renderer skin
+/// path until `drop_skinning` bakes its bind pose into a captured `Mesh`.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct SkinnedMeshRef {
+    /// The imported glTF/glb source file's `AssetId` (an `AssetSource::Filename`
+    /// entry) — the key under which the bridge caches this import's node template.
+    pub source: AssetId,
+    /// Which node inside the referenced glTF file carries this skinned mesh.
+    pub node_index: u32,
+    /// Optional primitive index within that node (for a multi-material skinned
+    /// node destructured into per-primitive children). `None` = the whole node.
+    #[serde(default)]
+    pub primitive_index: Option<u32>,
+}
+
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 // `Mesh` (the common, dominant variant) inlines a `MaterialInstance`, which makes
@@ -138,6 +159,24 @@ pub enum NodeKind {
         mesh: MeshRef,
         /// The node's single material assignment. `None` means *unassigned*
         /// and renders flat magenta (the missing-material sentinel).
+        #[serde(default)]
+        material: Option<MaterialInstance>,
+        #[serde(default)]
+        shadow: MeshShadowConfig,
+    },
+    /// A **skinned** mesh imported from a glTF — a deliberate *second* geometry
+    /// category, distinct from `Mesh`. It is **not** a `MeshDef`/`ModifierStack`
+    /// (no base/edits/overrides) and so **not editable**: per-vertex skin
+    /// weights can't survive topology-changing edits. It is rendered + deformed
+    /// by the renderer's existing glTF skin path (joints driven by the editor's
+    /// mirror bones + imported animation clips), NOT the captured-mesh pipeline.
+    /// `drop_skinning` is the explicit, terminal bridge to editing: it bakes the
+    /// bind-pose geometry into a captured `Mesh{ stack:{base:Captured} }` and
+    /// swaps the node to `NodeKind::Mesh`.
+    SkinnedMesh {
+        skin: SkinnedMeshRef,
+        /// Single material assignment (same one-material-per-node model as
+        /// `Mesh`); `None` renders flat magenta.
         #[serde(default)]
         material: Option<MaterialInstance>,
         #[serde(default)]
@@ -209,6 +248,7 @@ impl NodeKind {
             Self::Collider(_) => "collider",
             Self::Camera(_) => "camera",
             Self::Mesh { .. } => "mesh",
+            Self::SkinnedMesh { .. } => "skinned_mesh",
             Self::Curve(_) => "curve",
             Self::InstancesAlongCurve(_) => "instances",
             Self::Line(_) => "line",
@@ -224,6 +264,7 @@ impl NodeKind {
     pub fn mesh_shadow(&self) -> Option<&MeshShadowConfig> {
         match self {
             Self::Mesh { shadow, .. } => Some(shadow),
+            Self::SkinnedMesh { shadow, .. } => Some(shadow),
             Self::InstancesAlongCurve(d) => Some(&d.shadow),
             _ => None,
         }
@@ -233,6 +274,7 @@ impl NodeKind {
     pub fn mesh_shadow_mut(&mut self) -> Option<&mut MeshShadowConfig> {
         match self {
             Self::Mesh { shadow, .. } => Some(shadow),
+            Self::SkinnedMesh { shadow, .. } => Some(shadow),
             Self::InstancesAlongCurve(d) => Some(&mut d.shadow),
             _ => None,
         }

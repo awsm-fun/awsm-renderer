@@ -396,6 +396,12 @@ fn node_group(node: &Arc<Node>) -> Option<TargetGroup> {
             rows.extend(mesh_material_rows(id));
             ("mesh", "cube")
         }
+        // A skinned mesh carries the same first-party material as a Mesh (its
+        // skeletal deformation is driven by its bone nodes' transform tracks).
+        NodeKind::SkinnedMesh { .. } => {
+            rows.extend(mesh_material_rows(id));
+            ("skinned mesh", "cube")
+        }
         _ => ("node", "cube"),
     };
 

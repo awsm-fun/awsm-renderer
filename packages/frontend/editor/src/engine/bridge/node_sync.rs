@@ -335,6 +335,13 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
                 tracing::warn!("NodeKind::Mesh {mesh:?}: not in the capture cache; renders empty")
             }
         },
+        // A skinned glTF import: the renderer's `populate_gltf` already built the
+        // skinned mesh + skeleton; we keep that copy rendering (it deforms via the
+        // joints) and just (re)assign this node's material/shadow to it. NOT the
+        // captured-mesh pipeline — skinned geometry isn't editable.
+        NodeKind::SkinnedMesh { skin, material, .. } => {
+            materialize_skinned_mesh(entry.clone(), skin, material).await
+        }
         NodeKind::Camera(cfg) => materialize_camera(entry.clone(), cfg).await,
         // Group: no procedural geometry, no renderer resource.
         _ => {}
@@ -482,6 +489,140 @@ enum MeshMaterial {
     /// instanced geometry, whose appearance is the flat default + per-instance
     /// colours, not a per-node material assignment.
     Flat(awsm_scene_schema::MaterialDef),
+}
+
+/// The geometry COLOR set index a renderer mesh carries (glTF `COLOR_n`), or
+/// `None` if it has no vertex-colour attribute. Vertex-colour *usage* is
+/// geometry-derived, so the bridge sets `vertex_colors_enabled` + the set index
+/// from this (mirroring how `populate_gltf` decides it per primitive).
+fn mesh_vertex_color_set(
+    r: &awsm_renderer::AwsmRenderer,
+    mk: awsm_renderer::meshes::MeshKey,
+) -> Option<u32> {
+    use awsm_renderer::meshes::buffer_info::{
+        MeshBufferCustomVertexAttributeInfo, MeshBufferVertexAttributeInfo,
+    };
+    r.meshes.buffer_info(mk).ok().and_then(|info| {
+        info.triangles.vertex_attributes.iter().find_map(|attr| {
+            if let MeshBufferVertexAttributeInfo::Custom(
+                MeshBufferCustomVertexAttributeInfo::Colors { index, .. },
+            ) = attr
+            {
+                Some(*index)
+            } else {
+                None
+            }
+        })
+    })
+}
+
+/// Schema → runtime per-mesh shadow cast/receive flags.
+fn mesh_shadow_flags_from_config(
+    cfg: &awsm_scene_schema::MeshShadowConfig,
+) -> awsm_renderer::shadows::MeshShadowFlags {
+    awsm_renderer::shadows::MeshShadowFlags {
+        cast: cfg.cast,
+        receive: cfg.receive,
+    }
+}
+
+/// Materialize a `SkinnedMesh` node: the renderer's `populate_gltf` already built
+/// the skinned mesh + skeleton at import (and `hide_template_meshes` left the
+/// skinned copies *visible*), so we don't build geometry — we look this node's
+/// glTF `node_index` up in the cached import template, find its (skinned)
+/// renderer mesh key(s), and (re)assign this node's material + shadow flags onto
+/// them. The mesh keeps deforming via the skeleton joints, which the per-frame
+/// `skin_bridge` drives from the editor's animated mirror bones.
+///
+/// The skinned mesh keys are owned by the populate pass (the hidden template
+/// hierarchy keeps the joints alive), so they are **not** pushed to
+/// `entry.model_meshes` — `teardown` must not remove them. Only the materials we
+/// insert here are this node's to own + free.
+async fn materialize_skinned_mesh(
+    entry: Arc<RendererNode>,
+    skin: awsm_scene_schema::SkinnedMeshRef,
+    material: Option<awsm_scene_schema::dynamic_material::MaterialInstance>,
+) {
+    let Some(template) = bridge().get_template(skin.source) else {
+        tracing::warn!(
+            "SkinnedMesh {:?}: no import template cached (session-local — survives \
+             only within the import session); renders empty",
+            skin.source
+        );
+        return;
+    };
+    let Some(tnode) = template.find_by_node_index(skin.node_index) else {
+        tracing::warn!(
+            "SkinnedMesh node_index {} not in template; renders empty",
+            skin.node_index
+        );
+        return;
+    };
+    // The skinned renderer mesh key(s) for this node. `primitive_index = Some(i)`
+    // peels one primitive (a destructured multi-material node); `None` = all.
+    let mesh_keys: Vec<awsm_renderer::meshes::MeshKey> = match skin.primitive_index {
+        None => tnode.mesh_keys.clone(),
+        Some(i) => tnode
+            .mesh_keys
+            .get(i as usize)
+            .copied()
+            .into_iter()
+            .collect(),
+    };
+    if mesh_keys.is_empty() {
+        return;
+    }
+
+    let visible = entry.node.visible.get();
+    let shadow_cfg = entry
+        .node
+        .kind
+        .get_cloned()
+        .mesh_shadow()
+        .copied()
+        .unwrap_or_default();
+    let shadow_flags = mesh_shadow_flags_from_config(&shadow_cfg);
+
+    let mut material_keys = Vec::new();
+    let mut to_register = Vec::new();
+    {
+        let handle = renderer_handle();
+        let mut r = handle.lock().await;
+        for mk in &mesh_keys {
+            let _ = r.set_mesh_hidden(*mk, !visible);
+            let _ = r.set_mesh_shadow_flags(*mk, shadow_flags);
+            // Resolve PER PRIMITIVE because vertex-colour usage is geometry-derived
+            // (matches the renderer's native per-primitive behaviour).
+            let vertex_color_set = mesh_vertex_color_set(&r, *mk);
+            let mat_key = match material.as_ref() {
+                Some(inst) => {
+                    if let Some(mut merged) = builtin_merged(inst) {
+                        merged.vertex_colors_enabled = vertex_color_set.is_some();
+                        material::insert_material_vc(&mut r, &merged, vertex_color_set)
+                    } else if let Some(k) = super::dynamic::insert_custom(&mut r, inst) {
+                        k
+                    } else {
+                        material::insert_magenta(&mut r)
+                    }
+                }
+                None => material::insert_magenta(&mut r),
+            };
+            let _ = r.set_mesh_material(*mk, mat_key);
+            material_keys.push(mat_key);
+            to_register.push(*mk);
+        }
+        if let Err(e) = r.finalize_gpu_textures().await {
+            tracing::warn!("finalize_gpu_textures (skinned mesh): {e}");
+        }
+    }
+
+    for mk in &to_register {
+        bridge().register_mesh(*mk, entry.node_id);
+    }
+    // Only the inserted materials are owned by this node; the skinned mesh keys
+    // belong to the populate pass and must survive teardown (so they keep
+    // deforming) — do NOT add them to `model_meshes`.
+    entry.material_keys.lock().unwrap().extend(material_keys);
 }
 
 /// Authored polyline (`NodeKind::Line`) → fat-line strip. The fat-line pipeline

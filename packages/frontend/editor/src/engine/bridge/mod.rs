@@ -16,6 +16,7 @@ pub mod mesh_sync;
 pub mod node_sync;
 pub mod particles;
 pub mod skin_bridge;
+pub mod skinned_bake_cache;
 mod state;
 pub mod vertex_highlight;
 

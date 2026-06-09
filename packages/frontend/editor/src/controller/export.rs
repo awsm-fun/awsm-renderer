@@ -435,6 +435,15 @@ pub(crate) fn node_mesh(_scene: &Scene, kind: &NodeKind) -> Option<MeshData> {
             colors: r.colors,
             indices: r.indices,
         }),
+        // A skinned mesh exports its **bind-pose** geometry (the simplest correct
+        // path: GLB export is static, and the bind pose is what `drop_skinning`
+        // would bake). Resolved from the session-local bind-pose bake cache;
+        // `None` after a cold reload (no cached bake) — flagged as a limitation.
+        NodeKind::SkinnedMesh { skin, .. } => crate::engine::bridge::skinned_bake_cache::get(
+            skin.source,
+            skin.node_index,
+            skin.primitive_index,
+        ),
         _ => None,
     }
 }
@@ -443,6 +452,7 @@ pub(crate) fn node_mesh(_scene: &Scene, kind: &NodeKind) -> Option<MeshData> {
 fn material_slot(kind: &NodeKind) -> Option<&Option<MaterialInstance>> {
     match kind {
         NodeKind::Mesh { material, .. } => Some(material),
+        NodeKind::SkinnedMesh { material, .. } => Some(material),
         _ => None,
     }
 }

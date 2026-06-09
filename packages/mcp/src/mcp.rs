@@ -1079,6 +1079,19 @@ impl EditorMcp {
         .await
     }
 
+    #[tool(
+        description = "Bake a SKINNED mesh node to a static, EDITABLE mesh: discards the skin (joints/weights + skeleton) and captures the bind-pose geometry into a new captured Mesh asset, swapping the node from SkinnedMesh → Mesh. This is the TERMINAL, explicit bridge that makes an imported rigged mesh editable — a hard prerequisite for ANY geometry op (set_mesh_modifiers, vertex tools, get_mesh_layers, select_vertices_where) on it, which otherwise error 'node <id> is skinned; call drop_skinning first'. The mesh stops animating after this. Errors if the node isn't a SkinnedMesh. Undoable (restores the prior SkinnedMesh kind)."
+    )]
+    async fn drop_skinning(
+        &self,
+        Parameters(p): Parameters<NodeArg>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::DropSkinning {
+            node: parse_node(&p.node)?,
+        })
+        .await
+    }
+
     #[tool(description = "Duplicate a node (deep clone, fresh ids) as a following sibling.")]
     async fn duplicate_node(
         &self,
@@ -1364,9 +1377,16 @@ impl EditorMcp {
         let QueryResult::Map(m) = *qr else {
             return Err(McpError::internal_error("unexpected kind result", None));
         };
-        let mesh = m
-            .entries
-            .get(&node.to_string())
+        let entry = m.entries.get(&node.to_string());
+        // A SkinnedMesh isn't editable — steer the agent to drop_skinning, which
+        // bakes its bind pose into an editable Mesh.
+        if entry.and_then(|v| v.get("skinned_mesh")).is_some() {
+            return Err(McpError::invalid_params(
+                format!("node {node} is skinned; call drop_skinning first"),
+                None,
+            ));
+        }
+        let mesh = entry
             .and_then(|v| v.get("mesh"))
             .and_then(|v| v.as_str())
             .ok_or_else(|| McpError::invalid_params(format!("node {node} is not a Mesh"), None))?;

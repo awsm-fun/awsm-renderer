@@ -1240,6 +1240,7 @@ fn assign_to_selection(material: AssetId) {
                 matches!(
                     n.kind.get_cloned(),
                     crate::engine::scene::NodeKind::Mesh { .. }
+                        | crate::engine::scene::NodeKind::SkinnedMesh { .. }
                 )
             })
             .unwrap_or(false);

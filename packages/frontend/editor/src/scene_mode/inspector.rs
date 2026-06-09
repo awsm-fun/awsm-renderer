@@ -147,7 +147,7 @@ fn single_node(node: Arc<Node>) -> Dom {
 fn export_node_section(node: &Arc<Node>) -> Dom {
     let exportable = matches!(
         node.kind.get_cloned(),
-        NodeKind::Mesh { .. } | NodeKind::Group
+        NodeKind::Mesh { .. } | NodeKind::SkinnedMesh { .. } | NodeKind::Group
     );
     if !exportable {
         return html!("div");
@@ -207,6 +207,42 @@ fn kind_editor(node: &Arc<Node>) -> Dom {
             .child(material_editor(node, &inline_of(&material), material.is_some()))
             .child(mesh_shadow_editor(node, shadow))
         }),
+        // A skinned glTF import: not editable geometry (its per-vertex skin
+        // weights can't survive topology edits). Shows the material + shadow
+        // surface plus a "Drop Skinning" action that bakes the bind pose into a
+        // static editable Mesh (terminal).
+        NodeKind::SkinnedMesh {
+            material, shadow, ..
+        } => {
+            let node_id = node.id;
+            html!("div", {
+                .child(info_section(
+                    "Skinned Mesh",
+                    "An imported, rigged mesh deformed by the renderer's skin path \
+                     (driven by its bones + animation clips). It is NOT editable — \
+                     per-vertex skin weights can't survive topology-changing edits. \
+                     Drop skinning to bake the bind pose into a static, editable mesh.",
+                ))
+                .child(material_editor(node, &inline_of(&material), material.is_some()))
+                .child(mesh_shadow_editor(node, shadow))
+                .child(html!("div", {
+                    .style("margin", "8px 0")
+                    .child(Btn::new()
+                        .label("Drop Skinning")
+                        .icon("cube")
+                        .variant(BtnVariant::Ghost)
+                        .full(true)
+                        .on_click(move || {
+                            spawn_local(async move {
+                                let _ = controller()
+                                    .dispatch(EditorCommand::DropSkinning { node: node_id })
+                                    .await;
+                            });
+                        })
+                        .render())
+                }))
+            })
+        }
         // A Group is purely an organisational transform parent — name + transform
         // (above) are its full property set.
         NodeKind::Group => info_section("Group", "An organizational parent. Its children inherit this node's transform; it has no geometry of its own."),
@@ -2712,6 +2748,7 @@ fn node_material_instance(
 ) -> Option<awsm_scene_schema::dynamic_material::MaterialInstance> {
     match node.kind.get_cloned() {
         NodeKind::Mesh { material, .. } => material,
+        NodeKind::SkinnedMesh { material, .. } => material,
         _ => None,
     }
 }
@@ -2721,15 +2758,28 @@ fn set_node_material(
     node: &Arc<Node>,
     inst: awsm_scene_schema::dynamic_material::MaterialInstance,
 ) {
-    if let NodeKind::Mesh { mesh, shadow, .. } = node.kind.get_cloned() {
-        dispatch_kind(
-            node.id,
-            NodeKind::Mesh {
-                mesh,
-                material: Some(inst),
-                shadow,
-            },
-        );
+    match node.kind.get_cloned() {
+        NodeKind::Mesh { mesh, shadow, .. } => {
+            dispatch_kind(
+                node.id,
+                NodeKind::Mesh {
+                    mesh,
+                    material: Some(inst),
+                    shadow,
+                },
+            );
+        }
+        NodeKind::SkinnedMesh { skin, shadow, .. } => {
+            dispatch_kind(
+                node.id,
+                NodeKind::SkinnedMesh {
+                    skin,
+                    material: Some(inst),
+                    shadow,
+                },
+            );
+        }
+        _ => {}
     }
 }
 
@@ -2857,17 +2907,30 @@ fn uniform_bool(node: &Arc<Node>, name: &str, value: bool) -> Dom {
 
 // ── Shadows (per-mesh cast / receive) ─────────────────────────────────────────
 
-/// Replace a Mesh's `shadow`, preserving the rest of the kind.
+/// Replace a Mesh / SkinnedMesh's `shadow`, preserving the rest of the kind.
 fn set_mesh_shadow(node: &Arc<Node>, shadow: MeshShadowConfig) {
-    if let NodeKind::Mesh { mesh, material, .. } = node.kind.get_cloned() {
-        dispatch_kind(
-            node.id,
-            NodeKind::Mesh {
-                mesh,
-                material,
-                shadow,
-            },
-        );
+    match node.kind.get_cloned() {
+        NodeKind::Mesh { mesh, material, .. } => {
+            dispatch_kind(
+                node.id,
+                NodeKind::Mesh {
+                    mesh,
+                    material,
+                    shadow,
+                },
+            );
+        }
+        NodeKind::SkinnedMesh { skin, material, .. } => {
+            dispatch_kind(
+                node.id,
+                NodeKind::SkinnedMesh {
+                    skin,
+                    material,
+                    shadow,
+                },
+            );
+        }
+        _ => {}
     }
 }
 
@@ -2880,7 +2943,7 @@ fn mesh_shadow_editor(node: &Arc<Node>, shadow: MeshShadowConfig) -> Dom {
             first = false;
             clone!(node => async move {
                 if !fire { return; }
-                if let NodeKind::Mesh { shadow, .. } = node.kind.get_cloned() {
+                if let Some(shadow) = node.kind.get_cloned().mesh_shadow().copied() {
                     if shadow.cast != on {
                         set_mesh_shadow(&node, MeshShadowConfig { cast: on, ..shadow });
                     }
@@ -2896,7 +2959,7 @@ fn mesh_shadow_editor(node: &Arc<Node>, shadow: MeshShadowConfig) -> Dom {
             first = false;
             clone!(node => async move {
                 if !fire { return; }
-                if let NodeKind::Mesh { shadow, .. } = node.kind.get_cloned() {
+                if let Some(shadow) = node.kind.get_cloned().mesh_shadow().copied() {
                     if shadow.receive != on {
                         set_mesh_shadow(&node, MeshShadowConfig { receive: on, ..shadow });
                     }

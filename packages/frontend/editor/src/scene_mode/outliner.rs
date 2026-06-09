@@ -407,6 +407,9 @@ pub fn kind_icon(kind: &NodeKind) -> &'static str {
         NodeKind::Collider(_) => "collision",
         NodeKind::Camera(_) => "camera",
         NodeKind::Mesh { .. } => "cube",
+        // No dedicated rig/skeleton glyph in the icon set; a skinned mesh is
+        // still a mesh, so reuse the cube.
+        NodeKind::SkinnedMesh { .. } => "cube",
         NodeKind::Curve(_) => "curve",
         NodeKind::InstancesAlongCurve(_) => "layers",
         NodeKind::Line(_) => "curve",

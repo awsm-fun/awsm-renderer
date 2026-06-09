@@ -830,8 +830,11 @@ impl EditorController {
                 self.anim_solo_root.set(None);
                 self.playhead.set_neq(0.0);
                 self.playing.set_neq(false);
-                // Skin bridge mappings (#2) belong to imported models — drop them.
+                // Skin bridge mappings (#2) + import templates belong to imported
+                // models — drop them.
                 crate::engine::bridge::bridge().clear_skin_joints();
+                crate::engine::bridge::bridge().clear_templates();
+                crate::engine::bridge::skinned_bake_cache::clear();
                 self.project_name.set("untitled.awsm".to_string());
                 self.missing_assets.set(Vec::new());
                 // Seed a sane default scene: a key directional light (tilted ~50°
@@ -993,6 +996,78 @@ impl EditorController {
                 self.scene.assets.lock().unwrap().entries.insert(id, *entry);
                 self.scene.bump_revision();
                 Ok(Some(EditorCommand::DeleteAsset { id }))
+            }
+            EditorCommand::DropSkinning { node } => {
+                use awsm_scene_schema::SkinnedMeshRef;
+                let Some(n) = mutate::find_by_id(&self.scene, node) else {
+                    return Ok(None);
+                };
+                let prev = n.kind.get_cloned();
+                // Only a SkinnedMesh can be dropped to editable — anything else is
+                // a no-op (the UI/MCP layer surfaces a clearer message).
+                let (skin, material, shadow): (SkinnedMeshRef, _, _) = match prev.clone() {
+                    NodeKind::SkinnedMesh {
+                        skin,
+                        material,
+                        shadow,
+                    } => (skin, material, shadow),
+                    _ => return Ok(None),
+                };
+                // Bind-pose geometry stashed at import (no JOINTS/WEIGHTS).
+                let Some(mesh) = crate::engine::bridge::skinned_bake_cache::get(
+                    skin.source,
+                    skin.node_index,
+                    skin.primitive_index,
+                ) else {
+                    Toast::error(
+                        "drop_skinning: this skinned mesh's bind-pose geometry isn't \
+                         cached (re-import the model in this session)",
+                    );
+                    return Ok(None);
+                };
+                // Mint a captured editable Mesh asset from the bind pose and swap
+                // the node's kind. Reuses the import bake path (deterministic id =
+                // node id), so it persists like any captured mesh.
+                let label = n.name.get_cloned();
+                let mesh_ref = mint_imported_mesh(node, &label, &mesh, skin.source);
+                // Hide the now-orphaned skinned populate copy so it stops rendering
+                // (the node now renders its captured bind-pose Mesh instead).
+                if let Some(template) = crate::engine::bridge::bridge().get_template(skin.source) {
+                    if let Some(tnode) = template.find_by_node_index(skin.node_index) {
+                        let keys: Vec<_> = match skin.primitive_index {
+                            None => tnode.mesh_keys.clone(),
+                            Some(i) => tnode
+                                .mesh_keys
+                                .get(i as usize)
+                                .copied()
+                                .into_iter()
+                                .collect(),
+                        };
+                        spawn_local(async move {
+                            crate::engine::context::with_renderer_mut(move |r| {
+                                for mk in keys {
+                                    let _ = r.set_mesh_hidden(mk, true);
+                                }
+                            })
+                            .await;
+                        });
+                    }
+                }
+                n.kind.set(NodeKind::Mesh {
+                    mesh: mesh_ref,
+                    material,
+                    shadow,
+                });
+                self.structure_rev
+                    .set(self.structure_rev.get().wrapping_add(1));
+                self.scene.bump_revision();
+                self.dirty.set_neq(true);
+                // Inverse restores the prior SkinnedMesh kind (the captured asset is
+                // left behind, harmlessly unreferenced).
+                Ok(Some(EditorCommand::SetKind {
+                    id: node,
+                    kind: Box::new(prev),
+                }))
             }
             EditorCommand::ConvertToEditableMesh { node, mesh } => {
                 // Retired: every procedural node is already a `NodeKind::Mesh`
@@ -1374,6 +1449,12 @@ impl EditorController {
                                 material: instance,
                                 shadow,
                             },
+                            // A skinned import carries the same one-material slot.
+                            NodeKind::SkinnedMesh { skin, shadow, .. } => NodeKind::SkinnedMesh {
+                                skin,
+                                material: instance,
+                                shadow,
+                            },
                             _ => return Ok(None),
                         };
                         n.kind.set(next);
@@ -1400,6 +1481,7 @@ impl EditorController {
                 // The source node's material slot (geometry kinds only).
                 let src_slot = match src.kind.get_cloned() {
                     NodeKind::Mesh { material, .. } => material,
+                    NodeKind::SkinnedMesh { material, .. } => material,
                     _ => return Ok(None),
                 };
                 let prev = dst.kind.get_cloned();
@@ -1412,6 +1494,18 @@ impl EditorController {
                     } => (
                         NodeKind::Mesh {
                             mesh,
+                            material: src_slot.clone(),
+                            shadow,
+                        },
+                        dst_mat,
+                    ),
+                    NodeKind::SkinnedMesh {
+                        skin,
+                        material: dst_mat,
+                        shadow,
+                    } => (
+                        NodeKind::SkinnedMesh {
+                            skin,
                             material: src_slot.clone(),
                             shadow,
                         },
@@ -2577,6 +2671,12 @@ impl EditorController {
             id
         };
         let template = Arc::new(import.template);
+        // Cache the node template under the source-file `AssetId` so any
+        // `SkinnedMesh` node from this import can resolve its populate-baked
+        // renderer mesh keys (see `node_sync::materialize_skinned_mesh`). Only
+        // skinned imports actually consult it; static geometry baked to captured
+        // meshes ignores it — but it's cheap + keeps the path uniform.
+        crate::engine::bridge::bridge().insert_template(asset_id, template.clone());
 
         // glTF primitives with no material use glTF's default material — white,
         // metallic 1.0, roughness 1.0 (NOT the editor's magenta sentinel, which is
@@ -3116,6 +3216,11 @@ impl EditorController {
                     select_within_radius, Cmp,
                 };
                 use serde_json::json;
+                if node_is_skinned(&self.scene, node) {
+                    return QueryResult::Error {
+                        error: skinned_edit_error(node),
+                    };
+                }
                 let mesh = mutate::find_by_id(&self.scene, node).and_then(|n| {
                     crate::controller::export::node_mesh(&self.scene, &n.kind.get_cloned())
                 });
@@ -3231,6 +3336,11 @@ impl EditorController {
             }
             EditorQuery::GetVertexData { node, indices } => {
                 use serde_json::json;
+                if node_is_skinned(&self.scene, node) {
+                    return QueryResult::Error {
+                        error: skinned_edit_error(node),
+                    };
+                }
                 let mesh = mutate::find_by_id(&self.scene, node).and_then(|n| {
                     crate::controller::export::node_mesh(&self.scene, &n.kind.get_cloned())
                 });
@@ -3265,6 +3375,11 @@ impl EditorController {
             EditorQuery::GetMeshLayers { node } => {
                 use awsm_scene_schema::modifier::MeshBase;
                 use serde_json::json;
+                if node_is_skinned(&self.scene, node) {
+                    return QueryResult::Error {
+                        error: skinned_edit_error(node),
+                    };
+                }
                 // Resolve node → mesh asset id, then read its def (stack + overrides).
                 let mesh_id =
                     mutate::find_by_id(&self.scene, node).and_then(|n| match n.kind.get_cloned() {
@@ -3942,6 +4057,22 @@ fn validate_keys(keys: &[String], valid: &[&str]) -> Vec<String> {
         .collect()
 }
 
+/// The standard error message for a geometry op aimed at a **skinned** mesh
+/// node. Skinned meshes are not editable (their per-vertex skin weights can't
+/// survive topology edits); `drop_skinning` bakes the bind pose to a static
+/// editable mesh first.
+fn skinned_edit_error(node: NodeId) -> String {
+    format!("node {node} is skinned; call drop_skinning first")
+}
+
+/// `true` if `node` is a `SkinnedMesh` — the edit-guard predicate for
+/// geometry-editing commands/queries (which can't target a skinned mesh).
+fn node_is_skinned(scene: &Scene, node: NodeId) -> bool {
+    mutate::find_by_id(scene, node)
+        .map(|n| matches!(n.kind.get_cloned(), NodeKind::SkinnedMesh { .. }))
+        .unwrap_or(false)
+}
+
 /// The node's single material assignment, if it carries one and is assigned
 /// (`Some`). Returns `None` for non-geometry nodes and for unassigned geometry.
 fn node_material_ref(
@@ -3949,6 +4080,7 @@ fn node_material_ref(
 ) -> Option<&awsm_scene_schema::dynamic_material::MaterialInstance> {
     match kind {
         NodeKind::Mesh { material, .. } => material.as_ref(),
+        NodeKind::SkinnedMesh { material, .. } => material.as_ref(),
         _ => None,
     }
 }
@@ -3959,6 +4091,7 @@ fn node_material_mut(
 ) -> Option<&mut awsm_scene_schema::dynamic_material::MaterialInstance> {
     match kind {
         NodeKind::Mesh { material, .. } => material.as_mut(),
+        NodeKind::SkinnedMesh { material, .. } => material.as_mut(),
         _ => None,
     }
 }
@@ -4516,7 +4649,7 @@ fn build_editor_subtree(
     node_map: &mut std::collections::HashMap<u32, NodeId>,
 ) -> Arc<crate::engine::scene::node::Node> {
     use crate::engine::scene::node::Node;
-    use awsm_scene_schema::{dynamic_material::MaterialInstance, NodeKind, Trs};
+    use awsm_scene_schema::{dynamic_material::MaterialInstance, NodeKind, SkinnedMeshRef, Trs};
 
     let name = tn.label.clone().unwrap_or_else(|| {
         fallback_name
@@ -4559,8 +4692,89 @@ fn build_editor_subtree(
         })
     };
 
+    // Skinned-ness is per-primitive; a node is skinned if ANY primitive is.
+    // Skinned nodes are a different rendering category (renderer skin path,
+    // NOT editable): they become `NodeKind::SkinnedMesh` referencing the
+    // populate-baked renderer mesh — preserving the rig + deformation — rather
+    // than baking to a captured (bind-pose, static) `Mesh`. This is what fixes
+    // the step-2 regression where skinned imports froze at bind pose.
+    let node_is_skinned = tn.mesh_is_skinned.iter().any(|&s| s);
+
     let node = if tn.mesh_keys.is_empty() {
         Node::new_with_transform_and_kind(name, trs, NodeKind::Group)
+    } else if node_is_skinned {
+        // A skinned mesh node. With one material per node, a single-material node
+        // maps 1:1 to one `SkinnedMesh` referencing the whole node; a
+        // multi-material node is destructured into one `SkinnedMesh` child per
+        // primitive (each with its own `primitive_index` + material), mirroring
+        // the static (captured-mesh) destructure path.
+        let mat_indices = &tn.mesh_gltf_material_indices;
+        let distinct: std::collections::BTreeSet<Option<usize>> =
+            mat_indices.iter().copied().collect();
+        if distinct.len() <= 1 {
+            let material = instance_for(mat_indices.first().copied().flatten());
+            // Stash the bind-pose geometry (no JOINTS/WEIGHTS) so `drop_skinning`
+            // can bake it to a static editable Mesh later.
+            if let Some(mesh) = node_meshes.get(&(tn.gltf_node_index, None)) {
+                crate::engine::bridge::skinned_bake_cache::store(
+                    asset_id,
+                    tn.gltf_node_index,
+                    None,
+                    mesh.clone(),
+                );
+            }
+            Node::new_with_transform_and_kind(
+                name,
+                trs,
+                NodeKind::SkinnedMesh {
+                    skin: SkinnedMeshRef {
+                        source: asset_id,
+                        node_index: tn.gltf_node_index,
+                        primitive_index: None,
+                    },
+                    material,
+                    shadow: Default::default(),
+                },
+            )
+        } else {
+            let group = Node::new_with_transform_and_kind(name.clone(), trs, NodeKind::Group);
+            for (i, mi) in mat_indices.iter().enumerate() {
+                let material = instance_for(*mi);
+                let part_label = material
+                    .as_ref()
+                    .and_then(|inst| {
+                        crate::controller::custom_material::find_material(
+                            &controller().custom_materials,
+                            inst.asset,
+                        )
+                        .map(|m| m.name.get_cloned())
+                    })
+                    .unwrap_or_else(|| format!("{name} · part {i}"));
+                if let Some(mesh) = node_meshes.get(&(tn.gltf_node_index, Some(i as u32))) {
+                    crate::engine::bridge::skinned_bake_cache::store(
+                        asset_id,
+                        tn.gltf_node_index,
+                        Some(i as u32),
+                        mesh.clone(),
+                    );
+                }
+                let part = Node::new_with_transform_and_kind(
+                    part_label,
+                    Trs::IDENTITY,
+                    NodeKind::SkinnedMesh {
+                        skin: SkinnedMeshRef {
+                            source: asset_id,
+                            node_index: tn.gltf_node_index,
+                            primitive_index: Some(i as u32),
+                        },
+                        material,
+                        shadow: Default::default(),
+                    },
+                );
+                group.children.lock_mut().push_cloned(part);
+            }
+            group
+        }
     } else {
         // With one material per node, a node whose primitives all share a
         // material (the common case) maps 1:1 to a single Mesh node. A node whose
