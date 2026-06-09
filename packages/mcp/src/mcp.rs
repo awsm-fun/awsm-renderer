@@ -946,7 +946,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Lower the whole project to a player runtime bundle: base64 scene.glb (geometry + materials + lights/cameras) + the pruned custom-material side-files + an env descriptor. A read; returns the file set. Animations/textures/player-loader are follow-ons."
+        description = "Bake the whole project to a player runtime bundle DIRECTORY: a `scene.toml` (the runtime scene — node hierarchy + transforms + material instances + lights/cameras + our animation clips + environment, meshes referenced by id) plus an `assets/` directory: one geometry-only `assets/<id>.glb` per non-primitive mesh (bare primitives stay procedural in scene.toml), custom-material wgsl folders, and referenced textures. Materials + animations are NOT in the glbs (they're ours, applied by the player from scene.toml + clips). A read; returns the file set `{name, files:[{path, base64 bytes}]}` (result kind `player_bundle`). Skinned/morph meshes' glb re-export from source is a follow-on (static geometry for now)."
     )]
     async fn export_player_bundle(
         &self,

@@ -227,12 +227,15 @@ pub enum EditorQuery {
         node: NodeId,
         predicate: VertexPredicate,
     },
-    /// Lower the whole project to a player runtime bundle: a base64 `scene.glb`
-    /// (geometry + materials + lights/cameras, reusing the GLB exporter), the
-    /// pruned custom-material side-files, and an environment descriptor. A read
-    /// (returns the file set; never mutates the project). MCP:
-    /// `export_player_bundle`. (Animation lowering + texture copying + the
-    /// player-side loader are follow-ons — see the STATUS doc.)
+    /// Bake the whole project to a player runtime bundle **directory**: a
+    /// `scene.toml` (the runtime scene — nodes / transforms / material instances /
+    /// lights / cameras / our clips / env, meshes by id) + an `assets/` directory
+    /// (one geometry-only `assets/<id>.glb` per non-primitive mesh — bare
+    /// primitives stay procedural in scene.toml; custom-material folders;
+    /// referenced textures). Materials + animations are ours (not in the glbs),
+    /// applied by the player from scene.toml + clips. A read (returns the file
+    /// set; never mutates). MCP: `export_player_bundle`. Skinned/morph glb
+    /// re-export from source is a follow-on (static for now).
     ExportPlayerBundle { name: String },
     /// Geometry stats for a node's resolved mesh (Primitive / Mesh / Sweep):
     /// vertex+triangle counts, bbox, centroid, surface area, volume, watertight.

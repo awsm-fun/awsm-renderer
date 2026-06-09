@@ -1,9 +1,11 @@
 //! The **bake**: lower the authoring [`EditorProject`] to a runtime
 //! [`awsm_scene::Scene`]. This is the structural half — pure data, native-tested.
 //!
-//! The editor pairs it with the byte-producing half (build a geometry+skin+morph
-//! glb per [`RuntimeMesh::Glb`] mesh via `awsm-glb-export`, gather textures +
-//! custom-material folders) and writes the `scene.toml` + `assets/` directory.
+//! The editor pairs it with the byte-producing half (build a **geometry-only** glb
+//! per [`RuntimeMesh::Glb`] mesh via `awsm-glb-export`, gather textures + custom-
+//! material folders) and writes the `scene.toml` + `assets/` directory. (Skinned/
+//! morph meshes' glb re-export from source — `awsm_glb_export::reexport_clean`,
+//! which preserves the rig — is the remaining follow-on; static geometry for now.)
 //!
 //! What's dropped vs the authoring project: the modifier-stack recipes + per-vertex
 //! overrides collapse to a baked mesh (`RuntimeMesh`), and the editor-only library
