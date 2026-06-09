@@ -20,14 +20,29 @@ in chat; the split's runtime/authoring line is defined by the unification).
   (sparse pos/color/normal/uv), terminal-collapse rule, PaintVertexColors/
   SetVertexNormals/BakeAll + GetVertexData/GetMeshLayers, position-verb migration.
   Verified live: soft_transform pulls a sphere pole into a teardrop (collapse +
-  override + re-materialize). Paint-render + the new typed verbs need a server
-  restart + a vertex-color material to demo (deferred).
+  override + re-materialize).
+- ✅ **Skinning decision — editable XOR skinned** (`ea665a16`): `SkinnedMesh`
+  node (renderer-skinned, non-editable) + `drop_skinning` terminal bridge (bake
+  bind-pose → editable Mesh); edit-guard errors on skinned nodes; imports
+  preserve skinning instead of silently baking to bind pose.
+- ✅ **Step 7 — watch-it-work UI** (`e581108c`): agent activity feed +
+  per-panel spotlight on the inbound MCP command stream; read-only, silent with
+  no agent. Builds clean (lint + wasm); editor verified rendering post-change.
+  Feed/spotlight *visuals* still want the user's in-browser eyes.
+- ✅ **Step 8 — paint→render (splat path)** (`7d9a68d2`): fixed the editable-mesh
+  bug where painted `COLOR_0` was uploaded but the built-in PBR's
+  `vertex_colors_enabled` was never flipped (only the skinned path did it).
+  Verified live: a 561-vert sphere painted red-top/blue-bottom renders a sharp
+  colour band exactly at the y=0 paint boundary (vs uniform white pre-fix). This
+  closes step 5's deferred paint-render verification AND the headline texture-
+  splat path. (Hue is IBL-tinted: vertex colour multiplies the white PBR base;
+  unlit/Toon don't consume vertex colour.)
 - ⏸ **Step 4 — crate split**: NOT started — deferred. It's the most delicate
-  cross-crate work AND its `awsm-scene` runtime-mesh type depends on the
-  **skinning decision** (the known gap). Best done with that decided + fresh
-  context. (Step 3's bake/collapse is effectively covered by collapse + BakeAll.)
-- ⬜ Steps 6 (bundle = awsm-scene dir — needs step 4), 7 (watch-it-work UI —
-  ungated but visual), 8 (splat test — needs paint-render + a splat material).
+  cross-crate work; the skinning decision it depended on is now made (above), so
+  it's unblocked, but it's a large architectural move best done with fresh
+  context + the user in the loop on the `awsm-scene` vs editor-module line.
+  (Step 3's bake/collapse is effectively covered by collapse + BakeAll.)
+- ⬜ Step 6 (bundle = awsm-scene dir) — needs step 4.
 
 This plan unifies how geometry is represented, edited, persisted, and exported,
 and splits the schema into a lean runtime crate and an authoring crate. It folds
