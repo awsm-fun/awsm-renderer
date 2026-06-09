@@ -42,12 +42,21 @@ in chat; the split's runtime/authoring line is defined by the unification).
   `OpaqueShadingInput` fields) — the non-PBR, "lots of small opaque materials"
   splat path the renderer is built for. Verified live: a painted sphere renders
   true red/blue under BOTH an unlit custom material (pure) and built-in PBR (lit).
-- ⏸ **Step 4 — crate split**: NOT started — deferred. It's the most delicate
-  cross-crate work; the skinning decision it depended on is now made (above), so
-  it's unblocked, but it's a large architectural move best done with fresh
-  context + the user in the loop on the `awsm-scene` vs editor-module line.
-  (Step 3's bake/collapse is effectively covered by collapse + BakeAll.)
-- ⬜ Step 6 (bundle = awsm-scene dir) — needs step 4.
+- ✅ **Step 4 — crate split DONE** (`d566fe20`→`efbcd885`, 7 commits): the
+  monolithic `awsm-scene-schema` is deleted. `awsm-scene` = lean runtime (CORE
+  schema + `RuntimeMesh`/`MeshBlob` named-attribute table + runtime `Scene`);
+  `awsm-meshgen` owns the recipe types + is feature-gated (`default`=primitives
+  glam-only, `recipes`=types, `authoring`=exec + heavy deps); `awsm-editor-protocol`
+  = authoring layer (MeshDef/VertexOverrides/EditorProject + authoring asset table)
+  and umbrella-re-exports awsm-scene CORE + meshgen recipes. renderer/mcp →
+  awsm-scene; editor → protocol umbrella. `NodeKind` did NOT fork (mesh by
+  MeshRef). Full green: CI clippy + all tests (renderer 207, meshgen 38, scene 11,
+  protocol round-trips) + editor wasm + `trunk build` + in-browser MCP smoke
+  (insert + modifier-stack eval through the new crates renders). Bitcode-compat
+  risk dropped (pre-1.0, re-bake).
+- ⬜ Step 6 (bundle = awsm-scene dir + the `project_dir.rs` scene.toml writer) —
+  now unblocked; the runtime `Scene` + `RuntimeMesh` exist, needs the bake
+  (EditorProject → Scene, collapse stacks to blobs) + dir writer.
 
 This plan unifies how geometry is represented, edited, persisted, and exported,
 and splits the schema into a lean runtime crate and an authoring crate. It folds
