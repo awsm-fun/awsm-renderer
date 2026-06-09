@@ -223,6 +223,52 @@ fn download_text(filename: &str, content: &str) {
     let _ = web_sys::Url::revoke_object_url(&url);
 }
 
+/// Trigger a browser download of raw `bytes` as `filename` (binary — e.g. a
+/// `.glb`). Shared by the scene + per-node GLB export.
+pub(crate) fn download_bytes(filename: &str, bytes: &[u8]) {
+    use wasm_bindgen::JsCast;
+    let u8arr = js_sys::Uint8Array::from(bytes);
+    let parts = js_sys::Array::new();
+    parts.push(&u8arr);
+    let Ok(blob) = web_sys::Blob::new_with_u8_array_sequence(&parts) else {
+        return;
+    };
+    let Ok(url) = web_sys::Url::create_object_url_with_blob(&blob) else {
+        return;
+    };
+    if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+        if let Ok(a) = doc.create_element("a") {
+            if let Ok(a) = a.dyn_into::<web_sys::HtmlAnchorElement>() {
+                a.set_href(&url);
+                a.set_download(filename);
+                a.click();
+            }
+        }
+    }
+    let _ = web_sys::Url::revoke_object_url(&url);
+}
+
+/// Export the whole scene to a binary glTF and download it. The player/runtime
+/// (or another DCC tool) re-imports the `.glb`; it's not auto-added back to the
+/// project.
+fn export_scene_glb() {
+    spawn_local(async {
+        match crate::controller::export::export_scene_glb(&controller()).await {
+            Ok(bytes) => {
+                let name = controller().project_name.get_cloned();
+                let file = if name.is_empty() {
+                    "scene.glb".to_string()
+                } else {
+                    format!("{name}.glb")
+                };
+                download_bytes(&file, &bytes);
+                Toast::info(format!("Exported {file} ({} KB)", bytes.len() / 1024));
+            }
+            Err(e) => Toast::error(format!("Export failed: {e}")),
+        }
+    });
+}
+
 fn settings_drawer() -> Dom {
     let s = controller().settings.clone();
     RightDrawer::new("Settings")
@@ -765,6 +811,7 @@ fn overflow_button(ctrl: &EditorController) -> Dom {
         .style("display", "inline-flex")
         .child(DropButton::new().icon("more").variant(BtnVariant::Quiet).chevron(false)
             .items(|close| vec![
+                MenuItem::new("Export scene as GLB\u{2026}").icon("mesh").on_click(clone!(close => move || { export_scene_glb(); (close.borrow_mut())(); })).render(),
                 MenuItem::new("Settings\u{2026}").icon("settings").on_click(clone!(close => move || { controller().settings_open.set_neq(true); (close.borrow_mut())(); })).render(),
                 MenuItem::new("About AwsmRenderer\u{2026}").icon("help").on_click(clone!(close => move || { open_about(); (close.borrow_mut())(); })).render(),
                 MenuItem::new("Clear scene\u{2026}").icon("trash").danger(true).on_click(clone!(close => move || { open_clear_all(); (close.borrow_mut())(); })).render(),

@@ -139,6 +139,49 @@ fn single_node(node: Arc<Node>) -> Dom {
         .child(row("Prefab root", toggle(prefab)))
         .child(transform_section(&node))
         .child(kind_editor(&node))
+        .child(export_node_section(&node))
+    })
+}
+
+/// "Export GLB" for the selected node's subtree (geometry-bearing kinds +
+/// Group/Model containers). Downloads a binary glTF; re-import is up to the user.
+fn export_node_section(node: &Arc<Node>) -> Dom {
+    let exportable = matches!(
+        node.kind.get_cloned(),
+        NodeKind::Primitive { .. }
+            | NodeKind::Mesh { .. }
+            | NodeKind::SweepAlongCurve { .. }
+            | NodeKind::Model(_)
+            | NodeKind::Group
+    );
+    if !exportable {
+        return html!("div");
+    }
+    let node_id = node.id;
+    let raw_name = node.name.get_cloned();
+    html!("div", {
+        .style("margin", "10px 12px 0")
+        .child(Btn::new()
+            .label("Export GLB")
+            .icon("mesh")
+            .variant(BtnVariant::Ghost)
+            .full(true)
+            .on_click(move || {
+                let file = {
+                    let n = raw_name.trim();
+                    if n.is_empty() { "node.glb".to_string() } else { format!("{n}.glb") }
+                };
+                spawn_local(async move {
+                    match crate::controller::export::export_glb(&controller().scene, Some(node_id)).await {
+                        Ok(bytes) => {
+                            crate::app::download_bytes(&file, &bytes);
+                            Toast::info(format!("Exported {file} ({} KB)", bytes.len() / 1024));
+                        }
+                        Err(e) => Toast::error(format!("Export failed: {e}")),
+                    }
+                });
+            })
+            .render())
     })
 }
 

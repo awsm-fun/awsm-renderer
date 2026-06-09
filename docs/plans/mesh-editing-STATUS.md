@@ -140,9 +140,13 @@ Native test counts now: `glb-export` 6, `scene-schema` 14, `meshgen` 34.
   indices. **Risk (from spec): `ImportModelFromFile` blob: URLs are session-local
   and may be revoked** — mitigate by persisting imported source bytes into the
   project at import. Currently Model subtrees export as empty transform nodes.
-- **UI button**: "Export GLB" in the inspector header + per-node export, writing
-  via `ProjectDir::write_bytes` (`fs.rs:151`) or a blob download. Pattern: the
-  "Capture as Mesh" button at `scene_mode/inspector.rs:~276`.
+- ✅ **UI button** (DONE + browser-verified): scene-level "Export scene as GLB…"
+  in the overflow (⋯) menu (`app.rs::export_scene_glb`) + per-node "Export GLB"
+  button in the inspector for geometry/Group/Model kinds
+  (`inspector.rs::export_node_section`). Both trigger a binary **blob download**
+  (`app.rs::download_bytes`) — re-import is the user's call. Verified live: both
+  entry points downloaded a `.glb` that opened correctly in a third-party glTF
+  viewer (torus).
 - **Import round-trip `AWSM_materials_none`** (`renderer-gltf`): the importer
   today recognizes only the *singular*, material-level `AWSM_material_none`
   (`populate/material.rs:37` → maps to `UnlitMaterial`). The spec wants the
