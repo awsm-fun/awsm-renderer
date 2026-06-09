@@ -51,6 +51,7 @@ fn mesh_kind(
                 base: MeshBase::Primitive(shape),
                 modifiers: vec![],
             },
+            overrides: Default::default(),
         })),
     );
     NodeKind::Mesh {

@@ -208,6 +208,40 @@ pub struct GetMeshModifiersParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct PaintVertexColorsParams {
+    /// UUID of the editable mesh asset.
+    pub mesh: String,
+    /// Vertex indices (into the resolved/baked topology) to paint.
+    pub indices: Vec<u32>,
+    /// Linear RGBA color to set on each index.
+    pub color: [f32; 4],
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SetVertexNormalsParams {
+    /// UUID of the editable mesh asset.
+    pub mesh: String,
+    /// Vertex indices to override the normal of.
+    pub indices: Vec<u32>,
+    /// The normal vector to set on each index (should be unit-length).
+    pub normal: [f32; 3],
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct GetVertexDataParams {
+    /// UUID of the node whose resolved mesh to read.
+    pub node: String,
+    /// Vertex indices to read the final (post-eval + override) data of.
+    pub indices: Vec<u32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct GetMeshLayersParams {
+    /// UUID of the node whose mesh layer summary to read.
+    pub node: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct RenameParams {
     pub node: String,
     pub name: String,
@@ -1470,6 +1504,70 @@ impl EditorMcp {
         .await
     }
 
+    #[tool(
+        description = "Paint per-vertex COLORS on an editable mesh. `mesh` is the mesh asset UUID; `indices` are vertex indices (into the resolved/baked topology — get them from select_vertices_where); `color` is a linear RGBA [r,g,b,a]. TERMINAL/COLLAPSE: the first per-vertex authoring op freezes the procedural stack to a Captured base (topology locks; modifier params bake in) — after this only the sparse override layer is editable. NOTE: painted colors only DISPLAY under a material that reads vertex colors — built-in PBR with `vertex_colors_enabled`, or a custom material that samples them (see the texture-splatting recipe in `awsm://docs/mesh-tools`). Re-bakes geometry; coalesces consecutive strokes on one mesh into one undo step. Verify with get_vertex_data."
+    )]
+    async fn paint_vertex_colors(
+        &self,
+        Parameters(p): Parameters<PaintVertexColorsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::PaintVertexColors {
+            mesh: parse_asset(&p.mesh)?,
+            indices: p.indices,
+            color: p.color,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Override per-vertex NORMALS on an editable mesh (hand-author shading — e.g. flatten a face, fake a crease). `mesh` is the mesh asset UUID; `indices` are vertex indices; `normal` is the vector [x,y,z] (unit-length) set on each. An explicit normal override always wins over the auto-recompute that follows position sculpting. TERMINAL/COLLAPSE: freezes the procedural stack on first authoring op (see paint_vertex_colors). Re-bakes geometry; coalesces on one mesh. Verify with get_vertex_data."
+    )]
+    async fn set_vertex_normals(
+        &self,
+        Parameters(p): Parameters<SetVertexNormalsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetVertexNormals {
+            mesh: parse_asset(&p.mesh)?,
+            indices: p.indices,
+            normal: p.normal,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Project-wide FINALIZE: collapse every Mesh asset's modifier stack to a frozen-topology Captured base (bakes all procedural params + override layers into the geometry cache). The deliberate whole-project bake before export/handoff. Undoable (restores every mesh's prior stack as one step). No params."
+    )]
+    async fn bake_all(&self) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::BakeAll {}).await
+    }
+
+    #[tool(
+        description = "Read the FINAL (post-eval + override) per-vertex data for specific indices of a node's resolved mesh: returns `{ vertex_count, vertices: [{ index, position, normal, color, uv }] }` (color/uv null when the mesh has no such channel). The read counterpart to paint_vertex_colors / set_vertex_normals / set_vertex_positions — confirm what your last authoring op actually produced. `node` is the node UUID; `indices` the verts to read."
+    )]
+    async fn get_vertex_data(
+        &self,
+        Parameters(p): Parameters<GetVertexDataParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::GetVertexData {
+            node: parse_node(&p.node)?,
+            indices: p.indices,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Read a node mesh's LAYER SUMMARY — what's live (still procedural) vs locked (frozen-topology authoring): `{ base, modifiers, modifier_count, frozen_topology, has_overrides, override_counts:{positions,colors,normals,uvs} }`. `base` is primitive/lathe/superquadric/sweep/sdf/captured; `frozen_topology` true means per-vertex authoring already collapsed the stack (terminal). The perceive for deciding whether to edit modifiers (still procedural) or author per-vertex (terminal). `node` is the node UUID."
+    )]
+    async fn get_mesh_layers(
+        &self,
+        Parameters(p): Parameters<GetMeshLayersParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::GetMeshLayers {
+            node: parse_node(&p.node)?,
+        })
+        .await
+    }
+
     #[tool(description = "Delete a custom (dynamic/built-in) material by id.")]
     async fn delete_custom_material(
         &self,
@@ -2429,8 +2527,10 @@ impl ServerHandler for EditorMcp {
                 "awsm://docs/mesh-tools",
                 "Mesh tools",
                 "Authoring/editing geometry: set_mesh_modifiers (modifier stack + SDF) \
-                 JSON shapes, vertex selection/edit predicates, introspection, export — \
-                 with copy-paste examples (twist, lathe bat, SDF mug).",
+                 JSON shapes, vertex selection/edit predicates, per-vertex authoring \
+                 (paint_vertex_colors / set_vertex_normals / sculpt + bake_all), \
+                 introspection (get_vertex_data / get_mesh_layers), export — with \
+                 copy-paste examples (twist, lathe bat, SDF mug, texture splatting).",
             ),
             res(
                 "awsm://docs/material-contract-opaque",

@@ -57,6 +57,7 @@ fn project_with_mesh_asset(asset_id: AssetId, label: &str) -> EditorProject {
                 base: awsm_scene_schema::MeshBase::Captured(awsm_scene_schema::MeshRef(asset_id)),
                 modifiers: vec![],
             },
+            overrides: Default::default(),
         })),
     );
     EditorProject {
@@ -160,6 +161,7 @@ fn mesh_asset_with_source_roundtrip() {
                 }),
                 modifiers: vec![],
             },
+            overrides: Default::default(),
         })),
     );
     let sweep_id = AssetId::new();
@@ -191,6 +193,7 @@ fn mesh_asset_with_source_roundtrip() {
                 }),
                 modifiers: vec![],
             },
+            overrides: Default::default(),
         })),
     );
     let project = EditorProject {

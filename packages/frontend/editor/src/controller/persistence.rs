@@ -305,21 +305,23 @@ pub fn apply_project(ctrl: &EditorController, project: EditorProject) {
     // path where `restore_mesh_bytes` loaded the saved bytes).
     {
         use crate::engine::bridge::mesh_cache;
-        let stacks: Vec<(AssetId, awsm_scene_schema::ModifierStack)> = {
+        let defs: Vec<(AssetId, awsm_scene_schema::MeshDef)> = {
             let assets = ctrl.scene.assets.lock().unwrap();
             assets
                 .entries
                 .iter()
                 .filter_map(|(id, entry)| match &entry.source {
                     AssetSource::Mesh(def) if mesh_cache::get_captured(*id).is_none() => {
-                        Some((*id, def.stack.clone()))
+                        Some((*id, def.clone()))
                     }
                     _ => None,
                 })
                 .collect()
         };
-        for (id, stack) in stacks {
-            let baked = super::mesh_eval::evaluate_stack(&ctrl.scene, &stack);
+        for (id, def) in defs {
+            // Re-bake stack + overrides so a loaded project that carries authoring
+            // overrides (but no saved `.mesh.bin`) reflects them.
+            let baked = super::mesh_eval::evaluate_def(&ctrl.scene, &def);
             mesh_cache::store_with_id(id, mesh_cache::from_mesh_data(baked));
         }
     }

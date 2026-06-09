@@ -135,19 +135,40 @@ remove_modifier { "mesh": "<uuid>", "index": 0 }   // undo that twist
 
 ---
 
-## Raw per-vertex editing (escape hatch)
+## Per-vertex attribute authoring (sculpt + paint)
+
+Per-vertex authoring is **index-based on a fixed topology**, so it is
+**terminal**: the *first* authoring op **collapses** the procedural stack to a
+frozen `captured` base (topology + modifier params bake in). After that the mesh
+carries a **sparse, index-keyed override layer** (`MeshDef.overrides`:
+`positions / colors / normals / uvs`) re-applied on top of the frozen base on
+every re-bake — non-destructive and uniform across positions/colors/normals/uvs.
+Use `get_mesh_layers` to see whether a mesh is still procedural (editable
+modifiers) or already frozen (terminal authoring).
 
 - `select_vertices_where { node, predicate }` → returns matching vertex **indices**
-  (a read — no cursor). Feed them to the transforms below.
+  (a read — no cursor). Feed them to the authoring verbs below.
 - `set_vertex_selection { node, indices }` → highlight those vertices in the
   viewport (read-only amber cross markers; no geometry change). Pairs with
   `select_vertices_where`: run the query, then call this so a human can SEE which
-  vertices matched before you transform them. Empty `indices` clears the highlight.
+  vertices matched before you author them. Empty `indices` clears the highlight.
 - `soft_transform_vertices { mesh, indices, translation:[x,y,z], falloff }` —
   translate a selection with a smooth radial falloff (`falloff:0` = hard move).
-- `set_vertex_positions { mesh, indices, positions:[[x,y,z]...] }` — raw set.
-- `collapse_mesh_stack { mesh }` — bake the modifier recipe → raw, clear the
-  recipe (then edit vertices freely). Undoable.
+  Writes `overrides.positions`; normals auto-recompute (unless explicitly set).
+- `set_vertex_positions { mesh, indices, positions:[[x,y,z]...] }` — sculpt set
+  of specific verts (also writes `overrides.positions`).
+- `paint_vertex_colors { mesh, indices, color:[r,g,b,a] }` — author per-vertex
+  **colors** (linear RGBA). Painted colors only **display** under a material that
+  reads vertex colors — built-in PBR with `vertex_colors_enabled`, or a custom
+  material that samples them (see the splatting recipe below).
+- `set_vertex_normals { mesh, indices, normal:[x,y,z] }` — author per-vertex
+  **normals** (e.g. flatten a face / fake a crease); an explicit normal override
+  always wins over the sculpt auto-recompute.
+- `collapse_mesh_stack { mesh }` — explicitly bake one mesh's modifier recipe →
+  frozen `captured` (the authoring verbs do this implicitly on first use).
+- `bake_all {}` — project-wide finalize: collapse **every** Mesh's stack (freeze
+  all topology + bake overrides into the cache). The pre-export/handoff bake.
+  Undoable (restores every prior stack as one step).
 
 ### VertexPredicate (for `select_vertices_where`)
 
@@ -172,8 +193,35 @@ remove_modifier { "mesh": "<uuid>", "index": 0 }   // undo that twist
 - `get_mesh_cross_section { node, axis, samples }` → `[[height, radius]...]` (the
   silhouette profile; pairs with a lathe profile). Empty bins read `0` when the
   mesh has no vertices at that height — use a denser mesh or fewer `samples`.
+- `get_vertex_data { node, indices }` → the **final** (post-eval + override)
+  per-vertex data: `{ vertex_count, vertices:[{ index, position, normal, color,
+  uv }] }` (`color`/`uv` null when the mesh has no such channel). The read
+  counterpart to the paint/sculpt verbs — verify what your last op produced.
+- `get_mesh_layers { node }` → the layer summary / "what's live vs locked":
+  `{ base, modifiers, modifier_count, frozen_topology, has_overrides,
+  override_counts:{positions,colors,normals,uvs} }`. `frozen_topology:true` means
+  per-vertex authoring already collapsed the stack (terminal).
 
 ---
+
+## Recipe — texture splatting via vertex colors
+
+Vertex colors are a cheap per-vertex **blend mask** for a multi-texture (splat)
+material — no UV painting needed:
+
+1. Insert + shape the mesh (e.g. a ground `plane`, subdivided for resolution).
+2. Select the region to texture-A: `select_vertices_where {node, predicate}`
+   (e.g. `top_percent` along Y for peaks, or `within_radius` for a patch).
+3. `paint_vertex_colors {mesh, indices, color:[1,0,0,1]}` — store the blend
+   weight in a channel (R = grass, G = rock, B = sand, A = …). Paint other
+   regions into other channels. The first paint collapses the stack (terminal).
+4. Assign a **custom splat material** that samples each texture and `mix`es them
+   by the interpolated vertex color: `albedo = mix(grass, rock, vColor.r)` etc.
+   (declare the `vertex_color` fragment input + the texture slots; see the
+   material tools / `awsm://docs/material-recipes`). A built-in PBR material with
+   `vertex_colors_enabled` tints by the color but does **not** splat-blend
+   textures — that needs the custom material.
+5. Verify the painted weights with `get_vertex_data {node, indices}`.
 
 ## Export (get geometry out)
 

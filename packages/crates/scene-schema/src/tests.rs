@@ -105,12 +105,43 @@ fn mesh_def_editable_default_and_sources() {
             source: src,
             editable: true,
             stack: captured(),
+            overrides: Default::default(),
         };
         let json = serde_json::to_string(&def).unwrap();
         assert_eq!(def, serde_json::from_str::<MeshDef>(&json).unwrap());
         let bin = bitcode::serialize(&def).unwrap();
         assert_eq!(def, bitcode::deserialize::<MeshDef>(&bin).unwrap());
     }
+}
+
+/// Sparse `VertexOverrides` round-trip through serde + bitcode, default empty,
+/// and `is_empty`.
+#[test]
+fn vertex_overrides_roundtrip_and_default() {
+    use crate::material::VertexOverrides;
+
+    let empty = VertexOverrides::default();
+    assert!(empty.is_empty());
+
+    let mut ov = VertexOverrides::default();
+    ov.positions.insert(0, [1.0, 2.0, 3.0]);
+    ov.colors.insert(5, [0.1, 0.2, 0.3, 1.0]);
+    ov.normals.insert(2, [0.0, 1.0, 0.0]);
+    ov.uvs.insert(7, [0.25, 0.75]);
+    assert!(!ov.is_empty());
+
+    let json = serde_json::to_string(&ov).unwrap();
+    assert_eq!(ov, serde_json::from_str::<VertexOverrides>(&json).unwrap());
+    let bin = bitcode::serialize(&ov).unwrap();
+    assert_eq!(ov, bitcode::deserialize::<VertexOverrides>(&bin).unwrap());
+
+    // A MeshDef blob without the `overrides` key → defaults empty.
+    let blob = serde_json::json!({
+        "label": "m",
+        "stack": { "base": { "captured": AssetId::new().0.to_string() } },
+    });
+    let def: MeshDef = serde_json::from_value(blob).unwrap();
+    assert!(def.overrides.is_empty());
 }
 
 /// A modifier stack round-trips through serde + bitcode.

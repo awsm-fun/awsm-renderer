@@ -249,6 +249,20 @@ pub enum EditorQuery {
         #[serde(default = "default_cross_section_samples")]
         samples: u32,
     },
+    /// The **final** (post-eval + override) per-vertex data for each requested
+    /// index of a node's resolved mesh: `{ index, position, normal, color, uv }`
+    /// (color/uv `null` when the mesh has no such channel). The read counterpart
+    /// to the paint/sculpt verbs — verify what `paint_vertex_colors` /
+    /// `set_vertex_normals` / `set_vertex_positions` actually produced. MCP:
+    /// `get_vertex_data`.
+    GetVertexData { node: NodeId, indices: Vec<u32> },
+    /// The **layer summary** of a node's resolved mesh: the base kind
+    /// (primitive/lathe/superquadric/sweep/sdf/captured), the ordered modifier
+    /// list, and whether a per-vertex override layer is present (i.e. the mesh is
+    /// "baked/terminal") with per-channel override counts. The agent's "what's
+    /// live (still procedural) vs locked (frozen-topology authoring)" perceive.
+    /// MCP: `get_mesh_layers`.
+    GetMeshLayers { node: NodeId },
     /// The mesh asset's modifier-stack **recipe** (`{ base, modifiers }`),
     /// serialized as JSON in a `QueryResult::Text`. `null` when the mesh has no
     /// recipe (a raw captured/converted mesh) — call `set_mesh_modifiers` to give

@@ -15,6 +15,7 @@ use awsm_scene_schema::animation::{
 use awsm_scene_schema::modifier::{Modifier, ModifierStack};
 use awsm_scene_schema::{
     AssetEntry, AssetId, CapturedMesh, EnvironmentConfig, MaterialShading, NodeId, NodeKind, Trs,
+    VertexOverrides,
 };
 
 use crate::anim_ui::{AnimSel, AnimView, StepKind};
@@ -380,6 +381,46 @@ pub enum EditorCommand {
     /// recipe (the deliberate heavy snapshot). Inverse:
     /// `Batch[SetMeshModifiers(prior), SetMeshData(prior_bytes)]`.
     CollapseMeshStack { mesh: AssetId },
+
+    // ───────────────────── Per-vertex attribute authoring ────────────────────
+    // Per-vertex authoring is **index-based on a frozen topology** → terminal:
+    // the first authoring op collapses the procedural stack to a `Captured`-self
+    // base (locking topology), after which edits are a sparse per-vertex override
+    // layer (`MeshDef::overrides`). Each command below collapses-first
+    // (`ensure_authorable`), writes the override, re-bakes the `.mesh.bin` cache
+    // (base+modifiers+overrides), and bumps `mesh_revision`. The inverse restores
+    // the prior overrides (and, if the collapse fired, the prior stack too — a
+    // `Batch`).
+    /// Set the per-vertex **color** override of `indices` to `color` (RGBA). The
+    /// painted colors only *display* under a material that reads vertex colors —
+    /// built-in PBR with `vertex_colors_enabled`, or a custom material that
+    /// samples them. Inverse: restore the prior overrides (`SetVertexOverrides`,
+    /// possibly batched with a stack restore).
+    PaintVertexColors {
+        mesh: AssetId,
+        indices: Vec<u32>,
+        color: [f32; 4],
+    },
+    /// Set the per-vertex **normal** override of `indices` to `normal`. An
+    /// explicit normal override always wins over the eval/recompute. Inverse:
+    /// restore the prior overrides.
+    SetVertexNormals {
+        mesh: AssetId,
+        indices: Vec<u32>,
+        normal: [f32; 3],
+    },
+    /// Replace a mesh's entire sparse [`VertexOverrides`] map wholesale (the
+    /// idempotent setter, used as the universal inverse of the authoring
+    /// commands and by `BakeAll` undo). Collapses-first, re-bakes. Inverse:
+    /// `SetVertexOverrides(prior_overrides)`.
+    SetVertexOverrides {
+        mesh: AssetId,
+        overrides: VertexOverrides,
+    },
+    /// Project-wide finalize: collapse **every** Mesh asset's stack (freeze all
+    /// topology, bake all overrides into the cache, then flatten recipes to
+    /// `Captured`-self). Inverse: a `Batch` restoring each mesh's prior stack.
+    BakeAll {},
 
     /// Bind (or clear) a texture on a mesh node's **built-in/inline** material
     /// slot — the counterpart of `SetMaterialTexture` (which targets custom-WGSL
@@ -766,6 +807,10 @@ impl EditorCommand {
                 | EditorCommand::SetVertexPositions { .. }
                 | EditorCommand::SoftTransformVertices { .. }
                 | EditorCommand::CollapseMeshStack { .. }
+                | EditorCommand::PaintVertexColors { .. }
+                | EditorCommand::SetVertexNormals { .. }
+                | EditorCommand::SetVertexOverrides { .. }
+                | EditorCommand::BakeAll {}
         )
     }
 
@@ -816,6 +861,10 @@ impl EditorCommand {
             EditorCommand::SetVertexPositions { .. } => "Move vertices",
             EditorCommand::SoftTransformVertices { .. } => "Soft-transform vertices",
             EditorCommand::CollapseMeshStack { .. } => "Collapse mesh stack",
+            EditorCommand::PaintVertexColors { .. } => "Paint vertex colors",
+            EditorCommand::SetVertexNormals { .. } => "Set vertex normals",
+            EditorCommand::SetVertexOverrides { .. } => "Set vertex overrides",
+            EditorCommand::BakeAll {} => "Bake all meshes",
             EditorCommand::SetBuiltinTexture { .. } => "Bind texture",
             EditorCommand::SetCustomMaterialAlphaMode { .. } => "Set alpha mode",
             EditorCommand::SetCustomMaterialDoubleSided { .. } => "Set double-sided",

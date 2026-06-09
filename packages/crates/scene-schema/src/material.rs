@@ -292,6 +292,46 @@ pub struct MeshDef {
     /// triangle buffer is the regenerable bake of evaluating this stack. See
     /// [`super::modifier::ModifierStack`].
     pub stack: super::modifier::ModifierStack,
+    /// Sparse, index-keyed **per-vertex authoring overrides** layered on top of
+    /// the evaluated `stack` (see [`VertexOverrides`]). Per-vertex authoring is
+    /// *terminal*: the first authoring op collapses `stack` to a frozen
+    /// `Captured` base (locking topology), after which these maps are the only
+    /// non-destructive edit layer. Empty by default — `#[serde(default)]` keeps
+    /// pre-feature project.json round-tripping.
+    #[serde(default)]
+    pub overrides: VertexOverrides,
+}
+
+/// Sparse, vertex-index-keyed authoring overrides applied **after** the modifier
+/// stack evaluates (see [`MeshDef::overrides`]). Each map keys a vertex index
+/// (into the frozen, post-eval topology) to its authored value; an index absent
+/// from a map rides along with the evaluated base. Positions are *edited*
+/// (sculpt); colors/normals/uvs are *authored* channels (a channel is created on
+/// the baked mesh if any override for it exists). This is the data behind the
+/// `PaintVertexColors` / `SetVertexNormals` / migrated `SetVertexPositions` /
+/// `SoftTransformVertices` commands.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct VertexOverrides {
+    #[serde(default)]
+    pub positions: std::collections::HashMap<u32, [f32; 3]>,
+    #[serde(default)]
+    pub colors: std::collections::HashMap<u32, [f32; 4]>,
+    #[serde(default)]
+    pub normals: std::collections::HashMap<u32, [f32; 3]>,
+    #[serde(default)]
+    pub uvs: std::collections::HashMap<u32, [f32; 2]>,
+}
+
+impl VertexOverrides {
+    /// True when no override of any channel is present.
+    pub fn is_empty(&self) -> bool {
+        self.positions.is_empty()
+            && self.colors.is_empty()
+            && self.normals.is_empty()
+            && self.uvs.is_empty()
+    }
 }
 
 /// Where a captured mesh's geometry came from. Stored on `MeshDef`

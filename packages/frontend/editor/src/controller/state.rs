@@ -440,19 +440,22 @@ impl EditorController {
             _ => return None,
         };
         // Store the new recipe on the asset (the recipe lives in the
-        // project; the .mesh.bin is a regenerable cache).
-        {
+        // project; the .mesh.bin is a regenerable cache). Snapshot the full def
+        // (incl. any authoring overrides) so the re-bake layers them back on.
+        let def = {
             let mut assets = self.scene.assets.lock().unwrap();
-            if let Some(entry) = assets.entries.get_mut(&mesh) {
-                if let SceneAssetSource::Mesh(def) = &mut entry.source {
+            match assets.entries.get_mut(&mesh).map(|e| &mut e.source) {
+                Some(SceneAssetSource::Mesh(def)) => {
                     def.stack = stack.clone();
                     def.editable = true;
+                    def.clone()
                 }
+                _ => return None,
             }
-        }
+        };
         // Re-evaluate → re-bake the cache (the bridge re-materializes via
         // the mesh-revision bump in `apply`).
-        let baked = crate::controller::mesh_eval::evaluate_stack(&self.scene, &stack);
+        let baked = crate::controller::mesh_eval::evaluate_def(&self.scene, &def);
         mesh_cache::store_with_id(mesh, mesh_cache::from_mesh_data(baked));
         self.scene.bump_revision();
         // Inverse: restore the prior stack (re-evaluates to prior geometry).
@@ -460,6 +463,129 @@ impl EditorController {
             mesh,
             stack: prior_stack,
         })
+    }
+
+    /// Collapse-before-authoring: make `mesh` *authorable* (index-based per-vertex
+    /// authoring on a frozen topology). If the def isn't already a bare
+    /// `Captured`-self base with no modifiers, bake the procedural part of the
+    /// stack (base + modifiers, WITHOUT the override layer) into a fresh
+    /// `Captured(self)` blob and flatten the stack to `{ base: Captured(self),
+    /// modifiers: [] }`, freezing topology. The existing `overrides` are kept as
+    /// the live layer (they still index into the now-frozen topology), so this is
+    /// idempotent and non-destructive. Per-vertex authoring is **terminal**: after
+    /// this the procedural params are baked and only the override layer is editable.
+    ///
+    /// Returns `Ok(true)` if a collapse actually happened (so the caller can fold
+    /// the recipe-restore into its undo inverse), `Ok(false)` if already authorable,
+    /// and the prior stack (for the inverse) via the out-param. Errors if `mesh`
+    /// isn't a mesh asset.
+    fn ensure_authorable(&self, mesh: AssetId) -> EditorResult<Option<ModifierStack>> {
+        use crate::engine::bridge::mesh_cache;
+        use awsm_scene_schema::modifier::{MeshBase, ModifierStack};
+        use awsm_scene_schema::MeshRef;
+        let prior_stack = {
+            let assets = self.scene.assets.lock().unwrap();
+            match assets.get(mesh).map(|e| &e.source) {
+                Some(SceneAssetSource::Mesh(def)) => def.stack.clone(),
+                _ => {
+                    return Err(crate::error::EditorError::msg(format!(
+                        "asset {mesh} is not an editable mesh"
+                    )))
+                }
+            }
+        };
+        // Already authorable: a bare `Captured`-self base with no modifiers.
+        if prior_stack.modifiers.is_empty()
+            && matches!(prior_stack.base, MeshBase::Captured(r) if r == MeshRef(mesh))
+        {
+            return Ok(None);
+        }
+        // Freeze topology: bake the *procedural* part (stack only — overrides
+        // stay a live layer that still indexes the frozen verts) into captured
+        // bytes, then flatten the recipe to point at those bytes.
+        let baked = crate::controller::mesh_eval::evaluate_stack(&self.scene, &prior_stack);
+        mesh_cache::store_with_id(mesh, mesh_cache::from_mesh_data(baked));
+        {
+            let mut assets = self.scene.assets.lock().unwrap();
+            if let Some(entry) = assets.entries.get_mut(&mesh) {
+                if let SceneAssetSource::Mesh(def) = &mut entry.source {
+                    def.stack = ModifierStack {
+                        base: MeshBase::Captured(MeshRef(mesh)),
+                        modifiers: vec![],
+                    };
+                    def.editable = true;
+                }
+            }
+        }
+        Ok(Some(prior_stack))
+    }
+
+    /// Read-modify-write the sparse [`VertexOverrides`] of a mesh def, re-bake the
+    /// cache (stack + overrides), bump the scene revision, and return the prior
+    /// overrides (for an inverse). The shared body of the per-vertex authoring
+    /// commands (paint colors / set normals / sculpt positions). `mutate` receives
+    /// the live overrides to insert/replace into; out-of-range indices are
+    /// silently ignored at bake time (`apply_overrides`).
+    fn apply_vertex_overrides(
+        &self,
+        mesh: AssetId,
+        mutate: impl FnOnce(&mut awsm_scene_schema::material::VertexOverrides),
+    ) -> EditorResult<awsm_scene_schema::material::VertexOverrides> {
+        use crate::engine::bridge::mesh_cache;
+        // Collapse to a frozen-topology base first (terminal authoring).
+        self.ensure_authorable(mesh)?;
+        let (prior, def) = {
+            let mut assets = self.scene.assets.lock().unwrap();
+            match assets.entries.get_mut(&mesh).map(|e| &mut e.source) {
+                Some(SceneAssetSource::Mesh(def)) => {
+                    let prior = def.overrides.clone();
+                    mutate(&mut def.overrides);
+                    (prior, def.clone())
+                }
+                _ => {
+                    return Err(crate::error::EditorError::msg(format!(
+                        "asset {mesh} is not an editable mesh"
+                    )))
+                }
+            }
+        };
+        let baked = crate::controller::mesh_eval::evaluate_def(&self.scene, &def);
+        mesh_cache::store_with_id(mesh, mesh_cache::from_mesh_data(baked));
+        self.scene.bump_revision();
+        Ok(prior)
+    }
+
+    /// Build the undo inverse for a per-vertex authoring command: restore the
+    /// prior `overrides` (a `SetVertexOverrides`), and — if `ensure_authorable`
+    /// collapsed the procedural stack — restore the prior stack too, as a `Batch`.
+    /// The stack restore runs first on undo (it re-bakes the procedural base);
+    /// the overrides restore then re-applies the prior authoring layer.
+    fn overrides_inverse(
+        &self,
+        mesh: AssetId,
+        prior: awsm_scene_schema::material::VertexOverrides,
+        collapse: Option<ModifierStack>,
+    ) -> EditorCommand {
+        let restore_overrides = EditorCommand::SetVertexOverrides {
+            mesh,
+            overrides: prior,
+        };
+        match collapse {
+            None => restore_overrides,
+            // Order matters: restore the prior overrides FIRST (a no-op collapse,
+            // since topology is already frozen), THEN restore the procedural
+            // stack — `apply_mesh_stack` re-bakes `stack + overrides`, so the
+            // recipe-restore picks up the just-restored authoring layer. (Doing
+            // the stack restore first would let the overrides-restore re-collapse
+            // it.)
+            Some(prior_stack) => EditorCommand::Batch(vec![
+                restore_overrides,
+                EditorCommand::SetMeshModifiers {
+                    mesh,
+                    stack: prior_stack,
+                },
+            ]),
+        }
     }
 
     /// For a procedural-geometry `InsertSpec` (`Primitive` / `Sweep`), mint the
@@ -525,6 +651,7 @@ impl EditorController {
                 source: Some(source),
                 editable: true,
                 stack,
+                overrides: Default::default(),
             })),
         );
 
@@ -935,31 +1062,18 @@ impl EditorController {
                 indices,
                 positions,
             } => {
-                use crate::engine::bridge::mesh_cache;
-                let Some(mut cap) = mesh_cache::get_captured(mesh) else {
-                    return Ok(None);
-                };
-                // Sparse inverse: capture only the prior positions of touched verts.
-                let mut prior = Vec::with_capacity(indices.len());
-                for (k, &idx) in indices.iter().enumerate() {
-                    match cap.positions.get_mut(idx as usize) {
-                        Some(slot) => {
-                            prior.push(*slot);
-                            if let Some(np) = positions.get(k) {
-                                *slot = *np;
-                            }
+                // Migrated: write to the sparse `overrides.positions` layer
+                // (collapse-then-override) instead of mutating captured bytes —
+                // same observable result, now non-destructive + uniform.
+                let collapse = self.ensure_authorable(mesh)?;
+                let prior = self.apply_vertex_overrides(mesh, |ov| {
+                    for (k, &idx) in indices.iter().enumerate() {
+                        if let Some(p) = positions.get(k) {
+                            ov.positions.insert(idx, *p);
                         }
-                        None => prior.push([0.0, 0.0, 0.0]),
                     }
-                }
-                crate::controller::mesh_eval::recompute_captured_normals(&mut cap);
-                mesh_cache::store_with_id(mesh, cap);
-                self.scene.bump_revision();
-                Ok(Some(EditorCommand::SetVertexPositions {
-                    mesh,
-                    indices,
-                    positions: prior,
-                }))
+                })?;
+                Ok(Some(self.overrides_inverse(mesh, prior, collapse)))
             }
             EditorCommand::SoftTransformVertices {
                 mesh,
@@ -968,7 +1082,10 @@ impl EditorController {
                 falloff,
             } => {
                 use crate::engine::bridge::mesh_cache;
-                let Some(mut cap) = mesh_cache::get_captured(mesh) else {
+                // Resolve the current (post-eval+override) geometry to weight the
+                // falloff against, then bake the move into `overrides.positions`.
+                let collapse = self.ensure_authorable(mesh)?;
+                let Some(cap) = mesh_cache::get_captured(mesh) else {
                     return Ok(None);
                 };
                 let md = awsm_meshgen::MeshData {
@@ -984,27 +1101,98 @@ impl EditorController {
                     translation,
                     falloff,
                 );
-                // Sparse inverse over every vertex the falloff actually moved.
-                let mut inv_idx = Vec::new();
-                let mut inv_pos = Vec::new();
-                for (i, (old, new)) in cap.positions.iter().zip(&new_positions).enumerate() {
-                    if old != new {
-                        inv_idx.push(i as u32);
-                        inv_pos.push(*old);
+                // Only override the verts the falloff actually moved.
+                let mut moved = false;
+                let prior = self.apply_vertex_overrides(mesh, |ov| {
+                    for (i, (old, new)) in cap.positions.iter().zip(&new_positions).enumerate() {
+                        if old != new {
+                            ov.positions.insert(i as u32, *new);
+                            moved = true;
+                        }
                     }
-                }
-                if inv_idx.is_empty() {
+                })?;
+                if !moved {
                     return Ok(None);
                 }
-                cap.positions = new_positions;
-                crate::controller::mesh_eval::recompute_captured_normals(&mut cap);
-                mesh_cache::store_with_id(mesh, cap);
+                Ok(Some(self.overrides_inverse(mesh, prior, collapse)))
+            }
+            EditorCommand::PaintVertexColors {
+                mesh,
+                indices,
+                color,
+            } => {
+                let collapse = self.ensure_authorable(mesh)?;
+                let prior = self.apply_vertex_overrides(mesh, |ov| {
+                    for &idx in &indices {
+                        ov.colors.insert(idx, color);
+                    }
+                })?;
+                Ok(Some(self.overrides_inverse(mesh, prior, collapse)))
+            }
+            EditorCommand::SetVertexNormals {
+                mesh,
+                indices,
+                normal,
+            } => {
+                let collapse = self.ensure_authorable(mesh)?;
+                let prior = self.apply_vertex_overrides(mesh, |ov| {
+                    for &idx in &indices {
+                        ov.normals.insert(idx, normal);
+                    }
+                })?;
+                Ok(Some(self.overrides_inverse(mesh, prior, collapse)))
+            }
+            EditorCommand::SetVertexOverrides { mesh, overrides } => {
+                let collapse = self.ensure_authorable(mesh)?;
+                let prior = self.apply_vertex_overrides(mesh, |ov| {
+                    *ov = overrides;
+                })?;
+                Ok(Some(self.overrides_inverse(mesh, prior, collapse)))
+            }
+            EditorCommand::BakeAll {} => {
+                // Project-wide finalize: collapse every Mesh asset's stack.
+                let mesh_ids: Vec<AssetId> = {
+                    let assets = self.scene.assets.lock().unwrap();
+                    assets
+                        .entries
+                        .iter()
+                        .filter_map(|(id, e)| {
+                            matches!(e.source, SceneAssetSource::Mesh(_)).then_some(*id)
+                        })
+                        .collect()
+                };
+                let mut inverses = Vec::new();
+                for mesh in mesh_ids {
+                    // Each collapse returns the prior stack (when it fired). The
+                    // overrides are unchanged by a bake, so the inverse is just the
+                    // stack restore.
+                    if let Some(prior_stack) = self.ensure_authorable(mesh)? {
+                        // Re-bake so the cache reflects the flattened recipe (incl.
+                        // overrides re-applied on the frozen base).
+                        let def = {
+                            let assets = self.scene.assets.lock().unwrap();
+                            match assets.get(mesh).map(|e| &e.source) {
+                                Some(SceneAssetSource::Mesh(def)) => def.clone(),
+                                _ => continue,
+                            }
+                        };
+                        let baked = crate::controller::mesh_eval::evaluate_def(&self.scene, &def);
+                        crate::engine::bridge::mesh_cache::store_with_id(
+                            mesh,
+                            crate::engine::bridge::mesh_cache::from_mesh_data(baked),
+                        );
+                        inverses.push(EditorCommand::SetMeshModifiers {
+                            mesh,
+                            stack: prior_stack,
+                        });
+                    }
+                }
                 self.scene.bump_revision();
-                Ok(Some(EditorCommand::SetVertexPositions {
-                    mesh,
-                    indices: inv_idx,
-                    positions: inv_pos,
-                }))
+                if inverses.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(EditorCommand::Batch(inverses)))
+                }
             }
             EditorCommand::CollapseMeshStack { mesh } => {
                 use crate::engine::bridge::mesh_cache;
@@ -3041,6 +3229,103 @@ impl EditorController {
                     Err(error) => QueryResult::Error { error },
                 }
             }
+            EditorQuery::GetVertexData { node, indices } => {
+                use serde_json::json;
+                let mesh = mutate::find_by_id(&self.scene, node).and_then(|n| {
+                    crate::controller::export::node_mesh(&self.scene, &n.kind.get_cloned())
+                });
+                match mesh {
+                    Some(md) => {
+                        let verts: Vec<serde_json::Value> = indices
+                            .iter()
+                            .map(|&i| {
+                                let idx = i as usize;
+                                json!({
+                                    "index": i,
+                                    "position": md.positions.get(idx),
+                                    "normal": md.normals.as_ref().and_then(|n| n.get(idx)),
+                                    "color": md.colors.as_ref().and_then(|c| c.get(idx)),
+                                    "uv": md.uvs.as_ref().and_then(|u| u.get(idx)),
+                                })
+                            })
+                            .collect();
+                        let mut entries = std::collections::BTreeMap::new();
+                        entries.insert("vertex_count".to_string(), json!(md.positions.len()));
+                        entries.insert("vertices".to_string(), json!(verts));
+                        QueryResult::Map(query::MapResult {
+                            kind: "vertex_data".to_string(),
+                            entries,
+                        })
+                    }
+                    None => QueryResult::Error {
+                        error: format!("node {node} has no resolvable mesh"),
+                    },
+                }
+            }
+            EditorQuery::GetMeshLayers { node } => {
+                use awsm_scene_schema::modifier::MeshBase;
+                use serde_json::json;
+                // Resolve node → mesh asset id, then read its def (stack + overrides).
+                let mesh_id =
+                    mutate::find_by_id(&self.scene, node).and_then(|n| match n.kind.get_cloned() {
+                        NodeKind::Mesh { mesh, .. } => Some(mesh.0),
+                        _ => None,
+                    });
+                let def = mesh_id.and_then(|id| {
+                    match self.scene.assets.lock().unwrap().get(id).map(|e| &e.source) {
+                        Some(SceneAssetSource::Mesh(def)) => Some(def.clone()),
+                        _ => None,
+                    }
+                });
+                match def {
+                    Some(def) => {
+                        let base_kind = match &def.stack.base {
+                            MeshBase::Primitive(_) => "primitive",
+                            MeshBase::Lathe { .. } => "lathe",
+                            MeshBase::Superquadric { .. } => "superquadric",
+                            MeshBase::Sweep(_) => "sweep",
+                            MeshBase::Captured(_) => "captured",
+                            MeshBase::Sdf { .. } => "sdf",
+                        };
+                        // Each modifier serialized as its tagged JSON (the variant
+                        // name + params) — full fidelity for the layer list.
+                        let modifiers: Vec<serde_json::Value> = def
+                            .stack
+                            .modifiers
+                            .iter()
+                            .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null))
+                            .collect();
+                        let ov = &def.overrides;
+                        // "Baked/terminal" = a frozen-topology authorable mesh: a
+                        // bare Captured-self base with no modifiers.
+                        let frozen = def.stack.modifiers.is_empty()
+                            && matches!(def.stack.base, MeshBase::Captured(_));
+                        let mut entries = std::collections::BTreeMap::new();
+                        entries.insert("mesh".to_string(), json!(mesh_id.map(|i| i.to_string())));
+                        entries.insert("base".to_string(), json!(base_kind));
+                        entries.insert("modifiers".to_string(), json!(modifiers));
+                        entries.insert("modifier_count".to_string(), json!(modifiers.len()));
+                        entries.insert("frozen_topology".to_string(), json!(frozen));
+                        entries.insert("has_overrides".to_string(), json!(!ov.is_empty()));
+                        entries.insert(
+                            "override_counts".to_string(),
+                            json!({
+                                "positions": ov.positions.len(),
+                                "colors": ov.colors.len(),
+                                "normals": ov.normals.len(),
+                                "uvs": ov.uvs.len(),
+                            }),
+                        );
+                        QueryResult::Map(query::MapResult {
+                            kind: "mesh_layers".to_string(),
+                            entries,
+                        })
+                    }
+                    None => QueryResult::Error {
+                        error: format!("node {node} is not a Mesh / has no resolvable mesh asset"),
+                    },
+                }
+            }
             EditorQuery::WaitRenderSettled { max_ms } => self.wait_render_settled(max_ms).await,
             EditorQuery::NodeTransforms { nodes } => self.node_transforms(&nodes).await,
             EditorQuery::NodeKindDetails { nodes } => {
@@ -4206,6 +4491,7 @@ fn mint_imported_mesh(
             }),
             editable: true,
             stack,
+            overrides: Default::default(),
         })),
     );
     MeshRef(mesh_id)
@@ -4528,6 +4814,13 @@ fn coalesce_key(cmd: &EditorCommand) -> Option<(u8, NodeId)> {
         // `SetVertexPositions` is left granular (distinct edits stay distinct).
         EditorCommand::SetMeshModifiers { mesh, .. } => Some((18, pack(*mesh, 0, 0))),
         EditorCommand::SoftTransformVertices { mesh, .. } => Some((19, pack(*mesh, 0, 0))),
+        // Per-vertex authoring — coalesce continuous strokes per mesh + channel
+        // (consecutive paints / normal tweaks on one mesh = one undo step). The
+        // explicit `SetVertexPositions` stays granular (distinct edits stay
+        // distinct, matching the prior behaviour); `BakeAll` is a discrete,
+        // never-coalesced finalize.
+        EditorCommand::PaintVertexColors { mesh, .. } => Some((20, pack(*mesh, 0, 0))),
+        EditorCommand::SetVertexNormals { mesh, .. } => Some((21, pack(*mesh, 0, 0))),
         _ => None,
     }
 }
