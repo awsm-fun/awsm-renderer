@@ -17,5 +17,6 @@ pub mod node_sync;
 pub mod particles;
 pub mod skin_bridge;
 mod state;
+pub mod vertex_highlight;
 
 pub use state::*;

@@ -137,6 +137,10 @@ remove_modifier { "mesh": "<uuid>", "index": 0 }   // undo that twist
 
 - `select_vertices_where { node, predicate }` → returns matching vertex **indices**
   (a read — no cursor). Feed them to the transforms below.
+- `set_vertex_selection { node, indices }` → highlight those vertices in the
+  viewport (read-only amber cross markers; no geometry change). Pairs with
+  `select_vertices_where`: run the query, then call this so a human can SEE which
+  vertices matched before you transform them. Empty `indices` clears the highlight.
 - `soft_transform_vertices { mesh, indices, translation:[x,y,z], falloff }` —
   translate a selection with a smooth radial falloff (`falloff:0` = hard move).
 - `set_vertex_positions { mesh, indices, positions:[[x,y,z]...] }` — raw set.

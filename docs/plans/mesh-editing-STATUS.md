@@ -278,10 +278,16 @@ Native test counts now: `glb-export` 6, `scene-schema` 14, `meshgen` 34.
   axis_greater / axis_less / top_percent / within_radius. MCP
   `select_vertices_where`. Closes the cursor-free loop with the introspection
   queries + soft_transform_vertices.
-### ⬜ Phase 4 remaining
-- Transient `SetVertexSelection` (controller field, like `SetSelection`) +
-  read-only selection-highlight rendering in the bridge/viewport (the one small
-  view addition — observability only; browser).
+### Phase 4 remaining
+- ✅ **Vertex-selection highlight** (DONE + browser-verified): transient
+  `SetVertexSelection { node, indices }` command + controller `vertex_selection`
+  field (like `SetSelection`); a read-only bridge observer
+  (`engine/bridge/vertex_highlight.rs`) draws an amber 3-axis cross at each
+  selected vertex (world-space, sized to the mesh bbox), torn down + rebuilt on
+  change. MCP `set_vertex_selection` (pairs with `select_vertices_where`).
+  Verified live: selected a sphere's top-cap verts → amber crosses render at the
+  pole ring; empty selection clears them. (First-cut: markers are baked at
+  selection-time world matrix — re-emit after moving the node.)
 
 ## Phase 5 — SDF / CSG — 🟡 core complete (native-tested)
 - `MeshBase::Sdf { node, resolution }` + `SdfNode`/`SdfPrimitive` (round-trip

@@ -275,6 +275,14 @@ pub struct SelectionParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct VertexSelectionParams {
+    /// UUID of the geometry node whose vertices are highlighted.
+    pub node: String,
+    /// Vertex indices to highlight (empty = clear the highlight).
+    pub indices: Vec<u32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct UrlParams {
     pub url: String,
 }
@@ -1214,6 +1222,20 @@ impl EditorMcp {
             .map(|s| parse_node(s))
             .collect::<Result<Vec<_>, _>>()?;
         self.dispatch(EditorCommand::SetSelection { ids }).await
+    }
+
+    #[tool(
+        description = "Highlight a node mesh's vertices in the viewport (read-only overlay; no geometry change). Pairs with select_vertices_where: run that query to get matching indices, then call this so the human can SEE which vertices matched (a small amber cross marks each). Pass an empty `indices` to clear the highlight."
+    )]
+    async fn set_vertex_selection(
+        &self,
+        Parameters(p): Parameters<VertexSelectionParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetVertexSelection {
+            node: parse_node(&p.node)?,
+            indices: p.indices,
+        })
+        .await
     }
 
     // ── project / import / history ──────────────────────────────────────────

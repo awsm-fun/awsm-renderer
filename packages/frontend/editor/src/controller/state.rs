@@ -116,6 +116,11 @@ pub struct EditorController {
     pub scene: Arc<Scene>,
     /// Ordered selection (last = primary/anchor). Set via `SetSelection`.
     pub selected: Mutable<Vec<NodeId>>,
+    /// Read-only **vertex-selection highlight**: `Some((node, indices))` marks
+    /// those vertices of that node for a viewport overlay (no geometry edit).
+    /// Set via `SetVertexSelection`; `None` (or an empty `indices`) = no
+    /// highlight. Transient session-local view state (not undoable / persisted).
+    pub vertex_selection: Mutable<Option<(NodeId, Vec<u32>)>>,
     pub mode: Mutable<EditorMode>,
     pub project_name: Mutable<String>,
     pub dirty: Mutable<bool>,
@@ -230,6 +235,7 @@ impl EditorController {
         Self {
             scene: Scene::new(),
             selected: Mutable::new(Vec::new()),
+            vertex_selection: Mutable::new(None),
             mode: Mutable::new(EditorMode::default()),
             project_name: Mutable::new("untitled.awsm".to_string()),
             dirty: Mutable::new(false),
@@ -481,6 +487,17 @@ impl EditorController {
                     nodes: Some(ids.iter().map(|id| id.to_string()).collect()),
                 });
                 self.selected.set(ids);
+                Ok(None)
+            }
+            EditorCommand::SetVertexSelection { node, indices } => {
+                // Read-only highlight (no geometry mutation). An empty `indices`
+                // is normalized to `None` so the bridge's "Some ⇒ draw" path
+                // doubles as the clear path.
+                self.vertex_selection.set(if indices.is_empty() {
+                    None
+                } else {
+                    Some((node, indices))
+                });
                 Ok(None)
             }
             // `Batch` is unwrapped in `apply` (so the async fn doesn't recurse);

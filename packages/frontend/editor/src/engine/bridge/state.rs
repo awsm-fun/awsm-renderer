@@ -183,4 +183,7 @@ pub fn init() {
     // Re-materializes captured-mesh nodes when SetMeshData replaces an editable
     // mesh's bytes (no node-kind change → the kind observer wouldn't re-fire).
     mesh_sync::start();
+    // Read-only vertex-selection highlight overlay (draws markers at the
+    // controller's `vertex_selection`; no geometry mutation).
+    super::vertex_highlight::start();
 }

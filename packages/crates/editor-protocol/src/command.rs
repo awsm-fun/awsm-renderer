@@ -104,6 +104,13 @@ pub enum EditorCommand {
     /// resulting set.
     SetSelection { ids: Vec<NodeId> },
 
+    /// Record a read-only **vertex-selection highlight**: "these vertices of
+    /// this node are selected". **Transient** observability (like
+    /// [`SetSelection`]) — session-local view state, never recorded in the undo
+    /// log and never mutating geometry. The bridge draws a small marker at each
+    /// selected vertex in the viewport. An empty `indices` clears the highlight.
+    SetVertexSelection { node: NodeId, indices: Vec<u32> },
+
     /// Apply a list of commands as one atomic step: they run in order and
     /// collapse into a **single undo entry** (so undo reverses the whole batch).
     /// The MCP `dispatch_batch` round-trips here. Inverse: a `Batch` of the
@@ -632,6 +639,7 @@ impl EditorCommand {
             self,
             EditorCommand::SwitchMode { .. }
                 | EditorCommand::SetSelection { .. }
+                | EditorCommand::SetVertexSelection { .. }
                 | EditorCommand::SetAssetSelection { .. }
                 | EditorCommand::SetCurrentMaterial { .. }
                 | EditorCommand::SnapCameraToAxis { .. }
@@ -662,6 +670,7 @@ impl EditorCommand {
             self,
             EditorCommand::SwitchMode { .. }
                 | EditorCommand::SetSelection { .. }
+                | EditorCommand::SetVertexSelection { .. }
                 | EditorCommand::SetAssetSelection { .. }
                 | EditorCommand::SnapCameraToAxis { .. }
                 | EditorCommand::ResetCamera
@@ -766,6 +775,7 @@ impl EditorCommand {
         match self {
             EditorCommand::SwitchMode { .. } => "Switch mode",
             EditorCommand::SetSelection { .. } => "Select",
+            EditorCommand::SetVertexSelection { .. } => "Select vertices",
             EditorCommand::Batch(_) => "Batch edit",
             EditorCommand::NewProject => "New project",
             EditorCommand::Insert { .. } | EditorCommand::InsertTree { .. } => "Insert node",
