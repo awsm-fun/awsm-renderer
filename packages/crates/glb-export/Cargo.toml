@@ -19,3 +19,5 @@ serde_json = { workspace = true }
 # The reader half of the gltf stack — used by the round-trip tests to re-parse
 # what `write_glb` produced and assert geometry/material survive the bake.
 gltf = { workspace = true }
+# Throwaway directories for the player-bundle write_to_dir integration test.
+tempfile = "3"

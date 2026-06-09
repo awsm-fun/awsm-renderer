@@ -31,9 +31,11 @@
 //!   *assigned* materials use, so reassigning a lighter material drops the heavy
 //!   textures with no special "slim" flag.
 
+mod bundle;
 mod write;
 
 pub use awsm_meshgen::MeshData;
+pub use bundle::{assemble_bundle, BundleFile, BundleInputs, PlayerBundle};
 pub use write::write_glb;
 
 /// The primitive-level glTF extension marking a primitive whose real material is
