@@ -269,6 +269,48 @@ fn export_scene_glb() {
     });
 }
 
+/// Assemble a player bundle (scene.glb + custom-material side-files + referenced
+/// custom-material textures + env.json + bundle.json index) and write every file
+/// into a picked directory via the File System Access handle. Reuses the native
+/// `assemble_bundle` layout so the editor and the tested layout never drift.
+fn export_player_bundle() {
+    spawn_local(async {
+        let name = {
+            let n = controller().project_name.get_cloned();
+            if n.is_empty() {
+                "bundle".to_string()
+            } else {
+                n
+            }
+        };
+        let bundle =
+            match crate::controller::export::assemble_player_bundle(&controller(), &name).await {
+                Ok(bundle) => bundle,
+                Err(e) => {
+                    Toast::error(format!("Export bundle failed: {e}"));
+                    return;
+                }
+            };
+        match crate::fs::ProjectDir::pick().await {
+            Ok(dir) => {
+                let count = bundle.files.len();
+                for file in &bundle.files {
+                    if let Err(e) = dir.write_bytes(&file.path, &file.bytes).await {
+                        Toast::error(format!("Export bundle failed ({}): {e}", file.path));
+                        return;
+                    }
+                }
+                Toast::info(format!("Wrote {count} files to {}/", dir.name()));
+            }
+            Err(crate::fs::FsError::Cancelled) => {}
+            Err(crate::fs::FsError::Unsupported) => {
+                Toast::error("Export bundle needs a directory picker (Chromium-only)");
+            }
+            Err(e) => Toast::error(format!("Export bundle: {e}")),
+        }
+    });
+}
+
 fn settings_drawer() -> Dom {
     let s = controller().settings.clone();
     RightDrawer::new("Settings")
@@ -812,6 +854,7 @@ fn overflow_button(ctrl: &EditorController) -> Dom {
         .child(DropButton::new().icon("more").variant(BtnVariant::Quiet).chevron(false)
             .items(|close| vec![
                 MenuItem::new("Export scene as GLB\u{2026}").icon("mesh").on_click(clone!(close => move || { export_scene_glb(); (close.borrow_mut())(); })).render(),
+                MenuItem::new("Export player bundle\u{2026}").icon("mesh").on_click(clone!(close => move || { export_player_bundle(); (close.borrow_mut())(); })).render(),
                 MenuItem::new("Settings\u{2026}").icon("settings").on_click(clone!(close => move || { controller().settings_open.set_neq(true); (close.borrow_mut())(); })).render(),
                 MenuItem::new("About AwsmRenderer\u{2026}").icon("help").on_click(clone!(close => move || { open_about(); (close.borrow_mut())(); })).render(),
                 MenuItem::new("Clear scene\u{2026}").icon("trash").danger(true).on_click(clone!(close => move || { open_clear_all(); (close.borrow_mut())(); })).render(),

@@ -298,12 +298,27 @@ Native test counts now: `glb-export` 6, `scene-schema` 14, `meshgen` 34.
   pruned custom-material side-files (`persistence::material_files`), and an env
   descriptor. MCP `export_player_bundle`. (Confirms the Phase-1 scene-complete IR
   reuses with no rewrite.)
-### ⬜ Phase 6 remaining
-- Editor clips → glTF animation lowering populating `GlbScene.animations`
-  (`ExportAnimation` channels; `KHR_animation_pointer` for material/light/camera
-  tracks). Texture copying/compression into `textures/`. Write the bundle to a
-  picked dir via `ProjectDir` (vs returning the manifest). **Net-new player-side
-  bundle loader** (the called-out unknown). Screenshot-parity verification.
+### Phase 6 remaining
+- ✅ **Animation lowering** (DONE — `79f9fc8b`): editor TRS clips → glTF channels
+  in `GlbScene.animations` (`KHR_animation_pointer` for material/light/camera
+  tracks is a follow-on).
+- ✅ **Bundle → dir** (DONE + tested): native `awsm_glb_export::assemble_bundle`
+  + `PlayerBundle::write_to_dir` (tempdir integration test, `43668889`); the
+  editor's `assemble_player_bundle` reuses it (no layout drift) and the overflow
+  menu "Export player bundle…" writes the file set to a picked `ProjectDir`.
+  `bundle.json` indexes `scene.glb` + material side-files + `textures/` + env.
+  MCP-verified: `run_query export_player_bundle` returns the correct file set
+  (scene.glb `glTF…`, env.json, bundle.json manifest).
+- ✅ **Texture copying**: PBR textures travel embedded in `scene.glb`
+  (referenced-only); custom-WGSL material textures are gathered into `textures/`
+  by `assemble_player_bundle`. Follow-on: declared-slot defaults (un-overridden)
+  + compression.
+- ⬜ Browser: confirm the "Export player bundle…" dir-write picks a dir + writes
+  the files (FS-Access; the manifest assembly is MCP-verified + the layout
+  tempdir-tested).
+- **Out of scope (handoff):** the **player-side bundle loader** lives in the
+  separate game-player repo — it consumes `bundle.json` + `scene.glb` +
+  `materials/` + `textures/` + `env.json`.
 
 ## Generated capabilities reference / `awsm://docs/mesh-tools` — ⬜ NOT STARTED
 Mesh-edit view is read-only + a generated reference (no manipulation UI).

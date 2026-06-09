@@ -2859,39 +2859,34 @@ impl EditorController {
                 }
             }
             EditorQuery::ExportPlayerBundle { name } => {
+                use base64::Engine;
                 use serde_json::json;
-                // scene.glb — whole scene baked, incl. animations (GLB exporter).
-                let scene_glb = match crate::controller::export::export_scene_glb(self).await {
-                    Ok(bytes) => {
-                        use base64::Engine;
-                        base64::engine::general_purpose::STANDARD.encode(bytes)
+                // Assemble via the native `awsm_glb_export::assemble_bundle` layout
+                // (so editor + native bundle layout never drift). Each file's bytes
+                // are base64 (STANDARD) so the wire result stays JSON-clean.
+                match crate::controller::export::assemble_player_bundle(self, &name).await {
+                    Ok(bundle) => {
+                        let files: Vec<serde_json::Value> = bundle
+                            .files
+                            .into_iter()
+                            .map(|f| {
+                                json!({
+                                    "path": f.path,
+                                    "bytes": base64::engine::general_purpose::STANDARD
+                                        .encode(f.bytes),
+                                })
+                            })
+                            .collect();
+                        let mut entries = std::collections::BTreeMap::new();
+                        entries.insert("name".to_string(), json!(name));
+                        entries.insert("files".to_string(), json!(files));
+                        QueryResult::Map(query::MapResult {
+                            kind: "player_bundle".to_string(),
+                            entries,
+                        })
                     }
-                    Err(e) => return QueryResult::Error { error: e },
-                };
-                // Pruned custom-material side-files (wgsl + toml) — those a
-                // re-imported AWSM_materials_none primitive resolves against.
-                let materials: Vec<serde_json::Value> =
-                    crate::controller::persistence::material_files(self)
-                        .into_iter()
-                        .map(|(path, content)| json!({ "path": path, "content": content }))
-                        .collect();
-                let env = serde_json::to_value(self.scene.environment.get_cloned())
-                    .unwrap_or(serde_json::Value::Null);
-                let mut entries = std::collections::BTreeMap::new();
-                entries.insert("name".to_string(), json!(name));
-                entries.insert("scene_glb".to_string(), json!(scene_glb));
-                entries.insert("materials".to_string(), json!(materials));
-                entries.insert("env".to_string(), env);
-                // Animation lowering into the GLB + texture copying + the
-                // player-side bundle loader are follow-ons (see STATUS).
-                entries.insert(
-                    "note".to_string(),
-                    json!("first-cut: geometry+materials+env; animations/textures pending"),
-                );
-                QueryResult::Map(query::MapResult {
-                    kind: "player_bundle".to_string(),
-                    entries,
-                })
+                    Err(e) => QueryResult::Error { error: e },
+                }
             }
             EditorQuery::SelectVerticesWhere { node, predicate } => {
                 use awsm_editor_protocol::VertexPredicate as P;

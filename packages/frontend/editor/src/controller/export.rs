@@ -67,6 +67,104 @@ pub async fn export_scene_glb(ctrl: &super::EditorController) -> Result<Vec<u8>,
     Ok(write_glb(&glb))
 }
 
+/// Assemble a player bundle for the live scene, reusing the native
+/// [`awsm_glb_export::assemble_bundle`] layout so the editor and the
+/// natively-tested directory layout can never drift.
+///
+/// Pieces:
+/// - `scene.glb`: the whole-scene baked glTF (with embedded **PBR/built-in**
+///   textures — referenced-only — and animations) from [`export_scene_glb`].
+/// - `materials`: the custom-material `.wgsl`/`.toml` side-files at their
+///   bundle-relative paths (from `persistence::material_files`).
+/// - `textures`: only the textures referenced by **custom-WGSL** material
+///   instances in the scene (their `texture_overrides`). Built-in/PBR textures
+///   are NOT gathered here — they already travel embedded inside `scene_glb`.
+/// - `env.json`: the serialized environment descriptor.
+pub async fn assemble_player_bundle(
+    ctrl: &super::EditorController,
+    name: &str,
+) -> Result<awsm_glb_export::PlayerBundle, String> {
+    use awsm_glb_export::BundleInputs;
+
+    let scene_glb = export_scene_glb(ctrl).await?;
+    let materials = crate::controller::persistence::material_files(ctrl);
+    let env_json = serde_json::to_string(&ctrl.scene.environment.get_cloned()).ok();
+
+    // Gather the (deduped, ordered) texture asset ids referenced by custom-WGSL
+    // material instances in the scene.
+    let mut ids: Vec<AssetId> = Vec::new();
+    let mut seen: HashSet<AssetId> = HashSet::new();
+    let roots: Vec<Arc<Node>> = ctrl.scene.nodes.lock_ref().iter().cloned().collect();
+    for n in &roots {
+        collect_custom_texture_assets(ctrl, n, &mut ids, &mut seen);
+    }
+
+    let mut textures: Vec<(String, Vec<u8>)> = Vec::new();
+    for id in ids {
+        if let Some((tex_name, png)) = resolve_one_texture(&ctrl.scene, id).await {
+            textures.push((format!("{}.png", sanitize_filename(&tex_name)), png));
+        }
+    }
+
+    Ok(awsm_glb_export::assemble_bundle(
+        name,
+        BundleInputs {
+            scene_glb,
+            materials,
+            textures,
+            env_json,
+        },
+    ))
+}
+
+/// Walk a subtree collecting the (unique, ordered) texture asset ids referenced
+/// by **custom-WGSL** material instances' `texture_overrides`. Built-in/PBR
+/// material textures are skipped — those are embedded in `scene_glb` already.
+//
+// TODO: this only gathers `texture_overrides`; a custom material whose declared
+// texture slot uses its default (un-overridden) texture is not covered here.
+// Resolving declared-slot defaults is a follow-on.
+fn collect_custom_texture_assets(
+    ctrl: &super::EditorController,
+    node: &Node,
+    ids: &mut Vec<AssetId>,
+    seen: &mut HashSet<AssetId>,
+) {
+    let kind = node.kind.get_cloned();
+    if let Some(Some(inst)) = material_slot(&kind) {
+        // A custom-WGSL material is one whose asset resolves to a custom-material
+        // entry with NO built-in variant (the inverse of `collect_texture_assets`).
+        let is_builtin =
+            crate::controller::custom_material::find_material(&ctrl.custom_materials, inst.asset)
+                .map(|m| m.builtin.get_cloned().is_some())
+                .unwrap_or(false);
+        if !is_builtin {
+            for t in inst.texture_overrides.values() {
+                if seen.insert(t.asset) {
+                    ids.push(t.asset);
+                }
+            }
+        }
+    }
+    for c in node.children.lock_ref().iter() {
+        collect_custom_texture_assets(ctrl, c, ids, seen);
+    }
+}
+
+/// Keep a filename simple/safe: alphanumeric, dash, underscore, dot are kept;
+/// everything else becomes `_`.
+fn sanitize_filename(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 /// `node.id → depth-first index`, matching `write_glb`'s node flattening (so
 /// animation channels reference the right glTF node).
 fn build_index_map(scene: &Scene) -> HashMap<NodeId, usize> {
