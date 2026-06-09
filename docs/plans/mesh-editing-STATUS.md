@@ -243,8 +243,16 @@ Native test counts now: `glb-export` 6, `scene-schema` 14, `meshgen` 34.
   with `modifiers: None`; could seed `Some(ModifierStack{ base: <originating>,
   modifiers: [] })` once eval is the materialization path (so adding a modifier
   to a just-converted primitive Just Works).
-- **Convenience MCP**: `add_modifier` / `set_modifier_param` (read-modify-write
-  one stack) on top of `set_mesh_modifiers`.
+- ✅ **Convenience MCP** (DONE + MCP-verified): `add_modifier` / `set_modifier`
+  / `remove_modifier` commands (read-modify-write on an existing stack; clear
+  error if the mesh has no recipe — never synthesizes a circular `Captured`-self
+  base; bounds-checked) + a `get_mesh_modifiers` query, all on top of a factored
+  `apply_mesh_stack` helper (inverse = `SetMeshModifiers(prior)`), exposed as
+  MCP tools + documented in `awsm://docs/mesh-tools`. Verified live via
+  `dispatch_command` + `get_mesh_stats`: no-stack→error; add subdivide(2)+taper
+  → 24→150 verts, volume halved; remove taper → volume recovered, subdivide
+  kept; set_modifier subdivide 2→1 → 192→48 tris; index 9 → out-of-range error;
+  undo → restored 192 tris.
 - **Bridge materialization via eval**: today Mesh nodes materialize from the
   baked `.mesh.bin` (`mesh_cache::get_raw`); the recipe is re-baked at edit time
   in the command. Confirm in-browser that this is the desired path (vs. the

@@ -249,6 +249,13 @@ pub enum EditorQuery {
         #[serde(default = "default_cross_section_samples")]
         samples: u32,
     },
+    /// The mesh asset's modifier-stack **recipe** (`{ base, modifiers }`),
+    /// serialized as JSON in a `QueryResult::Text`. `null` when the mesh has no
+    /// recipe (a raw captured/converted mesh) — call `set_mesh_modifiers` to give
+    /// it a base before the incremental `add_/set_/remove_modifier` commands.
+    /// The read half of the incremental modifier-editing loop. MCP:
+    /// `get_mesh_modifiers`.
+    MeshModifiers { mesh: AssetId },
     /// Block until no material recompile is pending **and** the renderer's
     /// pipeline scheduler has drained **and** a fresh frame has presented (or
     /// `max_ms` elapses). The deterministic barrier between an edit and a

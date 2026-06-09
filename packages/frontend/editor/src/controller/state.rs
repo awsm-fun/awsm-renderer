@@ -12,7 +12,8 @@ use super::*;
 use crate::engine::scene::{mutate, AssetId, NodeId, NodeKind, Scene};
 use crate::error::EditorResult;
 use awsm_scene_schema::{
-    AssetEntry, AssetSource as SceneAssetSource, MaterialDef, ProceduralTextureDef, TextureDef,
+    AssetEntry, AssetSource as SceneAssetSource, MaterialDef, ModifierStack, ProceduralTextureDef,
+    TextureDef,
 };
 use std::sync::Arc;
 
@@ -386,6 +387,79 @@ impl EditorController {
             self.dirty.set_neq(true);
         }
         Ok(())
+    }
+
+    /// Read the current modifier-stack **recipe** off a mesh asset, for the
+    /// incremental modifier commands (`AddModifier` / `SetModifier` /
+    /// `RemoveModifier`). Errors if the asset isn't a mesh or has no recipe — a
+    /// raw captured/converted mesh with `modifiers == None` must get a base via
+    /// `SetMeshModifiers` first (synthesizing a `Captured`-self base here would
+    /// double-apply the prior bake on the next edit).
+    fn mesh_stack(&self, mesh: AssetId) -> EditorResult<ModifierStack> {
+        match self
+            .scene
+            .assets
+            .lock()
+            .unwrap()
+            .get(mesh)
+            .map(|e| &e.source)
+        {
+            Some(SceneAssetSource::Mesh(def)) => def.modifiers.clone().ok_or_else(|| {
+                crate::error::EditorError::msg(format!(
+                    "mesh {mesh} has no modifier stack; set a base stack with set_mesh_modifiers first"
+                ))
+            }),
+            _ => Err(crate::error::EditorError::msg(format!(
+                "asset {mesh} is not an editable mesh"
+            ))),
+        }
+    }
+
+    /// Replace a mesh asset's modifier-stack **recipe** wholesale: store the new
+    /// recipe on the asset, re-evaluate → re-bake the `.mesh.bin` cache, bump the
+    /// mesh revision (the bridge re-materializes referencing nodes), and return
+    /// the inverse — `SetMeshModifiers(prior_stack)` (re-evaluates to the prior
+    /// geometry) or, if there was no prior recipe, a `SetMeshData(prior_bytes)`.
+    /// The shared body of `SetMeshModifiers` and the incremental modifier
+    /// commands. Returns `None` (not undoable) if the asset isn't a mesh.
+    fn apply_mesh_stack(&self, mesh: AssetId, stack: ModifierStack) -> Option<EditorCommand> {
+        use crate::engine::bridge::mesh_cache;
+        // Capture the prior recipe + baked bytes for the inverse, and bail
+        // if this asset isn't a mesh.
+        let prior_stack = match self
+            .scene
+            .assets
+            .lock()
+            .unwrap()
+            .get(mesh)
+            .map(|e| &e.source)
+        {
+            Some(SceneAssetSource::Mesh(def)) => def.modifiers.clone(),
+            _ => return None,
+        };
+        let prior_bytes = mesh_cache::get_captured(mesh);
+        // Store the new recipe on the asset (the recipe lives in the
+        // project; the .mesh.bin is a regenerable cache).
+        {
+            let mut assets = self.scene.assets.lock().unwrap();
+            if let Some(entry) = assets.entries.get_mut(&mesh) {
+                if let SceneAssetSource::Mesh(def) = &mut entry.source {
+                    def.modifiers = Some(stack.clone());
+                    def.editable = true;
+                }
+            }
+        }
+        // Re-evaluate → re-bake the cache (the bridge re-materializes via
+        // the mesh-revision bump in `apply`).
+        let baked = crate::controller::mesh_eval::evaluate_stack(&self.scene, &stack);
+        mesh_cache::store_with_id(mesh, mesh_cache::from_mesh_data(baked));
+        self.scene.bump_revision();
+        // Inverse: restore the prior stack (re-evaluates to prior geometry)
+        // or, if there was no recipe, the prior baked bytes.
+        match prior_stack {
+            Some(stack) => Some(EditorCommand::SetMeshModifiers { mesh, stack }),
+            None => prior_bytes.map(|data| EditorCommand::SetMeshData { mesh, data }),
+        }
     }
 
     /// Apply a command's effect and return its inverse (for the undo log), or
@@ -771,44 +845,49 @@ impl EditorController {
                 Ok(prior.map(|data| EditorCommand::SetMeshData { mesh, data }))
             }
             EditorCommand::SetMeshModifiers { mesh, stack } => {
-                use crate::engine::bridge::mesh_cache;
-                // Capture the prior recipe + baked bytes for the inverse, and bail
-                // if this asset isn't a mesh.
-                let prior_stack = match self
-                    .scene
-                    .assets
-                    .lock()
-                    .unwrap()
-                    .get(mesh)
-                    .map(|e| &e.source)
-                {
-                    Some(SceneAssetSource::Mesh(def)) => def.modifiers.clone(),
-                    _ => return Ok(None),
+                Ok(self.apply_mesh_stack(mesh, stack))
+            }
+            EditorCommand::AddModifier { mesh, modifier } => {
+                let mut stack = match self.mesh_stack(mesh) {
+                    Ok(s) => s,
+                    Err(e) => return Err(e),
                 };
-                let prior_bytes = mesh_cache::get_captured(mesh);
-                // Store the new recipe on the asset (the recipe lives in the
-                // project; the .mesh.bin is a regenerable cache).
-                {
-                    let mut assets = self.scene.assets.lock().unwrap();
-                    if let Some(entry) = assets.entries.get_mut(&mesh) {
-                        if let SceneAssetSource::Mesh(def) = &mut entry.source {
-                            def.modifiers = Some(stack.clone());
-                            def.editable = true;
-                        }
-                    }
+                stack.modifiers.push(modifier);
+                Ok(self.apply_mesh_stack(mesh, stack))
+            }
+            EditorCommand::SetModifier {
+                mesh,
+                index,
+                modifier,
+            } => {
+                let mut stack = match self.mesh_stack(mesh) {
+                    Ok(s) => s,
+                    Err(e) => return Err(e),
+                };
+                let i = index as usize;
+                if i >= stack.modifiers.len() {
+                    return Err(crate::error::EditorError::msg(format!(
+                        "modifier index {index} out of range (mesh {mesh} has {} modifier(s))",
+                        stack.modifiers.len()
+                    )));
                 }
-                // Re-evaluate → re-bake the cache (the bridge re-materializes via
-                // the mesh-revision bump in `apply`).
-                let baked = crate::controller::mesh_eval::evaluate_stack(&self.scene, &stack);
-                mesh_cache::store_with_id(mesh, mesh_cache::from_mesh_data(baked));
-                self.scene.bump_revision();
-                // Inverse: restore the prior stack (re-evaluates to prior geometry)
-                // or, if there was no recipe, the prior baked bytes.
-                let inverse = match prior_stack {
-                    Some(stack) => Some(EditorCommand::SetMeshModifiers { mesh, stack }),
-                    None => prior_bytes.map(|data| EditorCommand::SetMeshData { mesh, data }),
+                stack.modifiers[i] = modifier;
+                Ok(self.apply_mesh_stack(mesh, stack))
+            }
+            EditorCommand::RemoveModifier { mesh, index } => {
+                let mut stack = match self.mesh_stack(mesh) {
+                    Ok(s) => s,
+                    Err(e) => return Err(e),
                 };
-                Ok(inverse)
+                let i = index as usize;
+                if i >= stack.modifiers.len() {
+                    return Err(crate::error::EditorError::msg(format!(
+                        "modifier index {index} out of range (mesh {mesh} has {} modifier(s))",
+                        stack.modifiers.len()
+                    )));
+                }
+                stack.modifiers.remove(i);
+                Ok(self.apply_mesh_stack(mesh, stack))
             }
             EditorCommand::SetVertexPositions {
                 mesh,
@@ -2907,6 +2986,32 @@ impl EditorController {
                     None => QueryResult::Error {
                         error: format!("node {node} has no resolvable mesh"),
                     },
+                }
+            }
+            EditorQuery::MeshModifiers { mesh } => {
+                // Resolve the asset's recipe; `null` JSON when it has none.
+                let stack = match self
+                    .scene
+                    .assets
+                    .lock()
+                    .unwrap()
+                    .get(mesh)
+                    .map(|e| &e.source)
+                {
+                    Some(SceneAssetSource::Mesh(def)) => Ok(def.modifiers.clone()),
+                    Some(_) => Err(format!("asset {mesh} is not a mesh")),
+                    None => Err(format!("no asset {mesh}")),
+                };
+                match stack {
+                    Ok(stack) => {
+                        // `Some(stack)` → the recipe JSON; `None` → JSON `null`
+                        // (the mesh has no recipe yet — set a base stack first).
+                        QueryResult::Text(
+                            serde_json::to_string(&stack)
+                                .unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}")),
+                        )
+                    }
+                    Err(error) => QueryResult::Error { error },
                 }
             }
             EditorQuery::WaitRenderSettled { max_ms } => self.wait_render_settled(max_ms).await,

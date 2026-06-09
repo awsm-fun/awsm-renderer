@@ -11,7 +11,7 @@ use awsm_scene_schema::animation::{
     BuiltinParamKind, ClipDirection, ClipLoop, Interp, Keyframe, LayerDoc, LayerModeDoc,
     LightParamKind, SamplerKind, StoredTrack, StripDoc, TrackTarget, TrackValue,
 };
-use awsm_scene_schema::modifier::ModifierStack;
+use awsm_scene_schema::modifier::{Modifier, ModifierStack};
 use awsm_scene_schema::{
     AssetEntry, AssetId, CapturedMesh, EnvironmentConfig, MaterialShading, NodeId, NodeKind, Trs,
 };
@@ -333,6 +333,23 @@ pub enum EditorCommand {
     /// remove / reorder / param-tweak are all the UI/agent sending a new whole
     /// stack. Inverse: restore the prior stack (or prior bytes if there was none).
     SetMeshModifiers { mesh: AssetId, stack: ModifierStack },
+    /// Append one `Modifier` to the **end** of a mesh's existing modifier stack
+    /// (convenience over resending the whole stack). The mesh must already carry a
+    /// recipe (`set_mesh_modifiers` first); errors otherwise. Re-bakes + the bridge
+    /// re-materializes referencing nodes. Inverse: `SetMeshModifiers(prior_stack)`.
+    AddModifier { mesh: AssetId, modifier: Modifier },
+    /// Replace the modifier at `index` in a mesh's existing stack. The mesh must
+    /// already carry a recipe; `index` must be in range — errors otherwise.
+    /// Inverse: `SetMeshModifiers(prior_stack)`.
+    SetModifier {
+        mesh: AssetId,
+        index: u32,
+        modifier: Modifier,
+    },
+    /// Remove the modifier at `index` from a mesh's existing stack. The mesh must
+    /// already carry a recipe; `index` must be in range — errors otherwise.
+    /// Inverse: `SetMeshModifiers(prior_stack)`.
+    RemoveModifier { mesh: AssetId, index: u32 },
     /// Replace the positions of specific vertices (raw editing). `indices[k]`
     /// gets `positions[k]`; normals are recomputed. Inverse: a `SetVertexPositions`
     /// carrying the **prior** positions of the same indices (sparse — never a
@@ -733,6 +750,9 @@ impl EditorCommand {
             EditorCommand::SetMeshData { .. }
                 | EditorCommand::ConvertToEditableMesh { .. }
                 | EditorCommand::SetMeshModifiers { .. }
+                | EditorCommand::AddModifier { .. }
+                | EditorCommand::SetModifier { .. }
+                | EditorCommand::RemoveModifier { .. }
                 | EditorCommand::SetVertexPositions { .. }
                 | EditorCommand::SoftTransformVertices { .. }
                 | EditorCommand::CollapseMeshStack { .. }
@@ -779,6 +799,9 @@ impl EditorCommand {
             EditorCommand::ConvertToEditableMesh { .. } => "Convert to editable mesh",
             EditorCommand::SetMeshData { .. } => "Edit mesh",
             EditorCommand::SetMeshModifiers { .. } => "Edit modifiers",
+            EditorCommand::AddModifier { .. } => "Add modifier",
+            EditorCommand::SetModifier { .. } => "Set modifier",
+            EditorCommand::RemoveModifier { .. } => "Remove modifier",
             EditorCommand::SetVertexPositions { .. } => "Move vertices",
             EditorCommand::SoftTransformVertices { .. } => "Soft-transform vertices",
             EditorCommand::CollapseMeshStack { .. } => "Collapse mesh stack",

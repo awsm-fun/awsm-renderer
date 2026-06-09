@@ -103,6 +103,36 @@ Then `get_mesh_cross_section { node, axis: 1, samples: 8 }` reads the radius cur
 
 ---
 
+## Incremental modifier editing (no whole-stack resend)
+
+Once a mesh has a stack (set a base with `set_mesh_modifiers` first), tweak it one
+modifier at a time instead of resending `{ base, modifiers }`:
+
+- `get_mesh_modifiers { mesh }` → the current recipe `{ base, modifiers }` as JSON
+  (or `null` if the mesh has no recipe yet). Read this to find modifier **indices**.
+- `add_modifier { mesh, modifier }` — append one modifier to the **end** of the stack.
+- `set_modifier { mesh, index, modifier }` — replace the modifier at `index` (0-based).
+- `remove_modifier { mesh, index }` — remove the modifier at `index` (0-based).
+
+`modifier` is a **single** Modifier object (the shapes under
+"[Modifier](#modifier-applied-in-order-each-is-one-object)" above), e.g.
+`{"twist":{"axis":"y","turns":2}}`. Each call re-bakes geometry and is **one
+discrete undo step** (they do not coalesce). **Precondition:** the mesh must
+already carry a stack — `add/set/remove` on a recipe-less mesh **errors** (call
+`set_mesh_modifiers` to set a base first); out-of-range indices also error.
+
+**Example — add a twist, then inspect:**
+```jsonc
+// mesh already has a stack (e.g. set_mesh_modifiers gave it a box base)
+add_modifier { "mesh": "<uuid>", "modifier": { "twist": { "axis": "y", "turns": 2 } } }
+get_mesh_modifiers { "mesh": "<uuid>" }
+// → { "base": { "primitive": { "box": { "dims": [1,2,1] } } },
+//     "modifiers": [ { "twist": { "axis": "y", "turns": 2.0 } } ] }
+remove_modifier { "mesh": "<uuid>", "index": 0 }   // undo that twist
+```
+
+---
+
 ## Raw per-vertex editing (escape hatch)
 
 - `select_vertices_where { node, predicate }` → returns matching vertex **indices**

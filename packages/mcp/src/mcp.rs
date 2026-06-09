@@ -174,6 +174,40 @@ pub struct SetMeshModifiersParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AddModifierParams {
+    /// UUID of the editable mesh asset (must already have a modifier stack —
+    /// call `set_mesh_modifiers` first to give it a base).
+    pub mesh: String,
+    /// One strongly-typed modifier object (e.g. `{"twist":{"axis":"y","turns":2}}`).
+    /// See the `awsm://docs/mesh-tools` resource for every modifier's shape.
+    pub modifier: Flexible<awsm_scene_schema::modifier::Modifier>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SetModifierParams {
+    /// UUID of the editable mesh asset (must already have a modifier stack).
+    pub mesh: String,
+    /// Zero-based index of the modifier to replace (must be in range).
+    pub index: u32,
+    /// The replacement modifier object.
+    pub modifier: Flexible<awsm_scene_schema::modifier::Modifier>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RemoveModifierParams {
+    /// UUID of the editable mesh asset (must already have a modifier stack).
+    pub mesh: String,
+    /// Zero-based index of the modifier to remove (must be in range).
+    pub index: u32,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct GetMeshModifiersParams {
+    /// UUID of the mesh asset to read the modifier stack from.
+    pub mesh: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct RenameParams {
     pub node: String,
     pub name: String,
@@ -1280,6 +1314,62 @@ impl EditorMcp {
         self.dispatch(EditorCommand::SetMeshModifiers {
             mesh,
             stack: p.stack.0,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Append one modifier to the END of a mesh's existing modifier stack — the convenience alternative to resending the whole stack via set_mesh_modifiers. `mesh` is the mesh asset UUID; `modifier` is a single Modifier object (e.g. {\"twist\":{\"axis\":\"y\",\"turns\":2}}, {\"taper\":{\"axis\":\"y\",\"factor\":0.3}}, {\"subdivide\":{\"iterations\":2}}). PRECONDITION: the mesh must ALREADY have a modifier stack — call set_mesh_modifiers (to set a base) first, or this errors (a raw captured/converted mesh has no recipe). Re-bakes geometry; each call is one discrete undo step. Read get_mesh_modifiers to see the current stack + indices. Full modifier shapes: the `awsm://docs/mesh-tools` resource."
+    )]
+    async fn add_modifier(
+        &self,
+        Parameters(p): Parameters<AddModifierParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::AddModifier {
+            mesh: parse_asset(&p.mesh)?,
+            modifier: p.modifier.0,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Replace the modifier at `index` (zero-based) in a mesh's existing modifier stack with `modifier`. `mesh` is the mesh asset UUID. PRECONDITION: the mesh must already have a modifier stack and `index` must be in range — both error otherwise. Re-bakes geometry; one discrete undo step. Use get_mesh_modifiers to read the current stack + valid indices first. Modifier shapes: the `awsm://docs/mesh-tools` resource."
+    )]
+    async fn set_modifier(
+        &self,
+        Parameters(p): Parameters<SetModifierParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetModifier {
+            mesh: parse_asset(&p.mesh)?,
+            index: p.index,
+            modifier: p.modifier.0,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Remove the modifier at `index` (zero-based) from a mesh's existing modifier stack. `mesh` is the mesh asset UUID. PRECONDITION: the mesh must already have a modifier stack and `index` must be in range — both error otherwise. Re-bakes geometry; one discrete undo step. Use get_mesh_modifiers to read the current stack + valid indices first."
+    )]
+    async fn remove_modifier(
+        &self,
+        Parameters(p): Parameters<RemoveModifierParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::RemoveModifier {
+            mesh: parse_asset(&p.mesh)?,
+            index: p.index,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Read a mesh's current modifier-stack recipe ({ base, modifiers }) as JSON. `mesh` is the mesh asset UUID. Returns `null` when the mesh has no recipe yet (a raw captured/converted mesh — call set_mesh_modifiers to give it a base before add_/set_/remove_modifier). The read half of incremental modifier editing: read the stack, find the index you want, then add_/set_/remove_modifier."
+    )]
+    async fn get_mesh_modifiers(
+        &self,
+        Parameters(p): Parameters<GetMeshModifiersParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::MeshModifiers {
+            mesh: parse_asset(&p.mesh)?,
         })
         .await
     }
