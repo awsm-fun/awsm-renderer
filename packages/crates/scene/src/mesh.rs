@@ -13,10 +13,24 @@
 
 use serde::{Deserialize, Serialize};
 
-// NOTE: `RuntimeMesh = Primitive(PrimitiveShape) | Editable(MeshBlob)` lands in
-// the next carve increment, once `primitive.rs` + its `AssetId` closure move
-// into this crate (see docs/plans/unified-mesh-model.md "Execution blueprint").
-// This increment establishes the keystone named-attribute table standalone.
+use crate::primitive::PrimitiveShape;
+
+/// The runtime mesh asset — what `AssetSource::Mesh` resolves to in a baked
+/// [`Scene`](crate::scene). The player keeps cheap procedural bases procedural
+/// ([`Primitive`](RuntimeMesh::Primitive) — it runs meshgen primitive-gen) and
+/// loads everything else ([`Editable`](RuntimeMesh::Editable) — sweep / SDF /
+/// edited / imported, all baked to a blob). Skinned meshes are *not* a variant
+/// here — they live as `NodeKind::SkinnedMesh { skin }` referencing an imported
+/// source (editable XOR skinned).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeMesh {
+    /// A primitive regenerated from params at load (no blob on disk).
+    Primitive(PrimitiveShape),
+    /// Baked triangle geometry — the `assets/<id>.mesh.bin` blob.
+    Editable(MeshBlob),
+}
 
 /// Baked triangle geometry as a named-attribute table. `positions` + `indices`
 /// are mandatory; everything else is optional / multi-set. `uvs[0]` is

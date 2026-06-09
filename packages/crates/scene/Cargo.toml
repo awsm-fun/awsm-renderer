@@ -27,3 +27,4 @@ schemars = ["dep:schemars"]
 [dev-dependencies]
 bitcode = { version = "0.6.9", features = ["serde", "uuid"] }
 serde_json = { workspace = true }
+toml = "0.8"
