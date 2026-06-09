@@ -3,7 +3,7 @@
 //! wireframe via the renderer's fat-line pipeline. Ported (one-shot, world-baked
 //! per node) from the archived editor's per-frame `collider_wireframe`.
 
-use awsm_scene_schema::ColliderShape;
+use awsm_editor_protocol::ColliderShape;
 use glam::{Mat4, Vec3, Vec4};
 
 const WIRE_ALPHA: f32 = 0.8;
@@ -236,7 +236,7 @@ fn push_cone(buf: &mut WireBuf, world: &Mat4, half_height: f32, radius: f32, col
 }
 
 fn push_ellipsoid(buf: &mut WireBuf, world: &Mat4, half_extents: &[f32; 3], color: &[f32; 3]) {
-    let mesh = awsm_scene_schema::ellipsoid_hull_mesh();
+    let mesh = awsm_editor_protocol::ellipsoid_hull_mesh();
     let [rx, ry, rz] = *half_extents;
     let c = rgb_to_vec4(color);
     for &(a, b) in &mesh.edges {

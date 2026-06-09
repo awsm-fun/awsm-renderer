@@ -14,7 +14,7 @@
 use std::cell::Cell;
 
 use awsm_editor_protocol::{EditorCommand, InsertSpec};
-use awsm_scene_schema::{LightKind, Modifier, PrimitiveShape};
+use awsm_editor_protocol::{LightKind, Modifier, PrimitiveShape};
 use awsm_web_shared::prelude::{Mutable, MutableVec};
 use wasm_bindgen_futures::spawn_local;
 

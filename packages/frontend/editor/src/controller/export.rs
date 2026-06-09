@@ -27,17 +27,17 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use awsm_editor_protocol::animation::{TrackTarget, TrackValue, TransformProp};
+use awsm_editor_protocol::dynamic_material::MaterialInstance;
+use awsm_editor_protocol::{
+    AssetId, AssetSource, CameraConfig, CameraProjection, CrossSectionDef, LightConfig,
+    MaterialAlphaMode, MaterialDef, MaterialShading, NodeId, NodeKind, SweepAlongCurveDef,
+    SweepUvMode, TextureDef, TextureRef,
+};
 use awsm_glb_export::{
     write_glb, AlphaMode, AnimInterp, AnimPath, ExportAnimChannel, ExportAnimation, ExportCamera,
     ExportImage, ExportLight, ExportMaterial, ExportNode, GlbScene, ImageMime, MeshData,
     PbrMaterial, TexRef, Trs, UnlitMaterial,
-};
-use awsm_scene_schema::animation::{TrackTarget, TrackValue, TransformProp};
-use awsm_scene_schema::dynamic_material::MaterialInstance;
-use awsm_scene_schema::{
-    AssetId, AssetSource, CameraConfig, CameraProjection, CrossSectionDef, LightConfig,
-    MaterialAlphaMode, MaterialDef, MaterialShading, NodeId, NodeKind, SweepAlongCurveDef,
-    SweepUvMode, TextureDef, TextureRef,
 };
 
 use crate::engine::bridge::{material as bridge_material, mesh_cache};
@@ -190,7 +190,7 @@ fn lower_clips(
     clips: &[std::sync::Arc<crate::controller::animation::CustomAnimation>],
     index_map: &HashMap<NodeId, usize>,
 ) -> Vec<ExportAnimation> {
-    use awsm_scene_schema::animation::SamplerKind;
+    use awsm_editor_protocol::animation::SamplerKind;
     let mut out = Vec::new();
     for clip in clips {
         let mut channels = Vec::new();

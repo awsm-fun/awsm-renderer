@@ -25,11 +25,11 @@ use glam::{Quat, Vec3};
 
 use crate::engine::scene::AssetId;
 
-// The serde model types are the **persistence schema** (`awsm_scene_schema`), so
+// The serde model types are the **persistence schema** (`awsm_editor_protocol`), so
 // the live model + the project TOML share one definition (mirrors how
 // `StoredMaterial` lives in scene-schema). Re-exported here so the rest of the
 // editor (commands / query / bridge) references them via `controller::animation`.
-pub use awsm_scene_schema::animation::{
+pub use awsm_editor_protocol::animation::{
     BuiltinParamKind, CameraParamKind, ClipDirection, ClipLoop, Interp, Keyframe, LayerDoc,
     LayerModeDoc, LightParamKind, MixerDoc, SamplerKind, StoredAnimation, StoredTrack, StripDoc,
     TrackTarget, TrackValue, TransformProp,
@@ -350,7 +350,7 @@ pub fn find_clip(
 
 // ───────────────────────────── serde projection ─────────────────────────────
 // The stored projection types (`StoredAnimation`, `StoredTrack`, the mixer docs)
-// live in `awsm_scene_schema::animation` (re-exported above) so the live model +
+// live in `awsm_editor_protocol::animation` (re-exported above) so the live model +
 // the project TOML share one definition. The conversions to/from the live model
 // are free functions here (the stored types are foreign).
 

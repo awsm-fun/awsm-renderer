@@ -8,7 +8,7 @@
 use crate::engine::scene::types::{AssetStatus, LightConfig, LightKind, NodeKind, Trs};
 use crate::prelude::*;
 
-pub use awsm_scene_schema::NodeId;
+pub use awsm_editor_protocol::NodeId;
 
 pub struct Node {
     pub id: NodeId,
@@ -145,32 +145,35 @@ impl Node {
     pub fn new_curve(name: impl Into<String>) -> Arc<Self> {
         Self::new_inner(
             name,
-            NodeKind::Curve(awsm_scene_schema::CurveDef::default()),
+            NodeKind::Curve(awsm_editor_protocol::CurveDef::default()),
         )
     }
 
     pub fn new_line(name: impl Into<String>) -> Arc<Self> {
-        Self::new_inner(name, NodeKind::Line(awsm_scene_schema::LineDef::default()))
+        Self::new_inner(
+            name,
+            NodeKind::Line(awsm_editor_protocol::LineDef::default()),
+        )
     }
 
     pub fn new_sprite(name: impl Into<String>) -> Arc<Self> {
         Self::new_inner(
             name,
-            NodeKind::Sprite(awsm_scene_schema::SpriteDef::default()),
+            NodeKind::Sprite(awsm_editor_protocol::SpriteDef::default()),
         )
     }
 
     pub fn new_particle(name: impl Into<String>) -> Arc<Self> {
         Self::new_inner(
             name,
-            NodeKind::ParticleEmitter(awsm_scene_schema::ParticleEmitterDef::default()),
+            NodeKind::ParticleEmitter(awsm_editor_protocol::ParticleEmitterDef::default()),
         )
     }
 
     pub fn new_decal(name: impl Into<String>) -> Arc<Self> {
         Self::new_inner(
             name,
-            NodeKind::Decal(awsm_scene_schema::DecalConfig::default()),
+            NodeKind::Decal(awsm_editor_protocol::DecalConfig::default()),
         )
     }
 
@@ -179,7 +182,7 @@ impl Node {
     pub fn new_instances(name: impl Into<String>) -> Arc<Self> {
         Self::new_inner(
             name,
-            NodeKind::InstancesAlongCurve(awsm_scene_schema::InstancesAlongCurveDef::default()),
+            NodeKind::InstancesAlongCurve(awsm_editor_protocol::InstancesAlongCurveDef::default()),
         )
     }
 
@@ -190,7 +193,7 @@ impl Node {
         Self::new_inner(
             name,
             NodeKind::Mesh {
-                mesh: awsm_scene_schema::MeshRef(awsm_scene_schema::AssetId::new()),
+                mesh: awsm_editor_protocol::MeshRef(awsm_editor_protocol::AssetId::new()),
                 material: None,
                 shadow: Default::default(),
             },

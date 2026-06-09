@@ -11,8 +11,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use awsm_scene_schema::animation::CustomAnimationRef;
-use awsm_scene_schema::{
+use awsm_editor_protocol::animation::CustomAnimationRef;
+use awsm_editor_protocol::{
     mesh_asset_filename, AssetId, AssetSource, CapturedMesh, CustomMaterialRef, EditorProject,
     StoredMaterial, StoredSlot,
 };
@@ -305,7 +305,7 @@ pub fn apply_project(ctrl: &EditorController, project: EditorProject) {
     // path where `restore_mesh_bytes` loaded the saved bytes).
     {
         use crate::engine::bridge::mesh_cache;
-        let defs: Vec<(AssetId, awsm_scene_schema::MeshDef)> = {
+        let defs: Vec<(AssetId, awsm_editor_protocol::MeshDef)> = {
             let assets = ctrl.scene.assets.lock().unwrap();
             assets
                 .entries

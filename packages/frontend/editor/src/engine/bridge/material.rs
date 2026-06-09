@@ -6,6 +6,9 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+use awsm_editor_protocol::{
+    AssetSource, MaterialDef, MaterialShading, ProceduralTextureDef, TextureDef, TextureRef,
+};
 use awsm_renderer::materials::pbr::PbrMaterial;
 use awsm_renderer::materials::toon::ToonMaterial;
 use awsm_renderer::materials::unlit::UnlitMaterial;
@@ -15,9 +18,6 @@ use awsm_renderer::AwsmRenderer;
 use awsm_renderer_core::sampler::{AddressMode, FilterMode, MipmapFilterMode};
 use awsm_renderer_core::texture::mipmap::MipmapTextureKind;
 use awsm_renderer_core::texture::texture_pool::TextureColorInfo;
-use awsm_scene_schema::{
-    AssetSource, MaterialDef, MaterialShading, ProceduralTextureDef, TextureDef, TextureRef,
-};
 
 use crate::engine::scene::AssetId;
 
@@ -308,9 +308,9 @@ fn resolve_texture(
 /// defaults to glTF's repeat + linear.
 fn sampler_for(
     r: &mut AwsmRenderer,
-    sampler: Option<awsm_scene_schema::TextureSampler>,
+    sampler: Option<awsm_editor_protocol::TextureSampler>,
 ) -> Option<SamplerKey> {
-    use awsm_scene_schema::{TextureFilter, TextureWrap};
+    use awsm_editor_protocol::{TextureFilter, TextureWrap};
     let s = sampler.unwrap_or_default();
     let addr = |w: TextureWrap| match w {
         TextureWrap::Repeat => AddressMode::Repeat,
@@ -377,15 +377,17 @@ pub(crate) fn procedural_rgba(p: &ProceduralTextureDef) -> (Vec<u8>, u32, u32) {
 /// Blend" heuristic for `Opaque` inline materials.
 fn alpha_mode_of(def: &MaterialDef) -> MaterialAlphaMode {
     match def.alpha_mode {
-        awsm_scene_schema::MaterialAlphaMode::Opaque => {
+        awsm_editor_protocol::MaterialAlphaMode::Opaque => {
             if def.base_color[3] < 0.999 {
                 MaterialAlphaMode::Blend
             } else {
                 MaterialAlphaMode::Opaque
             }
         }
-        awsm_scene_schema::MaterialAlphaMode::Mask { cutoff } => MaterialAlphaMode::Mask { cutoff },
-        awsm_scene_schema::MaterialAlphaMode::Blend => MaterialAlphaMode::Blend,
+        awsm_editor_protocol::MaterialAlphaMode::Mask { cutoff } => {
+            MaterialAlphaMode::Mask { cutoff }
+        }
+        awsm_editor_protocol::MaterialAlphaMode::Blend => MaterialAlphaMode::Blend,
     }
 }
 
@@ -449,7 +451,7 @@ fn material_to_pbr(
 /// `Option<…Extension>` fields. Presence = the variant bit (a distinct compiled
 /// shader); the scalar/color factors are the uniform values. Texture slots within
 /// each extension stay `None` until the texture-asset picker lands.
-fn apply_extensions(pbr: &mut PbrMaterial, ext: &awsm_scene_schema::PbrExtensions) {
+fn apply_extensions(pbr: &mut PbrMaterial, ext: &awsm_editor_protocol::PbrExtensions) {
     use awsm_renderer::materials::pbr as r;
     if let Some(e) = ext.emissive_strength {
         pbr.emissive_strength = Some(r::PbrMaterialEmissiveStrength {

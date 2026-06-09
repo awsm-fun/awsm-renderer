@@ -6,9 +6,9 @@
 //! and `Captured` references the mesh store, so those are resolved here and fed
 //! to `apply_modifiers`.
 
+use awsm_editor_protocol::{MeshBase, ModifierStack};
+use awsm_editor_protocol::{MeshDef, VertexOverrides};
 use awsm_meshgen::MeshData;
-use awsm_scene_schema::material::{MeshDef, VertexOverrides};
-use awsm_scene_schema::modifier::{MeshBase, ModifierStack};
 
 use crate::engine::bridge::mesh_cache;
 use crate::engine::scene::Scene;

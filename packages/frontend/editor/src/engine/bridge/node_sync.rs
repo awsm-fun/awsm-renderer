@@ -356,10 +356,10 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
 /// roughness / emissive) into a final `MaterialDef`. Returns `None` for a dynamic
 /// material or an unknown id (callers then try the dynamic path / inline).
 fn builtin_merged(
-    inst: &awsm_scene_schema::dynamic_material::MaterialInstance,
-) -> Option<awsm_scene_schema::MaterialDef> {
-    use awsm_scene_schema::material::{MaterialAlphaMode, MaterialShading, PbrExtensions};
-    use awsm_scene_schema::TextureRef;
+    inst: &awsm_editor_protocol::dynamic_material::MaterialInstance,
+) -> Option<awsm_editor_protocol::MaterialDef> {
+    use awsm_editor_protocol::material::{MaterialAlphaMode, MaterialShading, PbrExtensions};
+    use awsm_editor_protocol::TextureRef;
     let inline = &inst.inline;
     let ctrl = crate::controller::controller();
     let mat =
@@ -424,7 +424,7 @@ fn builtin_merged(
         (v, _) => v,
     };
 
-    Some(awsm_scene_schema::MaterialDef {
+    Some(awsm_editor_protocol::MaterialDef {
         base_color: inline.base_color,
         metallic: inline.metallic,
         roughness: inline.roughness,
@@ -470,7 +470,7 @@ fn builtin_merged(
 /// silently ignored.
 fn resolve_assigned_material(
     r: &mut awsm_renderer::AwsmRenderer,
-    material: Option<&awsm_scene_schema::dynamic_material::MaterialInstance>,
+    material: Option<&awsm_editor_protocol::dynamic_material::MaterialInstance>,
     vertex_color_set: Option<u32>,
 ) -> awsm_renderer::materials::MaterialKey {
     match material {
@@ -493,11 +493,11 @@ enum MeshMaterial {
     /// A user-assignable geometry node (captured mesh, sweep): resolve the
     /// optional assignment via [`resolve_assigned_material`] — magenta when
     /// unassigned, exactly like a primitive.
-    Assigned(Option<awsm_scene_schema::dynamic_material::MaterialInstance>),
+    Assigned(Option<awsm_editor_protocol::dynamic_material::MaterialInstance>),
     /// Render this material def directly — no assignment concept. Used by
     /// instanced geometry, whose appearance is the flat default + per-instance
     /// colours, not a per-node material assignment.
-    Flat(awsm_scene_schema::MaterialDef),
+    Flat(awsm_editor_protocol::MaterialDef),
 }
 
 /// The geometry COLOR set index a renderer mesh carries (glTF `COLOR_n`), or
@@ -527,7 +527,7 @@ fn mesh_vertex_color_set(
 
 /// Schema → runtime per-mesh shadow cast/receive flags.
 fn mesh_shadow_flags_from_config(
-    cfg: &awsm_scene_schema::MeshShadowConfig,
+    cfg: &awsm_editor_protocol::MeshShadowConfig,
 ) -> awsm_renderer::shadows::MeshShadowFlags {
     awsm_renderer::shadows::MeshShadowFlags {
         cast: cfg.cast,
@@ -549,8 +549,8 @@ fn mesh_shadow_flags_from_config(
 /// insert here are this node's to own + free.
 async fn materialize_skinned_mesh(
     entry: Arc<RendererNode>,
-    skin: awsm_scene_schema::SkinnedMeshRef,
-    material: Option<awsm_scene_schema::dynamic_material::MaterialInstance>,
+    skin: awsm_editor_protocol::SkinnedMeshRef,
+    material: Option<awsm_editor_protocol::dynamic_material::MaterialInstance>,
 ) {
     let Some(template) = bridge().get_template(skin.source) else {
         tracing::warn!(
@@ -636,7 +636,7 @@ async fn materialize_skinned_mesh(
 
 /// Authored polyline (`NodeKind::Line`) → fat-line strip. The fat-line pipeline
 /// reads world-space positions, so the node transform is baked in CPU-side.
-async fn materialize_line(entry: Arc<RendererNode>, def: awsm_scene_schema::LineDef) {
+async fn materialize_line(entry: Arc<RendererNode>, def: awsm_editor_protocol::LineDef) {
     if def.points.len() < 2 {
         return;
     }
@@ -680,7 +680,7 @@ async fn materialize_line(entry: Arc<RendererNode>, def: awsm_scene_schema::Line
 /// Curve viz (`NodeKind::Curve`) → a sampled Catmull-Rom polyline drawn as a
 /// magenta fat-line (the curve itself emits no game geometry; sweeps/instances
 /// consume it). World-space, parent transform baked in.
-async fn materialize_curve_viz(entry: Arc<RendererNode>, def: awsm_scene_schema::CurveDef) {
+async fn materialize_curve_viz(entry: Arc<RendererNode>, def: awsm_editor_protocol::CurveDef) {
     if def.control_points.len() < 2 {
         return;
     }
@@ -734,7 +734,7 @@ async fn materialize_curve_viz(entry: Arc<RendererNode>, def: awsm_scene_schema:
 /// Textured/tinted quad (`NodeKind::Sprite`) → a `sprite_quad` mesh with the
 /// renderer's billboard mode. Single-cell unlit-ish quad (the flipbook-animated
 /// variant is the follow-on); sprites don't cast/receive shadows.
-async fn materialize_sprite(entry: Arc<RendererNode>, def: awsm_scene_schema::SpriteDef) {
+async fn materialize_sprite(entry: Arc<RendererNode>, def: awsm_editor_protocol::SpriteDef) {
     use awsm_meshgen::sprite_quad;
     use awsm_renderer::meshes::mesh::BillboardMode;
 
@@ -746,18 +746,18 @@ async fn materialize_sprite(entry: Arc<RendererNode>, def: awsm_scene_schema::Sp
         colors: mesh.colors,
         indices: mesh.indices,
     };
-    let sprite_mat = awsm_scene_schema::MaterialDef {
+    let sprite_mat = awsm_editor_protocol::MaterialDef {
         base_color: def.tint,
         metallic: 0.0,
         roughness: 1.0,
         emissive: [def.tint[0] * 1.8, def.tint[1] * 1.8, def.tint[2] * 1.8],
         double_sided: true,
-        ..awsm_scene_schema::MaterialDef::default()
+        ..awsm_editor_protocol::MaterialDef::default()
     };
     let mode = match def.billboard {
-        awsm_scene_schema::BillboardMode::None => BillboardMode::None,
-        awsm_scene_schema::BillboardMode::YAxis => BillboardMode::YAxis,
-        awsm_scene_schema::BillboardMode::Full => BillboardMode::Full,
+        awsm_editor_protocol::BillboardMode::None => BillboardMode::None,
+        awsm_editor_protocol::BillboardMode::YAxis => BillboardMode::YAxis,
+        awsm_editor_protocol::BillboardMode::Full => BillboardMode::Full,
     };
     let parent_tk = entry.transform_key;
 
@@ -788,7 +788,10 @@ async fn materialize_sprite(entry: Arc<RendererNode>, def: awsm_scene_schema::Sp
 /// Collider (`NodeKind::Collider`) → an editor-overlay wireframe of the shape,
 /// drawn as a world-baked fat-line segment list (one-shot; re-materializes on
 /// shape/transform change via the kind observer).
-async fn materialize_collider(entry: Arc<RendererNode>, shape: awsm_scene_schema::ColliderShape) {
+async fn materialize_collider(
+    entry: Arc<RendererNode>,
+    shape: awsm_editor_protocol::ColliderShape,
+) {
     let parent_tk = entry.transform_key;
     let entry2 = entry.clone();
     let line_key = with_renderer_mut(move |r| {
@@ -818,7 +821,7 @@ async fn materialize_collider(entry: Arc<RendererNode>, shape: awsm_scene_schema
 /// Projection decal (`NodeKind::Decal`) → inserts the renderer decal (inert
 /// until a texture is assigned) plus a unit-cube volume wireframe so the decal
 /// is placeable/visible in the editor (the projection volume).
-async fn materialize_decal(entry: Arc<RendererNode>, cfg: awsm_scene_schema::DecalConfig) {
+async fn materialize_decal(entry: Arc<RendererNode>, cfg: awsm_editor_protocol::DecalConfig) {
     let parent_tk = entry.transform_key;
     let entry2 = entry.clone();
     let alpha = cfg.alpha;
@@ -833,7 +836,7 @@ async fn materialize_decal(entry: Arc<RendererNode>, cfg: awsm_scene_schema::Dec
             Err(err) => tracing::warn!("insert_decal: {err:?}"),
         }
         let (positions, colors) = super::collider_wire::build(
-            &awsm_scene_schema::ColliderShape::Box {
+            &awsm_editor_protocol::ColliderShape::Box {
                 half_extents: [0.5, 0.5, 0.5],
             },
             &world,
@@ -849,7 +852,7 @@ async fn materialize_decal(entry: Arc<RendererNode>, cfg: awsm_scene_schema::Dec
 
 /// The single curve node referenced by a sweep/instances node, if it exists and
 /// is a `Curve`.
-fn lookup_curve_def(node_id: NodeId) -> Option<awsm_scene_schema::CurveDef> {
+fn lookup_curve_def(node_id: NodeId) -> Option<awsm_editor_protocol::CurveDef> {
     let b = bridge();
     let entry = b.nodes.lock().unwrap().get(&node_id).cloned()?;
     match entry.node.kind.get_cloned() {
@@ -904,7 +907,7 @@ async fn upload_simple_mesh(
 /// `curve_node` (a Curve) and `source_node` (a Mesh) point at real nodes.
 async fn materialize_instances(
     entry: Arc<RendererNode>,
-    def: awsm_scene_schema::InstancesAlongCurveDef,
+    def: awsm_editor_protocol::InstancesAlongCurveDef,
 ) {
     use awsm_curves::{CatmullRomCurve, Curve3, FrameSequence};
     use awsm_renderer::instances::InstanceAttr;
@@ -993,7 +996,7 @@ async fn materialize_instances(
     let mesh_key = upload_simple_mesh(
         entry,
         raw,
-        MeshMaterial::Flat(awsm_scene_schema::MaterialDef::default()),
+        MeshMaterial::Flat(awsm_editor_protocol::MaterialDef::default()),
     )
     .await;
     if let Some(mk) = mesh_key {
@@ -1017,7 +1020,7 @@ async fn materialize_instances(
 /// instanced billboard quad, ticked each frame by the render loop.
 async fn materialize_particle(
     entry: Arc<RendererNode>,
-    def: awsm_scene_schema::ParticleEmitterDef,
+    def: awsm_editor_protocol::ParticleEmitterDef,
 ) {
     let parent_tk = entry.transform_key;
     let node_id = entry.node_id;
@@ -1082,7 +1085,7 @@ async fn apply_light(entry: Arc<RendererNode>, cfg: LightConfig) {
 /// kind observer re-fires on every `SetKind`, so editing the camera config
 /// re-inserts a slot that reflects the new config — keeping store and config in
 /// sync without a separate observer.
-async fn materialize_camera(entry: Arc<RendererNode>, cfg: awsm_scene_schema::CameraConfig) {
+async fn materialize_camera(entry: Arc<RendererNode>, cfg: awsm_editor_protocol::CameraConfig) {
     let params = camera_params_from_config(&cfg);
     let key = with_renderer_mut(move |r| r.cameras.insert(params)).await;
     *entry.camera_key.lock().unwrap() = Some(key);
@@ -1092,8 +1095,8 @@ async fn materialize_camera(entry: Arc<RendererNode>, cfg: awsm_scene_schema::Ca
 /// clip planes; depth-of-field (`aperture`/`focus_distance`) isn't authored on
 /// the node config yet, so it defaults to the same values `scene_camera_matrices`
 /// has always used (`5.6` / `10.0`).
-fn camera_params_from_config(cfg: &awsm_scene_schema::CameraConfig) -> CameraParams {
-    use awsm_scene_schema::CameraProjection;
+fn camera_params_from_config(cfg: &awsm_editor_protocol::CameraConfig) -> CameraParams {
+    use awsm_editor_protocol::CameraProjection;
     let projection = match cfg.projection {
         CameraProjection::Perspective { fov_y_rad } => {
             CameraProjectionParams::Perspective { fov_y_rad }
@@ -1113,10 +1116,10 @@ fn camera_params_from_config(cfg: &awsm_scene_schema::CameraConfig) -> CameraPar
 
 /// Schema → runtime light shadow params.
 fn light_shadow_params_from_config(
-    cfg: &awsm_scene_schema::LightShadowConfig,
+    cfg: &awsm_editor_protocol::LightShadowConfig,
 ) -> awsm_renderer::shadows::LightShadowParams {
+    use awsm_editor_protocol as s;
     use awsm_renderer::shadows as r;
-    use awsm_scene_schema as s;
     r::LightShadowParams {
         cast: cfg.cast,
         depth_bias: cfg.depth_bias,

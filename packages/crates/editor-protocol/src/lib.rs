@@ -17,6 +17,12 @@
 //! `NodeSpec` into a live `Node`, applying a command to the controller) lives in
 //! the editor — this crate is the vocabulary, not the interpreter.
 
+// The umbrella re-export (`pub use awsm_scene::*`) intentionally has its runtime
+// `AssetSource`/`AssetEntry`/`AssetTable` shadowed by this crate's authoring
+// versions (Rust resolves the explicit re-export over the glob). That shadowing
+// is the whole point — silence the advisory lint.
+#![allow(hidden_glob_reexports)]
+
 mod anim_ui;
 mod assets;
 mod command;
@@ -48,3 +54,10 @@ pub use transport::{EditorEvent, Request, Response};
 pub use awsm_meshgen::recipe::{
     Axis, MeshBase, Modifier, ModifierStack, SdfNode, SdfPrimitive, SweepAlongCurveDef,
 };
+
+// Umbrella: re-export the runtime CORE schema so the editor has a single import
+// path for both authoring + CORE types. The authoring `AssetSource`/`AssetEntry`/
+// `AssetTable` re-exported above deliberately shadow awsm-scene's runtime ones
+// (glob re-exports yield to explicit ones), so `awsm_editor_protocol::AssetSource`
+// is the authoring table (carries `Mesh(MeshDef)`).
+pub use awsm_scene::*;

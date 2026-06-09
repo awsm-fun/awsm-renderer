@@ -10,7 +10,7 @@
 
 use crate::engine::scene::AssetId;
 use awsm_editor_protocol::CompileError;
-use awsm_scene_schema::{MaterialDef, MaterialShading};
+use awsm_editor_protocol::{MaterialDef, MaterialShading};
 use awsm_web_shared::prelude::{Mutable, MutableVec};
 use std::sync::Arc;
 

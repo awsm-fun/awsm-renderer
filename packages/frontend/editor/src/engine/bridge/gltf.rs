@@ -18,6 +18,7 @@
 
 use std::collections::HashMap;
 
+use awsm_editor_protocol::MaterialDef;
 use awsm_glb_export::MeshData;
 use awsm_renderer::textures::TextureKey;
 use awsm_renderer_gltf::data::GltfData;
@@ -25,7 +26,6 @@ use awsm_renderer_gltf::extract::{extract_animations, ExtractedAnimation};
 use awsm_renderer_gltf::loader::{get_type_from_filename, GltfFileType};
 use awsm_renderer_gltf::populate::GltfPopulateContext;
 use awsm_renderer_gltf::{loader::GltfLoader, AwsmRendererGltfExt};
-use awsm_scene_schema::MaterialDef;
 
 use super::asset_template::{self, AssetTemplate};
 use crate::engine::context::renderer_handle;
@@ -75,14 +75,14 @@ pub struct ExtractedMaterial {
 #[derive(Clone, Copy, Default)]
 pub struct TexBinding {
     pub uv_index: u32,
-    pub transform: Option<awsm_scene_schema::TextureTransform>,
-    pub sampler: Option<awsm_scene_schema::TextureSampler>,
+    pub transform: Option<awsm_editor_protocol::TextureTransform>,
+    pub sampler: Option<awsm_editor_protocol::TextureSampler>,
 }
 
 /// Map a glTF texture sampler → the editor's [`TextureSampler`]. Returns `None`
 /// when it's the glTF default (repeat + linear), to keep refs compact.
-fn gltf_sampler(s: gltf::texture::Sampler) -> Option<awsm_scene_schema::TextureSampler> {
-    use awsm_scene_schema::{TextureFilter, TextureSampler, TextureWrap};
+fn gltf_sampler(s: gltf::texture::Sampler) -> Option<awsm_editor_protocol::TextureSampler> {
+    use awsm_editor_protocol::{TextureFilter, TextureSampler, TextureWrap};
     let wrap = |w: gltf::texture::WrappingMode| match w {
         gltf::texture::WrappingMode::ClampToEdge => TextureWrap::ClampToEdge,
         gltf::texture::WrappingMode::MirroredRepeat => TextureWrap::MirroredRepeat,
@@ -148,13 +148,13 @@ struct MaterialTextureIndices {
 fn tex_binding(
     tex_coord: u32,
     xform: Option<gltf::texture::TextureTransform>,
-    sampler: Option<awsm_scene_schema::TextureSampler>,
+    sampler: Option<awsm_editor_protocol::TextureSampler>,
 ) -> TexBinding {
     let uv_index = xform
         .as_ref()
         .and_then(|x| x.tex_coord())
         .unwrap_or(tex_coord);
-    let transform = xform.map(|x| awsm_scene_schema::TextureTransform {
+    let transform = xform.map(|x| awsm_editor_protocol::TextureTransform {
         offset: x.offset(),
         rotation: x.rotation(),
         scale: x.scale(),
@@ -295,9 +295,9 @@ fn extract_material_specs(data: &GltfData) -> Vec<MatSpec> {
                 alpha_mode: extract_alpha_mode(&m),
                 // KHR_materials_unlit → the editor's flat/unlit shading model.
                 shading: if m.unlit() {
-                    awsm_scene_schema::MaterialShading::Unlit
+                    awsm_editor_protocol::MaterialShading::Unlit
                 } else {
-                    awsm_scene_schema::MaterialShading::Pbr
+                    awsm_editor_protocol::MaterialShading::Pbr
                 },
                 extensions,
                 ..MaterialDef::default()
@@ -373,8 +373,8 @@ fn extract_material_specs(data: &GltfData) -> Vec<MatSpec> {
 }
 
 /// glTF `material.alphaMode` (+ cutoff) → the editor's [`MaterialAlphaMode`].
-fn extract_alpha_mode(m: &gltf::Material) -> awsm_scene_schema::MaterialAlphaMode {
-    use awsm_scene_schema::MaterialAlphaMode;
+fn extract_alpha_mode(m: &gltf::Material) -> awsm_editor_protocol::MaterialAlphaMode {
+    use awsm_editor_protocol::MaterialAlphaMode;
     match m.alpha_mode() {
         gltf::material::AlphaMode::Opaque => MaterialAlphaMode::Opaque,
         gltf::material::AlphaMode::Mask => MaterialAlphaMode::Mask {
@@ -417,8 +417,8 @@ fn ext_color3(v: &gltf::json::Value, key: &str, default: [f32; 3]) -> [f32; 3] {
 fn extract_extensions(
     m: &gltf::Material,
     ext_textures: &mut Vec<(&'static str, (usize, TexBinding))>,
-) -> awsm_scene_schema::material::PbrExtensions {
-    use awsm_scene_schema::material::*;
+) -> awsm_editor_protocol::material::PbrExtensions {
+    use awsm_editor_protocol::material::*;
     let mut e = PbrExtensions::default();
     // Capture an extension texture slot (a glTF `textureInfo` object) by name.
     let mut grab = |slot: &'static str, v: &gltf::json::Value, json_key: &str| {
@@ -544,7 +544,7 @@ fn ext_tex(v: &gltf::json::Value, key: &str) -> Option<(usize, TexBinding)> {
                 .and_then(|x| x.as_u64())
                 .map(|x| x as u32)
                 .unwrap_or(tex_coord);
-            let transform = awsm_scene_schema::TextureTransform {
+            let transform = awsm_editor_protocol::TextureTransform {
                 offset: read_vec2(t, "offset", [0.0, 0.0]),
                 rotation: ext_f32(t, "rotation", 0.0),
                 scale: read_vec2(t, "scale", [1.0, 1.0]),

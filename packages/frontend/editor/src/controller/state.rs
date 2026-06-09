@@ -11,7 +11,7 @@ use super::custom_material::{find_material, CustomMaterial as CM};
 use super::*;
 use crate::engine::scene::{mutate, AssetId, NodeId, NodeKind, Scene};
 use crate::error::EditorResult;
-use awsm_scene_schema::{
+use awsm_editor_protocol::{
     AssetEntry, AssetSource as SceneAssetSource, MaterialDef, ModifierStack, ProceduralTextureDef,
     TextureDef,
 };
@@ -481,8 +481,8 @@ impl EditorController {
     /// isn't a mesh asset.
     fn ensure_authorable(&self, mesh: AssetId) -> EditorResult<Option<ModifierStack>> {
         use crate::engine::bridge::mesh_cache;
-        use awsm_scene_schema::modifier::{MeshBase, ModifierStack};
-        use awsm_scene_schema::MeshRef;
+        use awsm_editor_protocol::MeshRef;
+        use awsm_editor_protocol::{MeshBase, ModifierStack};
         let prior_stack = {
             let assets = self.scene.assets.lock().unwrap();
             match assets.get(mesh).map(|e| &e.source) {
@@ -529,8 +529,8 @@ impl EditorController {
     fn apply_vertex_overrides(
         &self,
         mesh: AssetId,
-        mutate: impl FnOnce(&mut awsm_scene_schema::material::VertexOverrides),
-    ) -> EditorResult<awsm_scene_schema::material::VertexOverrides> {
+        mutate: impl FnOnce(&mut awsm_editor_protocol::VertexOverrides),
+    ) -> EditorResult<awsm_editor_protocol::VertexOverrides> {
         use crate::engine::bridge::mesh_cache;
         // Collapse to a frozen-topology base first (terminal authoring).
         self.ensure_authorable(mesh)?;
@@ -563,7 +563,7 @@ impl EditorController {
     fn overrides_inverse(
         &self,
         mesh: AssetId,
-        prior: awsm_scene_schema::material::VertexOverrides,
+        prior: awsm_editor_protocol::VertexOverrides,
         collapse: Option<ModifierStack>,
     ) -> EditorCommand {
         let restore_overrides = EditorCommand::SetVertexOverrides {
@@ -606,8 +606,8 @@ impl EditorController {
     ) -> Option<(AssetId, std::sync::Arc<crate::engine::scene::node::Node>)> {
         use crate::engine::bridge::mesh_cache;
         use crate::engine::scene::node::Node;
-        use awsm_scene_schema::modifier::{MeshBase, ModifierStack};
-        use awsm_scene_schema::{CapturedSource, MeshDef, MeshRef, PrimitiveShape, Trs};
+        use awsm_editor_protocol::{CapturedSource, MeshDef, MeshRef, PrimitiveShape, Trs};
+        use awsm_editor_protocol::{MeshBase, ModifierStack};
 
         let (label, base, source): (&str, MeshBase, CapturedSource) = match spec {
             InsertSpec::Primitive(shape) => {
@@ -626,7 +626,7 @@ impl EditorController {
                 )
             }
             InsertSpec::Sweep => {
-                let def = awsm_scene_schema::SweepAlongCurveDef::default();
+                let def = awsm_editor_protocol::SweepAlongCurveDef::default();
                 (
                     "Sweep",
                     MeshBase::Sweep(def.clone()),
@@ -842,12 +842,12 @@ impl EditorController {
                 // first PBR/lit material isn't black out of the box (the §E3 fix —
                 // applies to the human editor and MCP alike).
                 let light = build_insert(&InsertSpec::Light(
-                    awsm_scene_schema::LightKind::Directional,
+                    awsm_editor_protocol::LightKind::Directional,
                 ));
                 mutate::insert_under(&self.scene, None, light);
                 self.scene
                     .environment
-                    .set(awsm_scene_schema::EnvironmentConfig::default());
+                    .set(awsm_editor_protocol::EnvironmentConfig::default());
                 self.scene.bump_revision();
                 self.dirty.set_neq(false);
                 self.undo.borrow_mut().clear();
@@ -998,7 +998,7 @@ impl EditorController {
                 Ok(Some(EditorCommand::DeleteAsset { id }))
             }
             EditorCommand::DropSkinning { node } => {
-                use awsm_scene_schema::SkinnedMeshRef;
+                use awsm_editor_protocol::SkinnedMeshRef;
                 let Some(n) = mutate::find_by_id(&self.scene, node) else {
                     return Ok(None);
                 };
@@ -1271,8 +1271,8 @@ impl EditorController {
             }
             EditorCommand::CollapseMeshStack { mesh } => {
                 use crate::engine::bridge::mesh_cache;
-                use awsm_scene_schema::modifier::{MeshBase, ModifierStack};
-                use awsm_scene_schema::MeshRef;
+                use awsm_editor_protocol::MeshRef;
+                use awsm_editor_protocol::{MeshBase, ModifierStack};
                 let stack = match self
                     .scene
                     .assets
@@ -1342,9 +1342,9 @@ impl EditorController {
                 }
                 let n = self.custom_materials.lock_ref().len() + 1;
                 let label = match shading {
-                    awsm_scene_schema::MaterialShading::Pbr => "PBR",
-                    awsm_scene_schema::MaterialShading::Unlit => "Unlit",
-                    awsm_scene_schema::MaterialShading::Toon { .. } => "Toon",
+                    awsm_editor_protocol::MaterialShading::Pbr => "PBR",
+                    awsm_editor_protocol::MaterialShading::Unlit => "Unlit",
+                    awsm_editor_protocol::MaterialShading::Toon { .. } => "Toon",
                 };
                 let mat = CM::new_builtin(id, format!("{label} Material {n}"), shading);
                 self.custom_materials.lock_mut().push_cloned(mat.clone());
@@ -1434,7 +1434,7 @@ impl EditorController {
                                     .and_then(|m| m.builtin.get_cloned())
                                     .or_else(|| prior.as_ref().map(|p| p.inline.clone()))
                                     .unwrap_or_default();
-                                awsm_scene_schema::dynamic_material::MaterialInstance {
+                                awsm_editor_protocol::dynamic_material::MaterialInstance {
                                     asset: id,
                                     inline,
                                     uniform_overrides: Default::default(),
@@ -2573,7 +2573,7 @@ impl EditorController {
         // already uploaded (see `gltf::ExtractedMaterial`). Each glTF material
         // becomes a built-in PBR library material; its textures become texture
         // assets (deduped by baked key) pre-registered to the baked GPU texture.
-        use awsm_scene_schema::MaterialShading;
+        use awsm_editor_protocol::MaterialShading;
 
         let mut tex_for_key: std::collections::HashMap<
             awsm_renderer::textures::TextureKey,
@@ -2684,7 +2684,7 @@ impl EditorController {
         // library material iff the model actually has unmaterialed primitives.
         let default_mat_id = if template.roots.iter().any(template_needs_default_material) {
             let id = AssetId::new();
-            let def = awsm_scene_schema::MaterialDef {
+            let def = awsm_editor_protocol::MaterialDef {
                 base_color: [1.0, 1.0, 1.0, 1.0],
                 metallic: 1.0,
                 roughness: 1.0,
@@ -3039,7 +3039,7 @@ impl EditorController {
 
     /// Project texture assets into the snapshot (id / name / procedural-vs-raster).
     fn texture_snapshots(&self) -> Vec<query::TextureSnapshot> {
-        use awsm_scene_schema::{AssetSource as S, TextureDef};
+        use awsm_editor_protocol::{AssetSource as S, TextureDef};
         let assets = self.scene.assets.lock().unwrap();
         assets
             .entries
@@ -3373,7 +3373,7 @@ impl EditorController {
                 }
             }
             EditorQuery::GetMeshLayers { node } => {
-                use awsm_scene_schema::modifier::MeshBase;
+                use awsm_editor_protocol::MeshBase;
                 use serde_json::json;
                 if node_is_skinned(&self.scene, node) {
                     return QueryResult::Error {
@@ -3495,7 +3495,7 @@ impl EditorController {
             EditorQuery::GetTrackData { clip, track } => {
                 match find_track(&self.custom_animations, clip, track) {
                     Some(t) => {
-                        let stored = awsm_scene_schema::animation::StoredTrack {
+                        let stored = awsm_editor_protocol::animation::StoredTrack {
                             target: t.target.clone(),
                             sampler: t.sampler.get(),
                             mute: t.mute.get(),
@@ -4077,7 +4077,7 @@ fn node_is_skinned(scene: &Scene, node: NodeId) -> bool {
 /// (`Some`). Returns `None` for non-geometry nodes and for unassigned geometry.
 fn node_material_ref(
     kind: &NodeKind,
-) -> Option<&awsm_scene_schema::dynamic_material::MaterialInstance> {
+) -> Option<&awsm_editor_protocol::dynamic_material::MaterialInstance> {
     match kind {
         NodeKind::Mesh { material, .. } => material.as_ref(),
         NodeKind::SkinnedMesh { material, .. } => material.as_ref(),
@@ -4088,7 +4088,7 @@ fn node_material_ref(
 /// Mutable variant of [`node_material_ref`].
 fn node_material_mut(
     kind: &mut NodeKind,
-) -> Option<&mut awsm_scene_schema::dynamic_material::MaterialInstance> {
+) -> Option<&mut awsm_editor_protocol::dynamic_material::MaterialInstance> {
     match kind {
         NodeKind::Mesh { material, .. } => material.as_mut(),
         NodeKind::SkinnedMesh { material, .. } => material.as_mut(),
@@ -4101,10 +4101,10 @@ fn node_material_mut(
 /// `value` is too short.
 fn patch_builtin_param(
     kind: &mut NodeKind,
-    param: awsm_scene_schema::animation::BuiltinParamKind,
+    param: awsm_editor_protocol::animation::BuiltinParamKind,
     value: &[f32],
 ) -> bool {
-    use awsm_scene_schema::animation::BuiltinParamKind as P;
+    use awsm_editor_protocol::animation::BuiltinParamKind as P;
     let Some(inst) = node_material_mut(kind) else {
         return false;
     };
@@ -4148,7 +4148,7 @@ fn patch_builtin_texture(
         return false;
     };
     let inline = &mut inst.inline;
-    let tref = texture.map(|asset| awsm_scene_schema::TextureRef {
+    let tref = texture.map(|asset| awsm_editor_protocol::TextureRef {
         asset,
         uv_index: 0,
         transform: None,
@@ -4172,8 +4172,10 @@ fn patch_material_texture(kind: &mut NodeKind, slot: &str, texture: Option<Asset
     };
     match texture {
         Some(asset) => {
-            inst.texture_overrides
-                .insert(slot.to_string(), awsm_scene_schema::TextureRef::new(asset));
+            inst.texture_overrides.insert(
+                slot.to_string(),
+                awsm_editor_protocol::TextureRef::new(asset),
+            );
         }
         None => {
             inst.texture_overrides.remove(slot);
@@ -4185,12 +4187,12 @@ fn patch_material_texture(kind: &mut NodeKind, slot: &str, texture: Option<Asset
 /// Patch a light parameter on a `LightConfig`. Returns false if the param
 /// doesn't apply to the light kind or `value` is too short.
 fn patch_light_param(
-    cfg: &mut awsm_scene_schema::LightConfig,
-    param: awsm_scene_schema::animation::LightParamKind,
+    cfg: &mut awsm_editor_protocol::LightConfig,
+    param: awsm_editor_protocol::animation::LightParamKind,
     value: &[f32],
 ) -> bool {
-    use awsm_scene_schema::animation::LightParamKind as P;
-    use awsm_scene_schema::LightConfig as L;
+    use awsm_editor_protocol::animation::LightParamKind as P;
+    use awsm_editor_protocol::LightConfig as L;
     match param {
         P::Color => {
             if value.len() < 3 {
@@ -4455,9 +4457,9 @@ fn default_procedural(proc: ProceduralKind) -> ProceduralTextureDef {
 
 /// Read the `TextureRef` at an extension texture slot, keyed `"<ext>.<field>"`.
 pub(crate) fn get_ext_texture(
-    ext: &awsm_scene_schema::PbrExtensions,
+    ext: &awsm_editor_protocol::PbrExtensions,
     slot: &str,
-) -> Option<awsm_scene_schema::TextureRef> {
+) -> Option<awsm_editor_protocol::TextureRef> {
     match slot {
         "specular.tex" => ext.specular.and_then(|e| e.tex),
         "specular.color_tex" => ext.specular.and_then(|e| e.color_tex),
@@ -4481,9 +4483,9 @@ pub(crate) fn get_ext_texture(
 /// enabled extension, keyed by `"<ext>.<field>"`. No-op if the extension isn't
 /// present (it was the variant enable that decided whether the slot exists).
 pub(crate) fn set_ext_texture(
-    ext: &mut awsm_scene_schema::PbrExtensions,
+    ext: &mut awsm_editor_protocol::PbrExtensions,
     slot: &str,
-    tref: Option<awsm_scene_schema::TextureRef>,
+    tref: Option<awsm_editor_protocol::TextureRef>,
 ) {
     match slot {
         "specular.tex" => {
@@ -4572,11 +4574,11 @@ fn ensure_import_texture(
         crate::engine::bridge::gltf::TexBinding,
     )>,
     name: &str,
-) -> Option<awsm_scene_schema::TextureRef> {
+) -> Option<awsm_editor_protocol::TextureRef> {
     let (key, binding) = baked?;
     // The texture-asset id is deduped by baked key, but the binding (UV set +
     // transform) is per-slot, so it goes on the TextureRef, not the asset.
-    let mk = |asset: AssetId| awsm_scene_schema::TextureRef {
+    let mk = |asset: AssetId| awsm_editor_protocol::TextureRef {
         asset,
         uv_index: binding.uv_index,
         transform: binding.transform,
@@ -4604,10 +4606,10 @@ fn mint_imported_mesh(
     label: &str,
     mesh: &awsm_glb_export::MeshData,
     source_asset: AssetId,
-) -> awsm_scene_schema::MeshRef {
+) -> awsm_editor_protocol::MeshRef {
     use crate::engine::bridge::mesh_cache;
-    use awsm_scene_schema::modifier::{MeshBase, ModifierStack};
-    use awsm_scene_schema::{CapturedSource, MeshDef, MeshRef};
+    use awsm_editor_protocol::{CapturedSource, MeshDef, MeshRef};
+    use awsm_editor_protocol::{MeshBase, ModifierStack};
 
     let mesh_id = AssetId(node_id.0);
     mesh_cache::store_with_id(mesh_id, mesh_cache::from_mesh_data(mesh.clone()));
@@ -4649,7 +4651,7 @@ fn build_editor_subtree(
     node_map: &mut std::collections::HashMap<u32, NodeId>,
 ) -> Arc<crate::engine::scene::node::Node> {
     use crate::engine::scene::node::Node;
-    use awsm_scene_schema::{dynamic_material::MaterialInstance, NodeKind, SkinnedMeshRef, Trs};
+    use awsm_editor_protocol::{dynamic_material::MaterialInstance, NodeKind, SkinnedMeshRef, Trs};
 
     let name = tn.label.clone().unwrap_or_else(|| {
         fallback_name
@@ -4936,7 +4938,7 @@ fn template_needs_default_material(
 /// Drives `structure_rev` so the inspector rebuilds on a discrete toggle but not
 /// on a continuous scrub.
 fn structure_key(kind: &NodeKind) -> String {
-    use awsm_scene_schema::{CameraProjection, LightConfig, MaterialShading};
+    use awsm_editor_protocol::{CameraProjection, LightConfig, MaterialShading};
     match kind {
         // The Mesh inspector rows depend on the assigned material's shading model
         // (its shared variant) — read it from the per-mesh inline store, which is
@@ -4979,7 +4981,7 @@ fn find_track(
 /// disjoint tag space (the `NodeId` slot carries a synthetic id derived from the
 /// clip/track/index so the existing scene-node mechanism still applies).
 fn coalesce_key(cmd: &EditorCommand) -> Option<(u8, NodeId)> {
-    use awsm_scene_schema::AssetId as Aid;
+    use awsm_editor_protocol::AssetId as Aid;
     // Pack a (clip asset id, small index) into a NodeId so animation edits coalesce
     // per (clip, track/layer, keyframe/strip) identity without a second key type.
     let pack = |asset: Aid, a: usize, b: usize| -> NodeId {

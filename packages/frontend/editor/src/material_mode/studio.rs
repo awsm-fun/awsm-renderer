@@ -53,17 +53,17 @@ pub fn render() -> Dom {
 /// (PBR / Unlit / Toon) shading type. Built-ins carry shared variant settings;
 /// their uniform values are set per-mesh.
 fn new_material_items(close: Close) -> Vec<Dom> {
-    use awsm_scene_schema::MaterialShading;
+    use awsm_editor_protocol::MaterialShading;
     let mk = |label: &str, shading: Option<MaterialShading>, close: Close| {
         MenuItem::new(label)
             .on_click(move || {
                 match shading {
                     Some(s) => dispatch(EditorCommand::AddBuiltinMaterial {
-                        id: awsm_scene_schema::AssetId::new(),
+                        id: awsm_editor_protocol::AssetId::new(),
                         shading: s,
                     }),
                     None => dispatch(EditorCommand::AddCustomMaterial {
-                        id: awsm_scene_schema::AssetId::new(),
+                        id: awsm_editor_protocol::AssetId::new(),
                     }),
                 }
                 (close.borrow_mut())();
@@ -175,7 +175,7 @@ fn status_badge(wgsl: &str, registered: bool) -> Dom {
 
 /// Mutate the inner `MaterialDef` of a built-in library material + flag dirty.
 /// The `spawn_builtin_resync` observer re-materializes assigned meshes.
-fn edit_builtin(mat: &Arc<CustomMaterial>, f: impl FnOnce(&mut awsm_scene_schema::MaterialDef)) {
+fn edit_builtin(mat: &Arc<CustomMaterial>, f: impl FnOnce(&mut awsm_editor_protocol::MaterialDef)) {
     let mut def = mat.builtin.get_cloned().unwrap_or_default();
     f(&mut def);
     mat.builtin.set(Some(def));
@@ -190,7 +190,7 @@ fn builtin_toggle_row(
     mat: &Arc<CustomMaterial>,
     label: &str,
     value: bool,
-    set: impl Fn(&mut awsm_scene_schema::MaterialDef, bool) + 'static,
+    set: impl Fn(&mut awsm_editor_protocol::MaterialDef, bool) + 'static,
 ) -> Dom {
     use futures_signals::signal::SignalExt;
     let state = Mutable::new(value);
@@ -229,7 +229,7 @@ fn builtin_num_row(
     min: f64,
     max: f64,
     step: f64,
-    set: impl Fn(&mut awsm_scene_schema::MaterialDef, f64) + 'static,
+    set: impl Fn(&mut awsm_editor_protocol::MaterialDef, f64) + 'static,
 ) -> Dom {
     let mat = mat.clone();
     row(
@@ -250,10 +250,11 @@ fn builtin_num_row(
 fn builtin_texture_row(
     mat: &Arc<CustomMaterial>,
     label: &str,
-    current: Option<awsm_scene_schema::TextureRef>,
-    set: impl Fn(&mut awsm_scene_schema::MaterialDef, Option<awsm_scene_schema::TextureRef>) + 'static,
+    current: Option<awsm_editor_protocol::TextureRef>,
+    set: impl Fn(&mut awsm_editor_protocol::MaterialDef, Option<awsm_editor_protocol::TextureRef>)
+        + 'static,
 ) -> Dom {
-    use awsm_scene_schema::TextureRef;
+    use awsm_editor_protocol::TextureRef;
     use futures_signals::signal::SignalExt;
     let textures = crate::scene_mode::inspector::collect_texture_assets();
     let mut options: Vec<(String, String)> = vec![("__none__".into(), "— none —".into())];
@@ -288,8 +289,8 @@ fn builtin_texture_row(
 /// The material's texture slots (variant: enabling one recompiles assigned meshes).
 /// Base-color + emissive maps apply to every shading model; metallic/roughness,
 /// normal and occlusion maps are PBR-only.
-fn textures_section(mat: &Arc<CustomMaterial>, def: &awsm_scene_schema::MaterialDef) -> Dom {
-    use awsm_scene_schema::MaterialShading;
+fn textures_section(mat: &Arc<CustomMaterial>, def: &awsm_editor_protocol::MaterialDef) -> Dom {
+    use awsm_editor_protocol::MaterialShading;
     let mut sec = Section::new("Textures");
     sec = sec.child(builtin_texture_row(
         mat,
@@ -338,8 +339,8 @@ fn textures_section(mat: &Arc<CustomMaterial>, def: &awsm_scene_schema::Material
 
 /// The Toon knobs (uniforms structurally carried on the Toon shading variant, so
 /// they live on the material). Only shown for Toon materials.
-fn toon_section(mat: &Arc<CustomMaterial>, def: &awsm_scene_schema::MaterialDef) -> Dom {
-    use awsm_scene_schema::MaterialShading;
+fn toon_section(mat: &Arc<CustomMaterial>, def: &awsm_editor_protocol::MaterialDef) -> Dom {
+    use awsm_editor_protocol::MaterialShading;
     let MaterialShading::Toon {
         diffuse_bands,
         rim_strength,
@@ -431,7 +432,7 @@ fn toon_section(mat: &Arc<CustomMaterial>, def: &awsm_scene_schema::MaterialDef)
 /// Color factors default to white and are edited once the texture/color picker
 /// pass lands; the primary scalar of every extension is authorable here now.
 fn extensions_section(mat: &Arc<CustomMaterial>) -> Dom {
-    use awsm_scene_schema::MaterialShading;
+    use awsm_editor_protocol::MaterialShading;
     use futures_signals::signal::SignalExt;
     let mat = mat.clone();
     html!("div", {
@@ -523,7 +524,7 @@ fn extensions_section(mat: &Arc<CustomMaterial>) -> Dom {
 /// (shading type + alpha / double-sided / vertex-colors). Uniform values + texture
 /// bindings are set per-mesh, so they don't appear here.
 fn builtin_definition(mat: &Arc<CustomMaterial>) -> Dom {
-    use awsm_scene_schema::{MaterialAlphaMode, MaterialShading};
+    use awsm_editor_protocol::{MaterialAlphaMode, MaterialShading};
     let def = mat.builtin.get_cloned().unwrap_or_default();
     let shading_label = match def.shading {
         MaterialShading::Pbr => "PBR (physically based)",

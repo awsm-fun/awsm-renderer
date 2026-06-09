@@ -11,7 +11,7 @@
 
 use std::cell::RefCell;
 
-use awsm_scene_schema::{AssetSource, TextureDef};
+use awsm_editor_protocol::{AssetSource, TextureDef};
 use awsm_web_shared::prelude::Mutable;
 use wasm_bindgen::{Clamped, JsCast};
 
@@ -125,7 +125,7 @@ fn canvas_png(
 /// the GPU and PNG-encoded by the renderer.
 pub async fn texture_png(id: AssetId) -> Result<String, String> {
     enum Kind {
-        Procedural(awsm_scene_schema::ProceduralTextureDef),
+        Procedural(awsm_editor_protocol::ProceduralTextureDef),
         Raster,
     }
     let kind = {

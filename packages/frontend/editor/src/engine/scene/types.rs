@@ -7,7 +7,7 @@
 //! describing the renderer-side load progress for a `Model` node — it's
 //! never serialized.
 
-pub use awsm_scene_schema::{
+pub use awsm_editor_protocol::{
     CameraConfig, CameraProjection, ColliderShape, EnvironmentConfig, IblConfig, LightConfig,
     LightKind, NodeKind, SkyboxConfig, Trs,
 };

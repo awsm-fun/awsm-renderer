@@ -260,7 +260,6 @@ dependencies = [
  "awsm-renderer",
  "awsm-renderer-core",
  "awsm-renderer-gltf",
- "awsm-scene-schema",
  "awsm-web-shared",
  "awsm_web 0.45.0",
  "base64 0.22.1",

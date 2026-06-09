@@ -19,7 +19,7 @@ use awsm_renderer::dynamic_materials::MaterialRegistration;
 use awsm_renderer::materials::Material;
 use awsm_renderer::AwsmRenderer;
 
-use awsm_scene_schema::dynamic_material::{MaterialInstance, UniformValue as SceneUniformValue};
+use awsm_editor_protocol::dynamic_material::{MaterialInstance, UniformValue as SceneUniformValue};
 
 use crate::controller::{AlphaMode, CustomMaterial};
 use crate::engine::context::renderer_handle;
