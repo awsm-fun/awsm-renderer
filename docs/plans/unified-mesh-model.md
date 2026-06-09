@@ -246,6 +246,45 @@ the standalone interop GLB path (the "Export GLB" download button): bake a scene
 subtree → a portable `.glb` for Blender/other engines (lossy for custom WGSL
 materials, as today). Orthogonal to the player pipeline.
 
+### Execution blueprint — locked decisions (from the code-level migration map)
+A planning pass read the actual crate + all 5 dependents; the load-bearing
+findings (which simplify/correct the framing above):
+1. **No runtime scene document exists today.** `EditorProject` is the only doc and
+   it's authoring (embeds `MeshDef`/`StoredMaterial`/`MixerDoc`). So `awsm-scene`'s
+   runtime `Scene` + `scene.toml`/dir read-write is **net-new code**, not a move.
+2. **`NodeKind` does NOT fork.** `NodeKind::Mesh` references the mesh by
+   `MeshRef(AssetId)`, never inlines `MeshDef` — so the runtime/authoring split
+   lives **entirely in the asset table** (`AssetSource::Mesh(RuntimeMesh)` in
+   awsm-scene vs `Mesh(MeshDef)` in protocol). `tree.rs` moves whole as CORE. This
+   shrinks the carve a lot.
+3. **Recipe types (`ModifierStack`/`Modifier`/`SdfNode`/`MeshBase`/`Axis`/
+   `SweepAlongCurveDef`) move INTO `awsm-meshgen`** (its evaluator's home), and
+   `awsm-editor-protocol` depends on meshgen + re-exports them. Homing them in
+   protocol would create a meshgen↔protocol cycle. This is the load-bearing
+   acyclicity decision.
+4. **Renderer barely touches the schema** (only shadows/animation/AssetId/NodeId —
+   all CORE → awsm-scene; its dep is already optional+feature-gated). **Never needs
+   protocol.** `glb-export` has no scene-schema dep at all (Step 8, orthogonal).
+5. **Runtime mesh** = `RuntimeMesh = Primitive(PrimitiveShape) | Editable(MeshBlob)`;
+   `MeshBlob` keeps `CapturedMesh`'s exact first-5 field order/types (bitcode is
+   non-self-describing — old `.mesh.bin` must still decode) and appends multi-set
+   uvs/colors + arbitrary named `vec2/3/4` streams in a trailing
+   `#[serde(default)] attributes: Vec<NamedAttribute>`. Skinned stays a *node kind*
+   (`SkinnedMesh{skin}`), not a mesh-asset variant.
+6. **Authoring asset table is a parallel type** (`AuthoringAssetTable` with
+   `Mesh(MeshDef)`) — NOT a generic `AssetSource<M>` (generics ripple through
+   serde/schemars/~25 editor match sites).
+
+Step order (full carve, one arc; red window is steps 3→7 contiguous): (1) scaffold
+`awsm-scene` + move CORE modules + new `mesh.rs`/`scene.rs`/`project_dir.rs`;
+(2) move recipes into meshgen, repoint meshgen→awsm-scene; (3) build protocol
+authoring layer (`MeshDef`/`VertexOverrides`/`EditorProject` + re-export recipes),
+chain `schemars`; (4) repoint renderer; (5) repoint mcp (`Flexible<ModifierStack>`
+→ protocol); (6) repoint editor frontend (~140 sites, the bulk); (7) delete
+`awsm-scene-schema`, move its round-trip tests, full `task lint` + `trunk build`
+green. Top risks: bitcode blob layout compat (#5), the meshgen/protocol cycle (#3),
+schemars feature-chaining for the MCP typed tools.
+
 ---
 
 ## 5. The player bundle = a finalized `awsm-scene` directory (no `scene.glb`)
