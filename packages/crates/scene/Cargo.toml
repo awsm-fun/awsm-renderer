@@ -13,15 +13,15 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, optional = true }
 uuid = { version = "1.11.0", features = ["v4", "serde", "js"] }
 thiserror = { workspace = true }
-# Native `scene.toml` + material-folder loaders. Off by default so the wasm
-# build (no std::fs) pays no code-size cost — matches awsm-scene.
-toml = { version = "0.8", optional = true }
+# `scene.toml` ser/de — the canonical runtime scene format. Non-optional: the
+# editor (wasm) bakes it + the player parses it; toml is pure-Rust, wasm-friendly.
+toml = "0.8"
 # Optional JSON Schemas so the MCP server can expose strongly-typed tool params.
 schemars = { version = "1", optional = true }
 
 [features]
 default = []
-fs-loader = ["dep:serde_json", "dep:toml"]
+fs-loader = ["dep:serde_json"]
 schemars = ["dep:schemars"]
 
 [dev-dependencies]
